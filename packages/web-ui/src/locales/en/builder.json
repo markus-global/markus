@@ -67,7 +67,20 @@
     "sharing": "Sharing...",
     "updating": "Updating...",
     "updateVersion": "Update v{{version}}",
-    "viewOnHub": "View on Hub"
+    "viewOnHub": "View on Hub",
+    "submittedForReview": "Submitted for review. Only you can see it until a moderator approves it — others who open the link will see an \"under review\" page.",
+    "updateSubmitted": "Update submitted for review. The previously approved version stays public until the new version is approved.",
+    "underReview": "Under review",
+    "underReviewTip": "This item is waiting for moderator approval. Only you can see it for now.",
+    "rejected": "Rejected",
+    "rejectedTip": "A moderator rejected this item, so it is not publicly visible.",
+    "updateUnderReview": "Update under review",
+    "updateUnderReviewTip": "Your latest changes are awaiting approval. The previously approved version stays public."
+  },
+  "pricing": {
+    "label": "Price",
+    "enableTips": "Let users send tips",
+    "reviewNote": "Public and link-only items are reviewed by a moderator before they become visible to others."
   },
   "shareMode": {
     "title": "Choose Share Mode",

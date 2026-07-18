@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import rehypeHighlight from 'rehype-highlight';
-import { api, hubApi, kebab, type AuthUser, type HubVisibility, type HubOrg } from '../api.ts';
+import { api, hubApi, kebab, type AuthUser, type HubVisibility, type HubModerationStatus, type HubOrg } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 interface ArtifactDetailProps {
@@ -667,7 +667,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
   const [manifest, setManifest] = useState<ManifestData | null>(null);
   const [artPath, setArtPath] = useState('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string; visibility?: HubVisibility }>({ shared: false });
+  const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }>({ shared: false });
   const [shareInProgress, setShareInProgress] = useState(false);
   const [contentDirty, setContentDirty] = useState(false);
   const [showVersionBump, setShowVersionBump] = useState(false);
@@ -751,7 +751,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       const typeDir = type === 'agent' ? 'agent' : type === 'team' ? 'team' : 'skill';
       for (const hi of items) {
         if (hi.itemType === typeDir && (hi.slug === name || hi.name === name)) {
-          setHubStatus({ shared: true, id: hi.id, slug: hi.slug, version: hi.version, visibility: (hi as any).visibility ?? 'public' });
+          setHubStatus({ shared: true, id: hi.id, slug: hi.slug, version: hi.version, visibility: hi.visibility ?? 'public', moderationStatus: hi.moderationStatus, pendingReview: hi.pendingReview });
           return;
         }
       }
@@ -873,12 +873,16 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
         orgId: opts?.orgId,
       });
       if (result.id) {
-        setHubStatus({ shared: true, id: result.id, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public' });
+        setHubStatus({ shared: true, id: result.id, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public', moderationStatus: result.moderationStatus, pendingReview: result.pendingReview });
         setContentDirty(false);
+        const vis = result.visibility ?? opts?.visibility ?? 'public';
+        if (vis !== 'org' && (result.moderationStatus === 'pending' || result.pendingReview)) {
+          alert(result.updated ? t('share.updateSubmitted') : t('share.submittedForReview'));
+        }
       }
     } catch (err) {
       console.error('Share to Hub failed:', err);
-      alert(String(err));
+      alert(err instanceof Error ? err.message : String(err));
     } finally {
       setShareInProgress(false);
     }
@@ -983,6 +987,22 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
               const hasNewVersion = hubStatus.version !== localVersion;
               return (
                 <>
+                  {hubStatus.moderationStatus === 'pending' ? (
+                    <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.underReviewTip')}>
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      {t('share.underReview')}
+                    </span>
+                  ) : hubStatus.moderationStatus === 'rejected' ? (
+                    <span className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 inline-flex items-center gap-1" title={t('share.rejectedTip')}>
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                      {t('share.rejected')}
+                    </span>
+                  ) : hubStatus.pendingReview ? (
+                    <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.updateUnderReviewTip')}>
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      {t('share.updateUnderReview')}
+                    </span>
+                  ) : null}
                   {link && (
                     <a href={link} target="_blank" rel="noopener noreferrer"
                       className={`text-xs px-3 py-1.5 rounded-lg border transition-colors inline-flex items-center gap-1.5 ${
@@ -1349,9 +1369,9 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       {!readOnly && showVisibility && (
         <VisibilityDialog
           onClose={() => setShowVisibility(false)}
-          onConfirm={(visibility, orgId) => {
+          onConfirm={(visibility, orgId, priceCents, donationsEnabled) => {
             setShowVisibility(false);
-            void handleShareToHub({ visibility, orgId });
+            void handleShareToHub({ visibility, orgId, priceCents, donationsEnabled });
           }}
         />
       )}
@@ -1361,13 +1381,15 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
 function VisibilityDialog({ onClose, onConfirm }: {
   onClose: () => void;
-  onConfirm: (visibility: HubVisibility, orgId?: string) => void;
+  onConfirm: (visibility: HubVisibility, orgId?: string, priceCents?: number, donationsEnabled?: boolean) => void;
 }) {
   const { t } = useTranslation(['builder', 'common']);
   const [selected, setSelected] = useState<HubVisibility>('public');
   const [orgs, setOrgs] = useState<HubOrg[]>([]);
   const [selectedOrgId, setSelectedOrgId] = useState<string>('');
   const [loadingOrgs, setLoadingOrgs] = useState(false);
+  const [priceCents, setPriceCents] = useState(0);
+  const [donationsEnabled, setDonationsEnabled] = useState(false);
 
   useEffect(() => {
     if (selected === 'org' && orgs.length === 0) {
@@ -1378,6 +1400,8 @@ function VisibilityDialog({ onClose, onConfirm }: {
       }).catch(() => {}).finally(() => setLoadingOrgs(false));
     }
   }, [selected, orgs.length]);
+
+  const isPublicLike = selected === 'public' || selected === 'unlisted';
 
   const options: Array<{ value: HubVisibility; icon: ReactNode; label: string; desc: string }> = [
     {
@@ -1431,11 +1455,34 @@ function VisibilityDialog({ onClose, onConfirm }: {
             )}
           </div>
         )}
+        {isPublicLike && (
+          <div className="mb-5">
+            <label className="text-xs text-fg-secondary block mb-1.5">{t('pricing.label')}</label>
+            <div className="grid grid-cols-4 gap-2 mb-3">
+              {ARTIFACT_PRICE_OPTIONS.map(opt => (
+                <button key={opt.cents} type="button"
+                  onClick={() => setPriceCents(opt.cents)}
+                  className={`text-sm px-2 py-2 rounded-lg border transition-colors ${priceCents === opt.cents ? 'border-brand-500 bg-brand-500/10 text-fg-primary' : 'border-border-default text-fg-secondary hover:border-gray-600'}`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={donationsEnabled} onChange={e => setDonationsEnabled(e.target.checked)} className="accent-brand-500" />
+              <span className="text-xs text-fg-secondary">{t('pricing.enableTips')}</span>
+            </label>
+          </div>
+        )}
+        {isPublicLike && (
+          <div className="mb-4 text-[11px] text-fg-tertiary rounded-lg border border-border-default px-3 py-2">
+            {t('pricing.reviewNote')}
+          </div>
+        )}
         <div className="flex gap-3">
           <button onClick={onClose} className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
             {t('common:cancel')}
           </button>
-          <button onClick={() => onConfirm(selected, selected === 'org' ? selectedOrgId : undefined)}
+          <button onClick={() => onConfirm(selected, selected === 'org' ? selectedOrgId : undefined, isPublicLike && priceCents > 0 ? priceCents : undefined, isPublicLike ? donationsEnabled : undefined)}
             disabled={selected === 'org' && !selectedOrgId}
             className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             {t('shareMode.share')}

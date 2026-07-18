@@ -2106,6 +2106,7 @@ export interface HubUser {
 }
 
 export type HubVisibility = 'public' | 'org' | 'unlisted';
+export type HubModerationStatus = 'pending' | 'approved' | 'rejected';
 
 export interface HubItem {
   id: string;
@@ -2120,6 +2121,9 @@ export interface HubItem {
   priceCents?: number;
   visibility?: HubVisibility;
   orgId?: string;
+  moderationStatus?: HubModerationStatus;
+  moderationNote?: string;
+  pendingReview?: boolean;
   downloadCount: number;
   avgRating: string;
   ratingCount: number;
@@ -2127,6 +2131,23 @@ export interface HubItem {
   author: { id: string; username: string; displayName?: string };
   config?: Record<string, unknown>;
   readme?: string;
+}
+
+export interface HubMyItem {
+  id: string;
+  itemType: string;
+  name: string;
+  slug: string;
+  description: string;
+  version: string;
+  visibility?: HubVisibility;
+  orgId?: string;
+  priceCents?: number;
+  donationsEnabled?: boolean;
+  moderationStatus?: HubModerationStatus;
+  moderationNote?: string;
+  pendingReview?: boolean;
+  updatedAt: string;
 }
 
 export interface HubOrg {
@@ -2350,15 +2371,19 @@ export const hubApi = {
   publishViaProxy: async (payload: { itemType: string; name: string; slug?: string; description: string; category?: string; tags?: string[]; icon?: string; version?: string; config?: unknown; files?: Record<string, string>; readme?: string; thumbnailUrl?: string; images?: Array<{ url: string; alt: string; order: number }>; priceCents?: number; donationsEnabled?: boolean; visibility?: HubVisibility; orgId?: string }) => {
     await ensureHubAuth();
     try {
-      return await hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean; visibility?: HubVisibility }>('/items', { method: 'POST', body: JSON.stringify(payload) });
+      return await hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) });
     } catch (e) {
-      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean; visibility?: HubVisibility }>('/items', { method: 'POST', body: JSON.stringify(payload) }); }
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) }); }
       throw e;
     }
   },
+  updateItem: async (id: string, data: { priceCents?: number; donationsEnabled?: boolean; thumbnailUrl?: string; images?: Array<{ url: string; alt: string; order: number }> }) => {
+    await ensureHubAuth();
+    return hubRequest<{ ok: boolean }>(`/items/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  },
   myItems: async () => {
-    if (!getHubToken()) return { items: [] as Array<{ id: string; itemType: string; name: string; slug: string; description: string; version: string; visibility?: HubVisibility; orgId?: string; updatedAt: string }> };
-    return hubRequest<{ items: Array<{ id: string; itemType: string; name: string; slug: string; description: string; version: string; visibility?: HubVisibility; orgId?: string; updatedAt: string }> }>('/items/mine');
+    if (!getHubToken()) return { items: [] as HubMyItem[] };
+    return hubRequest<{ items: HubMyItem[] }>('/items/mine');
   },
   browseItems: async (opts?: { type?: string; orgId?: string; q?: string; page?: number; limit?: number }) => {
     const params = new URLSearchParams();

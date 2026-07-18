@@ -67,7 +67,20 @@
     "sharing": "正在分享...",
     "updating": "正在更新...",
     "updateVersion": "更新 v{{version}}",
-    "viewOnHub": "在 Hub 查看"
+    "viewOnHub": "在 Hub 查看",
+    "submittedForReview": "已提交审核。审核通过前只有你自己能看到，其他人打开链接会看到「审核中」页面。",
+    "updateSubmitted": "更新已提交审核。在新版本审核通过前，之前已通过的版本将继续公开展示。",
+    "underReview": "审核中",
+    "underReviewTip": "此资产正在等待管理员审核。目前只有你自己能看到。",
+    "rejected": "已拒绝",
+    "rejectedTip": "管理员拒绝了此资产，因此不会公开展示。",
+    "updateUnderReview": "更新审核中",
+    "updateUnderReviewTip": "你的最新修改正在等待审核。之前已通过的版本将继续公开展示。"
+  },
+  "pricing": {
+    "label": "价格",
+    "enableTips": "允许用户打赏",
+    "reviewNote": "公开和「仅链接」的资产需经管理员审核后才会对他人可见。"
   },
   "shareMode": {
     "title": "选择分享模式",

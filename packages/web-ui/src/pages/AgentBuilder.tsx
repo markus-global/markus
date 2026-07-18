@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, hubApi, type AgentInfo, type AuthUser, type HubVisibility, type HubOrg, type HubItem } from '../api.ts';
+import { api, hubApi, type AgentInfo, type AuthUser, type HubVisibility, type HubModerationStatus, type HubOrg, type HubItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
@@ -102,7 +102,7 @@ function useBuilderSubRoute(): { type: string; name: string } | null {
 }
 
 const SHARED_MAP_STORAGE_KEY = 'markus_builder_shared_map';
-type SharedEntry = { id: string; name: string; slug: string; version: string; visibility?: HubVisibility };
+type SharedEntry = { id: string; name: string; slug: string; version: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean };
 
 function loadSharedMapFromStorage(): Map<string, SharedEntry> {
   try {
@@ -147,7 +147,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
     Promise.all([
       (consume<{ artifacts: BuilderArtifact[] }>(PREFETCH_KEYS.builderArtifacts) ?? api.builder.artifacts.list()).then(d => d?.artifacts ?? []).catch(() => [] as BuilderArtifact[]),
       (consume<{ agents: AgentInfo[] }>(PREFETCH_KEYS.builderAgents) ?? api.agents.list()).then(d => d?.agents ?? []).catch(() => [] as AgentInfo[]),
-      (consume<{ items: Array<{ id: string; itemType: string; name: string; slug: string; version: string; visibility?: HubVisibility }> }>(PREFETCH_KEYS.builderHubMyItems) ?? hubApi.myItems()).then(d => d?.items ?? []).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string; version: string; visibility?: HubVisibility }>),
+      (consume<{ items: Array<{ id: string; itemType: string; name: string; slug: string; version: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }> }>(PREFETCH_KEYS.builderHubMyItems) ?? hubApi.myItems()).then(d => d?.items ?? []).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string; version: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }>),
       (consume<{ installed: Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }> }>(PREFETCH_KEYS.builderInstalled) ?? api.builder.artifacts.installed()).then(d => d?.installed ?? {}).catch(() => ({} as Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }>)),
     ]).then(([arts, agentList, hubItems, installedData]) => {
       setArtifacts(arts);
@@ -160,7 +160,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
           const typeDir = hi.itemType === 'agent' ? 'agent' : hi.itemType === 'team' ? 'team' : 'skill';
           for (const art of arts) {
             if (art.type === typeDir && (hi.slug === art.name || hi.name === ((art.meta.displayName as string) || (art.meta.name as string) || art.name))) {
-              shared.set(`${art.type}/${art.name}`, { id: hi.id, name: hi.name, slug: hi.slug || art.name, version: (hi as Record<string, string>).version || '1.0.0', visibility: (hi as any).visibility ?? 'public' });
+              shared.set(`${art.type}/${art.name}`, { id: hi.id, name: hi.name, slug: hi.slug || art.name, version: hi.version || '1.0.0', visibility: hi.visibility ?? 'public', moderationStatus: hi.moderationStatus, pendingReview: hi.pendingReview });
             }
           }
         }
@@ -306,10 +306,16 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
         visibility: opts?.visibility,
         orgId: opts?.orgId,
       });
-      if (result.id) setSharedMap(prev => { const m = new Map(prev); m.set(key, { id: result.id!, name, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public' }); saveSharedMapToStorage(m); return m; });
+      if (result.id) {
+        setSharedMap(prev => { const m = new Map(prev); m.set(key, { id: result.id!, name, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public', moderationStatus: result.moderationStatus, pendingReview: result.pendingReview }); saveSharedMapToStorage(m); return m; });
+        const vis = result.visibility ?? opts?.visibility ?? 'public';
+        if (vis !== 'org' && (result.moderationStatus === 'pending' || result.pendingReview)) {
+          alert(result.updated ? t('share.updateSubmitted') : t('share.submittedForReview'));
+        }
+      }
     } catch (err) {
       console.error('Share failed:', err);
-      alert(t('shareFailed', { error: String(err) }));
+      alert(t('shareFailed', { error: err instanceof Error ? err.message : String(err) }));
     } finally {
       setActionInProgress(null);
     }
@@ -635,6 +641,22 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                     </button>
                   ) : isShared ? (
                     <div className="flex items-center gap-1">
+                      {hubItem?.moderationStatus === 'pending' ? (
+                        <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.underReviewTip')}>
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                          {t('share.underReview')}
+                        </span>
+                      ) : hubItem?.moderationStatus === 'rejected' ? (
+                        <span className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 inline-flex items-center gap-1" title={t('share.rejectedTip')}>
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                          {t('share.rejected')}
+                        </span>
+                      ) : hubItem?.pendingReview ? (
+                        <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.updateUnderReviewTip')}>
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                          {t('share.updateUnderReview')}
+                        </span>
+                      ) : null}
                       <a href={getHubLink() ?? '#'} target="_blank" rel="noopener noreferrer"
                         className={`text-xs px-3 py-1.5 rounded-lg border transition-colors inline-flex items-center gap-1 ${
                           hubItem?.visibility === 'org' ? 'border-blue-500/30 text-blue-500 hover:text-blue-400 hover:border-blue-400/40'
@@ -779,10 +801,10 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
             <div className="bg-surface-secondary border border-border-default rounded-xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
               <VisibilitySelect
                 onCancel={() => setVisibilityTarget(null)}
-                onConfirm={(visibility, orgId) => {
+                onConfirm={(visibility, orgId, priceCents, donationsEnabled) => {
                   const art = visibilityTarget;
                   setVisibilityTarget(null);
-                  void handleShare(art, { visibility, orgId });
+                  void handleShare(art, { visibility, orgId, priceCents, donationsEnabled });
                 }}
               />
             </div>
@@ -795,13 +817,15 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
 
 function VisibilitySelect({ onCancel, onConfirm }: {
   onCancel: () => void;
-  onConfirm: (visibility: HubVisibility, orgId?: string) => void;
+  onConfirm: (visibility: HubVisibility, orgId?: string, priceCents?: number, donationsEnabled?: boolean) => void;
 }) {
   const { t } = useTranslation(['builder', 'common']);
   const [selected, setSelected] = useState<HubVisibility>('public');
   const [orgs, setOrgs] = useState<HubOrg[]>([]);
   const [selectedOrgId, setSelectedOrgId] = useState<string>('');
   const [loadingOrgs, setLoadingOrgs] = useState(false);
+  const [priceCents, setPriceCents] = useState(0);
+  const [donationsEnabled, setDonationsEnabled] = useState(false);
 
   useEffect(() => {
     if (selected === 'org' && orgs.length === 0) {
@@ -812,6 +836,9 @@ function VisibilitySelect({ onCancel, onConfirm }: {
       }).catch(() => {}).finally(() => setLoadingOrgs(false));
     }
   }, [selected, orgs.length]);
+
+  // Public / unlisted items go through moderation before others can see them.
+  const isPublicLike = selected === 'public' || selected === 'unlisted';
 
   const options: Array<{ value: HubVisibility; icon: ReactNode; label: string; desc: string }> = [
     {
@@ -864,11 +891,34 @@ function VisibilitySelect({ onCancel, onConfirm }: {
           )}
         </div>
       )}
+      {isPublicLike && (
+        <div className="mb-5">
+          <label className="text-xs text-fg-secondary block mb-1.5">{t('pricing.label')}</label>
+          <div className="grid grid-cols-4 gap-2 mb-3">
+            {PRICE_OPTIONS.map(opt => (
+              <button key={opt.cents} type="button"
+                onClick={() => setPriceCents(opt.cents)}
+                className={`text-sm px-2 py-2 rounded-lg border transition-colors ${priceCents === opt.cents ? 'border-brand-500 bg-brand-500/10 text-fg-primary' : 'border-border-default text-fg-secondary hover:border-gray-600'}`}>
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={donationsEnabled} onChange={e => setDonationsEnabled(e.target.checked)} className="accent-brand-500" />
+            <span className="text-xs text-fg-secondary">{t('pricing.enableTips')}</span>
+          </label>
+        </div>
+      )}
+      {isPublicLike && (
+        <div className="mb-4 text-[11px] text-fg-tertiary rounded-lg border border-border-default px-3 py-2">
+          {t('pricing.reviewNote')}
+        </div>
+      )}
       <div className="flex gap-3">
         <button onClick={onCancel} className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
           {t('common:cancel')}
         </button>
-        <button onClick={() => onConfirm(selected, selected === 'org' ? selectedOrgId : undefined)}
+        <button onClick={() => onConfirm(selected, selected === 'org' ? selectedOrgId : undefined, isPublicLike && priceCents > 0 ? priceCents : undefined, isPublicLike ? donationsEnabled : undefined)}
           disabled={selected === 'org' && !selectedOrgId}
           className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
           {t('shareMode.share')}
