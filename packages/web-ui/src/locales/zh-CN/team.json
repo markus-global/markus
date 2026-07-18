@@ -266,6 +266,7 @@
       "replyTitle": "回复"
     },
     "stopped": "已停止",
+    "emptyReply": "本次助手没有返回回复，通常是因为请求内容过大或 AI 服务暂时不可用。请点击重试；若持续出现，请在设置中检查积分或切换模型。",
     "fallbackAgent": "智能体",
     "fallbackYou": "你",
     "systemName": "系统",

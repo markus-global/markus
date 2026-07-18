@@ -1316,23 +1316,59 @@ export class ContextEngine {
   }): Promise<PreparedContext> {
     const contextWindow = opts.modelContextWindow ?? 64000;
     const rawMaxOutput = opts.modelMaxOutput ?? 16384;
-    const maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.4));
+    let maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.4));
 
     const systemTokens = estimateTokens(opts.systemPrompt, this.tokenCounter);
     const toolDefTokens = opts.toolDefinitions
       ? estimateTokens(JSON.stringify(opts.toolDefinitions), this.tokenCounter)
       : 0;
-    const safetyMargin = Math.ceil(Math.min(contextWindow * 0.15, 30000));
-    const messageBudget = contextWindow - systemTokens - toolDefTokens - maxOutput - safetyMargin;
+    let safetyMargin = Math.ceil(Math.min(contextWindow * 0.15, 30000));
+    let messageBudget = contextWindow - systemTokens - toolDefTokens - maxOutput - safetyMargin;
 
-    if (messageBudget < 500) {
-      log.warn('Very tight message budget', {
-        contextWindow,
-        systemTokens,
-        toolDefTokens,
-        maxOutput,
-        messageBudget,
-      });
+    // ── Defensive budget reclamation ────────────────────────────────────
+    // The system prompt + tool definitions are fixed overhead this method
+    // cannot trim. When they dominate the window (a misconfigured/too-small
+    // model context window, or a very large enabled toolset / MCP surface),
+    // the default output + safety reservations can push the message budget
+    // negative. Every conversation message then gets trimmed to zero and the
+    // model still receives an over-budget prompt — which comes back as an
+    // EMPTY reply, so the agent appears to "stop mid-task". Before that, try
+    // to reclaim room by shrinking the reserved output and safety margin down
+    // to floors so at least the most recent turn survives.
+    const MIN_MESSAGE_BUDGET = 1500;
+    const MIN_OUTPUT_RESERVE = 2048;
+    const staticOverhead = systemTokens + toolDefTokens;
+    if (messageBudget < MIN_MESSAGE_BUDGET) {
+      safetyMargin = Math.min(safetyMargin, 4000);
+      const roomForOutput = contextWindow - staticOverhead - safetyMargin - MIN_MESSAGE_BUDGET;
+      maxOutput = Math.max(MIN_OUTPUT_RESERVE, Math.min(maxOutput, roomForOutput));
+      messageBudget = contextWindow - staticOverhead - maxOutput - safetyMargin;
+
+      if (messageBudget < MIN_MESSAGE_BUDGET) {
+        // Even with minimal reservations the fixed overhead does not fit — the
+        // request will overflow no matter how much history we drop. Surface the
+        // root cause loudly (window too small / too many tools) so it's fixable
+        // instead of silently degrading into an empty reply.
+        log.error('Context overhead exceeds model window — request will likely overflow. Increase the model context window or reduce enabled tools/MCP servers.', {
+          contextWindow,
+          systemTokens,
+          toolDefTokens,
+          staticOverhead,
+          maxOutput,
+          safetyMargin,
+          messageBudget,
+          toolCount: opts.toolDefinitions?.length ?? 0,
+        });
+      } else {
+        log.warn('Reclaimed context budget by shrinking output/safety reservations', {
+          contextWindow,
+          systemTokens,
+          toolDefTokens,
+          maxOutput,
+          safetyMargin,
+          messageBudget,
+        });
+      }
     }
 
     let messages = opts.sessionMessages;

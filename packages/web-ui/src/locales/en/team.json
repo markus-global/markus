@@ -266,6 +266,7 @@
       "replyTitle": "Reply"
     },
     "stopped": "Stopped",
+    "emptyReply": "The assistant didn't produce a reply this time. This usually means the request was too large or the AI service was briefly unavailable. Please retry — if it keeps happening, check your credits or switch models in Settings.",
     "fallbackAgent": "Agent",
     "fallbackYou": "You",
     "systemName": "System",

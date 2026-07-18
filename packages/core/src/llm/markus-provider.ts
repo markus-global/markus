@@ -538,7 +538,6 @@ export class MarkusProvider implements LLMProviderInterface {
 }
 
 const FALLBACK_MODELS: MarkusModelInfo[] = [
-  { id: 'markus-lite', display_name: 'Markus Lite', capability: 'text', tier: 'flash', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: false },
-  { id: 'markus-pro', display_name: 'Markus Pro', capability: 'text', tier: 'pro', context_window: 65536, max_output_tokens: 8192, supports_vision: false, supports_reasoning: false },
-  { id: 'markus-max', display_name: 'Markus Max', capability: 'text', tier: 'high', context_window: 200000, max_output_tokens: 16384, supports_vision: true, supports_reasoning: false },
+  { id: 'markus-lite', display_name: 'Markus Lite', capability: 'text', tier: 'flash', context_window: 1000000, max_output_tokens: 384000, supports_vision: false, supports_reasoning: false },
+  { id: 'markus-pro', display_name: 'Markus Pro', capability: 'text', tier: 'pro', context_window: 1000000, max_output_tokens: 384000, supports_vision: false, supports_reasoning: false },
 ];

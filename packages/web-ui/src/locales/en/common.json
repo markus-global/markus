@@ -268,5 +268,14 @@
   },
   "license": {
     "upgradeLicense": "Upgrade"
+  },
+  "credits": {
+    "notificationTitle": "Markus Cloud AI Credits Exhausted",
+    "notificationBody": "Your credits have been exhausted and AI service is temporarily unavailable. Please top up or upgrade your subscription plan in Settings.",
+    "dialogTitle": "Credits Exhausted",
+    "dialogDesc": "Your Markus Cloud AI credits have been exhausted. You can top up credits or configure other model providers to continue.",
+    "configureModels": "Configure Models",
+    "topUp": "Top Up",
+    "dontRemind": "Don't remind me again"
   }
 }

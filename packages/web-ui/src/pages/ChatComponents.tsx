@@ -520,6 +520,13 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
         )}
 
+        {!isStreaming && !displayText && !hasTools && inlineCards.length === 0 && !isStopped && (
+          <div className="flex items-start gap-1.5 text-[13px] text-amber-500/90 leading-relaxed">
+            <span aria-hidden>⚠️</span>
+            <span>{t('page.emptyReply')}</span>
+          </div>
+        )}
+
         {isStopped && (
           <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
             <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
@@ -548,6 +555,12 @@ export const AgentMessageBody = memo(function AgentMessageBody({
         />
       )}
       {legacyText ? <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} /> : null}
+      {!isStreaming && !legacyText && !hasActivities && !isStopped && msg.sender === 'agent' && (
+        <div className="flex items-start gap-1.5 text-[13px] text-amber-500/90 leading-relaxed">
+          <span aria-hidden>⚠️</span>
+          <span>{t('page.emptyReply')}</span>
+        </div>
+      )}
       {isStopped && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>

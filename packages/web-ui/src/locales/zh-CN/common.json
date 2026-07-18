@@ -268,5 +268,14 @@
   },
   "license": {
     "upgradeLicense": "升级"
+  },
+  "credits": {
+    "notificationTitle": "Markus Cloud AI 积分已用完",
+    "notificationBody": "您的积分已耗尽，AI 服务暂时不可用。请前往设置页面充值或升级订阅计划。",
+    "dialogTitle": "Markus Cloud AI 积分已用完",
+    "dialogDesc": "您的 Markus Cloud AI 积分已耗尽。您可以充值积分，或配置其他模型 Provider 继续使用。",
+    "configureModels": "配置模型",
+    "topUp": "去充值",
+    "dontRemind": "不再提醒"
   }
 }

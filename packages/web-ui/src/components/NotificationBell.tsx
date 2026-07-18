@@ -196,13 +196,10 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const onCreditExhausted = useCallback(async () => {
     const hasUnread = notifications.some(n => !n.read && n.type === 'system' && n.metadata?.creditExhausted);
     if (hasUnread) return;
-    const lang = (typeof navigator !== 'undefined' && navigator.language?.startsWith('zh')) ? 'zh' : 'en';
     try {
       await api.notifications.create({
-        title: lang === 'zh' ? 'Markus Cloud AI 积分已用完' : 'Markus Cloud AI Credits Exhausted',
-        body: lang === 'zh'
-          ? '您的积分已耗尽，AI 服务暂时不可用。请前往设置页面充值或升级订阅计划。'
-          : 'Your credits have been exhausted and AI service is temporarily unavailable. Please top up or upgrade your subscription plan in Settings.',
+        title: t('credits.notificationTitle', { ns: 'common' }),
+        body: t('credits.notificationBody', { ns: 'common' }),
         type: 'system',
         priority: 'urgent',
         metadata: { creditExhausted: true },
@@ -210,7 +207,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       fetchData();
       playNotificationSound();
     } catch { /* */ }
-  }, [notifications, fetchData]);
+  }, [notifications, fetchData, t]);
 
   useEffect(() => {
     fetchData();
@@ -866,8 +863,6 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     ? 'http://localhost:5174/settings?tab=billing'
     : 'https://markus.global/settings?tab=billing';
 
-  const lang = (typeof navigator !== 'undefined' && navigator.language?.startsWith('zh')) ? 'zh' : 'en';
-
   const closeCreditDialog = useCallback(() => {
     if (creditMuteChecked) muteCreditNotifications();
     setCreditDialog(false);
@@ -898,12 +893,10 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
             </svg>
           </div>
           <h3 className="text-lg font-semibold mb-2 text-fg-primary">
-            {lang === 'zh' ? 'Markus Cloud AI 积分已用完' : 'Credits Exhausted'}
+            {t('credits.dialogTitle', { ns: 'common' })}
           </h3>
           <p className="text-sm mb-6 text-fg-tertiary leading-relaxed">
-            {lang === 'zh'
-              ? '您的 Markus Cloud AI 积分已耗尽。您可以充值积分，或配置其他模型 Provider 继续使用。'
-              : 'Your Markus Cloud AI credits have been exhausted. You can top up credits or configure other model providers to continue.'}
+            {t('credits.dialogDesc', { ns: 'common' })}
           </p>
           <div className="flex gap-3 mb-4">
             <button
@@ -914,7 +907,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
               }}
               className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors bg-surface-overlay text-fg-secondary hover:text-fg-primary"
             >
-              {lang === 'zh' ? '配置模型' : 'Configure Models'}
+              {t('credits.configureModels', { ns: 'common' })}
             </button>
             <a
               href={hubUrl}
@@ -923,7 +916,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
               onClick={() => closeCreditDialog()}
               className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors text-center"
             >
-              {lang === 'zh' ? '去充值' : 'Top Up'}
+              {t('credits.topUp', { ns: 'common' })}
             </a>
           </div>
           <label className="inline-flex items-center gap-2 cursor-pointer text-xs text-fg-tertiary hover:text-fg-secondary transition-colors">
@@ -933,7 +926,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
               onChange={e => setCreditMuteChecked(e.target.checked)}
               className="w-3.5 h-3.5 rounded accent-indigo-500"
             />
-            {lang === 'zh' ? '不再提醒' : "Don't remind me again"}
+            {t('credits.dontRemind', { ns: 'common' })}
           </label>
         </div>
       </div>
