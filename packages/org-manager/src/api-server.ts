@@ -6190,6 +6190,12 @@ EXPLANATION_END`;
         if (defaultProvider) {
           this.llmRouter.setDefaultProvider(defaultProvider);
           configUpdates.defaultProvider = defaultProvider;
+          // setDefaultProvider also retargets the routing default model at the
+          // new provider. Persist that synced value unless the caller sent an
+          // explicit routingDefaultModel below (which then takes precedence).
+          if (routingDefaultModel === undefined) {
+            configUpdates.routingDefaultModel = this.llmRouter.routingDefaultModel;
+          }
         }
         if (typeof autoFallback === 'boolean') {
           this.llmRouter.setAutoFallback(autoFallback);

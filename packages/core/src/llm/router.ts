@@ -1207,12 +1207,37 @@ export class LLMRouter {
     this.defaultProvider = name;
     log.info(`Default LLM provider updated to: ${name}`);
 
+    // Keep the global routing default model in sync with the default provider.
+    // Text routing prefers `_routingDefaultModel` over `defaultProvider`, so if
+    // it still points at the *previous* provider's model, agents would keep
+    // using the old provider after a switch. When the default model is unset or
+    // belongs to a different provider, retarget it at the new provider's model.
+    const current = this._routingDefaultModel;
+    if (!current || current.provider !== name) {
+      const model = this.getProviderDefaultModel(name);
+      if (model) {
+        this._routingDefaultModel = { provider: name, model };
+        log.info(`Routing default model synced to new default provider: ${name}:${model}`);
+      }
+    }
+
     // Re-run tier configuration with the new default
     const providerNames = this.listProviders();
     if (this.autoSelect && providerNames.length > 1) {
       this.providerTiers = buildTiers(providerNames, name);
       this.fallbackOrder = [name, ...providerNames.filter(n => n !== name)];
     }
+  }
+
+  /**
+   * The model a provider uses by default: its configured active model, or the
+   * first model in its catalog. Returns undefined for an unknown provider.
+   */
+  getProviderDefaultModel(name: string): string | undefined {
+    const provider = this.providers.get(name);
+    if (!provider) return undefined;
+    if (provider.model) return provider.model;
+    return this.getProviderModels(name)[0]?.id;
   }
 
   /**

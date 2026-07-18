@@ -1793,6 +1793,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {/* ───── Model Routing ───── */}
         <Section title={t('modelRouting.title')}>
           <ModelRoutingSection
+            // Remount when the default provider changes so the "Default Model"
+            // picker re-fetches and reflects the model the backend synced to the
+            // new provider (switching provider retargets routingDefaultModel).
+            key={llm?.defaultProvider ?? 'no-default'}
             configuredProviders={
               Object.entries(llm?.providers ?? {})
                 .filter(([, p]) => p.configured && p.enabled)

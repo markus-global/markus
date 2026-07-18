@@ -122,10 +122,13 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         try {
           const oldDefault = ctx.llmRouter.getDefaultProvider();
           ctx.llmRouter.setDefaultProvider(provider);
+          // setDefaultProvider retargets the routing default model at the new
+          // provider; persist it too so the switch survives a restart.
+          const syncedDefaultModel = ctx.llmRouter.routingDefaultModel;
 
           if (ctx.persistConfig) {
             try {
-              ctx.persistConfig({ llm: { defaultProvider: provider } } as any);
+              ctx.persistConfig({ llm: { defaultProvider: provider, routingDefaultModel: syncedDefaultModel } } as any);
             } catch (e) {
               log.warn('Failed to persist default provider change', { error: String(e) });
             }
@@ -135,7 +138,8 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
             status: 'success',
             previousDefault: oldDefault,
             newDefault: provider,
-            message: `Default provider changed from ${oldDefault} to ${provider}`,
+            newDefaultModel: syncedDefaultModel?.model,
+            message: `Default provider changed from ${oldDefault} to ${provider}${syncedDefaultModel ? ` (default model: ${syncedDefaultModel.model})` : ''}`,
           });
         } catch (err) {
           return JSON.stringify({
