@@ -190,22 +190,34 @@ The review outcome is properly communicated through the status transition (`comp
 Typical sources:
 
 1. **`background_exec` completion** — When a background shell process finishes, the agent receives a `callback_result` with exit code, duration, and stdout/stderr tail.
-2. **Future async operations** — A2A replies, delegated work, and other long-running ops can register callbacks the same way.
+2. **In-session A2A await** — When an agent sends `agent_send_message` with `await_in_session: true`, an `a2a_reply` callback is registered (correlated by `conversation_id`). The peer's reply is routed back into the **origin session** instead of a separate a2a session.
+
+**Two delivery forms.** A resolved callback is delivered one of two ways, selected by `deliveryMode`:
+
+- **`in_session`** → enqueues a `callback_result` bound to `originSessionId`, resuming the current conversation (used for `background_exec` completions and `await_in_session` A2A replies).
+- **`mailbox`** → enqueues a `system_event`, a fresh attention cycle (used for `schedule_wakeup` firings and autonomous follow-ups).
 
 Payload shape (`payload.extra`):
 
 ```typescript
 {
   callbackId: string;           // Registry ID (matches pending callback)
-  originSessionId: string;      // Session to resume context in
-  callbackType: 'background_exec' | ...;
+  originSessionId: string;      // Session to resume context in (in_session mode)
+  callbackType: 'background_exec' | 'wakeup' | 'a2a_reply';
+  correlationId?: string;       // conversation_id for a2a_reply
   exitCode?: number;            // For background_exec
 }
 ```
 
-Processing: routed to `handleMessage()` with the **originating session** (`originSessionId`) so the agent continues where it left off. Falls back to a fresh system session if origin is unknown. `invokesLLM: true`, `createsActivity: true`.
+Processing: `in_session` callbacks route to `handleMessage()` with the **originating session** (`originSessionId`) so the agent continues where it left off. Falls back to a fresh system session if origin is unknown. `invokesLLM: true`, `createsActivity: true`.
 
-Registration flow: when an agent starts an async operation, it calls `registerBackgroundSession()` (or equivalent), which registers a `PendingCallback` in `PendingCallbackRegistry` and persists it to SQLite. On completion, the registry entry is resolved and a `callback_result` item is enqueued.
+Registration flow: when an agent starts an async operation the completion is registered as a `PendingCallback` in `PendingCallbackRegistry` and persisted to SQLite:
+
+- `background_exec` — the `background_exec` tool path calls `registerBackgroundSession()` (from `Agent.executeTool`, keyed by the returned bg session id, `originSessionId = active session`).
+- `agent_send_message` with `await_in_session` — registers an `a2a_reply` callback keyed by `conversation_id`.
+- `schedule_wakeup` — registers a `wakeup` callback with a `wakeAt` timestamp (and optional `recurringMs`).
+
+On completion/firing the registry entry is resolved and delivered via the shared `Agent.deliverCallback()` helper according to its `deliveryMode`.
 
 See §11.3 for the full `PendingCallbackRegistry` specification.
 
@@ -679,22 +691,35 @@ The `@markus/a2a` package retains `DelegationManager` and protocol types. `A2ABu
 `PendingCallbackRegistry` (`packages/core/src/pending-callback.ts`) tracks async operations that must report results back through the mailbox rather than injecting directly into an active session.
 
 ```typescript
+type CallbackType = 'background_exec' | 'wakeup' | 'a2a_reply';
+type CallbackDelivery = 'in_session' | 'mailbox';
+
 interface PendingCallback {
-  id: string;              // Unique callback ID (e.g., background session ID)
-  agentId: string;         // Originating agent
-  originSessionId: string; // Session to resume on completion
-  type: 'background_exec'; // Operation type (extensible)
-  command?: string;        // Optional context (shell command, etc.)
-  registeredAt: number;      // Epoch ms
-  timeoutMs: number;         // Default: 10 minutes for background_exec
+  id: string;                    // Unique callback ID (e.g., background session ID, a2a_<conversation_id>)
+  agentId: string;               // Originating agent
+  originSessionId: string;       // Session to resume on completion (in_session mode)
+  type: CallbackType;            // Operation type
+  deliveryMode?: CallbackDelivery; // in_session (default) → callback_result; mailbox → system_event
+  command?: string;              // Optional context (shell command, etc.)
+  note?: string;                 // Free-text label (wakeup reason, delegation goal)
+  correlationId?: string;        // Correlates an external event (conversation_id)
+  wakeAt?: number;               // Scheduled wakeups: epoch ms when due
+  recurringMs?: number;          // Recurring wakeups: re-arm interval
+  registeredAt: number;          // Epoch ms
+  timeoutMs: number;             // 10 min for background_exec; 30 min for a2a_reply; effectively ∞ for wakeup
 }
 ```
 
 **Lifecycle:**
 
-1. **Register** — Agent initiates async work (e.g., `background_exec`). `registerBackgroundSession()` adds a callback to the registry and persists via `SqlitePendingCallbackRepo`.
-2. **Complete** — Operation finishes. Handler calls `resolve(id)`, then enqueues `callback_result` with `originSessionId` and result payload preserved in `extra`.
-3. **Timeout** — Heartbeat calls `getTimedOut()` to find expired callbacks, then `expireTimedOut(id)` removes each from the registry. Timed-out operations are surfaced in the heartbeat prompt (§11.4) for agent investigation — they do not silently disappear.
+1. **Register** — An async operation is registered as a `PendingCallback` and persisted via `SqlitePendingCallbackRepo`:
+   - `background_exec` → `registerBackgroundSession()` (called from `Agent.executeTool` on the tool result).
+   - `agent_send_message` with `await_in_session` → an `a2a_reply` callback keyed by `conversation_id`.
+   - `schedule_wakeup` → a `wakeup` callback with `wakeAt` (+ optional `recurringMs`).
+2. **Complete / fire** — On completion (`background_exec`, `a2a_reply`) or when a wakeup is due, the entry is resolved and delivered via the shared `Agent.deliverCallback()` helper: `in_session` → `callback_result` (bound to `originSessionId`); `mailbox` → `system_event`. Recurring wakeups re-arm.
+3. **Timeout** — Heartbeat calls `getTimedOut()` to find expired callbacks, then `expireTimedOut(id)` removes each from the registry. Timed-out operations are surfaced in the heartbeat prompt (§11.4) for agent investigation — they do not silently disappear. (Wakeups use an effectively infinite timeout and are never flagged.)
+
+**Wakeup scheduler:** each agent runs a coarse (~1-minute) sweep (`Agent.sweepDueWakeups`) that fires any `wakeup` callbacks whose `wakeAt` has passed. This lets an agent register precise time-based follow-ups (`schedule_wakeup`) and stay idle in between, rather than relying on the periodic heartbeat.
 
 The registry is a process singleton (`pendingCallbackRegistry`), restored from SQLite on startup so callbacks survive server restarts.
 
@@ -712,7 +737,7 @@ Periodic heartbeat items (`priority: 3 — low`) drive proactive agent patrol. B
 **Callback timeout handling** — Before building the heartbeat prompt, `handleHeartbeat()` calls `pendingCallbackRegistry.getTimedOut()`. For each expired callback:
 
 1. `expireTimedOut(id)` removes it from the registry (and persistence)
-2. Details are injected into the heartbeat prompt under **Timed-Out Background Operations**
+2. Details are injected into the heartbeat prompt under **Timed-Out Async Operations** (background exec or an awaited A2A delegation whose reply never arrived)
 3. The agent investigates and takes corrective action during the heartbeat LLM session
 
 This ensures orphaned async operations are surfaced even when the completion handler never fires (process crash, hung command, etc.).
@@ -1436,7 +1461,7 @@ This collapses what would have been 5 separate triage+process cycles into a sing
 
 ## 26. Future Work
 
-- **Proactive messaging scheduler**: Allow agents to schedule future messages (e.g., "remind user about this review tomorrow") using time-based prospective memory.
+- **Proactive messaging scheduler** *(implemented)*: Agents schedule time-based follow-ups via `schedule_wakeup` (one-shot or recurring); a coarse per-agent sweep fires due wakeups into the mailbox. See §11.3.
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Decision pattern learning**: Use long-term decision history to adaptively tune heuristic thresholds.
 - **Deliberation cost optimization**: Implement adaptive deliberation depth — use cheaper models or shorter budgets for simple multi-item scenarios, full budget only for genuinely complex triage.

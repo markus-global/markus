@@ -1501,6 +1501,13 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
     setTriggering(false);
   };
 
+  const handleCancelWakeup = async (wakeupId: string) => {
+    try {
+      await api.agents.cancelWakeup(agentId, wakeupId);
+      refresh();
+    } catch { /* ignore — refresh will reflect actual state */ }
+  };
+
   if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.heartbeatTab.loading')}</div>;
   if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.heartbeatTab.noData')}</div>;
 
@@ -1544,16 +1551,64 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
       }>
         <div className="grid grid-cols-4 gap-4">
           <StatBox label={t('agent:profilePage.overview.labels.status')} value={data.running ? t('agent:profilePage.heartbeatTab.running') : t('agent:profilePage.heartbeatTab.stopped')} color={data.running ? 'green' : 'gray'} />
-          <StatBox label={t('agent:profilePage.heartbeatTab.interval')} value={formatDuration(data.intervalMs) ?? t('agent:profilePage.emDash')} />
+          <StatBox label={t('agent:profilePage.heartbeatTab.safetyNetInterval')} value={formatDuration(data.intervalMs) ?? t('agent:profilePage.emDash')} />
           <StatBox label={t('agent:profilePage.heartbeatTab.lastRun')} value={data.lastHeartbeat ? formatRelativeTime(data.lastHeartbeat) ?? t('agent:profilePage.emDash') : t('agent:profilePage.never')} />
-          <StatBox label={t('agent:profilePage.heartbeatTab.nextRun')} value={data.nextRunAt ? formatRelativeTime(data.nextRunAt) ?? t('agent:profilePage.emDash') : data.running ? t('agent:profilePage.heartbeatTab.pending') : t('agent:profilePage.emDash')} />
+          <StatBox label={t('agent:profilePage.heartbeatTab.nextWake')} value={data.nextWakeAt ? formatRelativeTime(data.nextWakeAt) ?? t('agent:profilePage.emDash') : data.running ? t('agent:profilePage.heartbeatTab.pending') : t('agent:profilePage.emDash')} />
         </div>
+        <p className="mt-2 text-[10px] text-fg-tertiary leading-relaxed">{t('agent:profilePage.heartbeatTab.rhythmHint')}</p>
         {triggerMsg && (
           <div className="mt-3 text-[11px] text-blue-600 bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-2">
             {triggerMsg}
           </div>
         )}
       </Card>
+
+      {/* Scheduled Wakeups */}
+      {data.wakeups && data.wakeups.length > 0 && (
+        <Card title={t('agent:profilePage.heartbeatTab.wakeupsTitle')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.heartbeatTab.wakeupsCount', { count: data.wakeups.length })}</span>}>
+          <div className="divide-y divide-gray-800/50 -mx-5">
+            {data.wakeups.map(w => (
+              <div key={w.id} className="flex items-center gap-2.5 px-5 py-2.5">
+                <span className="text-sm shrink-0 opacity-60">⏰</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-fg-secondary truncate">{w.note || t('agent:profilePage.heartbeatTab.wakeupNoNote')}</div>
+                  <div className="text-[10px] text-fg-tertiary">
+                    {formatRelativeTime(w.wakeAt) ?? new Date(w.wakeAt).toLocaleString()}
+                    {w.recurringMs ? ` · ${t('agent:profilePage.heartbeatTab.recurring')}` : ''}
+                    {` · ${w.deliveryMode === 'in_session' ? t('agent:profilePage.heartbeatTab.deliveryInSession') : t('agent:profilePage.heartbeatTab.deliveryMailbox')}`}
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleCancelWakeup(w.id)}
+                  className="text-[10px] px-2 py-0.5 rounded text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors shrink-0"
+                >
+                  {t('agent:profilePage.heartbeatTab.cancelWakeup')}
+                </button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Pending Async Operations */}
+      {data.pendingCallbacks && data.pendingCallbacks.length > 0 && (
+        <Card title={t('agent:profilePage.heartbeatTab.pendingOpsTitle')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.heartbeatTab.pendingOpsCount', { count: data.pendingCallbacks.length })}</span>}>
+          <div className="divide-y divide-gray-800/50 -mx-5">
+            {data.pendingCallbacks.map(c => (
+              <div key={c.id} className="flex items-center gap-2.5 px-5 py-2.5">
+                <span className="text-sm shrink-0 opacity-60">{c.type === 'background_exec' ? '⚙' : '↔'}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-fg-secondary truncate font-mono">{c.label}</div>
+                  <div className="text-[10px] text-fg-tertiary">
+                    {t(`agent:profilePage.heartbeatTab.callbackType.${c.type}`)}
+                    {` · ${t('agent:profilePage.heartbeatTab.timesOut')} ${formatRelativeTime(c.timeoutAt) ?? new Date(c.timeoutAt).toLocaleString()}`}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* Last Heartbeat Summary */}
       {data.lastSummary && (

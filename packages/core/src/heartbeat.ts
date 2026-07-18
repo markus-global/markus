@@ -1,4 +1,4 @@
-import { createLogger, HEARTBEAT_MIN_INITIAL_DELAY_MS } from '@markus/shared';
+import { createLogger, HEARTBEAT_MIN_INITIAL_DELAY_MS, DEFAULT_HEARTBEAT_INTERVAL_MS } from '@markus/shared';
 import type { EventBus } from './events.js';
 
 const log = createLogger('heartbeat');
@@ -23,7 +23,7 @@ export class HeartbeatScheduler {
   constructor(
     private agentId: string,
     private eventBus: EventBus,
-    private config: HeartbeatConfig = { intervalMs: 30 * 60 * 1000, enabled: true },
+    private config: HeartbeatConfig = { intervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS, enabled: true },
   ) {}
 
   /**

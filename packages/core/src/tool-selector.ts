@@ -318,6 +318,34 @@ export class ToolSelector {
     });
 
     pushUnique({
+      name: 'schedule_wakeup',
+      description: 'Schedule a future self-check-in ("wake me up later"). Prefer this over relying on frequent heartbeats: register a wakeup for the exact time you need to follow up (e.g. re-check a task in 2h, remind yourself tomorrow at 9am), then stop working. When it fires you receive a mailbox item and can act. This saves tokens by avoiding constant polling. Provide EITHER in_seconds OR an ISO `at` timestamp.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          in_seconds: { type: 'number', description: 'Fire after this many seconds from now. Use for relative delays (e.g. 7200 = 2 hours).' },
+          at: { type: 'string', description: 'ISO 8601 timestamp to fire at (absolute time). Use in the user\'s timezone when relevant.' },
+          note: { type: 'string', description: 'Why you are waking up — what to do when it fires. Required, since future-you needs the context.' },
+          recurring_seconds: { type: 'number', description: 'If set (>0), re-arm the wakeup this many seconds after each firing (recurring reminder). Omit for a one-shot.' },
+          delivery: { type: 'string', enum: ['mailbox', 'in_session'], description: 'mailbox (default) = a fresh attention cycle; in_session = resume the current conversation. Use mailbox for autonomous follow-ups.' },
+        },
+        required: ['note'],
+      },
+    });
+
+    pushUnique({
+      name: 'cancel_wakeup',
+      description: 'Cancel a previously scheduled wakeup by its id (returned from schedule_wakeup). Use when a follow-up is no longer needed.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          wakeup_id: { type: 'string', description: 'The wakeup id returned by schedule_wakeup.' },
+        },
+        required: ['wakeup_id'],
+      },
+    });
+
+    pushUnique({
       name: 'recall_activity',
       description: 'Query your own execution history. Use "list" to see recent activities, or "get" with an activity_id to see detailed tool call logs for a specific activity.',
       inputSchema: {

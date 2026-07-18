@@ -914,6 +914,23 @@ export interface AgentToolInfo {
   description: string;
 }
 
+export interface ScheduledWakeup {
+  id: string;
+  note?: string;
+  wakeAt: string;
+  recurringMs?: number;
+  deliveryMode: 'in_session' | 'mailbox';
+}
+
+export interface PendingCallbackInfo {
+  id: string;
+  type: 'background_exec' | 'wakeup' | 'a2a_reply';
+  label: string;
+  correlationId?: string;
+  registeredAt: string;
+  timeoutAt: string;
+}
+
 export interface AgentHeartbeatInfo {
   running: boolean;
   uptimeMs: number;
@@ -922,6 +939,10 @@ export interface AgentHeartbeatInfo {
   lastSummary?: string;
   lastSummaryAt?: string;
   nextRunAt?: string;
+  /** Earliest of the next scheduled wakeup and the safety-net tick. */
+  nextWakeAt?: string;
+  wakeups?: ScheduledWakeup[];
+  pendingCallbacks?: PendingCallbackInfo[];
 }
 
 export interface RoleFileStatus {
@@ -1114,6 +1135,7 @@ export const api = {
       request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' }),
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
     triggerHeartbeat: (id: string) => request<{ status: string; message: string }>(`/agents/${id}/heartbeat/trigger`, { method: 'POST' }),
+    cancelWakeup: (id: string, wakeupId: string) => request<{ status: string; wakeupId: string }>(`/agents/${id}/wakeups/${wakeupId}`, { method: 'DELETE' }),
     getRecentActivities: (id: string) => request<{ activities: ActivitySummary[] }>(`/agents/${id}/recent-activities`),
     getActivityLogs: (id: string, activityId: string) =>
       request<{ logs: AgentActivityLogEntry[]; activity?: AgentActivityInfo }>(`/agents/${id}/activity-logs?activityId=${encodeURIComponent(activityId)}`),

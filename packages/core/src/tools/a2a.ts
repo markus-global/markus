@@ -39,6 +39,10 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
             type: 'string',
             description: 'Optional correlation ID for multi-turn exchanges. Auto-generated if omitted.',
           },
+          await_in_session: {
+            type: 'boolean',
+            description: 'If true, the recipient\'s reply is delivered INLINE in your current conversation (instead of a separate session), so you can continue this thread once they answer. The message is still dispatched asynchronously — you are not blocked — but when the reply arrives it resumes here. Use when you delegate a question/subtask and need the answer in context.',
+          },
           wait_for_reply: {
             type: 'boolean',
             description: '[DEPRECATED — ignored] A2A is always async.',

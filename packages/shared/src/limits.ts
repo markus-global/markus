@@ -396,6 +396,16 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   'complete_deliberation',
 ];
 
+// ─── Heartbeat ──────────────────────────────────────────────────────────────
+
+/**
+ * Default heartbeat interval — a long "safety-net" patrol rather than a frequent
+ * poll. Agents are expected to register precise follow-ups with `schedule_wakeup`
+ * (event-driven), so the periodic tick only exists to catch missed events and
+ * keep long-lived agents alive. Kept coarse (6h) to save tokens.
+ */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 // ─── Notebook Limits (formerly Working Memory) ──────────────────────────────
 
 /** Maximum number of agent-managed entries in the Notebook. System/CPP entries are unbounded. */

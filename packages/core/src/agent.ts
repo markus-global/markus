@@ -63,7 +63,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBuiltinTools } from './tools/builtin.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
-import { pendingCallbackRegistry } from './pending-callback.js';
+import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
 
@@ -363,6 +363,8 @@ export class Agent {
   private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
   private _heartbeatUnsub?: () => void;
+  private wakeupTimer?: ReturnType<typeof setInterval>;
+  private static readonly WAKEUP_SWEEP_INTERVAL_MS = 60_000;
 
   /** Mailbox for single-threaded attention model */
   private mailbox: AgentMailbox;
@@ -455,15 +457,14 @@ export class Agent {
       // Resolve from PendingCallbackRegistry if registered
       pendingCallbackRegistry.resolve(notification.sessionId);
 
-      this.enqueueToMailbox('callback_result', {
+      this.deliverCallback({
+        callbackId: notification.sessionId,
+        type: 'background_exec',
+        deliveryMode: 'in_session',
+        originSessionId: originSession,
         summary: `Background process ${status}: ${notification.command.slice(0, 80)}`,
         content: parts.join('\n'),
-        extra: {
-          callbackId: notification.sessionId,
-          originSessionId: originSession,
-          callbackType: 'background_exec',
-          exitCode: notification.exitCode,
-        },
+        exitCode: notification.exitCode,
       });
     });
 
@@ -588,6 +589,7 @@ export class Agent {
 
     this.heartbeat.start(options?.initialHeartbeatDelayMs);
     this.attentionController.start();
+    this.startWakeupSweep();
 
     // Periodic memory consolidation: compact sessions and generate daily insights.
     // Use random initial delay to stagger across agents and avoid a "dream storm"
@@ -638,6 +640,10 @@ export class Agent {
     this.cancelActiveStream();
     this.attentionController.stop();
     this.heartbeat.stop();
+    if (this.wakeupTimer) {
+      clearInterval(this.wakeupTimer);
+      this.wakeupTimer = undefined;
+    }
     this._bgCompletionUnsub?.();
     this._heartbeatUnsub?.();
     // Synchronous notebook persist on shutdown
@@ -1164,9 +1170,25 @@ export class Agent {
           }
           const msgChannelKey = extra.channelKey as string | undefined;
           const channelSessionId = msgChannelKey ? `channel_${msgChannelKey}_${this.id}` : undefined;
+          // In-session A2A delegation: if this message replies to a conversation the
+          // agent is awaiting inline (registered via agent_send_message await_in_session),
+          // route the reply into the ORIGIN session so the delegating thread continues
+          // where it left off, instead of a disconnected a2a_* session.
+          let awaitOriginSessionId: string | undefined;
+          if (item.sourceType === 'a2a_message') {
+            const convMatch = /\[conversation:([^\]]+)\]/.exec(item.payload.content);
+            if (convMatch?.[1]) {
+              const cb = pendingCallbackRegistry.findByCorrelation(this.id, convMatch[1]);
+              if (cb && cb.type === 'a2a_reply' && (cb.deliveryMode ?? 'in_session') === 'in_session') {
+                awaitOriginSessionId = cb.originSessionId || undefined;
+                pendingCallbackRegistry.resolve(cb.id);
+                log.info('Resolved in-session A2A await', { agentId: this.id, conversationId: convMatch[1], originSessionId: awaitOriginSessionId });
+              }
+            }
+          }
           const defaults: HandleMessageOptions = item.sourceType === 'a2a_message'
             ? {
-                sessionId: channelSessionId ?? `a2a_${this.id}_${ts}`,
+                sessionId: awaitOriginSessionId ?? channelSessionId ?? `a2a_${this.id}_${ts}`,
                 scenario: 'a2a' as const,
               }
             : channelSessionId
@@ -5199,7 +5221,139 @@ export class Agent {
     return false;
   }
 
-  registerBackgroundSession(bgSessionId: string, originSessionId: string, command?: string): void {
+  /**
+   * Deliver a resolved async callback back to the agent through the mailbox.
+   * - `in_session`: re-enter the originating session via a `callback_result` item
+   *   so the agent continues where it left off (interactive/awaited work).
+   * - `mailbox`: surface a fresh `system_event` — a new attention cycle
+   *   (autonomous/background completions, scheduled wakeups).
+   */
+  deliverCallback(cb: {
+    callbackId: string;
+    type: CallbackType;
+    deliveryMode: CallbackDelivery;
+    originSessionId?: string;
+    summary: string;
+    content: string;
+    exitCode?: number;
+    correlationId?: string;
+  }): void {
+    if (cb.deliveryMode === 'mailbox') {
+      this.enqueueToMailbox('system_event', {
+        summary: cb.summary,
+        content: cb.content,
+        extra: {
+          callbackId: cb.callbackId,
+          callbackType: cb.type,
+          correlationId: cb.correlationId,
+        },
+      });
+      return;
+    }
+    this.enqueueToMailbox('callback_result', {
+      summary: cb.summary,
+      content: cb.content,
+      extra: {
+        callbackId: cb.callbackId,
+        originSessionId: cb.originSessionId,
+        callbackType: cb.type,
+        correlationId: cb.correlationId,
+        exitCode: cb.exitCode,
+      },
+    });
+  }
+
+  /**
+   * After a tool executes, register any async callbacks implied by its result so
+   * their eventual completion routes back to the agent:
+   * - `background_exec` → a background-session callback (origin-session routing + heartbeat timeout surfacing).
+   * - `agent_send_message` with `await_in_session` → an `a2a_reply` callback so the
+   *   recipient's reply resumes the ORIGIN session (in-session delegation).
+   */
+  private registerAsyncCallbacksFromToolResult(
+    toolName: string,
+    args: Record<string, unknown>,
+    result: string,
+    sessionId?: string,
+  ): void {
+    const originSessionId = sessionId ?? this.currentSessionId;
+    if (!originSessionId) return;
+
+    if (toolName === 'background_exec') {
+      try {
+        const parsed = JSON.parse(result) as { status?: string; sessionId?: string };
+        if (parsed.status === 'running' && parsed.sessionId) {
+          const timeoutSec = (args['timeout_seconds'] as number) ?? 300;
+          // Registry timeout must outlast the process's own auto-kill so the
+          // completion callback fires first; only flag as orphaned afterwards.
+          const registryTimeoutMs = Math.max(10 * 60 * 1000, timeoutSec * 1000 + 60_000);
+          this.registerBackgroundSession(
+            parsed.sessionId,
+            originSessionId,
+            args['command'] as string | undefined,
+            registryTimeoutMs,
+          );
+        }
+      } catch { /* non-JSON tool result — nothing to register */ }
+      return;
+    }
+
+    if (toolName === 'agent_send_message' && args['await_in_session'] === true) {
+      try {
+        const parsed = JSON.parse(result) as { status?: string; conversation_id?: string };
+        if (parsed.status === 'dispatched' && parsed.conversation_id) {
+          pendingCallbackRegistry.register({
+            id: `a2a_${this.id}_${parsed.conversation_id}`,
+            agentId: this.id,
+            originSessionId,
+            type: 'a2a_reply',
+            deliveryMode: 'in_session',
+            correlationId: parsed.conversation_id,
+            note: `Awaiting reply from ${String(args['agent_id'] ?? 'peer')}`,
+            registeredAt: Date.now(),
+            // Cap so a never-answered delegate can't wedge the session forever;
+            // heartbeat's getTimedOut/expireTimedOut surfaces it after this.
+            timeoutMs: 30 * 60 * 1000,
+          });
+          log.info('Registered in-session A2A await', { agentId: this.id, conversationId: parsed.conversation_id, originSessionId });
+        }
+      } catch { /* non-JSON tool result — nothing to register */ }
+    }
+  }
+
+  private startWakeupSweep(): void {
+    if (this.wakeupTimer) return;
+    this.wakeupTimer = setInterval(() => this.sweepDueWakeups(), Agent.WAKEUP_SWEEP_INTERVAL_MS);
+    if (typeof this.wakeupTimer.unref === 'function') this.wakeupTimer.unref();
+  }
+
+  /**
+   * Fire any scheduled wakeups that are due for this agent. Each due wakeup is
+   * resolved (removed), delivered through the mailbox, and re-armed if recurring.
+   * Runs on a coarse ~1-minute sweep — precise enough for human-scale follow-ups
+   * while keeping the agent idle (token-free) in between.
+   */
+  private sweepDueWakeups(): void {
+    const now = Date.now();
+    for (const cb of pendingCallbackRegistry.getByAgentId(this.id)) {
+      if (cb.type !== 'wakeup' || cb.wakeAt === undefined || cb.wakeAt > now) continue;
+      pendingCallbackRegistry.resolve(cb.id);
+      this.deliverCallback({
+        callbackId: cb.id,
+        type: 'wakeup',
+        deliveryMode: cb.deliveryMode ?? 'mailbox',
+        originSessionId: cb.originSessionId,
+        summary: `Scheduled wakeup${cb.note ? `: ${cb.note.slice(0, 80)}` : ''}`,
+        content: `[SCHEDULED WAKEUP] ${cb.note ?? 'Time-based check-in you registered earlier.'}\nScheduled for: ${new Date(cb.wakeAt).toISOString()}`,
+        correlationId: cb.correlationId,
+      });
+      if (cb.recurringMs && cb.recurringMs > 0) {
+        pendingCallbackRegistry.register({ ...cb, wakeAt: now + cb.recurringMs, registeredAt: now });
+      }
+    }
+  }
+
+  registerBackgroundSession(bgSessionId: string, originSessionId: string, command?: string, timeoutMs = 10 * 60 * 1000): void {
     this.bgSessionOrigin.set(bgSessionId, originSessionId);
     pendingCallbackRegistry.register({
       id: bgSessionId,
@@ -5208,7 +5362,7 @@ export class Agent {
       type: 'background_exec',
       command,
       registeredAt: Date.now(),
-      timeoutMs: 10 * 60 * 1000,
+      timeoutMs,
     });
   }
 
@@ -5552,6 +5706,55 @@ export class Agent {
       }
     }
 
+    // Handle schedule_wakeup: register a future self-check-in via the callback registry.
+    if (toolCall.name === 'schedule_wakeup') {
+      const inSeconds = toolCall.arguments['in_seconds'] as number | undefined;
+      const atIso = toolCall.arguments['at'] as string | undefined;
+      const note = (toolCall.arguments['note'] as string) ?? '';
+      const recurringSeconds = toolCall.arguments['recurring_seconds'] as number | undefined;
+      const delivery: CallbackDelivery = toolCall.arguments['delivery'] === 'in_session' ? 'in_session' : 'mailbox';
+      if (!note.trim()) {
+        return JSON.stringify({ status: 'error', message: 'note is required — describe what to do when the wakeup fires.' });
+      }
+      let wakeAt: number | undefined;
+      if (typeof inSeconds === 'number' && inSeconds > 0) {
+        wakeAt = Date.now() + Math.round(inSeconds * 1000);
+      } else if (atIso) {
+        const t = new Date(atIso).getTime();
+        if (!Number.isNaN(t)) wakeAt = t;
+      }
+      if (!wakeAt) {
+        return JSON.stringify({ status: 'error', message: 'Provide either in_seconds (> 0) or a valid ISO `at` timestamp.' });
+      }
+      const id = `wake_${this.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      pendingCallbackRegistry.register({
+        id,
+        agentId: this.id,
+        originSessionId: sessionId ?? this.currentSessionId ?? '',
+        type: 'wakeup',
+        deliveryMode: delivery,
+        note,
+        wakeAt,
+        recurringMs: recurringSeconds && recurringSeconds > 0 ? Math.round(recurringSeconds * 1000) : undefined,
+        registeredAt: Date.now(),
+        timeoutMs: Number.MAX_SAFE_INTEGER, // wakeups never "time out"
+      });
+      log.info('Scheduled wakeup', { agentId: this.id, id, wakeAt: new Date(wakeAt).toISOString(), delivery });
+      return JSON.stringify({ status: 'ok', wakeup_id: id, wake_at: new Date(wakeAt).toISOString() });
+    }
+
+    // Handle cancel_wakeup: remove a scheduled wakeup.
+    if (toolCall.name === 'cancel_wakeup') {
+      const wakeupId = toolCall.arguments['wakeup_id'] as string | undefined;
+      if (!wakeupId) {
+        return JSON.stringify({ status: 'error', message: 'wakeup_id is required.' });
+      }
+      const cb = pendingCallbackRegistry.resolve(wakeupId);
+      return JSON.stringify(cb
+        ? { status: 'ok', message: 'Wakeup cancelled.' }
+        : { status: 'not_found', message: 'No scheduled wakeup with that id.' });
+    }
+
     // Handle request_user_input (and its deprecated alias request_user_approval):
     // blocking request for a human decision / approval / input, supporting one or
     // multiple questions with optional Markdown-rich choice options.
@@ -5789,6 +5992,7 @@ export class Agent {
         const span = startSpan('agent.tool', { tool: toolCall.name, attempt });
         try {
           const result = await handler.execute(effectiveArgs, onOutput);
+          this.registerAsyncCallbacksFromToolResult(toolCall.name, effectiveArgs, result, sessionId);
           this.recordToolUsage(toolCall.name, true);
           this.consecutiveFailures = 0;
           const toolDurationMs = Date.now() - span.startTime;
@@ -6092,14 +6296,15 @@ export class Agent {
       const lines = timedOut.map(cb => {
         pendingCallbackRegistry.expireTimedOut(cb.id);
         const elapsed = Math.round((Date.now() - cb.registeredAt) / 1000);
-        return `- [TIMED OUT] \`${cb.command ?? cb.type}\` (${elapsed}s elapsed, session: ${cb.originSessionId})`;
+        const label = cb.command ?? cb.note ?? cb.type;
+        return `- [TIMED OUT] \`${label}\` (${cb.type}, ${elapsed}s elapsed, session: ${cb.originSessionId})`;
       });
       timedOutSection = [
         '',
-        '## Timed-Out Background Operations',
-        `${timedOut.length} operation(s) exceeded their timeout:`,
+        '## Timed-Out Async Operations',
+        `${timedOut.length} async operation(s) (background exec / awaited delegation) exceeded their timeout:`,
         ...lines,
-        'Investigate and take corrective action if needed.',
+        'Investigate and take corrective action if needed — the awaited reply may never arrive.',
       ].join('\n');
     }
 
@@ -6157,6 +6362,11 @@ export class Agent {
       '## Core Principle: Patrol, Don\'t Build',
       'Heartbeat is a patrol — observe, triage, and take lightweight actions. Heavy work belongs in tasks.',
       '',
+      '## Prefer Scheduled Wakeups Over Frequent Patrols',
+      'This heartbeat is now a coarse safety-net that fires infrequently — it is NOT your primary timing mechanism.',
+      'If something needs attention at a specific time (re-check a task in 2h, follow up tomorrow morning, remind yourself of a deadline), register a precise `schedule_wakeup` and then stop. You will be woken exactly when needed instead of burning tokens polling every cycle.',
+      'Use `cancel_wakeup` if a scheduled follow-up is no longer needed. Reserve the patrol for catching things you did not explicitly schedule.',
+      '',
       '## Communication Channels',
       'Your raw text output is NOT visible to humans in heartbeat mode. To communicate:',
       '- **Reach humans**: `notify_user` — your message appears in their chat timeline AND notification bell. This is the ONLY way humans will see your findings.',
@@ -6167,6 +6377,7 @@ export class Agent {
       '- **Notify user**: `notify_user` — message appears in chat + notification bell',
       '- **Request user input**: `request_user_input` — blocks until user responds (approval, choice, or answers)',
       '- **Recall history**: `recall_activity` — review your past execution logs',
+      '- **Schedule a follow-up**: `schedule_wakeup` — wake yourself at a precise time instead of relying on the next patrol',
       '- **Message agents**: `agent_send_message` — coordinate with colleagues',
       '- **Create tasks**: `task_create` — if you spot something that needs doing, create a task for it (assign to yourself or others)',
       '- **Trigger existing tasks**: `task_update(status: "in_progress")` — restart failed tasks or unblock stuck ones',
@@ -6204,6 +6415,7 @@ export class Agent {
       'memory_save', 'memory_search', 'memory_update', 'memory_update_longterm',
       'update_notebook', 'update_working_memory',
       'discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'recall_activity',
+      'schedule_wakeup', 'cancel_wakeup',
       'package_install', 'package_list',
       'goal_create', 'goal_update', 'goal_status',
     ];

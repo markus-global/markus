@@ -19,6 +19,7 @@ import {
   type GoalConfig,
   type UserInputQuestion,
   type UserInputAnswer,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -980,7 +981,7 @@ export class AgentManager {
         ? { modelMode: 'custom' as const, primary: request.llmProvider }
         : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
       channels: [],
-      heartbeatIntervalMs: request.heartbeatIntervalMs ?? 30 * 60 * 1000,
+      heartbeatIntervalMs: request.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1843,7 +1844,7 @@ export class AgentManager {
         };
       })(),
       channels: [],
-      heartbeatIntervalMs: row.heartbeatIntervalMs ?? 30 * 60 * 1000,
+      heartbeatIntervalMs: row.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -3025,7 +3026,7 @@ export class AgentManager {
         let initialHeartbeatDelayMs: number | undefined;
         if (stagger && ids.length > 1) {
           const agent = this.getAgent(id);
-          const intervalMs = agent.config.heartbeatIntervalMs || 30 * 60 * 1000;
+          const intervalMs = agent.config.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS;
           initialHeartbeatDelayMs = Math.floor((i / ids.length) * intervalMs);
         }
         await this.startAgent(id, { initialHeartbeatDelayMs });

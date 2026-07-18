@@ -652,11 +652,17 @@ CREATE TABLE IF NOT EXISTS pending_callbacks (
   agent_id TEXT NOT NULL,
   origin_session_id TEXT NOT NULL,
   type TEXT NOT NULL DEFAULT 'background_exec',
+  delivery_mode TEXT NOT NULL DEFAULT 'in_session',
   command TEXT,
+  note TEXT,
+  correlation_id TEXT,
+  wake_at INTEGER,
+  recurring_ms INTEGER,
   registered_at INTEGER NOT NULL,
   timeout_ms INTEGER NOT NULL DEFAULT 600000
 );
 CREATE INDEX IF NOT EXISTS idx_pending_callbacks_agent ON pending_callbacks(agent_id);
+CREATE INDEX IF NOT EXISTS idx_pending_callbacks_wake ON pending_callbacks(wake_at);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -726,6 +732,11 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'approvals', column: 'questions', sql: 'ALTER TABLE approvals ADD COLUMN questions TEXT' },
     { table: 'approvals', column: 'answers', sql: 'ALTER TABLE approvals ADD COLUMN answers TEXT' },
     { table: 'users', column: 'preferences', sql: 'ALTER TABLE users ADD COLUMN preferences TEXT' },
+    { table: 'pending_callbacks', column: 'delivery_mode', sql: "ALTER TABLE pending_callbacks ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'in_session'" },
+    { table: 'pending_callbacks', column: 'note', sql: 'ALTER TABLE pending_callbacks ADD COLUMN note TEXT' },
+    { table: 'pending_callbacks', column: 'correlation_id', sql: 'ALTER TABLE pending_callbacks ADD COLUMN correlation_id TEXT' },
+    { table: 'pending_callbacks', column: 'wake_at', sql: 'ALTER TABLE pending_callbacks ADD COLUMN wake_at INTEGER' },
+    { table: 'pending_callbacks', column: 'recurring_ms', sql: 'ALTER TABLE pending_callbacks ADD COLUMN recurring_ms INTEGER' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -4898,25 +4909,34 @@ export class SqliteWorkflowScheduleRepo {
 export class SqlitePendingCallbackRepo {
   constructor(private db: DatabaseSync) {}
 
-  save(cb: { id: string; agentId: string; originSessionId: string; type: string; command?: string; registeredAt: number; timeoutMs: number }): void {
+  save(cb: { id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }): void {
     this.db.prepare(
-      `INSERT OR REPLACE INTO pending_callbacks (id, agent_id, origin_session_id, type, command, registered_at, timeout_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(cb.id, cb.agentId, cb.originSessionId, cb.type, cb.command ?? null, cb.registeredAt, cb.timeoutMs);
+      `INSERT OR REPLACE INTO pending_callbacks (id, agent_id, origin_session_id, type, delivery_mode, command, note, correlation_id, wake_at, recurring_ms, registered_at, timeout_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      cb.id, cb.agentId, cb.originSessionId, cb.type, cb.deliveryMode ?? 'in_session',
+      cb.command ?? null, cb.note ?? null, cb.correlationId ?? null,
+      cb.wakeAt ?? null, cb.recurringMs ?? null, cb.registeredAt, cb.timeoutMs,
+    );
   }
 
   remove(id: string): void {
     this.db.prepare('DELETE FROM pending_callbacks WHERE id = ?').run(id);
   }
 
-  loadAll(): Array<{ id: string; agentId: string; originSessionId: string; type: 'background_exec'; command?: string; registeredAt: number; timeoutMs: number }> {
+  loadAll(): Array<{ id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }> {
     const rows = this.db.prepare('SELECT * FROM pending_callbacks').all() as Record<string, unknown>[];
     return rows.map(r => ({
       id: r['id'] as string,
       agentId: r['agent_id'] as string,
       originSessionId: r['origin_session_id'] as string,
-      type: r['type'] as 'background_exec',
-      command: r['command'] as string | undefined,
+      type: r['type'] as string,
+      deliveryMode: (r['delivery_mode'] as string | null) ?? undefined,
+      command: (r['command'] as string | null) ?? undefined,
+      note: (r['note'] as string | null) ?? undefined,
+      correlationId: (r['correlation_id'] as string | null) ?? undefined,
+      wakeAt: (r['wake_at'] as number | null) ?? undefined,
+      recurringMs: (r['recurring_ms'] as number | null) ?? undefined,
       registeredAt: r['registered_at'] as number,
       timeoutMs: r['timeout_ms'] as number,
     }));

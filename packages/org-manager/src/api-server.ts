@@ -5313,12 +5313,46 @@ EXPLANATION_END`;
           nextRunAt = next.toISOString();
         }
 
+        // Scheduled wakeups + in-flight async callbacks (event-driven rhythm)
+        const callbacks = pendingCallbackRegistry.getByAgentId(agentId);
+        const wakeups = callbacks
+          .filter(c => c.type === 'wakeup' && c.wakeAt !== undefined)
+          .map(c => ({
+            id: c.id,
+            note: c.note,
+            wakeAt: new Date(c.wakeAt!).toISOString(),
+            recurringMs: c.recurringMs,
+            deliveryMode: c.deliveryMode ?? 'mailbox',
+          }))
+          .sort((a, b) => new Date(a.wakeAt).getTime() - new Date(b.wakeAt).getTime());
+        const pendingCallbacks = callbacks
+          .filter(c => c.type !== 'wakeup')
+          .map(c => ({
+            id: c.id,
+            type: c.type,
+            label: c.command ?? c.note ?? c.type,
+            correlationId: c.correlationId,
+            registeredAt: new Date(c.registeredAt).toISOString(),
+            timeoutAt: new Date(c.registeredAt + c.timeoutMs).toISOString(),
+          }));
+        // Next wake = earliest of scheduled wakeups and the safety-net tick
+        const wakeCandidates = [
+          ...(nextRunAt ? [new Date(nextRunAt).getTime()] : []),
+          ...wakeups.map(w => new Date(w.wakeAt).getTime()),
+        ];
+        const nextWakeAt = wakeCandidates.length > 0
+          ? new Date(Math.min(...wakeCandidates)).toISOString()
+          : undefined;
+
         this.json(res, 200, {
           ...status,
           lastHeartbeat,
           lastSummary,
           lastSummaryAt,
           nextRunAt,
+          nextWakeAt,
+          wakeups,
+          pendingCallbacks,
         });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
@@ -5340,6 +5374,27 @@ EXPLANATION_END`;
         }
         hb.trigger();
         this.json(res, 200, { status: 'triggered', message: 'Heartbeat triggered. Check activity logs for results.' });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Cancel a scheduled wakeup
+    if (path.match(/^\/api\/agents\/[^/]+\/wakeups\/[^/]+$/) && req.method === 'DELETE') {
+      const parts = path.split('/');
+      const agentId = parts[3]!;
+      const wakeupId = parts[5]!;
+      try {
+        // Confirm the agent exists (throws → 404) before touching the registry.
+        this.orgService.getAgentManager().getAgent(agentId);
+        const cb = pendingCallbackRegistry.getByAgentId(agentId).find(c => c.id === wakeupId && c.type === 'wakeup');
+        if (!cb) {
+          this.json(res, 404, { error: 'No scheduled wakeup with that id' });
+          return;
+        }
+        pendingCallbackRegistry.resolve(wakeupId);
+        this.json(res, 200, { status: 'cancelled', wakeupId });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -12586,6 +12641,7 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+\/activity-logs$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/heartbeat$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/heartbeat\/trigger$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/wakeups\/[^/]+$/, 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/command$/, 'POST'),
 
       // ── Sessions / Channels ──────────────────────────────────────────────

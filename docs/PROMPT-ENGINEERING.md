@@ -214,6 +214,25 @@ Placed in **Tier 1 (Stable)** (`## Referencing Markus Resources`, near the Deliv
 
 This closes the previous gap where the renderer silently auto-linked IDs but no prompt told agents to emit them.
 
+#### Async Work, Callbacks & Timing
+
+Placed in **Tier 1 (Stable)** (`## Async work, callbacks & timing`, after the agent-communication rules). Establishes the event-driven behavioral model that backs the callback/wakeup infrastructure (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §3.4/§11.3):
+
+- **Await, don't poll**: after starting async work, register for the completion event and stop — do not busy-loop checking status. `background_exec` reports completion automatically; a tight `process poll` loop is discouraged.
+- **`schedule_wakeup` / `cancel_wakeup`**: agents set precise time-based follow-ups (`in_seconds` or ISO `at`, optional `recurring_seconds`) instead of relying on the heartbeat, which is now a coarse safety-net (default `DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h) rather than a frequent poll.
+- **`agent_send_message` `await_in_session`**: the peer's reply resumes the **current conversation** (an `a2a_reply` callback correlated by `conversation_id`), instead of landing in a disconnected a2a session.
+- **Two delivery forms**: `in_session` (result resumes the origin session — `background_exec`, `await_in_session`) vs `mailbox` (fresh attention cycle — `schedule_wakeup`, autonomous follow-ups). Documented so agents pick the right one.
+- Note: `task_create` is intentionally **not** wired for in-session return — tasks are an independent, tracked/reviewed workflow whose results flow through the board, review, and `notify_user`, not back into the creating conversation.
+
+#### Behavioral Policies (coding-agent patterns)
+
+Placed in **Tier 1 (Stable)** (`## Error Recovery` + `## Autonomy & Escalation`). Production-coding-agent patterns encoded as durable rules:
+
+- **Bounded retry + escalate**: at most ~2 attempts at the same failing action without new evidence; then stop and escalate (`request_user_input` for a decision, `notify_user` for FYI, mark `blocked`). Never loop; never fail silently.
+- **Autonomy calibration**: reversible/low-stakes → pick a sensible default and record the assumption; irreversible/destructive/scope-expanding → `request_user_input` first. When unsure about reversibility, treat as irreversible.
+- **Self-contained delegation contract**: delegations must carry goal, context, constraints, expected return format, and preserve `conversation_id` — recipients have no access to the sender's session.
+- **Decision-ready return contract**: async results and delegation replies are summarized for immediate action, not raw stdout/log dumps.
+
 ### 2.3 Skill Filtering
 
 `filterSkillsByRelevance()` scores each skill against the current query by keyword overlap. Returns top 30. Each entry is one line: `**name** [category]: description`. The filtered skills catalog is placed in **Tier 3 (Dynamic)** because the filter results depend on the current query, which changes per message. This keeps Tier 2 stable and prevents per-message skill filtering from busting the semi-stable cache prefix.

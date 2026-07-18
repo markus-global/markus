@@ -44,14 +44,68 @@ function writeCache(entry: CacheEntry): void {
   } catch { /* best-effort */ }
 }
 
-function compareVersions(a: string, b: string): number {
-  const pa = a.replace(/^v/, '').split('.').map(Number);
-  const pb = b.replace(/^v/, '').split('.').map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = pa[i] ?? 0;
-    const nb = pb[i] ?? 0;
+/**
+ * Semver-aware version comparison.
+ *
+ * Compares the numeric core (major.minor.patch) first, then applies SemVer
+ * prerelease precedence rules:
+ *   - A version WITH a prerelease has LOWER precedence than the same core
+ *     without one (e.g. `0.8.5-rc.0` < `0.8.5`).
+ *   - Prerelease identifiers are compared dot-by-dot: numeric identifiers
+ *     compare numerically, alphanumeric ones compare lexically, and numeric
+ *     always sorts below alphanumeric. A longer set of identifiers wins when
+ *     all preceding ones are equal.
+ * Build metadata (everything after `+`) is ignored per the SemVer spec.
+ *
+ * Returns 1 if a > b, -1 if a < b, 0 if equal.
+ */
+export function compareVersions(a: string, b: string): number {
+  const norm = (v: string) => v.trim().replace(/^v/, '').split('+')[0]!; // strip leading v + build metadata
+  const split = (v: string): { core: number[]; pre: string[] } => {
+    const [core, pre] = norm(v).split('-', 2) as [string, string | undefined];
+    return {
+      core: core.split('.').map(n => Number(n) || 0),
+      pre: pre ? pre.split('.') : [],
+    };
+  };
+
+  const va = split(a);
+  const vb = split(b);
+
+  // Compare numeric core (major.minor.patch...)
+  for (let i = 0; i < Math.max(va.core.length, vb.core.length); i++) {
+    const na = va.core[i] ?? 0;
+    const nb = vb.core[i] ?? 0;
     if (na > nb) return 1;
     if (na < nb) return -1;
+  }
+
+  // Core equal — apply prerelease precedence
+  const aHasPre = va.pre.length > 0;
+  const bHasPre = vb.pre.length > 0;
+  if (!aHasPre && !bHasPre) return 0;
+  if (!aHasPre) return 1;  // a is stable, b is prerelease → a > b
+  if (!bHasPre) return -1; // a is prerelease, b is stable → a < b
+
+  // Both have prereleases — compare identifier by identifier
+  for (let i = 0; i < Math.max(va.pre.length, vb.pre.length); i++) {
+    const ia = va.pre[i];
+    const ib = vb.pre[i];
+    if (ia === undefined) return -1; // fewer identifiers → lower precedence
+    if (ib === undefined) return 1;
+    if (ia === ib) continue;
+    const numA = /^\d+$/.test(ia);
+    const numB = /^\d+$/.test(ib);
+    if (numA && numB) {
+      const diff = Number(ia) - Number(ib);
+      if (diff !== 0) return diff > 0 ? 1 : -1;
+    } else if (numA) {
+      return -1; // numeric identifiers have lower precedence than alphanumeric
+    } else if (numB) {
+      return 1;
+    } else {
+      return ia > ib ? 1 : -1; // lexical ASCII order
+    }
   }
   return 0;
 }

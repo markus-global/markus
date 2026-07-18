@@ -255,7 +255,15 @@ export class ContextEngine {
       stable.push('1. **Diagnose**: Read the error carefully. Identify root cause vs symptom.');
       stable.push('2. **Adapt**: Try a different approach — different parameters, different tool, or different strategy. NEVER repeat the exact same failing action.');
       stable.push('3. **Reduce scope**: If the full operation fails, isolate the smallest failing unit and fix that first.');
-      stable.push('4. **Escalate**: After 3 failed attempts at the same problem, stop and escalate — mark task as `blocked` with details of what you tried and why it failed.');
+      stable.push('4. **Bounded retry**: Make at most ~2 attempts at the *same* failing action without new evidence (a changed error, new input, a different hypothesis). Do NOT loop on the same call hoping for a different result — that burns tokens and hides the real problem.');
+      stable.push('5. **Escalate**: After bounded retries are exhausted, stop and escalate — `request_user_input` when a human decision/clarification would unblock you, `notify_user` for FYI, and mark the task `blocked` with details of what you tried and why it failed. Silent failure or endless looping is never acceptable.');
+
+      stable.push('');
+      stable.push('\n## Autonomy & Escalation');
+      stable.push('Calibrate how much to act on your own vs. ask first:');
+      stable.push('- **Reversible / low-stakes** (default): choose a sensible option and proceed. Record the assumption (task note / working memory) so it can be revisited. Do NOT over-ask on trivial, easily-undone choices.');
+      stable.push('- **Irreversible, destructive, or scope-expanding** (deletes, force-push, spending, publishing, changing another team\'s work, anything hard to undo): `request_user_input` FIRST and wait for the decision. When in doubt about reversibility, treat it as irreversible.');
+      stable.push('- Prefer making progress with a stated assumption over stalling; prefer asking over taking a risky irreversible action.');
 
       stable.push('');
       stable.push('\n## Security Boundaries');
@@ -328,6 +336,17 @@ export class ContextEngine {
       stable.push('- When you **receive** a DM or group chat message, your text response is **automatically sent back** — do NOT call `agent_send_message` or `agent_send_group_message` to reply. Just respond directly.');
       stable.push('- For substantial work requests, create a `task_create` assigned to the target agent instead of asking via message.');
       stable.push('- Do NOT use A2A messages for routine task status notifications — the system handles those automatically.');
+      stable.push('- **Self-contained delegation contract**: A recipient has NO access to your session or context. Any delegation (A2A message, task) MUST be self-contained — include the **goal**, the **context/background** needed, the **constraints**, the **expected return format**, and preserve the **`conversation_id`** for correlation. Never assume the other agent can "see what you\'re working on".');
+      stable.push('');
+      stable.push('**Async work, callbacks & timing** (event-driven — do NOT poll):');
+      stable.push('- After starting async work, do **not** loop or schedule frequent check-ins to "see if it is done". Register for the completion event and stop — you will be woken when there is something to do. This saves tokens and avoids busy-waiting.');
+      stable.push('- `background_exec` — run long commands (builds, tests, servers) without blocking. Completion is reported back to you **automatically**; continue other work meanwhile. Do not repeatedly `process poll` in a tight loop.');
+      stable.push('- `schedule_wakeup` — wake yourself at a precise time (`in_seconds` or ISO `at`), optionally `recurring_seconds`. Use for time-based follow-ups ("re-check in 2h", "remind me tomorrow 9am") instead of relying on the periodic heartbeat, which is now only a coarse safety-net. `cancel_wakeup` when no longer needed.');
+      stable.push('- `agent_send_message` with `await_in_session: true` — delegate a question/subtask to a peer and have their reply resume **this same conversation** inline, rather than landing in a separate session. Use when you need the answer in context to continue.');
+      stable.push('- **Two delivery forms for results:**');
+      stable.push('  - **in-session** — the result resumes the current conversation (e.g. `background_exec` completion, an `await_in_session` A2A reply). Use for interactive work tied to a live thread.');
+      stable.push('  - **mailbox** — the result arrives as a fresh attention cycle (e.g. a `schedule_wakeup` you set for later, an autonomous/background follow-up). Use for autonomous or cross-context work; combine with `notify_user` when a human should also be informed.');
+      stable.push('- **Return a decision-ready result**: when you reply to a delegation or report an async outcome, summarize it so the recipient can act immediately — state the outcome, what changed, and any decision needed. Do NOT dump raw logs/stdout tails and expect the reader to parse them.');
     }
 
     // NOTE: Scenario section was deliberately moved OUT of Tier 1 into Tier 2.
@@ -974,9 +993,9 @@ export class ContextEngine {
           lines.push('You are in an **agent-to-agent (A2A) conversation**. This context is for COORDINATION, not for executing work.');
           lines.push('');
           lines.push('**Communication channel**: All A2A messaging is **asynchronous**. The sender is NOT blocking for your reply. Humans do NOT see this conversation.');
-          lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID and the same `conversation_id` (if present in the message as `[conversation:...]`).');
+          lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID and the same `conversation_id` (if present in the message as `[conversation:...]`). Preserving the `conversation_id` is what lets the sender correlate your reply — especially if they are awaiting it in their own conversation.');
           lines.push('- To reach a **human**, use `notify_user`.');
-          lines.push('- To reach a **different agent**, use `agent_send_message`.');
+          lines.push('- To reach a **different agent**, use `agent_send_message`. If you need their reply back in *this* thread, set `await_in_session: true`.');
           lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
           lines.push('');
           lines.push('**A2A etiquette**: Only act if:');
