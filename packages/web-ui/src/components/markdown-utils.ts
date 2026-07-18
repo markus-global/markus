@@ -78,7 +78,13 @@ export function preprocessMentions(text: string, knownNames?: string[]): string 
 }
 
 const ENTITY_PREFIX = '#entity:';
-const ENTITY_ID_RE = /(?<!\[)(?<!#entity:)\b(tsk|req|proj|dlv|agt|team)_[a-f0-9]{6,}\b(?!\]\(#entity:)/gi;
+// Match bare entity IDs in prose, but NOT ones already inside a link:
+//   - `[id](...)`            → preceded by `[`
+//   - `](dlv_…)`             → preceded by `(`  (link destination)
+//   - `deliverable:dlv_…`    → preceded by `:`  (custom scheme href, e.g. from
+//                              agent output like `[Title](deliverable:dlv_…)`)
+// Rewriting IDs inside a destination corrupts the URL into nested markdown.
+const ENTITY_ID_RE = /(?<!\[)(?<!\()(?<!:)\b(tsk|req|proj|dlv|agt|team)_[a-f0-9]{6,}\b(?!\]\(#entity:)/gi;
 const ENTITY_LINK_IN_CODE_RE = /`\[([^\]]+)\]\(#entity:((?:tsk|req|proj|dlv|agt|team)_[a-f0-9]{6,})\)`/gi;
 
 /** Unwrap entity links wrapped in backticks: `[id](#entity:id)` → [id](#entity:id) */

@@ -9,6 +9,7 @@ import {
   type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
 import { UserInputModal } from '../components/UserInputModal.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
@@ -412,6 +413,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (closed.delete(sessionId)) {
       try { localStorage.setItem(`markus_closed_tabs_${agentId}`, JSON.stringify([...closed])); } catch { /* ignore */ }
     }
+  };
+  // Persist the active session per agent so a page refresh restores the same
+  // session the user was on (instead of always snapping back to the main session).
+  const getStoredActiveSession = (agentId: string): string | null => {
+    try { return localStorage.getItem(`markus_active_session_${agentId}`); } catch { return null; }
+  };
+  const setStoredActiveSession = (agentId: string, sessionId: string | null) => {
+    if (!agentId) return;
+    try {
+      if (sessionId && sessionId !== NEW_CHAT_PLACEHOLDER_ID) {
+        localStorage.setItem(`markus_active_session_${agentId}`, sessionId);
+      } else {
+        localStorage.removeItem(`markus_active_session_${agentId}`);
+      }
+    } catch { /* ignore */ }
   };
 
   const [sessions, setSessions] = useState<ChatSessionInfo[]>([]);
@@ -1141,10 +1157,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const defaultTabs = mainSession
               ? [mainSession, ...s.filter(ss => !ss.isMain && !closedIds.has(ss.id)).slice(0, 4)]
               : s.filter(ss => !closedIds.has(ss.id)).slice(0, 5);
-            const initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : defaultTabs;
-            const restoreId = savedActiveSession !== undefined ? savedActiveSession : (mainSession?.id ?? initialTabs[0]!.id);
+            let initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : defaultTabs;
+            // Prefer, in order: the in-memory buffer (survives tab switches within a
+            // session), the localStorage value (survives a full page refresh), then
+            // the main session. This keeps the user on the session they left off on.
+            const storedActive = getStoredActiveSession(selectedAgent!);
+            const restoreId = savedActiveSession !== undefined
+              ? savedActiveSession
+              : (storedActive ?? mainSession?.id ?? initialTabs[0]!.id);
+            // If the session we want to restore exists on the server but isn't in the
+            // default tab set (e.g. an older session), surface it as a tab so it can
+            // be activated instead of silently falling back to the first tab.
+            if (restoreId && restoreId !== NEW_CHAT_PLACEHOLDER_ID && !initialTabs.some(t => t.id === restoreId)) {
+              const found = s.find(ss => ss.id === restoreId);
+              if (found) initialTabs = [...initialTabs, found];
+            }
             const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
             setActiveSessionId(validId);
+            setStoredActiveSession(selectedAgent!, validId);
             setOpenSessionTabs(initialTabs);
             loadSessionMessages(validId!, newKey);
           } else {
@@ -1682,6 +1712,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             if (!currentSess || currentSess === NEW_CHAT_PLACEHOLDER_ID || currentSess === event.sessionId) {
               setActiveSessionId(event.sessionId);
               activeSessionBuffer.set(sendKey, event.sessionId);
+              if (selectedAgent) setStoredActiveSession(selectedAgent, event.sessionId);
               setOpenSessionTabs(prev => {
                 // Replace placeholder if exists; otherwise ensure the session tab is present
                 if (prev.some(t => t.id === NEW_CHAT_PLACEHOLDER_ID)) {
@@ -2192,6 +2223,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setActivities([]);
     }
     activeSessionBuffer.set(key, s.id);
+    if (selectedAgent) setStoredActiveSession(selectedAgent, s.id);
     if (prevSessionId && prevSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
       saveSessionToCache(key, prevSessionId);
     }
@@ -3409,19 +3441,29 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                             }
                           </div>
                         : msg.sender === 'agent' && chatMode === 'channel' && !(msg.segments && msg.segments.length > 0)
-                          ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
-                          : <AgentMessageBody
-                              msg={msg}
-                              isStreaming={isStreamingMsg}
-                              liveActivities={isStreamingMsg ? activities : []}
-                              onViewModeChange={(mode) => setExpandedMsgIds(prev => {
-                                const next = new Set(prev);
-                                if (mode === 'full') next.add(msg.id); else next.delete(msg.id);
-                                return next;
-                              })}
-                              onMentionClick={handleMentionClick}
-                              knownNames={agentNames}
-                            />
+                          ? <ErrorBoundary
+                              resetKeys={[msg.text]}
+                              fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
+                            >
+                              <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
+                            </ErrorBoundary>
+                          : <ErrorBoundary
+                              resetKeys={[msg.id, msg.text, msg.segments?.length, isStreamingMsg]}
+                              fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
+                            >
+                              <AgentMessageBody
+                                msg={msg}
+                                isStreaming={isStreamingMsg}
+                                liveActivities={isStreamingMsg ? activities : []}
+                                onViewModeChange={(mode) => setExpandedMsgIds(prev => {
+                                  const next = new Set(prev);
+                                  if (mode === 'full') next.add(msg.id); else next.delete(msg.id);
+                                  return next;
+                                })}
+                                onMentionClick={handleMentionClick}
+                                knownNames={agentNames}
+                              />
+                            </ErrorBoundary>
                       }
                       {msg.isNotification && (
                         <NotificationBadge priority={msg.notifyPriority} />

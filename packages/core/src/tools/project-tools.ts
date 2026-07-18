@@ -410,10 +410,10 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   enum: ['file', 'directory'],
                   description: 'file = any file-based content (docs, reports, code, etc.), directory = folder of files',
                 },
-                title: { type: 'string', description: 'Clear, searchable title' },
+                title: { type: 'string', description: 'Short, human-readable title (aim for under ~80 characters). Do NOT stuff the full content outline or a "+"-separated feature list here, and do NOT copy the summary into it.' },
                 summary: {
                   type: 'string',
-                  description: 'Brief summary describing what this deliverable contains and why it matters (not the full content — the actual content lives in the referenced file)',
+                  description: 'A distinct 1–3 sentence description of what this deliverable contains and why it matters (not the full content — that lives in the referenced file). Must be different from the title; do not repeat the title verbatim.',
                 },
                 reference: {
                   type: 'string',

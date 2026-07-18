@@ -1,4 +1,5 @@
 import { Suspense, lazy, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api.ts';
 import type { DeliverableInfo } from '../api.ts';
@@ -36,7 +37,11 @@ export function DeliverableDetailModal({ item, onClose, onOpenInPage }: {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  return (
+  // Portal to <body> so the fixed overlay is centered on the true viewport.
+  // When rendered inline inside chat markdown, an ancestor with a CSS transform /
+  // filter / backdrop-filter turns `position: fixed` into being relative to that
+  // ancestor, which pushes the modal off-screen for long messages.
+  const modal = (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
       <div
@@ -65,8 +70,9 @@ export function DeliverableDetailModal({ item, onClose, onOpenInPage }: {
 
         {/* Body */}
         <div className="px-5 py-4 space-y-4">
-          {/* Summary */}
-          {item.summary && (
+          {/* Summary — hidden when it merely repeats the title (agents sometimes
+              pass the same string for both `title` and `summary`). */}
+          {item.summary && item.summary.trim() !== item.title.trim() && (
             <div>
               <label className="text-[10px] text-fg-tertiary uppercase tracking-wider font-medium">{t('agent:deliverables.summary')}</label>
               <div className="mt-1.5">
@@ -154,4 +160,6 @@ export function DeliverableDetailModal({ item, onClose, onOpenInPage }: {
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined' ? createPortal(modal, document.body) : modal;
 }

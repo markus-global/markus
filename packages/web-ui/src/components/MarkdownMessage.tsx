@@ -1,7 +1,7 @@
 import { useMemo, useState, useRef, useEffect, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import remarkBreaks from 'remark-breaks';
@@ -25,6 +25,17 @@ import { PAGE } from '../routes.ts';
 import {
   EntityChip, EntityCard, looksLikeEntityId, chipTypeToEntityType, type EntityType,
 } from './EntityCard.tsx';
+import { ErrorBoundary } from './ErrorBoundary.tsx';
+
+// Internal resource link schemes (e.g. `deliverable:dlv_…`, `task:tsk_…`) that the
+// `a` renderer turns into clickable entity chips. react-markdown's default URL
+// sanitizer strips any non-safe protocol, which would blank these hrefs before the
+// chip logic runs — so allow them through here. `#entity:`/`#mention:` already
+// survive sanitization because they start with `#`.
+const CUSTOM_URI_SCHEME_RE = /^(deliverable|task|requirement|project|agent|team|workflow):/i;
+function chatUrlTransform(url: string): string {
+  return CUSTOM_URI_SCHEME_RE.test(url) ? url : defaultUrlTransform(url);
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const REMARK_PLUGINS: any[] = [remarkGfm, remarkMath, remarkBreaks];
@@ -112,8 +123,20 @@ const mdComponents = {
   h5: ({ children }: { children?: React.ReactNode }) => <h5 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-fg-primary">{children}</h5>,
   h6: ({ children }: { children?: React.ReactNode }) => <h6 className="text-xs font-medium mb-1 mt-2 first:mt-0 text-fg-primary">{children}</h6>,
   ul: ({ children }: { children?: React.ReactNode }) => <ul className="list-disc pl-4 mb-2 space-y-0.5">{children}</ul>,
-  ol: ({ children }: { children?: React.ReactNode }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
-  li: ({ children }: { children?: React.ReactNode }) => <li className="leading-relaxed text-fg-secondary marker:text-fg-secondary">{children}</li>,
+  // Forward `start` so ordered lists that begin at a number other than 1 render
+  // correctly. Agent output often intersperses block content (e.g. a bare
+  // entity-id card) between items, which splits one list into several
+  // single-item `<ol start="N">` lists; without `start` they'd all show "1.".
+  // `pl-7` (not `pl-4`): the decimal marker sits (list-style-position: outside)
+  // in the left padding; 16px is narrower than a two-digit marker like "20.",
+  // so the leading digit overflows left and gets clipped by the message
+  // container's `overflow-hidden` (rendering "10." as "0."). 28px fits it.
+  ol: ({ children, start }: { children?: React.ReactNode; start?: number }) => (
+    <ol start={start} className="list-decimal pl-7 mb-2 space-y-0.5">{children}</ol>
+  ),
+  li: ({ children, value }: { children?: React.ReactNode; value?: number }) => (
+    <li value={value} className="leading-relaxed text-fg-secondary marker:text-fg-secondary">{children}</li>
+  ),
   code: ({ children, className: cls }: { children?: React.ReactNode; className?: string }) => {
     const text = typeof children === 'string' ? children : String(children ?? '');
     const trimmed = text.trim();
@@ -528,6 +551,10 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
     <div className="relative group/md">
       <CopyMenu content={content} contentRef={contentRef} />
       <div ref={contentRef}>
+        <ErrorBoundary
+          resetKeys={[processedRest]}
+          fallback={<div className={`prose prose-sm max-w-none break-words whitespace-pre-wrap pr-8 text-fg-secondary ${className}`}>{rest}</div>}
+        >
         <div className={`prose prose-sm max-w-none break-words pr-8 text-fg-secondary ${className}`}>
           {thinking.length > 0 && (() => {
             const full = thinking.join('\n\n');
@@ -544,7 +571,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
                 </summary>
                 <div className="px-3 pb-3 border-t border-border-default/50">
                   <div className="mt-2 pl-3 border-l-2 border-brand-500/40 text-xs text-fg-secondary leading-relaxed">
-                    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
+                    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components} urlTransform={chatUrlTransform}>
                       {preprocess(full)}
                     </ReactMarkdown>
                   </div>
@@ -552,10 +579,11 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
               </details>
             );
           })()}
-          <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
+          <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components} urlTransform={chatUrlTransform}>
             {processedRest}
           </ReactMarkdown>
         </div>
+        </ErrorBoundary>
       </div>
       {previewSrc && <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />}
     </div>
