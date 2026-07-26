@@ -190,22 +190,34 @@ The review outcome is properly communicated through the status transition (`comp
 Typical sources:
 
 1. **`background_exec` completion** — When a background shell process finishes, the agent receives a `callback_result` with exit code, duration, and stdout/stderr tail.
-2. **Future async operations** — A2A replies, delegated work, and other long-running ops can register callbacks the same way.
+2. **In-session A2A await** — When an agent sends `agent_send_message` with `await_in_session: true`, an `a2a_reply` callback is registered (correlated by `conversation_id`). The peer's reply is routed back into the **origin session** instead of a separate a2a session.
+
+**Two delivery forms.** A resolved callback is delivered one of two ways, selected by `deliveryMode`:
+
+- **`in_session`** → enqueues a `callback_result` bound to `originSessionId`, resuming the current conversation (used for `background_exec` completions and `await_in_session` A2A replies).
+- **`mailbox`** → enqueues a `system_event`, a fresh attention cycle (used for `schedule_wakeup` firings and autonomous follow-ups).
 
 Payload shape (`payload.extra`):
 
 ```typescript
 {
   callbackId: string;           // Registry ID (matches pending callback)
-  originSessionId: string;      // Session to resume context in
-  callbackType: 'background_exec' | ...;
+  originSessionId: string;      // Session to resume context in (in_session mode)
+  callbackType: 'background_exec' | 'wakeup' | 'a2a_reply';
+  correlationId?: string;       // conversation_id for a2a_reply
   exitCode?: number;            // For background_exec
 }
 ```
 
-Processing: routed to `handleMessage()` with the **originating session** (`originSessionId`) so the agent continues where it left off. Falls back to a fresh system session if origin is unknown. `invokesLLM: true`, `createsActivity: true`.
+Processing: `in_session` callbacks route to `handleMessage()` with the **originating session** (`originSessionId`) so the agent continues where it left off. Falls back to a fresh system session if origin is unknown. `invokesLLM: true`, `createsActivity: true`.
 
-Registration flow: when an agent starts an async operation, it calls `registerBackgroundSession()` (or equivalent), which registers a `PendingCallback` in `PendingCallbackRegistry` and persists it to SQLite. On completion, the registry entry is resolved and a `callback_result` item is enqueued.
+Registration flow: when an agent starts an async operation the completion is registered as a `PendingCallback` in `PendingCallbackRegistry` and persisted to SQLite:
+
+- `background_exec` — the `background_exec` tool path calls `registerBackgroundSession()` (from `Agent.executeTool`, keyed by the returned bg session id, `originSessionId = active session`).
+- `agent_send_message` with `await_in_session` — registers an `a2a_reply` callback keyed by `conversation_id`.
+- `schedule_wakeup` — registers a `wakeup` callback with a `wakeAt` timestamp (and optional `recurringMs`).
+
+On completion/firing the registry entry is resolved and delivered via the shared `Agent.deliverCallback()` helper according to its `deliveryMode`.
 
 See §11.3 for the full `PendingCallbackRegistry` specification.
 
@@ -286,6 +298,44 @@ When an agent is stopped (`Agent.stop()`) or paused (`Agent.pause()`):
 2. **Attention loop stops** — `AttentionController.stop()` sets `running = false` and wakes any blocked `dequeueAsync()`.
 3. **In-flight item is preserved** — if processing was in progress, the item is **requeued** (not lost) so it can be picked up when the agent resumes.
 4. **Deferred items survive** — items deferred by preemption remain in the database and will be resurfaced when the agent restarts.
+
+### Spec: processing backstop — cancel-on-timeout + single-flight (P0)
+
+The attention loop wraps `processMailboxItem` in a generous backstop
+(`MAILBOX_PROCESSING_TIMEOUT_MS`, or `APPROVAL_WAIT_TIMEOUT_MS` while awaiting approval)
+via `Promise.race` in `processFocusedItem`. On timeout the item is **requeued**. Today the
+original processing promise is **not cancelled** — it may still be running, so a requeue can
+re-run tools and double side effects.
+
+- **Behavior**: when the backstop fires, the in-flight processing is **cancelled**
+  (`AbortController`/cancelToken shared with the LLM/tool path), and a **single-flight
+  generation guard** ensures that if the original processing resolves *after* the timeout, its
+  result is **discarded** (not persisted, not streamed, not re-completing the item).
+- **Invariants**:
+  - After a timeout-requeue, the tool side effects and persistence of the *timed-out*
+    attempt happen **at most once** (the orphaned late result is dropped).
+  - Requeue still occurs so the item is not lost.
+  - Normal (non-timeout) completion is unaffected.
+- **Design rationale (Hermes)**: an interrupted/aborted API call must not inject a
+  half-finished result; discard in-flight work rather than racing two writers.
+- **Testing** (`packages/core/test/attention.test.ts` — "A1: cancels in-flight processing
+  on backstop timeout…"): a slow turn hits the backstop → `cancelProcessing` is invoked and
+  the item is requeued; the original turn resolving late is dropped (no extra
+  requeue/complete). The backstop is injectable via `setProcessingTimeoutMs` for
+  deterministic testing.
+- **Status**: implemented (`AttentionController.processFocusedItem` cancel-on-timeout +
+  `AttentionDelegate.cancelProcessing`, wired in `Agent.createAttentionDelegate`).
+
+### Spec: interruptible streaming chat (P1)
+
+The **Streaming chat** yield point (above) is non-preemptable by design (a human awaits the
+reply). B3 keeps that principle but distinguishes revocation from preemption: an explicit
+**cancel** decision aborts the in-flight stream and drops the item (`[cancelled]`), while a
+**preempt** restores the signal so the higher-priority item runs right after the turn (no
+mid-answer truncation). Backstop-timeout abort is shared with A1's `cancelProcessing`.
+
+- **Status**: implemented. Full behavior/invariants/tests live in
+  [STREAMING-AND-REATTACH.md §4.2](./STREAMING-AND-REATTACH.md).
 
 ---
 
@@ -679,22 +729,37 @@ The `@markus/a2a` package retains `DelegationManager` and protocol types. `A2ABu
 `PendingCallbackRegistry` (`packages/core/src/pending-callback.ts`) tracks async operations that must report results back through the mailbox rather than injecting directly into an active session.
 
 ```typescript
+type CallbackType = 'background_exec' | 'wakeup' | 'a2a_reply';
+type CallbackDelivery = 'in_session' | 'mailbox';
+
 interface PendingCallback {
-  id: string;              // Unique callback ID (e.g., background session ID)
-  agentId: string;         // Originating agent
-  originSessionId: string; // Session to resume on completion
-  type: 'background_exec'; // Operation type (extensible)
-  command?: string;        // Optional context (shell command, etc.)
-  registeredAt: number;      // Epoch ms
-  timeoutMs: number;         // Default: 10 minutes for background_exec
+  id: string;                    // Unique callback ID (e.g., background session ID, a2a_<conversation_id>)
+  agentId: string;               // Originating agent
+  originSessionId: string;       // Session to resume on completion (in_session mode)
+  type: CallbackType;            // Operation type
+  deliveryMode?: CallbackDelivery; // in_session (default) → callback_result; mailbox → system_event
+  command?: string;              // Optional context (shell command, etc.)
+  note?: string;                 // Free-text label (wakeup reason, delegation goal)
+  correlationId?: string;        // Correlates an external event (conversation_id)
+  wakeAt?: number;               // Scheduled wakeups: epoch ms when due
+  recurringMs?: number;          // Recurring wakeups: re-arm interval
+  registeredAt: number;          // Epoch ms
+  timeoutMs: number;             // 10 min for background_exec; 30 min for a2a_reply; effectively ∞ for wakeup
 }
 ```
 
 **Lifecycle:**
 
-1. **Register** — Agent initiates async work (e.g., `background_exec`). `registerBackgroundSession()` adds a callback to the registry and persists via `SqlitePendingCallbackRepo`.
-2. **Complete** — Operation finishes. Handler calls `resolve(id)`, then enqueues `callback_result` with `originSessionId` and result payload preserved in `extra`.
-3. **Timeout** — Heartbeat calls `getTimedOut()` to find expired callbacks, then `expireTimedOut(id)` removes each from the registry. Timed-out operations are surfaced in the heartbeat prompt (§11.4) for agent investigation — they do not silently disappear.
+1. **Register** — An async operation is registered as a `PendingCallback` and persisted via `SqlitePendingCallbackRepo`:
+   - `background_exec` → `registerBackgroundSession()` (called from `Agent.executeTool` on the tool result).
+   - `agent_send_message` with `await_in_session` → an `a2a_reply` callback keyed by `conversation_id`.
+   - `schedule_wakeup` → a `wakeup` callback with `wakeAt` (+ optional `recurringMs`).
+2. **Complete / fire** — On completion (`background_exec`, `a2a_reply`) or when a wakeup is due, the entry is resolved and delivered via the shared `Agent.deliverCallback()` helper: `in_session` → `callback_result` (bound to `originSessionId`); `mailbox` → `system_event`. Recurring wakeups re-arm.
+3. **Timeout** — Heartbeat calls `getTimedOut()` to find expired callbacks, then `expireTimedOut(id)` removes each from the registry. Timed-out operations are surfaced in the heartbeat prompt (§11.4) for agent investigation — they do not silently disappear. (Wakeups use an effectively infinite timeout and are never flagged.)
+
+**Wakeup scheduler:** each agent runs a coarse (~1-minute) sweep (`Agent.sweepDueWakeups`) that fires any `wakeup` callbacks whose `wakeAt` has passed. This lets an agent register precise time-based follow-ups (`schedule_wakeup`) and stay idle in between, rather than relying on the periodic heartbeat.
+
+**Heartbeat as coarse safety-net:** the periodic heartbeat is a fallback patrol (`DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h), not the primary timing mechanism — `schedule_wakeup` is. The interval is configurable live by the user (Heartbeat tab / `PATCH /api/agents/:id/config`) and by the agent itself via the `set_heartbeat_interval` tool (clamped 5min–24h). Both paths go through `Agent.setHeartbeatInterval()`, which restarts the scheduler immediately; agent-initiated changes persist via the `agent:heartbeat-interval-changed` event → `agentRepo.updateConfig`.
 
 The registry is a process singleton (`pendingCallbackRegistry`), restored from SQLite on startup so callbacks survive server restarts.
 
@@ -712,7 +777,7 @@ Periodic heartbeat items (`priority: 3 — low`) drive proactive agent patrol. B
 **Callback timeout handling** — Before building the heartbeat prompt, `handleHeartbeat()` calls `pendingCallbackRegistry.getTimedOut()`. For each expired callback:
 
 1. `expireTimedOut(id)` removes it from the registry (and persistence)
-2. Details are injected into the heartbeat prompt under **Timed-Out Background Operations**
+2. Details are injected into the heartbeat prompt under **Timed-Out Async Operations** (background exec or an awaited A2A delegation whose reply never arrived)
 3. The agent investigates and takes corrective action during the heartbeat LLM session
 
 This ensures orphaned async operations are surfaced even when the completion handler never fires (process crash, hung command, etc.).
@@ -826,6 +891,8 @@ Every `notify_user` message is persisted with **two layers of context**:
 2. **Embedded context comment** (appended to message content): `<!-- notify_context: task_id=xxx, requirement_id=yyy -->` — survives through `restoreSessionFromHistory()` (which only reads `role` + `content`), ensuring the agent retains context about what it notified the user about when the user replies.
 
 The agent's `chat` scenario system prompt instructs it to parse these `notify_context` references and use tools like `recall_activity` or `search_tasks` to retrieve full context before responding to user follow-ups.
+
+> **Referencing resources in the body**: `notify_user` bodies (and any chat/comment/report markdown) should reference Markus resources using the conventions in [PROMPT-ENGINEERING.md §2.2 "Referencing Markus Resources"](./PROMPT-ENGINEERING.md#referencing-markus-resources) — bare IDs (`tsk_…`, `dlv_…`, …), titled links `[Title](task:tsk_…)`, or a reference alone on its own line to render a card. This is separate from the `related_task_id` metadata (which drives the notification's deep-link badge).
 
 #### Real-time Visibility
 
@@ -1120,7 +1187,28 @@ When the user opens an agent's chat, the frontend loads sessions via `getSession
 Agent responses include a `<<HANDLE_COMPLETE>>` completion marker to detect abnormal termination. This marker is:
 - Required in the agent's prompt instructions for non-chat processing
 - Stripped from all output before display (streaming `text_delta`, SSE segment fallback, heartbeat daily log)
-- Detected by `detectAbnormalCompletion()` — if absent, the mailbox item is requeued for retry
+- Detected by `detectAbnormalCompletion()` — if absent, the mailbox item is requeued for retry (background types), except two cases that **complete without retry** to avoid duplicating side effects: (a) the marker is still missing after an in-session continuation was already attempted, and (b) a user-interaction item where the user already saw partial output.
+
+### Spec: unfinished/refused work is visible (P0)
+
+The two "complete without retry" cases above (and tool failures / `MEMORY.md` write
+refusals) currently resolve near-silently — the user has no clear signal the turn did not
+finish cleanly.
+
+- **Behavior**: when a turn completes without a marker after continuation (or a tool returns
+  a structured error, or a memory write is refused), the agent emits a **structured event**
+  (`incomplete` / `tool_error`) and an activity-log entry. Retry semantics are **unchanged** —
+  this adds visibility only.
+- **Invariants**: each condition emits exactly one corresponding event; no additional retries
+  are triggered by making it visible. See the mailbox-item terminal states in
+  [STATE-MACHINES.md](./STATE-MACHINES.md) and the event contract in
+  [STREAMING-AND-REATTACH.md §4.1](./STREAMING-AND-REATTACH.md).
+- **Testing** (`packages/core/test/attention.test.ts` — "A3: emits agent:incomplete…"):
+  a marker-missing completion emits exactly one `agent:incomplete` event, adds no retry, and
+  completes the item.
+- **Status**: implemented (`AttentionController.emitIncomplete`, emitted from the
+  complete-without-retry and max-retries-exhausted terminals; consumers can forward it to the
+  activity log / SSE per [STREAMING-AND-REATTACH.md §4.1](./STREAMING-AND-REATTACH.md)).
 
 ---
 
@@ -1434,7 +1522,7 @@ This collapses what would have been 5 separate triage+process cycles into a sing
 
 ## 26. Future Work
 
-- **Proactive messaging scheduler**: Allow agents to schedule future messages (e.g., "remind user about this review tomorrow") using time-based prospective memory.
+- **Proactive messaging scheduler** *(implemented)*: Agents schedule time-based follow-ups via `schedule_wakeup` (one-shot or recurring); a coarse per-agent sweep fires due wakeups into the mailbox. See §11.3.
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Decision pattern learning**: Use long-term decision history to adaptively tune heuristic thresholds.
 - **Deliberation cost optimization**: Implement adaptive deliberation depth — use cheaper models or shorter budgets for simple multi-item scenarios, full budget only for genuinely complex triage.

@@ -212,6 +212,123 @@ body {
   @apply text-brand-400;
 }
 
+/* ──────────────────────────────────────────────────────────────
+   Marketplace / community design-system primitives
+   (shared visual language for store + hub asset surfaces)
+   ────────────────────────────────────────────────────────────── */
+
+/* Section header used above discovery rows */
+.section-title {
+  @apply text-[15px] font-semibold text-fg-primary tracking-tight;
+}
+.section-subtitle {
+  @apply text-xs text-fg-tertiary mt-0.5;
+}
+.section-link {
+  @apply text-xs font-medium text-brand-400 hover:text-brand-300 transition-colors;
+}
+
+/* Elevated content card with soft depth + hover lift */
+.asset-card {
+  @apply relative bg-surface-secondary border border-border-subtle rounded-2xl overflow-hidden transition-all duration-300;
+}
+
+/* Masonry / waterfall layouts: cards keep their natural height and pack tightly
+   instead of stretching to the tallest card in a grid row. */
+.masonry-2,
+.masonry-3 {
+  column-count: 1;
+  column-gap: 1rem;
+}
+.masonry-2 > *,
+.masonry-3 > * {
+  break-inside: avoid;
+  margin-bottom: 1rem;
+  /* isolate hover transforms so they don't confuse column breaking */
+  display: block;
+}
+@media (min-width: 768px) {
+  .masonry-3 { column-count: 2; }
+}
+@media (min-width: 1024px) {
+  .masonry-2 { column-count: 2; }
+  .masonry-3 { column-count: 3; }
+}
+.asset-card:hover {
+  @apply border-border-default -translate-y-0.5;
+  box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.45);
+}
+
+/* Small metadata chips / tags */
+.chip {
+  @apply inline-flex items-center gap-1 rounded-full bg-surface-elevated px-2 py-0.5 text-[10px] font-medium text-fg-tertiary border border-border-subtle;
+}
+.chip-accent {
+  @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold text-brand-300 bg-brand-500/10 border border-brand-500/20;
+}
+
+/* Price / status badges that sit on top of covers */
+.badge-free {
+  @apply inline-flex items-center rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold backdrop-blur-md;
+}
+.badge-paid {
+  @apply inline-flex items-center rounded-full bg-amber-500/20 text-amber-200 border border-amber-500/30 px-2 py-0.5 text-[10px] font-semibold backdrop-blur-md;
+}
+
+/* Gradient headline text */
+.text-gradient {
+  background: linear-gradient(100deg, var(--color-fg-primary), var(--color-brand-400));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Loading skeleton shimmer */
+@keyframes skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-secondary) 25%,
+    var(--color-surface-elevated) 37%,
+    var(--color-surface-secondary) 63%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Horizontal scroll rail with snap for discovery carousels */
+.rail {
+  @apply flex gap-4 overflow-x-auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+.rail::-webkit-scrollbar {
+  display: none;
+}
+.rail > * {
+  scroll-snap-align: start;
+  flex: 0 0 auto;
+}
+
+/* Featured / hero banner glow accent */
+.hero-glow {
+  position: relative;
+  overflow: hidden;
+}
+.hero-glow::before {
+  content: '';
+  position: absolute;
+  inset: -40% -20% auto auto;
+  width: 60%;
+  height: 160%;
+  background: radial-gradient(circle at top right, var(--color-brand-500), transparent 60%);
+  opacity: 0.25;
+  pointer-events: none;
+}
+
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -259,12 +376,9 @@ body {
   left: 100%;
 }
 
-/* Streaming chat bubble: subtle pulsing left accent */
+/* Streaming chat bubble: no left accent bar (it looked like a quote). */
 .streaming-bubble {
-  border-left: 2px solid var(--color-brand-500) !important;
-  padding-left: 12px !important;
   min-height: 2.5rem;
-  animation: pulse-subtle 2s ease-in-out infinite;
 }
 
 @keyframes fadeIn {
@@ -287,6 +401,14 @@ body {
 }
 .animate-fab-in {
   animation: fabIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  15%, 55% { transform: translateX(-5px); }
+  35%, 75% { transform: translateX(5px); }
+}
+.animate-shake {
+  animation: shake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
 }
 
 .filter-pills-fade {

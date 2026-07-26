@@ -357,6 +357,7 @@ export function createMockOrgService(agentManager = createMockAgentManager()): O
     listAvailableRoles: vi.fn(() => ['developer', 'secretary']),
     listOrganizations: vi.fn(() => [{ id: 'default', name: 'Default Org' }]),
     getDefaultOrganization: vi.fn(() => ({ id: 'default', name: 'Default Org' })),
+    renameOrganization: vi.fn((id: string, name: string) => ({ id, name })),
     listHumanUsers: vi.fn(() => [{ id: 'user-1', name: 'Test User' }]),
     getRoleDetails: vi.fn((name: string) => ({ name, description: `${name} role`, category: 'builtin' })),
     isProtectedAgent: vi.fn((id: string) => id === 'secretary'),

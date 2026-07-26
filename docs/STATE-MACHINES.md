@@ -500,6 +500,28 @@ AttentionController triage → handleMessage(originSessionId)
 complete (completed)
 ```
 
+### Terminal Outcomes (all mailbox items)
+
+After `processFocusedItem` runs, exactly one terminal outcome is chosen (implemented in
+[`attention.ts`](../packages/core/src/attention.ts) `processFocusedItem`):
+
+| Outcome | Trigger | Persistence effect | Resumable? |
+|---------|---------|--------------------|-----------|
+| **completed** | Normal finish (marker present, or accepted without-retry case) | `complete(id)` | No (done) |
+| **dropped** | Explicit `cancel` decision / `[cancelled]` reply | `complete(id)` (permanent) | No |
+| **deferred** | `preempt` decision / `[preempted]` reply | `deferDequeued(item)` | Yes — `resurfaceDue()` re-queues when idle |
+| **requeued** | Backstop **timeout**, agent stopped mid-flight, or abnormal reply on a background type (< max retries) | `requeue(item)` | Yes — re-processed from queue |
+| **completed (incomplete)** | Marker still missing after in-session continuation, or abnormal reply on a user-interaction item | `complete(id)` | No |
+
+**Specs that refine these outcomes** (behavior/invariants/tests live in
+[MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md)):
+
+- **Timeout → requeue must be single-flight**: on backstop timeout the in-flight processing
+  is cancelled and any late result is discarded, so a requeue cannot double side effects.
+  Status: planned.
+- **completed (incomplete) must be visible**: the marker-missing terminal emits a structured
+  `incomplete` event / activity entry rather than resolving silently. Status: planned.
+
 ### `callback_result` Specifics
 
 | Stage | Behaviour |

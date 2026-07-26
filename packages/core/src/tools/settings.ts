@@ -15,14 +15,16 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
     {
       name: 'llm_list_providers',
       description:
-        'List LLM providers. By default only shows enabled (configured + active) providers. ' +
-        'Use show_all=true to include disabled and unconfigured providers.',
+        'List LLM providers and their models. By default only shows USABLE providers (configured + enabled) — ' +
+        'these are the only ones you can actually call. Use show_all=true to also see disabled/unconfigured ' +
+        'providers, which are returned WITHOUT their model lists and marked usable:false — do not try to call ' +
+        'their models until they are enabled.',
       inputSchema: {
         type: 'object',
         properties: {
           show_all: {
             type: 'boolean',
-            description: 'When true, include disabled and unconfigured providers. Default: false (only enabled).',
+            description: 'When true, include disabled and unconfigured providers (marked usable:false, no model list). Default: false (only usable).',
           },
         },
       },
@@ -31,28 +33,52 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         const showAll = args['show_all'] === true;
         const entries = Object.entries(settings.providers)
           .filter(([, p]) => showAll || (p.configured && p.enabled))
-          .map(([name, p]) => ({
-            name,
-            displayName: p.displayName,
-            currentModel: p.model,
-            configured: p.configured,
-            enabled: p.enabled,
-            isDefault: name === settings.defaultProvider,
-            availableModels: p.models?.map(m => ({
-              id: m.id,
-              name: m.name,
-              contextWindow: m.contextWindow,
-              maxOutputTokens: m.maxOutputTokens,
-              cost: m.cost,
-              reasoning: m.reasoning,
-              vision: m.inputTypes?.includes('image'),
-            })) ?? [],
-          }));
-        const enabled = entries.filter(p => p.configured && p.enabled);
+          .map(([name, p]) => {
+            const usable = !!(p.configured && p.enabled);
+            const base = {
+              name,
+              displayName: p.displayName,
+              currentModel: p.model,
+              configured: p.configured,
+              enabled: p.enabled,
+              // Only usable providers can actually serve a request. This is the
+              // single field the agent should gate on before choosing a model.
+              usable,
+              isDefault: name === settings.defaultProvider,
+            };
+            if (!usable) {
+              // Do NOT advertise models for providers the agent cannot call —
+              // that is exactly what led it to "test" unreachable models. Explain
+              // why instead so it can enable them first if needed.
+              const reason = !p.configured
+                ? 'not configured (no API key / not connected)'
+                : 'disabled (turned off in settings)';
+              return {
+                ...base,
+                availableModels: [],
+                unusable_reason: reason,
+                hint: `This provider is ${reason}; its models cannot be called. Enable/configure it first, or pick a usable provider.`,
+              };
+            }
+            return {
+              ...base,
+              availableModels: p.models?.map(m => ({
+                id: m.id,
+                name: m.name,
+                contextWindow: m.contextWindow,
+                maxOutputTokens: m.maxOutputTokens,
+                cost: m.cost,
+                reasoning: m.reasoning,
+                vision: m.inputTypes?.includes('image'),
+              })) ?? [],
+            };
+          });
+        const enabled = entries.filter(p => p.usable);
         return JSON.stringify({
           defaultProvider: settings.defaultProvider,
-          enabled_count: enabled.length,
+          usable_count: enabled.length,
           total_count: entries.length,
+          note: 'Only providers with usable:true can be called. Models from usable:false providers will fail until the provider is enabled/configured.',
           providers: entries,
         });
       },
@@ -122,10 +148,13 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         try {
           const oldDefault = ctx.llmRouter.getDefaultProvider();
           ctx.llmRouter.setDefaultProvider(provider);
+          // setDefaultProvider retargets the routing default model at the new
+          // provider; persist it too so the switch survives a restart.
+          const syncedDefaultModel = ctx.llmRouter.routingDefaultModel;
 
           if (ctx.persistConfig) {
             try {
-              ctx.persistConfig({ llm: { defaultProvider: provider } } as any);
+              ctx.persistConfig({ llm: { defaultProvider: provider, routingDefaultModel: syncedDefaultModel } } as any);
             } catch (e) {
               log.warn('Failed to persist default provider change', { error: String(e) });
             }
@@ -135,7 +164,8 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
             status: 'success',
             previousDefault: oldDefault,
             newDefault: provider,
-            message: `Default provider changed from ${oldDefault} to ${provider}`,
+            newDefaultModel: syncedDefaultModel?.model,
+            message: `Default provider changed from ${oldDefault} to ${provider}${syncedDefaultModel ? ` (default model: ${syncedDefaultModel.model})` : ''}`,
           });
         } catch (err) {
           return JSON.stringify({
@@ -363,24 +393,66 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
     {
       name: 'llm_get_capability_routing',
       description:
-        'Get current capability routing configuration. Shows which provider+model is assigned to each capability type ' +
-        '(text, image_generation, audio_tts, audio_stt, video_generation) and the routing default model.',
+        'Get current capability routing configuration AND the authoritative list of models you can actually use for each ' +
+        'non-text capability (image_generation, image_recognition, audio_tts, audio_stt, video_generation). ' +
+        'Use this BEFORE any image/audio/video task instead of guessing model ids or probing models: `usable_models` ' +
+        'only lists models from providers that are configured AND enabled, so anything here is safe to call. ' +
+        'If a capability has an empty `usable_models` list, that capability is not available — do not attempt it.',
       inputSchema: { type: 'object', properties: {} },
       async execute(): Promise<string> {
         const routing = ctx.llmRouter.capabilityRouting;
         const defaultModel = ctx.llmRouter.routingDefaultModel;
+        const settings = ctx.llmRouter.getEnhancedSettings();
+
+        // Model-level capability tag for each non-text capability type. These match
+        // the strings carried on ModelDefinition.capabilities (populated from the
+        // Hub catalog / static catalog), so a model is usable for a capability iff
+        // it advertises the corresponding tag.
+        const CAP_TAG: Record<string, string> = {
+          image_generation: 'imageGeneration',
+          audio_tts: 'tts',
+          audio_stt: 'stt',
+          video_generation: 'videoGeneration',
+        };
+
+        const usableModels: Record<string, Array<{ provider: string; model: string; name: string; tier?: string }>> = {};
+        for (const [capType, tag] of Object.entries(CAP_TAG)) {
+          const list: Array<{ provider: string; model: string; name: string; tier?: string }> = [];
+          for (const p of Object.values(settings.providers)) {
+            // Only advertise models the agent can actually call right now.
+            if (!(p.configured && p.enabled)) continue;
+            for (const m of p.models ?? []) {
+              if (m.capabilities?.includes(tag)) {
+                list.push({ provider: p.name, model: m.id, name: m.name, tier: m.tier });
+              }
+            }
+          }
+          usableModels[capType] = list;
+        }
+
+        // image_recognition is a property of text models (vision), not a standalone
+        // media model — surface vision-capable text models separately.
+        usableModels['image_recognition'] = Object.values(settings.providers)
+          .filter(p => p.configured && p.enabled)
+          .flatMap(p => (p.models ?? [])
+            .filter(m => m.inputTypes?.includes('image'))
+            .map(m => ({ provider: p.name, model: m.id, name: m.name, tier: m.tier })));
+
         return JSON.stringify({
           routing_default_model: defaultModel ?? null,
           assignments: routing.assignments,
           capability_types: ['text', 'image_recognition', 'image_generation', 'audio_tts', 'audio_stt', 'video_generation'],
+          usable_models: usableModels,
+          note: 'usable_models lists only models from configured+enabled providers. You can pass model=... directly on generate_image / text_to_speech / speech_to_text / generate_video without calling llm_set_capability_routing. Routing assignments are only the default when model is omitted. An empty usable_models list means the capability is unavailable.',
         });
       },
     },
     {
       name: 'llm_set_capability_routing',
       description:
-        'Assign a specific provider+model to a capability type. For example, assign OpenAI gpt-image-1 to image_generation, ' +
-        'or assign a TTS model to audio_tts. Use llm_get_capability_routing to see current assignments and llm_list_providers to see available providers. ' +
+        'Assign a specific provider+model to a capability type. Required arg name is capability_type ' +
+        '(values: text, image_recognition, image_generation, audio_tts, audio_stt, video_generation) — not "type". ' +
+        'Pick model from llm_get_capability_routing.usable_models for that capability. ' +
         'Set provider and model to empty strings to clear an assignment.',
       inputSchema: {
         type: 'object',
@@ -388,15 +460,15 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           capability_type: {
             type: 'string',
             enum: ['text', 'image_recognition', 'image_generation', 'audio_tts', 'audio_stt', 'video_generation'],
-            description: 'The capability type to configure',
+            description: 'The capability type to configure (required; use this exact key name)',
           },
           provider: {
             type: 'string',
-            description: 'Provider name (e.g. "openai", "anthropic"). Use llm_list_providers to see available names.',
+            description: 'Provider name (e.g. "markus", "openai"). Use llm_list_providers to see available names.',
           },
           model: {
             type: 'string',
-            description: 'Model ID to use for this capability (e.g. "gpt-image-1", "tts-1", "whisper-1")',
+            description: 'Model ID to use for this capability (e.g. "openai/gpt-image-1", "deepgram/aura-2", "deepgram/nova-3"). Prefer ids from llm_get_capability_routing.usable_models.',
           },
           fallback_provider: {
             type: 'string',
@@ -410,19 +482,34 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         required: ['capability_type', 'provider', 'model'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const capabilityType = args['capability_type'] as ModelCapabilityType;
-        const provider = args['provider'] as string;
-        const model = args['model'] as string;
+        const VALID: Set<string> = new Set([
+          'text', 'image_recognition', 'image_generation',
+          'audio_tts', 'audio_stt', 'video_generation',
+        ]);
+        const capabilityType = resolveCapabilityTypeArg(args, VALID);
+        const provider = String(args['provider'] ?? '').trim();
+        const model = String(args['model'] ?? '').trim();
 
         try {
+          if (!capabilityType) {
+            const raw = args['capability_type'] ?? args['capabilityType'] ?? args['type'] ?? args['capability'];
+            return JSON.stringify({
+              status: 'error',
+              error: `Invalid or missing capability_type "${String(raw)}". Must be one of: ${[...VALID].join(', ')}`,
+              hint: 'Pass capability_type (not type/capability). Call llm_get_capability_routing first.',
+            });
+          }
+
           if (!provider && !model) {
-            const current = { ...ctx.llmRouter.capabilityRouting };
+            const current = {
+              assignments: { ...ctx.llmRouter.capabilityRouting.assignments },
+            };
             delete current.assignments[capabilityType];
             ctx.llmRouter.setCapabilityRouting(current);
 
             if (ctx.persistConfig) {
               try {
-                ctx.persistConfig({ llm: { capabilityRouting: { assignments: { [capabilityType]: null } } } } as any);
+                ctx.persistConfig({ llm: { capabilityRouting: ctx.llmRouter.capabilityRouting } } as any);
               } catch { /* best effort */ }
             }
 
@@ -432,13 +519,28 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
             });
           }
 
+          if (!provider || !model) {
+            return JSON.stringify({
+              status: 'error',
+              error: 'Both provider and model are required (or both empty to clear).',
+            });
+          }
+
           if (capabilityType !== 'text') {
+            const catalogErr = validateModelAgainstCatalog(ctx.llmRouter, provider, model, capabilityType);
+            if (catalogErr) {
+              return JSON.stringify({
+                status: 'error',
+                error: catalogErr,
+                hint: `Call llm_get_capability_routing and pick from usable_models.${capabilityType}.`,
+              });
+            }
             const mismatch = detectModelCapabilityMismatch(model, capabilityType);
             if (mismatch) {
               return JSON.stringify({
                 status: 'error',
                 error: mismatch,
-                hint: `Use llm_list_providers to find models that support ${capabilityType}.`,
+                hint: `Use llm_get_capability_routing.usable_models.${capabilityType} to find a suitable model.`,
               });
             }
           }
@@ -450,17 +552,17 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
             assignment.fallback = { provider: fbProvider, model: fbModel };
           }
 
-          const updated = {
-            ...ctx.llmRouter.capabilityRouting,
+          ctx.llmRouter.setCapabilityRouting({
             assignments: {
               ...ctx.llmRouter.capabilityRouting.assignments,
               [capabilityType]: assignment,
             },
-          };
-          ctx.llmRouter.setCapabilityRouting(updated);
+          });
 
           if (ctx.persistConfig) {
-            try { ctx.persistConfig({ llm: { capabilityRouting: updated } } as any); } catch { /* best effort */ }
+            try {
+              ctx.persistConfig({ llm: { capabilityRouting: ctx.llmRouter.capabilityRouting } } as any);
+            } catch { /* best effort */ }
           }
 
           return JSON.stringify({
@@ -479,23 +581,87 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
   ];
 }
 
+const CAP_TAG_BY_TYPE: Partial<Record<ModelCapabilityType, string>> = {
+  image_generation: 'imageGeneration',
+  audio_tts: 'tts',
+  audio_stt: 'stt',
+  video_generation: 'videoGeneration',
+};
+
+/** Accept capability_type plus common model typos (type / capability). */
+function resolveCapabilityTypeArg(
+  args: Record<string, unknown>,
+  valid: Set<string>,
+): ModelCapabilityType | null {
+  const raw = args['capability_type'] ?? args['capabilityType'] ?? args['type'] ?? args['capability'];
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const v = raw.trim();
+  return valid.has(v) ? (v as ModelCapabilityType) : null;
+}
+
+/**
+ * When the provider catalog has tagged this model, require the matching capability tag.
+ * Untagged / unknown catalog entries fall through to name heuristics.
+ */
+function validateModelAgainstCatalog(
+  router: LLMRouter,
+  provider: string,
+  model: string,
+  capabilityType: ModelCapabilityType,
+): string | null {
+  const tag = CAP_TAG_BY_TYPE[capabilityType];
+  if (!tag && capabilityType !== 'image_recognition') return null;
+
+  const settings = router.getEnhancedSettings();
+  const p = settings.providers[provider];
+  if (!p?.models?.length) return null;
+
+  const entry = p.models.find(m => m.id === model);
+  if (!entry) return null;
+
+  if (capabilityType === 'image_recognition') {
+    if (entry.capabilities && entry.capabilities.length > 0) {
+      if (!entry.capabilities.includes('vision') && !entry.inputTypes?.includes('image')) {
+        return `Model "${model}" does not advertise vision / image input for image_recognition.`;
+      }
+    }
+    return null;
+  }
+
+  // Only enforce when the catalog explicitly tagged the model.
+  if (!entry.capabilities || entry.capabilities.length === 0) return null;
+
+  if (!entry.capabilities.includes(tag!)) {
+    return `Model "${model}" is not tagged for ${capabilityType} (missing "${tag}"). ` +
+      `Multimodal chat/audio models are not valid speech endpoints — pick from usable_models.${capabilityType}.`;
+  }
+  return null;
+}
+
 const CAPABILITY_MODEL_PATTERNS: Record<string, RegExp> = {
   image_generation: /\bdall-?e\b|gpt-image|flux|stable.?diffusion|sdxl|imagen|wanx|wan[.-]?ai|kolors|playground|cogview|glm-image|seedream|grok-imagine|image-01/i,
   image_recognition: /\bvl\b|vision|visual|eye|gpt-4o|gemini|claude/i,
-  audio_tts: /\btts\b|cosy.?voice|speech|bark|xtts|voice|orpheus|music/i,
-  audio_stt: /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|transcribe|asr|voxtral/i,
+  // Dedicated TTS ids only — do NOT match bare "speech"/"voice" (too broad) or music models.
+  audio_tts: /\btts\b|cosy.?voice|bark|xtts|orpheus|aura-?\d|tts-1|text[-_.]?to[-_.]?speech/i,
+  audio_stt: /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|transcribe|asr|voxtral|nova-?\d/i,
   video_generation: /\bvideo\b|hailuo|wan.*[ti]2v|sora|kling|gen-?[23]|cogvideo|vidu|seedance|veo/i,
 };
 
-const TEXT_MODEL_PATTERN = /deepseek|qwen|gpt-[34]|gpt-5|claude|gemini|glm-[45]|llama|mistral|phi-|command|minimax-m/i;
+const TEXT_MODEL_PATTERN = /deepseek|qwen|gpt-[345]|gpt-5|claude|gemini|glm-[45]|llama|mistral|phi-|command|minimax-m/i;
+const AUDIO_CHAT_PATTERN = /gpt-audio|gpt-4o-audio|realtime|\baudio-preview\b/i;
 
 function detectModelCapabilityMismatch(model: string, capabilityType: ModelCapabilityType): string | null {
+  if (capabilityType === 'audio_tts' && AUDIO_CHAT_PATTERN.test(model)) {
+    return `Model "${model}" is a multimodal chat/audio model, not a dedicated TTS endpoint. ` +
+      `Use a speech model such as deepgram/aura-2 or openai/tts-1.`;
+  }
+
   const expectedPattern = CAPABILITY_MODEL_PATTERNS[capabilityType];
   if (!expectedPattern) return null;
 
   if (expectedPattern.test(model)) return null;
 
-  if (TEXT_MODEL_PATTERN.test(model)) {
+  if (TEXT_MODEL_PATTERN.test(model) || AUDIO_CHAT_PATTERN.test(model)) {
     return `Model "${model}" appears to be a text/chat model, not suitable for ${capabilityType}. ` +
       `Expected a model matching patterns like: ${expectedPattern.source}`;
   }

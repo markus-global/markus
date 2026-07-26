@@ -290,6 +290,75 @@ describe('processFocusedItem (via runLoop)', () => {
     expect(callCount).toBe(3);
   });
 
+  it('A1: cancels in-flight processing on backstop timeout, requeues, and drops the late result', async () => {
+    let resolveProcessing: ((v: string) => void) | undefined;
+    let processCalls = 0;
+    // Attempt #1 hangs (forces a backstop timeout); attempt #2 (after requeue)
+    // completes normally so the loop settles deterministically.
+    const processMailboxItem = vi.fn().mockImplementation(() => {
+      processCalls++;
+      if (processCalls === 1) {
+        return new Promise<string>(res => { resolveProcessing = res; });
+      }
+      return Promise.resolve(`ok ${COMPLETION_MARKER}`);
+    });
+    const cancelProcessing = vi.fn();
+    const { controller, mailbox, delegate } = makeController({ processMailboxItem, cancelProcessing });
+    // Tiny backstop so the timeout branch fires deterministically on attempt #1.
+    controller.setProcessingTimeoutMs(40);
+    const requeueSpy = vi.spyOn(mailbox, 'requeue');
+
+    mailbox.enqueue('a2a_message', { summary: 'slow', content: 'body' });
+    controller.start();
+
+    // Attempt #1 times out → cancelProcessing invoked + requeue; attempt #2 completes.
+    await vi.waitFor(() => {
+      expect(cancelProcessing).toHaveBeenCalledTimes(1);
+      expect(processCalls).toBe(2);
+      expect(mailbox.depth).toBe(0);
+    }, { timeout: 3000 });
+
+    const requeuesAfterSettle = requeueSpy.mock.calls.length;
+
+    // The timed-out attempt #1 resolves late — must be dropped (Promise.race already
+    // discarded it), causing no additional requeue/complete and no crash.
+    resolveProcessing?.(`late done ${COMPLETION_MARKER}`);
+    await new Promise(r => setTimeout(r, 100));
+    controller.stop();
+
+    expect(delegate.cancelProcessing).toHaveBeenCalledTimes(1); // only attempt #1 timed out
+    expect(requeueSpy.mock.calls.length).toBe(requeuesAfterSettle); // late resolve added nothing
+    expect(requeuesAfterSettle).toBeGreaterThanOrEqual(1); // item was requeued, not lost
+  });
+
+  it('A3: emits agent:incomplete (no retry) when the completion marker is missing', async () => {
+    const { controller, mailbox, eventBus, delegate } = makeController({
+      // Reply without the completion marker → marker-missing terminal.
+      processMailboxItem: vi.fn().mockResolvedValue('a reply with no marker'),
+    });
+    const incomplete = vi.fn();
+    eventBus.on('agent:incomplete', incomplete);
+
+    mailbox.enqueue('a2a_message', { summary: 'msg', content: 'body' });
+    controller.start();
+    await vi.waitFor(() => {
+      expect(incomplete).toHaveBeenCalledTimes(1);
+    }, { timeout: 2000 });
+    // Let the loop settle to prove there is no retry.
+    await new Promise(r => setTimeout(r, 100));
+    controller.stop();
+
+    // Visibility only: exactly one structured event, no additional processing attempt.
+    expect(incomplete).toHaveBeenCalledTimes(1);
+    expect(incomplete.mock.calls[0][0]).toMatchObject({
+      agentId: AGENT_ID,
+      type: 'a2a_message',
+      reason: 'completion marker missing from reply',
+    });
+    expect(delegate.processMailboxItem).toHaveBeenCalledTimes(1);
+    expect(mailbox.depth).toBe(0);
+  });
+
   it('requeues item on processing error', async () => {
     let callCount = 0;
     const { controller, mailbox } = makeController({

@@ -1,26 +1,13 @@
-export type PlanTier = 'free' | 'enterprise';
+export type PlanTier = 'free' | 'basic' | 'plus' | 'pro' | 'max' | 'team' | 'enterprise';
 
+/**
+ * Plan limits are now CU-only. Non-CU limits (maxAgents, maxTeams,
+ * maxToolCallsPerDay, maxUsers) have been removed — they ran on the
+ * user's own machine at zero cost and created unnecessary complexity.
+ */
 export interface PlanLimits {
-  maxAgents: number;
-  maxTeams: number;
-  maxToolCallsPerDay: number;
-  maxUsers: number;
+  [key: string]: unknown;
 }
-
-export const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
-  free: {
-    maxAgents: 20,
-    maxTeams: 5,
-    maxToolCallsPerDay: 5000,
-    maxUsers: 1,
-  },
-  enterprise: {
-    maxAgents: -1,
-    maxTeams: -1,
-    maxToolCallsPerDay: -1,
-    maxUsers: -1,
-  },
-};
 
 export type EnterpriseFeature =
   | 'multi_user'

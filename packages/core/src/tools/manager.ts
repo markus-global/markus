@@ -17,7 +17,7 @@ export interface ManagerToolsContext {
 }
 
 export interface SecretaryToolsContext {
-  listTeams: () => Array<{ id: string; name: string; memberCount: number; members: Array<{ id: string; name: string; status: string }> }>;
+  listTeams: () => Array<{ id: string; name: string; description?: string; memberCount: number; members: Array<{ id: string; name: string; status: string }> }>;
   stopTeam: (teamId: string) => Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }>;
   startTeam: (teamId: string) => Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }>;
 }
@@ -29,6 +29,8 @@ export interface PackageToolsContext {
   listTemplates?: () => (() => Array<{ id: string; name: string; description: string; roleId: string; category: string }>) | undefined;
   searchHub?: () => ((opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>) | undefined;
   downloadAndInstall?: () => ((itemId: string) => Promise<{ type: string; installed: unknown }>) | undefined;
+  /** Resolve an existing team by name, or create it. Used when package_install(agent) gets team_name. */
+  ensureTeam?: (name: string, description?: string) => Promise<{ id: string; name: string; created: boolean }>;
   requestApproval?: (request: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) => Promise<{ approved: boolean; comment?: string }>;
 }
 
@@ -36,7 +38,7 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
   return [
     {
       name: 'package_list',
-      description: 'List all available packages. type "agent": built-in roles (developer, content-writer, etc.) and custom agent packages. type "team": team templates (content-team, research-lab, etc.). type "skill": skill packages. Omit type to list all. Install with package_install. To find more online, use hub_search.',
+      description: 'List installable packages. type "agent": built-in roles + custom packages under ~/.markus/builder-artifacts/agents/. type "team": custom packages under ~/.markus/builder-artifacts/teams/ plus builtin templates (content-team, research-lab, etc.). type "skill": packages under ~/.markus/builder-artifacts/skills/. Install with package_install. For online packages use hub_search.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -52,7 +54,12 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
         if (!listArtifacts) return JSON.stringify({ status: 'error', error: 'Package service is not available yet. Please try again later.' });
         try {
           const type = args['type'] as string | undefined;
-          const artifacts = listArtifacts(type as 'agent' | 'team' | 'skill' | undefined);
+          const artifacts = listArtifacts(type as 'agent' | 'team' | 'skill' | undefined).map(a => ({
+            type: a.type,
+            source: (a as { source?: string }).source ?? 'local',
+            name: a.name,
+            description: a.description,
+          }));
           const listTemplates = ctx.listTemplates?.();
           const roles = (!type || type === 'agent') && listTemplates ? listTemplates() : [];
           const roleItems = roles.map((r: { id?: string; name?: string; description?: string }) => ({
@@ -72,7 +79,12 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
 
     {
       name: 'package_install',
-      description: 'Install a package into the live organization. type "agent": hire/install an agent (from a built-in role or a custom package). type "team": deploy a full team with all members, norms, and starter tasks. type "skill": install a skill package. Requires user approval. Use package_list to see what is available.',
+      description:
+        'Install into the live org. ' +
+        'type "team": install a team package directory (builtin or ~/.markus/builder-artifacts/teams/{name}/) — creates the team AND all members in one step. ' +
+        'type "agent": hire one agent from a builtin role or ~/.markus/builder-artifacts/agents/{name}/; optional team_id (existing) or team_name (find-or-create team, then place the agent). ' +
+        'type "skill": install a skill package. ' +
+        'Requires user approval. Custom packages must already exist under builder-artifacts (workspace/ writes are ignored). Use package_list first.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -85,7 +97,11 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
           agent_name: { type: 'string', description: 'Display name for the new agent (required when installing from a built-in role, e.g. "developer")' },
           team_id: {
             type: 'string',
-            description: 'Optional team ID to add the agent to after installation. If omitted, the agent is created without team membership.',
+            description: 'For type "agent" only: existing team ID from list_teams. Prefer team_name for a new/named team.',
+          },
+          team_name: {
+            type: 'string',
+            description: 'For type "agent" only: place the agent on this team (creates the team if it does not exist). Ignored when team_id is set. Never needed for type "team" packages.',
           },
           skills: {
             type: 'array',
@@ -104,36 +120,61 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
           if (!type || !['agent', 'team', 'skill'].includes(type)) return JSON.stringify({ status: 'error', error: 'type is required and must be one of: agent, team, skill' });
           if (!name) return JSON.stringify({ status: 'error', error: 'name is required — use package_list to see available packages' });
 
+          const resolveAgentTeamId = async (): Promise<{ teamId?: string; teamCreated?: boolean; teamName?: string }> => {
+            const teamIdArg = (args['team_id'] as string | undefined)?.trim() || undefined;
+            if (teamIdArg) return { teamId: teamIdArg };
+            const teamName = (args['team_name'] as string | undefined)?.trim() || undefined;
+            if (!teamName) return {};
+            if (!ctx.ensureTeam) {
+              throw new Error('team_name was provided but team ensure service is unavailable — pass team_id from list_teams instead');
+            }
+            const team = await ctx.ensureTeam(teamName);
+            return { teamId: team.id, teamCreated: team.created, teamName: team.name };
+          };
+
           if (ctx.requestApproval) {
             const { approved, comment } = await ctx.requestApproval({
               toolName: 'package_install',
-              toolArgs: { type, name, agent_name: args['agent_name'], team_id: args['team_id'] },
+              toolArgs: {
+                type,
+                name,
+                agent_name: args['agent_name'],
+                team_id: args['team_id'],
+                team_name: args['team_name'],
+              },
               reason: `Agent wants to install ${type} "${name}" into the organization`,
             });
             if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied package installation' });
           }
 
           if (type === 'agent') {
+            const { teamId, teamCreated, teamName } = await resolveAgentTeamId();
             try {
-              const teamId = (args['team_id'] as string | undefined)?.trim() || undefined;
               const result = await installArtifact(type, name, teamId);
               return JSON.stringify({
                 status: 'success',
                 ...result,
-                next_steps: teamId ? `Installed successfully. Agent added to team ${teamId}. Next: onboard with project context via agent_send_message, then assign tasks via task_create.` : 'Installed successfully. Next: onboard new agent with project context via agent_send_message, then assign tasks via task_create.',
+                team_id: teamId,
+                team_created: teamCreated ?? false,
+                next_steps: teamId
+                  ? `Installed successfully. Agent on team ${teamName ?? teamId}${teamCreated ? ' (newly created)' : ''}. Next: onboard via agent_send_message, then task_create.`
+                  : 'Installed successfully. Next: onboard via agent_send_message, then task_create.',
               });
             } catch {
               const hireFromTemplate = ctx.hireFromTemplate?.();
               if (hireFromTemplate) {
                 const agentName = (args['agent_name'] as string | undefined)?.trim();
                 if (!agentName) return JSON.stringify({ status: 'error', error: 'agent_name is required when installing from a built-in role — provide a display name for the new agent' });
-                const teamId = (args['team_id'] as string | undefined)?.trim() || undefined;
                 const result = await hireFromTemplate(name, agentName, args['skills'] as string[] | undefined, teamId);
                 return JSON.stringify({
                   status: 'success',
                   type: 'agent',
                   agent: result,
-                  next_steps: teamId ? `Agent hired and added to team ${teamId}. Next: onboard with project context via agent_send_message, then assign tasks via task_create.` : 'Agent hired and started. Next: onboard with project context via agent_send_message, then assign tasks via task_create.',
+                  team_id: teamId,
+                  team_created: teamCreated ?? false,
+                  next_steps: teamId
+                    ? `Agent hired onto team ${teamName ?? teamId}${teamCreated ? ' (newly created)' : ''}. Next: onboard via agent_send_message, then task_create.`
+                    : 'Agent hired and started. Next: onboard via agent_send_message, then task_create.',
                 });
               }
               throw new Error(`Agent package not found: ${name}. Use package_list to see available packages.`);
@@ -145,7 +186,7 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
             status: 'success',
             ...result,
             ...(type === 'team' ? {
-              next_steps: 'Installed successfully. Next: onboard new agent(s) with project context via agent_send_message, then assign initial tasks via task_create.',
+              next_steps: 'Team package installed (team + members created together). Next: onboard via agent_send_message, then task_create. Do not call a separate team_create.',
             } : {}),
           });
         } catch (error) {
@@ -492,6 +533,23 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
 export function createSecretaryTools(ctx: SecretaryToolsContext): AgentToolHandler[] {
   return [
     {
+      name: 'list_teams',
+      description: 'List organization teams (including empty ones) with member counts. Use to pick team_id for package_install(type:"agent"), or to see what already exists. Prefer package_install(team_name) / package_install(type:"team") to create teams — there is no separate team_create tool. Distinct from manager tool team_list (agents on one manager\'s team).',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+      async execute(): Promise<string> {
+        try {
+          const teams = ctx.listTeams();
+          return JSON.stringify({ status: 'success', teams, count: teams.length });
+        } catch (error) {
+          return JSON.stringify({ status: 'error', error: String(error) });
+        }
+      },
+    } as AgentToolHandler,
+
+    {
       name: 'team_stop',
       description: 'Stop all agents in a team. All team members will go offline and will not process tasks or messages until started again. The stopped state persists across system restarts.',
       inputSchema: {
@@ -507,7 +565,7 @@ export function createSecretaryTools(ctx: SecretaryToolsContext): AgentToolHandl
           if (!teamId) return JSON.stringify({ status: 'error', error: 'team_id is required' });
           const teams = ctx.listTeams();
           const team = teams.find(t => t.id === teamId);
-          if (!team) return JSON.stringify({ status: 'error', error: `Team not found: ${teamId}` });
+          if (!team) return JSON.stringify({ status: 'error', error: `Team not found: ${teamId}. Use list_teams.` });
           const result = await ctx.stopTeam(teamId);
           log.info('Secretary stopped team via tool', { teamId, success: result.success.length, failed: result.failed.length });
           return JSON.stringify({ status: 'success', team: team.name, ...result });
@@ -533,7 +591,7 @@ export function createSecretaryTools(ctx: SecretaryToolsContext): AgentToolHandl
           if (!teamId) return JSON.stringify({ status: 'error', error: 'team_id is required' });
           const teams = ctx.listTeams();
           const team = teams.find(t => t.id === teamId);
-          if (!team) return JSON.stringify({ status: 'error', error: `Team not found: ${teamId}` });
+          if (!team) return JSON.stringify({ status: 'error', error: `Team not found: ${teamId}. Use list_teams.` });
           const result = await ctx.startTeam(teamId);
           log.info('Secretary started team via tool', { teamId, success: result.success.length, failed: result.failed.length });
           return JSON.stringify({ status: 'success', team: team.name, ...result });

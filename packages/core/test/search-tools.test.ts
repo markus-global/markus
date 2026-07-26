@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { createGrepTool, createGlobTool, createListDirectoryTool } from '../src/tools/search.js';
+import { createGrepTool, createGlobTool, createListDirectoryTool, globToRegExp } from '../src/tools/search.js';
 import { resolve } from 'node:path';
+
+describe('globToRegExp', () => {
+  it('matches **/*.mp3 against nested audio files', () => {
+    const re = globToRegExp('**/*.mp3');
+    expect(re.test('audio/tts-1.mp3')).toBe(true);
+    expect(re.test('tts-1.mp3')).toBe(true);
+    expect(re.test('audio/tts-1.wav')).toBe(false);
+  });
+});
 
 const WORKSPACE = resolve(import.meta.dirname, '..');
 
@@ -49,7 +58,7 @@ describe('Search Tools', () => {
     const glob = createGlobTool(WORKSPACE);
 
     it('should find TypeScript files', async () => {
-      const result = await glob.execute({ pattern: '*.ts', path: 'src/tools', max_results: 20 });
+      const result = await glob.execute({ pattern: 'search.ts', path: 'src/tools', max_results: 20 });
       const parsed = JSON.parse(result);
       expect(parsed.status).toBe('success');
       expect(parsed.fileCount).toBeGreaterThan(0);
@@ -68,6 +77,14 @@ describe('Search Tools', () => {
       const parsed = JSON.parse(result);
       expect(parsed.status).toBe('success');
       expect(parsed.fileCount).toBe(0);
+    });
+
+    it('should support **/*.ext recursive globs (not find -name)', async () => {
+      const result = await glob.execute({ pattern: '**/search-tools.test.ts', path: 'test', max_results: 20 });
+      const parsed = JSON.parse(result);
+      expect(parsed.status).toBe('success');
+      expect(parsed.fileCount).toBeGreaterThan(0);
+      expect(parsed.files.some((f: string) => f.endsWith('search-tools.test.ts'))).toBe(true);
     });
 
     it('should allow reading outside workspace (read-only tools are unrestricted)', async () => {

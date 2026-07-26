@@ -43,7 +43,7 @@ You will receive the **live list** of available role templates, skills, and plat
 - **DO NOT** invent role names or skill IDs. Only use values from the dynamic context.
 - **DO NOT** leave skills empty when relevant skills are available. Review the skills list!
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
-- **The `name` field MUST be English kebab-case**.
+- **The `name` field MUST be a valid English kebab-case slug** (e.g. `frontend-squad`). Chinese goes in `displayName` only — invalid `name` is rejected on write/save/share. Follow the `team-building` skill Package Slug rules.
 - Every team MUST have exactly **one** member with `"role": "manager"` and at least **one** `"worker"`.
 - Write each ROLE.md with **full attention** — at least 5 substantive paragraphs per member.
 

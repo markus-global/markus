@@ -1,11 +1,85 @@
 import { execFile } from 'node:child_process';
-import { resolve, relative } from 'node:path';
+import { resolve, relative, basename, sep } from 'node:path';
 import { readdirSync, statSync, existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import type { PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Convert a glob pattern to a RegExp that matches POSIX-style relative paths.
+ * Supports `*`, `?`, and recursive `**` globs (e.g. star-star slash star.mp3).
+ */
+export function globToRegExp(pattern: string): RegExp {
+  let i = 0;
+  let out = '^';
+  const p = pattern.replace(/\\/g, '/');
+  while (i < p.length) {
+    const c = p[i]!;
+    if (c === '*') {
+      if (p[i + 1] === '*') {
+        // ** or **/
+        if (p[i + 2] === '/') {
+          out += '(?:.*/)?';
+          i += 3;
+        } else {
+          out += '.*';
+          i += 2;
+        }
+      } else {
+        out += '[^/]*';
+        i += 1;
+      }
+    } else if (c === '?') {
+      out += '[^/]';
+      i += 1;
+    } else if ('+.^${}()|[]'.includes(c)) {
+      out += `\\${c}`;
+      i += 1;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  out += '$';
+  return new RegExp(out);
+}
+
+function walkMatchingFiles(
+  dir: string,
+  targetRoot: string,
+  matches: (relFromTarget: string, fileName: string, fullPath: string) => boolean,
+  maxResults: number,
+  out: string[],
+): void {
+  if (out.length >= maxResults) return;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (out.length >= maxResults) return;
+    if (name === 'node_modules' || name === '.git' || name === 'dist' || name === 'build') continue;
+    const full = resolve(dir, name);
+    let st;
+    try {
+      st = statSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) {
+      walkMatchingFiles(full, targetRoot, matches, maxResults, out);
+    } else if (st.isFile()) {
+      const relFromTarget = relative(targetRoot, full).split(sep).join('/');
+      if (matches(relFromTarget, name, full.split(sep).join('/'))) {
+        out.push(full);
+      }
+    }
+  }
+}
 
 /** Read-only search tools can access any path — no restrictions on reads by design */
 function isPathAccessible(_resolvedPath: string, _workspacePath?: string, _policy?: PathAccessPolicy): boolean {
@@ -126,28 +200,52 @@ export function createGlobTool(workspacePath?: string, policy?: PathAccessPolicy
       const maxResults = (args['max_results'] as number) ?? 100;
 
       const basePath = workspacePath ?? process.cwd();
-      const target = searchPath ? resolve(basePath, searchPath) : basePath;
+      // Absolute paths (e.g. ~/.markus/generated) must not be joined under workspace.
+      const target = searchPath
+        ? (searchPath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(searchPath)
+          ? resolve(searchPath)
+          : resolve(basePath, searchPath))
+        : basePath;
 
       if (!isPathAccessible(target, workspacePath, policy)) {
         return JSON.stringify({ status: 'denied', error: 'Search path must be within an accessible workspace zone' });
       }
 
-      try {
-        // Use `find` with shell globbing via sh -c
-        const findArgs = ['-c', `find "${target}" -type f -name "${pattern}" 2>/dev/null | head -${maxResults}`];
-        const { stdout } = await execFileAsync('sh', findArgs, {
-          timeout: 10_000,
-          maxBuffer: 2 * 1024 * 1024,
-        });
+      if (!existsSync(target)) {
+        return JSON.stringify({ status: 'error', error: `Directory not found: ${target}` });
+      }
 
-        const files = stdout.trim().split('\n').filter(Boolean);
-        const relativePaths = files.map(f => relative(basePath, f));
+      try {
+        // IMPORTANT: do NOT pass globs like **/*.mp3 to `find -name` — find's
+        // -name only matches the basename and does not treat ** as recursive.
+        const normalized = pattern.replace(/\\/g, '/');
+        const matcher = globToRegExp(normalized);
+        const nameOnly = !normalized.includes('/') || /^\*\*\//.test(normalized);
+        const nameMatcher = nameOnly ? globToRegExp(basename(normalized)) : null;
+
+        const matched: string[] = [];
+        walkMatchingFiles(
+          target,
+          target,
+          (relFromTarget, fileName, fullPosix) =>
+            matcher.test(relFromTarget)
+            || matcher.test(fullPosix)
+            || !!nameMatcher?.test(fileName),
+          maxResults,
+          matched,
+        );
+
+        // Prefer paths relative to workspace when inside it; otherwise keep absolute.
+        const files = matched.map(f => {
+          const rel = relative(basePath, f);
+          return rel && !rel.startsWith('..') ? rel.split(sep).join('/') : f;
+        });
 
         return JSON.stringify({
           status: 'success',
-          fileCount: relativePaths.length,
-          files: relativePaths,
-          truncated: relativePaths.length >= maxResults,
+          fileCount: files.length,
+          files,
+          truncated: files.length >= maxResults,
         });
       } catch (error) {
         return JSON.stringify({ status: 'error', error: `Glob search failed: ${String(error)}` });

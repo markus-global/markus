@@ -7,12 +7,14 @@ import { createRequire } from 'node:module';
 import { allTemplateDirs, resolveTemplatesDir, resolveWebUiDir } from '../paths.js';
 import {
   loadConfig,
+  saveConfig,
   getDefaultConfigPath,
   createLogger,
   closeRuntimeLogger,
   checkForUpdate,
   generateId,
   userId,
+  PROVIDERS,
   type LLMProviderConfig,
   type DecisionType,
 } from '@markus/shared';
@@ -95,152 +97,150 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   const providerConfigs: Record<string, LLMProviderConfig> = {};
   let defaultProvider = config.llm.defaultProvider;
   const llmTimeoutMs = Number(process.env['LLM_TIMEOUT_MS']) || config.llm.timeoutMs || undefined;
+  const providerMeta = new Map(PROVIDERS.map((p) => [p.id, p]));
+  const envPrefix = (id: string) => id.toUpperCase().replace(/-/g, '_');
 
-  const anthropicKey =
-    config.llm.providers['anthropic']?.apiKey ?? process.env['ANTHROPIC_API_KEY'];
-  if (anthropicKey) {
-    providerConfigs['anthropic'] = {
-      provider: 'anthropic',
-      model: config.llm.providers['anthropic']?.model ?? config.llm.defaultModel,
-      apiKey: anthropicKey,
-      timeoutMs: llmTimeoutMs,
-    };
-  }
+  // Markus Cloud — OpenRouter member key only (chat + search).
+  const markusCfg = config.llm.providers['markus'] ?? {};
+  const markusOrKey = markusCfg.apiKey?.startsWith('sk-or-')
+    ? markusCfg.apiKey
+    : (markusCfg.apiKey && !/^markus[_-]/i.test(markusCfg.apiKey) ? markusCfg.apiKey : '');
+  if (markusOrKey) {
+    const cfgBaseUrl = markusCfg.baseUrl ?? '';
+    const markusOrBase =
+      (cfgBaseUrl && !/localhost:8787|127\.0\.0\.1:8787|workers\.dev|markus-proxy/i.test(cfgBaseUrl))
+        ? cfgBaseUrl
+        : 'https://openrouter.ai/api/v1';
 
-  const openaiKey = config.llm.providers['openai']?.apiKey ?? process.env['OPENAI_API_KEY'];
-  if (openaiKey) {
-    providerConfigs['openai'] = {
-      provider: 'openai',
-      model: config.llm.providers['openai']?.model ?? process.env['OPENAI_MODEL'] ?? 'gpt-5.4',
-      apiKey: openaiKey,
-      timeoutMs: llmTimeoutMs,
-    };
-  }
-
-  const siliconflowKey =
-    config.llm.providers['siliconflow']?.apiKey ?? process.env['SILICONFLOW_API_KEY'];
-  if (siliconflowKey) {
-    providerConfigs['siliconflow'] = {
-      provider: 'siliconflow',
-      model: config.llm.providers['siliconflow']?.model ?? process.env['SILICONFLOW_MODEL'] ?? 'Qwen/Qwen3.5-35B-A3B',
-      apiKey: siliconflowKey,
-      baseUrl:
-        config.llm.providers['siliconflow']?.baseUrl ??
-        process.env['SILICONFLOW_BASE_URL'] ??
-        'https://api.siliconflow.cn/v1',
-      timeoutMs: llmTimeoutMs,
-    };
-    if (config.llm.defaultProvider === 'siliconflow') {
-      defaultProvider = 'siliconflow';
+    let markusModelsUrl = markusCfg.modelsUrl ?? process.env['MARKUS_MODELS_URL'] ?? '';
+    const hubBase = (config.hub?.url || process.env['MARKUS_HUB_URL'] || '').replace(/\/+$/, '');
+    if (!markusModelsUrl && hubBase) {
+      markusModelsUrl = `${hubBase}/api/models/live/markus`;
     }
-  }
+    if (markusModelsUrl && hubBase) {
+      try {
+        const mu = new URL(markusModelsUrl);
+        const hu = new URL(hubBase.includes('://') ? hubBase : `http://${hubBase}`);
+        if (mu.host !== hu.host) {
+          markusModelsUrl = `${hubBase}/api/models/live/markus`;
+        }
+      } catch { /* keep */ }
+    }
 
-  const siliconflowIntlKey =
-    config.llm.providers['siliconflow-intl']?.apiKey ?? process.env['SILICONFLOW_INTL_API_KEY'];
-  if (siliconflowIntlKey) {
-    providerConfigs['siliconflow-intl'] = {
-      provider: 'siliconflow',
-      model: config.llm.providers['siliconflow-intl']?.model ?? process.env['SILICONFLOW_INTL_MODEL'] ?? 'Qwen/Qwen3.5-35B-A3B',
-      apiKey: siliconflowIntlKey,
-      baseUrl:
-        config.llm.providers['siliconflow-intl']?.baseUrl ??
-        process.env['SILICONFLOW_INTL_BASE_URL'] ??
-        'https://api-st.siliconflow.cn/v1',
+    const prev = markusCfg;
+    const needPersist =
+      (markusModelsUrl && markusModelsUrl !== (prev.modelsUrl ?? ''))
+      || (markusOrBase && markusOrBase !== (prev.baseUrl ?? ''))
+      || (markusOrKey && markusOrKey !== (prev.apiKey ?? ''))
+      || !!(prev.subscriptionKey || prev.proxyUrl);
+    if (needPersist) {
+      try {
+        saveConfig({
+          llm: {
+            providers: {
+              markus: {
+                apiKey: markusOrKey,
+                baseUrl: markusOrBase,
+                ...(markusModelsUrl ? { modelsUrl: markusModelsUrl } : {}),
+                ...(prev.model ? { model: prev.model } : {}),
+              },
+            },
+          },
+        } as any);
+        log.info('Persisted Markus OpenRouter credentials', {
+          modelsUrl: markusModelsUrl,
+          baseUrl: markusOrBase,
+          hasOrKey: true,
+        });
+      } catch (err) {
+        log.warn('Failed to persist Markus config', { error: String(err) });
+      }
+    }
+
+    process.env['MARKUS_OPENROUTER_KEY'] = markusOrKey;
+    process.env['MARKUS_OPENROUTER_BASE'] = markusOrBase;
+    delete process.env['MARKUS_SUBSCRIPTION_KEY'];
+    delete process.env['MARKUS_PROXY_URL'];
+    delete process.env['MARKUS_SEARCH_URL'];
+    if (markusModelsUrl && !process.env['MARKUS_MODELS_URL']) {
+      process.env['MARKUS_MODELS_URL'] = markusModelsUrl;
+    }
+
+    providerConfigs['markus'] = {
+      provider: 'markus',
+      model: markusCfg.model ?? '',
+      apiKey: markusOrKey,
+      baseUrl: markusOrBase,
+      ...(markusModelsUrl ? { modelsUrl: markusModelsUrl } : {}),
       timeoutMs: llmTimeoutMs,
     };
-    if (config.llm.defaultProvider === 'siliconflow-intl') {
-      defaultProvider = 'siliconflow-intl';
-    }
+  } else if (config.llm.defaultProvider === 'markus') {
+    log.warn(
+      'Markus Cloud AI is set as the default provider but no OpenRouter member key is configured. ' +
+      'Sign in to Markus Hub to obtain credentials.',
+    );
   }
 
-  const minimaxKey =
-    config.llm.providers['minimax']?.apiKey ?? process.env['MINIMAX_API_KEY'];
-  if (minimaxKey) {
-    providerConfigs['minimax'] = {
-      provider: 'openai',
-      model: config.llm.providers['minimax']?.model ?? process.env['MINIMAX_MODEL'] ?? 'MiniMax-M3',
-      apiKey: minimaxKey,
-      baseUrl:
-        config.llm.providers['minimax']?.baseUrl ??
-        process.env['MINIMAX_BASE_URL'] ??
-        'https://api.minimax.io/v1',
-      timeoutMs: llmTimeoutMs,
-    };
-    if (config.llm.defaultProvider === 'minimax') {
-      defaultProvider = 'minimax';
-    }
-  }
+  // Load every provider from markus.json (+ env fallbacks). Previously only a
+  // hardcoded subset was wired on boot, so Google/Ollama/DashScope/custom
+  // providers saved via Settings vanished after restart (#244).
+  const candidateNames = new Set<string>([
+    ...Object.keys(config.llm.providers ?? {}),
+    ...PROVIDERS.map((p) => p.id),
+  ]);
+  candidateNames.delete('markus');
 
-  const minimaxCnKey =
-    config.llm.providers['minimax-cn']?.apiKey ?? process.env['MINIMAX_CN_API_KEY'];
-  if (minimaxCnKey) {
-    providerConfigs['minimax-cn'] = {
-      provider: 'openai',
-      model: config.llm.providers['minimax-cn']?.model ?? process.env['MINIMAX_CN_MODEL'] ?? 'MiniMax-M3',
-      apiKey: minimaxCnKey,
-      baseUrl:
-        config.llm.providers['minimax-cn']?.baseUrl ??
-        process.env['MINIMAX_CN_BASE_URL'] ??
-        'https://api.minimaxi.com/v1',
-      timeoutMs: llmTimeoutMs,
-    };
-    if (config.llm.defaultProvider === 'minimax-cn') {
-      defaultProvider = 'minimax-cn';
-    }
-  }
+  for (const name of candidateNames) {
+    const cfg = config.llm.providers[name] ?? {};
+    const meta = providerMeta.get(name);
+    const prefix = envPrefix(name);
 
-  const openrouterKey =
-    config.llm.providers['openrouter']?.apiKey ?? process.env['OPENROUTER_API_KEY'];
-  if (openrouterKey) {
-    providerConfigs['openrouter'] = {
-      provider: 'openrouter',
-      model: config.llm.providers['openrouter']?.model ?? process.env['OPENROUTER_MODEL'] ?? 'xiaomi/mimo-v2-pro',
-      apiKey: openrouterKey,
-      baseUrl:
-        config.llm.providers['openrouter']?.baseUrl ??
-        process.env['OPENROUTER_BASE_URL'] ??
-        'https://openrouter.ai/api/v1',
-      timeoutMs: llmTimeoutMs,
-    };
-    if (config.llm.defaultProvider === 'openrouter') {
-      defaultProvider = 'openrouter';
+    if (name === 'ollama') {
+      const baseUrl =
+        cfg.baseUrl
+        ?? process.env['OLLAMA_BASE_URL']
+        ?? meta?.baseUrl;
+      const model =
+        cfg.model
+        ?? process.env['OLLAMA_MODEL']
+        ?? meta?.defaultModel
+        ?? 'llama3';
+      if (baseUrl || cfg.model || process.env['OLLAMA_BASE_URL']) {
+        providerConfigs['ollama'] = {
+          provider: 'ollama',
+          model,
+          ...(baseUrl ? { baseUrl } : {}),
+          timeoutMs: llmTimeoutMs,
+        };
+      }
+      continue;
     }
-  }
 
-  const zaiKey =
-    config.llm.providers['zai']?.apiKey ?? process.env['ZAI_API_KEY'];
-  if (zaiKey) {
-    providerConfigs['zai'] = {
-      provider: 'zai',
-      model: config.llm.providers['zai']?.model ?? process.env['ZAI_MODEL'] ?? 'glm-5.1',
-      apiKey: zaiKey,
-      baseUrl:
-        config.llm.providers['zai']?.baseUrl ??
-        process.env['ZAI_BASE_URL'] ??
-        'https://api.z.ai/api/paas/v4',
-      timeoutMs: llmTimeoutMs,
-    };
-    if (config.llm.defaultProvider === 'zai') {
-      defaultProvider = 'zai';
-    }
-  }
+    const apiKey =
+      cfg.apiKey
+      ?? (meta ? process.env[meta.envKey] : undefined)
+      ?? process.env[`${prefix}_API_KEY`];
+    if (!apiKey) continue;
 
-  const deepseekKey =
-    config.llm.providers['deepseek']?.apiKey ?? process.env['DEEPSEEK_API_KEY'];
-  if (deepseekKey) {
-    providerConfigs['deepseek'] = {
-      provider: 'deepseek',
-      model: config.llm.providers['deepseek']?.model ?? process.env['DEEPSEEK_MODEL'] ?? 'deepseek-v4-flash',
-      apiKey: deepseekKey,
-      baseUrl:
-        config.llm.providers['deepseek']?.baseUrl ??
-        process.env['DEEPSEEK_BASE_URL'] ??
-        'https://api.deepseek.com',
+    const model =
+      cfg.model
+      ?? process.env[`${prefix}_MODEL`]
+      ?? meta?.defaultModel
+      ?? (name === 'anthropic' ? config.llm.defaultModel : undefined)
+      ?? '';
+    const baseUrl =
+      cfg.baseUrl
+      ?? process.env[`${prefix}_BASE_URL`]
+      ?? meta?.baseUrl;
+
+    providerConfigs[name] = {
+      // Name may be a known LLMProvider or a custom OpenAI-compatible id.
+      provider: name as LLMProviderConfig['provider'],
+      model,
+      apiKey,
+      ...(baseUrl ? { baseUrl } : {}),
       timeoutMs: llmTimeoutMs,
     };
-    if (config.llm.defaultProvider === 'deepseek') {
-      defaultProvider = 'deepseek';
-    }
   }
 
   // If the configured default provider has no API key, fall back to the first available one
@@ -589,6 +589,19 @@ async function startServerCore(
   if (config.integrations?.search?.bochaApiKey && !process.env['BOCHA_API_KEY']) {
     process.env['BOCHA_API_KEY'] = config.integrations.search.bochaApiKey;
   }
+  // Markus-hosted search (OpenRouter member key): opt-out + BYOK disable list.
+  if (config.integrations?.search?.useMarkusHosted === false) {
+    process.env['MARKUS_SEARCH_ENABLED'] = '0';
+  }
+  if (config.integrations?.search?.markusSearchModel) {
+    process.env['MARKUS_SEARCH_OR_MODEL'] = config.integrations.search.markusSearchModel;
+  }
+  {
+    const s = config.integrations?.search ?? {};
+    const disabled = (['serper', 'tavily', 'bing', 'google', 'serpapi', 'brave', 'exa', 'bocha'] as const)
+      .filter(id => (s as Record<string, unknown>)[`${id}Enabled`] === false);
+    if (disabled.length) process.env['SEARCH_DISABLED_PROVIDERS'] = disabled.join(',');
+  }
 
   const apiPort = Number(values['port']) || config.server.apiPort;
 
@@ -821,6 +834,7 @@ async function startServerCore(
     if (builtinTeamsDir && existsSync(builtinTeamsDir)) {
       builderService.setBuiltinTeamTemplatesDir(builtinTeamsDir);
     }
+    builderService.ensureArtifactDirs();
     agentManager.setBuilderService(builderService);
   }
   const hubClient = apiServer.getHubClient();
@@ -828,11 +842,35 @@ async function startServerCore(
     agentManager.setHubClient(hubClient);
   }
 
-  // Wire team/agent update callbacks for manager tools
+  // Wire team/agent update callbacks for manager + secretary tools
   agentManager.setTeamUpdater(async (teamId, data) => {
     const team = await orgService.updateTeam(teamId, data);
     return { id: teamId, name: team.name, description: team.description };
   });
+  agentManager.setTeamCreator(async (orgId, name, description) => {
+    const team = await orgService.createTeam(orgId, name, description);
+    // Same event POST /api/teams emits — Team Chat sidebar refreshes without a full page reload.
+    apiServer.getWSBroadcaster()?.broadcast({
+      type: 'chat:group_created',
+      payload: {
+        chatId: `group:${team.id}`,
+        name: team.name,
+        creatorId: '',
+        creatorName: '',
+        teamId: team.id,
+      },
+      timestamp: new Date().toISOString(),
+    });
+    return { id: team.id, name: team.name, description: team.description };
+  });
+  agentManager.setOrgTeamLister((orgId) =>
+    orgService.listTeams(orgId).map(t => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      memberAgentIds: t.memberAgentIds,
+    })),
+  );
   if (storage) {
     agentManager.setAgentConfigPersister(async (agentId, data) => {
       await storage.agentRepo.updateConfig(agentId, data);
@@ -868,6 +906,7 @@ async function startServerCore(
       targetUserId: ownerUserId,
       options: opts.options,
       allowFreeform: opts.allowFreeform,
+      questions: opts.questions,
       details: { priority: opts.priority, taskId: opts.relatedTaskId, taskTitle },
     });
   });
@@ -885,6 +924,16 @@ async function startServerCore(
       metadata: opts.metadata,
     });
   });
+
+  // Seed autonomous-run locale/timezone from the owner's stored preferences.
+  try {
+    const ownerIdentity = orgService.resolveHumanIdentity(ownerUserId);
+    if (ownerIdentity && (ownerIdentity.locale || ownerIdentity.timezone)) {
+      agentManager.setRuntimeViewerContext({ locale: ownerIdentity.locale, timezone: ownerIdentity.timezone });
+    }
+  } catch (e) {
+    log.warn('Failed to seed runtime viewer context from owner preferences', { error: String(e) });
+  }
 
   // Ensure every agent has a main session on startup, then persist activity logs to it
   if (storage?.chatSessionRepo) {
@@ -950,6 +999,51 @@ async function startServerCore(
         log.warn('Failed to persist activity log', { agentId, error: String(e) });
       }
     });
+    // Heartbeat interval changed (by an agent via set_heartbeat_interval, or any
+    // in-process update): persist the new value so it survives restart.
+    agentManager.getEventBus().on('agent:heartbeat-interval-changed', async (evt: unknown) => {
+      const { agentId, intervalMs } = evt as { agentId: string; intervalMs: number };
+      try {
+        await storage.agentRepo.updateConfig(agentId, { heartbeatIntervalMs: intervalMs });
+      } catch (e) {
+        log.warn('Failed to persist heartbeat interval change', { agentId, error: String(e) });
+      }
+    });
+    // Team Chat right-panel open/collapse — deliver to the interacting user's UI.
+    agentManager.getEventBus().on('agent:ui-layout', (evt: unknown) => {
+      const event = evt as {
+        agentId: string;
+        targetUserId?: string;
+        action: 'open' | 'collapse';
+        panel?: {
+          kind: 'url' | 'file' | 'deliverable';
+          url?: string;
+          path?: string;
+          title?: string;
+          deliverableId?: string;
+        };
+      };
+      try {
+        const payload = {
+          agentId: event.agentId,
+          action: event.action,
+          ...(event.panel ? { panel: event.panel } : {}),
+        };
+        const wsEvent = {
+          type: 'ui:right_panel',
+          payload,
+          timestamp: new Date().toISOString(),
+        };
+        if (event.targetUserId) {
+          ws.sendToUser(event.targetUserId, wsEvent);
+        } else {
+          ws.broadcast(wsEvent);
+        }
+      } catch (e) {
+        log.warn('Failed to broadcast ui-layout event', { agentId: event.agentId, error: String(e) });
+      }
+    });
+
     // notify_user: persist as regular chat message + WS broadcast + notification bell
     agentManager.getEventBus().on('agent:notify-user', async (evt: unknown) => {
       const { agentId, title, body, priority, taskId, requirementId, targetUserId } = evt as {
@@ -1213,20 +1307,35 @@ async function startServerCore(
       durationMs: event.durationMs,
       success: event.success,
       detail: event.detail,
+      metadata: {
+        cost: event.cost ?? 0,
+        cuCost: event.cuCost,
+        provider: event.provider,
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+      },
     });
     if (event.tokensUsed && event.type === 'llm_request') {
+      const inputTok = event.inputTokens ?? Math.floor(event.tokensUsed * 0.7);
+      const outputTok = event.outputTokens ?? Math.ceil(event.tokensUsed * 0.3);
       auditService.recordLLMUsage(
         'default',
         agentId,
-        Math.floor(event.tokensUsed * 0.7),
-        Math.ceil(event.tokensUsed * 0.3)
+        inputTok,
+        outputTok,
       );
       billingService.recordUsage({
         orgId: 'default',
         agentId,
         type: 'llm_tokens',
         amount: event.tokensUsed,
-        metadata: { action: event.action },
+        metadata: {
+          action: event.action,
+          cuCost: event.cuCost,
+          provider: event.provider,
+          inputTokens: event.inputTokens,
+          outputTokens: event.outputTokens,
+        },
       });
     }
     if (event.type === 'tool_call') {
@@ -1239,15 +1348,6 @@ async function startServerCore(
       });
     }
   });
-
-  billingService.setToolCallsTodayProvider(() => {
-    let total = 0;
-    for (const a of agentManager.listAgents()) {
-      try { total += agentManager.getAgent(a.id).getUsageStats().toolCallsToday; } catch { /* not loaded */ }
-    }
-    return total;
-  });
-  agentManager.setToolCallLimitChecker(() => billingService.checkLimit('default', 'tool_call'));
 
   // Wire agent state changes to DB persistence + WS broadcast
   if (storage) {
@@ -1442,7 +1542,10 @@ async function startServerCore(
             ],
             systemCacheSegments: interruptCacheSegments,
             temperature: 0.1,
-            maxTokens: 32,
+            // No maxTokens cap: a tight cap (e.g. 32) is fully consumed by a
+            // reasoning model's hidden reasoning, leaving content empty so the
+            // judge always degrades to 'continue'. The router fills the model's
+            // real limit; the one-word answer stops the generation naturally.
           }, triageProvider);
           const raw = response.content.trim().toLowerCase();
           const valid: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];

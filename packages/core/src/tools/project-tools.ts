@@ -410,10 +410,15 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   enum: ['file', 'directory'],
                   description: 'file = any file-based content (docs, reports, code, etc.), directory = folder of files',
                 },
-                title: { type: 'string', description: 'Clear, searchable title' },
+                title: {
+                  type: 'string',
+                  description:
+                    'Short, human-readable title in the user\'s language (aim for under ~80 characters). Do NOT stuff the full content outline or a "+"-separated feature list here, and do NOT copy the summary into it. Do not default to English when the user works in another language.',
+                },
                 summary: {
                   type: 'string',
-                  description: 'Brief summary describing what this deliverable contains and why it matters (not the full content — the actual content lives in the referenced file)',
+                  description:
+                    'A distinct 1–3 sentence description in the user\'s language of what this deliverable contains and why it matters (not the full content — that lives in the referenced file). Must be different from the title; do not repeat the title verbatim.',
                 },
                 reference: {
                   type: 'string',
@@ -444,7 +449,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   deliverableStatus: result.status,
                 };
                 if (ctx.webUiBaseUrl) {
-                  resp.accessUrl = `${ctx.webUiBaseUrl}/#deliverables`;
+                  resp.accessUrl = `${ctx.webUiBaseUrl}/#output/${result.id}`;
                 }
                 return JSON.stringify(resp);
               } catch (error) {
@@ -590,7 +595,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 if (!result) return JSON.stringify({ status: 'error', error: 'Deliverable not found' });
                 const resp: Record<string, unknown> = { status: 'success', deliverableId: result.id, deliverableStatus: result.status };
                 if (ctx.webUiBaseUrl) {
-                  resp.accessUrl = `${ctx.webUiBaseUrl}/#deliverables`;
+                  resp.accessUrl = `${ctx.webUiBaseUrl}/#output/${result.id}`;
                 }
                 return JSON.stringify(resp);
               } catch (error) {

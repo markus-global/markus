@@ -4,9 +4,12 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import rehypeHighlight from 'rehype-highlight';
-import { api, hubApi, kebab, type AuthUser, type HubVisibility, type HubOrg } from '../api.ts';
+import { api, hubApi, kebab, toPackageSlug, type AuthUser, type HubVisibility, type HubModerationStatus, type HubOrg } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
-import { PAYMENTS_ENABLED } from './AgentBuilder.tsx';
+import { isElectron, openExternal } from '../hooks/useElectron.ts';
+import { assetGlyphPath, ASSET_TYPE_META, normalizeAssetType } from '../lib/assetIdentity.ts';
+import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { PAGE, hashPath } from '../routes.ts';
 
 interface ArtifactDetailProps {
   type: string;
@@ -664,17 +667,20 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
   const { t } = useTranslation(['builder', 'common']);
   const isMobile = useIsMobile();
   const [loading, setLoading] = useState(true);
+  /** Folder / package slug — may diverge from `name` prop after auto-conversion. */
+  const [folderName, setFolderName] = useState(name);
   const [files, setFiles] = useState<Record<string, string>>({});
   const [manifest, setManifest] = useState<ManifestData | null>(null);
   const [artPath, setArtPath] = useState('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string; visibility?: HubVisibility }>({ shared: false });
+  const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }>({ shared: false });
   const [shareInProgress, setShareInProgress] = useState(false);
   const [contentDirty, setContentDirty] = useState(false);
   const [showVersionBump, setShowVersionBump] = useState(false);
   const [showShareMode, setShowShareMode] = useState(false);
   const [showVisibility, setShowVisibility] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
+  const [notice, setNotice] = useState<{ title: string; message: string; variant?: 'primary' | 'danger' } | null>(null);
 
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
@@ -687,6 +693,8 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
   const initialManifestRef = useRef(initialManifest);
   initialManifestRef.current = initialManifest;
+
+  useEffect(() => { setFolderName(name); }, [name]);
 
   const load = useCallback(async () => {
     const im = initialManifestRef.current;
@@ -704,7 +712,21 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
     }
     setLoading(true);
     try {
-      const data = await api.builder.artifacts.get(type, name);
+      // Auto-convert legacy Chinese / invalid package slugs when opening.
+      let workingName = name;
+      try {
+        const ensured = await api.builder.artifacts.ensureSlugSafe(type, name);
+        workingName = ensured.name;
+        setFolderName(workingName);
+        if (ensured.converted) {
+          history.replaceState(null, '', hashPath(PAGE.BUILDER, `${type}/${encodeURIComponent(workingName)}`));
+          window.dispatchEvent(new CustomEvent('markus:data-changed'));
+        }
+      } catch {
+        setFolderName(name);
+      }
+
+      const data = await api.builder.artifacts.get(type, workingName);
       setFiles(data.files ?? {});
       setArtPath(data.path ?? '');
       const manifestFile = data.files[`${type}.json`] ?? data.files['agent.json'] ?? data.files['team.json'] ?? data.files['skill.json'];
@@ -752,7 +774,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       const typeDir = type === 'agent' ? 'agent' : type === 'team' ? 'team' : 'skill';
       for (const hi of items) {
         if (hi.itemType === typeDir && (hi.slug === name || hi.name === name)) {
-          setHubStatus({ shared: true, id: hi.id, slug: hi.slug, version: hi.version, visibility: (hi as any).visibility ?? 'public' });
+          setHubStatus({ shared: true, id: hi.id, slug: hi.slug, version: hi.version, visibility: hi.visibility ?? 'public', moderationStatus: hi.moderationStatus, pendingReview: hi.pendingReview });
           return;
         }
       }
@@ -813,19 +835,42 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
     setShareInProgress(true);
     try {
       await hubApi.ensureAuth();
-      const artName = manifest.displayName || manifest.name || name;
-      const description = manifest.description || '';
-      const category = manifest.category || 'general';
-      const tags = manifest.tags ?? [];
-      const slug = name;
-      let icon: string | undefined = manifest.icon || undefined;
-      const version = manifest.version || '1.0.0';
+      // Legacy Chinese / invalid folder names → auto-convert before publish.
+      // Skip the server call when the folder name is already a valid slug.
+      const ensured = await api.builder.artifacts.ensureSlugSafe(
+        type,
+        folderName,
+        manifest.displayName || manifest.name || folderName,
+      );
+      const workingName = ensured.name;
+      const slug = ensured.slug || toPackageSlug(workingName);
+      if (!slug) {
+        throw new Error('Invalid package slug: use English kebab-case for the artifact name (e.g. qwen-multimodal). Chinese-only names cannot be shared — rename the package slug and put the Chinese title in displayName.');
+      }
+      const displayTitle = ensured.displayName || manifest.displayName || manifest.name || folderName;
+      if (ensured.converted) {
+        setFolderName(workingName);
+        setManifest(m => m ? { ...m, name: slug, displayName: displayTitle } : m);
+        history.replaceState(null, '', hashPath(PAGE.BUILDER, `${type}/${encodeURIComponent(workingName)}`));
+        window.dispatchEvent(new CustomEvent('markus:data-changed'));
+      }
+
+      const publishManifest = {
+        ...manifest,
+        name: slug,
+        displayName: displayTitle,
+      };
+      const description = publishManifest.description || '';
+      const category = publishManifest.category || 'general';
+      const tags = publishManifest.tags ?? [];
+      let icon: string | undefined = publishManifest.icon || undefined;
+      const version = publishManifest.version || '1.0.0';
 
       // If icon is a local image path, upload it to Hub
       if (icon && !icon.startsWith('http') && /\.(png|jpe?g|gif|webp|svg)$/i.test(icon)) {
         const iconFilename = icon.split('/').pop() ?? icon;
         try {
-          const iconResp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images/${encodeURIComponent(iconFilename)}`);
+          const iconResp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(workingName)}/images/${encodeURIComponent(iconFilename)}`);
           if (iconResp.ok) {
             const blob = await iconResp.blob();
             const file = new File([blob], iconFilename, { type: blob.type });
@@ -837,12 +882,12 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
       let thumbnailUrl: string | undefined;
       const hubImages: Array<{ url: string; alt: string; order: number }> = [];
-      const screenshots = manifest.screenshots ?? [];
+      const screenshots = publishManifest.screenshots ?? [];
       for (let i = 0; i < screenshots.length; i++) {
         const imgPath = screenshots[i]!;
         const filename = imgPath.split('/').pop() ?? imgPath;
         try {
-          const imgResp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images/${encodeURIComponent(filename)}`);
+          const imgResp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(workingName)}/images/${encodeURIComponent(filename)}`);
           if (imgResp.ok) {
             const blob = await imgResp.blob();
             const file = new File([blob], filename, { type: blob.type });
@@ -857,14 +902,14 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
       const result = await hubApi.publishViaProxy({
         itemType: type === 'team' ? 'team' : type === 'skill' ? 'skill' : 'agent',
-        name: artName,
+        name: displayTitle,
         slug,
         description,
         category,
         tags,
         icon,
         version,
-        config: manifest,
+        config: publishManifest,
         files: Object.keys(files).length > 0 ? files : undefined,
         thumbnailUrl,
         images: hubImages.length > 0 ? hubImages : undefined,
@@ -874,22 +919,42 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
         orgId: opts?.orgId,
       });
       if (result.id) {
-        setHubStatus({ shared: true, id: result.id, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public' });
+        setHubStatus({ shared: true, id: result.id, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public', moderationStatus: result.moderationStatus, pendingReview: result.pendingReview });
         setContentDirty(false);
+        const vis = result.visibility ?? opts?.visibility ?? 'public';
+        if (vis !== 'org' && (result.moderationStatus === 'pending' || result.pendingReview)) {
+          setNotice({
+            title: t('common:share'),
+            message: ensured.converted
+              ? t('share.convertedAndSubmitted', { previous: name, slug })
+              : (result.updated ? t('share.updateSubmitted') : t('share.submittedForReview')),
+            variant: 'primary',
+          });
+        } else if (ensured.converted) {
+          setNotice({
+            title: t('common:share'),
+            message: t('share.convertedSlug', { previous: name, slug }),
+            variant: 'primary',
+          });
+        }
       }
     } catch (err) {
       console.error('Share to Hub failed:', err);
-      alert(String(err));
+      setNotice({
+        title: t('common:share'),
+        message: err instanceof Error ? err.message : String(err),
+        variant: 'danger',
+      });
     } finally {
       setShareInProgress(false);
     }
-  }, [manifest, files, type, name]);
+  }, [manifest, files, type, name, folderName, t]);
 
   const handleImageUpload = async (file: File) => {
     const formData = new FormData();
     formData.append('image', file);
     try {
-      await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images`, { method: 'POST', body: formData, credentials: 'include' });
+      await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(folderName)}/images`, { method: 'POST', body: formData, credentials: 'include' });
       await load();
       setContentDirty(true);
     } catch (err) { console.error('Image upload failed:', err); }
@@ -897,7 +962,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
   const handleImageRemove = async (filename: string) => {
     try {
-      await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images/${encodeURIComponent(filename)}`, { method: 'DELETE', credentials: 'include' });
+      await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(folderName)}/images/${encodeURIComponent(filename)}`, { method: 'DELETE', credentials: 'include' });
       await load();
       setContentDirty(true);
     } catch (err) { console.error('Image remove failed:', err); }
@@ -984,8 +1049,27 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
               const hasNewVersion = hubStatus.version !== localVersion;
               return (
                 <>
+                  {hubStatus.moderationStatus === 'pending' ? (
+                    <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.underReviewTip')}>
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      {t('share.underReview')}
+                    </span>
+                  ) : hubStatus.moderationStatus === 'rejected' ? (
+                    <span className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 inline-flex items-center gap-1" title={t('share.rejectedTip')}>
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                      {t('share.rejected')}
+                    </span>
+                  ) : hubStatus.pendingReview ? (
+                    <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.updateUnderReviewTip')}>
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      {t('share.updateUnderReview')}
+                    </span>
+                  ) : null}
+                  {/* Desktop: open the Hub page in the system browser (not an in-app
+                      window) so the user can copy the URL. href stays for web + copy-link. */}
                   {link && (
                     <a href={link} target="_blank" rel="noopener noreferrer"
+                      onClick={(e) => { if (isElectron()) { e.preventDefault(); openExternal(link); } }}
                       className={`text-xs px-3 py-1.5 rounded-lg border transition-colors inline-flex items-center gap-1.5 ${
                         hubStatus.visibility === 'org' ? 'border-blue-500/30 text-blue-500 hover:text-blue-400 hover:border-blue-400/50'
                         : hubStatus.visibility === 'unlisted' ? 'border-gray-500/30 text-fg-tertiary hover:text-fg-secondary hover:border-gray-400/50'
@@ -1070,14 +1154,19 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
                 <div onClick={() => !readOnly && setShowIconPicker(!showIconPicker)}
                   className={`w-16 h-16 rounded-xl ${style.bg} flex items-center justify-center text-3xl shrink-0 ${readOnly ? '' : 'cursor-pointer hover:ring-2'} ${style.ring} transition-all overflow-hidden`}>
                   {editIcon && editIcon.startsWith('images/')
-                    ? <img src={`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images/${encodeURIComponent(editIcon.replace('images/', ''))}`} alt="" className="w-full h-full object-cover" />
+                    ? <img src={`/api/builder/artifacts/${type}s/${encodeURIComponent(folderName)}/images/${encodeURIComponent(editIcon.replace('images/', ''))}`} alt="" className="w-full h-full object-cover" />
                     : editIcon && (editIcon.startsWith('http') || editIcon.startsWith('/'))
                       ? <img src={editIcon} alt="" className="w-full h-full object-cover" />
                       : (() => {
                           const icon = editIcon || '';
                           const isEmoji = icon && [...icon].length <= 2 && /\p{Emoji}/u.test(icon);
                           if (isEmoji) return icon;
-                          return <span className="text-2xl font-bold opacity-60">{(editName || name || style.icon)[0]?.toUpperCase()}</span>;
+                          const glyphColor = ASSET_TYPE_META[normalizeAssetType(type)].accent;
+                          return (
+                            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" aria-hidden>
+                              <path d={assetGlyphPath(editName || name || type)} fill={glyphColor} />
+                            </svg>
+                          );
                         })()}
                 </div>
                 {!readOnly && showIconPicker && (
@@ -1104,7 +1193,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
                           const formData = new FormData();
                           formData.append('image', file);
                           try {
-                            const resp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(name)}/images`, { method: 'POST', body: formData, credentials: 'include' });
+                            const resp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(folderName)}/images`, { method: 'POST', body: formData, credentials: 'include' });
                             if (resp.ok) {
                               const data = await resp.json() as { filename: string; path: string };
                               const iconPath = data.path;
@@ -1337,11 +1426,11 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       {!readOnly && showShareMode && (
         <ShareModeDialog
           onClose={() => setShowShareMode(false)}
-          onConfirm={(mode, price) => {
+          onConfirm={(mode, priceCents) => {
             setShowShareMode(false);
             void handleShareToHub({
-              donationsEnabled: mode === 'donation',
-              priceCents: mode === 'paid' ? price : undefined,
+              donationsEnabled: false,
+              priceCents: mode === 'paid' ? priceCents : undefined,
             });
           }}
           isUpdate={hubStatus.shared}
@@ -1350,10 +1439,20 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       {!readOnly && showVisibility && (
         <VisibilityDialog
           onClose={() => setShowVisibility(false)}
-          onConfirm={(visibility, orgId) => {
+          onConfirm={(visibility, orgId, priceCents, donationsEnabled) => {
             setShowVisibility(false);
-            void handleShareToHub({ visibility, orgId });
+            void handleShareToHub({ visibility, orgId, priceCents, donationsEnabled });
           }}
+        />
+      )}
+      {notice && (
+        <ConfirmModal
+          alertOnly
+          variant={notice.variant ?? 'primary'}
+          title={notice.title}
+          message={notice.message}
+          onConfirm={() => setNotice(null)}
+          onCancel={() => setNotice(null)}
         />
       )}
     </div>
@@ -1362,13 +1461,15 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
 function VisibilityDialog({ onClose, onConfirm }: {
   onClose: () => void;
-  onConfirm: (visibility: HubVisibility, orgId?: string) => void;
+  onConfirm: (visibility: HubVisibility, orgId?: string, priceCents?: number, donationsEnabled?: boolean) => void;
 }) {
   const { t } = useTranslation(['builder', 'common']);
   const [selected, setSelected] = useState<HubVisibility>('public');
   const [orgs, setOrgs] = useState<HubOrg[]>([]);
   const [selectedOrgId, setSelectedOrgId] = useState<string>('');
   const [loadingOrgs, setLoadingOrgs] = useState(false);
+  const [priceCents, setPriceCents] = useState(0);
+  const [donationsEnabled, setDonationsEnabled] = useState(false);
 
   useEffect(() => {
     if (selected === 'org' && orgs.length === 0) {
@@ -1379,6 +1480,8 @@ function VisibilityDialog({ onClose, onConfirm }: {
       }).catch(() => {}).finally(() => setLoadingOrgs(false));
     }
   }, [selected, orgs.length]);
+
+  const isPublicLike = selected === 'public' || selected === 'unlisted';
 
   const options: Array<{ value: HubVisibility; icon: ReactNode; label: string; desc: string }> = [
     {
@@ -1404,7 +1507,9 @@ function VisibilityDialog({ onClose, onConfirm }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div className="bg-surface-secondary border border-border-default rounded-xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
-        <h3 className="text-base font-semibold text-fg-primary mb-4">{t('visibility.label')}</h3>
+        <h3 className="text-base font-semibold text-fg-primary mb-1">{t('visibility.label')}</h3>
+        <p className="text-[11px] text-fg-tertiary mb-4 leading-relaxed">{t('visibility.subtitle')}</p>
+        <div className="text-[10px] uppercase tracking-wider text-fg-tertiary font-semibold mb-2">1 · {t('visibility.public')} / {t('visibility.org')}</div>
         <div className="space-y-2 mb-5">
           {options.map(opt => (
             <label key={opt.value} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selected === opt.value ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
@@ -1432,11 +1537,35 @@ function VisibilityDialog({ onClose, onConfirm }: {
             )}
           </div>
         )}
+        {isPublicLike && (
+          <div className="mb-5">
+            <div className="text-[10px] uppercase tracking-wider text-fg-tertiary font-semibold mb-2">2 · {t('pricing.label')}</div>
+            <label className="text-xs text-fg-secondary block mb-1.5">{t('pricing.label')}</label>
+            <div className="grid grid-cols-4 gap-2 mb-3">
+              {ARTIFACT_PRICE_OPTIONS.map(opt => (
+                <button key={opt.cents} type="button"
+                  onClick={() => setPriceCents(opt.cents)}
+                  className={`text-sm px-2 py-2 rounded-lg border transition-colors ${priceCents === opt.cents ? 'border-brand-500 bg-brand-500/10 text-fg-primary' : 'border-border-default text-fg-secondary hover:border-gray-600'}`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={donationsEnabled} onChange={e => setDonationsEnabled(e.target.checked)} className="accent-brand-500" />
+              <span className="text-xs text-fg-secondary">{t('pricing.enableTips')}</span>
+            </label>
+          </div>
+        )}
+        {isPublicLike && (
+          <div className="mb-4 text-[11px] text-fg-tertiary rounded-lg border border-border-default px-3 py-2">
+            {t('pricing.reviewNote')}
+          </div>
+        )}
         <div className="flex gap-3">
           <button onClick={onClose} className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
             {t('common:cancel')}
           </button>
-          <button onClick={() => onConfirm(selected, selected === 'org' ? selectedOrgId : undefined)}
+          <button onClick={() => onConfirm(selected, selected === 'org' ? selectedOrgId : undefined, isPublicLike && priceCents > 0 ? priceCents : undefined, isPublicLike ? donationsEnabled : undefined)}
             disabled={selected === 'org' && !selectedOrgId}
             className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             {t('shareMode.share')}
@@ -1447,14 +1576,20 @@ function VisibilityDialog({ onClose, onConfirm }: {
   );
 }
 
+const ARTIFACT_PRICE_OPTIONS = [
+  { cents: 0, label: 'Free' },
+  { cents: 100, label: '$1' },
+  { cents: 500, label: '$5' },
+  { cents: 1000, label: '$10' },
+] as const;
+
 function ShareModeDialog({ onClose, onConfirm, isUpdate }: {
   onClose: () => void;
-  onConfirm: (mode: 'free' | 'donation' | 'paid', priceCents: number) => void;
+  onConfirm: (mode: 'free' | 'paid', priceCents: number) => void;
   isUpdate: boolean;
 }) {
   const { t } = useTranslation(['builder', 'common']);
-  const [mode, setMode] = useState<'free' | 'donation' | 'paid'>('free');
-  const [price, setPrice] = useState('');
+  const [selectedPrice, setSelectedPrice] = useState(0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
@@ -1464,53 +1599,26 @@ function ShareModeDialog({ onClose, onConfirm, isUpdate }: {
         </h3>
 
         <div className="space-y-2 mb-5">
-          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'free' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
-            <input type="radio" name="shareMode" checked={mode === 'free'} onChange={() => setMode('free')} className="accent-brand-500" />
-            <div>
-              <div className="text-sm font-medium text-fg-primary">{t('shareMode.free')}</div>
-              <div className="text-[11px] text-fg-tertiary">{t('shareMode.freeDesc')}</div>
-            </div>
-          </label>
-          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'donation' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
-            <input type="radio" name="shareMode" checked={mode === 'donation'} onChange={() => setMode('donation')} className="accent-brand-500" />
-            <div>
-              <div className="text-sm font-medium text-fg-primary">{t('shareMode.donation')}</div>
-              <div className="text-[11px] text-fg-tertiary">{t('shareMode.donationDesc')}</div>
-            </div>
-          </label>
-          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === 'paid' ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
-            <input type="radio" name="shareMode" checked={mode === 'paid'} onChange={() => setMode('paid')} className="accent-brand-500" />
-            <div>
-              <div className="text-sm font-medium text-fg-primary">{t('shareMode.paid')}</div>
-              <div className="text-[11px] text-fg-tertiary">{t('shareMode.paidDesc')}</div>
-            </div>
-          </label>
+          {ARTIFACT_PRICE_OPTIONS.map(opt => (
+            <label key={opt.cents} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedPrice === opt.cents ? 'border-brand-500 bg-brand-500/10' : 'border-border-default hover:border-gray-600'}`}>
+              <input type="radio" name="sharePrice" checked={selectedPrice === opt.cents} onChange={() => setSelectedPrice(opt.cents)} className="accent-brand-500" />
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{opt.label}</div>
+                <div className="text-[11px] text-fg-tertiary">
+                  {opt.cents === 0 ? t('shareMode.freeDesc') : t('shareMode.paidDesc')}
+                </div>
+              </div>
+            </label>
+          ))}
         </div>
-
-        {mode === 'paid' && (
-          <div className="mb-5">
-            <label className="text-xs text-fg-secondary block mb-1.5">{t('shareMode.priceLabel')}</label>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-fg-tertiary">$</span>
-              <input
-                type="number" min="0.5" step="0.5" value={price}
-                onChange={e => setPrice(e.target.value)}
-                placeholder={t('shareMode.pricePlaceholder')}
-                className="flex-1 text-sm px-3 py-2 rounded-lg bg-surface-elevated border border-border-default text-fg-primary placeholder:text-fg-muted"
-              />
-            </div>
-          </div>
-        )}
 
         <div className="flex gap-3">
           <button onClick={onClose}
             className="flex-1 text-sm px-4 py-2 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-gray-600 transition-colors">
             {t('common:cancel')}
           </button>
-          <button
-            onClick={() => onConfirm(mode, mode === 'paid' ? Math.round(Number(price) * 100) : 0)}
-            disabled={mode === 'paid' && (!price || Number(price) <= 0)}
-            className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <button onClick={() => onConfirm(selectedPrice > 0 ? 'paid' : 'free', selectedPrice)}
+            className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">
             {isUpdate ? t('shareMode.update') : t('shareMode.share')}
           </button>
         </div>

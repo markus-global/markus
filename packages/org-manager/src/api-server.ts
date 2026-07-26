@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -32,6 +32,12 @@ import {
   estimateQualityScore,
   tierFromQualityScore,
   costTierFromPrice,
+  testSearchProvider,
+  applyHubRecommendedRouting,
+  fetchHubRecommendations,
+  isGreenfieldLlmConfig,
+  markusCatalogUrlFromHub,
+  isLegacyMarkusProxyBaseUrl,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -53,193 +59,52 @@ import type { WorkflowService } from './workflow-service.js';
 import type { WorkflowRunner } from './workflow-runner.js';
 import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
+import { ActiveStreamRegistry } from './active-stream-registry.js';
 import { installSkill } from './skill-service.js';
 import type { LocalFileStorageProvider } from './file-storage-provider.js';
+import {
+  signToken,
+  verifyToken,
+  hashPassword,
+  verifyPassword,
+  generateInviteToken,
+  parseCookies,
+  stripProviderPrefix,
+  enrichModelFromCatalog,
+  mergeModelCapabilities,
+} from './middleware/auth.js';
+import { handleTasksRoutes } from './routes/tasks.js';
+import { handleGatewayRoutes } from './routes/gateway.js';
+import { handleSkillsRoutes } from './routes/skills.js';
 
 const log = createLogger('api-server');
 
-// ── Auth helpers ──────────────────────────────────────────────────────────────
-// Simple JWT-lite using HMAC-SHA256 (no external deps required)
-async function signToken(payload: Record<string, unknown>, secret: string): Promise<string> {
-  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const body = btoa(JSON.stringify(payload));
-  const data = `${header}.${body}`;
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
-  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
-  return `${data}.${sigB64}`;
-}
-
-async function verifyToken(token: string, secret: string): Promise<Record<string, unknown> | null> {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    const data = `${parts[0]}.${parts[1]}`;
-    const key = await crypto.subtle.importKey(
-      'raw',
-      new TextEncoder().encode(secret),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['verify']
-    );
-    const sigBytes = Uint8Array.from(atob(parts[2]!.replace(/-/g, '+').replace(/_/g, '/')), c =>
-      c.charCodeAt(0)
-    );
-    const valid = await crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(data));
-    if (!valid) return null;
-    const payload = JSON.parse(atob(parts[1]!)) as Record<string, unknown>;
-    if (payload['exp'] && (payload['exp'] as number) < Date.now() / 1000) return null;
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
-const PBKDF2_ITERATIONS = 10000;
-
-async function hashPassword(password: string): Promise<string> {
-  // Format: pbkdf2:<iterations>:<saltHex>:<hashHex>
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const saltHex = Array.from(salt)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits']
-  );
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
-    key,
-    256
-  );
-  const hashHex = Array.from(new Uint8Array(bits))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-  return `pbkdf2:${PBKDF2_ITERATIONS}:${saltHex}:${hashHex}`;
-}
-
-async function verifyPassword(password: string, stored: string): Promise<boolean> {
-  const parts = stored.split(':');
-  // Support old format (3 parts) and new format (4 parts with iterations)
-  if (parts[0] !== 'pbkdf2') return false;
-  let iterations: number;
-  let saltHex: string;
-  let expectedHash: string;
-  if (parts.length === 4) {
-    iterations = parseInt(parts[1]!, 10);
-    saltHex = parts[2]!;
-    expectedHash = parts[3]!;
-  } else if (parts.length === 3) {
-    iterations = 100000; // legacy
-    saltHex = parts[1]!;
-    expectedHash = parts[2]!;
-  } else {
-    return false;
-  }
-  const salt = Uint8Array.from((saltHex.match(/.{2}/g) ?? []).map(b => parseInt(b, 16)));
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits']
-  );
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
-    key,
-    256
-  );
-  const hashHex = Array.from(new Uint8Array(bits))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-  return hashHex === expectedHash;
-}
-
-function stripProviderPrefix(catalogId: string): string {
-  return ModelCatalogService.stripProviderPrefix(catalogId);
-}
-
-interface ModelEnrichment {
-  tier?: string;
-  costTier?: string;
-  capabilities?: string[];
-  mode?: string;
-}
-
-function enrichModelFromCatalog(
-  modelId: string,
-  builtinTier: string | undefined,
-  catalog: ModelCatalogService | undefined,
-): ModelEnrichment {
-  const catalogEntry = catalog?.getModelInfo(modelId);
-  const tier = builtinTier ?? tierFromQualityScore(
-    estimateQualityScore(modelId, catalogEntry?.capabilities?.reasoning, catalogEntry?.inputCostPer1MTokens),
-  );
-  const costTier = catalogEntry
-    ? costTierFromPrice(catalogEntry.inputCostPer1MTokens)
-    : undefined;
-  const capabilities = catalogEntry
-    ? Object.entries(catalogEntry.capabilities)
-        .filter(([, v]) => v)
-        .map(([k]) => k)
-    : undefined;
-  const mode = catalogEntry?.mode;
-  return { tier, costTier, capabilities, mode };
-}
-
-function generateInviteToken(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-function parseCookies(cookieHeader: string | undefined): Record<string, string> {
-  if (!cookieHeader) return {};
-  const result: Record<string, string> = {};
-  for (const part of cookieHeader.split(';')) {
-    const eqIdx = part.indexOf('=');
-    if (eqIdx === -1) continue;
-    const key = decodeURIComponent(part.slice(0, eqIdx).trim());
-    const val = decodeURIComponent(part.slice(eqIdx + 1).trim());
-    if (key) result[key] = val;
-  }
-  return result;
-}
-
 export class APIServer {
+  static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
   private server?: ReturnType<typeof createServer>;
-  private ws: WSBroadcaster;
-  private skillRegistry?: SkillRegistry;
+  public ws: WSBroadcaster;
+  public skillRegistry?: SkillRegistry;
   private hitlService?: HITLService;
   private feishuNotifier?: FeishuNotifier;
-  private billingService?: BillingService;
-  private auditService?: AuditService;
-  private licenseService?: LicenseService;
+  public billingService?: BillingService;
+  public auditService?: AuditService;
+  public licenseService?: LicenseService;
   private telemetryService?: TelemetryService;
-  private storage?: StorageBridge;
-  private llmRouter?: LLMRouter;
-  private markusConfigPath?: string;
+  public storage?: StorageBridge;
+  public llmRouter?: LLMRouter;
+  public markusConfigPath?: string;
   private hubUrl = 'https://markus.global';
+  /** Throttle Hub POST /api/user/cu/sync from /api/cu/status (ms). */
+  private lastCuStatusSyncAt = 0;
   private webUiDir?: string;
-  private gateway?: ExternalAgentGateway;
-  private gatewaySecret?: string;
-  private syncHandler?: GatewaySyncHandler;
-  private gatewayMessageQueue = new Map<string, Array<{ id: string; from: string; fromName: string; content: string; timestamp: string }>>();
-  private reviewService?: ReviewService;
-  private registryCache?: Map<string, { data: unknown; ts: number }>;
+  public gateway?: ExternalAgentGateway;
+  public gatewaySecret?: string;
+  public syncHandler?: GatewaySyncHandler;
+  public gatewayMessageQueue = new Map<string, Array<{ id: string; from: string; fromName: string; content: string; timestamp: string }>>();
+  public reviewService?: ReviewService;
+  public registryCache?: Map<string, { data: unknown; ts: number }>;
   private templateRegistry?: TemplateRegistry;
-  private builderService?: BuilderService;
+  builderService?: BuilderService;
   private workflowEngine?: WorkflowEngine;
   private workflowService?: WorkflowService;
   private workflowRunner?: WorkflowRunner;
@@ -247,10 +112,354 @@ export class APIServer {
   private fileStorage?: LocalFileStorageProvider;
   private remoteAgent?: { getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void };
   private remoteAgentFactory?: () => Promise<{ getStatus(): unknown; start(): Promise<void>; stop(): Promise<void>; onStatus(cb: (s: unknown) => void): () => void } | null>;
-  private modelCatalog?: ModelCatalogService;
-  private routingCandidatesCache: { data: unknown; expireAt: number } | null = null;
-  private static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
-  private invalidateRoutingCache(): void { this.routingCandidatesCache = null; }
+  public modelCatalog?: ModelCatalogService;
+  public routingCandidatesCache: { data: unknown; expireAt: number } | null = null;
+  /** In-flight chat streams for refresh reattach. */
+  public readonly activeStreams = new ActiveStreamRegistry();
+  invalidateRoutingCache(): void { this.routingCandidatesCache = null; }
+
+  /**
+   * Ensure Markus OpenRouter-only config: Hub catalog URL + OR baseUrl/apiKey.
+   * Strips legacy Worker fields (`proxyUrl` / `subscriptionKey` / `searchUrl`).
+   */
+  ensureMarkusDirectConfig(): string | undefined {
+    try {
+      const cfg = loadConfig();
+      const markus = cfg.llm.providers?.['markus'] as {
+        apiKey?: string;
+        baseUrl?: string;
+        modelsUrl?: string;
+        model?: string;
+        subscriptionKey?: string;
+        proxyUrl?: string;
+        searchUrl?: string;
+        workerEnabled?: boolean;
+      } | undefined;
+      if (!markus?.apiKey && !markus?.subscriptionKey) return markus?.modelsUrl;
+
+      const hubBase = (cfg.hub?.url || this.hubUrl || '').replace(/\/+$/, '');
+      let modelsUrl = markus.modelsUrl?.trim() || '';
+      let baseUrl = markus.baseUrl?.trim() || '';
+      let apiKey = markus.apiKey?.trim() || '';
+      // Prefer sk-or-; never treat legacy markus_* subscription as OR apiKey.
+      if (apiKey && /^markus[_-]/i.test(apiKey)) apiKey = '';
+      let changed = false;
+
+      if (!modelsUrl && hubBase) {
+        modelsUrl = markusCatalogUrlFromHub(hubBase);
+        changed = true;
+      }
+      // Prefer config hub.url when modelsUrl points at a different host
+      // (e.g. leftover https://markus.global while hub.url is localhost).
+      if (modelsUrl && hubBase) {
+        try {
+          const mu = new URL(modelsUrl);
+          const hu = new URL(hubBase.includes('://') ? hubBase : `http://${hubBase}`);
+          if (mu.host !== hu.host) {
+            modelsUrl = markusCatalogUrlFromHub(hubBase);
+            changed = true;
+            log.info('Markus modelsUrl host mismatch — retargeted to config hub.url', {
+              from: markus.modelsUrl,
+              to: modelsUrl,
+            });
+          }
+        } catch { /* ignore bad URLs */ }
+      }
+      // Legacy: Worker URL lived in baseUrl — replace with OR base.
+      if (isLegacyMarkusProxyBaseUrl(baseUrl) && baseUrl) {
+        baseUrl = 'https://openrouter.ai/api/v1';
+        changed = true;
+      }
+      if (!baseUrl) {
+        baseUrl = 'https://openrouter.ai/api/v1';
+        changed = true;
+      }
+      // Drop Worker-era fields from disk when present.
+      if (markus.subscriptionKey || markus.proxyUrl || markus.searchUrl || markus.workerEnabled !== undefined) {
+        changed = true;
+      }
+      if (apiKey !== (markus.apiKey?.trim() || '')) changed = true;
+
+      if (changed) {
+        const next: Record<string, string> = {};
+        if (apiKey) next.apiKey = apiKey;
+        if (baseUrl) next.baseUrl = baseUrl;
+        if (modelsUrl) next.modelsUrl = modelsUrl;
+        if (markus.model) next.model = markus.model;
+        saveConfig({ llm: { providers: { markus: next } } } as any);
+        if (this.llmRouter && apiKey) {
+          this.llmRouter.registerProviderFromConfig('markus', {
+            provider: 'markus',
+            apiKey,
+            baseUrl,
+            model: markus.model || '',
+            ...(modelsUrl ? { modelsUrl } : {}),
+          });
+        }
+        log.info('Normalized Markus OpenRouter-only provider config', {
+          modelsUrl,
+          baseUrl,
+          hasOrKey: !!apiKey,
+          hub: hubBase,
+        });
+      } else if (this.llmRouter && modelsUrl) {
+        const p = this.llmRouter.getProvider('markus') as { configure?: (c: object) => void } | undefined;
+        p?.configure?.({
+          provider: 'markus',
+          modelsUrl,
+          baseUrl: baseUrl || markus.baseUrl,
+          ...(apiKey ? { apiKey } : {}),
+        });
+      }
+
+      delete process.env['MARKUS_SUBSCRIPTION_KEY'];
+      delete process.env['MARKUS_PROXY_URL'];
+      delete process.env['MARKUS_SEARCH_URL'];
+      if (apiKey) process.env['MARKUS_OPENROUTER_KEY'] = apiKey;
+      if (baseUrl) process.env['MARKUS_OPENROUTER_BASE'] = baseUrl;
+      if (modelsUrl) process.env['MARKUS_MODELS_URL'] = modelsUrl;
+      return modelsUrl || undefined;
+    } catch (err) {
+      log.warn('ensureMarkusDirectConfig failed', { error: String(err) });
+      return undefined;
+    }
+  }
+
+  /** Legacy Worker-era keys look like `markus_<hex>`; OpenRouter keys start with `sk-or-`. */
+  private isLegacyMarkusSubscriptionKey(apiKey: string | undefined): boolean {
+    if (!apiKey) return true;
+    if (apiKey.startsWith('sk-or-')) return false;
+    return /^markus[_-]/i.test(apiKey) || !apiKey.startsWith('sk-');
+  }
+
+  /** Serialize search settings for GET/POST /api/settings/search. */
+  private buildSearchSettingsStatus(currentConfig: ReturnType<typeof loadConfig>) {
+    const search = currentConfig.integrations?.search ?? {};
+    const mask = (key?: string) => (key ? '***' + key.slice(-4) : '');
+    const markus = currentConfig.llm?.providers?.['markus'] as {
+      apiKey?: string;
+    } | undefined;
+    const orKey =
+      (markus?.apiKey && markus.apiKey.startsWith('sk-or-') ? markus.apiKey : '')
+      || (process.env['MARKUS_OPENROUTER_KEY']?.startsWith('sk-or-') ? process.env['MARKUS_OPENROUTER_KEY'] : '')
+      || (process.env['OPENROUTER_API_KEY'] || '');
+    if (orKey) process.env['MARKUS_OPENROUTER_KEY'] = orKey;
+    return {
+      serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']), enabled: search.serperEnabled !== false },
+      tavily: { configured: !!search.tavilyApiKey || !!process.env['TAVILY_API_KEY'], preview: mask(search.tavilyApiKey || process.env['TAVILY_API_KEY']), enabled: search.tavilyEnabled !== false },
+      bing: { configured: !!search.bingApiKey || !!process.env['BING_SEARCH_API_KEY'], preview: mask(search.bingApiKey || process.env['BING_SEARCH_API_KEY']), enabled: search.bingEnabled !== false },
+      google: { configured: !!(search.googleSearchApiKey && search.googleSearchCx) || !!(process.env['GOOGLE_SEARCH_API_KEY'] && process.env['GOOGLE_SEARCH_CX']), preview: mask(search.googleSearchApiKey || process.env['GOOGLE_SEARCH_API_KEY']), enabled: search.googleEnabled !== false },
+      serpapi: { configured: !!search.serpApiKey || !!process.env['SERPAPI_API_KEY'], preview: mask(search.serpApiKey || process.env['SERPAPI_API_KEY']), enabled: search.serpapiEnabled !== false },
+      brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']), enabled: search.braveEnabled !== false },
+      exa: { configured: !!search.exaApiKey || !!process.env['EXA_API_KEY'], preview: mask(search.exaApiKey || process.env['EXA_API_KEY']), enabled: search.exaEnabled !== false },
+      bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']), enabled: search.bochaEnabled !== false },
+      markus: {
+        // Hosted search uses the Hub-issued OpenRouter member key.
+        available: !!orKey,
+        enabled: search.useMarkusHosted !== false,
+        searchProvider: 'openrouter',
+        markusProvider: search.markusProvider || '',
+        markusSearchModel:
+          search.markusSearchModel
+          || process.env['MARKUS_SEARCH_OR_MODEL']
+          || 'perplexity/sonar',
+        language: search.language || '',
+      },
+    };
+  }
+
+  /**
+   * Fetch (or rotate) the Hub-provisioned OpenRouter member key and write it to
+   * local Markus provider config. OpenRouter-only — ignores legacy Worker proxy fields.
+   */
+  async syncOpenRouterCredentialsFromHub(opts?: { rotate?: boolean; force?: boolean }): Promise<{
+    ok: boolean;
+    error?: string;
+    keyPrefix?: string;
+    modelsUrl?: string;
+  }> {
+    const cfg = loadConfig();
+    const markus = cfg.llm.providers?.['markus'] as {
+      apiKey?: string;
+      baseUrl?: string;
+      modelsUrl?: string;
+      model?: string;
+    } | undefined;
+    const currentKey = markus?.apiKey ?? '';
+    if (!opts?.force && !opts?.rotate && currentKey.startsWith('sk-or-')) {
+      return { ok: true, keyPrefix: currentKey.slice(0, 12), modelsUrl: markus?.modelsUrl };
+    }
+    if (!opts?.force && !opts?.rotate && !this.isLegacyMarkusSubscriptionKey(currentKey) && currentKey) {
+      return { ok: true, keyPrefix: currentKey.slice(0, 12), modelsUrl: markus?.modelsUrl };
+    }
+
+    const token = this.readHubToken();
+    if (!token) {
+      return { ok: false, error: 'Hub token missing — sign in to Markus Hub first' };
+    }
+
+    const hubBase = (cfg.hub?.url || this.hubUrl || '').replace(/\/+$/, '');
+    if (!hubBase) return { ok: false, error: 'Hub URL not configured' };
+
+    try {
+      const url = `${hubBase}/api/user/openrouter-credentials${opts?.rotate ? '?rotate=1' : ''}`;
+      const res = await this.hubFetch(url, {
+        method: opts?.rotate ? 'POST' : 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          ...(opts?.rotate ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(opts?.rotate ? { body: JSON.stringify({ rotate: true }) } : {}),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({})) as { error?: string };
+        return { ok: false, error: errBody.error ?? `Hub returned ${res.status}` };
+      }
+      const data = await res.json() as {
+        openrouter?: { key?: string; baseUrl?: string; modelsUrl?: string; keyPrefix?: string };
+      };
+      const or = data.openrouter;
+      if (!or?.key) return { ok: false, error: 'Hub did not return an OpenRouter key' };
+
+      const baseUrl = or.baseUrl || 'https://openrouter.ai/api/v1';
+      const modelsUrl = or.modelsUrl || markusCatalogUrlFromHub(hubBase);
+      saveConfig({
+        llm: {
+          providers: {
+            markus: {
+              apiKey: or.key,
+              baseUrl,
+              modelsUrl,
+              ...(markus?.model ? { model: markus.model } : {}),
+            },
+          },
+        },
+      } as any);
+
+      delete process.env['MARKUS_SUBSCRIPTION_KEY'];
+      delete process.env['MARKUS_PROXY_URL'];
+      delete process.env['MARKUS_SEARCH_URL'];
+      process.env['MARKUS_OPENROUTER_KEY'] = or.key;
+      process.env['MARKUS_OPENROUTER_BASE'] = baseUrl;
+      process.env['MARKUS_MODELS_URL'] = modelsUrl;
+
+      if (this.llmRouter) {
+        this.llmRouter.registerProviderFromConfig('markus', {
+          provider: 'markus',
+          apiKey: or.key,
+          baseUrl,
+          modelsUrl,
+          model: markus?.model || '',
+        });
+        await this.llmRouter.refreshMarkusCatalog().catch(() => 0);
+        this.invalidateRoutingCache();
+      }
+
+      log.info('Synced OpenRouter member key from Hub', {
+        keyPrefix: or.keyPrefix ?? or.key.slice(0, 12),
+        modelsUrl,
+        rotated: !!opts?.rotate,
+      });
+      return {
+        ok: true,
+        keyPrefix: or.keyPrefix ?? or.key.slice(0, 12),
+        modelsUrl,
+      };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * Fetch Admin recommendations from Hub and merge into local routing.
+   * force=true: user clicked "Restore Markus recommendations".
+   * force=false: greenfield sets default→markus; upgrade only fills empty/obsolete slots.
+   */
+  async applyHubRecommendationsAfterConnect(
+    modelsUrl: string | undefined,
+    opts: { force: boolean },
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    capabilityRouting?: { assignments: Record<string, unknown> };
+    routingDefaultModel?: { provider: string; model: string } | null;
+    defaultProvider?: string;
+  }> {
+    if (!this.llmRouter) return { ok: false, error: 'LLM router not ready' };
+    if (!modelsUrl) return { ok: false, error: 'Markus catalog URL missing — reconnect to Hub' };
+
+    const fetched = await fetchHubRecommendations(modelsUrl);
+    if (!fetched) return { ok: false, error: 'Failed to fetch recommended models from Hub' };
+
+    const { loadConfig: loadCfg } = await import('@markus/shared');
+    const cfg = loadCfg();
+    const greenfield = !opts.force && isGreenfieldLlmConfig(cfg.llm);
+
+    const applied = applyHubRecommendedRouting(
+      {
+        defaultProvider: this.llmRouter.defaultProviderName,
+        routingDefaultModel: this.llmRouter.routingDefaultModel ?? null,
+        capabilityRouting: this.llmRouter.capabilityRouting,
+      },
+      fetched.recommendations,
+      { force: opts.force, greenfield },
+    );
+
+    if (!applied.changed) {
+      return {
+        ok: true,
+        capabilityRouting: this.llmRouter.capabilityRouting,
+        routingDefaultModel: this.llmRouter.routingDefaultModel ?? null,
+        defaultProvider: this.llmRouter.defaultProviderName,
+      };
+    }
+
+    const configUpdates: Record<string, unknown> = {
+      capabilityRouting: applied.capabilityRouting,
+    };
+    this.llmRouter.setCapabilityRouting(applied.capabilityRouting);
+
+    // Set default provider before routingDefaultModel — setDefaultProvider may
+    // sync routingDefaultModel to the provider's active model; we overwrite next.
+    if (applied.defaultProvider === 'markus') {
+      try {
+        this.llmRouter.setDefaultProvider('markus');
+        configUpdates.defaultProvider = 'markus';
+      } catch (err) {
+        log.warn('Could not set defaultProvider=markus', { error: String(err) });
+      }
+    }
+    if (applied.markusActiveModel) {
+      const markus = this.llmRouter.getProvider('markus');
+      markus?.configure({ provider: 'markus', model: applied.markusActiveModel });
+      configUpdates.providers = {
+        markus: { model: applied.markusActiveModel },
+      };
+    }
+    if (applied.routingDefaultModel) {
+      this.llmRouter.setRoutingDefaultModel(applied.routingDefaultModel);
+      configUpdates.routingDefaultModel = applied.routingDefaultModel;
+    }
+
+    saveConfig({ llm: configUpdates } as any);
+    this.invalidateRoutingCache();
+    log.info('Applied Hub recommended routing', {
+      force: opts.force,
+      greenfield,
+      defaultProvider: applied.defaultProvider,
+      text: applied.routingDefaultModel?.model,
+    });
+
+    return {
+      ok: true,
+      capabilityRouting: this.llmRouter.capabilityRouting,
+      routingDefaultModel: this.llmRouter.routingDefaultModel ?? null,
+      defaultProvider: this.llmRouter.defaultProviderName,
+    };
+  }
+
   private feishuRegisterSessions = new Map<string, { url: string; expireIn: number; status: string; createdAt: number }>();
   /** Aggregate today's tool calls from all agents' persisted metrics (the single source of truth) */
   private getToolCallsTodayFromAgents(): number {
@@ -308,9 +517,9 @@ export class APIServer {
   }
 
   constructor(
-    private orgService: OrganizationService,
-    private taskService: TaskService,
-    private port: number = 8056
+    public orgService: OrganizationService,
+    public taskService: TaskService,
+    public port: number = 8056
   ) {
     this.ws = new WSBroadcaster();
     this.teamTemplateRegistry = createDefaultTeamTemplates();
@@ -634,9 +843,16 @@ export class APIServer {
         const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
         const res = await self.hubFetch(`${hubUrl}/api/items/${itemId}/download`, { method: 'POST', headers });
         if (!res.ok) throw new Error(`Hub download failed: ${res.status}`);
-        const data = await res.json() as { name: string; itemType: string; files?: Record<string, string>; config?: unknown; description?: string };
+        const data = await res.json() as { name: string; itemType: string; files?: Record<string, string>; config?: unknown; description?: string; slug?: string };
         const name = data.name;
-        const slug = kebab(name, 'hub-pkg');
+        const config = (data.config ?? {}) as Record<string, unknown>;
+        // Prefer the Hub's canonical slug / manifest name so non-ASCII display
+        // names (e.g. Chinese) don't collapse to a shared slug and clobber
+        // unrelated artifacts.
+        const canonicalName = (data.slug && data.slug.trim())
+          || (typeof config.name === 'string' && config.name.trim() ? config.name.trim() : '')
+          || name;
+        const slug = kebab(canonicalName, 'hub-pkg');
         const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
         const typeDir = mode === 'agent' ? 'agents' : mode === 'team' ? 'teams' : 'skills';
         const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, slug);
@@ -661,6 +877,41 @@ export class APIServer {
       return existsSync(tokenPath) ? readFileSync(tokenPath, 'utf-8').trim() : undefined;
     } catch {
       return undefined;
+    }
+  }
+
+  /**
+   * Push markus.json `org.name` to the Hub org the user owns.
+   * Skips the stock default so we don't overwrite a Hub-named org when the
+   * user never customized a local preferred name.
+   */
+  private async applyPreferredOrgNameToHub(hubToken: string): Promise<void> {
+    let preferred = '';
+    try {
+      preferred = (loadConfig(this.markusConfigPath).org?.name ?? '').trim();
+    } catch {
+      return;
+    }
+    if (!preferred || preferred === 'My Organization') return;
+
+    const mineRes = await this.hubFetch(`${this.hubUrl}/api/orgs/mine`, {
+      headers: { Authorization: `Bearer ${hubToken}` },
+    });
+    if (!mineRes.ok) return;
+    const data = await mineRes.json() as { orgs?: Array<{ id: string; name: string; role: string }> };
+    const owned = (data.orgs ?? []).find((o) => o.role === 'owner');
+    if (!owned || owned.name === preferred) return;
+
+    const renameRes = await this.hubFetch(`${this.hubUrl}/api/orgs/${owned.id}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${hubToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: preferred }),
+    });
+    if (!renameRes.ok) {
+      log.warn('Hub org rename rejected', { status: renameRes.status, orgId: owned.id });
     }
   }
 
@@ -943,7 +1194,7 @@ export class APIServer {
   }
 
   /** Returns user or sends 401 and returns null */
-  private async requireAuth(
+  async requireAuth(
     req: IncomingMessage,
     res: ServerResponse
   ): Promise<{ userId: string; orgId: string; role: string } | null> {
@@ -1588,7 +1839,7 @@ export class APIServer {
     }
   }
 
-  /** Persist the assistant reply after LLM completes */
+  /** Persist the assistant reply after LLM completes (upsert while streaming). */
   private async persistAssistantMessage(
     sessionId: string | null,
     agentId: string,
@@ -1598,14 +1849,26 @@ export class APIServer {
   ): Promise<void> {
     if (!this.storage || !sessionId) return;
     try {
-      const msg = await this.storage.chatSessionRepo.appendMessage(
-        sessionId,
-        agentId,
-        'assistant',
-        reply,
-        tokensUsed,
-        metadata
-      );
+      const meta = (metadata && typeof metadata === 'object')
+        ? metadata as Record<string, unknown>
+        : undefined;
+      const useUpsert = !!(meta && (meta.isStreaming === true || meta.isStreaming === false || meta.streamId));
+      const msg = useUpsert
+        ? this.storage.chatSessionRepo.upsertStreamingAssistantMessage(
+            sessionId,
+            agentId,
+            reply,
+            tokensUsed,
+            metadata,
+          )
+        : await this.storage.chatSessionRepo.appendMessage(
+            sessionId,
+            agentId,
+            'assistant',
+            reply,
+            tokensUsed,
+            metadata,
+          );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
       if (msg?.id) {
         this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
@@ -2127,7 +2390,7 @@ export class APIServer {
 
       // First-time login: if the email isn't found, check if there's an unclaimed
       // admin user (still using the placeholder email). If the password matches,
-      // adopt that admin user with the provided email.
+      // adopt that admin user with the provided email + a non-placeholder name.
       if (!userRow && this.storage) {
         const allUsers = await this.storage.userRepo.listByOrg('default');
         const unclaimedOwner = allUsers.find((u: any) =>
@@ -2136,8 +2399,22 @@ export class APIServer {
         if (unclaimedOwner && unclaimedOwner.passwordHash) {
           const ownerPasswordValid = await verifyPassword(password, unclaimedOwner.passwordHash);
           if (ownerPasswordValid) {
-            this.storage.userRepo.updateProfile(unclaimedOwner.id, { email });
-            userRow = { ...unclaimedOwner, email } as typeof userRow;
+            const placeholderName = !unclaimedOwner.name || /^admin$/i.test(unclaimedOwner.name);
+            const adoptedName = placeholderName
+              ? (email.split('@')[0] || 'User')
+              : unclaimedOwner.name;
+            this.storage.userRepo.updateProfile(unclaimedOwner.id, {
+              email,
+              ...(placeholderName ? { name: adoptedName } : {}),
+            });
+            this.orgService.syncHumanIdentity(
+              unclaimedOwner.id,
+              'default',
+              adoptedName,
+              'owner',
+              email,
+            );
+            userRow = { ...unclaimedOwner, email, name: adoptedName } as typeof userRow;
           }
         }
       }
@@ -2308,6 +2585,14 @@ export class APIServer {
         writeFileSync(tokenPath, hubToken, 'utf-8');
       } catch { /* non-critical */ }
 
+      // Local onboarding may have stored a preferred org name before Hub connect.
+      // Apply it to the user's Hub org once a session exists.
+      try {
+        await this.applyPreferredOrgNameToHub(hubToken);
+      } catch (err) {
+        log.warn('Failed to sync preferred org name to Hub', { error: (err as Error).message });
+      }
+
       const finalUser = userRow!;
       await this.storage.userRepo.updateLastLogin(finalUser.id);
       const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
@@ -2364,8 +2649,32 @@ export class APIServer {
           role: userRow.role,
           orgId: userRow.orgId,
           avatarUrl: userRow.avatarUrl ?? undefined,
+          preferences: userRow.preferences ?? undefined,
         },
       });
+      return;
+    }
+
+    if (path === '/api/auth/me/preferences' && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const prefs: Record<string, unknown> = {};
+      if (typeof body['locale'] === 'string') prefs.locale = body['locale'];
+      if (typeof body['timezone'] === 'string') prefs.timezone = body['timezone'];
+      if (Object.keys(prefs).length === 0) {
+        this.json(res, 400, { error: 'No supported preference fields provided' });
+        return;
+      }
+      this.orgService.updateHumanPreferences(authUser.userId, prefs);
+      // Owner preferences double as the default locale/timezone for autonomous agent runs.
+      const identity = this.orgService.resolveHumanIdentity(authUser.userId);
+      if (identity?.role === 'owner') {
+        try {
+          this.orgService.getAgentManager().setRuntimeViewerContext({ locale: identity.locale, timezone: identity.timezone });
+        } catch { /* agent manager not ready */ }
+      }
+      this.json(res, 200, { ok: true, preferences: identity ? { locale: identity.locale, timezone: identity.timezone } : prefs });
       return;
     }
 
@@ -2507,12 +2816,14 @@ export class APIServer {
         this.json(res, 404, { error: 'User not found' });
         return;
       }
-      // Update in-memory human user as well
-      const human = this.orgService.getHumanUser(authUser.userId);
-      if (human) {
-        human.name = name;
-        if (email) human.email = email;
-      }
+      // Keep in-memory org identity in sync (sidebar / People / agent context)
+      this.orgService.syncHumanIdentity(
+        updated.id,
+        updated.orgId,
+        name,
+        (updated.role as 'owner' | 'admin' | 'member') ?? 'member',
+        email || updated.email || undefined,
+      );
       // Re-issue token with updated info
       const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
       const token = await signToken(
@@ -2670,6 +2981,79 @@ export class APIServer {
       const limit = parseInt(url.searchParams.get('limit') ?? '20');
       const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, limit, authUser?.userId);
       this.json(res, 200, { sessions });
+      return;
+    }
+
+    // Active stream status (JSON) — used by Chat UI after refresh
+    if (path.match(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/) && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const parts = path.split('/');
+      const agentId = parts[3]!;
+      const sessionId = parts[5]!;
+      this.json(res, 200, this.activeStreams.status(agentId, sessionId));
+      return;
+    }
+
+    // Reattach to an in-flight chat stream (SSE). Soft disconnect does not cancel.
+    if (path.match(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream$/) && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const parts = path.split('/');
+      const agentId = parts[3]!;
+      const sessionId = parts[5]!;
+      const afterSeq = parseInt(url.searchParams.get('afterSeq') ?? '0', 10) || 0;
+      const active = this.activeStreams.getByAgentSession(agentId, sessionId);
+      // Allow attach while streaming OR briefly after done (TTL) so a late
+      // refresh still receives the terminal `done` / `error` event.
+      if (!active || (active.status !== 'streaming' && active.status !== 'done' && active.status !== 'error')) {
+        // 204: nothing to attach — client should show persisted messages only
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      active.attach(res, afterSeq);
+      return;
+    }
+
+    // Session model override (Chat composer picker)
+    if (path.match(/^\/api\/sessions\/[^/]+\/model-override$/) && req.method === 'PUT') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const sessionId = path.split('/')[3]!;
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const session = this.storage.chatSessionRepo.getSession(sessionId);
+      if (!session) {
+        this.json(res, 404, { error: 'Session not found' });
+        return;
+      }
+      if (session.userId && session.userId !== authUser.userId) {
+        const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+        if (!isAdminOrOwner) {
+          this.json(res, 403, { error: 'Access denied' });
+          return;
+        }
+      }
+      const body = await this.readBody(req);
+      const provider = typeof body['provider'] === 'string' ? body['provider'].trim() : '';
+      const model = typeof body['model'] === 'string' ? body['model'].trim() : '';
+      const existing = this.storage.chatSessionRepo.getSessionMetadata(sessionId) ?? {};
+      if (!provider || !model) {
+        delete existing['modelOverride'];
+        this.storage.chatSessionRepo.updateSessionMetadata(sessionId, Object.keys(existing).length ? existing : null);
+        this.json(res, 200, { modelOverride: null });
+        return;
+      }
+      if (this.llmRouter?.isProviderDisabled(provider)) {
+        this.json(res, 400, { error: `Provider "${provider}" is disabled` });
+        return;
+      }
+      existing['modelOverride'] = { provider, model };
+      this.storage.chatSessionRepo.updateSessionMetadata(sessionId, existing);
+      this.json(res, 200, { modelOverride: { provider, model } });
       return;
     }
 
@@ -3236,6 +3620,19 @@ export class APIServer {
           // Pass deferred session restore when agent is busy — it will be applied
           // at mailbox processing time to avoid corrupting an in-progress session.
           const deferredRestore = agent.isProcessing() ? sessionRestoreData : undefined;
+          // Optional one-shot / session model override for this turn
+          const overrideProvider = typeof body['provider'] === 'string' ? body['provider'].trim() : '';
+          const overrideModel = typeof body['model'] === 'string' ? body['model'].trim() : '';
+          if (overrideProvider && overrideModel) {
+            agent.setTurnModelOverride({ provider: overrideProvider, model: overrideModel });
+          } else if (sessionId && this.storage) {
+            const sessMeta = this.storage.chatSessionRepo.getSessionMetadata(sessionId);
+            const mo = sessMeta?.['modelOverride'] as { provider?: string; model?: string } | undefined;
+            if (mo?.provider && mo?.model) {
+              agent.setTurnModelOverride({ provider: mo.provider, model: mo.model });
+            }
+          }
+
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
@@ -3251,6 +3648,7 @@ export class APIServer {
             executionStreamRepo: this.storage?.executionStreamRepo,
             isResume,
             sessionRestore: deferredRestore,
+            activeStreams: this.activeStreams,
           });
 
           await sseHandler.handle(res);
@@ -3544,17 +3942,6 @@ export class APIServer {
         this.json(res, 400, { error: 'name is required' });
         return;
       }
-      // Feature gating: check team limit
-      if (this.licenseService) {
-        const limits = this.licenseService.getLimits();
-        if (limits.maxTeams > 0) {
-          const existingTeams = await this.orgService.listTeams(orgId);
-          if (existingTeams.length >= limits.maxTeams) {
-            this.json(res, 403, { error: `Team limit reached (${limits.maxTeams}). Upgrade to Enterprise for unlimited teams.` });
-            return;
-          }
-        }
-      }
       const team = await this.orgService.createTeam(
         orgId,
         name,
@@ -3806,79 +4193,7 @@ export class APIServer {
     }
 
     // Tasks
-    if (path === '/api/tasks' && req.method === 'GET') {
-      const orgId = url.searchParams.get('orgId') ?? undefined;
-      const status = url.searchParams.get('status') as TaskStatus | undefined;
-      const assignedAgentId = url.searchParams.get('assignedAgentId') ?? undefined;
-      const projectId = url.searchParams.get('projectId') ?? undefined;
-      const requirementId = url.searchParams.get('requirementId') ?? undefined;
-      const priority = url.searchParams.get('priority') as TaskPriority | undefined;
-      const search = url.searchParams.get('search') ?? undefined;
-      const sortBy = url.searchParams.get('sortBy') as TaskSortField | undefined;
-      const sortOrder = url.searchParams.get('sortOrder') as SortOrder | undefined;
-      const pageParam = url.searchParams.get('page');
-      const pageSizeParam = url.searchParams.get('pageSize');
-      const page = pageParam ? parseInt(pageParam, 10) : undefined;
-      const pageSize = pageSizeParam ? parseInt(pageSizeParam, 10) : undefined;
-
-      const result = this.taskService.queryTasks({
-        orgId, status, assignedAgentId, projectId, requirementId,
-        priority, search, sortBy, sortOrder, page, pageSize,
-      });
-      this.json(res, 200, result);
-      return;
-    }
-
-    if (path === '/api/tasks/scheduled' && req.method === 'GET') {
-      const tasks = this.taskService.listScheduledTasks();
-      this.json(res, 200, { tasks });
-      return;
-    }
-
-    if (path === '/api/tasks/deliverables' && req.method === 'GET') {
-      const projectId = url.searchParams.get('projectId') ?? undefined;
-      if (this.deliverableService) {
-        const { results } = this.deliverableService.search({ projectId, limit: 500 });
-        const grouped = new Map<string, { taskId: string; taskTitle: string; taskStatus: string; projectId?: string; requirementId?: string; assignedAgentId?: string; updatedAt?: string; deliverables: typeof results }>();
-        for (const d of results) {
-          if (!d.taskId) continue;
-          if (!grouped.has(d.taskId)) {
-            const task = this.taskService.getTask(d.taskId);
-            grouped.set(d.taskId, {
-              taskId: d.taskId,
-              taskTitle: task?.title ?? '',
-              taskStatus: task?.status ?? '',
-              projectId: task?.projectId,
-              requirementId: task?.requirementId,
-              assignedAgentId: task?.assignedAgentId,
-              updatedAt: task?.updatedAt,
-              deliverables: [],
-            });
-          }
-          grouped.get(d.taskId)!.deliverables.push(d);
-        }
-        this.json(res, 200, { items: [...grouped.values()] });
-      } else {
-        const all = this.taskService.listTasks({ projectId });
-        const items = all
-          .filter(t => t.deliverables && t.deliverables.length > 0)
-          .map(t => ({
-            taskId: t.id,
-            taskTitle: t.title,
-            taskStatus: t.status,
-            projectId: t.projectId,
-            requirementId: t.requirementId,
-            assignedAgentId: t.assignedAgentId,
-            updatedAt: t.updatedAt,
-            deliverables: t.deliverables,
-          }));
-        this.json(res, 200, { items });
-      }
-      return;
-    }
-
-    // ── Unified Deliverables CRUD ──────────────────────────────────────────
-
+    if (await handleTasksRoutes(this, req, res, path, url)) return;
     if (path === '/api/deliverables' && req.method === 'GET') {
       if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
       const q = url.searchParams.get('q') ?? undefined;
@@ -3977,571 +4292,7 @@ export class APIServer {
       return;
     }
 
-    if (path === '/api/tasks/dashboard' && req.method === 'GET') {
-      const orgId = url.searchParams.get('orgId') ?? undefined;
-      const dashboard = this.taskService.getDashboard(orgId);
-      this.json(res, 200, dashboard);
-      return;
-    }
-
-    if (path.match(/^\/api\/tasks\/[^/]+\/context$/) && req.method === 'GET') {
-      const taskId = path.split('/')[3]!;
-      try {
-        const task = this.taskService.getTask(taskId);
-        if (!task) {
-          this.json(res, 404, { error: 'Task not found' });
-          return;
-        }
-
-        const result: Record<string, unknown> = {
-          task: {
-            id: task.id,
-            title: task.title,
-            description: task.description,
-            status: task.status,
-            priority: task.priority,
-            subtasks: task.subtasks || [],
-            notes: task.notes || [],
-            deliverables: task.deliverables || [],
-            completionSummary: task.completionSummary,
-            assignedAgentId: task.assignedAgentId,
-            reviewerId: task.reviewerId,
-            executionRound: task.executionRound,
-            createdAt: task.createdAt,
-            updatedAt: task.updatedAt,
-          },
-          upstream: [] as Array<Record<string, unknown>>,
-          downstream: [] as Array<Record<string, unknown>>,
-        };
-
-        if (task.requirementId && this.requirementService) {
-          try {
-            const reqData = this.requirementService.getRequirement(task.requirementId);
-            if (reqData) {
-              result.requirement = {
-                id: reqData.id,
-                title: reqData.title,
-                description: reqData.description,
-                status: reqData.status,
-              };
-            }
-          } catch { /* requirement may not exist */ }
-        }
-
-        if (task.projectId && this.projectService) {
-          try {
-            const project = this.projectService.getProject(task.projectId);
-            if (project) {
-              result.project = {
-                id: project.id,
-                name: project.name,
-                description: project.description,
-                repositories: project.repositories || [],
-              };
-            }
-          } catch { /* project may not exist */ }
-        }
-
-        if (task.blockedBy && task.blockedBy.length > 0) {
-          for (const depId of task.blockedBy) {
-            try {
-              const dep = this.taskService.getTask(depId);
-              if (dep) {
-                (result.upstream as Array<Record<string, unknown>>).push({
-                  id: dep.id,
-                  title: dep.title,
-                  status: dep.status,
-                  notes: dep.notes,
-                  completionSummary: dep.completionSummary,
-                  deliverables: dep.deliverables,
-                });
-              }
-            } catch { /* dep may not exist */ }
-          }
-        }
-
-        try {
-          const allTasks = this.taskService.queryTasks({ orgId: task.orgId });
-          const downstream = allTasks.tasks.filter(t =>
-            t.blockedBy && t.blockedBy.includes(task.id),
-          );
-          result.downstream = downstream.map(t => ({
-            id: t.id,
-            title: t.title,
-            status: t.status,
-          }));
-        } catch { /* ignore */ }
-
-        this.json(res, 200, result);
-      } catch {
-        this.json(res, 500, { error: 'Failed to fetch task context' });
-      }
-      return;
-    }
-
-    if (path.match(/^\/api\/tasks\/[^/]+$/) && req.method === 'GET') {
-      const taskId = path.split('/')[3]!;
-      const task = this.taskService.getTask(taskId);
-      if (!task) {
-        this.json(res, 404, { error: `Task not found: ${taskId}` });
-        return;
-      }
-      this.json(res, 200, { task });
-      return;
-    }
-
-    if (path === '/api/tasks' && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const body = await this.readBody(req);
-      const assignedAgentId = (body['assignedAgentId'] as string | undefined)?.trim();
-      const reviewerId = (body['reviewerId'] as string | undefined)?.trim();
-      const reviewerType = (body['reviewerType'] as string | undefined) === 'human' ? 'human' as const : 'agent' as const;
-      if (!assignedAgentId || !reviewerId) {
-        this.json(res, 400, { error: 'assignedAgentId and reviewerId are required' });
-        return;
-      }
-      const agentMgr = this.orgService.getAgentManager();
-      if (!agentMgr.hasAgent(assignedAgentId)) {
-        this.json(res, 400, { error: `Assigned agent not found: ${assignedAgentId}` });
-        return;
-      }
-      if (reviewerType !== 'human' && !agentMgr.hasAgent(reviewerId)) {
-        this.json(res, 400, { error: `Reviewer agent not found: ${reviewerId}` });
-        return;
-      }
-      const scheduleRaw = body['scheduleConfig'] as Record<string, unknown> | undefined;
-      let task: ReturnType<typeof this.taskService.createTask>;
-      try {
-        task = this.taskService.createTask({
-          orgId: (body['orgId'] as string) ?? 'default',
-          title: body['title'] as string,
-          description: body['description'] as string,
-          priority: body['priority'] as TaskPriority | undefined,
-          assignedAgentId,
-          reviewerId,
-          reviewerType,
-          projectId: body['projectId'] as string | undefined,
-          blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
-          requirementId: body['requirementId'] as string | undefined,
-          createdBy: authUser?.userId ?? 'unknown',
-          creatorRole: 'human',
-          taskType: ((body['taskType'] as string | undefined) ?? 'standard') as 'standard' | 'scheduled',
-          scheduleConfig: scheduleRaw ? {
-            cron: scheduleRaw['cron'] as string | undefined,
-            every: scheduleRaw['every'] as string | undefined,
-            runAt: scheduleRaw['runAt'] as string | undefined,
-            timezone: scheduleRaw['timezone'] as string | undefined,
-            maxRuns: scheduleRaw['maxRuns'] as number | undefined,
-          } : undefined,
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        let code = 'unknown';
-        if (msg.includes('task cap reached') || msg.includes('active task cap')) code = 'task_limit_reached';
-        else if (msg.includes('must reference an approved requirement')) code = 'requirement_required';
-        else if (msg.includes('agent not found')) code = 'agent_not_found';
-        this.json(res, 400, { error: msg, code });
-        return;
-      }
-      this.auditService?.record({
-        orgId: task.orgId,
-        type: 'task_created',
-        action: 'create_task',
-        detail: `Task "${task.title}" created`,
-        userId: authUser?.userId,
-        agentId: task.assignedAgentId,
-        taskId: task.id,
-        projectId: task.projectId,
-        success: true,
-        metadata: { reviewerId: task.reviewerId, requirementId: task.requirementId },
-      });
-      this.json(res, 201, { task });
-      return;
-    }
-
-    if (path.match(/^\/api\/tasks\/[^/]+$/) && req.method === 'PUT') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = path.split('/')[3]!;
-      const body = await this.readBody(req);
-
-      if (body['status']) {
-        const task = this.taskService.updateTaskStatus(taskId, body['status'] as TaskStatus, authUser?.userId);
-        this.json(res, 200, { task });
-        return;
-      }
-
-      if ('assignedAgentId' in body) {
-        const agentId = body['assignedAgentId'] as string | null;
-        if (agentId) {
-          const task = this.taskService.assignTask(taskId, agentId, authUser?.userId);
-          this.json(res, 200, { task });
-        } else {
-          this.json(res, 400, { error: 'assignedAgentId is required — tasks must always have an assignee' });
-        }
-        return;
-      }
-
-      // General field update (title/description/priority/projectId/requirementId/blockedBy/reviewerId/reviewerType)
-      if (
-        body['title'] !== undefined ||
-        body['description'] !== undefined ||
-        body['priority'] !== undefined ||
-        body['projectId'] !== undefined ||
-        body['requirementId'] !== undefined ||
-        body['blockedBy'] !== undefined ||
-        body['reviewerId'] !== undefined ||
-        body['reviewerType'] !== undefined
-      ) {
-        const task = this.taskService.updateTask(taskId, {
-          title: body['title'] as string | undefined,
-          description: body['description'] as string | undefined,
-          priority: body['priority'] as TaskPriority | undefined,
-          projectId: body['projectId'] !== undefined ? (body['projectId'] as string | null) : undefined,
-          requirementId: body['requirementId'] !== undefined ? (body['requirementId'] as string | null) : undefined,
-          blockedBy: Array.isArray(body['blockedBy']) ? body['blockedBy'] as string[] : undefined,
-          reviewerId: body['reviewerId'] as string | undefined,
-          reviewerType: body['reviewerType'] as 'agent' | 'human' | undefined,
-        }, authUser?.userId);
-        this.json(res, 200, { task });
-        return;
-      }
-
-      this.json(res, 400, { error: 'Provide status, assignedAgentId, or task fields to update' });
-      return;
-    }
-
-    // Task approve/reject — the only way to transition out of pending.
-    // If the UI changed the assignee before approving, that's already on the task object.
-    if (path.match(/^\/api\/tasks\/[^/]+\/approve$/) && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = path.split('/')[3]!;
-      try {
-        const body = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
-        const runNow = body['runNow'] === true;
-        const task = this.taskService.approveTask(taskId, authUser?.userId, runNow);
-        this.auditService?.record({
-          orgId: task.orgId,
-          type: 'task_approval_granted',
-          action: 'approve_task',
-          detail: `Task "${task.title}" approved`,
-          userId: authUser?.userId,
-          agentId: task.assignedAgentId,
-          taskId: task.id,
-          projectId: task.projectId,
-          success: true,
-        });
-        this.json(res, 200, { task });
-      } catch (err: unknown) {
-        this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
-      }
-      return;
-    }
-
-    if (path.match(/^\/api\/tasks\/[^/]+\/reject$/) && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = path.split('/')[3]!;
-      try {
-        const task = this.taskService.rejectTask(taskId, authUser?.userId);
-        this.auditService?.record({
-          orgId: task.orgId,
-          type: 'task_approval_rejected',
-          action: 'reject_task',
-          detail: `Task "${task.title}" rejected`,
-          userId: authUser?.userId,
-          agentId: task.assignedAgentId,
-          taskId: task.id,
-          projectId: task.projectId,
-          success: true,
-        });
-        this.json(res, 200, { task });
-      } catch (err: unknown) {
-        this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
-      }
-      return;
-    }
-
-    if (path.match(/^\/api\/tasks\/[^/]+\/cancel$/) && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = path.split('/')[3]!;
-      const body = await this.readBody(req);
-      const cascade = body['cascade'] === true;
-      try {
-        const task = this.taskService.cancelTask(taskId, cascade, authUser?.userId, 'human');
-        this.auditService?.record({
-          orgId: task.orgId,
-          type: 'task_cancelled',
-          action: 'cancel_task',
-          detail: `Task "${task.title}" cancelled`,
-          userId: authUser?.userId,
-          agentId: task.assignedAgentId,
-          taskId: task.id,
-          projectId: task.projectId,
-          success: true,
-          metadata: { cascade },
-        });
-        this.json(res, 200, { task });
-      } catch (err) {
-        this.json(res, 400, { error: String(err) });
-      }
-      return;
-    }
-
-    if (path.match(/^\/api\/tasks\/[^/]+\/dependents$/) && req.method === 'GET') {
-      const taskId = path.split('/')[3]!;
-      const count = this.taskService.getDependentTaskCount(taskId);
-      this.json(res, 200, { count });
-      return;
-    }
-
-    if (path.startsWith('/api/tasks/') && req.method === 'DELETE' && !path.includes('/subtasks/')) {
-      this.json(res, 400, { error: 'Tasks cannot be deleted — use cancel instead to preserve audit trail' });
-      return;
-    }
-
-    // Subtasks (embedded within a task)
-    if (path.match(/^\/api\/tasks\/[^/]+\/subtasks$/) && req.method === 'GET') {
-      const taskId = path.split('/')[3]!;
-      const task = this.taskService.getTask(taskId);
-      if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
-      this.json(res, 200, { subtasks: task.subtasks });
-      return;
-    }
-
-    if (path.match(/^\/api\/tasks\/[^/]+\/subtasks$/) && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const body = await this.readBody(req);
-      const taskId = path.split('/')[3]!;
-      const subtask = this.taskService.addSubtask(taskId, body['title'] as string);
-      this.json(res, 201, { subtask });
-      return;
-    }
-
-    // Complete/cancel a specific subtask
-    const subtaskActionMatch = path.match(/^\/api\/tasks\/([^/]+)\/subtasks\/([^/]+)\/(complete|cancel)$/);
-    if (subtaskActionMatch && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = subtaskActionMatch[1]!;
-      const subtaskId = subtaskActionMatch[2]!;
-      const action = subtaskActionMatch[3]!;
-      const sub = action === 'complete'
-        ? this.taskService.completeSubtask(taskId, subtaskId)
-        : this.taskService.cancelSubtask(taskId, subtaskId);
-      this.json(res, 200, { subtask: sub });
-      return;
-    }
-
-    // Delete a specific subtask
-    const subtaskDeleteMatch = path.match(/^\/api\/tasks\/([^/]+)\/subtasks\/([^/]+)$/);
-    if (subtaskDeleteMatch && req.method === 'DELETE') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = subtaskDeleteMatch[1]!;
-      const subtaskId = subtaskDeleteMatch[2]!;
-      this.taskService.deleteSubtask(taskId, subtaskId);
-      this.json(res, 200, { ok: true });
-      return;
-    }
-
-    if (path === '/api/taskboard' && req.method === 'GET') {
-      const orgId = url.searchParams.get('orgId') ?? 'default';
-      const projectId = url.searchParams.get('projectId') ?? undefined;
-      const board = this.taskService.getTaskBoard(orgId, { projectId });
-      this.json(res, 200, { board });
-      return;
-    }
-
-    // Comprehensive operations dashboard
-    if (path === '/api/ops/dashboard' && req.method === 'GET') {
-      const orgId = url.searchParams.get('orgId') ?? undefined;
-      const period = (url.searchParams.get('period') ?? '24h') as '1h' | '24h' | '7d';
-      const opsDashboard = this.buildOpsDashboard(orgId, period);
-      this.json(res, 200, opsDashboard);
-      return;
-    }
-
-    // Task execution: run a task with its assigned agent (fire-and-forget)
-    if (path.match(/^\/api\/tasks\/[^/]+\/run$/) && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = path.split('/')[3]!;
-      try {
-        const task = this.taskService.getTask(taskId);
-        if (!task) { this.json(res, 404, { error: 'Task not found' }); return; }
-        if (task.status !== 'in_progress') {
-          this.json(res, 400, { error: `Cannot run task in ${task.status} status — must be in_progress` });
-          return;
-        }
-        await this.taskService.runTask(taskId);
-        this.json(res, 202, { status: 'running', taskId });
-      } catch (err) {
-        this.json(res, 400, { error: String(err) });
-      }
-      return;
-    }
-
-    // Unified execution stream logs
-    if (path === '/api/execution-logs' && req.method === 'GET') {
-      const sourceType = url.searchParams.get('sourceType');
-      const sourceId = url.searchParams.get('sourceId');
-      if (!sourceType || !sourceId) {
-        this.json(res, 400, { error: 'sourceType and sourceId required' });
-        return;
-      }
-      if (!this.storage?.executionStreamRepo) {
-        this.json(res, 200, { logs: [] });
-        return;
-      }
-      try {
-        const logs = this.storage.executionStreamRepo.getBySource(sourceType, sourceId);
-        this.json(res, 200, { logs });
-      } catch (err) {
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // Task execution logs — rounds summary (lightweight metadata only)
-    if (path.match(/^\/api\/tasks\/[^/]+\/logs\/summary$/) && req.method === 'GET') {
-      const taskId = path.split('/')[3]!;
-      if (!this.storage) {
-        this.json(res, 200, { rounds: [] });
-        return;
-      }
-      try {
-        const rounds = this.storage.taskLogRepo.getRoundsSummary(taskId);
-        this.json(res, 200, { rounds });
-      } catch (err) {
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // Task execution logs — optionally filtered by round
-    if (path.match(/^\/api\/tasks\/[^/]+\/logs$/) && req.method === 'GET') {
-      const taskId = path.split('/')[3]!;
-      if (!this.storage) {
-        this.json(res, 200, { logs: [] });
-        return;
-      }
-      try {
-        const roundParam = url.searchParams.get('round');
-        const logs = roundParam
-          ? this.storage.taskLogRepo.getByTaskRound(taskId, parseInt(roundParam, 10))
-          : await this.storage.taskLogRepo.getByTask(taskId);
-        this.json(res, 200, { logs });
-      } catch (err) {
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // Task comments — add a comment (text + optional image attachments + @mentions)
-    if (path.match(/^\/api\/tasks\/[^/]+\/comments$/) && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = path.split('/')[3]!;
-      try {
-        const body = await this.readBody(req);
-        const mentions = (body['mentions'] as string[] | undefined) ?? [];
-        let resolvedAuthorName = (body['authorName'] as string | undefined);
-        if (!resolvedAuthorName && authUser?.userId && this.storage?.userRepo) {
-          const userRow = await this.storage.userRepo.findById(authUser.userId);
-          resolvedAuthorName = userRow?.name;
-        }
-        const authorId = (body['authorId'] as string) ?? authUser?.userId ?? 'human';
-        const authorName = resolvedAuthorName ?? 'User';
-        // Single entry point: DB write + WS broadcast + inject into running task + agent notifications
-        const result = await this.taskService.postTaskComment(
-          taskId, authorId, authorName,
-          body['content'] as string,
-          mentions, undefined,
-          { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined, replyToId: body['replyTo'] as string | undefined },
-        );
-        this.json(res, 201, { comment: result.comment });
-      } catch (err) {
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // Task comments — list comments for a task
-    if (path.match(/^\/api\/tasks\/[^/]+\/comments$/) && req.method === 'GET') {
-      const taskId = path.split('/')[3]!;
-      if (!this.storage?.taskCommentRepo) {
-        this.json(res, 200, { comments: [] });
-        return;
-      }
-      try {
-        const comments = await this.storage.taskCommentRepo.getByTask(taskId);
-        this.json(res, 200, { comments });
-      } catch (err) {
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // Task status history — list all status transitions for a task
-    if (path.match(/^\/api\/tasks\/[^/]+\/history$/) && req.method === 'GET') {
-      const taskId = path.split('/')[3]!;
-      try {
-        const history = this.taskService.getTaskStatusHistory(taskId);
-        this.json(res, 200, { history });
-      } catch (err) {
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // Task pause — explicitly pause a running task
-    if (path.match(/^\/api\/tasks\/[^/]+\/pause$/) && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = path.split('/')[3]!;
-      try {
-        this.taskService.pauseTask(taskId, authUser.userId, 'human');
-        this.json(res, 200, { status: 'blocked' as TaskStatus, taskId });
-      } catch (err) {
-        this.json(res, 400, { error: String(err) });
-      }
-      return;
-    }
-
-    // Task resume — resume a paused (blocked) task.
-    // Transition blocked → in_progress via updateTaskStatus; the auto-start
-    // side effect in handleTransitionSideEffects will schedule runTask.
-    if (path.match(/^\/api\/tasks\/[^/]+\/resume$/) && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = path.split('/')[3]!;
-      try {
-        this.taskService.resumeTask(taskId, authUser.userId, 'human');
-        this.json(res, 202, { status: 'running', taskId });
-      } catch (err) {
-        this.json(res, 400, { error: String(err) });
-      }
-      return;
-    }
-
-    // Task retry fresh — discard previous execution, start clean
-    if (path.match(/^\/api\/tasks\/[^/]+\/retry$/) && req.method === 'POST') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      const taskId = path.split('/')[3]!;
-      try {
-        const task = await this.taskService.retryTaskFresh(taskId);
-        this.json(res, 202, { task });
-      } catch (err) {
-        this.json(res, 400, { error: String(err) });
-      }
-      return;
-    }
+    if (await handleTasksRoutes(this, req, res, path, url)) return;
 
     // Organizations
     if (path === '/api/orgs' && req.method === 'GET') {
@@ -4771,8 +4522,12 @@ export class APIServer {
           const lc = body['llmConfig'] as Record<string, unknown>;
           cfg.llmConfig = { ...(cfg.llmConfig as Record<string, unknown>), ...lc };
         }
-        if (body['heartbeatIntervalMs'] !== undefined)
-          cfg.heartbeatIntervalMs = body['heartbeatIntervalMs'];
+        // Apply the heartbeat interval live (clamped) so the scheduler picks
+        // up the new cadence immediately without a process restart.
+        let effectiveHeartbeatMs: number | undefined;
+        if (body['heartbeatIntervalMs'] !== undefined) {
+          effectiveHeartbeatMs = agent.setHeartbeatInterval(Number(body['heartbeatIntervalMs']));
+        }
 
         // Persist config changes to DB
         if (this.storage) {
@@ -4782,7 +4537,7 @@ export class APIServer {
               agentRole: body['agentRole'] as string | undefined,
               skills: body['skills'] as unknown,
               llmConfig: cfg.llmConfig,
-              heartbeatIntervalMs: body['heartbeatIntervalMs'] as number | undefined,
+              heartbeatIntervalMs: effectiveHeartbeatMs,
             });
           } catch (persistErr) {
             log.warn('Failed to persist agent config to DB', { agentId, error: String(persistErr) });
@@ -5082,7 +4837,8 @@ EXPLANATION_END`;
             { role: 'system', content: 'You are a precise configuration merge tool. Output exactly the requested format.' },
             { role: 'user', content: prompt },
           ],
-          maxTokens: 8192,
+          // No maxTokens cap: merged config files can exceed a fixed cap and get
+          // truncated. The router supplies the model's real output limit.
           temperature: 0.1,
         });
 
@@ -5289,12 +5045,46 @@ EXPLANATION_END`;
           nextRunAt = next.toISOString();
         }
 
+        // Scheduled wakeups + in-flight async callbacks (event-driven rhythm)
+        const callbacks = pendingCallbackRegistry.getByAgentId(agentId);
+        const wakeups = callbacks
+          .filter(c => c.type === 'wakeup' && c.wakeAt !== undefined)
+          .map(c => ({
+            id: c.id,
+            note: c.note,
+            wakeAt: new Date(c.wakeAt!).toISOString(),
+            recurringMs: c.recurringMs,
+            deliveryMode: c.deliveryMode ?? 'mailbox',
+          }))
+          .sort((a, b) => new Date(a.wakeAt).getTime() - new Date(b.wakeAt).getTime());
+        const pendingCallbacks = callbacks
+          .filter(c => c.type !== 'wakeup')
+          .map(c => ({
+            id: c.id,
+            type: c.type,
+            label: c.command ?? c.note ?? c.type,
+            correlationId: c.correlationId,
+            registeredAt: new Date(c.registeredAt).toISOString(),
+            timeoutAt: new Date(c.registeredAt + c.timeoutMs).toISOString(),
+          }));
+        // Next wake = earliest of scheduled wakeups and the safety-net tick
+        const wakeCandidates = [
+          ...(nextRunAt ? [new Date(nextRunAt).getTime()] : []),
+          ...wakeups.map(w => new Date(w.wakeAt).getTime()),
+        ];
+        const nextWakeAt = wakeCandidates.length > 0
+          ? new Date(Math.min(...wakeCandidates)).toISOString()
+          : undefined;
+
         this.json(res, 200, {
           ...status,
           lastHeartbeat,
           lastSummary,
           lastSummaryAt,
           nextRunAt,
+          nextWakeAt,
+          wakeups,
+          pendingCallbacks,
         });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
@@ -5316,6 +5106,27 @@ EXPLANATION_END`;
         }
         hb.trigger();
         this.json(res, 200, { status: 'triggered', message: 'Heartbeat triggered. Check activity logs for results.' });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Cancel a scheduled wakeup
+    if (path.match(/^\/api\/agents\/[^/]+\/wakeups\/[^/]+$/) && req.method === 'DELETE') {
+      const parts = path.split('/');
+      const agentId = parts[3]!;
+      const wakeupId = parts[5]!;
+      try {
+        // Confirm the agent exists (throws → 404) before touching the registry.
+        this.orgService.getAgentManager().getAgent(agentId);
+        const cb = pendingCallbackRegistry.getByAgentId(agentId).find(c => c.id === wakeupId && c.type === 'wakeup');
+        if (!cb) {
+          this.json(res, 404, { error: 'No scheduled wakeup with that id' });
+          return;
+        }
+        pendingCallbackRegistry.resolve(wakeupId);
+        this.json(res, 200, { status: 'cancelled', wakeupId });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -5390,7 +5201,7 @@ EXPLANATION_END`;
         const VIRTUAL_TOOLS: Array<{ name: string; description: string }> = [
           { name: 'discover_tools', description: 'Discover and activate additional tools and skills available to this agent' },
           { name: 'notify_user', description: 'Send a notification to a human team member (appears in chat + notification bell)' },
-          { name: 'request_user_approval', description: 'Request a decision or approval from a human (blocks until response)' },
+          { name: 'request_user_input', description: 'Request a decision, approval, or input from a human — one or multiple questions (blocks until response)' },
           { name: 'recall_activity', description: 'Query your own execution history and past activity logs' },
         ];
         for (const vt of VIRTUAL_TOOLS) {
@@ -5488,421 +5299,7 @@ EXPLANATION_END`;
       return;
     }
 
-    // ── External Agent Gateway ──────────────────────────────────────────────
-    if (path === '/api/gateway/info' && req.method === 'GET') {
-      const authUser = await this.requireAuth(req, res);
-      if (!authUser) return;
-      if (authUser.role !== 'admin') {
-        this.json(res, 403, { error: 'Admin access required' });
-        return;
-      }
-      const host = req.headers['host'] ?? `localhost:${this.port}`;
-      const proto = req.headers['x-forwarded-proto'] ?? 'http';
-      const gatewayUrl = `${proto}://${host}/api/gateway`;
-      const secret = this.gatewaySecret ?? '';
-      const masked = secret.length > 8
-        ? secret.slice(0, 4) + '*'.repeat(secret.length - 8) + secret.slice(-4)
-        : secret;
-      this.json(res, 200, {
-        gatewayUrl,
-        orgId: 'default',
-        orgSecret: masked,
-        orgSecretFull: secret,
-        enabled: !!this.gateway,
-      });
-      return;
-    }
-
-    if (path === '/api/gateway/register' && req.method === 'POST') {
-      if (!this.gateway) {
-        this.json(res, 503, { error: 'Gateway not configured' });
-        return;
-      }
-      const body = await this.readBody(req);
-      try {
-        const reg = await this.gateway.register({
-          externalAgentId: body['agentId'] as string,
-          agentName: body['agentName'] as string,
-          orgId: body['orgId'] as string,
-          capabilities: (body['capabilities'] as string[]) ?? [],
-          platform: body['platform'] as string | undefined,
-          platformConfig: body['platformConfig'] as string | undefined,
-          agentCardUrl: body['agentCardUrl'] as string | undefined,
-          openClawConfig: body['openClawConfig'] as string | undefined,
-        });
-        this.json(res, 201, reg);
-      } catch (err) {
-        if (err instanceof GatewayError) {
-          this.json(res, err.statusCode, { error: err.message });
-          return;
-        }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    if (path === '/api/gateway/auth' && req.method === 'POST') {
-      if (!this.gateway) {
-        this.json(res, 503, { error: 'Gateway not configured' });
-        return;
-      }
-      const body = await this.readBody(req);
-      try {
-        const result = this.gateway.authenticate({
-          externalAgentId: body['agentId'] as string,
-          orgId: body['orgId'] as string,
-          secret: body['secret'] as string,
-        });
-        this.json(res, 200, result);
-      } catch (err) {
-        if (err instanceof GatewayError) {
-          this.json(res, err.statusCode, { error: err.message });
-          return;
-        }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    if (path === '/api/gateway/message' && req.method === 'POST') {
-      if (!this.gateway) {
-        this.json(res, 503, { error: 'Gateway not configured' });
-        return;
-      }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) {
-        this.json(res, 401, { error: 'Missing Bearer token' });
-        return;
-      }
-      try {
-        const token = this.gateway.verifyToken(authHeader.slice(7));
-        const body = await this.readBody(req);
-        const result = await this.gateway.routeMessage(token, {
-          type: body['type'] as 'task' | 'status' | 'heartbeat',
-          content: body['content'] as string,
-          metadata: body['metadata'] as Record<string, unknown> | undefined,
-        });
-        this.json(res, 200, result);
-      } catch (err) {
-        if (err instanceof GatewayError) {
-          this.json(res, err.statusCode, { error: err.message });
-          return;
-        }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    if (path === '/api/gateway/status' && req.method === 'GET') {
-      if (!this.gateway) {
-        this.json(res, 503, { error: 'Gateway not configured' });
-        return;
-      }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) {
-        this.json(res, 401, { error: 'Missing Bearer token' });
-        return;
-      }
-      try {
-        const token = this.gateway.verifyToken(authHeader.slice(7));
-        const status = this.gateway.getStatus(token);
-        this.json(res, 200, status);
-      } catch (err) {
-        if (err instanceof GatewayError) {
-          this.json(res, err.statusCode, { error: err.message });
-          return;
-        }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // ── Gateway: Manual / Handbook ──────────────────────────────────────────
-    if (path === '/api/gateway/manual' && req.method === 'GET') {
-      if (!this.gateway) {
-        this.json(res, 503, { error: 'Gateway not configured' });
-        return;
-      }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) {
-        this.json(res, 401, { error: 'Missing Bearer token' });
-        return;
-      }
-      try {
-        const token = this.gateway.verifyToken(authHeader.slice(7));
-        const reg = this.gateway.listRegistrations(token.orgId)
-          .find(r => r.externalAgentId === token.externalAgentId);
-
-        const colleagues: HandbookColleague[] = this.orgService.getAgentManager().listAgents()
-          .filter(a => a.id !== token.markusAgentId)
-          .map(a => ({ id: a.id, name: a.name, role: a.role, status: a.status }));
-        const mgr = colleagues.find(c => {
-          const all = this.orgService.getAgentManager().listAgents();
-          return all.find(a => a.id === c.id && a.agentRole === 'manager');
-        });
-
-        const projects: HandbookProject[] = this.projectService
-          ? this.projectService.listProjects(token.orgId).map(p => ({
-              id: p.id, name: p.name,
-            }))
-          : [];
-
-        const handbook = generateHandbook({
-          baseUrl: `http://localhost:${this.port}`,
-          orgName: token.orgId,
-          agentName: reg?.agentName,
-          markusAgentId: token.markusAgentId,
-          platform: reg?.platform,
-          colleagues,
-          manager: mgr ? { id: mgr.id, name: mgr.name } : undefined,
-          projects,
-        });
-        res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
-        res.end(handbook);
-      } catch (err) {
-        if (err instanceof GatewayError) {
-          this.json(res, err.statusCode, { error: err.message });
-          return;
-        }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // ── Gateway: Team Context ────────────────────────────────────────────────
-    if (path === '/api/gateway/team' && req.method === 'GET') {
-      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
-      try {
-        const token = this.gateway.verifyToken(authHeader.slice(7));
-        const agents = this.orgService.getAgentManager().listAgents();
-        const colleagues = agents
-          .filter(a => a.id !== token.markusAgentId)
-          .map(a => ({ id: a.id, name: a.name, role: a.role, status: a.status, agentRole: a.agentRole, skills: a.skills }));
-        const manager = agents.find(a => a.agentRole === 'manager' && a.id !== token.markusAgentId);
-        this.json(res, 200, {
-          colleagues,
-          manager: manager ? { id: manager.id, name: manager.name } : null,
-        });
-      } catch (err) {
-        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // ── Gateway: Projects ────────────────────────────────────────────────────
-    if (path === '/api/gateway/projects' && req.method === 'GET') {
-      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
-      try {
-        const token = this.gateway.verifyToken(authHeader.slice(7));
-        if (!this.projectService) { this.json(res, 200, { projects: [] }); return; }
-        const projects = this.projectService.listProjects(token.orgId).map(p => ({
-          id: p.id, name: p.name, description: p.description, status: p.status,
-          teamIds: p.teamIds,
-        }));
-        this.json(res, 200, { projects });
-      } catch (err) {
-        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // ── Gateway: Requirements ────────────────────────────────────────────────
-    if (path === '/api/gateway/requirements' && req.method === 'GET') {
-      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
-      try {
-        const token = this.gateway.verifyToken(authHeader.slice(7));
-        if (!this.requirementService) { this.json(res, 200, { requirements: [] }); return; }
-        const url = new URL(req.url!, `http://localhost`);
-        const projectId = url.searchParams.get('project_id') ?? undefined;
-        const status = url.searchParams.get('status') ?? undefined;
-        const reqs = this.requirementService.listRequirements({
-          orgId: token.orgId,
-          projectId,
-          status: status as any,
-        }).map(r => ({
-          id: r.id, title: r.title, description: r.description,
-          status: r.status, priority: r.priority,
-          projectId: r.projectId,
-          source: r.source, createdAt: r.createdAt,
-        }));
-        this.json(res, 200, { requirements: reqs });
-      } catch (err) {
-        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // ── Gateway: Deliverables ──────────────────────────────────────────────
-    if (path === '/api/gateway/deliverables' && req.method === 'GET') {
-      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
-      try {
-        this.gateway.verifyToken(authHeader.slice(7));
-        if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
-        const q = url.searchParams.get('q') ?? undefined;
-        const projectId = url.searchParams.get('projectId') ?? undefined;
-        const type = url.searchParams.get('type') as any ?? undefined;
-        const { results } = this.deliverableService.search({ query: q, projectId, type });
-        this.json(res, 200, { results });
-      } catch (err) {
-        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    if (path === '/api/gateway/deliverables' && req.method === 'POST') {
-      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
-      try {
-        const token = this.gateway.verifyToken(authHeader.slice(7));
-        if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
-        const body = await this.readBody(req);
-        const d = await this.deliverableService.create({
-          type: body['type'] as any ?? 'text',
-          title: body['title'] as string,
-          summary: body['summary'] as string ?? body['content'] as string,
-          reference: body['reference'] as string,
-          format: body['format'] as string | undefined,
-          tags: body['tags'] as string[],
-          agentId: token.markusAgentId,
-          projectId: body['projectId'] as string,
-        });
-        this.json(res, 201, { deliverable: d });
-      } catch (err) {
-        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    if (path.match(/^\/api\/gateway\/deliverables\/[^/]+$/) && req.method === 'PUT') {
-      if (!this.gateway) { this.json(res, 503, { error: 'Gateway not configured' }); return; }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) { this.json(res, 401, { error: 'Missing Bearer token' }); return; }
-      try {
-        this.gateway.verifyToken(authHeader.slice(7));
-        if (!this.deliverableService) { this.json(res, 503, { error: 'Deliverable service not available' }); return; }
-        const delivId = path.split('/')[4]!;
-        const body = await this.readBody(req);
-        const d = await this.deliverableService.update(delivId, {
-          title: body['title'] as string | undefined,
-          summary: body['summary'] as string | undefined,
-          reference: body['reference'] as string | undefined,
-          status: body['status'] as any,
-          type: body['type'] as any,
-          tags: body['tags'] as string[] | undefined,
-        });
-        if (!d) { this.json(res, 404, { error: 'Deliverable not found' }); return; }
-        this.json(res, 200, { deliverable: d });
-      } catch (err) {
-        if (err instanceof GatewayError) { this.json(res, err.statusCode, { error: err.message }); return; }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // ── Gateway: Sync Endpoint ──────────────────────────────────────────────
-    if (path === '/api/gateway/sync' && req.method === 'POST') {
-      if (!this.gateway || !this.syncHandler) {
-        this.json(res, 503, { error: 'Gateway not configured' });
-        return;
-      }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) {
-        this.json(res, 401, { error: 'Missing Bearer token' });
-        return;
-      }
-      try {
-        const token = this.gateway.verifyToken(authHeader.slice(7));
-        const body = await this.readBody(req) as SyncRequest;
-        const result = await this.syncHandler.handleSync(token.markusAgentId, token.orgId, body);
-        this.json(res, 200, result);
-      } catch (err) {
-        if (err instanceof GatewayError) {
-          this.json(res, err.statusCode, { error: err.message });
-          return;
-        }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
-
-    // ── Gateway: Task Lifecycle Endpoints ────────────────────────────────────
-    const gwTaskMatch = path.match(/^\/api\/gateway\/tasks\/([^/]+)\/(accept|progress|complete|fail|delegate|subtasks)$/);
-    if (gwTaskMatch && req.method === 'POST') {
-      if (!this.gateway) {
-        this.json(res, 503, { error: 'Gateway not configured' });
-        return;
-      }
-      const authHeader = req.headers['authorization'];
-      if (!authHeader?.startsWith('Bearer ')) {
-        this.json(res, 401, { error: 'Missing Bearer token' });
-        return;
-      }
-      try {
-        const token = this.gateway.verifyToken(authHeader.slice(7));
-        const taskId = gwTaskMatch[1]!;
-        const action = gwTaskMatch[2]!;
-        const body = await this.readBody(req);
-
-        switch (action) {
-          case 'accept': {
-            const task = this.taskService.updateTaskStatus(taskId, 'in_progress', `ext:${token.markusAgentId}`);
-            this.json(res, 200, { task: { id: task.id, status: task.status } });
-            break;
-          }
-          case 'progress': {
-            const task = this.taskService.getTask(taskId);
-            if (!task) { this.json(res, 404, { error: 'Task not found' }); break; }
-            if (task.status !== 'in_progress') {
-              try { this.taskService.updateTaskStatus(taskId, 'in_progress', `ext:${token.markusAgentId}`); } catch { /* already in_progress */ }
-            }
-            this.json(res, 200, { taskId, progress: body['progress'], acknowledged: true });
-            break;
-          }
-          case 'complete': {
-            const task = this.taskService.updateTaskStatus(taskId, 'completed', `ext:${token.markusAgentId}`);
-            this.json(res, 200, { task: { id: task.id, status: task.status } });
-            break;
-          }
-          case 'fail': {
-            const task = this.taskService.updateTaskStatus(taskId, 'failed', `ext:${token.markusAgentId}`);
-            this.json(res, 200, { task: { id: task.id, status: task.status } });
-            break;
-          }
-          case 'delegate': {
-            this.json(res, 400, { error: 'Delegation is not supported — tasks must always have an assigned agent' });
-            break;
-          }
-          case 'subtasks': {
-            const parentTask = this.taskService.getTask(taskId);
-            if (!parentTask) { this.json(res, 404, { error: 'Parent task not found' }); break; }
-            const subtask = this.taskService.addSubtask(taskId, body['title'] as string);
-            this.json(res, 201, { task: { id: subtask.id, title: subtask.title, status: subtask.status } });
-            break;
-          }
-        }
-      } catch (err) {
-        if (err instanceof GatewayError) {
-          this.json(res, err.statusCode, { error: err.message });
-          return;
-        }
-        this.json(res, 500, { error: String(err) });
-      }
-      return;
-    }
+    if (await handleGatewayRoutes(this, req, res, path, url)) return;
 
     // Human Users
     if (path === '/api/users' && req.method === 'GET') {
@@ -5927,18 +5324,6 @@ EXPLANATION_END`;
     if (path === '/api/users' && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
-
-      // Feature gating: check multi-user limit
-      if (this.licenseService && this.storage) {
-        const limits = this.licenseService.getLimits();
-        if (limits.maxUsers > 0) {
-          const existingCount = this.storage.userRepo.countByOrg('default');
-          if (existingCount >= limits.maxUsers) {
-            this.json(res, 403, { error: `User limit reached (${limits.maxUsers}). Upgrade to Enterprise for multi-user support.` });
-            return;
-          }
-        }
-      }
 
       const body = await this.readBody(req);
       const orgId = (body['orgId'] as string) ?? 'default';
@@ -6180,979 +5565,7 @@ EXPLANATION_END`;
     }
 
     // Skills
-    if (path === '/api/skills' && req.method === 'GET') {
-      // Skills from in-memory registry
-      const registrySkills = (this.skillRegistry?.list() ?? [])
-        .map(s => ({
-          name: s.name,
-          version: s.version,
-          description: s.description,
-          author: s.author,
-          category: s.category,
-          tags: s.tags,
-          hasInstructions: !!s.instructions,
-          sourcePath: s.builtIn ? undefined : s.sourcePath,
-          type: (s.builtIn ? 'builtin' : s.sourcePath ? 'filesystem' : 'registry') as string,
-        }));
-      const seen = new Set(registrySkills.map(s => s.name));
-
-      // Live filesystem scan for any skills not yet in registry
-      const fsSkills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; hasInstructions: boolean; sourcePath: string; type: string }> = [];
-      for (const dir of WELL_KNOWN_SKILL_DIRS) {
-        for (const discovered of discoverSkillsInDir(dir)) {
-          if (seen.has(discovered.manifest.name)) continue;
-          seen.add(discovered.manifest.name);
-          fsSkills.push({
-            name: discovered.manifest.name,
-            version: discovered.manifest.version,
-            description: discovered.manifest.description,
-            author: discovered.manifest.author,
-            category: discovered.manifest.category,
-            tags: discovered.manifest.tags,
-            hasInstructions: !!discovered.manifest.instructions,
-            sourcePath: discovered.path,
-            type: 'filesystem',
-          });
-        }
-      }
-
-      const imported: Array<{ name: string; description: string; category: string; version: string; tags: string[]; hasInstructions: boolean; type: string }> = [];
-
-      const agents = this.orgService.getAgentManager().listAgents();
-      const skillAgents: Record<string, string[]> = {};
-      for (const agent of agents) {
-        for (const skillName of agent.skills) {
-          if (!skillAgents[skillName]) skillAgents[skillName] = [];
-          skillAgents[skillName]!.push(agent.id);
-        }
-      }
-      const all = [
-        ...registrySkills.map(s => ({ ...s, agentIds: skillAgents[s.name] ?? [] })),
-        ...fsSkills.map(s => ({ ...s, agentIds: skillAgents[s.name] ?? [] })),
-        ...imported.map(s => ({ ...s, agentIds: skillAgents[s.name] ?? [] })),
-      ];
-      this.json(res, 200, { skills: all });
-      return;
-    }
-
-    // Built-in skills — list templates/skills/
-    if (path === '/api/skills/builtin' && req.method === 'GET') {
-      const builtinDir = resolve(process.env['MARKUS_TEMPLATES_DIR'] ?? resolve(process.cwd(), 'templates'), 'skills');
-      const found = discoverSkillsInDir(builtinDir);
-      const installedSkills = new Map(
-        (this.skillRegistry?.list() ?? []).map(s => [s.name, s])
-      );
-      // Read raw manifests to get i18n/hidden fields
-      const rawManifests = new Map<string, Record<string, unknown>>();
-      try {
-        const { readdirSync, readFileSync, existsSync } = await import('node:fs');
-        for (const entry of readdirSync(builtinDir, { withFileTypes: true })) {
-          if (!entry.isDirectory()) continue;
-          const sjPath = resolve(builtinDir, entry.name, 'skill.json');
-          if (existsSync(sjPath)) {
-            try { rawManifests.set(entry.name, JSON.parse(readFileSync(sjPath, 'utf-8'))); } catch { /* skip */ }
-          }
-        }
-      } catch { /* skip */ }
-      const skills = found
-        .filter(({ manifest }) => {
-          const raw = rawManifests.get(manifest.name);
-          return !(raw as Record<string, unknown>)?.hidden;
-        })
-        .map(({ manifest, path: p }) => {
-          const inst = installedSkills.get(manifest.name);
-          const raw = rawManifests.get(manifest.name);
-          return {
-            name: manifest.name,
-            version: manifest.version,
-            description: manifest.description,
-            author: manifest.author,
-            category: manifest.category,
-            tags: manifest.tags ?? [],
-            hasMcpServers: !!manifest.mcpServers && Object.keys(manifest.mcpServers).length > 0,
-            hasInstructions: !!manifest.instructions,
-            instructions: manifest.instructions ?? undefined,
-            requiredPermissions: manifest.requiredPermissions ?? [],
-            sourcePath: p,
-            installed: !!inst,
-            installedVersion: inst?.version ?? null,
-            i18n: (raw as Record<string, unknown>)?.i18n ?? undefined,
-          };
-        });
-      this.json(res, 200, { skills });
-      return;
-    }
-
-    if (path.match(/^\/api\/skills\/[^/]+$/) && !path.startsWith('/api/skills/registry') && req.method === 'GET') {
-      const skillName = decodeURIComponent(path.split('/')[3]!);
-      if (!this.skillRegistry) {
-        this.json(res, 404, { error: 'Skill registry not configured' });
-        return;
-      }
-      const skill = this.skillRegistry.get(skillName);
-      if (!skill) {
-        this.json(res, 404, { error: `Skill not found: ${skillName}` });
-        return;
-      }
-      const manifest = skill.manifest;
-      this.json(res, 200, {
-        skill: {
-          ...manifest,
-          hasInstructions: !!manifest.instructions,
-          instructionsPreview: manifest.instructions?.slice(0, 500),
-        },
-      });
-      return;
-    }
-
-    // Third-party skill registry — fetch from GitHub repos and cache
-    if (path === '/api/skills/registry' && req.method === 'GET') {
-      const source = url.searchParams.get('source') ?? 'openclaw';
-      const now = Date.now();
-      const cacheKey = `skill-registry-${source}`;
-      const cached = this.registryCache?.get(cacheKey);
-      if (cached && now - cached.ts < 600_000) {
-        this.json(res, 200, { skills: cached.data, source, cached: true });
-        return;
-      }
-
-      try {
-        const skills: Array<{ name: string; description: string; category: string; source: string; sourceUrl: string; author: string; addedAt?: string }> = [];
-
-        if (source === 'openclaw') {
-          const resp = await fetch('https://raw.githubusercontent.com/LeoYeAI/openclaw-master-skills/main/README.md');
-          if (resp.ok) {
-            const readme = await resp.text();
-            const tableLines = readme.split('\n').filter(l => l.startsWith('| ['));
-            for (const line of tableLines) {
-              const cols = line.split('|').map(c => c.trim()).filter(Boolean);
-              if (cols.length >= 4) {
-                const nameMatch = cols[0]?.match(/\[([^\]]+)\]/);
-                const name = nameMatch?.[1] ?? '';
-                const description = cols[1]?.replace(/\.\.\.$/, '').trim() ?? '';
-                const category = cols[2]?.trim() ?? 'Other';
-                const srcMatch = cols[3]?.match(/\[GitHub\]\(([^)]+)\)/);
-                const addedAt = cols[4]?.trim();
-                if (name) {
-                  skills.push({
-                    name,
-                    description,
-                    category,
-                    source: 'openclaw',
-                    sourceUrl: srcMatch?.[1] ?? `https://github.com/LeoYeAI/openclaw-master-skills/tree/main/skills/${name}`,
-                    author: 'Community',
-                    addedAt,
-                  });
-                }
-              }
-            }
-          }
-        }
-
-        if (!this.registryCache) this.registryCache = new Map();
-        this.registryCache.set(cacheKey, { data: skills, ts: now });
-        this.json(res, 200, { skills, source, cached: false });
-      } catch (err) {
-        this.json(res, 500, { error: `Failed to fetch registry: ${String(err)}` });
-      }
-      return;
-    }
-
-    // Install a skill: download to ~/.markus/skills/ and register
-    if (path === '/api/skills/install' && req.method === 'POST') {
-      const body = await this.readBody(req);
-      const skillName = body['name'] as string;
-      if (!skillName) {
-        this.json(res, 400, { error: 'name is required' });
-        return;
-      }
-
-      try {
-        const result = await installSkill({
-          name: skillName,
-          source: body['source'] as string | undefined,
-          slug: body['slug'] as string | undefined,
-          sourceUrl: body['sourceUrl'] as string | undefined,
-          description: body['description'] as string | undefined,
-          category: body['category'] as string | undefined,
-          version: body['version'] as string | undefined,
-          githubRepo: body['githubRepo'] as string | undefined,
-          githubSkillPath: body['githubSkillPath'] as string | undefined,
-        }, this.skillRegistry);
-
-        this.json(res, 201, result);
-        return;
-      } catch (err) {
-        const msg = String(err instanceof Error ? err.message : err);
-        const status = msg.includes('Download failed') ? 502 : 500;
-        this.json(res, status, { error: msg });
-        return;
-      }
-    }
-
-    // Uninstall a skill: delete from filesystem and/or DB
-    if (path.startsWith('/api/skills/installed/') && req.method === 'DELETE') {
-      const skillName = decodeURIComponent(path.slice('/api/skills/installed/'.length));
-      if (!skillName) {
-        this.json(res, 400, { error: 'skill name is required' });
-        return;
-      }
-
-      let deletedFs = false;
-
-      // Try delete from filesystem (~/.markus/skills/)
-      const skillsDir = join(homedir(), '.markus', 'skills');
-      const safeName = skillName.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-      const targetDir = join(skillsDir, safeName);
-      if (existsSync(targetDir)) {
-        try {
-          execSync(`rm -rf "${targetDir}"`, { timeout: 10000 });
-          deletedFs = true;
-        } catch (err) {
-          console.warn(`[skills/uninstall] fs delete failed: ${String(err)}`);
-        }
-      }
-
-      if (!deletedFs) {
-        this.json(res, 404, { error: `Skill "${skillName}" not found` });
-        return;
-      }
-
-      // Unregister from runtime SkillRegistry
-      if (this.skillRegistry) {
-        this.skillRegistry.unregister(skillName);
-      }
-
-      // Remove from all agents that had this skill assigned
-      const agentMgr = this.orgService.getAgentManager();
-      const affectedAgents: string[] = [];
-      for (const agentInfo of agentMgr.listAgents()) {
-        try {
-          const agent = agentMgr.getAgent(agentInfo.id);
-          if (agent.config.skills.includes(skillName)) {
-            agent.config.skills = agent.config.skills.filter(s => s !== skillName);
-            affectedAgents.push(agentInfo.id);
-            if (this.storage) {
-              try { await this.storage.agentRepo.updateConfig(agentInfo.id, { skills: agent.config.skills }); }
-              catch (e) { log.warn('Failed to persist skill removal from agent after uninstall', { agentId: agentInfo.id, error: String(e) }); }
-            }
-          }
-        } catch { /* agent not accessible */ }
-      }
-
-      this.json(res, 200, { deleted: true, name: skillName, deletedFs, removedFromAgents: affectedAgents });
-      return;
-    }
-
-    // ── Builder Artifacts: directory-based package management ──────────────
-
-    // GET /api/builder/artifacts — scan all builder artifacts
-    if (path === '/api/builder/artifacts' && req.method === 'GET') {
-      try {
-        const artifacts = this.builderService
-          ? this.builderService.listArtifacts()
-          : [];
-        this.json(res, 200, { artifacts });
-      } catch (err) {
-        this.json(res, 500, { error: `Scan failed: ${String(err)}` });
-      }
-      return;
-    }
-
-    // GET /api/builder/artifacts/:type/:name — read one artifact (all files)
-    {
-      const artMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)$/);
-      if (artMatch && req.method === 'GET') {
-        const rawType = artMatch[1]!;
-        const name = decodeURIComponent(artMatch[2]!);
-        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
-        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
-        if (!existsSync(artDir)) {
-          this.json(res, 404, { error: 'Artifact not found' });
-          return;
-        }
-        try {
-          const files: Record<string, string> = {};
-          const readDir = (dir: string, prefix: string): void => {
-            for (const entry of readdirSync(dir, { withFileTypes: true })) {
-              const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
-              if (entry.isDirectory()) {
-                readDir(join(dir, entry.name), relPath);
-              } else {
-                try { files[relPath] = readFileSync(join(dir, entry.name), 'utf-8'); } catch { /* skip binary */ }
-              }
-            }
-          };
-          readDir(artDir, '');
-          const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill';
-          this.json(res, 200, { type, name, path: artDir, files });
-        } catch (err) {
-          this.json(res, 500, { error: `Read failed: ${String(err)}` });
-        }
-        return;
-      }
-    }
-
-    // GET /api/builder/artifacts/installed — detect which artifacts have been installed
-    if (path === '/api/builder/artifacts/installed' && req.method === 'GET') {
-      try {
-        const installed: Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }> = {};
-        const agentManager = this.orgService.getAgentManager();
-        const dataDir = agentManager.getDataDir();
-
-        // Scan agents for .role-origin.json markers
-        for (const agentInfo of agentManager.listAgents()) {
-          const originPath = join(dataDir, agentInfo.id, 'role', '.role-origin.json');
-          if (existsSync(originPath)) {
-            try {
-              const origin = JSON.parse(readFileSync(originPath, 'utf-8'));
-              if (origin.source === 'builder-artifact' && origin.artifact) {
-                const artName = origin.artifact as string;
-                let artType = origin.artifactType as string | undefined;
-                if (!artType) {
-                  try {
-                    const agentObj = agentManager.getAgent(agentInfo.id);
-                    artType = agentObj.config.teamId ? 'team' : 'agent';
-                  } catch { artType = 'agent'; }
-                }
-                if (artType === 'team') {
-                  const teamKey = `team/${artName}`;
-                  if (!installed[teamKey]) installed[teamKey] = { agentIds: [] };
-                  installed[teamKey].agentIds!.push(agentInfo.id);
-                  if (!installed[teamKey].teamId) {
-                    try {
-                      const agentObj = agentManager.getAgent(agentInfo.id);
-                      if (agentObj.config.teamId) installed[teamKey].teamId = agentObj.config.teamId;
-                    } catch { /* skip */ }
-                  }
-                } else {
-                  installed[`agent/${artName}`] = { agentId: agentInfo.id };
-                }
-              }
-            } catch { /* skip invalid */ }
-          }
-        }
-
-        // Scan skills: check builder-artifacts paired with installed skills
-        const skillArtDir = join(homedir(), '.markus', 'builder-artifacts', 'skills');
-        const skillsDir = join(homedir(), '.markus', 'skills');
-        if (existsSync(skillArtDir)) {
-          try {
-            for (const entry of readdirSync(skillArtDir, { withFileTypes: true })) {
-              if (entry.isDirectory() && existsSync(join(skillsDir, entry.name))) {
-                installed[`skill/${entry.name}`] = {};
-              }
-            }
-          } catch { /* ignore */ }
-        }
-        // Also detect skills installed directly (skillhub/skillssh/builtin) without builder-artifacts
-        if (existsSync(skillsDir)) {
-          try {
-            for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
-              const key = `skill/${entry.name}`;
-              if (entry.isDirectory() && !installed[key]) {
-                installed[key] = {};
-              }
-            }
-          } catch { /* ignore */ }
-        }
-
-        this.json(res, 200, { installed });
-      } catch (err) {
-        this.json(res, 500, { error: `Scan failed: ${String(err)}` });
-      }
-      return;
-    }
-
-    // POST /api/builder/artifacts/save — save JSON artifact as directory-based package
-    if (path === '/api/builder/artifacts/save' && req.method === 'POST') {
-      const body = await this.readBody(req);
-      const mode = body['mode'] as string;
-      const artifact = body['artifact'] as Record<string, unknown>;
-      if (!mode || !['agent', 'team', 'skill'].includes(mode) || !artifact) {
-        this.json(res, 400, { error: 'mode must be agent|team|skill and artifact is required' });
-        return;
-      }
-
-      try {
-        const typeDir = mode === 'agent' ? 'agents' : mode === 'team' ? 'teams' : 'skills';
-        const pkgType = mode as PackageType;
-        const manifest = buildManifest(pkgType, artifact);
-        if (!manifest.source) manifest.source = { type: 'local' };
-        const mfName = manifestFilename(pkgType);
-        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, manifest.name);
-        mkdirSync(artDir, { recursive: true });
-        writeFileSync(join(artDir, mfName), JSON.stringify(manifest, null, 2), 'utf-8');
-
-        // Write content files from `files` map
-        const artFiles = artifact.files as Record<string, string> | undefined;
-        if (artFiles) {
-          for (const [fn, c] of Object.entries(artFiles)) {
-            if (fn === mfName) continue;
-            const filePath = join(artDir, fn);
-            mkdirSync(dirname(filePath), { recursive: true });
-            writeFileSync(filePath, c, 'utf-8');
-          }
-        }
-
-        // Team: extract announcement, norms, and member role files from config
-        if (mode === 'team') {
-          const fileSet = new Set(artFiles ? Object.keys(artFiles) : []);
-
-          // Write ANNOUNCEMENT.md / NORMS.md from config fields if not already in files
-          const announcement = artifact.announcement as string | undefined;
-          if (announcement && !fileSet.has('ANNOUNCEMENT.md')) {
-            writeFileSync(join(artDir, 'ANNOUNCEMENT.md'), announcement, 'utf-8');
-          }
-          const norms = artifact.norms as string | undefined;
-          if (norms && !fileSet.has('NORMS.md')) {
-            writeFileSync(join(artDir, 'NORMS.md'), norms, 'utf-8');
-          }
-
-          // Write member role files from config if not already written via files map
-          const rawMembers = (Array.isArray((artifact.team as Record<string, unknown>)?.members)
-            ? (artifact.team as Record<string, unknown>).members
-            : Array.isArray(artifact.members) ? artifact.members : []) as Array<Record<string, unknown>>;
-          for (const [idx, m] of rawMembers.entries()) {
-            const mName = (m.name as string) ?? 'Agent';
-            const slug = kebab(mName, 'member-' + idx);
-            const memberDir = join(artDir, 'members', slug);
-            const roleContent = (m.roleContent as string) || (m.role_md as string);
-            const policiesContent = (m.policiesContent as string) || (m.policies_md as string);
-            const contextContent = (m.contextContent as string) || (m.context_md as string);
-            if (roleContent && !fileSet.has(`members/${slug}/ROLE.md`)) {
-              mkdirSync(memberDir, { recursive: true });
-              writeFileSync(join(memberDir, 'ROLE.md'), roleContent, 'utf-8');
-            }
-            if (policiesContent && !fileSet.has(`members/${slug}/POLICIES.md`)) {
-              mkdirSync(memberDir, { recursive: true });
-              writeFileSync(join(memberDir, 'POLICIES.md'), policiesContent, 'utf-8');
-            }
-            if (contextContent && !fileSet.has(`members/${slug}/CONTEXT.md`)) {
-              mkdirSync(memberDir, { recursive: true });
-              writeFileSync(join(memberDir, 'CONTEXT.md'), contextContent, 'utf-8');
-            }
-          }
-
-          // Legacy: write explicit memberFiles if provided in JSON
-          const memberFiles = artifact.memberFiles as Record<string, Record<string, string>> | undefined;
-          if (memberFiles) {
-            for (const [slug, files] of Object.entries(memberFiles)) {
-              const memberDir = join(artDir, 'members', slug);
-              mkdirSync(memberDir, { recursive: true });
-              for (const [fn, c] of Object.entries(files)) writeFileSync(join(memberDir, fn), c, 'utf-8');
-            }
-          }
-        }
-
-        if (this.deliverableService) {
-          this.deliverableService.create({
-            type: 'file',
-            title: `${mode.charAt(0).toUpperCase() + mode.slice(1)}: ${manifest.displayName}`,
-            summary: (artifact.description as string) ?? manifest.description ?? `${mode} saved via Builder`,
-            reference: artDir,
-            artifactType: mode as 'agent' | 'team' | 'skill',
-            artifactData: artifact,
-            tags: ['builder', mode],
-          }).catch(err => log.warn('Failed to create deliverable for builder artifact', { error: String(err) }));
-        }
-
-        this.json(res, 201, { type: mode, name: manifest.name, path: artDir });
-      } catch (err) {
-        this.json(res, 500, { error: `Save failed: ${String(err)}` });
-      }
-      return;
-    }
-
-    // POST /api/builder/artifacts/import — write a bundle of files directly to artifact directory
-    if (path === '/api/builder/artifacts/import' && req.method === 'POST') {
-      const body = await this.readBody(req);
-      const type = body['type'] as string;
-      const name = body['name'] as string;
-      const files = body['files'] as Record<string, string> | undefined;
-      const source = body['source'] as { type: string; hubItemId?: string; url?: string } | undefined;
-      if (!type || !['agent', 'team', 'skill'].includes(type) || !name || !files) {
-        this.json(res, 400, { error: 'type (agent|team|skill), name, and files are required' });
-        return;
-      }
-      try {
-        const typeDir = type === 'agent' ? 'agents' : type === 'team' ? 'teams' : 'skills';
-        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
-        mkdirSync(artDir, { recursive: true });
-        for (const [fn, content] of Object.entries(files)) {
-          const filePath = join(artDir, fn);
-          mkdirSync(dirname(filePath), { recursive: true });
-          writeFileSync(filePath, content, 'utf-8');
-        }
-
-        // Write source tracking into manifest if source provided
-        if (source) {
-          const mfName = manifestFilename(type as PackageType);
-          const mfPath = join(artDir, mfName);
-          if (existsSync(mfPath)) {
-            try {
-              const mf = JSON.parse(readFileSync(mfPath, 'utf-8'));
-              mf.source = source;
-              writeFileSync(mfPath, JSON.stringify(mf, null, 2), 'utf-8');
-            } catch { /* skip if manifest invalid */ }
-          }
-        }
-
-        this.json(res, 201, { type, name, path: artDir });
-      } catch (err) {
-        this.json(res, 500, { error: `Import failed: ${String(err)}` });
-      }
-      return;
-    }
-
-    // POST /api/builder/artifacts/:type/:name/install — deploy from package to runtime
-    {
-      const installMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/install$/);
-      if (installMatch && req.method === 'POST') {
-        const rawType = installMatch[1]!;
-        const name = decodeURIComponent(installMatch[2]!);
-        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
-        const type = (typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill') as 'agent' | 'team' | 'skill';
-
-        if (!this.builderService) {
-          this.json(res, 500, { error: 'BuilderService not initialized' });
-          return;
-        }
-
-        if (type === 'team' && this.licenseService) {
-          const limits = this.licenseService.getLimits();
-          if (limits.maxTeams > 0) {
-            const existingTeams = await this.orgService.listTeams('default');
-            if (existingTeams.length >= limits.maxTeams) {
-              this.json(res, 403, { error: `Team limit reached (${limits.maxTeams}). Upgrade to Enterprise for unlimited teams.` });
-              return;
-            }
-          }
-        }
-
-        try {
-          const result = await this.builderService.installArtifact(type, name);
-          this.json(res, 201, result);
-        } catch (err) {
-          const msg = String(err instanceof Error ? err.message : err);
-          const status = msg.includes('not found') ? 404 : msg.includes('Invalid manifest') || msg.includes('No ') ? 400 : 500;
-          this.json(res, status, { error: msg });
-        }
-        return;
-      }
-    }
-
-    // POST /api/builder/artifacts/:type/:name/uninstall — remove deployed artifact from runtime
-    {
-      const uninstallMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/uninstall$/);
-      if (uninstallMatch && req.method === 'POST') {
-        const rawType = uninstallMatch[1]!;
-        const name = decodeURIComponent(uninstallMatch[2]!);
-        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
-        const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill';
-
-        try {
-          const agentManager = this.orgService.getAgentManager();
-          const dataDir = agentManager.getDataDir();
-          const removedAgents: string[] = [];
-          let removedTeamId: string | undefined;
-
-          if (type === 'agent') {
-            for (const agentInfo of agentManager.listAgents()) {
-              const originPath = join(dataDir, agentInfo.id, 'role', '.role-origin.json');
-              if (existsSync(originPath)) {
-                try {
-                  const origin = JSON.parse(readFileSync(originPath, 'utf-8'));
-                  if (origin.artifact === name && (!origin.artifactType || origin.artifactType === 'agent')) {
-                    await this.orgService.fireAgent(agentInfo.id);
-                    removedAgents.push(agentInfo.id);
-                  }
-                } catch { /* skip */ }
-              }
-            }
-          } else if (type === 'team') {
-            const teamAgentIds: string[] = [];
-            let teamId: string | undefined;
-            for (const agentInfo of agentManager.listAgents()) {
-              const originPath = join(dataDir, agentInfo.id, 'role', '.role-origin.json');
-              if (existsSync(originPath)) {
-                try {
-                  const origin = JSON.parse(readFileSync(originPath, 'utf-8'));
-                  if (origin.artifact === name && origin.artifactType === 'team') {
-                    teamAgentIds.push(agentInfo.id);
-                    if (!teamId) {
-                      try {
-                        const agentObj = agentManager.getAgent(agentInfo.id);
-                        teamId = agentObj.config.teamId;
-                      } catch { /* skip */ }
-                    }
-                  }
-                } catch { /* skip */ }
-              }
-            }
-            // Fallback: find team by matching member agent IDs
-            if (!teamId && teamAgentIds.length > 0) {
-              const teams = this.orgService.listTeams('default');
-              for (const t of teams) {
-                if (teamAgentIds.some(aid => t.memberAgentIds.includes(aid))) {
-                  teamId = t.id;
-                  break;
-                }
-              }
-            }
-            if (teamId) {
-              await this.orgService.deleteTeam(teamId, true);
-              removedTeamId = teamId;
-            } else {
-              for (const aid of teamAgentIds) {
-                await this.orgService.fireAgent(aid);
-              }
-            }
-            removedAgents.push(...teamAgentIds);
-          } else if (type === 'skill') {
-            const skillDir = join(homedir(), '.markus', 'skills', name);
-            if (existsSync(skillDir)) {
-              rmSync(skillDir, { recursive: true, force: true });
-              if (this.skillRegistry) {
-                try { this.skillRegistry.unregister(name); } catch { /* skip */ }
-              }
-            }
-          }
-
-          this.json(res, 200, { uninstalled: true, type, name, removedAgents, removedTeamId });
-        } catch (err) {
-          this.json(res, 500, { error: `Uninstall failed: ${String(err)}` });
-        }
-        return;
-      }
-    }
-
-    // DELETE /api/builder/artifacts/:type/:name — remove artifact
-    {
-      const delMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)$/);
-      if (delMatch && req.method === 'DELETE') {
-        const rawType = delMatch[1]!;
-        const name = decodeURIComponent(delMatch[2]!);
-        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
-        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
-        if (!existsSync(artDir)) {
-          this.json(res, 404, { error: 'Artifact not found' });
-          return;
-        }
-        try {
-          rmSync(artDir, { recursive: true, force: true });
-          this.json(res, 200, { deleted: true, type: typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill', name });
-        } catch (err) {
-          this.json(res, 500, { error: `Delete failed: ${String(err)}` });
-        }
-        return;
-      }
-    }
-
-    // POST /api/builder/artifacts/:type/:name/images — upload image
-    {
-      const imgPostMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/images$/);
-      if (imgPostMatch && req.method === 'POST') {
-        const rawType = imgPostMatch[1]!;
-        const name = decodeURIComponent(imgPostMatch[2]!);
-        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
-        const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill' as const;
-        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
-        if (!existsSync(artDir)) { this.json(res, 404, { error: 'Artifact not found' }); return; }
-
-        try {
-          const imagesDir = join(artDir, 'images');
-          if (!existsSync(imagesDir)) mkdirSync(imagesDir, { recursive: true });
-
-          const chunks: Buffer[] = [];
-          for await (const chunk of req) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-          const body = Buffer.concat(chunks);
-
-          const contentType = req.headers['content-type'] ?? '';
-          if (contentType.includes('multipart/form-data')) {
-            const boundary = contentType.split('boundary=')[1]?.split(';')[0];
-            if (!boundary) { this.json(res, 400, { error: 'Missing boundary' }); return; }
-
-            const bodyStr = body.toString('latin1');
-            const parts = bodyStr.split('--' + boundary).filter(p => p.includes('Content-Disposition'));
-            for (const part of parts) {
-              const nameMatch = part.match(/filename="([^"]+)"/);
-              if (!nameMatch) continue;
-              const filename = nameMatch[1]!.replace(/[^a-zA-Z0-9._-]/g, '_');
-              const headerEnd = part.indexOf('\r\n\r\n');
-              if (headerEnd < 0) continue;
-              const fileContent = part.slice(headerEnd + 4).replace(/\r\n$/, '').replace(/\r\n--$/, '');
-              const filePath = join(imagesDir, filename);
-              writeFileSync(filePath, Buffer.from(fileContent, 'latin1'));
-
-              const manifestFile = join(artDir, `${type}.json`);
-              if (existsSync(manifestFile)) {
-                try {
-                  const manifest = JSON.parse(readFileSync(manifestFile, 'utf-8'));
-                  const screenshots: string[] = manifest.screenshots ?? [];
-                  const relPath = `images/${filename}`;
-                  if (!screenshots.includes(relPath)) {
-                    screenshots.push(relPath);
-                    manifest.screenshots = screenshots;
-                    if (!manifest.thumbnail) manifest.thumbnail = relPath;
-                    writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
-                  }
-                } catch { /* skip manifest update */ }
-              }
-
-              this.json(res, 200, { filename, path: `images/${filename}` });
-              return;
-            }
-            this.json(res, 400, { error: 'No image file found in upload' });
-          } else {
-            this.json(res, 400, { error: 'Expected multipart/form-data' });
-          }
-        } catch (err) {
-          this.json(res, 500, { error: `Upload failed: ${String(err)}` });
-        }
-        return;
-      }
-    }
-
-    // GET /api/builder/artifacts/:type/:name/images/:filename — serve image
-    {
-      const imgGetMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/images\/([^/]+)$/);
-      if (imgGetMatch && req.method === 'GET') {
-        const rawType = imgGetMatch[1]!;
-        const name = decodeURIComponent(imgGetMatch[2]!);
-        const filename = decodeURIComponent(imgGetMatch[3]!);
-        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
-        const filePath = join(homedir(), '.markus', 'builder-artifacts', typeDir, name, 'images', filename);
-        if (!existsSync(filePath)) { this.json(res, 404, { error: 'Image not found' }); return; }
-
-        const ext = filename.split('.').pop()?.toLowerCase() ?? '';
-        const mimeTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
-        res.writeHead(200, { 'Content-Type': mimeTypes[ext] ?? 'application/octet-stream', 'Cache-Control': 'public, max-age=3600' });
-        res.end(readFileSync(filePath));
-        return;
-      }
-    }
-
-    // DELETE /api/builder/artifacts/:type/:name/images/:filename — remove image
-    {
-      const imgDelMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/images\/([^/]+)$/);
-      if (imgDelMatch && req.method === 'DELETE') {
-        const rawType = imgDelMatch[1]!;
-        const name = decodeURIComponent(imgDelMatch[2]!);
-        const filename = decodeURIComponent(imgDelMatch[3]!);
-        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
-        const type = typeDir === 'agents' ? 'agent' : typeDir === 'teams' ? 'team' : 'skill' as const;
-        const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, name);
-        const filePath = join(artDir, 'images', filename);
-        if (!existsSync(filePath)) { this.json(res, 404, { error: 'Image not found' }); return; }
-
-        try {
-          rmSync(filePath);
-          const manifestFile = join(artDir, `${type}.json`);
-          if (existsSync(manifestFile)) {
-            try {
-              const manifest = JSON.parse(readFileSync(manifestFile, 'utf-8'));
-              const relPath = `images/${filename}`;
-              if (Array.isArray(manifest.screenshots)) {
-                manifest.screenshots = manifest.screenshots.filter((s: string) => s !== relPath);
-              }
-              if (manifest.thumbnail === relPath) {
-                manifest.thumbnail = manifest.screenshots?.[0] ?? undefined;
-              }
-              writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
-            } catch { /* skip */ }
-          }
-          this.json(res, 200, { deleted: true, filename });
-        } catch (err) {
-          this.json(res, 500, { error: `Delete failed: ${String(err)}` });
-        }
-        return;
-      }
-    }
-
-    // Skills registry: SkillHub (skillhub.tencent.com) — static JSON from Tencent CDN
-    if (path === '/api/skills/registry/skillhub' && req.method === 'GET') {
-      const q = url.searchParams.get('q') ?? '';
-      const category = url.searchParams.get('category') ?? '';
-      const page = parseInt(url.searchParams.get('page') ?? '1', 10);
-      const limit = parseInt(url.searchParams.get('limit') ?? '24', 10);
-      const sort = url.searchParams.get('sort') ?? 'score';
-
-      const cacheKey = 'skillhub-data';
-      const now = Date.now();
-      const cached = this.registryCache?.get(cacheKey) as { data: { total: number; generated_at: string; featured: string[]; categories: Record<string, string[]>; skills: Array<{ slug: string; name: string; description: string; description_zh?: string; version: string; homepage: string; tags: string[]; downloads: number; stars: number; installs: number; updated_at: number; score: number }> }; ts: number } | undefined;
-
-      try {
-        let allData = cached && now - cached.ts < 3_600_000 ? cached.data : null;
-        if (!allData) {
-          const dataUrl = 'https://cloudcache.tencentcs.com/qcloud/tea/app/data/skills.66a05e01.json';
-          const resp = await fetch(dataUrl);
-          if (!resp.ok) {
-            this.json(res, 502, { error: `SkillHub CDN returned ${resp.status}` });
-            return;
-          }
-          allData = await resp.json() as typeof cached extends undefined ? never : NonNullable<typeof cached>['data'];
-          if (!this.registryCache) this.registryCache = new Map();
-          this.registryCache.set(cacheKey, { data: allData, ts: now });
-        }
-
-        let skills = allData!.skills;
-        const categoryMap = allData!.categories ?? {};
-
-        if (category && categoryMap[category]) {
-          const catTags = new Set(categoryMap[category]!.map(t => t.toLowerCase()));
-          skills = skills.filter(s => s.tags?.some(t => catTags.has(t.toLowerCase())));
-        }
-
-        if (q) {
-          const lower = q.toLowerCase();
-          skills = skills.filter(s =>
-            s.name.toLowerCase().includes(lower) ||
-            s.slug.toLowerCase().includes(lower) ||
-            (s.description_zh ?? s.description ?? '').toLowerCase().includes(lower)
-          );
-        }
-
-        if (sort === 'downloads') skills.sort((a, b) => b.downloads - a.downloads);
-        else if (sort === 'stars') skills.sort((a, b) => b.stars - a.stars);
-        else if (sort === 'installs') skills.sort((a, b) => b.installs - a.installs);
-        else skills.sort((a, b) => b.score - a.score);
-
-        const total = skills.length;
-        const start = (page - 1) * limit;
-        const pageSkills = skills.slice(start, start + limit);
-
-        // Enrich homepage URLs: CDN data often has `clawhub.ai/{slug}` instead of `clawhub.ai/{owner}/{slug}`
-        if (!this.registryCache) this.registryCache = new Map();
-        const ownerCacheKey = 'skillhub-owner-map';
-        const ownerMap: Map<string, string> = (this.registryCache.get(ownerCacheKey) as { data: Map<string, string> } | undefined)?.data ?? new Map();
-        const needsEnrich = pageSkills.filter(s => {
-          const hp = s.homepage ?? '';
-          const hpPath = hp.replace(/^https?:\/\/clawhub\.ai\/?/, '');
-          return hpPath && !hpPath.includes('/') && !ownerMap.has(s.slug);
-        });
-        if (needsEnrich.length > 0) {
-          await Promise.allSettled(
-            needsEnrich.map(async s => {
-              try {
-                const resp = await fetch(`https://wry-manatee-359.convex.site/api/v1/skills/${encodeURIComponent(s.slug)}`, { signal: AbortSignal.timeout(5000) });
-                if (resp.ok) {
-                  const detail = await resp.json() as { owner?: { handle?: string } };
-                  if (detail.owner?.handle) {
-                    ownerMap.set(s.slug, detail.owner.handle);
-                  }
-                }
-              } catch { /* skip — will use original homepage */ }
-            })
-          );
-          this.registryCache.set(ownerCacheKey, { data: ownerMap, ts: now });
-        }
-        const enrichedSkills = pageSkills.map(s => {
-          const hp = s.homepage ?? '';
-          const hpPath = hp.replace(/^https?:\/\/clawhub\.ai\/?/, '');
-          if (hpPath && !hpPath.includes('/') && ownerMap.has(s.slug)) {
-            return { ...s, homepage: `https://clawhub.ai/${ownerMap.get(s.slug)}/${s.slug}` };
-          }
-          return s;
-        });
-
-        this.json(res, 200, {
-          skills: enrichedSkills,
-          total,
-          page,
-          limit,
-          categories: Object.keys(categoryMap),
-          featured: allData!.featured,
-          cached: !!(cached && now - cached.ts < 3_600_000),
-        });
-      } catch (err) {
-        this.json(res, 500, { error: `SkillHub fetch failed: ${String(err)}` });
-      }
-      return;
-    }
-
-    // Skills registry: Proxy fetch from skills.sh leaderboard
-    if (path === '/api/skills/registry/skillssh' && req.method === 'GET') {
-      const q = url.searchParams.get('q') ?? '';
-      const cacheKey = `skillssh-${q || 'leaderboard'}`;
-      const now = Date.now();
-      const cached = this.registryCache?.get(cacheKey);
-      if (cached && now - cached.ts < 600_000) {
-        this.json(res, 200, { skills: cached.data, cached: true });
-        return;
-      }
-      try {
-        const fetchUrl = q
-          ? `https://skills.sh/search?q=${encodeURIComponent(q)}`
-          : 'https://skills.sh/';
-        const resp = await fetch(fetchUrl);
-        if (!resp.ok) {
-          this.json(res, 502, { error: `skills.sh returned ${resp.status}` });
-          return;
-        }
-        const html = await resp.text();
-        const skills: Array<{ name: string; author: string; repo: string; installs: string; url: string; description?: string }> = [];
-        const seen = new Set<string>();
-
-        // Parse the leaderboard HTML: each skill is an <a> block with h3 (name), p (author/repo), span (installs)
-        const blockRegex = /<a[^>]*href="\/([\w-]+\/[\w.-]+\/[\w][\w.-]*)"[^>]*>([\s\S]*?)<\/a>/g;
-        const IGNORED_PREFIXES = new Set(['_next', 'static', 'api', 'assets', 'images', 'fonts', 'css', 'js']);
-        let match: RegExpExecArray | null;
-        while ((match = blockRegex.exec(html)) !== null) {
-          const fullPath = match[1]!;
-          const parts = fullPath.split('/');
-          if (parts.length < 3) continue;
-          if (IGNORED_PREFIXES.has(parts[0]!)) continue;
-
-          const author = parts[0]!;
-          const repo = `${parts[0]}/${parts[1]}`;
-          const block = match[2]!;
-
-          // Extract skill name from <h3>
-          const nameMatch = block.match(/<h3[^>]*>(.*?)<\/h3>/);
-          const name = nameMatch?.[1]?.trim() ?? parts[2]!;
-
-          // Extract install count from last <span class="font-mono ...">
-          const installMatches = [...block.matchAll(/<span[^>]*font-mono[^>]*>([\d.]+[KMB]?)<\/span>/g)];
-          const installs = installMatches.length > 0 ? installMatches[installMatches.length - 1]![1] ?? '' : '';
-
-          const key = `${author}/${repo}/${name}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          skills.push({ name, author, repo, installs, url: `https://skills.sh/${fullPath}` });
-        }
-
-        // Fetch descriptions for top skills in parallel (batch of first 20)
-        const toFetch = skills.slice(0, 20).filter(s => !s.description);
-        if (toFetch.length > 0) {
-          const descResults = await Promise.allSettled(
-            toFetch.map(async (s) => {
-              const pageResp = await fetch(s.url, { signal: AbortSignal.timeout(8000) });
-              if (!pageResp.ok) return { name: s.name, desc: '' };
-              const pageHtml = await pageResp.text();
-              const pMatch = pageHtml.match(/<p[^>]*class="[^"]*text-muted[^"]*"[^>]*>(.*?)<\/p>/);
-              if (pMatch) return { name: s.name, desc: pMatch[1]!.replace(/<[^>]+>/g, '').trim() };
-              const firstP = pageHtml.match(/<article[^>]*>[\s\S]*?<p[^>]*>(.*?)<\/p>/);
-              if (firstP) return { name: s.name, desc: firstP[1]!.replace(/<[^>]+>/g, '').trim() };
-              return { name: s.name, desc: '' };
-            })
-          );
-          for (const r of descResults) {
-            if (r.status === 'fulfilled' && r.value.desc) {
-              const skill = skills.find(s => s.name === r.value.name);
-              if (skill) skill.description = r.value.desc;
-            }
-          }
-        }
-
-        if (!this.registryCache) this.registryCache = new Map();
-        this.registryCache.set(cacheKey, { data: skills, ts: now });
-        this.json(res, 200, { skills, cached: false });
-      } catch (err) {
-        this.json(res, 500, { error: `skills.sh fetch failed: ${String(err)}` });
-      }
-      return;
-    }
+    if (await handleSkillsRoutes(this, req, res, path, url)) return;
 
     // Agent Templates
     if (path === '/api/templates' && req.method === 'GET') {
@@ -7449,8 +5862,9 @@ EXPLANATION_END`;
         : (body['respondedBy'] as string) ?? authUser.userId ?? 'anonymous';
       const comment = body['comment'] as string | undefined;
       const selectedOption = body['selectedOption'] as string | undefined;
+      const answers = body['answers'] as UserInputAnswer[] | undefined;
       const result = this.hitlService.respondToApproval(
-        approvalId, approved, respondedBy, comment, selectedOption,
+        approvalId, approved, respondedBy, comment, selectedOption, answers,
       );
       if (!result) {
         this.json(res, 404, { error: 'Approval not found or not pending' });
@@ -7513,6 +5927,25 @@ EXPLANATION_END`;
         totalCount: counts.total,
         unreadCount: counts.unread,
       });
+      return;
+    }
+
+    if (path === '/api/notifications' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const title = body['title'] as string;
+      const bodyText = body['body'] as string;
+      if (!title || !bodyText) { this.json(res, 400, { error: 'title and body required' }); return; }
+      const n = this.hitlService?.notify({
+        targetUserId: authUser.userId,
+        type: ((body['type'] as string) ?? 'system') as 'system',
+        title,
+        body: bodyText,
+        priority: ((body['priority'] as string) ?? 'normal') as 'normal',
+        metadata: body['metadata'] as Record<string, unknown> | undefined,
+      });
+      this.json(res, 201, { notification: n });
       return;
     }
 
@@ -7737,6 +6170,8 @@ EXPLANATION_END`;
         try {
           const agent = agentManager.getAgent(a.id);
           const stats = agent.getUsageStats();
+          const cfg = agent.config?.llmConfig;
+          const provider = cfg?.modelMode === 'custom' ? (cfg.primary ?? 'unknown') : 'markus';
           return {
             agentId: a.id,
             agentName: a.name,
@@ -7751,6 +6186,9 @@ EXPLANATION_END`;
             messages: stats.requestsToday,
             estimatedCost: stats.estimatedCost,
             costToday: stats.costToday,
+            cuUsed: stats.cuUsed,
+            cuUsedToday: stats.cuUsedToday,
+            provider,
           };
         } catch {
           return {
@@ -7767,6 +6205,9 @@ EXPLANATION_END`;
             messages: 0,
             estimatedCost: 0,
             costToday: 0,
+            cuUsed: 0,
+            cuUsedToday: 0,
+            provider: 'unknown',
           };
         }
       });
@@ -7902,7 +6343,7 @@ EXPLANATION_END`;
     if (path === '/api/license' && req.method === 'GET') {
       const raw = this.licenseService
         ? this.licenseService.getInfo()
-        : { plan: 'free', features: [], limits: { maxAgents: 20, maxTeams: 5, maxToolCallsPerDay: 5000, maxUsers: 1 } };
+        : { plan: 'free', features: [], limits: {} };
       this.json(res, 200, await this.buildLicenseResponse(raw, req));
       return;
     }
@@ -8094,23 +6535,146 @@ EXPLANATION_END`;
     }
 
     // Settings — Hub URL (for web-ui to discover hub address)
+    // CU status for Home / soft-stop — local MarkusProvider stats + Hub ledger remaining.
+    // Throttled cu/sync (30s) so stale OpenRouter limits heal without waiting for Cron.
+    if (path === '/api/cu/status' && req.method === 'GET') {
+      const local = this.llmRouter?.getMarkusQuotaInfo() ?? null;
+      let hubRemaining: number | null = null;
+      let hubLimit: number | null = null;
+      let totalCuUsed: number | undefined = local?.totalCuUsed;
+      try {
+        const token = this.readHubToken();
+        const hubBase = (loadConfig().hub?.url || this.hubUrl || '').replace(/\/+$/, '');
+        if (token && hubBase) {
+          const now = Date.now();
+          if (now - this.lastCuStatusSyncAt >= 30_000) {
+            this.lastCuStatusSyncAt = now;
+            const syncRes = await this.hubFetch(`${hubBase}/api/user/cu/sync`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              },
+            });
+            if (syncRes.ok) {
+              const sync = await syncRes.json() as {
+                remainingCu?: number;
+                entitlementCu?: number;
+                usedCu?: number;
+              };
+              hubLimit = Number(sync.entitlementCu ?? 0);
+              hubRemaining = Math.max(0, Number(sync.remainingCu ?? 0));
+              totalCuUsed = Number(sync.usedCu ?? totalCuUsed ?? 0);
+              this.llmRouter?.setMarkusHubRemainingHint(hubRemaining);
+            }
+          }
+          if (hubRemaining === null) {
+            const planRes = await this.hubFetch(`${hubBase}/api/user/plan`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (planRes.ok) {
+              const plan = await planRes.json() as {
+                monthlyQuotaCu?: number;
+                bonusCu?: number;
+                purchasedCu?: number;
+                totalConsumedThisPeriod?: number;
+              };
+              const entitlement =
+                Number(plan.monthlyQuotaCu ?? 0) + Number(plan.bonusCu ?? 0) + Number(plan.purchasedCu ?? 0);
+              const consumed = Number(plan.totalConsumedThisPeriod ?? 0);
+              hubLimit = entitlement;
+              hubRemaining = Math.max(0, entitlement - consumed);
+              totalCuUsed = consumed;
+              this.llmRouter?.setMarkusHubRemainingHint(hubRemaining);
+            }
+          }
+        }
+      } catch {
+        /* Hub plan optional — local headers still useful */
+      }
+
+      const cuRemaining = hubRemaining ?? local?.cuRemaining ?? -1;
+      const cuLimit = hubLimit ?? local?.cuLimit ?? 0;
+      this.json(res, 200, {
+        available: Boolean(this.llmRouter?.getProvider('markus')),
+        cuCost: local?.lastCuCost ?? local?.cuCost ?? 0,
+        cuRemaining,
+        cuLimit,
+        cuUsedToday: local?.cuUsedToday,
+        totalCuUsed,
+      });
+      return;
+    }
+
     if (path === '/api/settings/hub' && req.method === 'GET') {
       this.json(res, 200, { hubUrl: this.hubUrl });
       return;
     }
 
-    // Settings — Hub Token (frontend pushes token so MCP skill servers can read it)
+    // Preferred local org name (markus.json org.name). Used by onboarding for
+    // local accounts; applied to the Hub org when the user later connects Hub.
+    if (path === '/api/settings/org' && req.method === 'GET') {
+      try {
+        const cfg = loadConfig(this.markusConfigPath);
+        this.json(res, 200, { org: { id: cfg.org?.id ?? 'default', name: cfg.org?.name ?? 'My Organization' } });
+      } catch {
+        this.json(res, 200, { org: { id: 'default', name: 'My Organization' } });
+      }
+      return;
+    }
+
+    if (path === '/api/settings/org' && (req.method === 'PUT' || req.method === 'POST')) {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      try {
+        const body = await this.readBody(req);
+        const name = typeof body['name'] === 'string' ? body['name'].trim() : '';
+        if (!name) {
+          this.json(res, 400, { error: 'name is required' });
+          return;
+        }
+        const cfg = loadConfig(this.markusConfigPath);
+        const orgId = cfg.org?.id ?? 'default';
+        saveConfig({ org: { id: orgId, name } } as any, this.markusConfigPath);
+        const localOrg = this.orgService.getDefaultOrganization();
+        if (localOrg && typeof this.orgService.renameOrganization === 'function') {
+          this.orgService.renameOrganization(localOrg.id, name);
+        }
+        this.json(res, 200, { ok: true, org: { id: localOrg?.id ?? orgId, name } });
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to save org name: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      return;
+    }
+
+    // Settings — Hub Token GET (frontend pulls saved token on init)
+    if (path === '/api/settings/hub-token' && req.method === 'GET') {
+      const token = this.readHubToken();
+      this.json(res, 200, { token: token ?? null });
+      return;
+    }
+
+    // Settings — Hub Token POST (frontend pushes token so MCP skill servers can read it)
     if (path === '/api/settings/hub-token' && req.method === 'POST') {
       const body = await this.readBody(req);
       const authUser = await this.getAuthUser(req);
       const token = body['token'] as string | null;
       const tokenPath = join(homedir(), '.markus', 'hub-token');
       try {
+        const prev = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf-8').trim() : '';
+        const next = token?.trim() ?? '';
+        // Skip no-op writes — identical POSTs used to flood the event loop / audit log.
+        if (prev === next) {
+          this.json(res, 200, { ok: true, unchanged: true });
+          return;
+        }
         if (token) {
           mkdirSync(join(homedir(), '.markus'), { recursive: true });
           writeFileSync(tokenPath, token, 'utf-8');
+          process.env['MARKUS_HUB_TOKEN'] = token;
         } else if (existsSync(tokenPath)) {
           rmSync(tokenPath);
+          delete process.env['MARKUS_HUB_TOKEN'];
         }
         log.info(`Hub token ${token ? 'saved to' : 'cleared from'} ${tokenPath}`);
       } catch (err) {
@@ -8121,6 +6685,94 @@ EXPLANATION_END`;
         type: 'settings_changed',
         action: 'hub_token',
         detail: token ? 'Hub token saved' : 'Hub token cleared',
+        userId: authUser?.userId,
+        success: true,
+      });
+      this.json(res, 200, { ok: true });
+      return;
+    }
+
+    // Settings — OpenRouter member credentials (Hub connect flow)
+    if (path === '/api/settings/subscription-key' && req.method === 'POST') {
+      const body = await this.readBody(req);
+      const authUser = await this.getAuthUser(req);
+      const openrouter = body['openrouter'] as { key?: string; baseUrl?: string; modelsUrl?: string } | undefined;
+      let savedOpenRouter = false;
+      try {
+        const { saveConfig } = await import('@markus/shared');
+        const existing = (loadConfig().llm.providers?.['markus'] ?? {}) as {
+          apiKey?: string;
+          baseUrl?: string;
+          modelsUrl?: string;
+          model?: string;
+        };
+        const markusConfig: Record<string, string> = {};
+
+        if (openrouter?.key && openrouter.baseUrl) {
+          markusConfig.apiKey = openrouter.key;
+          markusConfig.baseUrl = openrouter.baseUrl;
+          if (openrouter.modelsUrl) markusConfig.modelsUrl = openrouter.modelsUrl;
+          savedOpenRouter = true;
+        }
+        if (!markusConfig.apiKey && existing.apiKey) markusConfig.apiKey = existing.apiKey;
+        if (!markusConfig.baseUrl && existing.baseUrl && !isLegacyMarkusProxyBaseUrl(existing.baseUrl)) {
+          markusConfig.baseUrl = existing.baseUrl;
+        }
+        if (!markusConfig.modelsUrl && existing.modelsUrl) markusConfig.modelsUrl = existing.modelsUrl;
+        if (existing.model) markusConfig.model = existing.model;
+
+        if (Object.keys(markusConfig).length > 0) {
+          // Drop legacy Worker fields from persisted config.
+          saveConfig({ llm: { providers: { markus: markusConfig } } } as any);
+          log.info('Markus OpenRouter credentials saved', {
+            hasOr: savedOpenRouter,
+            hasModelsUrl: !!markusConfig.modelsUrl,
+          });
+        }
+
+        delete process.env['MARKUS_SUBSCRIPTION_KEY'];
+        delete process.env['MARKUS_PROXY_URL'];
+        delete process.env['MARKUS_SEARCH_URL'];
+        if (markusConfig.apiKey) {
+          process.env['MARKUS_OPENROUTER_KEY'] = markusConfig.apiKey;
+        }
+        if (markusConfig.baseUrl) {
+          process.env['MARKUS_OPENROUTER_BASE'] = markusConfig.baseUrl;
+        }
+        if (markusConfig.modelsUrl) {
+          process.env['MARKUS_MODELS_URL'] = markusConfig.modelsUrl;
+        }
+
+        try {
+          if (this.llmRouter && savedOpenRouter) {
+            this.llmRouter.registerProviderFromConfig('markus', {
+              provider: 'markus',
+              apiKey: String(markusConfig.apiKey || ''),
+              baseUrl: String(markusConfig.baseUrl || 'https://openrouter.ai/api/v1'),
+              model: String(markusConfig.model || ''),
+              ...(markusConfig.modelsUrl ? { modelsUrl: String(markusConfig.modelsUrl) } : {}),
+            });
+            this.ensureMarkusDirectConfig();
+            await this.llmRouter.refreshMarkusCatalog();
+            const modelsUrl = markusConfig.modelsUrl
+              || (loadConfig().llm.providers?.markus as { modelsUrl?: string } | undefined)?.modelsUrl;
+            await this.applyHubRecommendationsAfterConnect(
+              modelsUrl ? String(modelsUrl) : undefined,
+              { force: false },
+            );
+            this.invalidateRoutingCache();
+          }
+        } catch (err) {
+          log.warn('Failed to hot-reload Markus provider after Hub connect', { error: String(err) });
+        }
+      } catch (err) {
+        log.error('Failed to save openrouter key', { error: String(err) });
+      }
+      this.auditService?.record({
+        orgId: 'system',
+        type: 'settings_changed',
+        action: 'subscription_key',
+        detail: savedOpenRouter ? 'OpenRouter key saved' : 'No key provided',
         userId: authUser?.userId,
         success: true,
       });
@@ -8237,6 +6889,30 @@ EXPLANATION_END`;
         return;
       }
 
+      // Markus catalog comes from Hub (`modelsUrl`), not OpenRouter /v1/models with the member key.
+      if (providerName === 'markus') {
+        try {
+          this.ensureMarkusDirectConfig();
+          const count = await this.llmRouter?.refreshMarkusCatalog() ?? 0;
+          const settings = this.llmRouter?.getEnhancedSettings();
+          const models = settings?.providers?.['markus']?.models ?? [];
+          this.json(res, 200, {
+            provider: 'markus',
+            models,
+            source: count > 0 ? 'hub' : 'empty',
+            count,
+          });
+        } catch (err) {
+          this.json(res, 200, {
+            provider: 'markus',
+            models: [],
+            source: 'error',
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
+
       try {
         // Get provider instance to access its API key
         const providerInstance = this.llmRouter?.getProvider(providerName);
@@ -8267,7 +6943,42 @@ EXPLANATION_END`;
         this.json(res, 200, { defaultProvider: 'unknown', providers: {} });
         return;
       }
+      // Fix stale Worker baseUrl / missing modelsUrl, migrate legacy markus_ keys,
+      // then refresh Hub catalog.
+      try {
+        this.ensureMarkusDirectConfig();
+        const cfg = loadConfig();
+        const markusKey = (cfg.llm.providers?.['markus'] as { apiKey?: string } | undefined)?.apiKey;
+        if (this.isLegacyMarkusSubscriptionKey(markusKey)) {
+          const sync = await this.syncOpenRouterCredentialsFromHub({ force: true });
+          if (!sync.ok) {
+            log.warn('Legacy Markus key present but OpenRouter sync failed', { error: sync.error });
+          }
+        }
+        const preview = this.llmRouter.getEnhancedSettings();
+        const markus = preview.providers?.['markus'];
+        if (markus?.configured && (!markus.models || markus.models.length === 0)) {
+          await this.llmRouter.refreshMarkusCatalog();
+        }
+      } catch { /* non-fatal */ }
       this.json(res, 200, this.llmRouter.getEnhancedSettings());
+      return;
+    }
+
+    // Explicitly re-fetch / rotate OpenRouter member key from Hub
+    if (path === '/api/settings/llm/sync-openrouter' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+      const result = await this.syncOpenRouterCredentialsFromHub({
+        force: true,
+        rotate: body['rotate'] === true,
+      });
+      if (!result.ok) {
+        this.json(res, 400, { error: result.error ?? 'sync failed' });
+        return;
+      }
+      this.json(res, 200, { ...result, settings: this.llmRouter?.getEnhancedSettings() });
       return;
     }
 
@@ -8293,6 +7004,12 @@ EXPLANATION_END`;
         if (defaultProvider) {
           this.llmRouter.setDefaultProvider(defaultProvider);
           configUpdates.defaultProvider = defaultProvider;
+          // setDefaultProvider also retargets the routing default model at the
+          // new provider. Persist that synced value unless the caller sent an
+          // explicit routingDefaultModel below (which then takes precedence).
+          if (routingDefaultModel === undefined) {
+            configUpdates.routingDefaultModel = this.llmRouter.routingDefaultModel;
+          }
         }
         if (typeof autoFallback === 'boolean') {
           this.llmRouter.setAutoFallback(autoFallback);
@@ -8368,8 +7085,10 @@ EXPLANATION_END`;
         for (const m of providerSettings.models ?? []) {
           seenIds.add(m.id);
           const enriched = enrichModelFromCatalog(m.id, m.tier, this.modelCatalog);
-          let caps = enriched.capabilities ?? (m as any).capabilities;
-          if (!caps && (m as any).inputTypes?.includes('image')) {
+          // Prefer builtin multimodal tags (imageGeneration/tts/…) — LiteLLM often
+          // returns [] / chat-only flags and must not wipe them (causes false "mismatch").
+          let caps = mergeModelCapabilities((m as any).capabilities, enriched.capabilities);
+          if (!caps?.length && (m as any).inputTypes?.includes('image')) {
             caps = ['vision'];
           }
           models.push({
@@ -8478,8 +7197,8 @@ EXPLANATION_END`;
         for (const m of providerSettings.models ?? []) {
           seenIds.add(m.id);
           const enriched = enrichModelFromCatalog(m.id, m.tier, this.modelCatalog);
-          let caps = enriched.capabilities ?? (m as any).capabilities;
-          if (!caps && (m as any).inputTypes?.includes('image')) {
+          let caps = mergeModelCapabilities((m as any).capabilities, enriched.capabilities);
+          if (!caps?.length && (m as any).inputTypes?.includes('image')) {
             caps = ['vision'];
           }
           allCandidates.push({
@@ -8541,7 +7260,49 @@ EXPLANATION_END`;
         suggestions[capabilityType] = { provider: best.provider, model: best.modelId, tier: best.tier };
       }
 
+      // Prefer Hub Admin recommendations when Markus is connected (same source as restore).
+      try {
+        const { loadConfig: loadCfg } = await import('@markus/shared');
+        const modelsUrl = (loadCfg().llm.providers?.markus as { modelsUrl?: string } | undefined)?.modelsUrl;
+        if (modelsUrl) {
+          const hubRecs = await fetchHubRecommendations(modelsUrl);
+          if (hubRecs?.recommendations) {
+            for (const [cap, modelId] of Object.entries(hubRecs.recommendations)) {
+              if (!modelId) continue;
+              suggestions[cap] = { provider: 'markus', model: modelId };
+            }
+          }
+        }
+      } catch { /* keep local scoring suggestions */ }
+
       this.json(res, 200, { suggestions });
+      return;
+    }
+
+    // Settings — Restore Markus Admin recommendations (force overwrite)
+    if (path === '/api/settings/llm/restore-recommended' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.llmRouter) {
+        this.json(res, 400, { error: 'LLM router not ready' });
+        return;
+      }
+      let modelsUrl: string | undefined;
+      try {
+        const { loadConfig: loadCfg } = await import('@markus/shared');
+        modelsUrl = (loadCfg().llm.providers?.markus as { modelsUrl?: string } | undefined)?.modelsUrl;
+      } catch { /* ignore */ }
+      const result = await this.applyHubRecommendationsAfterConnect(modelsUrl, { force: true });
+      if (!result.ok) {
+        this.json(res, 400, { error: result.error ?? 'Failed to restore recommendations' });
+        return;
+      }
+      this.json(res, 200, {
+        ok: true,
+        capabilityRouting: result.capabilityRouting,
+        routingDefaultModel: result.routingDefaultModel,
+        defaultProvider: result.defaultProvider,
+      });
       return;
     }
 
@@ -8732,23 +7493,27 @@ EXPLANATION_END`;
         const { existsSync: ex, readFileSync, statSync } = await import('node:fs');
 
         const thisDir = dn(fileURLToPath(import.meta.url));
-        // Search order: Electron bundled → dev workspace → binary install → cwd fallback
+        // Search order: npm/CLI dist → Electron unpacked → binary stage → monorepo → cwd
+        // (bundled markus.mjs / main.js: import.meta.url dirname is the dist/ folder)
         const zipCandidates = [
-          // Electron desktop: zip is sibling of main.js in dist/ (unpacked from asar)
           jn(thisDir, 'markus-browser-extension.zip'),
-          // Also check MARKUS_TEMPLATES_DIR parent (points to unpacked dist/)
+          jn(rslv(thisDir, '..'), 'markus-browser-extension.zip'),
+          // Electron: MARKUS_TEMPLATES_DIR = …/app.asar.unpacked/dist/templates
           ...(process.env.MARKUS_TEMPLATES_DIR
             ? [jn(rslv(process.env.MARKUS_TEMPLATES_DIR, '..'), 'markus-browser-extension.zip')]
             : []),
-          jn(rslv(thisDir, '..', '..', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
+          // Linux binary / deb: STAGE/chrome-extension/… (thisDir = STAGE/bin)
           jn(rslv(thisDir, '..', 'chrome-extension'), 'markus-browser-extension.zip'),
-          jn(rslv(thisDir, '..', '..', '..', 'chrome-extension'), 'markus-browser-extension.zip'),
+          jn(rslv(thisDir, '..', 'chrome-extension', 'dist'), 'markus-browser-extension.zip'),
+          jn(rslv(thisDir, '..', '..', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
+          jn(rslv(thisDir, '..', '..', '..', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
           jn(rslv(process.cwd(), 'packages', 'chrome-extension'), 'dist', 'markus-browser-extension.zip'),
           jn(rslv(process.cwd(), 'chrome-extension'), 'markus-browser-extension.zip'),
+          jn(rslv(process.cwd(), 'dist'), 'markus-browser-extension.zip'),
         ];
         let zipPath = zipCandidates.find(p => ex(p));
 
-        // If not found, try building from source
+        // Dev fallback: build from source when running inside the monorepo
         if (!zipPath) {
           const extDir = [
             rslv(thisDir, '..', '..', 'chrome-extension'),
@@ -8760,7 +7525,13 @@ EXPLANATION_END`;
             if (ex(built)) zipPath = built;
           }
         }
-        if (!zipPath) { this.json(res, 404, { error: 'Extension zip not found.' }); return; }
+        if (!zipPath) {
+          this.json(res, 404, {
+            error: 'Extension zip not found in this installation. Reinstall Markus or download the extension from the release assets.',
+            code: 'EXTENSION_ZIP_MISSING',
+          });
+          return;
+        }
 
         const data = readFileSync(zipPath);
         res.writeHead(200, {
@@ -8867,22 +7638,68 @@ EXPLANATION_END`;
       return;
     }
 
+    // Settings — Search API connectivity test (runs a real probe query)
+    if (path === '/api/settings/search/test' && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const body = await this.readBody(req);
+      const provider = String(body['provider'] ?? '').toLowerCase();
+      if (!provider) { this.json(res, 400, { ok: false, error: 'provider is required' }); return; }
+
+      let overrides: Record<string, string | undefined> | undefined;
+      // Markus-hosted search: inject OpenRouter member key from config.
+      if (provider === 'markus') {
+        const { loadConfig: loadCfg } = await import('@markus/shared');
+        const cfg = loadCfg(this.markusConfigPath);
+        const m = cfg.llm?.providers?.['markus'] as {
+          apiKey?: string;
+          baseUrl?: string;
+        } | undefined;
+        const orKey =
+          (m?.apiKey?.startsWith('sk-or-') ? m.apiKey : '')
+          || process.env['MARKUS_OPENROUTER_KEY']
+          || process.env['OPENROUTER_API_KEY']
+          || '';
+        const orBase =
+          (m?.baseUrl && !isLegacyMarkusProxyBaseUrl(m.baseUrl) ? m.baseUrl : '')
+          || process.env['MARKUS_OPENROUTER_BASE']
+          || 'https://openrouter.ai/api/v1';
+        overrides = {
+          MARKUS_OPENROUTER_KEY: orKey,
+          MARKUS_OPENROUTER_BASE: orBase,
+          MARKUS_SEARCH_ENABLED: '1',
+        };
+      }
+      // Allow testing an unsaved key typed in the UI before it auto-saves.
+      if (typeof body['apiKey'] === 'string' && body['apiKey']) {
+        const envMap: Record<string, string> = {
+          serper: 'SERPER_API_KEY', tavily: 'TAVILY_API_KEY', bing: 'BING_SEARCH_API_KEY',
+          google: 'GOOGLE_SEARCH_API_KEY', serpapi: 'SERPAPI_API_KEY', brave: 'BRAVE_SEARCH_API_KEY',
+          exa: 'EXA_API_KEY', bocha: 'BOCHA_API_KEY',
+        };
+        const envKey = envMap[provider];
+        if (envKey) {
+          overrides = { ...(overrides ?? {}), [envKey]: body['apiKey'] as string };
+          if (provider === 'google' && typeof body['cx'] === 'string' && body['cx']) {
+            overrides['GOOGLE_SEARCH_CX'] = body['cx'] as string;
+          }
+        }
+      }
+
+      try {
+        const result = await testSearchProvider(provider, overrides);
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 200, { ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+
     // Settings — Search API keys
     if (path === '/api/settings/search' && req.method === 'GET') {
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
-      const search = currentConfig.integrations?.search ?? {};
-      const mask = (key?: string) => key ? '***' + key.slice(-4) : '';
-      this.json(res, 200, {
-        serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']) },
-        tavily: { configured: !!search.tavilyApiKey || !!process.env['TAVILY_API_KEY'], preview: mask(search.tavilyApiKey || process.env['TAVILY_API_KEY']) },
-        bing: { configured: !!search.bingApiKey || !!process.env['BING_SEARCH_API_KEY'], preview: mask(search.bingApiKey || process.env['BING_SEARCH_API_KEY']) },
-        google: { configured: !!(search.googleSearchApiKey && search.googleSearchCx) || !!(process.env['GOOGLE_SEARCH_API_KEY'] && process.env['GOOGLE_SEARCH_CX']), preview: mask(search.googleSearchApiKey || process.env['GOOGLE_SEARCH_API_KEY']) },
-        serpapi: { configured: !!search.serpApiKey || !!process.env['SERPAPI_API_KEY'], preview: mask(search.serpApiKey || process.env['SERPAPI_API_KEY']) },
-        brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']) },
-        exa: { configured: !!search.exaApiKey || !!process.env['EXA_API_KEY'], preview: mask(search.exaApiKey || process.env['EXA_API_KEY']) },
-        bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']) },
-      });
+      this.json(res, 200, this.buildSearchSettingsStatus(currentConfig));
       return;
     }
 
@@ -8936,11 +7753,44 @@ EXPLANATION_END`;
         if (body['bochaApiKey']) process.env['BOCHA_API_KEY'] = body['bochaApiKey'] as string;
         else delete process.env['BOCHA_API_KEY'];
       }
+      // Markus-hosted search (OpenRouter): opt-out toggle only.
+      const searchUpdates: Record<string, unknown> = { ...updates };
+      if (typeof body['useMarkusHosted'] === 'boolean') {
+        searchUpdates.useMarkusHosted = body['useMarkusHosted'];
+        if (body['useMarkusHosted'] === false) process.env['MARKUS_SEARCH_ENABLED'] = '0';
+        else delete process.env['MARKUS_SEARCH_ENABLED'];
+      }
+      if (typeof body['markusSearchModel'] === 'string') {
+        const model = (body['markusSearchModel'] as string).trim();
+        searchUpdates.markusSearchModel = model || undefined;
+        if (model) process.env['MARKUS_SEARCH_OR_MODEL'] = model;
+        else delete process.env['MARKUS_SEARCH_OR_MODEL'];
+      }
+      // Persist legacy UI fields if sent, but do not drive runtime search routing.
+      if (typeof body['markusProvider'] === 'string') {
+        searchUpdates.markusProvider = body['markusProvider'];
+      }
+      if (typeof body['language'] === 'string') {
+        searchUpdates.language = body['language'];
+      }
+      // Per-provider enable switches (default enabled). Skipped by web_search when false.
+      const enableFields = ['serperEnabled', 'tavilyEnabled', 'bingEnabled', 'googleEnabled', 'serpapiEnabled', 'braveEnabled', 'exaEnabled', 'bochaEnabled'] as const;
+      for (const field of enableFields) {
+        if (typeof body[field] === 'boolean') searchUpdates[field] = body[field];
+      }
       try {
-        saveConfig({ integrations: { search: updates } } as any, this.markusConfigPath);
+        saveConfig({ integrations: { search: searchUpdates } } as any, this.markusConfigPath);
       } catch (e) {
         log.warn('Failed to persist search settings', { error: String(e) });
       }
+      // Rebuild the disabled-provider set so web_search picks it up live.
+      try {
+        const { loadConfig: reload } = await import('@markus/shared');
+        const s = (reload(this.markusConfigPath).integrations?.search ?? {}) as Record<string, unknown>;
+        const disabledNow = enableFields.filter(f => s[f] === false).map(f => f.replace(/Enabled$/, ''));
+        if (disabledNow.length) process.env['SEARCH_DISABLED_PROVIDERS'] = disabledNow.join(',');
+        else delete process.env['SEARCH_DISABLED_PROVIDERS'];
+      } catch { /* non-critical */ }
       this.auditService?.record({
         orgId: 'system',
         type: 'settings_changed',
@@ -8952,18 +7802,7 @@ EXPLANATION_END`;
       });
       const { loadConfig: loadCfg } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
-      const search = currentConfig.integrations?.search ?? {};
-      const mask = (key?: string) => key ? '***' + key.slice(-4) : '';
-      this.json(res, 200, {
-        serper: { configured: !!search.serperApiKey || !!process.env['SERPER_API_KEY'], preview: mask(search.serperApiKey || process.env['SERPER_API_KEY']) },
-        tavily: { configured: !!search.tavilyApiKey || !!process.env['TAVILY_API_KEY'], preview: mask(search.tavilyApiKey || process.env['TAVILY_API_KEY']) },
-        bing: { configured: !!search.bingApiKey || !!process.env['BING_SEARCH_API_KEY'], preview: mask(search.bingApiKey || process.env['BING_SEARCH_API_KEY']) },
-        google: { configured: !!(search.googleSearchApiKey && search.googleSearchCx) || !!(process.env['GOOGLE_SEARCH_API_KEY'] && process.env['GOOGLE_SEARCH_CX']), preview: mask(search.googleSearchApiKey || process.env['GOOGLE_SEARCH_API_KEY']) },
-        serpapi: { configured: !!search.serpApiKey || !!process.env['SERPAPI_API_KEY'], preview: mask(search.serpApiKey || process.env['SERPAPI_API_KEY']) },
-        brave: { configured: !!search.braveApiKey || !!process.env['BRAVE_SEARCH_API_KEY'], preview: mask(search.braveApiKey || process.env['BRAVE_SEARCH_API_KEY']) },
-        exa: { configured: !!search.exaApiKey || !!process.env['EXA_API_KEY'], preview: mask(search.exaApiKey || process.env['EXA_API_KEY']) },
-        bocha: { configured: !!search.bochaApiKey || !!process.env['BOCHA_API_KEY'], preview: mask(search.bochaApiKey || process.env['BOCHA_API_KEY']) },
-      });
+      this.json(res, 200, this.buildSearchSettingsStatus(currentConfig));
       return;
     }
 
@@ -9797,7 +8636,10 @@ EXPLANATION_END`;
       }
       const requestBody = {
         messages: [{ role: 'user' as const, content: 'Reply with exactly one word: hello' }],
-        maxTokens: 32,
+        // No maxTokens cap: a reasoning model spends the whole budget on hidden
+        // reasoning under a tight cap, returning empty content and producing a
+        // false "empty response / misconfigured" result. Let the router fill in
+        // the model's real limit; the model stops after the one-word reply.
         temperature: 0,
       };
       const baseUrl = (provider as any).baseUrl ?? (provider as any).config?.baseUrl ?? '';
@@ -11543,6 +10385,9 @@ EXPLANATION_END`;
         const htmlExts = ['.html', '.htm'];
         const jsonExts = ['.json'];
         const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
+        const audioExts = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma', '.opus'];
+        const videoExts = ['.mp4', '.webm', '.mov', '.mkv', '.avi', '.m4v'];
+        const binaryExts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.tar', '.gz', '.rar', '.7z'];
 
         for (const p of paths.slice(0, 50)) {
           try {
@@ -11560,6 +10405,9 @@ EXPLANATION_END`;
             else if (htmlExts.includes(ext)) type = 'html';
             else if (jsonExts.includes(ext)) type = 'json';
             else if (imageExts.includes(ext)) type = 'image';
+            else if (audioExts.includes(ext)) type = 'audio';
+            else if (videoExts.includes(ext)) type = 'video';
+            else if (binaryExts.includes(ext)) type = 'binary';
             else if (!isFile) type = 'directory';
             results[p] = { exists: true, isFile, type };
           } catch {
@@ -11621,42 +10469,169 @@ EXPLANATION_END`;
           return;
         }
 
-        const maxSize = 2 * 1024 * 1024; // 2MB limit
+        const ext = extname(resolved).toLowerCase();
+        const name = resolved.split('/').pop() || 'file';
+        const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
+        const audioExts = new Set(['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma', '.opus']);
+        const videoExts = new Set(['.mp4', '.webm', '.mov', '.mkv', '.avi', '.m4v']);
+        const binaryExts = new Set([
+          '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+          '.zip', '.tar', '.gz', '.rar', '.7z', '.bz2',
+          '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm',
+          '.woff', '.woff2', '.ttf', '.otf', '.eot',
+        ]);
+        const audioMime: Record<string, string> = {
+          '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+          '.flac': 'audio/flac', '.aac': 'audio/aac', '.m4a': 'audio/mp4',
+          '.wma': 'audio/x-ms-wma', '.opus': 'audio/opus',
+        };
+        const videoMime: Record<string, string> = {
+          '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+          '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.m4v': 'video/mp4',
+        };
+
+        if (audioExts.has(ext)) {
+          this.json(res, 200, {
+            type: 'audio', name, path: resolved, size: stat.size,
+            mimeType: audioMime[ext] ?? 'audio/mpeg',
+            streamUrl: `/api/files/stream?path=${encodeURIComponent(resolved)}`,
+          });
+          return;
+        }
+        if (videoExts.has(ext)) {
+          this.json(res, 200, {
+            type: 'video', name, path: resolved, size: stat.size,
+            mimeType: videoMime[ext] ?? 'video/mp4',
+            streamUrl: `/api/files/stream?path=${encodeURIComponent(resolved)}`,
+          });
+          return;
+        }
+        if (binaryExts.has(ext)) {
+          this.json(res, 200, {
+            type: 'binary', name, path: resolved, size: stat.size,
+            mimeType: 'application/octet-stream', extension: ext,
+          });
+          return;
+        }
+
+        const maxSize = 2 * 1024 * 1024; // 2MB limit for inlined text/image previews
         if (stat.size > maxSize) {
           this.json(res, 413, { error: 'File too large for preview', size: stat.size, maxSize });
           return;
         }
 
-        const ext = extname(resolved).toLowerCase();
-        const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
-        if (imageExts.includes(ext)) {
+        if (imageExts.has(ext)) {
           const data = readFileSync(resolved);
           const mimeMap: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
           this.json(res, 200, {
             type: 'image',
-            name: resolved.split('/').pop(),
+            name,
             mimeType: mimeMap[ext] ?? 'application/octet-stream',
             content: data.toString('base64'),
           });
-        } else {
-          const content = readFileSync(resolved, 'utf-8');
-          const mdExts = ['.md', '.markdown'];
-          const htmlExts = ['.html', '.htm'];
-          const jsonExts = ['.json'];
-          const csvExts = ['.csv', '.tsv'];
-          let fileType = 'text';
-          if (mdExts.includes(ext)) fileType = 'markdown';
-          else if (htmlExts.includes(ext)) fileType = 'html';
-          else if (jsonExts.includes(ext)) fileType = 'json';
-          else if (csvExts.includes(ext)) fileType = 'csv';
-          this.json(res, 200, {
-            type: fileType,
-            name: resolved.split('/').pop(),
-            content,
-          });
+          return;
         }
+
+        // Sniff binary content (null bytes) so arbitrary agent-produced extensions
+        // don't get decoded as UTF-8 garbage in the UI.
+        const head = readFileSync(resolved).subarray(0, Math.min(8192, stat.size));
+        if (head.includes(0)) {
+          this.json(res, 200, {
+            type: 'binary', name, path: resolved, size: stat.size,
+            mimeType: 'application/octet-stream', extension: ext || '',
+          });
+          return;
+        }
+
+        const content = head.length === stat.size
+          ? head.toString('utf-8')
+          : readFileSync(resolved, 'utf-8');
+        const mdExts = ['.md', '.markdown'];
+        const htmlExts = ['.html', '.htm'];
+        const jsonExts = ['.json'];
+        const csvExts = ['.csv', '.tsv'];
+        let fileType = 'text';
+        if (mdExts.includes(ext)) fileType = 'markdown';
+        else if (htmlExts.includes(ext)) fileType = 'html';
+        else if (jsonExts.includes(ext)) fileType = 'json';
+        else if (csvExts.includes(ext)) fileType = 'csv';
+        this.json(res, 200, {
+          type: fileType,
+          name,
+          content,
+        });
       } catch (err) {
         this.json(res, 500, { error: `Failed to read file: ${String(err)}` });
+      }
+      return;
+    }
+
+    // GET /api/files/stream?path=... — stream audio/video with HTTP Range support
+    if (path === '/api/files/stream' && req.method === 'GET') {
+      const filePath = url.searchParams.get('path');
+      if (!filePath) {
+        this.json(res, 400, { error: 'Missing "path" query parameter' });
+        return;
+      }
+      try {
+        const { resolve, extname } = await import('node:path');
+        const { existsSync, statSync, createReadStream } = await import('node:fs');
+        const { homedir } = await import('node:os');
+        const home = homedir();
+        const expanded = filePath.startsWith('~/') ? resolve(home, filePath.slice(2)) : filePath === '~' ? home : filePath;
+        const resolved = resolve(expanded);
+        if (!existsSync(resolved) || !statSync(resolved).isFile()) {
+          this.json(res, 404, { error: 'File not found' });
+          return;
+        }
+        const ext = extname(resolved).toLowerCase();
+        const mimeMap: Record<string, string> = {
+          '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+          '.flac': 'audio/flac', '.aac': 'audio/aac', '.m4a': 'audio/mp4',
+          '.wma': 'audio/x-ms-wma', '.opus': 'audio/opus',
+          '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+          '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.m4v': 'video/mp4',
+          '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+          '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+        };
+        const mime = mimeMap[ext] ?? 'application/octet-stream';
+        const size = statSync(resolved).size;
+        const range = req.headers.range;
+        if (range) {
+          const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+          if (!m) {
+            res.writeHead(416, { 'Content-Range': `bytes */${size}` });
+            res.end();
+            return;
+          }
+          const start = m[1] ? parseInt(m[1], 10) : 0;
+          const end = m[2] ? parseInt(m[2], 10) : size - 1;
+          if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= size) {
+            res.writeHead(416, { 'Content-Range': `bytes */${size}` });
+            res.end();
+            return;
+          }
+          const clampedEnd = Math.min(end, size - 1);
+          const chunkSize = clampedEnd - start + 1;
+          res.writeHead(206, {
+            'Content-Range': `bytes ${start}-${clampedEnd}/${size}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': chunkSize,
+            'Content-Type': mime,
+            'Cache-Control': 'private, max-age=300',
+          });
+          createReadStream(resolved, { start, end: clampedEnd }).pipe(res);
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': mime,
+          'Content-Length': size,
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'private, max-age=300',
+        });
+        createReadStream(resolved).pipe(res);
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to stream file: ${String(err)}` });
       }
       return;
     }
@@ -12535,6 +11510,9 @@ EXPLANATION_END`;
       exact('/api/agents', 'GET', 'POST'),
       exact('/api/agents/role-updates', 'GET'),
       regex(/^\/api\/agents\/[^/]+\/sessions$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/, 'GET'),
+      regex(/^\/api\/sessions\/[^/]+\/model-override$/, 'PUT'),
       regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
@@ -12561,6 +11539,7 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+\/activity-logs$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/heartbeat$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/heartbeat\/trigger$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/wakeups\/[^/]+$/, 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/command$/, 'POST'),
 
       // ── Sessions / Channels ──────────────────────────────────────────────
@@ -12654,7 +11633,7 @@ EXPLANATION_END`;
       regex(/^\/api\/projects\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
 
       // ── Notifications ────────────────────────────────────────────────────
-      exact('/api/notifications', 'GET'),
+      exact('/api/notifications', 'GET', 'POST'),
       exact('/api/notifications/mark-all-read', 'POST'),
       startsWith('/api/notifications/', 'POST'),
 
@@ -12705,10 +11684,16 @@ EXPLANATION_END`;
       exact('/api/license/import', 'POST'),
       exact('/api/license/deactivate', 'POST'),
       exact('/api/settings/telemetry', 'GET', 'POST'),
+      exact('/api/cu/status', 'GET'),
       exact('/api/settings/hub', 'GET'),
-      exact('/api/settings/hub-token', 'POST'),
+      exact('/api/settings/org', 'GET', 'PUT', 'POST'),
+      exact('/api/settings/hub-token', 'GET', 'POST'),
+      exact('/api/settings/subscription-key', 'POST'),
       exact('/api/settings/llm', 'GET', 'POST'),
       exact('/api/settings/llm/models', 'GET'),
+      exact('/api/settings/llm/restore-recommended', 'POST'),
+      exact('/api/settings/llm/sync-openrouter', 'POST'),
+      exact('/api/settings/llm/routing', 'GET'),
       exact('/api/settings/agent', 'GET', 'POST'),
       exact('/api/settings/network', 'GET', 'POST'),
       exact('/api/settings/browser', 'GET', 'POST'),
@@ -12716,6 +11701,7 @@ EXPLANATION_END`;
       exact('/api/settings/browser/test-auto-click', 'POST'),
       exact('/api/settings/browser/test-concurrent', 'POST', 'DELETE'),
       exact('/api/settings/search', 'GET', 'POST'),
+      exact('/api/settings/search/test', 'POST'),
       exact('/api/settings/env-models', 'GET', 'POST'),
       exact('/api/settings/detect-ollama', 'GET'),
       exact('/api/settings/export', 'POST'),
@@ -12786,6 +11772,7 @@ EXPLANATION_END`;
       exact('/api/builder/artifacts/save', 'POST'),
       exact('/api/builder/artifacts/import', 'POST'),
       regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)$/, 'GET', 'DELETE'),
+      regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/ensure-slug$/, 'POST'),
       regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/install$/, 'POST'),
       regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/uninstall$/, 'POST'),
       regex(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/images$/, 'POST'),
@@ -12829,6 +11816,7 @@ EXPLANATION_END`;
       // ── Files ────────────────────────────────────────────────────────────
       exact('/api/files/check', 'POST'),
       exact('/api/files/preview', 'GET'),
+      exact('/api/files/stream', 'GET'),
       exact('/api/files/image', 'GET'),
       exact('/api/files/reveal', 'POST'),
       exact('/api/files/write', 'POST'),
@@ -12899,11 +11887,11 @@ EXPLANATION_END`;
     res.end(body);
   }
 
-  private projectService?: ProjectService;
+  projectService?: ProjectService;
   private reportService?: ReportService;
   private knowledgeService?: KnowledgeService;
-  private deliverableService?: DeliverableService;
-  private requirementService?: RequirementService;
+  deliverableService?: DeliverableService;
+  requirementService?: RequirementService;
 
   setProjectService(svc: ProjectService): void {
     this.projectService = svc;
@@ -12927,7 +11915,7 @@ EXPLANATION_END`;
     this.workflowRunner = runner;
   }
 
-  private buildOpsDashboard(orgId: string | undefined, period: '1h' | '24h' | '7d') {
+  buildOpsDashboard(orgId: string | undefined, period: '1h' | '24h' | '7d') {
     const taskDashboard = this.taskService.getDashboard(orgId);
 
     // Agent efficiency ranking with health scores
@@ -13018,12 +12006,12 @@ EXPLANATION_END`;
     };
   }
 
-  private json(res: ServerResponse, status: number, data: unknown): void {
+  json(res: ServerResponse, status: number, data: unknown): void {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data));
   }
 
-  private readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
     // Return cached body if already pre-read at route level (BUG-003/005)
     const cached: unknown = (req as any).__parsedBody__;
     if (cached !== undefined) {

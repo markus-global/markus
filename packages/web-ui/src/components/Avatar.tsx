@@ -1,5 +1,19 @@
-import { useState, useRef, useCallback } from 'react';
-import { api } from '../api.ts';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
+import { api, hubApi } from '../api.ts';
+import { ConfirmModal } from './ConfirmModal.tsx';
+
+/** Prefer local Markus avatar; resolve Hub-relative paths against Hub origin. */
+export function resolveUserAvatarSrc(localUrl?: string | null, hubUrl?: string | null): string | null {
+  const pick = localUrl || hubUrl || null;
+  if (!pick) return null;
+  if (pick.startsWith('http') || pick.startsWith('data:') || pick.startsWith('/api/')) return pick;
+  if (pick.startsWith('/')) {
+    const base = hubApi.getUrl()?.replace(/\/$/, '') || '';
+    return base ? `${base}${pick}` : pick;
+  }
+  return pick;
+}
 
 // ─── Display Avatar ──────────────────────────────────────────────────────────
 
@@ -9,24 +23,70 @@ interface AvatarProps {
   size?: number;
   className?: string;
   bgClass?: string;
+  /**
+   * Fallback when no usable image:
+   * - `icon` — person silhouette (account / sidebar user)
+   * - `initials` — letter badge (agents, mentions, etc.)
+   */
+  fallback?: 'icon' | 'initials';
 }
 
-export function Avatar({ name, avatarUrl, size = 28, className = '', bgClass = 'bg-brand-600' }: AvatarProps) {
-  const initial = name?.[0]?.toUpperCase() ?? '?';
-  const fontSize = size <= 20 ? 'text-[8px]' : size <= 28 ? 'text-xs' : size <= 40 ? 'text-sm' : 'text-lg';
+/** Soft neutral person silhouette used for account / user chrome. */
+function DefaultUserIcon({ size, className = '' }: { size: number; className?: string }) {
+  const iconSize = Math.max(12, Math.round(size * 0.55));
+  return (
+    <div
+      className={`rounded-full bg-surface-overlay text-fg-secondary flex items-center justify-center shrink-0 border border-border-default/70 ${className}`}
+      style={{ width: size, height: size }}
+      aria-hidden
+    >
+      <svg
+        width={iconSize}
+        height={iconSize}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+        <circle cx="12" cy="7" r="4" />
+      </svg>
+    </div>
+  );
+}
 
-  if (avatarUrl) {
+export function Avatar({
+  name,
+  avatarUrl,
+  size = 28,
+  className = '',
+  bgClass = 'bg-brand-600',
+  fallback = 'initials',
+}: AvatarProps) {
+  const [imgFailed, setImgFailed] = useState(false);
+  useEffect(() => { setImgFailed(false); }, [avatarUrl]);
+  const showImage = !!avatarUrl && !imgFailed;
+
+  if (showImage) {
     return (
       <img
-        src={avatarUrl}
+        src={avatarUrl!}
         alt={name ?? ''}
         className={`rounded-full object-cover shrink-0 ${className}`}
         style={{ width: size, height: size }}
-        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+        onError={() => setImgFailed(true)}
       />
     );
   }
 
+  if (fallback === 'icon') {
+    return <DefaultUserIcon size={size} className={className} />;
+  }
+
+  const initial = name?.[0]?.toUpperCase() ?? '?';
+  const fontSize = size <= 20 ? 'text-[8px]' : size <= 28 ? 'text-xs' : size <= 40 ? 'text-sm' : 'text-lg';
   const hasExplicitTextColor = /\btext-(?!white\b)/.test(bgClass);
   return (
     <div
@@ -50,22 +110,28 @@ interface AvatarUploadProps {
 }
 
 export function AvatarUpload({ currentUrl, name, size = 64, targetType = 'user', targetId, onUploaded }: AvatarUploadProps) {
+  const { t } = useTranslation('common');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [imgFailed, setImgFailed] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const displayUrl = previewUrl ?? currentUrl;
+  useEffect(() => { setImgFailed(false); }, [displayUrl]);
+  const showImage = !!displayUrl && !imgFailed;
 
   const handleFile = useCallback(async (file: File) => {
     if (!file.type.startsWith('image/')) return;
     if (file.size > 2 * 1024 * 1024) {
-      alert('Image must be under 2MB');
+      setNotice(t('imageTooLarge'));
       return;
     }
     const reader = new FileReader();
     reader.onload = async () => {
       const dataUrl = reader.result as string;
       setPreviewUrl(dataUrl);
+      setImgFailed(false);
       setUploading(true);
       try {
         const { avatarUrl } = await api.auth.uploadAvatar(dataUrl, targetType, targetId);
@@ -77,10 +143,7 @@ export function AvatarUpload({ currentUrl, name, size = 64, targetType = 'user',
       }
     };
     reader.readAsDataURL(file);
-  }, [targetType, targetId, onUploaded]);
-
-  const initial = name?.[0]?.toUpperCase() ?? '?';
-  const fontSize = size <= 32 ? 'text-sm' : size <= 48 ? 'text-lg' : 'text-2xl';
+  }, [targetType, targetId, onUploaded, t]);
 
   return (
     <div className="relative inline-block group">
@@ -98,12 +161,15 @@ export function AvatarUpload({ currentUrl, name, size = 64, targetType = 'user',
         style={{ width: size, height: size }}
         title="Click to set avatar"
       >
-        {displayUrl ? (
-          <img src={displayUrl} alt={name ?? ''} className="w-full h-full object-cover" />
+        {showImage ? (
+          <img
+            src={displayUrl!}
+            alt={name ?? ''}
+            className="w-full h-full object-cover"
+            onError={() => setImgFailed(true)}
+          />
         ) : (
-          <div className={`w-full h-full bg-brand-600 flex items-center justify-center text-white ${fontSize} font-bold`}>
-            {initial}
-          </div>
+          <DefaultUserIcon size={size} />
         )}
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
           {uploading ? (
@@ -116,6 +182,16 @@ export function AvatarUpload({ currentUrl, name, size = 64, targetType = 'user',
           )}
         </div>
       </button>
+      {notice && (
+        <ConfirmModal
+          alertOnly
+          variant="danger"
+          title={t('error', { defaultValue: 'Error' })}
+          message={notice}
+          onConfirm={() => setNotice(null)}
+          onCancel={() => setNotice(null)}
+        />
+      )}
     </div>
   );
 }

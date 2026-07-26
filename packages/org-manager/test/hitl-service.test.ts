@@ -91,6 +91,32 @@ describe('HITLService', () => {
       }));
     });
 
+    it('carries multi-question payload and resolves waiters with answers', async () => {
+      const waitPromise = service.requestApprovalAndWait({
+        agentId: 'agent-1',
+        agentName: 'Tutor',
+        type: 'custom',
+        title: 'Quiz',
+        description: 'Answer these',
+        questions: [
+          { id: 'q1', prompt: 'Pick one', inputType: 'choice', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+          { id: 'q2', prompt: 'Explain', inputType: 'text' },
+        ],
+      });
+      const pending = service.listApprovals('pending');
+      const created = pending[0]!;
+      expect(created.questions).toHaveLength(2);
+
+      const answers = [
+        { questionId: 'q1', selectedOptionIds: ['a'] },
+        { questionId: 'q2', text: 'Because.' },
+      ];
+      const result = service.respondToApproval(created.id, true, 'user-1', undefined, undefined, answers);
+      expect(result?.answers).toEqual(answers);
+      expect(approvalRepo.upsert).toHaveBeenCalledWith(expect.objectContaining({ answers }));
+      await expect(waitPromise).resolves.toEqual(expect.objectContaining({ approved: true, answers }));
+    });
+
     it('cancels approval', () => {
       const approval = service.requestApproval({
         agentId: 'agent-1',

@@ -16,6 +16,7 @@ import {
   SYSTEM_MAILBOX_MERGED_CHARS,
   SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS,
   CHANNEL_CONTEXT_MESSAGES,
+  CONTEXT_ABSURD_MESSAGE_CHARS,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
@@ -51,6 +52,8 @@ export interface ContextUsageStats {
   totalUsed: number;
   available: number;
   usagePercent: number;
+  /** C2: true when this pack had to run token-budget compression (was over budget). */
+  compressed: boolean;
 }
 
 export interface PreparedContext {
@@ -120,7 +123,9 @@ export class ContextEngine {
     memory: IMemoryStore;
     currentQuery?: string;
     identity?: IdentityContext;
-    senderIdentity?: { id: string; name: string; role: string; isFirstConversation?: boolean };
+    senderIdentity?: { id: string; name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string };
+    /** Fallback locale/timezone for autonomous runs with no interactive sender (e.g. owner preferences). */
+    viewerContext?: { locale?: string; timezone?: string };
     assignedTasks?: Array<{
       id: string;
       title: string;
@@ -234,15 +239,15 @@ export class ContextEngine {
       stable.push('When you need to understand code or find information, use a layered approach — each layer is a fallback for the previous:');
       stable.push('1. **Semantic search** (`memory_search`, `deliverable_search`): Start with conceptual queries to find relevant knowledge and existing outputs.');
       stable.push('2. **Pattern search** (`grep_search`): Use for exact symbol names, error messages, configuration keys, or specific strings.');
-      stable.push('3. **File browsing** (`file_read`, `file_list`): Navigate directory structure and read specific files when you know the likely location.');
+      stable.push('3. **File browsing** (`file_read`, `list_directory`): Navigate directory structure and read specific files when you know the likely location.');
       stable.push('4. **External research** (`web_search`, `web_fetch`): Use for unfamiliar libraries, APIs, error codes, or best practices not found in the codebase.');
 
       // Dynamic browser fallback based on available skills
       const hasBrowserSkill = opts.availableSkills?.some(s => s.name === 'chrome-devtools');
       if (hasBrowserSkill) {
-        stable.push('5. **Browser tools** (`browser_navigate`, `browser_snapshot`, `browser_click`): If `web_search` or `web_fetch` fails (network error, JS-rendered page, rate-limited site), use browser tools to access the information interactively. Browser tools can handle pages that require JavaScript rendering, authentication flows, or complex navigation that `web_fetch` cannot.');
+        stable.push('5. **Browser tools** (`browser_navigate`, `browser_snapshot`, `browser_click`): when `web_search`/`web_fetch` fails (network error, JS-rendered page, rate-limiting), access the page interactively — handles JS rendering, auth flows, and complex navigation `web_fetch` cannot.');
       } else {
-        stable.push('If `web_search` or `web_fetch` fails, try alternative search queries, different URLs, or `web_fetch` on a search engine URL directly (e.g. `https://www.google.com/search?q=YOUR_QUERY`). If you have browser tools available via the `chrome-devtools` skill, those can handle JS-rendered pages and interactive sites.');
+        stable.push('If `web_search`/`web_fetch` fails, try alternative queries or URLs, or `web_fetch` a search-engine URL directly (e.g. `https://www.google.com/search?q=YOUR_QUERY`). The `chrome-devtools` skill adds browser tools for JS-rendered/interactive sites.');
       }
 
       stable.push('Always check existing patterns in the codebase before introducing new conventions. When exploring unfamiliar code, start from entry points and trace data flow.');
@@ -253,7 +258,15 @@ export class ContextEngine {
       stable.push('1. **Diagnose**: Read the error carefully. Identify root cause vs symptom.');
       stable.push('2. **Adapt**: Try a different approach — different parameters, different tool, or different strategy. NEVER repeat the exact same failing action.');
       stable.push('3. **Reduce scope**: If the full operation fails, isolate the smallest failing unit and fix that first.');
-      stable.push('4. **Escalate**: After 3 failed attempts at the same problem, stop and escalate — mark task as `blocked` with details of what you tried and why it failed.');
+      stable.push('4. **Bounded retry**: Make at most ~2 attempts at the *same* failing action without new evidence (a changed error, new input, a different hypothesis). Do NOT loop on the same call hoping for a different result — that burns tokens and hides the real problem.');
+      stable.push('5. **Escalate**: After bounded retries are exhausted, stop and escalate — `request_user_input` when a human decision/clarification would unblock you, `notify_user` for FYI, and mark the task `blocked` with details of what you tried and why it failed. Silent failure or endless looping is never acceptable.');
+
+      stable.push('');
+      stable.push('\n## Autonomy & Escalation');
+      stable.push('Calibrate how much to act on your own vs. ask first:');
+      stable.push('- **Reversible / low-stakes** (default): choose a sensible option and proceed. Record the assumption (task note / working memory) so it can be revisited. Do NOT over-ask on trivial, easily-undone choices.');
+      stable.push('- **Irreversible, destructive, or scope-expanding** (deletes, force-push, spending, publishing, changing another team\'s work, anything hard to undo): `request_user_input` FIRST and wait for the decision. When in doubt about reversibility, treat it as irreversible.');
+      stable.push('- Prefer making progress with a stated assumption over stalling; prefer asking over taking a risky irreversible action.');
 
       stable.push('');
       stable.push('\n## Security Boundaries');
@@ -282,11 +295,29 @@ export class ContextEngine {
       stable.push('Default to markdown for brevity; escalate to HTML when richness helps comprehension. Always use the correct file extension so the platform can detect and render it properly.');
 
       stable.push('');
+      stable.push('\n## Referencing Markus Resources');
+      stable.push('When you mention a Markus resource (task, requirement, project, deliverable, agent, team) in chat, comments, or reports, use these conventions so the UI renders a clickable reference:');
+      stable.push('- **Bare ID** in prose (e.g. `tsk_…`, `req_…`, `proj_…`, `dlv_…`, `agt_…`, `team_…`) → inline clickable chip.');
+      stable.push('- **Titled link** `[Readable Title](task:tsk_…)` (types: `task`, `requirement`, `project`, `deliverable`, `agent`, `team`) → chip showing the title. Preferred when a readable name helps.');
+      stable.push('- **Card**: a reference **alone on its own line** (bare ID or single titled link) → rich card (icon + title + status + summary). After `deliverable_create` / `task_submit_review`, put the new `dlv_…` on its own line so the user gets a clickable deliverable card.');
+      stable.push('- Do NOT paste raw REST paths (`/api/…`) or bare `http(s)://` internal URLs — they open as external links, not in-app navigation. IDs inside fenced code blocks render as-is (not linked), so reference them in prose when you want them clickable.');
+
+      stable.push('');
+      stable.push('\n## User Language (critical)');
+      stable.push('These system instructions are written in English for the model, but that must NOT make user-visible content default to English.');
+      stable.push('- **Chat replies**: match the user\'s language (see `User locale` below, else their recent messages).');
+      stable.push('- **User-facing records you create or update** — titles, descriptions, summaries, notes, comments, notifications, goals, project names, and deliverable content meant for humans — MUST use that same language. This includes `task_create` / `subtask_create` / `requirement_propose` / `deliverable_create` / `goal_create` and any later edits.');
+      stable.push('- Do **not** invent English titles like "Research X — Plan Ready" when the user is working in Chinese (or another language). Write those fields in the user\'s language.');
+      stable.push('- **Exceptions**: code identifiers, file paths, API names, model IDs, and quoted third-party English source text may stay as-is.');
+      stable.push('- If the user explicitly asks for another language for a specific artifact, follow that request.');
+
+      stable.push('');
       stable.push('\n## Task & Requirement Workflow');
       stable.push('');
       stable.push('**Requirements** (governance gate):');
       stable.push('- `requirement_propose` → pending human approval → approved → link tasks via `requirement_id`');
       stable.push('- Every task MUST reference an approved `requirement_id`. Use `requirement_propose` first if no requirement exists.');
+      stable.push('- After `requirement_propose` / `task_create`, the UI already shows Approve/Reject on the entity card, and the system already notifies the human. **Do NOT** follow up with `request_user_input` (or `request_user_approval`) to ask them to approve — that duplicates the built-in approval UI. Do **not** send an extra `notify_user` just to remind them either; they will approve when ready. Only use `notify_user` later if something is truly stuck for a long time and needs a non-blocking nudge (never a blocking questionnaire).');
       stable.push('');
       stable.push('**Task lifecycle** — Create → Execute → Review → Complete:');
       stable.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_id`; optional `reviewer_type`: "agent"|"human"). Check `task_list` first to avoid duplicates.');
@@ -308,7 +339,8 @@ export class ContextEngine {
       stable.push('');
       stable.push('**Communicating with humans**:');
       stable.push('- `notify_user` — proactive message to a human team member: status updates, progress reports, findings, alerts. Appears in chat timeline AND notification bell. The human can reply. Write comprehensive body with full context. **This is the ONLY way to reach humans from non-chat contexts** (heartbeat, autonomous tasks, etc.).');
-      stable.push('- `request_user_approval` — when you need a human decision, approval, or input. BLOCKS until the user responds. Supports custom options and freeform text. Do NOT use for routine updates.');
+      stable.push('- `request_user_input` — when you need a human decision or information that is **not** covered by a built-in UI. BLOCKS until the user responds. Supports one or multiple questions, custom options (Markdown-rich), and freeform text. Do NOT use for routine updates.');
+      stable.push('- **Never use `request_user_input` / `request_user_approval` to approve requirements or tasks** — those entities already have system Approve/Reject buttons (and creation already notifies the human). Use `request_user_input` for other decisions (preferences, ambiguous choices, collecting facts, irreversible actions outside req/task cards).');
       stable.push('- `recall_activity` — query your own past execution logs by task or activity type. Use when you need to review what you did previously (e.g., to answer a follow-up question).');
       stable.push('');
       stable.push('**Communicating with other agents**:');
@@ -316,6 +348,18 @@ export class ContextEngine {
       stable.push('- When you **receive** a DM or group chat message, your text response is **automatically sent back** — do NOT call `agent_send_message` or `agent_send_group_message` to reply. Just respond directly.');
       stable.push('- For substantial work requests, create a `task_create` assigned to the target agent instead of asking via message.');
       stable.push('- Do NOT use A2A messages for routine task status notifications — the system handles those automatically.');
+      stable.push('- **Self-contained delegation contract**: A recipient has NO access to your session or context. Any delegation (A2A message, task) MUST be self-contained — include the **goal**, the **context/background** needed, the **constraints**, the **expected return format**, and preserve the **`conversation_id`** for correlation. Never assume the other agent can "see what you\'re working on".');
+      stable.push('');
+      stable.push('**Async work, callbacks & timing** (event-driven — do NOT poll):');
+      stable.push('- After starting async work, do **not** loop or schedule frequent check-ins to "see if it is done". Register for the completion event and stop — you will be woken when there is something to do. This saves tokens and avoids busy-waiting.');
+      stable.push('- `background_exec` — run long commands (builds, tests, servers) without blocking. Completion is reported back to you **automatically**; continue other work meanwhile. Do not repeatedly `process poll` in a tight loop.');
+      stable.push('- `schedule_wakeup` — wake yourself at a precise time (`in_seconds` or ISO `at`), optionally `recurring_seconds`. Use for time-based follow-ups ("re-check in 2h", "remind me tomorrow 9am") instead of relying on the periodic heartbeat, which is now only a coarse safety-net. `cancel_wakeup` when no longer needed.');
+      stable.push('- `set_heartbeat_interval` — change how often your periodic safety-net patrol runs (clamped 5min–24h). Increase it when idle to save tokens, decrease it if you need to patrol more often. This does NOT replace `schedule_wakeup` for precise follow-ups.');
+      stable.push('- `agent_send_message` with `await_in_session: true` — delegate a question/subtask to a peer and have their reply resume **this same conversation** inline, rather than landing in a separate session. Use when you need the answer in context to continue.');
+      stable.push('- **Two delivery forms for results:**');
+      stable.push('  - **in-session** — the result resumes the current conversation (e.g. `background_exec` completion, an `await_in_session` A2A reply). Use for interactive work tied to a live thread.');
+      stable.push('  - **mailbox** — the result arrives as a fresh attention cycle (e.g. a `schedule_wakeup` you set for later, an autonomous/background follow-up). Use for autonomous or cross-context work; combine with `notify_user` when a human should also be informed.');
+      stable.push('- **Return a decision-ready result**: when you reply to a delegation or report an async outcome, summarize it so the recipient can act immediately — state the outcome, what changed, and any decision needed. Do NOT dump raw logs/stdout tails and expect the reader to parse them.');
     }
 
     // NOTE: Scenario section was deliberately moved OUT of Tier 1 into Tier 2.
@@ -364,30 +408,37 @@ export class ContextEngine {
       semiStable.push(lines.join('\n'));
     }
 
-    if (opts.agentWorkspace) {
-      semiStable.push('\n## Your Workspace');
-      semiStable.push(`- Working directory: \`${opts.agentWorkspace.primaryWorkspace}\``);
-      if (opts.agentWorkspace.sharedWorkspace) {
-        semiStable.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write here)`);
+    if (opts.agentWorkspace || opts.agentDataDir) {
+      semiStable.push('\n## Your Workspace & Files');
+      if (opts.agentWorkspace) {
+        semiStable.push(`- Working directory: \`${opts.agentWorkspace.primaryWorkspace}\``);
+        semiStable.push('  (Shell and relative file paths resolve here — project work goes here.)');
       }
-      const artifactsDir = opts.agentWorkspace.builderArtifactsDir ?? '~/.markus/builder-artifacts';
-      if (opts.agentWorkspace.builderArtifactsDir) {
-        semiStable.push(`- Builder artifacts directory: \`${artifactsDir}/\``);
-        semiStable.push('  When creating agents, teams, or skills, place them in the correct subdirectory:');
+      if (opts.agentWorkspace?.sharedWorkspace) {
+        semiStable.push(`- Shared workspace: \`${opts.agentWorkspace.sharedWorkspace}\` (all agents can read/write)`);
+      }
+      if (opts.agentDataDir) {
+        const home = opts.agentDataDir;
+        semiStable.push(`- Agent home: \`${home}\``);
+        semiStable.push('  Important files (use these **exact absolute paths** — do not invent other locations):');
+        semiStable.push(`  - Persona / identity: \`${home}/role/ROLE.md\``);
+        semiStable.push(`  - Heartbeat checklist: \`${home}/role/HEARTBEAT.md\``);
+        semiStable.push(`  - Long-term memory: \`${home}/MEMORY.md\``);
+        semiStable.push(`  - Notebook: \`${home}/NOTEBOOK.md\``);
+        semiStable.push('  ROLE.md and HEARTBEAT.md live under `role/` only. Creating them in the working directory or agent-home root will not take effect.');
+      }
+      const artifactsDir = opts.agentWorkspace?.builderArtifactsDir;
+      if (artifactsDir) {
+        semiStable.push(`- Builder artifacts: \`${artifactsDir}/\``);
         semiStable.push(`  - Agents → \`${artifactsDir}/agents/{agent-name}/\``);
         semiStable.push(`  - Teams → \`${artifactsDir}/teams/{team-name}/\``);
         semiStable.push(`  - Skills → \`${artifactsDir}/skills/{skill-name}/\``);
         semiStable.push('  The Builder page and install system ONLY recognize these paths.');
       }
-      if (opts.agentDataDir) {
-        semiStable.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
+      semiStable.push('- Always use **absolute paths** in `file_read` / `file_write` / `file_edit`. Relative paths often land in the working directory by mistake.');
+      if (opts.agentWorkspace?.sharedWorkspace) {
+        semiStable.push('- You can `file_read` shared-workspace files directly — no need to ask other agents for them.');
       }
-      semiStable.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
-      semiStable.push('- You can directly read files in the shared workspace using `file_read` — no need to request them from other agents.');
-    } else if (opts.agentDataDir) {
-      semiStable.push('\n## Your Workspace');
-      semiStable.push(`- Agent data directory: \`${opts.agentDataDir}\` (your ROLE.md, MEMORY.md, and personal files)`);
-      semiStable.push('- IMPORTANT: Always use **absolute paths** in file operations. Relative paths are error-prone.');
     }
 
     if (opts.agentWorkspace?.sharedWorkspace) {
@@ -668,15 +719,60 @@ export class ContextEngine {
     // churn, but we don't quantize further — Tier 3 has many other per-call
     // varying fields, so coarser buckets risk inaccurate time perception
     // with negligible additional cache benefit.
+    // Resolve the viewer's locale/timezone (interactive sender first, then the
+    // autonomous fallback), so time is shown in their local frame and the agent
+    // is nudged to respond in their language. These live in the volatile Tier 3
+    // tail (after the timestamp), so they never disturb the cached stable prefix.
+    const viewerLocale = opts.senderIdentity?.locale ?? opts.viewerContext?.locale;
+    const viewerTz = opts.senderIdentity?.timezone ?? opts.viewerContext?.timezone;
     const now = new Date();
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const offset = now.getTimezoneOffset();
-    const sign = offset <= 0 ? '+' : '-';
-    const absH = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
-    const absM = String(Math.abs(offset) % 60).padStart(2, '0');
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const localStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-    dynamic.push(`\n---\nCurrent date and time: ${localStr} (${tz}, UTC${sign}${absH}:${absM})`);
+    const serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    let tz = viewerTz || serverTz;
+    let localStr: string;
+    let offsetLabel: string;
+    try {
+      const dtf = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      });
+      const parts = Object.fromEntries(dtf.formatToParts(now).map(p => [p.type, p.value]));
+      localStr = `${parts.year}-${parts.month}-${parts.day} ${parts.hour === '24' ? '00' : parts.hour}:${parts.minute}`;
+      const offParts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(now);
+      offsetLabel = offParts.find(p => p.type === 'timeZoneName')?.value ?? '';
+    } catch {
+      // Invalid timezone string — fall back to the server's local time.
+      tz = serverTz;
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const offset = now.getTimezoneOffset();
+      const sign = offset <= 0 ? '+' : '-';
+      const absH = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
+      const absM = String(Math.abs(offset) % 60).padStart(2, '0');
+      localStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      offsetLabel = `UTC${sign}${absH}:${absM}`;
+    }
+    dynamic.push(`\n---\nCurrent date and time: ${localStr} (${tz}${offsetLabel ? `, ${offsetLabel}` : ''})`);
+    if (!isDream && (viewerLocale || viewerTz)) {
+      const langName = viewerLocale ? this.describeLocale(viewerLocale) : undefined;
+      const bits: string[] = [];
+      if (langName) bits.push(`Their preferred language is **${langName}** (${viewerLocale}).`);
+      if (viewerTz) bits.push(`Their timezone is **${viewerTz}**.`);
+      dynamic.push(
+        `User locale: ${bits.join(' ')} ` +
+        `Use this language for chat **and** for every user-visible field you write via tools ` +
+        `(task/requirement/deliverable/goal/project titles & descriptions, comments, notifications, report body text). ` +
+        `Think in that language too. Do not switch those fields to English just because the system prompt is English. ` +
+        `Only use another language if they explicitly ask, or if a role mandate requires it. ` +
+        `Use their timezone when stating dates/times.`
+      );
+    } else if (!isDream) {
+      // No saved locale — still forbid English-default artifacts when the user writes in another language.
+      dynamic.push(
+        'User language: Match the language of the user\'s recent messages for chat replies **and** for user-visible ' +
+        'tool fields (task/requirement/deliverable/goal titles & descriptions, comments, notifications). ' +
+        'Do not default those fields to English merely because these instructions are in English.'
+      );
+    }
 
     // Build cache-aware segments: each tier becomes a segment with an
     // optional cache breakpoint. Providers that support explicit cache
@@ -694,6 +790,16 @@ export class ContextEngine {
       text: segments.map(s => s.content).join('\n'),
       segments,
     };
+  }
+
+  /** Human-readable language name for a BCP-47 locale (e.g. 'zh-CN' → 'Chinese (China)'). */
+  private describeLocale(locale: string): string {
+    try {
+      const dn = new Intl.DisplayNames(['en'], { type: 'language' });
+      const name = dn.of(locale);
+      if (name && name !== locale) return name;
+    } catch { /* Intl.DisplayNames unavailable or invalid locale */ }
+    return locale;
   }
 
   private buildMailboxSection(ctx: NonNullable<Parameters<ContextEngine['buildSystemPrompt']>[0]['mailboxContext']>): string {
@@ -818,7 +924,11 @@ export class ContextEngine {
         lines.push('');
         lines.push('Keep responses concise and human-friendly. The user should not see raw tool outputs or complex operations.');
         lines.push('');
-        lines.push('**Notification context**: Previous messages in this session may contain `<!-- notify_context: ... -->` metadata comments from your earlier `notify_user` calls. These embed `task_id`, `requirement_id`, and `priority` references. When the human replies to such a message, use these references to retrieve full context (e.g. via `recall_activity`, `search_tasks`) before responding.');
+        lines.push('**Ending a turn**: Finish the user\'s request in this turn (call tools if needed — do not only announce a next step). When done, give a clear outcome and stop. Do **not** ask "anything else?", "还需要我做什么吗?", or similar closing check-ins — the user will write again if they need more.');
+        lines.push('');
+        lines.push('**Right panel (chat only)**: Use `open_right_panel` to show the user a webpage (`url`), a local file (`path`), or a deliverable (`deliverable_id`) in their Team Chat side panel. Use `collapse_right_panel` to hide the panel without closing its tabs.');
+        lines.push('');
+        lines.push('**Notification context**: Previous messages in this session may contain `<!-- notify_context: ... -->` metadata comments from your earlier `notify_user` calls. These embed `task_id`, `requirement_id`, and `priority` references. When the human replies to such a message, use these references to retrieve full context (e.g. via `recall_activity`, `task_list`) before responding.');
         break;
 
       case 'task_execution':
@@ -919,9 +1029,9 @@ export class ContextEngine {
           lines.push('You are in an **agent-to-agent (A2A) conversation**. This context is for COORDINATION, not for executing work.');
           lines.push('');
           lines.push('**Communication channel**: All A2A messaging is **asynchronous**. The sender is NOT blocking for your reply. Humans do NOT see this conversation.');
-          lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID and the same `conversation_id` (if present in the message as `[conversation:...]`).');
+          lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID and the same `conversation_id` (if present in the message as `[conversation:...]`). Preserving the `conversation_id` is what lets the sender correlate your reply — especially if they are awaiting it in their own conversation.');
           lines.push('- To reach a **human**, use `notify_user`.');
-          lines.push('- To reach a **different agent**, use `agent_send_message`.');
+          lines.push('- To reach a **different agent**, use `agent_send_message`. If you need their reply back in *this* thread, set `await_in_session: true`.');
           lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
           lines.push('');
           lines.push('**A2A etiquette**: Only act if:');
@@ -1259,37 +1369,86 @@ export class ContextEngine {
     }>;
     systemCacheSegments?: SystemPromptSegment[];
   }): Promise<PreparedContext> {
-    const contextWindow = opts.modelContextWindow ?? 64000;
-    const rawMaxOutput = opts.modelMaxOutput ?? 16384;
-    const maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.4));
+    // No silent defaults: a missing/zero context window is exactly what
+    // silently drove the message budget negative and made the agent return
+    // empty replies ("stops mid-task"). Fail loud so the upstream catalog gap
+    // is fixed instead of masked.
+    if (!opts.modelContextWindow || opts.modelContextWindow <= 0) {
+      throw new Error(`context-engine: modelContextWindow must be a positive number (got ${opts.modelContextWindow}). The model catalog is not supplying a real context window.`);
+    }
+    const contextWindow = opts.modelContextWindow;
+    // Unlike the context window, a missing max_output_tokens is NOT fatal: many
+    // upstreams (e.g. OpenRouter's `top_provider.max_completion_tokens`) legitimately
+    // report no output cap for good models. On the wire we already omit max_tokens
+    // in that case (see router.resolveMaxTokens). Here we only need *some* output
+    // reservation to plan the window, so derive it from the real context window
+    // rather than aborting the turn — this is a budget reservation, not a fabricated
+    // model capability.
+    const rawMaxOutput = (opts.modelMaxOutput && opts.modelMaxOutput > 0)
+      ? opts.modelMaxOutput
+      : Math.floor(contextWindow * 0.4);
+    let maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.4));
 
     const systemTokens = estimateTokens(opts.systemPrompt, this.tokenCounter);
     const toolDefTokens = opts.toolDefinitions
       ? estimateTokens(JSON.stringify(opts.toolDefinitions), this.tokenCounter)
       : 0;
-    const safetyMargin = Math.ceil(Math.min(contextWindow * 0.15, 30000));
-    const messageBudget = contextWindow - systemTokens - toolDefTokens - maxOutput - safetyMargin;
+    // Modest safety margin — prefer packing history over reserving unused slack.
+    let safetyMargin = Math.ceil(Math.min(contextWindow * 0.08, 16_000));
+    let messageBudget = contextWindow - systemTokens - toolDefTokens - maxOutput - safetyMargin;
 
-    if (messageBudget < 500) {
-      log.warn('Very tight message budget', {
-        contextWindow,
-        systemTokens,
-        toolDefTokens,
-        maxOutput,
-        messageBudget,
-      });
+    // ── Defensive budget reclamation ────────────────────────────────────
+    // The system prompt + tool definitions are fixed overhead this method
+    // cannot trim. When they dominate the window (a misconfigured/too-small
+    // model context window, or a very large enabled toolset / MCP surface),
+    // the default output + safety reservations can push the message budget
+    // negative. Every conversation message then gets trimmed to zero and the
+    // model still receives an over-budget prompt — which comes back as an
+    // EMPTY reply, so the agent appears to "stop mid-task". Before that, try
+    // to reclaim room by shrinking the reserved output and safety margin down
+    // to floors so at least the most recent turn survives.
+    const MIN_MESSAGE_BUDGET = 1500;
+    const MIN_OUTPUT_RESERVE = 2048;
+    const staticOverhead = systemTokens + toolDefTokens;
+    if (messageBudget < MIN_MESSAGE_BUDGET) {
+      safetyMargin = Math.min(safetyMargin, 4000);
+      const roomForOutput = contextWindow - staticOverhead - safetyMargin - MIN_MESSAGE_BUDGET;
+      maxOutput = Math.max(MIN_OUTPUT_RESERVE, Math.min(maxOutput, roomForOutput));
+      messageBudget = contextWindow - staticOverhead - maxOutput - safetyMargin;
+
+      if (messageBudget < MIN_MESSAGE_BUDGET) {
+        // Even with minimal reservations the fixed overhead does not fit — the
+        // request will overflow no matter how much history we drop. Surface the
+        // root cause loudly (window too small / too many tools) so it's fixable
+        // instead of silently degrading into an empty reply.
+        log.error('Context overhead exceeds model window — request will likely overflow. Increase the model context window or reduce enabled tools/MCP servers.', {
+          contextWindow,
+          systemTokens,
+          toolDefTokens,
+          staticOverhead,
+          maxOutput,
+          safetyMargin,
+          messageBudget,
+          toolCount: opts.toolDefinitions?.length ?? 0,
+        });
+      } else {
+        log.warn('Reclaimed context budget by shrinking output/safety reservations', {
+          contextWindow,
+          systemTokens,
+          toolDefTokens,
+          maxOutput,
+          safetyMargin,
+          messageBudget,
+        });
+      }
     }
 
     let messages = opts.sessionMessages;
 
-    // ── Stage 1: Count-based summarization (too many messages) ──────────
-    if (messages.length > 60) {
-      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, 40, opts.agentId);
-    }
-
-    // ── Stage 2: Per-message size cap (shrink oversized individual messages) ─
-    const perMessageCap = Math.max(2000, Math.floor(messageBudget / 8));
-    messages = this.shrinkOversizedMessages(messages, perMessageCap);
+    // ── Stage 1: Pathological single-message shrink only ────────────────
+    // Do NOT count-cap or pre-shrink normal history to save tokens. Keep the
+    // full session and compress only when the real token budget is exceeded.
+    messages = this.shrinkOversizedMessages(messages, CONTEXT_ABSURD_MESSAGE_CHARS);
     messages = this.sanitizeMessageSequence(messages);
 
     const currentTurnStart = this.findCurrentTurnStart(messages);
@@ -1298,11 +1457,17 @@ export class ContextEngine {
     const preCompressionUsed = systemTokens + toolDefTokens + totalTokens;
     const effectiveBudget = contextWindow - maxOutput;
     const preCompressionPct = effectiveBudget > 0 ? (preCompressionUsed / effectiveBudget) * 100 : 0;
+    const perMessageCap = Math.max(8_000, Math.floor(messageBudget / 4));
 
-    // ── Stage 3: Token-budget-driven compression ────────────────────────
-    // Progressive compression: try lighter methods first, escalate as needed.
+    // ── Stage 2: Token-budget-driven compression (only if over budget) ──
+    // Progressive: light → summarize older half → trim oldest. Prefer keeping
+    // as much recent history as the window allows.
+    let didCompress = false;
     if (totalTokens > messageBudget) {
-      // 3a: Compact old tool-call blocks into summaries
+      didCompress = true;
+      // 2a: Shrink large messages to a budget-aware cap, then compact old tool blocks
+      messages = this.shrinkOversizedMessages(messages, perMessageCap);
+      messages = this.sanitizeMessageSequence(messages);
       const compactBoundary = preCompressionPct > 80 ? messages.length : currentTurnStart;
       messages = this.compactOldTurns(messages, compactBoundary, messageBudget);
       messages = this.sanitizeMessageSequence(messages);
@@ -1310,9 +1475,8 @@ export class ContextEngine {
     }
 
     if (totalTokens > messageBudget && messages.length > 15) {
-      // 3b: LLM-powered or heuristic summarization of older messages.
-      // This is the generic compression path — works for ALL providers.
-      const keepCount = Math.max(10, Math.min(20, Math.floor(messages.length * 0.4)));
+      // 2b: Summarize older messages; keep the majority of recent turns.
+      const keepCount = Math.max(40, Math.floor(messages.length * 0.7));
       log.info('Triggering generic compression (token budget exceeded)', {
         usagePercent: preCompressionPct.toFixed(1),
         messageCount: messages.length,
@@ -1324,20 +1488,21 @@ export class ContextEngine {
     }
 
     if (totalTokens > messageBudget && messages.length > 10) {
-      // 3c: Aggressive summarization — keep fewer messages
-      log.warn('Context still over budget, aggressive summarization', {
+      // 2c: Stronger summarization — still keep a substantial recent window
+      const keepCount = Math.max(20, Math.floor(messages.length * 0.45));
+      log.warn('Context still over budget, stronger summarization', {
         totalTokens,
         messageBudget,
         messageCount: messages.length,
+        keepLast: keepCount,
       });
-      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, Math.max(6, Math.floor(messages.length * 0.3)), opts.agentId);
+      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, keepCount, opts.agentId);
       messages = this.sanitizeMessageSequence(messages);
-      // Re-shrink after summarization in case the summary itself is large
       messages = this.shrinkOversizedMessages(messages, perMessageCap);
       totalTokens = this.sumTokens(messages);
     }
 
-    // ── Stage 4: Last-resort trimming ───────────────────────────────────
+    // ── Stage 3: Last-resort trimming (drop oldest until it fits) ───────
     if (totalTokens > messageBudget) {
       messages = this.trimToFitBudget(messages, messageBudget);
       messages = this.sanitizeMessageSequence(messages);
@@ -1387,6 +1552,7 @@ export class ContextEngine {
         totalUsed,
         available,
         usagePercent: Math.round(usagePercent * 10) / 10,
+        compressed: didCompress,
       },
       systemCacheSegments: opts.systemCacheSegments,
     };
@@ -1602,11 +1768,12 @@ export class ContextEngine {
         // Research tool results (web_search, browser snapshots) carry information
         // the agent needs for reasoning. Give them a higher cap than generic tools.
         const isResearch = m.toolCallId && this.isResearchToolResult(text);
-        const effectiveCap = isResearch ? Math.max(maxChars, 6000) : maxChars;
+        // Keep research results readable but lean — the main chat model pays for every token.
+        const effectiveCap = isResearch ? Math.max(maxChars, 3500) : maxChars;
         if (text.length <= effectiveCap) return m;
 
-        const headSize = Math.min(Math.floor(effectiveCap * 0.65), isResearch ? 4000 : 1500);
-        const tailSize = Math.min(Math.floor(effectiveCap * 0.25), isResearch ? 1500 : 800);
+        const headSize = Math.min(Math.floor(effectiveCap * 0.65), isResearch ? 2200 : 1500);
+        const tailSize = Math.min(Math.floor(effectiveCap * 0.25), isResearch ? 900 : 800);
         const head = safeSlice(text, 0, headSize);
         const tail = safeSlice(text, text.length - tailSize);
         const omitted = text.length - head.length - tail.length;

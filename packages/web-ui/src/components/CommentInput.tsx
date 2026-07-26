@@ -574,6 +574,7 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
           </button>
         </div>
       </div>
+      <p className="mt-1 text-center text-[10px] text-fg-tertiary/80 select-none">{t('aiDisclaimer')}</p>
     </div>
   );
 }

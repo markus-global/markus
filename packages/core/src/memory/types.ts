@@ -40,7 +40,7 @@ export interface IMemoryStore {
   getObservations(): MemoryEntry[];
 
   // -- Semantic Memory: curated knowledge (MEMORY.md) --
-  addLongTermMemory(key: string, content: string): void;
+  addLongTermMemory(key: string, content: string): { ok: boolean; reason?: string };
   getLongTermMemory(): string;
   getLongTermMemoryExcluding(sections: string[]): string;
   getLongTermSection(sectionName: string): string;

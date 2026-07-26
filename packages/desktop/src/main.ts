@@ -128,9 +128,16 @@ app.whenReady().then(async () => {
     });
   });
 
+  // Detect a hidden auto-start launch (macOS: openAsHidden; Windows: --hidden
+  // arg we register with setLoginItemSettings). The window is still created and
+  // the backend still starts — the window just stays in the tray until the user
+  // opens it, so booting the machine doesn't pop the app to the foreground.
+  const startHidden = process.argv.includes('--hidden')
+    || (() => { try { return app.getLoginItemSettings().wasOpenedAsHidden; } catch { return false; } })();
+
   // Show splash / loading window while backend starts
-  console.log('[main] creating window...');
-  const win = createMainWindow();
+  console.log('[main] creating window...', { startHidden });
+  const win = createMainWindow(!startHidden);
   console.log('[main] window created, loading splash...');
   
   win.webContents.on('did-fail-load', (_e, code, desc, url) => {
@@ -150,7 +157,7 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error('[main] splash loadFile error:', err);
   }
-  win.show();
+  if (!startHidden) win.show();
 
   // Start backend (or reuse an existing instance on the same port)
   const isZh = app.getLocale().startsWith('zh');
@@ -181,6 +188,18 @@ app.whenReady().then(async () => {
       });
       backendUrl = instance.url;
       backendReady = true;
+
+      // Wire embedded WebContentsView as a CDP backend for browser tools.
+      try {
+        const { createEmbeddedBrowserHost } = await import('./embedded-browser-backend.js');
+        const am = instance.apiServer.orgService.getAgentManager() as {
+          setEmbeddedBrowserHost?: (host: ReturnType<typeof createEmbeddedBrowserHost>) => void;
+        };
+        am.setEmbeddedBrowserHost?.(createEmbeddedBrowserHost());
+        console.log('[main] embedded browser CDP host registered');
+      } catch (err) {
+        console.warn('[main] failed to register embedded browser host:', err);
+      }
     }
 
     startNotificationBridge(backendUrl);

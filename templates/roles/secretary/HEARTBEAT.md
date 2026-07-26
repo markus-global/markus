@@ -13,7 +13,7 @@
 - Use `requirement_list` to check requirements you created:
   - **`in_progress`**: Are all linked tasks progressing? Are any stalled or blocked?
   - **`in_progress` with all tasks done**: Evaluate whether the requirement is fully met. If yes, update status to `completed`. If not, create additional tasks.
-  - **`pending`**: Remind the user if a proposal has been waiting for approval too long (>24h).
+  - **`pending`**: Leave it alone at first — creation already notified the user and the card has Approve/Reject. Only if still pending >24h, optionally send ONE non-blocking `notify_user` nudge. Never use `request_user_input` to re-ask for approval.
   - **`rejected`**: Review the rejection reason. Either resubmit with updates via `requirement_resubmit`, or abandon it.
 
 ## New-Hire & Artifact Monitoring
@@ -57,7 +57,7 @@ Check `task_list` for tasks recently completed by you or your team members. For 
 For identified best practices:
 - Save via `memory_save` with `tags: ["insight", "secretary"]` and `[INSIGHT]` format.
 - If it is a multi-step workflow (e.g., "new agent onboarding procedure", "org knowledge audit process"), promote it to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
-- When 3+ related insights accumulate, update your ROLE.md with the new guideline (read first via `file_read`, append only, log with `tags: ["insight", "role-evolution"]`).
+- When 3+ related insights accumulate, update `role/ROLE.md` under your agent home (absolute path in system context; read first via `file_read`, append only, log with `tags: ["insight", "role-evolution"]`). Do not write ROLE.md in the working directory.
 
 ## Self-Evolution Reflection
 

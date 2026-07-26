@@ -616,13 +616,10 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   const renderAgentItem = (a: AgentInfo, teamId?: string) => {
     const selected = chatMode === 'direct' && selectedAgent === a.id;
     const isExt = externalMarkusIds.has(a.id);
-    const hasRecentError = a.status !== 'error' && !!a.lastError && !!a.lastErrorAt
-      && (Date.now() - new Date(a.lastErrorAt).getTime()) < 30 * 60 * 1000;
     const isStopped = a.status === 'offline';
-    const statusColor = a.status === 'idle' && !hasRecentError ? 'bg-green-500'
-      : a.status === 'working' && !hasRecentError ? 'bg-blue-500 animate-pulse'
+    const statusColor = a.status === 'idle' ? 'bg-green-500'
+      : a.status === 'working' ? 'bg-blue-500 animate-pulse'
       : a.status === 'error' ? 'bg-red-500'
-      : hasRecentError ? 'bg-amber-500'
       : 'bg-gray-600';
 
     const team = teamId ? teamMap.get(teamId) : undefined;
@@ -832,7 +829,8 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
         <div className="group/teamhdr flex items-center gap-0.5">
           <button
             onClick={() => {
-              if (teamGc) onSelectChannel(teamGc.channelKey);
+              // Prefer channel entry; synthetic `group:{teamId}` works before groupChats refresh.
+              if (tid !== '_ungrouped') onSelectChannel(teamGc?.channelKey ?? `group:${tid}`);
               else toggleTeam(tid);
             }}
             onContextMenu={e => {
@@ -940,7 +938,12 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
 
   const [dmSectionExpanded, setDmSectionExpanded] = useState(false);
   const dmHasActiveChannel = chatMode === 'channel' && groupChatsByTeam.dmChannels.some(gc => gc.channelKey === activeChannel);
-  const showDmExpanded = dmSectionExpanded || dmHasActiveChannel;
+  // Auto-expand once when a DM channel becomes active so the selected chat is
+  // visible, but keep the toggle fully user-controlled afterwards (a derived
+  // `expanded || hasActive` made it impossible to collapse while a DM was open).
+  useEffect(() => {
+    if (dmHasActiveChannel) setDmSectionExpanded(true);
+  }, [dmHasActiveChannel]);
 
   return (
     <>
@@ -1210,16 +1213,16 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
           {groupChatsByTeam.dmChannels.length > 0 && (
             <div className="mb-2">
               <button
-                onClick={() => setDmSectionExpanded(!showDmExpanded)}
+                onClick={() => setDmSectionExpanded(v => !v)}
                 className="w-full flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-semibold text-fg-muted uppercase tracking-wider hover:text-fg-secondary transition-colors"
               >
-                <svg className={`w-2.5 h-2.5 transition-transform ${showDmExpanded ? 'rotate-90' : ''}`} fill="currentColor" viewBox="0 0 20 20">
+                <svg className={`w-2.5 h-2.5 transition-transform ${dmSectionExpanded ? 'rotate-90' : ''}`} fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
                 </svg>
-                {t('chat.agentDMs', { defaultValue: 'Agent DMs' })}
+                {t('chat.agentDMs')}
                 <span className="ml-auto text-[9px] font-normal text-fg-tertiary">{groupChatsByTeam.dmChannels.length}</span>
               </button>
-              {showDmExpanded && groupChatsByTeam.dmChannels.map(gc => {
+              {dmSectionExpanded && groupChatsByTeam.dmChannels.map(gc => {
                 const isActive = chatMode === 'channel' && activeChannel === gc.channelKey;
                 const chUnread = unreadByChannel?.[gc.channelKey] ?? 0;
                 const dmLabel = gc.name.replace(/^DM:\s*/, '');
@@ -1423,14 +1426,13 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
               setShowNewTeam(false);
               onRefreshTeams();
               setHighlightTeamId(newTeam.id);
-              window.dispatchEvent(new Event('markus:check-license-limits'));
               setTimeout(() => {
                 const el = document.querySelector(`[data-team-id="${newTeam.id}"]`);
                 el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
               }, 300);
               setTimeout(() => setHighlightTeamId(null), 3000);
             } catch (e) {
-              alert(t('chat.failedToCreateTeam', { message: e instanceof Error ? e.message : String(e) }));
+              showToast(t('chat.failedToCreateTeam', { message: e instanceof Error ? e.message : String(e) }), 'error');
             }
           }}
         />

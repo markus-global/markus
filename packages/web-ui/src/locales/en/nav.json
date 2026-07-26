@@ -1,10 +1,10 @@
 {
-  "home": "Home",
+  "home": "Overview",
   "team": "Team",
-  "work": "Work",
-  "store": "Store",
-  "builder": "Builder",
-  "deliverables": "Deliverables",
+  "work": "Tasks",
+  "store": "Explore",
+  "builder": "Assets",
+  "deliverables": "Output",
   "reports": "Reports",
   "notifications": "Notifications",
   "settings": "Settings",
@@ -17,14 +17,26 @@
   "sidebar": {
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
-    "signOut": "Sign out",
+    "signOut": "Log out",
     "newProject": "New Project",
     "createFirstProject": "Create your first project",
-    "showAllProjects": "Show all {{count}} projects..."
+    "showAllProjects": "Show all {{count}} projects...",
+    "hubConnected": "Hub connected",
+    "hubConnectedAs": "Hub: @{{username}}",
+    "hubDisconnected": "Hub not connected",
+    "hubAccountMismatch": "Local user differs from Hub account — credits follow Hub (@{{username}})",
+    "hubLogin": "Sign in",
+    "hubLoginShort": "Sign in",
+    "hubConnecting": "…",
+    "hubShort": "Hub",
+    "hubAccount": "Account"
   },
   "tabs": {
+    "create": "Create",
+    "discover": "Discover",
     "agents": "Agents",
     "teams": "Teams",
-    "skills": "Skills"
+    "skills": "Skills",
+    "installed": "Installed"
   }
 }

@@ -1,12 +1,17 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getToolMeta } from './execution-utils.ts';
+import { NamedIcon } from '../lib/namedIcons.tsx';
 
 export interface ActivityStep {
   tool: string;
   phase: 'start' | 'end' | 'output';
   success?: boolean;
   ts: number;
+  arguments?: unknown;
+  result?: string;
+  error?: string;
+  durationMs?: number;
 }
 
 interface Props {
@@ -62,37 +67,27 @@ function PulsingDots() {
   );
 }
 
-function TimelineItem({ item, idx, total }: { item: ToolItem; idx: number; total: number }) {
+function TimelineItem({ item }: { item: ToolItem; idx: number; total: number }) {
+  const { t } = useTranslation('common');
   const meta = getToolMeta(item.tool);
   return (
-    <div className="flex items-center gap-2 py-0.5">
-      {/* Vertical connector */}
-      <div className="flex flex-col items-center self-stretch w-3 shrink-0">
-        {idx > 0 && <div className="w-px h-2 bg-surface-overlay" />}
-        <div className={`w-2.5 h-2.5 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
-          item.status === 'running'
-            ? 'border-brand-500 bg-brand-500/15'
-            : item.status === 'error'
-            ? 'border-red-500 bg-red-500/15 text-red-500'
-            : 'border-gray-600 bg-surface-elevated text-fg-tertiary'
-        }`}>
-          {item.status === 'done' ? '✓' : item.status === 'error' ? '✗' : ''}
-        </div>
-        {idx < total - 1 && <div className="w-px flex-1 bg-surface-overlay mt-0.5" />}
-      </div>
-
-      {/* Label */}
-      <div className={`flex items-center gap-1.5 text-xs ${
-        item.status === 'running'
-          ? 'text-brand-500'
-          : item.status === 'error'
-          ? 'text-red-500 opacity-60'
-          : 'text-fg-tertiary'
-      }`}>
-        <span className="opacity-70">{meta.icon}</span>
-        <span>{meta.label}{item.status === 'running' ? '…' : ''}</span>
-        {item.status === 'running' && <Spinner />}
-      </div>
+    <div className="flex items-center gap-1.5 py-0.5">
+      {/* The tool's own icon carries success/failure via color — no separate status badge. */}
+      <NamedIcon
+        name={meta.iconName}
+        size={15}
+        className={`shrink-0 ${
+          item.status === 'running' ? 'text-brand-500'
+          : item.status === 'error' ? 'text-red-500'
+          : 'text-green-500'
+        }`}
+      />
+      <span className={`text-xs ${
+        item.status === 'running' ? 'text-brand-500'
+        : item.status === 'error' ? 'text-red-500'
+        : 'text-fg-secondary'
+      }`}>{t(`execution.tools.${meta.key}`, { defaultValue: meta.label })}{item.status === 'running' ? '…' : ''}</span>
+      {item.status === 'running' && <Spinner />}
     </div>
   );
 }
@@ -102,12 +97,8 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
   const timeline = buildTimeline(activities);
   const [expanded, setExpanded] = useState(false);
 
-  const shouldShow = persistent || isActive || activities.length > 0;
-
   const hasAny = timeline.length > 0;
   const allDone = hasAny && timeline.every(t => t.status !== 'running');
-  const showThinking = isActive && !hasAny;
-  const showWriting = isActive && hasAny && allDone;
 
   if (persistent && allDone) {
     const errorCount = timeline.filter(t => t.status === 'error').length;
@@ -124,12 +115,18 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
             <span className="text-red-500 ml-0.5">· {t('activity.failed', { count: errorCount })}</span>
           )}
           {!expanded && (
-            <span className="ml-1 flex gap-0.5">
-              {timeline.slice(0, 5).map(t => (
-                <span key={t.key} className="text-[10px] opacity-60" title={getToolMeta(t.tool).label}>
-                  {getToolMeta(t.tool).icon}
-                </span>
-              ))}
+            <span className="ml-1 flex items-center gap-1">
+              {timeline.slice(0, 5).map(it => {
+                const m = getToolMeta(it.tool);
+                return (
+                  <NamedIcon
+                    key={it.key}
+                    name={m.iconName}
+                    size={13}
+                    className={`shrink-0 ${it.status === 'error' ? 'text-red-500' : 'text-green-500'}`}
+                  />
+                );
+              })}
               {timeline.length > 5 && <span className="text-[10px] text-fg-tertiary">+{timeline.length - 5}</span>}
             </span>
           )}
@@ -145,44 +142,57 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
     );
   }
 
+  // ── Live / active: collapsed-by-default compact summary (mirrors Team Chat) ──
+  // Nothing has happened yet → a lightweight thinking indicator.
+  if (!hasAny) {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-fg-secondary py-0.5">
+        <span className="mr-0.5">{t('activity.thinking')}</span>
+        <PulsingDots />
+      </div>
+    );
+  }
+
+  const errorCount = timeline.filter(it => it.status === 'error').length;
+
+  // Determine the single-line headline: the tool currently running, otherwise
+  // (all tools done while still active) the model is writing its response.
+  let running: ToolItem | null = null;
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    if (timeline[i]!.status === 'running') { running = timeline[i]!; break; }
+  }
+  const lastItem = timeline[timeline.length - 1]!;
+  let headLabel: string;
+  if (running) {
+    const m = getToolMeta(running.tool);
+    headLabel = `${t(`execution.tools.${m.key}`, { defaultValue: m.label })}…`;
+  } else if (isActive && allDone) {
+    headLabel = t('activity.writingResponse');
+  } else {
+    const m = getToolMeta(lastItem.tool);
+    headLabel = t(`execution.tools.${m.key}`, { defaultValue: m.label });
+  }
+  const spinning = !!running || (isActive && allDone);
+
   return (
-    <div
-      className="mb-2 space-y-0.5 transition-all duration-300 overflow-hidden"
-      style={{
-        maxHeight: shouldShow ? '500px' : '0px',
-        opacity: shouldShow ? 1 : 0,
-        marginBottom: shouldShow ? undefined : '0px',
-      }}
-    >
-      {timeline.map((item, idx) => (
-        <TimelineItem key={item.key} item={item} idx={idx} total={timeline.length} />
-      ))}
-
-      <div
-        className="transition-all duration-200 overflow-hidden"
-        style={{ maxHeight: showThinking ? '40px' : '0px', opacity: showThinking ? 1 : 0 }}
+    <div className="mb-1">
+      <button
+        onClick={(e) => { e.stopPropagation(); setExpanded(v => !v); }}
+        className="flex items-center gap-1.5 text-xs w-full min-w-0 select-none text-fg-tertiary hover:text-fg-secondary transition-colors"
       >
-        <div className="flex items-center gap-1.5 text-xs text-fg-secondary py-0.5">
-          <span className="mr-0.5">{t('activity.thinking')}</span>
-          <PulsingDots />
+        <span className={`shrink-0 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}>▶</span>
+        <span className={`truncate font-medium ${spinning ? 'text-brand-500' : 'text-fg-secondary'}`}>{headLabel}</span>
+        <span className="shrink-0">· {t('activity.step', { count: timeline.length })}</span>
+        {errorCount > 0 && <span className="text-red-500 shrink-0">· {t('activity.failed', { count: errorCount })}</span>}
+        {spinning && <Spinner />}
+      </button>
+      {expanded && (
+        <div className="mt-1 space-y-0.5">
+          {timeline.map((item, idx) => (
+            <TimelineItem key={item.key} item={item} idx={idx} total={timeline.length} />
+          ))}
         </div>
-      </div>
-
-      <div
-        className="transition-all duration-200 overflow-hidden"
-        style={{ maxHeight: showWriting ? '40px' : '0px', opacity: showWriting ? 1 : 0 }}
-      >
-        <div className="flex items-center gap-1.5 py-0.5">
-          <div className="flex flex-col items-center self-stretch w-3 shrink-0">
-            <div className="w-px h-2 bg-surface-overlay" />
-            <div className="w-2.5 h-2.5 rounded-full border border-brand-500 bg-brand-500/15 shrink-0" />
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-brand-500">
-            <Spinner />
-            <span>{t('activity.writingResponse')}</span>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }

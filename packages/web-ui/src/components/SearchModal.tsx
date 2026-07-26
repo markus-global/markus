@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, type AgentInfo, type TaskInfo, type ProjectInfo, type DeliverableInfo, type RequirementInfo, type WorkflowInfo } from '../api.ts';
+import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, type PageId } from '../routes.ts';
 import { Avatar } from './Avatar.tsx';
@@ -43,6 +44,7 @@ let _persistedSearched = false;
 
 export function SearchModal({ onClose, currentPage }: { onClose: () => void; currentPage?: string }) {
   const { t } = useTranslation(['common', 'home', 'work']);
+  useNativeBrowserOverlay(true);
   const [query, setQuery] = useState(_persistedQuery);
   const [category, setCategory] = useState<SearchCategory>(_persistedCategory);
   const [results, setResults] = useState<SearchResults>(_persistedResults);

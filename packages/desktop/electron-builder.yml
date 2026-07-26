@@ -45,6 +45,17 @@ win:
     - target: nsis
       arch: [x64]
   icon: build/icon.ico
+  # Full Windows signing (app exe + installer) via Certum SimplySign. The custom
+  # signer shells out to `ssign`; it no-ops when CERTUM_* env vars are absent so
+  # local/unsigned builds still work. See build/sign.cjs.
+  #
+  # SHA-256 only (no SHA-1): SHA-1 Authenticode is deprecated, and dual-signing
+  # would invoke the custom signer — hence `ssign` and a SimplySign login — twice
+  # per file, doubling the TOTP logins for no trust benefit.
+  signtoolOptions:
+    sign: build/sign.cjs
+    signingHashAlgorithms:
+      - sha256
 
 nsis:
   artifactName: "Markus-Setup-${version}.${ext}"

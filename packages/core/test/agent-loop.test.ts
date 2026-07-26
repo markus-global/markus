@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Agent } from '../src/agent.js';
+import { Agent, shouldContinueToolLoop, needsMaxTokensContinuation } from '../src/agent.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -154,7 +154,9 @@ describe('Agent Loop Improvements', () => {
   });
 
   it('should offload oversized tool results to filesystem', async () => {
-    const hugeOutput = 'x'.repeat(20_000);
+    // Budget-first packing no longer pre-compacts normal-sized history. Results are
+    // offloaded to disk only above OFFLOAD_THRESHOLD (50k); pick a size above it.
+    const hugeOutput = 'x'.repeat(60_000);
 
     let callIndex = 0;
     const mockRouter = makeMockRouter(async () => {
@@ -188,9 +190,10 @@ describe('Agent Loop Improvements', () => {
       const toolMsg = msgs.find(m => m.role === 'tool');
       if (toolMsg) {
         expect(toolMsg.content.length).toBeLessThan(hugeOutput.length);
-        expect(toolMsg.content).toContain('Tool result compacted');
-        expect(toolMsg.content).toContain('head');
-        expect(toolMsg.content).toContain('tail');
+        // Oversized results are offloaded to a file with a reference the model can read.
+        expect(toolMsg.content).toContain('FULL output');
+        expect(toolMsg.content).toContain('saved to:');
+        expect(toolMsg.content).toContain('file_read');
       }
     }
   });
@@ -331,5 +334,36 @@ describe('handleMessage interrupt flow (via attention loop)', () => {
     for (const s of scenarios) {
       expect(s.name !== 'chat').toBe(s.preemptable);
     }
+  });
+});
+
+describe('B5: shared tool-loop decision helpers', () => {
+  it('shouldContinueToolLoop continues on tool_use with tool calls', () => {
+    expect(shouldContinueToolLoop({ finishReason: 'tool_use', toolCalls: [{ id: 't' }] })).toBe(true);
+  });
+
+  it('shouldContinueToolLoop continues on max_tokens (with or without tool calls)', () => {
+    expect(shouldContinueToolLoop({ finishReason: 'max_tokens', toolCalls: [] })).toBe(true);
+    expect(shouldContinueToolLoop({ finishReason: 'max_tokens', toolCalls: [{ id: 't' }] })).toBe(true);
+  });
+
+  it('shouldContinueToolLoop stops on end_turn or tool_use with no calls', () => {
+    expect(shouldContinueToolLoop({ finishReason: 'end_turn', toolCalls: [] })).toBe(false);
+    expect(shouldContinueToolLoop({ finishReason: 'tool_use', toolCalls: [] })).toBe(false);
+    expect(shouldContinueToolLoop({ finishReason: 'tool_use' })).toBe(false);
+    expect(shouldContinueToolLoop({})).toBe(false);
+  });
+
+  it('shouldContinueToolLoop always returns a boolean (never a truthy count)', () => {
+    const r = shouldContinueToolLoop({ finishReason: 'tool_use', toolCalls: [{ id: 'a' }, { id: 'b' }] });
+    expect(r).toBe(true);
+    expect(typeof r).toBe('boolean');
+  });
+
+  it('needsMaxTokensContinuation is true only for max_tokens without tool calls', () => {
+    expect(needsMaxTokensContinuation({ finishReason: 'max_tokens', toolCalls: [] })).toBe(true);
+    expect(needsMaxTokensContinuation({ finishReason: 'max_tokens' })).toBe(true);
+    expect(needsMaxTokensContinuation({ finishReason: 'max_tokens', toolCalls: [{ id: 't' }] })).toBe(false);
+    expect(needsMaxTokensContinuation({ finishReason: 'end_turn', toolCalls: [] })).toBe(false);
   });
 });

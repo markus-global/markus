@@ -5,7 +5,7 @@ import type { AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
-  CompactExecutionCard, FullExecutionLog,
+  FullExecutionLog,
   TaskApprovalCard, RequirementApprovalCard,
   parseTaskApprovalFromResult, parseRequirementApprovalFromResult,
   type ExecutionStreamEntryUI,
@@ -71,7 +71,6 @@ export function ChatAgentLink({ name, agentId, agents, onViewProfile }: {
             <span className={`w-2 h-2 rounded-full shrink-0 ${
               agent.status === 'working' ? 'bg-blue-400 animate-pulse'
               : agent.status === 'error' ? 'bg-red-400'
-              : (agent.lastError && agent.lastErrorAt && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000) ? 'bg-amber-400'
               : 'bg-green-400'
             }`} />
           </div>
@@ -105,12 +104,9 @@ export function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
     return () => document.removeEventListener('mousedown', handler);
   }, [onClose]);
 
-  const hasRecentError = agent.status !== 'error' && !!agent.lastError && !!agent.lastErrorAt
-    && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000;
-  const statusColor = agent.status === 'idle' && !hasRecentError ? 'bg-green-400'
-    : agent.status === 'working' && !hasRecentError ? 'bg-blue-400 animate-pulse'
+  const statusColor = agent.status === 'idle' ? 'bg-green-400'
+    : agent.status === 'working' ? 'bg-blue-400 animate-pulse'
     : agent.status === 'error' ? 'bg-red-400'
-    : hasRecentError ? 'bg-amber-400'
     : 'bg-gray-500';
   const statusLabel = agent.status === 'idle' ? t('common:status.online') : agent.status === 'working' ? t('common:status.working') : agent.status === 'error' ? t('common:status.error') : t('common:status.offline');
 
@@ -154,6 +150,42 @@ export function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
   );
 }
 
+// ─── Credit error detection ───────────────────────────────────────────────────
+
+/** Returns true if the error is a Markus Cloud AI credit/quota error. */
+export function isMarkusCreditError(err: unknown): boolean {
+  const raw = String(err);
+  return raw.includes('CU_EXCEEDED')
+    || raw.includes('CU_MONTHLY_EXCEEDED')
+    || /key limit exceeded|total limit/i.test(raw)
+    || (/\b403\b/.test(raw) && /limit|insufficient|credit|quota/i.test(raw))
+    || (/\b402\b/.test(raw) && /credit|quota|balance|limit/i.test(raw));
+}
+
+const CREDIT_MUTE_KEY = 'markus:credit-notif-muted';
+let _lastCreditNotifTs = 0;
+
+/**
+ * Inject a credit-exhausted notification into the notification bell.
+ * - Respects "don't remind again" (persisted in localStorage).
+ * - 5-minute cooldown between notifications (desktop app stays open long).
+ */
+export function dispatchCreditNotification(): void {
+  try { if (localStorage.getItem(CREDIT_MUTE_KEY)) return; } catch { /* */ }
+  const now = Date.now();
+  if (now - _lastCreditNotifTs < 5 * 60_000) return;
+  _lastCreditNotifTs = now;
+  window.dispatchEvent(new CustomEvent('markus:credit-exhausted'));
+}
+
+export function muteCreditNotifications(): void {
+  try { localStorage.setItem(CREDIT_MUTE_KEY, '1'); } catch { /* */ }
+}
+
+export function unmuteCreditNotifications(): void {
+  try { localStorage.removeItem(CREDIT_MUTE_KEY); } catch { /* */ }
+}
+
 // ─── friendlyAgentError ───────────────────────────────────────────────────────
 
 export function friendlyAgentError(err: unknown, t: TFunction): string {
@@ -175,16 +207,31 @@ export function friendlyAgentError(err: unknown, t: TFunction): string {
     if (colonIdx >= 0) detail = raw.slice(colonIdx + 2).trim();
   }
 
-  if (raw.includes('402') || /insufficient.?balance/i.test(raw))
-    return t('errors.ai402', { detail: detail || t('errors.defaultInsufficientCredits') });
-  if (raw.includes('401') || /unauthorized|invalid.?api.?key/i.test(raw))
-    return t('errors.ai401', { detail: detail || t('errors.defaultInvalidApiKey') });
-  if (raw.includes('429') || /rate.?limit/i.test(raw))
-    return t('errors.ai429', { detail: detail || t('errors.defaultTooManyRequests') });
-  if (raw.includes('503') || /service.?unavailable/i.test(raw))
-    return t('errors.ai503', { detail: detail || t('errors.defaultServiceDown') });
+  // All error keys live in the 'team' namespace — use explicit prefix so
+  // this function works regardless of the caller's default namespace.
+  const e = (key: string, opts?: Record<string, unknown>) => t(`team:errors.${key}`, opts);
 
-  return t('errors.aiGeneric', { detail: detail || raw.slice(0, 120) });
+  if (isMarkusCreditError(raw) || raw.includes('CU_EXCEEDED') || /key limit exceeded|total limit/i.test(raw))
+    return e('markusCuExceeded');
+  if (raw.includes('CU_WINDOW_EXCEEDED'))
+    return e('markusWindowExceeded');
+  if (raw.includes('MARKUS_RATE_LIMITED'))
+    return e('markusRateLimited');
+
+  if (raw.includes('402') || /insufficient.?balance/i.test(raw))
+    return e('markusCuExceeded');
+  if (raw.includes('401') || /unauthorized|invalid.?api.?key/i.test(raw))
+    return e('ai401', { detail: detail || e('defaultInvalidApiKey') });
+  if (raw.includes('429') || /rate.?limit/i.test(raw))
+    return e('ai429', { detail: detail || e('defaultTooManyRequests') });
+  if (raw.includes('502') || /bad.?gateway/i.test(raw))
+    return e('ai502', { detail: detail || e('defaultUpstreamDown') });
+  if (raw.includes('503') || /service.?unavailable/i.test(raw))
+    return e('ai503', { detail: detail || e('defaultServiceDown') });
+
+  // Strip vendor billing URLs if anything slipped through.
+  const safe = (detail || raw).replace(/https?:\/\/[^\s]*openrouter\.ai[^\s]*/gi, '').trim();
+  return e('aiGeneric', { detail: (safe || raw).slice(0, 120) });
 }
 
 // ─── MessageActions ───────────────────────────────────────────────────────────
@@ -205,13 +252,13 @@ export function MessageActions({
   const isStopped = msg.isStopped;
   const canRetry = isLastAgentMsg !== false;
   return (
-    <div className="flex items-center gap-0.5 mt-1">
-      <button onClick={() => onCopy(msg)} className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors" title={t('copy')}>
+    <div className="flex items-center flex-wrap gap-0.5 mt-1">
+      <button onClick={() => onCopy(msg)} className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-overlay/60 transition-colors" title={t('common:copy')}>
         {isCopied
           ? <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12" /></svg>
           : <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" /></svg>
         }
-        {isCopied ? t('copied') : t('copy')}
+        {isCopied ? t('common:copied') : t('common:copy')}
       </button>
       {canRetry && onResume && (
         <button onClick={() => onResume(msg)} className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-green-500 hover:text-green-400 hover:bg-green-500/10 transition-colors" title={t('page.messageActions.resumeTitle')}>
@@ -242,6 +289,11 @@ export function MessageActions({
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 17 4 12 9 7" /><path d="M20 18v-2a4 4 0 00-4-4H4" /></svg>
           {t('page.messageActions.replyTitle')}
         </button>
+      )}
+      {msg.sender === 'agent' && (
+        <span className="ml-1 px-1 text-[10px] leading-none text-fg-tertiary/70 select-none whitespace-nowrap">
+          {t('page.messageActions.aiGeneratedDisclaimer')}
+        </span>
       )}
     </div>
   );
@@ -343,7 +395,14 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
 
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'tool_start', content: seg.tool, metadata: { arguments: seg.args }, createdAt: toolStartTs,
+        seq: seq++, type: 'tool_start', content: seg.tool,
+        metadata: {
+          arguments: seg.args,
+          // Live spawn_* rows need nested progress while still running — tool_end
+          // is not emitted until the sub-agent finishes (can be minutes).
+          ...(seg.status === 'running' && seg.subagentLogs?.length ? { subagentLogs: seg.subagentLogs } : {}),
+        },
+        createdAt: toolStartTs,
       });
       if (seg.status !== 'running') {
         entries.push({
@@ -378,51 +437,58 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
 // ─── AgentMessageBody ─────────────────────────────────────────────────────────
 
 export const AgentMessageBody = memo(function AgentMessageBody({
-  msg, isStreaming, liveActivities, onViewModeChange,
+  msg, isStreaming, liveActivities,
   onMentionClick,
   knownNames,
 }: {
   msg: ChatMsg;
   isStreaming: boolean;
   liveActivities: ActivityStep[];
-  onViewModeChange?: (mode: 'compact' | 'full') => void;
   onMentionClick?: (name: string, event: ReactMouseEvent) => void;
   knownNames?: string[];
 }) {
   const { t } = useTranslation(['team', 'common']);
   const segments = msg.segments;
   const isStopped = msg.isStopped;
-  const [viewMode, setViewModeState] = useState<'compact' | 'full'>('compact');
-  const setViewMode = useCallback((m: 'compact' | 'full') => { setViewModeState(m); onViewModeChange?.(m); }, [onViewModeChange]);
+  // The execution timeline (tool calls + thinking + answer) is always shown
+  // expanded — no compact/collapse state. Users see the complete history without
+  // an extra click, which keeps the view consistent and removes mental overhead.
 
-  const segLen = (s: MsgSegment) => s.type === 'text' ? s.content.length : (s.result?.length ?? 0);
+  // Include thinking length — thinking_delta updates seg.thinking without changing
+  // content length, and a content-only key would freeze the timeline mid-stream.
+  const segLen = (s: MsgSegment) => s.type === 'text'
+    ? s.content.length + (s.thinking?.length ?? 0)
+    : (s.result?.length ?? 0) + (s.subagentLogs?.length ?? 0) * 1000 + (s.liveOutput?.length ?? 0);
   const segKey = segments ? segments.length + ':' + (segments.length > 0 ? segLen(segments[segments.length - 1]!) : 0) : '';
+  // Also hash any in-flight spawn_* log growth (not always the last segment).
+  const subagentLogKey = segments
+    ? segments.reduce((n, s) => n + (s.type === 'tool' ? (s.subagentLogs?.length ?? 0) : 0), 0)
+    : 0;
   const streamEntries = useMemo(
     () => segments && segments.length > 0 ? segmentsToStreamEntries(segments, msg.agentId, msg.rawCreatedAt) : [],
-    [segKey, msg.agentId, msg.rawCreatedAt], // eslint-disable-line react-hooks/exhaustive-deps
+    [segKey, subagentLogKey, msg.agentId, msg.rawCreatedAt], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const committed = msg.committedSegments;
   const commitKey = committed ? committed.length + ':' + (committed.length > 0 ? segLen(committed[committed.length - 1]!) : 0) : '';
+  const commitSubagentKey = committed
+    ? committed.reduce((n, s) => n + (s.type === 'tool' ? (s.subagentLogs?.length ?? 0) : 0), 0)
+    : 0;
+  // While streaming, live `segments` (incl. thinking_delta) are the source of truth.
+  // Preferring committedSegments here hid in-flight thinking after the first tool/commit.
   const fullLogEntries = useMemo(
-    () => committed && committed.length > 0
-      ? segmentsToStreamEntries(committed, msg.agentId, msg.rawCreatedAt)
-      : streamEntries,
-    [commitKey, msg.agentId, msg.rawCreatedAt, streamEntries], // eslint-disable-line react-hooks/exhaustive-deps
+    () => {
+      if (isStreaming) return streamEntries;
+      if (committed && committed.length > 0) {
+        return segmentsToStreamEntries(committed, msg.agentId, msg.rawCreatedAt);
+      }
+      return streamEntries;
+    },
+    [isStreaming, commitKey, commitSubagentKey, msg.agentId, msg.rawCreatedAt, streamEntries], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   if (segments !== undefined && segments.length > 0) {
     const hasTools = segments.some(s => s.type === 'tool');
-    const streamingText = isStreaming
-      ? (() => {
-          const raw = segments.filter(s => s.type === 'text').map(s => s.content).join('');
-          const cleaned = raw
-            .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
-            .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
-            .trim();
-          return cleaned ? cleaned.slice(-200) : undefined;
-        })()
-      : undefined;
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
     const stripMarkup = (t: string) => t
@@ -434,45 +500,43 @@ export const AgentMessageBody = memo(function AgentMessageBody({
     const displayText = segmentText
       || (!isStreaming && msg.text ? stripMarkup(msg.text) : null);
 
+    // Collect approval cards once for the bubble footer. The timeline hides its
+    // mid-row copies via hideApprovalCards so the same card is not shown twice.
     const inlineCards: Array<{ key: string } & ({ kind: 'task'; info: TaskApprovalInfo } | { kind: 'req'; info: RequirementApprovalInfo })> = [];
-    if (viewMode === 'compact') {
-      for (const seg of segments) {
-        if (seg.type !== 'tool') continue;
-        const ta = parseTaskApprovalFromResult(seg.tool, seg.result);
-        if (ta) { inlineCards.push({ key: `task-${ta.taskId}`, kind: 'task', info: ta }); continue; }
-        const ra = parseRequirementApprovalFromResult(seg.tool, seg.result);
-        if (ra) { inlineCards.push({ key: `req-${ra.requirementId}`, kind: 'req', info: ra }); }
-      }
+    for (const seg of segments) {
+      if (seg.type !== 'tool') continue;
+      const ta = parseTaskApprovalFromResult(seg.tool, seg.result);
+      if (ta) { inlineCards.push({ key: `task-${ta.taskId}`, kind: 'task', info: ta }); continue; }
+      const ra = parseRequirementApprovalFromResult(seg.tool, seg.result);
+      if (ra) { inlineCards.push({ key: `req-${ra.requirementId}`, kind: 'req', info: ra }); }
     }
 
     return (
       <div className="space-y-2 min-h-[1em] min-w-0 overflow-x-hidden">
-        {(hasTools || isStreaming) && (
-          viewMode === 'compact' ? (
-            <CompactExecutionCard
-              entries={streamEntries}
-              streamingText={streamingText}
-              isActive={isStreaming}
-              onExpand={() => setViewMode('full')}
-              embedded
-            />
-          ) : (
-            <FullExecutionLog
-              entries={fullLogEntries}
-              isActive={isStreaming}
-              onCollapse={() => setViewMode('compact')}
-              embedded
-            />
+        {(hasTools || isStreaming) ? (
+          // Always expanded: the full timeline includes tools, thinking and the answer.
+          <FullExecutionLog
+            entries={fullLogEntries}
+            isActive={isStreaming}
+            embedded
+            hideApprovalCards
+          />
+        ) : (
+          displayText && (
+            <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
           )
         )}
 
-        {viewMode === 'compact' && inlineCards.map(c => c.kind === 'task'
+        {inlineCards.map(c => c.kind === 'task'
           ? <TaskApprovalCard key={c.key} info={c.info} />
           : <RequirementApprovalCard key={c.key} info={c.info} />
         )}
 
-        {viewMode === 'compact' && displayText && (
-          <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
+        {!isStreaming && !displayText && !hasTools && inlineCards.length === 0 && !isStopped && (
+          <div className="flex items-start gap-1.5 text-[13px] text-amber-500/90 leading-relaxed">
+            <span aria-hidden>⚠️</span>
+            <span>{t('page.emptyReply')}</span>
+          </div>
         )}
 
         {isStopped && (
@@ -503,6 +567,12 @@ export const AgentMessageBody = memo(function AgentMessageBody({
         />
       )}
       {legacyText ? <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} /> : null}
+      {!isStreaming && !legacyText && !hasActivities && !isStopped && msg.sender === 'agent' && (
+        <div className="flex items-start gap-1.5 text-[13px] text-amber-500/90 leading-relaxed">
+          <span aria-hidden>⚠️</span>
+          <span>{t('page.emptyReply')}</span>
+        </div>
+      )}
       {isStopped && (
         <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-fg-tertiary">
           <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>

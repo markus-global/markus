@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { type PageId, PAGE, PAGE_ICONS, SIDEBAR_NAV, SIDEBAR_SECTIONS } from '../routes.ts';
 import { type AuthUser } from '../api.ts';
 import { NotificationBell } from './NotificationBell.tsx';
-
+import { UserAccountMenu } from './UserAccountMenu.tsx';
 
 interface Props {
   currentPage: string;
@@ -10,6 +10,7 @@ interface Props {
   authUser?: AuthUser;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  onLogout?: () => void;
 }
 
 function Icon({ d, size = 18 }: { d: string; size?: number }) {
@@ -20,7 +21,7 @@ function Icon({ d, size = 18 }: { d: string; size?: number }) {
   );
 }
 
-export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggleCollapse }: Props) {
+export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggleCollapse, onLogout }: Props) {
   const { t } = useTranslation(['nav', 'common']);
 
   return (
@@ -33,7 +34,7 @@ export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggle
       </div>
       <nav className={`${collapsed ? 'p-1' : 'px-3 py-2'} flex-1 overflow-y-auto scrollbar-thin`}>
         {SIDEBAR_SECTIONS.map((section, si) => {
-          const items = SIDEBAR_NAV.filter(i => i.section === section.key && i.id !== PAGE.SETTINGS);
+          const items = SIDEBAR_NAV.filter(i => i.section === section.key);
           if (items.length === 0) return null;
           const sectionLabel = t(`sections.${section.key}`);
           return (
@@ -84,28 +85,18 @@ export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggle
           );
         })}
       </nav>
-      <div className={`shrink-0 ${collapsed ? 'p-1' : 'px-3 pb-2'} flex items-center ${collapsed ? 'flex-col gap-1' : 'justify-between'}`}>
-        {window.markusDesktop && (
-          <button
-            onClick={() => window.markusDesktop?.openInBrowser()}
-            title={t('common:openInBrowser', 'Open in Browser')}
-            className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors text-fg-secondary hover:bg-surface-overlay/60 hover:text-fg-primary"
-          >
-            <Icon d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3" size={16} />
-          </button>
-        )}
-        <button
-          onClick={() => onNavigate(PAGE.SETTINGS)}
-          title={t(PAGE.SETTINGS)}
-          className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors text-fg-secondary hover:bg-surface-overlay/60 hover:text-fg-primary"
-        >
-          <Icon d={PAGE_ICONS[PAGE.SETTINGS] ?? ''} size={16} />
-        </button>
-        {!collapsed && (
-          <span className="text-[10px] text-fg-muted select-none">v{__APP_VERSION__}</span>
-        )}
+      <div className={`shrink-0 border-t border-border-subtle ${collapsed ? 'p-1.5 flex justify-center' : 'px-3 py-2.5'}`}>
+        <UserAccountMenu
+          authUser={authUser}
+          onLogout={onLogout}
+          onEditProfile={() => {
+            window.dispatchEvent(new Event('markus:open-edit-profile'));
+          }}
+          showSettingsLink={false}
+          collapsed={collapsed}
+          showVersion={!collapsed}
+        />
       </div>
-
     </aside>
   );
 }

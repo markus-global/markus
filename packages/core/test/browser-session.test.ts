@@ -39,35 +39,60 @@ describe('BrowserSessionManager', () => {
     expect(() => bsm.handleTabClosed(undefined)).not.toThrow();
   });
 
-  it('select_page rejects pages not owned by session', async () => {
+  it('select_page rejects pages owned by another session', async () => {
     const handlers = bsm.wrapToolHandlers([
-      makeHandler('new_page', () => '1: https://a.com [selected]\n'),
+      makeHandler('new_page', (args) => {
+        const url = String(args.url ?? '');
+        return url.includes('a.com')
+          ? '1: https://a.com [selected]\n'
+          : '2: https://b.com [selected]\n';
+      }),
       makeHandler('select_page', () => 'Selected page 2\n'),
       makeHandler('list_pages', () => '1: https://a.com\n2: https://b.com\n'),
     ], agentId);
 
     const newPage = handlers.find(h => h.name.endsWith('__new_page'))!;
     await newPage.execute({ _browserSessionId: sessionA, url: 'https://a.com' });
+    await newPage.execute({ _browserSessionId: sessionB, url: 'https://b.com' });
 
     const select = handlers.find(h => h.name.endsWith('__select_page'))!;
     const result = await select.execute({ _browserSessionId: sessionA, pageId: 2 });
-    expect(result).toContain('NOT your tab');
+    expect(result).toContain('another session');
     expect(JSON.parse(result).error).toContain('Cannot select page 2');
   });
 
-  it('list_pages annotates owned vs foreign tabs', async () => {
+  it('select_page claims unowned shared (user) tabs', async () => {
     const handlers = bsm.wrapToolHandlers([
-      makeHandler('new_page', () => '1: https://a.com [selected]\n'),
-      makeHandler('list_pages', () => '1: https://a.com [selected]\n2: https://b.com\n'),
+      makeHandler('select_page', () => 'Selected page 9\n'),
+      makeHandler('list_pages', () => '9: https://user-opened.example [selected]\n'),
+    ], agentId);
+
+    const select = handlers.find(h => h.name.endsWith('__select_page'))!;
+    const result = await select.execute({ _browserSessionId: sessionA, pageId: 9 });
+    expect(result).toContain('Claimed shared user tab 9');
+    expect(bsm.getOwnedTabIds(agentId, sessionA)).toEqual([9]);
+  });
+
+  it('list_pages annotates owned vs shared vs other-session tabs', async () => {
+    const handlers = bsm.wrapToolHandlers([
+      makeHandler('new_page', (args) => {
+        const url = String(args.url ?? '');
+        return url.includes('a.com')
+          ? '1: https://a.com [selected]\n'
+          : '2: https://b.com [selected]\n';
+      }),
+      makeHandler('list_pages', () => '1: https://a.com [selected]\n2: https://b.com\n3: https://user.com\n'),
     ], agentId);
 
     const newPage = handlers.find(h => h.name.endsWith('__new_page'))!;
     await newPage.execute({ _browserSessionId: sessionA, url: 'https://a.com' });
+    await newPage.execute({ _browserSessionId: sessionB, url: 'https://b.com' });
 
     const list = handlers.find(h => h.name.endsWith('__list_pages'))!;
     const result = await list.execute({ _browserSessionId: sessionA });
     expect(result).toContain('-- YOUR TAB');
-    expect(result).toContain('-- NOT YOUR TAB');
+    expect(result).toContain('-- OTHER SESSION TAB');
+    expect(result).toContain('-- SHARED TAB (select_page to claim)');
   });
 
   it('isolates tab ownership between sessions', async () => {

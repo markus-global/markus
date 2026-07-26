@@ -633,10 +633,10 @@ describe('LLMRouter model metadata', () => {
     expect(selected.model).toBe('claude-sonnet-4-20250514');
   });
 
-  it('getActiveModelContextWindow and MaxOutput return defaults for missing provider', () => {
+  it('throws (no silent default) when resolving window/output for a missing provider', () => {
     const router = new LLMRouter('missing');
-    expect(router.getActiveModelContextWindow()).toBe(64000);
-    expect(router.getActiveModelMaxOutput()).toBe(4096);
+    expect(() => router.getActiveModelContextWindow()).toThrow(/not registered/);
+    expect(() => router.getActiveModelMaxOutput()).toThrow(/not registered/);
     expect(router.getActiveModelName()).toBe('');
   });
 });
@@ -695,6 +695,24 @@ describe('LLMRouter selectForCapability fallthrough', () => {
 
     const selected = router.selectForCapability('text', { messages: [{ role: 'user', content: 'Hi' }] });
     expect(selected.provider).toBe('openai');
+  });
+});
+
+describe('LLMRouter text chat honors routingDefaultModel', () => {
+  it('routes via request.model for Markus (no shared configure) when routingDefaultModel is set', async () => {
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash');
+    const router = new LLMRouter('deepseek');
+    router.registerProvider('deepseek', mockProvider('deepseek', 'deepseek-v4-flash'));
+    router.registerProvider('markus', markus);
+    router.setRoutingDefaultModel({ provider: 'markus', model: 'z-ai/glm-5.1' });
+
+    await router.chat({ messages: [{ role: 'user', content: 'Hi' }] });
+
+    // Markus Provider resolves model per request — avoid mutating provider.model.
+    expect(markus.configure).not.toHaveBeenCalled();
+    expect(markus.chat).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'z-ai/glm-5.1' }),
+    );
   });
 });
 

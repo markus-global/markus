@@ -1,5 +1,5 @@
 {
-  "title": "Deliverables",
+  "title": "Output",
   "create": "+ Create",
   "searchPlaceholder": "Search deliverables...",
   "filters": {
@@ -33,7 +33,7 @@
   "empty": {
     "title": "No deliverables yet",
     "subtitle": "Deliverables are automatically created when agents complete tasks",
-    "goToWork": "Go to Workbench",
+    "goToWork": "Go to Tasks",
     "noResults": "No matching deliverables",
     "noResultsHint": "Try adjusting your search or filters"
   },
@@ -126,7 +126,8 @@
     "openChat": "Chat with agent",
     "closeChat": "Close chat",
     "placeholder": "Message agent...",
-    "currentDeliverable": "Current deliverable"
+    "currentDeliverable": "Current deliverable",
+    "selectedFrom": "Selected from"
   },
   "contextMenu": {
     "addToConversation": "Add to conversation"

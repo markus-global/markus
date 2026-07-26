@@ -172,6 +172,24 @@ describe('preprocessEntityIds', () => {
       expect(result).toBe(`[${id}](#entity:${id})`);
     }
   });
+
+  it('does not rewrite agent IDs inside local image / file paths', () => {
+    const md = '![CEO猫猫](/Users/liuqian/.markus/agents/agt_b56cd6208342f8502d7bdd4d/tool-outputs/ceo_cat.png)';
+    expect(preprocessEntityIds(md)).toBe(md);
+  });
+
+  it('does not rewrite entity IDs inside markdown link destinations', () => {
+    const md = '[open](https://example.com/x/dlv_abcdef12/view)';
+    expect(preprocessEntityIds(md)).toBe(md);
+  });
+
+  it('still links bare agent IDs in surrounding prose', () => {
+    const md = 'Agent agt_b56cd6208342f8502d7bdd4d made this image:\n\n![x](/tmp/agents/agt_b56cd6208342f8502d7bdd4d/out.png)';
+    const result = preprocessEntityIds(md);
+    expect(result).toContain('[agt_b56cd6208342f8502d7bdd4d](#entity:agt_b56cd6208342f8502d7bdd4d) made this image');
+    expect(result).toContain('![x](/tmp/agents/agt_b56cd6208342f8502d7bdd4d/out.png)');
+    expect(result).not.toContain('/agents/[agt_');
+  });
 });
 
 // ─── looksLikePlantUML ──────────────────────────────────────────────────────

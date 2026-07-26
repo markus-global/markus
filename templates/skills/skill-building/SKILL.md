@@ -37,16 +37,17 @@ When the user **installs** the artifact, the **entire directory** (all files) is
 
 Output the skill in two steps — manifest first, then content files. **Never put file content inline in the JSON.**
 
-### Chat Mode vs Task Mode
+### All modes (chat / task / A2A) — same rule
 
-- **Chat mode** (user conversation): Output the manifest JSON in a ```json code block → system auto-saves and creates the directory → then use `file_write` for each content file.
-- **Task mode** (assigned task): Use `file_write` to write the manifest JSON file directly (e.g., `file_write("~/.markus/builder-artifacts/skills/{name}/skill.json", ...)`) → then use `file_write` for each content file. When submitting deliverables, set the reference to the artifact directory path.
-- **A2A mode** (agent-to-agent): Same as task mode — write all files via `file_write`.
+There is **no** chat auto-save. A JSON code block in your reply does **not** create files.
 
-### Step 1: Output Manifest JSON
+1. `file_write("~/.markus/builder-artifacts/skills/{name}/skill.json", ...)` for the manifest
+2. `file_write` for each content file (SKILL.md, README, …)
+3. In task mode, set deliverable references to the artifact directory path
 
-**In chat mode**: Output the skill configuration as a JSON code block. The system auto-saves it.
-**In task/A2A mode**: Write the manifest JSON file directly via `file_write`.
+You may preview JSON in chat **in addition to** writing files — never instead of `file_write`.
+
+### Step 1: Write Manifest JSON via file_write
 
 This JSON contains ONLY metadata — **no file content**.
 
@@ -98,7 +99,7 @@ This JSON contains ONLY metadata — **no file content**.
 - Tool names exposed by MCP servers are automatically prefixed with the server name (e.g., `my-api__tool_name`). Mention these prefixed names in SKILL.md.
 - You can also use externally published MCP servers: `"command": "npx", "args": ["-y", "some-mcp-server@latest"]`.
 
-The system automatically saves this JSON and creates the directory. After that, you proceed to write files.
+After `skill.json` is written, proceed to write the remaining files with `file_write`.
 
 ### Step 2: Write Files with file_write
 
@@ -126,11 +127,30 @@ file_write("~/.markus/builder-artifacts/skills/git-changelog/SKILL.md", "---\nna
 file_write("~/.markus/builder-artifacts/skills/git-changelog/README.md", "# Git Changelog\n\nA skill that helps agents generate changelogs from git history...\n")
 ```
 
+## Package Slug (`name`) — REQUIRED
+
+The manifest `name` is the **package slug**: directory name, Hub URL segment (`/@user/{slug}`), SKILL.md frontmatter `name`, and share/publish id.
+
+**Rules (hard — invalid manifests are rejected on write / save / share):**
+- English **kebab-case** only: lowercase letters `a-z`, digits `0-9`, hyphens `-`
+- 2–64 characters; must **start with a letter**
+- Pattern examples: `git-changelog`, `web-scraper`, `pdf-summarizer`
+- **NOT allowed**: Chinese (`网页抓取器`), spaces, underscores, UPPERCASE, emoji, or empty
+- Put the human-readable title (any language) in **`displayName`**, never in `name`
+- Manifest `name` and `SKILL.md` frontmatter `name` must match **exactly**
+
+| User language | `name` (slug) | `displayName` |
+|---|---|---|
+| Chinese “网页抓取” | `web-scraper` | `网页抓取` |
+| English “Git Changelog” | `git-changelog` | `Git Changelog` |
+
+If the user only gives a Chinese title, **you invent an English kebab slug**, set `displayName` to their title, and use the slug for `~/.markus/builder-artifacts/skills/{name}/`.
+
 ## Field Reference
 
 ### Top-level fields
 - **`type`**: Always `"skill"`
-- **`name`**: **MUST be English kebab-case** (e.g., `git-changelog`, `web-scraper`). Must match `SKILL.md` frontmatter name. This is the directory name and identifier.
+- **`name`**: **Package slug** — English kebab-case only (see [Package Slug](#package-slug-name--required)). Write/save/share reject Chinese or invalid slugs. Must match `SKILL.md` frontmatter `name`.
 - **`displayName`**: Human-readable skill name, can be in any language
 - **`version`**: Semver (default `"1.0.0"`)
 - **`description`**: When and why an agent should use this skill (can be in any language)
@@ -170,6 +190,6 @@ Once all files are written, tell the user:
 - **DO NOT** use names that conflict with built-in skills. Check the dynamic context for existing skill names.
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
 - **DO NOT** write artifacts to `~/.markus/shared/` or your working directory. Always use `~/.markus/builder-artifacts/skills/{name}/`.
-- **The `name` field MUST be English kebab-case** (e.g., `git-changelog`, not `网页抓取器`). This is the directory name and package identifier.
+- **The `name` field MUST be a valid English kebab-case slug** (see Package Slug). Never use Chinese as `name`. Invalid `name` → write/save/share fails.
 - The `name` field and `SKILL.md` frontmatter `name` must match exactly.
 - **All top-level fields must be the correct type**: `author` must be a plain string (your name, e.g. `"John"`) — NOT an object. `tags` must be an array of strings. `version` must be semver string. `description` must be a string. The system validates the manifest on write and will reject malformed files.

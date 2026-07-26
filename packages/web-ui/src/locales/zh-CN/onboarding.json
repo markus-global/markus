@@ -113,6 +113,7 @@
     "defaultOrgName": "{{name}} 的团队",
     "setOrgName": "设置组织名称",
     "orgNameSaved": "已保存",
+    "orgNameSaveFailed": "保存组织名称失败，请重试。",
     "pendingInvitations": "你有待接受的组织邀请",
     "invitedBy": "邀请人：{{name}}",
     "acceptAndJoin": "接受并加入",

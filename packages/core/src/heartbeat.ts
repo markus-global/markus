@@ -1,16 +1,64 @@
-import { createLogger, HEARTBEAT_MIN_INITIAL_DELAY_MS } from '@markus/shared';
+import { createLogger, HEARTBEAT_MIN_INITIAL_DELAY_MS, DEFAULT_HEARTBEAT_INTERVAL_MS } from '@markus/shared';
 import type { EventBus } from './events.js';
 
 const log = createLogger('heartbeat');
 
+export interface HeartbeatActiveHours {
+  start: string;   // "08:00"
+  end: string;     // "22:00"
+  timezone?: string;
+}
+
 export interface HeartbeatConfig {
   intervalMs: number;
   enabled: boolean;
-  activeHours?: {
-    start: string;   // "08:00"
-    end: string;     // "22:00"
-    timezone?: string;
-  };
+  activeHours?: HeartbeatActiveHours;
+}
+
+/**
+ * C1: minutes-since-midnight for `date` **in a specific IANA timezone**.
+ * Falls back to the host-local clock when no timezone is given or the timezone
+ * is invalid. Pure and side-effect-free so active-hours logic is testable and
+ * consistent regardless of where the process runs.
+ */
+export function minutesOfDayInTimeZone(date: Date, timeZone?: string): number {
+  if (!timeZone) return date.getHours() * 60 + date.getMinutes();
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    }).formatToParts(date);
+    let h = 0;
+    let m = 0;
+    for (const p of parts) {
+      if (p.type === 'hour') h = parseInt(p.value, 10) % 24; // '24' → 0 at midnight
+      else if (p.type === 'minute') m = parseInt(p.value, 10);
+    }
+    return h * 60 + m;
+  } catch {
+    // Invalid timezone id — degrade to local time rather than throwing in a timer.
+    return date.getHours() * 60 + date.getMinutes();
+  }
+}
+
+/**
+ * C1: whether `now` falls inside the configured active-hours window, evaluated in
+ * `activeHours.timezone` (not the host's local timezone). Handles windows that wrap
+ * past midnight (e.g. 22:00–06:00). Pure so it can be unit-tested across timezones.
+ */
+export function isWithinActiveHours(activeHours: HeartbeatActiveHours, now: Date = new Date()): boolean {
+  const [startH, startM] = activeHours.start.split(':').map(Number);
+  const [endH, endM] = activeHours.end.split(':').map(Number);
+  const current = minutesOfDayInTimeZone(now, activeHours.timezone);
+  const startMin = startH * 60 + startM;
+  const endMin = endH * 60 + endM;
+  if (startMin <= endMin) {
+    return current >= startMin && current < endMin;
+  }
+  // Wraps midnight (e.g. 22:00 - 06:00)
+  return current >= startMin || current < endMin;
 }
 
 export class HeartbeatScheduler {
@@ -23,7 +71,7 @@ export class HeartbeatScheduler {
   constructor(
     private agentId: string,
     private eventBus: EventBus,
-    private config: HeartbeatConfig = { intervalMs: 30 * 60 * 1000, enabled: true },
+    private config: HeartbeatConfig = { intervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS, enabled: true },
   ) {}
 
   /**
@@ -71,6 +119,20 @@ export class HeartbeatScheduler {
     log.info('Heartbeat scheduler stopped', { agentId: this.agentId });
   }
 
+  /**
+   * Change the heartbeat interval and apply it live. If the scheduler is
+   * running, it is restarted so the new cadence takes effect immediately
+   * (with fresh jitter for the next tick to avoid a thundering herd).
+   */
+  updateInterval(intervalMs: number): void {
+    this.config.intervalMs = intervalMs;
+    log.info('Heartbeat interval updated', { agentId: this.agentId, intervalMs });
+    if (this.running) {
+      this.stop();
+      this.start();
+    }
+  }
+
   isRunning(): boolean {
     return this.running;
   }
@@ -101,20 +163,6 @@ export class HeartbeatScheduler {
   }
 
   private isWithinActiveHours(): boolean {
-    const { start, end } = this.config.activeHours!;
-    const [startH, startM] = start.split(':').map(Number);
-    const [endH, endM] = end.split(':').map(Number);
-    const now = new Date();
-    const h = now.getHours();
-    const m = now.getMinutes();
-    const current = h * 60 + m;
-    const startMin = startH * 60 + startM;
-    const endMin = endH * 60 + endM;
-
-    if (startMin <= endMin) {
-      return current >= startMin && current < endMin;
-    }
-    // Wraps midnight (e.g. 22:00 - 06:00)
-    return current >= startMin || current < endMin;
+    return isWithinActiveHours(this.config.activeHours!);
   }
 }

@@ -2,12 +2,11 @@ import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } fro
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
-import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
+import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, streamEntryToExecEntry, attachSubagentLogsToEntries, FullExecutionLog, CompactExecutionCard, type ExecEntry, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
+import { taskLogToStreamEntry, activityLogToStreamEntry, type AgentActivityLogEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer } from '../components/ContentRenderer.tsx';
 import { Avatar } from '../components/Avatar.tsx';
-import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
@@ -18,6 +17,65 @@ import { usePageActive } from '../hooks/usePageActive.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
+
+/**
+ * Convert a live `agent:activity_log` WS payload into the generic execution
+ * stream-entry shape used by CompactExecutionCard / FullExecutionLog. The
+ * backend already broadcasts the full stream (text, thinking, tool_start,
+ * tool_end with args/results/durations, errors, status) — the same shape the
+ * historical "view log" path consumes — so the live comment view can reuse the
+ * exact same renderer as Team Chat instead of a bespoke tool-only indicator.
+ */
+function wsPayloadToStreamEntry(p: Record<string, unknown>): ExecutionStreamEntryUI | null {
+  const agentId = p['agentId'] as string;
+  const activityId = p['activityId'] as string;
+  if (!agentId || !activityId) return null;
+  // Structurally identical to ExecutionStreamEntryUI (same fields). The
+  // renderers key off `createdAt`, so no extra `ts` field is needed.
+  return activityLogToStreamEntry({
+    seq: p['seq'] as number,
+    type: p['type'] as AgentActivityLogEntry['type'],
+    content: (p['content'] as string) ?? '',
+    metadata: p['metadata'] as Record<string, unknown> | undefined,
+    createdAt: (p['createdAt'] as string) ?? new Date().toISOString(),
+  }, activityId, agentId);
+}
+
+/** Append a live stream entry to the per-agent map, de-duped by stable id. */
+function appendLiveEntry(
+  prev: Map<string, ExecutionStreamEntryUI[]>,
+  agentId: string,
+  entry: ExecutionStreamEntryUI,
+): Map<string, ExecutionStreamEntryUI[]> {
+  const list = prev.get(agentId) ?? [];
+  if (list.some(e => e.id === entry.id)) return prev;
+  const next = new Map(prev);
+  next.set(agentId, [...list, entry]);
+  return next;
+}
+
+/**
+ * Collapsed-by-default live streaming card for an agent's in-progress reply in
+ * a task/requirement comment thread. Mirrors the Team Chat agent streaming
+ * experience: a one-line compact summary that expands into the full execution
+ * timeline (thinking, tool arguments/results, durations). Replaces the old
+ * bespoke ActivityIndicator, which could only show tool names.
+ */
+function LiveExecutionStream({ entries }: { entries: ExecutionStreamEntryUI[] }) {
+  const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
+  if (entries.length === 0) return null;
+  // stopPropagation so expanding/collapsing the card doesn't trigger the parent
+  // row's navigate-to-Team click handler.
+  return (
+    <div onClick={e => e.stopPropagation()}>
+      {viewMode === 'compact' ? (
+        <CompactExecutionCard entries={entries} isActive onExpand={() => setViewMode('full')} embedded />
+      ) : (
+        <FullExecutionLog entries={entries} isActive onCollapse={() => setViewMode('compact')} embedded />
+      )}
+    </div>
+  );
+}
 
 /* ── useDropdownPosition: compute fixed position for dropdown escaping overflow containers ── */
 function useDropdownPosition(triggerRef: React.RefObject<HTMLDivElement | null>, open: boolean) {
@@ -235,7 +293,6 @@ function AgentNameLink({ agentId, agents }: { agentId: string; agents: AgentInfo
             <span className={`w-2 h-2 rounded-full shrink-0 ${
               agent.status === 'working' ? 'bg-blue-400 animate-pulse'
               : agent.status === 'error' ? 'bg-red-400'
-              : (agent.lastError && agent.lastErrorAt && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000) ? 'bg-amber-400'
               : 'bg-green-400'
             }`} />
           </div>
@@ -579,12 +636,9 @@ function MentionPopover({ agent, anchorRect, onClose }: {
     return () => document.removeEventListener('mousedown', handler);
   }, [onClose]);
 
-  const hasRecentError = agent.status !== 'error' && !!agent.lastError && !!agent.lastErrorAt
-    && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000;
-  const statusColor = agent.status === 'idle' && !hasRecentError ? 'bg-green-400'
-    : agent.status === 'working' && !hasRecentError ? 'bg-blue-400 animate-pulse'
+  const statusColor = agent.status === 'idle' ? 'bg-green-400'
+    : agent.status === 'working' ? 'bg-blue-400 animate-pulse'
     : agent.status === 'error' ? 'bg-red-400'
-    : hasRecentError ? 'bg-amber-400'
     : 'bg-gray-500';
   const statusLabel = agent.status === 'idle' ? t('work:task.online') : agent.status === 'working' ? t('work:task.working') : agent.status === 'error' ? t('work:task.error') : t('work:task.offline');
 
@@ -762,7 +816,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [agentActivities, setAgentActivities] = useState<Map<string, ActivityStep[]>>(new Map());
+  const [agentActivities, setAgentActivities] = useState<Map<string, ExecutionStreamEntryUI[]>>(new Map());
 
   useEffect(() => {
     setThinkingAgents([]);
@@ -808,21 +862,12 @@ function TaskActivitySection({ task, agents, users, authUser }: {
       if (!p) return;
       const agentId = p['agentId'] as string;
       if (!thinkingIds.has(agentId)) return;
-      const evtType = p['type'] as string;
-      if (evtType === 'tool_start' || evtType === 'tool_end') {
-        const tool = (p['content'] as string) ?? (p['metadata'] as Record<string, unknown>)?.['tool'] as string ?? '';
-        const step: ActivityStep = {
-          tool,
-          phase: evtType === 'tool_start' ? 'start' : 'end',
-          success: evtType === 'tool_end' ? (p['metadata'] as Record<string, unknown>)?.['success'] !== false : undefined,
-          ts: Date.now(),
-        };
-        setAgentActivities(prev => {
-          const next = new Map(prev);
-          const list = [...(next.get(agentId) ?? []), step];
-          next.set(agentId, list);
-          return next;
-        });
+      // Keep the FULL live stream (text, thinking, tool args/results, errors),
+      // not just tool names, so the compact card can expand into the same rich
+      // timeline used in Team Chat and the historical "view log" view.
+      const entry = wsPayloadToStreamEntry(p);
+      if (entry) {
+        setAgentActivities(prev => appendLiveEntry(prev, agentId, entry));
       }
     });
     return unsub;
@@ -923,7 +968,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
                   </div>
                   {activities.length > 0 && (
                     <div className="ml-8 mt-1">
-                      <ActivityIndicator activities={activities} isActive={true} />
+                      <LiveExecutionStream entries={activities} />
                     </div>
                   )}
                 </div>
@@ -954,7 +999,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
   const [submitting, setSubmitting] = useState(false);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [agentActivities, setAgentActivities] = useState<Map<string, ActivityStep[]>>(new Map());
+  const [agentActivities, setAgentActivities] = useState<Map<string, ExecutionStreamEntryUI[]>>(new Map());
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
   const [relatedActivities, setRelatedActivities] = useState<ActivityRecord[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(false);
@@ -1107,21 +1152,12 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
       if (!p) return;
       const agentId = p['agentId'] as string;
       if (!thinkingIds.has(agentId)) return;
-      const evtType = p['type'] as string;
-      if (evtType === 'tool_start' || evtType === 'tool_end') {
-        const tool = (p['content'] as string) ?? (p['metadata'] as Record<string, unknown>)?.['tool'] as string ?? '';
-        const step: ActivityStep = {
-          tool,
-          phase: evtType === 'tool_start' ? 'start' : 'end',
-          success: evtType === 'tool_end' ? (p['metadata'] as Record<string, unknown>)?.['success'] !== false : undefined,
-          ts: Date.now(),
-        };
-        setAgentActivities(prev => {
-          const next = new Map(prev);
-          const list = [...(next.get(agentId) ?? []), step];
-          next.set(agentId, list);
-          return next;
-        });
+      // Keep the FULL live stream (text, thinking, tool args/results, errors),
+      // not just tool names, so the compact card can expand into the same rich
+      // timeline used in Team Chat and the historical "view log" view.
+      const entry = wsPayloadToStreamEntry(p);
+      if (entry) {
+        setAgentActivities(prev => appendLiveEntry(prev, agentId, entry));
       }
     });
     return unsub;
@@ -1459,7 +1495,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
                   </div>
                   {activities.length > 0 && (
                     <div className="ml-9 mt-1">
-                      <ActivityIndicator activities={activities} isActive={true} />
+                      <LiveExecutionStream entries={activities} />
                     </div>
                   )}
                 </div>
@@ -1476,9 +1512,25 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
 // ─── File Preview Modal ─────────────────────────────────────────────────────────
 
 type DirEntry = { name: string; path: string; isDirectory: boolean; size?: number; ext: string };
-type PreviewData = { type: string; name: string; content: string; mimeType?: string; entries?: DirEntry[]; path?: string };
+type PreviewData = {
+  type: string;
+  name: string;
+  content?: string;
+  mimeType?: string;
+  entries?: DirEntry[];
+  path?: string;
+  size?: number;
+  streamUrl?: string;
+  extension?: string;
+};
 
-const PREVIEWABLE_EXTS = new Set(['.md', '.markdown', '.txt', '.json', '.yaml', '.yml', '.toml', '.csv', '.xml', '.html', '.htm', '.css', '.js', '.ts', '.jsx', '.tsx', '.py', '.sh', '.log', '.env', '.cfg', '.ini', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
+const PREVIEWABLE_EXTS = new Set([
+  '.md', '.markdown', '.txt', '.json', '.yaml', '.yml', '.toml', '.csv', '.xml', '.html', '.htm',
+  '.css', '.js', '.ts', '.jsx', '.tsx', '.py', '.sh', '.log', '.env', '.cfg', '.ini',
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
+  '.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.opus',
+  '.mp4', '.webm', '.mov', '.mkv', '.m4v',
+]);
 
 function fmtSize(bytes?: number): string {
   if (bytes == null) return '';
@@ -1599,9 +1651,44 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
           {/* File preview */}
           {data && data.type !== 'directory' && (
             <div className="p-5">
-              {data.type === 'image' ? (
+              {data.type === 'image' && data.content ? (
                 <div className="flex justify-center">
                   <img src={`data:${data.mimeType};base64,${data.content}`} alt={data.name} className="max-w-full max-h-[60vh] rounded-lg" />
+                </div>
+              ) : data.type === 'audio' ? (
+                <div className="flex flex-col gap-3">
+                  <audio
+                    controls
+                    preload="metadata"
+                    src={data.streamUrl || (data.path ? api.files.streamUrl(data.path) : api.files.streamUrl(currentPath))}
+                    className="w-full"
+                  />
+                  <span className="text-xs text-fg-tertiary">{data.name}{data.size != null ? ` · ${fmtSize(data.size)}` : ''}</span>
+                </div>
+              ) : data.type === 'video' ? (
+                <div className="flex flex-col gap-3">
+                  <video
+                    controls
+                    preload="metadata"
+                    src={data.streamUrl || (data.path ? api.files.streamUrl(data.path) : api.files.streamUrl(currentPath))}
+                    className="w-full max-h-[60vh] rounded-lg bg-black"
+                  />
+                  <span className="text-xs text-fg-tertiary">{data.name}{data.size != null ? ` · ${fmtSize(data.size)}` : ''}</span>
+                </div>
+              ) : data.type === 'binary' || data.content == null ? (
+                <div className="space-y-3 text-center py-6">
+                  <p className="text-sm text-fg-secondary">
+                    {t('work:task.cannotPreviewFile', { defaultValue: 'This file type cannot be previewed.' })}
+                  </p>
+                  <p className="text-xs text-fg-tertiary font-mono">
+                    {data.name}{data.extension ? ` (${data.extension})` : ''}{data.size != null ? ` · ${fmtSize(data.size)}` : ''}
+                  </p>
+                  <button
+                    onClick={() => openInFinder(currentPath)}
+                    className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors"
+                  >
+                    {t('work:task.openInFinder')}
+                  </button>
                 </div>
               ) : (
                 <ContentRenderer content={data.content} format={data.type === 'text' ? 'text' : data.type} className="text-sm text-fg-secondary leading-relaxed" />
@@ -2648,6 +2735,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
   const [newRepoPath, setNewRepoPath] = useState('');
   const [newRepoBranch, setNewRepoBranch] = useState('main');
   const [statusUpdating, setStatusUpdating] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const { t } = useTranslation(['work', 'common']);
 
   const PROJECT_STATUSES: Array<{ value: string; label: string; desc: string }> = [
@@ -2829,8 +2917,18 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
       <div className="border border-red-500/20 rounded-xl p-4">
         <h4 className="text-xs font-semibold text-red-500/80 mb-2">{t('work:project.dangerZone')}</h4>
         <p className="text-[11px] text-fg-tertiary mb-3">{t('work:project.dangerZoneDeleteHint')}</p>
-        <button onClick={onDeleteProject} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 hover:bg-red-500/10 rounded-lg transition-colors">{t('work:project.deleteProject')}</button>
+        <button onClick={() => setConfirmDelete(true)} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 hover:bg-red-500/10 rounded-lg transition-colors">{t('work:project.deleteProject')}</button>
       </div>
+
+      {confirmDelete && (
+        <ConfirmModal
+          title={t('work:project.deleteProjectConfirmTitle')}
+          message={t('work:project.deleteProjectConfirmBody', { name: project.name, tasks: stats.total, reqs: stats.reqs })}
+          confirmLabel={t('work:project.deleteProject')}
+          onConfirm={() => { setConfirmDelete(false); onDeleteProject(); }}
+          onCancel={() => setConfirmDelete(false)}
+        />
+      )}
     </div>
   );
 }
@@ -4255,6 +4353,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [taskType, setTaskType] = useState<'standard' | 'scheduled'>('standard');
   const [taskScheduleEvery, setTaskScheduleEvery] = useState('4h');
   const [taskCreateError, setTaskCreateError] = useState('');
+  const [taskCreating, setTaskCreating] = useState(false);
 
   const [selectedTask, setSelectedTask] = useState<TaskInfo | null>(null);
   const [selectedReq, setSelectedReq] = useState<RequirementInfo | null>(() => {
@@ -4291,10 +4390,23 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [rejectReqId, setRejectReqId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [reqCreateError, setReqCreateError] = useState('');
+  const [reqCreating, setReqCreating] = useState(false);
   const [rejectReqError, setRejectReqError] = useState('');
-  const [pendingDeleteProjectId, setPendingDeleteProjectId] = useState<string | null>(null);
 
   const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
+
+  // Escape closes the top-most open modal/sheet (NewProjectModal handles its own).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (rejectReqId) { setRejectReqId(null); setRejectReqError(''); }
+      else if (showCreateTask) { setShowCreateTask(false); setTaskCreateError(''); }
+      else if (showCreateReq) { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); setReqCreateError(''); }
+      else if (showFilterSheet) setShowFilterSheet(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [rejectReqId, showCreateTask, showCreateReq, showFilterSheet]);
 
   const selectedProject = projects.find(p => p.id === selectedProjectId) ?? null;
   const selectedProjectTeamId = selectedProject?.teamIds?.[0] ?? null;
@@ -4732,24 +4844,27 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   };
 
   const handleDeleteProject = async (id: string) => {
-    if (!confirm('Delete this project and unlink all its tasks?')) return;
+    // Confirmation is handled by an in-app modal in ProjectSettingsPanel — a
+    // native confirm() does not render inside the desktop webview, which made
+    // deletes appear to fire with no prompt.
     try {
       await api.projects.delete(id);
       if (selectedProjectId === id) selectAllTasks();
-      msg('Project deleted');
+      msg(t('work:task.projectDeleted'));
       refreshProjects(); refreshBoard();
-    } catch (e) { msg(`Error: ${e}`); }
+    } catch (e) { msg(t('work:task.errorGeneric', { message: String(e) })); }
   };
 
 
   const createTask = async () => {
-    if (!taskTitle || !taskAssignTo || !taskReviewer) return;
+    if (!taskTitle || !taskAssignTo || !taskReviewer || taskCreating) return;
     setTaskCreateError('');
     const reviewerIsHuman = taskReviewer.startsWith('human:');
     const reviewerId = taskReviewer.replace(/^(human|agent):/, '');
     if (taskAssignTo === reviewerId && !reviewerIsHuman) { msg(t('work:task.assignedReviewerDifferent')); return; }
     const projId = taskProjectId || undefined;
     const reqId = taskRequirementId || undefined;
+    setTaskCreating(true);
     try {
       const { task } = await api.tasks.create(
         taskTitle, taskDesc,
@@ -4771,6 +4886,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       const key = `work:task.errorCode_${code || 'unknown'}`;
       const localized = t(key, { defaultValue: '' });
       setTaskCreateError(localized || t('work:task.errorCreatingTask', { message: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setTaskCreating(false);
     }
   };
 
@@ -4804,10 +4921,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   // ── Requirement actions ──
 
   const handleCreateReq = async () => {
+    if (reqCreating) return;
     if (!reqTitle.trim()) { setReqCreateError(t('work:task.pleaseReqTitle')); return; }
     if (!reqDesc.trim()) { setReqCreateError(t('work:task.pleaseReqDesc')); return; }
     if (!reqProjectId) { setReqCreateError(t('work:task.pleaseReqProject')); return; }
     setReqCreateError('');
+    setReqCreating(true);
     try {
       const { requirement } = await api.requirements.create({ title: reqTitle.trim(), description: reqDesc.trim(), priority: reqPriority, projectId: reqProjectId });
       msg(t('work:task.requirementCreated'));
@@ -4815,20 +4934,21 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       refreshRequirements();
       if (requirement) forceOpenReq(requirement);
     } catch (e) { setReqCreateError(e instanceof Error ? e.message : String(e)); }
+    finally { setReqCreating(false); }
   };
 
   const handleApproveReq = async (id: string) => {
-    try { await api.requirements.approve(id); msg('Requirement approved'); markNotifRead({ requirementId: id }); handleReqRefresh(); refreshBoard(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.approve(id); msg(t('work:task.requirementApproved')); markNotifRead({ requirementId: id }); handleReqRefresh(); refreshBoard(); } catch (e) { msg(t('work:task.errorGeneric', { message: String(e) })); }
   };
 
   const handleRejectReq = async () => {
     if (!rejectReqId) return;
     setRejectReqError('');
-    try { await api.requirements.reject(rejectReqId, rejectReason); msg('Requirement rejected'); markNotifRead({ requirementId: rejectReqId }); setRejectReqId(null); setRejectReason(''); setRejectReqError(''); handleReqRefresh(); } catch (e) { setRejectReqError(e instanceof Error ? e.message : String(e)); }
+    try { await api.requirements.reject(rejectReqId, rejectReason); msg(t('work:task.requirementRejected')); markNotifRead({ requirementId: rejectReqId }); setRejectReqId(null); setRejectReason(''); setRejectReqError(''); handleReqRefresh(); } catch (e) { setRejectReqError(e instanceof Error ? e.message : String(e)); }
   };
 
   const handleDeleteReq = async (id: string) => {
-    try { await api.requirements.cancel(id); msg('Requirement cancelled'); markNotifRead({ requirementId: id }); handleReqRefresh(); } catch (e) { msg(`Error: ${e}`); }
+    try { await api.requirements.cancel(id); msg(t('work:task.requirementCancelled')); markNotifRead({ requirementId: id }); handleReqRefresh(); } catch (e) { msg(t('work:task.errorGeneric', { message: String(e) })); }
   };
 
   // ── Drag handlers (tasks + requirements) ──
@@ -5799,7 +5919,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             {taskCreateError && <div className="px-3 py-2 bg-red-500/15 text-red-500 text-xs rounded-lg">{taskCreateError}</div>}
             <div className="flex justify-end gap-3 pt-1">
               <button onClick={() => { setShowCreateTask(false); setTaskCreateError(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
-              <button onClick={() => void createTask()} disabled={!taskTitle.trim() || !taskAssignTo || !taskReviewer} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">{t('common:create')}</button>
+              <button onClick={() => void createTask()} disabled={!taskTitle.trim() || !taskAssignTo || !taskReviewer || taskCreating} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">{taskCreating ? t('common:creating') : t('common:create')}</button>
             </div>
           </div>
         </div>
@@ -5844,7 +5964,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             {reqCreateError && <div className="px-3 py-2 bg-red-500/15 text-red-500 text-xs rounded-lg">{reqCreateError}</div>}
             <div className="flex justify-end gap-3 pt-1">
               <button onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); setReqCreateError(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
-              <button onClick={() => void handleCreateReq()} disabled={!reqTitle.trim() || !reqDesc.trim() || !reqProjectId} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-40 disabled:cursor-not-allowed">{t('common:create')}</button>
+              <button onClick={() => void handleCreateReq()} disabled={!reqTitle.trim() || !reqDesc.trim() || !reqProjectId || reqCreating} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-40 disabled:cursor-not-allowed">{reqCreating ? t('common:creating') : t('common:create')}</button>
             </div>
           </div>
         </div>
@@ -5996,7 +6116,7 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
   const [comments, setComments] = useState<RequirementComment[]>([]);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [agentActivities, setAgentActivities] = useState<Map<string, ActivityStep[]>>(new Map());
+  const [agentActivities, setAgentActivities] = useState<Map<string, ExecutionStreamEntryUI[]>>(new Map());
 
   useEffect(() => {
     setThinkingAgents([]);
@@ -6041,21 +6161,12 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
       if (!p) return;
       const agentId = p['agentId'] as string;
       if (!thinkingIds.has(agentId)) return;
-      const evtType = p['type'] as string;
-      if (evtType === 'tool_start' || evtType === 'tool_end') {
-        const tool = (p['content'] as string) ?? (p['metadata'] as Record<string, unknown>)?.['tool'] as string ?? '';
-        const step: ActivityStep = {
-          tool,
-          phase: evtType === 'tool_start' ? 'start' : 'end',
-          success: evtType === 'tool_end' ? (p['metadata'] as Record<string, unknown>)?.['success'] !== false : undefined,
-          ts: Date.now(),
-        };
-        setAgentActivities(prev => {
-          const next = new Map(prev);
-          const list = [...(next.get(agentId) ?? []), step];
-          next.set(agentId, list);
-          return next;
-        });
+      // Keep the FULL live stream (text, thinking, tool args/results, errors),
+      // not just tool names, so the compact card can expand into the same rich
+      // timeline used in Team Chat and the historical "view log" view.
+      const entry = wsPayloadToStreamEntry(p);
+      if (entry) {
+        setAgentActivities(prev => appendLiveEntry(prev, agentId, entry));
       }
     });
     return unsub;
@@ -6142,7 +6253,7 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
                   </div>
                   {activities.length > 0 && (
                     <div className="ml-8 mt-1">
-                      <ActivityIndicator activities={activities} isActive={true} />
+                      <LiveExecutionStream entries={activities} />
                     </div>
                   )}
                 </div>

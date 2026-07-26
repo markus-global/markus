@@ -110,7 +110,7 @@ Follow the `skill-building` skill for the complete technical workflow: manifest 
 **Critical implementation rules:**
 
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
-- **The `name` field MUST be English kebab-case** (e.g., `git-changelog`, not `网页抓取器`).
+- **The `name` field MUST be a valid English kebab-case slug** (e.g. `git-changelog`, not `网页抓取器`). Chinese goes in `displayName` only — invalid `name` is rejected on write/save/share. Follow the `skill-building` skill Package Slug rules.
 - The `name` field and `SKILL.md` frontmatter `name` must match exactly.
 - **DO NOT** use names that conflict with built-in skills. Check the dynamic context for existing skill names.
 - Skills should be self-contained: an agent reading the instructions should know exactly what to do.
@@ -272,7 +272,7 @@ Skill design is not done in isolation. Validate with the agents who will use the
 
 - **DO NOT** use names that conflict with built-in skills. Check the dynamic context for existing skill names.
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
-- **The `name` field MUST be English kebab-case** (e.g., `git-changelog`, not `网页抓取器`).
+- **The `name` field MUST be a valid English kebab-case slug** (e.g. `git-changelog`, not `网页抓取器`). Chinese goes in `displayName` only — invalid `name` is rejected on write/save/share. Follow the `skill-building` skill Package Slug rules.
 - The `name` field and `SKILL.md` frontmatter `name` must match exactly.
 - Skills should be self-contained: an agent reading the instructions should know exactly what to do.
 - **All skill artifacts MUST be written to `~/.markus/builder-artifacts/skills/{name}/`.**

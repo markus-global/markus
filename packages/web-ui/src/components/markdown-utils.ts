@@ -78,8 +78,25 @@ export function preprocessMentions(text: string, knownNames?: string[]): string 
 }
 
 const ENTITY_PREFIX = '#entity:';
-const ENTITY_ID_RE = /(?<!\[)(?<!#entity:)\b(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}\b(?!\]\(#entity:)/gi;
-const ENTITY_LINK_IN_CODE_RE = /`\[([^\]]+)\]\(#entity:((?:tsk|req|proj|dlv|agt)_[a-f0-9]{6,})\)`/gi;
+// Match bare entity IDs in prose, but NOT ones already inside a link / path:
+//   - `[id](...)`            → preceded by `[`
+//   - `](dlv_…)`             → preceded by `(`  (link destination)
+//   - `deliverable:dlv_…`    → preceded by `:`  (custom scheme href)
+//   - `/agents/agt_…/…`      → preceded by `/` or `\` (filesystem / URL path)
+// Rewriting IDs inside a destination or path corrupts the URL into nested markdown
+// (e.g. image `![x](/…/agents/agt_…/file.png)` became
+// `![x](/…/agents/[agt_…](#entity:agt_…)/file.png)` → 404).
+const ENTITY_ID_RE = /(?<!\[)(?<!\()(?<!:)(?<!\/)(?<!\\)\b(tsk|req|proj|dlv|agt|team)_[a-f0-9]{6,}\b(?!\]\(#entity:)/gi;
+const ENTITY_LINK_IN_CODE_RE = /`\[([^\]]+)\]\(#entity:((?:tsk|req|proj|dlv|agt|team)_[a-f0-9]{6,})\)`/gi;
+
+/** True when `index` sits inside a markdown link/image destination: `](…here…)`. */
+function isInsideMarkdownDestination(text: string, index: number): boolean {
+  const before = text.slice(0, index);
+  const open = before.lastIndexOf('](');
+  if (open === -1) return false;
+  const close = before.indexOf(')', open + 2);
+  return close === -1;
+}
 
 /** Unwrap entity links wrapped in backticks: `[id](#entity:id)` → [id](#entity:id) */
 export function preprocessEntityLinksInCode(text: string): string {
@@ -88,7 +105,11 @@ export function preprocessEntityLinksInCode(text: string): string {
 
 /** Convert bare entity IDs (tsk_xxx, dlv_xxx, etc.) to markdown links with #entity: href. */
 export function preprocessEntityIds(text: string): string {
-  return text.replace(ENTITY_ID_RE, (id) => `[${id}](${ENTITY_PREFIX}${id})`);
+  return text.replace(ENTITY_ID_RE, (id: string, _prefix: string, offset: number) => {
+    // Defense in depth: even if lookbehinds miss a case, never rewrite inside ](...).
+    if (isInsideMarkdownDestination(text, offset)) return id;
+    return `[${id}](${ENTITY_PREFIX}${id})`;
+  });
 }
 
 /** Detect PlantUML content by @startuml/@enduml markers */

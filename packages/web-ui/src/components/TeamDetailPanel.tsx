@@ -165,12 +165,9 @@ export function TeamDetailPanel({
                 const isActive = chatMode === 'direct' && selectedAgent === a.id;
                 const isManager = team.managerId === a.id;
                 const isStopped = a.status === 'offline';
-                const hasRecentError = a.status !== 'error' && !!a.lastError && !!a.lastErrorAt
-                  && (Date.now() - new Date(a.lastErrorAt).getTime()) < 30 * 60 * 1000;
-                const statusColor = a.status === 'idle' && !hasRecentError ? 'bg-green-500'
-                  : a.status === 'working' && !hasRecentError ? 'bg-blue-500 animate-pulse'
+                const statusColor = a.status === 'idle' ? 'bg-green-500'
+                  : a.status === 'working' ? 'bg-blue-500 animate-pulse'
                   : a.status === 'error' ? 'bg-red-500'
-                  : hasRecentError ? 'bg-amber-500'
                   : 'bg-gray-600';
 
                 return (

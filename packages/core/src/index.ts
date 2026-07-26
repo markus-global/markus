@@ -44,6 +44,20 @@ export { CodexResponsesProvider } from './llm/openai-codex.js';
 export { getEffectiveProxy, type EffectiveProxy, type ProxySource } from './llm/proxy-fetch.js';
 export { GoogleProvider } from './llm/google.js';
 export { OllamaProvider } from './llm/ollama.js';
+export { MarkusProvider, resolveMarkusRoute, clearMarkusModelListCache } from './llm/markus-provider.js';
+export type { MarkusRoute, MarkusRouteCatalogEntry, MarkusModelInfo } from './llm/markus-provider.js';
+export {
+  applyHubRecommendedRouting,
+  fetchHubRecommendations,
+  isGreenfieldLlmConfig,
+  isObsoleteMarkusModel,
+  recommendedUrlFromModelsUrl,
+  markusCatalogUrlFromHub,
+  isLegacyMarkusProxyBaseUrl,
+  RECOMMENDED_CAPABILITY_KEYS,
+  type HubRecommendations,
+  type ApplyRecommendedResult,
+} from './llm/hub-recommended-routing.js';
 export { AuthProfileStore } from './llm/auth-profiles.js';
 export { OAuthManager } from './llm/oauth-manager.js';
 export { ModelCatalogService } from './llm/model-catalog.js';
@@ -130,6 +144,9 @@ export {
   FileEditTool,
   WebFetchTool,
   WebSearchTool,
+  testSearchProvider,
+  resolveMarkusSearchProvider,
+  type MarkusSearchProviderId,
   createShellTool,
   createFileReadTool,
   createFileWriteTool,
@@ -257,5 +274,6 @@ export {
 } from './tools/chrome-dialog-clicker.js';
 export { MarkusBrowserBridge } from './tools/markus-browser-bridge.js';
 export { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/markus-browser-mcp.js';
+export type { EmbeddedBrowserHost, EmbeddedBrowserToolResult } from './tools/embedded-browser-host.js';
 export type { BrowserTestResult, BrowserTestStep, ChaosEvent, ChaosOpResult, ChaosStats, ChaosDone } from './tools/browser-test.js';
 export { getAdapter, getAllAdapters } from './coding-tools/index.js';

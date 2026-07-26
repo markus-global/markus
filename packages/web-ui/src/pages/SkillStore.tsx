@@ -1,9 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, hubApi, type HubItem } from '../api.ts';
+import { api, hubApi, ownsHubItem, type HubItem } from '../api.ts';
+import { AssetCard } from '../components/AssetCard.tsx';
+import { Masonry } from '../components/Masonry.tsx';
+import { iconForSkill } from '../lib/namedIcons.tsx';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
-import { installHubItem } from './TemplateMarketplace.tsx';
+import { installHubItem, purchaseAndInstall } from './TemplateMarketplace.tsx';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 
 interface InstalledSkill {
@@ -78,7 +81,7 @@ interface SkillsShSkill {
   description?: string;
 }
 
-type TabId = 'builtin' | 'skillhub' | 'skillssh' | 'markus-hub';
+type TabId = 'skills' | 'skillhub' | 'skillssh';
 
 const CATEGORY_COLORS: Record<string, string> = {
   development: 'bg-blue-500/15 text-blue-600',
@@ -98,9 +101,10 @@ const CATEGORY_COLORS: Record<string, string> = {
   '通讯协作': 'bg-green-500/15 text-green-600',
 };
 
-function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
+function HubSkillInstallButton({ item, installedSkills, purchased, onMsg, onRefresh }: {
   item: HubItem;
   installedSkills: InstalledSkill[];
+  purchased?: boolean;
   onMsg: (text: string, type: 'success' | 'error') => void;
   onRefresh: () => void;
 }) {
@@ -108,14 +112,17 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
   const [installing, setInstalling] = useState(false);
 
   const slug = item.name.toLowerCase().trim().replace(/\s+/g, '-').replace(/[\/\\:*?"<>|]+/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'unnamed';
-  const matchedSkill = installedSkills.find(s => s.name === item.name || s.name === slug);
+  const matchedSkill = installedSkills.find(s => s.name === item.name || s.name === slug || (!!item.slug && s.name === item.slug));
   const isInstalled = !!matchedSkill;
   const canUpgrade = isInstalled && item.version && matchedSkill?.version && isNewerVersion(item.version, matchedSkill.version);
   const isPaid = (item.priceCents ?? 0) > 0;
 
+  const [status, setStatus] = useState('');
+
   const handleInstall = async () => {
     if (installing) return;
     setInstalling(true);
+    setStatus('');
     try {
       await installHubItem(item);
       onMsg(canUpgrade ? `Upgraded ${item.name}` : `Installed ${item.name}`, 'success');
@@ -127,6 +134,28 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
       } else {
         onMsg(t('card.failed'), 'error');
       }
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const handleBuy = async () => {
+    if (installing) return;
+    setInstalling(true);
+    setStatus('');
+    try {
+      const result = await purchaseAndInstall(item, (s) => {
+        if (s === 'checkout_opened') setStatus(t('card.waitingPurchase', 'Waiting for purchase...'));
+        else if (s === 'installing') setStatus(t('card.installing'));
+      });
+      if (result === 'installed') {
+        onMsg(`Purchased & installed ${item.name}`, 'success');
+        onRefresh();
+      }
+      setStatus('');
+    } catch (err: unknown) {
+      onMsg(err instanceof Error ? err.message : t('card.failed'), 'error');
+      setStatus('');
     } finally {
       setInstalling(false);
     }
@@ -149,12 +178,15 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
     );
   }
 
-  if (isPaid) {
+  if (isPaid && !purchased) {
+    const priceLabel = `$${((item.priceCents ?? 0) / 100).toFixed(2)}`;
     return (
-      <a href={`${hubApi.getUrl()}/@${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
-        target="_blank" rel="noopener noreferrer"
-        className="px-2.5 py-1 text-[10px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg inline-flex items-center gap-1"
-      >{t('card.buy', { price: `$${((item.priceCents ?? 0) / 100).toFixed(2)}` })}</a>
+      <span className="inline-flex items-center gap-1.5">
+        <button onClick={() => void handleBuy()} disabled={installing}
+          className="px-2.5 py-1 text-[10px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg disabled:opacity-50 inline-flex items-center gap-1">
+          {installing ? (status || t('card.installing')) : <>{t('card.buy', 'Buy')} {priceLabel}</>}
+        </button>
+      </span>
     );
   }
 
@@ -166,13 +198,15 @@ function HubSkillInstallButton({ item, installedSkills, onMsg, onRefresh }: {
   );
 }
 
-function HubSkillCard({ item, installedSkills, onMsg, onRefresh, highlight, onHighlightDone }: {
+function HubSkillCard({ item, installedSkills, purchased, onMsg, onRefresh, highlight, onHighlightDone, type = 'skill' }: {
   item: HubItem;
   installedSkills: InstalledSkill[];
+  purchased?: boolean;
   onMsg: (text: string, type: 'success' | 'error') => void;
   onRefresh: () => void;
   highlight?: boolean;
   onHighlightDone?: () => void;
+  type?: string;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const [glowing, setGlowing] = useState(false);
@@ -190,54 +224,33 @@ function HubSkillCard({ item, installedSkills, onMsg, onRefresh, highlight, onHi
     ? `${hubApi.getUrl()}/@${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
     : null;
 
-  const iconIsEmoji = item.icon && !item.icon.startsWith('/') && !item.icon.startsWith('http');
-  const iconSrc = item.icon && (item.icon.startsWith('http') ? item.icon : item.icon.startsWith('/') ? `${hubApi.getUrl()}${item.icon}` : null);
-  const rating = Math.round(parseFloat(item.avgRating));
-
   const handleCardClick = () => {
     if (detailUrl) window.open(detailUrl, '_blank', 'noopener,noreferrer');
   };
 
   return (
-    <div ref={cardRef} onClick={handleCardClick} className={`group relative bg-surface-secondary rounded-xl overflow-hidden cursor-pointer transition-all duration-300 hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5 ${glowing ? 'ring-2 ring-brand-500 shadow-lg shadow-brand-500/20 animate-pulse' : ''}`}>
-      <div className={`absolute inset-0 rounded-xl border transition-colors duration-300 ${glowing ? 'border-brand-500/60' : 'border-border-default group-hover:border-brand-500/30'}`} />
-      <div className="relative p-5">
-        <div className="flex items-start gap-3 mb-3">
-          <div className="w-10 h-10 rounded-lg bg-surface-elevated/80 border border-border-default/50 flex items-center justify-center shrink-0 text-lg">
-            {iconSrc ? <img src={iconSrc} alt="" className="w-8 h-8 rounded object-cover" /> : iconIsEmoji ? item.icon : '\u{1F9E9}'}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold truncate group-hover:text-brand-400 transition-colors">{item.name}</h3>
-            </div>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[11px] text-fg-tertiary truncate">by {item.author?.displayName ?? item.author?.username}</span>
-              {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/15 text-brand-400 rounded-md border border-brand-500/10 shrink-0">v{item.version}</span>}
-            </div>
-          </div>
-        </div>
-
-        <p className="text-sm text-fg-secondary line-clamp-2 leading-relaxed mb-3">{item.description}</p>
-
-        {item.tags?.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {item.tags.slice(0, 3).map(tag => (
-              <span key={tag} className="px-2 py-0.5 text-[10px] bg-surface-elevated/80 text-fg-secondary rounded-md border border-border-default/50">{tag}</span>
-            ))}
-            {item.tags.length > 3 && <span className="px-1 text-[10px] text-fg-muted">+{item.tags.length - 3}</span>}
-          </div>
-        )}
-
-        <div className="flex items-center gap-3 text-xs text-fg-tertiary mb-3">
-          <span className="text-amber-500 tracking-tight">{'\u2605'.repeat(rating)}{'\u2606'.repeat(5 - rating)}</span>
-          <span className="text-fg-muted">({item.ratingCount})</span>
-          <span>{'\u2193'} {item.downloadCount}</span>
-        </div>
-
-        <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-default/50" onClick={e => e.stopPropagation()}>
-          <HubSkillInstallButton item={item} installedSkills={installedSkills} onMsg={onMsg} onRefresh={onRefresh} />
-        </div>
-      </div>
+    <div ref={cardRef} className={glowing ? 'animate-pulse' : ''}>
+      <AssetCard
+        type={type}
+        showTypeBadge={type !== 'skill'}
+        name={item.name}
+        description={item.description}
+        seed={item.slug || item.name}
+        icon={item.icon || iconForSkill(item.slug || item.name, item.category)}
+        cover={item.thumbnailUrl}
+        hubBase={hubApi.getUrl()}
+        author={item.author}
+        version={item.version}
+        category={item.category}
+        tags={item.tags}
+        rating={parseFloat(item.avgRating) || 0}
+        ratingCount={item.ratingCount}
+        downloadCount={item.downloadCount}
+        priceCents={item.priceCents}
+        currency={item.currency}
+        onClick={handleCardClick}
+        actions={<HubSkillInstallButton item={item} installedSkills={installedSkills} purchased={purchased} onMsg={onMsg} onRefresh={onRefresh} />}
+      />
     </div>
   );
 }
@@ -246,7 +259,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
   const { t, i18n } = useTranslation(['store', 'common']);
   const lang = i18n.language;
   const isMobile = useIsMobile();
-  const [tab, setTab] = useState<TabId>(highlightItemId ? 'markus-hub' : 'builtin');
+  const [tab, setTab] = useState<TabId>('skills');
   const [flash, setFlash] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [installing, setInstalling] = useState<Set<string>>(new Set());
 
@@ -270,14 +283,15 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
   const [loadingSkillssh, setLoadingSkillssh] = useState(false);
 
   const [hubSkills, setHubSkills] = useState<HubItem[]>([]);
+  const [connectorItems, setConnectorItems] = useState<HubItem[]>([]);
+  const [hubPurchasedIds, setHubPurchasedIds] = useState<Set<string>>(new Set());
   const [loadingHub, setLoadingHub] = useState(false);
   const [hubSearch, setHubSearch] = useState('');
 
   const TABS: Array<{ id: TabId; labelKey: string }> = [
-    { id: 'builtin', labelKey: 'skillStore.tabs.builtin' },
+    { id: 'skills', labelKey: 'skillStore.tabs.all' },
     { id: 'skillhub', labelKey: 'skillStore.tabs.skillhub' },
     { id: 'skillssh', labelKey: 'skillStore.tabs.skillssh' },
-    { id: 'markus-hub', labelKey: 'skillStore.tabs.markusHub' },
   ];
 
   const msg = (m: string, type: 'success' | 'error' = 'success') => {
@@ -333,14 +347,22 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
       const p = !q
         ? (consume<{ items: HubItem[] }>(PREFETCH_KEYS.hubSkills) ?? hubApi.search({ type: 'skill', limit: 50 }))
         : hubApi.search({ type: 'skill', q, limit: 50 });
-      const d = await p;
+      const cp = hubApi.search({ subtype: 'connector', q: q || undefined, limit: 50 }).catch(() => ({ items: [] as HubItem[] }));
+      const [d, c] = await Promise.all([
+        p,
+        cp,
+        hubApi.isAuthenticated()
+          ? hubApi.purchases.mine().then(r => setHubPurchasedIds(new Set(r.purchases.map(pp => pp.itemId)))).catch(() => {})
+          : Promise.resolve(),
+      ]);
       setHubSkills(d?.items ?? []);
+      setConnectorItems(c?.items ?? []);
     } catch { /* */ }
     setLoadingHub(false);
   }, []);
 
   useEffect(() => { loadInstalled(); loadBuiltin(); loadSkillhub(); loadSkillssh(); }, []);
-  useEffect(() => { if (tab === 'markus-hub') loadHubSkills(hubSearch); }, [tab, hubSearch, loadHubSkills]);
+  useEffect(() => { if (tab === 'skills') loadHubSkills(hubSearch); }, [tab, hubSearch, loadHubSkills]);
 
   const installSkillhub = async (skill: SkillHubSkill) => {
     setInstalling(prev => new Set(prev).add(skill.name));
@@ -538,93 +560,95 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
         }`}>{flash.text}</div>
       )}
 
-      {tab === 'builtin' && (
-        <div className={`flex-1 overflow-y-auto ${isMobile ? 'p-4' : 'p-6'}`}>
-          <div className="flex items-center gap-3 mb-5">
-            <span className="text-xs text-fg-tertiary">{t('skillStore.builtinCount', { count: builtinSkills.length })}</span>
-            <button onClick={() => void loadBuiltin()} className="text-xs text-brand-500 hover:text-brand-500 transition-colors">
-              {t('skillStore.refresh')}
-            </button>
+      {tab === 'skills' && (() => {
+        const q = hubSearch.trim().toLowerCase();
+        const filteredBuiltin = q
+          ? builtinSkills.filter(s => localizedBuiltinName(s, lang).toLowerCase().includes(q) || localizedBuiltinDesc(s, lang).toLowerCase().includes(q))
+          : builtinSkills;
+        const bothLoading = loadingBuiltin && loadingHub;
+        const bothEmpty = filteredBuiltin.length === 0 && hubSkills.length === 0 && connectorItems.length === 0;
+        return (
+          <div className={`flex-1 overflow-y-auto ${isMobile ? 'p-4' : 'p-6'} space-y-8`}>
+            <div className="flex items-center gap-2">
+              <input
+                value={hubSearch}
+                onChange={e => setHubSearch(e.target.value)}
+                placeholder={t('skillStore.searchMarkusHub')}
+                className={`px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none ${isMobile ? 'flex-1 min-w-0' : 'w-72'}`}
+              />
+            </div>
+
+            {bothLoading && bothEmpty ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-56 rounded-2xl skeleton" />)}
+              </div>
+            ) : bothEmpty ? (
+              <div className="text-center text-fg-tertiary py-20">
+                <div className="text-4xl mb-3 opacity-30">◇</div>
+                <div>{t('skillStore.noBuiltin')}</div>
+                <div className="text-xs mt-1">{t('skillStore.noBuiltinHint')}</div>
+              </div>
+            ) : (
+              <>
+                {filteredBuiltin.length > 0 && (
+                  <section>
+                    <div className="flex items-baseline gap-2 mb-3">
+                      <h3 className="section-title">{t('skillStore.tabs.builtin')}</h3>
+                      <span className="text-xs text-fg-tertiary">{t('skillStore.builtinCount', { count: filteredBuiltin.length })}</span>
+                    </div>
+                    <Masonry columns={3}>
+                      {filteredBuiltin.map(skill => (
+                        <AssetCard
+                          key={skill.name}
+                          type="skill"
+                          name={localizedBuiltinName(skill, lang)}
+                          description={localizedBuiltinDesc(skill, lang)}
+                          seed={skill.name}
+                          icon={iconForSkill(skill.name, skill.category)}
+                          version={skill.version}
+                          category={skill.category}
+                          tags={skill.tags}
+                          authorLabel={skill.author || undefined}
+                          installed={skill.installed}
+                          hideStats
+                          showTypeBadge={false}
+                          cornerLabel={skill.installed ? undefined : t('skillStore.tabs.builtin')}
+                          onClick={() => setSelectedBuiltin(skill)}
+                        />
+                      ))}
+                    </Masonry>
+                  </section>
+                )}
+
+                {hubSkills.length > 0 && (
+                  <section>
+                    <h3 className="section-title mb-3">{t('skillStore.tabs.markusHub')}</h3>
+                    <Masonry columns={3}>
+                      {hubSkills.map(item => (
+                        <HubSkillCard key={item.id} item={item} installedSkills={installed} purchased={ownsHubItem(item, hubPurchasedIds)} onMsg={msg} onRefresh={() => { void loadInstalled(); void loadHubSkills(hubSearch); }} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} />
+                      ))}
+                    </Masonry>
+                  </section>
+                )}
+
+                {connectorItems.length > 0 && (
+                  <section>
+                    <div className="mb-3">
+                      <h3 className="section-title">{t('tabs.connectors')}</h3>
+                      <p className="text-xs text-fg-tertiary mt-0.5">{t('connectorStore.emptyHint', '连接器让智能体接入外部工具与服务 (MCP)')}</p>
+                    </div>
+                    <Masonry columns={3}>
+                      {connectorItems.map(item => (
+                        <HubSkillCard key={item.id} item={item} type="connector" installedSkills={installed} purchased={ownsHubItem(item, hubPurchasedIds)} onMsg={msg} onRefresh={() => { void loadInstalled(); void loadHubSkills(hubSearch); }} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} />
+                      ))}
+                    </Masonry>
+                  </section>
+                )}
+              </>
+            )}
           </div>
-
-          {loadingBuiltin ? (
-            <div className="text-center text-fg-tertiary py-20"><div className="animate-pulse">{t('skillStore.loadingBuiltin')}</div></div>
-          ) : builtinSkills.length === 0 ? (
-            <div className="text-center text-fg-tertiary py-20">
-              <div className="text-4xl mb-3 opacity-30">◇</div>
-              <div>{t('skillStore.noBuiltin')}</div>
-              <div className="text-xs mt-1">{t('skillStore.noBuiltinHint')}</div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {builtinSkills.map(skill => (
-                <div key={skill.name} onClick={() => setSelectedBuiltin(skill)}
-                  className="group relative bg-surface-secondary rounded-xl cursor-pointer transition-all duration-300 overflow-hidden hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5">
-                  <div className="absolute inset-0 rounded-xl border transition-colors duration-300 border-border-default group-hover:border-brand-500/30" />
-                  <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-green-500/40 to-transparent transition-opacity duration-300 opacity-0 group-hover:opacity-100" />
-                  <div className="relative p-5">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <div className="font-semibold text-sm truncate group-hover:text-brand-400 transition-colors">{localizedBuiltinName(skill, lang)}</div>
-                          {skill.hasMcpServers && (
-                            <span className="px-1.5 py-0.5 rounded text-[9px] bg-blue-500/15 text-blue-600 shrink-0">MCP</span>
-                          )}
-                        </div>
-                        <div className="text-xs text-fg-tertiary mt-0.5">
-                          {skill.author ? `by ${skill.author} · ` : ''}v{skill.version}
-                        </div>
-                      </div>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${CATEGORY_COLORS[skill.category ?? ''] ?? 'bg-gray-500/15 text-fg-secondary'} capitalize shrink-0 ml-2`}>
-                        {skill.category ?? 'custom'}
-                      </span>
-                    </div>
-
-                    <p className="text-sm text-fg-secondary mt-2 line-clamp-2">{localizedBuiltinDesc(skill, lang)}</p>
-
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {skill.tags.slice(0, 4).map(tg => <span key={tg} className="px-2 py-0.5 text-[10px] bg-surface-elevated text-fg-tertiary rounded-full">{tg}</span>)}
-                    </div>
-
-                    {skill.requiredPermissions.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {skill.requiredPermissions.map(p => (
-                          <span key={p} className="px-1.5 py-0.5 text-[9px] bg-amber-500/10 text-amber-500 rounded">{p}</span>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="mt-3 pt-2 border-t border-border-default/50 flex items-center justify-between" onClick={e => e.stopPropagation()}>
-                      {skill.installed && skill.installedVersion ? (
-                        <span className="text-[10px] text-fg-tertiary">v{skill.installedVersion}</span>
-                      ) : <span />}
-                      {skill.installed && skill.installedVersion && isNewerVersion(skill.version, skill.installedVersion) ? (
-                        <button
-                          onClick={() => void installBuiltin(skill)}
-                          disabled={installing.has(skill.name)}
-                          className="px-2.5 py-1 text-[10px] bg-amber-600 hover:bg-amber-500 text-white rounded-lg disabled:opacity-50 transition-colors"
-                        >
-                          {installing.has(skill.name) ? t('card.upgrading') : t('card.upgrade', { version: skill.version })}
-                        </button>
-                      ) : skill.installed ? (
-                        <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-fg-secondary rounded-lg">{t('card.installed')}</span>
-                      ) : (
-                        <button
-                          onClick={() => void installBuiltin(skill)}
-                          disabled={installing.has(skill.name)}
-                          className="px-2.5 py-1 text-[10px] bg-green-600 hover:bg-green-500 text-white rounded-lg disabled:opacity-50 transition-colors"
-                        >
-                          {installing.has(skill.name) ? t('card.installing') : t('card.install')}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {tab === 'skillhub' && (
         <div className={`flex-1 overflow-y-auto ${isMobile ? 'p-4' : 'p-6'}`}>
@@ -677,45 +701,43 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
           ) : (
             <>
               <div className="text-xs text-fg-tertiary mb-3">{t('skillStore.skillhubTotal', { count: skillhubTotal.toLocaleString() })}</div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <Masonry columns={3}>
                 {skillhubSkills.map(skill => {
                   const isInst = installed.some(s => s.name === skill.name || s.name === skill.slug);
                   return (
-                    <div key={skill.slug} className="bg-surface-elevated rounded-xl p-5 hover:bg-surface-overlay transition-colors">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1 min-w-0">
-                          <div className="font-semibold text-sm truncate">{skill.name}</div>
-                          <div className="text-xs text-fg-tertiary mt-0.5">v{skill.version}</div>
-                        </div>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 ml-2 ${skill.tags?.[0] ? (CATEGORY_COLORS[skill.tags[0]] ?? 'bg-brand-500/15 text-brand-500') : 'bg-brand-500/15 text-brand-500'}`}>
-                          {skill.tags?.[0] ?? 'SkillHub'}
+                    <AssetCard
+                      key={skill.slug}
+                      type="skill"
+                      name={skill.name}
+                      description={skill.description_zh ?? skill.description ?? ''}
+                      seed={skill.slug}
+                      icon={iconForSkill(skill.slug || skill.name, skill.tags?.[0])}
+                      version={skill.version}
+                      authorLabel="SkillHub"
+                      showTypeBadge={false}
+                      tags={skill.tags}
+                      installed={isInst}
+                      hideStats
+                      onClick={() => window.open(skill.homepage, '_blank', 'noopener,noreferrer')}
+                      footerLeft={
+                        <span className="flex items-center gap-2 text-[10px] text-fg-tertiary">
+                          {skill.stars > 0 && <span className="text-amber-600">★ {skill.stars.toLocaleString()}</span>}
+                          {skill.downloads > 0 && <span>{skill.downloads >= 10000 ? `${(skill.downloads / 10000).toFixed(1)}万` : skill.downloads.toLocaleString()} {t('skillStore.downloads')}</span>}
                         </span>
-                      </div>
-                      <p className="text-sm text-fg-secondary mt-2 line-clamp-2">{skill.description_zh ?? skill.description ?? 'No description'}</p>
-                      <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          {skill.stars > 0 && <span className="text-[10px] text-amber-600">★ {skill.stars.toLocaleString()}</span>}
-                          {skill.downloads > 0 && <span className="text-[10px] text-fg-tertiary">{skill.downloads >= 10000 ? `${(skill.downloads / 10000).toFixed(1)}万` : skill.downloads.toLocaleString()} {t('skillStore.downloads')}</span>}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <a href={skill.homepage} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-500 hover:text-brand-500">{t('card.view')}</a>
-                          {isInst ? (
-                            <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-fg-secondary rounded-lg">{t('card.installed')}</span>
-                          ) : (
-                            <button
-                              onClick={() => void installSkillhub(skill)}
-                              disabled={installing.has(skill.name)}
-                              className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50"
-                            >
-                              {installing.has(skill.name) ? '...' : t('card.install')}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
+                      }
+                      actions={isInst ? undefined : (
+                        <button
+                          onClick={() => void installSkillhub(skill)}
+                          disabled={installing.has(skill.name)}
+                          className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50"
+                        >
+                          {installing.has(skill.name) ? '...' : t('card.install')}
+                        </button>
+                      )}
+                    />
                   );
                 })}
-              </div>
+              </Masonry>
               {skillhubTotal > 24 && (
                 <div className="flex items-center justify-center gap-2 mt-6">
                   <button
@@ -768,75 +790,41 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
               <div className="text-xs mt-1">{t('skillStore.browseSkillsshHint')}</div>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <Masonry columns={3}>
               {filteredSkillssh.map(skill => {
                 const isInst = installed.some(s => s.name === skill.name);
                 return (
-                  <div key={`${skill.author}-${skill.name}`} className="bg-surface-elevated rounded-xl p-5 hover:bg-surface-overlay transition-colors">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-sm truncate">{skill.name}</div>
-                        <div className="text-xs text-fg-tertiary mt-0.5">{skill.author} / {skill.repo}</div>
-                      </div>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/15 text-fg-secondary shrink-0 ml-2">skills.sh</span>
-                    </div>
-                    <p className="text-sm text-fg-secondary mt-2 line-clamp-2">{skill.description || 'No description'}</p>
-                    <div className="mt-2 pt-2 border-t border-border-default flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        {skill.installs && <span className="text-[10px] text-fg-tertiary">{skill.installs} installs</span>}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <a href={skill.url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-500 hover:text-brand-500">{t('card.view')}</a>
-                        {isInst ? (
-                          <span className="px-2.5 py-1 text-[10px] bg-surface-overlay text-fg-secondary rounded-lg">{t('card.installed')}</span>
-                        ) : (
-                          <button
-                            onClick={() => void installSkillssh(skill)}
-                            disabled={installing.has(skill.name)}
-                            className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50"
-                          >
-                            {installing.has(skill.name) ? '...' : t('card.install')}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+                  <AssetCard
+                    key={`${skill.author}-${skill.name}`}
+                    type="skill"
+                    name={skill.name}
+                    description={skill.description || ''}
+                    seed={`${skill.author}-${skill.name}`}
+                    icon={iconForSkill(skill.name)}
+                    authorLabel={`${skill.author}/${skill.repo}`}
+                    showTypeBadge={false}
+                    installed={isInst}
+                    hideStats
+                    cornerLabel={isInst ? undefined : 'skills.sh'}
+                    onClick={() => window.open(skill.url, '_blank', 'noopener,noreferrer')}
+                    footerLeft={skill.installs ? <span className="text-[10px] text-fg-tertiary">{skill.installs} installs</span> : undefined}
+                    actions={isInst ? undefined : (
+                      <button
+                        onClick={() => void installSkillssh(skill)}
+                        disabled={installing.has(skill.name)}
+                        className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50"
+                      >
+                        {installing.has(skill.name) ? '...' : t('card.install')}
+                      </button>
+                    )}
+                  />
                 );
               })}
-            </div>
+            </Masonry>
           )}
         </div>
       )}
 
-      {tab === 'markus-hub' && (
-        <div className={`flex-1 overflow-y-auto ${isMobile ? 'p-4' : 'p-6'}`}>
-          <div className="flex items-center gap-2 mb-5">
-            <input
-              value={hubSearch}
-              onChange={e => setHubSearch(e.target.value)}
-              placeholder={t('skillStore.searchMarkusHub')}
-              className={`px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none ${isMobile ? 'flex-1 min-w-0' : 'w-72'}`}
-            />
-            {!isMobile && <span className="text-xs text-fg-tertiary ml-auto">{t('skillStore.communitySkills')}</span>}
-          </div>
-
-          {loadingHub ? (
-            <div className="text-center text-fg-tertiary py-20"><div className="animate-pulse">{t('skillStore.loadingHub')}</div></div>
-          ) : hubSkills.length === 0 ? (
-            <div className="text-center text-fg-tertiary py-20">
-              <div className="text-4xl mb-3">🏪</div>
-              <div>{t('skillStore.noHub')}</div>
-              <div className="text-xs mt-1">{t('skillStore.noHubHint')}</div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {hubSkills.map(item => (
-                <HubSkillCard key={item.id} item={item} installedSkills={installed} onMsg={msg} onRefresh={() => void loadInstalled()} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }

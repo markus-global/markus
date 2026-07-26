@@ -218,12 +218,17 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           return JSON.stringify({ status: 'deleted', removed });
         }
 
+        let writeResult: { ok: boolean; reason?: string };
         if (mode === 'patch') {
           const existing = ctx.memory.getLongTermSection(section);
           const merged = existing ? `${existing}\n${content}` : content;
-          ctx.memory.addLongTermMemory(section, merged);
+          writeResult = ctx.memory.addLongTermMemory(section, merged);
         } else {
-          ctx.memory.addLongTermMemory(section, content);
+          writeResult = ctx.memory.addLongTermMemory(section, content);
+        }
+        if (!writeResult.ok) {
+          log.warn('Agent long-term memory write refused', { agentId: ctx.agentId, section, mode, reason: writeResult.reason });
+          return JSON.stringify({ status: 'error', ok: false, error: writeResult.reason ?? 'MEMORY.md write refused', section, mode });
         }
         log.info('Agent updated long-term memory', { agentId: ctx.agentId, section, mode, contentLen: content.length });
         return JSON.stringify({ status: 'updated', section, mode });
@@ -292,11 +297,15 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         const section = args['section'] as string;
         const content = args['content'] as string;
         const mode = (args['mode'] as string) ?? 'replace';
+        let writeResult: { ok: boolean; reason?: string };
         if (mode === 'patch') {
           const existing = ctx.memory.getLongTermSection(section);
-          ctx.memory.addLongTermMemory(section, existing ? `${existing}\n${content}` : content);
+          writeResult = ctx.memory.addLongTermMemory(section, existing ? `${existing}\n${content}` : content);
         } else {
-          ctx.memory.addLongTermMemory(section, content);
+          writeResult = ctx.memory.addLongTermMemory(section, content);
+        }
+        if (!writeResult.ok) {
+          return JSON.stringify({ status: 'error', ok: false, error: writeResult.reason ?? 'MEMORY.md write refused', section, mode });
         }
         return JSON.stringify({ status: 'updated', section, mode });
       },

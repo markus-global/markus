@@ -17,7 +17,7 @@ This skill teaches you how to create Markus team packages — self-contained dir
 
 ```
 ~/.markus/builder-artifacts/teams/{team-name}/
-├── team.json                    # Manifest (auto-created from your JSON output)
+├── team.json                    # Manifest (you write via file_write)
 ├── README.md                    # Public-facing team overview for Hub/Builder (REQUIRED)
 ├── ANNOUNCEMENT.md              # Team announcement (you write via file_write)
 ├── NORMS.md                     # Working norms (you write via file_write)
@@ -36,7 +36,25 @@ This skill teaches you how to create Markus team packages — self-contained dir
         └── CONTEXT.md           # Domain context and references (optional)
 ```
 
-**Do NOT write artifacts to `~/.markus/shared/`, your working directory, or any other location.** Only `~/.markus/builder-artifacts/teams/` is recognized by the system.
+**Do NOT write artifacts to `~/.markus/shared/`, your agent `workspace/`, or any other location.** Only `~/.markus/builder-artifacts/teams/` is recognized by `package_list` / `package_install`. The `agents/`, `teams/`, and `skills/` subdirs are created automatically at startup — still write files yourself with `file_write`.
+
+## Package Slug (`name`) — REQUIRED
+
+The manifest `name` is the **package slug**: directory name, Hub URL segment (`/@user/{slug}`), and share/publish id.
+
+**Rules (hard — invalid manifests are rejected on write / save / share):**
+- English **kebab-case** only: lowercase letters `a-z`, digits `0-9`, hyphens `-`
+- 2–64 characters; must **start with a letter**
+- Pattern examples: `frontend-squad`, `research-team`, `think-tank-research`
+- **NOT allowed**: Chinese (`智库研究团队`), spaces, underscores, UPPERCASE, emoji, or empty
+- Put the human-readable title (any language) in **`displayName`**, never in `name`
+
+| User language | `name` (slug) | `displayName` |
+|---|---|---|
+| Chinese “智库研究团队” | `think-tank-research` | `智库研究团队` |
+| English “Frontend Squad” | `frontend-squad` | `Frontend Squad` |
+
+If the user only gives a Chinese title, **you invent an English kebab slug** that captures the meaning, set `displayName` to their title, and use the slug for `~/.markus/builder-artifacts/teams/{name}/`. Member folder slugs under `members/` must also be English kebab-case.
 
 ### Where files are deployed on install
 
@@ -52,18 +70,19 @@ This skill teaches you how to create Markus team packages — self-contained dir
 
 ## Creation Workflow
 
-Output the team in up to three steps — manifest first, then content files, then optional workflow YAML. **Never put file content inline in the JSON.**
+Write the team in up to three steps — manifest first, then content files, then optional workflow YAML. **Never put file content inline in the JSON.**
 
-### Chat Mode vs Task Mode
+### All modes (chat / task / A2A) — same rule
 
-- **Chat mode** (user conversation): Output the manifest JSON in a ```json code block → system auto-saves and creates the directory → then use `file_write` for each content file.
-- **Task mode** (assigned task): Use `file_write` to write the manifest JSON file directly (e.g., `file_write("~/.markus/builder-artifacts/teams/{name}/team.json", ...)`) → then use `file_write` for each content file. When submitting deliverables, set the reference to the artifact directory path.
-- **A2A mode** (agent-to-agent): Same as task mode — write all files via `file_write`.
+There is **no** chat auto-save. A JSON code block in your reply does **not** create files.
 
-### Step 1: Output Manifest JSON
+1. `file_write("~/.markus/builder-artifacts/teams/{name}/team.json", ...)` for the manifest
+2. `file_write` for each content file (README, ANNOUNCEMENT, NORMS, member ROLE.md, …)
+3. In task mode, set deliverable references to the artifact directory path
 
-**In chat mode**: Output the team structure as a JSON code block. The system auto-saves it.
-**In task/A2A mode**: Write the manifest JSON file directly via `file_write`.
+You may show the user a preview JSON in chat **in addition to** writing files — never instead of `file_write`.
+
+### Step 1: Write Manifest JSON via file_write
 
 This JSON contains ONLY metadata and structure — **no file content**.
 
@@ -103,7 +122,7 @@ This JSON contains ONLY metadata and structure — **no file content**.
 }
 ```
 
-The system automatically saves this JSON and creates the directory. After that, you proceed to write files.
+After `team.json` is written, proceed to write the remaining files with `file_write`.
 
 ### Step 2: Write Files with file_write
 
@@ -224,7 +243,7 @@ For the full YAML format reference, DAG patterns, scheduling, and more examples,
 
 ### Top-level fields
 - **`type`**: Always `"team"`
-- **`name`**: **MUST be English kebab-case** (e.g., `frontend-squad`, `research-team`). Even for Chinese teams, use English slug.
+- **`name`**: **Package slug** — English kebab-case only (see [Package Slug](#package-slug-name--required)). Write/save/share reject Chinese or invalid slugs.
 - **`displayName`**: Human-readable name, any language (e.g., `"前端开发小队"`)
 - **`version`**: Semver (default `"1.0.0"`)
 - **`description`**: Team purpose (any language)
@@ -266,7 +285,7 @@ Once all files are written, tell the user:
 - **DO NOT** leave skills empty when relevant skills are available. Review the skills list!
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
 - **DO NOT** write artifacts to `~/.markus/shared/` or your working directory. Always use `~/.markus/builder-artifacts/teams/{name}/`.
-- **The `name` field MUST be English kebab-case**.
+- **The `name` field MUST be a valid English kebab-case slug** (see Package Slug). Never use Chinese as `name`. Invalid `name` → write/save/share fails.
 - **All top-level fields must be the correct type**: `author` must be a plain string (e.g. `"John"`) — NOT an object. `tags` must be an array of strings. `version` must be semver string. `description` must be a string. The system validates the manifest on write and will reject malformed files.
 - Every team MUST have exactly **one** member with `"role": "manager"` and at least **one** `"worker"`.
 - Write each ROLE.md with **full attention** — at least 5 substantive paragraphs per member.

@@ -14,6 +14,41 @@ function rmdir(dir: string) {
 }
 
 // =============================================================================
+// Long-term MEMORY.md: write result / refusal (B1)
+// =============================================================================
+
+describe('MemoryStore — addLongTermMemory result (B1)', () => {
+  let tmp: string;
+  let store: MemoryStore;
+
+  beforeEach(() => {
+    tmp = makeTempDir();
+    store = new MemoryStore(tmp);
+  });
+  afterEach(() => rmdir(tmp));
+
+  it('returns { ok: true } on a normal write', () => {
+    const res = store.addLongTermMemory('Project Facts', 'The build tool is pnpm.');
+    expect(res).toEqual({ ok: true });
+  });
+
+  it('returns { ok: false, reason } when MEMORY.md is full (refused write)', () => {
+    // Each section is capped at 3000 chars; total cap is 15000. Fill past the total
+    // so a later write is refused (compression cannot free capped sections).
+    const big = 'x'.repeat(3000);
+    let refused: { ok: boolean; reason?: string } | undefined;
+    for (let i = 0; i < 12; i++) {
+      const res = store.addLongTermMemory(`Section ${i}`, big);
+      if (!res.ok) { refused = res; break; }
+    }
+    expect(refused).toBeDefined();
+    expect(refused!.ok).toBe(false);
+    expect(typeof refused!.reason).toBe('string');
+    expect(refused!.reason!.length).toBeGreaterThan(0);
+  });
+});
+
+// =============================================================================
 // Semantic Memory: Observation Buffer (memories.json)
 // =============================================================================
 
@@ -452,13 +487,14 @@ describe('MemoryStore — Audit trail: daily-logs', () => {
     expect(messages[0].content).toContain('summary');
   });
 
-  it('checkAndCompact auto-compacts sessions exceeding message threshold', () => {
+  it('checkAndCompact does not drop turns at moderate message counts', () => {
     const session = store.createSession('agent-1');
     for (let i = 0; i < 62; i++) {
       store.appendMessage(session.id, { role: 'user', content: `msg ${i}` });
     }
+    // Storage compact is a high-volume safety net only — keep full transcript.
     const remaining = store.getRecentMessages(session.id, 100);
-    expect(remaining.length).toBeLessThan(62);
-    expect(String(remaining[0]?.content ?? '')).toContain('summary');
+    expect(remaining.length).toBe(62);
+    expect(String(remaining[0]?.content ?? '')).not.toContain('summary');
   });
 });

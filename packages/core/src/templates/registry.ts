@@ -1,4 +1,4 @@
-import { createLogger } from '@markus/shared';
+import { createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS } from '@markus/shared';
 import type { AgentTemplate, TemplateSearchQuery, TemplateSearchResult, TemplateSource } from './types.js';
 
 const log = createLogger('template-registry');
@@ -151,7 +151,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       skills: [],
       tags: ['management', 'planning', 'coordination', 'tracking'],
       category: 'management',
-      heartbeatIntervalMs: 15 * 60 * 1000,
+      heartbeatIntervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
       icon: 'clipboard',
       i18n: { 'zh-CN': { name: '项目经理', description: '管理任务、协调团队成员、跟踪进度，确保项目里程碑按时完成。' } },
     },
@@ -302,7 +302,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       skills: [],
       tags: ['operations', 'process', 'efficiency', 'coordination'],
       category: 'management',
-      heartbeatIntervalMs: 15 * 60 * 1000,
+      heartbeatIntervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
       icon: 'settings',
       i18n: { 'zh-CN': { name: '运营经理', description: '监督日常运营、流程优化、资源调配和跨部门协调。' } },
     },
@@ -318,7 +318,7 @@ export function createDefaultTemplateRegistry(): TemplateRegistry {
       skills: [],
       tags: ['product', 'strategy', 'roadmap', 'user-research'],
       category: 'management',
-      heartbeatIntervalMs: 15 * 60 * 1000,
+      heartbeatIntervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
       icon: 'target',
       i18n: { 'zh-CN': { name: '产品经理', description: '产品策略、路线图规划、用户研究、功能优先级排序和利益相关者沟通。' } },
     },

@@ -4,18 +4,29 @@ import { TemplateMarketplace } from './TemplateMarketplace.tsx';
 import { TeamsStore } from './TeamsStore.tsx';
 import { SkillStore } from './SkillStore.tsx';
 import { InstalledStore } from './InstalledStore.tsx';
+import { StoreDiscovery } from './StoreDiscovery.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import type { AuthUser } from '../api.ts';
+import type { AssetType } from '../lib/assetIdentity.ts';
 
-const tabs = [{ id: 'agents' }, { id: 'teams' }, { id: 'skills' }, { id: 'installed' }] as const;
+const tabs = [{ id: 'discover' }, { id: 'agents' }, { id: 'teams' }, { id: 'skills' }, { id: 'installed' }] as const;
 
 type TabId = (typeof tabs)[number]['id'];
 
-const TYPE_TO_TAB: Record<string, TabId> = { agent: 'agents', team: 'teams', skill: 'skills' };
+// Connectors are a subtype of skill, so they live inside the Skills tab.
+const TYPE_TO_TAB: Record<string, TabId> = { agent: 'agents', team: 'teams', skill: 'skills', connector: 'skills' };
+
+const TAB_ICONS: Record<TabId, string> = {
+  discover: 'M12 2l2.4 6.9L21 9l-5.4 4 2 7-5.6-4.1L6.4 20l2-7L3 9l6.6-.1z',
+  agents: 'M12 2a5 5 0 015 5v1a5 5 0 01-10 0V7a5 5 0 015-5zM4 21a8 8 0 0116 0z',
+  teams: 'M16 11a4 4 0 10-4-4 4 4 0 004 4zM8 13a3 3 0 10-3-3 3 3 0 003 3zm0 2c-2.7 0-5 1.3-5 3v2h7v-2c0-.7.2-1.3.6-1.9A7.6 7.6 0 008 15zm8 0c-3 0-6 1.5-6 3.5V21h12v-2.5c0-2-3-3.5-6-3.5z',
+  skills: 'M13 2L3 14h7l-1 8 10-12h-7z',
+  installed: 'M12 3v12m0 0l-4-4m4 4l4-4M5 21h14',
+};
 
 function isValidTab(v: string | null): v is TabId {
-  return v === 'agents' || v === 'teams' || v === 'skills' || v === 'installed';
+  return v === 'discover' || v === 'agents' || v === 'teams' || v === 'skills' || v === 'installed';
 }
 
 function readInitialState(): { tab: TabId; installId: string | null } {
@@ -40,7 +51,7 @@ function readInitialState(): { tab: TabId; installId: string | null } {
     return { tab, installId: id };
   }
 
-  const tab: TabId = isValidTab(lsTab) ? lsTab : 'agents';
+  const tab: TabId = isValidTab(lsTab) ? lsTab : 'discover';
   return { tab, installId: null };
 }
 
@@ -72,8 +83,15 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
     return () => window.removeEventListener('markus:navigate', handler);
   }, []);
 
+  const openType = (type: AssetType, itemId?: string) => {
+    const tab = TYPE_TO_TAB[type] ?? 'agents';
+    if (itemId) setHighlightItemId(itemId);
+    setActiveTab(tab);
+  };
+
   const renderContent = () => (
     <>
+      {activeTab === 'discover' && <StoreDiscovery onOpenType={openType} />}
       {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
       {activeTab === 'teams' && <TeamsStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
       {activeTab === 'skills' && <SkillStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
@@ -84,12 +102,12 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
   if (isMobile) {
     return (
       <div className="flex-1 overflow-hidden flex flex-col" onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd}>
-        <div className="flex shrink-0">
+        <div className="flex shrink-0 overflow-x-auto scrollbar-hide">
           {tabs.map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 min-w-0 px-4 py-3 text-sm font-medium text-center whitespace-nowrap transition-colors border-b-2 ${
+              className={`flex-1 min-w-fit px-4 py-3 text-sm font-medium text-center whitespace-nowrap transition-colors border-b-2 ${
                 activeTab === tab.id
                   ? 'border-brand-500 text-brand-500'
                   : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
@@ -122,6 +140,9 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
                 : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
             }`}
           >
+            <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d={TAB_ICONS[tab.id]} />
+            </svg>
             {t(`tabs.${tab.id}`)}
           </button>
         ))}

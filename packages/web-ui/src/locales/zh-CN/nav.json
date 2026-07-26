@@ -1,30 +1,42 @@
 {
-  "home": "首页",
+  "home": "概览",
   "team": "团队",
-  "work": "工作",
-  "store": "商店",
-  "builder": "创建",
-  "deliverables": "交付",
+  "work": "任务",
+  "store": "探索",
+  "builder": "资产",
+  "deliverables": "产出",
   "reports": "报告",
   "notifications": "通知",
   "settings": "设置",
   "sections": {
     "quick": "",
     "workspace": "工作区",
-    "build": "资产",
+    "build": "创作",
     "system": "系统"
   },
   "sidebar": {
     "collapseSidebar": "收起侧边栏",
     "expandSidebar": "展开侧边栏",
-    "signOut": "退出登录",
+    "signOut": "登出",
     "newProject": "新建项目",
     "createFirstProject": "创建你的第一个项目",
-    "showAllProjects": "显示全部 {{count}} 个项目..."
+    "showAllProjects": "显示全部 {{count}} 个项目...",
+    "hubConnected": "Hub 已连接",
+    "hubConnectedAs": "Hub：@{{username}}",
+    "hubDisconnected": "Hub 未连接",
+    "hubAccountMismatch": "本地用户与 Hub 账号不一致 — 积分以 Hub 为准（@{{username}}）",
+    "hubLogin": "登录",
+    "hubLoginShort": "登录",
+    "hubConnecting": "…",
+    "hubShort": "Hub",
+    "hubAccount": "账户"
   },
   "tabs": {
+    "create": "创建",
+    "discover": "发现",
     "agents": "智能体",
     "teams": "团队",
-    "skills": "技能"
+    "skills": "技能",
+    "installed": "已安装"
   }
 }

@@ -17,6 +17,22 @@ export interface TaskMetrics {
   averageCompletionTimeMs: number;
 }
 
+/**
+ * C2: harness-discipline signals. The existing counters cover cost/throughput but not
+ * whether context packing, completion-marker discipline, and prompt caching are actually
+ * holding. These are measurement-only (they never change agent behavior).
+ */
+export interface HarnessHealthMetrics {
+  /** How often per-call context packing had to compress (over budget). */
+  compressionCount: number;
+  /** Share of non-chat turns that finished without a completion marker (0-1). */
+  markerFailureRate: number;
+  /** Prompt cache-hit rate from provider usage where reported (0-1). */
+  cacheHitRate: number;
+  /** USD cost attributed per completed turn (0 when no USD cost is reported). */
+  perTurnCostUsd: number;
+}
+
 export interface AgentMetricsSnapshot {
   agentId: string;
   period: '1h' | '24h' | '7d';
@@ -32,6 +48,9 @@ export interface AgentMetricsSnapshot {
 
   totalInteractions: number;
   uptime: number;
+
+  /** C2: harness-discipline signals (compression / marker / cache / per-turn cost). */
+  harness: HarnessHealthMetrics;
 }
 
 interface AuditCounters {
@@ -40,6 +59,8 @@ interface AuditCounters {
   completionTokens: number;
   estimatedCost: number;
   costToday: number;
+  totalCuUsed: number;
+  cuUsedToday: number;
   requestCount: number;
   toolCalls: number;
   errorCount: number;
@@ -50,16 +71,27 @@ interface AuditCounters {
   requestsToday: number;
   toolCallsToday: number;
   todayCutoffDate: string;
+  // C2: harness-health raw counters (measurement only).
+  compressionCount: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  turnsCompleted: number;
+  nonChatTurns: number;
+  markerMissTurns: number;
 }
 
 function freshCounters(): AuditCounters {
   return {
     totalTokens: 0, promptTokens: 0, completionTokens: 0,
     estimatedCost: 0, costToday: 0,
+    totalCuUsed: 0, cuUsedToday: 0,
     requestCount: 0, toolCalls: 0, errorCount: 0,
     totalEvents: 0, totalLlmDurationMs: 0, lastSuccessTimestamp: 0,
     tokensToday: 0, requestsToday: 0, toolCallsToday: 0,
     todayCutoffDate: new Date().toISOString().slice(0, 10),
+    compressionCount: 0,
+    cacheReadTokens: 0, cacheWriteTokens: 0,
+    turnsCompleted: 0, nonChatTurns: 0, markerMissTurns: 0,
   };
 }
 
@@ -108,7 +140,10 @@ export class AgentMetricsCollector {
     tokensUsed?: number;
     inputTokens?: number;
     outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
     cost?: number;
+    cuCost?: number;
     durationMs?: number;
     success: boolean;
     detail?: string;
@@ -120,6 +155,7 @@ export class AgentMetricsCollector {
       c.requestsToday = 0;
       c.toolCallsToday = 0;
       c.costToday = 0;
+      c.cuUsedToday = 0;
       c.todayCutoffDate = today;
     }
 
@@ -139,6 +175,13 @@ export class AgentMetricsCollector {
       c.requestCount++;
       c.tokensToday += tokens;
       c.requestsToday++;
+      if (event.cuCost) {
+        c.totalCuUsed += event.cuCost;
+        c.cuUsedToday += event.cuCost;
+      }
+      // C2: prompt cache accounting (provider-reported; may be absent).
+      if (event.cacheReadTokens) c.cacheReadTokens += event.cacheReadTokens;
+      if (event.cacheWriteTokens) c.cacheWriteTokens += event.cacheWriteTokens;
       if (event.durationMs) c.totalLlmDurationMs += event.durationMs;
     } else if (event.type === 'tool_call') {
       c.toolCalls++;
@@ -172,6 +215,28 @@ export class AgentMetricsCollector {
     this.scheduleSave();
   }
 
+  /** C2: a per-call context pack had to compress (was over budget). */
+  recordCompression(): void {
+    this.counters.compressionCount++;
+    this.scheduleSave();
+  }
+
+  /**
+   * C2: a mailbox turn completed. Non-chat turns are expected to end with a completion
+   * marker; missing markers on those turns feed the marker-failure rate. Chat turns are
+   * excluded (a human is reading the reply, no marker protocol applies).
+   */
+  recordTurn(opts: { isChat: boolean; hadCompletionMarker: boolean; costUsd?: number }): void {
+    const c = this.counters;
+    c.turnsCompleted++;
+    if (opts.costUsd) c.estimatedCost += opts.costUsd;
+    if (!opts.isChat) {
+      c.nonChatTurns++;
+      if (!opts.hadCompletionMarker) c.markerMissTurns++;
+    }
+    this.scheduleSave();
+  }
+
   getMetrics(period: '1h' | '24h' | '7d' = '24h'): AgentMetricsSnapshot {
     const cutoff = this.periodCutoff(period);
     const c = this.counters;
@@ -185,6 +250,7 @@ export class AgentMetricsCollector {
     const errorRate = c.totalEvents > 0 ? c.errorCount / c.totalEvents : 0;
     const averageResponseTimeMs = c.requestCount > 0 ? Math.round(c.totalLlmDurationMs / c.requestCount) : 0;
     const healthScore = this.computeHealthScore(heartbeatSuccessRate, taskMetrics, errorRate);
+    const harness = this.computeHarnessMetrics(c);
 
     return {
       agentId: this.agentId,
@@ -198,6 +264,22 @@ export class AgentMetricsCollector {
       averageResponseTimeMs,
       totalInteractions: c.requestCount,
       uptime: Date.now() - this.startTime,
+      harness,
+    };
+  }
+
+  private computeHarnessMetrics(c: AuditCounters): HarnessHealthMetrics {
+    const markerFailureRate = c.nonChatTurns > 0 ? c.markerMissTurns / c.nonChatTurns : 0;
+    // Cache-hit rate: cached reads over total prompt-side tokens (cached reads + writes +
+    // fresh prompt tokens). 0 when nothing cacheable has been reported.
+    const cacheDenominator = c.cacheReadTokens + c.cacheWriteTokens + c.promptTokens;
+    const cacheHitRate = cacheDenominator > 0 ? c.cacheReadTokens / cacheDenominator : 0;
+    const perTurnCostUsd = c.turnsCompleted > 0 ? c.estimatedCost / c.turnsCompleted : 0;
+    return {
+      compressionCount: c.compressionCount,
+      markerFailureRate,
+      cacheHitRate,
+      perTurnCostUsd,
     };
   }
 
@@ -216,22 +298,10 @@ export class AgentMetricsCollector {
     toolCallsToday: number;
     estimatedCost: number;
     costToday: number;
+    cuUsed: number;
+    cuUsedToday: number;
   } {
     const c = this.counters;
-    let cost = c.estimatedCost;
-    let costToday = c.costToday;
-
-    // Fallback for pre-migration data without per-call cost tracking
-    if (cost === 0 && c.totalTokens > 0) {
-      const input = Math.round(c.totalTokens * 0.7);
-      const output = c.totalTokens - input;
-      cost = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
-    }
-    if (costToday === 0 && c.tokensToday > 0) {
-      const input = Math.round(c.tokensToday * 0.7);
-      const output = c.tokensToday - input;
-      costToday = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
-    }
 
     return {
       totalTokens: c.totalTokens,
@@ -242,8 +312,10 @@ export class AgentMetricsCollector {
       tokensToday: c.tokensToday,
       requestsToday: c.requestsToday,
       toolCallsToday: c.toolCallsToday,
-      estimatedCost: Math.round(cost * 10000) / 10000,
-      costToday: Math.round(costToday * 10000) / 10000,
+      estimatedCost: 0,
+      costToday: 0,
+      cuUsed: c.totalCuUsed,
+      cuUsedToday: c.cuUsedToday,
     };
   }
 
@@ -279,11 +351,7 @@ export class AgentMetricsCollector {
   private computeTokenUsageFromCounters(c: AuditCounters): TokenUsage {
     const input = c.promptTokens || Math.round(c.totalTokens * 0.7);
     const output = c.completionTokens || (c.totalTokens - input);
-    let cost = c.estimatedCost;
-    if (cost === 0 && c.totalTokens > 0) {
-      cost = (input / 1_000_000) * 3 + (output / 1_000_000) * 15;
-    }
-    return { input, output, cost: Math.round(cost * 10000) / 10000 };
+    return { input, output, cost: 0 };
   }
 
   private computeTaskMetrics(tasks: TaskEvent[]): TaskMetrics {

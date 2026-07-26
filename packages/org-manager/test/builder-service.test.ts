@@ -87,9 +87,37 @@ describe('BuilderService', () => {
       expect(agentsOnly.every(a => a.type === 'agent')).toBe(true);
     });
 
-    it('returns empty when artifact dir missing', () => {
+    it('recreates builder-artifacts dirs and returns empty when wiped', () => {
       if (existsSync(artifactsRoot)) rmSync(artifactsRoot, { recursive: true, force: true });
       expect(service.listArtifacts()).toEqual([]);
+      expect(existsSync(join(artifactsRoot, 'agents'))).toBe(true);
+      expect(existsSync(join(artifactsRoot, 'teams'))).toBe(true);
+      expect(existsSync(join(artifactsRoot, 'skills'))).toBe(true);
+    });
+
+    it('lists builtin team templates alongside local ones', () => {
+      const builtinRoot = join(tmpHome, 'builtin-teams');
+      const builtinTeam = join(builtinRoot, 'content-team');
+      mkdirSync(builtinTeam, { recursive: true });
+      writeFileSync(join(builtinTeam, 'team.json'), JSON.stringify({
+        type: 'team',
+        name: 'content-team',
+        version: '1.0.0',
+        description: 'Builtin content team',
+        team: { members: [] },
+      }));
+      service.setBuiltinTeamTemplatesDir(builtinRoot);
+
+      const teams = service.listArtifacts('team');
+      expect(teams.some(t => t.name === 'content-team' && t.source === 'builtin')).toBe(true);
+    });
+
+    it('ensureArtifactDirs creates agents/teams/skills under builder-artifacts', () => {
+      if (existsSync(artifactsRoot)) rmSync(artifactsRoot, { recursive: true, force: true });
+      service.ensureArtifactDirs();
+      expect(existsSync(join(artifactsRoot, 'agents'))).toBe(true);
+      expect(existsSync(join(artifactsRoot, 'teams'))).toBe(true);
+      expect(existsSync(join(artifactsRoot, 'skills'))).toBe(true);
     });
   });
 

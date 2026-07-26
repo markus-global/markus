@@ -31,8 +31,46 @@ describe('AgentMetricsCollector', () => {
       const m = collector.getMetrics('24h');
       expect(m.tokenUsage.input).toBe(2100); // 70% of 3000
       expect(m.tokenUsage.output).toBe(900); // 30% of 3000
-      expect(m.tokenUsage.cost).toBeGreaterThan(0);
+      expect(m.tokenUsage.cost).toBe(0);
       expect(m.totalInteractions).toBe(2);
+    });
+
+    it('accumulates CU from audit events', () => {
+      collector.recordAudit({
+        type: 'llm_request',
+        action: 'chat',
+        tokensUsed: 500,
+        cuCost: 12,
+        success: true,
+      });
+      collector.recordAudit({
+        type: 'llm_request',
+        action: 'chat',
+        tokensUsed: 300,
+        cuCost: 8,
+        success: true,
+      });
+
+      const stats = collector.getUsageStats();
+      expect(stats.cuUsed).toBe(20);
+      expect(stats.cuUsedToday).toBe(20);
+      expect(stats.estimatedCost).toBe(0);
+    });
+
+    it('does not estimate USD when no cost provided', () => {
+      collector.recordAudit({
+        type: 'llm_request',
+        action: 'chat',
+        tokensUsed: 5000,
+        inputTokens: 4000,
+        outputTokens: 1000,
+        success: true,
+      });
+
+      const stats = collector.getUsageStats();
+      expect(stats.estimatedCost).toBe(0);
+      expect(stats.costToday).toBe(0);
+      expect(collector.getMetrics('24h').tokenUsage.cost).toBe(0);
     });
 
     it('tracks task completion metrics', () => {
@@ -159,6 +197,60 @@ describe('AgentMetricsCollector', () => {
       expect(m.taskMetrics.completed).toBe(1);
       expect(m.taskMetrics.cancelled).toBe(1);
       expect(m.taskMetrics.failed).toBe(0);
+    });
+  });
+
+  describe('C2: harness-health metrics', () => {
+    it('starts at zero on a fresh collector', () => {
+      const h = collector.getMetrics('24h').harness;
+      expect(h.compressionCount).toBe(0);
+      expect(h.markerFailureRate).toBe(0);
+      expect(h.cacheHitRate).toBe(0);
+      expect(h.perTurnCostUsd).toBe(0);
+    });
+
+    it('counts context compressions', () => {
+      collector.recordCompression();
+      collector.recordCompression();
+      expect(collector.getMetrics('24h').harness.compressionCount).toBe(2);
+    });
+
+    it('computes marker-failure rate over non-chat turns only', () => {
+      // Chat turns are exempt from the marker protocol → excluded from the denominator.
+      collector.recordTurn({ isChat: true, hadCompletionMarker: false });
+      // 4 non-chat turns, 1 missing its marker → 0.25
+      collector.recordTurn({ isChat: false, hadCompletionMarker: true });
+      collector.recordTurn({ isChat: false, hadCompletionMarker: true });
+      collector.recordTurn({ isChat: false, hadCompletionMarker: true });
+      collector.recordTurn({ isChat: false, hadCompletionMarker: false });
+
+      expect(collector.getMetrics('24h').harness.markerFailureRate).toBe(0.25);
+    });
+
+    it('computes cache-hit rate from provider cache tokens', () => {
+      // inputTokens=fresh prompt; cacheReadTokens=cached; hit = read / (read+write+fresh)
+      collector.recordAudit({
+        type: 'llm_request', action: 'chat', success: true,
+        inputTokens: 200, outputTokens: 50, cacheReadTokens: 600, cacheWriteTokens: 200,
+      });
+      // 600 / (600 + 200 + 200) = 0.6
+      expect(collector.getMetrics('24h').harness.cacheHitRate).toBeCloseTo(0.6, 5);
+    });
+
+    it('computes per-turn USD cost from reported costs', () => {
+      collector.recordTurn({ isChat: false, hadCompletionMarker: true, costUsd: 0.10 });
+      collector.recordTurn({ isChat: false, hadCompletionMarker: true, costUsd: 0.30 });
+      // total 0.40 over 2 turns → 0.20
+      expect(collector.getMetrics('24h').harness.perTurnCostUsd).toBeCloseTo(0.2, 5);
+    });
+
+    it('persists and reloads harness counters', () => {
+      // A collector without a dataDir keeps counters in memory; assert accumulation is stable.
+      collector.recordCompression();
+      collector.recordTurn({ isChat: false, hadCompletionMarker: false });
+      const h = collector.getMetrics('24h').harness;
+      expect(h.compressionCount).toBe(1);
+      expect(h.markerFailureRate).toBe(1);
     });
   });
 });

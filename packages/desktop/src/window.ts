@@ -53,7 +53,7 @@ function isStateVisible(state: WindowState): boolean {
 
 let mainWindow: BrowserWindow | null = null;
 
-export function createMainWindow(): BrowserWindow {
+export function createMainWindow(show = true): BrowserWindow {
   const state = loadWindowState();
 
   const windowOpts: Electron.BrowserWindowConstructorOptions = {
@@ -61,7 +61,7 @@ export function createMainWindow(): BrowserWindow {
     height: state.height,
     minWidth: 800,
     minHeight: 600,
-    show: true,
+    show,
     ...(process.platform === 'darwin' ? {
       titleBarStyle: 'hiddenInset' as const,
       trafficLightPosition: { x: 16, y: 16 },
@@ -82,7 +82,9 @@ export function createMainWindow(): BrowserWindow {
 
   mainWindow = new BrowserWindow(windowOpts);
 
-  if (state.isMaximized) {
+  // Only maximize when actually showing — maximizing a hidden window can force
+  // it visible on some platforms, defeating a hidden auto-start launch.
+  if (show && state.isMaximized) {
     mainWindow.maximize();
   }
 
@@ -91,6 +93,10 @@ export function createMainWindow(): BrowserWindow {
   });
 
   mainWindow.on('closed', () => {
+    try {
+      // Lazy import to avoid circular deps at module load.
+      void import('./embedded-browser.js').then(m => m.destroyAllEmbeddedBrowsers());
+    } catch { /* ignore */ }
     mainWindow = null;
   });
 
@@ -103,6 +109,9 @@ export function getMainWindow(): BrowserWindow | null {
 
 export function restoreOrCreateWindow(url: string): void {
   if (mainWindow) {
+    // A window created for a hidden auto-start launch exists but was never
+    // shown — reveal it before focusing.
+    if (!mainWindow.isVisible()) mainWindow.show();
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   } else {

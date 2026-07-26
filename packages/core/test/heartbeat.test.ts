@@ -1,5 +1,9 @@
 import { EventBus } from '../src/events.js';
-import { HeartbeatScheduler } from '../src/heartbeat.js';
+import {
+  HeartbeatScheduler,
+  isWithinActiveHours,
+  minutesOfDayInTimeZone,
+} from '../src/heartbeat.js';
 import { HEARTBEAT_MIN_INITIAL_DELAY_MS } from '@markus/shared';
 
 describe('HeartbeatScheduler', () => {
@@ -123,5 +127,42 @@ describe('HeartbeatScheduler', () => {
     scheduler.stop();
     vi.advanceTimersByTime(HEARTBEAT_MIN_INITIAL_DELAY_MS + 20_000);
     expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+describe('C1: active-hours timezone handling', () => {
+  // A fixed instant: 2026-07-23T12:00:00Z (noon UTC, summer → DST in effect).
+  const noonUtc = new Date('2026-07-23T12:00:00Z');
+
+  it('minutesOfDayInTimeZone converts the same instant per timezone', () => {
+    expect(minutesOfDayInTimeZone(noonUtc, 'UTC')).toBe(12 * 60); // 12:00
+    expect(minutesOfDayInTimeZone(noonUtc, 'America/Los_Angeles')).toBe(5 * 60); // 05:00 PDT
+    expect(minutesOfDayInTimeZone(noonUtc, 'Asia/Tokyo')).toBe(21 * 60); // 21:00 JST
+  });
+
+  it('minutesOfDayInTimeZone falls back to local time for an invalid timezone', () => {
+    const local = noonUtc.getHours() * 60 + noonUtc.getMinutes();
+    expect(minutesOfDayInTimeZone(noonUtc, 'Not/AZone')).toBe(local);
+  });
+
+  it('evaluates the 08:00-22:00 window in the configured timezone, not the host', () => {
+    const window = { start: '08:00', end: '22:00' };
+    // Noon UTC is inside 08-22 in UTC and Tokyo (21:00) but not in LA (05:00).
+    expect(isWithinActiveHours({ ...window, timezone: 'UTC' }, noonUtc)).toBe(true);
+    expect(isWithinActiveHours({ ...window, timezone: 'Asia/Tokyo' }, noonUtc)).toBe(true);
+    expect(isWithinActiveHours({ ...window, timezone: 'America/Los_Angeles' }, noonUtc)).toBe(false);
+  });
+
+  it('excludes the exact end minute and includes the exact start minute', () => {
+    // Tokyo is 21:00 at noonUtc.
+    expect(isWithinActiveHours({ start: '21:00', end: '22:00', timezone: 'Asia/Tokyo' }, noonUtc)).toBe(true);
+    expect(isWithinActiveHours({ start: '08:00', end: '21:00', timezone: 'Asia/Tokyo' }, noonUtc)).toBe(false); // end exclusive
+  });
+
+  it('handles windows that wrap past midnight, per timezone', () => {
+    // LA is 05:00 at noonUtc → inside a 22:00-06:00 overnight window.
+    expect(isWithinActiveHours({ start: '22:00', end: '06:00', timezone: 'America/Los_Angeles' }, noonUtc)).toBe(true);
+    // Tokyo is 21:00 → outside the overnight window.
+    expect(isWithinActiveHours({ start: '22:00', end: '06:00', timezone: 'Asia/Tokyo' }, noonUtc)).toBe(false);
   });
 });

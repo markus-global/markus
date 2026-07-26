@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createManagerTools, createPackageTools, type ManagerToolsContext, type PackageToolsContext } from '../src/tools/manager.js';
+import {
+  createManagerTools,
+  createPackageTools,
+  createSecretaryTools,
+  type ManagerToolsContext,
+  type PackageToolsContext,
+  type SecretaryToolsContext,
+} from '../src/tools/manager.js';
 
 function createMockManagerContext(overrides?: Partial<ManagerToolsContext>): ManagerToolsContext {
   return {
@@ -301,6 +308,89 @@ describe('package_install', () => {
       toolName: 'package_install',
       toolArgs: expect.objectContaining({ team_id: undefined }),
     }));
+  });
+});
+
+describe('secretary list_teams', () => {
+  function createMockSecretaryContext(overrides?: Partial<SecretaryToolsContext>): SecretaryToolsContext {
+    return {
+      listTeams: vi.fn(() => [
+        { id: 'team_empty', name: '空团队', description: 'empty', memberCount: 0, members: [] },
+        { id: 'team_full', name: '研发组', memberCount: 1, members: [{ id: 'agt_1', name: 'Dev', status: 'idle' }] },
+      ]),
+      stopTeam: vi.fn(async () => ({ success: [], failed: [] })),
+      startTeam: vi.fn(async () => ({ success: [], failed: [] })),
+      ...overrides,
+    };
+  }
+
+  function findSecretaryTool(ctx: SecretaryToolsContext, name: string) {
+    const tools = createSecretaryTools(ctx);
+    const tool = tools.find(t => t.name === name);
+    if (!tool) throw new Error(`Tool "${name}" not found. Available: ${tools.map(t => t.name).join(', ')}`);
+    return tool;
+  }
+
+  it('list_teams returns org teams including empty ones', async () => {
+    const ctx = createMockSecretaryContext();
+    const tool = findSecretaryTool(ctx, 'list_teams');
+    const result = JSON.parse(await tool.execute({}));
+    expect(result.status).toBe('success');
+    expect(result.count).toBe(2);
+    expect(result.teams[0].memberCount).toBe(0);
+  });
+
+  it('does not register team_create', () => {
+    const ctx = createMockSecretaryContext();
+    expect(createSecretaryTools(ctx).some(t => t.name === 'team_create')).toBe(false);
+  });
+});
+
+describe('package_install team_name', () => {
+  it('find-or-creates team via ensureTeam when team_name is set', async () => {
+    const ensureTeam = vi.fn(async (name: string) => ({ id: 'team_auto', name, created: true }));
+    const hireFromTemplateFn = vi.fn(async (_templateId: string, agentName: string, _skills?: string[], teamId?: string) => ({
+      id: 'agt_new',
+      name: agentName,
+      role: 'developer',
+      teamId,
+    }));
+    const installArtifactFn = vi.fn(async () => {
+      throw new Error('not a custom artifact');
+    });
+    const ctx = createMockPackageContext({
+      ensureTeam,
+      hireFromTemplate: () => hireFromTemplateFn,
+      installArtifact: () => installArtifactFn,
+    });
+    const tool = findPackageTool(ctx, 'package_install');
+    const result = JSON.parse(await tool.execute({
+      type: 'agent',
+      name: 'tpl_dev',
+      agent_name: '助手',
+      team_name: '淘金小队',
+    }));
+    expect(result.status).toBe('success');
+    expect(ensureTeam).toHaveBeenCalledWith('淘金小队');
+    expect(hireFromTemplateFn).toHaveBeenCalledWith('tpl_dev', '助手', undefined, 'team_auto');
+    expect(result.team_id).toBe('team_auto');
+    expect(result.team_created).toBe(true);
+  });
+
+  it('prefers team_id over team_name', async () => {
+    const ensureTeam = vi.fn(async (name: string) => ({ id: 'team_auto', name, created: true }));
+    const installArtifactFn = vi.fn(async (_type: string, _name: string, teamId?: string) => ({
+      type: 'agent',
+      installed: { name: 'custom-dev', teamId },
+    }));
+    const ctx = createMockPackageContext({
+      ensureTeam,
+      installArtifact: () => installArtifactFn,
+    });
+    const tool = findPackageTool(ctx, 'package_install');
+    await tool.execute({ type: 'agent', name: 'custom-dev', team_id: 'team_existing', team_name: '忽略' });
+    expect(ensureTeam).not.toHaveBeenCalled();
+    expect(installArtifactFn).toHaveBeenCalledWith('agent', 'custom-dev', 'team_existing');
   });
 });
 

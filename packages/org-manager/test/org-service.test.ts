@@ -241,15 +241,14 @@ describe('OrganizationService', () => {
       expect(storage.agentRepo.create).toHaveBeenCalled();
     });
 
-    it('enforces agent limit when maxAgents is set', async () => {
-      const org = service.getOrganization('org-1')!;
-      org.maxAgents = 1;
-      agentManager.listAgents.mockReturnValue([{ id: 'existing' }]);
+    it('allows unlimited agents (no maxAgents limit)', async () => {
+      agentManager.listAgents.mockReturnValue(Array.from({ length: 100 }, (_, i) => ({ id: `agent-${i}` })));
+      agentManager.startAgent.mockResolvedValue({ id: 'new-agent' });
       await expect(service.hireAgent({
         name: 'Extra',
         roleName: 'developer',
         orgId: 'org-1',
-      })).rejects.toThrow(/Agent limit reached/);
+      })).resolves.toBeDefined();
     });
 
     it('fires an agent and clears manager reference', async () => {
@@ -477,6 +476,22 @@ describe('OrganizationService', () => {
       const user = service.addHumanUser('org-1', 'Carol', 'member', { email: 'carol@test.com' });
       expect(service.resolveHumanIdentity(user.id)?.name).toBe('Carol');
       expect(service.resolveHumanIdentity('unknown')).toBeUndefined();
+    });
+
+    it('exposes and merges locale/timezone preferences', () => {
+      const user = service.addHumanUser('org-1', 'Dora', 'member');
+      expect(service.resolveHumanIdentity(user.id)?.locale).toBeUndefined();
+
+      service.updateHumanPreferences(user.id, { locale: 'zh-CN', timezone: 'Asia/Shanghai' });
+      const resolved = service.resolveHumanIdentity(user.id);
+      expect(resolved?.locale).toBe('zh-CN');
+      expect(resolved?.timezone).toBe('Asia/Shanghai');
+
+      // Partial update preserves the untouched field.
+      service.updateHumanPreferences(user.id, { timezone: 'Asia/Tokyo' });
+      const resolved2 = service.resolveHumanIdentity(user.id);
+      expect(resolved2?.locale).toBe('zh-CN');
+      expect(resolved2?.timezone).toBe('Asia/Tokyo');
     });
 
     it('routes to first org agent when no manager configured', () => {

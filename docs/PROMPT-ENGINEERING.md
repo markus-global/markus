@@ -49,7 +49,7 @@ These are `handleMessage()` calls with `scenario: 'heartbeat'` and typed session
 | Sub-scenario | Trigger | Session ID Pattern | Purpose |
 |-------------|---------|-------------------|---------|
 | **Daily Report** | `consolidateMemory()` (once/day) | `sys_<agentId>_<ts>` | Generate brief status report → `daily-logs/` |
-| **Memory Flush** | `consolidateMemory()` (before compaction) | `sys_<agentId>_<ts>` | Prompt agent to `memory_save` important info before context window is compacted |
+| **Memory Flush** | turn-level preflight when context usage is high (see §5.7) | `sys_<agentId>_<ts>` | Prompt agent to `memory_save` important info before the context window fills |
 | **LLM Summarizer** | `contextEngine.smartSummarizeAndTruncate()` | N/A (internal) | Compress older conversation messages into a summary (no tools) |
 | **Dream Consolidation** | `consolidateMemory()` (once/day, ≥50 entries) | `sys_<agentId>_<ts>` | LLM reviews memory entries, outputs prune/merge plan (no tools) |
 
@@ -124,6 +124,35 @@ The system prompt uses a **3-tier cache architecture** with explicit cache break
 **Tool definition caching (Anthropic)**: The last tool in the `tools` array is marked with `cache_control: { type: 'ephemeral' }`, allowing Anthropic to cache the tool definitions prefix. Since tool lists are relatively stable within a session, this provides additional cache hits.
 
 **Dynamic value quantization**: Several dynamic fields use coarse-grained labels instead of precise values to reduce prompt churn: notebook entry ages use buckets (`just now`, `recent`, `~Nh ago`), mailbox elapsed time uses labels (`just started`, `a few minutes`, `~Nmin`), and timestamps drop seconds (minute-level precision). Coarser timestamp buckets were considered but rejected — Tier 3 has many other per-call varying fields, so the marginal cache benefit does not justify the risk of inaccurate time perception.
+
+### 2.2 Spec: injection-point ownership audit (C3)
+
+The tiering above is the intended design; this spec makes it an enforced invariant so a new
+injection point cannot silently land in a stable tier and bust the cache prefix.
+
+- **Behavior**: every prompt injection point has an explicit tier owner. Identity, policies,
+  tool-usage rules → **Tier 1 (stable)**. Identity/org/memory/scenario → **Tier 2
+  (semi-stable)**. All per-call situational meta (CPP output via `## Notebook`, triage
+  decision, mailbox state, task board, timestamps, query-filtered skills) → **Tier 3
+  (dynamic), after the last cache breakpoint**.
+- **Invariants**:
+  - The Tier 1+2 prefix contains **no** per-call varying content (CPP/triage/notebook/mailbox
+    meta appear only after the last `cache_control` breakpoint).
+  - CPP writes to `NOTEBOOK.md` (Tier 3), never as a new stable system-prompt section (see
+    [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) §3).
+- **Design rationale (Anthropic prompt caching)**: dynamic content in the stable prefix
+  invalidates every downstream cache hit; keeping it in the ephemeral tail preserves prefix
+  reuse across mode switches.
+- **Testing** (`packages/core/test/cache-optimization.test.ts` — the "C3:" cases): with a
+  prompt carrying CPP output, mailbox/attention meta, channel history, sender identity and a
+  timestamp, assert (a) the breakpoint (Tier 1+2) prefix excludes every dynamic marker,
+  (b) those markers appear only in the tail segment after the last breakpoint, (c) identity /
+  tool-usage rules / `## Your Knowledge` stay in the stable prefix, and (d) CPP output is
+  routed to the notebook writer rather than injected as a stable `## Cognitive Context`
+  section. The cache-hit-rate metric is tracked separately (see
+  [ARCHITECTURE.md §11.1](./ARCHITECTURE.md) observability).
+- **Status**: implemented (design was already in place; this adds the enforcing guard tests
+  and the `usage.compressed`-driven cache/compression metrics).
 
 ### 2.2 Section Details
 
@@ -203,6 +232,38 @@ Placed at the **end of Tier 2** so the identity/org/memory prefix remains stable
 | `review` | Evaluate deliverable quality against acceptance criteria. | **Not directly visible** | `task_update` for verdict; `notify_user` optionally |
 | `memory_consolidation` | Internal memory management. Purely private. | **Not visible**; internal only | No communication tools needed |
 
+#### Referencing Markus Resources
+
+Placed in **Tier 1 (Stable)** (`## Referencing Markus Resources`, near the Deliverable Output Format section). Teaches agents the link conventions the Web UI markdown renderer understands, so references become clickable in chat/comments/reports:
+
+- **Bare ID** in prose (`tsk_…`, `req_…`, `proj_…`, `dlv_…`, `agt_…`, `team_…`) → inline clickable chip (auto-linked by `preprocessEntityIds` in `markdown-utils.ts`).
+- **Titled link** `[Title](task:tsk_…)` (types: `task`, `requirement`, `project`, `deliverable`, `agent`, `team`) → chip showing the title.
+- **Card**: a reference **alone on its own line/paragraph** renders as a rich block card (icon + title + status + summary) via `EntityCard`. Agents are told to reference a new `dlv_…` on its own line after `deliverable_create` so users get a clickable deliverable card.
+- Agents must NOT paste raw `/api/…` paths or bare `http(s)://` internal URLs — those render as external links, not in-app navigation.
+
+This closes the previous gap where the renderer silently auto-linked IDs but no prompt told agents to emit them.
+
+#### Async Work, Callbacks & Timing
+
+Placed in **Tier 1 (Stable)** (`## Async work, callbacks & timing`, after the agent-communication rules). Establishes the event-driven behavioral model that backs the callback/wakeup infrastructure (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §3.4/§11.3):
+
+- **Await, don't poll**: after starting async work, register for the completion event and stop — do not busy-loop checking status. `background_exec` reports completion automatically; a tight `process poll` loop is discouraged.
+- **`schedule_wakeup` / `cancel_wakeup`**: agents set precise time-based follow-ups (`in_seconds` or ISO `at`, optional `recurring_seconds`) instead of relying on the heartbeat, which is now a coarse safety-net (default `DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h) rather than a frequent poll.
+- **`set_heartbeat_interval`**: agents (or users, via the Heartbeat tab / config API) can adjust the coarse safety-net cadence itself (clamped 5min–24h, applied live). This is distinct from `schedule_wakeup` — the latter is for precise one-off/recurring follow-ups; the former only changes how often the fallback patrol fires.
+- **`agent_send_message` `await_in_session`**: the peer's reply resumes the **current conversation** (an `a2a_reply` callback correlated by `conversation_id`), instead of landing in a disconnected a2a session.
+- **Two delivery forms**: `in_session` (result resumes the origin session — `background_exec`, `await_in_session`) vs `mailbox` (fresh attention cycle — `schedule_wakeup`, autonomous follow-ups). Documented so agents pick the right one.
+- Note: `task_create` is intentionally **not** wired for in-session return — tasks are an independent, tracked/reviewed workflow whose results flow through the board, review, and `notify_user`, not back into the creating conversation.
+
+#### Behavioral Policies (coding-agent patterns)
+
+Placed in **Tier 1 (Stable)** (`## Error Recovery` + `## Autonomy & Escalation`). Production-coding-agent patterns encoded as durable rules:
+
+- **Bounded retry + escalate**: at most ~2 attempts at the same failing action without new evidence; then stop and escalate (`request_user_input` for a decision that has no built-in UI, `notify_user` for FYI, mark `blocked`). Never loop; never fail silently.
+- **Autonomy calibration**: reversible/low-stakes → pick a sensible default and record the assumption; irreversible/destructive/scope-expanding → `request_user_input` first. When unsure about reversibility, treat as irreversible.
+- **Requirement/task approval**: after `requirement_propose` / `task_create`, do **not** use `request_user_input` to ask the human to approve — the entity card already has Approve/Reject, and creation already notifies them. Skip extra `notify_user` reminders at creation time; at most one non-blocking nudge if something stays pending for a very long time.
+- **Self-contained delegation contract**: delegations must carry goal, context, constraints, expected return format, and preserve `conversation_id` — recipients have no access to the sender's session.
+- **Decision-ready return contract**: async results and delegation replies are summarized for immediate action, not raw stdout/log dumps.
+
 ### 2.3 Skill Filtering
 
 `filterSkillsByRelevance()` scores each skill against the current query by keyword overlap. Returns top 30. Each entry is one line: `**name** [category]: description`. The filtered skills catalog is placed in **Tier 3 (Dynamic)** because the filter results depend on the current query, which changes per message. This keeps Tier 2 stable and prevents per-message skill filtering from busting the semi-stable cache prefix.
@@ -228,31 +289,46 @@ Token estimates use tiktoken when available (model-specific encoding), falling b
 
 ### 3.2 Compression Pipeline
 
+**Policy: window-first, compress only when over budget.** Markus does **not** drop or
+pre-summarize turns just to save tokens. It keeps the full session and packs against the
+real model window; compression stages run only when the message tokens exceed the budget.
+(This replaced an older count-based rule that summarized at ">60 messages, keep 40".)
+
 ```
 Session Messages
        │
        ▼
- Stage 1: Count-based summarization
-   └─ If >60 messages → smartSummarizeAndTruncate(keep: 40)
+ Stage 1: Pathological single-message shrink ONLY
+   └─ shrinkOversizedMessages(cap: CONTEXT_ABSURD_MESSAGE_CHARS = 200k)
+   └─ sanitizeMessageSequence()          (no count cap, no pre-shrink of normal history)
        │
        ▼
- Stage 2: Per-message size cap
-   └─ shrinkOversizedMessages(cap: max(2000, budget/8))
-   └─ sanitizeMessageSequence()
+ (below runs only if totalTokens > messageBudget)
        │
        ▼
- Stage 3: Token-budget-driven compression (progressive)
-   ├─ 3a: compactOldTurns() — summarize tool-call blocks
-   ├─ 3b: smartSummarizeAndTruncate(keep: 40%) — LLM or heuristic
-   └─ 3c: Aggressive summarize(keep: 30%) + re-shrink
+ Stage 2: Token-budget-driven compression (progressive)
+   ├─ 2a: shrinkOversizedMessages(cap: max(8000, budget/4)) + compactOldTurns()
+   ├─ 2b: smartSummarizeAndTruncate(keep: max(40, 70%)) — keep the majority of recent turns
+   └─ 2c: stronger summarize(keep: max(20, 45%)) + re-shrink
        │
        ▼
- Stage 4: Last-resort trimming
+ Stage 3: Last-resort trimming
    └─ trimToFitBudget() — drop oldest, protect index 0 (task prompt)
        │
        ▼
  Final: [system prompt, ...compressed messages]
 ```
+
+- **Safety margin**: `min(contextWindow * 0.08, 16000)` — modest, to prefer packing
+  history over reserving unused slack.
+- **Storage-side compaction** is a separate, high-volume safety net (not a per-call token
+  saver): on-disk sessions are compacted only at
+  `SESSION_STORAGE_COMPACT_TRIGGER = 2000` messages, keeping
+  `SESSION_STORAGE_COMPACT_KEEP = 1000`; oversized on-disk tool results are shrunk at
+  `SESSION_STORAGE_TOOL_SHRINK_CHARS = 100k`. See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
+
+**Design rationale (Hermes)**: aligns with the industry practice of filling the window and
+compressing only over budget — the opposite of self-limiting to save tokens.
 
 **Lightweight sessions**: All interactions (heartbeat, A2A, memory flush, comments) use the same `prepareMessages()` pipeline. Sessions are persisted to JSON files for full traceability. The `scenario` parameter controls what context is included in the system prompt — lightweight scenarios (`heartbeat`, `a2a`, `comment_response`) skip heavy context like assigned tasks, deliverables, and chat session lists.
 
@@ -396,23 +472,22 @@ Key differences from chat:
 
 Heartbeat uses `handleMessage(prompt, undefined, undefined, { sessionId: 'hb_<agentId>_<ts>', allowedTools, scenario: 'heartbeat' })`.
 
-The heartbeat user prompt is assembled inline; the system prompt still comes from `buildSystemPrompt(scenario:'heartbeat')` (identity, `## Your Knowledge`, `## Notebook`, mailbox context). The inline prompt includes:
-1. `[HEARTBEAT CHECK-IN]` header
-2. Agent's custom checklist (from `role.heartbeatChecklist`)
-3. Last heartbeat summary (from memory search)
-4. **`## Active Goals`** — when `goalFetcher` is wired, lists each standing goal's title, status, iteration count (`currentIteration` / `maxIterations`), and completion criteria, with instructions to assess progress, create follow-up tasks, and mark requirements complete when criteria are met
-5. Failed task recovery instructions
-6. Requirement monitoring section
-7. Daily report section (managers, after 20:00)
-8. Self-evolution reflection instructions — includes Knowledge Lifecycle decision matrix (observation buffer vs curated knowledge vs skill creation)
-9. Quality signal check — revision rate self-assessment, knowledge effectiveness
-10. "Patrol, Don't Build" rules — lightweight actions allowed, complex work → create task
-11. When `background_exec` sessions have finished since the last turn, a `## Background Processes Completed` section is included so the model sees completion summaries on the next heartbeat
-12. Conditional actions (failed bg processes, blocked tasks, completed dependencies, patterns)
+The heartbeat user prompt is assembled inline; the system prompt still comes from `buildSystemPrompt(scenario:'heartbeat')` (identity, `## Your Knowledge`, `## Notebook`, mailbox context, and the cached `heartbeat` scenario section). The inline prompt is deliberately **slim** — it carries only per-call dynamic content and defers durable rules to the cached system prompt. It includes:
+1. `[HEARTBEAT CHECK-IN]` header + agent's custom checklist (from `role.heartbeatChecklist`)
+2. Last heartbeat summary (from memory search)
+3. Conditional dynamic sections, only when present: `## Background Processes Completed` (finished `background_exec` sessions), `## Timed-Out Async Operations`, **`## Active Goals`** (when `goalFetcher` is wired — each standing goal's title, status, `currentIteration`/`maxIterations`, and completion criteria), and the manager `## Daily Report Required` section (after 20:00)
+4. Slim `## Failed Task Recovery` and `## Requirement Monitoring` (2-3 lines each)
+5. `## Self-Evolution` — a compact Knowledge Lifecycle **decision matrix** that routes each learning to the right home (`memory_save` / `memory_update_longterm` / skill / ROLE.md / HEARTBEAT.md), with the revision-rate quality signal folded into a single line
+6. `## Patrol Reminder` — lightweight-patrol do/don't rules; points to `schedule_wakeup` for precise follow-ups and `set_heartbeat_interval` to adjust cadence. It explicitly **defers** communication-channel and async-timing details to the cached scenario/Tier-1 sections rather than restating them
+7. `## Finishing Up` — `memory_save` a `heartbeat:summary`, produce the daily report if required, else respond `HEARTBEAT_OK`
+
+**Deduplication note**: earlier versions of the inline prompt restated `## Communication Channels`, `## Core Principle: Patrol, Don't Build`, `## Prefer Scheduled Wakeups`, `## What You CAN/MUST NOT Do`, and `## Conditional Actions`. These duplicated the cached `heartbeat` scenario section (§5.3 / `buildScenarioSection`) and Tier-1 rules, so they were removed from the (uncached) inline user prompt to cut per-heartbeat token cost. The `heartbeat` scenario section is now the single source of truth for comms/priorities.
 
 **Notebook Guidelines** (in mailbox checklists / system prompt when queue context is present): use `update_notebook` to save priorities, context, decisions, and blockers; `clear_notebook` when context becomes irrelevant. Do not store raw message content — use `memory_save` for durable observations.
 
-Tool whitelist includes: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update`, `update_notebook`, `update_working_memory` (alias), `goal_create`, `goal_update`, `goal_status`, `discover_tools`, `notify_user`, `request_user_approval`, `recall_activity`, `package_list`, `package_install`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
+Tool whitelist includes: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update`, `update_notebook`, `update_working_memory` (alias), `goal_create`, `goal_update`, `goal_status`, `discover_tools`, `notify_user`, `request_user_approval`, `recall_activity`, `schedule_wakeup`, `cancel_wakeup`, `set_heartbeat_interval`, `package_list`, `package_install`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
+
+**Heartbeat cadence & configurability**: the periodic heartbeat is a coarse safety-net (`DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h) behind the event-driven `schedule_wakeup` mechanism — it is NOT the primary timing mechanism. The interval is configurable at three levels: (a) the user via `PATCH /api/agents/:id/config` (`heartbeatIntervalMs`) or the Agent Profile → Heartbeat tab; (b) the agent itself via the `set_heartbeat_interval` tool (clamped to `MIN_HEARTBEAT_INTERVAL_MS`–`MAX_HEARTBEAT_INTERVAL_MS`, i.e. 5min–24h). Both apply **live** via `Agent.setHeartbeatInterval()` (restarts the scheduler) and persist (agent-driven changes flow through the `agent:heartbeat-interval-changed` event → `agentRepo.updateConfig`). A one-time SQLite migration (gated by `PRAGMA user_version`) bumps agents still on the legacy 30-min default to the 6h safety-net without clobbering any interval a user or agent set deliberately.
 
 Agent communication guidance (heartbeat context):
 
@@ -482,8 +557,15 @@ Use memory_save to persist:
 - Important facts learned...
 ```
 
-Called via `handleMessage(prompt, undefined, undefined, { sessionId: 'sys_<agentId>_<ts>', scenario: 'heartbeat' })`.  
-Triggered when main session exceeds 30 messages, before compaction.
+Called via `handleMessage(prompt, undefined, undefined, { sessionId: 'sys_<agentId>_<ts>', scenario: 'heartbeat' })`.
+
+**Trigger (spec)**: a **turn-level preflight** — before a turn packs context, if the
+previous turn's context usage crossed a threshold (~75%) and this session has not flushed
+yet, run `memoryFlush` once (deduplicated per session; the flush itself uses an independent
+`sys_` session so it cannot recurse into another flush). See the memory-flush spec in
+[MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for the authoritative behavior, invariants, and
+tests. Status: planned (the `memoryFlush` method exists but is not yet wired into the turn
+preflight).
 
 ### 5.8 Dream Consolidation
 
@@ -547,20 +629,25 @@ Goal tools (`goal_create`, `goal_update`, `goal_status`) are available during **
 
 Creation and deployment are **two separate phases** with an explicit user gate between them.
 
+**Simple hire (no artifact design):** `package_install(type:"agent", name, agent_name, team_name?)` — optional `team_name` find-or-creates a team; or `team_id` from `list_teams`. There is **no** `team_create` tool.
+
+**Custom package flow:**
 **Phase 1 — Create (design the artifact):**
 - Activate `agent-building`, `team-building`, or `skill-building` skill via `discover_tools`
-- Write manifest + content files to `~/.markus/builder-artifacts/{agents|teams|skills}/{name}/`
+- Write manifest + content files with `file_write` to `~/.markus/builder-artifacts/{agents|teams|skills}/{name}/` (dirs are ensured at startup; chat JSON is **not** auto-saved)
 - This produces a package on disk. No live resources are created.
 
 **Phase 2 — Deploy (ONLY on explicit user request):**
 | Method | When to use | Tools |
 |--------|-------------|-------|
-| Local package | Agents, teams, skills from package_list | `package_list` → `package_install` |
+| Local / builtin package | Agents, teams, skills from package_list | `package_list` → `package_install` (`type:"team"` creates team+members together) |
 | Hub one-step | Community packages from Markus Hub | `hub_search` → `hub_install` |
 
 **Post-deploy:** Onboard new agents via `agent_send_message` (project context) → `task_create` (initial work).
 
-**Critical rule:** Agents must NEVER auto-deploy. `package_install` and `hub_install` create live agents that consume LLM tokens and join the organization. Only execute when the user explicitly says "install", "deploy", "hire", or "start".
+**Critical rules:**
+- Agents must NEVER auto-deploy. `package_install` and `hub_install` create live agents that consume LLM tokens and join the organization. Only execute when the user explicitly says "install", "deploy", "hire", or "start".
+- Never create org teams/agents via `shell_execute`, direct DB edits, or paths outside `builder-artifacts`.
 
 ---
 

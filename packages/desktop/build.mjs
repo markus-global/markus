@@ -84,20 +84,18 @@ async function main() {
     cpSync(templatesRoot, templatesDest, { recursive: true });
   }
 
-  // Copy Chrome extension zip (build it first if needed)
-  const extDir = resolve(__dirname, '../chrome-extension');
-  const extZip = resolve(extDir, 'dist/markus-browser-extension.zip');
-  if (!existsSync(extZip) && existsSync(resolve(extDir, 'pack.mjs'))) {
-    console.log('  Building Chrome extension zip...');
-    const { execSync } = await import('node:child_process');
-    try { execSync('node pack.mjs', { cwd: extDir, stdio: 'inherit' }); } catch { /* non-critical */ }
+  // Chrome extension zip — required for Settings download; fail the build if missing
+  console.log('  Ensuring Chrome extension zip...');
+  const { execSync } = await import('node:child_process');
+  const ensureScript = resolve(__dirname, '../../scripts/ensure-chrome-extension-zip.mjs');
+  execSync(`node "${ensureScript}" --copy-to "${resolve(__dirname, 'dist')}"`, {
+    cwd: resolve(__dirname, '../..'),
+    stdio: 'inherit',
+  });
+  if (!existsSync(resolve(__dirname, 'dist/markus-browser-extension.zip'))) {
+    throw new Error('Chrome extension zip missing after pack — browser extension download would 404');
   }
-  if (existsSync(extZip)) {
-    cpSync(extZip, resolve(__dirname, 'dist/markus-browser-extension.zip'));
-    console.log('  Chrome extension zip copied');
-  } else {
-    console.warn('  ⚠ Chrome extension zip not found — browser extension download will be unavailable');
-  }
+  console.log('  Chrome extension zip copied');
 
   // Copy model catalog data (baseline + supplements)
   const coreDataDir = resolve(__dirname, '../core/data');

@@ -8,14 +8,16 @@
 import { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, type TaskLogEntry } from '../api.ts';
+import { api, wsClient } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
+import { ConfirmModal } from './ConfirmModal.tsx';
 import { CodingToolCard, type CodingToolSession } from './CodingToolCard.tsx';
+import { NamedIcon } from '../lib/namedIcons.tsx';
 import {
-  getToolMeta, getShellCommand, formatDuration, formatLogTime, truncate, prettyJson, formatArgsDetail,
-  filterCompletedStarts, streamEntryToExecEntry, taskLogToEntry,
+  getToolMeta, getShellCommand, formatDuration, formatLogTime, truncate, prettyJson, formatArgsDetail, suppressVirtualScrollAdjust,
+  filterCompletedStarts, streamEntryToExecEntry,
   parseTaskApprovalFromResult, parseRequirementApprovalFromResult,
   type SubagentLogEntry, type ToolCallInfo, type ExecEntry, type ExecutionStreamEntryUI,
   type TaskApprovalInfo, type RequirementApprovalInfo,
@@ -24,7 +26,7 @@ import {
 // Re-export everything from execution-utils so existing imports keep working
 export {
   getToolMeta, formatDuration, formatLogTime,
-  taskLogToEntry, activityLogToEntry, attachSubagentLogsToEntries, filterCompletedStarts,
+  attachSubagentLogsToEntries, filterCompletedStarts,
   streamEntryToExecEntry, parseTaskApprovalFromResult, parseRequirementApprovalFromResult,
   type SubagentLogEntry, type ToolCallInfo, type ExecEntry, type ExecutionStreamEntryUI,
   type TaskApprovalInfo, type RequirementApprovalInfo,
@@ -86,87 +88,126 @@ export function StreamingText({ content, className }: { content: string; classNa
 }
 
 
-// ─── Tool Detail Modal ────────────────────────────────────────────────────────
+// ─── ToolDetailContent — inline expandable detail (args + result) ─────────────
 
-function ToolDetailModal({ info, onClose }: { info: ToolCallInfo; onClose: () => void }) {
+/** Default preview window for huge tool args/results in the chat timeline. */
+const TOOL_DETAIL_PREVIEW_CHARS = 8_000;
+/** Only render the newest nested sub-agent log rows in the expanded panel. */
+const SUBAGENT_LOG_RENDER_LIMIT = 120;
+
+function TruncatedPre({ text, className }: { text: string; className?: string }) {
   const { t } = useTranslation('common');
-  const meta = getToolMeta(info.tool);
+  const [expanded, setExpanded] = useState(false);
+  const tooLong = text.length > TOOL_DETAIL_PREVIEW_CHARS;
+  const shown = !tooLong || expanded ? text : `${text.slice(0, TOOL_DETAIL_PREVIEW_CHARS)}\n…`;
+  return (
+    <div>
+      <pre className={className}>{shown}</pre>
+      {tooLong && (
+        <button
+          type="button"
+          className="mt-1 text-[11px] text-brand-500 hover:underline"
+          onClick={(e) => { e.stopPropagation(); setExpanded(v => !v); }}
+        >
+          {expanded ? t('showLess') : t('showMore')}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ToolDetailContent({ info, time }: { info: ToolCallInfo; time?: string }) {
+  const { t } = useTranslation('common');
   const argEntries = formatArgsDetail(info.args);
   const isRunning = info.status === 'running';
   const success = info.status !== 'error';
+  const hasAny = argEntries.length > 0 || (!isRunning && (!!info.result || !!info.error)) || (!!info.subagentLogs && info.subagentLogs.length > 0);
+  const subagentScrollRef = useRef<HTMLDivElement>(null);
+  const logCount = info.subagentLogs?.length ?? 0;
+  const visibleSubagentLogs = info.subagentLogs && info.subagentLogs.length > SUBAGENT_LOG_RENDER_LIMIT
+    ? info.subagentLogs.slice(info.subagentLogs.length - SUBAGENT_LOG_RENDER_LIMIT)
+    : info.subagentLogs;
 
   useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+    if (!isRunning || !subagentScrollRef.current) return;
+    subagentScrollRef.current.scrollTop = subagentScrollRef.current.scrollHeight;
+  }, [logCount, isRunning]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/60" />
-      <div className="relative bg-surface-secondary border border-border-default rounded-xl shadow-2xl w-[560px] max-w-[92vw] max-h-[80vh] overflow-hidden flex flex-col"
-        onClick={e => e.stopPropagation()}>
-        <div className="px-5 py-3 border-b border-border-default flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="opacity-60 text-sm">{meta.icon}</span>
-            <span className={`text-sm font-semibold ${isRunning ? 'text-brand-500' : success ? 'text-fg-primary' : 'text-red-500'}`}>{meta.label}</span>
-            <span className={`text-xs px-1.5 py-0.5 rounded ${isRunning ? 'bg-brand-500/15 text-brand-500' : success ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>
-              {isRunning ? t('execution.toolRunning') : success ? t('execution.toolSuccess') : t('execution.toolFailed')}
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            {info.durationMs != null && <span className="text-xs text-fg-tertiary">{formatDuration(info.durationMs)}</span>}
-            <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-          {argEntries.length > 0 && (
-            <div>
-              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('execution.arguments')}</h4>
-              <div className="space-y-2">
-                {argEntries.map(({ key, value }) => (
-                  <div key={key}>
-                    <div className="text-[11px] text-brand-500 font-medium mb-0.5">{key}</div>
-                    <pre className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap break-all font-mono">{value}</pre>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          {!isRunning && info.result && (
-            <div>
-              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('execution.result')}</h4>
-              <pre className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto overflow-y-auto max-h-[60vh] whitespace-pre-wrap break-all font-mono">{prettyJson(info.result)}</pre>
-            </div>
-          )}
-          {!isRunning && info.error && (
-            <div>
-              <h4 className="text-[10px] font-semibold text-red-500 uppercase tracking-wider mb-2">{t('execution.error')}</h4>
-              <pre className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-60 overflow-y-auto whitespace-pre-wrap break-all font-mono">{prettyJson(String(info.error))}</pre>
-            </div>
-          )}
-          {info.subagentLogs && info.subagentLogs.length > 0 && (
-            <div>
-              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('execution.subagentExecution')}</h4>
-              <div className="bg-surface-elevated/50 rounded-lg px-3 py-2 space-y-1 max-h-[50vh] overflow-y-auto">
-                {info.subagentLogs.map((log, idx) => {
-                  const icon = log.eventType === 'started' ? '▶' : log.eventType === 'completed' ? '✓' : log.eventType === 'error' ? '✗' : log.eventType === 'tool_start' ? '◎' : log.eventType === 'tool_end' ? '●' : log.eventType === 'thinking' ? '💭' : '→';
-                  const color = log.eventType === 'error' ? 'text-red-500' : log.eventType === 'completed' ? 'text-green-500' : log.eventType === 'started' ? 'text-brand-500' : 'text-fg-tertiary';
-                  return (
-                    <div key={idx} className="flex items-start gap-1.5 text-xs">
-                      <span className={`shrink-0 ${color}`}>{icon}</span>
-                      <span className={`font-mono break-all ${color}`}>{log.content}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-          {!argEntries.length && !isRunning && !info.result && !info.error && !(info.subagentLogs?.length) && (
-            <div className="text-sm text-fg-tertiary italic py-4 text-center">{t('execution.noToolDetail')}</div>
-          )}
-        </div>
+    <div className="space-y-3 py-1">
+      <div className="flex items-center gap-2 text-[10px]">
+        <span className={`px-1.5 py-0.5 rounded ${isRunning ? 'bg-brand-500/15 text-brand-500' : success ? 'bg-green-500/15 text-green-600' : 'bg-surface-overlay text-fg-tertiary'}`}>
+          {isRunning ? t('execution.toolRunning') : success ? t('execution.toolSuccess') : t('execution.toolFailed')}
+        </span>
+        {time && <span className="text-fg-tertiary tabular-nums">{time}</span>}
+        {info.durationMs != null && <span className="text-fg-tertiary">{formatDuration(info.durationMs)}</span>}
       </div>
+      {argEntries.length > 0 && (
+        <div>
+          <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('execution.arguments')}</h4>
+          <div className="space-y-2">
+            {argEntries.map(({ key, value }) => (
+              <div key={key}>
+                <div className="text-[11px] text-brand-500 font-medium mb-0.5">{key}</div>
+                <TruncatedPre
+                  text={value}
+                  className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {visibleSubagentLogs && visibleSubagentLogs.length > 0 && (
+        <div>
+          <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('execution.subagentExecution')}</h4>
+          <div ref={subagentScrollRef} className="bg-surface-elevated/50 rounded-lg px-3 py-2 space-y-1 max-h-64 overflow-y-auto">
+            {logCount > SUBAGENT_LOG_RENDER_LIMIT && (
+              <div className="text-[10px] text-fg-tertiary pb-1">… {logCount - SUBAGENT_LOG_RENDER_LIMIT} earlier steps omitted</div>
+            )}
+            {visibleSubagentLogs.map((log, idx) => {
+              const icon = log.eventType === 'started' ? '▶' : log.eventType === 'completed' ? '✓' : log.eventType === 'error' ? '✗' : log.eventType === 'tool_start' ? '◎' : log.eventType === 'tool_end' ? '●' : log.eventType === 'thinking' ? '·' : '→';
+              const color = log.eventType === 'error' ? 'text-fg-tertiary' : log.eventType === 'completed' ? 'text-green-500' : log.eventType === 'started' || log.eventType === 'tool_start' ? 'text-brand-500' : 'text-fg-tertiary';
+              return (
+                <div key={idx} className="flex items-start gap-1.5 text-xs">
+                  <span className={`shrink-0 ${color}`}>{icon}</span>
+                  <span className={`font-mono break-all ${color}`}>{truncate(log.content, 500)}</span>
+                </div>
+              );
+            })}
+            {isRunning && (
+              <div className="flex items-center gap-1.5 text-[11px] text-brand-500 pt-0.5">
+                <svg className="w-3 h-3 animate-spin shrink-0" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span>{t('execution.toolRunning')}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {!isRunning && info.result && (
+        <div>
+          <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('execution.result')}</h4>
+          <TruncatedPre
+            text={prettyJson(info.result)}
+            className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono"
+          />
+        </div>
+      )}
+      {!isRunning && info.error && (
+        <div>
+          <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('execution.error')}</h4>
+          <TruncatedPre
+            text={prettyJson(String(info.error))}
+            className="text-xs text-fg-secondary bg-surface-elevated/50 border border-border-default rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono"
+          />
+        </div>
+      )}
+      {!hasAny && (
+        <div className="text-xs text-fg-tertiary italic py-2 text-center">{t('execution.noToolDetail')}</div>
+      )}
     </div>
   );
 }
@@ -210,6 +251,7 @@ const TASK_STATUS_CONFIG: Record<string, { icon: string; labelKey: string; borde
 export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
   const { t } = useTranslation('common');
   const [cardState, setCardState] = useState<TaskCardState>('loading');
+  const [confirmAction, setConfirmAction] = useState<'approve' | 'reject' | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -235,7 +277,8 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
     window.dispatchEvent(new CustomEvent('markus:mark-read-by-ref', { detail: { taskId: info.taskId } }));
   };
 
-  const handleApprove = async () => {
+  const runApprove = async () => {
+    setConfirmAction(null);
     setCardState('approving');
     try {
       await api.tasks.approve(info.taskId);
@@ -246,7 +289,8 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
     }
   };
 
-  const handleReject = async () => {
+  const runReject = async () => {
+    setConfirmAction(null);
     setCardState('rejecting');
     try {
       await api.tasks.reject(info.taskId);
@@ -291,20 +335,41 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
       {isPending && (
         <div className="flex items-center gap-2 mt-2 pt-2 border-t border-border-default/30">
           <button
-            onClick={handleApprove}
+            onClick={() => setConfirmAction('approve')}
             disabled={cardState !== 'pending'}
             className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-green-600 hover:bg-green-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {cardState === 'approving' ? t('execution.card.approving') : t('approve')}
           </button>
           <button
-            onClick={handleReject}
+            onClick={() => setConfirmAction('reject')}
             disabled={cardState !== 'pending'}
             className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-surface-elevated hover:bg-surface-overlay text-fg-secondary border border-border-default transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {cardState === 'rejecting' ? t('execution.card.rejecting') : t('reject')}
           </button>
         </div>
+      )}
+
+      {confirmAction === 'approve' && (
+        <ConfirmModal
+          variant="primary"
+          title={t('execution.card.confirmApproveTaskTitle')}
+          message={t('execution.card.confirmApproveTaskMessage', { title: info.title })}
+          confirmLabel={t('approve')}
+          onConfirm={() => { void runApprove(); }}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+      {confirmAction === 'reject' && (
+        <ConfirmModal
+          variant="danger"
+          title={t('execution.card.confirmRejectTaskTitle')}
+          message={t('execution.card.confirmRejectTaskMessage', { title: info.title })}
+          confirmLabel={t('reject')}
+          onConfirm={() => { void runReject(); }}
+          onCancel={() => setConfirmAction(null)}
+        />
       )}
     </div>
   );
@@ -345,6 +410,7 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
   const [cardState, setCardState] = useState<ReqCardState>('loading');
   const [rejectReason, setRejectReason] = useState('');
   const [showRejectInput, setShowRejectInput] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<'approve' | 'reject' | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -373,7 +439,8 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
     window.dispatchEvent(new CustomEvent('markus:mark-read-by-ref', { detail: { requirementId: info.requirementId } }));
   };
 
-  const handleApprove = async () => {
+  const runApprove = async () => {
+    setConfirmAction(null);
     setCardState('approving');
     try {
       await api.requirements.approve(info.requirementId);
@@ -384,12 +451,9 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
     }
   };
 
-  const handleReject = async () => {
-    if (!showRejectInput) {
-      setShowRejectInput(true);
-      return;
-    }
+  const runReject = async () => {
     if (!rejectReason.trim()) return;
+    setConfirmAction(null);
     setCardState('rejecting');
     try {
       await api.requirements.reject(info.requirementId, rejectReason.trim());
@@ -398,6 +462,15 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
     } catch {
       setCardState('pending');
     }
+  };
+
+  const onRejectClick = () => {
+    if (!showRejectInput) {
+      setShowRejectInput(true);
+      return;
+    }
+    if (!rejectReason.trim()) return;
+    setConfirmAction('reject');
   };
 
   const isPending = cardState === 'pending' || cardState === 'approving' || cardState === 'rejecting';
@@ -440,20 +513,20 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
               onChange={e => setRejectReason(e.target.value)}
               placeholder={t('execution.rejectionReasonPlaceholder')}
               className="w-full px-2 py-1.5 text-xs rounded-md bg-surface-secondary border border-border-default text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:border-brand-500"
-              onKeyDown={e => e.key === 'Enter' && handleReject()}
+              onKeyDown={e => e.key === 'Enter' && onRejectClick()}
               autoFocus
             />
           )}
           <div className="flex items-center gap-2">
             <button
-              onClick={handleApprove}
+              onClick={() => setConfirmAction('approve')}
               disabled={cardState !== 'pending'}
               className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-green-600 hover:bg-green-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {cardState === 'approving' ? t('execution.card.approving') : t('approve')}
             </button>
             <button
-              onClick={handleReject}
+              onClick={onRejectClick}
               disabled={cardState !== 'pending' || (showRejectInput && !rejectReason.trim())}
               className="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-surface-elevated hover:bg-surface-overlay text-fg-secondary border border-border-default transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -461,6 +534,27 @@ export function RequirementApprovalCard({ info }: { info: RequirementApprovalInf
             </button>
           </div>
         </div>
+      )}
+
+      {confirmAction === 'approve' && (
+        <ConfirmModal
+          variant="primary"
+          title={t('execution.card.confirmApproveReqTitle')}
+          message={t('execution.card.confirmApproveReqMessage', { title: info.title })}
+          confirmLabel={t('approve')}
+          onConfirm={() => { void runApprove(); }}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+      {confirmAction === 'reject' && (
+        <ConfirmModal
+          variant="danger"
+          title={t('execution.card.confirmRejectReqTitle')}
+          message={t('execution.card.confirmRejectReqMessage', { title: info.title })}
+          confirmLabel={t('reject')}
+          onConfirm={() => { void runReject(); }}
+          onCancel={() => setConfirmAction(null)}
+        />
       )}
     </div>
   );
@@ -503,7 +597,7 @@ function CodingToolDetailModal({ session, info, onClose }: { session: CodingTool
         <div className="px-5 py-3 border-b border-border-default flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`text-xs px-2 py-0.5 rounded font-medium ${toolMeta.badgeClass}`}>{toolMeta.label}</span>
-            <span className={`text-xs px-1.5 py-0.5 rounded ${isRunning ? 'bg-brand-500/15 text-brand-500' : isSuccess ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>
+            <span className={`text-xs px-1.5 py-0.5 rounded ${isRunning ? 'bg-brand-500/15 text-brand-500' : isSuccess ? 'bg-green-500/15 text-green-600' : 'bg-surface-overlay text-fg-tertiary'}`}>
               {isRunning ? 'Running' : isSuccess ? 'Completed' : isFailed ? 'Failed' : session.status}
             </span>
             {durationMs != null && <span className="text-xs text-fg-tertiary tabular-nums">{formatDuration(durationMs)}</span>}
@@ -563,7 +657,7 @@ function CodingToolDetailModal({ session, info, onClose }: { session: CodingTool
                   </div>
                 )}
                 {session.result.error && (
-                  <pre className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 overflow-x-auto max-h-60 overflow-y-auto whitespace-pre-wrap break-all font-mono">
+                  <pre className="text-xs text-fg-secondary bg-surface-elevated/50 border border-border-default rounded-lg px-3 py-2 overflow-x-auto max-h-60 overflow-y-auto whitespace-pre-wrap break-all font-mono">
                     {session.result.error}
                   </pre>
                 )}
@@ -670,32 +764,51 @@ function toolCallInfoToSession(info: ToolCallInfo): CodingToolSession | null {
 
 // ─── ToolCallRow — unified rendering for a single tool call ───────────────────
 
-export function ToolCallRow({ info, showTime, time, isLast }: {
+export function ToolCallRow({ info, time, hideApprovalCards }: {
   info: ToolCallInfo;
   showTime?: boolean;
   time?: string;
   isLast?: boolean;
+  /** When true, skip mid-row approval cards (chat bubble renders them once at the bottom). */
+  hideApprovalCards?: boolean;
 }) {
   const { t } = useTranslation('common');
   const meta = getToolMeta(info.tool);
-  const [expanded, setExpanded] = useState(false);
   const isDone = info.status !== 'running';
   const isStopped = info.status === 'stopped';
   const isSubagentTool = info.tool === 'spawn_subagent' || info.tool === 'spawn_subagents';
-  const hasSubagentLogs = isSubagentTool && info.subagentLogs && info.subagentLogs.length > 0;
-  const clickable = true;
+  const hasSubagentLogs = !!(isSubagentTool && info.subagentLogs && info.subagentLogs.length > 0);
+  // Auto-open while a sub-agent is streaming so users see nested progress without a click.
+  const [expanded, setExpanded] = useState(() => isSubagentTool && info.status === 'running');
+  const userCollapsedRef = useRef(false);
 
   const codingSession = useMemo(() => toolCallInfoToSession(info), [info]);
   const [codingModalOpen, setCodingModalOpen] = useState(false);
 
   const shellCmd = getShellCommand(info);
   const outputRef = useRef<HTMLPreElement>(null);
+  const latestSubagentLine = hasSubagentLogs
+    ? info.subagentLogs![info.subagentLogs!.length - 1]!.content
+    : '';
+
+  // Whether there's anything worth expanding inline (args / result / error / subagent logs).
+  const hasDetail = useMemo(() => {
+    const argEntries = formatArgsDetail(info.args);
+    return argEntries.length > 0 || !!info.result || !!info.error || (!!info.subagentLogs && info.subagentLogs.length > 0);
+  }, [info.args, info.result, info.error, info.subagentLogs]);
 
   useEffect(() => {
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
   }, [info.liveOutput]);
+
+  useEffect(() => {
+    if (!isSubagentTool) return;
+    if (info.status === 'running' && hasSubagentLogs && !userCollapsedRef.current) {
+      setExpanded(true);
+    }
+  }, [isSubagentTool, info.status, hasSubagentLogs, info.subagentLogs?.length]);
 
   if (codingSession) {
     return (
@@ -713,63 +826,81 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
 
   return (
     <>
-      <div
-        className={`relative py-0.5 min-w-0 ${!isLast ? 'border-b border-border-default/30 pb-1.5 mb-0.5' : ''} ${clickable ? 'cursor-pointer rounded hover:bg-surface-elevated/30 transition-colors' : ''}`}
-        onClick={() => setExpanded(true)}
-      >
-        {showTime && time && (
-          <span className="text-[10px] text-fg-tertiary tabular-nums hidden md:block mb-0.5">{time}</span>
-        )}
-        <div className="flex items-start gap-2">
-        <div className="flex flex-col items-center shrink-0 mt-0.5" style={{ width: 14 }}>
-          <div className={`w-3 h-3 rounded-full border flex items-center justify-center text-[8px] shrink-0 ${
-            info.status === 'running' ? 'border-brand-500 bg-brand-500/15 animate-pulse'
-            : info.status === 'error' ? 'border-red-500 bg-red-500/15 text-red-500'
-            : isStopped ? 'border-gray-500 bg-surface-secondary text-fg-tertiary'
-            : 'border-green-500 bg-green-500/15 text-green-500'
-          }`}>
-            {info.status === 'done' ? '✓' : info.status === 'error' ? '✗' : isStopped ? '■' : ''}
-          </div>
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className={`flex items-center gap-1 text-xs leading-snug ${
+      <div className="relative py-0.5 min-w-0">
+        <div
+          className={`flex items-center gap-2 min-w-0 rounded ${hasDetail ? 'cursor-pointer hover:bg-surface-elevated/30 transition-colors' : ''}`}
+          onClick={() => {
+            if (!hasDetail) return;
+            suppressVirtualScrollAdjust();
+            setExpanded(e => {
+              const next = !e;
+              if (isSubagentTool && info.status === 'running') userCollapsedRef.current = !next;
+              return next;
+            });
+          }}
+        >
+          {/* The tool's own icon carries success/failure via color — no separate status badge. */}
+          <NamedIcon
+            name={meta.iconName}
+            size={15}
+            className={`shrink-0 ${
+              info.status === 'running' ? 'text-brand-500'
+              : info.status === 'error' || isStopped ? 'text-fg-tertiary'
+              : 'text-green-500'
+            }`}
+          />
+          <span className={`text-xs leading-snug shrink-0 ${
             info.status === 'running' ? 'text-brand-500'
-            : info.status === 'error' ? 'text-red-500 line-through opacity-50'
-            : isStopped ? 'text-fg-tertiary opacity-60'
-            : 'text-fg-tertiary'
-          }`}>
-            <span className="opacity-60">{meta.icon}</span>
-            <span>{meta.label}{info.status === 'running' ? '…' : ''}</span>
-            {info.status === 'running' && (
-              <svg className="w-3 h-3 animate-spin ml-0.5 shrink-0" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            )}
-            {info.durationMs != null && info.status !== 'running' && (
-              <span className="text-[10px] text-fg-tertiary ml-0.5">{formatDuration(info.durationMs)}</span>
-            )}
-            {hasSubagentLogs && (
-              <span className="text-[10px] text-fg-tertiary ml-0.5 opacity-60">{t('execution.toolSteps', { count: info.subagentLogs!.filter(l => l.eventType === 'tool_end').length })}</span>
-            )}
-          </div>
-          {/* Show shell command being executed */}
+            : info.status === 'error' || isStopped ? 'text-fg-tertiary opacity-70'
+            : 'text-fg-secondary'
+          }`}>{t(`execution.tools.${meta.key}`, { defaultValue: meta.label })}{info.status === 'running' ? '…' : ''}</span>
+          {/* Expand chevron sits right after the tool name, mirroring ThinkingRow. */}
+          {hasDetail && (
+            <svg className={`w-3 h-3 shrink-0 text-fg-tertiary transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+          )}
+          {info.status === 'running' && (
+            <svg className="w-3 h-3 animate-spin shrink-0" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+          )}
+          {info.durationMs != null && info.status !== 'running' && (
+            <span className="text-[10px] text-fg-tertiary shrink-0">{formatDuration(info.durationMs)}</span>
+          )}
+          {/* Shell command preview: only the FIRST line (multi-line commands otherwise
+              collapse their newlines into one messy run-on line). Full text on expand. */}
           {shellCmd && (
-            <div className={`mt-0.5 font-mono text-[11px] truncate max-w-full ${info.status === 'running' ? 'text-fg-secondary' : 'text-fg-tertiary'}`} title={shellCmd}>
-              <span className="text-fg-tertiary select-none">$ </span>{truncate(shellCmd, 120)}
-            </div>
+            <span className="font-mono text-[11px] text-fg-tertiary truncate min-w-0" title={shellCmd}>
+              <span className="select-none opacity-70">$ </span>{shellCmd.split('\n')[0]}
+            </span>
           )}
-          {/* Live streaming output */}
-          {info.liveOutput && info.status === 'running' && (
-            <pre ref={outputRef} className="mt-1 font-mono text-[11px] text-fg-tertiary bg-surface-secondary/60 rounded px-2 py-1.5 max-h-32 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all">
-              {info.liveOutput}
-            </pre>
+          {hasSubagentLogs && (
+            <span className="text-[10px] text-fg-tertiary shrink-0 opacity-60">{t('execution.toolSteps', { count: info.subagentLogs!.filter(l => l.eventType === 'tool_end').length })}</span>
           )}
         </div>
-        </div>
+        {/* Live streaming output (only while running) — render trailing window only */}
+        {info.liveOutput && info.status === 'running' && (
+          <pre ref={outputRef} className="mt-1 font-mono text-[11px] text-fg-tertiary bg-surface-secondary/60 rounded px-2 py-1.5 max-h-32 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all">
+            {info.liveOutput.length > TOOL_DETAIL_PREVIEW_CHARS
+              ? info.liveOutput.slice(info.liveOutput.length - TOOL_DETAIL_PREVIEW_CHARS)
+              : info.liveOutput}
+          </pre>
+        )}
+        {/* When the nested panel is collapsed mid-run, still show the latest sub-agent step. */}
+        {!expanded && isSubagentTool && info.status === 'running' && latestSubagentLine && (
+          <div className="mt-1 ml-[23px] font-mono text-[11px] text-fg-tertiary truncate" title={latestSubagentLine}>
+            {latestSubagentLine}
+          </div>
+        )}
+        {/* Inline expandable detail (args + result), height-capped with its own scroll —
+            a lighter alternative to the old modal, consistent with the thinking block. */}
+        {expanded && hasDetail && (
+          <div className="mt-1 ml-[23px] border-l-2 border-border-default/60 pl-3 max-h-80 overflow-y-auto overflow-x-hidden">
+            <ToolDetailContent info={info} time={time} />
+          </div>
+        )}
       </div>
-      {expanded && createPortal(<ToolDetailModal info={info} onClose={() => setExpanded(false)} />, document.body)}
-      {isDone && (() => {
+      {isDone && !hideApprovalCards && (() => {
         const taskApproval = parseTaskApprovalFromResult(info.tool, info.result);
         if (taskApproval) return <TaskApprovalCard info={taskApproval} />;
         const reqApproval = parseRequirementApprovalFromResult(info.tool, info.result);
@@ -782,30 +913,36 @@ export function ToolCallRow({ info, showTime, time, isLast }: {
 
 // ─── ThinkingRow — collapsible thinking content ───────────────────────────────
 
-function ThinkingRow({ content, time, showTime }: { content: string; time?: string; showTime?: boolean }) {
+function ThinkingRow({ content, time, defaultExpanded }: { content: string; time?: string; showTime?: boolean; defaultExpanded?: boolean }) {
   const { t } = useTranslation('common');
-  const [expanded, setExpanded] = useState(false);
-  const preview = content.split('\n')[0] ?? '';
+  const [expanded, setExpanded] = useState(defaultExpanded ?? false);
+  // Follow stream lifecycle: auto-open while the reply is active; leave user toggle alone after.
+  useEffect(() => {
+    if (defaultExpanded) setExpanded(true);
+  }, [defaultExpanded]);
   return (
-    <div>
-      {showTime && time && (
-        <span className="text-[10px] text-fg-tertiary tabular-nums hidden md:block mb-0.5">{time}</span>
+    <div className="min-w-0 py-0.5 overflow-hidden">
+      <button
+        onClick={() => { suppressVirtualScrollAdjust(); setExpanded(e => !e); }}
+        className="flex items-center gap-2 text-xs w-full min-w-0"
+      >
+        {/* Sparkles reads as "AI reasoning" — clearer than a lightbulb for younger
+            users, and shares the monochrome stroke style of the tool icons.
+            Thinking always "succeeds", so it keeps a steady violet accent that gives
+            it its own identity, distinct from the green/red status colors of tools. */}
+        <NamedIcon name="sparkles" size={15} className="shrink-0 text-violet-400" />
+        <span className="shrink-0 text-fg-secondary">{t('execution.thinking')}</span>
+        {/* Chevron sits right after the title, not pinned to the far right. */}
+        <svg className={`w-3 h-3 shrink-0 text-fg-tertiary transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+        {expanded && time && <span className="ml-auto shrink-0 text-[10px] text-fg-tertiary tabular-nums">{time}</span>}
+      </button>
+      {/* Reasoning body rendered as a quote block so it reads as the agent's inner
+          monologue, visually distinct from its actual answer text. */}
+      {expanded && (
+        <div className="mt-1.5 ml-[23px] border-l-2 border-border-default/60 pl-3 overflow-hidden">
+          <MarkdownMessage content={content} className="text-xs text-fg-tertiary break-words" />
+        </div>
       )}
-      <div className="min-w-0 my-1 overflow-hidden bg-purple-500/[0.06] border border-purple-500/15 rounded-lg px-3 py-2 transition-colors hover:bg-purple-500/[0.1]">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-1.5 text-xs text-purple-400 w-full"
-        >
-          <svg className={`w-3 h-3 transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-          <span className="font-medium shrink-0">{t('execution.thinking')}</span>
-          {!expanded && <span className="text-fg-tertiary text-[11px] truncate">{preview}</span>}
-        </button>
-        {expanded && (
-          <div className="mt-2 pt-2 border-t border-purple-500/15 overflow-hidden">
-            <MarkdownMessage content={content} className="text-xs text-fg-tertiary break-words" />
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -814,27 +951,35 @@ function ThinkingRow({ content, time, showTime }: { content: string; time?: stri
 
 export const MemoExecEntryRow = memo(ExecEntryRow);
 
-export function ExecEntryRow({ entry, showTime, isLast }: {
+export function ExecEntryRow({ entry, showTime, isLast, defaultThinkingExpanded, hideApprovalCards }: {
   entry: ExecEntry;
   showTime?: boolean;
   isLast?: boolean;
+  defaultThinkingExpanded?: boolean;
+  hideApprovalCards?: boolean;
 }) {
   const { t } = useTranslation('common');
   if (entry.type === 'tool') {
-    return <ToolCallRow info={entry.info} showTime={showTime} time={entry.time} isLast={isLast} key={entry.key} />;
+    return (
+      <ToolCallRow
+        info={entry.info}
+        showTime={showTime}
+        time={entry.time}
+        isLast={isLast}
+        hideApprovalCards={hideApprovalCards}
+        key={entry.key}
+      />
+    );
   }
   if (entry.type === 'thinking') {
-    return <ThinkingRow content={entry.content} time={entry.time} showTime={showTime} />;
+    return <ThinkingRow content={entry.content} time={entry.time} showTime={showTime} defaultExpanded={defaultThinkingExpanded} />;
   }
   if (entry.type === 'text') {
+    // Plain answer prose, indented to align with the icon-rows' labels. No box or
+    // icon — being clean prose is what distinguishes it from thinking/tools.
     return (
-      <div>
-        {showTime && entry.time && (
-          <span className="text-[10px] text-fg-tertiary tabular-nums hidden md:block mb-0.5">{entry.time}</span>
-        )}
-        <div className="min-w-0 bg-surface-elevated/50 rounded-lg px-3 py-2.5 my-1 overflow-hidden">
-          <MarkdownMessage content={entry.content} className="text-sm text-fg-secondary break-words" />
-        </div>
+      <div className="min-w-0 pl-[23px] pr-1 overflow-hidden">
+        <MarkdownMessage content={entry.content} className="text-sm text-fg-secondary break-words" />
       </div>
     );
   }
@@ -845,38 +990,26 @@ export function ExecEntryRow({ entry, showTime, isLast }: {
     const color = isCompleted ? 'text-green-600' : isStarted ? 'text-blue-600' : isResumed ? 'text-amber-600' : 'text-fg-tertiary';
     const dot = isCompleted ? 'bg-green-400' : isStarted ? 'bg-blue-400' : isResumed ? 'bg-amber-400' : 'bg-gray-500';
     return (
-      <div className="py-0.5 px-1">
-        {showTime && entry.time && (
-          <span className="text-[10px] text-fg-tertiary tabular-nums hidden md:block mb-0.5">{entry.time}</span>
-        )}
-        <div className="flex items-center gap-2">
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
-          <span className={`text-xs capitalize ${color}`}>{t(`execution.statusKnown.${entry.content}`, { defaultValue: entry.content })}</span>
-        </div>
+      <div className="flex items-center gap-2 py-0.5 min-w-0">
+        {/* Dot centered in a 15px slot so the label aligns with the other rows. */}
+        <span className="w-[15px] flex justify-center shrink-0">
+          <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+        </span>
+        <span className={`text-xs capitalize ${color}`}>{t(`execution.statusKnown.${entry.content}`, { defaultValue: entry.content })}</span>
       </div>
     );
   }
   if (entry.type === 'error') {
     return (
-      <div>
-        {showTime && entry.time && (
-          <span className="text-[10px] text-fg-tertiary tabular-nums hidden md:block mb-0.5">{entry.time}</span>
-        )}
-        <div className="min-w-0 text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-2 my-1 leading-relaxed break-words overflow-hidden">
+      <div className="flex items-start gap-2 py-0.5 min-w-0">
+        <NamedIcon name="alert-circle" size={15} className="shrink-0 mt-0.5 text-red-500" />
+        <span className="text-xs text-red-500 leading-relaxed break-words min-w-0">
           <span className="font-medium">{t('execution.errorPrefix')}</span> {entry.content}
-        </div>
+        </span>
       </div>
     );
   }
   return null;
-}
-
-// ─── Legacy adapter: LogEntryRow for backward compatibility ───────────────────
-
-export function LogEntryRow({ entry }: { entry: TaskLogEntry }) {
-  const execEntry = taskLogToEntry(entry);
-  if (!execEntry) return null;
-  return <ExecEntryRow entry={execEntry} />;
 }
 
 // ─── CompactExecutionCard ─────────────────────────────────────────────────────
@@ -931,15 +1064,15 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
   } else if (lastEntry?.type === 'tool_start') {
     const meta = getToolMeta(lastEntry.content);
     statusIcon = meta.icon;
-    statusLabel = `${meta.label}...`;
+    statusLabel = `${t(`execution.tools.${meta.key}`, { defaultValue: meta.label })}...`;
     const shellCmd = lastEntry.metadata?.arguments && typeof lastEntry.metadata.arguments === 'object'
       ? (lastEntry.metadata.arguments as Record<string, unknown>).command as string | undefined
       : undefined;
-    if (shellCmd) statusDetail = `$ ${truncate(shellCmd, 80)}`;
+    if (shellCmd) statusDetail = `$ ${truncate(shellCmd.split('\n')[0] ?? '', 80)}`;
   } else if (lastEntry?.type === 'tool_end') {
     const meta = getToolMeta(lastEntry.content);
     statusIcon = meta.icon;
-    statusLabel = meta.label;
+    statusLabel = t(`execution.tools.${meta.key}`, { defaultValue: meta.label });
   } else {
     statusIcon = '💭';
     statusLabel = t('execution.compact.thinking');
@@ -949,7 +1082,7 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
 
   return (
     <div
-      onClick={onExpand}
+      onClick={() => { suppressVirtualScrollAdjust(); onExpand(); }}
       className={`overflow-hidden transition-all cursor-pointer min-w-0 ${
         embedded
           ? 'hover:bg-surface-elevated/20'
@@ -1032,13 +1165,21 @@ export interface FullExecutionLogProps {
   entries: ExecutionStreamEntryUI[];
   streamingText?: string;
   isActive: boolean;
-  onCollapse: () => void;
+  /** When omitted, the log is permanently expanded and no collapse toggle is shown. */
+  onCollapse?: () => void;
   showRounds?: boolean;
   /** When true, disables internal max-height/scroll — parent handles scrolling */
   embedded?: boolean;
+  /** Expand thinking rows (used while a reply is still streaming). */
+  expandThinking?: boolean;
+  /**
+   * Hide per-tool Task/Requirement approval cards inside the timeline.
+   * Use when the parent (chat bubble) already renders those cards once at the bottom.
+   */
+  hideApprovalCards?: boolean;
 }
 
-export function FullExecutionLog({ entries, streamingText, isActive, onCollapse, showRounds, embedded }: FullExecutionLogProps) {
+export function FullExecutionLog({ entries, streamingText, isActive, onCollapse, showRounds, embedded, expandThinking, hideApprovalCards }: FullExecutionLogProps) {
   const { t } = useTranslation('common');
   const scrollRef = useRef<HTMLDivElement>(null);
   const [expandedRounds, setExpandedRounds] = useState<Set<number>>(new Set());
@@ -1062,6 +1203,7 @@ export function FullExecutionLog({ entries, streamingText, isActive, onCollapse,
   }, [entries.length, streamingText, isActive, embedded]);
 
   const toggleRound = (round: number) => {
+    suppressVirtualScrollAdjust();
     setExpandedRounds(prev => {
       const next = new Set(prev);
       if (next.has(round)) next.delete(round);
@@ -1077,20 +1219,22 @@ export function FullExecutionLog({ entries, streamingText, isActive, onCollapse,
 
   return (
     <div className={`min-w-0 overflow-hidden ${embedded ? '' : 'rounded-lg border border-border-default bg-surface-primary/50'}`}>
-      <div
-        onClick={onCollapse}
-        className={`flex items-center cursor-pointer hover:bg-surface-elevated/40 transition-colors ${
-          embedded ? 'justify-end py-0.5' : 'justify-between px-3 py-1.5 border-b border-border-default'
-        }`}
-      >
-        {!embedded && <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">{t('execution.fullLog.title')}</span>}
-        <span className="text-[10px] text-brand-500 flex items-center gap-0.5">
-          {t('execution.fullLog.collapse')}
-          <svg className="w-3 h-3 rotate-180" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
-        </span>
-      </div>
+      {onCollapse && (
+        <div
+          onClick={() => { suppressVirtualScrollAdjust(); onCollapse(); }}
+          className={`flex items-center cursor-pointer hover:bg-surface-elevated/40 transition-colors ${
+            embedded ? 'justify-end py-0.5' : 'justify-between px-3 py-1.5 border-b border-border-default'
+          }`}
+        >
+          {!embedded && <span className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">{t('execution.fullLog.title')}</span>}
+          <span className="text-[10px] text-brand-500 flex items-center gap-0.5">
+            {t('execution.fullLog.collapse')}
+            <svg className="w-3 h-3 rotate-180" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
+          </span>
+        </div>
+      )}
 
-      <div ref={embedded ? undefined : scrollRef} className={`space-y-0.5 min-w-0 overflow-x-hidden ${embedded ? 'py-1' : 'px-3 py-2 max-h-[60vh] overflow-y-auto scrollbar-thin'}`}>
+      <div ref={embedded ? undefined : scrollRef} className={`space-y-2.5 min-w-0 overflow-x-hidden ${embedded ? 'py-1' : 'px-3 py-2 max-h-[60vh] overflow-y-auto scrollbar-thin'}`}>
         {hasMultipleRounds ? (
           rounds.map(rg => {
             const isExpanded = expandedRounds.has(rg.round);
@@ -1111,9 +1255,16 @@ export function FullExecutionLog({ entries, streamingText, isActive, onCollapse,
                   </div>
                 </button>
                 {isExpanded && (
-                  <div className="px-3 py-1.5 space-y-0.5">
+                  <div className="px-3 py-1.5 space-y-2.5">
                     {filteredEntries.map((entry, i) => (
-                      <MemoExecEntryRow key={i} entry={entry} showTime isLast={i === filteredEntries.length - 1} />
+                      <MemoExecEntryRow
+                        key={i}
+                        entry={entry}
+                        showTime={false}
+                        isLast={i === filteredEntries.length - 1}
+                        defaultThinkingExpanded={!!expandThinking}
+                        hideApprovalCards={hideApprovalCards}
+                      />
                     ))}
                   </div>
                 )}
@@ -1122,7 +1273,14 @@ export function FullExecutionLog({ entries, streamingText, isActive, onCollapse,
           })
         ) : (
           filtered && filtered.map((entry, i) => (
-            <MemoExecEntryRow key={i} entry={entry} showTime isLast={i === filtered.length - 1} />
+            <MemoExecEntryRow
+              key={i}
+              entry={entry}
+              showTime={false}
+              isLast={i === filtered.length - 1}
+              defaultThinkingExpanded={!!expandThinking}
+              hideApprovalCards={hideApprovalCards}
+            />
           ))
         )}
 

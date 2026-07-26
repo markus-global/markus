@@ -1,5 +1,5 @@
 {
-  "title": "仪表盘",
+  "title": "概览",
   "subtitle": "以下是你的 AI 团队今日动态。",
   "hireAgent": "部署智能体",
   "metricCards": {
@@ -32,14 +32,41 @@
     "createProject": "创建项目",
     "createProjectDesc": "设定需求，让智能体规划、执行并交付"
   },
+  "claim": {
+    "title": "领取奖励积分",
+    "subtitle": "使用 Markus Cloud AI 开始体验——无需自行配置 API Key。",
+    "provider": "默认模型服务",
+    "creditsUnit": "积分",
+    "oneTimeNote": "账户一次性奖励积分。",
+    "loading": "正在检查账户状态…",
+    "claimNow": "立即领取",
+    "claiming": "领取中…",
+    "tooSoon": "请稍候 {{seconds}} 秒后再领取。",
+    "success": "已到账 {{amount}} 奖励积分，可以开始使用了！",
+    "startUsing": "可以开始使用 Markus Cloud 了。",
+    "openHub": "前往 Hub 领取",
+    "openHubHint": "在 Markus Hub 领取 {{amount}} 奖励积分。",
+    "notClaimable": "当前账户无法领取此积分。",
+    "loadFailed": "无法加载领取状态，请重试。",
+    "claimFailed": "领取失败，请重试。",
+    "retry": "重试"
+  },
   "checklist": {
     "title": "开始使用 Markus",
     "subtitle": "按照以下步骤快速上手，让你的 AI 团队开始工作。",
     "progress": "{{done}}/{{total}} 步已完成",
     "setup": {
       "title": "系统配置",
-      "llm": "配置 AI 模型",
+      "claim": "领取 Markus 奖励积分",
+      "claimDesc": "领取 1,000 Markus Cloud 奖励积分，即可开始对话",
+      "claimAction": "领取积分",
+      "markus": "领取 Markus 奖励积分",
+      "markusDesc": "领取 1,000 Markus Cloud 奖励积分，即可开始对话",
+      "markusAction": "领取积分",
+      "markusActionConfigured": "管理模型",
+      "llm": "配置大模型",
       "llmDesc": "设置 LLM 提供商的 API Key，这是智能体工作的基础",
+      "llmDescHub": "使用 Markus Cloud AI，或添加你自己的模型 API Key —— 智能体工作所必需",
       "llmAction": "前往配置",
       "search": "配置搜索引擎",
       "searchDesc": "设置搜索 API Key，让智能体能够搜索互联网获取信息",
@@ -47,12 +74,6 @@
       "browser": "设置浏览器自动化",
       "browserDesc": "安装 Chrome 扩展，让智能体能够自动操控浏览器",
       "browserAction": "前往设置",
-      "codingTools": "配置编程工具",
-      "codingToolsDesc": "连接外部编程工具（Cursor、Claude Code、Codex）以执行编程任务",
-      "codingToolsAction": "去配置",
-      "license": "账户与许可证",
-      "licenseDesc": "连接 Markus Hub，激活企业版许可证解锁全部功能",
-      "licenseAction": "前往设置",
       "optional": "可选",
       "update": "更新配置"
     },
@@ -67,9 +88,6 @@
       "requirements": "添加需求",
       "requirementsDesc": "为项目添加需求，智能体会自动拆解为可执行的任务",
       "requirementsAction": "让秘书添加",
-      "agent": "招聘一个智能体",
-      "agentDesc": "从模板招聘专业智能体，如研究员、开发者、分析师等",
-      "agentAction": "让秘书招聘",
       "team": "创建科技前沿智库",
       "teamDesc": "组建由埃隆·马斯克、史蒂夫·乔布斯、山姆·奥特曼、黄仁勋 4 位科技领袖角色组成的 AI 智库，从不同视角分析科技前沿趋势",
       "teamAction": "一键创建"
@@ -157,5 +175,54 @@
     "team": "创建智能体团队",
     "skill": "创建技能",
     "discover": "发现更多"
+  },
+  "usage": {
+    "sectionTitle": "用量与排名",
+    "creditsTitle": "积分用量",
+    "kpi": {
+      "cuConsumed": "积分消耗",
+      "tokensConsumed": "Token 消耗",
+      "todayAmount": "今日：{{amount}}"
+    },
+    "quota": {
+      "title": "Markus Cloud AI",
+      "personalLimitLabel": "个人积分限额",
+      "personalLimit": "组织管理员为您设置了个人积分限额。",
+      "notConnected": "未连接到 Markus Hub",
+      "connect": "连接",
+      "connectedAs": "当前账号 @{{username}}",
+      "resetsAt": "重置时间 {{date}}",
+      "topUp": "充值"
+    },
+    "agents": {
+      "title": "智能体排名",
+      "noData": "暂无智能体数据。启动智能体后可在此查看。",
+      "name": "智能体",
+      "team": "团队",
+      "tasks": "任务",
+      "cuUsed": "积分消耗",
+      "tokens": "Tokens",
+      "efficiency": "效率",
+      "total": "合计（{{count}} 个智能体）",
+      "mixedProviders": "混合供应商 — 积分仅统计 Cloud AI",
+      "showAll": "展开全部 {{count}} 个",
+      "showLess": "收起"
+    },
+    "trends": {
+      "title": "用量趋势",
+      "expand": "展开",
+      "collapse": "收起",
+      "byDay": "按天",
+      "byHour": "按小时",
+      "days": "天",
+      "totalCredits": "积分消耗",
+      "totalTokens": "Token 消耗",
+      "totalRequests": "请求次数",
+      "creditsChart": "积分",
+      "tokensChart": "Tokens",
+      "max": "最大",
+      "noData": "暂无用量数据。连接 Markus Hub 查看趋势。",
+      "models": "模型"
+    }
   }
 }

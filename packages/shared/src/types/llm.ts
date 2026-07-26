@@ -1,6 +1,6 @@
 import type { ModelTier } from './model-catalog.js';
 
-export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'deepseek' | 'custom';
+export type LLMProvider = 'anthropic' | 'openai' | 'openai-codex' | 'siliconflow' | 'openrouter' | 'google' | 'ollama' | 'minimax' | 'zai' | 'deepseek' | 'markus' | 'custom';
 
 export type LLMAuthType = 'api-key' | 'oauth' | 'setup-token';
 
@@ -43,6 +43,23 @@ export interface LLMProviderConfig {
   timeoutMs?: number;
   authType?: LLMAuthType;
   authProfileId?: string;
+  /**
+   * Hub-served, geo-aware model catalog URL. Used to list allowed models.
+   * Chat and hosted search use the OpenRouter member key (`apiKey` / `sk-or-…`).
+   */
+  modelsUrl?: string;
+  /** Hub API base (for POST /api/user/cu/sync on credit recovery). */
+  hubUrl?: string;
+  /** Hub JWT / session token for cu/sync. Falls back to MARKUS_HUB_TOKEN / ~/.markus/hub-token. */
+  hubToken?: string;
+  /** @deprecated Legacy Worker subscription key — ignored; stripped on save. */
+  subscriptionKey?: string;
+  /** @deprecated Legacy Cloudflare Worker proxy URL — ignored; stripped on save. */
+  proxyUrl?: string;
+  /** @deprecated Legacy Hub search facade URL — ignored. */
+  searchUrl?: string;
+  /** @deprecated Legacy Worker toggle — ignored. */
+  workerEnabled?: boolean;
 }
 
 export interface ModelCostConfig {
@@ -66,6 +83,8 @@ export interface ModelDefinition {
   tier?: ModelTier;
   /** Multimodal capability flags (e.g. 'imageGeneration', 'tts', 'stt', 'videoGeneration') */
   capabilities?: string[];
+  /** Hub catalog route when present (always openrouter for Markus Provider). */
+  route?: 'openrouter';
 }
 
 export interface EnhancedProviderSettings {
@@ -89,12 +108,16 @@ export interface EnhancedProviderSettings {
 export interface EnhancedLLMSettings {
   defaultProvider: string;
   autoFallback?: boolean;
+  /** Global text routing default (provider + model). Used by Chat model picker label. */
+  routingDefaultModel?: { provider: string; model: string } | null;
   providers: Record<string, EnhancedProviderSettings>;
 }
 
 export interface LLMRequest {
   messages: LLMMessage[];
   tools?: LLMTool[];
+  /** Override the model for this specific request (provider-dependent). */
+  model?: string;
   maxTokens?: number;
   temperature?: number;
   stopSequences?: string[];
@@ -164,6 +187,10 @@ export interface LLMResponse {
   compactionContent?: string;
   /** Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning_content) that must be round-tripped. */
   reasoningContent?: string;
+  /** Compute Units charged by Markus proxy (from x-cu-cost header). */
+  cuCost?: number;
+  /** Low-credit warning to display after this response (e.g. "Credits running low"). */
+  creditWarning?: string;
 }
 
 export interface SubagentProgressEvent {

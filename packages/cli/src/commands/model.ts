@@ -385,10 +385,17 @@ async function setDefaultProvider(
     console.log('  Invalid selection.');
     return;
   }
-  const newDefault = availableIds[selIdx];
+  const newDefault = availableIds[selIdx]!;
   const config = loadConfig(undefined);
-  saveConfig({ ...config, llm: { ...config.llm, defaultProvider: newDefault } });
-  console.log(`\n  ${C.GREEN}✓${C.RESET}  Default provider set to: ${newDefault}\n`);
+  // Keep the routing default model in sync with the default provider so agents
+  // don't keep routing to the previous provider's model via a stale default.
+  const providerModel = config.llm?.providers?.[newDefault]?.model;
+  const currentDefaultModel = config.llm?.routingDefaultModel;
+  const routingDefaultModel = (providerModel && (!currentDefaultModel || currentDefaultModel.provider !== newDefault))
+    ? { provider: newDefault, model: providerModel }
+    : currentDefaultModel;
+  saveConfig({ ...config, llm: { ...config.llm, defaultProvider: newDefault, ...(routingDefaultModel ? { routingDefaultModel } : {}) } });
+  console.log(`\n  ${C.GREEN}✓${C.RESET}  Default provider set to: ${newDefault}${routingDefaultModel?.provider === newDefault ? ` (default model: ${routingDefaultModel.model})` : ''}\n`);
 }
 
 // ─── Placeholder detection ────────────────────────────────────────────────────

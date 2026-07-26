@@ -203,10 +203,15 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       inputSchema: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'Short, clear task title' },
+          title: {
+            type: 'string',
+            description:
+              'Short, clear task title in the user\'s language (match User locale / their recent messages — not English by default)',
+          },
           description: {
             type: 'string',
-            description: 'Detailed description of what needs to be done and why',
+            description:
+              'Detailed description of what needs to be done and why, written in the user\'s language (same as title)',
           },
           requirement_id: {
             type: 'string',
@@ -821,7 +826,11 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               type: 'object',
               properties: {
                 task_id: { type: 'string', description: 'The task ID to add this subtask to' },
-                title: { type: 'string', description: 'Clear, action-oriented subtask title (e.g. "Research competitor pricing", not "research")' },
+                title: {
+                  type: 'string',
+                  description:
+                    'Clear, action-oriented subtask title in the user\'s language (e.g. Chinese user → 「调研竞品定价」, not English-only)',
+                },
               },
               required: ['task_id', 'title'],
             },
@@ -1068,12 +1077,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               properties: {
                 title: {
                   type: 'string',
-                  description: 'Clear, concise title describing what is needed',
+                  description:
+                    'Clear, concise title in the user\'s language (match User locale / their messages — not English by default)',
                 },
                 description: {
                   type: 'string',
                   description:
-                    'Detailed explanation of what needs to be done, why, and expected outcome',
+                    'Detailed explanation of what needs to be done, why, and expected outcome — in the user\'s language',
                 },
                 priority: {
                   type: 'string',
@@ -1538,9 +1548,19 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             inputSchema: {
               type: 'object' as const,
               properties: {
-                title: { type: 'string', description: 'Goal title' },
-                description: { type: 'string', description: 'Detailed description of what needs to be achieved' },
-                completion_criteria: { type: 'string', description: 'LLM-evaluable criteria for when this goal is considered complete' },
+                title: {
+                  type: 'string',
+                  description: 'Goal title in the user\'s language (match User locale / their messages)',
+                },
+                description: {
+                  type: 'string',
+                  description: 'Detailed description of what needs to be achieved, in the user\'s language',
+                },
+                completion_criteria: {
+                  type: 'string',
+                  description:
+                    'LLM-evaluable completion criteria — write in the user\'s language so humans can read them too',
+                },
                 max_iterations: { type: 'number', description: 'Safety limit on heartbeat iterations (default: 10)' },
                 priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Priority (default: medium)' },
               },

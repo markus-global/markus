@@ -113,6 +113,7 @@
     "defaultOrgName": "{{name}}'s Team",
     "setOrgName": "Set Organization Name",
     "orgNameSaved": "Saved",
+    "orgNameSaveFailed": "Could not save the organization name. Please try again.",
     "pendingInvitations": "You have pending organization invitations",
     "invitedBy": "Invited by: {{name}}",
     "acceptAndJoin": "Accept & Join",

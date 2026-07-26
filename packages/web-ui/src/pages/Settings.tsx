@@ -5,8 +5,8 @@ import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
-import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { isElectron } from '../hooks/useElectron.ts';
 import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
 import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
@@ -14,6 +14,7 @@ import { PROVIDER_OPTIONS } from '../constants/providers.ts';
 import { FeishuIntegrationSection } from '../components/FeishuIntegrationSection.tsx';
 import { CodingToolsSettings } from './CodingToolsSettings.tsx';
 import { WebSearchSettings } from './WebSearchSettings.tsx';
+import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[]; tier?: string }
@@ -46,6 +47,16 @@ type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'searc
 
 interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
 
+/** Module-scoped — used by Settings page and CollapsibleAvailableModels. */
+const BUILTIN_MODEL_IDS = new Set([
+  'claude-opus-4-6', 'claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022',
+  'gpt-5.4', 'gpt-4o', 'o4-mini',
+  'gemini-3-1-pro', 'gemini-2.5-flash',
+  'MiniMax-M2.7', 'MiniMax-M2.5',
+  'xiaomi/mimo-v2-pro', 'anthropic/claude-opus-4-6', 'openai/gpt-5.4', 'google/gemini-3-1-pro',
+  'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner',
+]);
+
 const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'appearance', labelKey: 'nav.appearance' },
   { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
@@ -55,7 +66,6 @@ const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'coding-tools', labelKey: 'nav.codingTools', adminOnly: true },
   { id: 'search', labelKey: 'nav.search', adminOnly: true },
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
-  { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
 ];
 
@@ -63,11 +73,57 @@ const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] }> = [
   { labelKey: 'nav.group.general', tabs: ['appearance', 'storage'] },
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'coding-tools', 'search'] },
-  { labelKey: 'nav.group.connections', tabs: ['integrations', 'remote'] },
+  { labelKey: 'nav.group.connections', tabs: ['integrations'] },
   { labelKey: 'nav.group.account', tabs: ['account'] },
 ];
 
-const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account' };
+/** Maps API breakdown `name` → i18n key under dataStorage.items.* */
+const STORAGE_ITEM_KEYS: Record<string, string> = {
+  Database: 'database',
+  Agents: 'agents',
+  Skills: 'skills',
+  'LLM Logs': 'llmLogs',
+  'Builder Artifacts': 'builderArtifacts',
+  Teams: 'teams',
+  Shared: 'shared',
+  Knowledge: 'knowledge',
+};
+
+/** safe = free to clear; keep = app/workspace data (no delete CTA); caution = back up first */
+const STORAGE_SAFETY_LEVEL: Record<string, 'safe' | 'caution' | 'keep'> = {
+  Database: 'keep',
+  Agents: 'keep',
+  Skills: 'caution',
+  'LLM Logs': 'safe',
+  'Builder Artifacts': 'caution',
+  Teams: 'keep',
+  Shared: 'caution',
+  Knowledge: 'caution',
+};
+
+// Leading icons for the settings nav (stroke-based lucide paths, one or more subpaths).
+const SETTINGS_TAB_ICONS: Record<string, string> = {
+  appearance: 'M21 4H14 M10 4H3 M21 12H12 M8 12H3 M21 20H16 M12 20H3 M14 2v4 M8 10v4 M16 18v4',
+  storage: 'M12 8c4.418 0 8-1.343 8-3s-3.582-3-8-3-8 1.343-8 3 3.582 3 8 3Z M4 5v6c0 1.657 3.582 3 8 3s8-1.343 8-3V5 M4 11v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6',
+  providers: 'M9 2v3 M15 2v3 M9 19v3 M15 19v3 M2 9h3 M2 15h3 M19 9h3 M19 15h3 M6 6h12v12H6z M9 9h6v6H9z',
+  execution: 'M12 8V4H8 M4 8h16a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2z M2 14h2 M20 14h2 M15 13v2 M9 13v2',
+  browser: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z',
+  'coding-tools': 'M16 18l6-6-6-6 M8 6l-6 6 6 6',
+  search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3',
+  integrations: 'M9 17H7A5 5 0 0 1 7 7h2 M15 7h2a5 5 0 1 1 0 10h-2 M8 12h8',
+  account: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2 M12 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z',
+  _default: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+};
+
+function SettingsTabIcon({ id, className }: { id: string; className?: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${className ?? ''}`}>
+      <path d={SETTINGS_TAB_ICONS[id] ?? SETTINGS_TAB_ICONS._default} />
+    </svg>
+  );
+}
+
+const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account', remote: 'account' };
 
 function getSettingsTab(): SettingsTab | null {
   const hash = window.location.hash.slice(1);
@@ -84,9 +140,6 @@ function getSettingsTab(): SettingsTab | null {
 export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdated }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser; onLogout?: () => void; onUserUpdated?: (u: AuthUser) => void } = {}) {
   const { t, i18n } = useTranslation(['settings', 'common']);
   const isMobile = useIsMobile();
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [showEditProfile, setShowEditProfile] = useState(false);
-  const userMenuRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab | null>(getSettingsTab);
 
   useEffect(() => {
@@ -108,20 +161,29 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   // On desktop, always show a tab (default to appearance). On mobile, null means show the list.
   const resolvedTab: SettingsTab | null = activeTab ?? (isMobile ? null : 'appearance');
 
+  // Launch-at-login (Electron desktop only). Reflects the OS-level setting.
+  const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  const [launchAtLoginBusy, setLaunchAtLoginBusy] = useState(false);
   useEffect(() => {
-    const handler = () => setShowEditProfile(true);
-    window.addEventListener('markus:open-edit-profile', handler);
-    return () => window.removeEventListener('markus:open-edit-profile', handler);
+    if (!isElectron() || !window.markusDesktop?.getLoginItemSettings) return;
+    window.markusDesktop.getLoginItemSettings()
+      .then(s => setLaunchAtLogin(!!s.openAtLogin))
+      .catch(() => {});
   }, []);
-
-  useEffect(() => {
-    if (!userMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) setUserMenuOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [userMenuOpen]);
+  const toggleLaunchAtLogin = useCallback(async () => {
+    if (!window.markusDesktop?.setLoginItemSettings || launchAtLoginBusy) return;
+    const next = !launchAtLogin;
+    setLaunchAtLoginBusy(true);
+    setLaunchAtLogin(next); // optimistic
+    try {
+      const res = await window.markusDesktop.setLoginItemSettings(next);
+      setLaunchAtLogin(!!res.openAtLogin);
+    } catch {
+      setLaunchAtLogin(!next); // revert on failure
+    } finally {
+      setLaunchAtLoginBusy(false);
+    }
+  }, [launchAtLogin, launchAtLoginBusy]);
 
   const [health, setHealth] = useState<{ status: string; version: string; agents: number } | null>(null);
   const [llm, setLlm] = useState<LLMSettings | null>(null);
@@ -132,6 +194,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [togglingProvider, setTogglingProvider] = useState<string | null>(null);
   const [providerCatalogModels, setProviderCatalogModels] = useState<Record<string, CatalogModel[]>>({});
   const [providerCatalogLoading, setProviderCatalogLoading] = useState<string | null>(null);
+  const [markusCatalogError, setMarkusCatalogError] = useState<string | null>(null);
 
   // Environment variable model detection state
   const [envModels, setEnvModels] = useState<EnvModelsResponse | null>(null);
@@ -318,12 +381,23 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   useEffect(() => {
     if (!expandedProvider || providerCatalogModels[expandedProvider]) return;
     setProviderCatalogLoading(expandedProvider);
-    // Use live endpoint (fetches from provider's /v1/models API with stored key)
+    if (expandedProvider === 'markus') setMarkusCatalogError(null);
+    // Markus: Hub catalog via modelsUrl (config.hub.url). Others: provider /v1/models.
     api.modelCatalog.getLive(expandedProvider)
       .then(result => {
         setProviderCatalogModels(prev => ({ ...prev, [expandedProvider]: result.models }));
+        if (expandedProvider === 'markus') {
+          if ((result as { error?: string }).error) {
+            setMarkusCatalogError(String((result as { error?: string }).error));
+          }
+          // Refresh LLM settings so Markus "可用模型" picks up Hub catalog ids
+          loadLlmSettings();
+        }
       })
-      .catch(() => {
+      .catch((e) => {
+        if (expandedProvider === 'markus') {
+          setMarkusCatalogError(e instanceof Error ? e.message : String(e));
+        }
         // Fallback to static catalog
         api.modelCatalog.getByProvider(expandedProvider)
           .then(result => {
@@ -614,6 +688,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [editProviderForm, setEditProviderForm] = useState({ apiKey: '', baseUrl: '', model: '', contextWindow: 0, maxOutputTokens: 0, costInput: 0, costOutput: 0 });
   const [editProviderSaving, setEditProviderSaving] = useState(false);
   const [deletingProvider, setDeletingProvider] = useState<string | null>(null);
+  const [providerDeleteTarget, setProviderDeleteTarget] = useState<{ name: string; label: string } | null>(null);
 
   // Quick setup state (for unconfigured known providers — just enter API key)
   const [quickSetupKey, setQuickSetupKey] = useState('');
@@ -795,15 +870,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     } catch { /* ignore */ }
   };
 
-  const BUILTIN_MODEL_IDS = new Set([
-    'claude-opus-4-6', 'claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022',
-    'gpt-5.4', 'gpt-4o', 'o4-mini',
-    'gemini-3-1-pro', 'gemini-2.5-flash',
-    'MiniMax-M2.7', 'MiniMax-M2.5',
-    'xiaomi/mimo-v2-pro', 'anthropic/claude-opus-4-6', 'openai/gpt-5.4', 'google/gemini-3-1-pro',
-    'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner',
-  ]);
-
   // Provider connectivity test state
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string; model?: string; usage?: Record<string, number>; requestUrl?: string; requestBody?: unknown }>>({});
@@ -839,14 +905,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   return (
     <div className="flex-1 flex overflow-hidden">
-      {showEditProfile && authUser && (
-        <EditProfileModal
-          authUser={authUser}
-          onClose={() => setShowEditProfile(false)}
-          onSaved={u => { setShowEditProfile(false); onUserUpdated?.(u); }}
-        />
-      )}
-
       {/* Settings Sidebar */}
       <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-border-default bg-surface-secondary overflow-y-auto">
         <div className="px-3 pt-4 pb-2">
@@ -875,13 +933,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     <button
                       key={tab.id}
                       onClick={() => navigateTab(tab.id)}
-                      className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors text-fg-primary ${
+                      className={`w-full flex items-center gap-2.5 text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors text-fg-primary ${
                         resolvedTab === tab.id
                           ? 'bg-surface-overlay'
                           : 'hover:bg-surface-overlay/60'
                       }`}
                     >
-                      {t(`settings:${tab.labelKey}`)}
+                      <SettingsTabIcon id={tab.id} className={resolvedTab === tab.id ? 'text-fg-secondary' : 'text-fg-tertiary'} />
+                      <span className="truncate">{t(`settings:${tab.labelKey}`)}</span>
                     </button>
                   ))}
                 </div>
@@ -889,45 +948,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             );
           })}
         </nav>
-        {authUser && (
-          <div className="px-3 pb-4 border-t border-border-default pt-3">
-            <div ref={userMenuRef} className="relative">
-              <button
-                onClick={() => setUserMenuOpen(!userMenuOpen)}
-                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-surface-overlay transition-colors"
-              >
-                <Avatar name={authUser.name || t('common:userPlaceholder')} avatarUrl={authUser.avatarUrl} size={24} />
-                <span className="text-sm text-fg-secondary truncate flex-1 text-left">{authUser.name || t('common:userPlaceholder')}</span>
-              </button>
-              {userMenuOpen && (
-                <div className="absolute left-0 bottom-full mb-1 bg-surface-secondary border border-border-default rounded-xl shadow-xl z-50 overflow-hidden" style={{ minWidth: 200 }}>
-                  <div className="px-4 py-3 border-b border-border-default">
-                    <div className="text-sm font-medium text-fg-primary">{authUser.name || t('common:userPlaceholder')}</div>
-                    <div className="text-xs text-fg-tertiary mt-0.5">{authUser.email || authUser.role}</div>
-                  </div>
-                  <div className="py-1">
-                    <button
-                      onClick={() => { setUserMenuOpen(false); setShowEditProfile(true); }}
-                      className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-fg-secondary hover:bg-surface-overlay transition-colors"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
-                      {t('common:profile.editProfile')}
-                    </button>
-                    {onLogout && (
-                      <button
-                        onClick={() => { setUserMenuOpen(false); onLogout(); }}
-                        className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-red-500 hover:bg-red-500/10 transition-colors"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
-                        {t('common:signOut')}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
       </aside>
 
       {/* Content Panel */}
@@ -958,9 +978,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     <button
                       key={tab.id}
                       onClick={() => navigateTab(tab.id)}
-                      className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm text-fg-primary hover:bg-surface-overlay transition-colors"
+                      className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-fg-primary hover:bg-surface-overlay transition-colors"
                     >
-                      <span>{t(`settings:${tab.labelKey}`)}</span>
+                      <SettingsTabIcon id={tab.id} className="text-fg-tertiary" />
+                      <span className="flex-1 text-left">{t(`settings:${tab.labelKey}`)}</span>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary"><polyline points="9 18 15 12 9 6" /></svg>
                     </button>
                   ))}
@@ -1015,7 +1036,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 {SUPPORTED_LANGUAGES.map(({ code, label }) => (
                   <button
                     key={code}
-                    onClick={() => { i18n.changeLanguage(code); }}
+                    onClick={() => {
+                      void i18n.changeLanguage(code);
+                      // Persist so the agent picks the matching default Markus search provider.
+                      void api.settings.updateSearch({ language: code }).catch(() => {});
+                    }}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
                       i18n.language === code || (code === 'en' && !SUPPORTED_LANGUAGES.some(l => l.code === i18n.language))
                         ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary'
@@ -1026,6 +1051,30 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 ))}
               </div>
             </div>
+            {isElectron() && (
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mt-5 pt-5 border-t border-border-default/50">
+                <div>
+                  <div className="text-sm font-medium">{t('appearance.launchAtLogin')}</div>
+                  <div className="text-xs text-fg-tertiary mt-0.5">{t('appearance.launchAtLoginDesc')}</div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={launchAtLogin}
+                  disabled={launchAtLoginBusy}
+                  onClick={() => void toggleLaunchAtLogin()}
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                    launchAtLogin ? 'bg-brand-600' : 'bg-surface-elevated border border-border-default'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                      launchAtLogin ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            )}
           </div>
         </Section>}
 
@@ -1052,13 +1101,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           for (const [name, info] of Object.entries(llm.providers)) {
             if (info.configured) {
               configuredEntries.push([name, info]);
-            } else {
+            } else if (name !== 'markus') {
               unconfiguredEntries.push([name, info]);
             }
             seen.add(name);
           }
           for (const po of PROVIDER_OPTIONS) {
-            if (!seen.has(po.id)) {
+            if (!seen.has(po.id) && po.id !== 'markus') {
               unconfiguredEntries.push([po.id, {
                 name: po.id,
                 displayName: po.label,
@@ -1073,12 +1122,51 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           configuredEntries.sort((a, b) => (b[1].enabled ? 1 : 0) - (a[1].enabled ? 1 : 0));
           allProviderEntries.push(...configuredEntries, ...unconfiguredEntries);
           const hasConfigured = configuredEntries.length > 0;
+          // Markus Cloud AI — show pinned section if not yet configured
+          const markusInBackend = llm.providers['markus'];
+          const markusConfigured = markusInBackend?.configured ?? false;
           return (
+            <>
+            {/* Markus Cloud AI — pinned at top when not configured */}
+            {!markusConfigured && (
+            <Section title="Markus Cloud AI">
+              <div className="bg-surface-secondary border border-brand-500/30 rounded-xl overflow-hidden transition-colors hover:border-brand-500/50">
+                <div className="flex items-center justify-between px-5 py-4 cursor-pointer" onClick={() => { setExpandedProvider(expandedProvider === 'markus' ? null : 'markus'); setQuickSetupKey(''); setQuickSetupMsg(null); }}>
+                  <div className="flex items-center gap-3">
+                    <span className="w-2.5 h-2.5 rounded-full bg-brand-500 shadow-[0_0_6px_rgba(99,102,241,0.4)]" />
+                    <div>
+                      <span className="text-sm font-medium">Markus Cloud AI</span>
+                      <div className="text-xs text-fg-tertiary mt-0.5">{t('modelProviders.markusHint')}</div>
+                    </div>
+                  </div>
+                  <svg className={`w-4 h-4 text-fg-tertiary transition-transform ${expandedProvider === 'markus' ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </div>
+                {expandedProvider === 'markus' && (
+                  <div className="px-5 pb-5 space-y-3 border-t border-border-default/50">
+                    <p className="text-xs text-fg-tertiary pt-3">{t('modelProviders.markusSetupLogin')}</p>
+                    <button onClick={() => navBus.navigate(PAGE.SETTINGS, { tab: 'account' })}
+                      className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">
+                      {t('modelProviders.goToAccount')}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </Section>
+            )}
+
             <ProviderSection
               title={t('modelProviders.title')}
               defaultCollapsed={hasConfigured}
               configuredProviders={configuredEntries}
               t={t}
+              onBadgeClick={(providerName) => {
+                setExpandedProvider(providerName);
+                setQuickSetupKey(''); setQuickSetupMsg(null);
+                setTimeout(() => {
+                  const el = document.querySelector(`[data-provider-id="${providerName}"]`);
+                  el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }, 80);
+              }}
             >
               <div className="space-y-3">
                 {hasConfigured && (
@@ -1089,7 +1177,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 {allProviderEntries.map(([name, info], idx) => {
                   const isFirstUnconfigured = !info.configured && (idx === 0 || allProviderEntries[idx - 1][1].configured);
                   return (
-                    <div key={name}>
+                    <div key={name} data-provider-id={name}>
                       {isFirstUnconfigured && hasConfigured && (
                         <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider px-1 mt-4 mb-2">
                           {t('modelProviders.groupUnconfigured')}
@@ -1116,7 +1204,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       </div>
                       <div className="text-xs text-fg-tertiary mt-0.5">
                         {info.configured ? (
-                          <>{info.models && info.models.length > 0 ? t('modelProviders.modelsAvailable', { count: info.models.length }) : ''}{info.apiKeyPreview && <> · <code className="text-fg-secondary">{info.apiKeyPreview}</code></>}</>
+                          <>{info.models && info.models.length > 0 ? t('modelProviders.modelsAvailable', { count: info.models.length }) : ''}{name !== 'markus' && info.apiKeyPreview && <> · <code className="text-fg-secondary">{info.apiKeyPreview}</code></>}</>
                         ) : t('modelProviders.notConfigured')}
                       </div>
                     </div>
@@ -1180,15 +1268,21 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                                 <><svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>{t('modelProviders.testing')}</>
                               ) : t('modelProviders.test')}
                             </button>
-                            <button onClick={e => { e.stopPropagation(); startEditProvider(name, info); }}
-                              className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
-                              {t('common:edit')}
-                            </button>
-                            <button onClick={e => { e.stopPropagation(); if (confirm(t('modelProviders.deleteConfirm', { name: info.displayName ?? name }))) void deleteProvider(name); }}
-                              disabled={deletingProvider === name}
-                              className="px-3 py-1.5 text-xs border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-40">
-                              {deletingProvider === name ? t('common:deleting') : t('common:delete')}
-                            </button>
+                            {/* Markus Cloud AI is managed via account sign-in — no manual
+                                base URL / key editing (and its upstream must not be surfaced). */}
+                            {name !== 'markus' && (
+                              <button onClick={e => { e.stopPropagation(); startEditProvider(name, info); }}
+                                className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
+                                {t('common:edit')}
+                              </button>
+                            )}
+                            {name !== 'markus' && (
+                              <button onClick={e => { e.stopPropagation(); setProviderDeleteTarget({ name, label: info.displayName ?? name }); }}
+                                disabled={deletingProvider === name}
+                                className="px-3 py-1.5 text-xs border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-40">
+                                {deletingProvider === name ? t('common:deleting') : t('common:delete')}
+                              </button>
+                            )}
                           </div>
                         )}
 
@@ -1203,7 +1297,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                                 : testResults[name].error}
                             </summary>
                             <div className="px-3 pb-2 pt-1 space-y-1 text-[11px] text-fg-muted border-t border-current/10">
-                              {testResults[name].requestUrl && (
+                              {name !== 'markus' && testResults[name].requestUrl && (
                                 <div><span className="text-fg-secondary">{t('modelProviders.testDetail.requestUrl')}:</span> <code className="font-mono text-fg-primary">{testResults[name].requestUrl}</code></div>
                               )}
                               <div><span className="text-fg-secondary">{t('modelProviders.testDetail.model')}:</span> <code className="font-mono text-fg-primary">{testResults[name].model ?? info.model}</code></div>
@@ -1228,11 +1322,22 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       </>
                     )}
 
-                    {/* Available Models (read-only informational) */}
+                    {/* ───── Markus Cloud AI — Connected status ───── */}
+                    {name === 'markus' && info.configured && (
+                      <div className="bg-green-500/5 border border-green-500/20 rounded-lg p-4">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_4px_rgba(74,222,128,0.4)]" />
+                          <span className="text-sm font-medium text-green-400">{t('modelProviders.markusConnected')}</span>
+                        </div>
+                        <p className="text-xs text-fg-tertiary mt-2">{t('modelProviders.markusConnectedHint')}</p>
+                      </div>
+                    )}
+
+                    {/* Available Models (collapsed by default when the list is long) */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <div className="text-[10px] text-fg-tertiary uppercase tracking-wider">{t('modelProviders.availableModels')}</div>
-                        {info.configured && addingModelProvider !== name && (
+                        {info.configured && name !== 'markus' && addingModelProvider !== name && (
                           <button onClick={() => { setAddingModelProvider(name); setAddModelForm({ id: '', name: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5, reasoning: false, vision: false }); }}
                             className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">
                             {t('modelProviders.addModel')}
@@ -1255,32 +1360,29 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                         </div>
                       )}
 
+                      {name === 'markus' && info.configured && (!info.models || info.models.length === 0) && (
+                        providerCatalogLoading === name ? (
+                          <div className="flex items-center gap-2 mt-1 text-xs text-fg-tertiary">
+                            <div className="w-3 h-3 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                            {t('modelProviders.loadingHubCatalog')}
+                          </div>
+                        ) : (
+                          <div className="mt-1 text-xs text-amber-400/90">
+                            {markusCatalogError
+                              ? t('modelProviders.hubCatalogError', { error: markusCatalogError })
+                              : t('modelProviders.hubCatalogEmpty')}
+                          </div>
+                        )
+                      )}
+
                       {info.models && info.models.length > 0 && (
-                        <div className="space-y-1">
-                          {info.models.map(m => {
-                            const isCustom = !BUILTIN_MODEL_IDS.has(m.id);
-                            return (
-                              <div key={m.id} className="flex items-center justify-between px-3 py-1.5 rounded-lg text-xs bg-surface-elevated/30">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-fg-secondary">{m.name}</span>
-                                  <InlineTierBadge modelId={m.id} tier={m.tier} />
-                                  {m.reasoning && <span className="text-[9px] bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">{t('modelProviders.reasoning')}</span>}
-                                  {m.inputTypes?.includes('image') && <span className="text-[9px] bg-blue-500/15 text-blue-600 px-1 py-0.5 rounded">{t('modelProviders.vision')}</span>}
-                                  {isCustom && <span className="text-[9px] bg-purple-500/15 text-purple-400 px-1 py-0.5 rounded">{t('modelProviders.custom')}</span>}
-                                </div>
-                                <div className="flex items-center gap-3 text-fg-tertiary">
-                                  {m.contextWindow > 0 && <span>{t('modelProviders.ctxTokens', { size: (m.contextWindow / 1000).toFixed(0) })}</span>}
-                                  {isCustom && (
-                                    <button onClick={e => { e.stopPropagation(); void deleteCustomModel(name, m.id); }}
-                                      className="text-red-400 hover:text-red-300 transition-colors" title={t('modelProviders.deleteCustomModelTitle')}>
-                                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
+                        <CollapsibleAvailableModels
+                          models={info.models}
+                          providerName={name}
+                          activeModelId={info.model}
+                          t={t}
+                          onDeleteCustom={(modelId) => void deleteCustomModel(name, modelId)}
+                        />
                       )}
 
                       {info.configured && providerCatalogLoading === name && (
@@ -1322,6 +1424,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     {!info.configured && (
                       <div className="space-y-3">
                         <div className="text-xs text-fg-secondary">{t('modelProviders.quickSetupHint')}</div>
+                        {name === 'markus' && (
+                          <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-brand-600/8 border border-brand-500/15 text-xs text-fg-secondary">
+                            <svg className="w-4 h-4 shrink-0 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                            <span>{t('modelProviders.markusKeyHint')}{' '}
+                              <a href={`${hubApi.getUrl()}/settings`} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-400 underline underline-offset-2">{t('modelProviders.markusKeyLink')}</a>
+                            </span>
+                          </div>
+                        )}
                         <div>
                           <label className="text-[10px] text-fg-tertiary uppercase block mb-1">{t('modelProviders.apiKey')}</label>
                           <input
@@ -1460,6 +1570,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
               )}
             </ProviderSection>
+            </>
           );
         })()}
 
@@ -1735,6 +1846,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {/* ───── Model Routing ───── */}
         <Section title={t('modelRouting.title')}>
           <ModelRoutingSection
+            // Remount when the default provider changes so the "Default Model"
+            // picker re-fetches and reflects the model the backend synced to the
+            // new provider (switching provider retargets routingDefaultModel).
+            key={llm?.defaultProvider ?? 'no-default'}
             configuredProviders={
               Object.entries(llm?.providers ?? {})
                 .filter(([, p]) => p.configured && p.enabled)
@@ -2239,48 +2354,113 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         <Section title={t('dataStorage.title')}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
             {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">{t('dataStorage.scanning')}</div>}
-            {storageInfo && (
+            {storageInfo && (() => {
+              const rows = [...storageInfo.breakdown]
+                .filter(b => b.size > 0)
+                .sort((a, b) => b.size - a.size);
+              const total = Math.max(storageInfo.totalSize, 1);
+              const safeRows = rows.filter(b => STORAGE_SAFETY_LEVEL[b.name] === 'safe');
+              const safeBytes = safeRows.reduce((n, b) => n + b.size, 0);
+              const barTone = (level: 'safe' | 'caution' | 'keep') =>
+                level === 'safe' ? 'bg-fg-secondary/55' : level === 'caution' ? 'bg-fg-tertiary/45' : 'bg-fg-primary/25';
+              return (
               <>
-                {/* Summary bar */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-lg font-semibold text-fg-primary">{formatBytes(storageInfo.totalSize, t)}</div>
-                    <div className="text-xs text-fg-tertiary font-mono mt-0.5">{storageInfo.dataDir}</div>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => loadStorage()} disabled={storageLoading}
-                      className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors disabled:opacity-40">
-                      {storageLoading ? t('dataStorage.scanning') : t('common:refresh')}
-                    </button>
-                    <button onClick={() => void api.system.openPath(storageInfo.dataDir)}
-                      className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors">
-                      {t('dataStorage.openInFinder')}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Breakdown table */}
-                <div className="border-t border-border-default pt-4">
-                  <h4 className="text-xs font-semibold text-fg-secondary mb-3">{t('dataStorage.storageBreakdown')}</h4>
-                  <div className="space-y-1.5">
-                    {storageInfo.breakdown.filter(b => b.size > 0).map(item => (
-                      <div key={item.name} className="flex items-center justify-between py-1.5 px-3 rounded-lg bg-surface-elevated/40">
-                        <div className="min-w-0">
-                          <span className="text-sm text-fg-primary">{item.name}</span>
-                          <span className="text-xs text-fg-tertiary ml-2">{item.description}</span>
-                        </div>
-                        <span className="text-sm font-medium text-fg-secondary tabular-nums shrink-0 ml-3">{formatBytes(item.size, t)}</span>
+                <div className="space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-2xl font-semibold tracking-tight text-fg-primary tabular-nums">
+                        {formatBytes(storageInfo.totalSize, t)}
                       </div>
-                    ))}
+                      <div className="text-xs text-fg-tertiary font-mono mt-1 truncate" title={storageInfo.dataDir}>
+                        {storageInfo.dataDir}
+                      </div>
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <button onClick={() => loadStorage()} disabled={storageLoading}
+                        className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-primary/60 rounded-lg text-fg-secondary transition-colors disabled:opacity-40">
+                        {storageLoading ? t('dataStorage.scanning') : t('common:refresh')}
+                      </button>
+                      <button onClick={() => void api.system.openPath(storageInfo.dataDir)}
+                        className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-primary/60 rounded-lg text-fg-secondary transition-colors">
+                        {t('dataStorage.openInFinder')}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="h-2 rounded-full bg-surface-primary overflow-hidden flex" aria-hidden>
+                    {rows.map(item => {
+                      const level = STORAGE_SAFETY_LEVEL[item.name] ?? 'caution';
+                      const pct = Math.max((item.size / total) * 100, item.size > 0 ? 0.8 : 0);
+                      return (
+                        <div
+                          key={item.name}
+                          className={`h-full ${barTone(level)}`}
+                          style={{ width: `${pct}%` }}
+                          title={`${item.name}: ${formatBytes(item.size, t)}`}
+                        />
+                      );
+                    })}
+                  </div>
+
+                  {safeBytes > 0 && (
+                    <p className="text-xs text-fg-tertiary leading-relaxed">
+                      {t('dataStorage.clearableHint', {
+                        size: formatBytes(safeBytes, t),
+                        percent: Math.round((safeBytes / total) * 100),
+                      })}
+                    </p>
+                  )}
+                </div>
+
+                <div className="border-t border-border-default pt-4">
+                  <div className="flex items-baseline justify-between gap-3 mb-3">
+                    <h4 className="text-xs font-semibold text-fg-secondary">{t('dataStorage.storageBreakdown')}</h4>
+                    <span className="text-[11px] text-fg-tertiary">{t('dataStorage.sortedBySize')}</span>
+                  </div>
+                  <div className="divide-y divide-border-default/70 rounded-xl border border-border-default/70 overflow-hidden">
+                    {rows.map(item => {
+                      const itemKey = STORAGE_ITEM_KEYS[item.name];
+                      const level = STORAGE_SAFETY_LEVEL[item.name] ?? 'caution';
+                      const label = itemKey ? t(`dataStorage.items.${itemKey}.label`) : item.name;
+                      const blurb = itemKey ? t(`dataStorage.items.${itemKey}.blurb`) : item.description;
+                      const pct = Math.round((item.size / total) * 100);
+                      return (
+                        <div key={item.name} className="flex items-center gap-3 px-3.5 py-3 bg-surface-primary/25 hover:bg-surface-primary/45 transition-colors">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-sm font-medium text-fg-primary truncate">{label}</span>
+                              {level === 'safe' && (
+                                <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-md bg-surface-elevated text-fg-secondary border border-border-default/80">
+                                  {t('dataStorage.safetyLevel.safe')}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{blurb}</div>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <div className="text-sm font-medium text-fg-primary tabular-nums">{formatBytes(item.size, t)}</div>
+                            <div className="text-[11px] text-fg-tertiary tabular-nums mt-0.5">{pct}%</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void api.system.openPath(item.path)}
+                            className="shrink-0 px-2.5 py-1 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors"
+                            title={item.path}
+                          >
+                            {t('dataStorage.openFolder')}
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
-                {/* Orphan cleanup */}
                 {orphanInfo && (orphanInfo.orphanAgents.length > 0 || orphanInfo.orphanTeams.length > 0) && (
                   <OrphanSection orphanInfo={orphanInfo} dataDir={storageInfo.dataDir} onPurged={loadStorage} formatBytes={(n) => formatBytes(n, t)} />
                 )}
               </>
-            )}
+              );
+            })()}
           </div>
         </Section>
 
@@ -2306,6 +2486,19 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         <div className="h-8" />
       </div>}
+      {providerDeleteTarget && (
+        <ConfirmModal
+          title={t('common:delete')}
+          message={t('modelProviders.deleteConfirm', { name: providerDeleteTarget.label })}
+          confirmLabel={t('common:delete')}
+          onConfirm={() => {
+            const name = providerDeleteTarget.name;
+            setProviderDeleteTarget(null);
+            void deleteProvider(name);
+          }}
+          onCancel={() => setProviderDeleteTarget(null)}
+        />
+      )}
       </div>
     </div>
   );
@@ -2601,6 +2794,130 @@ const MODE_SORT_ORDER: Record<string, number> = {
   audio_speech: 3, audio_transcription: 4, ocr: 5,
 };
 
+const AVAILABLE_MODELS_PREVIEW = 5;
+
+function CollapsibleAvailableModels({
+  models,
+  providerName,
+  activeModelId,
+  t,
+  onDeleteCustom,
+}: {
+  models: Array<{
+    id: string;
+    name: string;
+    tier?: string;
+    reasoning?: boolean;
+    inputTypes?: string[];
+    contextWindow?: number;
+    capabilities?: string[];
+  }>;
+  providerName: string;
+  activeModelId?: string;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+  onDeleteCustom: (modelId: string) => void;
+}) {
+  const longList = models.length > AVAILABLE_MODELS_PREVIEW;
+  // Hub catalogs are large — keep collapsed by default.
+  const [expanded, setExpanded] = useState(!longList);
+  const [filter, setFilter] = useState('');
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return models;
+    return models.filter(m =>
+      m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
+    );
+  }, [models, filter]);
+
+  const visible = expanded ? filtered : filtered.slice(0, AVAILABLE_MODELS_PREVIEW);
+
+  return (
+    <div className="space-y-1">
+      {longList && (
+        <div className="flex items-center justify-between gap-2 px-1 mb-1">
+          <button
+            type="button"
+            onClick={() => setExpanded(e => !e)}
+            className="flex items-center gap-1.5 text-[10px] text-fg-tertiary hover:text-fg-secondary transition-colors"
+          >
+            <svg className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            {expanded
+              ? t('modelProviders.collapseModels')
+              : t('modelProviders.showAllModels', { count: models.length })}
+          </button>
+          {expanded && (
+            <input
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              placeholder={t('modelProviders.filterModels')}
+              className="flex-1 max-w-[220px] px-2 py-1 text-[10px] rounded-md bg-surface-overlay/50 border border-border-default text-fg-secondary placeholder:text-fg-tertiary"
+            />
+          )}
+        </div>
+      )}
+      <div className={expanded && longList ? 'max-h-64 overflow-y-auto space-y-1 pr-0.5' : 'space-y-1'}>
+        {visible.map(m => {
+          const isCustom = !BUILTIN_MODEL_IDS.has(m.id);
+          const caps = m.capabilities ?? [];
+          const isActive = activeModelId === m.id;
+          return (
+            <div
+              key={m.id}
+              className={`flex items-center justify-between px-3 py-1.5 rounded-lg text-xs ${
+                isActive ? 'bg-brand-500/10 border border-brand-500/20' : 'bg-surface-elevated/30'
+              }`}
+            >
+              <div className="flex items-center gap-2 flex-wrap min-w-0">
+                <span className="text-fg-secondary truncate">{m.name}</span>
+                {isActive && (
+                  <span className="text-[9px] bg-brand-500/15 text-brand-500 px-1 py-0.5 rounded shrink-0">
+                    {t('modelProviders.badgeDefault')}
+                  </span>
+                )}
+                <InlineTierBadge modelId={m.id} tier={m.tier} />
+                {m.reasoning && <span className="text-[9px] bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">{t('modelProviders.reasoning')}</span>}
+                {(m.inputTypes?.includes('image') || caps.includes('vision')) && <span className="text-[9px] bg-blue-500/15 text-blue-600 px-1 py-0.5 rounded">{t('modelProviders.vision')}</span>}
+                {caps.includes('imageGeneration') && <span className="text-[9px] bg-cyan-500/15 text-cyan-600 px-1 py-0.5 rounded">{t('modelProviders.capImageGen')}</span>}
+                {(caps.includes('tts') || caps.includes('audioOutput')) && <span className="text-[9px] bg-emerald-500/15 text-emerald-600 px-1 py-0.5 rounded">{t('modelProviders.capTts')}</span>}
+                {(caps.includes('stt') || caps.includes('audioInput')) && <span className="text-[9px] bg-teal-500/15 text-teal-600 px-1 py-0.5 rounded">{t('modelProviders.capStt')}</span>}
+                {caps.includes('videoGeneration') && <span className="text-[9px] bg-orange-500/15 text-orange-600 px-1 py-0.5 rounded">{t('modelProviders.capVideo')}</span>}
+                {isCustom && providerName !== 'markus' && <span className="text-[9px] bg-purple-500/15 text-purple-400 px-1 py-0.5 rounded">{t('modelProviders.custom')}</span>}
+              </div>
+              <div className="flex items-center gap-3 text-fg-tertiary shrink-0">
+                {(m.contextWindow ?? 0) > 0 && <span>{t('modelProviders.ctxTokens', { size: ((m.contextWindow ?? 0) / 1000).toFixed(0) })}</span>}
+                {isCustom && providerName !== 'markus' && (
+                  <button
+                    onClick={e => { e.stopPropagation(); onDeleteCustom(m.id); }}
+                    className="text-red-400 hover:text-red-300 transition-colors"
+                    title={t('modelProviders.deleteCustomModelTitle')}
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {longList && !expanded && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="w-full text-[10px] text-fg-tertiary hover:text-brand-500 transition-colors py-1.5"
+        >
+          {t('modelProviders.showAllModels', { count: models.length })}
+        </button>
+      )}
+      {expanded && filter && filtered.length === 0 && (
+        <div className="text-[10px] text-fg-tertiary px-1 py-2">{t('modelProviders.noFilterMatches')}</div>
+      )}
+    </div>
+  );
+}
+
 function ExpandableCatalogModels({ models, providerName, t, onAdd }: {
   models: Array<{ id?: string; mode?: string }>;
   providerName: string;
@@ -2787,12 +3104,13 @@ function Msg({ type, text }: { type: 'ok' | 'err'; text: string }) {
   );
 }
 
-function ProviderSection({ title, defaultCollapsed, configuredProviders, t, children }: {
+function ProviderSection({ title, defaultCollapsed, configuredProviders, t, children, onBadgeClick }: {
   title: string;
   defaultCollapsed: boolean;
   configuredProviders: Array<[string, { displayName?: string; enabled: boolean }]>;
   t: (key: string) => string;
   children: React.ReactNode;
+  onBadgeClick?: (providerName: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   return (
@@ -2817,17 +3135,19 @@ function ProviderSection({ title, defaultCollapsed, configuredProviders, t, chil
       {collapsed && configuredProviders.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
           {configuredProviders.map(([name, info]) => (
-            <span
+            <button
               key={name}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border ${
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setCollapsed(false); onBadgeClick?.(name); }}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border cursor-pointer transition-colors ${
                 info.enabled
-                  ? 'bg-green-500/10 border-green-500/30 text-green-400'
-                  : 'bg-surface-elevated border-border-default text-fg-tertiary'
+                  ? 'bg-green-500/10 border-green-500/30 text-green-400 hover:bg-green-500/20'
+                  : 'bg-surface-elevated border-border-default text-fg-tertiary hover:border-gray-500'
               }`}
             >
               <span className={`w-1.5 h-1.5 rounded-full ${info.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
               {info.displayName ?? name}
-            </span>
+            </button>
           ))}
         </div>
       )}
@@ -2977,60 +3297,6 @@ function OrphanSection({ orphanInfo, dataDir, onPurged, formatBytes: formatBytes
         </button>
       </div>
       {result && <div className="text-xs text-fg-tertiary mt-2">{result}</div>}
-    </div>
-  );
-}
-
-function EditProfileModal({ authUser, onClose, onSaved }: { authUser: AuthUser; onClose: () => void; onSaved: (u: AuthUser) => void }) {
-  const { t } = useTranslation('common');
-  const [name, setName] = useState(authUser.name || '');
-  const [email, setEmail] = useState(authUser.email || '');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [avatarUrl, setAvatarUrl] = useState(authUser.avatarUrl);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim()) { setError(t('profile.nameRequired')); return; }
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setError(t('profile.invalidEmail')); return; }
-    setSaving(true); setError('');
-    try {
-      const { user } = await api.auth.updateProfile(name.trim(), email.trim());
-      onSaved({ ...user, avatarUrl: avatarUrl ?? user.avatarUrl });
-    } catch { setError(t('profile.failedToSave')); }
-    finally { setSaving(false); }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <form onSubmit={submit} className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[400px] shadow-2xl" onClick={e => e.stopPropagation()}>
-        <h3 className="text-base font-semibold mb-5">{t('profile.editProfile')}</h3>
-        <div className="flex justify-center mb-5">
-          <AvatarUpload
-            currentUrl={avatarUrl}
-            name={name}
-            size={72}
-            targetType="user"
-            targetId={authUser.id}
-            onUploaded={url => setAvatarUrl(url)}
-          />
-        </div>
-        <div className="space-y-3">
-          <div>
-            <label className="block text-xs text-fg-tertiary font-medium mb-1">{t('profile.name')}</label>
-            <input value={name} onChange={e => setName(e.target.value)} className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none" />
-          </div>
-          <div>
-            <label className="block text-xs text-fg-tertiary font-medium mb-1">{t('profile.email')}</label>
-            <input value={email} onChange={e => setEmail(e.target.value)} type="email" className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none" />
-          </div>
-          {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
-        </div>
-        <div className="flex justify-end gap-3 mt-5">
-          <button type="button" onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('cancel')}</button>
-          <button type="submit" disabled={saving} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-lg">{saving ? t('saving') : t('save')}</button>
-        </div>
-      </form>
     </div>
   );
 }
@@ -3319,24 +3585,11 @@ function QRCode({ url }: { url: string }) {
 /* ─── Account (Organization & License + Local Markus) ─── */
 
 const FEATURE_ICONS: Record<string, string> = {
-  multi_user: '👥', unlimited_teams: '🏢', unlimited_tools: '⚡',
-  sso: '🔐', audit_enhanced: '📋', multi_instance: '🌐', offline_license: '📡',
+  multi_user: '👥', sso: '🔐', audit_enhanced: '📋', multi_instance: '🌐', offline_license: '📡',
 };
 
 function AccountSection({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation(['settings', 'common']);
-  const getInitialSection = (): 'orgLicense' | 'users' => {
-    const hash = window.location.hash.slice(1);
-    const parts = hash.split('/');
-    if (parts[1] === 'users') return 'users';
-    return 'orgLicense';
-  };
-  const [activeSection, setActiveSection] = useState<'orgLicense' | 'users'>(getInitialSection);
-
-  const sections = [
-    { id: 'orgLicense' as const, label: t('account.sectionOrgLicense') },
-    { id: 'users' as const, label: t('account.sectionUsers') },
-  ];
 
   return (
     <div className="space-y-6">
@@ -3345,49 +3598,24 @@ function AccountSection({ authUser }: { authUser?: AuthUser }) {
         <p className="text-xs text-fg-tertiary">{t('account.subtitle')}</p>
       </div>
 
-      <div className="flex gap-1 p-1 bg-surface-elevated rounded-lg border border-border-default">
-        {sections.map(s => (
-          <button key={s.id} onClick={() => setActiveSection(s.id)}
-            className={`flex-1 px-3 py-2 text-xs font-medium rounded-md transition-all ${
-              activeSection === s.id
-                ? 'bg-surface-primary text-fg-primary shadow-sm border border-border-default'
-                : 'text-fg-tertiary hover:text-fg-secondary'
-            }`}>
-            {s.label}
-          </button>
-        ))}
-      </div>
-
-      {activeSection === 'orgLicense' && <OrgLicenseSection />}
-      {activeSection === 'users' && <UserManagementSection authUser={authUser} />}
+      <AccountOverviewSection />
+      <UserManagementSection authUser={authUser} />
     </div>
   );
 }
 
-/* ─── Organization & License (merged) ─── */
+/* ─── Account Overview (Cloud AI + Org + Enterprise License) ─── */
 
-function OrgLicenseSection() {
+function AccountOverviewSection() {
   const { t } = useTranslation(['settings', 'common']);
 
-  // ── Org state ──
+  // ── Cloud AI plan state ──
+  const [planInfo, setPlanInfo] = useState<{ orgId?: string | null; planType: string; planStatus: string; monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null; bonusCu: number; purchasedCu?: number; windowQuotaCu: number; memberCuLimit?: number | null; memberCuUsed?: number } | null>(null);
+  const [planLoading, setPlanLoading] = useState(true);
+
+  // ── Org state (read-only) ──
   const [orgs, setOrgs] = useState<Array<{ id: string; name: string; slug: string; role: string; memberCount: number; license: any }>>([]);
-  const [selectedOrgId, setSelectedOrgIdRaw] = useState<string | null>(() => {
-    try { return localStorage.getItem('markus_selected_org_id'); } catch { return null; }
-  });
-  const setSelectedOrgId = useCallback((v: string | null | ((prev: string | null) => string | null)) => {
-    setSelectedOrgIdRaw(prev => {
-      const next = typeof v === 'function' ? v(prev) : v;
-      try { if (next) localStorage.setItem('markus_selected_org_id', next); else localStorage.removeItem('markus_selected_org_id'); } catch {}
-      return next;
-    });
-  }, []);
-  const [members, setMembers] = useState<Array<{ id: string; userId: string; role: string; status: string; joinedAt: string; username: string; email: string | null; displayName: string | null; avatarUrl: string | null }>>([]);
   const [invitations, setInvitations] = useState<Array<{ orgId: string; orgName: string; invitedBy: string }>>([]);
-  const [editName, setEditName] = useState('');
-  const [inviteValue, setInviteValue] = useState('');
-  const [inviteRole, setInviteRole] = useState<'member' | 'admin'>('member');
-  const [inviting, setInviting] = useState(false);
-  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [orgMsg, setOrgMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [orgLoading, setOrgLoading] = useState(true);
   const [hubConnecting, setHubConnecting] = useState(false);
@@ -3395,72 +3623,27 @@ function OrgLicenseSection() {
   // ── License state ──
   const [licenseInfo, setLicenseInfo] = useState<{
     plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean;
-    features: string[]; limits: { maxAgents: number; maxTeams: number; maxToolCallsPerDay: number; maxUsers: number };
-    usage?: { agents: number; teams: number; toolCallsToday: number; users: number };
+    features: string[]; limits: Record<string, unknown>;
     instanceId: string; hubUserId?: string; username?: string;
     orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number;
   } | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
-  const [licenseKey, setLicenseKey] = useState('');
-  const [activating, setActivating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [licMsg, setLicMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
 
-  // ── Org data loading ──
+  // ── Data loading ──
   const loadOrgs = useCallback((showError = false) => {
     setOrgLoading(true);
-    let loadFailed = false;
-    api.hubOrgs.mine().catch((e) => { loadFailed = true; if (showError) setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : t('org.loadFailed') }); return { orgs: [] as typeof orgs }; })
+    api.hubOrgs.mine().catch((e) => { if (showError) setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : t('org.loadFailed') }); return { orgs: [] as typeof orgs }; })
       .then(o => {
         setOrgs(o.orgs);
-        if (o.orgs.length > 0) {
-          setSelectedOrgId(prev => {
-            if (prev && o.orgs.some((org: any) => org.id === prev)) return prev;
-            const withLicense = o.orgs.find((org: any) => org.license?.plan === 'enterprise');
-            return withLicense?.id ?? o.orgs[0].id;
-          });
-          setEditName(prev => {
-            if (prev) return prev;
-            const withLicense = o.orgs.find((org: any) => org.license?.plan === 'enterprise');
-            return withLicense?.name ?? o.orgs[0].name;
-          });
-        } else if (showError && !loadFailed) {
-          setOrgMsg({ type: 'err', text: t('org.noOrgAfterConnect') });
-        }
-        // Fetch invitations after orgs (non-blocking)
         api.hubOrgs.invitations().then(inv => setInvitations(inv.invitations)).catch(() => {});
       }).finally(() => setOrgLoading(false));
-  }, [setSelectedOrgId, t]);
+  }, [t]);
 
   useEffect(() => {
-    if (!getHubUser() && !getHubToken()) { setOrgLoading(false); return; }
+    if (!getHubUser() && !getHubToken()) { setOrgLoading(false); setPlanLoading(false); return; }
     loadOrgs();
+    hubApi.user.plan().then(p => setPlanInfo(p)).catch(() => {}).finally(() => setPlanLoading(false));
   }, [loadOrgs]);
-
-  useEffect(() => {
-    if (!selectedOrgId) return;
-    api.hubOrgs.members(selectedOrgId).then(d => setMembers(d.members)).catch(() => {});
-    const org = orgs.find(o => o.id === selectedOrgId);
-    if (org) setEditName(org.name);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedOrgId]);
-
-  const selectedOrg = orgs.find(o => o.id === selectedOrgId);
-  const isOwner = selectedOrg?.role === 'owner';
-  const isAdmin = selectedOrg?.role === 'admin';
-  const canInvite = isOwner || isAdmin;
-
-  const ROLE_I18N: Record<string, string> = { owner: t('org.roleOwner'), admin: t('org.roleAdmin'), member: t('org.roleMember') };
-  const localizeRole = (role: string) => ROLE_I18N[role] ?? role;
-
-  // ── License data loading ──
-  const LICENSE_ERROR_I18N: Record<string, string> = {
-    'Trial already used for this account': 'license.trialAlreadyUsed',
-    'License not found or not active': 'license.licenseNotFound',
-    'Instance limit reached': 'license.instanceLimitReached',
-  };
-  const localizeError = (msg: string) => { const key = LICENSE_ERROR_I18N[msg]; return key ? t(key) : msg; };
 
   const refreshLicense = useCallback((revalidate = false) => {
     setRefreshing(true);
@@ -3472,470 +3655,159 @@ function OrgLicenseSection() {
 
   useEffect(() => { refreshLicense(true); }, [refreshLicense]);
 
-  // ── Derived license values ──
-  // licenseInfo (from local instance) is the single source of truth for license state.
-  // Org data (from Hub) supplements with member count and org name only.
   const isEnterprise = licenseInfo?.plan === 'enterprise';
-  const canManageLicense = orgs.length === 0 || isOwner;
 
-  const effectiveValidUntil = licenseInfo?.validUntil;
-  const effectiveMaxSeats = licenseInfo?.maxSeats;
-  const effectiveUsedSeats = selectedOrg?.memberCount ?? licenseInfo?.usedSeats ?? 0;
+  const handleAcceptInvite = async (orgId: string) => {
+    try { await api.hubOrgs.acceptInvitation(orgId); setInvitations(prev => prev.filter(i => i.orgId !== orgId)); loadOrgs(); }
+    catch (e) { setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' }); }
+  };
 
-  const daysRemaining = effectiveValidUntil
-    ? Math.max(0, Math.ceil((new Date(effectiveValidUntil).getTime() - Date.now()) / 86400000))
+  const daysRemaining = licenseInfo?.validUntil
+    ? Math.max(0, Math.ceil((new Date(licenseInfo.validUntil).getTime() - Date.now()) / 86400000))
     : null;
-  const needsRenewal = isEnterprise && canManageLicense && daysRemaining !== null && daysRemaining <= 60;
 
   const featureKeys = ['multi_user', 'multi_instance'] as const;
   const featureI18n: Record<string, string> = {
     multi_user: t('license.featureMultiUser'), multi_instance: t('license.featureMultiInstance'),
   };
 
-  // ── Org handlers ──
-  const handleUpdateName = async () => {
-    if (!selectedOrgId || !editName.trim()) return;
-    try {
-      await api.hubOrgs.update(selectedOrgId, { name: editName.trim() });
-      setOrgs(prev => prev.map(o => o.id === selectedOrgId ? { ...o, name: editName.trim() } : o));
-      setOrgMsg({ type: 'ok', text: t('org.nameSaved') });
-    } catch (e) { setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' }); }
-  };
+  const primaryOrg = orgs.find(o => o.id === planInfo?.orgId) ?? orgs[0];
+  const totalCredits = planInfo
+    ? (planInfo.monthlyQuotaCu ?? 0) + (planInfo.bonusCu ?? 0) + (planInfo.purchasedCu ?? 0)
+    : 0;
 
-  const seatsFull = selectedOrg?.license?.maxSeats != null && selectedOrg.memberCount >= selectedOrg.license.maxSeats;
-
-  const handleInvite = async () => {
-    if (!selectedOrgId || !inviteValue.trim()) return;
-    const email = inviteValue.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setOrgMsg({ type: 'err', text: t('org.invalidEmail') }); return; }
-    setInviting(true); setOrgMsg(null);
-    try {
-      await api.hubOrgs.invite(selectedOrgId, { email, role: inviteRole });
-      setInviteValue(''); setInviteRole('member');
-      setOrgMsg({ type: 'ok', text: t('org.invited') });
-      api.hubOrgs.members(selectedOrgId).then(d => setMembers(d.members)).catch(() => {});
-    } catch (e) {
-      const raw = e instanceof Error ? e.message : '';
-      const ERR: Record<string, string> = {
-        'User not found': t('org.errorUserNotFound'),
-        'User is already a member or has a pending invitation': t('org.errorAlreadyMember'),
-        'An invitation has already been sent to this email': t('org.errorAlreadySent'),
-      };
-      setOrgMsg({ type: 'err', text: ERR[raw] ?? (raw || t('org.errorInviteFailed')) });
-    } finally { setInviting(false); }
-  };
-
-  const handleRemove = async (userId: string) => {
-    if (!selectedOrgId) return;
-    try { await api.hubOrgs.removeMember(selectedOrgId, userId); setMembers(prev => prev.filter(m => m.userId !== userId)); }
-    catch (e) { setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' }); }
-  };
-
-  const handleAcceptInvite = async (orgId: string) => {
-    try { await api.hubOrgs.acceptInvitation(orgId); setInvitations(prev => prev.filter(i => i.orgId !== orgId)); const res = await api.hubOrgs.mine(); setOrgs(res.orgs); }
-    catch (e) { setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' }); }
-  };
-
-  const handleLeave = async () => {
-    if (!selectedOrgId) return;
-    try {
-      await api.hubOrgs.leave(selectedOrgId);
-      setShowLeaveConfirm(false);
-      setOrgs(prev => prev.filter(o => o.id !== selectedOrgId));
-      setSelectedOrgId(orgs.length > 1 ? orgs.find(o => o.id !== selectedOrgId)!.id : null);
-    } catch (e) {
-      setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' });
-      setShowLeaveConfirm(false);
-    }
-  };
-
-  const handleRoleChange = async (userId: string, newRole: string) => {
-    if (!selectedOrgId) return;
-    try {
-      await api.hubOrgs.updateMemberRole(selectedOrgId, userId, newRole);
-      setMembers(prev => prev.map(m => m.userId === userId ? { ...m, role: newRole } : m));
-      setOrgMsg({ type: 'ok', text: t('org.roleUpdated') });
-    } catch (e) { setOrgMsg({ type: 'err', text: e instanceof Error ? e.message : 'Failed' }); }
-  };
-
-  // ── License handlers ──
-  const handleActivate = async () => {
-    if (!licenseKey.trim()) return;
-    setActivating(true); setLicMsg(null);
-    try { await ensureHubAuth(); } catch { setLicMsg({ type: 'err', text: t('license.activationFailed') }); setActivating(false); return; }
-    try {
-      const result = await api.license.activate(licenseKey.trim());
-      if (result.success) { setLicMsg({ type: 'ok', text: t('license.activated') }); setLicenseKey(''); refreshLicense(true); }
-      else { setLicMsg({ type: 'err', text: localizeError(result.error ?? t('license.activationFailed')) }); }
-    } catch (err) { setLicMsg({ type: 'err', text: localizeError((err instanceof Error && err.message) || t('license.activationFailed')) }); }
-    finally { setActivating(false); }
-  };
-
-  const handleTrial = async () => {
-    setActivating(true); setLicMsg(null);
-    try { await ensureHubAuth(); } catch { setLicMsg({ type: 'err', text: t('license.trialFailed') }); setActivating(false); return; }
-    try {
-      const result = await api.license.trial();
-      if (result.success) { setLicMsg({ type: 'ok', text: t('license.trialActivated') }); refreshLicense(true); }
-      else { setLicMsg({ type: 'err', text: localizeError(result.error ?? t('license.trialFailed')) }); }
-    } catch (err) { setLicMsg({ type: 'err', text: localizeError((err instanceof Error && err.message) || t('license.trialFailed')) }); }
-    finally { setActivating(false); }
-  };
-
-  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      setLicMsg(null);
-      try {
-        const result = await api.license.import(reader.result as string);
-        if (result.success) { setLicMsg({ type: 'ok', text: t('license.imported') }); refreshLicense(true); }
-        else { setLicMsg({ type: 'err', text: result.error ?? t('license.importFailed') }); }
-      } catch { setLicMsg({ type: 'err', text: t('license.importFailed') }); }
-    };
-    reader.readAsText(file); e.target.value = '';
-  };
-
-  const handleDeactivate = async () => {
-    if (!window.confirm(t('license.deactivateConfirm'))) return;
-    setLicMsg(null);
-    try { await api.license.deactivate(); setLicMsg({ type: 'ok', text: t('license.deactivated') }); refreshLicense(true); }
-    catch { setLicMsg({ type: 'err', text: t('license.deactivateFailed') }); }
-  };
-
-  const copyToClipboard = (text: string, label: string) => {
-    navigator.clipboard.writeText(text).then(() => { setCopied(label); setTimeout(() => setCopied(null), 2000); }).catch(() => {});
-  };
-
-  const copyAllDetails = () => {
-    const rows: [string, string | undefined][] = [
-      [t('license.username'), licenseInfo?.username],
-      [t('license.userId', { defaultValue: 'User ID' }), licenseInfo?.hubUserId],
-      [t('license.orgId', { defaultValue: 'Org ID' }), licenseInfo?.orgId],
-      [t('license.licenseKey'), licenseInfo?.licenseKey],
-      [t('license.instanceId'), licenseInfo?.instanceId],
-    ];
-    const text = rows.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join('\n');
-    copyToClipboard(text, 'allDetails');
-  };
-
-  const InfoRow = ({ label, value }: { label: string; value?: string }) => (
-    value ? (
-      <div className="flex items-center gap-3 py-1.5">
-        <span className="text-xs text-fg-tertiary w-24 shrink-0">{label}</span>
-        <code className="text-xs text-fg-secondary font-mono bg-surface-primary/60 px-2 py-0.5 rounded select-all truncate max-w-[280px]">{value}</code>
-      </div>
-    ) : null
-  );
-
-  const effectiveOrgId = licenseInfo?.orgId || selectedOrgId;
-  const idBlock = [
-    licenseInfo?.username && `Username: ${licenseInfo.username}`,
-    licenseInfo?.hubUserId && `User ID: ${licenseInfo.hubUserId}`,
-    effectiveOrgId && `Org ID: ${effectiveOrgId}`,
-    licenseInfo?.instanceId && `Instance ID: ${licenseInfo.instanceId}`,
-  ].filter(Boolean).join('\n');
-
-  if (orgLoading) return <div className="text-center py-8 text-fg-tertiary text-sm">{t('common:loading')}</div>;
-
-  // ── No org state ──
-  if (orgs.length === 0 && invitations.length === 0) {
-    return (
-      <div className="space-y-6">
-        <LicensePlanCard isEnterprise={licenseInfo?.plan === 'enterprise'} licenseInfo={licenseInfo}
-          daysRemaining={licenseInfo?.validUntil ? Math.max(0, Math.ceil((new Date(licenseInfo.validUntil).getTime() - Date.now()) / 86400000)) : null}
-          effectiveValidUntil={licenseInfo?.validUntil} effectiveMaxSeats={licenseInfo?.maxSeats}
-          effectiveUsedSeats={licenseInfo?.usedSeats ?? 0} effectiveOrgName={licenseInfo?.orgName}
-          featureKeys={featureKeys} featureI18n={featureI18n} t={t} />
-        <div className="text-center py-8 space-y-4">
-          <div className="text-3xl">🏢</div>
-          <div className="text-sm text-fg-tertiary">{t('org.noOrg')}</div>
-          <button disabled={hubConnecting} onClick={() => {
-            setOrgMsg(null);
-            setHubConnecting(true);
-            ensureHubAuth().then(() => loadOrgs(true)).catch(e => {
-              const raw = e instanceof Error ? e.message : String(e);
-              const text = raw.includes('Popup blocked') ? t('org.popupBlocked') : raw.includes('cancelled') ? t('org.loginCancelled') : raw;
-              setOrgMsg({ type: 'err', text });
-            }).finally(() => setHubConnecting(false));
-          }}
-            className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2">
-            {hubConnecting && <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="30 70" strokeLinecap="round"/></svg>}
-            {hubConnecting ? t('org.connecting') : t('org.connectHub')}
-          </button>
-          {orgMsg && (
-            <div className={`inline-block px-4 py-2 rounded-lg text-xs ${orgMsg.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'}`}>
-              {orgMsg.text}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
+  if (orgLoading || planLoading) return <div className="text-center py-8 text-fg-tertiary text-sm">{t('common:loading')}</div>;
 
   return (
     <div className="space-y-6">
-      {(orgMsg || licMsg) && (
-        <div className="space-y-2">
-          {[orgMsg, licMsg].filter(Boolean).map((m, i) => (
-            <div key={i} className={`flex items-center gap-2 text-sm px-4 py-3 rounded-lg ${
-              m!.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'
-            }`}>
-              <span>{m!.type === 'ok' ? '✓' : '✕'}</span><span>{m!.text}</span>
-            </div>
-          ))}
+      {orgMsg && (
+        <div className={`flex items-center gap-2 text-sm px-4 py-3 rounded-lg ${
+          orgMsg.type === 'ok' ? 'bg-green-500/10 text-green-600 border border-green-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'
+        }`}>
+          <span>{orgMsg.type === 'ok' ? '✓' : '✕'}</span><span>{orgMsg.text}</span>
         </div>
       )}
 
-      {invitations.length > 0 && (
-        <div className="space-y-2">
-          {invitations.map(inv => (
-            <div key={inv.orgId} className="flex items-center justify-between px-4 py-3 rounded-lg border border-amber-500/20 bg-amber-500/5">
-              <div className="text-sm">
-                <span className="font-medium text-fg-primary">{inv.orgName}</span>
-                <span className="text-fg-tertiary ml-1">— {t('org.invitedBy')} {inv.invitedBy}</span>
-              </div>
-              <button onClick={() => void handleAcceptInvite(inv.orgId)} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors">
-                {t('org.accept')}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {orgs.length > 1 && (
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-fg-secondary whitespace-nowrap font-medium">{t('org.switchOrg')}</span>
-          <select value={selectedOrgId ?? ''} onChange={e => setSelectedOrgId(e.target.value)}
-            className="flex-1 px-3 py-2 rounded-lg border border-border-default bg-surface-elevated text-sm text-fg-primary">
-            {orgs.map(o => <option key={o.id} value={o.id}>{o.name} ({localizeRole(o.role)})</option>)}
-          </select>
-        </div>
-      )}
-
-      {/* ═══ LICENSE ═══ */}
+      {/* ═══ CLOUD AI ═══ */}
       <div>
-        <div className="flex items-center mb-3">
-          <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">{t('license.title')}</h3>
-          <button onClick={() => refreshLicense(true)} disabled={refreshing}
-            className="ml-auto flex items-center gap-1.5 text-xs text-fg-tertiary hover:text-fg-secondary disabled:opacity-50 transition-colors">
-            <svg className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5M4.05 11A8 8 0 0119.95 9M19.95 13A8 8 0 014.05 15" />
-            </svg>
-            {t('license.refresh')}
-          </button>
-        </div>
-        <div className="space-y-4">
-          <LicensePlanCard isEnterprise={isEnterprise} licenseInfo={licenseInfo}
-            daysRemaining={daysRemaining} effectiveValidUntil={effectiveValidUntil}
-            effectiveMaxSeats={effectiveMaxSeats} effectiveUsedSeats={effectiveUsedSeats}
-            effectiveOrgName={selectedOrg?.name ?? licenseInfo?.orgName}
-            hubMemberCount={selectedOrg?.memberCount}
-            orgIsTrial={selectedOrg?.license?.isTrial}
-            featureKeys={featureKeys} featureI18n={featureI18n} t={t} />
-
-          {isEnterprise ? (
-            <>
-              {needsRenewal && (
-                <div className={`px-4 py-3 rounded-lg border ${daysRemaining === 0 ? 'bg-red-500/8 border-red-500/15 text-red-600' : daysRemaining! <= 7 ? 'bg-amber-500/8 border-amber-500/15 text-amber-600' : 'bg-amber-500/5 border-amber-500/10 text-amber-600'}`}>
-                  <div className="text-sm font-medium">{daysRemaining === 0 ? t('license.expiredWarning') : t('license.renewalWarning', { count: daysRemaining! })}</div>
-                  <div className="text-[11px] mt-1 opacity-75">{t('license.renewalHint')}</div>
-                  <div className="flex gap-2 mt-3">
-                    <input type="text" value={licenseKey} onChange={e => setLicenseKey(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleActivate()} placeholder={t('license.keyPlaceholder')}
-                      className="flex-1 px-3 py-1.5 bg-surface-primary border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors placeholder:text-fg-tertiary font-mono" />
-                    <button onClick={handleActivate} disabled={activating || !licenseKey.trim()}
-                      className="px-4 py-1.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-all whitespace-nowrap">{t('license.renew')}</button>
-                  </div>
+        <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-3">{t('account.cloudAiTitle')}</h3>
+        <div className="rounded-lg border border-border-default bg-gradient-to-r from-brand-600/5 to-transparent px-5 py-4 space-y-3">
+          {planInfo ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-fg-tertiary">{t('account.currentPlan')}</span>
+                <span className="px-2 py-0.5 rounded text-xs font-semibold capitalize bg-brand-600/10 text-brand-500 border border-brand-500/15">{planInfo.planType}</span>
+              </div>
+              {(totalCredits > 0 || (planInfo.memberCuLimit != null && planInfo.memberCuLimit > 0)) && (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-fg-tertiary">{planInfo.memberCuLimit != null && planInfo.memberCuLimit > 0 ? t('account.personalLimit') : t('account.credits')}</span>
+                  <span className="font-medium text-fg-primary tabular-nums">
+                    {planInfo.memberCuLimit != null && planInfo.memberCuLimit > 0
+                      ? `${Math.round(planInfo.memberCuUsed ?? 0).toLocaleString()} / ${planInfo.memberCuLimit.toLocaleString()}`
+                      : `${Math.round(planInfo.cuUsed).toLocaleString()} / ${totalCredits.toLocaleString()}`}
+                  </span>
                 </div>
               )}
-              {canManageLicense ? (
-                <>
-                  <div className="rounded-lg border border-border-default">
-                    <div className="px-5 py-3 border-b border-border-default/50 flex items-center justify-between">
-                      <span className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('license.details')}</span>
-                      <button onClick={copyAllDetails} className="text-xs text-fg-tertiary hover:text-fg-secondary transition-colors flex items-center gap-1">
-                        {copied === 'allDetails' ? '✓ ' + t('license.copied') : '⧉ ' + t('license.copyInfo')}
-                      </button>
-                    </div>
-                    <div className="px-5 py-2 divide-y divide-border-default/30">
-                      <InfoRow label={t('license.username')} value={licenseInfo?.username} />
-                      {licenseInfo?.hubUserId && <InfoRow label={t('license.userId', { defaultValue: 'User ID' })} value={licenseInfo.hubUserId} />}
-                      {licenseInfo?.orgId && <InfoRow label={t('license.orgId', { defaultValue: 'Org ID' })} value={licenseInfo.orgId} />}
-                      <InfoRow label={t('license.licenseKey')} value={licenseInfo?.licenseKey} />
-                      <InfoRow label={t('license.instanceId')} value={licenseInfo?.instanceId} />
-                    </div>
-                  </div>
-                  {/* TODO: re-enable when offline import and deactivation are ready
-                  <div className="rounded-lg border border-border-default">
-                    <div className="px-5 py-3 border-b border-border-default/50">
-                      <span className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('license.manage')}</span>
-                    </div>
-                    <div className="p-5 space-y-4">
-                      <div className="flex items-center justify-between">
-                        <div><div className="text-xs text-fg-primary font-medium">{t('license.importFile')}</div><div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.importDesc')}</div></div>
-                        <button onClick={() => fileRef.current?.click()} className="px-3 py-1.5 text-xs font-medium text-fg-secondary border border-border-default rounded-lg hover:bg-surface-overlay transition-colors whitespace-nowrap">{t('license.importBtn')}</button>
-                      </div>
-                      <input ref={fileRef} type="file" accept=".lic,.json" className="hidden" onChange={handleImport} />
-                      <div className="pt-3 border-t border-border-default/50">
-                        <div className="flex items-center justify-between">
-                          <div><div className="text-xs text-fg-primary font-medium">{t('license.deactivate')}</div><div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.deactivateDesc')}</div></div>
-                          <button onClick={handleDeactivate} className="px-3 py-1.5 text-xs font-medium text-red-500 border border-red-500/20 rounded-lg hover:bg-red-500/8 transition-colors whitespace-nowrap">{t('license.deactivate')}</button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  */}
-                </>
-              ) : (
-                <div className="px-4 py-3 rounded-lg bg-surface-elevated border border-border-default/50 text-xs text-fg-tertiary">{t('license.notOwnedHint')}</div>
-              )}
-            </>
+            </div>
           ) : (
-            <>
-              <button onClick={handleTrial} disabled={activating}
-                className="w-full flex items-center justify-between px-5 py-4 rounded-lg border border-brand-500/20 bg-brand-600/5 hover:bg-brand-600/10 transition-all text-left disabled:opacity-50">
-                <div><div className="text-sm font-semibold text-fg-primary">{t('license.tryEnterprise')}</div><div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.trialDesc')}</div></div>
-                <span className="text-brand-500 text-lg shrink-0 ml-4">→</span>
-              </button>
-              <div className="rounded-lg border border-border-default p-5">
-                <div className="text-sm font-medium text-fg-primary">{t('license.upgrade')}</div>
-                <div className="text-[11px] text-fg-tertiary mt-1">{t('license.activateDesc')}</div>
-                <div className="flex gap-2 mt-3">
-                  <input type="text" value={licenseKey} onChange={e => setLicenseKey(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleActivate()} placeholder={t('license.keyPlaceholder')}
-                    className="flex-1 px-3 py-2 bg-surface-primary border border-border-default rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors placeholder:text-fg-tertiary font-mono" />
-                  <button onClick={handleActivate} disabled={activating || !licenseKey.trim()}
-                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-all whitespace-nowrap">{t('license.activate')}</button>
-                </div>
-              </div>
-              <div className="rounded-lg border border-border-default p-5">
-                <div className="text-sm font-medium text-fg-primary">{t('license.contactSales')}</div>
-                <div className="text-[11px] text-fg-tertiary mt-1 mb-3">{t('license.contactSalesDesc', { email: t('license.salesEmail') })}</div>
-                {idBlock && (
-                  <div className="flex gap-2 items-start">
-                    <div className="relative flex-1">
-                      <pre className="text-[11px] text-fg-secondary font-mono bg-surface-primary border border-border-default/50 rounded-lg px-3 py-2.5 leading-relaxed select-all whitespace-pre-wrap">{idBlock}</pre>
-                      <button onClick={() => copyToClipboard(idBlock, 'salesInfo')} className="absolute top-1.5 right-1.5 text-xs text-fg-tertiary hover:text-fg-secondary transition-colors bg-surface-primary/90 border border-border-default/50 px-2 py-1 rounded-md">
-                        {copied === 'salesInfo' ? '✓ ' + t('license.copied') : t('license.copyInfo')}
-                      </button>
-                    </div>
-                    <a href={`mailto:${t('license.salesEmail')}?subject=Enterprise%20License%20Request&body=${encodeURIComponent(idBlock)}`}
-                      className="shrink-0 inline-flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-all no-underline whitespace-nowrap">{t('license.emailSales')}</a>
-                  </div>
-                )}
-              </div>
-              {/* TODO: re-enable when offline import is ready
-              <div className="flex items-center justify-between rounded-lg border border-border-default px-5 py-4">
-                <div><div className="text-xs font-medium text-fg-primary">{t('license.importFile')}</div><div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.importDesc')}</div></div>
-                <button onClick={() => fileRef.current?.click()} className="px-3 py-1.5 text-xs font-medium text-fg-secondary border border-border-default rounded-lg hover:bg-surface-overlay transition-colors whitespace-nowrap shrink-0">{t('license.importBtn')}</button>
-              </div>
-              <input ref={fileRef} type="file" accept=".lic,.json" className="hidden" onChange={handleImport} />
-              */}
-            </>
+            <p className="text-xs text-fg-secondary">{t('license.cloudAiDesc')}</p>
           )}
+          <div className="flex flex-wrap gap-2">
+            <a href={`${hubApi.getUrl()}/settings?tab=billing`} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors no-underline">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+              {t('account.manageBilling')}
+            </a>
+          </div>
         </div>
       </div>
 
       {/* ═══ ORGANIZATION ═══ */}
-      {selectedOrg && (
-        <div>
-          <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-3">{t('org.title')}</h3>
-          <div className="space-y-4">
-            <div className="rounded-lg border border-border-default p-5 space-y-4">
-              <div className="space-y-2">
-                <label className="text-xs text-fg-tertiary font-medium">{t('org.nameLabel')}</label>
-                {isOwner ? (
-                  <div className="flex gap-2">
-                    <input value={editName} onChange={e => setEditName(e.target.value)} className="flex-1 px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary" />
-                    <button onClick={() => void handleUpdateName()} disabled={editName === selectedOrg.name || !editName.trim()}
-                      className="px-3 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-xs rounded-lg transition-colors">{t('common:save')}</button>
-                  </div>
-                ) : (<div className="text-sm text-fg-primary">{selectedOrg.name}</div>)}
+      <div>
+        <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-3">{t('account.orgSection')}</h3>
+        {invitations.length > 0 && (
+          <div className="space-y-2 mb-3">
+            {invitations.map(inv => (
+              <div key={inv.orgId} className="flex items-center justify-between px-4 py-3 rounded-lg border border-amber-500/20 bg-amber-500/5">
+                <div className="text-sm">
+                  <span className="font-medium text-fg-primary">{inv.orgName}</span>
+                  <span className="text-fg-tertiary ml-1">— {t('org.invitedBy')} {inv.invitedBy}</span>
+                </div>
+                <button onClick={() => void handleAcceptInvite(inv.orgId)} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors">
+                  {t('org.accept')}
+                </button>
               </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-fg-tertiary">{t('org.orgId')}</span>
-                <code className="px-1.5 py-0.5 rounded bg-surface-elevated text-fg-secondary">{selectedOrg.id}</code>
-              </div>
+            ))}
+          </div>
+        )}
+        {primaryOrg ? (
+          <div className="rounded-lg border border-border-default px-5 py-4 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-fg-tertiary">{t('org.nameLabel')}</span>
+              <span className="font-medium text-fg-primary">{primaryOrg.name}</span>
             </div>
-
-            <div className="rounded-lg border border-border-default overflow-hidden">
-              <div className="px-5 py-3 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border-default, #e5e7eb)' }}>
-                <h3 className="text-sm font-medium text-fg-primary">{t('org.members')} ({members.filter(m => m.status === 'active').length})</h3>
-              </div>
-              <div className="divide-y divide-border-default">
-                {members.map(m => (
-                  <div key={m.id} className="flex items-center justify-between px-5 py-3">
-                    <div className="flex items-center gap-3">
-                      {m.avatarUrl ? (<img src={m.avatarUrl} alt="" className="w-8 h-8 rounded-full object-cover" />) : (
-                        <div className="w-8 h-8 rounded-full bg-brand-600/20 flex items-center justify-center text-xs font-bold text-brand-500">{(m.displayName ?? m.username)?.[0]?.toUpperCase()}</div>
-                      )}
-                      <div>
-                        <div className="text-sm font-medium text-fg-primary">{m.displayName ?? m.username}</div>
-                        <div className="text-[11px] text-fg-tertiary">@{m.username}{m.status === 'pending' ? ` (${t('org.pending')})` : ''}</div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {isOwner && m.role !== 'owner' ? (
-                        <select value={m.role} onChange={e => void handleRoleChange(m.userId, e.target.value)}
-                          className="px-2 py-1 rounded border border-border-default bg-surface-elevated text-xs text-fg-secondary">
-                          <option value="admin">{t('org.roleAdmin')}</option>
-                          <option value="member">{t('org.roleMember')}</option>
-                        </select>
-                      ) : (
-                        <span className="text-xs text-fg-tertiary">{localizeRole(m.role)}</span>
-                      )}
-                      {isOwner && m.role !== 'owner' && (<button onClick={() => void handleRemove(m.userId)} className="text-xs text-red-500 hover:text-red-400 transition-colors">{t('org.remove')}</button>)}
-                    </div>
-                  </div>
-                ))}
-                {members.length === 0 && (<div className="px-5 py-6 text-center text-xs text-fg-tertiary">{t('org.noMembers')}</div>)}
-              </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-fg-tertiary">{t('account.memberCount')}</span>
+              <span className="font-medium text-fg-primary">{primaryOrg.memberCount}</span>
             </div>
-
-            {canInvite && (
-              <div className="rounded-lg border border-border-default p-5 space-y-3">
-                <label className="text-xs text-fg-tertiary font-medium">{t('org.inviteLabel')}</label>
-                {seatsFull ? (<p className="text-xs text-amber-500">{t('org.seatsFullHint')}</p>) : (
-                  <div className="flex gap-2">
-                    <input value={inviteValue} onChange={e => setInviteValue(e.target.value)} type="email" placeholder={t('org.invitePlaceholder')}
-                      className="flex-1 px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary placeholder:text-fg-quaternary"
-                      onKeyDown={e => { if (e.key === 'Enter') void handleInvite(); }} />
-                    <select value={inviteRole} onChange={e => setInviteRole(e.target.value as 'member' | 'admin')}
-                      className="px-2 py-2 rounded-lg border border-border-default bg-surface-elevated text-xs text-fg-secondary">
-                      <option value="member">{t('org.roleMember')}</option>
-                      <option value="admin">{t('org.roleAdmin')}</option>
-                    </select>
-                    <button onClick={() => void handleInvite()} disabled={inviting || !inviteValue.trim()}
-                      className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors">{inviting ? t('common:saving') : t('org.invite')}</button>
-                  </div>
-                )}
-              </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-fg-tertiary">{t('org.orgId')}</span>
+              <code className="px-1.5 py-0.5 rounded bg-surface-elevated text-fg-secondary text-[11px]">{primaryOrg.id}</code>
+            </div>
+            <a href={`${hubApi.getUrl()}/settings?tab=organization`} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-4 py-2 border border-border-default text-fg-secondary hover:bg-surface-elevated text-xs font-medium rounded-lg transition-colors no-underline">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+              {t('account.manageOrg')}
+            </a>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-border-default px-5 py-6 text-center space-y-3">
+            <div className="text-sm text-fg-tertiary">{t('org.noOrg')}</div>
+            {!!getHubToken() && (
+              <div className="text-xs text-amber-500/90">{t('org.staleSessionHint')}</div>
             )}
-
-            {!isOwner && (<button onClick={() => setShowLeaveConfirm(true)} className="text-xs text-red-500 hover:text-red-400 transition-colors border border-red-500/30 rounded-lg px-3 py-1.5 hover:bg-red-500/5">{t('org.leave')}</button>)}
+            <button disabled={hubConnecting} onClick={() => {
+              setOrgMsg(null);
+              setHubConnecting(true);
+              // Always force a fresh Hub sign-in: a stale local token makes
+              // ensureHubAuth() resolve immediately with no UI, which looked like
+              // a dead button when org load failed.
+              ensureHubAuth({ force: true }).then(() => loadOrgs(true)).catch(e => {
+                const raw = e instanceof Error ? e.message : String(e);
+                const text = raw.includes('Popup blocked') ? t('org.popupBlocked') : raw.includes('cancelled') ? t('org.loginCancelled') : raw;
+                setOrgMsg({ type: 'err', text });
+              }).finally(() => setHubConnecting(false));
+            }}
+              className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2">
+              {hubConnecting && <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="30 70" strokeLinecap="round"/></svg>}
+              {hubConnecting ? t('org.connecting') : (getHubToken() ? t('org.reconnectHub') : t('org.connectHub'))}
+            </button>
           </div>
+        )}
+      </div>
+
+      {/* ═══ ENTERPRISE LICENSE (conditional) ═══ */}
+      {isEnterprise && (
+        <div>
+          <div className="flex items-center mb-3">
+            <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">{t('license.title')}</h3>
+            <button onClick={() => refreshLicense(true)} disabled={refreshing}
+              className="ml-auto flex items-center gap-1.5 text-xs text-fg-tertiary hover:text-fg-secondary disabled:opacity-50 transition-colors">
+              <svg className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5M4.05 11A8 8 0 0119.95 9M19.95 13A8 8 0 014.05 15" />
+              </svg>
+              {t('license.refresh')}
+            </button>
+          </div>
+          <LicensePlanCard isEnterprise licenseInfo={licenseInfo}
+            daysRemaining={daysRemaining} effectiveValidUntil={licenseInfo?.validUntil}
+            effectiveMaxSeats={licenseInfo?.maxSeats} effectiveUsedSeats={primaryOrg?.memberCount ?? licenseInfo?.usedSeats ?? 0}
+            effectiveOrgName={primaryOrg?.name ?? licenseInfo?.orgName}
+            featureKeys={featureKeys} featureI18n={featureI18n} t={t} />
         </div>
       )}
 
-      {showLeaveConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowLeaveConfirm(false)}>
-          <div className="bg-surface-secondary border border-border-default rounded-2xl max-w-sm w-full mx-4 p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex items-start gap-3 mb-4">
-              <span className="flex items-center justify-center w-10 h-10 rounded-xl bg-red-500/10 text-red-500 shrink-0">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-              </span>
-              <div>
-                <h3 className="text-base font-semibold text-fg-primary">{t('org.leaveConfirmTitle')}</h3>
-                <p className="text-sm text-fg-secondary mt-1">{t('org.leaveConfirmMsg', { name: selectedOrg?.name ?? '' })}</p>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2.5 pt-2 border-t border-border-default">
-              <button onClick={() => setShowLeaveConfirm(false)} className="px-4 py-2 text-xs font-medium rounded-lg border border-border-default text-fg-secondary hover:bg-surface-elevated transition-colors">{t('org.leaveCancel')}</button>
-              <button onClick={() => void handleLeave()} className="px-4 py-2 text-xs font-medium rounded-lg bg-red-600 hover:bg-red-500 text-white shadow-sm shadow-red-600/20 transition-colors">{t('org.leaveConfirmBtn')}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
+      {/* ═══ FOOTER ═══ */}
       <div className="flex items-center gap-4 text-[11px] text-fg-tertiary pt-1">
         <a href="https://markus.global" target="_blank" rel="noopener noreferrer" className="hover:text-fg-secondary transition-colors">{t('license.website')}</a>
         <a href={`mailto:${t('license.salesEmail')}`} className="hover:text-fg-secondary transition-colors">{t('license.salesEmail')}</a>
@@ -3944,70 +3816,47 @@ function OrgLicenseSection() {
   );
 }
 
-/* ─── License Plan Card (shared sub-component) ─── */
+/* ─── License Plan Card (enterprise only) ─── */
 
-function LicensePlanCard({ isEnterprise, licenseInfo, daysRemaining, effectiveValidUntil, effectiveMaxSeats, effectiveUsedSeats, effectiveOrgName, hubMemberCount, orgIsTrial, featureKeys, featureI18n, t }: {
+function LicensePlanCard({ isEnterprise, licenseInfo, daysRemaining, effectiveValidUntil, effectiveMaxSeats, effectiveUsedSeats, effectiveOrgName, featureKeys, featureI18n, t }: {
   isEnterprise: boolean | undefined; licenseInfo: any;
   daysRemaining: number | null; effectiveValidUntil?: string; effectiveMaxSeats?: number; effectiveUsedSeats: number; effectiveOrgName?: string;
-  hubMemberCount?: number; orgIsTrial?: boolean;
   featureKeys: readonly string[]; featureI18n: Record<string, string>; t: (key: string, opts?: any) => string;
 }) {
-  const displayUsers = hubMemberCount ?? licenseInfo?.usage?.users ?? 0;
-  if (isEnterprise) {
-    return (
-      <div className="rounded-lg border border-brand-500/20 overflow-hidden">
-        <div className="px-5 py-4 bg-gradient-to-r from-brand-600/5 to-transparent">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <span className="text-base font-semibold text-fg-primary">{t('license.planEnterprise')}</span>
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-500/12 text-green-600 border border-green-500/15">{t('license.statusActive')}</span>
-              {(licenseInfo?.isTrial || orgIsTrial) && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/12 text-amber-600 border border-amber-500/15">{t('license.trial')}</span>)}
-              {licenseInfo?.isOffline && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-brand-500/12 text-brand-400 border border-brand-500/15">{t('license.offline')}</span>)}
-            </div>
-            {daysRemaining !== null && (
-              <div className="text-right">
-                <div className={`text-sm font-semibold tabular-nums ${daysRemaining === 0 ? 'text-red-500' : daysRemaining <= 7 ? 'text-amber-500' : daysRemaining <= 60 ? 'text-amber-600' : 'text-fg-primary'}`}>
-                  {daysRemaining > 0 ? t('license.daysRemaining', { count: daysRemaining }) : t('license.expired')}
-                </div>
-                <div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.expiresOn', { date: new Date(effectiveValidUntil!).toLocaleDateString() })}</div>
+  if (!isEnterprise) return null;
+  return (
+    <div className="rounded-lg border border-brand-500/20 overflow-hidden">
+      <div className="px-5 py-4 bg-gradient-to-r from-brand-600/5 to-transparent">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <span className="text-base font-semibold text-fg-primary">{t('license.planEnterprise')}</span>
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-500/12 text-green-600 border border-green-500/15">{t('license.statusActive')}</span>
+            {licenseInfo?.isTrial && (<span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/12 text-amber-600 border border-amber-500/15">{t('license.trial')}</span>)}
+          </div>
+          {daysRemaining !== null && (
+            <div className="text-right">
+              <div className={`text-sm font-semibold tabular-nums ${daysRemaining === 0 ? 'text-red-500' : daysRemaining <= 7 ? 'text-amber-500' : daysRemaining <= 60 ? 'text-amber-600' : 'text-fg-primary'}`}>
+                {daysRemaining > 0 ? t('license.daysRemaining', { count: daysRemaining }) : t('license.expired')}
               </div>
-            )}
-          </div>
-          <div className="mt-4 grid grid-cols-4 gap-px rounded-lg overflow-hidden border border-border-default/50">
-            <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.agents ?? 0} <span className="text-fg-tertiary font-normal">/ ∞</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitAgents')}</div></div>
-            <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.teams ?? 0} <span className="text-fg-tertiary font-normal">/ ∞</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitTeams')}</div></div>
-            <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.toolCallsToday ?? 0} <span className="text-fg-tertiary font-normal">/ ∞</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitToolCalls')}{t('license.perDay')}</div></div>
-            <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-sm font-semibold text-fg-primary tabular-nums">{displayUsers} <span className="text-fg-tertiary font-normal">/ {effectiveMaxSeats ?? '∞'}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitUsers')}</div></div>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {featureKeys.map(f => (<span key={f} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-brand-500 bg-brand-600/6 border border-brand-500/10">{FEATURE_ICONS[f]} {featureI18n[f]}</span>))}
-          </div>
-          {effectiveOrgName && (
-            <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
-              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-primary/40 border border-border-default/30">
-                <span className="text-fg-tertiary">{t('license.organization')}</span><span className="font-medium text-fg-primary">{effectiveOrgName}</span>
-              </div>
-              {effectiveMaxSeats != null && (
-                <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-primary/40 border border-border-default/30">
-                  <span className="text-fg-tertiary">{t('license.seats')}</span><span className="font-medium text-fg-primary">{effectiveUsedSeats} / {effectiveMaxSeats}</span>
-                </div>
-              )}
+              <div className="text-[11px] text-fg-tertiary mt-0.5">{t('license.expiresOn', { date: new Date(effectiveValidUntil!).toLocaleDateString() })}</div>
             </div>
           )}
         </div>
-      </div>
-    );
-  }
-  return (
-    <div className="rounded-lg border border-border-default">
-      <div className="px-5 py-4">
-        <div className="flex items-center gap-2.5"><span className="text-base font-semibold text-fg-primary">{t('license.planFree')}</span><span className="text-[11px] text-fg-tertiary">{t('license.freeFeaturesDesc')}</span></div>
-        <div className="mt-3 grid grid-cols-4 gap-px rounded-lg overflow-hidden border border-border-default/50">
-          <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.agents ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ {licenseInfo?.limits?.maxAgents ?? 20}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitAgents')}</div></div>
-          <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.teams ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ {licenseInfo?.limits?.maxTeams ?? 5}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitTeams')}</div></div>
-          <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{licenseInfo?.usage?.toolCallsToday ?? 0} <span className="text-fg-tertiary font-normal text-xs">/ {(licenseInfo?.limits?.maxToolCallsPerDay ?? 5000).toLocaleString()}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitToolCalls')}{t('license.perDay')}</div></div>
-          <div className="bg-surface-primary/40 px-3 py-2.5 text-center"><div className="text-lg font-semibold text-fg-primary tabular-nums">{displayUsers} <span className="text-fg-tertiary font-normal text-xs">/ {licenseInfo?.limits?.maxUsers ?? 1}</span></div><div className="text-[10px] text-fg-tertiary mt-0.5">{t('license.limitUsers')}</div></div>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {featureKeys.map(f => (<span key={f} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-brand-500 bg-brand-600/6 border border-brand-500/10">{FEATURE_ICONS[f]} {featureI18n[f]}</span>))}
         </div>
+        {effectiveOrgName && (
+          <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+            <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-primary/40 border border-border-default/30">
+              <span className="text-fg-tertiary">{t('license.organization')}</span><span className="font-medium text-fg-primary">{effectiveOrgName}</span>
+            </div>
+            {effectiveMaxSeats != null && (
+              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-primary/40 border border-border-default/30">
+                <span className="text-fg-tertiary">{t('license.seats')}</span><span className="font-medium text-fg-primary">{effectiveUsedSeats} / {effectiveMaxSeats}</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

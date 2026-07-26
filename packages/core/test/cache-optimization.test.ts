@@ -403,6 +403,111 @@ describe('ContextEngine — cache optimization', () => {
     });
   });
 
+  describe('C3: injection-point ownership audit', () => {
+    // Dynamic (Tier 3) section markers that must never leak into the stable prefix.
+    const DYNAMIC_MARKERS = [
+      '## Cognitive Context',
+      '## Your Attention State', // mailbox/attention meta
+      '## Channel History',
+      '## Current Conversation',
+      'Current date and time:',
+    ];
+    // Stable/semi-stable (Tier 1+2) markers that must live in the cached prefix.
+    const STABLE_MARKERS = ['## Tool Usage Rules', '## Your Knowledge'];
+
+    async function buildRichPrompt() {
+      const memory = makeMockMemory();
+      // Give Tier 2 a "## Your Knowledge" section.
+      memory.getLongTermMemoryExcluding = () => '- Prefer TypeScript.';
+      memory.getLongTermMemory = () => '- Prefer TypeScript.';
+      return engine.buildSystemPrompt({
+        agentId: 'test-agent',
+        agentName: 'TestAgent',
+        role: makeRole(),
+        memory: memory as any,
+        scenario: 'a2a' as any,
+        // Per-call situational meta — all belong in Tier 3.
+        cognitiveContext: {
+          depth: 'shallow' as any,
+          isEmpty: false,
+          cognitiveContext: 'The user is asking about billing.',
+          retrievedContext: 'Prior billing thread.',
+          reflection: 'Stay concise.',
+        },
+        mailboxContext: {
+          currentFocus: { type: 'a2a_message', label: 'from Bob', elapsedMs: 5000 },
+          queueDepth: 2,
+          topQueued: [{ type: 'human_chat', priority: 1, summary: 'urgent question' }],
+          recentDecisions: [{ type: 'continue', reasoning: 'stay on task' }],
+        },
+        channelContext: [{ role: 'user', content: 'hello team' }],
+        senderIdentity: { id: 'u1', name: 'Bob', role: 'admin' },
+      });
+    }
+
+    it('keeps all per-call situational meta out of the cached (breakpoint) prefix', async () => {
+      const result = await buildRichPrompt();
+      const stablePrefix = result.segments
+        .filter(s => s.cacheBreakpoint)
+        .map(s => s.content)
+        .join('\n');
+
+      for (const marker of DYNAMIC_MARKERS) {
+        expect(stablePrefix, `stable prefix must not contain "${marker}"`).not.toContain(marker);
+      }
+    });
+
+    it('places dynamic meta only in the tail segment after the last breakpoint', async () => {
+      const result = await buildRichPrompt();
+      const lastBreakIdx = result.segments.map(s => !!s.cacheBreakpoint).lastIndexOf(true);
+      const tail = result.segments
+        .slice(lastBreakIdx + 1)
+        .map(s => s.content)
+        .join('\n');
+
+      // The dynamic tail exists and is not itself a cache breakpoint.
+      expect(result.segments[result.segments.length - 1]!.cacheBreakpoint).toBeFalsy();
+      for (const marker of DYNAMIC_MARKERS) {
+        expect(tail, `dynamic tail must contain "${marker}"`).toContain(marker);
+      }
+    });
+
+    it('keeps identity/tools/knowledge in the stable prefix', async () => {
+      const result = await buildRichPrompt();
+      const stablePrefix = result.segments
+        .filter(s => s.cacheBreakpoint)
+        .map(s => s.content)
+        .join('\n');
+      for (const marker of STABLE_MARKERS) {
+        expect(stablePrefix, `stable prefix must contain "${marker}"`).toContain(marker);
+      }
+    });
+
+    it('routes CPP output to the notebook (Tier 3) rather than a new stable section when a writer is provided', async () => {
+      const writes: Array<{ key: string; managed: string }> = [];
+      const result = await engine.buildSystemPrompt({
+        agentId: 'test-agent',
+        agentName: 'TestAgent',
+        role: makeRole(),
+        memory: makeMockMemory() as any,
+        scenario: 'a2a' as any,
+        cognitiveContext: {
+          depth: 'shallow' as any,
+          isEmpty: false,
+          cognitiveContext: 'situational note',
+        },
+        notebookWriter: (key, _text, managed) => { writes.push({ key, managed }); },
+      });
+      // CPP was handed to the notebook writer, not injected as a stable "## Cognitive Context".
+      expect(writes.some(w => w.managed === 'cpp')).toBe(true);
+      const stablePrefix = result.segments
+        .filter(s => s.cacheBreakpoint)
+        .map(s => s.content)
+        .join('\n');
+      expect(stablePrefix).not.toContain('## Cognitive Context');
+    });
+  });
+
   describe('prepareMessages cache breakpoint', () => {
     it('should mark the last message before current turn with cacheBreakpoint', async () => {
       const sessionMessages: LLMMessage[] = [

@@ -38,31 +38,7 @@ export interface APIKey {
 export interface OrgPlan {
   orgId: string;
   tier: PlanTier;
-  limits: {
-    maxAgents: number;
-    maxTokensPerMonth: number;
-    maxToolCallsPerDay: number;
-    maxMessagesPerDay: number;
-    maxStorageBytes: number;
-  };
 }
-
-const DEFAULT_PLANS: Record<PlanTier, OrgPlan['limits']> = {
-  free: {
-    maxAgents: 20,
-    maxTokensPerMonth: -1,
-    maxToolCallsPerDay: 5000,
-    maxMessagesPerDay: -1,
-    maxStorageBytes: -1,
-  },
-  enterprise: {
-    maxAgents: -1,
-    maxTokensPerMonth: -1,
-    maxToolCallsPerDay: -1,
-    maxMessagesPerDay: -1,
-    maxStorageBytes: -1,
-  },
-};
 
 let keyCounter = 0;
 
@@ -71,31 +47,15 @@ export class BillingService {
   private apiKeys = new Map<string, APIKey>();
   private apiKeysByKey = new Map<string, APIKey>();
   private orgPlans = new Map<string, OrgPlan>();
-  private toolCallsTodayProvider?: () => number;
-
-  setToolCallsTodayProvider(fn: () => number): void {
-    this.toolCallsTodayProvider = fn;
-  }
-
   setOrgPlan(orgId: string, tier: PlanTier): OrgPlan {
-    const plan: OrgPlan = {
-      orgId,
-      tier,
-      limits: { ...DEFAULT_PLANS[tier] },
-    };
+    const plan: OrgPlan = { orgId, tier };
     this.orgPlans.set(orgId, plan);
     log.info(`Plan set for org ${orgId}: ${tier}`);
     return plan;
   }
 
   getOrgPlan(orgId: string): OrgPlan {
-    return (
-      this.orgPlans.get(orgId) ?? {
-        orgId,
-        tier: 'free',
-        limits: { ...DEFAULT_PLANS.free },
-      }
-    );
+    return this.orgPlans.get(orgId) ?? { orgId, tier: 'free' };
   }
 
   recordUsage(record: Omit<UsageRecord, 'timestamp'>): UsageRecord {
@@ -145,64 +105,6 @@ export class BillingService {
       agentId,
       ...data,
     }));
-  }
-
-  checkLimit(
-    orgId: string,
-    type: UsageRecord['type'],
-    additionalAmount = 1
-  ): { allowed: boolean; reason?: string } {
-    const plan = this.getOrgPlan(orgId);
-    if (plan.tier === 'enterprise') return { allowed: true };
-
-    const today = new Date().toISOString().slice(0, 10);
-    const month = new Date().toISOString().slice(0, 7);
-
-    if (type === 'llm_tokens') {
-      const summary = this.getUsageSummary(orgId, month);
-      if (
-        plan.limits.maxTokensPerMonth > 0 &&
-        summary.llmTokens + additionalAmount > plan.limits.maxTokensPerMonth
-      ) {
-        return {
-          allowed: false,
-          reason: `Monthly token limit reached (${plan.limits.maxTokensPerMonth})`,
-        };
-      }
-    }
-
-    if (type === 'tool_call') {
-      const todayCount = this.toolCallsTodayProvider
-        ? this.toolCallsTodayProvider()
-        : this.records.filter(r => r.orgId === orgId && r.type === 'tool_call' && r.timestamp.startsWith(today)).reduce((s, r) => s + r.amount, 0);
-      if (
-        plan.limits.maxToolCallsPerDay > 0 &&
-        todayCount + additionalAmount > plan.limits.maxToolCallsPerDay
-      ) {
-        return {
-          allowed: false,
-          reason: `Daily tool call limit reached (${plan.limits.maxToolCallsPerDay})`,
-        };
-      }
-    }
-
-    if (type === 'message') {
-      const todayRecords = this.records.filter(
-        r => r.orgId === orgId && r.type === 'message' && r.timestamp.startsWith(today)
-      );
-      const todayCount = todayRecords.reduce((s, r) => s + r.amount, 0);
-      if (
-        plan.limits.maxMessagesPerDay > 0 &&
-        todayCount + additionalAmount > plan.limits.maxMessagesPerDay
-      ) {
-        return {
-          allowed: false,
-          reason: `Daily message limit reached (${plan.limits.maxMessagesPerDay})`,
-        };
-      }
-    }
-
-    return { allowed: true };
   }
 
   createAPIKey(
@@ -274,27 +176,34 @@ export class BillingService {
     period: string;
     totalTokens: number;
     totalToolCalls: number;
+    totalCu: number;
     estimatedCost: number;
-    byAgent: Array<{ agentId: string; tokens: number; toolCalls: number; cost: number }>;
+    byAgent: Array<{ agentId: string; tokens: number; toolCalls: number; cost: number; cu: number }>;
   } {
     const period = periodPrefix ?? new Date().toISOString().slice(0, 7);
     const filtered = this.records.filter(
       r => r.projectId === projectId && r.timestamp.startsWith(period)
     );
 
-    const agentMap = new Map<string, { tokens: number; toolCalls: number }>();
+    const agentMap = new Map<string, { tokens: number; toolCalls: number; cu: number }>();
     let totalTokens = 0;
     let totalToolCalls = 0;
+    let totalCu = 0;
 
     for (const r of filtered) {
       let entry = agentMap.get(r.agentId);
       if (!entry) {
-        entry = { tokens: 0, toolCalls: 0 };
+        entry = { tokens: 0, toolCalls: 0, cu: 0 };
         agentMap.set(r.agentId, entry);
       }
       if (r.type === 'llm_tokens') {
         entry.tokens += r.amount;
         totalTokens += r.amount;
+        const cuCost = typeof r.metadata?.cuCost === 'number' ? r.metadata.cuCost : 0;
+        if (cuCost > 0) {
+          entry.cu += cuCost;
+          totalCu += cuCost;
+        }
       }
       if (r.type === 'tool_call') {
         entry.toolCalls += r.amount;
@@ -302,28 +211,62 @@ export class BillingService {
       }
     }
 
-    const costPerToken = 0.000003;
     return {
       projectId,
       period,
       totalTokens,
       totalToolCalls,
-      estimatedCost: totalTokens * costPerToken,
+      totalCu,
+      estimatedCost: totalCu,
       byAgent: [...agentMap.entries()].map(([agentId, data]) => ({
         agentId,
-        ...data,
-        cost: data.tokens * costPerToken,
+        tokens: data.tokens,
+        toolCalls: data.toolCalls,
+        cost: data.cu,
+        cu: data.cu,
       })),
     };
   }
 
-  getTaskCost(taskId: string): { tokens: number; toolCalls: number; estimatedCost: number } {
+  getTaskCost(taskId: string): { tokens: number; toolCalls: number; totalCu: number; estimatedCost: number } {
     const filtered = this.records.filter(r => r.taskId === taskId);
     const tokens = filtered.filter(r => r.type === 'llm_tokens').reduce((s, r) => s + r.amount, 0);
     const toolCalls = filtered
       .filter(r => r.type === 'tool_call')
       .reduce((s, r) => s + r.amount, 0);
-    return { tokens, toolCalls, estimatedCost: tokens * 0.000003 };
+    const totalCu = filtered
+      .filter(r => r.type === 'llm_tokens')
+      .reduce((s, r) => s + (typeof r.metadata?.cuCost === 'number' ? r.metadata.cuCost : 0), 0);
+    return { tokens, toolCalls, totalCu, estimatedCost: totalCu };
+  }
+
+  getCuUsageSummary(orgId: string, periodPrefix?: string): { totalCu: number } {
+    const period = periodPrefix ?? new Date().toISOString().slice(0, 7);
+    const filtered = this.records.filter(
+      r => r.orgId === orgId && r.timestamp.startsWith(period) && r.type === 'llm_tokens',
+    );
+    const totalCu = filtered.reduce(
+      (s, r) => s + (typeof r.metadata?.cuCost === 'number' ? r.metadata.cuCost : 0),
+      0,
+    );
+    return { totalCu };
+  }
+
+  getCuUsageSummaryForPeriod(scopeId: string, periodStart: Date, periodEnd: Date): { totalCu: number } {
+    const startStr = periodStart.toISOString();
+    const endStr = periodEnd.toISOString();
+    const filtered = this.records.filter(
+      r =>
+        (r.orgId === scopeId || r.projectId === scopeId) &&
+        r.type === 'llm_tokens' &&
+        r.timestamp >= startStr &&
+        r.timestamp <= endStr,
+    );
+    const totalCu = filtered.reduce(
+      (s, r) => s + (typeof r.metadata?.cuCost === 'number' ? r.metadata.cuCost : 0),
+      0,
+    );
+    return { totalCu };
   }
 
   getUsageSummaryForPeriod(scopeId: string, periodStart: Date, periodEnd: Date): UsageSummary {

@@ -1,4 +1,4 @@
-import { createLogger } from '@markus/shared';
+import { createLogger, type UserInputQuestion, type UserInputAnswer } from '@markus/shared';
 import type { OrganizationService } from './org-service.js';
 
 const log = createLogger('hitl');
@@ -38,6 +38,10 @@ export interface ApprovalRequest {
   options?: Array<{ id: string; label: string; description?: string }>;
   allowFreeform?: boolean;
   selectedOption?: string;
+  /** One or more structured questions (request_user_input). When present, the UI renders a multi-question form. */
+  questions?: UserInputQuestion[];
+  /** Aggregated answers to `questions`, filled on response. */
+  answers?: UserInputAnswer[];
   /** When set, only these users (plus admins/owners) see and may respond to the approval in the API. */
   approverUserIds?: string[];
   /** The intended recipient; used for visibility filtering when approverUserIds is not set. */
@@ -110,6 +114,8 @@ export interface ApprovalRepo {
     options?: Array<{ id: string; label: string; description?: string }>;
     allowFreeform?: boolean;
     selectedOption?: string;
+    questions?: UserInputQuestion[];
+    answers?: UserInputAnswer[];
     approverUserIds?: string[];
     targetUserId?: string;
   }): void;
@@ -130,6 +136,8 @@ export interface ApprovalRepo {
     options?: Array<{ id: string; label: string; description?: string }>;
     allowFreeform?: boolean;
     selectedOption?: string;
+    questions?: UserInputQuestion[];
+    answers?: UserInputAnswer[];
     approverUserIds?: string[];
     targetUserId?: string;
   }>;
@@ -150,6 +158,8 @@ export interface ApprovalRepo {
     options?: Array<{ id: string; label: string; description?: string }>;
     allowFreeform?: boolean;
     selectedOption?: string;
+    questions?: UserInputQuestion[];
+    answers?: UserInputAnswer[];
     approverUserIds?: string[];
     targetUserId?: string;
   } | undefined;
@@ -166,7 +176,7 @@ export class HITLService {
   private approvals = new Map<string, ApprovalRequest>();
   private pendingResolvers = new Map<
     string,
-    (result: { approved: boolean; comment?: string; selectedOption?: string; respondedBy?: string }) => void
+    (result: { approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[]; respondedBy?: string }) => void
   >();
   private notificationHandlers: NotificationHandler[] = [];
   private notificationRepo?: NotificationRepo;
@@ -205,6 +215,8 @@ export class HITLService {
             options: row.options,
             allowFreeform: row.allowFreeform,
             selectedOption: row.selectedOption,
+            questions: row.questions,
+            answers: row.answers,
             approverUserIds: row.approverUserIds,
             targetUserId: row.targetUserId,
           });
@@ -241,6 +253,7 @@ export class HITLService {
     expiresInMs?: number;
     options?: Array<{ id: string; label: string; description?: string }>;
     allowFreeform?: boolean;
+    questions?: UserInputQuestion[];
     approverUserIds?: string[];
   }): ApprovalRequest {
     const id = genId('apr');
@@ -258,6 +271,7 @@ export class HITLService {
       expiresAt: opts.expiresInMs ? new Date(Date.now() + opts.expiresInMs).toISOString() : undefined,
       options: opts.options,
       allowFreeform: opts.allowFreeform,
+      questions: opts.questions,
       approverUserIds: opts.approverUserIds,
       targetUserId: opts.targetUserId,
     };
@@ -290,10 +304,11 @@ export class HITLService {
     expiresInMs?: number;
     options?: Array<{ id: string; label: string; description?: string }>;
     allowFreeform?: boolean;
+    questions?: UserInputQuestion[];
     approverUserIds?: string[];
-  }): Promise<{ approved: boolean; comment?: string; selectedOption?: string; respondedBy?: string }> {
+  }): Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[]; respondedBy?: string }> {
     const approval = this.requestApproval(opts);
-    return new Promise<{ approved: boolean; comment?: string; selectedOption?: string; respondedBy?: string }>((resolve) => {
+    return new Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[]; respondedBy?: string }>((resolve) => {
       this.pendingResolvers.set(approval.id, resolve);
       if (opts.expiresInMs) {
         setTimeout(() => {
@@ -314,7 +329,7 @@ export class HITLService {
     });
   }
 
-  respondToApproval(id: string, approved: boolean, respondedBy: string, comment?: string, selectedOption?: string): ApprovalRequest | undefined {
+  respondToApproval(id: string, approved: boolean, respondedBy: string, comment?: string, selectedOption?: string, answers?: UserInputAnswer[]): ApprovalRequest | undefined {
     const approval = this.approvals.get(id);
     if (!approval || approval.status !== 'pending') return undefined;
 
@@ -323,15 +338,16 @@ export class HITLService {
     approval.respondedBy = respondedBy;
     if (comment) approval.responseComment = comment;
     if (selectedOption) approval.selectedOption = selectedOption;
+    if (answers && answers.length > 0) approval.answers = answers;
     this.persistApproval(approval);
-    log.info(`Approval ${id} ${approval.status} by ${respondedBy}`, { comment, selectedOption });
+    log.info(`Approval ${id} ${approval.status} by ${respondedBy}`, { comment, selectedOption, answerCount: answers?.length ?? 0 });
 
     this.markApprovalNotificationsRead(id);
 
     const resolve = this.pendingResolvers.get(id);
     if (resolve) {
       this.pendingResolvers.delete(id);
-      resolve({ approved, comment, selectedOption, respondedBy });
+      resolve({ approved, comment, selectedOption, answers, respondedBy });
     }
     return approval;
   }
@@ -388,6 +404,8 @@ export class HITLService {
         options: approval.options,
         allowFreeform: approval.allowFreeform,
         selectedOption: approval.selectedOption,
+        questions: approval.questions,
+        answers: approval.answers,
         approverUserIds: approval.approverUserIds,
         targetUserId: approval.targetUserId,
       });

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { api, type ProjectInfo, type TeamInfo } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
 
 interface Props {
   orgId?: string;
@@ -12,6 +13,7 @@ interface Props {
 
 export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
   const { t } = useTranslation(['work', 'common']);
+  useNativeBrowserOverlay(true);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
@@ -26,6 +28,12 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
   useEffect(() => {
     api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const handleSubmit = useCallback(async (e?: React.FormEvent) => {
     e?.preventDefault();

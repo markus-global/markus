@@ -35,6 +35,17 @@ describe('ToolSelector', () => {
     expect(names).toContain('notify_user');
   });
 
+  it('offers right-panel tools only in Team Chat', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap(ALL_BUILTIN);
+    const chat = selector.selectTools({ allTools, userMessage: 'hello', isChat: true }).map(t => t.name);
+    const task = selector.selectTools({ allTools, userMessage: 'hello', isTaskExecution: true }).map(t => t.name);
+    expect(chat).toContain('open_right_panel');
+    expect(chat).toContain('collapse_right_panel');
+    expect(task).not.toContain('open_right_panel');
+    expect(task).not.toContain('collapse_right_panel');
+  });
+
   it('activates shell group by keyword', () => {
     const selector = new ToolSelector();
     const allTools = makeToolMap(ALL_BUILTIN);
@@ -169,6 +180,43 @@ describe('ToolSelector', () => {
     expect(discover!.description).toContain('test-skill');
     expect(discover!.description).toContain('Inactive tools');
     expect(discover!.description).toContain('shell_execute');
+  });
+
+  it('B2: keeps core tools + discover for empty / synthetic / short inputs (keyword-independent)', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap(ALL_BUILTIN);
+    const CORE = ['agent_send_message', 'task_create', 'task_list', 'memory_save',
+      'memory_search', 'spawn_subagent', 'discover_tools', 'notify_user'];
+
+    for (const userMessage of ['', '   ', 'ok', '[Continue]', '<<HANDLE_COMPLETE>>', 'y']) {
+      const names = selector.selectTools({ allTools, userMessage }).map(t => t.name);
+      for (const c of CORE) expect(names, `core "${c}" missing for input ${JSON.stringify(userMessage)}`).toContain(c);
+    }
+  });
+
+  it('B2: does not throw on a missing user message and still returns core', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap(ALL_BUILTIN);
+    // Synthetic continuations sometimes have no message; must be handled gracefully.
+    const names = selector.selectTools({ allTools, userMessage: undefined as unknown as string }).map(t => t.name);
+    expect(names).toContain('agent_send_message');
+    expect(names).toContain('discover_tools');
+  });
+
+  it('B2: recentToolNames preserves a niche tool across a keyword-less continuation (multimodal case)', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap([...ALL_BUILTIN, 'generate_image']);
+    // First turn: keyword pulls in the image tool.
+    const first = selector.selectTools({ allTools, userMessage: 'please generate an image of a cat' }).map(t => t.name);
+    expect(first).toContain('generate_image');
+    // Follow-up continuation has no image keyword — without session-awareness the tool
+    // would be dropped. recentToolNames (session-aware reactivation) keeps it available.
+    const followUp = selector.selectTools({
+      allTools,
+      userMessage: 'now make it bigger',
+      recentToolNames: ['generate_image'],
+    }).map(t => t.name);
+    expect(followUp).toContain('generate_image');
   });
 
   it('activates Chinese keywords', () => {

@@ -1,78 +1,110 @@
 {
   "title": "Reports",
   "tabs": {
-    "generate": "Generate",
+    "dashboard": "Dashboard",
     "history": "History"
   },
-  "period": {
-    "daily": "daily",
-    "weekly": "weekly",
-    "monthly": "monthly",
-    "today": "Today",
-    "thisWeek": "This Week",
-    "thisMonth": "This Month"
+  "kpi": {
+    "tasksCompleted": "Tasks Completed",
+    "ofTotal": "of {{total}} total",
+    "activeContributors": "Active Contributors",
+    "agentsAndHumans": "{{agents}} agents · {{humans}} humans",
+    "cuConsumed": "CU Consumed",
+    "tokensConsumed": "Tokens Used",
+    "todayAmount": "Today: {{amount}}",
+    "successRate": "Success Rate",
+    "healthScore": "Health: {{score}}/100"
   },
-  "usage": {
-    "llmTokens": "LLM Tokens (all time)",
-    "toolCalls": "Tool Calls (today)",
-    "messages": "Messages (today)",
-    "storage": "Storage"
+  "quota": {
+    "title": "Cloud AI",
+    "personalLimitLabel": "Personal Limit",
+    "personalLimit": "Your organization admin has set a personal credit limit for you.",
+    "notConnected": "Not connected to Markus Hub",
+    "connect": "Connect",
+    "bonus": "Bonus: {{amount}}",
+    "resetsAt": "Resets {{date}}",
+    "topUp": "Top Up",
+    "windowQuota": "5h window: {{amount}} CU (upgradable)",
+    "windowUsageLabel": "5h window usage",
+    "windowQuotaNone": "5h window: not enforced",
+    "rateLimit": "Rate limit: 600 req/min (all plans)"
   },
-  "taskMetrics": {
-    "title": "Task Metrics",
-    "completed": "Completed",
-    "inProgress": "In Progress",
-    "created": "Created",
-    "blocked": "Blocked",
-    "failed": "Failed"
+  "agents": {
+    "title": "Agent Rankings",
+    "noData": "No agent data yet. Start agents to see their activity here.",
+    "name": "Agent",
+    "team": "Team",
+    "tasks": "Tasks",
+    "cuUsed": "CU Used",
+    "tokens": "Tokens",
+    "efficiency": "Efficiency",
+    "total": "Total ({{count}} agents)",
+    "mixedProviders": "Mixed providers — CU only tracks Cloud AI",
+    "showAll": "Show all {{count}}",
+    "showLess": "Show less"
   },
-  "costOverview": {
-    "title": "Cost Overview",
-    "estCostAllTime": "Est. Cost (all time)",
-    "tokensToday": "Tokens Today",
-    "costToday": "Cost Today",
+  "humans": {
+    "title": "Team Members",
+    "name": "Name",
+    "role": "Role",
+    "team": "Team"
+  },
+  "teamPerf": {
+    "title": "Team Performance",
+    "members": "{{agents}}A · {{humans}}H",
+    "tasks": "Tasks",
+    "cuUsed": "CU",
+    "tokens": "Tokens",
+    "managedBy": "Managed by {{name}}"
+  },
+  "trends": {
+    "title": "Usage Trends",
+    "byDay": "By Day",
+    "byHour": "By Hour",
+    "days": "days",
+    "totalCredits": "Credits Used",
+    "totalTokens": "Tokens Used",
+    "totalRequests": "Requests",
+    "creditsChart": "Credits",
+    "tokensChart": "Tokens",
+    "max": "Max",
+    "noData": "No usage data yet. Connect to Markus Hub to see trends.",
+    "models": "Models"
+  },
+  "history": {
+    "planPending": "Plan pending",
+    "planStatus": "Plan {{status}}",
+    "taskMetrics": "Task Metrics",
+    "metric": {
+      "completed": "Completed",
+      "inProgress": "In Progress",
+      "created": "Created",
+      "blocked": "Blocked",
+      "failed": "Failed"
+    },
+    "costOverview": "Cost Overview",
     "totalTokens": "Total Tokens",
-    "estimatedCost": "Estimated Cost",
+    "cuUsed": "CU Used",
     "trend": "Trend",
-    "byAgentRow": "{{tokens}} tokens · {{cost}}"
-  },
-  "taskSummary": {
-    "title": "Task Summary",
+    "taskSummary": "Task Summary",
     "completedCount": "Completed ({{count}})",
     "inProgressCount": "In Progress ({{count}})",
     "blockedCount": "Blocked ({{count}})",
-    "noTasksInPeriod": "No tasks in this period."
-  },
-  "highlights": "Highlights",
-  "blockers": "Blockers",
-  "upcomingPlan": {
-    "title": "Upcoming Plan",
+    "noTasks": "No tasks in this period.",
+    "highlights": "Highlights",
+    "blockers": "Blockers",
+    "upcomingPlan": "Upcoming Plan",
     "approvePlan": "Approve Plan",
     "rejectPlan": "Reject Plan",
     "rejectionReason": "Rejection reason:",
     "planApproved": "Plan approved",
     "planRejected": "Plan rejected",
-    "planPending": "Plan pending",
-    "planStatus": "Plan {{status}}"
+    "noDetailedMetrics": "This report does not contain detailed metrics data.",
+    "feedbackTitle": "Feedback ({{count}})",
+    "feedbackPlaceholder": "Add feedback or instructions…",
+    "feedbackAdded": "Feedback added"
   },
-  "noDetailedMetrics": "This report does not contain detailed metrics data.",
-  "noReportsYet": "No reports generated yet. Use the Generate tab to create one.",
-  "feedback": {
-    "title": "Feedback ({{count}})",
-    "placeholder": "Add feedback or instructions…",
-    "added": "Feedback added"
-  },
-  "perAgentUsage": {
-    "title": "Per-Agent Usage",
-    "noData": "No agent usage data yet.",
-    "agent": "Agent",
-    "totalTokens": "Total Tokens",
-    "today": "Today",
-    "requests": "Requests",
-    "toolCalls": "Tool Calls",
-    "estCost": "Est. Cost",
-    "totalAgents": "Total ({{count}} agents)"
-  },
+  "noReportsYet": "No reports generated yet.",
   "reportType": "{{type}} Report",
   "backToList": "← Back to list"
 }

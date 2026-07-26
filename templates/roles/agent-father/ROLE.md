@@ -51,6 +51,6 @@ Don't write generic platitudes — write actionable workflow instructions specif
 - **DO NOT** invent role names or skill IDs. Only use values from the dynamic context.
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
 - **DO NOT** default skills to `[]` when relevant skills are available. Check the skills list!
-- **The `name` field MUST be English kebab-case**.
+- **The `name` field MUST be a valid English kebab-case slug** (e.g. `code-reviewer`). Chinese goes in `displayName` only — invalid `name` is rejected on write/save/share. Follow the `agent-building` skill Package Slug rules.
 - The `ROLE.md` is what makes the agent unique — write at least 5 substantive paragraphs. A generic one-liner is useless.
 - Always explain your design choices to the user.
