@@ -28,7 +28,7 @@ describe('WebSearchTool', () => {
     expect(result).toContain('error');
   });
 
-  it('uses DuckDuckGo when no API keys are set', async () => {
+  it('returns error when no search backends are configured', async () => {
     delete process.env['SERPER_API_KEY'];
     delete process.env['TAVILY_API_KEY'];
     delete process.env['BING_SEARCH_API_KEY'];
@@ -42,21 +42,14 @@ describe('WebSearchTool', () => {
     delete process.env['MARKUS_HUB_TOKEN'];
     delete process.env['MARKUS_SUBSCRIPTION_KEY'];
     delete process.env['MARKUS_PROXY_URL'];
-
-    // DuckDuckGo scrapes HTML, not JSON
-    const ddgHtml = `<html><body>
-      <a rel="nofollow" href="https://example.com" class="result-link">Test Result</a>
-      <td class="result-snippet">A snippet about the test</td>
-    </body></html>`;
-    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      text: async () => ddgHtml,
-    });
+    delete process.env['MARKUS_OPENROUTER_KEY'];
+    process.env['MARKUS_SEARCH_ENABLED'] = '0';
 
     const result = await WebSearchTool.execute({ query: 'test query', maxResults: 5 });
     const parsed = JSON.parse(result);
-    expect(parsed.status).toBe('success');
-    expect(parsed.results.length).toBeGreaterThan(0);
+    expect(parsed.status).toBe('error');
+    expect(parsed.error).toMatch(/No search backends configured/i);
+    delete process.env['MARKUS_SEARCH_ENABLED'];
   });
 
   it('uses Serper when SERPER_API_KEY is set', async () => {
@@ -245,7 +238,7 @@ describe('WebSearchTool', () => {
     for (const k of [
       'SERPER_API_KEY', 'TAVILY_API_KEY', 'BING_SEARCH_API_KEY', 'GOOGLE_SEARCH_API_KEY',
       'SERPAPI_API_KEY', 'BRAVE_SEARCH_API_KEY', 'EXA_API_KEY', 'BOCHA_API_KEY',
-      'MARKUS_SEARCH_URL', 'MARKUS_HUB_URL', 'MARKUS_HUB_TOKEN',
+      'MARKUS_SEARCH_URL', 'MARKUS_HUB_URL', 'MARKUS_HUB_TOKEN', 'MARKUS_CU_REMAINING',
       'MARKUS_SUBSCRIPTION_KEY', 'MARKUS_PROXY_URL',
       'MARKUS_OPENROUTER_KEY', 'OPENROUTER_API_KEY', 'MARKUS_OPENROUTER_BASE',
     ]) delete process.env[k];
@@ -303,10 +296,12 @@ describe('WebSearchTool', () => {
     expect(body.provider).toBeUndefined();
   });
 
-  it('prefers cheap BYOK search APIs over Markus OR LLM retrieval when both are configured', async () => {
+  it('prefers BYOK when Hub balance is zero/unknown even if Markus is configured', async () => {
     clearOwnSearchKeys();
     process.env['SERPER_API_KEY'] = 'serper-test';
     process.env['MARKUS_OPENROUTER_KEY'] = 'sk-or-test';
+    process.env['MARKUS_HUB_TOKEN'] = 'hub-token';
+    process.env['MARKUS_CU_REMAINING'] = '0';
     delete process.env['MARKUS_SEARCH_ENABLED'];
 
     const fetchMock = fetch as ReturnType<typeof vi.fn>;
@@ -322,6 +317,26 @@ describe('WebSearchTool', () => {
     expect(parsed.status).toBe('success');
     expect(parsed.results[0].title).toBe('Serper First');
     expect(String(fetchMock.mock.calls[0][0])).toContain('serper.dev');
+  });
+
+  it('prefers Markus search when Hub is connected and CU remaining > 0', async () => {
+    clearOwnSearchKeys();
+    process.env['SERPER_API_KEY'] = 'serper-test';
+    process.env['MARKUS_OPENROUTER_KEY'] = 'sk-or-test';
+    process.env['MARKUS_HUB_TOKEN'] = 'hub-token';
+    process.env['MARKUS_CU_REMAINING'] = '120';
+    delete process.env['MARKUS_SEARCH_ENABLED'];
+
+    const fetchMock = fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(orSearchResponse([
+      { url: 'https://example.com/r', title: 'Markus First', snippet: 'hosted' },
+    ]));
+
+    const result = await WebSearchTool.execute({ query: 'test' });
+    const parsed = JSON.parse(result);
+    expect(parsed.status).toBe('success');
+    expect(parsed.results[0].title).toBe('Markus First');
+    expect(String(fetchMock.mock.calls[0][0])).toContain('openrouter.ai');
   });
 
   it('skips Markus search when member key is unset', async () => {
@@ -399,23 +414,26 @@ describe('WebSearchTool', () => {
   it('skips a provider listed in SEARCH_DISABLED_PROVIDERS even if its key is set', async () => {
     clearOwnSearchKeys();
     delete process.env['MARKUS_SUBSCRIPTION_KEY'];
+    delete process.env['MARKUS_OPENROUTER_KEY'];
     process.env['SERPER_API_KEY'] = 'serper-test';
     process.env['SEARCH_DISABLED_PROVIDERS'] = 'serper';
+    process.env['MARKUS_SEARCH_ENABLED'] = '0';
 
     const fetchMock = fetch as ReturnType<typeof vi.fn>;
-    // Only DuckDuckGo remains; give it a parseable HTML result.
     fetchMock.mockResolvedValue({
       ok: true,
-      text: async () => '<html><body><a rel="nofollow" href="https://example.com" class="result-link">DDG</a><td class="result-snippet">snip</td></body></html>',
+      text: async () => '',
       json: async () => ({}),
     });
 
-    await WebSearchTool.execute({ query: 'test' });
+    const result = JSON.parse(await WebSearchTool.execute({ query: 'test' }));
+    expect(result.status).toBe('error');
     // Serper endpoint must never be called when disabled.
     for (const call of fetchMock.mock.calls) {
       expect(String(call[0])).not.toContain('serper');
     }
     delete process.env['SEARCH_DISABLED_PROVIDERS'];
+    delete process.env['MARKUS_SEARCH_ENABLED'];
   });
 
   it('skips Markus-hosted search when disabled via MARKUS_SEARCH_ENABLED=0', async () => {

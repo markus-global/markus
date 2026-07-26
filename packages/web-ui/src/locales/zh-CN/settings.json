@@ -381,7 +381,7 @@
   },
   "searchApi": {
     "title": "网络搜索",
-    "description": "优先级：Markus 托管 → 自备 API → DuckDuckGo。",
+    "description": "优先级：已连接 Hub 且余额不为 0 时优先 Markus 托管；否则优先自备 API。",
     "serper": "Serper (Google)",
     "serperHint": "serper.dev",
     "tavily": "Tavily",
@@ -405,8 +405,6 @@
     "saved": "搜索 API 密钥已保存",
     "failedToSave": "保存搜索 API 密钥失败",
     "envDetected": "来自环境变量",
-    "freeBackend": "免费兜底，无需密钥。",
-    "freeLabel": "免费",
     "markus": "Markus 托管搜索",
     "markusBadge": "推荐",
     "markusHint": "无需第三方密钥 · 使用 Markus Cloud 余额",

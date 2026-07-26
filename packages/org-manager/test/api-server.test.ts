@@ -25,7 +25,7 @@ vi.mock('@markus/shared', async (importOriginal) => {
       org: { id: 'default', name: 'My Organization' },
       network: { proxy: '', proxyEnabled: false },
       browser: { headless: true },
-      search: { provider: 'duckduckgo' },
+      search: { provider: 'serper' },
       integrations: { feishu: {} },
       agent: {},
     })),
@@ -2005,7 +2005,7 @@ describe('APIServer route handlers', () => {
       });
 
       it('POST /api/settings/search', async () => {
-        const res = await request(ctx.server, 'POST', '/api/settings/search', { provider: 'duckduckgo' });
+        const res = await request(ctx.server, 'POST', '/api/settings/search', { provider: 'serper' });
         expect(res.status).toBe(200);
       });
 

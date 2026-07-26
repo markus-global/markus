@@ -65,10 +65,13 @@
     "start": "Start",
     "stop": "Stop",
     "setAsManager": "Set as Manager",
-    "removeFromTeam": "Remove from team",
+    "removeFromTeam": "Move out of team",
     "moveTo": "Move to",
+    "moveToSearch": "Search teams…",
+    "moveToEmpty": "No matching teams",
     "removeFromOrg": "Remove from org",
-    "manageMembers": "Manage Members"
+    "manageMembers": "Manage Members",
+    "orgSecretaryProtected": "System Secretary — cannot be removed"
   },
   "modals": {
     "createTeam": {
@@ -134,7 +137,7 @@
       "purgeFiles": "Also delete disk files (workspace, memory, logs)"
     },
     "removeFromTeam": {
-      "title": "Remove from team?",
+      "title": "Move out of team?",
       "message": "This member will be moved to Ungrouped."
     },
     "removeAgent": {

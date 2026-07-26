@@ -46,7 +46,7 @@
   "search": {
     "title": "Web Search (Optional)",
     "subtitle": "Give agents the ability to search the web",
-    "description": "Configure at least one search API key to enable agents to find real-time information. DuckDuckGo is always available as a free fallback.",
+    "description": "Configure Markus hosted search or at least one search API key so agents can find real-time information.",
     "serper": "Serper (Google)",
     "tavily": "Tavily",
     "bing": "Bing Web Search",

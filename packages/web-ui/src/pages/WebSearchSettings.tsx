@@ -406,20 +406,6 @@ export function WebSearchSettings() {
                       </div>
                     );
                   })}
-
-                  <div className="rounded-lg px-3 py-2.5">
-                    <div className="flex items-center gap-3">
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm font-medium text-fg-primary">DuckDuckGo</span>
-                        <span className="text-xs text-fg-tertiary ml-2 hidden sm:inline">{t('searchApi.freeBackend')}</span>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <TestButton id="duckduckgo" />
-                        <span className="text-[10px] font-medium text-green-500">{t('searchApi.freeLabel')}</span>
-                      </div>
-                    </div>
-                    <div className="mt-2"><TestResultLine id="duckduckgo" /></div>
-                  </div>
                 </div>
               )}
             </div>

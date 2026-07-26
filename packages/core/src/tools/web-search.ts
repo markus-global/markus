@@ -51,10 +51,11 @@ async function proxyFetch(url: string | URL, init?: RequestInit): Promise<Respon
 
 /**
  * Multi-backend web search tool.
- * Priority: Markus hosted (OpenRouter member key / chat completions) >
- *   Serper > Tavily > Bing > Google > SerpAPI > Brave > Exa > Bocha > DuckDuckGo (free).
+ * Priority is conditional:
+ *   - Hub connected and CU remaining > 0 → Markus hosted first, then BYOK
+ *   - otherwise → BYOK first, then Markus (if configured)
  * Only backends whose keys are actually configured are attempted — unconfigured
- * providers are skipped entirely. DuckDuckGo needs no key and is the last resort.
+ * providers are skipped entirely.
  */
 export const WebSearchTool: AgentToolHandler = {
   name: 'web_search',
@@ -88,9 +89,6 @@ export const WebSearchTool: AgentToolHandler = {
     );
     const on = (id: string) => !disabled.has(id);
 
-    // Prefer pure search APIs (cheap, no second LLM) over Markus-hosted
-    // OpenRouter LLM retrieval (perplexity/sonar). Markus is kept as a
-    // quality fallback when no BYOK search key is configured.
     const byokDefs: Array<{ name: string; fn: typeof searchSerper; configured: () => boolean }> = [
       { name: 'Serper', fn: searchSerper, configured: () => on('serper') && !!process.env['SERPER_API_KEY'] },
       { name: 'Tavily', fn: searchTavily, configured: () => on('tavily') && !!process.env['TAVILY_API_KEY'] },
@@ -105,13 +103,25 @@ export const WebSearchTool: AgentToolHandler = {
       on('markus')
       && !!resolveMarkusOrKey()
       && process.env['MARKUS_SEARCH_ENABLED'] !== '0';
+    const byokBackends = byokDefs.filter(b => b.configured()).map(b => ({ name: b.name, fn: b.fn }));
+    const markusBackend = markusConfigured ? [{ name: 'Markus', fn: searchMarkus }] : [];
+    // Prefer Markus only when Hub is connected and remaining CU is known and > 0.
+    // Zero / unknown / disconnected → BYOK first (avoid burning empty balance).
+    const preferMarkus = shouldPreferMarkusSearch();
 
-    // Only configured backends, then DuckDuckGo (free, no key) as final fallback.
-    const backends: Array<{ name: string; fn: typeof searchSerper }> = [
-      ...byokDefs.filter(b => b.configured()),
-      ...(markusConfigured ? [{ name: 'Markus', fn: searchMarkus }] : []),
-      { name: 'DuckDuckGo', fn: searchDuckDuckGo },
-    ];
+    const backends: Array<{ name: string; fn: typeof searchSerper }> = preferMarkus
+      ? [...markusBackend, ...byokBackends]
+      : [...byokBackends, ...markusBackend];
+    if (backends.length === 0) {
+      return JSON.stringify({
+        status: 'error',
+        error: 'No search backends configured.',
+        hints: [
+          'Enable Markus hosted search or add a BYOK search API key in Settings → Web Search. ' +
+          'You can also use web_fetch or browser tools to retrieve web content directly.',
+        ],
+      });
+    }
     const errors: Array<{ backend: string; error: string }> = [];
 
     for (const { name, fn } of backends) {
@@ -476,6 +486,19 @@ function resolveMarkusOrKey(): string {
   return '';
 }
 
+/** Hub connected + remaining CU > 0 → try Markus search before BYOK. */
+export function shouldPreferMarkusSearch(): boolean {
+  const hubConnected = !!(
+    process.env['MARKUS_HUB_TOKEN']?.trim()
+    || process.env['MARKUS_OPENROUTER_KEY']?.trim()
+  );
+  if (!hubConnected) return false;
+  const raw = process.env['MARKUS_CU_REMAINING'];
+  if (raw === undefined || raw === '') return false;
+  const remaining = Number(raw);
+  return Number.isFinite(remaining) && remaining > 0;
+}
+
 function resolveMarkusOrBase(): string {
   const base = (process.env['MARKUS_OPENROUTER_BASE'] || process.env['OPENROUTER_BASE_URL'] || 'https://openrouter.ai/api/v1')
     .trim()
@@ -598,123 +621,6 @@ async function searchMarkus(query: string, maxResults: number): Promise<SearchRe
   throw new Error('Empty search response');
 }
 
-// ── DuckDuckGo fallback (no API key) ───────────────────────────────────────
-
-const DDG_UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-
-const DDG_ENDPOINTS = [
-  'https://lite.duckduckgo.com/lite/',
-  'https://html.duckduckgo.com/html/',
-] as const;
-
-/**
- * Try DuckDuckGo Lite first, then HTML endpoint. Both are scraped so neither
- * needs an API key. Each endpoint gets its own attempt with independent timeout.
- */
-async function searchDuckDuckGo(query: string, maxResults: number): Promise<SearchResult[]> {
-  const encoded = encodeURIComponent(query);
-  let lastError: Error | undefined;
-
-  for (const base of DDG_ENDPOINTS) {
-    try {
-      const res = await proxyFetch(`${base}?q=${encoded}`, {
-        headers: { 'User-Agent': DDG_UA },
-      });
-
-      if (!res.ok) {
-        lastError = new Error(`HTTP ${res.status} ${res.statusText}`);
-        continue;
-      }
-
-      const html = await res.text();
-      const results = base.includes('lite')
-        ? parseDDGLite(html, maxResults)
-        : parseDDGHtml(html, maxResults);
-      if (results.length > 0) return results;
-      lastError = new Error(`Parsed 0 results from ${base}`);
-    } catch (err: unknown) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-    }
-  }
-
-  throw new Error(`Network error: ${lastError?.message ?? 'all DuckDuckGo endpoints failed'}`);
-}
-
-// ── DDG HTML parsers ───────────────────────────────────────────────────────
-
-function parseDDGLite(html: string, max: number): SearchResult[] {
-  const results: SearchResult[] = [];
-
-  const linkRegex = /<a[^>]+rel="nofollow"[^>]*href="([^"]*)"[^>]*class="result-link"[^>]*>([\s\S]*?)<\/a>/g;
-  const snippetRegex = /<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/g;
-
-  const links: Array<{ url: string; title: string }> = [];
-  let match;
-  while ((match = linkRegex.exec(html)) !== null) {
-    const url = match[1] ?? '';
-    const title = stripHtml(match[2] ?? '');
-    if (url && title) links.push({ url, title });
-  }
-
-  const snippets: string[] = [];
-  while ((match = snippetRegex.exec(html)) !== null) {
-    snippets.push(stripHtml(match[1] ?? ''));
-  }
-
-  if (links.length === 0) {
-    const generalLink = /<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-    const seen = new Set<string>();
-    while ((match = generalLink.exec(html)) !== null) {
-      const url = match[1] ?? '';
-      const title = stripHtml(match[2] ?? '');
-      if (url && title && !seen.has(url) && !url.includes('duckduckgo.com')) {
-        seen.add(url);
-        links.push({ url, title });
-      }
-    }
-  }
-
-  for (let i = 0; i < Math.min(links.length, max); i++) {
-    results.push({
-      title: links[i]!.title,
-      url: links[i]!.url,
-      snippet: snippets[i] ?? '',
-    });
-  }
-
-  return results;
-}
-
-function parseDDGHtml(html: string, maxResults: number): SearchResult[] {
-  const results: SearchResult[] = [];
-  const linkRegex = /<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g;
-  const snippetRegex = /<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-
-  const links: Array<{ url: string; title: string }> = [];
-  let match;
-  while ((match = linkRegex.exec(html)) !== null) {
-    const url = decodeURIComponent((match[1] ?? '').replace(/.*uddg=/, '').replace(/&.*/, ''));
-    const title = stripHtml(match[2] ?? '');
-    if (url && title) links.push({ url, title });
-  }
-
-  const snippets: string[] = [];
-  while ((match = snippetRegex.exec(html)) !== null) {
-    snippets.push(stripHtml(match[1] ?? ''));
-  }
-
-  for (let i = 0; i < Math.min(links.length, maxResults); i++) {
-    results.push({
-      title: links[i]!.title,
-      url: links[i]!.url,
-      snippet: snippets[i] ?? '',
-    });
-  }
-
-  return results;
-}
-
 // ── Connectivity test ──────────────────────────────────────────────────────
 
 export interface SearchProviderTestResult {
@@ -739,7 +645,6 @@ const TEST_BACKENDS: Record<string, (query: string, maxResults: number) => Promi
   exa: searchExa,
   bocha: searchBocha,
   markus: searchMarkus,
-  duckduckgo: searchDuckDuckGo,
 };
 
 /**
@@ -785,18 +690,3 @@ export async function testSearchProvider(
   }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;/g, "'")
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}

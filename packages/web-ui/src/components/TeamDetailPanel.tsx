@@ -57,16 +57,20 @@ export function TeamDetailPanel({
 
   // ── Agent context menu ──
   const [agentMenu, setAgentMenu] = useState<{ agentId: string; x: number; y: number } | null>(null);
+  const [moveToOpen, setMoveToOpen] = useState(false);
+  const [moveToQuery, setMoveToQuery] = useState('');
 
-  const clampMenuPos = useCallback((e: React.MouseEvent, menuW = 176, menuH = 480) => {
-    const btn = e.currentTarget.getBoundingClientRect();
+  const clampMenuPos = useCallback((e: React.MouseEvent, menuW = 176, menuH = 220) => {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const pad = 8;
-    let x = btn.left;
-    let y = btn.bottom + 4;
+    // Anchor to the pointer; oversized menuH used to pin the menu to the top.
+    let x = e.clientX;
+    let y = e.clientY;
     if (x + menuW > vw - pad) x = Math.max(pad, vw - menuW - pad);
-    if (y + menuH > vh - pad) y = Math.max(pad, btn.top - menuH - 4);
+    if (y + menuH > vh - pad) y = Math.max(pad, vh - menuH - pad);
+    x = Math.max(pad, Math.min(x, vw - menuW - pad));
+    y = Math.max(pad, Math.min(y, vh - menuH - pad));
     return { x, y };
   }, []);
 
@@ -178,6 +182,8 @@ export function TeamDetailPanel({
                       if (!isAdmin) return;
                       e.preventDefault();
                       const pos = clampMenuPos(e);
+                      setMoveToOpen(false);
+                      setMoveToQuery('');
                       setAgentMenu({ agentId: a.id, ...pos });
                     }}
                     className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors ${
@@ -276,8 +282,12 @@ export function TeamDetailPanel({
         const isManager = team.managerId === a.id;
         return (
           <div
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
-            style={{ left: agentMenu.x, top: agentMenu.y }}
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-48 max-w-[calc(100vw-1rem)] overflow-y-auto"
+            style={{
+              left: agentMenu.x,
+              top: agentMenu.y,
+              maxHeight: Math.max(160, window.innerHeight - agentMenu.y - 8),
+            }}
             onClick={e => e.stopPropagation()}
           >
             <button onClick={() => { setAgentMenu(null); onViewProfile(a.id); }}
@@ -310,22 +320,69 @@ export function TeamDetailPanel({
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 14 4 9 9 4" /><path d="M20 20v-7a4 4 0 0 0-4-4H4" /></svg>
               {t('contextMenu.removeFromTeam')}
             </button>
-            {teams.filter(tm => tm.id !== team.id).length > 0 && (
-              <>
-                <div className="border-t border-border-default/50 my-1" />
-                <div className="px-3 py-1 text-[10px] text-fg-tertiary uppercase flex items-center gap-1.5">
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5l7 7-7 7" /></svg>
-                  {t('contextMenu.moveTo')}
-                </div>
-                {teams.filter(tm => tm.id !== team.id).map(tm => (
-                  <button key={tm.id} onClick={() => { handleMoveToTeam(a.id, tm.id); setAgentMenu(null); }}
-                    className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary flex items-center gap-2">
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-                    {tm.name}
+            {(() => {
+              const moveTargets = teams.filter(tm => tm.id !== team.id);
+              if (moveTargets.length === 0) return null;
+              const q = moveToQuery.trim().toLowerCase();
+              const filtered = q
+                ? moveTargets.filter(tm => tm.name.toLowerCase().includes(q))
+                : moveTargets;
+              return (
+                <>
+                  <div className="border-t border-border-default/50 my-1" />
+                  <button
+                    type="button"
+                    onClick={() => setMoveToOpen(v => !v)}
+                    className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary flex items-center gap-2"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5l7 7-7 7" /></svg>
+                    <span className="flex-1">{t('contextMenu.moveTo')}</span>
+                    <svg
+                      width="10"
+                      height="10"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className={`shrink-0 text-fg-tertiary transition-transform ${moveToOpen ? 'rotate-180' : ''}`}
+                    >
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
                   </button>
-                ))}
-              </>
-            )}
+                  {moveToOpen && (
+                    <div className="px-2 pb-1.5" onClick={e => e.stopPropagation()}>
+                      <input
+                        autoFocus
+                        value={moveToQuery}
+                        onChange={e => setMoveToQuery(e.target.value)}
+                        onKeyDown={e => e.stopPropagation()}
+                        placeholder={t('contextMenu.moveToSearch')}
+                        className="w-full mb-1 px-2 py-1.5 text-xs rounded-md bg-surface-overlay border border-border-default text-fg-primary placeholder:text-fg-tertiary outline-none focus:border-brand-500/50"
+                      />
+                      <div className="max-h-36 overflow-y-auto rounded-md">
+                        {filtered.length === 0 ? (
+                          <div className="px-2 py-2 text-[10px] text-fg-tertiary">{t('contextMenu.moveToEmpty')}</div>
+                        ) : (
+                          filtered.map(tm => (
+                            <button
+                              key={tm.id}
+                              type="button"
+                              onClick={() => { handleMoveToTeam(a.id, tm.id); setAgentMenu(null); }}
+                              className="w-full text-left px-2 py-1.5 text-xs hover:bg-surface-overlay text-fg-secondary rounded truncate"
+                              title={tm.name}
+                            >
+                              {tm.name}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
             <div className="border-t border-border-default/50 my-1" />
             <button onClick={async () => { await api.agents.remove(a.id); onRefreshAgents(); setAgentMenu(null); }}
               className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">

@@ -2,12 +2,13 @@ import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { api, invalidateApiCache, wsClient, type NotificationInfo, type ApprovalInfo, type UserInputAnswer } from '../api.ts';
+import { api, hubApi, invalidateApiCache, wsClient, type NotificationInfo, type ApprovalInfo, type UserInputAnswer } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 import { muteCreditNotifications } from '../pages/ChatComponents.tsx';
-import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
+import { openExternal } from '../hooks/useElectron.ts';
+import { ConfirmModal } from './ConfirmModal.tsx';
 import { UserInputModal } from './UserInputModal.tsx';
 
 /** A request_user_input carries an explicit multi-question payload. */
@@ -160,9 +161,6 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const notifScrollRef = useRef<HTMLDivElement>(null);
   const lastTabRef = useRef<'approvals' | 'notifications'>('approvals');
   const [creditDialog, setCreditDialog] = useState(false);
-  const [creditMuteChecked, setCreditMuteChecked] = useState(false);
-  // Electron WebContentsView paints above HTML — hide native browser while this dialog is open.
-  useNativeBrowserOverlay(creditDialog);
 
   const NOTIF_PAGE_SIZE = 30;
 
@@ -505,7 +503,6 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       case 'system': {
         if (meta.creditExhausted) {
           setCreditDialog(true);
-          setCreditMuteChecked(false);
           return;
         }
         if (meta.templateUpdates) {
@@ -993,79 +990,35 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     </>
   );
 
-  const hubUrl = typeof window !== 'undefined' && window.location.origin.includes('localhost')
-    ? 'http://localhost:5174/settings?tab=billing'
-    : 'https://markus.global/settings?tab=billing';
+  const applyCreditMute = useCallback((checked?: Record<string, boolean>) => {
+    if (checked?.mute) muteCreditNotifications();
+  }, []);
 
-  const closeCreditDialog = useCallback(() => {
-    if (creditMuteChecked) muteCreditNotifications();
+  const closeCreditDialog = useCallback((checked?: Record<string, boolean>) => {
+    applyCreditMute(checked);
     setCreditDialog(false);
-  }, [creditMuteChecked]);
+  }, [applyCreditMute]);
 
-  const creditDialogEl = creditDialog ? createPortal(
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center" onClick={closeCreditDialog}>
-      <div className="absolute inset-0 bg-black/50" />
-      <div
-        className="relative w-full max-w-sm mx-4 rounded-2xl overflow-hidden shadow-2xl"
-        style={{ background: 'var(--bg-surface-secondary, #1e1e2e)', border: '1px solid var(--border-default, #333)' }}
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="h-1 bg-gradient-to-r from-orange-500 via-red-500 to-pink-500" />
-        {/* Close X button */}
-        <button
-          onClick={closeCreditDialog}
-          className="absolute top-3 right-3 w-7 h-7 flex items-center justify-center rounded-full text-fg-tertiary hover:text-fg-primary hover:bg-white/10 transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-        <div className="p-6 pt-5 text-center">
-          <div className="w-14 h-14 mx-auto mb-4 rounded-full flex items-center justify-center" style={{ background: 'rgba(249,115,22,0.12)' }}>
-            <svg className="w-7 h-7 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-            </svg>
-          </div>
-          <h3 className="text-lg font-semibold mb-2 text-fg-primary">
-            {t('credits.dialogTitle', { ns: 'common' })}
-          </h3>
-          <p className="text-sm mb-6 text-fg-tertiary leading-relaxed">
-            {t('credits.dialogDesc', { ns: 'common' })}
-          </p>
-          <div className="flex gap-3 mb-4">
-            <button
-              onClick={() => {
-                closeCreditDialog();
-                navBus.navigate(PAGE.SETTINGS);
-                setTimeout(() => { window.location.hash = 'settings/providers'; }, 50);
-              }}
-              className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors bg-surface-overlay text-fg-secondary hover:text-fg-primary"
-            >
-              {t('credits.configureModels', { ns: 'common' })}
-            </button>
-            <a
-              href={hubUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => closeCreditDialog()}
-              className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors text-center"
-            >
-              {t('credits.topUp', { ns: 'common' })}
-            </a>
-          </div>
-          <label className="inline-flex items-center gap-2 cursor-pointer text-xs text-fg-tertiary hover:text-fg-secondary transition-colors">
-            <input
-              type="checkbox"
-              checked={creditMuteChecked}
-              onChange={e => setCreditMuteChecked(e.target.checked)}
-              className="w-3.5 h-3.5 rounded accent-indigo-500"
-            />
-            {t('credits.dontRemind', { ns: 'common' })}
-          </label>
-        </div>
-      </div>
-    </div>,
-    document.body,
+  const creditDialogEl = creditDialog ? (
+    <ConfirmModal
+      title={t('credits.dialogTitle', { ns: 'common' })}
+      message={t('credits.dialogDesc', { ns: 'common' })}
+      variant="primary"
+      cancelLabel={t('credits.configureModels', { ns: 'common' })}
+      confirmLabel={t('credits.topUp', { ns: 'common' })}
+      checkboxes={[{ id: 'mute', label: t('credits.dontRemind', { ns: 'common' }) }]}
+      onCancel={() => setCreditDialog(false)}
+      onCancelClick={(checked) => {
+        closeCreditDialog(checked);
+        navBus.navigate(PAGE.SETTINGS);
+        setTimeout(() => { window.location.hash = 'settings/providers'; }, 50);
+      }}
+      onConfirm={(checked) => {
+        const url = `${hubApi.getUrl().replace(/\/$/, '')}/settings?tab=billing`;
+        closeCreditDialog(checked);
+        openExternal(url);
+      }}
+    />
   ) : null;
 
   if (embeddedMode) {

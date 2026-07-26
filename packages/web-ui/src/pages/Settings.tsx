@@ -1005,8 +1005,19 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       )}
       {resolvedTab !== null && <div className="p-7 space-y-10 max-w-4xl mx-auto w-full">
 
-        {/* ───── Appearance ───── */}
-        {resolvedTab === 'appearance' && <Section title={t('appearance.title')}>
+        {/* ───── General: system status + appearance ───── */}
+        {resolvedTab === 'appearance' && <>
+        <Section title={t('systemStatus.title')}>
+          {health ? (
+            <div className="grid grid-cols-3 gap-4">
+              <InfoCard label={t('systemStatus.status')} value={health.status === 'ok' ? t('systemStatus.healthy') : health.status} color="green" />
+              <InfoCard label={t('systemStatus.version')} value={health.version} color="indigo" />
+              <InfoCard label={t('systemStatus.activeAgents')} value={String(health.agents)} color="purple" />
+            </div>
+          ) : <div className="text-sm text-fg-tertiary">{t('common:loading')}</div>}
+        </Section>
+
+        <Section title={t('appearance.title')}>
           <div className="bg-surface-elevated rounded-xl p-5">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
@@ -1076,22 +1087,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
             )}
           </div>
-        </Section>}
+        </Section>
+        </>}
 
         {canManageOrgSettings && (
         <>
         {resolvedTab === 'providers' && <>
-        {/* ───── System Status ───── */}
-        <Section title={t('systemStatus.title')}>
-          {health ? (
-            <div className="grid grid-cols-3 gap-4">
-              <InfoCard label={t('systemStatus.status')} value={health.status === 'ok' ? t('systemStatus.healthy') : health.status} color="green" />
-              <InfoCard label={t('systemStatus.version')} value={health.version} color="indigo" />
-              <InfoCard label={t('systemStatus.activeAgents')} value={String(health.agents)} color="purple" />
-            </div>
-          ) : <div className="text-sm text-fg-tertiary">{t('common:loading')}</div>}
-        </Section>
-
         {/* ───── Model Providers ───── */}
         {llm && (() => {
           const allProviderEntries: Array<[string, ProviderInfo]> = [];

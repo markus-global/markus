@@ -65,10 +65,13 @@
     "start": "启动",
     "stop": "停止",
     "setAsManager": "设为管理者",
-    "removeFromTeam": "从团队移除",
+    "removeFromTeam": "移出团队",
     "moveTo": "移动到",
+    "moveToSearch": "搜索团队…",
+    "moveToEmpty": "没有匹配的团队",
     "removeFromOrg": "从组织移除",
-    "manageMembers": "管理成员"
+    "manageMembers": "管理成员",
+    "orgSecretaryProtected": "系统秘书 — 不可删除"
   },
   "modals": {
     "createTeam": {
@@ -134,7 +137,7 @@
       "purgeFiles": "同时删除磁盘文件（工作区、记忆、日志）"
     },
     "removeFromTeam": {
-      "title": "从团队移除？",
+      "title": "移出团队？",
       "message": "该成员将移至「未分组」。"
     },
     "removeAgent": {

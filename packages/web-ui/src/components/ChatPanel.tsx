@@ -128,7 +128,7 @@ export function ChatPanel({
     }
   }, [messages, scrollToBottom, loading]);
 
-  // WS: listen for proactive messages from this agent
+  // WS: listen for proactive messages from this agent (incl. Feishu user turns)
   useEffect(() => {
     const unsub = wsClient.on('chat:proactive_message', (event) => {
       const p = event.payload;
@@ -138,23 +138,49 @@ export function ChatPanel({
       if (targetUserId && targetUserId !== authUser?.id) return;
       const message = (p['message'] as string) ?? '';
       const msgSessionId = (p['sessionId'] as string) ?? '';
+      const messageId = (p['messageId'] as string) ?? '';
       if (!message || (message === '[cancelled]') || (message === '[Stream cancelled]')) return;
 
       if (msgSessionId && sessionIdRef.current && msgSessionId !== sessionIdRef.current) return;
 
-      const { cleaned: displayMessage, priority: parsedPriority } = stripNotifyContext(message);
       const meta = (p['metadata'] as Record<string, unknown>) ?? {};
-      const isNotify = !!meta.notifyUser || displayMessage !== message;
+      const isUserTurn = meta.role === 'user';
+      const { cleaned: displayMessage, priority: parsedPriority } = stripNotifyContext(message);
+      const isNotify = !isUserTurn && (!!meta.notifyUser || displayMessage !== message);
+      const fallbackUserText = typeof meta.userText === 'string' ? meta.userText : '';
+      const fallbackUserId = typeof meta.userMessageId === 'string' ? meta.userMessageId : '';
       const newMsg: ChatMsg = {
-        id: `proactive_${Date.now()}`,
-        sender: 'agent',
+        id: messageId || `proactive_${Date.now()}`,
+        sender: isUserTurn ? 'user' : 'agent',
         text: displayMessage,
         time: new Date().toLocaleTimeString(),
-        agentName: (p['agentName'] as string) ?? agentName,
-        agentId: msgAgentId,
-        ...(isNotify ? { isNotification: true, notifyPriority: (meta.priority as string) ?? parsedPriority } : {}),
+        ...(isUserTurn
+          ? {}
+          : {
+              agentName: (p['agentName'] as string) ?? agentName,
+              agentId: msgAgentId,
+              ...(isNotify ? { isNotification: true, notifyPriority: (meta.priority as string) ?? parsedPriority } : {}),
+            }),
       };
-      setMessages(prev => [...prev, newMsg]);
+      setMessages(prev => {
+        if (prev.some(m => m.id === newMsg.id)) return prev;
+        let base = prev;
+        if (!isUserTurn && fallbackUserText) {
+          const hasUser = base.some(m =>
+            (fallbackUserId && m.id === fallbackUserId)
+            || (m.sender === 'user' && m.text === fallbackUserText),
+          );
+          if (!hasUser) {
+            base = [...base, {
+              id: fallbackUserId || `feishu_user_${newMsg.id}`,
+              sender: 'user' as const,
+              text: fallbackUserText,
+              time: new Date().toLocaleTimeString(),
+            }];
+          }
+        }
+        return [...base, newMsg];
+      });
     });
     return unsub;
   }, [agentId, agentName, authUser?.id]);

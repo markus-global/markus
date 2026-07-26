@@ -726,6 +726,9 @@ export interface AgentInfo {
   activeTaskCount?: number;
   agentRole?: 'manager' | 'worker';
   teamId?: string;
+  /** True for the org-level Secretary (cannot be deleted / moved). */
+  isOrgSecretary?: boolean;
+  protected?: boolean;
   lastError?: string;
   lastErrorAt?: string;
   currentTaskId?: string;

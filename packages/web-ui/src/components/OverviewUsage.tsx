@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, hubApi, getHubUser, type AgentUsageInfo, type OpsDashboard, type TeamInfo } from '../api.ts';
+import { openExternal } from '../hooks/useElectron.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 
@@ -210,8 +211,9 @@ export function CloudQuotaBar({ hubConnected, hubPlan }: {
   const pct = totalQuota > 0 ? Math.min(100, Math.round((cuUsed / totalQuota) * 100)) : 0;
   const barColor = pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : 'bg-brand-500';
 
-  const hubUrl = typeof window !== 'undefined' && window.location.origin.includes('localhost')
-    ? 'http://localhost:5174/settings?tab=billing' : 'https://markus.global/settings?tab=billing';
+  const openBilling = () => {
+    openExternal(`${hubApi.getUrl().replace(/\/$/, '')}/settings?tab=billing`);
+  };
 
   return (
     <div className="px-4 sm:px-5 pb-4">
@@ -236,11 +238,13 @@ export function CloudQuotaBar({ hubConnected, hubPlan }: {
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-[10px] text-fg-tertiary">
           <span>{hubPlan.cuResetAt ? t('usage.quota.resetsAt', { date: new Date(hubPlan.cuResetAt).toLocaleDateString() }) : ''}</span>
-          <a href={hubUrl} target="_blank" rel="noopener noreferrer"
+          <button
+            type="button"
             className="px-2 py-1 bg-brand-600 text-white rounded hover:bg-brand-500 transition-colors font-medium"
-            onClick={e => e.stopPropagation()}>
+            onClick={e => { e.stopPropagation(); openBilling(); }}
+          >
             {t('usage.quota.topUp')}
-          </a>
+          </button>
         </div>
       </div>
       <div className="flex items-center gap-3">

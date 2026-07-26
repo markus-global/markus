@@ -645,6 +645,12 @@ export class LLMRouter {
    * Propagated to MarkusProvider; 0 blocks new chat locally.
    */
   setMarkusHubRemainingHint(remaining: number | null): void {
+    // Keep search-tool priority in sync (web_search reads MARKUS_CU_REMAINING).
+    if (remaining === null || remaining === undefined) {
+      delete process.env['MARKUS_CU_REMAINING'];
+    } else {
+      process.env['MARKUS_CU_REMAINING'] = String(Math.max(0, Math.floor(remaining)));
+    }
     const provider = this.providers.get('markus');
     if (provider instanceof MarkusProvider) {
       provider.setHubRemainingHint(remaining);

@@ -76,6 +76,7 @@ import {
 import { handleTasksRoutes } from './routes/tasks.js';
 import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
+import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
 
 const log = createLogger('api-server');
 
@@ -1242,6 +1243,8 @@ export class APIServer {
   // Depth limit is a safety net — agents should terminate via [NO_RESPONSE]
   // guided by prompt instructions, not by hitting this ceiling.
   private static readonly A2A_MAX_DEPTH = 20;
+  /** DM auto-chain is much tighter — ACK loops burn tokens even with prompt guidance. */
+  private static readonly DM_MAX_DEPTH = 6;
   private static readonly A2A_COOLDOWN_MS = 30_000;
   /** Per-channel cooldown tracker: channel → agentId → last reply timestamp */
   private a2aCooldowns = new Map<string, Map<string, number>>();
@@ -1403,9 +1406,14 @@ export class APIServer {
         const prefixLines = [
           `[DM CONVERSATION with ${opts?.replyToAgentName ?? 'a colleague'} | You are: ${agentName}]`,
           `[CHANNEL] channel_key="${channel}"`,
-          '---',
-          '',
         ];
+        if ((chainCtx?.depth ?? 0) >= 2) {
+          prefixLines.push(
+            '[LOOP GUARD] This DM already exchanged replies. Default to [NO_RESPONSE] unless you have a NEW fact, question, or instruction.',
+            'Do NOT acknowledge with 收到/保持待命/OK. Do NOT paste "回复说" back into this DM — use notify_user for humans.',
+          );
+        }
+        prefixLines.push('---', '');
         messagePrefix = prefixLines.join('\n');
       } else {
         const prefixLines = [
@@ -1534,15 +1542,17 @@ export class APIServer {
         return;
       }
 
-      // DM auto-suppress: in DM channels, catch *pure* acknowledgments the LLM
-      // sends instead of [NO_RESPONSE]. Only suppresses when the entire message
-      // (stripped of punctuation/emoji) is a single acknowledgment token — never
-      // touches messages that contain additional content beyond the ack word.
+      // DM auto-suppress: catch pure acknowledgments / misdirected relay paste-backs
+      // the LLM sends instead of [NO_RESPONSE]. Compound acks like "收到，保持待命。"
+      // must be suppressed — otherwise DM auto-chain creates infinite ping-pong.
       if (isDmReply) {
-        const stripped = cleanReply.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
-        const PURE_ACK = /^(收到|好的|了解|明白|知道了|ok|okay|gotit|understood|roger|noted|copy|willdo|sure|soundsgood|ack|确认|遵命|standby|waiting|保持待命|待命中?|acknowledged?)$/i;
-        if (PURE_ACK.test(stripped)) {
+        if (isDmPureAcknowledgment(cleanReply)) {
           log.info('DM auto-suppress: pure acknowledgment detected', { agentId, channel, original: cleanReply.slice(0, 80) });
+          emitNoResponse();
+          return;
+        }
+        if (isDmMisdirectedRelay(cleanReply)) {
+          log.info('DM auto-suppress: misdirected peer-relay paste-back', { agentId, channel, original: cleanReply.slice(0, 120) });
           emitNoResponse();
           return;
         }
@@ -1623,7 +1633,7 @@ export class APIServer {
         // DM: auto-trigger the other party to respond (IM-style back-and-forth).
         // No @mention required — every DM reply triggers the peer.
         const depth = (chainCtx?.depth ?? 0) + 1;
-        if (depth <= APIServer.A2A_MAX_DEPTH) {
+        if (depth <= APIServer.DM_MAX_DEPTH) {
           const peerAgentId = chainCtx?.allAgentIds?.find(id => id !== agentId);
           if (peerAgentId) {
             // Load fresh channel context including the just-persisted reply
@@ -1816,7 +1826,8 @@ export class APIServer {
     images?: string[],
     sessionId?: string | null,
     replyTo?: { id: string; sender: string; text: string } | null,
-  ): Promise<string | null> {
+    extraMeta?: Record<string, unknown>,
+  ): Promise<{ sessionId: string; messageId: string } | null> {
     if (!this.storage) return null;
     try {
       let session: { id: string; title: string | null } | undefined;
@@ -1827,12 +1838,19 @@ export class APIServer {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
       const title = !session!.title ? userMessage.slice(0, 60) : undefined;
-      const meta: Record<string, unknown> = {};
+      const meta: Record<string, unknown> = { ...(extraMeta ?? {}) };
       if (images?.length) meta.images = images;
       if (replyTo) { meta.replyToId = replyTo.id; meta.replyToSender = replyTo.sender; meta.replyToText = replyTo.text; }
-      await this.storage.chatSessionRepo.appendMessage(session!.id, agentId, 'user', userMessage, 0, Object.keys(meta).length > 0 ? meta : undefined);
+      const saved = await this.storage.chatSessionRepo.appendMessage(
+        session!.id,
+        agentId,
+        'user',
+        userMessage,
+        0,
+        Object.keys(meta).length > 0 ? meta : undefined,
+      );
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session!.id, title);
-      return session!.id;
+      return { sessionId: session!.id, messageId: saved.id };
     } catch (err) {
       log.warn('Failed to persist user message', { error: String(err) });
       return null;
@@ -1881,10 +1899,7 @@ export class APIServer {
   private triggerSecretaryWelcome(userId: string, userName: string, userRole: string): void {
     try {
       const mgr = this.orgService.getAgentManager();
-      const agentList = mgr.listAgents();
-      const secretaryInfo = agentList.find(a =>
-        a.agentRole === 'secretary' || a.role?.toLowerCase() === 'secretary'
-      );
+      const secretaryInfo = this.orgService.findOrgSecretary();
       if (!secretaryInfo) return;
       const secretary = mgr.getAgent(secretaryInfo.id);
       const welcomeMsg = `[SYSTEM] A new team member just joined: "${userName}" (role: ${userRole}, id: ${userId}). They have completed their account setup. As their Secretary, proactively guide them through the system capabilities. Send them a welcome message using notify_user (target the new user by their id: ${userId}) explaining what they can do in Markus — projects, tasks, deliverables, team collaboration, and how to work with AI agents. Help them get started with their first steps.`;
@@ -2031,12 +2046,9 @@ export class APIServer {
     }
 
     const agentManager = this.orgService.getAgentManager();
-    const agentList = agentManager.listAgents();
 
-    // Always route to Secretary — it can internally delegate to other agents via A2A
-    const secretaryInfo = agentList.find(a =>
-      a.agentRole === 'secretary' || a.role?.toLowerCase() === 'secretary'
-    );
+    // Always route to the org-level Secretary (not team「协调秘书」etc.)
+    const secretaryInfo = this.orgService.findOrgSecretary();
     if (!secretaryInfo) {
       log.warn('No Secretary agent found to handle Feishu message');
       if (messageId && processingReactionId && this.feishuNotifier) {
@@ -2067,26 +2079,44 @@ export class APIServer {
     let cardUpdatePending = false;
     let cardUpdateTimer: ReturnType<typeof setTimeout> | null = null;
     let streamingText = '';
+    // Bumped when the stream finishes so a late mid-stream updateCard cannot
+    // overwrite the final done/error card (Feishu would stay on "thinking").
+    let cardEpoch = 0;
+    // Serialize Feishu card patches — overlapping updateCard awaits otherwise race
+    // and a stale mid-stream body can replace the final done card.
+    let cardWriteChain: Promise<void> = Promise.resolve();
+    const enqueueCardWrite = (
+      epochAtSchedule: number,
+      build: () => Record<string, unknown>,
+      opts?: { rethrow?: boolean },
+    ) => {
+      const write = cardWriteChain.then(async () => {
+        if (!statusCardId || !this.feishuNotifier || epochAtSchedule !== cardEpoch) return;
+        await this.feishuNotifier.updateCard(statusCardId, build());
+      });
+      // Keep the queue alive even when a write fails; callers that need fallback
+      // pass rethrow and await `write` directly.
+      cardWriteChain = write.catch((e) => {
+        log.warn('Failed to update Feishu card', { error: String(e) });
+      });
+      return opts?.rethrow ? write : cardWriteChain;
+    };
 
     // Throttled card update — avoid excessive API calls (max once per 2s)
     const CARD_UPDATE_INTERVAL_MS = 2000;
     const scheduleCardUpdate = () => {
       if (!statusCardId || !this.feishuNotifier || cardUpdatePending) return;
       cardUpdatePending = true;
-      cardUpdateTimer = setTimeout(async () => {
+      const epochAtSchedule = cardEpoch;
+      cardUpdateTimer = setTimeout(() => {
         cardUpdatePending = false;
         cardUpdateTimer = null;
-        try {
-          const card = buildAgentResponseCard({
-            agentName,
-            phase: lastCardUpdatePhase,
-            toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
-            content: streamingText || undefined,
-          });
-          await this.feishuNotifier!.updateCard(statusCardId!, card);
-        } catch (e) {
-          log.warn('Failed to update Feishu card mid-stream', { error: String(e) });
-        }
+        void enqueueCardWrite(epochAtSchedule, () => buildAgentResponseCard({
+          agentName,
+          phase: lastCardUpdatePhase,
+          toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
+          content: streamingText || undefined,
+        }));
       }, CARD_UPDATE_INTERVAL_MS);
     };
 
@@ -2113,16 +2143,102 @@ export class APIServer {
     };
 
     try {
-      // Use streaming for real-time progress — Secretary's main session (no channelKey)
+      // Route Feishu into the owner's Secretary main session (same as Team Chat),
+      // so history restore / persistence / live WS updates stay in one place.
+      const ownerUserId = await this.ensureAdminUser('default');
+      let mainSessionId: string | undefined;
+      let sessionRestoreData: {
+        dbSessionId: string;
+        messages: Array<{ role: string; content: string }>;
+      } | null = null;
+      if (this.storage) {
+        try {
+          const mainSession = this.storage.chatSessionRepo.getOrCreateMainSession(
+            secretaryInfo.id,
+            ownerUserId,
+          );
+          const sessionId = mainSession.id;
+          mainSessionId = sessionId;
+          const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
+          sessionRestoreData = {
+            dbSessionId: sessionId,
+            messages: histResult.messages.map((m: { role: string; content: string }) => ({
+              role: m.role,
+              content: m.content,
+            })),
+          };
+        } catch (err) {
+          log.warn('Failed to prepare Feishu main-session restore', { error: String(err) });
+          sessionRestoreData = null;
+        }
+      }
+
+      if (!secretary.isProcessing()) {
+        if (sessionRestoreData) {
+          secretary.restoreSessionFromHistory(
+            sessionRestoreData.dbSessionId,
+            sessionRestoreData.messages,
+          );
+        }
+      }
+
+      // Persist the inbound Feishu user turn onto the main session before streaming
+      // (restore snapshot above intentionally excludes this message).
+      let feishuUserMessageId: string | undefined;
+      if (mainSessionId) {
+        const persisted = await this.persistUserMessage(
+          secretaryInfo.id,
+          text,
+          ownerUserId,
+          undefined,
+          mainSessionId,
+          undefined,
+          {
+            source: 'feishu',
+            feishuChatId: chatId,
+            feishuSenderId: senderId,
+            feishuSenderName: senderName,
+          },
+        );
+        if (persisted) {
+          secretary.bindDbSession(persisted.sessionId);
+          mainSessionId = persisted.sessionId;
+          feishuUserMessageId = persisted.messageId;
+          // Push the user turn to Team Chat immediately (do not wait for the reply).
+          this.ws.broadcastProactiveMessage(
+            secretaryInfo.id,
+            agentName,
+            persisted.sessionId,
+            persisted.messageId,
+            text,
+            {
+              isMainSession: true,
+              source: 'feishu',
+              sessionId: persisted.sessionId,
+              role: 'user',
+            },
+            ownerUserId,
+          );
+        }
+      }
+
+      const deferredRestore = secretary.isProcessing() ? sessionRestoreData : undefined;
+      const feishuSenderLabel = senderName.startsWith('Feishu') ? senderName : `Feishu:${senderName}`;
       const reply = await secretary.sendMessageStream(
         text,
         handleStreamEvent,
-        senderId ?? 'feishu_user',
-        { name: senderName, role: 'user' },
+        ownerUserId,
+        { name: feishuSenderLabel, role: 'user' },
+        undefined,
+        undefined,
+        undefined,
+        deferredRestore !== undefined ? { sessionRestore: deferredRestore } : undefined,
       );
 
-      // Clear any pending throttled update
+      // Invalidate in-flight mid-stream card patches before writing the final card.
       if (cardUpdateTimer) { clearTimeout(cardUpdateTimer); cardUpdateTimer = null; }
+      cardUpdatePending = false;
+      cardEpoch += 1;
 
       const elapsedMs = Date.now() - startTime;
 
@@ -2147,9 +2263,23 @@ export class APIServer {
         return;
       }
 
-      // Strip thinking/reasoning blocks — only show the clean response to user
+      // Strip thinking/reasoning blocks — only show the clean response to user.
+      // Fall back to streamed text when the resolved reply strips empty (think-only /
+      // tool-only turns) — otherwise Feishu stays stuck on the thinking card while
+      // Markus Team Chat already shows a completed turn.
       const { clean: cleanReply } = extractThinkBlocks(reply ?? '');
-      const displayContent = stripInternalBlocks(cleanReply);
+      const { clean: cleanStreamed } = extractThinkBlocks(streamingText);
+      let displayContent = stripInternalBlocks(cleanReply).trim()
+        || stripInternalBlocks(cleanStreamed).trim();
+      if (!displayContent && toolCalls.length > 0) {
+        displayContent = '已处理完成。';
+      }
+      if (!displayContent) {
+        displayContent = '已收到，暂无文字回复。';
+        log.warn('Feishu reply had no displayable text; finalizing thinking card with fallback', {
+          chatId, replyLen: (reply ?? '').length, streamedLen: streamingText.length,
+        });
+      }
 
       // Remove "processing" reaction and add "done" reaction
       if (messageId && this.feishuNotifier) {
@@ -2159,38 +2289,67 @@ export class APIServer {
         await this.feishuNotifier.addReaction(messageId, 'DONE');
       }
 
-      // Final card update with full response + tool call summary
+      // Always finalize the thinking card — never leave Feishu on "正在分析您的消息..."
       const toolCallEntries = toolCalls.length > 0 ? toolCalls : undefined;
 
-      if (statusCardId && this.feishuNotifier && displayContent) {
-        const doneCard = buildAgentResponseCard({
-          agentName,
-          phase: 'done',
-          content: displayContent,
-          toolCalls: toolCallEntries,
-          elapsedMs,
-        });
+      if (statusCardId && this.feishuNotifier) {
         try {
-          await this.feishuNotifier.updateCard(statusCardId, doneCard);
+          await enqueueCardWrite(cardEpoch, () => buildAgentResponseCard({
+            agentName,
+            phase: 'done',
+            content: displayContent,
+            toolCalls: toolCallEntries,
+            elapsedMs,
+          }), { rethrow: true });
         } catch (cardErr) {
           log.warn('Failed to update Feishu card, falling back to text', { error: String(cardErr) });
           await this.feishuNotifier.sendTextToChat(chatId, displayContent);
         }
-      } else if (displayContent && this.feishuNotifier) {
+      } else if (this.feishuNotifier) {
         await this.feishuNotifier.sendTextToChat(chatId, displayContent);
       }
 
-      // Persist to DB main session (no senderId filter → finds the is_main session)
-      void this.persistChatTurn(
-        secretaryInfo.id,
-        text,
-        reply ?? '',
-        undefined,
-        secretary.getState().tokensUsedToday,
-      );
+      // Persist assistant reply on the same main session + notify Team Chat UI.
+      if (mainSessionId) {
+        await this.persistAssistantMessage(
+          mainSessionId,
+          secretaryInfo.id,
+          reply ?? '',
+          secretary.getState().tokensUsedToday,
+          { source: 'feishu', feishuChatId: chatId, feishuSenderId: senderId },
+        );
+        this.ws.broadcastProactiveMessage(
+          secretaryInfo.id,
+          agentName,
+          mainSessionId,
+          generateId('cm'),
+          displayContent,
+          {
+            isMainSession: true,
+            source: 'feishu',
+            sessionId: mainSessionId,
+            role: 'assistant',
+            // Fallback so UI can still insert the user bubble if the earlier
+            // user-turn WS event was missed (tab closed / reconnect race).
+            userText: text,
+            ...(feishuUserMessageId ? { userMessageId: feishuUserMessageId } : {}),
+          },
+          ownerUserId,
+        );
+      } else {
+        void this.persistChatTurn(
+          secretaryInfo.id,
+          text,
+          reply ?? '',
+          ownerUserId,
+          secretary.getState().tokensUsedToday,
+        );
+      }
     } catch (err) {
-      // Clear any pending throttled update
+      // Invalidate in-flight mid-stream card patches before writing the error card.
       if (cardUpdateTimer) { clearTimeout(cardUpdateTimer); cardUpdateTimer = null; }
+      cardUpdatePending = false;
+      cardEpoch += 1;
 
       log.error('Secretary agent failed to respond to Feishu message', { error: String(err) });
       const elapsedMs = Date.now() - startTime;
@@ -2206,15 +2365,14 @@ export class APIServer {
       // Update the status card with error state
       const errMsg = String(err).slice(0, 200);
       if (statusCardId && this.feishuNotifier) {
-        const errorCard = buildAgentResponseCard({
-          agentName,
-          phase: 'error',
-          errorMessage: errMsg,
-          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-          elapsedMs,
-        });
         try {
-          await this.feishuNotifier.updateCard(statusCardId, errorCard);
+          await enqueueCardWrite(cardEpoch, () => buildAgentResponseCard({
+            agentName,
+            phase: 'error',
+            errorMessage: errMsg,
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            elapsedMs,
+          }), { rethrow: true });
         } catch {
           await this.feishuNotifier.sendTextToChat(chatId, `处理消息时出错: ${errMsg}`);
         }
@@ -3409,6 +3567,13 @@ export class APIServer {
           });
         }
       }
+      // Mark the org-level Secretary so UI can hide delete/move without brittle role-string checks.
+      const orgSecretaryId = this.orgService.findOrgSecretary()?.id;
+      if (orgSecretaryId) {
+        agents = agents.map(a =>
+          a.id === orgSecretaryId ? { ...a, isOrgSecretary: true, protected: true } : a
+        );
+      }
       if (this.gateway) {
         const extRegs = this.gateway.listRegistrations();
         const disconnectedIds = new Set(
@@ -3609,11 +3774,11 @@ export class APIServer {
         const bindingPersist = async (
           aId: string, text: string, sId?: string, imgs?: string[], sessId?: string,
         ): Promise<string | null> => {
-          const dbSessId = await this.persistUserMessage(aId, text, sId, imgs, sessId, replyTo);
-          if (dbSessId && !sessId) {
-            agent.bindDbSession(dbSessId);
+          const persisted = await this.persistUserMessage(aId, text, sId, imgs, sessId, replyTo);
+          if (persisted && !sessId) {
+            agent.bindDbSession(persisted.sessionId);
           }
-          return dbSessId;
+          return persisted?.sessionId ?? null;
         };
 
         if (stream) {
@@ -6675,6 +6840,8 @@ EXPLANATION_END`;
         } else if (existsSync(tokenPath)) {
           rmSync(tokenPath);
           delete process.env['MARKUS_HUB_TOKEN'];
+          // Disconnected Hub → search should not prefer Markus-hosted.
+          this.llmRouter?.setMarkusHubRemainingHint(null);
         }
         log.info(`Hub token ${token ? 'saved to' : 'cleared from'} ${tokenPath}`);
       } catch (err) {

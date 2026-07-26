@@ -675,12 +675,36 @@ export class OrganizationService {
     return this.hireAgent(request);
   }
 
-  /** Check whether an agent is the protected Secretary (cannot be deleted). */
+  /**
+   * Resolve the org-level Secretary (owner's hub agent), not team members that
+   * happen to reuse the Secretary role template (e.g. research-lab「协调秘书」).
+   * Preference: no team → exact name Secretary/秘书 → first match.
+   *
+   * Note: customized ROLE.md titles may be "Secretary 角色定义", not bare "Secretary".
+   */
+  findOrgSecretary(): { id: string; name: string; role: string; agentRole: string; teamId?: string } | undefined {
+    const secretaries = this.agentManager.listAgents().filter(a => OrganizationService.isSecretaryLike(a));
+    if (secretaries.length === 0) return undefined;
+    return secretaries.find(a => !a.teamId)
+      ?? secretaries.find(a => a.name === 'Secretary' || a.name === '秘书')
+      ?? secretaries[0];
+  }
+
+  /** True for agents whose role/name identifies them as a Secretary-class agent. */
+  static isSecretaryLike(a: { name?: string; role?: string; agentRole?: string }): boolean {
+    const role = (a.role ?? '').toLowerCase().trim();
+    const name = (a.name ?? '').trim();
+    if (a.agentRole === 'secretary') return true;
+    if (name === 'Secretary' || name === '秘书') return true;
+    // "secretary", "Secretary 角色定义", etc.
+    if (role === 'secretary' || role.startsWith('secretary')) return true;
+    return false;
+  }
+
+  /** Check whether an agent is the protected org-level Secretary (cannot be deleted). */
   isProtectedAgent(agentId: string): boolean {
-    try {
-      const agent = this.agentManager.getAgent(agentId);
-      return agent.role.name.toLowerCase() === 'secretary';
-    } catch { return false; }
+    const orgSecretary = this.findOrgSecretary();
+    return !!orgSecretary && orgSecretary.id === agentId;
   }
 
   async fireAgent(agentId: string, opts?: { purgeFiles?: boolean }): Promise<void> {

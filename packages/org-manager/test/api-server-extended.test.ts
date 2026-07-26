@@ -15,7 +15,7 @@ vi.mock('@markus/shared', async (importOriginal) => {
     loadConfig: vi.fn(() => ({
       network: { proxy: '', proxyEnabled: false },
       browser: { headless: true },
-      search: { provider: 'duckduckgo', serperApiKey: 'serper-key' },
+      search: { provider: 'serper', serperApiKey: 'serper-key' },
       integrations: { feishu: { appId: 'cli_test', appSecret: 'secret' } },
       agent: {},
     })),
@@ -1242,6 +1242,12 @@ describe('APIServer extended route coverage', () => {
     it('handleFeishuUserMessage routes to secretary agent', async () => {
       const secretary = ctx.agentManager.getAgent('secretary');
       vi.mocked(secretary.sendMessageStream).mockResolvedValueOnce('Secretary reply');
+      const broadcastSpy = vi.spyOn(
+        ctx.server['ws'] as {
+          broadcastProactiveMessage: (...args: unknown[]) => void;
+        },
+        'broadcastProactiveMessage',
+      ).mockImplementation(() => {});
       await ctx.server['handleFeishuUserMessage']({
         chatId: 'chat-feishu-1',
         senderId: 'ou_sender',
@@ -1250,6 +1256,20 @@ describe('APIServer extended route coverage', () => {
         content: JSON.stringify({ text: 'Need help' }),
       });
       expect(secretary.sendMessageStream).toHaveBeenCalled();
+      const roles = broadcastSpy.mock.calls.map(call =>
+        (call[5] as { role?: string } | undefined)?.role,
+      );
+      // User turn is pushed live before the assistant reply finishes.
+      expect(roles).toContain('user');
+      expect(roles).toContain('assistant');
+      const userCall = broadcastSpy.mock.calls.find(
+        call => (call[5] as { role?: string } | undefined)?.role === 'user',
+      );
+      expect(userCall?.[4]).toBe('Need help');
+      const assistantCall = broadcastSpy.mock.calls.find(
+        call => (call[5] as { role?: string } | undefined)?.role === 'assistant',
+      );
+      expect((assistantCall?.[5] as { userText?: string }).userText).toBe('Need help');
     });
 
     it('handleFeishuUserMessage handles non-text message type', async () => {

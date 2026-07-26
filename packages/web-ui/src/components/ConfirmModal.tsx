@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
 
@@ -19,7 +20,14 @@ interface Props {
   alertOnly?: boolean;
   checkboxes?: CheckboxOption[];
   onConfirm: (checked?: Record<string, boolean>) => void;
+  /** Backdrop / dismiss. */
   onCancel: () => void;
+  /**
+   * Cancel-button handler. Defaults to `onCancel`.
+   * Use when the cancel button means a secondary action (e.g. navigate)
+   * while backdrop should only dismiss. Receives checkbox state when present.
+   */
+  onCancelClick?: (checked?: Record<string, boolean>) => void;
 }
 
 export function ConfirmModal({
@@ -32,6 +40,7 @@ export function ConfirmModal({
   checkboxes,
   onConfirm,
   onCancel,
+  onCancelClick,
 }: Props) {
   const { t } = useTranslation('common');
   useNativeBrowserOverlay(true);
@@ -46,8 +55,8 @@ export function ConfirmModal({
     ? 'px-4 py-1.5 text-sm bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors'
     : 'px-4 py-1.5 text-sm bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors';
 
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={onCancel}>
+  return createPortal(
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[10050] p-4" onClick={onCancel}>
       <div
         className="bg-surface-secondary border border-border-default rounded-xl p-6 w-[360px] max-w-[calc(100vw-2rem)] shadow-2xl"
         onClick={e => e.stopPropagation()}
@@ -87,13 +96,19 @@ export function ConfirmModal({
         <div className="flex justify-end gap-2">
           {!alertOnly && (
             <button
-              onClick={onCancel}
-              className="px-4 py-1.5 text-sm border border-border-default rounded-lg hover:bg-surface-elevated transition-colors"
+              type="button"
+              onClick={() => {
+                const payload = checkboxes ? checks : undefined;
+                if (onCancelClick) onCancelClick(payload);
+                else onCancel();
+              }}
+              className="px-4 py-1.5 text-sm border border-border-default rounded-lg text-fg-primary hover:bg-surface-elevated transition-colors"
             >
               {cancelLabel ?? t('cancel')}
             </button>
           )}
           <button
+            type="button"
             onClick={() => onConfirm(checkboxes ? checks : undefined)}
             className={confirmBtnClass}
           >
@@ -101,6 +116,7 @@ export function ConfirmModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

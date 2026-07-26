@@ -381,7 +381,7 @@
   },
   "searchApi": {
     "title": "Web Search",
-    "description": "Priority: Markus hosted → your API keys → DuckDuckGo.",
+    "description": "Priority: Hub connected with balance → Markus hosted first; otherwise your API keys first.",
     "serper": "Serper (Google)",
     "serperHint": "serper.dev",
     "tavily": "Tavily",
@@ -405,8 +405,6 @@
     "saved": "Search API keys saved",
     "failedToSave": "Failed to save search API keys",
     "envDetected": "from env",
-    "freeBackend": "Free fallback, no API key.",
-    "freeLabel": "Free",
     "markus": "Markus Hosted Search",
     "markusBadge": "Recommended",
     "markusHint": "No third-party key · uses your Markus Cloud balance",

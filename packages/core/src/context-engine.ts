@@ -1014,11 +1014,16 @@ export class ContextEngine {
           lines.push('Your reply triggers the other agent to respond, which triggers you again — an infinite loop if you do not stop. You MUST respond with `[NO_RESPONSE]` in ALL of these cases:');
           lines.push('- The conversation has reached a natural conclusion (agreement reached, question answered, info exchanged)');
           lines.push('- You have nothing **new and actionable** to add — no new facts, no new questions, no new instructions');
-          lines.push('- You are just acknowledging receipt ("OK", "got it", "understood", "收到", "noted", "roger", "will do", "保持待命", "standby")');
+          lines.push('- You are just acknowledging receipt ("OK", "got it", "understood", "收到", "noted", "roger", "will do", "保持待命", "standby", "收到，保持待命")');
           lines.push('- The same information is being repeated or rephrased');
           lines.push('- The other party confirmed or acknowledged your last message — the exchange is complete');
           lines.push('- You want to say something purely polite, ceremonial, or encouraging (e.g., "加油", "sounds good", "great work")');
+          lines.push('- You already got the answer you needed from this peer — do NOT paste "X 回复说：…" back into this DM');
           lines.push('**Default to [NO_RESPONSE]**. Only reply if you have genuinely new information, a question that needs answering, or a correction. When in doubt, STOP.');
+          lines.push('');
+          lines.push('**Human delivery (very important):**');
+          lines.push('- If you asked this peer something on behalf of a human (owner/boss), deliver the answer with `notify_user` (or report it in your human chat).');
+          lines.push('- NEVER relay the peer\'s answer back into this DM as "XXX 回复说：…". That re-triggers them and starts an acknowledgment loop.');
           lines.push('');
           lines.push('**Communication rules:**');
           lines.push('- Be concise and structured — your colleague needs actionable information');

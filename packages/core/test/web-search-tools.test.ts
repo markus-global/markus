@@ -1,16 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebSearchTool } from '../src/tools/web-search.js';
 
-const DDG_LITE_HTML = `
-<a rel="nofollow" href="https://example.com/page" class="result-link">Example Result</a>
-<td class="result-snippet">A helpful snippet about example.</td>
-`;
-
-const DDG_HTML = `
-<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Ftest.com">Test Title</a>
-<a class="result__snippet">Test snippet text</a>
-`;
-
 function mockFetch(handler: (url: string, init?: RequestInit) => unknown) {
   vi.stubGlobal('fetch', vi.fn((url: string | URL, init?: RequestInit) => {
     const urlStr = String(url);
@@ -209,34 +199,11 @@ describe('WebSearchTool', () => {
     expect(result.results[0].snippet).toBe('Bocha summary');
   });
 
-  it('falls back to DuckDuckGo lite when no API keys are set', async () => {
-    mockFetch((url) => {
-      if (url.includes('lite.duckduckgo.com')) {
-        return { ok: true, status: 200, statusText: 'OK', text: async () => DDG_LITE_HTML };
-      }
-      throw new Error(`unexpected url: ${url}`);
-    });
-
-    const result = JSON.parse(await WebSearchTool.execute({ query: 'ddg lite' }));
-    expect(result.status).toBe('success');
-    expect(result.results[0].title).toBe('Example Result');
-    expect(result.results[0].url).toBe('https://example.com/page');
-  });
-
-  it('falls back to DuckDuckGo html endpoint when lite returns no results', async () => {
-    mockFetch((url) => {
-      if (url.includes('lite.duckduckgo.com')) {
-        return { ok: true, text: async () => '<html><body>no results</body></html>' };
-      }
-      if (url.includes('html.duckduckgo.com')) {
-        return { ok: true, text: async () => DDG_HTML };
-      }
-      throw new Error(`unexpected url: ${url}`);
-    });
-
-    const result = JSON.parse(await WebSearchTool.execute({ query: 'ddg html' }));
-    expect(result.status).toBe('success');
-    expect(result.results[0].title).toBe('Test Title');
+  it('returns error when no search backends are configured', async () => {
+    process.env.MARKUS_SEARCH_ENABLED = '0';
+    const result = JSON.parse(await WebSearchTool.execute({ query: 'no backends' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/No search backends configured/i);
   });
 
   it('returns error with network hints when all backends fail with network errors', async () => {

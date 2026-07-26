@@ -577,12 +577,7 @@ export class WorkflowRunner {
 
   private findSecretaryAgent(): string | undefined {
     try {
-      const agentManager = this.orgService.getAgentManager();
-      const agents = agentManager.listAgents();
-      const secretary = agents.find(a =>
-        a.agentRole === 'secretary' || a.role?.toLowerCase() === 'secretary'
-      );
-      return secretary?.id;
+      return this.orgService.findOrgSecretary()?.id;
     } catch {
       return undefined;
     }

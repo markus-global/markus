@@ -1063,7 +1063,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (previewMode && previewData?.chatMode === 'channel') return;
     if (agents.length === 0) return;
     if (selectedAgent && agents.some(a => a.id === selectedAgent)) return;
-    const secretary = agents.find(a => a.role === 'secretary')
+    const secretary = agents.find(a => !a.teamId && a.role?.toLowerCase() === 'secretary')
+      ?? agents.find(a => a.role?.toLowerCase() === 'secretary')
       ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
     if (secretary) {
       setChatMode('direct');
@@ -1950,7 +1951,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return unsub;
   }, [previewMode, activeChannel]);
 
-  // WS live updates for proactive agent messages (direct mode)
+  // WS live updates for proactive agent/user messages (direct mode)
   useEffect(() => {
     if (previewMode) return;
     const unsub = wsClient.on('chat:proactive_message', (event) => {
@@ -1961,15 +1962,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const agentName = (p['agentName'] as string) ?? t('page.fallbackAgent');
       const message = (p['message'] as string) ?? '';
       const sessionId = (p['sessionId'] as string) ?? '';
+      const messageId = (p['messageId'] as string) ?? '';
       const meta = (p['metadata'] as Record<string, unknown>) ?? {};
       if (!agentId || !message) return;
       if (message === '[cancelled]' || message === '[Stream cancelled]') return;
 
-      const isActivity = !!meta.activityLog || message.startsWith('[ACTIVITY:');
+      const isUserTurn = meta.role === 'user';
+      const isActivity = !isUserTurn && (!!meta.activityLog || message.startsWith('[ACTIVITY:'));
 
       // Strip notify_context HTML comments from real-time messages
       const { cleaned: displayMessage, priority: parsedPriority } = stripNotifyContext(message);
-      const isNotify = !!meta.notifyUser || displayMessage !== message;
+      const isNotify = !isUserTurn && (!!meta.notifyUser || displayMessage !== message);
 
       // Session-aware routing: only display proactive messages in the correct
       // session context to prevent messages from appearing in unrelated sessions.
@@ -1985,46 +1988,69 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         }
       }
 
-      const isWsFallback = !!meta.isMainSession;
+      const isWsFallback = !!meta.isMainSession && !isUserTurn;
+      const proactiveSession = sessionId || activeSessionId;
+      const fallbackUserText = typeof meta.userText === 'string' ? meta.userText : '';
+      const fallbackUserId = typeof meta.userMessageId === 'string' ? meta.userMessageId : '';
 
       const newMsg: ChatMsg = {
-        id: `proactive_${Date.now()}`,
-        sender: 'agent',
+        id: messageId || `proactive_${Date.now()}`,
+        sender: isUserTurn ? 'user' : 'agent',
         text: displayMessage,
         time: new Date().toLocaleTimeString(),
-        agentName,
-        agentId,
-        ...(isNotify ? { isNotification: true, notifyPriority: (meta.priority as string) ?? parsedPriority } : {}),
-        ...(isActivity ? {
-          isActivityLog: true,
-          activityType: meta.activityType as string | undefined,
-          outcome: meta.outcome as string | undefined,
-          mailboxItemId: meta.mailboxItemId as string | undefined,
-          taskId: meta.taskId as string | undefined,
-          requirementId: meta.requirementId as string | undefined,
-        } : {}),
-        ...(!isActivity && meta.taskId ? { taskId: meta.taskId as string } : {}),
-        ...(!isActivity && meta.requirementId ? { requirementId: meta.requirementId as string } : {}),
+        ...(isUserTurn
+          ? {}
+          : {
+              agentName,
+              agentId,
+              ...(isNotify ? { isNotification: true, notifyPriority: (meta.priority as string) ?? parsedPriority } : {}),
+              ...(isActivity ? {
+                isActivityLog: true,
+                activityType: meta.activityType as string | undefined,
+                outcome: meta.outcome as string | undefined,
+                mailboxItemId: meta.mailboxItemId as string | undefined,
+                taskId: meta.taskId as string | undefined,
+                requirementId: meta.requirementId as string | undefined,
+              } : {}),
+              ...(!isActivity && meta.taskId ? { taskId: meta.taskId as string } : {}),
+              ...(!isActivity && meta.requirementId ? { requirementId: meta.requirementId as string } : {}),
+            }),
       };
 
       // WS fallback messages (from SSE disconnect recovery) should replace the
       // last partial/stopped agent message rather than duplicating it.
-      const proactiveSession = sessionId || activeSessionId;
-      if (isWsFallback) {
-        updateConvMsgs(key, prev => {
-          for (let i = prev.length - 1; i >= 0; i--) {
-            const msg = prev[i]!;
+      updateConvMsgs(key, prev => {
+        if (prev.some(m => m.id === newMsg.id)) return prev;
+
+        // Feishu assistant event may carry the inbound user text as a safety net.
+        let base = prev;
+        if (!isUserTurn && fallbackUserText) {
+          const hasUser = base.some(m =>
+            (fallbackUserId && m.id === fallbackUserId)
+            || (m.sender === 'user' && m.text === fallbackUserText),
+          );
+          if (!hasUser) {
+            base = [...base, {
+              id: fallbackUserId || `feishu_user_${newMsg.id}`,
+              sender: 'user' as const,
+              text: fallbackUserText,
+              time: new Date().toLocaleTimeString(),
+            }];
+          }
+        }
+
+        if (isWsFallback) {
+          for (let i = base.length - 1; i >= 0; i--) {
+            const msg = base[i]!;
             if (msg.sender === 'agent' && msg.agentId === agentId && msg.isStopped) {
-              const updated = [...prev];
+              const updated = [...base];
               updated[i] = { ...newMsg, id: msg.id };
               return updated;
             }
           }
-          return [...prev, newMsg];
-        }, proactiveSession || undefined);
-      } else {
-        updateConvMsgs(key, prev => [...prev, newMsg], proactiveSession || undefined);
-      }
+        }
+        return [...base, newMsg];
+      }, proactiveSession || undefined);
     });
     return unsub;
   }, [previewMode, updateConvMsgs, t, activeSessionId]);
