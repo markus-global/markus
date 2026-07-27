@@ -60,7 +60,7 @@ function syncSkillFrontmatterName(artDir: string, newSlug: string): void {
   const skillMd = join(artDir, 'SKILL.md');
   if (!existsSync(skillMd)) return;
   try {
-    let text = readFileSync(skillMd, 'utf-8');
+    const text = readFileSync(skillMd, 'utf-8');
     if (!text.startsWith('---')) return;
     const end = text.indexOf('\n---', 3);
     if (end < 0) return;
@@ -173,7 +173,7 @@ export async function handleSkillsRoutes(
             i18n: raw?.i18n ?? undefined,
           };
         })
-        .filter((s): s is NonNullable<typeof s> => s != null);
+        .filter((s): s is NonNullable<typeof s> => s !== null && s !== undefined);
       server.json(res, 200, { skills });
       return true;
     }

@@ -8,7 +8,7 @@
  * Agent control: webContents.debugger speaks CDP — the same protocol used by
  * chrome-devtools-mcp / the Chrome extension bridge.
  */
-import { BrowserWindow, WebContentsView, session } from 'electron';
+import { WebContentsView, session, type BrowserWindow } from 'electron';
 import { getMainWindow } from './window.js';
 
 const PARTITION = 'persist:markus-embedded-browser';

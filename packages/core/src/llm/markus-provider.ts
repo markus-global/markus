@@ -19,22 +19,20 @@ import {
   type LLMTool,
   type ProviderCapabilities,
 } from '@markus/shared';
-import type {
-  MultiModalProviderInterface,
-  MultiModalToolSchemas,
-  ImageGenOptions,
-  ImageResult,
-  TTSOptions,
-  AudioResult,
-  STTOptions,
-  VideoGenOptions,
-  VideoResult,
-} from './provider.js';
 import {
   CREDIT_EXCEEDED_MSG,
   defaultVoiceForModel,
   formatUpstreamMediaError,
   isCreditExhaustedHttp,
+  type MultiModalProviderInterface,
+  type MultiModalToolSchemas,
+  type ImageGenOptions,
+  type ImageResult,
+  type TTSOptions,
+  type AudioResult,
+  type STTOptions,
+  type VideoGenOptions,
+  type VideoResult,
 } from './provider.js';
 
 /** Re-export for callers/tests that import helpers from this module. */
@@ -656,7 +654,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
   private async assertCreditsAvailable(): Promise<void> {
     const softZero =
       this.hubRemainingHint === 0
-      || (this.lastQuotaInfo != null && this.lastQuotaInfo.cuRemaining === 0);
+      || this.lastQuotaInfo?.cuRemaining === 0;
     if (!softZero) return;
 
     if (await this.tryRecoverCredits()) return;
@@ -1295,7 +1293,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     Object.assign(body, mapOpenRouterImageSize(options?.size));
     if (options?.quality) body['quality'] = options.quality;
     if (options?.output_format) body['output_format'] = options.output_format;
-    if (options?.seed != null) body['seed'] = options.seed;
+    if (options?.seed !== undefined && options.seed !== null) body['seed'] = options.seed;
 
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -1466,7 +1464,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     const model = this.resolveMediaModel(options?.model, 'video generation', 'alibaba/happyhorse-1.1');
     const endpoint = this.openaiCompatUrl('videos');
     const body: Record<string, unknown> = { model, prompt };
-    if (options?.duration != null) body['duration'] = options.duration;
+    if (options?.duration !== undefined && options.duration !== null) body['duration'] = options.duration;
     if (options?.size) {
       const size = options.size.trim();
       if (/^\d+x\d+$/i.test(size)) body['size'] = size;

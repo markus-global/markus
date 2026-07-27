@@ -1,5 +1,31 @@
 # Release Log
 
+## v0.9.0
+
+Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消息；聊天会话 buffer 状态机重构；飞书主会话同步与 Agent DM 确认死循环防护；搜索优先级与 Team Chat 菜单体验优化。
+
+### New Features
+
+- **Markus Cloud / Hub Credits** — MarkusProvider、用量与额度展示、Cloud 计费与 Hub credits UX；billing 相关 CLI / 桌面链路
+- **认知增强与统一 A2A** — 认知架构增强、Agent DM 频道协作流、统一 A2A 消息路径
+- **Conversation buffer 状态机** — 抽取会话缓冲状态机，修复聊天竞态与流式重连边界
+- **Hub recommended routing** — Hub 推荐路由与模型目录 / 路由能力增强
+- **Team Chat 菜单优化** — 「移动到」可搜索折叠、组织秘书保护、文案改为「移出团队」
+
+### Bug Fixes
+
+- **飞书主会话同步** — 飞书用户消息落入组织秘书主会话；Team Chat 实时展示用户与助手双边消息
+- **Agent DM 确认死循环** — 拦截复合「收到/保持待命」与误转发「回复说」粘贴回 DM，收紧 DM 链深度
+- **搜索优先级** — Hub 已连接且有余额时优先 Markus 搜索，否则 BYOK
+- **任务与通知稳定性** — 任务状态实时更新、deliberation / notify 上下文、triage 完整性
+- **性能与前端** — Prompt cache 友好与 Tier 3 token 成本优化；web-ui 路由拆分、共享缓存、轮询去重
+
+### Stats
+
+- 290 files changed, +36,540 / −12,148 lines
+
+---
+
 ## v0.8.5
 
 飞书流式消息与审批路由全面升级；Coding Tools 集成（Claude Code / Codex / Cursor）；交付物页面 UX 大改版；Prompt 工程全面重构；代码块语法高亮与 Mermaid/PlantUML 图表渲染；GPT-5.6 模型目录；多项调度与流式稳定性修复。

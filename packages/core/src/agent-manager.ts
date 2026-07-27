@@ -29,7 +29,7 @@ import { EventBus } from './events.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { BrowserSessionManager } from './tools/browser-session.js';
-import { createManagerTools, createPackageTools, createSecretaryTools } from './tools/manager.js';
+import { createManagerTools, createPackageTools, createSecretaryTools, type SecretaryToolsContext } from './tools/manager.js';
 import { createWorkflowTools, type WorkflowToolsContext } from './tools/workflow-tools.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
@@ -2975,7 +2975,7 @@ export class AgentManager {
     return { id: created.id, name: created.name, created: true };
   }
 
-  private buildSecretaryToolsContext(orgId: string): import('./tools/manager.js').SecretaryToolsContext {
+  private buildSecretaryToolsContext(orgId: string): SecretaryToolsContext {
     return {
       listTeams: () => {
         if (this.orgTeamLister) {

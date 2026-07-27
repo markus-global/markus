@@ -486,7 +486,17 @@ export function App() {
       theme={theme.mode}
       onThemeChange={theme.setMode}
       skipProfile={skipOnboardingProfile}
-      onProfileUpdated={(u) => setAuthUser(u)}
+      onProfileUpdated={(u) => {
+        const next: AuthUser = {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          orgId: u.orgId ?? 'default',
+          avatarUrl: u.avatarUrl,
+        };
+        setAuthUser(next);
+      }}
       onComplete={() => {
         localStorage.setItem('markus_onboarded', '1');
         setShowOnboarding(false);
