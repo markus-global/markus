@@ -78,6 +78,13 @@ export interface AttentionDelegate {
   processMailboxItem(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void>;
   onDecisionMade(decision: AttentionDecision): void;
   onFocusChanged(item: MailboxItem | undefined): void;
+  /**
+   * Best-effort cancel of the in-flight processing for `item` — invoked when the
+   * backstop timeout fires so the orphaned turn stops before the item is requeued
+   * (prevents duplicate tool side effects). Implementations abort the active LLM
+   * stream and set the processing cancel flag. Optional for non-agent delegates.
+   */
+  cancelProcessing?(item: MailboxItem): void;
   evaluateInterrupt(
     currentItem: MailboxItem,
     newItem: MailboxItem,
@@ -142,6 +149,8 @@ export class AttentionController {
   private watchdogLastTick = Date.now();
   private processingStartedAt?: number;
   private waitingForHumanApproval = false;
+  /** Backstop timeout override (test/config); defaults to MAILBOX_PROCESSING_TIMEOUT_MS. */
+  private processingTimeoutMs?: number;
 
   private static readonly MAX_RECENT_DECISIONS = 50;
 
@@ -168,6 +177,11 @@ export class AttentionController {
 
   setWaitingForApproval(waiting: boolean): void {
     this.waitingForHumanApproval = waiting;
+  }
+
+  /** Override the processing backstop timeout (ms). Primarily for tests/config. */
+  setProcessingTimeoutMs(ms: number): void {
+    this.processingTimeoutMs = ms > 0 ? ms : undefined;
   }
 
   /**
@@ -510,7 +524,9 @@ export class AttentionController {
       // is a generous backstop — by the time it fires, all underlying I/O has
       // surely completed or failed, so requeuing is safe.
       const processing = this.delegate?.processMailboxItem(item, batchItems, batchContext);
-      const backstopMs = this.waitingForHumanApproval ? APPROVAL_WAIT_TIMEOUT_MS : MAILBOX_PROCESSING_TIMEOUT_MS;
+      const backstopMs = this.waitingForHumanApproval
+        ? APPROVAL_WAIT_TIMEOUT_MS
+        : (this.processingTimeoutMs ?? MAILBOX_PROCESSING_TIMEOUT_MS);
       const backstop = new Promise<undefined>(resolve =>
         setTimeout(() => resolve(undefined), backstopMs),
       );
@@ -522,7 +538,16 @@ export class AttentionController {
         reply = result.reply;
       } else {
         timedOut = true;
-        log.error('Processing exceeded backstop timeout — requeueing', {
+        // Single-flight guard: cancel the orphaned in-flight processing before we
+        // requeue, so the timed-out turn cannot keep running tools and double the
+        // side effects once the requeued item is processed again. The late result
+        // of `processing` is already discarded by the Promise.race above.
+        try {
+          this.delegate?.cancelProcessing?.(item);
+        } catch (err) {
+          log.debug('cancelProcessing threw on backstop timeout', { itemId: item.id, error: String(err) });
+        }
+        log.error('Processing exceeded backstop timeout — cancelling in-flight and requeueing', {
           agentId: this.agentId,
           itemId: item.id,
           type: item.sourceType,
@@ -590,6 +615,9 @@ export class AttentionController {
             itemId: item.id,
             type: item.sourceType,
           });
+          // A3: make the near-silent "completed but unfinished" terminal visible.
+          // Visibility only — retry semantics are unchanged.
+          this.emitIncomplete(item, abnormalReason);
           this.mailbox.complete(item.id);
         } else if (isUserInteraction) {
           // Empty reply / error for user-facing item — the user already saw
@@ -601,6 +629,7 @@ export class AttentionController {
             type: item.sourceType,
             reason: abnormalReason,
           });
+          this.emitIncomplete(item, abnormalReason);
           this.mailbox.complete(item.id);
         } else {
           // Empty reply for background type — transient errors may self-correct.
@@ -622,6 +651,7 @@ export class AttentionController {
             retryCount: retries,
             reason: abnormalReason,
           });
+          this.emitIncomplete(item, abnormalReason);
         }
         this.mailbox.complete(item.id);
       }
@@ -725,6 +755,25 @@ export class AttentionController {
   /** True if a human_chat arrived during deliberation, signalling early abort. */
   get shouldAbortDeliberation(): boolean {
     return this.deliberationAbortSignal;
+  }
+
+  /**
+   * A3: emit a structured `agent:incomplete` event when a mailbox item completes
+   * without finishing cleanly (marker missing after continuation, or abnormal reply
+   * accepted without retry). Visibility only — does not change retry semantics.
+   */
+  private emitIncomplete(item: MailboxItem, reason: string): void {
+    try {
+      this.eventBus.emit('agent:incomplete', {
+        agentId: this.agentId,
+        itemId: item.id,
+        type: item.sourceType,
+        taskId: item.payload?.taskId,
+        reason,
+      });
+    } catch (err) {
+      log.debug('Failed to emit agent:incomplete', { itemId: item.id, error: String(err) });
+    }
   }
 
   /**

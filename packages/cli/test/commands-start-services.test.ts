@@ -119,4 +119,46 @@ describe('createServices', () => {
 
     delete process.env.OPENAI_API_KEY;
   }, 60000);
+
+  it('reloads google, ollama, dashscope, and custom providers from markus.json (#244)', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+    delete process.env.OLLAMA_BASE_URL;
+    delete process.env.DASHSCOPE_API_KEY;
+
+    writeConfig({
+      llm: {
+        defaultProvider: 'google',
+        providers: {
+          google: { apiKey: 'google-key1234567890', model: 'gemini-2.5-flash', enabled: true },
+          ollama: { baseUrl: 'http://127.0.0.1:11434/v1', model: 'llama3.2', enabled: true },
+          dashscope: {
+            apiKey: 'dash-key1234567890123',
+            baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            model: 'qwen-max',
+            enabled: true,
+          },
+          'my-custom-proxy': {
+            apiKey: 'custom-key123456789012',
+            baseUrl: 'https://proxy.example.com/v1',
+            model: 'proxy-model',
+            enabled: true,
+          },
+        },
+      },
+    });
+
+    const config = loadConfig(configPath);
+    const services = await createServices(config);
+    const registered = services.llmRouter.listProviders();
+
+    expect(registered).toEqual(expect.arrayContaining([
+      'google',
+      'ollama',
+      'dashscope',
+      'my-custom-proxy',
+    ]));
+    expect(services.llmRouter.getSettings().providers.google.configured).toBe(true);
+    expect(services.llmRouter.getSettings().providers.ollama.configured).toBe(true);
+  }, 60000);
 });

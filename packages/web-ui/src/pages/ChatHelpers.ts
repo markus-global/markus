@@ -20,6 +20,8 @@ export interface ChatMsg {
   activities?: ActivityStep[];
   isError?: boolean;
   isStopped?: boolean;
+  /** True when the assistant turn is still generating (survives refresh via reattach). */
+  isStreaming?: boolean;
   images?: string[];
   replyToId?: string;
   replyToSender?: string;
@@ -36,6 +38,25 @@ export interface ChatMsg {
 
 export type ChatMode = 'channel' | 'direct' | 'dm';
 
+// ─── Stream payload caps (keep React state + DOM from unbounded growth) ───────
+
+/** Keep only the trailing window of shell/live tool stdout in UI state. */
+export const MAX_LIVE_OUTPUT_CHARS = 24_000;
+/** Cap nested sub-agent progress rows kept on a tool segment. */
+export const MAX_SUBAGENT_LOGS = 200;
+
+/** Append a live-output chunk, retaining only the newest window. */
+export function appendLiveOutput(prev: string | undefined, chunk: string, max = MAX_LIVE_OUTPUT_CHARS): string {
+  const next = (prev ?? '') + chunk;
+  return next.length <= max ? next : next.slice(next.length - max);
+}
+
+/** Append a sub-agent log entry, retaining only the newest N rows. */
+export function appendSubagentLog<T>(logs: T[] | undefined, entry: T, max = MAX_SUBAGENT_LOGS): T[] {
+  const next = [...(logs ?? []), entry];
+  return next.length <= max ? next : next.slice(next.length - max);
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const NOTIFY_CONTEXT_RE = /\n*<!-- notify_context:.*?-->/g;
@@ -50,6 +71,45 @@ export function stripNotifyContext(text: string): { cleaned: string; priority?: 
   return { cleaned: text.replace(NOTIFY_CONTEXT_RE, '').trimEnd(), priority };
 }
 
+/** Map a persisted/SSE segment into chat UI shape, keeping nested sub-agent logs. */
+export function storedSegmentToMsgSegment(
+  s: StoredSegment,
+  index: number,
+  live?: MsgSegment,
+): MsgSegment {
+  if (s.type !== 'tool') {
+    return { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt };
+  }
+  const liveTool = live?.type === 'tool' && live.tool === s.tool ? live : undefined;
+  const serverLen = s.subagentLogs?.length ?? 0;
+  const liveLen = liveTool?.subagentLogs?.length ?? 0;
+  const logs = serverLen >= liveLen ? s.subagentLogs : liveTool?.subagentLogs;
+  return {
+    type: 'tool' as const,
+    key: `${s.tool}_${index}`,
+    tool: s.tool,
+    status: s.status,
+    args: s.arguments,
+    result: s.result,
+    error: s.error,
+    durationMs: s.durationMs,
+    createdAt: s.createdAt,
+    ...(logs?.length ? { subagentLogs: logs } : {}),
+  };
+}
+
+export function storedSegmentsToMsgSegments(
+  segments: StoredSegment[],
+  liveSegments?: MsgSegment[],
+): MsgSegment[] {
+  const liveTools = (liveSegments ?? []).filter((s): s is Extract<MsgSegment, { type: 'tool' }> => s.type === 'tool');
+  let liveToolIdx = 0;
+  return segments.map((s, i) => {
+    const live = s.type === 'tool' ? liveTools[liveToolIdx++] : undefined;
+    return storedSegmentToMsgSegment(s, i, live);
+  });
+}
+
 export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   const base: ChatMsg = {
     id: m.id,
@@ -60,11 +120,7 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
     agentId: m.role !== 'user' ? m.agentId : undefined,
   };
   if (m.role !== 'user' && m.metadata?.segments && m.metadata.segments.length > 0) {
-    base.segments = m.metadata.segments.map((s: StoredSegment, i: number) =>
-      s.type === 'tool'
-        ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs, createdAt: s.createdAt }
-        : { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt }
-    );
+    base.segments = storedSegmentsToMsgSegments(m.metadata.segments);
   }
   if (m.role === 'assistant' && (m.content === '[cancelled]' || m.content === '[Stream cancelled]')) {
     base.text = '';
@@ -72,7 +128,11 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
     base.isError = true;
   }
-  if (m.metadata?.isStopped) {
+  if (m.metadata?.isStreaming) {
+    base.isStreaming = true;
+  }
+  // Soft-disconnect snapshots used to set isStopped; prefer isStreaming when both present.
+  if (m.metadata?.isStopped && !m.metadata?.isStreaming) {
     base.isStopped = true;
   }
   if (m.metadata?.images?.length) {

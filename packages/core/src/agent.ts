@@ -10,6 +10,7 @@ import {
   type LLMContentPart,
   type LLMTool,
   type LLMToolCall,
+  type LLMResponse,
   type LLMStreamEvent,
   type IdentityContext,
   type PathAccessPolicy,
@@ -32,13 +33,17 @@ import {
   COMPLETION_MARKER_INSTRUCTION,
   COMPLETION_MARKER,
   hasCompletionMarker,
+  stripCompletionMarkerLeak,
   TRIAGE_CONTEXT_MESSAGES_MAX,
   TRIAGE_CONTEXT_MSG_CHARS,
   DELIBERATION_ALLOWED_TOOLS,
   TRIAGE_ITEM_CONTENT_CHARS,
   PRIORITY_LABELS,
   safeSlice,
+  clampHeartbeatIntervalMs,
   type GoalConfig,
+  type UserInputQuestion,
+  type UserInputAnswer,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -61,7 +66,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBuiltinTools } from './tools/builtin.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
-import { pendingCallbackRegistry } from './pending-callback.js';
+import { isToolErrorResult } from './tools/result.js';
+import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
 
@@ -89,6 +95,7 @@ const chatSubagentContext = new AsyncLocalStorage<ChatSubagentContext>();
 import { TaskExecutor, AgentStateManager } from './concurrent/index.js';
 import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
+import { RepetitionGuard } from './repetition-detector.js';
 
 const log = createLogger('agent');
 
@@ -98,7 +105,7 @@ const log = createLogger('agent');
  * inspects the reply; stripping happens later in `stripCompletionMarker`.
  */
 const RAW_TOOL_XML_RE =
-  /(?:minimax:tool_call\s*)?<invoke\s+name="[^"]*">\s*(?:<parameter\s+name="[^"]*">[^<]*<\/parameter>\s*)*<\/invoke>\s*(?:<\/minimax:tool_call>)?/gi;
+  /<[^<>]*?tool_calls>[\s\S]*?<\/[^<>]*?tool_calls>|(?:minimax:tool_call\s*)?<[^<>]*?invoke\s+name="[^"]*">[\s\S]*?<\/[^<>]*?invoke>\s*(?:<\/minimax:tool_call>)?/gi;
 
 function sanitizeLLMReply(reply: string): string {
   const cleaned = reply.replace(RAW_TOOL_XML_RE, '').trim();
@@ -110,7 +117,7 @@ function sanitizeLLMReply(reply: string): string {
  * memory or shown to users.  Called after abnormal-completion detection.
  */
 function stripCompletionMarker(reply: string): string {
-  return reply.replaceAll(COMPLETION_MARKER, '').trim();
+  return stripCompletionMarkerLeak(reply).trim();
 }
 
 /**
@@ -131,7 +138,7 @@ function createMarkerStrippingDelta(rawEmit: (text: string) => void) {
   };
 
   const flush = () => {
-    const cleaned = tail.replaceAll(COMPLETION_MARKER, '');
+    const cleaned = stripCompletionMarkerLeak(tail);
     tail = '';
     if (cleaned) rawEmit(cleaned);
   };
@@ -139,14 +146,31 @@ function createMarkerStrippingDelta(rawEmit: (text: string) => void) {
   return { emit, flush };
 }
 
-/** Returns true when a tool returned a structured error (status: 'error' | 'denied'). */
-function isErrorResult(result: string): boolean {
-  try {
-    const parsed = JSON.parse(result) as Record<string, unknown>;
-    return parsed.status === 'error' || parsed.status === 'denied';
-  } catch {
-    return false;
+/** @see isToolErrorResult — kept as a local alias for call sites in this file. */
+const isErrorResult = isToolErrorResult;
+
+/**
+ * Tool input schemas declare snake_case params (e.g. `project_id`), but models
+ * frequently emit camelCase (`projectId`) instead. Without this, a tool silently
+ * reads `undefined`, returns a misleading "X is required" error, and the model —
+ * seeing that it *did* provide the value — retries the identical call forever.
+ * To make tool dispatch tolerant, we add the missing casing variant for every
+ * top-level key (aliases only; the original keys are preserved, and existing
+ * keys are never overwritten). Internal keys (leading underscore) are skipped.
+ */
+function addArgCasingAliases(args: unknown): Record<string, unknown> {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    return (args ?? {}) as Record<string, unknown>;
   }
+  const out: Record<string, unknown> = { ...(args as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+    if (key.startsWith('_')) continue;
+    const camel = key.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+    const snake = key.replace(/([A-Z])/g, (_, c: string) => '_' + c.toLowerCase());
+    if (camel !== key && !(camel in out)) out[camel] = value;
+    if (snake !== key && !(snake in out)) out[snake] = value;
+  }
+  return out;
 }
 
 export type ToolOutputCallback = (chunk: string) => void;
@@ -222,6 +246,60 @@ interface HandleMessageOptions {
   directMention?: boolean;
 }
 
+/** Context-usage percentage (0-100) at/above which a turn-level memory flush preflight fires. */
+export const MEMORY_FLUSH_PREFLIGHT_THRESHOLD = 75;
+
+/**
+ * A2: decide whether to run a memory-flush preflight before a turn packs context.
+ * Pure so it is unit-testable independent of the Agent runtime.
+ *
+ * Fires once per session when the previous turn's context usage crossed the
+ * threshold. Never fires for `sys_` sessions (the flush itself runs in one, so this
+ * prevents a flush → compact → flush loop), and never twice for the same session.
+ */
+export function shouldMemoryFlushPreflight(opts: {
+  sessionId: string | undefined;
+  lastUsagePercent: number | undefined;
+  alreadyFlushed: boolean;
+  threshold?: number;
+}): boolean {
+  const { sessionId, lastUsagePercent, alreadyFlushed } = opts;
+  const threshold = opts.threshold ?? MEMORY_FLUSH_PREFLIGHT_THRESHOLD;
+  if (!sessionId || sessionId.startsWith('sys_')) return false; // no reentry
+  if (alreadyFlushed) return false;
+  if (lastUsagePercent === undefined) return false;
+  return lastUsagePercent >= threshold;
+}
+
+/** Minimal shape of an LLM response the tool-execution loop branches on. */
+export interface ToolLoopResponseShape {
+  finishReason?: string;
+  toolCalls?: unknown[] | null;
+}
+
+/**
+ * B5: single source of truth for "should the tool-execution loop iterate again?".
+ * The loop continues while the model is still requesting tools, or was cut off by
+ * `max_tokens` (so we can nudge it to continue). Extracted (pure) so all five loop
+ * entry points in {@link Agent} share one authoritative decision instead of five
+ * copies of the same boolean expression.
+ */
+export function shouldContinueToolLoop(response: ToolLoopResponseShape): boolean {
+  return Boolean(
+    (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
+      response.finishReason === 'max_tokens'
+  );
+}
+
+/**
+ * B5: whether a `max_tokens` cutoff needs an explicit "continue" nudge — i.e. the
+ * model hit the output cap *without* also requesting tools (a tool_use turn already
+ * continues on its own). Pure counterpart to {@link shouldContinueToolLoop}.
+ */
+export function needsMaxTokensContinuation(response: ToolLoopResponseShape): boolean {
+  return response.finishReason === 'max_tokens' && !response.toolCalls?.length;
+}
+
 export class Agent {
   readonly id: string;
   readonly config: AgentConfig;
@@ -253,12 +331,17 @@ export class Agent {
   private userApprovalRequester?: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
+    questions?: UserInputQuestion[];
     allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
-  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] }>;
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
+  /** Locale/timezone used for autonomous runs (no interactive sender), typically the org owner's preferences. */
+  private runtimeViewerContext?: { locale?: string; timezone?: string };
   private semanticSearch?: SemanticMemorySearch;
   private currentSessionId?: string;
   private currentInteractingUserId?: string;
+  /** Scenario of the in-flight handleMessage / stream turn (for chat-only tools). */
+  private activeScenario?: AgentScenario;
   private pendingDeliberationResult?: DeliberationResult;
   private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
@@ -276,7 +359,6 @@ export class Agent {
   }) => void;
   private escalationCallback?: (agentId: string, reason: string) => void;
   private approvalCallback?: ApprovalCallback;
-  private toolCallLimitChecker?: () => { allowed: boolean; reason?: string };
   private tasksFetcher?: () => Array<{
     id: string;
     title: string;
@@ -301,6 +383,8 @@ export class Agent {
    */
   private pendingInjections = new Map<string, string[]>();
   private activeStreamToken?: { cancelled: boolean; userStopped?: boolean };
+  /** One chat turn / session model pick from the Chat UI (provider must be enabled). */
+  private turnModelOverride?: { provider: string; model: string };
   /** The mailbox item ID currently being processed – threaded into activity records. */
   private processingMailboxItemId?: string;
   /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
@@ -330,6 +414,10 @@ export class Agent {
   private stopReason?: string;
   private toolResultCounter = 0;
   private lastEstimatedInputTokens = 0;
+  /** A2: sessions that have already run a memory-flush preflight (dedup). */
+  private flushedSessions = new Set<string>();
+  /** A2: last observed context-usage percent per session, used by the flush preflight. */
+  private lastUsageBySession = new Map<string, number>();
   /** In-memory activity log buffer (keyed by activity ID, write-through cache) */
   private activityLogs = new Map<string, AgentActivityLogEntry[]>();
   private activitySeqCounters = new Map<string, number>();
@@ -358,6 +446,8 @@ export class Agent {
   private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
   private _heartbeatUnsub?: () => void;
+  private wakeupTimer?: ReturnType<typeof setInterval>;
+  private static readonly WAKEUP_SWEEP_INTERVAL_MS = 60_000;
 
   /** Mailbox for single-threaded attention model */
   private mailbox: AgentMailbox;
@@ -450,15 +540,14 @@ export class Agent {
       // Resolve from PendingCallbackRegistry if registered
       pendingCallbackRegistry.resolve(notification.sessionId);
 
-      this.enqueueToMailbox('callback_result', {
+      this.deliverCallback({
+        callbackId: notification.sessionId,
+        type: 'background_exec',
+        deliveryMode: 'in_session',
+        originSessionId: originSession,
         summary: `Background process ${status}: ${notification.command.slice(0, 80)}`,
         content: parts.join('\n'),
-        extra: {
-          callbackId: notification.sessionId,
-          originSessionId: originSession,
-          callbackType: 'background_exec',
-          exitCode: notification.exitCode,
-        },
+        exitCode: notification.exitCode,
       });
     });
 
@@ -507,12 +596,45 @@ export class Agent {
    * Resolve the LLM provider name for this agent.
    * In 'custom' mode returns the agent-specific provider; in 'default' mode
    * returns undefined so the router uses the current system default.
+   * Chat UI session/turn override wins when set.
    */
   private getEffectiveProvider(): string | undefined {
+    if (this.turnModelOverride?.provider) {
+      return this.turnModelOverride.provider;
+    }
     if (this.config.llmConfig.modelMode === 'custom') {
       return this.config.llmConfig.primary;
     }
     return undefined;
+  }
+
+  /** Set a one-turn (or session-scoped) provider+model override from Chat UI. */
+  setTurnModelOverride(override: { provider: string; model: string } | null): void {
+    this.turnModelOverride = override ?? undefined;
+  }
+
+  getTurnModelOverride(): { provider: string; model: string } | undefined {
+    return this.turnModelOverride;
+  }
+
+  /**
+   * Tolerant max-output lookup used only for context-window budget planning.
+   *
+   * A missing `max_output_tokens` in the catalog is NOT fatal: many upstreams
+   * (e.g. OpenRouter reports `top_provider.max_completion_tokens = null` for
+   * good models like `deepseek/deepseek-v4-flash`) legitimately don't advertise
+   * an output cap. The strict `getModelMaxOutput` throws in that case, which
+   * previously aborted the entire turn and put the agent into a retry/stall
+   * loop. For budgeting we tolerate the gap and let the context engine derive a
+   * reservation from the real context window; on the wire the router already
+   * omits `max_tokens` when the cap is unknown.
+   */
+  private getModelMaxOutputForBudget(): number | undefined {
+    try {
+      return this.llmRouter.getModelMaxOutput(this.getEffectiveProvider());
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -527,11 +649,11 @@ export class Agent {
     if (status === 'error') {
       this.state.lastError = errorMessage || this.state.lastError || 'Unknown error';
       this.state.lastErrorAt = new Date().toISOString();
+    } else if (oldStatus === 'error') {
+      // Recovered → clear stale error; UI should show current status only.
+      this.state.lastError = undefined;
+      this.state.lastErrorAt = undefined;
     }
-    // Keep lastError/lastErrorAt when recovering from error — they serve as
-    // informational records of the most recent error.  The frontend uses
-    // `status` as the authoritative current-state indicator and shows
-    // lastError as a dismissible warning when the agent has recovered.
 
     if (this.stateManager) {
       this.stateManager.updateState({ status });
@@ -583,6 +705,7 @@ export class Agent {
 
     this.heartbeat.start(options?.initialHeartbeatDelayMs);
     this.attentionController.start();
+    this.startWakeupSweep();
 
     // Periodic memory consolidation: compact sessions and generate daily insights.
     // Use random initial delay to stagger across agents and avoid a "dream storm"
@@ -633,6 +756,10 @@ export class Agent {
     this.cancelActiveStream();
     this.attentionController.stop();
     this.heartbeat.stop();
+    if (this.wakeupTimer) {
+      clearInterval(this.wakeupTimer);
+      this.wakeupTimer = undefined;
+    }
     this._bgCompletionUnsub?.();
     this._heartbeatUnsub?.();
     // Synchronous notebook persist on shutdown
@@ -654,6 +781,20 @@ export class Agent {
     this.setStatus('offline');
     this.eventBus.emit('agent:stopped', { agentId: this.id });
     log.info(`Agent stopped: ${this.config.name}`, { reason });
+  }
+
+  /**
+   * Update the heartbeat (safety-net patrol) interval and apply it live.
+   * The value is clamped to the allowed range. Callers are responsible for
+   * persisting the new value to storage. Returns the effective (clamped) ms.
+   */
+  setHeartbeatInterval(intervalMs: number): number {
+    const effective = clampHeartbeatIntervalMs(intervalMs);
+    this.config.heartbeatIntervalMs = effective;
+    this.heartbeat.updateInterval(effective);
+    this.eventBus.emit('agent:heartbeat-interval-changed', { agentId: this.id, intervalMs: effective });
+    log.info('Agent heartbeat interval set', { agentId: this.id, intervalMs: effective });
+    return effective;
   }
 
   // ─── Mailbox & Attention ──────────────────────────────────────────────────
@@ -681,7 +822,7 @@ export class Agent {
   sendMessage(
     userMessage: string,
     senderId?: string,
-    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
     options?: HandleMessageOptions & {
       sourceType?: MailboxItemType;
       priority?: MailboxPriority;
@@ -739,7 +880,7 @@ export class Agent {
   injectFollowUp(
     userMessage: string,
     senderId?: string,
-    senderInfo?: { name: string; role: string },
+    senderInfo?: { name: string; role: string; locale?: string; timezone?: string },
     images?: string[],
   ): void {
     const payload: MailboxPayload = {
@@ -766,7 +907,7 @@ export class Agent {
     userMessage: string,
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
     cancelToken?: { cancelled: boolean; userStopped?: boolean },
     images?: string[],
     fileNames?: string[],
@@ -854,7 +995,7 @@ export class Agent {
     userMessage: string,
     onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -937,7 +1078,19 @@ export class Agent {
   private createAttentionDelegate(): AttentionDelegate {
     return {
       processMailboxItem: async (item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string) => {
-        return this.processMailboxItemInternal(item, batchItems, batchContext);
+        const result = await this.processMailboxItemInternal(item, batchItems, batchContext);
+        // C2 (measurement only): record turn-level harness health. Chat turns are exempt
+        // from the completion-marker protocol; non-chat turns missing a marker feed the
+        // marker-failure rate.
+        try {
+          this.metricsCollector.recordTurn({
+            isChat: item.sourceType === 'human_chat',
+            hadCompletionMarker: typeof result === 'string' && result.includes(COMPLETION_MARKER),
+          });
+        } catch (err) {
+          log.debug('recordTurn failed', { agentId: this.id, itemId: item.id, error: String(err) });
+        }
+        return result;
       },
       onDecisionMade: (decision: AttentionDecision) => {
         log.debug('Attention decision', {
@@ -962,6 +1115,15 @@ export class Agent {
           this.setStatus('working');
         } else if (this.activeTasks.size === 0) {
           this.setStatus('idle');
+        }
+      },
+      cancelProcessing: (item: MailboxItem) => {
+        // Backstop-timeout single-flight: abort the orphaned in-flight turn so it
+        // stops before the item is requeued and re-processed (no double side effects).
+        try {
+          this.cancelActiveStream();
+        } catch (err) {
+          log.debug('cancelProcessing: cancelActiveStream failed', { agentId: this.id, itemId: item.id, error: String(err) });
         }
       },
       evaluateInterrupt: async (currentItem: MailboxItem, newItem: MailboxItem) => {
@@ -1005,16 +1167,70 @@ export class Agent {
   }
 
   /**
-   * If the reply is missing the required completion marker, inject a
-   * continuation prompt into the existing session and make one more LLM
-   * call to obtain it — instead of letting the attention controller
-   * requeue the entire item from scratch (which duplicates side effects).
+   * If the reply is missing the required completion marker, continue in-session
+   * with tools enabled so the model can finish announced-but-unfinished work
+   * (instead of a tool-less one-shot that can only append text / a marker).
    *
-   * Limited to a single attempt; if the marker is still missing afterwards
-   * the reply is returned as-is and the attention controller will complete
-   * the item without retry.
+   * Still a single continuation attempt (bounded tool iterations). If the
+   * marker is still missing afterwards, the reply is returned as-is and the
+   * attention controller completes the item without requeueing the whole turn.
    */
-  private async ensureCompletionMarker(reply: string, sessionId?: string): Promise<string> {
+  /**
+   * Expand tool-selection context from the session so short follow-ups ("继续")
+   * and completion-marker continuations still activate the same tool groups as
+   * the original user request, and keep tools already used in-session.
+   */
+  private buildSessionAwareToolSelectContext(
+    sessionId: string,
+    currentMessage: string,
+    opts?: { forceMultimodalSeed?: boolean },
+  ): {
+    userMessage: string;
+    sessionToolNames: string[];
+  } {
+    const recent = this.memory.getRecentMessages(sessionId, 80);
+    const sessionToolNames: string[] = [];
+    const seenTools = new Set<string>();
+    for (const m of recent) {
+      for (const tc of m.toolCalls ?? []) {
+        if (tc.name && !seenTools.has(tc.name)) {
+          seenTools.add(tc.name);
+          sessionToolNames.push(tc.name);
+        }
+      }
+    }
+    const userBits = recent
+      .filter(m => m.role === 'user' && typeof m.content === 'string')
+      .map(m => m.content as string)
+      .filter(c => !c.startsWith('[SYSTEM]') && !c.startsWith('[Continue from where'))
+      .slice(-8);
+    const trimmed = currentMessage.trim();
+    const isShortFollowUp = trimmed.length > 0 && trimmed.length <= 40;
+    const parts: string[] = [];
+    if (opts?.forceMultimodalSeed || isShortFollowUp) {
+      parts.push(...userBits);
+    }
+    parts.push(currentMessage.slice(0, 2000));
+    if (opts?.forceMultimodalSeed) {
+      // Marker continuation must keep multimodal/search groups available even if
+      // the last human turn was only "继续" / a marker nudge.
+      parts.push(
+        'finish remaining work with tools: image picture audio speech voice video tts stt ' +
+          'generate_image text_to_speech speech_to_text generate_video file search ' +
+          '图片 画图 语音 视频 转文字 转语音',
+      );
+    }
+    return {
+      userMessage: parts.join('\n'),
+      sessionToolNames,
+    };
+  }
+
+  private async ensureCompletionMarker(
+    reply: string,
+    sessionId?: string,
+    onEvent?: (event: LLMStreamEvent & { agentEvent?: string }) => void,
+  ): Promise<string> {
     if (!reply || reply === '[cancelled]' || reply === '[preempted]' || reply === '[merged]') return reply;
     if (hasCompletionMarker(reply)) return reply;
     if (!sessionId || !this.memory.getSession(sessionId)) return reply;
@@ -1027,31 +1243,130 @@ export class Agent {
 
     this.memory.appendMessage(sessionId, {
       role: 'user',
-      content: `[SYSTEM] Your previous response did not include the required completion marker. You MUST end your response with exactly: ${COMPLETION_MARKER}`,
+      content:
+        `[SYSTEM] Your previous response did not include the required completion marker and may have unfinished work. ` +
+        `Do NOT only announce remaining steps — finish them with tools now if anything is still pending. ` +
+        `When truly done, end your response with exactly: ${COMPLETION_MARKER}`,
     });
 
     try {
-      const sessionMessages = this.memory.getRecentMessages(sessionId, 50);
-      const prepared = await this.contextEngine.prepareMessages({
-        systemPrompt: 'You are completing a previous response. Finish any remaining work and end your response with the required completion marker.',
-        sessionMessages,
+      const selectCtx = this.buildSessionAwareToolSelectContext(sessionId, reply, {
+        forceMultimodalSeed: true,
+      });
+      const llmTools = this.buildToolDefinitions({
+        userMessage: selectCtx.userMessage,
+        isReview: false,
+        extraRecentToolNames: selectCtx.sessionToolNames,
+      });
+      const multimodalToolNames = ['generate_image', 'text_to_speech', 'speech_to_text', 'generate_video'];
+      log.info('ensureCompletionMarker tool selection', {
+        agentId: this.id,
+        sessionId,
+        toolCount: llmTools.length,
+        hasMultimodal: multimodalToolNames.filter(n => llmTools.some(t => t.name === n)),
+        sessionToolNames: selectCtx.sessionToolNames,
+      });
+      const systemPrompt =
+        'You are continuing a previous response. Finish any remaining work using tools if needed. ' +
+        'Do not stop after only announcing a plan. When finished, end with the required completion marker.';
+
+      const prepare = async () => this.contextEngine.prepareMessages({
+        systemPrompt,
+        sessionMessages: this.memory.getRecentMessages(sessionId, 80),
         memory: this.memory,
         sessionId,
         agentId: this.id,
         modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-        modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
-        toolDefinitions: [],
+        modelMaxOutput: this.getModelMaxOutputForBudget(),
+        toolDefinitions: llmTools,
       });
 
-      const continuation = await this.llmRouter.chat(
-        { messages: prepared.messages },
+      let prepared = await prepare();
+      let response = await this.llmRouter.chat(
+        {
+          messages: prepared.messages,
+          tools: llmTools.length > 0 ? llmTools : undefined,
+        },
         this.getEffectiveProvider(),
         { sessionId: this.currentSessionId },
       );
 
-      const contReply = continuation.content ?? '';
-      this.memory.appendMessage(sessionId, { role: 'assistant', content: contReply });
-      return reply + contReply;
+      // B: when invoked from a streaming turn, forward the continuation text to
+      // the UI so the finish isn't produced invisibly server-side.
+      const contDelta = onEvent
+        ? createMarkerStrippingDelta((text) => onEvent({ type: 'text_delta', text }))
+        : undefined;
+
+      const contParts: string[] = [];
+      if (response.content) { contParts.push(response.content); contDelta?.emit(response.content); }
+
+      let toolIter = 0;
+      // Allow real remaining work, but keep a hard bound (this is still one continuation).
+      const maxIter = Math.min(this._maxToolIterations, 24);
+      while (
+        shouldContinueToolLoop(response)
+      ) {
+        if (++toolIter > maxIter) {
+          log.warn('ensureCompletionMarker tool loop hit max iterations', {
+            agentId: this.id, sessionId, iterations: toolIter, cap: maxIter,
+          });
+          break;
+        }
+
+        if (needsMaxTokensContinuation(response)) {
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            reasoningContent: response.reasoningContent,
+          });
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: `[Continue from where you left off. When done, end with exactly: ${COMPLETION_MARKER}]`,
+          });
+        } else {
+          this.memory.appendMessage(sessionId, {
+            role: 'assistant',
+            content: response.content,
+            toolCalls: response.toolCalls,
+            reasoningContent: response.reasoningContent,
+          });
+          for (const tc of response.toolCalls!) {
+            try {
+              let result = await this.executeTool(tc, undefined, sessionId);
+              result = this.offloadLargeResult(tc.name, result);
+              this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+            } catch (toolErr) {
+              this.memory.appendMessage(sessionId, {
+                role: 'tool',
+                content: `Error: ${String(toolErr)}`,
+                toolCallId: tc.id,
+              });
+            }
+          }
+        }
+
+        prepared = await prepare();
+        response = await this.llmRouter.chat(
+          {
+            messages: prepared.messages,
+            tools: llmTools.length > 0 ? llmTools : undefined,
+          },
+          this.getEffectiveProvider(),
+          { sessionId: this.currentSessionId },
+        );
+        if (response.content) { contParts.push(response.content); contDelta?.emit(response.content); }
+      }
+
+      if (response.finishReason !== 'tool_use') {
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content ?? '',
+          reasoningContent: response.reasoningContent,
+        });
+      }
+
+      contDelta?.flush();
+      return reply + contParts.join('');
     } catch (err) {
       log.warn('Failed to obtain completion marker via continuation — returning original reply', {
         agentId: this.id,
@@ -1152,16 +1467,40 @@ export class Agent {
                 extra.images as string[] | undefined,
                 extra.fileNames as string[] | undefined,
               );
-              if (needsMarker) reply = await this.ensureCompletionMarker(reply, this.currentSessionId);
+              // Team Chat: do not burn an extra LLM round just to obtain <<HANDLE_COMPLETE>>.
+              // Prompt discipline ends the turn; attention already completes chat without retry.
+              if (needsMarker && item.sourceType !== 'human_chat') {
+                reply = await this.ensureCompletionMarker(
+                  reply,
+                  this.currentSessionId,
+                  extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
+                );
+              }
               resolveResponse(reply);
               return reply;
             }
           }
           const msgChannelKey = extra.channelKey as string | undefined;
           const channelSessionId = msgChannelKey ? `channel_${msgChannelKey}_${this.id}` : undefined;
+          // In-session A2A delegation: if this message replies to a conversation the
+          // agent is awaiting inline (registered via agent_send_message await_in_session),
+          // route the reply into the ORIGIN session so the delegating thread continues
+          // where it left off, instead of a disconnected a2a_* session.
+          let awaitOriginSessionId: string | undefined;
+          if (item.sourceType === 'a2a_message') {
+            const convMatch = /\[conversation:([^\]]+)\]/.exec(item.payload.content);
+            if (convMatch?.[1]) {
+              const cb = pendingCallbackRegistry.findByCorrelation(this.id, convMatch[1]);
+              if (cb && cb.type === 'a2a_reply' && (cb.deliveryMode ?? 'in_session') === 'in_session') {
+                awaitOriginSessionId = cb.originSessionId || undefined;
+                pendingCallbackRegistry.resolve(cb.id);
+                log.info('Resolved in-session A2A await', { agentId: this.id, conversationId: convMatch[1], originSessionId: awaitOriginSessionId });
+              }
+            }
+          }
           const defaults: HandleMessageOptions = item.sourceType === 'a2a_message'
             ? {
-                sessionId: channelSessionId ?? `a2a_${this.id}_${ts}`,
+                sessionId: awaitOriginSessionId ?? channelSessionId ?? `a2a_${this.id}_${ts}`,
                 scenario: 'a2a' as const,
               }
             : channelSessionId
@@ -1175,7 +1514,9 @@ export class Agent {
             senderInfo,
             opts,
           );
-          if (needsMarker) reply = await this.ensureCompletionMarker(reply, opts.sessionId ?? this.currentSessionId);
+          if (needsMarker && item.sourceType !== 'human_chat') {
+            reply = await this.ensureCompletionMarker(reply, opts.sessionId ?? this.currentSessionId);
+          }
           resolveResponse(reply);
           return reply;
         }
@@ -1861,7 +2202,9 @@ export class Agent {
             content: `Summarize the following conversation history:\n\n${conversationText}`,
           },
         ],
-        maxTokens: 1024,
+        // No maxTokens cap: the router fills in the model's real output limit.
+        // Reasoning models need headroom before emitting the summary, and the
+        // prompt itself bounds the output ("under 1500 characters").
         temperature: 0.2,
       });
 
@@ -2094,13 +2437,19 @@ export class Agent {
   setUserApprovalRequester(cb: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
+    questions?: UserInputQuestion[];
     allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
-  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>): void {
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] }>): void {
     this.userApprovalRequester = cb;
   }
 
   setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
     this.userNotifier = cb;
+  }
+
+  /** Set the locale/timezone used to localize prompts for autonomous runs. */
+  setRuntimeViewerContext(ctx: { locale?: string; timezone?: string } | undefined): void {
+    this.runtimeViewerContext = ctx;
   }
 
   /**
@@ -2238,33 +2587,19 @@ export class Agent {
 
     const itemsSection = allItems.map(formatItem).join('\n\n');
 
+    // Available actions and rules live in the cached `deliberation` scenario
+    // section (## Current Interaction Mode) — not repeated here to avoid paying
+    // for the same guidance twice every cycle. This prompt carries only the
+    // dynamic queue and the accounting rule unique to complete_deliberation.
     const deliberationPrompt = [
       '[DELIBERATION MODE]',
       '',
-      `You have ${allItems.length} items in your mailbox. Review and decide what to focus on.`,
+      `You have ${allItems.length} items in your mailbox. Review and decide what to focus on — see "Current Interaction Mode" above for available actions and rules.`,
       '',
       '## Your Mailbox',
       itemsSection,
       '',
-      '## Available Actions',
-      '1. **Inspect**: `check_mailbox` to refresh your queue view.',
-      '2. **Gather context**: `recall_activity`, `task_get`, `memory_search` for background.',
-      '3. **Manage queue**: `defer_mailbox_item` to postpone, `drop_mailbox_item` to discard stale items.',
-      '4. **Handle inline**: `notify_user`, `task_comment`, `agent_send_message` for trivial replies. Mark as inline_completed.',
-      '5. **Save awareness**: `update_working_memory` or `memory_save` to record observations.',
-      '6. **Decide**: `complete_deliberation` with your final focus decision.',
-      '',
-      '## Guidelines',
-      '- Human messages (priority 0) always take precedence.',
-      '- **Batch processing**: Items sharing a taskId/requirementId/channel can be processed together — pass multiple IDs in `process_item_ids` and provide `batch_context` to guide unified handling.',
-      '- Drop old informational items (heartbeats, status updates) aggressively.',
-      '- **Memory updates**: Use `memory_updates` in `complete_deliberation` to record team decisions, observations, or context that should persist across cycles.',
-      '- Your working memory persists across processing cycles — use it for continuity.',
-      '',
-      '**CRITICAL**: When you call `complete_deliberation`, EVERY item in the mailbox MUST appear in exactly ONE of:',
-      '  `process_item_id`/`process_item_ids`, `defer_item_ids`, `drop_item_ids`, or `inline_completed_ids`.',
-      'Items not listed will remain queued and trigger another deliberation cycle — wasting tokens and time.',
-      'If items are stale or informational, LIST them in `drop_item_ids`. Do NOT just say "drop" in reasoning without listing IDs.',
+      '**CRITICAL accounting**: When you call `complete_deliberation`, EVERY item above MUST appear in exactly ONE of `process_item_id`/`process_item_ids`, `defer_item_ids`, `drop_item_ids`, or `inline_completed_ids`. Items not listed stay queued and trigger another cycle — wasting tokens. LIST stale/informational items in `drop_item_ids` (do NOT just say "drop" in reasoning). Batch items sharing a taskId/requirementId/channel via `process_item_ids` + `batch_context`. Use `memory_updates` to persist decisions across cycles.',
       '',
       'When ready, call `complete_deliberation`.',
     ].join('\n');
@@ -2458,6 +2793,11 @@ export class Agent {
       type: string;
       action: string;
       tokensUsed?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      cost?: number;
+      cuCost?: number;
+      provider?: string;
       durationMs?: number;
       success: boolean;
       detail?: string;
@@ -2474,21 +2814,27 @@ export class Agent {
     return this.metricsCollector.getUsageStats();
   }
 
-  private computeCallCost(inputTokens: number, outputTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number): number {
-    const modelCost = this.llmRouter.getModelCost(this.getEffectiveProvider());
-    if (!modelCost) return 0;
-
-    const cacheRead = cacheReadTokens ?? 0;
-    const cacheWrite = cacheWriteTokens ?? 0;
-    const regularInput = Math.max(0, inputTokens - cacheRead - cacheWrite);
-
-    let cost = (regularInput / 1_000_000) * modelCost.input
-             + (outputTokens / 1_000_000) * modelCost.output;
-
-    cost += (cacheRead / 1_000_000) * (modelCost.cacheRead ?? modelCost.input);
-    cost += (cacheWrite / 1_000_000) * (modelCost.cacheWrite ?? modelCost.input);
-
-    return cost;
+  private emitLlmRequestAudit(
+    action: string,
+    response: LLMResponse,
+    durationMs: number,
+    tokensUsed?: number,
+  ): void {
+    const provider = this.getEffectiveProvider();
+    this.emitAudit({
+      type: 'llm_request',
+      action,
+      tokensUsed: tokensUsed ?? response.usage.inputTokens + response.usage.outputTokens,
+      inputTokens: response.usage.inputTokens,
+      outputTokens: response.usage.outputTokens,
+      cacheReadTokens: response.usage.cacheReadTokens,
+      cacheWriteTokens: response.usage.cacheWriteTokens,
+      cost: 0,
+      cuCost: provider === 'markus' ? response.cuCost : undefined,
+      provider,
+      durationMs,
+      success: true,
+    });
   }
 
   private emitAudit(event: {
@@ -2500,6 +2846,8 @@ export class Agent {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
     cost?: number;
+    cuCost?: number;
+    provider?: string;
     durationMs?: number;
     success: boolean;
     detail?: string;
@@ -2555,10 +2903,6 @@ export class Agent {
 
   setEscalationCallback(cb: (agentId: string, reason: string) => void): void {
     this.escalationCallback = cb;
-  }
-
-  setToolCallLimitChecker(cb: () => { allowed: boolean; reason?: string }): void {
-    this.toolCallLimitChecker = cb;
   }
 
   setStateChangeCallback(
@@ -2626,6 +2970,7 @@ export class Agent {
         contextMdPath: this.contextMdPath,
         memory: this.memory,
         scenario: 'chat',
+        viewerContext: this.runtimeViewerContext,
         ...this.getTeamContextParams(),
       });
 
@@ -2638,7 +2983,7 @@ export class Agent {
           sessionId,
           agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          modelMaxOutput: this.getModelMaxOutputForBudget(),
           toolDefinitions: browserTools,
           systemCacheSegments,
         });
@@ -2948,7 +3293,7 @@ export class Agent {
   async handleMessage(
     userMessage: string,
     senderId?: string,
-    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
     options?: HandleMessageOptions,
   ): Promise<string> {
     if (this.activeTasks.size === 0) {
@@ -2958,6 +3303,7 @@ export class Agent {
     const scenario = options?.scenario ?? 'chat';
     const isLightweight = scenario !== 'chat' && scenario !== 'task_execution' && scenario !== 'review';
     const isPreemptable = scenario !== 'chat';
+    this.activeScenario = scenario;
 
     // Track chat activity (only if not already in a heartbeat or other activity)
     let chatActivityId: string | undefined;
@@ -3057,6 +3403,7 @@ export class Agent {
       currentQuery: effectiveMessage,
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
+      viewerContext: this.runtimeViewerContext,
       assignedTasks: isLightweight ? undefined : this.tasksFetcher?.(),
       deliverableContext: isLightweight ? undefined : this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
@@ -3079,13 +3426,40 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
 
+    const toolSelectCtx = this.buildSessionAwareToolSelectContext(sessionId, effectiveMessage);
     let llmTools = this.buildToolDefinitions({
-      userMessage: effectiveMessage,
+      userMessage: toolSelectCtx.userMessage,
       isReview: scenario === 'review',
+      isChat: scenario === 'chat',
+      extraRecentToolNames: toolSelectCtx.sessionToolNames,
     });
     if (options?.allowedTools) {
-      llmTools = llmTools.filter(t => options.allowedTools!.has(t.name));
+      const allowed = options.allowedTools;
+      // Restrict to the scenario's allow-list...
+      llmTools = llmTools.filter(t => allowed.has(t.name));
+      // ...but the allow-list is authoritative: also offer any allowed tool that
+      // is registered yet wasn't picked by keyword selection. `allowedTools` is
+      // intersected with the default keyword-based selection above, so without
+      // this a scenario can instruct the model to use a tool (e.g. check_mailbox
+      // during deliberation, or requirement_get in comment responses) that never
+      // actually reaches the LLM — the model then calls a tool it has no schema
+      // for and loops on validation errors.
+      const have = new Set(llmTools.map(t => t.name));
+      const registered = taskAsyncContext.getStore()?.tools ?? this.tools;
+      for (const name of allowed) {
+        if (have.has(name)) continue;
+        const h = registered.get(name);
+        if (!h) continue;
+        llmTools.push({
+          name: h.name,
+          description: h.getDescription?.() ?? h.description,
+          inputSchema: h.getInputSchema?.() ?? h.inputSchema,
+        });
+      }
     }
+
+    // A2: flush important memory to disk before context fills (turn-level preflight).
+    await this.maybeMemoryFlushPreflight(sessionId);
 
     const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
     const prepared = await this.contextEngine.prepareMessages({
@@ -3095,11 +3469,13 @@ export class Agent {
       sessionId,
       agentId: this.id,
       modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-      modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+      modelMaxOutput: this.getModelMaxOutputForBudget(),
       toolDefinitions: llmTools,
       systemCacheSegments,
     });
     const messages = prepared.messages;
+    this.recordContextUsage(sessionId, prepared.usage.usagePercent);
+    if (prepared.usage.compressed) this.metricsCollector.recordCompression(); // C2
     log.debug('Context usage for chat', { usagePercent: prepared.usage.usagePercent, totalUsed: prepared.usage.totalUsed });
 
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
@@ -3121,18 +3497,7 @@ export class Agent {
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
       this.calibrateTokenCounter(response.usage.inputTokens);
-      this.emitAudit({
-        type: 'llm_request',
-        action: 'chat',
-        tokensUsed: tokensThisCall,
-        inputTokens: response.usage.inputTokens,
-        outputTokens: response.usage.outputTokens,
-        cacheReadTokens: response.usage.cacheReadTokens,
-        cacheWriteTokens: response.usage.cacheWriteTokens,
-        cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
-        durationMs: Date.now() - llmStart,
-        success: true,
-      });
+      this.emitLlmRequestAudit('chat', response, Date.now() - llmStart);
 
       let toolIterations = 0;
       const effectiveMaxIter = options?.maxToolIterations ?? this._maxToolIterations;
@@ -3140,8 +3505,7 @@ export class Agent {
       const requirementActionToolUsed = new Set<string>();
 
       while (
-        (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
-        response.finishReason === 'max_tokens'
+        shouldContinueToolLoop(response)
       ) {
         if (++toolIterations > effectiveMaxIter) {
           log.warn('Tool loop hit max iterations', {
@@ -3153,7 +3517,7 @@ export class Agent {
         }
 
         // Handle max_tokens continuation (model was cut off mid-response)
-        if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
+        if (needsMaxTokensContinuation(response)) {
           this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
           const contMsg: LLMMessage = {
             role: 'user',
@@ -3255,7 +3619,7 @@ export class Agent {
             if (tc.name === 'task_comment' || tc.name === 'requirement_comment') {
               commentToolUsed.add(tc.name);
             }
-            const REQ_ACTION_TOOLS = ['requirement_update_status', 'requirement_comment', 'task_create', 'notify_user', 'request_user_approval'];
+            const REQ_ACTION_TOOLS = ['requirement_update_status', 'requirement_comment', 'task_create', 'notify_user', 'request_user_input', 'request_user_approval'];
             if (REQ_ACTION_TOOLS.includes(tc.name)) {
               requirementActionToolUsed.add(tc.name);
             }
@@ -3327,7 +3691,7 @@ export class Agent {
           sessionId,
           agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          modelMaxOutput: this.getModelMaxOutputForBudget(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -3348,18 +3712,7 @@ export class Agent {
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
         this.calibrateTokenCounter(response.usage.inputTokens);
-        this.emitAudit({
-          type: 'llm_request',
-          action: 'chat',
-          tokensUsed: tokens2,
-          inputTokens: response.usage.inputTokens,
-          outputTokens: response.usage.outputTokens,
-          cacheReadTokens: response.usage.cacheReadTokens,
-          cacheWriteTokens: response.usage.cacheWriteTokens,
-          cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
-          durationMs: Date.now() - llmStart2,
-          success: true,
-        });
+        this.emitLlmRequestAudit('chat', response, Date.now() - llmStart2, tokens2);
       }
 
       // Safeguard: if agent finishes comment_response without calling
@@ -3388,7 +3741,7 @@ export class Agent {
           sessionId,
           agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          modelMaxOutput: this.getModelMaxOutputForBudget(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -3452,7 +3805,7 @@ export class Agent {
             sessionId,
             agentId: this.id,
             modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-            modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+            modelMaxOutput: this.getModelMaxOutputForBudget(),
             toolDefinitions: llmTools,
             systemCacheSegments,
           });
@@ -3492,7 +3845,7 @@ export class Agent {
           sessionId,
           agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          modelMaxOutput: this.getModelMaxOutputForBudget(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -3554,7 +3907,7 @@ export class Agent {
             sessionId,
             agentId: this.id,
             modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-            modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+            modelMaxOutput: this.getModelMaxOutputForBudget(),
             toolDefinitions: llmTools,
             systemCacheSegments,
           });
@@ -3625,6 +3978,7 @@ export class Agent {
       log.error('Failed to handle message', { error: String(error) });
       throw error;
     } finally {
+      this.activeScenario = undefined;
       await this.finalizeBrowserSession(sessionId);
     }
   }
@@ -3633,7 +3987,7 @@ export class Agent {
     userMessage: string,
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
-    senderInfo?: { name: string; role: string; isFirstConversation?: boolean },
+    senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
     cancelToken?: { cancelled: boolean; userStopped?: boolean },
     images?: string[],
     fileNames?: string[],
@@ -3701,6 +4055,7 @@ export class Agent {
       currentQuery: effectiveMessage,
       identity: this.identityContext,
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
+      viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
       deliverableContext: this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
@@ -3720,7 +4075,11 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
 
-    const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage });
+    this.activeScenario = 'chat';
+    const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage, isChat: true });
+
+    // A2: flush important memory to disk before context fills (turn-level preflight).
+    await this.maybeMemoryFlushPreflight(this.currentSessionId);
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
     const preparedStream = await this.contextEngine.prepareMessages({
@@ -3730,11 +4089,13 @@ export class Agent {
       sessionId: this.currentSessionId,
       agentId: this.id,
       modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-      modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+      modelMaxOutput: this.getModelMaxOutputForBudget(),
       toolDefinitions: llmTools,
       systemCacheSegments,
     });
     const messages = preparedStream.messages;
+    this.recordContextUsage(this.currentSessionId, preparedStream.usage.usagePercent);
+    if (preparedStream.usage.compressed) this.metricsCollector.recordCompression(); // C2
     log.debug('Context usage for stream', { usagePercent: preparedStream.usage.usagePercent });
 
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
@@ -3758,6 +4119,11 @@ export class Agent {
 
     let lastResponseContent = '';
     let thinkingBuffer = '';
+    // A: stop a degenerate turn where the model repeats itself instead of acting
+    // or ending. We keep what streamed so far, note it, and finish the turn.
+    const repetitionGuard = new RepetitionGuard();
+    let degeneratedAbort = false;
+    let streamedText = '';
     const streamMarkerDelta = createMarkerStrippingDelta((text) => {
       onEvent({ type: 'text_delta', text });
     });
@@ -3767,6 +4133,15 @@ export class Agent {
       }
       if (event.type === 'text_delta' && event.text) {
         streamMarkerDelta.emit(event.text);
+        streamedText += event.text;
+        if (!degeneratedAbort && repetitionGuard.push(event.text)) {
+          degeneratedAbort = true;
+          log.warn('Aborting stream: degenerate repetition detected', {
+            agentId: this.id,
+            sessionId: this.currentSessionId,
+          });
+          abortController.abort();
+        }
         return;
       }
       onEvent(event);
@@ -3776,7 +4151,14 @@ export class Agent {
       const llmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction, systemCacheSegments },
+          {
+            messages,
+            tools: llmTools.length > 0 ? llmTools : undefined,
+            metadata: this.getLLMMetadata(this.currentSessionId),
+            compaction: useCompaction,
+            systemCacheSegments,
+            ...(this.turnModelOverride?.model ? { model: this.turnModelOverride.model } : {}),
+          },
           wrappedOnEvent,
           this.getEffectiveProvider(),
           abortController.signal,
@@ -3790,22 +4172,15 @@ export class Agent {
       this.updateTokensUsed(tokensThisCall);
       this.calibrateTokenCounter(response.usage.inputTokens);
       lastResponseContent = response.content || '';
-      this.emitAudit({
-        type: 'llm_request',
-        action: 'chat_stream',
-        tokensUsed: tokensThisCall,
-        inputTokens: response.usage.inputTokens,
-        outputTokens: response.usage.outputTokens,
-        cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
-        durationMs: Date.now() - llmStart,
-        success: true,
-      });
+      this.emitLlmRequestAudit('chat_stream', response, Date.now() - llmStart, tokensThisCall);
+      if (response.creditWarning) {
+        onEvent({ type: 'text_delta', text: `\n\n⚠️ ${response.creditWarning}` });
+      }
 
       let streamToolIterations = 0;
 
       while (
-        (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
-        response.finishReason === 'max_tokens'
+        shouldContinueToolLoop(response)
       ) {
         if (++streamToolIterations > this._maxToolIterations) {
           log.warn('Stream tool loop hit max iterations', {
@@ -3832,7 +4207,7 @@ export class Agent {
         }
 
         // Handle max_tokens continuation
-        if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
+        if (needsMaxTokensContinuation(response)) {
           this.memory.appendMessage(this.currentSessionId, {
             role: 'assistant',
             content: response.content,
@@ -3949,8 +4324,28 @@ export class Agent {
           if (typeof streamYield.item.metadata?.responsePromise?.resolve === 'function') {
             streamYield.item.metadata.responsePromise.resolve('[merged]');
           }
-        } else if (streamYield.decision === 'preempt' || streamYield.decision === 'cancel') {
-          // Can't preempt streaming chat — restore signal so it's not lost.
+        } else if (streamYield.decision === 'cancel') {
+          // B3: an explicit revocation (e.g. "stop / cancel that") must cut the stream
+          // rather than finishing work the user no longer wants. Abort the in-flight LLM
+          // stream via the shared abort/cancel path and drop the item ([cancelled]).
+          log.info('Streaming chat cancelled at yield point', {
+            agentId: this.id, cancelledBy: streamYield.item?.sourceType,
+          });
+          try { abortController.abort(); } catch { /* best effort */ }
+          if (this.currentSessionId && lastResponseContent) {
+            this.memory.appendMessage(this.currentSessionId, {
+              role: 'assistant',
+              content: lastResponseContent + '\n\n[cancelled]',
+            });
+          }
+          if (streamChatActivityId) this.endActivity(streamChatActivityId);
+          if (this.activeTasks.size === 0) this.setStatus('idle');
+          return '[cancelled]';
+        } else if (streamYield.decision === 'preempt') {
+          // A human is awaiting this streamed reply (chat is non-preemptable by design;
+          // see agent-loop.test.ts). Restore the signal so the higher-priority item is
+          // processed immediately after this turn completes, rather than truncating the
+          // human's answer mid-way.
           this.attentionController.restoreInterruptSignal(streamYield.item);
         }
 
@@ -3962,7 +4357,7 @@ export class Agent {
           sessionId: this.currentSessionId,
           agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          modelMaxOutput: this.getModelMaxOutputForBudget(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -3987,7 +4382,14 @@ export class Agent {
         const llmStart2 = Date.now();
         response = await this.withNetworkRetry(
           () => this.llmRouter.chatStream(
-            { messages: updatedMessages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(this.currentSessionId), compaction: useCompaction, systemCacheSegments },
+            {
+              messages: updatedMessages,
+              tools: llmTools.length > 0 ? llmTools : undefined,
+              metadata: this.getLLMMetadata(this.currentSessionId),
+              compaction: useCompaction,
+              systemCacheSegments,
+              ...(this.turnModelOverride?.model ? { model: this.turnModelOverride.model } : {}),
+            },
             wrappedOnEvent,
             this.getEffectiveProvider(),
             abortController.signal,
@@ -4001,16 +4403,7 @@ export class Agent {
         this.updateTokensUsed(tokens2);
         this.calibrateTokenCounter(response.usage.inputTokens);
         lastResponseContent = response.content || lastResponseContent;
-        this.emitAudit({
-          type: 'llm_request',
-          action: 'chat_stream',
-          tokensUsed: tokens2,
-          inputTokens: response.usage.inputTokens,
-          outputTokens: response.usage.outputTokens,
-          cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens),
-          durationMs: Date.now() - llmStart2,
-          success: true,
-        });
+        this.emitLlmRequestAudit('chat_stream', response, Date.now() - llmStart2, tokens2);
       }
 
       streamMarkerDelta.flush();
@@ -4057,6 +4450,22 @@ export class Agent {
       return rawReply;
     } catch (error) {
       streamMarkerDelta.flush();
+      // A: graceful truncation when we aborted a repetitive turn. Persist what
+      // streamed, append a visible note, and mark the turn done so upstream does
+      // not run a marker continuation on known-degenerate output.
+      if (degeneratedAbort) {
+        const note = '\n\n[response stopped: repetitive output detected]';
+        const truncated = stripCompletionMarker(sanitizeLLMReply(streamedText)) + note;
+        onEvent({ type: 'text_delta', text: note });
+        if (this.currentSessionId) {
+          try {
+            this.memory.appendMessage(this.currentSessionId, { role: 'assistant', content: truncated });
+          } catch { /* avoid masking */ }
+        }
+        if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: false });
+        if (this.activeTasks.size === 0) this.setStatus('idle');
+        return truncated + COMPLETION_MARKER;
+      }
       if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: !cancelToken?.userStopped });
       if (cancelToken?.userStopped) {
         if (this.currentSessionId) {
@@ -4098,6 +4507,10 @@ export class Agent {
       throw error;
     } finally {
       if (cancelPollTimer) clearInterval(cancelPollTimer);
+      // Turn override is per-send; clear so the next mailbox item uses defaults
+      // unless the API sets it again from session metadata.
+      this.turnModelOverride = undefined;
+      this.activeScenario = undefined;
       if (this.currentSessionId) {
         await this.finalizeBrowserSession(this.currentSessionId);
       }
@@ -4353,6 +4766,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: taskPrompt,
       identity: this.identityContext,
+      viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
       deliverableContext: this.getDeliverableContext(taskPrompt),
       environment: this.environmentProfile,
@@ -4409,6 +4823,9 @@ export class Agent {
         return;
       }
 
+      // A2: flush important memory to disk before context fills (turn-level preflight).
+      await this.maybeMemoryFlushPreflight(sessionId);
+
       const preparedTask = await this.contextEngine.prepareMessages({
         systemPrompt,
         sessionMessages: this.memory.getRecentMessages(sessionId, 200),
@@ -4416,11 +4833,13 @@ export class Agent {
         sessionId,
         agentId: this.id,
         modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-        modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+        modelMaxOutput: this.getModelMaxOutputForBudget(),
         toolDefinitions: llmTools,
         systemCacheSegments,
       });
       const messages = preparedTask.messages;
+      this.recordContextUsage(sessionId, preparedTask.usage.usagePercent);
+      if (preparedTask.usage.compressed) this.metricsCollector.recordCompression(); // C2
       log.debug('Context usage for task execution', { taskId, usagePercent: preparedTask.usage.usagePercent, totalUsed: preparedTask.usage.totalUsed });
 
       let taskLlmStart = Date.now();
@@ -4438,11 +4857,10 @@ export class Agent {
       let taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(taskLlmTokens);
       this.calibrateTokenCounter(response.usage.inputTokens);
-      this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - taskLlmStart, success: true });
+      this.emitLlmRequestAudit('task_execution', response, Date.now() - taskLlmStart, taskLlmTokens);
 
       while (
-        (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
-        response.finishReason === 'max_tokens'
+        shouldContinueToolLoop(response)
       ) {
         taskToolIterations++;
         if (cancelToken?.cancelled) {
@@ -4454,7 +4872,7 @@ export class Agent {
 
         flushText();
 
-        if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
+        if (needsMaxTokensContinuation(response)) {
           this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
           this.memory.appendMessage(sessionId, {
             role: 'user',
@@ -4637,7 +5055,7 @@ export class Agent {
           sessionId,
           agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          modelMaxOutput: this.getModelMaxOutputForBudget(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -4662,7 +5080,7 @@ export class Agent {
         taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(taskLlmTokens);
         this.calibrateTokenCounter(response.usage.inputTokens);
-        this.emitAudit({ type: 'llm_request', action: 'task_execution', tokensUsed: taskLlmTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - taskLlmStart, success: true });
+        this.emitLlmRequestAudit('task_execution', response, Date.now() - taskLlmStart, taskLlmTokens);
       }
 
       // Final cancel check after the tool loop exits
@@ -4706,7 +5124,7 @@ export class Agent {
           sessionId,
           agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          modelMaxOutput: this.getModelMaxOutputForBudget(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -4887,6 +5305,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: userMessage,
       identity: this.identityContext,
+      viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
       deliverableContext: this.getDeliverableContext(userMessage),
       environment: this.environmentProfile,
@@ -4942,7 +5361,7 @@ export class Agent {
         sessionId,
         agentId: this.id,
         modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-        modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+        modelMaxOutput: this.getModelMaxOutputForBudget(),
         toolDefinitions: llmTools,
         systemCacheSegments,
       });
@@ -4962,17 +5381,23 @@ export class Agent {
       let risTokens = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(risTokens);
       this.calibrateTokenCounter(response.usage.inputTokens);
-      this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - risLlmStart, success: true });
+      this.emitLlmRequestAudit('respond_in_session', response, Date.now() - risLlmStart, risTokens);
 
       let toolIter = 0;
+      // Config-driven safety cap on tool iterations (same source as the other loops).
+      const effectiveMaxIter = this._maxToolIterations;
       while (
-        (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
-        response.finishReason === 'max_tokens'
+        shouldContinueToolLoop(response)
       ) {
-        if (++toolIter > 200) break;
+        if (++toolIter > effectiveMaxIter) {
+          log.warn('respondInSession tool loop hit max iterations', {
+            agentId: this.id, sessionId, iterations: toolIter, cap: effectiveMaxIter,
+          });
+          break;
+        }
         flushText();
 
-        if (response.finishReason === 'max_tokens' && !response.toolCalls?.length) {
+        if (needsMaxTokensContinuation(response)) {
           this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
           this.memory.appendMessage(sessionId, {
             role: 'user',
@@ -5046,7 +5471,7 @@ export class Agent {
           sessionId,
           agentId: this.id,
           modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.llmRouter.getModelMaxOutput(this.getEffectiveProvider()),
+          modelMaxOutput: this.getModelMaxOutputForBudget(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -5064,8 +5489,11 @@ export class Agent {
         risTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(risTokens);
         this.calibrateTokenCounter(response.usage.inputTokens);
-        this.emitAudit({ type: 'llm_request', action: 'respond_in_session', tokensUsed: risTokens, inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, cost: this.computeCallCost(response.usage.inputTokens, response.usage.outputTokens, response.usage.cacheReadTokens, response.usage.cacheWriteTokens), durationMs: Date.now() - risLlmStart, success: true });
+        this.emitLlmRequestAudit('respond_in_session', response, Date.now() - risLlmStart, risTokens);
       }
+
+      // End the turn when the model stops calling tools. No extra "confirm done"
+      // LLM round — finish work inside the tool loop; marker is prompt-only.
 
       flushText();
       const rawReply = sanitizeLLMReply(response.content);
@@ -5183,7 +5611,139 @@ export class Agent {
     return false;
   }
 
-  registerBackgroundSession(bgSessionId: string, originSessionId: string, command?: string): void {
+  /**
+   * Deliver a resolved async callback back to the agent through the mailbox.
+   * - `in_session`: re-enter the originating session via a `callback_result` item
+   *   so the agent continues where it left off (interactive/awaited work).
+   * - `mailbox`: surface a fresh `system_event` — a new attention cycle
+   *   (autonomous/background completions, scheduled wakeups).
+   */
+  deliverCallback(cb: {
+    callbackId: string;
+    type: CallbackType;
+    deliveryMode: CallbackDelivery;
+    originSessionId?: string;
+    summary: string;
+    content: string;
+    exitCode?: number;
+    correlationId?: string;
+  }): void {
+    if (cb.deliveryMode === 'mailbox') {
+      this.enqueueToMailbox('system_event', {
+        summary: cb.summary,
+        content: cb.content,
+        extra: {
+          callbackId: cb.callbackId,
+          callbackType: cb.type,
+          correlationId: cb.correlationId,
+        },
+      });
+      return;
+    }
+    this.enqueueToMailbox('callback_result', {
+      summary: cb.summary,
+      content: cb.content,
+      extra: {
+        callbackId: cb.callbackId,
+        originSessionId: cb.originSessionId,
+        callbackType: cb.type,
+        correlationId: cb.correlationId,
+        exitCode: cb.exitCode,
+      },
+    });
+  }
+
+  /**
+   * After a tool executes, register any async callbacks implied by its result so
+   * their eventual completion routes back to the agent:
+   * - `background_exec` → a background-session callback (origin-session routing + heartbeat timeout surfacing).
+   * - `agent_send_message` with `await_in_session` → an `a2a_reply` callback so the
+   *   recipient's reply resumes the ORIGIN session (in-session delegation).
+   */
+  private registerAsyncCallbacksFromToolResult(
+    toolName: string,
+    args: Record<string, unknown>,
+    result: string,
+    sessionId?: string,
+  ): void {
+    const originSessionId = sessionId ?? this.currentSessionId;
+    if (!originSessionId) return;
+
+    if (toolName === 'background_exec') {
+      try {
+        const parsed = JSON.parse(result) as { status?: string; sessionId?: string };
+        if (parsed.status === 'running' && parsed.sessionId) {
+          const timeoutSec = (args['timeout_seconds'] as number) ?? 300;
+          // Registry timeout must outlast the process's own auto-kill so the
+          // completion callback fires first; only flag as orphaned afterwards.
+          const registryTimeoutMs = Math.max(10 * 60 * 1000, timeoutSec * 1000 + 60_000);
+          this.registerBackgroundSession(
+            parsed.sessionId,
+            originSessionId,
+            args['command'] as string | undefined,
+            registryTimeoutMs,
+          );
+        }
+      } catch { /* non-JSON tool result — nothing to register */ }
+      return;
+    }
+
+    if (toolName === 'agent_send_message' && args['await_in_session'] === true) {
+      try {
+        const parsed = JSON.parse(result) as { status?: string; conversation_id?: string };
+        if (parsed.status === 'dispatched' && parsed.conversation_id) {
+          pendingCallbackRegistry.register({
+            id: `a2a_${this.id}_${parsed.conversation_id}`,
+            agentId: this.id,
+            originSessionId,
+            type: 'a2a_reply',
+            deliveryMode: 'in_session',
+            correlationId: parsed.conversation_id,
+            note: `Awaiting reply from ${String(args['agent_id'] ?? 'peer')}`,
+            registeredAt: Date.now(),
+            // Cap so a never-answered delegate can't wedge the session forever;
+            // heartbeat's getTimedOut/expireTimedOut surfaces it after this.
+            timeoutMs: 30 * 60 * 1000,
+          });
+          log.info('Registered in-session A2A await', { agentId: this.id, conversationId: parsed.conversation_id, originSessionId });
+        }
+      } catch { /* non-JSON tool result — nothing to register */ }
+    }
+  }
+
+  private startWakeupSweep(): void {
+    if (this.wakeupTimer) return;
+    this.wakeupTimer = setInterval(() => this.sweepDueWakeups(), Agent.WAKEUP_SWEEP_INTERVAL_MS);
+    if (typeof this.wakeupTimer.unref === 'function') this.wakeupTimer.unref();
+  }
+
+  /**
+   * Fire any scheduled wakeups that are due for this agent. Each due wakeup is
+   * resolved (removed), delivered through the mailbox, and re-armed if recurring.
+   * Runs on a coarse ~1-minute sweep — precise enough for human-scale follow-ups
+   * while keeping the agent idle (token-free) in between.
+   */
+  private sweepDueWakeups(): void {
+    const now = Date.now();
+    for (const cb of pendingCallbackRegistry.getByAgentId(this.id)) {
+      if (cb.type !== 'wakeup' || cb.wakeAt === undefined || cb.wakeAt > now) continue;
+      pendingCallbackRegistry.resolve(cb.id);
+      this.deliverCallback({
+        callbackId: cb.id,
+        type: 'wakeup',
+        deliveryMode: cb.deliveryMode ?? 'mailbox',
+        originSessionId: cb.originSessionId,
+        summary: `Scheduled wakeup${cb.note ? `: ${cb.note.slice(0, 80)}` : ''}`,
+        content: `[SCHEDULED WAKEUP] ${cb.note ?? 'Time-based check-in you registered earlier.'}\nScheduled for: ${new Date(cb.wakeAt).toISOString()}`,
+        correlationId: cb.correlationId,
+      });
+      if (cb.recurringMs && cb.recurringMs > 0) {
+        pendingCallbackRegistry.register({ ...cb, wakeAt: now + cb.recurringMs, registeredAt: now });
+      }
+    }
+  }
+
+  registerBackgroundSession(bgSessionId: string, originSessionId: string, command?: string, timeoutMs = 10 * 60 * 1000): void {
     this.bgSessionOrigin.set(bgSessionId, originSessionId);
     pendingCallbackRegistry.register({
       id: bgSessionId,
@@ -5192,7 +5752,7 @@ export class Agent {
       type: 'background_exec',
       command,
       registeredAt: Date.now(),
-      timeoutMs: 10 * 60 * 1000,
+      timeoutMs,
     });
   }
 
@@ -5280,11 +5840,20 @@ export class Agent {
     userMessage?: string;
     isTaskExecution?: boolean;
     isReview?: boolean;
+    /** Team Chat (DM) — enables open_right_panel / collapse_right_panel. */
+    isChat?: boolean;
+    /** Extra names forced into selection (e.g. tools already used in this session). */
+    extraRecentToolNames?: string[];
   }): LLMTool[] {
     const isManager = this.config.agentRole === 'manager';
+    const isSecretary = this.role.name.toLowerCase() === 'secretary';
 
     // Include tools the agent explicitly requested via discover_tools
-    const recentPlusActivated = [...this.recentToolNames, ...this.activatedExtraTools];
+    const recentPlusActivated = [
+      ...this.recentToolNames,
+      ...this.activatedExtraTools,
+      ...(context?.extraRecentToolNames ?? []),
+    ];
 
     const effectiveTools = taskAsyncContext.getStore()?.tools ?? this.tools;
 
@@ -5293,8 +5862,10 @@ export class Agent {
       userMessage: context?.userMessage ?? '',
       recentToolNames: recentPlusActivated,
       isManager,
+      isSecretary,
       isTaskExecution: context?.isTaskExecution,
       isReview: context?.isReview,
+      isChat: context?.isChat,
       skillCatalog: this.skillRegistry?.list(),
     });
 
@@ -5477,6 +6048,44 @@ export class Agent {
       return await this.handleDiscoverTools(toolCall.arguments);
     }
 
+    // Team Chat only: open / collapse the right-side panel in the user's UI.
+    if (toolCall.name === 'open_right_panel' || toolCall.name === 'collapse_right_panel') {
+      if (this.activeScenario !== 'chat') {
+        return JSON.stringify({
+          status: 'error',
+          error: 'open_right_panel / collapse_right_panel are only available in Team Chat sessions.',
+        });
+      }
+      try {
+        const { parseOpenRightPanelArgs } = await import('./tools/ui-layout.js');
+        if (toolCall.name === 'collapse_right_panel') {
+          this.eventBus.emit('agent:ui-layout', {
+            agentId: this.id,
+            targetUserId: this.currentInteractingUserId,
+            action: 'collapse',
+          });
+          return JSON.stringify({ status: 'ok', message: 'Right panel collapse requested.' });
+        }
+        const parsed = parseOpenRightPanelArgs(toolCall.arguments ?? {});
+        if (!parsed.ok) {
+          return JSON.stringify({ status: 'error', error: parsed.error });
+        }
+        this.eventBus.emit('agent:ui-layout', {
+          agentId: this.id,
+          targetUserId: this.currentInteractingUserId,
+          action: 'open',
+          panel: parsed.panel,
+        });
+        return JSON.stringify({
+          status: 'ok',
+          message: 'Right panel open requested.',
+          panel: parsed.panel,
+        });
+      } catch (err) {
+        return JSON.stringify({ status: 'error', error: `Failed to control right panel: ${String(err)}` });
+      }
+    }
+
     // Handle notify_user: proactive message to the user (appears in chat + notification bell)
     if (toolCall.name === 'notify_user') {
       const title = (toolCall.arguments.title as string) ?? '';
@@ -5536,20 +6145,144 @@ export class Agent {
       }
     }
 
-    // Handle request_user_approval: blocking approval/decision request
-    if (toolCall.name === 'request_user_approval') {
+    // Handle schedule_wakeup: register a future self-check-in via the callback registry.
+    if (toolCall.name === 'schedule_wakeup') {
+      const inSeconds = toolCall.arguments['in_seconds'] as number | undefined;
+      const atIso = toolCall.arguments['at'] as string | undefined;
+      const recurringSeconds = toolCall.arguments['recurring_seconds'] as number | undefined;
+      const delivery: CallbackDelivery = toolCall.arguments['delivery'] === 'in_session' ? 'in_session' : 'mailbox';
+      // `note` gives future-you context and is strongly recommended, but some
+      // models omit it. Fall back to a generic note instead of failing the wakeup
+      // outright — a scheduled wakeup with a generic note beats no wakeup at all.
+      const note = ((toolCall.arguments['note'] as string) ?? '').trim() || 'Scheduled self-check-in (no note was provided).';
+      let wakeAt: number | undefined;
+      if (typeof inSeconds === 'number' && inSeconds > 0) {
+        wakeAt = Date.now() + Math.round(inSeconds * 1000);
+      } else if (atIso) {
+        const t = new Date(atIso).getTime();
+        if (!Number.isNaN(t)) wakeAt = t;
+      }
+      if (!wakeAt) {
+        return JSON.stringify({ status: 'error', message: 'Provide either in_seconds (> 0) or a valid ISO `at` timestamp.' });
+      }
+      const id = `wake_${this.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      pendingCallbackRegistry.register({
+        id,
+        agentId: this.id,
+        originSessionId: sessionId ?? this.currentSessionId ?? '',
+        type: 'wakeup',
+        deliveryMode: delivery,
+        note,
+        wakeAt,
+        recurringMs: recurringSeconds && recurringSeconds > 0 ? Math.round(recurringSeconds * 1000) : undefined,
+        registeredAt: Date.now(),
+        timeoutMs: Number.MAX_SAFE_INTEGER, // wakeups never "time out"
+      });
+      log.info('Scheduled wakeup', { agentId: this.id, id, wakeAt: new Date(wakeAt).toISOString(), delivery });
+      return JSON.stringify({ status: 'ok', wakeup_id: id, wake_at: new Date(wakeAt).toISOString() });
+    }
+
+    // Handle cancel_wakeup: remove a scheduled wakeup.
+    if (toolCall.name === 'cancel_wakeup') {
+      const wakeupId = toolCall.arguments['wakeup_id'] as string | undefined;
+      if (!wakeupId) {
+        return JSON.stringify({ status: 'error', message: 'wakeup_id is required.' });
+      }
+      const cb = pendingCallbackRegistry.resolve(wakeupId);
+      return JSON.stringify(cb
+        ? { status: 'ok', message: 'Wakeup cancelled.' }
+        : { status: 'not_found', message: 'No scheduled wakeup with that id.' });
+    }
+
+    // Handle set_heartbeat_interval: adjust the periodic safety-net cadence.
+    if (toolCall.name === 'set_heartbeat_interval') {
+      const minutes = toolCall.arguments['interval_minutes'] as number | undefined;
+      const ms = toolCall.arguments['interval_ms'] as number | undefined;
+      let requested: number | undefined;
+      if (typeof minutes === 'number' && minutes > 0) requested = Math.round(minutes * 60 * 1000);
+      else if (typeof ms === 'number' && ms > 0) requested = Math.round(ms);
+      if (requested === undefined) {
+        return JSON.stringify({ status: 'error', message: 'Provide either interval_minutes (> 0) or interval_ms (> 0).' });
+      }
+      const effective = this.setHeartbeatInterval(requested);
+      return JSON.stringify({
+        status: 'ok',
+        interval_ms: effective,
+        interval_minutes: Math.round(effective / 60000),
+        note: effective !== requested
+          ? 'Requested value was clamped to the allowed range (5 minutes – 24 hours).'
+          : 'Heartbeat interval updated and applied immediately.',
+      });
+    }
+
+    // Handle request_user_input (and its deprecated alias request_user_approval):
+    // blocking request for a human decision / approval / input, supporting one or
+    // multiple questions with optional Markdown-rich choice options.
+    if (toolCall.name === 'request_user_input' || toolCall.name === 'request_user_approval') {
       const title = (toolCall.arguments.title as string) ?? '';
       const description = (toolCall.arguments.description as string) ?? '';
-      if (!title || !description) {
-        return JSON.stringify({ status: 'error', message: 'title and description are required' });
+      const rawQuestions = toolCall.arguments.questions as Array<Record<string, unknown>> | undefined;
+      const rawOptions = toolCall.arguments.options as Array<{ id?: string; label: string; description?: string }> | undefined;
+
+      // Normalize into a canonical questions[] array.
+      const normalizeOptions = (opts?: Array<{ id?: string; label: string; description?: string }>) =>
+        opts?.map((o, i) => ({ id: o.id ?? `opt_${i + 1}`, label: o.label, description: o.description }));
+
+      // Explicit-intent policy: every choice question (and the options shorthand)
+      // MUST explicitly declare allow_multiple and allow_freeform. There are no
+      // silent defaults — an unspecified value is rejected below so the agent
+      // re-calls the tool with a clear, unambiguous intent.
+      const missingIntent: string[] = [];
+      let questions: UserInputQuestion[] | undefined;
+      if (rawQuestions && rawQuestions.length > 0) {
+        questions = rawQuestions.map((q, i) => {
+          const opts = normalizeOptions(q['options'] as Array<{ id?: string; label: string; description?: string }> | undefined);
+          const inputType = (q['input_type'] as 'choice' | 'text' | undefined)
+            ?? (opts && opts.length > 0 ? 'choice' : 'text');
+          if (inputType === 'choice') {
+            if (typeof q['allow_multiple'] !== 'boolean') missingIntent.push(`questions[${i}].allow_multiple`);
+            if (typeof q['allow_freeform'] !== 'boolean') missingIntent.push(`questions[${i}].allow_freeform`);
+          }
+          return {
+            id: (q['id'] as string) ?? `q_${i + 1}`,
+            prompt: (q['prompt'] as string) ?? '',
+            inputType,
+            options: opts,
+            allowMultiple: q['allow_multiple'] as boolean,
+            allowFreeform: q['allow_freeform'] as boolean,
+          };
+        });
+      } else if (rawOptions && rawOptions.length > 0) {
+        // Single-question shorthand with custom options.
+        if (typeof toolCall.arguments.allow_multiple !== 'boolean') missingIntent.push('allow_multiple');
+        if (typeof toolCall.arguments.allow_freeform !== 'boolean') missingIntent.push('allow_freeform');
+        questions = [{
+          id: 'q_1',
+          prompt: description || title,
+          inputType: 'choice',
+          options: normalizeOptions(rawOptions),
+          allowMultiple: toolCall.arguments.allow_multiple as boolean,
+          allowFreeform: toolCall.arguments.allow_freeform as boolean,
+        }];
+      }
+
+      if (missingIntent.length > 0) {
+        return JSON.stringify({
+          status: 'error',
+          message: `request_user_input rejected: you must explicitly set a boolean (true or false) for each of the following, then call the tool again — ${missingIntent.join(', ')}. For every choice question you must state allow_multiple (false = single-select, true = multi-select) and allow_freeform (true = also allow a custom text answer, false = options only). There is no default; the intent must be explicit.`,
+        });
+      }
+
+      // Require enough to render something: either a description, questions, or options.
+      if (!title || (!description && (!questions || questions.length === 0))) {
+        return JSON.stringify({ status: 'error', message: 'title is required, plus either description, questions, or options' });
       }
       if (!this.userApprovalRequester) {
-        return JSON.stringify({ status: 'error', message: 'User approval is not available.' });
+        return JSON.stringify({ status: 'error', message: 'User input is not available.' });
       }
       try {
         const priority = (toolCall.arguments.priority as string) ?? 'normal';
         const relatedTaskId = toolCall.arguments.related_task_id as string | undefined;
-        const options = toolCall.arguments.options as Array<{ id: string; label: string; description?: string }> | undefined;
         const allowFreeform = (toolCall.arguments.allow_freeform as boolean) ?? false;
 
         this.attentionController.setWaitingForApproval(true);
@@ -5559,24 +6292,27 @@ export class Agent {
             agentName: this.config.name,
             title,
             description,
-            options,
+            options: normalizeOptions(rawOptions),
+            questions,
             allowFreeform,
             priority,
             relatedTaskId,
           });
 
-          log.info('User approval response received', { agentId: this.id, title, approved: result.approved, selectedOption: result.selectedOption });
-          return JSON.stringify({
+          log.info('User input response received', { agentId: this.id, title, approved: result.approved, selectedOption: result.selectedOption, answerCount: result.answers?.length ?? 0 });
+          const resp: Record<string, unknown> = {
             status: 'ok',
             approved: result.approved,
             selected_option: result.selectedOption ?? (result.approved ? 'approve' : 'reject'),
             comment: result.comment ?? '',
-          });
+          };
+          if (result.answers && result.answers.length > 0) resp.answers = result.answers;
+          return JSON.stringify(resp);
         } finally {
           this.attentionController.setWaitingForApproval(false);
         }
       } catch (err) {
-        return JSON.stringify({ status: 'error', message: `Failed to get user approval: ${String(err)}` });
+        return JSON.stringify({ status: 'error', message: `Failed to get user input: ${String(err)}` });
       }
     }
 
@@ -5707,17 +6443,10 @@ export class Agent {
         error: beforeResult.reason ?? 'Blocked by tool hook',
       });
     }
-    if (this.toolCallLimitChecker) {
-      const limitResult = this.toolCallLimitChecker();
-      if (!limitResult.allowed) {
-        return JSON.stringify({
-          status: 'denied',
-          error: limitResult.reason ?? 'Tool call limit reached',
-        });
-      }
-    }
-
-    const baseArgs = beforeResult.modifiedArgs ?? toolCall.arguments;
+    // Normalize key casing so tools that read snake_case params still work when
+    // the model emits camelCase (and vice versa) — otherwise a casing mismatch
+    // yields a misleading "required" error and the model retries the same call.
+    const baseArgs = addArgCasingAliases(beforeResult.modifiedArgs ?? toolCall.arguments);
     const effectiveArgs = sessionId
       ? { ...baseArgs, _browserSessionId: sessionId }
       : baseArgs;
@@ -5734,6 +6463,7 @@ export class Agent {
         const span = startSpan('agent.tool', { tool: toolCall.name, attempt });
         try {
           const result = await handler.execute(effectiveArgs, onOutput);
+          this.registerAsyncCallbacksFromToolResult(toolCall.name, effectiveArgs, result, sessionId);
           this.recordToolUsage(toolCall.name, true);
           this.consecutiveFailures = 0;
           const toolDurationMs = Date.now() - span.startTime;
@@ -5908,23 +6638,14 @@ export class Agent {
     const failedTaskRecoverySection = [
       '',
       '## Failed Task Recovery',
-      'Check `task_list` for tasks assigned to you with status `failed`.',
-      'If you find any, retry them by calling `task_update` with `status: "in_progress"` and a note explaining the retry.',
-      'This will automatically restart task execution with previous context preserved, so the agent can learn from the failure.',
-      'Only retry tasks where you are the `assignedAgentId`. Do NOT retry tasks assigned to others.',
+      'Retry your OWN `failed` tasks via `task_update(status:"in_progress", note:"...")` — this auto-restarts execution with prior context preserved. Only retry tasks where you are the assignee.',
     ].join('\n');
 
     // --- Requirement monitoring section (all agents) ---
     const requirementMonitoringSection = [
       '',
       '## Requirement Monitoring',
-      'Check requirements you proposed with `requirement_list` (set `mine_only: true`):',
-      '- If **pending** for a long time → send a message to the user reminding them to review',
-      '- If **in_progress** but no tasks created yet → create tasks to break it down and get started',
-      '- If **in_progress** → check linked task status and update the requirement if all tasks are done',
-      '- If **rejected** → read the rejection reason and decide if a revised proposal makes sense',
-      'Use `requirement_comment` to post updates or ask questions on requirements.',
-      'Use `task_comment` with @mentions to coordinate with other agents on shared tasks.',
+      'Review requirements you proposed (`requirement_list` with `mine_only: true`): nudge the user on long-pending ones, break approved-but-empty ones into tasks, and close them once their tasks are done. Use `requirement_comment` for updates and `task_comment` @mentions to coordinate.',
     ].join('\n');
 
     // --- Manager daily report logic ---
@@ -5967,50 +6688,25 @@ export class Agent {
     }
 
     // --- Self-evolution reflection section (all agents) ---
+    const roleMdAbs = join(this.dataDir, 'role', 'ROLE.md');
+    const heartbeatMdAbs = join(this.dataDir, 'role', 'HEARTBEAT.md');
     const selfEvolutionSection = [
       '',
-      '## Completed Task Review & Best Practice Extraction',
-      'Use `task_list` to find tasks recently completed (status `completed`) where you were the assignee.',
-      'For each completed task since your last heartbeat:',
+      '## Self-Evolution (since last heartbeat)',
+      'Review your recently completed tasks (`task_list`). For anything **specific, actionable, and non-obvious** you learned, record it — route by type (always `memory_search` first to update rather than duplicate):',
+      'Insight format: `[INSIGHT] <one-line summary>`; tags always start with `"insight"`, then a category (e.g. `coding`, `tool:<name>`, `domain:<topic>`).',
       '',
-      '1. **What went well?** — First-pass approvals (no revision) are strong signals. Efficient tool usage, clean patterns, good decomposition.',
-      '2. **What could be improved?** — Friction, rework, reviewer feedback that revealed a better way.',
-      '3. **Is there a repeatable pattern?** — If you solved a class of problems (not just one instance), add it to your MEMORY.md knowledge.',
-      '',
-      '## Knowledge Lifecycle (how to save what you learn)',
-      '',
-      '**Observation buffer** (`memory_save` → memories.json):',
-      '- Individual observations: insights, tool tips, gotchas, task outcomes.',
-      '- Format: `[INSIGHT] <summary>` + context/approach/why.',
-      '- Tags: always `"insight"` first, then category: `coding`, `tool-usage`, `architecture`, `domain:<topic>`.',
-      '- Dream cycles will promote recurring patterns (3+ similar) to MEMORY.md and prune source entries.',
-      '',
-      '**Curated knowledge** (`memory_update_longterm` → MEMORY.md):',
-      '- You organize MEMORY.md however you want — create sections that make sense for your work.',
-      '- Use `mode: "patch"` to append to a section, `mode: "replace"` to rewrite a section.',
-      '- **ALWAYS check existing knowledge first** (`memory_search`) — update rather than duplicate.',
-      '- Common sections: `procedures`, `conventions`, `preferences`, `domain-knowledge`.',
-      '',
-      '**Shareable skills** (for team-wide practices):',
-      '- Check existing skills first: `discover_tools({ mode: "list_skills" })` and `package_list`.',
-      '- To update an existing skill: edit files in `~/.markus/builder-artifacts/skills/{name}/`, bump version, re-install with `package_install`.',
-      '',
-      '**Direct self-evolution** (simplest and most impactful):',
-      '- **Update ROLE.md** — When you discover a behavioral rule, working style, or guiding principle that should always apply, append it to your ROLE.md via `file_edit`. ROLE.md is loaded into every conversation, so changes take effect immediately. Read first, then append. No need to accumulate 3 insights — even a single validated lesson can warrant a role update if it is fundamental.',
-      '- **Update HEARTBEAT.md** — When you realize your patrol routine should include a new recurring check (or remove an obsolete one), modify your HEARTBEAT.md via `file_edit`. This is your personal checklist — customize it to match your actual responsibilities. Changes take effect at the next heartbeat.',
-      '',
-      '**Decision guide — where does this insight go?**',
       '| Observation type | Action |',
       '|---|---|',
-      '| Single insight / gotcha | `memory_save` with tags: `["insight"]` |',
-      '| Tool tip or preference | `memory_save` with tags: `["insight", "tool:<name>"]` |',
+      '| Single insight / gotcha | `memory_save` (tags: `["insight"]`) |',
+      '| Tool tip or preference | `memory_save` (tags: `["insight", "tool:<name>"]`) |',
       '| Multi-step repeatable workflow | `memory_update_longterm({ section: "procedures", mode: "patch" })` |',
-      '| Practice worth sharing with the team | Create skill via **skill-building**, then install with `package_install` |',
-      '| Behavioral rule or guiding principle | Update ROLE.md (`file_read` → `file_edit` to append) |',
-      '| New recurring check for your patrol | Update HEARTBEAT.md (`file_read` → `file_edit`) |',
+      '| Practice worth sharing | Create a skill (skill-building), then `package_install` |',
+      `| Behavioral rule / guiding principle | Append to \`${roleMdAbs}\` (\`file_read\` → \`file_edit\`) |`,
+      `| New recurring patrol check | Update \`${heartbeatMdAbs}\` (\`file_read\` → \`file_edit\`) |`,
       '',
-      'Quality bar: Only record insights that are **specific**, **actionable**, and **non-obvious**.',
-      'Skip if nothing meaningful happened since last heartbeat.',
+      `A high revision rate (tasks with \`executionRound > 1\`) signals your knowledge/\`${roleMdAbs}\` is not covering real failure patterns — fix that. Skip this entirely if nothing meaningful happened.`,
+      'Do not write ROLE.md or HEARTBEAT.md under the working directory or agent-home root; only the `role/` paths above are loaded.',
     ].join('\n');
 
     // Drain any background process completion notifications
@@ -6037,14 +6733,15 @@ export class Agent {
       const lines = timedOut.map(cb => {
         pendingCallbackRegistry.expireTimedOut(cb.id);
         const elapsed = Math.round((Date.now() - cb.registeredAt) / 1000);
-        return `- [TIMED OUT] \`${cb.command ?? cb.type}\` (${elapsed}s elapsed, session: ${cb.originSessionId})`;
+        const label = cb.command ?? cb.note ?? cb.type;
+        return `- [TIMED OUT] \`${label}\` (${cb.type}, ${elapsed}s elapsed, session: ${cb.originSessionId})`;
       });
       timedOutSection = [
         '',
-        '## Timed-Out Background Operations',
-        `${timedOut.length} operation(s) exceeded their timeout:`,
+        '## Timed-Out Async Operations',
+        `${timedOut.length} async operation(s) (background exec / awaited delegation) exceeded their timeout:`,
         ...lines,
-        'Investigate and take corrective action if needed.',
+        'Investigate and take corrective action if needed — the awaited reply may never arrive.',
       ].join('\n');
     }
 
@@ -6073,17 +6770,6 @@ export class Agent {
       } catch { /* ignore */ }
     }
 
-    const qualitySignalSection = [
-      '',
-      '## Quality Signal Check',
-      'When reviewing completed tasks, note your revision rate:',
-      '- Tasks with `executionRound > 1` required revision — your initial approach had issues.',
-      '- A high revision rate (>30%) suggests your knowledge is not being applied effectively.',
-      '- Check: does your MEMORY.md knowledge actually cover the failure patterns you see?',
-      '- If you keep making the same type of mistake, escalate: save as insight → add to MEMORY.md → update ROLE.md or HEARTBEAT.md.',
-      '- Consider: would a ROLE.md rule or a HEARTBEAT.md check have prevented any recent failures?',
-    ].join('\n');
-
     const prompt = [
       '[HEARTBEAT CHECK-IN]',
       '',
@@ -6097,42 +6783,12 @@ export class Agent {
       requirementMonitoringSection,
       dailyReportSection,
       selfEvolutionSection,
-      qualitySignalSection,
       '',
-      '## Core Principle: Patrol, Don\'t Build',
-      'Heartbeat is a patrol — observe, triage, and take lightweight actions. Heavy work belongs in tasks.',
-      '',
-      '## Communication Channels',
-      'Your raw text output is NOT visible to humans in heartbeat mode. To communicate:',
-      '- **Reach humans**: `notify_user` — your message appears in their chat timeline AND notification bell. This is the ONLY way humans will see your findings.',
-      '- **Reach agents**: `agent_send_message` — sends a message to a peer agent\'s mailbox.',
-      '',
-      '## What You CAN Do (lightweight actions)',
-      '- **Check status**: `task_list`, `task_get`, `team_status` — see what\'s going on',
-      '- **Notify user**: `notify_user` — message appears in chat + notification bell',
-      '- **Request user approval**: `request_user_approval` — blocks until user responds',
-      '- **Recall history**: `recall_activity` — review your past execution logs',
-      '- **Message agents**: `agent_send_message` — coordinate with colleagues',
-      '- **Create tasks**: `task_create` — if you spot something that needs doing, create a task for it (assign to yourself or others)',
-      '- **Trigger existing tasks**: `task_update(status: "in_progress")` — restart failed tasks or unblock stuck ones',
-      '- **Retry failed tasks**: If tasks assigned to you are in `failed` status, retry via `task_update(status: "in_progress")` with a note',
-      '- **Quick reviews**: If tasks are in `review` where you are the reviewer, review them now (may need more tool calls)',
-      '- **Save insights**: `memory_save` — record observations, insights, and patterns',
-      '- **Propose requirements**: `requirement_propose` — suggest work based on what you observe',
-      '',
-      '## What You Must NOT Do',
-      '- **No complex multi-step implementation** — don\'t write code, refactor modules, or do deep analysis in heartbeat',
-      '- If you identify something complex that needs doing:',
-      '  1. Notify the user via `notify_user` explaining what you found and why it matters',
-      '     (Use `request_user_approval` if you need the user to make a decision or provide input)',
-      '  2. Create a task via `task_create` with clear description and acceptance criteria',
-      '  3. The user will approve and the task system handles execution',
-      '',
-      '## Conditional Actions',
-      '- If background processes failed → check the error, notify the responsible developer or user',
-      '- If tasks are blocked for too long → investigate blockers, send a message to the assignee or PM',
-      '- If a dependency task completed → check if downstream tasks can be unblocked',
-      '- If you notice a recurring pattern → save it as an insight via `memory_save`',
+      '## Patrol Reminder',
+      'This is a lightweight patrol, not a work session. The periodic heartbeat is only a coarse safety-net — your interaction-mode and async-timing rules in the system prompt already cover how to reach humans (`notify_user` / `request_user_input`) and agents (`agent_send_message`), and when to use `schedule_wakeup`.',
+      '- **Do**: triage tasks and pending reviews, retry failed tasks, unblock stuck ones, follow up on completed dependencies, save insights, and `task_create` / `requirement_propose` for anything that needs doing.',
+      '- **Don\'t**: write code, refactor, or run deep analysis here — create a task instead. For complex work or a decision, escalate via `notify_user` / `request_user_input`.',
+      '- Prefer `schedule_wakeup` for precise follow-ups; use `set_heartbeat_interval` if the patrol cadence itself is wrong.',
       '',
       '## Finishing Up',
       '- Compare against your last heartbeat summary above. Skip unchanged items.',
@@ -6148,7 +6804,8 @@ export class Agent {
       'requirement_propose', 'requirement_list', 'requirement_update_status',
       'memory_save', 'memory_search', 'memory_update', 'memory_update_longterm',
       'update_notebook', 'update_working_memory',
-      'discover_tools', 'notify_user', 'request_user_approval', 'recall_activity',
+      'discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'recall_activity',
+      'schedule_wakeup', 'cancel_wakeup', 'set_heartbeat_interval',
       'package_install', 'package_list',
       'goal_create', 'goal_update', 'goal_status',
     ];
@@ -6222,6 +6879,29 @@ export class Agent {
    * Memory flush: before compaction, prompt the agent to persist important information.
    * Inspired by OpenClaw's pre-compaction memory flush pattern.
    */
+  /** A2: record the context usage of a just-packed turn so the next turn's preflight can react. */
+  private recordContextUsage(sessionId: string | undefined, usagePercent: number): void {
+    if (!sessionId) return;
+    this.lastUsageBySession.set(sessionId, usagePercent);
+  }
+
+  /**
+   * A2: turn-level memory-flush preflight. Runs before a turn packs context: if the
+   * previous turn's usage crossed the threshold and this session has not flushed yet,
+   * flush once. Deduplicated per session; skips `sys_` sessions to avoid reentry.
+   */
+  private async maybeMemoryFlushPreflight(sessionId: string | undefined): Promise<void> {
+    if (!shouldMemoryFlushPreflight({
+      sessionId,
+      lastUsagePercent: sessionId ? this.lastUsageBySession.get(sessionId) : undefined,
+      alreadyFlushed: sessionId ? this.flushedSessions.has(sessionId) : false,
+    })) {
+      return;
+    }
+    this.flushedSessions.add(sessionId!);
+    await this.memoryFlush(sessionId!);
+  }
+
   private async memoryFlush(sessionId: string): Promise<void> {
     const session = this.memory.getSession(sessionId);
     if (!session || session.messages.length < 20) return;
@@ -6274,8 +6954,8 @@ export class Agent {
     try {
       const today = new Date().toISOString().slice(0, 10);
 
-      // Session compaction is now handled exclusively by MemoryStore.checkAndCompact
-      // (triggered on appendMessage at >80 messages). No session compaction here —
+      // Session compaction is handled by MemoryStore.checkAndCompact (safety-net
+      // only at very high message counts). Per-call packing uses the model window.
       // consolidateMemory only runs the dream cycle.
 
       // Memory dream: prune, deduplicate, merge.

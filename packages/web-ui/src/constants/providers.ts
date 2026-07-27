@@ -7,6 +7,7 @@ export interface ProviderOption {
 }
 
 export const PROVIDER_OPTIONS: ProviderOption[] = [
+  { id: 'markus', label: 'Markus Cloud AI', envKey: 'MARKUS_SUBSCRIPTION_KEY', defaultModel: '' },
   { id: 'anthropic', label: 'Anthropic', envKey: 'ANTHROPIC_API_KEY', defaultModel: 'claude-opus-4-6' },
   { id: 'openai', label: 'OpenAI', envKey: 'OPENAI_API_KEY', defaultModel: 'gpt-5.4' },
   { id: 'google', label: 'Google Gemini', envKey: 'GOOGLE_API_KEY', defaultModel: 'gemini-3-1-pro' },

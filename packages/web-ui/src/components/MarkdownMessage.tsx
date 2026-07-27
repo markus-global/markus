@@ -1,13 +1,14 @@
 import { useMemo, useState, useRef, useEffect, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import remarkBreaks from 'remark-breaks';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import 'katex/dist/katex.min.css';
+import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
 import { CodeBlock } from './CodeBlock.tsx';
 import { MermaidBlock } from './MermaidBlock.tsx';
@@ -22,6 +23,20 @@ import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
 import { TypographySettings, loadTypographyConfig, resolveTypographyCSS } from './TypographySettings.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import {
+  EntityChip, EntityCard, looksLikeEntityId, chipTypeToEntityType, type EntityType,
+} from './EntityCard.tsx';
+import { ErrorBoundary } from './ErrorBoundary.tsx';
+
+// Internal resource link schemes (e.g. `deliverable:dlv_…`, `task:tsk_…`) that the
+// `a` renderer turns into clickable entity chips. react-markdown's default URL
+// sanitizer strips any non-safe protocol, which would blank these hrefs before the
+// chip logic runs — so allow them through here. `#entity:`/`#mention:` already
+// survive sanitization because they start with `#`.
+const CUSTOM_URI_SCHEME_RE = /^(deliverable|task|requirement|project|agent|team|workflow):/i;
+function chatUrlTransform(url: string): string {
+  return CUSTOM_URI_SCHEME_RE.test(url) ? url : defaultUrlTransform(url);
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const REMARK_PLUGINS: any[] = [remarkGfm, remarkMath, remarkBreaks];
@@ -59,26 +74,45 @@ const MENTION_PREFIX = '#mention:';
 // ─── Entity ID linking ───────────────────────────────────────────────────────
 
 const ENTITY_PREFIX = '#entity:';
-const ENTITY_LINK_CONTENT_RE = /^\[([^\]]+)\]\(#entity:((tsk|req|proj|dlv|agt)_[a-f0-9]{6,})\)$/i;
+const ENTITY_LINK_CONTENT_RE = /^\[([^\]]+)\]\(#entity:((tsk|req|proj|dlv|agt|team)_[a-f0-9]{6,})\)$/i;
+const CHIP_HREF_RE = /^(workflow|task|requirement|project|deliverable|agent|team):(.+)$/;
 
-const ENTITY_META: Record<string, { icon: string; label: string }> = {
-  tsk:  { icon: '📋', label: 'Task' },
-  req:  { icon: '📝', label: 'Requirement' },
-  proj: { icon: '📁', label: 'Project' },
-  dlv:  { icon: '📦', label: 'Deliverable' },
-  agt:  { icon: '🤖', label: 'Agent' },
-};
+// hast helpers for detecting a paragraph that is a single entity reference (→ block card)
+type HastNode = { type: string; tagName?: string; value?: string; properties?: Record<string, unknown>; children?: HastNode[] };
 
-function navigateToEntity(id: string) {
-  if (id.startsWith('tsk_'))  navBus.navigate(PAGE.WORK, { openTask: id });
-  else if (id.startsWith('req_'))  navBus.navigate(PAGE.WORK, { openRequirement: id });
-  else if (id.startsWith('proj_')) navBus.navigate(PAGE.WORK, { projectId: id });
-  else if (id.startsWith('dlv_'))  navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: id });
-  else if (id.startsWith('agt_'))  navBus.navigate(PAGE.TEAM, { agentId: id });
+function hastText(node: HastNode): string {
+  if (node.type === 'text') return node.value ?? '';
+  return (node.children ?? []).map(hastText).join('');
 }
 
-function looksLikeEntityId(text: string): boolean {
-  return /^(tsk|req|proj|dlv|agt)_[a-f0-9]{6,}$/i.test(text);
+function isBlankText(node: HastNode): boolean {
+  return node.type === 'text' && (node.value ?? '').trim() === '';
+}
+
+/** If a paragraph node consists solely of one entity reference, extract it for card rendering. */
+function soleEntityRef(node?: HastNode): { id: string; type?: EntityType; label?: string } | null {
+  if (!node?.children) return null;
+  const kids = node.children.filter(k => !isBlankText(k));
+  if (kids.length !== 1) return null;
+  const only = kids[0]!;
+  if (only.type === 'element' && only.tagName === 'a') {
+    const href = only.properties?.['href'] as string | undefined;
+    if (!href) return null;
+    const label = hastText(only);
+    if (href.startsWith(ENTITY_PREFIX)) return { id: href.slice(ENTITY_PREFIX.length) };
+    const m = href.match(CHIP_HREF_RE);
+    if (m && m[1] !== 'workflow') return { id: m[2]!, type: chipTypeToEntityType(m[1]!), label };
+    return null;
+  }
+  if (only.type === 'element' && only.tagName === 'code') {
+    const txt = hastText(only).trim();
+    if (looksLikeEntityId(txt)) return { id: txt };
+  }
+  if (only.type === 'text') {
+    const txt = (only.value ?? '').trim();
+    if (looksLikeEntityId(txt)) return { id: txt };
+  }
+  return null;
 }
 
 const mdComponents = {
@@ -90,8 +124,20 @@ const mdComponents = {
   h5: ({ children }: { children?: React.ReactNode }) => <h5 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-fg-primary">{children}</h5>,
   h6: ({ children }: { children?: React.ReactNode }) => <h6 className="text-xs font-medium mb-1 mt-2 first:mt-0 text-fg-primary">{children}</h6>,
   ul: ({ children }: { children?: React.ReactNode }) => <ul className="list-disc pl-4 mb-2 space-y-0.5">{children}</ul>,
-  ol: ({ children }: { children?: React.ReactNode }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
-  li: ({ children }: { children?: React.ReactNode }) => <li className="leading-relaxed text-fg-secondary marker:text-fg-secondary">{children}</li>,
+  // Forward `start` so ordered lists that begin at a number other than 1 render
+  // correctly. Agent output often intersperses block content (e.g. a bare
+  // entity-id card) between items, which splits one list into several
+  // single-item `<ol start="N">` lists; without `start` they'd all show "1.".
+  // `pl-7` (not `pl-4`): the decimal marker sits (list-style-position: outside)
+  // in the left padding; 16px is narrower than a two-digit marker like "20.",
+  // so the leading digit overflows left and gets clipped by the message
+  // container's `overflow-hidden` (rendering "10." as "0."). 28px fits it.
+  ol: ({ children, start }: { children?: React.ReactNode; start?: number }) => (
+    <ol start={start} className="list-decimal pl-7 mb-2 space-y-0.5">{children}</ol>
+  ),
+  li: ({ children, value }: { children?: React.ReactNode; value?: string | number | readonly string[] }) => (
+    <li value={value} className="leading-relaxed text-fg-secondary marker:text-fg-secondary">{children}</li>
+  ),
   code: ({ children, className: cls }: { children?: React.ReactNode; className?: string }) => {
     const text = typeof children === 'string' ? children : String(children ?? '');
     const trimmed = text.trim();
@@ -105,36 +151,11 @@ const mdComponents = {
       return <code className={`${cls} text-fg-secondary font-mono text-xs`}>{children}</code>;
     }
     if (looksLikeEntityId(text)) {
-      const prefix = text.split('_')[0]!;
-      const meta = ENTITY_META[prefix];
-      return (
-        <span
-          data-entity-link={text}
-          className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-mono cursor-pointer hover:bg-brand-500/20 transition-colors"
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigateToEntity(text); }}
-          title={meta ? `${meta.label}: ${text}` : text}
-        >
-          {meta && <span className="text-[10px]">{meta.icon}</span>}
-          <span>{text.slice(0, prefix.length + 1 + 8)}…</span>
-        </span>
-      );
+      return <EntityChip id={text.trim()} />;
     }
     const entityLinkMatch = text.match(ENTITY_LINK_CONTENT_RE);
     if (entityLinkMatch) {
-      const id = entityLinkMatch[2];
-      const prefix = id.split('_')[0]!;
-      const meta = ENTITY_META[prefix];
-      return (
-        <span
-          data-entity-link={id}
-          className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-mono cursor-pointer hover:bg-brand-500/20 transition-colors"
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigateToEntity(id); }}
-          title={meta ? `${meta.label}: ${id}` : id}
-        >
-          {meta && <span className="text-[10px]">{meta.icon}</span>}
-          <span>{id.slice(0, prefix.length + 1 + 8)}…</span>
-        </span>
-      );
+      return <EntityChip id={entityLinkMatch[2]!} label={entityLinkMatch[1]} />;
     }
     if (looksLikeFilePath(text)) {
       return <FilePathLink path={text} />;
@@ -198,8 +219,8 @@ function localImageUrl(filePath: string): string {
   return `/api/files/image?path=${encodeURIComponent(filePath)}`;
 }
 
-const loadedImageCache = new Set<string>();
-const failedImageCache = new Set<string>();
+/** Successful object-URL / remote loads — keep across remounts so streaming re-renders don't refetch. */
+const loadedImageCache = new Map<string, string>();
 
 function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: string; onPreview?: (src: string) => void; basePath?: string }) {
   const effectiveSrc = useMemo(() => {
@@ -207,59 +228,130 @@ function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: s
     return localImageUrl(resolveImagePath(src, basePath));
   }, [src, basePath]);
 
-  const alreadyCached = loadedImageCache.has(effectiveSrc);
-  const alreadyFailed = failedImageCache.has(effectiveSrc);
-  const [visible, setVisible] = useState(alreadyCached);
-  const [loaded, setLoaded] = useState(alreadyCached);
-  const [error, setError] = useState(alreadyFailed);
-  const containerRef = useRef<HTMLSpanElement>(null);
+  // Local absolute paths are served via /api/files/image. Fetch→blob is more reliable
+  // than <img src> during chat streaming: ErrorBoundary/virtualizer remounts abort in-flight
+  // <img> loads and used to be permanently cached as failures.
+  const isLocalApi = effectiveSrc.startsWith('/api/files/image?');
+  const cached = loadedImageCache.get(effectiveSrc);
+  // Local chat images should load immediately — IntersectionObserver + streaming
+  // remounts previously left a permanent blank skeleton when fetches were aborted.
+  const [displaySrc, setDisplaySrc] = useState<string | null>(cached ?? (isLocalApi ? null : effectiveSrc));
+  const [loaded, setLoaded] = useState(!!cached);
+  const [error, setError] = useState(false);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  /** Bumped on user retry so the fetch effect re-runs even when other deps are unchanged. */
+  const [retryToken, setRetryToken] = useState(0);
+  const fetchGenRef = useRef(0);
+
+  const retryLoad = useCallback(() => {
+    loadedImageCache.delete(effectiveSrc);
+    setError(false);
+    setErrorDetail(null);
+    setLoaded(false);
+    setDisplaySrc(isLocalApi ? null : `${effectiveSrc}${effectiveSrc.includes('?') ? '&' : '?'}retry=${Date.now()}`);
+    setRetryToken(n => n + 1);
+  }, [effectiveSrc, isLocalApi]);
 
   useEffect(() => {
-    if (visible || alreadyCached || alreadyFailed) return;
-    const el = containerRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => { if (entry?.isIntersecting) { setVisible(true); observer.disconnect(); } },
-      { rootMargin: '200px' },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [visible, alreadyCached, alreadyFailed]);
+    if (!isLocalApi) return;
+    const hit = loadedImageCache.get(effectiveSrc);
+    if (hit) {
+      setDisplaySrc(hit);
+      setLoaded(true);
+      setError(false);
+      setErrorDetail(null);
+      return;
+    }
 
-  if (alreadyFailed) {
+    const gen = ++fetchGenRef.current;
+    setError(false);
+    setErrorDetail(null);
+    setLoaded(false);
+    setDisplaySrc(null);
+
+    (async () => {
+      try {
+        // Do not AbortController-cancel on effect cleanup: streaming remounts were
+        // aborting in-flight loads and leaving a blank skeleton with error=false.
+        const res = await fetch(effectiveSrc, { credentials: 'same-origin' });
+        if (gen !== fetchGenRef.current) return;
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try {
+            const body = await res.json() as { error?: string };
+            if (body.error) detail = body.error;
+          } catch { /* ignore */ }
+          throw new Error(detail);
+        }
+        const blob = await res.blob();
+        if (gen !== fetchGenRef.current) return;
+        if (blob.size === 0) throw new Error('Empty image response');
+        // SPA/HTML fallbacks sometimes return 200 text/html — reject those.
+        if (blob.type && !blob.type.startsWith('image/') && !blob.type.includes('octet-stream')) {
+          throw new Error(`Unexpected content-type: ${blob.type}`);
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        loadedImageCache.set(effectiveSrc, objectUrl);
+        setDisplaySrc(objectUrl);
+        setLoaded(true);
+        setError(false);
+        setErrorDetail(null);
+      } catch (err) {
+        if (gen !== fetchGenRef.current) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn('[MarkdownImage] failed to load local image', effectiveSrc, err);
+        setErrorDetail(msg);
+        setError(true);
+        setLoaded(false);
+      }
+    })();
+  }, [isLocalApi, effectiveSrc, retryToken]);
+
+  // Remote / data-URI: ordinary <img>; reset error when src changes / user retries.
+  useEffect(() => {
+    if (isLocalApi) return;
+    setDisplaySrc(effectiveSrc);
+    setLoaded(!!loadedImageCache.get(effectiveSrc));
+    setError(false);
+    setErrorDetail(null);
+  }, [effectiveSrc, isLocalApi, retryToken]);
+
+  if (error) {
     return (
-      <span className="inline-flex items-center gap-1.5 px-3 py-2 text-xs text-fg-tertiary bg-surface-elevated rounded-lg border border-border-default">
+      <button
+        type="button"
+        onClick={retryLoad}
+        title={errorDetail ?? 'Click to retry'}
+        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs text-fg-tertiary bg-surface-elevated rounded-lg border border-border-default hover:bg-surface-overlay hover:text-fg-secondary cursor-pointer transition-colors max-w-full"
+      >
         <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
           <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
           <circle cx="8.5" cy="8.5" r="1.5" />
           <polyline points="21 15 16 10 5 21" />
         </svg>
-        Failed to load image
-      </span>
+        <span className="truncate">Failed to load image — click to retry{errorDetail ? ` (${errorDetail})` : ''}</span>
+      </button>
     );
   }
 
   return (
-    <span ref={containerRef} className="inline-block align-middle max-w-full">
-      {!loaded && !error && (
+    <span className="inline-block align-middle max-w-full">
+      {!loaded && (
         <span className="block w-full min-h-[80px] max-w-[400px] bg-surface-elevated rounded-lg animate-pulse" />
       )}
-      {error ? (
-        <span className="inline-flex items-center gap-1.5 px-3 py-2 text-xs text-fg-tertiary bg-surface-elevated rounded-lg border border-border-default">
-          <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-            <circle cx="8.5" cy="8.5" r="1.5" />
-            <polyline points="21 15 16 10 5 21" />
-          </svg>
-          Failed to load image
-        </span>
-      ) : visible ? (
+      {displaySrc ? (
         <img
-          src={effectiveSrc}
+          src={displaySrc}
           alt={alt ?? ''}
-          onLoad={() => { loadedImageCache.add(effectiveSrc); setLoaded(true); }}
-          onError={() => { failedImageCache.add(effectiveSrc); setError(true); }}
-          onClick={() => onPreview?.(effectiveSrc)}
+          onLoad={() => {
+            if (!isLocalApi) loadedImageCache.set(effectiveSrc, effectiveSrc);
+            setLoaded(true);
+          }}
+          onError={() => {
+            setErrorDetail('Image decode failed');
+            setError(true);
+          }}
+          onClick={() => onPreview?.(displaySrc)}
           className={`max-w-full h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity my-1${!loaded ? ' absolute opacity-0 pointer-events-none' : ''}`}
           style={{ maxHeight: '400px', objectFit: 'contain' }}
         />
@@ -271,6 +363,7 @@ function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: s
 // ─── Image Preview Modal ────────────────────────────────────────────────────
 
 function ImagePreviewModal({ src, onClose }: { src: string; onClose: () => void }) {
+  useNativeBrowserOverlay(true);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -459,13 +552,15 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   const contentRef = useRef<HTMLDivElement>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
-  const processedRest = useMemo(() => {
-    let t = transformOutsideCode(rest, normalizeMathDelimiters);
+  const preprocess = useCallback((text: string) => {
+    let t = transformOutsideCode(text, normalizeMathDelimiters);
     t = transformOutsideCode(t, preprocessEntityLinksInCode);
     t = transformOutsideCode(t, preprocessEntityIds);
     t = transformOutsideCode(t, s => preprocessMentions(s, knownNames));
     return t;
-  }, [rest, knownNames]);
+  }, [knownNames]);
+
+  const processedRest = useMemo(() => preprocess(rest), [rest, preprocess]);
 
   const components = useMemo(() => {
     return {
@@ -473,6 +568,13 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
       img: ({ src, alt }: { src?: string; alt?: string }) => (
         <MarkdownImage key={src ?? ''} src={src ?? ''} alt={alt} onPreview={setPreviewSrc} basePath={basePath} />
       ),
+      // Render a paragraph consisting solely of one entity reference as a rich block card.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      p: ({ children, node }: { children?: React.ReactNode; node?: any }) => {
+        const ref = soleEntityRef(node as HastNode | undefined);
+        if (ref) return <EntityCard id={ref.id} type={ref.type} label={ref.label} />;
+        return <p className="mb-2 last:mb-0 leading-relaxed text-fg-secondary">{children}</p>;
+      },
       a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
         if (href?.startsWith(MENTION_PREFIX)) {
           const name = decodeURIComponent(href.slice(MENTION_PREFIX.length));
@@ -487,45 +589,27 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
           );
         }
         if (href?.startsWith(ENTITY_PREFIX)) {
-          const id = href.slice(ENTITY_PREFIX.length);
-          const prefix = id.split('_')[0]!;
-          const meta = ENTITY_META[prefix];
-          return (
-            <span
-              data-entity-link={id}
-              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-mono cursor-pointer hover:bg-brand-500/20 transition-colors"
-              onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); navigateToEntity(id); }}
-              title={meta ? `${meta.label}: ${id}` : id}
-            >
-              {meta && <span className="text-[10px]">{meta.icon}</span>}
-              <span>{id.slice(0, prefix.length + 1 + 8)}…</span>
-            </span>
-          );
+          return <EntityChip id={href.slice(ENTITY_PREFIX.length)} />;
         }
         {
-          const chipMatch = href?.match(/^(workflow|task|requirement|project|deliverable|agent):(.+)$/);
+          const chipMatch = href?.match(CHIP_HREF_RE);
           if (chipMatch) {
             const [, chipType, chipId] = chipMatch;
-            const chipMeta: Record<string, { icon: string; nav: () => void }> = {
-              workflow:    { icon: '⚙️', nav: () => navBus.navigate(PAGE.WORK, { boardType: 'workflows' }) },
-              task:        { icon: '✅', nav: () => navigateToEntity(chipId!) },
-              requirement: { icon: '📋', nav: () => navigateToEntity(chipId!) },
-              project:     { icon: '📁', nav: () => navigateToEntity(chipId!) },
-              deliverable: { icon: '📦', nav: () => navigateToEntity(chipId!) },
-              agent:       { icon: '🤖', nav: () => navigateToEntity(chipId!) },
-            };
-            const cm = chipMeta[chipType!];
-            if (cm) {
+            if (chipType === 'workflow') {
               return (
                 <span
                   className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-brand-500/10 text-brand-500 text-xs font-medium cursor-pointer hover:bg-brand-500/20 transition-colors"
-                  onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); cm.nav(); }}
-                  title={`${chipType}: ${chipId}`}
+                  onClick={(e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); navBus.navigate(PAGE.WORK, { boardType: 'workflows' }); }}
+                  title={`workflow: ${chipId}`}
                 >
-                  <span className="text-[10px]">{cm.icon}</span>
+                  <span className="text-[10px]">⚙️</span>
                   <span>{children}</span>
                 </span>
               );
+            }
+            const entityType = chipTypeToEntityType(chipType!);
+            if (entityType) {
+              return <EntityChip id={chipId!} type={entityType} label={children} />;
             }
           }
         }
@@ -540,6 +624,10 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
     <div className="relative group/md">
       <CopyMenu content={content} contentRef={contentRef} />
       <div ref={contentRef}>
+        <ErrorBoundary
+          resetKeys={[processedRest]}
+          fallback={<div className={`prose prose-sm max-w-none break-words whitespace-pre-wrap pr-8 text-fg-secondary ${className}`}>{rest}</div>}
+        >
         <div className={`prose prose-sm max-w-none break-words pr-8 text-fg-secondary ${className}`}>
           {thinking.length > 0 && (() => {
             const full = thinking.join('\n\n');
@@ -556,18 +644,19 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
                 </summary>
                 <div className="px-3 pb-3 border-t border-border-default/50">
                   <div className="mt-2 pl-3 border-l-2 border-brand-500/40 text-xs text-fg-secondary leading-relaxed">
-                    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={mdComponents}>
-                      {normalizeMathDelimiters(full)}
+                    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components} urlTransform={chatUrlTransform}>
+                      {preprocess(full)}
                     </ReactMarkdown>
                   </div>
                 </div>
               </details>
             );
           })()}
-          <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
+          <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components} urlTransform={chatUrlTransform}>
             {processedRest}
           </ReactMarkdown>
         </div>
+        </ErrorBoundary>
       </div>
       {previewSrc && <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />}
     </div>

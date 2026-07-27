@@ -127,11 +127,9 @@ describe('AgentManager integration (real Agent)', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it('setToolCallLimitChecker propagates to agents', async () => {
+  it('agent creation works without tool call limit checker (removed)', async () => {
     const manager = createManager();
-    manager.setToolCallLimitChecker(() => ({ allowed: true }));
-
-    const agent = await manager.createAgent({ name: 'Limited', roleName: 'custom', tools: [] });
+    const agent = await manager.createAgent({ name: 'NoLimit', roleName: 'custom', tools: [] });
     expect(agent).toBeDefined();
   });
 

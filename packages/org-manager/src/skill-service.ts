@@ -335,13 +335,13 @@ export async function installSkill(
     } catch { /* skip */ }
   }
 
-  // Register into runtime SkillRegistry
+  // Register / refresh runtime SkillRegistry (overwrite on upgrade so new SKILL.md is live)
   if (skillRegistry) {
     try {
       const discovered = discoverSkillsInDir(skillsDir).find(
         d => d.manifest.name === skillName || d.path === targetDir
       );
-      if (discovered && !skillRegistry.get(discovered.manifest.name)) {
+      if (discovered) {
         discovered.manifest.sourcePath = discovered.path;
         skillRegistry.register({ manifest: discovered.manifest });
       }

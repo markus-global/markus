@@ -49,14 +49,20 @@ jobs:
       - name: Build Web UI
         run: pnpm --filter @markus/web-ui build
 
+      - name: Pack Chrome extension
+        run: node scripts/ensure-chrome-extension-zip.mjs
+
       - name: Bundle CLI for publishing
         run: pnpm --filter @markus-global/cli build:bundle
 
       - name: Verify bundle
         run: |
           ls -lh packages/cli/dist/markus.mjs
-          ls -d packages/cli/dist/web-ui || echo "Warning: Web UI not bundled"
-          ls -d packages/cli/templates || echo "Warning: templates not bundled"
+          ls -d packages/cli/dist/web-ui || { echo "Web UI not bundled"; exit 1; }
+          ls -d packages/cli/templates || { echo "templates not bundled"; exit 1; }
+          ls -lh packages/cli/dist/markus-browser-extension.zip
+          # npm pack dry-run must include the zip
+          cd packages/cli && npm pack --dry-run 2>&1 | grep -F 'markus-browser-extension.zip'
 
       - name: Publish to npm
         run: cd packages/cli && npm publish --access public --tag ${{ steps.meta.outputs.npm_tag }}
@@ -85,6 +91,9 @@ jobs:
 
       - name: Build Web UI
         run: pnpm --filter @markus/web-ui build
+
+      - name: Pack Chrome extension
+        run: node scripts/ensure-chrome-extension-zip.mjs
 
       - name: Bundle CLI for publishing
         run: pnpm --filter @markus-global/cli build:bundle
@@ -122,10 +131,6 @@ jobs:
             platform: darwin
             arch: x64
             electron_args: "--mac --x64"
-          - os: windows-latest
-            platform: win
-            arch: x64
-            electron_args: "--win --x64"
           - os: ubuntu-latest
             platform: linux
             arch: x64
@@ -151,8 +156,14 @@ jobs:
       - name: Build Web UI
         run: pnpm --filter @markus/web-ui build
 
+      - name: Pack Chrome extension
+        run: node scripts/ensure-chrome-extension-zip.mjs
+
       - name: Build Electron app
         run: pnpm --filter @markus/desktop build:electron
+
+      - name: Verify Electron dist includes extension zip
+        run: ls -lh packages/desktop/dist/markus-browser-extension.zip
 
       - name: Import Apple certificates
         if: matrix.platform == 'darwin'
@@ -201,9 +212,88 @@ jobs:
             packages/desktop/dist-electron/*.AppImage
           retention-days: 5
 
+  # Windows is built in its own job so the Certum SimplySign signing secrets can
+  # be gated behind a protected environment (required reviewers) without forcing
+  # the mac/linux desktop builds through the same manual-approval step.
+  build-desktop-windows:
+    needs: publish-npm
+    runs-on: windows-latest
+    environment: signing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Build Web UI
+        run: pnpm --filter @markus/web-ui build
+
+      - name: Pack Chrome extension
+        run: node scripts/ensure-chrome-extension-zip.mjs
+
+      - name: Build Electron app
+        run: pnpm --filter @markus/desktop build:electron
+
+      - name: Verify Electron dist includes extension zip
+        run: ls -lh packages/desktop/dist/markus-browser-extension.zip
+
+      # Fetch the ssign client used by build/sign.cjs and export its native
+      # Windows path so electron-builder's custom signer can find it.
+      #
+      # Supply-chain: ssign is a small third-party tool that handles our
+      # long-lived signing credential, so the download is pinned to an exact
+      # release AND verified against a known SHA-256 before use. If Le-Syl21
+      # ever re-tags or the CDN is tampered with, the checksum mismatch aborts
+      # the build instead of running an unknown binary. Bump both values
+      # together when upgrading (get the digest from the release assets API).
+      - name: Install ssign (Certum SimplySign client)
+        shell: bash
+        env:
+          SSIGN_VERSION: v0.1.2
+          SSIGN_SHA256: 973b871de89a55dc25aa6384c437bae5f94a5bb04c5e82c91ec01f3cf50deed9
+        run: |
+          set -euo pipefail
+          curl -fsSL -o ssign.zip \
+            "https://github.com/Le-Syl21/ssign/releases/download/${SSIGN_VERSION}/ssign-windows-x86_64.zip"
+          echo "${SSIGN_SHA256}  ssign.zip" | sha256sum -c -
+          powershell -NoProfile -Command "Expand-Archive -Path ssign.zip -DestinationPath ssign_bin -Force"
+          SSIGN_MSYS="$(find "$PWD/ssign_bin" -name 'ssign.exe' | head -1)"
+          if [ -z "$SSIGN_MSYS" ]; then echo "::error::ssign.exe not found in release archive"; exit 1; fi
+          echo "SSIGN_PATH=$(cygpath -w "$SSIGN_MSYS")" >> "$GITHUB_ENV"
+
+      # Full signing (app exe + NSIS installer) happens inside electron-builder
+      # via build/sign.cjs, so .blockmap / latest.yml are generated from the
+      # already-signed installer. Signing is skipped (non-fatal) if CERTUM_* are
+      # unset, so the pipeline still produces an unsigned installer for forks.
+      - name: Package + sign Electron app (Certum SimplySign)
+        working-directory: packages/desktop
+        run: pnpm dist --win --x64
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CERTUM_EMAIL: ${{ secrets.CERTUM_EMAIL }}
+          CERTUM_OTP: ${{ secrets.CERTUM_OTP }}
+
+      - name: Upload Electron artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: markus-desktop-win-x64
+          path: packages/desktop/dist-electron/*.exe
+          retention-days: 5
+
   github-release:
     runs-on: ubuntu-latest
-    needs: [publish-npm, build-server-binary, build-desktop]
+    needs: [publish-npm, build-server-binary, build-desktop, build-desktop-windows]
     steps:
       - uses: actions/checkout@v4
 
@@ -267,7 +357,7 @@ jobs:
 
   upload-to-hub:
     runs-on: ubuntu-latest
-    needs: [publish-npm, build-server-binary, build-desktop, github-release]
+    needs: [publish-npm, build-server-binary, build-desktop, build-desktop-windows, github-release]
     if: needs.publish-npm.outputs.is_prerelease == 'false'
     steps:
       - name: Download all artifacts

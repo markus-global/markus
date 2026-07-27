@@ -2,10 +2,19 @@ import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { api, invalidateApiCache, wsClient, type NotificationInfo, type ApprovalInfo } from '../api.ts';
+import { api, hubApi, invalidateApiCache, wsClient, type NotificationInfo, type ApprovalInfo, type UserInputAnswer } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
+import { muteCreditNotifications } from '../pages/ChatComponents.tsx';
+import { openExternal } from '../hooks/useElectron.ts';
+import { ConfirmModal } from './ConfirmModal.tsx';
+import { UserInputModal } from './UserInputModal.tsx';
+
+/** A request_user_input carries an explicit multi-question payload. */
+function isUserInputApproval(a: ApprovalInfo): boolean {
+  return Array.isArray(a.questions) && a.questions.length > 0;
+}
 
 interface Props {
   collapsed?: boolean;
@@ -63,6 +72,23 @@ function timeAgo(iso: string, t: TFunction): string {
   return t('common:time.daysAgo', { count: Math.floor(hrs / 24) });
 }
 
+const TEMPLATE_UPDATES_ACK_KEY = 'markus:template-updates-ack';
+
+/** Module-level guards: NotificationBell can mount more than once; avoid duplicate creates. */
+let templateUpdatesCheckInFlight = false;
+let templateUpdatesClaimedFingerprint: string | null = null;
+
+function templateUpdatesFingerprint(updates: Array<{ name: string; availableVersion: string }>): string {
+  return updates.map(u => `${u.name}@${u.availableVersion}`).sort().join(',');
+}
+
+function isTemplateUpdateNotification(n: NotificationInfo, fingerprint?: string): boolean {
+  if (n.type !== 'system' || !n.metadata?.templateUpdates) return false;
+  if (!fingerprint) return true;
+  const fp = n.metadata.templateUpdatesFingerprint as string | undefined;
+  return !fp || fp === fingerprint;
+}
+
 function actionHint(n: NotificationInfo, t: TFunction): string | null {
   const actionType = (n as any).actionType;
   if (actionType === 'open_chat') return t('team:notifications.actionHints.openChat');
@@ -81,6 +107,9 @@ function actionHint(n: NotificationInfo, t: TFunction): string | null {
       return t('team:notifications.actionHints.openChat');
     case 'approval_request':
       return t('team:notifications.actionHints.viewApproval');
+    case 'system':
+      if (meta.templateUpdates) return t('common:templateUpdates.actionHint');
+      return null;
     default:
       if (meta.taskId) return t('team:notifications.actionHints.viewTask');
       if (meta.requirementId) return t('team:notifications.actionHints.viewRequirement');
@@ -118,6 +147,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [notifications, setNotifications] = useState<NotificationInfo[]>([]);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   const [responding, setResponding] = useState<string | null>(null);
+  const [modalApproval, setModalApproval] = useState<ApprovalInfo | null>(null);
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
   const [unreadCount, setUnreadCount] = useState(0);
@@ -130,17 +160,22 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [loadingMore, setLoadingMore] = useState(false);
   const notifScrollRef = useRef<HTMLDivElement>(null);
   const lastTabRef = useRef<'approvals' | 'notifications'>('approvals');
+  const [creditDialog, setCreditDialog] = useState(false);
 
   const NOTIF_PAGE_SIZE = 30;
 
   const fetchData = useCallback(async () => {
     try {
+      // Avoid GET dedup returning a stale empty approvals list right after HITL create.
+      invalidateApiCache('/approvals');
+      invalidateApiCache('/notifications');
       const [n, a] = await Promise.all([
         api.notifications.list(userId, false, { limit: NOTIF_PAGE_SIZE, offset: 0 }),
         api.approvals.list(),
       ]);
       setNotifications(n.notifications);
-      setUnreadCount(n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length);
+      const serverUnread = n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length;
+      setUnreadCount(serverUnread);
       setHasMoreNotifications(n.totalCount != null ? n.notifications.length < n.totalCount : n.notifications.length >= NOTIF_PAGE_SIZE);
       setApprovals(a.approvals);
       if (!initialFetchDone.current) {
@@ -182,18 +217,130 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     });
   }, []);
 
+  // Keep latest notifications for event handlers without putting them in effect deps
+  // (that previously recreated onCreditExhausted → re-ran the mount effect →
+  // fetchData → setNotifications → infinite /api/notifications+/approvals loop).
+  const notificationsRef = useRef(notifications);
+  notificationsRef.current = notifications;
+
+  const onCreditExhausted = useCallback(async () => {
+    const hasUnread = notificationsRef.current.some(n => !n.read && n.type === 'system' && n.metadata?.creditExhausted);
+    if (hasUnread) return;
+    try {
+      await api.notifications.create({
+        title: t('credits.notificationTitle', { ns: 'common' }),
+        body: t('credits.notificationBody', { ns: 'common' }),
+        type: 'system',
+        priority: 'urgent',
+        metadata: { creditExhausted: true },
+      });
+      fetchData();
+      playNotificationSound();
+    } catch { /* */ }
+  }, [fetchData, t]);
+
+  /** Detect local builtin skills older than this Markus build; persist like credit notices. */
+  const checkTemplateUpdates = useCallback(async () => {
+    if (templateUpdatesCheckInFlight) return;
+    templateUpdatesCheckInFlight = true;
+    try {
+      const { updates } = await api.skills.updates();
+      if (!updates.length) return;
+      const fingerprint = templateUpdatesFingerprint(updates);
+      try {
+        if (localStorage.getItem(TEMPLATE_UPDATES_ACK_KEY) === fingerprint) return;
+      } catch { /* */ }
+      if (templateUpdatesClaimedFingerprint === fingerprint) return;
+
+      const localUnread = notificationsRef.current.some(n => !n.read && isTemplateUpdateNotification(n, fingerprint));
+      if (localUnread) return;
+
+      // Authoritative check against server — local state may be stale across mounts/races.
+      // Also collapse duplicate unread rows from earlier races (keep newest).
+      try {
+        const remote = await api.notifications.list(userId, true, { limit: 50, type: 'system' });
+        const dupes = remote.notifications
+          .filter(n => isTemplateUpdateNotification(n, fingerprint))
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        if (dupes.length > 0) {
+          for (const n of dupes.slice(1)) {
+            api.notifications.markRead(n.id).catch(() => {});
+          }
+          if (dupes.length > 1) fetchData();
+          templateUpdatesClaimedFingerprint = fingerprint;
+          return;
+        }
+      } catch { /* fall through and attempt create */ }
+
+      // Claim only once we are about to create (inFlight already serializes overlapping runs).
+      templateUpdatesClaimedFingerprint = fingerprint;
+      await api.notifications.create({
+        title: t('templateUpdates.notificationTitle', { ns: 'common' }),
+        body: t('templateUpdates.notificationBody', { ns: 'common', count: updates.length }),
+        type: 'system',
+        priority: 'high',
+        metadata: {
+          templateUpdates: true,
+          templateUpdatesFingerprint: fingerprint,
+          count: updates.length,
+          skills: updates.map(u => u.name),
+        },
+      });
+      fetchData();
+      playNotificationSound();
+    } catch {
+      // Allow retry on next check if create failed after claiming.
+      templateUpdatesClaimedFingerprint = null;
+    } finally {
+      templateUpdatesCheckInFlight = false;
+    }
+  }, [fetchData, t, userId]);
+
   useEffect(() => {
     fetchData();
     const timer = setInterval(fetchData, 60000);
-    const onChanged = () => fetchData();
-    const onOpenNotifications = () => { setOpen(true); fetchData(); };
+    // Coalesce bursty WS / custom-event refreshes (agents can emit many in a row).
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleFetch = () => {
+      if (debounceTimer) return;
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void fetchData();
+      }, 400);
+    };
+    const onChanged = () => scheduleFetch();
+    const onOpenNotifications = () => { setOpen(true); void fetchData(); };
     window.addEventListener('markus:notifications-changed', onChanged);
     window.addEventListener('markus:mark-read-by-ref', markReadByRef);
     window.addEventListener('markus:open-notifications', onOpenNotifications);
-    const unsubNotif = wsClient.on('notification:created', () => fetchData());
-    const unsubApproval = wsClient.on('approval:created', () => fetchData());
-    return () => { clearInterval(timer); window.removeEventListener('markus:notifications-changed', onChanged); window.removeEventListener('markus:mark-read-by-ref', markReadByRef); window.removeEventListener('markus:open-notifications', onOpenNotifications); unsubNotif(); unsubApproval(); };
-  }, [fetchData, markReadByRef]);
+    window.addEventListener('markus:credit-exhausted', onCreditExhausted);
+    const unsubNotif = wsClient.on('notification', scheduleFetch);
+    const unsubApproval = wsClient.on('approval:requested', scheduleFetch);
+    return () => {
+      clearInterval(timer);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      window.removeEventListener('markus:notifications-changed', onChanged);
+      window.removeEventListener('markus:mark-read-by-ref', markReadByRef);
+      window.removeEventListener('markus:open-notifications', onOpenNotifications);
+      window.removeEventListener('markus:credit-exhausted', onCreditExhausted);
+      unsubNotif();
+      unsubApproval();
+    };
+  }, [fetchData, markReadByRef, onCreditExhausted]);
+
+  // Run once per mount identity of userId — do NOT re-run when notifications refresh
+  // (that previously raced and created duplicate rows).
+  useEffect(() => {
+    void checkTemplateUpdates();
+    const timer = setInterval(() => { void checkTemplateUpdates(); }, 5 * 60_000);
+    const onDataChanged = () => { void checkTemplateUpdates(); };
+    window.addEventListener('markus:data-changed', onDataChanged);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('markus:data-changed', onDataChanged);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: avoid re-check loops on notification state
+  }, [userId]);
 
   const reposition = useCallback(() => {
     if (!btnRef.current) return;
@@ -325,6 +472,12 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       case 'approval_request': {
         const approvalId = meta.approvalId as string | undefined;
         const approval = approvalId ? approvals.find(a => a.id === approvalId) : undefined;
+        // User-input approvals always open the modal: editable while pending, and
+        // read-only afterwards so the user can review what they submitted.
+        if (approval && isUserInputApproval(approval)) {
+          setModalApproval(approval);
+          break;
+        }
         const taskId = (approval?.details?.taskId ?? meta.taskId) as string | undefined;
         const requirementId = (approval?.details?.requirementId ?? meta.requirementId) as string | undefined;
         const apAgentId = (approval?.details?.agentId ?? approval?.agentId) as string | undefined;
@@ -348,6 +501,19 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
         break;
       case 'agent_report':
       case 'system': {
+        if (meta.creditExhausted) {
+          setCreditDialog(true);
+          return;
+        }
+        if (meta.templateUpdates) {
+          const fp = meta.templateUpdatesFingerprint as string | undefined;
+          if (fp) {
+            try { localStorage.setItem(TEMPLATE_UPDATES_ACK_KEY, fp); } catch { /* */ }
+          }
+          localStorage.setItem('markus_nav_storeTab', 'installed');
+          navBus.navigate(PAGE.STORE);
+          return;
+        }
         if (meta.agentId) {
           const params: Record<string, string> = { agentId: meta.agentId as string };
           if (meta.sessionId) params.sessionId = meta.sessionId as string;
@@ -379,7 +545,9 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   };
 
   const handleNotificationClick = async (n: NotificationInfo) => {
-    if (!n.read) handleMarkRead(n.id);
+    if (!n.read) {
+      handleMarkRead(n.id);
+    }
     const meta = n.metadata ?? {};
     const targetTaskId = meta.taskId as string | undefined;
     const targetReqId = meta.requirementId as string | undefined;
@@ -394,11 +562,12 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     navigateForNotification(n);
   };
 
-  const handleApprovalResponse = async (id: string, approved: boolean, comment?: string, selectedOption?: string) => {
+  const handleApprovalResponse = async (id: string, approved: boolean, comment?: string, selectedOption?: string, answers?: UserInputAnswer[]) => {
     setResponding(id);
     try {
-      const { approval } = await api.approvals.respond(id, approved, userId, comment, selectedOption);
+      const { approval } = await api.approvals.respond(id, approved, userId, comment, selectedOption, answers);
       setApprovals(prev => prev.map(a => a.id === id ? approval : a));
+      setModalApproval(null);
       setAdjustingId(null);
       setFreeformTexts(prev => { const next = { ...prev }; delete next[id]; return next; });
 
@@ -493,6 +662,28 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     onClose?.();
   };
 
+  const renderRespondButton = (a: ApprovalInfo) => (
+    <button
+      disabled={responding === a.id}
+      onClick={() => setModalApproval(a)}
+      className="w-full px-3 py-2 text-[11px] font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors inline-flex items-center justify-center gap-1.5"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+      {t('team:userInput.respond', { defaultValue: 'Respond' })}
+      {a.questions && a.questions.length > 1 ? ` (${a.questions.length})` : ''}
+    </button>
+  );
+
+  const modalEl = modalApproval ? (
+    <UserInputModal
+      approval={modalApproval}
+      submitting={responding === modalApproval.id}
+      readOnly={modalApproval.status !== 'pending'}
+      onClose={() => setModalApproval(null)}
+      onSubmit={(r) => handleApprovalResponse(modalApproval.id, r.approved, r.comment, r.selectedOption, r.answers)}
+    />
+  ) : null;
+
   const panelContent = (
     <>
       {/* Tabs + Close */}
@@ -572,6 +763,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                         )}
                       </div>
                       {(() => {
+                        if (isUserInputApproval(a)) return renderRespondButton(a);
                         const sub = a.details?.subType as string | undefined;
                         const isStructured = sub === 'task' || sub === 'requirement' || sub === 'requirement_resubmit';
                         const hasOptions = a.options && a.options.length > 0;
@@ -715,7 +907,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                         </div>
                       )}
                       {historyList.slice(0, 50).map(a => (
-                        <button key={a.id} onClick={() => navigateForApproval(a)} className="w-full text-left px-3 py-2.5 hover:bg-surface-overlay/50 transition-colors group">
+                        <button key={a.id} onClick={() => isUserInputApproval(a) ? setModalApproval(a) : navigateForApproval(a)} className="w-full text-left px-3 py-2.5 hover:bg-surface-overlay/50 transition-colors group">
                           <div className="flex items-center gap-2">
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'approved' ? 'bg-green-500' : a.status === 'cancelled' || a.status === 'expired' ? 'bg-gray-400' : 'bg-red-500'}`} />
                             {approvalTypeLabel(a) && <span className="text-[10px] text-fg-tertiary font-medium shrink-0">{approvalTypeLabel(a)}</span>}
@@ -798,6 +990,37 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     </>
   );
 
+  const applyCreditMute = useCallback((checked?: Record<string, boolean>) => {
+    if (checked?.mute) muteCreditNotifications();
+  }, []);
+
+  const closeCreditDialog = useCallback((checked?: Record<string, boolean>) => {
+    applyCreditMute(checked);
+    setCreditDialog(false);
+  }, [applyCreditMute]);
+
+  const creditDialogEl = creditDialog ? (
+    <ConfirmModal
+      title={t('credits.dialogTitle', { ns: 'common' })}
+      message={t('credits.dialogDesc', { ns: 'common' })}
+      variant="primary"
+      cancelLabel={t('credits.configureModels', { ns: 'common' })}
+      confirmLabel={t('credits.topUp', { ns: 'common' })}
+      checkboxes={[{ id: 'mute', label: t('credits.dontRemind', { ns: 'common' }) }]}
+      onCancel={() => setCreditDialog(false)}
+      onCancelClick={(checked) => {
+        closeCreditDialog(checked);
+        navBus.navigate(PAGE.SETTINGS);
+        setTimeout(() => { window.location.hash = 'settings/providers'; }, 50);
+      }}
+      onConfirm={(checked) => {
+        const url = `${hubApi.getUrl().replace(/\/$/, '')}/settings?tab=billing`;
+        closeCreditDialog(checked);
+        openExternal(url);
+      }}
+    />
+  ) : null;
+
   if (embeddedMode) {
     const tabs: Array<'approvals' | 'notifications'> = ['approvals', 'notifications'];
     const tabIdx = tabs.indexOf(tab);
@@ -819,7 +1042,10 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     })();
 
     return (
+      <>
+      {creditDialogEl}
       <div className="flex flex-col h-full overflow-hidden">
+        {modalEl}
         {/* Tabs */}
         <div className="flex border-b border-border-default shrink-0">
           {tabs.map((t_id) => (
@@ -879,6 +1105,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           {cmd && <pre className="text-[11px] text-fg-primary bg-surface-overlay border border-border-default rounded-md px-2.5 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed mt-2">{cmd}</pre>}
                         </div>
                         {(() => {
+                          if (isUserInputApproval(a)) return renderRespondButton(a);
                           const sub = a.details?.subType as string | undefined;
                           const isStructured = sub === 'task' || sub === 'requirement' || sub === 'requirement_resubmit';
                           const hasOptions = a.options && a.options.length > 0;
@@ -1070,6 +1297,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
           </div>
         </div>
       </div>
+      </>
     );
   }
 
@@ -1077,6 +1305,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     const d = iconPath || 'M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 0 1-3.46 0';
     return (
       <>
+        {modalEl}
         <button
           ref={btnRef}
           onClick={() => { setOpen(!open); if (!open) fetchData(); }}
@@ -1107,12 +1336,14 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
           </div>,
           document.body
         )}
+        {creditDialogEl}
       </>
     );
   }
 
   return (
     <>
+      {modalEl}
       <button
         ref={btnRef}
         onClick={() => { setOpen(!open); if (!open) fetchData(); }}
@@ -1138,6 +1369,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
         </div>,
         document.body
       )}
+      {creditDialogEl}
     </>
   );
 }

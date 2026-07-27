@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CapabilityRoutingConfigDTO, ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO } from '../api';
 import { ModelSelect, type ModelOption } from './ModelSelect';
+import { ConfirmModal } from './ConfirmModal.tsx';
 
 interface Props {
   onSave: (data: { capabilityRouting?: Partial<CapabilityRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null }) => Promise<void>;
@@ -25,7 +26,7 @@ interface Suggestion {
 }
 
 export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
-  const { t } = useTranslation('settings');
+  const { t } = useTranslation(['settings', 'common']);
   const [assignments, setAssignments] = useState<Partial<Record<ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO>>>({});
   const [defaultModel, setDefaultModel] = useState<{ provider: string; model: string } | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -34,6 +35,9 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
   const [fullModelList, setFullModelList] = useState<ModelOption[] | null>(null);
   const [suggestions, setSuggestions] = useState<Record<string, Suggestion | null>>({});
   const [suggestionsLoaded, setSuggestionsLoaded] = useState(false);
+  const [restoreStatus, setRestoreStatus] = useState<'idle' | 'working' | 'error'>('idle');
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [confirmRestore, setConfirmRestore] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSaveRef = useRef<{ capabilityRouting?: Partial<CapabilityRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null } | null>(null);
 
@@ -123,6 +127,69 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
 
   const allModels = fullModelList ?? fallbackModels;
 
+  const reloadRouting = useCallback(() => {
+    fetch('/api/settings/llm/routing', { credentials: 'include' })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then((data: { capabilityRouting?: CapabilityRoutingConfigDTO; routingDefaultModel?: { provider: string; model: string } | null }) => {
+        setAssignments(data.capabilityRouting?.assignments ?? {});
+        setDefaultModel(data.routingDefaultModel ?? null);
+      })
+      .catch(() => { /* keep current form state */ });
+    fetch('/api/models/routing-candidates', { credentials: 'include' })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then((data: { providers: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> }> }) => {
+        const models: ModelOption[] = [];
+        for (const prov of data.providers) {
+          for (const m of prov.models) {
+            models.push({
+              provider: prov.provider,
+              providerLabel: prov.displayName,
+              modelId: m.id,
+              modelName: m.name,
+              mode: m.mode,
+              tier: m.tier,
+              costTier: m.costTier,
+              capabilities: m.capabilities,
+            });
+          }
+        }
+        setFullModelList(models);
+      })
+      .catch(() => { /* ignore */ });
+  }, []);
+
+  const restoreRecommended = useCallback(async () => {
+    if (restoreStatus === 'working') return;
+    setRestoreStatus('working');
+    setRestoreError(null);
+    try {
+      const res = await fetch('/api/settings/llm/restore-recommended', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json().catch(() => ({})) as {
+        ok?: boolean;
+        error?: string;
+        capabilityRouting?: CapabilityRoutingConfigDTO;
+        routingDefaultModel?: { provider: string; model: string } | null;
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      if (data.capabilityRouting) setAssignments(data.capabilityRouting.assignments ?? {});
+      if (data.routingDefaultModel !== undefined) setDefaultModel(data.routingDefaultModel);
+      reloadRouting();
+      setRestoreStatus('idle');
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(prev => (prev === 'saved' ? 'idle' : prev)), 2000);
+    } catch (e) {
+      setRestoreStatus('error');
+      setRestoreError(e instanceof Error ? e.message : String(e));
+      setTimeout(() => setRestoreStatus('idle'), 4000);
+    }
+  }, [restoreStatus, reloadRouting]);
+
   if (!loaded) {
     return (
       <div className="space-y-4">
@@ -147,7 +214,22 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
 
   return (
     <div className="space-y-6">
-      <SaveIndicator status={saveStatus} t={t} />
+      <div className="flex items-center justify-between gap-3">
+        <SaveIndicator status={saveStatus} t={t} />
+        <div className="flex flex-col items-end gap-1">
+          <button
+            type="button"
+            onClick={() => setConfirmRestore(true)}
+            disabled={restoreStatus === 'working'}
+            className="text-xs px-3 py-1.5 rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary hover:border-brand-500/40 disabled:opacity-50 transition-colors"
+          >
+            {restoreStatus === 'working' ? t('modelRouting.restoreWorking') : t('modelRouting.restoreRecommended')}
+          </button>
+          {restoreError && (
+            <span className="text-[10px] text-red-400 max-w-xs text-right">{restoreError}</span>
+          )}
+        </div>
+      </div>
 
       {/* Default / Fallback Model */}
       <div className="bg-surface-elevated rounded-xl p-5 space-y-3">
@@ -223,6 +305,19 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
           </div>
         )}
       </div>
+      {confirmRestore && (
+        <ConfirmModal
+          variant="primary"
+          title={t('modelRouting.restoreRecommended')}
+          message={t('modelRouting.restoreConfirm')}
+          confirmLabel={t('common:confirm')}
+          onConfirm={() => {
+            setConfirmRestore(false);
+            void restoreRecommended();
+          }}
+          onCancel={() => setConfirmRestore(false)}
+        />
+      )}
     </div>
   );
 }
@@ -410,11 +505,13 @@ function filterModelsForCapability(models: ModelOption[], capabilityType: ModelC
     video_generation: ['video_generation'],
   };
 
+  // Dedicated speech tags only — audioOutput/audioInput alone includes multimodal
+  // chat models (e.g. gpt-audio) that are not usable as Markus TTS/STT endpoints.
   const capMap: Record<string, string[]> = {
     image_recognition: ['vision'],
     image_generation: ['imageGeneration'],
-    audio_tts: ['audioOutput', 'tts'],
-    audio_stt: ['audioInput', 'stt'],
+    audio_tts: ['tts'],
+    audio_stt: ['stt'],
     video_generation: ['videoGeneration'],
   };
 

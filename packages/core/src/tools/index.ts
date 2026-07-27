@@ -4,7 +4,13 @@ export { createGrepTool, createGlobTool, createListDirectoryTool } from './searc
 export { createPatchTool } from './patch.js';
 export { createBackgroundExecTool, createProcessTool, onBackgroundCompletion, drainCompletedNotifications } from './process-manager.js';
 export { WebFetchTool } from './web-fetch.js';
-export { WebSearchTool } from './web-search.js';
+export {
+  WebSearchTool,
+  testSearchProvider,
+  resolveMarkusSearchProvider,
+  type MarkusSearchProviderId,
+  type SearchProviderTestResult,
+} from './web-search.js';
 export { WebExtractTool } from './web-extract.js';
 export { MCPClientManager } from './mcp-client.js';
 export { createBuiltinTools } from './builtin.js';
@@ -19,3 +25,9 @@ export { createRecallTool, type RecallContext, type RecallCallbacks } from './re
 export { createMailboxTools, type MailboxToolContext } from './mailbox-tools.js';
 export { createWorkflowTools, type WorkflowToolsContext } from './workflow-tools.js';
 export { createMultiModalTools, type MultiModalToolsContext } from './multimodal.js';
+export { toolOk, toolErr, isToolErrorResult } from './result.js';
+export {
+  parseOpenRightPanelArgs,
+  type UiLayoutEvent,
+  type UiLayoutOpenPayload,
+} from './ui-layout.js';

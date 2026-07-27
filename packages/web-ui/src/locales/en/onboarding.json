@@ -46,7 +46,7 @@
   "search": {
     "title": "Web Search (Optional)",
     "subtitle": "Give agents the ability to search the web",
-    "description": "Configure at least one search API key to enable agents to find real-time information. DuckDuckGo is always available as a free fallback.",
+    "description": "Configure Markus hosted search or at least one search API key so agents can find real-time information.",
     "serper": "Serper (Google)",
     "tavily": "Tavily",
     "bing": "Bing Web Search",
@@ -113,6 +113,7 @@
     "defaultOrgName": "{{name}}'s Team",
     "setOrgName": "Set Organization Name",
     "orgNameSaved": "Saved",
+    "orgNameSaveFailed": "Could not save the organization name. Please try again.",
     "pendingInvitations": "You have pending organization invitations",
     "invitedBy": "Invited by: {{name}}",
     "acceptAndJoin": "Accept & Join",

@@ -8,7 +8,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { createLogger } from '@markus/shared';
+import { createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, type UserInputQuestion, type UserInputAnswer } from '@markus/shared';
 
 type SqlParams = SQLInputValue[];
 
@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   user_id TEXT,
   title TEXT,
   is_main INTEGER NOT NULL DEFAULT 0,
+  metadata TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_message_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -383,6 +384,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT,
   invite_token TEXT,
   invite_expires_at TEXT,
+  preferences TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_login_at TEXT
 );
@@ -534,7 +536,9 @@ CREATE TABLE IF NOT EXISTS approvals (
   allow_freeform INTEGER NOT NULL DEFAULT 0,
   selected_option TEXT,
   approver_user_ids TEXT,
-  target_user_id TEXT
+  target_user_id TEXT,
+  questions TEXT,
+  answers TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
 
@@ -648,7 +652,12 @@ CREATE TABLE IF NOT EXISTS pending_callbacks (
   agent_id TEXT NOT NULL,
   origin_session_id TEXT NOT NULL,
   type TEXT NOT NULL DEFAULT 'background_exec',
+  delivery_mode TEXT NOT NULL DEFAULT 'in_session',
   command TEXT,
+  note TEXT,
+  correlation_id TEXT,
+  wake_at INTEGER,
+  recurring_ms INTEGER,
   registered_at INTEGER NOT NULL,
   timeout_ms INTEGER NOT NULL DEFAULT 600000
 );
@@ -699,6 +708,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'agent_activities', column: 'summary', sql: "ALTER TABLE agent_activities ADD COLUMN summary TEXT DEFAULT ''" },
     { table: 'agent_activities', column: 'keywords', sql: "ALTER TABLE agent_activities ADD COLUMN keywords TEXT DEFAULT ''" },
     { table: 'chat_sessions', column: 'is_main', sql: "ALTER TABLE chat_sessions ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0" },
+    { table: 'chat_sessions', column: 'metadata', sql: "ALTER TABLE chat_sessions ADD COLUMN metadata TEXT" },
     { table: 'mailbox_items', column: 'retry_count', sql: "ALTER TABLE mailbox_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0" },
     { table: 'users', column: 'avatar_url', sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT" },
     { table: 'users', column: 'invite_token', sql: "ALTER TABLE users ADD COLUMN invite_token TEXT" },
@@ -719,6 +729,14 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'requirement_comments', column: 'reply_to_id', sql: 'ALTER TABLE requirement_comments ADD COLUMN reply_to_id TEXT' },
     { table: 'tasks', column: 'completion_summary', sql: 'ALTER TABLE tasks ADD COLUMN completion_summary TEXT' },
     { table: 'requirements', column: 'goal_config', sql: 'ALTER TABLE requirements ADD COLUMN goal_config TEXT' },
+    { table: 'approvals', column: 'questions', sql: 'ALTER TABLE approvals ADD COLUMN questions TEXT' },
+    { table: 'approvals', column: 'answers', sql: 'ALTER TABLE approvals ADD COLUMN answers TEXT' },
+    { table: 'users', column: 'preferences', sql: 'ALTER TABLE users ADD COLUMN preferences TEXT' },
+    { table: 'pending_callbacks', column: 'delivery_mode', sql: "ALTER TABLE pending_callbacks ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'in_session'" },
+    { table: 'pending_callbacks', column: 'note', sql: 'ALTER TABLE pending_callbacks ADD COLUMN note TEXT' },
+    { table: 'pending_callbacks', column: 'correlation_id', sql: 'ALTER TABLE pending_callbacks ADD COLUMN correlation_id TEXT' },
+    { table: 'pending_callbacks', column: 'wake_at', sql: 'ALTER TABLE pending_callbacks ADD COLUMN wake_at INTEGER' },
+    { table: 'pending_callbacks', column: 'recurring_ms', sql: 'ALTER TABLE pending_callbacks ADD COLUMN recurring_ms INTEGER' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -730,6 +748,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
 
   // Indexes that depend on migrated columns (must run AFTER column migrations)
   _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_pending_callbacks_wake ON pending_callbacks(wake_at)');
 
   migrateToExecutionStreamLogs(_db);
 
@@ -745,6 +764,24 @@ export function openSqlite(dbPath: string): DatabaseSync {
     if (result.changes > 0) {
       log.info(`Status migration: ${m.desc} (${result.changes} rows)`);
     }
+  }
+
+  // One-time heartbeat interval migration: agents created before the coarse
+  // safety-net redesign persisted the legacy 30-min default (1800000). Bump
+  // those (and only those) up to the current DEFAULT_HEARTBEAT_INTERVAL_MS.
+  // Gated by PRAGMA user_version so it runs exactly once — any interval a user
+  // or agent deliberately sets afterwards is respected and never clobbered.
+  const HEARTBEAT_MIGRATION_VERSION = 1;
+  const LEGACY_HEARTBEAT_DEFAULT_MS = 1800000;
+  const userVersionRow = _db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined;
+  if ((userVersionRow?.user_version ?? 0) < HEARTBEAT_MIGRATION_VERSION) {
+    const result = _db
+      .prepare('UPDATE agents SET heartbeat_interval_ms = ? WHERE heartbeat_interval_ms = ?')
+      .run(DEFAULT_HEARTBEAT_INTERVAL_MS, LEGACY_HEARTBEAT_DEFAULT_MS);
+    if (result.changes > 0) {
+      log.info(`Heartbeat migration: bumped ${result.changes} agent(s) from legacy 30m default to ${DEFAULT_HEARTBEAT_INTERVAL_MS}ms safety-net`);
+    }
+    _db.exec(`PRAGMA user_version = ${HEARTBEAT_MIGRATION_VERSION}`);
   }
 
   log.info('SQLite database opened', { path: dbPath });
@@ -797,15 +834,14 @@ export class SqliteOrgRepo {
     name: string;
     ownerId: string;
     plan?: string;
-    maxAgents?: number;
   }) {
     const ts = now();
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO organizations (id, name, owner_id, plan, max_agents, settings, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, '{}', ?, ?)`
+        `INSERT OR IGNORE INTO organizations (id, name, owner_id, plan, settings, created_at, updated_at)
+       VALUES (?, ?, ?, ?, '{}', ?, ?)`
       )
-      .run(data.id, data.name, data.ownerId, data.plan ?? 'free', data.maxAgents ?? 20, ts, ts);
+      .run(data.id, data.name, data.ownerId, data.plan ?? 'free', ts, ts);
     return this.findOrgById(data.id)!;
   }
 
@@ -854,7 +890,6 @@ export class SqliteOrgRepo {
       name: r['name'] as string,
       ownerId: r['owner_id'] as string,
       plan: r['plan'] as string,
-      maxAgents: r['max_agents'] as number,
       managerAgentId: r['manager_agent_id'] as string | null,
       settings: fromJson(r['settings'] as string),
       createdAt: toDate(r['created_at'] as string),
@@ -896,7 +931,7 @@ export class SqliteAgentRepo {
         toJson(data.skills ?? []),
         toJson(data.llmConfig ?? {}),
         toJson(data.computeConfig ?? {}),
-        data.heartbeatIntervalMs ?? 1800000,
+        data.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
         ts,
         ts
       );
@@ -2105,6 +2140,78 @@ export class SqliteChatSessionRepo {
     };
   }
 
+  /**
+   * Upsert the in-flight assistant bubble for a streaming turn.
+   * If the latest assistant message is marked `isStreaming`, update it in place
+   * so refresh/partial/final persist does not stack duplicate rows.
+   */
+  upsertStreamingAssistantMessage(
+    sessionId: string,
+    agentId: string,
+    content: string,
+    tokensUsed?: number,
+    metadata?: unknown,
+  ) {
+    const row = this.db
+      .prepare(
+        `SELECT id, metadata FROM chat_messages
+         WHERE session_id = ? AND role = 'assistant'
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(sessionId) as { id: string; metadata: string | null } | undefined;
+
+    let existingStreaming = false;
+    if (row?.metadata) {
+      try {
+        const meta = JSON.parse(row.metadata) as { isStreaming?: boolean };
+        existingStreaming = !!meta.isStreaming;
+      } catch {
+        existingStreaming = false;
+      }
+    }
+
+    if (row && existingStreaming) {
+      const ts = now();
+      this.db
+        .prepare(
+          `UPDATE chat_messages
+           SET content = ?, metadata = ?, tokens_used = ?, created_at = created_at
+           WHERE id = ?`,
+        )
+        .run(content, metadata ? toJson(metadata) : null, tokensUsed ?? 0, row.id);
+      return {
+        id: row.id,
+        sessionId,
+        agentId,
+        role: 'assistant',
+        content,
+        metadata: metadata ?? null,
+        tokensUsed: tokensUsed ?? 0,
+        createdAt: new Date(ts),
+      };
+    }
+
+    return this.appendMessage(sessionId, agentId, 'assistant', content, tokensUsed, metadata);
+  }
+
+  updateSessionMetadata(sessionId: string, metadata: Record<string, unknown> | null): void {
+    this.db
+      .prepare('UPDATE chat_sessions SET metadata = ? WHERE id = ?')
+      .run(metadata ? toJson(metadata) : null, sessionId);
+  }
+
+  getSessionMetadata(sessionId: string): Record<string, unknown> | null {
+    const row = this.db
+      .prepare('SELECT metadata FROM chat_sessions WHERE id = ?')
+      .get(sessionId) as { metadata: string | null } | undefined;
+    if (!row?.metadata) return null;
+    try {
+      return (JSON.parse(row.metadata) as Record<string, unknown>) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   getMessages(sessionId: string, limit = 50, before?: string) {
     let q = 'SELECT * FROM chat_messages WHERE session_id = ?';
     const vals: SqlParams = [sessionId];
@@ -2167,12 +2274,23 @@ export class SqliteChatSessionRepo {
   }
 
   private _mapSession(r: Record<string, unknown>) {
+    let metadata: Record<string, unknown> | null = null;
+    if (typeof r['metadata'] === 'string' && r['metadata']) {
+      try {
+        metadata = JSON.parse(r['metadata'] as string) as Record<string, unknown>;
+      } catch {
+        metadata = null;
+      }
+    } else if (r['metadata'] && typeof r['metadata'] === 'object') {
+      metadata = r['metadata'] as Record<string, unknown>;
+    }
     return {
       id: r['id'],
       agentId: r['agent_id'],
       userId: r['user_id'],
       title: r['title'],
       isMain: !!(r['is_main']),
+      metadata,
       createdAt: toDate(r['created_at'] as string)!,
       lastMessageAt: toDate(r['last_message_at'] as string)!,
     };
@@ -2581,6 +2699,11 @@ export class SqliteUserRepo {
     this.db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run(avatarUrl, id);
   }
 
+  updatePreferences(id: string, preferences: Record<string, unknown>) {
+    this.db.prepare('UPDATE users SET preferences = ? WHERE id = ?').run(JSON.stringify(preferences), id);
+    return this.findById(id);
+  }
+
   setInviteToken(id: string, token: string, expiresAt: string) {
     this.db.prepare('UPDATE users SET invite_token = ?, invite_expires_at = ? WHERE id = ?').run(token, expiresAt, id);
   }
@@ -2644,6 +2767,7 @@ export class SqliteUserRepo {
       hubUsername: r['hub_username'] as string | null,
       inviteToken: r['invite_token'] as string | null,
       inviteExpiresAt: r['invite_expires_at'] as string | null,
+      preferences: fromJson<Record<string, unknown>>(r['preferences'] as string) ?? undefined,
       createdAt: toDate(r['created_at'] as string),
       lastLoginAt: toDate(r['last_login_at'] as string),
     };
@@ -4234,6 +4358,8 @@ export interface ApprovalRow {
   options?: Array<{ id: string; label: string; description?: string }>;
   allowFreeform?: boolean;
   selectedOption?: string;
+  questions?: UserInputQuestion[];
+  answers?: UserInputAnswer[];
   approverUserIds?: string[];
   targetUserId?: string;
 }
@@ -4243,14 +4369,15 @@ export class SqliteApprovalRepo {
 
   upsert(a: ApprovalRow): void {
     this.db.prepare(
-      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids, target_user_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids, target_user_id, questions, answers)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          status = excluded.status,
          responded_at = excluded.responded_at,
          responded_by = excluded.responded_by,
          response_comment = excluded.response_comment,
-         selected_option = excluded.selected_option`
+         selected_option = excluded.selected_option,
+         answers = excluded.answers`
     ).run(
       a.id,
       a.agentId,
@@ -4270,6 +4397,8 @@ export class SqliteApprovalRepo {
       a.selectedOption ?? null,
       a.approverUserIds?.length ? JSON.stringify(a.approverUserIds) : null,
       a.targetUserId ?? null,
+      a.questions?.length ? JSON.stringify(a.questions) : null,
+      a.answers?.length ? JSON.stringify(a.answers) : null,
     );
   }
 
@@ -4308,6 +4437,8 @@ export class SqliteApprovalRepo {
       options: fromJson<Array<{ id: string; label: string; description?: string }>>(r['options'] as string) ?? undefined,
       allowFreeform: !!(r['allow_freeform'] as number),
       selectedOption: r['selected_option'] as string | undefined,
+      questions: fromJson<UserInputQuestion[]>(r['questions'] as string) ?? undefined,
+      answers: fromJson<UserInputAnswer[]>(r['answers'] as string) ?? undefined,
       approverUserIds: fromJson<string[]>(r['approver_user_ids'] as string) ?? undefined,
       targetUserId: (r['target_user_id'] as string) ?? undefined,
     };
@@ -4878,25 +5009,34 @@ export class SqliteWorkflowScheduleRepo {
 export class SqlitePendingCallbackRepo {
   constructor(private db: DatabaseSync) {}
 
-  save(cb: { id: string; agentId: string; originSessionId: string; type: string; command?: string; registeredAt: number; timeoutMs: number }): void {
+  save(cb: { id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }): void {
     this.db.prepare(
-      `INSERT OR REPLACE INTO pending_callbacks (id, agent_id, origin_session_id, type, command, registered_at, timeout_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(cb.id, cb.agentId, cb.originSessionId, cb.type, cb.command ?? null, cb.registeredAt, cb.timeoutMs);
+      `INSERT OR REPLACE INTO pending_callbacks (id, agent_id, origin_session_id, type, delivery_mode, command, note, correlation_id, wake_at, recurring_ms, registered_at, timeout_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      cb.id, cb.agentId, cb.originSessionId, cb.type, cb.deliveryMode ?? 'in_session',
+      cb.command ?? null, cb.note ?? null, cb.correlationId ?? null,
+      cb.wakeAt ?? null, cb.recurringMs ?? null, cb.registeredAt, cb.timeoutMs,
+    );
   }
 
   remove(id: string): void {
     this.db.prepare('DELETE FROM pending_callbacks WHERE id = ?').run(id);
   }
 
-  loadAll(): Array<{ id: string; agentId: string; originSessionId: string; type: 'background_exec'; command?: string; registeredAt: number; timeoutMs: number }> {
+  loadAll(): Array<{ id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }> {
     const rows = this.db.prepare('SELECT * FROM pending_callbacks').all() as Record<string, unknown>[];
     return rows.map(r => ({
       id: r['id'] as string,
       agentId: r['agent_id'] as string,
       originSessionId: r['origin_session_id'] as string,
-      type: r['type'] as 'background_exec',
-      command: r['command'] as string | undefined,
+      type: r['type'] as string,
+      deliveryMode: (r['delivery_mode'] as string | null) ?? undefined,
+      command: (r['command'] as string | null) ?? undefined,
+      note: (r['note'] as string | null) ?? undefined,
+      correlationId: (r['correlation_id'] as string | null) ?? undefined,
+      wakeAt: (r['wake_at'] as number | null) ?? undefined,
+      recurringMs: (r['recurring_ms'] as number | null) ?? undefined,
       registeredAt: r['registered_at'] as number,
       timeoutMs: r['timeout_ms'] as number,
     }));

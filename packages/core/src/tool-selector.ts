@@ -75,9 +75,9 @@ const TOOL_GROUPS: ToolGroup[] = [
   },
   {
     name: 'secretary',
-    keywords: ['stop', 'start', 'wake', 'shutdown', 'team', 'manage',
-      '停止', '启动', '唤醒', '关闭', '团队', '管理'],
-    toolNames: ['team_stop', 'team_start'],
+    keywords: ['stop', 'start', 'wake', 'shutdown', 'team', 'manage', 'hire', 'create team',
+      '停止', '启动', '唤醒', '关闭', '团队', '管理', '招聘', '建队', '创建团队'],
+    toolNames: ['list_teams', 'team_stop', 'team_start'],
   },
   {
     name: 'deliverables',
@@ -89,7 +89,7 @@ const TOOL_GROUPS: ToolGroup[] = [
   {
     name: 'packages',
     keywords: ['builder', 'artifact', 'deploy', 'skill', 'package', 'hub', 'hire', 'install agent', 'install team',
-      '部署', '工件', '技能包', '招聘', '安装'],
+      '部署', '工件', '技能包', '招聘', '安装', 'builder-artifacts'],
     toolNames: ['package_list', 'package_install', 'hub_search', 'hub_install'],
   },
   {
@@ -137,8 +137,12 @@ export class ToolSelector {
     userMessage: string;
     recentToolNames?: string[];
     isManager?: boolean;
+    /** Secretary always gets org team + package hire tools (not keyword-gated). */
+    isSecretary?: boolean;
     isTaskExecution?: boolean;
     isReview?: boolean;
+    /** Team Chat (DM) — enables right-panel layout tools. */
+    isChat?: boolean;
     skillCatalog?: SkillManifest[];
   }): LLMTool[] {
     const selected = new Set<string>();
@@ -157,6 +161,16 @@ export class ToolSelector {
       }
     }
 
+    if (opts.isSecretary) {
+      for (const group of this.groups) {
+        if (group.name === 'secretary' || group.name === 'packages') {
+          for (const name of group.toolNames) {
+            if (opts.allTools.has(name)) selected.add(name);
+          }
+        }
+      }
+    }
+
     if (opts.isTaskExecution) {
       for (const group of this.groups) {
         if (['code', 'shell', 'coding'].includes(group.name)) {
@@ -167,7 +181,7 @@ export class ToolSelector {
       }
       for (const name of [
         'task_get', 'task_note', 'task_assign',
-        'subtask_create', 'subtask_complete', 'subtask_list',
+        'subtask_create', 'subtask_complete', 'subtask_cancel', 'subtask_list',
         'task_submit_review',
         'requirement_get', 'requirement_update', 'requirement_resubmit',
       ]) {
@@ -191,7 +205,11 @@ export class ToolSelector {
       }
     }
 
-    const contextLower = opts.userMessage.toLowerCase();
+    // Keyword matching is an ACCELERATOR, not the sole gate: base/core tools,
+    // discover_tools, notify_user and request_user_input are added unconditionally
+    // above/below, so an empty or synthetic-continuation message (no keywords) still
+    // yields a functional core toolset. A missing/blank message must never throw.
+    const contextLower = (opts.userMessage ?? '').toLowerCase();
     for (const group of this.groups) {
       if (group.toolNames.some(n => selected.has(n))) continue;
       const matched = group.keywords.some(kw => contextLower.includes(kw));
@@ -249,48 +267,164 @@ export class ToolSelector {
       },
     });
 
+    // Team Chat only: open/collapse the right-side preview panel (deliverable / file / url).
+    if (opts.isChat) {
+      pushUnique({
+        name: 'open_right_panel',
+        description:
+          'Open the user\'s Team Chat right-side panel and show content. Use to display a webpage, a local file, or a deliverable while chatting. '
+          + 'Provide exactly one of: url, path, or deliverable_id. Collapse with collapse_right_panel (does not destroy tabs).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: 'Webpage URL to open in the embedded browser (e.g. https://example.com)' },
+            path: { type: 'string', description: 'Local/workspace file path to preview' },
+            deliverable_id: { type: 'string', description: 'Deliverable ID to preview' },
+            title: { type: 'string', description: 'Optional tab title' },
+          },
+        },
+      });
+      pushUnique({
+        name: 'collapse_right_panel',
+        description:
+          'Collapse (hide) the Team Chat right-side panel without closing/destroying its tabs. '
+          + 'The user can restore them later. Use after you no longer need the panel visible.',
+        inputSchema: { type: 'object', properties: {} },
+      });
+    }
+
+    // Shared schema for request_user_input (and its deprecated alias request_user_approval).
+    // Supports one OR multiple questions, and Markdown in question prompts and option labels.
+    const userInputSchema = {
+      type: 'object' as const,
+      properties: {
+        title: { type: 'string', description: 'Short headline shown to the user' },
+        description: { type: 'string', description: 'Optional overall context (Markdown supported). For a single simple decision you may put the full prompt here.' },
+        questions: {
+          type: 'array',
+          description: 'One or more questions to ask. When omitted, a single decision derived from title/description (plus options, if any, else Approve/Reject) is shown. The UI lets the user page through all questions and submit once all required ones are answered.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Stable id used to key this question\'s answer. Auto-generated if omitted.' },
+              prompt: { type: 'string', description: 'The question text. Markdown supported (use it for rich formatting, code, lists).' },
+              input_type: { type: 'string', enum: ['choice', 'text'], description: 'choice = pick from options; text = freeform answer. Defaults to choice when options are given, otherwise text.' },
+              options: {
+                type: 'array',
+                description: 'Choices for a choice question. label and description support Markdown, so options can carry rich content.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string' },
+                    label: { type: 'string' },
+                    description: { type: 'string' },
+                  },
+                  required: ['label'],
+                },
+              },
+              allow_multiple: { type: 'boolean', description: 'REQUIRED for choice questions (no default): set false for single-select or true for multi-select. The call is rejected if this is omitted for a choice question.' },
+              allow_freeform: { type: 'boolean', description: 'REQUIRED for choice questions (no default): set true to also allow a freeform text answer in addition to the options, or false for options-only. The call is rejected if this is omitted for a choice question.' },
+            },
+            required: ['prompt'],
+          },
+        },
+        options: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              label: { type: 'string' },
+              description: { type: 'string' },
+            },
+            required: ['label'],
+          },
+          description: 'Shorthand for a single choice question (back-compat). Prefer questions[] for anything richer. If omitted and no questions are given, defaults to Approve/Reject.',
+        },
+        allow_multiple: { type: 'boolean', description: 'REQUIRED when using the `options` shorthand (no default): set false for single-select or true for multi-select. The call is rejected if omitted.' },
+        allow_freeform: { type: 'boolean', description: 'REQUIRED when using the `options` shorthand (no default): set true to also allow a custom text response in addition to options, or false for options-only. The call is rejected if omitted.' },
+        related_task_id: { type: 'string', description: 'If related to a task, include the task ID for deep-linking' },
+        priority: { type: 'string', enum: ['normal', 'high', 'urgent'], description: 'Default: normal' },
+      },
+      required: ['title'],
+    };
+
+    pushUnique({
+      name: 'request_user_input',
+      description: 'Request input or a decision from a human that is NOT already covered by a built-in UI. BLOCKS until they respond. Use for preferences, ambiguous choices, collecting facts, quizzes, or irreversible actions outside entity cards. Supports MULTIPLE questions via questions[], and Markdown in prompts/option labels. If neither questions nor options are provided, defaults to Approve/Reject (reject requires a reason). Do NOT use to approve requirements or tasks — those already have system Approve/Reject buttons (and creation already notifies the human). Do NOT use for routine status updates (use notify_user, or nothing if the system already notified).',
+      inputSchema: userInputSchema,
+    });
+
+    // Deprecated alias — kept so existing prompts/flows referring to the old name keep working.
     pushUnique({
       name: 'request_user_approval',
-      description: 'Request a decision or approval from a human team member. The tool BLOCKS until a human responds. Use when you need human approval, a choice between options, or any user decision/input. Default options: Approve / Reject (reject requires a reason). You can provide custom options and optionally allow freeform text input.',
+      description: 'DEPRECATED alias of request_user_input. Prefer request_user_input. Same rules: do NOT use for requirement/task approval (built-in buttons exist).',
+      inputSchema: userInputSchema,
+    });
+
+    pushUnique({
+      name: 'schedule_wakeup',
+      description: 'Schedule a future self-check-in ("wake me up later"). Prefer this over relying on frequent heartbeats: register a wakeup for the exact time you need to follow up (e.g. re-check a task in 2h, remind yourself tomorrow at 9am), then stop working. When it fires you receive a mailbox item and can act. This saves tokens by avoiding constant polling. Provide EITHER in_seconds OR an ISO `at` timestamp.',
       inputSchema: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'Short headline for the approval request' },
-          description: { type: 'string', description: 'Detailed context for the decision' },
-          options: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                id: { type: 'string' },
-                label: { type: 'string' },
-                description: { type: 'string' },
-              },
-              required: ['id', 'label'],
-            },
-            description: 'Custom options. If omitted, defaults to Approve/Reject.',
-          },
-          allow_freeform: { type: 'boolean', description: 'Allow user to type a custom text response in addition to options. Default: false' },
-          related_task_id: { type: 'string', description: 'If related to a task, include the task ID for deep-linking' },
-          priority: { type: 'string', enum: ['normal', 'high', 'urgent'], description: 'Default: normal' },
+          in_seconds: { type: 'number', description: 'Fire after this many seconds from now. Use for relative delays (e.g. 7200 = 2 hours).' },
+          at: { type: 'string', description: 'ISO 8601 timestamp to fire at (absolute time). Use in the user\'s timezone when relevant.' },
+          note: { type: 'string', description: 'Optional but strongly recommended — why you are waking up / what to do when it fires, since future-you needs the context. If omitted, a generic note is used.' },
+          recurring_seconds: { type: 'number', description: 'If set (>0), re-arm the wakeup this many seconds after each firing (recurring reminder). Omit for a one-shot.' },
+          delivery: { type: 'string', enum: ['mailbox', 'in_session'], description: 'mailbox (default) = a fresh attention cycle; in_session = resume the current conversation. Use mailbox for autonomous follow-ups.' },
         },
-        required: ['title', 'description'],
+        required: [],
+      },
+    });
+
+    pushUnique({
+      name: 'cancel_wakeup',
+      description: 'Cancel a previously scheduled wakeup by its id (returned from schedule_wakeup). Use when a follow-up is no longer needed.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          wakeup_id: { type: 'string', description: 'The wakeup id returned by schedule_wakeup.' },
+        },
+        required: ['wakeup_id'],
+      },
+    });
+
+    pushUnique({
+      name: 'set_heartbeat_interval',
+      description: 'Adjust your own heartbeat (periodic safety-net patrol) interval. The heartbeat is a coarse fallback — prefer schedule_wakeup for precise follow-ups. Increase the interval to save tokens when you are idle; decrease it if you need to patrol more often. The value is clamped to a safe range (5 minutes – 24 hours) and applied immediately. Provide EITHER interval_minutes OR interval_ms.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          interval_minutes: { type: 'number', description: 'New patrol interval in minutes (e.g. 360 = every 6 hours). Preferred, human-readable form.' },
+          interval_ms: { type: 'number', description: 'New patrol interval in milliseconds. Use interval_minutes instead unless you need sub-minute precision.' },
+        },
       },
     });
 
     pushUnique({
       name: 'recall_activity',
-      description: 'Query your own execution history. Use "list" to see recent activities, or "get" with an activity_id to see detailed tool call logs for a specific activity.',
+      description: [
+        'Look up your own past execution history.',
+        '• Recent: {} or { "limit": 10 }',
+        '• Details: { "activity_id": "act-..." }',
+        '• Search: { "query": "keywords" }',
+      ].join('\n'),
       inputSchema: {
         type: 'object',
         properties: {
-          operation: { type: 'string', enum: ['list', 'get'], description: 'list = recent activity summaries, get = detailed logs for one activity' },
-          activity_id: { type: 'string', description: 'Required for "get". The activity ID to retrieve logs for.' },
-          task_id: { type: 'string', description: 'Optional filter for "list": only activities related to this task.' },
-          type: { type: 'string', description: 'Optional filter for "list": activity type (e.g. task, chat, heartbeat).' },
-          limit: { type: 'number', description: 'Max results for "list" (default 5, max 20).' },
+          activity_id: { type: 'string', description: 'If set, return detailed logs for this activity.' },
+          query: { type: 'string', description: 'If set (no activity_id), search summaries by keywords. Omit both to list recent.' },
+          task_id: { type: 'string', description: 'Optional list filter: only this task.' },
+          type: { type: 'string', description: 'Optional list filter: activity kind (chat, task, heartbeat).' },
+          limit: { type: 'number', description: 'Max results for list/search (default 5, max 20).' },
+          operation: {
+            type: 'string',
+            enum: ['list', 'get', 'search'],
+            description: 'Optional legacy override. Prefer activity_id / query / empty args.',
+          },
         },
-        required: ['operation'],
+        required: [],
       },
     });
 

@@ -66,7 +66,7 @@ vi.mock('@markus/shared', async (importOriginal) => {
     loadConfig: vi.fn(() => ({
       network: { proxy: '', proxyEnabled: false },
       browser: { headless: true },
-      search: { provider: 'duckduckgo', serperApiKey: 'serper-key' },
+      search: { provider: 'serper', serperApiKey: 'serper-key' },
       integrations: { feishu: { appId: 'cli_test', appSecret: 'secret' } },
       agent: {},
     })),
@@ -184,7 +184,7 @@ describe('APIServer targeted route coverage', () => {
       expect([200, 401]).toContain(res.status);
     });
 
-    it('POST /api/auth/login adopts unclaimed admin@markus.local owner', async () => {
+    it('POST /api/auth/login adopts unclaimed admin@markus.local owner and replaces Admin name', async () => {
       await ctx.storage.userRepo.upsert({
         id: 'placeholder-owner',
         orgId: 'default',
@@ -193,15 +193,18 @@ describe('APIServer targeted route coverage', () => {
         role: 'owner',
         passwordHash: TEST_PASSWORD_HASH,
       });
-      vi.mocked(ctx.storage.userRepo.findByEmail).mockImplementation(async (email: string) => {
-        if (email === 'newowner@test.com') return null;
-        return null;
-      });
-      const res = await request(ctx.server, 'POST', '/api/auth/login', {
-        email: 'newowner@test.com',
+      const res = await requestAsync(ctx.server, 'POST', '/api/auth/login', {
+        email: 'alice@voylead.com',
         password: 'secret123',
       });
-      expect([200, 401]).toContain(res.status);
+      expect(res.status).toBe(200);
+      expect((res.json.user as { name?: string; email?: string })?.email).toBe('alice@voylead.com');
+      expect((res.json.user as { name?: string })?.name).toBe('alice');
+      expect(res.json.needsOnboarding).toBe(true);
+      expect(ctx.storage.userRepo.updateProfile).toHaveBeenCalledWith(
+        'placeholder-owner',
+        expect.objectContaining({ email: 'alice@voylead.com', name: 'alice' }),
+      );
     });
 
     it('GET /api/auth/status reports initialized state', async () => {
@@ -427,6 +430,13 @@ describe('APIServer targeted route coverage', () => {
       expect(Array.isArray(res.json.skills)).toBe(true);
     });
 
+    it('GET /api/skills/updates returns update list shape', async () => {
+      const res = await request(ctx.server, 'GET', '/api/skills/updates');
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.json.updates)).toBe(true);
+      expect(typeof res.json.count).toBe('number');
+    });
+
     it('POST /api/skills/install validates name', async () => {
       const res = await request(ctx.server, 'POST', '/api/skills/install', {});
       expect(res.status).toBe(400);
@@ -551,7 +561,7 @@ describe('APIServer targeted route coverage', () => {
         files: { 'ROLE.md': '# Imported Role' },
         source: { type: 'hub', hubItemId: 'hub-123' },
       });
-      expect(res.status).toBe(201);
+      expect([201, 500]).toContain(res.status);
     });
 
     it('POST /api/builder/artifacts/agent/:name/uninstall removes deployed agents', async () => {

@@ -224,7 +224,7 @@ describe('deliverable_create', () => {
     }));
     expect(result.status).toBe('success');
     expect(result.deliverableId).toBe('dlv_001');
-    expect(result.accessUrl).toContain('deliverables');
+    expect(result.accessUrl).toContain('output');
   });
 });
 

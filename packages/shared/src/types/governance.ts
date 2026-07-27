@@ -83,6 +83,35 @@ export interface Deliverable {
   updatedAt: string;
 }
 
+// ─── User Input Requests (request_user_input / HITL) ─────────────────────────
+
+export interface UserInputOption {
+  id: string;
+  /** Markdown-supported label shown for the option. */
+  label: string;
+  /** Optional Markdown-supported extra detail. */
+  description?: string;
+}
+
+export interface UserInputQuestion {
+  id: string;
+  /** The question text (Markdown supported). */
+  prompt: string;
+  /** choice = pick from options; text = freeform answer. */
+  inputType: 'choice' | 'text';
+  options?: UserInputOption[];
+  allowMultiple?: boolean;
+  allowFreeform?: boolean;
+}
+
+export interface UserInputAnswer {
+  questionId: string;
+  /** Selected option id(s) for a choice question. */
+  selectedOptionIds?: string[];
+  /** Freeform / text answer. */
+  text?: string;
+}
+
 // ─── Agent Trust ─────────────────────────────────────────────────────────────
 
 export type TrustLevel = 'probation' | 'standard' | 'trusted' | 'senior';

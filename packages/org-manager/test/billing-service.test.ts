@@ -29,10 +29,11 @@ describe('BillingService', () => {
       expect(breakdown.find(b => b.agentId === 'agent-1')?.llmTokens).toBe(500);
     });
 
-    it('computes project and task costs', () => {
+    it('computes project and task costs from CU metadata', () => {
       service.recordUsage({
         orgId: 'org-1', agentId: 'agent-1', type: 'llm_tokens', amount: 1000,
         projectId: 'proj-1', taskId: 'task-1',
+        metadata: { cuCost: 50, provider: 'markus' },
       });
       service.recordUsage({
         orgId: 'org-1', agentId: 'agent-1', type: 'tool_call', amount: 3,
@@ -42,11 +43,27 @@ describe('BillingService', () => {
       const projectCost = service.getProjectCostBreakdown('proj-1');
       expect(projectCost.totalTokens).toBe(1000);
       expect(projectCost.totalToolCalls).toBe(3);
-      expect(projectCost.estimatedCost).toBeCloseTo(0.003);
+      expect(projectCost.totalCu).toBe(50);
+      expect(projectCost.estimatedCost).toBe(50);
+      expect(projectCost.byAgent[0]?.cu).toBe(50);
 
       const taskCost = service.getTaskCost('task-1');
       expect(taskCost.tokens).toBe(1000);
       expect(taskCost.toolCalls).toBe(3);
+      expect(taskCost.totalCu).toBe(50);
+      expect(taskCost.estimatedCost).toBe(50);
+    });
+
+    it('aggregates CU in usage summary', () => {
+      service.recordUsage({
+        orgId: 'org-1', agentId: 'agent-1', type: 'llm_tokens', amount: 500,
+        metadata: { cuCost: 10, provider: 'markus' },
+      });
+      service.recordUsage({
+        orgId: 'org-1', agentId: 'agent-2', type: 'llm_tokens', amount: 200,
+        metadata: { cuCost: 5, provider: 'markus' },
+      });
+      expect(service.getCuUsageSummary('org-1').totalCu).toBe(15);
     });
 
     it('summarizes usage for custom period', () => {
@@ -89,26 +106,10 @@ describe('BillingService', () => {
       expect(service.getOrgPlan('org-1').tier).toBe('enterprise');
     });
 
-    it('allows enterprise usage without limits', () => {
-      service.setOrgPlan('org-1', 'enterprise');
-      expect(service.checkLimit('org-1', 'tool_call', 9999)).toEqual({ allowed: true });
-    });
-
-    it('enforces free tier tool call limit', () => {
+    it('does not enforce tool call limits (removed — CU-only billing)', () => {
       service.setOrgPlan('org-1', 'free');
-      for (let i = 0; i < 5000; i++) {
-        service.recordUsage({ orgId: 'org-1', agentId: 'a', type: 'tool_call', amount: 1 });
-      }
-      const result = service.checkLimit('org-1', 'tool_call', 1);
-      expect(result.allowed).toBe(false);
-      expect(result.reason).toMatch(/Daily tool call limit/);
-    });
-
-    it('uses toolCallsTodayProvider when set', () => {
-      service.setOrgPlan('org-1', 'free');
-      service.setToolCallsTodayProvider(() => 4999);
-      expect(service.checkLimit('org-1', 'tool_call', 1).allowed).toBe(true);
-      expect(service.checkLimit('org-1', 'tool_call', 2).allowed).toBe(false);
+      expect(typeof service.setOrgPlan).toBe('function');
+      expect(typeof service.getOrgPlan).toBe('function');
     });
   });
 });

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import type { ThemeMode } from '../hooks/useTheme.ts';
-import { api } from '../api.ts';
+import { api, getHubToken } from '../api.ts';
 import { AvatarUpload } from './Avatar.tsx';
 
 interface Props {
@@ -9,12 +9,14 @@ interface Props {
   theme: ThemeMode;
   onThemeChange: (mode: ThemeMode) => void;
   skipProfile?: boolean;
+  /** Keep App authUser in sync when the profile step persists a new name/email. */
+  onProfileUpdated?: (user: { id: string; name: string; email?: string; role: string; orgId?: string; avatarUrl?: string }) => void;
 }
 
 const USAGE_TYPE_STEP_ID = 'usageType';
 const PROFILE_STEP_ID = 'profile';
 
-export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Props) {
+export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onProfileUpdated }: Props) {
   const { t } = useTranslation(['onboarding', 'common']);
   const [step, setStep] = useState(0);
 
@@ -34,11 +36,18 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
       if (user.email) setProfileEmail(user.email);
       if (user.avatarUrl) setProfileAvatarUrl(user.avatarUrl);
       const username = user.name || user.email?.split('@')[0] || '';
-      if (username) setOrgName(t('usageType.defaultOrgName', { name: username }));
+      if (username) setOrgName((prev) => prev || t('usageType.defaultOrgName', { name: username }));
     }).catch(() => {});
-    api.hubOrgs.invitations().then(d => {
-      if (d.invitations?.length > 0) setPendingInvites(d.invitations);
+    // Prefer an already-saved local org name (markus.json) over the generated default.
+    api.settings.getOrg().then(({ org }) => {
+      if (org?.name && org.name !== 'My Organization') setOrgName(org.name);
     }).catch(() => {});
+    // Hub invitations only make sense when a Hub session already exists.
+    if (getHubToken()) {
+      api.hubOrgs.invitations().then(d => {
+        if (d.invitations?.length > 0) setPendingInvites(d.invitations);
+      }).catch(() => {});
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -47,9 +56,37 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
   const [orgName, setOrgName] = useState('');
   const [orgNameSaving, setOrgNameSaving] = useState(false);
   const [orgNameSaved, setOrgNameSaved] = useState(false);
+  const [orgNameError, setOrgNameError] = useState('');
   const [pendingInvites, setPendingInvites] = useState<Array<{ orgId: string; orgName: string; invitedBy: string }>>([]);
   const [acceptingInvite, setAcceptingInvite] = useState<string | null>(null);
   const [acceptedInvite, setAcceptedInvite] = useState<string | null>(null);
+
+  const saveOrgName = async () => {
+    const name = orgName.trim();
+    if (!name) return;
+    setOrgNameSaving(true);
+    setOrgNameError('');
+    try {
+      // Always persist locally first — local accounts never need Hub for this step.
+      // When the user later connects Hub, hub-login / connect sync applies this name.
+      await api.settings.updateOrg(name);
+
+      if (getHubToken()) {
+        const orgsData = await api.hubOrgs.mine();
+        const owned = orgsData.orgs?.find((o) => o.role === 'owner') ?? orgsData.orgs?.[0];
+        if (owned?.id) {
+          await api.hubOrgs.update(owned.id, { name });
+        } else {
+          await api.hubOrgs.create(name);
+        }
+      }
+      setOrgNameSaved(true);
+    } catch {
+      setOrgNameError(t('usageType.orgNameSaveFailed'));
+    } finally {
+      setOrgNameSaving(false);
+    }
+  };
 
   // Telemetry opt-in state
   const [telemetryEnabled, setTelemetryEnabled] = useState(true);
@@ -63,10 +100,11 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
     if (profilePassword && profilePassword !== profileConfirm) { setProfileError(t('profile.errors.passwordMismatch')); return; }
     setProfileSaving(true);
     try {
-      await api.auth.updateProfile(profileName.trim(), profileEmail.trim());
+      const { user } = await api.auth.updateProfile(profileName.trim(), profileEmail.trim());
       if (profilePassword) {
         await api.auth.changePassword('', profilePassword);
       }
+      onProfileUpdated?.(user);
       setProfileSaved(true);
     } catch {
       setProfileError(t('profile.errors.saveFailed'));
@@ -173,25 +211,16 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
                 <input
                   type="text"
                   value={orgName}
-                  onChange={e => { setOrgName(e.target.value); setOrgNameSaved(false); }}
+                  onChange={e => { setOrgName(e.target.value); setOrgNameSaved(false); setOrgNameError(''); }}
                   placeholder={t('usageType.orgNamePlaceholder')}
                   className="w-full px-4 py-2.5 bg-surface-elevated border border-border-default rounded-xl text-sm text-fg-primary focus:border-brand-500 outline-none transition-colors"
                 />
               </div>
+              {orgNameError && (
+                <p className="text-xs text-red-500">{orgNameError}</p>
+              )}
               <button
-                onClick={async () => {
-                  if (!orgName.trim()) return;
-                  setOrgNameSaving(true);
-                  try {
-                    const orgsData = await api.hubOrgs.mine();
-                    const firstOrg = orgsData.orgs?.[0];
-                    if (firstOrg?.id) {
-                      await api.hubOrgs.update(firstOrg.id, { name: orgName.trim() });
-                    }
-                    setOrgNameSaved(true);
-                  } catch { /* ignore */ }
-                  finally { setOrgNameSaving(false); }
-                }}
+                onClick={() => { void saveOrgName(); }}
                 disabled={orgNameSaving || !orgName.trim() || orgNameSaved}
                 className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
               >
@@ -361,33 +390,19 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile }: Pr
                 {t('common:back')}
               </button>
             ) : (
-              <button onClick={onComplete} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                {t('common:skip')}
-              </button>
+              <span />
             )}
-            <div className="flex items-center gap-3">
-              {usageTypeStepIdx >= 0 && step === usageTypeStepIdx && !usageType && (
-                <button onClick={() => { setUsageType('personal'); setOrgNameSaved(true); setStep(step + 1); }} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                  {t('common:skip')}
-                </button>
-              )}
-              {profileStepIdx >= 0 && step === profileStepIdx && !profileSaved && (
-                <button onClick={() => setStep(step + 1)} className="px-4 py-2 text-sm text-fg-tertiary hover:text-fg-secondary transition-colors">
-                  {t('common:skip')}
-                </button>
-              )}
-              <button
-                onClick={handleNext}
-                disabled={(profileStepIdx >= 0 && step === profileStepIdx && !profileSaved) || (usageTypeStepIdx >= 0 && step === usageTypeStepIdx && (!usageType || (usageType === 'organization' && !orgNameSaved)))}
-                className={`px-6 py-2.5 text-white text-sm rounded-xl transition-colors ${
-                  (profileStepIdx >= 0 && step === profileStepIdx && !profileSaved) || (usageTypeStepIdx >= 0 && step === usageTypeStepIdx && (!usageType || (usageType === 'organization' && !orgNameSaved)))
-                    ? 'bg-brand-600/40 cursor-not-allowed'
-                    : 'bg-brand-600 hover:bg-brand-500'
-                }`}
-              >
-                {step === steps.length - 1 ? t('getStarted') : t('common:next')}
-              </button>
-            </div>
+            <button
+              onClick={handleNext}
+              disabled={(profileStepIdx >= 0 && step === profileStepIdx && !profileSaved) || (usageTypeStepIdx >= 0 && step === usageTypeStepIdx && (!usageType || (usageType === 'organization' && !orgNameSaved)))}
+              className={`px-6 py-2.5 text-white text-sm rounded-xl transition-colors ${
+                (profileStepIdx >= 0 && step === profileStepIdx && !profileSaved) || (usageTypeStepIdx >= 0 && step === usageTypeStepIdx && (!usageType || (usageType === 'organization' && !orgNameSaved)))
+                  ? 'bg-brand-600/40 cursor-not-allowed'
+                  : 'bg-brand-600 hover:bg-brand-500'
+              }`}
+            >
+              {step === steps.length - 1 ? t('getStarted') : t('common:next')}
+            </button>
           </div>
         </div>
       </div>

@@ -1,10 +1,29 @@
 {
-  "title": "商店",
+  "title": "社区",
   "tabs": {
+    "discover": "发现",
     "agents": "智能体",
     "teams": "团队",
     "skills": "技能",
+    "connectors": "连接器",
     "installed": "已安装"
+  },
+  "discover": {
+    "title": "Markus 广场",
+    "subtitle": "发现社区共享的智能体、AI 小队、技能与连接器 — 由创作者共建的开放生态。",
+    "trending": "热门趋势",
+    "trendingSub": "社区中下载与评分增长最快的资产",
+    "fresh": "新鲜上架",
+    "freshSub": "来自创作者的最新作品",
+    "topCreators": "顶尖创作者",
+    "topCreatorsSub": "生态贡献榜",
+    "empty": "生态正在成长中",
+    "emptyHint": "成为首批创作者，分享你的第一个资产"
+  },
+  "connectorStore": {
+    "searchPlaceholder": "搜索连接器 (MCP)…",
+    "empty": "暂无连接器",
+    "emptyHint": "连接器让智能体接入外部工具与服务 (MCP)"
   },
   "agentStore": {
     "title": "智能体商店",
@@ -55,6 +74,7 @@
     "title": "技能商店",
     "tabs": {
       "installed": "已安装",
+      "all": "技能",
       "builtin": "内置",
       "skillhub": "SkillHub",
       "skillssh": "skills.sh",
@@ -111,7 +131,9 @@
     "upgraded": "已升级！",
     "failed": "失败",
     "purchaseRequired": "需要购买",
-    "buy": "购买 {{price}}",
+    "buy": "购买",
+    "waitingPurchase": "等待支付完成…",
+    "buyOnHub": "在 Hub 购买",
     "view": "查看 →"
   },
   "installedTab": {
@@ -123,7 +145,12 @@
     "filterAll": "全部",
     "filterAgents": "智能体",
     "filterTeams": "团队",
-    "filterSkills": "技能"
+    "filterSkills": "技能",
+    "updateAvailable": "有可用更新",
+    "updateTo": "更新 → v{{version}}",
+    "updating": "更新中…",
+    "updateSuccess": "已将 {{name}} 更新到 v{{version}}",
+    "updateFailed": "更新 {{name}} 失败"
   },
   "marketplace": {
     "searchPlaceholder": "搜索模板…",

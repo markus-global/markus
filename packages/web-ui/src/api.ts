@@ -32,6 +32,7 @@ export interface AuthUser {
   role: string;
   orgId: string;
   avatarUrl?: string;
+  preferences?: { locale?: string; timezone?: string; [key: string]: unknown };
 }
 
 export interface ChatSessionInfo {
@@ -40,13 +41,14 @@ export interface ChatSessionInfo {
   userId: string | null;
   title: string | null;
   isMain?: boolean;
+  metadata?: { modelOverride?: { provider: string; model: string } } | null;
   createdAt: string;
   lastMessageAt: string;
 }
 
 export type StoredSegment =
   | { type: 'text'; content: string; thinking?: string; createdAt?: string }
-  | { type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string };
+  | { type: 'tool'; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string; subagentLogs?: SubagentProgressEvent[] };
 
 export interface ChatMessageInfo {
   id: string;
@@ -54,7 +56,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -169,6 +171,29 @@ export interface ApprovalInfo {
   options?: Array<{ id: string; label: string; description?: string }>;
   allowFreeform?: boolean;
   selectedOption?: string;
+  questions?: UserInputQuestion[];
+  answers?: UserInputAnswer[];
+}
+
+export interface UserInputOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface UserInputQuestion {
+  id: string;
+  prompt: string;
+  inputType: 'choice' | 'text';
+  options?: UserInputOption[];
+  allowMultiple?: boolean;
+  allowFreeform?: boolean;
+}
+
+export interface UserInputAnswer {
+  questionId: string;
+  selectedOptionIds?: string[];
+  text?: string;
 }
 
 export interface CodeReviewCheckInfo {
@@ -329,6 +354,7 @@ export interface ReportInfo {
   };
   costSummary?: {
     totalTokens: number;
+    totalCu?: number;
     totalEstimatedCost: number;
     byAgent: Array<{ agentId: string; tokens: number; cost: number }>;
     trend: string;
@@ -475,6 +501,29 @@ export interface RemotePeerInfo {
   transport: 'p2p' | 'relay' | 'connecting';
   connectedAt: number;
   lastActiveAt: number;
+}
+
+interface SearchKeyStatusEntry { configured: boolean; preview: string; enabled: boolean }
+
+export interface SearchSettingsStatus {
+  serper: SearchKeyStatusEntry;
+  tavily: SearchKeyStatusEntry;
+  bing: SearchKeyStatusEntry;
+  google: SearchKeyStatusEntry;
+  serpapi: SearchKeyStatusEntry;
+  brave: SearchKeyStatusEntry;
+  exa: SearchKeyStatusEntry;
+  bocha: SearchKeyStatusEntry;
+  markus: {
+    available: boolean;
+    enabled: boolean;
+    /** Hosted search backend label (OpenRouter). */
+    searchProvider?: string;
+    markusProvider?: string;
+    /** OpenRouter model id used for hosted retrieval (e.g. perplexity/sonar). */
+    markusSearchModel?: string;
+    language?: string;
+  };
 }
 
 export interface RemoteStatus {
@@ -677,6 +726,9 @@ export interface AgentInfo {
   activeTaskCount?: number;
   agentRole?: 'manager' | 'worker';
   teamId?: string;
+  /** True for the org-level Secretary (cannot be deleted / moved). */
+  isOrgSecretary?: boolean;
+  protected?: boolean;
   lastError?: string;
   lastErrorAt?: string;
   currentTaskId?: string;
@@ -890,6 +942,23 @@ export interface AgentToolInfo {
   description: string;
 }
 
+export interface ScheduledWakeup {
+  id: string;
+  note?: string;
+  wakeAt: string;
+  recurringMs?: number;
+  deliveryMode: 'in_session' | 'mailbox';
+}
+
+export interface PendingCallbackInfo {
+  id: string;
+  type: 'background_exec' | 'wakeup' | 'a2a_reply';
+  label: string;
+  correlationId?: string;
+  registeredAt: string;
+  timeoutAt: string;
+}
+
 export interface AgentHeartbeatInfo {
   running: boolean;
   uptimeMs: number;
@@ -898,6 +967,10 @@ export interface AgentHeartbeatInfo {
   lastSummary?: string;
   lastSummaryAt?: string;
   nextRunAt?: string;
+  /** Earliest of the next scheduled wakeup and the safety-net tick. */
+  nextWakeAt?: string;
+  wakeups?: ScheduledWakeup[];
+  pendingCallbacks?: PendingCallbackInfo[];
 }
 
 export interface RoleFileStatus {
@@ -977,6 +1050,7 @@ export interface TeamTemplateInfo {
   members: Array<{ templateId?: string; roleName?: string; name?: string; count?: number; role?: 'manager' | 'worker'; skills?: string[] }>;
   tags?: string[];
   category?: string;
+  icon?: string;
   announcements?: string;
   norms?: string;
   i18n?: Record<string, { displayName?: string; name?: string; description?: string; members?: Record<string, string> }>;
@@ -1040,6 +1114,9 @@ export interface AgentUsageInfo {
   messages: number;
   estimatedCost: number;
   costToday: number;
+  cuUsed?: number;
+  cuUsedToday?: number;
+  provider?: string;
 }
 
 export const api = {
@@ -1090,6 +1167,7 @@ export const api = {
       request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' }),
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
     triggerHeartbeat: (id: string) => request<{ status: string; message: string }>(`/agents/${id}/heartbeat/trigger`, { method: 'POST' }),
+    cancelWakeup: (id: string, wakeupId: string) => request<{ status: string; wakeupId: string }>(`/agents/${id}/wakeups/${wakeupId}`, { method: 'DELETE' }),
     getRecentActivities: (id: string) => request<{ activities: ActivitySummary[] }>(`/agents/${id}/recent-activities`),
     getActivityLogs: (id: string, activityId: string) =>
       request<{ logs: AgentActivityLogEntry[]; activity?: AgentActivityInfo }>(`/agents/${id}/activity-logs?activityId=${encodeURIComponent(activityId)}`),
@@ -1117,7 +1195,7 @@ export const api = {
     },
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[], replyTo?: { id: string; sender: string; text: string } | null): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean }> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[], replyTo?: { id: string; sender: string; text: string } | null, modelOverride?: { provider: string; model: string } | null): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -1127,7 +1205,19 @@ export const api = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
-            body: JSON.stringify({ text, stream: true, images, fileNames, sessionId: sessionId ?? undefined, isRetry: isRetry || undefined, isResume: isResume || undefined, replyTo: replyTo || undefined }),
+            body: JSON.stringify({
+              text,
+              stream: true,
+              images,
+              fileNames,
+              sessionId: sessionId ?? undefined,
+              isRetry: isRetry || undefined,
+              isResume: isResume || undefined,
+              replyTo: replyTo || undefined,
+              ...(modelOverride?.provider && modelOverride?.model
+                ? { provider: modelOverride.provider, model: modelOverride.model }
+                : {}),
+            }),
             signal,
           });
           if (!res.ok) { reject(new Error(`API error: ${res.status}`)); return; }
@@ -1158,7 +1248,8 @@ export const api = {
                   fullContent = event.content || fullContent;
                   if (event.sessionId) resultSessionId = event.sessionId;
                   const doneSegments = (event as Record<string, unknown>).segments as StoredSegment[] | undefined;
-                  if (doneSegments?.length) resultSegments = doneSegments;
+                  // Keep empty arrays too — distinguishes a real terminal `done` from soft disconnect.
+                  if (doneSegments) resultSegments = doneSegments;
                   const merged = !!(event as Record<string, unknown>).merged;
                   resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, merged });
                   reader.cancel().catch(() => {});
@@ -1319,7 +1410,18 @@ export const api = {
   },
   files: {
     preview: (filePath: string) =>
-      request<{ type: string; name: string; content: string; mimeType?: string }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
+      request<{
+        type: string;
+        name: string;
+        content?: string;
+        mimeType?: string;
+        path?: string;
+        size?: number;
+        streamUrl?: string;
+        extension?: string;
+      }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
+    streamUrl: (filePath: string) =>
+      `${BASE}/files/stream?path=${encodeURIComponent(filePath)}`,
     reveal: (filePath: string) =>
       request<{ ok: boolean; path: string }>('/files/reveal', { method: 'POST', body: JSON.stringify({ path: filePath }) }),
     check: (paths: string[]) =>
@@ -1392,6 +1494,9 @@ export const api = {
     agents: (orgId = 'default') =>
       request<{ agents: AgentUsageInfo[] }>(`/usage/agents?orgId=${orgId}`),
   },
+  cu: {
+    status: () => request<{ available: boolean; cuCost: number; cuRemaining: number; cuLimit: number; cuUsedToday?: number; totalCuUsed?: number }>('/cu/status'),
+  },
   health: () => request<{ status: string; version: string; agents: number; latestVersion?: string; updateAvailable?: boolean }>('/health'),
   system: {
     openPath: (path: string) =>
@@ -1405,8 +1510,25 @@ export const api = {
   },
   settings: {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),
+    /** Local preferred org name (markus.json). Applied to Hub org on connect. */
+    getOrg: () => request<{ org: { id: string; name: string } }>('/settings/org'),
+    updateOrg: (name: string) =>
+      request<{ ok: boolean; org: { id: string; name: string } }>('/settings/org', {
+        method: 'PUT',
+        body: JSON.stringify({ name }),
+      }),
+    /** Re-fetch OpenRouter member key from Hub and configure the Markus provider. */
+    syncOpenRouter: () =>
+      request<{ ok: boolean; settings?: { defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> } }>(
+        '/settings/llm/sync-openrouter',
+        { method: 'POST', body: JSON.stringify({}) },
+      ),
     getRouting: () => request<{ capabilityRouting: CapabilityRoutingConfigDTO }>('/settings/llm/routing'),
-    updateRouting: (data: { capabilityRouting?: Partial<CapabilityRoutingConfigDTO> }) =>
+    updateRouting: (data: {
+      capabilityRouting?: Partial<CapabilityRoutingConfigDTO>;
+      routingDefaultModel?: { provider: string; model: string } | null;
+      defaultProvider?: string;
+    }) =>
       request('/settings/llm', { method: 'POST', body: JSON.stringify(data) }),
     getAgent: () => request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent'),
     updateAgent: (settings: { maxToolIterations?: number; cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }) =>
@@ -1477,9 +1599,14 @@ export const api = {
       }
     },
     stopConcurrentBrowserTest: () => request<{ ok: boolean }>('/settings/browser/test-concurrent', { method: 'DELETE' }),
-    getSearch: () => request<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search'),
-    updateSearch: (keys: { serperApiKey?: string; tavilyApiKey?: string; bingApiKey?: string; googleSearchApiKey?: string; googleSearchCx?: string; serpApiKey?: string; braveApiKey?: string; exaApiKey?: string; bochaApiKey?: string }) =>
-      request<{ serper: { configured: boolean; preview: string }; tavily: { configured: boolean; preview: string }; bing: { configured: boolean; preview: string }; google: { configured: boolean; preview: string }; serpapi: { configured: boolean; preview: string }; brave: { configured: boolean; preview: string }; exa: { configured: boolean; preview: string }; bocha: { configured: boolean; preview: string } }>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),
+    getSearch: () => request<SearchSettingsStatus>('/settings/search'),
+    updateSearch: (keys: { serperApiKey?: string; tavilyApiKey?: string; bingApiKey?: string; googleSearchApiKey?: string; googleSearchCx?: string; serpApiKey?: string; braveApiKey?: string; exaApiKey?: string; bochaApiKey?: string; useMarkusHosted?: boolean; markusSearchModel?: string; serperEnabled?: boolean; tavilyEnabled?: boolean; bingEnabled?: boolean; googleEnabled?: boolean; serpapiEnabled?: boolean; braveEnabled?: boolean; exaEnabled?: boolean; bochaEnabled?: boolean; language?: string }) =>
+      request<SearchSettingsStatus>('/settings/search', { method: 'POST', body: JSON.stringify(keys) }),
+    testSearch: (provider: string, extra?: { apiKey?: string; cx?: string }) =>
+      request<{ ok: boolean; latencyMs?: number; count?: number; sample?: { title: string; url: string }; error?: string }>(
+        '/settings/search/test',
+        { method: 'POST', body: JSON.stringify({ provider, ...extra }) },
+      ),
     getRemote: () => request<RemoteStatus>('/settings/remote'),
     enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
     disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
@@ -1542,7 +1669,20 @@ export const api = {
   },
   skills: {
     list: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags?: string[]; tools?: Array<{ name: string; description: string }>; requiredPermissions?: string[]; type: 'builtin' | 'filesystem' | 'imported'; sourcePath?: string; agentIds: string[] }> }>('/skills'),
-    builtin: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags: string[]; hasMcpServers: boolean; hasInstructions: boolean; requiredPermissions: string[]; installed: boolean; installedVersion?: string | null }> }>('/skills/builtin'),
+    builtin: () => request<{ skills: Array<{ name: string; version: string; description?: string; author?: string; category?: string; tags: string[]; hasMcpServers: boolean; hasInstructions: boolean; requiredPermissions: string[]; installed: boolean; installedVersion?: string | null; updateAvailable?: boolean; i18n?: Record<string, { displayName?: string; description?: string }> }> }>('/skills/builtin'),
+    /** Builtin template skills where the local copy is older than this Markus build. */
+    updates: () => request<{
+      updates: Array<{
+        type: 'skill';
+        name: string;
+        displayName?: string;
+        description?: string;
+        installedVersion: string;
+        availableVersion: string;
+        localPath: string;
+      }>;
+      count: number;
+    }>('/skills/updates'),
     registry: (source?: string) => request<{ skills: Array<{ name: string; description: string; category: string; source: string; sourceUrl: string; author: string; addedAt?: string }>; source: string; cached: boolean }>(`/skills/registry${source ? `?source=${source}` : ''}`),
     registrySkillhub: (opts?: { q?: string; category?: string; page?: number; limit?: number; sort?: string }) => {
       const params = new URLSearchParams();
@@ -1582,6 +1722,35 @@ export const api = {
         request<{ uninstalled: boolean; removedAgents?: string[]; removedTeamId?: string }>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}/uninstall`, { method: 'POST' }),
       delete: (type: string, name: string) =>
         request<{ deleted: boolean }>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+      /** Auto-convert legacy Chinese / invalid folder names to a valid English kebab-case slug. */
+      ensureSlug: (type: string, name: string) =>
+        request<{
+          converted: boolean;
+          type: string;
+          previousName?: string;
+          name: string;
+          slug: string;
+          displayName?: string;
+          path: string;
+        }>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}/ensure-slug`, { method: 'POST' }),
+      /**
+       * Prefer a no-op when the folder name is already a valid slug (avoids depending on
+       * a newly added ensure-slug route). Falls back to local slug if the API is missing.
+       */
+      ensureSlugSafe: async (type: string, name: string, displayName?: string) => {
+        const local = toPackageSlug(name);
+        if (local && local === name) {
+          return { converted: false as const, type, name, slug: local, displayName, path: '' };
+        }
+        try {
+          return await api.builder.artifacts.ensureSlug(type, name);
+        } catch (err) {
+          if (local) {
+            return { converted: false as const, type, name: local, slug: local, displayName, path: '' };
+          }
+          throw err;
+        }
+      },
       installed: () =>
         request<{ installed: Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }> }>('/builder/artifacts/installed'),
     },
@@ -1600,6 +1769,8 @@ export const api = {
       request<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
     updateProfile: (name: string, email: string) =>
       request<{ user: AuthUser }>('/auth/profile', { method: 'PUT', body: JSON.stringify({ name, email }) }),
+    updatePreferences: (prefs: { locale?: string; timezone?: string }) =>
+      request<{ ok: boolean; preferences: { locale?: string; timezone?: string } }>('/auth/me/preferences', { method: 'PUT', body: JSON.stringify(prefs) }),
     setup: (token: string, password: string) =>
       request<{ ok: boolean; email: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ token, password }) }),
     inviteInfo: (token: string) =>
@@ -1614,10 +1785,6 @@ export const api = {
       request<{ success: boolean; error?: string }>('/license/activate', { method: 'POST', body: JSON.stringify({ licenseKey }) }),
     trial: () =>
       request<{ success: boolean; error?: string }>('/license/trial', { method: 'POST' }),
-    import: (fileContent: string) =>
-      request<{ success: boolean; error?: string }>('/license/import', { method: 'POST', body: JSON.stringify({ fileContent }) }),
-    deactivate: () =>
-      request<{ success: boolean; error?: string }>('/license/deactivate', { method: 'POST' }),
   },
   sessions: {
     hasAny: () =>
@@ -1629,6 +1796,132 @@ export const api = {
         `/sessions/${sessionId}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),
     delete: (sessionId: string) => request(`/sessions/${sessionId}`, { method: 'DELETE' }),
+    setModelOverride: (sessionId: string, override: { provider: string; model: string } | null) =>
+      request<{ modelOverride: { provider: string; model: string } | null }>(
+        `/sessions/${sessionId}/model-override`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(override ?? { provider: '', model: '' }),
+        },
+      ),
+    streamStatus: (agentId: string, sessionId: string) =>
+      request<{ active: boolean; streamId?: string; messageId?: string; lastSeq?: number; status?: string }>(
+        `/agents/${agentId}/sessions/${sessionId}/stream/status`,
+      ),
+    /**
+     * Reattach to an in-flight generation after page refresh.
+     * Resolves on done/error; 204 means nothing active.
+     */
+    reattachStream: (
+      agentId: string,
+      sessionId: string,
+      handlers: {
+        onChunk?: (chunk: string) => void;
+        onActivity?: (event: AgentToolEvent) => void;
+        onCommit?: (event: StreamCommitEvent) => void;
+        onSnapshot?: (snapshot: { content: string; segments: StoredSegment[] }) => void;
+      },
+      signal?: AbortSignal,
+      afterSeq = 0,
+    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; attached: boolean }> => {
+      return new Promise(async (resolve, reject) => {
+        let fullContent = '';
+        let resultSessionId: string | undefined = sessionId;
+        let resultSegments: StoredSegment[] | undefined;
+        try {
+          const res = await fetch(
+            `${BASE}/agents/${agentId}/sessions/${sessionId}/stream?afterSeq=${afterSeq}`,
+            { method: 'GET', credentials: 'include', signal },
+          );
+          if (res.status === 204) {
+            resolve({ content: '', sessionId, attached: false });
+            return;
+          }
+          if (!res.ok) {
+            reject(new Error(`API error: ${res.status}`));
+            return;
+          }
+          const reader = res.body?.getReader();
+          if (!reader) {
+            reject(new Error('No reader'));
+            return;
+          }
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('data: ')) continue;
+              try {
+                const event = JSON.parse(trimmed.slice(6)) as Record<string, unknown>;
+                const type = event.type as string;
+                if (type === 'snapshot') {
+                  const snapSegs = (event.segments as StoredSegment[] | undefined) ?? [];
+                  const snapContent = typeof event.content === 'string' ? event.content : '';
+                  fullContent = snapContent;
+                  if (snapSegs.length) resultSegments = snapSegs;
+                  handlers.onSnapshot?.({ content: snapContent, segments: snapSegs });
+                } else if (type === 'text_delta' && typeof event.text === 'string') {
+                  // Snapshot attach skips historical ring events; these are live deltas.
+                  fullContent += event.text;
+                  handlers.onChunk?.(event.text);
+                } else if (type === 'thinking_delta' && typeof event.thinking === 'string') {
+                  handlers.onChunk?.(`<think>${event.thinking}</think>`);
+                } else if (type === 'done') {
+                  fullContent = (event.content as string) || fullContent;
+                  if (typeof event.sessionId === 'string') resultSessionId = event.sessionId;
+                  const doneSegments = event.segments as StoredSegment[] | undefined;
+                  if (doneSegments) resultSegments = doneSegments;
+                  resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true });
+                  reader.cancel().catch(() => {});
+                  return;
+                } else if (type === 'error') {
+                  reject(new Error((event.message as string) ?? (event.error as string) ?? 'Stream error'));
+                  reader.cancel().catch(() => {});
+                  return;
+                } else if (type === 'thinking_commit' && typeof event.thinking === 'string') {
+                  handlers.onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event.createdAt as string) ?? new Date().toISOString() });
+                } else if (type === 'text_commit' && typeof event.text === 'string') {
+                  handlers.onCommit?.({ type: 'text_commit', content: event.text, createdAt: (event.createdAt as string) ?? new Date().toISOString() });
+                } else if (type === 'agent_tool' && event.tool && event.phase) {
+                  if (event.phase === 'start') {
+                    handlers.onActivity?.({ tool: event.tool as string, phase: 'start', arguments: event.arguments });
+                  } else if (event.phase === 'end') {
+                    handlers.onActivity?.({
+                      tool: event.tool as string,
+                      phase: 'end',
+                      success: event.success as boolean | undefined,
+                      arguments: event.arguments,
+                      result: event.result as string | undefined,
+                      error: event.error as string | undefined,
+                      durationMs: event.durationMs as number | undefined,
+                    });
+                  }
+                } else if (type === 'subagent_progress' && event.tool) {
+                  handlers.onActivity?.({
+                    tool: event.tool as string,
+                    phase: 'subagent_progress',
+                    subagentEvent: event.subagentEvent as SubagentProgressEvent,
+                  });
+                } else if (type === 'heartbeat') {
+                  handlers.onActivity?.({ tool: '', phase: 'heartbeat' });
+                }
+              } catch { /* skip */ }
+            }
+          }
+          // Stream ended without a terminal done/error (e.g. server closed early).
+          resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true });
+        } catch (err) {
+          // Abort is not a successful attach — caller must not finalize the turn.
+          reject(err);
+        }
+      });
+    },
   },
   channels: {
     getMessages: (channel: string, limit = 50, before?: string) =>
@@ -1669,8 +1962,8 @@ export const api = {
       const qs = status ? `?status=${status}` : '';
       return request<{ approvals: ApprovalInfo[] }>(`/approvals${qs}`);
     },
-    respond: (id: string, approved: boolean, respondedBy?: string, comment?: string, selectedOption?: string) =>
-      request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy, comment, selectedOption }) }),
+    respond: (id: string, approved: boolean, respondedBy?: string, comment?: string, selectedOption?: string, answers?: UserInputAnswer[]) =>
+      request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy, comment, selectedOption, answers }) }),
   },
   notifications: {
     list: (userId?: string, unread?: boolean, opts?: { type?: string; limit?: number; offset?: number }) => {
@@ -1682,6 +1975,8 @@ export const api = {
       if (opts?.offset) params.set('offset', String(opts.offset));
       return request<{ notifications: NotificationInfo[]; totalCount?: number; unreadCount?: number }>(`/notifications?${params}`);
     },
+    create: (opts: { title: string; body: string; type?: string; priority?: string; metadata?: Record<string, unknown> }) =>
+      request<{ notification: NotificationInfo }>('/notifications', { method: 'POST', body: JSON.stringify(opts) }),
     markRead: (id: string) => request<{ success: boolean }>(`/notifications/${id}`, { method: 'POST' }),
     markAllRead: (userId: string) => request<{ success: boolean; count: number }>('/notifications/mark-all-read', { method: 'POST', body: JSON.stringify({ userId }) }),
   },
@@ -2044,13 +2339,38 @@ let HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?
 // Fetch hub URL from server config (overrides default if available),
 // and sync existing Hub token to backend for agent tool access.
 // Skip in preview/showcase mode (no backend available).
+/** Fetch Hub identity for the current token and persist it (keeps UI in sync with billing). */
+async function refreshHubUserFromToken(): Promise<HubUser | null> {
+  if (!getHubToken()) return null;
+  try {
+    const data = await hubRequest<{ user: HubUser }>('/auth/me');
+    if (data?.user?.id) {
+      const token = getHubToken()!;
+      saveHubAuth(token, data.user);
+      return data.user;
+    }
+  } catch { /* token invalid — validateHubSession / hubRequest clear on 401 */ }
+  return getHubUser();
+}
+
 if (!(window as unknown as Record<string, boolean>).__MARKUS_PREVIEW__) {
   request<{ hubUrl: string }>('/settings/hub')
-    .then(r => {
+    .then(async r => {
       if (r.hubUrl) HUB_URL = r.hubUrl;
       const existingToken = localStorage.getItem('markus_hub_token');
       if (existingToken) {
         request('/settings/hub-token', { method: 'POST', body: JSON.stringify({ token: existingToken }) }).catch(() => {});
+        // Token may exist without markus_hub_user (e.g. restored from disk only).
+        // refreshHubUserFromToken → saveHubAuth already emits markus:hub-auth when state changes.
+        void refreshHubUserFromToken();
+      } else {
+        try {
+          const saved = await request<{ token: string | null }>('/settings/hub-token');
+          if (saved.token) {
+            localStorage.setItem('markus_hub_token', saved.token);
+            await refreshHubUserFromToken();
+          }
+        } catch { /* backend may not support GET yet */ }
       }
     })
     .catch(() => {});
@@ -2068,10 +2388,13 @@ export interface HubUser {
 }
 
 export type HubVisibility = 'public' | 'org' | 'unlisted';
+export type HubModerationStatus = 'pending' | 'approved' | 'rejected';
 
 export interface HubItem {
   id: string;
   itemType: 'agent' | 'team' | 'skill';
+  /** Skill facet: 'connector' = a skill whose value is the MCP servers it wires up. */
+  subtype?: 'connector' | null;
   name: string;
   slug?: string;
   description: string;
@@ -2079,16 +2402,48 @@ export interface HubItem {
   category: string;
   tags: string[];
   icon?: string;
+  thumbnailUrl?: string;
+  images?: Array<{ url: string; alt: string; order: number }>;
   priceCents?: number;
+  currency?: string;
+  donationsEnabled?: boolean;
+  donationCount?: number;
+  donationTotal?: number;
+  purchasedByCurrentUser?: boolean;
   visibility?: HubVisibility;
   orgId?: string;
+  moderationStatus?: HubModerationStatus;
+  moderationNote?: string;
+  pendingReview?: boolean;
   downloadCount: number;
   avgRating: string;
   ratingCount: number;
+  /** curation signals */
+  featured?: boolean;
+  editorial?: string | null;
+  trendingScore?: number;
+  licenseAttribution?: string | null;
   createdAt: string;
-  author: { id: string; username: string; displayName?: string };
+  author: { id: string; username: string; displayName?: string; avatarUrl?: string };
   config?: Record<string, unknown>;
   readme?: string;
+}
+
+export interface HubMyItem {
+  id: string;
+  itemType: string;
+  name: string;
+  slug: string;
+  description: string;
+  version: string;
+  visibility?: HubVisibility;
+  orgId?: string;
+  priceCents?: number;
+  donationsEnabled?: boolean;
+  moderationStatus?: HubModerationStatus;
+  moderationNote?: string;
+  pendingReview?: boolean;
+  updatedAt: string;
 }
 
 export interface HubOrg {
@@ -2102,6 +2457,26 @@ export function getHubToken(): string | null {
   return localStorage.getItem(HUB_TOKEN_KEY);
 }
 
+/**
+ * Restore Hub JWT from the desktop backend (`~/.markus/hub-token`) into
+ * localStorage when the renderer cache is empty. Safe to call repeatedly.
+ */
+export async function restoreHubTokenFromBackend(): Promise<string | null> {
+  const existing = getHubToken();
+  if (existing) return existing;
+  try {
+    const saved = await request<{ token: string | null }>('/settings/hub-token');
+    if (saved.token) {
+      localStorage.setItem(HUB_TOKEN_KEY, saved.token);
+      // Refresh user quietly — do not fire markus:hub-auth here (login already
+      // does). Extra events caused Overview/claim-modal refresh loops.
+      void refreshHubUserFromToken();
+      return saved.token;
+    }
+  } catch { /* backend unavailable */ }
+  return null;
+}
+
 export function getHubUser(): HubUser | null {
   try {
     const raw = localStorage.getItem(HUB_USER_KEY);
@@ -2109,38 +2484,165 @@ export function getHubUser(): HubUser | null {
   } catch { return null; }
 }
 
+/**
+ * Whether the current Hub user can install a paid item without buying again.
+ * Matches Hub detail semantics: purchase row OR author (authors never appear in /purchases/mine).
+ */
+export function ownsHubItem(item: HubItem, purchasedIds?: Set<string> | null): boolean {
+  if (item.purchasedByCurrentUser) return true;
+  if (purchasedIds?.has(item.id)) return true;
+  const me = getHubUser();
+  if (!me?.id) return false;
+  const authorId = item.author?.id ?? (item as { authorId?: string }).authorId;
+  return !!authorId && authorId === me.id;
+}
+
 export function clearHubAuth(): void {
   localStorage.removeItem(HUB_TOKEN_KEY);
   localStorage.removeItem(HUB_USER_KEY);
   syncHubTokenToBackend(null);
+  window.dispatchEvent(new CustomEvent('markus:hub-auth'));
 }
 
 export function saveHubAuth(token: string, user: HubUser): void {
+  const prevToken = localStorage.getItem(HUB_TOKEN_KEY);
+  const prevUser = localStorage.getItem(HUB_USER_KEY);
+  const nextUser = JSON.stringify(user);
+  // Idempotent: validateHubSession → refreshHubUserFromToken used to re-save identical
+  // auth and re-emit markus:hub-auth, which UserAccountMenu listened to with another
+  // validate — flooding POST /settings/hub-token (~800/s) and starving the API server.
+  if (prevToken === token && prevUser === nextUser) return;
   localStorage.setItem(HUB_TOKEN_KEY, token);
-  localStorage.setItem(HUB_USER_KEY, JSON.stringify(user));
+  localStorage.setItem(HUB_USER_KEY, nextUser);
   syncHubTokenToBackend(token);
+  window.dispatchEvent(new CustomEvent('markus:hub-auth'));
 }
 
 function syncHubTokenToBackend(token: string | null): void {
   request('/settings/hub-token', { method: 'POST', body: JSON.stringify({ token }) }).catch(() => {});
 }
 
+/** Persist Hub connect OpenRouter member credentials (chat + search). */
+function syncOpenRouterCredentialsToBackend(opts: { openrouter?: OpenRouterConnect }): void {
+  if (!opts.openrouter?.key) return;
+  request('/settings/subscription-key', {
+    method: 'POST',
+    body: JSON.stringify({ openrouter: opts.openrouter }),
+  }).catch(() => {});
+}
+
+// ── Hub sign-in handoff ──────────────────────────────────────────────────────
+// Both flows share one server-side connect session that the app polls via
+// /api/auth/connect-status (proxied through the local backend):
+//   • Desktop (Electron): open the Hub connect page in the *system browser* and
+//     let the OS route markus://auth back to the app. Polling is the built-in
+//     fallback if the deep link is ever missed, so login always completes.
+//   • Web: open a popup and poll (a plain browser has no OS deep-link handler).
+
+interface OpenRouterConnect { key: string; baseUrl: string; modelsUrl: string }
+interface ConnectStatus {
+  ready?: boolean;
+  token?: string;
+  user?: HubUser;
+  openrouter?: OpenRouterConnect;
+}
+
+async function fetchConnectStatus(sessionId: string): Promise<ConnectStatus | null> {
+  try {
+    return await request<ConnectStatus>(`/hub/auth/connect-status?session=${encodeURIComponent(sessionId)}&_t=${Date.now()}`);
+  } catch { return null; }
+}
+
+function applyHubConnect(data: ConnectStatus): void {
+  if (!data.token || !data.user) return;
+  saveHubAuth(data.token, data.user);
+  if (data.openrouter?.key) {
+    syncOpenRouterCredentialsToBackend({ openrouter: data.openrouter });
+  }
+  // Best-effort: push locally preferred org name (from onboarding) to Hub.
+  void syncPreferredOrgNameToHub();
+}
+
+/** Rename the user's Hub org to match markus.json org.name when connected. */
+export async function syncPreferredOrgNameToHub(): Promise<void> {
+  if (!getHubToken()) return;
+  try {
+    const { org } = await request<{ org: { name: string } }>('/settings/org');
+    const name = org?.name?.trim();
+    if (!name || name === 'My Organization') return;
+    const mine = await hubRequest<{ orgs: Array<{ id: string; name: string; role: string }> }>('/orgs/mine');
+    const owned = (mine.orgs ?? []).find((o) => o.role === 'owner');
+    if (!owned || owned.name === name) return;
+    await hubRequest(`/orgs/${owned.id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+  } catch {
+    /* best effort — hub-login also syncs server-side */
+  }
+}
+
+interface DesktopBridge {
+  openExternal: (url: string) => void;
+  onDeepLinkAuth?: (cb: (d: { session?: string }) => void) => void;
+  consumePendingDeepLinkAuth?: () => Promise<string | null>;
+}
+function desktopBridge(): DesktopBridge | undefined {
+  return (window as unknown as { markusDesktop?: DesktopBridge }).markusDesktop;
+}
+
 /**
- * Open Hub login/register page as a popup window.
- * Uses a session-based polling mechanism:
- * 1. Generate a random sessionId, open Hub /auth/connect?session=xxx
- * 2. User logs in on the Hub page → Hub stores result for this session
- * 3. Markus polls /api/auth/connect-status?session=xxx until token arrives
- * Resolves once the token is received and saved; rejects if popup is closed without auth.
+ * Poll a known connect session until the Hub reports it ready (or timeout).
+ * Used for the desktop cold-start case, where the app is launched by the
+ * markus://auth deep link and adopts the session id it carries.
  */
-let _hubAuthPromise: Promise<void> | null = null;
-export function ensureHubAuth(method?: string): Promise<void> {
-  if (getHubToken()) return Promise.resolve();
-  if (_hubAuthPromise) return _hubAuthPromise;
+export async function completeHubAuthFromSession(sessionId: string, timeoutMs = 120_000): Promise<boolean> {
+  if (getHubToken()) return true;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const data = await fetchConnectStatus(sessionId);
+    if (data?.ready && data.token && data.user) { applyHubConnect(data); return true; }
+    await new Promise(r => setTimeout(r, 1200));
+  }
+  return false;
+}
 
-  const sessionId = `cs_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+// Single global deep-link listener that forwards to whichever sign-in is active.
+let _deepLinkAuthHandler: ((session: string) => void) | null = null;
+desktopBridge()?.onDeepLinkAuth?.((d) => { _deepLinkAuthHandler?.(d?.session ?? ''); });
 
-  _hubAuthPromise = new Promise<void>((resolve, reject) => {
+function runDesktopHubAuth(sessionId: string, method: string | undefined, desktop: DesktopBridge): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (ok: boolean, err?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(pollTimer);
+      clearTimeout(timeoutTimer);
+      if (_deepLinkAuthHandler === onDeepLink) _deepLinkAuthHandler = null;
+      if (ok) resolve(); else reject(err);
+    };
+    const tryComplete = async () => {
+      if (settled) return;
+      const data = await fetchConnectStatus(sessionId);
+      if (data?.ready && data.token && data.user) {
+        applyHubConnect(data);
+        finish(true);
+      }
+    };
+    // Deep-link accelerator: complete immediately when the OS routes the return
+    // URL back. Ignore events for other sessions (a stale/overlapping sign-in).
+    const onDeepLink = (session: string) => { if (!session || session === sessionId) void tryComplete(); };
+    _deepLinkAuthHandler = onDeepLink;
+
+    let url = `${HUB_URL}/auth/connect?session=${encodeURIComponent(sessionId)}&redirect=${encodeURIComponent('markus://auth')}`;
+    if (method) url += `&method=${encodeURIComponent(method)}`;
+    desktop.openExternal(url);
+
+    const pollTimer = setInterval(() => { void tryComplete(); }, 1500);
+    const timeoutTimer = setTimeout(() => finish(false, new Error('Hub login timed out')), 5 * 60_000);
+  });
+}
+
+function runPopupHubAuth(sessionId: string, method?: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
     let url = `${HUB_URL}/auth/connect?session=${encodeURIComponent(sessionId)}`;
     if (method) url += `&method=${encodeURIComponent(method)}`;
     const w = 460, h = 580;
@@ -2149,7 +2651,6 @@ export function ensureHubAuth(method?: string): Promise<void> {
     const popup = window.open(url, 'markus_hub_auth', `popup=yes,width=${w},height=${h},left=${left},top=${top}`);
 
     if (!popup) {
-      _hubAuthPromise = null;
       reject(new Error('Popup blocked by browser. Please allow popups for this site.'));
       return;
     }
@@ -2157,44 +2658,28 @@ export function ensureHubAuth(method?: string): Promise<void> {
     let settled = false;
     let finalCheckTimer: ReturnType<typeof setInterval> | null = null;
 
-    const statusUrl = () =>
-      `/hub/auth/connect-status?session=${encodeURIComponent(sessionId)}&_t=${Date.now()}`;
-
     const cleanup = () => {
       clearInterval(pollTimer);
       clearInterval(closedTimer);
       if (finalCheckTimer) clearInterval(finalCheckTimer);
       document.removeEventListener('visibilitychange', onVisible);
-      _hubAuthPromise = null;
-    };
-
-    const handleReady = (data: { token: string; user: HubUser }) => {
-      if (settled) return;
-      settled = true;
-      saveHubAuth(data.token, data.user);
-      cleanup();
-      popup?.close();
-      resolve();
     };
 
     const pollStatus = async () => {
-      try {
-        const data = await request<{ ready?: boolean; token?: string; user?: HubUser }>(statusUrl());
-        if (data.ready && data.token && data.user) {
-          handleReady(data as { token: string; user: HubUser });
-        }
-      } catch { /* Hub might be offline, keep polling */ }
-    };
-
-    const pollTimer = setInterval(() => {
       if (settled) return;
-      pollStatus();
-    }, 1500);
-
-    const onVisible = () => {
-      if (settled || document.visibilityState !== 'visible') return;
-      pollStatus();
+      const data = await fetchConnectStatus(sessionId);
+      if (data?.ready && data.token && data.user) {
+        settled = true;
+        applyHubConnect(data);
+        cleanup();
+        popup?.close();
+        resolve();
+      }
     };
+
+    const pollTimer = setInterval(() => { void pollStatus(); }, 1500);
+
+    const onVisible = () => { if (!settled && document.visibilityState === 'visible') void pollStatus(); };
     document.addEventListener('visibilitychange', onVisible);
 
     const closedTimer = setInterval(() => {
@@ -2209,14 +2694,52 @@ export function ensureHubAuth(method?: string): Promise<void> {
           if (retries >= 5 && !settled) {
             settled = true;
             cleanup();
-            if (getHubToken()) { resolve(); } else { reject(new Error('Hub login cancelled')); }
+            if (getHubToken()) resolve(); else reject(new Error('Hub login cancelled'));
           }
         }, 1000);
       }
     }, 500);
   });
+}
 
-  return _hubAuthPromise;
+export type EnsureHubAuthOpts = {
+  /** Drop any cached Hub token and open a fresh sign-in (user-initiated reconnect). */
+  force?: boolean;
+  method?: string;
+};
+
+/**
+ * Ensure a Hub session exists, launching the appropriate sign-in flow.
+ * Desktop uses the system browser + markus://auth deep link; web uses a popup.
+ * Resolves once the token is received and saved.
+ *
+ * With `{ force: true }`, clears a stale local token first — needed when the UI
+ * shows "Connect" but localStorage still has an expired/invalid session (otherwise
+ * this would no-op and the button would appear broken).
+ */
+let _hubAuthPromise: Promise<void> | null = null;
+export function ensureHubAuth(methodOrOpts?: string | EnsureHubAuthOpts): Promise<void> {
+  const opts: EnsureHubAuthOpts = typeof methodOrOpts === 'string'
+    ? { method: methodOrOpts }
+    : (methodOrOpts ?? {});
+
+  if (opts.force) {
+    // Cancel any in-flight non-forced auth and clear the stale session.
+    _hubAuthPromise = null;
+    if (getHubToken() || getHubUser()) clearHubAuth();
+  } else if (getHubToken()) {
+    return Promise.resolve();
+  }
+  if (_hubAuthPromise) return _hubAuthPromise;
+
+  const sessionId = `cs_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const desktop = desktopBridge();
+  const p = desktop
+    ? runDesktopHubAuth(sessionId, opts.method, desktop)
+    : runPopupHubAuth(sessionId, opts.method);
+  _hubAuthPromise = p;
+  void p.catch(() => {}).finally(() => { if (_hubAuthPromise === p) _hubAuthPromise = null; });
+  return p;
 }
 
 async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -2232,17 +2755,44 @@ async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (res.status === 401 && token) {
     clearHubAuth();
   }
-  if (!res.ok) throw new Error(data.error ?? `Hub HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error ?? `Hub HTTP ${res.status}`) as Error & {
+      code?: string;
+      retryAfterSeconds?: number;
+      status?: number;
+    };
+    err.code = typeof data.code === 'string' ? data.code : undefined;
+    err.retryAfterSeconds = typeof data.retryAfterSeconds === 'number' ? data.retryAfterSeconds : undefined;
+    err.status = res.status;
+    throw err;
+  }
   return data as T;
+}
+
+/**
+ * Probe whether the cached Hub token still works against the Hub API.
+ * On 401, hubRequest already clears local auth.
+ */
+export async function validateHubSession(): Promise<boolean> {
+  if (!getHubToken()) return false;
+  try {
+    // Probe only — do not refresh+saveHubAuth here (that re-emits hub-auth and can loop).
+    await hubRequest('/user/plan');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export const hubApi = {
   getUrl: () => HUB_URL,
+  /** True when a Hub token is cached locally — not a live server check. Prefer validateHubSession(). */
   isAuthenticated: () => !!getHubToken(),
   getUser: getHubUser,
   logout: () => { clearHubAuth(); },
   /** Open Hub popup for login/register. Resolves when auth is complete. */
   ensureAuth: ensureHubAuth,
+  validateSession: validateHubSession,
   login: async (email: string, password: string) => {
     const data = await hubRequest<{ user: HubUser; token: string }>('/auth/login', {
       method: 'POST', body: JSON.stringify({ email, password }),
@@ -2257,9 +2807,10 @@ export const hubApi = {
     saveHubAuth(data.token, data.user);
     return data;
   },
-  search: (opts?: { type?: string; q?: string; category?: string; sort?: string; page?: number; limit?: number }) => {
+  search: (opts?: { type?: string; subtype?: string; q?: string; category?: string; sort?: string; page?: number; limit?: number }) => {
     const params = new URLSearchParams();
     if (opts?.type) params.set('type', opts.type);
+    if (opts?.subtype) params.set('subtype', opts.subtype);
     if (opts?.q) params.set('q', opts.q);
     if (opts?.category) params.set('category', opts.category);
     if (opts?.sort) params.set('sort', opts.sort);
@@ -2305,15 +2856,19 @@ export const hubApi = {
   publishViaProxy: async (payload: { itemType: string; name: string; slug?: string; description: string; category?: string; tags?: string[]; icon?: string; version?: string; config?: unknown; files?: Record<string, string>; readme?: string; thumbnailUrl?: string; images?: Array<{ url: string; alt: string; order: number }>; priceCents?: number; donationsEnabled?: boolean; visibility?: HubVisibility; orgId?: string }) => {
     await ensureHubAuth();
     try {
-      return await hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean; visibility?: HubVisibility }>('/items', { method: 'POST', body: JSON.stringify(payload) });
+      return await hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) });
     } catch (e) {
-      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean; visibility?: HubVisibility }>('/items', { method: 'POST', body: JSON.stringify(payload) }); }
+      if (!getHubToken()) { await ensureHubAuth(); return hubRequest<{ id?: string; name?: string; slug?: string; error?: string; updated?: boolean; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }>('/items', { method: 'POST', body: JSON.stringify(payload) }); }
       throw e;
     }
   },
+  updateItem: async (id: string, data: { priceCents?: number; donationsEnabled?: boolean; thumbnailUrl?: string; images?: Array<{ url: string; alt: string; order: number }> }) => {
+    await ensureHubAuth();
+    return hubRequest<{ ok: boolean }>(`/items/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+  },
   myItems: async () => {
-    if (!getHubToken()) return { items: [] as Array<{ id: string; itemType: string; name: string; slug: string; description: string; version: string; visibility?: HubVisibility; orgId?: string; updatedAt: string }> };
-    return hubRequest<{ items: Array<{ id: string; itemType: string; name: string; slug: string; description: string; version: string; visibility?: HubVisibility; orgId?: string; updatedAt: string }> }>('/items/mine');
+    if (!getHubToken()) return { items: [] as HubMyItem[] };
+    return hubRequest<{ items: HubMyItem[] }>('/items/mine');
   },
   browseItems: async (opts?: { type?: string; orgId?: string; q?: string; page?: number; limit?: number }) => {
     const params = new URLSearchParams();
@@ -2335,13 +2890,91 @@ export const hubApi = {
     await ensureHubAuth();
     return hubRequest<{ ok: boolean }>(`/items/${id}`, { method: 'DELETE' });
   },
+  purchases: {
+    checkout: (itemId: string) =>
+      hubRequest<{ ok?: boolean; checkoutUrl?: string; sessionId?: string; alreadyOwned?: boolean }>('/purchases/checkout', { method: 'POST', body: JSON.stringify({ itemId }) }),
+    payWithEarnings: (itemId: string) =>
+      hubRequest<{ ok?: boolean; purchaseId?: string; alreadyOwned?: boolean }>('/purchases/pay-with-earnings', { method: 'POST', body: JSON.stringify({ itemId }) }),
+    mine: () =>
+      hubRequest<{ purchases: Array<{ id: string; itemId: string; amount: number; createdAt: string }> }>('/purchases/mine'),
+  },
+  creator: {
+    getBalance: () =>
+      hubRequest<{ availableBalance: number; totalEarnings: number }>('/creator/balance'),
+  },
+  user: {
+    plan: () => hubRequest<{
+      planType: string; planStatus: string;
+      monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null;
+      bonusCu: number; purchasedCu: number; windowQuotaCu: number;
+      windowCuUsed?: number;
+      totalConsumedThisPeriod?: number;
+      memberCuLimit?: number | null;
+      memberCuUsed?: number;
+    }>('/user/plan'),
+    cuStats: (days = 30, granularity: 'day' | 'hour' = 'day') =>
+      hubRequest<{ stats: Array<{ period: string; model: string | null; totalCu: number; totalInput: number; totalOutput: number; totalCached: number; requestCount: number }>; granularity: string; days: number }>(
+        `/user/cu/stats?days=${days}&granularity=${granularity}`
+      ),
+    /** Status of the one-time free starter credit claim. */
+    claimFreeCreditsStatus: () => hubRequest<{
+      claimable: boolean;
+      claimed: boolean;
+      claimedAt?: string | null;
+      amountCu: number;
+      bonusCu?: number;
+      monthlyQuotaCu?: number;
+      minAccountAgeSeconds: number;
+      retryAfterSeconds: number;
+      isOwner?: boolean;
+    }>('/user/claim-free-credits'),
+    /** Claim one-time free starter credits (bonusCu). May return TOO_SOON. */
+    claimFreeCredits: () => hubRequest<{
+      ok: boolean;
+      alreadyClaimed?: boolean;
+      claimedAt?: string;
+      bonusCu?: number;
+      monthlyQuotaCu?: number;
+      grantedCu?: number;
+      error?: string;
+      code?: string;
+      retryAfterSeconds?: number;
+      minAccountAgeSeconds?: number;
+    }>('/user/claim-free-credits', { method: 'POST' }),
+  },
 };
 
-/** Convert a string to kebab-case slug. Must match the server-side kebab() in @markus/shared. */
+/** English kebab-case package / Hub slug (mirrors @markus/shared). */
+export const PACKAGE_SLUG_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+
+export function isValidPackageSlug(s: string): boolean {
+  return typeof s === 'string' && s.length >= 2 && s.length <= 64 && PACKAGE_SLUG_RE.test(s);
+}
+
+/** Normalize toward a package slug; null when input cannot become valid English kebab-case. */
+export function toPackageSlug(s: string): string | null {
+  const result = s.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  return isValidPackageSlug(result) ? result : null;
+}
+
+/** Ensure a valid slug; Chinese / invalid names become a stable `pkg-<hash>`. */
+export function ensurePackageSlug(raw: string): { slug: string; converted: boolean } {
+  const input = String(raw || '').trim();
+  if (isValidPackageSlug(input)) return { slug: input, converted: false };
+  const normalized = toPackageSlug(input);
+  if (normalized) return { slug: normalized, converted: normalized !== input };
+  return { slug: kebab(input || 'package'), converted: true };
+}
+
+/** Convert a string to a kebab-case slug. Must match the server-side kebab() in @markus/shared. */
 export function kebab(s: string, fallback?: string): string {
-  const result = s.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
-  if (result) return result;
-  if (fallback) return fallback;
+  const normalized = toPackageSlug(s);
+  if (normalized) return normalized;
+  if (fallback) {
+    const fb = toPackageSlug(fallback);
+    if (fb) return fb;
+    if (isValidPackageSlug(fallback)) return fallback;
+  }
   let hash = 0;
   for (let i = 0; i < s.length; i++) hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
   return `pkg-${Math.abs(hash).toString(36)}`;

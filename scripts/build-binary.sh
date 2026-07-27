@@ -112,17 +112,14 @@ TEMPLATES_DIR="$ROOT_DIR/packages/cli/templates"
 LOGO_PNG="$ROOT_DIR/packages/web-ui/public/logo.png"
 [[ -f "$LOGO_PNG" ]] && cp "$LOGO_PNG" "$STAGE_DIR/logo.png" && ok "Logo copied"
 
-# Chrome extension zip (for browser automation setup)
-EXT_ZIP="$ROOT_DIR/packages/chrome-extension/dist/markus-browser-extension.zip"
-if [[ ! -f "$EXT_ZIP" ]]; then
-  info "Building Chrome extension zip..."
-  (cd "$ROOT_DIR/packages/chrome-extension" && npm run pack --silent 2>/dev/null) || true
-fi
-if [[ -f "$EXT_ZIP" ]]; then
-  mkdir -p "$STAGE_DIR/chrome-extension"
-  cp "$EXT_ZIP" "$STAGE_DIR/chrome-extension/"
-  ok "Chrome extension zip copied"
-fi
+# Chrome extension zip (for browser automation setup) — required
+info "Ensuring Chrome extension zip..."
+EXT_ZIP="$(node "$ROOT_DIR/scripts/ensure-chrome-extension-zip.mjs" | tail -n1)"
+[[ -f "$EXT_ZIP" ]] || die "Chrome extension zip missing after pack"
+mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/chrome-extension"
+cp "$EXT_ZIP" "$STAGE_DIR/bin/markus-browser-extension.zip"
+cp "$EXT_ZIP" "$STAGE_DIR/chrome-extension/markus-browser-extension.zip"
+ok "Chrome extension zip copied (bin/ + chrome-extension/)"
 
 # Create launcher wrapper
 cat > "$STAGE_DIR/markus" << 'LAUNCHER'

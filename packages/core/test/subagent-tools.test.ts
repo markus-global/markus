@@ -168,6 +168,28 @@ describe('runSubagentLoop', () => {
     expect(result).not.toContain('secret chain');
     expect(result).toContain('Visible result');
   });
+
+  it('B4: stops early and marks the result when the shared aggregate budget is exhausted', async () => {
+    // Always requests a tool → would loop forever without a budget/cap.
+    const router = makeMockRouter([{
+      content: 'loop',
+      finishReason: 'tool_use',
+      toolCalls: [{ id: 'tc1', name: 'echo', arguments: {} }],
+    }]);
+    const echoTool: AgentToolHandler = {
+      name: 'echo', description: 'Echo', inputSchema: { type: 'object', properties: {} },
+      execute: async () => '{"ok":true}',
+    };
+    const ctx = makeCtx(router, new Map([['echo', echoTool]]));
+    const sharedBudget = { remaining: 2 };
+    const result = await runSubagentLoop(ctx, 'Loop forever', { maxIterations: 1000, sharedBudget });
+
+    // Budget bounded the work: exactly `remaining` iterations consumed, then stop.
+    expect(sharedBudget.remaining).toBe(0);
+    // init chat + 2 iteration chats = 3 total (bounded, not 1000).
+    expect((router.chat as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(3);
+    expect(result).toContain('shared aggregate iteration budget exhausted');
+  });
 });
 
 describe('subagent tool wrappers', () => {
@@ -202,6 +224,29 @@ describe('subagent tool wrappers', () => {
     const parsed = JSON.parse(raw);
     expect(parsed.status).toBe('completed');
     expect(parsed.results).toHaveLength(2);
+  });
+
+  it('B4: spawn_subagents reports budgetExceeded when the fan-out exhausts the shared budget', async () => {
+    // Every child loops forever (always tool_use) → the shared aggregate budget must cap them.
+    const router = makeMockRouter([{
+      content: 'loop',
+      finishReason: 'tool_use',
+      toolCalls: [{ id: 'tc1', name: 'echo', arguments: {} }],
+    }]);
+    const echoTool: AgentToolHandler = {
+      name: 'echo', description: 'Echo', inputSchema: { type: 'object', properties: {} },
+      execute: async () => '{"ok":true}',
+    };
+    const tool = createParallelSubagentTool(makeCtx(router, new Map([['echo', echoTool]])));
+    const parsed = JSON.parse(await tool.execute({
+      tasks: [
+        { id: 'a', task: 'loop A', max_iterations: 1000 },
+        { id: 'b', task: 'loop B', max_iterations: 1000 },
+      ],
+    }));
+    expect(parsed.status).toBe('completed');
+    expect(parsed.budgetExceeded).toBe(true);
+    expect(parsed.aggregateIterationBudget).toBeGreaterThan(0);
   });
 
   it('spawn_subagents rejects empty and oversized batches', async () => {

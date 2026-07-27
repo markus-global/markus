@@ -119,6 +119,8 @@ function refresh(key: CacheKey): Promise<unknown> {
     return data;
   }).catch(err => {
     entry.inflight = null;
+    // Back off briefly so a failing endpoint can't re-trigger on every render snapshot.
+    entry.ts = Date.now() - cfg.ttlMs + 5_000;
     throw err;
   });
   entry.inflight = p;

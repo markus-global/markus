@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { withJitter, TASK_RETRY_DELAYS_MS, COMPLETION_MARKER } from '../src/limits.js';
+import { withJitter, TASK_RETRY_DELAYS_MS, COMPLETION_MARKER, hasCompletionMarker, stripCompletionMarkerLeak } from '../src/limits.js';
 
 describe('withJitter', () => {
   it('returns a value close to the base', () => {
@@ -45,5 +45,28 @@ describe('constants', () => {
   it('COMPLETION_MARKER is non-empty and unique', () => {
     expect(COMPLETION_MARKER.length).toBeGreaterThan(5);
     expect(COMPLETION_MARKER).toContain('<<');
+  });
+});
+
+describe('stripCompletionMarkerLeak', () => {
+  it('removes the exact marker', () => {
+    expect(stripCompletionMarkerLeak(`done ${COMPLETION_MARKER}`)).toBe('done ');
+  });
+
+  it('removes malformed variants a weak model emits as prose', () => {
+    expect(stripCompletionMarkerLeak('带上 <HANDLE_COMPLETE> 标记')).toBe('带上  标记');
+    expect(stripCompletionMarkerLeak('end < HANDLE_COMPLETE >')).toBe('end ');
+    expect(stripCompletionMarkerLeak('x <<HANDLE_COMPLETE> y')).toBe('x  y');
+    expect(stripCompletionMarkerLeak('x <handle_complete> y')).toBe('x  y');
+  });
+
+  it('leaves ordinary text untouched', () => {
+    const text = 'The task is complete and handled successfully.';
+    expect(stripCompletionMarkerLeak(text)).toBe(text);
+  });
+
+  it('detection stays strict — a malformed variant is NOT a real marker', () => {
+    expect(hasCompletionMarker('带上 <HANDLE_COMPLETE> 标记')).toBe(false);
+    expect(hasCompletionMarker(`done ${COMPLETION_MARKER}`)).toBe(true);
   });
 });

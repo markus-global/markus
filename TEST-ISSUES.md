@@ -33,10 +33,15 @@ Issues discovered during test coverage improvement. Each issue is categorized:
 | T-020 | Medium | [DESIGN] | `core/src/tools/mcp-client.ts` | MCP child process stdout is parsed line-by-line with `JSON.parse` — no handling for partial JSON if a message spans multiple `data` chunks. The `readline`-like split on `\n` can break if JSON contains escaped newlines in strings | **Closed** — not a bug: `stdoutBuffers` Map correctly accumulates partial chunks; JSON-RPC uses newline-delimited JSON where `\n` in strings is always `\\n` |
 | T-021 | Low | [BUG] | `core/src/tools/task-tools.ts` | 4 empty catch blocks — `JSON.parse` failures for `deliverables` and `subtasks` are silently ignored; malformed JSON input from LLM results in silent data loss instead of an error message to the user | **Closed** — acceptable: catches are for non-fatal enrichment (optional comments/status); `JSON.parse(rawDel)` correctly falls through to string handling |
 | T-022 | Low | [DESIGN] | `core/src/attention.ts` | 6 empty catch blocks — attention/triage failures are swallowed; if the LLM returns malformed JSON for priority assessment, the item falls through to default handling without any logging | **Fixed** — added `log.debug` to all 6 catch blocks |
-| T-023 | Medium | [DESIGN] | `org-manager/src/api-server.ts` | 12,599 lines in a single file — extremely difficult to maintain, review, and test. Route handlers, middleware, SSE management, websocket logic, and business logic all mixed together | Open — needs refactoring into modules |
+| T-023 | Medium | [DESIGN] | `org-manager/src/api-server.ts` | 12,599 lines in a single file — extremely difficult to maintain, review, and test. Route handlers, middleware, SSE management, websocket logic, and business logic all mixed together | **Fixed** — api-server.ts split from 13,171 to ~5,189 lines. 7 route modules extracted (settings/llm, agents-deep, gateway, tasks, skills, governance + middleware/auth). |
 | T-024 | Low | [BUG] | `core/src/agent-metrics.ts` | `writeFileSync` for metrics persistence has no error handling beyond empty catch — if disk is full, metrics are silently lost AND the agent continues without knowing. `readFileSync` for restore also swallows parse errors | **Fixed** — added `log.warn` for save and load failures |
 | T-025 | Medium | [RACE] | `core/src/agent.ts` | `activeTasks` Set and `activeTaskGen` Map are modified without synchronization — while JS is single-threaded, the `async` task execution paths can interleave at `await` points, potentially causing the `finally` block of an older generation to clear a newer task's entry (mitigated by generation counter, but the gen check itself is not atomic with the delete) | **Closed** — not a real race: JS is single-threaded, check+delete runs atomically between await points; generation counter correctly prevents stale cleanup |
 | T-026 | Low | [DESIGN] | `core/src/memory/store.ts` | 5 empty catch blocks — memory persistence failures (write daily log, compact session) are swallowed; data loss in memory subsystem is invisible | **Fixed** — added `log.debug` to 3 silent catch blocks (stat, sessions dir, load session) |
+| T-027 | Medium | [DESIGN] | `core/src/agent-metrics.ts` | Local USD cost estimation using hardcoded Sonnet pricing ($3/$15 per 1M tokens) and $0.000003/token flat rate produced inaccurate billing data | **Fixed** — replaced with server-side CU tracking from Markus Provider x-cu-* headers; estimatedCost always 0 |
+| T-028 | Medium | [DESIGN] | `shared/src/types/license.ts` | Dual plan systems (plan-config.ts vs license.ts) with overlapping feature definitions not unified | **Fixed** — PLAN_LIMITS.maxUsers now derives from plan-config.ts; relationship documented |
+| T-029 | Low | [BUG] | `cli/src/commands/start.ts` | Markus provider default model id inconsistency | **Superseded** — Markus Provider uses OpenRouter slugs from Hub catalog |
+| T-030 | Low | [DESIGN] | `org-manager/src/license-service.ts` | HUB_LICENSE_PUBLIC_KEY is a placeholder PEM; offline license verification silently accepts any signature in dev mode | **Fixed** — added startup warning when placeholder is detected |
+| T-031 | Medium | [DESIGN] | `web-ui/src/pages/AgentBuilder.tsx` | PAYMENTS_ENABLED=false flag permanently disabled LemonSqueezy payment gate; dead code | **Fixed** — removed flag and LemonSqueezy references |
 
 ## Fix Priority
 
@@ -44,6 +49,7 @@ Issues discovered during test coverage improvement. Each issue is categorized:
 - T-005: `String(error)` → `error.message` ✅
 - T-008: Remove dead `pendingApprovals` field ✅
 - T-009: "Image" → "File" for non-image fallback ✅
+- T-029: Markus provider uses Hub OR slugs ✅
 
 ### High Priority (race conditions affecting data integrity)
 - T-010: Config file concurrent write race ✅
@@ -55,6 +61,9 @@ Issues discovered during test coverage improvement. Each issue is categorized:
 - T-014: agent.ts empty catches ✅ (7 key blocks)
 - T-016: `handleMessage` concurrency — mitigated by attention loop ✅
 - T-024: Metrics persistence logging ✅
+- T-027: Local USD cost estimation → server-side CU tracking ✅
+- T-028: Dual plan systems unified via plan-config.ts ✅
+- T-031: LemonSqueezy dead code removed ✅
 
 ### Low Priority (design improvements)
 - T-001: Provider capability check ✅
@@ -64,9 +73,8 @@ Issues discovered during test coverage improvement. Each issue is categorized:
 - T-019: Dispatcher cache sentinel ✅
 - T-022: attention.ts empty catches ✅
 - T-026: memory/store.ts empty catches ✅
-
-### Remaining Open
-- T-023: api-server.ts 12.6k lines (deferred to separate PR)
+- T-023: api-server.ts split into route modules ✅
+- T-030: Placeholder license key startup warning ✅
 
 ### Closed (by design / not a bug / acceptable)
 - T-002: Auth/billing fallback — by design, gated by `autoFallback` switch

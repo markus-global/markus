@@ -40,7 +40,8 @@
     "resumeAllTooltip": "Resume all agents",
     "failedToCreateTeam": "Failed to create team: {{message}}",
     "agents": "Agents",
-    "teams": "Teams"
+    "teams": "Teams",
+    "agentDMs": "Agent DMs"
   },
   "teamProfile": {
     "overview": "Overview",
@@ -64,10 +65,13 @@
     "start": "Start",
     "stop": "Stop",
     "setAsManager": "Set as Manager",
-    "removeFromTeam": "Remove from team",
+    "removeFromTeam": "Move out of team",
     "moveTo": "Move to",
+    "moveToSearch": "Search teams…",
+    "moveToEmpty": "No matching teams",
     "removeFromOrg": "Remove from org",
-    "manageMembers": "Manage Members"
+    "manageMembers": "Manage Members",
+    "orgSecretaryProtected": "System Secretary — cannot be removed"
   },
   "modals": {
     "createTeam": {
@@ -133,7 +137,7 @@
       "purgeFiles": "Also delete disk files (workspace, memory, logs)"
     },
     "removeFromTeam": {
-      "title": "Remove from team?",
+      "title": "Move out of team?",
       "message": "This member will be moved to Ungrouped."
     },
     "removeAgent": {
@@ -201,6 +205,16 @@
     },
     "approvalHistory": "History"
   },
+  "userInput": {
+    "respond": "Respond",
+    "submit": "Submit",
+    "submitted": "Submitted",
+    "next": "Next",
+    "previous": "Previous",
+    "questionProgress": "Question {{current}} of {{total}}",
+    "textPlaceholder": "Type your answer…",
+    "freeformPlaceholder": "Or write your own answer…"
+  },
   "intro": {
     "secretary": "I just set up Markus. Help me get started — what can I do here?",
     "agent": "Introduce yourself — what can you do?"
@@ -228,13 +242,25 @@
     "defaultInvalidApiKey": "Invalid API key",
     "defaultTooManyRequests": "Too many requests",
     "defaultServiceDown": "Service temporarily down",
+    "markusCuExceeded": "⚠ Insufficient balance. Please top up or upgrade: https://markus.global/settings?tab=billing",
+    "markusRateLimited": "⚠ Markus Cloud AI request frequency limit reached (600 req/min). This usually resolves within a few seconds. If many agents are running concurrently, consider staggering their tasks.",
+    "markusWindowExceeded": "⚠ 5-hour usage window limit reached. Your plan allows a limited amount of CU within any 5-hour period. Please wait for the window to roll over, or upgrade your plan for a higher 5h window quota: https://markus.global/settings?tab=billing",
+    "creditModalTitle": "Credits Exhausted",
+    "creditModalDesc": "Your Markus Cloud AI credits have been used up. Please purchase more credits or upgrade your subscription to continue.",
+    "creditModalDismiss": "Later",
+    "creditModalUpgrade": "Top Up / Upgrade",
     "ai402": "⚠ AI service error: {{detail}}. Please top up the API balance or contact your administrator.",
     "ai401": "⚠ AI service authentication failed: {{detail}}. Please check the configuration.",
     "ai429": "⚠ Rate limit exceeded: {{detail}}. Please wait a moment and try again.",
+    "ai502": "⚠ AI upstream service error: {{detail}}. The LLM provider may be temporarily down. Please try again later.",
     "ai503": "⚠ AI service unavailable: {{detail}}. Please try again later.",
-    "aiGeneric": "⚠ AI service error: {{detail}}"
+    "aiGeneric": "⚠ AI service error: {{detail}}",
+    "defaultUpstreamDown": "LLM provider returned 502 Bad Gateway"
   },
   "page": {
+    "userInputPrompt_one": "{{count}} question awaiting your response",
+    "userInputPrompt_other": "{{count}} questions awaiting your response",
+    "userInputRespond": "Respond",
     "viewProfileArrow": "View Profile →",
     "viewAgentProfileArrow": "View Agent Profile →",
     "viewMindArrow": "View Mind →",
@@ -242,9 +268,11 @@
       "resumeTitle": "Resume",
       "reaskTitle": "Re-ask",
       "retryTitle": "Retry",
-      "replyTitle": "Reply"
+      "replyTitle": "Reply",
+      "aiGeneratedDisclaimer": "AI-generated content — please verify carefully"
     },
     "stopped": "Stopped",
+    "emptyReply": "The assistant didn't produce a reply this time. This usually means the request was too large or the AI service was briefly unavailable. Please retry — if it keeps happening, check your credits or switch models in Settings.",
     "fallbackAgent": "Agent",
     "fallbackYou": "You",
     "systemName": "System",
@@ -258,6 +286,7 @@
     "newChatPlus": "+ New",
     "newChatButton": "+ New Chat",
     "historyTitle": "History",
+    "rightPanelToggle": "Toggle side panel",
     "sessionMain": "Main",
     "sessionConversation": "Conversation",
     "noConversationsYet": "No conversations yet",
@@ -335,5 +364,11 @@
     "searchPlaceholder": "Search messages...",
     "searching": "Searching...",
     "noSearchResults": "No messages found"
+  },
+  "chatModel": {
+    "title": "Model",
+    "search": "Search models",
+    "applyGlobal": "Apply to global",
+    "empty": "No enabled providers / models"
   }
 }

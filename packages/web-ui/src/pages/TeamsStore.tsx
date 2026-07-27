@@ -1,11 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, hubApi, type TeamTemplateInfo, type HubItem } from '../api.ts';
+import { api, hubApi, ownsHubItem, type TeamTemplateInfo, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
-import { installHubItem } from './TemplateMarketplace.tsx';
+import { installHubItem, purchaseAndInstall, hubItemSlug } from './TemplateMarketplace.tsx';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
-
-type FilterId = 'all' | 'hub';
+import { AssetCard } from '../components/AssetCard.tsx';
+import { Masonry } from '../components/Masonry.tsx';
 
 const TEAM_CATEGORY_ICONS: Record<string, string> = {
   development: '{ }',
@@ -59,7 +59,6 @@ function isNewerVersion(latest: string, current: string): boolean {
 export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItemId?: string | null; onHighlightDone?: () => void } = {}) {
   const { t, i18n } = useTranslation(['store', 'common']);
   const lang = i18n.language;
-  const [filter, setFilter] = useState<FilterId>(highlightItemId ? 'hub' : 'all');
   const [search, setSearch] = useState('');
   const [templates, setTemplates] = useState<TeamTemplateInfo[]>([]);
   const [hubItems, setHubItems] = useState<HubItem[]>([]);
@@ -69,6 +68,7 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
   const [deploying, setDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [localArtifacts, setLocalArtifacts] = useState<Map<string, LocalArtifactInfo>>(new Map());
+  const [purchasedIds, setPurchasedIds] = useState<Set<string>>(new Set());
   const [detailItem, setDetailItem] = useState<{ type: string; name: string } | null>(null);
 
   const loadLocalStatus = useCallback(async () => {
@@ -94,38 +94,36 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      if (filter === 'hub') {
-        const hubPromise = !search
-          ? (consume<{ items: HubItem[]; total: number }>(PREFETCH_KEYS.hubTeams) ?? hubApi.search({ type: 'team', limit: 50 }))
-          : hubApi.search({ type: 'team', q: search, limit: 50 });
-        const [res] = await Promise.all([
-          hubPromise.catch(() => ({ items: [] as HubItem[], total: 0 })),
-          loadLocalStatus(),
-        ]);
-        setHubItems(res?.items ?? []);
-        setTemplates([]);
-      } else {
-        setHubItems([]);
-        const res = await api.teamTemplates.list(search || undefined);
-        setTemplates(res?.templates ?? []);
-      }
+      const hubPromise = !search
+        ? (consume<{ items: HubItem[]; total: number }>(PREFETCH_KEYS.hubTeams) ?? hubApi.search({ type: 'team', limit: 50 }))
+        : hubApi.search({ type: 'team', q: search, limit: 50 });
+      const [hubRes, tplRes] = await Promise.all([
+        hubPromise.catch(() => ({ items: [] as HubItem[], total: 0 })),
+        api.teamTemplates.list(search || undefined).catch(() => ({ templates: [] as TeamTemplateInfo[] })),
+        loadLocalStatus(),
+        hubApi.isAuthenticated()
+          ? hubApi.purchases.mine().then(r => setPurchasedIds(new Set(r.purchases.map(p => p.itemId)))).catch(() => {})
+          : Promise.resolve(),
+      ]);
+      setHubItems(hubRes?.items ?? []);
+      setTemplates(tplRes?.templates ?? []);
     } catch {
       setTemplates([]);
       setHubItems([]);
     } finally {
       setLoading(false);
     }
-  }, [filter, search, loadLocalStatus]);
+  }, [search, loadLocalStatus]);
 
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
-    if (!selected || filter !== 'all') { setMemberFiles({}); return; }
+    if (!selected) { setMemberFiles({}); return; }
     fetch(`/api/team-templates/${encodeURIComponent(selected.id)}/files`, { credentials: 'include' })
       .then(r => r.json())
       .then((data: { files?: Record<string, string> }) => setMemberFiles(data.files ?? {}))
       .catch(() => setMemberFiles({}));
-  }, [selected, filter]);
+  }, [selected]);
 
   const handleDeploy = async (tpl: TeamTemplateInfo) => {
     setDeploying(true);
@@ -177,7 +175,6 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
 
       const errMsg = errors.length > 0 ? ` (${errors.length} failed: ${errors[0]})` : '';
       setDeployResult({ ok: deployed > 0, message: `Team "${localizedTeamName(tpl, lang)}" deployed with ${deployed} agent(s)${errMsg}` });
-      window.dispatchEvent(new Event('markus:check-license-limits'));
     } catch (err) {
       setDeployResult({ ok: false, message: `Failed: ${err}` });
     } finally {
@@ -195,7 +192,7 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
     );
   }
 
-  if (selected && filter === 'all') {
+  if (selected) {
     const allFiles: Record<string, string> = { ...memberFiles };
     if (selected.announcements) allFiles['ANNOUNCEMENT.md'] = selected.announcements;
     if (selected.norms) allFiles['NORMS.md'] = selected.norms;
@@ -289,61 +286,23 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
-      <div className="px-6 h-14 flex items-center shrink-0">
+      <div className="px-6 h-14 flex items-center justify-between shrink-0 gap-3">
         <h2 className="text-lg font-semibold">{t('teamStore.title')}</h2>
+        <input
+          type="text"
+          placeholder={t('teamStore.searchPlaceholder')}
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm max-w-xs w-full focus:border-brand-500 focus:outline-none"
+        />
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 px-6 py-2 shrink-0">
-        <div className="flex gap-1">
-          {([
-            { id: 'all' as const, labelKey: 'teamStore.builtin' },
-            { id: 'hub' as const, labelKey: 'teamStore.markusHub' },
-          ]).map(f => (
-            <button
-              key={f.id}
-              onClick={() => { setFilter(f.id); setSelected(null); setDeployResult(null); }}
-              className={`px-3 py-1 text-xs rounded-md transition-colors ${
-                filter === f.id ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
-              }`}
-            >
-              {t(f.labelKey)}
-            </button>
-          ))}
-        </div>
-        {filter === 'all' && (
-          <div className="text-xs text-fg-tertiary">
-            {t('teamStore.available', { count: templates.length })}
-          </div>
-        )}
-        <div className="flex-1 min-w-[120px]">
-          <input
-            type="text"
-            placeholder={t('teamStore.searchPlaceholder')}
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-full focus:border-brand-500 focus:outline-none"
-          />
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-7">
+      <div className="flex-1 overflow-y-auto p-7 space-y-8">
         {loading ? (
-          <div className="text-center text-fg-tertiary py-20 animate-pulse">{t('teamStore.loading')}</div>
-        ) : filter === 'hub' ? (
-          hubItems.length === 0 ? (
-            <div className="text-center py-16">
-              <div className="text-fg-tertiary text-3xl mb-3">🏪</div>
-              <p className="text-sm text-fg-tertiary">{t('teamStore.noHub')}</p>
-              <p className="text-xs text-fg-tertiary mt-1">{t('teamStore.noHubHint')}</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {hubItems.map(item => (
-                <HubTeamCard key={item.id} item={item} localInfo={localArtifacts.get(toSlug(item.name))} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} onViewDetail={(name) => setDetailItem({ type: 'team', name })} />
-              ))}
-            </div>
-          )
-        ) : templates.length === 0 ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-56 rounded-2xl skeleton" />)}
+          </div>
+        ) : templates.length === 0 && hubItems.length === 0 ? (
           <div className="text-center py-20">
             <div className="text-4xl mb-4 opacity-30">&#9673;</div>
             <div className="text-fg-secondary font-medium mb-1">
@@ -354,24 +313,54 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            {templates.map(tpl => (
-              <TeamTemplateCard
-                key={tpl.id}
-                template={tpl}
-                lang={lang}
-                isSelected={false}
-                onSelect={() => setSelected(tpl)}
-              />
-            ))}
-          </div>
+          <>
+            {templates.length > 0 && (
+              <section>
+                <div className="flex items-baseline gap-2 mb-3">
+                  <h3 className="section-title">{t('teamStore.builtin')}</h3>
+                  <span className="text-xs text-fg-tertiary">{t('teamStore.available', { count: templates.length })}</span>
+                </div>
+                <Masonry columns={2}>
+                  {templates.map(tpl => (
+                    <AssetCard
+                      key={tpl.id}
+                      type="team"
+                      name={localizedTeamName(tpl, lang)}
+                      description={localizedTeamDesc(tpl, lang)}
+                      seed={tpl.id}
+                      icon={tpl.icon || 'users'}
+                      version={tpl.version}
+                      category={tpl.category}
+                      tags={tpl.tags}
+                      authorLabel={tpl.author}
+                      hideStats
+                      showTypeBadge={false}
+                      cornerLabel={t('teamStore.builtin')}
+                      onClick={() => setSelected(tpl)}
+                    />
+                  ))}
+                </Masonry>
+              </section>
+            )}
+
+            {hubItems.length > 0 && (
+              <section>
+                <h3 className="section-title mb-3">{t('teamStore.markusHub')}</h3>
+                <Masonry columns={2}>
+                  {hubItems.map(item => (
+                    <HubTeamCard key={item.id} item={item} localInfo={localArtifacts.get(hubItemSlug(item))} purchased={ownsHubItem(item, purchasedIds)} onStatusChange={loadLocalStatus} highlight={item.id === highlightItemId} onHighlightDone={onHighlightDone} onViewDetail={(name) => setDetailItem({ type: 'team', name })} />
+                  ))}
+                </Masonry>
+              </section>
+            )}
+          </>
         )}
       </div>
     </div>
   );
 }
 
-function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDone, onViewDetail }: { item: HubItem; localInfo?: LocalArtifactInfo; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void; onViewDetail?: (name: string) => void }) {
+function HubTeamCard({ item, localInfo, purchased, onStatusChange, highlight, onHighlightDone, onViewDetail }: { item: HubItem; localInfo?: LocalArtifactInfo; purchased?: boolean; onStatusChange: () => void; highlight?: boolean; onHighlightDone?: () => void; onViewDetail?: (name: string) => void }) {
   const { t } = useTranslation(['store']);
   const [installing, setInstalling] = useState(false);
   const [status, setStatus] = useState('');
@@ -413,9 +402,28 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
     }
   };
 
-  const iconIsEmoji = item.icon && !item.icon.startsWith('/') && !item.icon.startsWith('http');
-  const iconSrc = item.icon && (item.icon.startsWith('http') ? item.icon : item.icon.startsWith('/') ? `${hubApi.getUrl()}${item.icon}` : null);
-  const rating = Math.round(parseFloat(item.avgRating));
+  const handleBuy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (installing) return;
+    setInstalling(true);
+    setStatus('');
+    try {
+      const result = await purchaseAndInstall(item, (s) => {
+        if (s === 'checkout_opened') setStatus(t('card.waitingPurchase', 'Waiting for purchase...'));
+        else if (s === 'installing') setStatus(t('card.installing'));
+      });
+      if (result === 'installed') {
+        setStatus(t('card.installed') + '!');
+        onStatusChange();
+      } else {
+        setStatus('');
+      }
+    } catch (err: unknown) {
+      setStatus(err instanceof Error ? err.message : t('card.failed'));
+    } finally {
+      setInstalling(false);
+    }
+  };
 
   const hubDetailUrl = item.slug && item.author?.username
     ? `${hubApi.getUrl()}/@${encodeURIComponent(item.author.username)}/${encodeURIComponent(item.slug)}`
@@ -423,135 +431,65 @@ function HubTeamCard({ item, localInfo, onStatusChange, highlight, onHighlightDo
 
   const handleCardClick = () => {
     if (isInstalled && onViewDetail) {
-      onViewDetail(toSlug(item.name));
+      onViewDetail(hubItemSlug(item));
     } else if (hubDetailUrl) {
       window.open(hubDetailUrl, '_blank', 'noopener,noreferrer');
     }
   };
 
+  const actions = (
+    <>
+      {canUpgrade ? (
+        <button onClick={e => void handleInstall(e)} disabled={installing}
+          className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50">
+          {installing ? t('card.upgrading') : t('card.upgrade', { version: item.version })}
+        </button>
+      ) : isInstalled ? (
+        <button onClick={e => void handleInstall(e)} disabled={installing}
+          className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay text-fg-secondary border border-border-default rounded-lg transition-colors disabled:opacity-50">
+          {t('card.installed')}{localInfo?.localVersion ? ` v${localInfo.localVersion}` : ''}
+        </button>
+      ) : isPaid && !purchased ? (
+        <button onClick={e => void handleBuy(e)} disabled={installing}
+          className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50 inline-flex items-center gap-1">
+          {installing ? (status || t('card.installing')) : <>{t('card.buy', 'Buy')} {priceLabel}</>}
+        </button>
+      ) : (
+        <button onClick={e => void handleInstall(e)} disabled={installing}
+          className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50">
+          {installing ? t('card.installing') : t('card.install')}
+        </button>
+      )}
+      {status && <span className={`text-[10px] ${status === t('card.failed') || status === t('card.purchaseRequired') ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
+    </>
+  );
+
   return (
-    <div ref={cardRef} onClick={handleCardClick} className={`group relative bg-surface-secondary rounded-xl overflow-hidden cursor-pointer transition-all duration-300 hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5 ${glowing ? 'ring-2 ring-brand-500 shadow-lg shadow-brand-500/20 animate-pulse' : ''}`}>
-      <div className={`absolute inset-0 rounded-xl border transition-colors duration-300 ${glowing ? 'border-brand-500/60' : 'border-border-default group-hover:border-brand-500/30'}`} />
-      <div className="relative p-5">
-        <div className="flex items-start gap-3 mb-3">
-          <div className="w-10 h-10 rounded-lg bg-surface-elevated/80 border border-border-default/50 flex items-center justify-center shrink-0 text-lg">
-            {iconSrc ? <img src={iconSrc} alt="" className="w-8 h-8 rounded object-cover" /> : iconIsEmoji ? item.icon : '\u{1F465}'}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold truncate group-hover:text-brand-400 transition-colors">{item.name}</h3>
-              {isPaid && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-400 rounded-md border border-amber-500/10 shrink-0">{priceLabel}</span>}
-            </div>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[11px] text-fg-tertiary truncate">by {item.author?.displayName ?? item.author?.username}</span>
-              {item.version && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/15 text-brand-400 rounded-md border border-brand-500/10 shrink-0">v{item.version}</span>}
-            </div>
-          </div>
-        </div>
-
-        <p className="text-sm text-fg-secondary line-clamp-2 leading-relaxed mb-3">{item.description}</p>
-
-        {item.tags?.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {item.tags.slice(0, 3).map(tag => (
-              <span key={tag} className="px-2 py-0.5 text-[10px] bg-surface-elevated/80 text-fg-secondary rounded-md border border-border-default/50">{tag}</span>
-            ))}
-            {item.tags.length > 3 && <span className="px-1 text-[10px] text-fg-muted">+{item.tags.length - 3}</span>}
-          </div>
-        )}
-
-        <div className="flex items-center gap-3 text-xs text-fg-tertiary mb-3">
-          <span className="text-amber-500 tracking-tight">{'\u2605'.repeat(rating)}{'\u2606'.repeat(5 - rating)}</span>
-          <span className="text-fg-muted">({item.ratingCount})</span>
-          <span>{'\u2193'} {item.downloadCount}</span>
-        </div>
-
-        <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-default/50" onClick={e => e.stopPropagation()}>
-          {canUpgrade ? (
-            <button onClick={e => void handleInstall(e)} disabled={installing}
-              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors disabled:opacity-50">
-              {installing ? t('card.upgrading') : t('card.upgrade', { version: item.version })}
-            </button>
-          ) : isInstalled ? (
-            <span className="px-3 py-1.5 text-xs bg-green-500/10 text-green-500 rounded-lg border border-green-500/20 inline-flex items-center gap-1">
-              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              {t('card.installed')}{localInfo?.localVersion ? ` v${localInfo.localVersion}` : ''}
-            </span>
-          ) : isPaid ? (
-            <a href={`${hubApi.getUrl()}/@${encodeURIComponent(item.author?.username ?? '')}/${encodeURIComponent(item.slug ?? item.id)}`}
-              target="_blank" rel="noopener noreferrer"
-              className="px-3 py-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white rounded-lg transition-colors inline-flex items-center gap-1">
-              {t('card.buy', { price: priceLabel })}
-            </a>
-          ) : (
-            <button onClick={e => void handleInstall(e)} disabled={installing}
-              className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50">
-              {installing ? t('card.installing') : t('card.install')}
-            </button>
-          )}
-          {status && <span className={`text-[10px] ${status === t('card.failed') || status === t('card.purchaseRequired') ? 'text-red-500' : 'text-green-600'}`}>{status}</span>}
-        </div>
-      </div>
+    <div ref={cardRef} className={glowing ? 'animate-pulse' : ''}>
+      <AssetCard
+        type="team"
+        showTypeBadge={false}
+        name={item.name}
+        description={item.description}
+        seed={item.slug || item.name}
+        icon={item.icon || 'users'}
+        cover={item.thumbnailUrl}
+        hubBase={hubApi.getUrl()}
+        author={item.author}
+        version={item.version}
+        category={item.category}
+        tags={item.tags}
+        rating={parseFloat(item.avgRating) || 0}
+        ratingCount={item.ratingCount}
+        downloadCount={item.downloadCount}
+        priceCents={item.priceCents}
+        currency={item.currency}
+        installed={isInstalled}
+        glowing={glowing}
+        onClick={handleCardClick}
+        actions={actions}
+      />
     </div>
   );
 }
 
-function TeamTemplateCard({ template: tpl, lang, isSelected, onSelect }: {
-  template: TeamTemplateInfo;
-  lang: string;
-  isSelected: boolean;
-  onSelect: () => void;
-}) {
-  const { t } = useTranslation(['store']);
-  const totalAgents = tpl.members.reduce((s, m) => s + (m.count ?? 1), 0);
-  const hasManager = tpl.members.some(m => m.role === 'manager');
-
-  return (
-    <div
-      onClick={onSelect}
-      className={`group relative bg-surface-secondary rounded-xl cursor-pointer transition-all duration-300 overflow-hidden ${
-        isSelected
-          ? 'ring-1 ring-brand-500/60 shadow-lg shadow-brand-500/10'
-          : 'hover:shadow-xl hover:shadow-brand-500/5 hover:-translate-y-0.5'
-      }`}
-    >
-      <div className={`absolute inset-0 rounded-xl border transition-colors duration-300 ${
-        isSelected ? 'border-brand-500/50' : 'border-border-default group-hover:border-brand-500/30'
-      }`} />
-      <div className={`absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-brand-500/40 to-transparent transition-opacity duration-300 ${
-        isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-      }`} />
-
-      <div className="relative p-5">
-        <div className="flex items-center gap-2">
-          <div className="font-semibold text-fg-primary truncate group-hover:text-brand-400 transition-colors">{localizedTeamName(tpl, lang)}</div>
-          <span className="px-2 py-0.5 rounded-md text-[10px] font-medium shrink-0 bg-brand-500/15 text-brand-400 border border-brand-500/10">
-            v{tpl.version}
-          </span>
-        </div>
-        <div className="text-[11px] text-fg-tertiary mt-0.5">by {tpl.author}</div>
-
-        <p className="text-sm text-fg-secondary mt-3 line-clamp-2 leading-relaxed">{localizedTeamDesc(tpl, lang)}</p>
-
-        <div className="flex flex-wrap gap-1.5 mt-3">
-          {tpl.members.map((m, i) => (
-            <span key={i} className={`px-2 py-0.5 text-[10px] rounded-md border ${
-              m.role === 'manager' ? 'bg-brand-500/10 text-brand-400 border-brand-500/15' : 'bg-blue-500/10 text-blue-400 border-blue-500/15'
-            }`}>
-              {localizedMemberName(tpl, m.name ?? m.roleName ?? m.templateId ?? 'Agent', lang)}
-              {(m.count ?? 1) > 1 ? ` x${m.count}` : ''}
-            </span>
-          ))}
-        </div>
-
-        <div className="mt-3 pt-3 border-t border-border-default/50 flex items-center gap-3 text-xs">
-          <span className="text-fg-muted">{t('teamStore.agents', { count: totalAgents })}</span>
-          {hasManager && <span className="text-brand-400/60">{t('teamStore.hasManager')}</span>}
-          {tpl.tags && tpl.tags.length > 0 && (
-            <span className="text-fg-muted text-[10px]">{tpl.tags.slice(0, 3).join(' · ')}</span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}

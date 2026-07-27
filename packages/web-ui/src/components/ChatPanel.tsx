@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   api, wsClient,
   type AgentInfo, type AgentToolEvent, type StreamCommitEvent,
-  type AuthUser, type StoredSegment,
+  type AuthUser,
 } from '../api.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 import {
@@ -13,7 +13,9 @@ import { Avatar } from './Avatar.tsx';
 import { ChatInput, type ContextChip, type MentionItem, type MentionChip } from './ChatInput.tsx';
 import {
   type MsgSegment, type ChatMsg,
-  dbMsgToChat, stripNotifyContext, formatSmartTime, getDateKey, formatDateLabel,
+  dbMsgToChat, stripNotifyContext, storedSegmentsToMsgSegments,
+  appendLiveOutput, appendSubagentLog,
+  formatSmartTime, getDateKey, formatDateLabel,
 } from '../pages/ChatHelpers.ts';
 import type { ActivityStep } from './ActivityIndicator.tsx';
 
@@ -126,7 +128,7 @@ export function ChatPanel({
     }
   }, [messages, scrollToBottom, loading]);
 
-  // WS: listen for proactive messages from this agent
+  // WS: listen for proactive messages from this agent (incl. Feishu user turns)
   useEffect(() => {
     const unsub = wsClient.on('chat:proactive_message', (event) => {
       const p = event.payload;
@@ -136,23 +138,49 @@ export function ChatPanel({
       if (targetUserId && targetUserId !== authUser?.id) return;
       const message = (p['message'] as string) ?? '';
       const msgSessionId = (p['sessionId'] as string) ?? '';
+      const messageId = (p['messageId'] as string) ?? '';
       if (!message || (message === '[cancelled]') || (message === '[Stream cancelled]')) return;
 
       if (msgSessionId && sessionIdRef.current && msgSessionId !== sessionIdRef.current) return;
 
-      const { cleaned: displayMessage, priority: parsedPriority } = stripNotifyContext(message);
       const meta = (p['metadata'] as Record<string, unknown>) ?? {};
-      const isNotify = !!meta.notifyUser || displayMessage !== message;
+      const isUserTurn = meta.role === 'user';
+      const { cleaned: displayMessage, priority: parsedPriority } = stripNotifyContext(message);
+      const isNotify = !isUserTurn && (!!meta.notifyUser || displayMessage !== message);
+      const fallbackUserText = typeof meta.userText === 'string' ? meta.userText : '';
+      const fallbackUserId = typeof meta.userMessageId === 'string' ? meta.userMessageId : '';
       const newMsg: ChatMsg = {
-        id: `proactive_${Date.now()}`,
-        sender: 'agent',
+        id: messageId || `proactive_${Date.now()}`,
+        sender: isUserTurn ? 'user' : 'agent',
         text: displayMessage,
         time: new Date().toLocaleTimeString(),
-        agentName: (p['agentName'] as string) ?? agentName,
-        agentId: msgAgentId,
-        ...(isNotify ? { isNotification: true, notifyPriority: (meta.priority as string) ?? parsedPriority } : {}),
+        ...(isUserTurn
+          ? {}
+          : {
+              agentName: (p['agentName'] as string) ?? agentName,
+              agentId: msgAgentId,
+              ...(isNotify ? { isNotification: true, notifyPriority: (meta.priority as string) ?? parsedPriority } : {}),
+            }),
       };
-      setMessages(prev => [...prev, newMsg]);
+      setMessages(prev => {
+        if (prev.some(m => m.id === newMsg.id)) return prev;
+        let base = prev;
+        if (!isUserTurn && fallbackUserText) {
+          const hasUser = base.some(m =>
+            (fallbackUserId && m.id === fallbackUserId)
+            || (m.sender === 'user' && m.text === fallbackUserText),
+          );
+          if (!hasUser) {
+            base = [...base, {
+              id: fallbackUserId || `feishu_user_${newMsg.id}`,
+              sender: 'user' as const,
+              text: fallbackUserText,
+              time: new Date().toLocaleTimeString(),
+            }];
+          }
+        }
+        return [...base, newMsg];
+      });
     });
     return unsub;
   }, [agentId, agentName, authUser?.id]);
@@ -307,11 +335,34 @@ export function ChatPanel({
           for (let i = segs.length - 1; i >= 0; i--) {
             const s = segs[i]!;
             if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-              segs[i] = { ...s, liveOutput: (s.liveOutput ?? '') + (event.output ?? '') };
+              segs[i] = { ...s, liveOutput: appendLiveOutput(s.liveOutput, event.output ?? '') };
               break;
             }
           }
           u[idx] = { ...u[idx]!, segments: segs };
+          return u;
+        });
+      } else if (event.phase === 'subagent_progress' && event.subagentEvent) {
+        setMessages(prev => {
+          const u = [...prev];
+          const idx = u.findIndex(m => m.id === agentMsgId);
+          if (idx < 0) return prev;
+          const appendLog = (list: MsgSegment[]): MsgSegment[] => {
+            const next = [...list];
+            for (let i = next.length - 1; i >= 0; i--) {
+              const s = next[i]!;
+              if (s.type === 'tool' && (s.tool === 'spawn_subagent' || s.tool === 'spawn_subagents') && s.status === 'running') {
+                next[i] = { ...s, subagentLogs: appendSubagentLog(s.subagentLogs, event.subagentEvent!) };
+                break;
+              }
+            }
+            return next;
+          };
+          u[idx] = {
+            ...u[idx]!,
+            segments: appendLog(u[idx]!.segments ?? []),
+            committedSegments: appendLog(u[idx]!.committedSegments ?? []),
+          };
           return u;
         });
       } else if (event.phase === 'end') {
@@ -322,9 +373,11 @@ export function ChatPanel({
           if (idx < 0) return prev;
           const now = new Date().toISOString();
           const segs = [...(u[idx]!.segments ?? [])];
+          let endedSubagentLogs: Extract<MsgSegment, { type: 'tool' }>['subagentLogs'];
           for (let i = segs.length - 1; i >= 0; i--) {
             const s = segs[i]!;
             if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
+              endedSubagentLogs = s.subagentLogs;
               segs[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined, createdAt: now };
               break;
             }
@@ -333,7 +386,17 @@ export function ChatPanel({
           for (let i = committed.length - 1; i >= 0; i--) {
             const s = committed[i]!;
             if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-              committed[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined, createdAt: now };
+              committed[i] = {
+                ...s,
+                status: event.success === false ? 'error' : 'done',
+                args: event.arguments,
+                result: event.result,
+                error: event.error,
+                durationMs: event.durationMs,
+                liveOutput: undefined,
+                createdAt: now,
+                subagentLogs: endedSubagentLogs ?? s.subagentLogs,
+              };
               break;
             }
           }
@@ -368,11 +431,7 @@ export function ChatPanel({
           const u = [...prev];
           const idx = u.findIndex(m => m.id === agentMsgId);
           if (idx < 0) return prev;
-          const finalSegs: MsgSegment[] = streamResult.segments!.map((s: StoredSegment, i: number) =>
-            s.type === 'tool'
-              ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs, createdAt: s.createdAt }
-              : { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt }
-          );
+          const finalSegs: MsgSegment[] = storedSegmentsToMsgSegments(streamResult.segments!, u[idx]!.segments);
           let finalText = streamResult.content || u[idx]!.text;
           if (!finalText) {
             finalText = finalSegs.filter(s => s.type === 'text').map(s => (s as { content: string }).content).join('');
@@ -578,7 +637,6 @@ export function ChatPanel({
                               msg={msg}
                               isStreaming={isStreamingMsg}
                               liveActivities={isStreamingMsg ? activities : []}
-                              onViewModeChange={() => {}}
                             />
                           : <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" />
                       }

@@ -13,9 +13,19 @@ function createMockProvider(overrides: Partial<MultiModalProviderInterface> = {}
   } as MultiModalProviderInterface;
 }
 
-function createContext(candidatesByCapability: Record<string, ModalityCandidate[]>) {
+function createContext(
+  candidatesByCapability: Record<string, ModalityCandidate[]>,
+  extras: {
+    resolveProvider?: (name: string) => ModalityCandidate | undefined;
+    listProviderNames?: () => string[];
+    isProviderDisabled?: (name: string) => boolean;
+  } = {},
+) {
   return {
     resolveCandidates: vi.fn((capabilityType: string) => candidatesByCapability[capabilityType] ?? []),
+    resolveProvider: extras.resolveProvider,
+    listProviderNames: extras.listProviderNames,
+    isProviderDisabled: extras.isProviderDisabled,
   };
 }
 
@@ -36,9 +46,35 @@ describe('createMultiModalTools', () => {
   });
 
   describe('generate_image', () => {
+    it('rejects empty args with a model-clear missing-prompt error (not upstream Zod)', async () => {
+      const generateImage = vi.fn();
+      const tools = createMultiModalTools(createContext({
+        image_generation: [{ provider: createMockProvider({ generateImage }), name: 'markus', model: 'openai/gpt-image-1' }],
+      }));
+      const result = JSON.parse(await tools[0].execute({}));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('Missing required argument "prompt"');
+      expect(result.error).toContain('empty arguments {}');
+      expect(result.error).toContain('do NOT rename');
+      expect(generateImage).not.toHaveBeenCalled();
+    });
+
+    it('accepts description alias for prompt', async () => {
+      const tinyPng =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      const generateImage = vi.fn().mockResolvedValue([{ base64: tinyPng }]);
+      const tools = createMultiModalTools(createContext({
+        image_generation: [{ provider: createMockProvider({ generateImage }), name: 'markus', model: 'openai/gpt-image-1' }],
+      }));
+      const result = JSON.parse(await tools[0].execute({ description: 'a cat' }));
+      expect(result.status).toBe('success');
+      expect(generateImage).toHaveBeenCalledWith('a cat', expect.any(Object));
+    });
+
     it('returns error when no candidates available', async () => {
       const tools = createMultiModalTools(createContext({ image_generation: [] }));
       const result = JSON.parse(await tools[0].execute({ prompt: 'a cat' }));
+      expect(result.status).toBe('error');
       expect(result.error).toContain('No image generation provider configured');
     });
 
@@ -47,20 +83,50 @@ describe('createMultiModalTools', () => {
         image_generation: [{ provider: createMockProvider(), name: 'no-image', model: 'x' }],
       }));
       const result = JSON.parse(await tools[0].execute({ prompt: 'a cat' }));
+      expect(result.status).toBe('error');
       expect(result.error).toContain('No image generation provider configured');
     });
 
     it('executes image generation via first successful provider', async () => {
+      const pngBytes = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64',
+      );
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        arrayBuffer: async () => pngBytes.buffer.slice(pngBytes.byteOffset, pngBytes.byteOffset + pngBytes.byteLength),
+      }));
       const generateImage = vi.fn().mockResolvedValue([{ url: 'https://example.com/img.png' }]);
       const provider = createMockProvider({ generateImage, model: 'dall-e-3' });
       const tools = createMultiModalTools(createContext({
         image_generation: [{ provider, name: 'openai', model: 'dall-e-3' }],
       }));
       const result = JSON.parse(await tools[0].execute({ prompt: 'sunset', size: '1024x1024' }));
+      expect(result.status).toBe('success');
       expect(result.success).toBe(true);
       expect(result.provider).toBe('openai');
       expect(result.images).toHaveLength(1);
+      expect(result.images[0].filePath).toBeTruthy();
+      expect(result.images[0].markdown).toContain(result.images[0].filePath);
+      expect(result.images[0].base64).toBeUndefined();
+      expect(JSON.stringify(result).length).toBeLessThan(2000);
       expect(generateImage).toHaveBeenCalledWith('sunset', expect.objectContaining({ size: '1024x1024', model: 'dall-e-3' }));
+      vi.unstubAllGlobals();
+    });
+
+    it('persists base64 images to disk instead of returning them in the tool result', async () => {
+      const tinyPng =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      const generateImage = vi.fn().mockResolvedValue([{ base64: tinyPng }]);
+      const provider = createMockProvider({ generateImage, model: 'gpt-image-1' });
+      const tools = createMultiModalTools(createContext({
+        image_generation: [{ provider, name: 'markus', model: 'openai/gpt-image-1' }],
+      }));
+      const result = JSON.parse(await tools[0].execute({ prompt: 'dot' }));
+      expect(result.success).toBe(true);
+      expect(result.images[0].filePath).toMatch(/img-\d+-0\.png$/);
+      expect(result.images[0].base64).toBeUndefined();
+      expect(JSON.stringify(result)).not.toContain(tinyPng);
     });
 
     it('falls back to next provider on failure', async () => {
@@ -91,11 +157,91 @@ describe('createMultiModalTools', () => {
         image_generation: [{ provider, name: 'broken', model: 'x' }],
       }));
       const result = JSON.parse(await tools[0].execute({ prompt: 'fail' }));
-      expect(result.error).toContain('Image generation failed: API down');
+      expect(result.error).toContain('API down');
+      expect(result.error).toMatch(/Image generation failed/);
+    });
+
+    it('uses explicit provider+model even when that provider is not in capability routing', async () => {
+      const tinyPng =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      const generateImage = vi.fn().mockResolvedValue([{ base64: tinyPng }]);
+      const openai = createMockProvider({ generateImage, name: 'openai', model: 'gpt-image-1' });
+      const tools = createMultiModalTools(
+        createContext(
+          // Capability routing only has markus (and that entry has no generateImage) — empty list.
+          { image_generation: [] },
+          {
+            resolveProvider: (name) => (name === 'openai' ? { provider: openai, name: 'openai' } : undefined),
+            listProviderNames: () => ['openai', 'markus'],
+          },
+        ),
+      );
+      const result = JSON.parse(await tools[0].execute({
+        prompt: 'a cat',
+        provider: 'openai',
+        model: 'gpt-image-1',
+      }));
+      expect(result.status).toBe('success');
+      expect(result.provider).toBe('openai');
+      expect(generateImage).toHaveBeenCalledWith('a cat', expect.objectContaining({ model: 'gpt-image-1' }));
+    });
+
+    it('lists available providers when explicit provider is unknown', async () => {
+      const tools = createMultiModalTools(
+        createContext(
+          { image_generation: [] },
+          {
+            resolveProvider: () => undefined,
+            listProviderNames: () => ['markus', 'openai'],
+          },
+        ),
+      );
+      const result = JSON.parse(await tools[0].execute({
+        prompt: 'a cat',
+        provider: 'not-a-real-provider',
+        model: 'x',
+      }));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('not configured');
+      expect(result.error).toContain('markus');
+      expect(result.error).toContain('openai');
+    });
+
+    it('rejects disabled provider with an explicit disabled error', async () => {
+      const generateImage = vi.fn();
+      const tools = createMultiModalTools(
+        createContext(
+          { image_generation: [] },
+          {
+            resolveProvider: () => undefined,
+            listProviderNames: () => ['markus'],
+            isProviderDisabled: (name) => name === 'openai',
+          },
+        ),
+      );
+      const result = JSON.parse(await tools[0].execute({
+        prompt: 'a cat',
+        provider: 'openai',
+        model: 'gpt-image-1',
+      }));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('is disabled');
+      expect(result.error).toContain('markus');
+      expect(generateImage).not.toHaveBeenCalled();
     });
   });
 
   describe('text_to_speech', () => {
+    it('documents sync blocking and short-chunk guidance for the agent', () => {
+      const tools = createMultiModalTools(createContext({ audio_tts: [] }));
+      const tts = tools.find(t => t.name === 'text_to_speech')!;
+      const desc = tts.getDescription?.() ?? tts.description;
+      expect(desc).toMatch(/synchronous/i);
+      expect(desc).toMatch(/split/i);
+      const textProp = (tts.getInputSchema?.() ?? tts.inputSchema).properties?.text as { description?: string };
+      expect(textProp?.description).toMatch(/short/i);
+    });
+
     it('returns error when no TTS provider configured', async () => {
       const tools = createMultiModalTools(createContext({ audio_tts: [] }));
       const tts = tools.find(t => t.name === 'text_to_speech')!;
@@ -115,7 +261,7 @@ describe('createMultiModalTools', () => {
       expect(result.success).toBe(true);
       expect(result.format).toBe('mp3');
       expect(result.sizeBytes).toBe(audio.length);
-      expect(result.filePath).toContain('markus-audio');
+      expect(result.filePath).toMatch(/generated\/audio|markus-audio/);
       expect(generateSpeech).toHaveBeenCalledWith('Hello world', expect.objectContaining({ voice: 'alloy', model: 'tts-1' }));
     });
 
@@ -128,7 +274,8 @@ describe('createMultiModalTools', () => {
       }));
       const tts = tools.find(t => t.name === 'text_to_speech')!;
       const result = JSON.parse(await tts.execute({ text: 'fail' }));
-      expect(result.error).toContain('TTS failed: TTS unavailable');
+      expect(result.error).toContain('TTS unavailable');
+      expect(result.error).toMatch(/TTS failed/);
     });
   });
 
@@ -194,8 +341,9 @@ describe('createMultiModalTools', () => {
         audio_stt: [{ provider, name: 'openai', model: 'whisper-1' }],
       }));
       const stt = tools.find(t => t.name === 'speech_to_text')!;
-      await expect(stt.execute({ audio_url: 'https://example.com/missing.wav' }))
-        .rejects.toThrow('Failed to fetch audio: HTTP 404');
+      const result = JSON.parse(await stt.execute({ audio_url: 'https://example.com/missing.wav' }));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('Failed to fetch audio: HTTP 404');
       vi.unstubAllGlobals();
     });
   });
@@ -212,18 +360,21 @@ describe('createMultiModalTools', () => {
       const generateVideo = vi.fn().mockResolvedValue({
         status: 'completed',
         taskId: 'task-123',
+        path: '/tmp/markus-videos/vid-task-123.mp4',
         url: 'https://example.com/video.mp4',
         durationSeconds: 5,
       });
       const provider = createMockProvider({ generateVideo });
       const tools = createMultiModalTools(createContext({
-        video_generation: [{ provider, name: 'runway', model: 'gen-3' }],
+        video_generation: [{ provider, name: 'markus', model: 'alibaba/happyhorse-1.1' }],
       }));
       const video = tools.find(t => t.name === 'generate_video')!;
       const result = JSON.parse(await video.execute({ prompt: 'ocean waves', duration: 5 }));
       expect(result.success).toBe(true);
       expect(result.taskId).toBe('task-123');
-      expect(result.url).toBe('https://example.com/video.mp4');
+      expect(result.filePath).toBe('/tmp/markus-videos/vid-task-123.mp4');
+      // Local path wins — do not clutter the tool result with the remote URL.
+      expect(result.url).toBeUndefined();
     });
   });
 });

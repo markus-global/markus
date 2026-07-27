@@ -46,7 +46,7 @@
   "search": {
     "title": "网络搜索（可选）",
     "subtitle": "赋予智能体搜索网络的能力",
-    "description": "配置至少一个搜索 API 密钥，让智能体能够获取实时信息。DuckDuckGo 始终可用作免费兜底。",
+    "description": "启用 Markus 托管搜索，或配置至少一个搜索 API 密钥，让智能体能够获取实时信息。",
     "serper": "Serper (Google)",
     "tavily": "Tavily",
     "bing": "Bing 网页搜索",
@@ -113,6 +113,7 @@
     "defaultOrgName": "{{name}} 的团队",
     "setOrgName": "设置组织名称",
     "orgNameSaved": "已保存",
+    "orgNameSaveFailed": "保存组织名称失败，请重试。",
     "pendingInvitations": "你有待接受的组织邀请",
     "invitedBy": "邀请人：{{name}}",
     "acceptAndJoin": "接受并加入",

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Agent } from '../src/agent.js';
+import { pendingCallbackRegistry } from '../src/pending-callback.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { RoleTemplate } from '@markus/shared';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -114,6 +115,60 @@ describe('handleMessageStream', () => {
 
     const reply = await agent.handleMessageStream('cancelled msg', () => {}, undefined, undefined, token);
     expect(reply).toBe('[cancelled]');
+  });
+
+  it('A: aborts a degenerate turn that repeats itself and finishes with a visible note', async () => {
+    const line = 'Let me finalize the report and check the video output now.\n';
+    const router = makeMockRouter({
+      streamFn: async (_req, onEvent, _provider, signal) => {
+        for (let i = 0; i < 12; i++) {
+          if ((signal as AbortSignal | undefined)?.aborted) throw new Error('aborted');
+          (onEvent as (e: { type: string; text: string }) => void)?.({ type: 'text_delta', text: line });
+        }
+        return { content: line.repeat(12), finishReason: 'end_turn', usage: { inputTokens: 80, outputTokens: 40 } };
+      },
+    });
+    const agent = createAgent(router);
+    const events: string[] = [];
+
+    const reply = await agent.handleMessageStream('please test everything', (evt) => {
+      if (evt.type === 'text_delta') events.push(evt.text ?? '');
+    });
+
+    // The turn stops instead of streaming the same sentence forever.
+    expect(reply).toContain('[response stopped: repetitive output detected]');
+    // Marked complete so upstream does not run a marker continuation on garbage.
+    expect(reply).toContain('<<HANDLE_COMPLETE>>');
+    // The stop note is visible to the UI.
+    expect(events.join('')).toContain('[response stopped');
+  });
+
+  it('B: forwards the marker-continuation text to the UI when streaming', async () => {
+    const router = makeMockRouter({
+      chatFn: async () => ({
+        content: 'Finishing the report now. <<HANDLE_COMPLETE>>',
+        finishReason: 'end_turn',
+        usage: { inputTokens: 30, outputTokens: 10 },
+      }),
+    });
+    const agent = createAgent(router);
+    const memory = (agent as unknown as { memory: { createSession: (id: string) => { id: string } } }).memory;
+    const sessionId = memory.createSession(agent.id).id;
+
+    const events: string[] = [];
+    const ensure = (agent as unknown as {
+      ensureCompletionMarker: (r: string, s: string, e: (evt: { type: string; text?: string }) => void) => Promise<string>;
+    }).ensureCompletionMarker.bind(agent);
+
+    const result = await ensure('Here is the plan.', sessionId, (evt) => {
+      if (evt.type === 'text_delta') events.push(evt.text ?? '');
+    });
+
+    // Continuation content is streamed to the UI (marker stripped from deltas)...
+    expect(events.join('')).toContain('Finishing the report now.');
+    expect(events.join('')).not.toContain('<<HANDLE_COMPLETE>>');
+    // ...and the returned reply carries the marker so the turn is complete.
+    expect(result).toContain('<<HANDLE_COMPLETE>>');
   });
 });
 
@@ -278,7 +333,142 @@ describe('activateTools and registerBackgroundSession', () => {
   it('registerBackgroundSession tracks session origin mapping', () => {
     const agent = createAgent(makeMockRouter());
     agent.registerBackgroundSession('bg_sess_1', 'main_sess');
-    expect(agent.registerBackgroundSession).toBeDefined();
+    const pending = pendingCallbackRegistry.getByAgentId(agent.id);
+    const entry = pending.find(c => c.id === 'bg_sess_1');
+    expect(entry).toBeDefined();
+    expect(entry?.originSessionId).toBe('main_sess');
+    expect(entry?.type).toBe('background_exec');
+    pendingCallbackRegistry.resolve('bg_sess_1'); // cleanup shared singleton
+  });
+
+  it('executing background_exec registers a pending callback bound to the active session', async () => {
+    // Mock LLM: first turn issues a background_exec tool call, second turn ends.
+    let turn = 0;
+    const router = makeMockRouter({
+      chatFn: async () => {
+        turn++;
+        if (turn === 1) {
+          return {
+            content: '',
+            finishReason: 'tool_use',
+            toolCalls: [{ id: 'tc_bg', name: 'background_exec', arguments: { command: 'echo hi' } }],
+            usage: { inputTokens: 10, outputTokens: 5 },
+          };
+        }
+        return { content: 'Started in background.', finishReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
+      },
+    });
+    const agent = createAgent(router);
+    // Fake background_exec tool: returns immediately, never spawns a real process.
+    agent.registerTool({
+      name: 'background_exec',
+      description: 'fake bg exec',
+      inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+      execute: async () => JSON.stringify({ status: 'running', sessionId: 'bg_reg_test_1', pid: 123, command: 'echo hi' }),
+    });
+
+    await agent.handleMessage('run echo in background', undefined, undefined, { sessionId: 'chat_sess_bg' });
+
+    const pending = pendingCallbackRegistry.getByAgentId(agent.id);
+    const entry = pending.find(c => c.id === 'bg_reg_test_1');
+    expect(entry).toBeDefined();
+    expect(entry?.originSessionId).toBe('chat_sess_bg');
+    expect(entry?.command).toBe('echo hi');
+    pendingCallbackRegistry.resolve('bg_reg_test_1'); // cleanup shared singleton
+  });
+});
+
+describe('deliverCallback routing', () => {
+  it('in_session delivery enqueues a callback_result bound to the origin session', () => {
+    const agent = createAgent(makeMockRouter());
+    agent.deliverCallback({
+      callbackId: 'cb1', type: 'background_exec', deliveryMode: 'in_session',
+      originSessionId: 'origin_sess', summary: 'done', content: 'output',
+    });
+    const items = agent.getMailbox().getQueuedItems();
+    const item = items.find(i => i.payload.extra?.['callbackId'] === 'cb1');
+    expect(item?.sourceType).toBe('callback_result');
+    expect(item?.payload.extra?.['originSessionId']).toBe('origin_sess');
+  });
+
+  it('mailbox delivery enqueues a system_event (new attention cycle)', () => {
+    const agent = createAgent(makeMockRouter());
+    agent.deliverCallback({
+      callbackId: 'cb2', type: 'wakeup', deliveryMode: 'mailbox',
+      originSessionId: 'origin_sess', summary: 'wake', content: 'time to check',
+    });
+    const items = agent.getMailbox().getQueuedItems();
+    const item = items.find(i => i.payload.extra?.['callbackId'] === 'cb2');
+    expect(item?.sourceType).toBe('system_event');
+  });
+});
+
+describe('schedule_wakeup / cancel_wakeup', () => {
+  const wakeupToolCall = (args: Record<string, unknown>) => ({
+    chatFn: (() => {
+      let turn = 0;
+      return async () => {
+        turn++;
+        if (turn === 1) {
+          return {
+            content: '', finishReason: 'tool_use',
+            toolCalls: [{ id: 'tc_w', name: 'schedule_wakeup', arguments: args }],
+            usage: { inputTokens: 10, outputTokens: 5 },
+          };
+        }
+        return { content: 'Scheduled.', finishReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
+      };
+    })(),
+  });
+
+  it('registers a wakeup callback with a future wakeAt', async () => {
+    const agent = createAgent(makeMockRouter(wakeupToolCall({ in_seconds: 3600, note: 'check the build' })));
+    await agent.handleMessage('remind me', undefined, undefined, { sessionId: 'chat_wk' });
+    const wk = pendingCallbackRegistry.getByAgentId(agent.id).find(c => c.type === 'wakeup');
+    expect(wk).toBeDefined();
+    expect(wk?.note).toBe('check the build');
+    expect(wk?.wakeAt).toBeGreaterThan(Date.now());
+    if (wk) pendingCallbackRegistry.resolve(wk.id);
+  });
+
+  it('rejects a wakeup without a valid time', async () => {
+    const agent = createAgent(makeMockRouter(wakeupToolCall({ note: 'no time given' })));
+    await agent.handleMessage('remind me', undefined, undefined, { sessionId: 'chat_wk2' });
+    const wk = pendingCallbackRegistry.getByAgentId(agent.id).find(c => c.type === 'wakeup');
+    expect(wk).toBeUndefined();
+  });
+});
+
+describe('agent_send_message await_in_session', () => {
+  it('registers an a2a_reply callback bound to the origin session', async () => {
+    let turn = 0;
+    const router = makeMockRouter({
+      chatFn: async () => {
+        turn++;
+        if (turn === 1) {
+          return {
+            content: '', finishReason: 'tool_use',
+            toolCalls: [{ id: 'tc_a', name: 'agent_send_message', arguments: { agent_id: 'agt_peer', message: 'help?', await_in_session: true } }],
+            usage: { inputTokens: 10, outputTokens: 5 },
+          };
+        }
+        return { content: 'Sent.', finishReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
+      },
+    });
+    const agent = createAgent(router);
+    agent.registerTool({
+      name: 'agent_send_message',
+      description: 'fake a2a send',
+      inputSchema: { type: 'object', properties: { agent_id: { type: 'string' }, message: { type: 'string' } }, required: ['agent_id', 'message'] },
+      execute: async () => JSON.stringify({ status: 'dispatched', conversation_id: 'conv_test_1', channel_key: 'dm:a2a:x:y' }),
+    });
+    await agent.handleMessage('ask peer', undefined, undefined, { sessionId: 'chat_a2a' });
+    const cb = pendingCallbackRegistry.getByAgentId(agent.id).find(c => c.type === 'a2a_reply');
+    expect(cb).toBeDefined();
+    expect(cb?.correlationId).toBe('conv_test_1');
+    expect(cb?.originSessionId).toBe('chat_a2a');
+    expect(cb?.deliveryMode).toBe('in_session');
+    if (cb) pendingCallbackRegistry.resolve(cb.id);
   });
 });
 

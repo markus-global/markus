@@ -1,17 +1,21 @@
-import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense, type ChangeEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { api, wsClient, hubApi, kebab } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
-import { ExecEntryRow, StreamingText, taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
+import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { friendlyAgentError } from './ChatComponents.tsx';
+import { DeliverableDetailModal, DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
+import { getToolMeta } from '../components/execution-utils.ts';
+import { NamedIcon } from '../lib/namedIcons.tsx';
 
 const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 
@@ -57,6 +61,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   const { t } = useTranslation(['agent', 'common']);
   const isMobile = useIsMobile();
   const [agent, setAgent] = useState<AgentDetail | null>(null);
+  const [notice, setNotice] = useState<{ title: string; message: string; variant?: 'primary' | 'danger' } | null>(null);
   const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
   const effectiveTab = headless && externalTab ? externalTab : tab;
   const [externalInfo, setExternalInfo] = useState<ExternalAgentInfo | null>(null);
@@ -156,8 +161,10 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
                   dependencies: { skills: agent.skills ?? [] },
                 };
                 await hubApi.publishViaProxy({ itemType: 'agent', name: agent.name, description: config.description, category: 'general', config, files: filesMap });
-                alert(t('agent:profilePage.publishSuccess', { name: agent.name }));
-              } catch (e) { alert(t('agent:profilePage.publishFailed', { error: String(e) })); }
+                setNotice({ title: t('agent:profilePage.hub'), message: t('agent:profilePage.publishSuccess', { name: agent.name }), variant: 'primary' });
+              } catch (e) {
+                setNotice({ title: t('agent:profilePage.hub'), message: t('agent:profilePage.publishFailed', { error: String(e) }), variant: 'danger' });
+              }
             }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title={t('agent:profilePage.publishTitle')}><span>↑</span> {t('agent:profilePage.hub')}</button>
             )}
             {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
@@ -194,6 +201,16 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
         )}
         {tab === 'deliverables' && <DeliverablesTab agentId={agentId} />}
       </div>
+      {notice && (
+        <ConfirmModal
+          alertOnly
+          variant={notice.variant ?? 'primary'}
+          title={notice.title}
+          message={notice.message}
+          onConfirm={() => setNotice(null)}
+          onCancel={() => setNotice(null)}
+        />
+      )}
     </div>
   );
 }
@@ -349,20 +366,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
               {agent.state.lastErrorAt && <span className="text-[10px] text-red-500/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>}
             </div>
             <pre className="text-[11px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-red-500/5 rounded p-2">
-              {agent.state.lastError || t('agent:profilePage.overview.errorFallback')}
-            </pre>
-          </div>
-        )}
-
-        {agent.state.status !== 'error' && agent.state.lastError && agent.state.lastErrorAt
-          && (Date.now() - new Date(agent.state.lastErrorAt).getTime()) < 30 * 60 * 1000 && (
-          <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-xs font-medium text-amber-600">{t('agent:profilePage.overview.recentError')}</span>
-              <span className="text-[10px] text-amber-500/50 ml-auto">{new Date(agent.state.lastErrorAt).toLocaleString()}</span>
-            </div>
-            <pre className="text-[11px] text-amber-600/80 leading-relaxed whitespace-pre-wrap break-all font-mono bg-amber-500/5 rounded p-2">
-              {agent.state.lastError}
+              {friendlyAgentError(agent.state.lastError, t) || agent.state.lastError || t('agent:profilePage.overview.errorFallback')}
             </pre>
           </div>
         )}
@@ -391,7 +395,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
               <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
               <StatBox label={t('agent:profilePage.overview.labels.promptTokens')} value={fmtNum(usageInfo.promptTokens)} />
               <StatBox label={t('agent:profilePage.overview.labels.completionTokens')} value={fmtNum(usageInfo.completionTokens)} />
-              <StatBox label={t('agent:profilePage.overview.labels.estCost')} value={`$${usageInfo.estimatedCost < 0.01 ? usageInfo.estimatedCost.toFixed(4) : usageInfo.estimatedCost.toFixed(2)}`} />
+              <StatBox label="CU Used" value={fmtNum(usageInfo.cuUsed ?? 0)} />
             </div>
           </>
         )}
@@ -958,17 +962,21 @@ const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'search', prefixes: ['grep_search', 'glob_find', 'list_directory'] },
   { id: 'runtime', prefixes: ['shell_execute', 'background_exec', 'process'] },
   { id: 'web', prefixes: ['web_search', 'web_fetch', 'web_extract'] },
-  { id: 'tasks', prefixes: ['task_create', 'task_list', 'task_update', 'task_get', 'task_assign', 'task_note', 'task_comment', 'task_submit_review', 'subtask_create', 'subtask_complete', 'subtask_list', 'task_check_duplicates', 'task_cleanup_duplicates', 'task_board_health'] },
+  { id: 'multimodal', prefixes: ['generate_image', 'text_to_speech', 'speech_to_text', 'generate_video'] },
+  { id: 'browser', prefixes: ['navigate_page', 'new_page', 'close_page', 'select_page', 'list_pages', 'open_page', 'resize_page', 'click', 'hover', 'fill', 'fill_form', 'type_text', 'press_key', 'take_screenshot', 'take_snapshot', 'evaluate_script', 'wait_for', 'list_console_messages', 'list_network_requests', 'get_console_message', 'get_network_request', 'lighthouse_audit', 'drag', 'upload_file', 'emulate', 'handle_dialog'] },
+  { id: 'tasks', prefixes: ['task_create', 'task_list', 'task_update', 'task_get', 'task_assign', 'task_note', 'task_comment', 'task_submit_review', 'subtask_create', 'subtask_complete', 'subtask_cancel', 'subtask_list', 'task_check_duplicates', 'task_cleanup_duplicates', 'task_board_health', 'create_task', 'update_task', 'add_task_note', 'create_subtask'] },
   { id: 'requirements', prefixes: ['requirement_propose', 'requirement_list', 'requirement_get', 'requirement_update', 'requirement_update_status', 'requirement_resubmit', 'requirement_comment'] },
-  { id: 'projects', prefixes: ['list_projects', 'get_project', 'create_project', 'update_project', 'delete_project', 'project_info', 'project_stats'] },
+  { id: 'projects', prefixes: ['list_projects', 'get_project', 'create_project', 'update_project', 'delete_project', 'project_stats', 'project_structure', 'code_stats', 'git_'] },
   { id: 'deliverables', prefixes: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'] },
   { id: 'packages', prefixes: ['package_list', 'package_install', 'hub_search', 'hub_install', 'builder_list', 'builder_install', 'markus-hub__'] },
-  { id: 'communication', prefixes: ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task'] },
-  { id: 'memory', prefixes: ['memory_save', 'memory_search', 'memory_list', 'memory_update_longterm', 'memory_delete', 'recall_context', 'recall_activity'] },
-  { id: 'teamManager', prefixes: ['team_list', 'team_status', 'delegate_message', 'team_update', 'agent_update'] },
-  { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents'] },
-  { id: 'system', prefixes: ['discover_tools', 'notify_user', 'request_user_approval'] },
-  { id: 'llm', prefixes: ['llm_list_providers', 'llm_switch_model', 'llm_switch_default_provider', 'llm_add_provider', 'llm_edit_provider', 'llm_add_model'] },
+  { id: 'communication', prefixes: ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task', 'feishu_'] },
+  { id: 'memory', prefixes: ['memory_save', 'memory_search', 'memory_list', 'memory_update', 'memory_update_longterm', 'memory_delete', 'recall_context', 'recall_activity', 'update_working_memory', 'clear_working_memory', 'update_notebook', 'clear_notebook'] },
+  { id: 'mailbox', prefixes: ['check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item', 'delegate_message'] },
+  { id: 'planning', prefixes: ['goal_create', 'goal_update', 'goal_status', 'workflow_'] },
+  { id: 'teamManager', prefixes: ['team_list', 'team_status', 'team_update', 'team_start', 'team_stop', 'agent_update', 'agent_start', 'agent_stop'] },
+  { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents', 'invoke_coding_tool', 'coding_tool_apply'] },
+  { id: 'system', prefixes: ['discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'schedule_wakeup', 'cancel_wakeup', 'set_heartbeat_interval'] },
+  { id: 'llm', prefixes: ['llm_'] },
 ];
 
 function categorizeTools(tools: AgentToolInfo[], t: TFunction): Array<{ category: string; tools: AgentToolInfo[] }> {
@@ -976,8 +984,11 @@ function categorizeTools(tools: AgentToolInfo[], t: TFunction): Array<{ category
   const used = new Set<string>();
   for (const { id, prefixes } of TOOL_CATEGORY_DEF) {
     const catLabel = t(`agent:toolCategories.${id}`);
-    const matched = tools.filter(tool => prefixes.some(n => tool.name.startsWith(n)));
-    if (matched.length > 0) { categorized.set(catLabel, matched); matched.forEach(m => used.add(m.name)); }
+    const matched = tools.filter(tool => !used.has(tool.name) && prefixes.some(n => tool.name.startsWith(n)));
+    if (matched.length > 0) {
+      categorized.set(catLabel, matched);
+      matched.forEach(m => used.add(m.name));
+    }
   }
   const remaining = tools.filter(tool => !used.has(tool.name));
   for (const tool of remaining) {
@@ -995,12 +1006,6 @@ function categorizeTools(tools: AgentToolInfo[], t: TFunction): Array<{ category
   return [...categorized.entries()].map(([category, catTools]) => ({ category, tools: catTools }));
 }
 
-function toolDisplayName(name: string): { displayName: string; mcpServer?: string } {
-  const sep = name.indexOf('__');
-  if (sep > 0) return { displayName: name.slice(sep + 2), mcpServer: name.slice(0, sep) };
-  return { displayName: name };
-}
-
 function cleanDescription(desc: string): string {
   return desc.replace(/^\[MCP:[^\]]*\]\s*/i, '');
 }
@@ -1012,19 +1017,33 @@ function ToolsTab({ tools }: { tools: AgentToolInfo[] }) {
     <div className="space-y-4">
       <div className="text-xs text-fg-tertiary">{t('agent:profilePage.toolsTab.registeredCount', { count: tools.length })}</div>
       {groups.map(g => (
-        <Card key={g.category} title={g.category}>
-          <div className="grid grid-cols-2 gap-2">
+        <Card key={g.category} title={`${g.category} (${g.tools.length})`}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {g.tools.map(tool => {
-              const { displayName, mcpServer } = toolDisplayName(tool.name);
+              const meta = getToolMeta(tool.name);
+              const label = t(`common:execution.tools.${meta.key}`, { defaultValue: meta.label });
+              const isMcp = tool.name.includes('__');
+              const rawName = isMcp ? tool.name.split('__').pop()! : tool.name;
+              const description = cleanDescription(tool.description || '');
               return (
-                <div key={tool.name} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-elevated">
-                  <div className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
+                <div key={tool.name} className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-surface-elevated min-w-0">
+                  <NamedIcon name={meta.iconName} size={15} className="shrink-0 mt-0.5 text-fg-secondary" />
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs font-medium font-mono">{displayName}</span>
-                      {mcpServer && <span className="text-[9px] px-1 py-px rounded bg-surface-elevated text-fg-tertiary border border-border-default/40 shrink-0">MCP</span>}
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-xs font-medium text-fg-primary truncate">{label}</span>
+                      {isMcp && (
+                        <span className="text-[9px] px-1 py-px rounded bg-surface-secondary text-fg-tertiary border border-border-default/40 shrink-0">
+                          MCP
+                        </span>
+                      )}
                     </div>
-                    <div className="text-[10px] text-fg-tertiary truncate">{cleanDescription(tool.description)}</div>
+                    {/* Technical id under the localized label — useful when label ≠ snake_case name. */}
+                    {rawName !== label && (
+                      <div className="text-[10px] font-mono text-fg-tertiary/70 truncate">{rawName}</div>
+                    )}
+                    {description && (
+                      <div className="text-[10px] text-fg-tertiary truncate mt-0.5" title={description}>{description}</div>
+                    )}
                   </div>
                 </div>
               );
@@ -1500,6 +1519,13 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
     setTriggering(false);
   };
 
+  const handleCancelWakeup = async (wakeupId: string) => {
+    try {
+      await api.agents.cancelWakeup(agentId, wakeupId);
+      refresh();
+    } catch { /* ignore — refresh will reflect actual state */ }
+  };
+
   if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.heartbeatTab.loading')}</div>;
   if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.heartbeatTab.noData')}</div>;
 
@@ -1543,16 +1569,64 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
       }>
         <div className="grid grid-cols-4 gap-4">
           <StatBox label={t('agent:profilePage.overview.labels.status')} value={data.running ? t('agent:profilePage.heartbeatTab.running') : t('agent:profilePage.heartbeatTab.stopped')} color={data.running ? 'green' : 'gray'} />
-          <StatBox label={t('agent:profilePage.heartbeatTab.interval')} value={formatDuration(data.intervalMs) ?? t('agent:profilePage.emDash')} />
+          <HeartbeatIntervalEditor agentId={agentId} intervalMs={data.intervalMs} onChanged={refresh} />
           <StatBox label={t('agent:profilePage.heartbeatTab.lastRun')} value={data.lastHeartbeat ? formatRelativeTime(data.lastHeartbeat) ?? t('agent:profilePage.emDash') : t('agent:profilePage.never')} />
-          <StatBox label={t('agent:profilePage.heartbeatTab.nextRun')} value={data.nextRunAt ? formatRelativeTime(data.nextRunAt) ?? t('agent:profilePage.emDash') : data.running ? t('agent:profilePage.heartbeatTab.pending') : t('agent:profilePage.emDash')} />
+          <StatBox label={t('agent:profilePage.heartbeatTab.nextWake')} value={data.nextWakeAt ? formatRelativeTime(data.nextWakeAt) ?? t('agent:profilePage.emDash') : data.running ? t('agent:profilePage.heartbeatTab.pending') : t('agent:profilePage.emDash')} />
         </div>
+        <p className="mt-2 text-[10px] text-fg-tertiary leading-relaxed">{t('agent:profilePage.heartbeatTab.rhythmHint')}</p>
         {triggerMsg && (
           <div className="mt-3 text-[11px] text-blue-600 bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-2">
             {triggerMsg}
           </div>
         )}
       </Card>
+
+      {/* Scheduled Wakeups */}
+      {data.wakeups && data.wakeups.length > 0 && (
+        <Card title={t('agent:profilePage.heartbeatTab.wakeupsTitle')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.heartbeatTab.wakeupsCount', { count: data.wakeups.length })}</span>}>
+          <div className="divide-y divide-gray-800/50 -mx-5">
+            {data.wakeups.map(w => (
+              <div key={w.id} className="flex items-center gap-2.5 px-5 py-2.5">
+                <span className="text-sm shrink-0 opacity-60">⏰</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-fg-secondary truncate">{w.note || t('agent:profilePage.heartbeatTab.wakeupNoNote')}</div>
+                  <div className="text-[10px] text-fg-tertiary">
+                    {formatRelativeTime(w.wakeAt) ?? new Date(w.wakeAt).toLocaleString()}
+                    {w.recurringMs ? ` · ${t('agent:profilePage.heartbeatTab.recurring')}` : ''}
+                    {` · ${w.deliveryMode === 'in_session' ? t('agent:profilePage.heartbeatTab.deliveryInSession') : t('agent:profilePage.heartbeatTab.deliveryMailbox')}`}
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleCancelWakeup(w.id)}
+                  className="text-[10px] px-2 py-0.5 rounded text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors shrink-0"
+                >
+                  {t('agent:profilePage.heartbeatTab.cancelWakeup')}
+                </button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Pending Async Operations */}
+      {data.pendingCallbacks && data.pendingCallbacks.length > 0 && (
+        <Card title={t('agent:profilePage.heartbeatTab.pendingOpsTitle')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.heartbeatTab.pendingOpsCount', { count: data.pendingCallbacks.length })}</span>}>
+          <div className="divide-y divide-gray-800/50 -mx-5">
+            {data.pendingCallbacks.map(c => (
+              <div key={c.id} className="flex items-center gap-2.5 px-5 py-2.5">
+                <span className="text-sm shrink-0 opacity-60">{c.type === 'background_exec' ? '⚙' : '↔'}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-fg-secondary truncate font-mono">{c.label}</div>
+                  <div className="text-[10px] text-fg-tertiary">
+                    {t(`agent:profilePage.heartbeatTab.callbackType.${c.type}`)}
+                    {` · ${t('agent:profilePage.heartbeatTab.timesOut')} ${formatRelativeTime(c.timeoutAt) ?? new Date(c.timeoutAt).toLocaleString()}`}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* Last Heartbeat Summary */}
       {data.lastSummary && (
@@ -1739,6 +1813,104 @@ function KV({ label, mono, children }: { label: string; mono?: boolean; children
 function StatBox({ label, value, color }: { label: string; value: string; color?: string }) {
   const c = color === 'green' ? 'text-green-500' : color === 'blue' ? 'text-blue-400' : color === 'indigo' ? 'text-brand-500' : color === 'red' ? 'text-red-400' : 'text-fg-secondary';
   return (<div className="flex items-baseline gap-1.5"><span className={`text-sm font-semibold ${c}`}>{value}</span><span className="text-[10px] text-fg-tertiary">{label}</span></div>);
+}
+
+const HEARTBEAT_PRESETS_MS = [
+  30 * 60 * 1000,
+  60 * 60 * 1000,
+  3 * 60 * 60 * 1000,
+  6 * 60 * 60 * 1000,
+  12 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+];
+const HEARTBEAT_MIN_MINUTES = 5;
+const HEARTBEAT_MAX_MINUTES = 24 * 60;
+
+// Editable safety-net interval control (mirrors the StatBox layout).
+function HeartbeatIntervalEditor({ agentId, intervalMs, onChanged }: { agentId: string; intervalMs: number; onChanged: () => void }) {
+  const { t } = useTranslation(['agent', 'common']);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showCustom, setShowCustom] = useState(false);
+  const [customMin, setCustomMin] = useState(String(Math.round(intervalMs / 60000)));
+
+  const presetLabel = (ms: number) =>
+    ms % (60 * 60 * 1000) === 0
+      ? t('agent:profilePage.heartbeatTab.intervalHours', { count: ms / (60 * 60 * 1000) })
+      : t('agent:profilePage.heartbeatTab.intervalMinutes', { count: Math.round(ms / 60000) });
+
+  const apply = async (ms: number) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await api.agents.updateConfig(agentId, { heartbeatIntervalMs: ms });
+      onChanged();
+    } catch (err) {
+      setError(String(err).replace('Error: ', ''));
+    }
+    setSaving(false);
+  };
+
+  const onSelectChange = (e: ChangeEvent<HTMLSelectElement>) => {
+    if (e.target.value === 'custom') {
+      setShowCustom(true);
+      return;
+    }
+    setShowCustom(false);
+    void apply(Number(e.target.value));
+  };
+
+  const applyCustom = () => {
+    const min = Math.round(Number(customMin));
+    if (!Number.isFinite(min) || min < HEARTBEAT_MIN_MINUTES || min > HEARTBEAT_MAX_MINUTES) {
+      setError(t('agent:profilePage.heartbeatTab.intervalRangeHint'));
+      return;
+    }
+    void apply(min * 60 * 1000);
+  };
+
+  const isPreset = HEARTBEAT_PRESETS_MS.includes(intervalMs);
+  const selectValue = showCustom || !isPreset ? 'custom' : String(intervalMs);
+
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.heartbeatTab.safetyNetInterval')}</span>
+      <select
+        value={selectValue}
+        onChange={onSelectChange}
+        disabled={saving}
+        className="text-xs bg-bg-secondary border border-gray-700/50 rounded-md px-1.5 py-1 text-fg-secondary focus:outline-none focus:border-blue-500/50 disabled:opacity-40"
+      >
+        {!isPreset && <option value={String(intervalMs)}>{presetLabel(intervalMs)}</option>}
+        {HEARTBEAT_PRESETS_MS.map(ms => (
+          <option key={ms} value={String(ms)}>{presetLabel(ms)}</option>
+        ))}
+        <option value="custom">{t('agent:profilePage.heartbeatTab.intervalCustom')}</option>
+      </select>
+      {(showCustom || !isPreset) && (
+        <div className="flex items-center gap-1.5 mt-1">
+          <input
+            type="number"
+            min={HEARTBEAT_MIN_MINUTES}
+            max={HEARTBEAT_MAX_MINUTES}
+            value={customMin}
+            onChange={e => setCustomMin(e.target.value)}
+            disabled={saving}
+            className="w-16 text-xs bg-bg-secondary border border-gray-700/50 rounded-md px-1.5 py-1 text-fg-secondary focus:outline-none focus:border-blue-500/50 disabled:opacity-40"
+          />
+          <span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.heartbeatTab.intervalCustomUnit')}</span>
+          <button
+            onClick={applyCustom}
+            disabled={saving}
+            className="text-[10px] px-2 py-1 rounded-md bg-blue-600/20 text-blue-600 hover:bg-blue-600/30 border border-blue-500/30 transition-colors disabled:opacity-40"
+          >
+            {saving ? t('agent:profilePage.heartbeatTab.intervalSaving') : t('agent:profilePage.heartbeatTab.intervalSave')}
+          </button>
+        </div>
+      )}
+      {error && <span className="text-[10px] text-red-400">{error}</span>}
+    </div>
+  );
 }
 
 function Empty({ text }: { text: string }) {
@@ -2438,17 +2610,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
 
 // ─── Deliverables Tab ────────────────────────────────────────────────────────
 
-const DELIVERABLE_TYPE_META: Record<string, { icon: string; color: string }> = {
-  file:      { icon: '📄', color: 'bg-green-500/10 text-green-600' },
-  directory: { icon: '📁', color: 'bg-blue-500/10 text-blue-600' },
-};
-
-const DELIVERABLE_STATUS_META: Record<string, { color: string }> = {
-  active:   { color: 'text-green-600 bg-green-500/10' },
-  verified: { color: 'text-blue-600 bg-blue-500/10' },
-  outdated: { color: 'text-fg-tertiary bg-surface-elevated/50' },
-};
-
 function DeliverablesTab({ agentId }: { agentId: string }) {
   const { t } = useTranslation(['agent', 'common']);
   const [items, setItems] = useState<DeliverableInfo[]>([]);
@@ -2545,140 +2706,3 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
     </>
   );
 }
-
-function DeliverableDetailModal({ item, onClose, onOpenInPage }: {
-  item: DeliverableInfo;
-  onClose: () => void;
-  onOpenInPage: (id: string) => void;
-}) {
-  const { t } = useTranslation(['agent', 'common']);
-  const typeMeta = DELIVERABLE_TYPE_META[item.type] ?? { icon: '📎', color: 'bg-surface-elevated text-fg-secondary' };
-  const statusMeta = DELIVERABLE_STATUS_META[item.status] ?? DELIVERABLE_STATUS_META.active!;
-  const isUrl = /^https?:\/\//i.test(item.reference ?? '');
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
-      <div
-        className="relative bg-surface-primary rounded-2xl shadow-2xl border border-border-default w-full max-w-lg max-h-[85vh] overflow-y-auto"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="sticky top-0 bg-surface-primary/95 backdrop-blur-sm border-b border-border-default px-5 py-4 flex items-start gap-3 rounded-t-2xl z-10">
-          <span className={`inline-flex items-center justify-center w-10 h-10 rounded-xl text-lg shrink-0 ${typeMeta.color}`}>
-            {typeMeta.icon}
-          </span>
-          <div className="flex-1 min-w-0">
-            <h3 className="text-base font-semibold text-fg-primary">{item.title}</h3>
-            <div className="flex items-center gap-2 mt-1 flex-wrap">
-              <span className={`px-1.5 py-0.5 text-[10px] rounded font-medium ${statusMeta.color}`}>{item.status}</span>
-              <span className="text-[10px] text-fg-tertiary">{item.type}</span>
-              {item.format && <span className="text-[10px] px-1.5 py-0.5 bg-surface-elevated rounded text-fg-secondary">{item.format}</span>}
-            </div>
-          </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors shrink-0 text-fg-tertiary hover:text-fg-primary">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="px-5 py-4 space-y-4">
-          {/* Summary */}
-          {item.summary && (
-            <div>
-              <label className="text-[10px] text-fg-tertiary uppercase tracking-wider font-medium">{t('agent:deliverables.summary')}</label>
-              <div className="mt-1.5">
-                <Suspense fallback={<p className="text-sm text-fg-secondary">{item.summary}</p>}>
-                  <LazyMarkdownMessage content={item.summary} className="text-sm text-fg-secondary" />
-                </Suspense>
-              </div>
-            </div>
-          )}
-
-          {/* Reference */}
-          {item.reference && (
-            <div>
-              <label className="text-[10px] text-fg-tertiary uppercase tracking-wider font-medium">{t('agent:deliverables.reference')}</label>
-              <div className="mt-1.5 flex items-center gap-2 bg-surface-elevated rounded-lg px-3 py-2">
-                <span className="text-xs text-fg-secondary font-mono break-all flex-1 select-all">{item.reference}</span>
-                {isUrl ? (
-                  <button
-                    onClick={() => window.open(item.reference, '_blank', 'noopener,noreferrer')}
-                    className="px-2 py-1 text-[10px] rounded bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0"
-                  >{t('common:open')}</button>
-                ) : (
-                  <button
-                    onClick={() => { api.files.reveal(item.reference).catch(() => {}); }}
-                    className="px-2 py-1 text-[10px] rounded bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors shrink-0"
-                  >{t('common:open')}</button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Diff stats */}
-          {item.diffStats && (
-            <div className="flex items-center gap-3 text-xs bg-surface-elevated rounded-lg px-3 py-2">
-              <span className="text-fg-tertiary font-medium">Diff:</span>
-              <span className="text-fg-secondary">{item.diffStats.filesChanged} file{item.diffStats.filesChanged !== 1 ? 's' : ''}</span>
-              <span className="text-green-500">+{item.diffStats.additions}</span>
-              <span className="text-red-500">-{item.diffStats.deletions}</span>
-            </div>
-          )}
-
-          {/* Test results */}
-          {item.testResults && (
-            <div className="flex items-center gap-3 text-xs bg-surface-elevated rounded-lg px-3 py-2">
-              <span className="text-fg-tertiary font-medium">Tests:</span>
-              <span className="text-green-500">{item.testResults.passed} passed</span>
-              {item.testResults.failed > 0 && <span className="text-red-500">{item.testResults.failed} failed</span>}
-              {item.testResults.skipped > 0 && <span className="text-fg-tertiary">{item.testResults.skipped} skipped</span>}
-            </div>
-          )}
-
-          {/* Tags */}
-          {item.tags.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {item.tags.map(tag => (
-                <span key={tag} className="px-2 py-0.5 text-[11px] bg-surface-elevated rounded-md text-fg-tertiary">{tag}</span>
-              ))}
-            </div>
-          )}
-
-          {/* Metadata */}
-          <div className="flex items-center gap-4 text-[10px] text-fg-tertiary flex-wrap pt-1 border-t border-border-default/50">
-            <span>{t('agent:deliverables.created')}: {new Date(item.createdAt).toLocaleString()}</span>
-            <span>{t('agent:deliverables.updated')}: {new Date(item.updatedAt).toLocaleString()}</span>
-            {item.accessCount > 0 && <span>{t('agent:deliverables.accessed', { count: item.accessCount })}</span>}
-          </div>
-        </div>
-
-        {/* Footer actions */}
-        <div className="sticky bottom-0 bg-surface-primary/95 backdrop-blur-sm border-t border-border-default px-5 py-3 flex items-center justify-end gap-2 rounded-b-2xl">
-          <button
-            onClick={() => onOpenInPage(item.id)}
-            className="px-3 py-1.5 text-xs font-medium text-brand-500 hover:bg-brand-500/10 rounded-lg transition-colors flex items-center gap-1.5"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
-            </svg>
-            {t('agent:deliverables.openInPage')}
-          </button>
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 text-xs font-medium text-fg-secondary bg-surface-elevated hover:bg-surface-overlay rounded-lg transition-colors"
-          >{t('common:close')}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-

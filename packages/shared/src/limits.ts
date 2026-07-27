@@ -147,6 +147,19 @@ export function hasCompletionMarker(reply: string): boolean {
   return outside.includes(COMPLETION_MARKER);
 }
 
+/**
+ * Matches the completion marker AND common malformed variants a weak model may
+ * emit as prose — single brackets or stray whitespace, e.g. `<HANDLE_COMPLETE>`
+ * or `< HANDLE_COMPLETE >`. Used for display/persist cleanup so these never leak
+ * into stored or shown replies. Detection (`hasCompletionMarker`) stays strict.
+ */
+const COMPLETION_MARKER_LEAK_RE = /<{1,2}\s*HANDLE_COMPLETE\s*>{1,2}/gi;
+
+/** Remove the completion marker and its malformed variants from a reply. */
+export function stripCompletionMarkerLeak(text: string): string {
+  return text.replace(COMPLETION_MARKER_LEAK_RE, '');
+}
+
 /** Max auto-retries when execution finishes without task_submit_review. */
 export const TASK_MAX_NO_SUBMIT_RETRIES = 8;
 
@@ -286,8 +299,14 @@ export const MAILBOX_COALESCE_WINDOW_MS = 200;
  *  If processing exceeds this duration — typically caused by system sleep,
  *  network hang, or an unresponsive LLM provider — the item is requeued
  *  for retry and the attention loop continues.
- *  10 minutes covers even long tool-chain executions while catching genuine hangs. */
-export const MAILBOX_PROCESSING_TIMEOUT_MS = 10 * 60 * 1000;
+ *  45 minutes covers long multimodal tools (e.g. video generation poll ~30m)
+ *  plus LLM turns, while still catching genuine hangs. */
+export const MAILBOX_PROCESSING_TIMEOUT_MS = 45 * 60 * 1000;
+
+/** After the Chat SSE client disconnects (e.g. page refresh), keep the agent
+ *  running this long before force-stopping. Matches mailbox long-tool budget
+ *  so video generation is not killed by a refresh. */
+export const SSE_DISCONNECT_FORCE_STOP_MS = 45 * 60 * 1000;
 
 /** Watchdog interval (ms) for detecting system sleep/wake cycles.
  *  A timer fires every WATCHDOG_INTERVAL_MS; if the actual elapsed time
@@ -367,7 +386,7 @@ export const TRIAGE_MAX_TOOL_ITERATIONS = 6;
 export const TRIAGE_ALLOWED_TOOLS: readonly string[] = [
   'task_list', 'task_get', 'requirement_list', 'requirement_get',
   'list_projects', 'team_list',
-  'recall_activity', 'memory_search', 'memory_search_longterm',
+  'recall_activity', 'memory_search',
 ];
 
 // ─── Deliberation (Full-Session Triage) Limits ──────────────────────────────
@@ -381,7 +400,7 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   // Context gathering (read-only)
   'task_list', 'task_get', 'requirement_list', 'requirement_get',
   'list_projects', 'team_list', 'team_status',
-  'recall_activity', 'memory_search', 'memory_search_longterm',
+  'recall_activity', 'memory_search',
   // Mailbox management
   'check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item',
   // Notebook (cognitive workspace)
@@ -395,6 +414,30 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   // Decision output
   'complete_deliberation',
 ];
+
+// ─── Heartbeat ──────────────────────────────────────────────────────────────
+
+/**
+ * Default heartbeat interval — a long "safety-net" patrol rather than a frequent
+ * poll. Agents are expected to register precise follow-ups with `schedule_wakeup`
+ * (event-driven), so the periodic tick only exists to catch missed events and
+ * keep long-lived agents alive. Kept coarse (6h) to save tokens.
+ */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Configurable bounds for the heartbeat interval (user- or agent-adjusted).
+ * The floor prevents token-burning tight polls; the ceiling keeps long-lived
+ * agents from drifting so far that the safety-net never fires.
+ */
+export const MIN_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;   // 5 minutes
+export const MAX_HEARTBEAT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/** Clamp an arbitrary interval to the allowed heartbeat range. */
+export function clampHeartbeatIntervalMs(ms: number): number {
+  if (!Number.isFinite(ms)) return DEFAULT_HEARTBEAT_INTERVAL_MS;
+  return Math.max(MIN_HEARTBEAT_INTERVAL_MS, Math.min(MAX_HEARTBEAT_INTERVAL_MS, Math.round(ms)));
+}
 
 // ─── Notebook Limits (formerly Working Memory) ──────────────────────────────
 
@@ -435,6 +478,15 @@ export const SUBAGENT_ERROR_PREVIEW_CHARS = 500;
 /** Max parallel subagents in a single spawn_subagents call. */
 export const SUBAGENT_MAX_PARALLEL = 10;
 
+/**
+ * Aggregate tool-iteration budget shared across all children of one `spawn_subagents`
+ * fan-out (B4). Per-child caps and `SUBAGENT_MAX_PARALLEL` bound a single child / the
+ * concurrency; this bounds the TOTAL work so a wide fan-out cannot silently multiply
+ * CU/token spend. When the shared budget is exhausted, remaining children stop early and
+ * the aggregate result reports `budgetExceeded`.
+ */
+export const SUBAGENT_MAX_AGGREGATE_ITERATIONS = 100;
+
 /** Max LLM call retries for transient errors within a subagent. */
 export const SUBAGENT_MAX_LLM_RETRIES = 2;
 
@@ -466,7 +518,7 @@ export const SHELL_SESSION_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 // ─── Human-Approval Wait ─────────────────────────────────────────────────────
 
 /** Backstop timeout (ms) for mailbox items that are blocking on human approval.
- *  Normal processing uses MAILBOX_PROCESSING_TIMEOUT_MS (10 min), but
+ *  Normal processing uses MAILBOX_PROCESSING_TIMEOUT_MS (45 min), but
  *  request_user_approval can wait indefinitely for the user. 24 hours is a
  *  generous safety net while allowing realistic human response times. */
 export const APPROVAL_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
@@ -489,6 +541,26 @@ export const HEARTBEAT_STARTUP_JITTER_MS = 10_000;
  *  Much shorter than the generic 5-minute cooldown because rate limits
  *  typically clear within seconds. */
 export const LLM_CIRCUIT_RESET_RATE_LIMIT_MS = 30 * 1000;
+
+// ─── Session / Context Packing ───────────────────────────────────────────────
+// Industry-style policy: keep full session history and pack against the real
+// model context window. Do NOT preemptively drop turns to "save tokens".
+// Count-based compaction is only a disk/RAM safety net at very high volume.
+
+/** Permanent storage compact trigger (message count). Below this, keep the
+ *  full transcript on disk. Token packing is handled per LLM call. */
+export const SESSION_STORAGE_COMPACT_TRIGGER = 2_000;
+
+/** How many recent messages to keep after a storage-time safety compact. */
+export const SESSION_STORAGE_COMPACT_KEEP = 1_000;
+
+/** Shrink individual on-disk tool results above this size (chars). Does not
+ *  drop turns — only trims pathological blobs. */
+export const SESSION_STORAGE_TOOL_SHRINK_CHARS = 100_000;
+
+/** Per-request: only shrink a single message above this many chars before
+ *  budget checks (pathological payloads). Normal history is left intact. */
+export const CONTEXT_ABSURD_MESSAGE_CHARS = 200_000;
 
 /** Max concurrent in-flight LLM requests per provider before jitter kicks in.
  *  When exceeded, additional requests add a random delay to spread the load

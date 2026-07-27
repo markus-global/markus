@@ -228,6 +228,8 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   // Context menus
   const [teamMenu, setTeamMenu] = useState<{ teamId: string; x: number; y: number } | null>(null);
   const [agentMenu, setAgentMenu] = useState<{ agentId: string; teamId?: string; x: number; y: number } | null>(null);
+  const [moveToOpen, setMoveToOpen] = useState(false);
+  const [moveToQuery, setMoveToQuery] = useState('');
   const [humanMenu, setHumanMenu] = useState<{ userId: string; x: number; y: number } | null>(null);
   const [addMenu, setAddMenu] = useState<string | null>(null); // teamId for which add menu is open
   const [gcMenu, setGcMenu] = useState<{ gcId: string; x: number; y: number } | null>(null);
@@ -322,16 +324,18 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   const [editingTeam, setEditingTeam] = useState<string | null>(null);
   const [editTeamName, setEditTeamName] = useState('');
 
-  const clampMenuPos = useCallback((e: React.MouseEvent, menuW = 176, menuH = 480) => {
-    const btn = e.currentTarget.getBoundingClientRect();
+  const clampMenuPos = useCallback((e: React.MouseEvent, menuW = 176, menuH = 220) => {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const pad = 8;
-    let x = btn.left;
-    let y = btn.bottom + 4;
+    // Anchor to the pointer for context menus. Using a huge assumed height with
+    // the row rect previously flipped the menu to y≈8 (top of the viewport).
+    let x = e.clientX;
+    let y = e.clientY;
     if (x + menuW > vw - pad) x = Math.max(pad, vw - menuW - pad);
-    if (y + menuH > vh - pad) y = btn.top - menuH - 4;
-    y = Math.max(pad, y);
+    if (y + menuH > vh - pad) y = Math.max(pad, vh - menuH - pad);
+    x = Math.max(pad, Math.min(x, vw - menuW - pad));
+    y = Math.max(pad, Math.min(y, vh - menuH - pad));
     return { x, y };
   }, []);
 
@@ -535,9 +539,24 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     );
   };
 
+  /** Org-level Secretary — protected system agent. Not team「协调秘书」. */
+  const isOrgSecretary = (a: AgentInfo) => {
+    if (a.isOrgSecretary || a.protected) return true;
+    if (a.teamId) return false;
+    const role = (a.role ?? '').toLowerCase().trim();
+    const name = (a.name ?? '').trim();
+    // Customized ROLE.md titles become e.g. "Secretary 角色定义", not bare "secretary".
+    return name === 'Secretary'
+      || name === '秘书'
+      || role === 'secretary'
+      || role.startsWith('secretary');
+  };
+
   // ── Drag-and-drop handlers ────────────────────────────────────────────────
 
   const handlePointerDown = (e: React.PointerEvent, agentId: string, fromTeamId?: string) => {
+    const agent = agents.find(ag => ag.id === agentId);
+    if (agent && isOrgSecretary(agent)) return; // system Secretary cannot be moved
     dragStartPos.current = { x: e.clientX, y: e.clientY };
     dragTimerRef.current = setTimeout(() => {
       setDragAgent({ agentId, fromTeamId });
@@ -616,13 +635,10 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   const renderAgentItem = (a: AgentInfo, teamId?: string) => {
     const selected = chatMode === 'direct' && selectedAgent === a.id;
     const isExt = externalMarkusIds.has(a.id);
-    const hasRecentError = a.status !== 'error' && !!a.lastError && !!a.lastErrorAt
-      && (Date.now() - new Date(a.lastErrorAt).getTime()) < 30 * 60 * 1000;
     const isStopped = a.status === 'offline';
-    const statusColor = a.status === 'idle' && !hasRecentError ? 'bg-green-500'
-      : a.status === 'working' && !hasRecentError ? 'bg-blue-500 animate-pulse'
+    const statusColor = a.status === 'idle' ? 'bg-green-500'
+      : a.status === 'working' ? 'bg-blue-500 animate-pulse'
       : a.status === 'error' ? 'bg-red-500'
-      : hasRecentError ? 'bg-amber-500'
       : 'bg-gray-600';
 
     const team = teamId ? teamMap.get(teamId) : undefined;
@@ -652,6 +668,8 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
             if (!isAdmin) return;
             e.preventDefault();
             const pos = clampMenuPos(e);
+            setMoveToOpen(false);
+            setMoveToQuery('');
             setAgentMenu({ agentId: a.id, teamId, ...pos });
           }}
           className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors select-none ${
@@ -699,7 +717,12 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
                 onClick={e => {
                   e.stopPropagation();
                   if (agentMenu?.agentId === a.id) { setAgentMenu(null); }
-                  else { const pos = clampMenuPos(e as unknown as React.MouseEvent); setAgentMenu({ agentId: a.id, teamId, ...pos }); }
+                  else {
+                    const pos = clampMenuPos(e as unknown as React.MouseEvent);
+                    setMoveToOpen(false);
+                    setMoveToQuery('');
+                    setAgentMenu({ agentId: a.id, teamId, ...pos });
+                  }
                 }}
                 className="w-5 h-5 flex items-center justify-center text-fg-tertiary hover:text-fg-secondary rounded transition-colors"
                 title={t('chat.moreOptions')}
@@ -832,7 +855,8 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
         <div className="group/teamhdr flex items-center gap-0.5">
           <button
             onClick={() => {
-              if (teamGc) onSelectChannel(teamGc.channelKey);
+              // Prefer channel entry; synthetic `group:{teamId}` works before groupChats refresh.
+              if (tid !== '_ungrouped') onSelectChannel(teamGc?.channelKey ?? `group:${tid}`);
               else toggleTeam(tid);
             }}
             onContextMenu={e => {
@@ -940,7 +964,12 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
 
   const [dmSectionExpanded, setDmSectionExpanded] = useState(false);
   const dmHasActiveChannel = chatMode === 'channel' && groupChatsByTeam.dmChannels.some(gc => gc.channelKey === activeChannel);
-  const showDmExpanded = dmSectionExpanded || dmHasActiveChannel;
+  // Auto-expand once when a DM channel becomes active so the selected chat is
+  // visible, but keep the toggle fully user-controlled afterwards (a derived
+  // `expanded || hasActive` made it impossible to collapse while a DM was open).
+  useEffect(() => {
+    if (dmHasActiveChannel) setDmSectionExpanded(true);
+  }, [dmHasActiveChannel]);
 
   return (
     <>
@@ -1210,16 +1239,16 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
           {groupChatsByTeam.dmChannels.length > 0 && (
             <div className="mb-2">
               <button
-                onClick={() => setDmSectionExpanded(!showDmExpanded)}
+                onClick={() => setDmSectionExpanded(v => !v)}
                 className="w-full flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-semibold text-fg-muted uppercase tracking-wider hover:text-fg-secondary transition-colors"
               >
-                <svg className={`w-2.5 h-2.5 transition-transform ${showDmExpanded ? 'rotate-90' : ''}`} fill="currentColor" viewBox="0 0 20 20">
+                <svg className={`w-2.5 h-2.5 transition-transform ${dmSectionExpanded ? 'rotate-90' : ''}`} fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
                 </svg>
-                {t('chat.agentDMs', { defaultValue: 'Agent DMs' })}
+                {t('chat.agentDMs')}
                 <span className="ml-auto text-[9px] font-normal text-fg-tertiary">{groupChatsByTeam.dmChannels.length}</span>
               </button>
-              {showDmExpanded && groupChatsByTeam.dmChannels.map(gc => {
+              {dmSectionExpanded && groupChatsByTeam.dmChannels.map(gc => {
                 const isActive = chatMode === 'channel' && activeChannel === gc.channelKey;
                 const chUnread = unreadByChannel?.[gc.channelKey] ?? 0;
                 const dmLabel = gc.name.replace(/^DM:\s*/, '');
@@ -1325,12 +1354,25 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
         const team = agentMenu.teamId ? teamMap.get(agentMenu.teamId) : undefined;
         const isManager = team?.managerId === a.id;
         const isSelf = a.id === authUser?.id;
+        const orgSecretary = isOrgSecretary(a);
         return (
           <div
-            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
-            style={{ left: agentMenu.x, top: agentMenu.y }}
+            className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 z-50 w-48 max-w-[calc(100vw-1rem)] overflow-y-auto"
+            style={{
+              left: agentMenu.x,
+              top: agentMenu.y,
+              maxHeight: Math.max(160, window.innerHeight - agentMenu.y - 8),
+            }}
             onClick={e => e.stopPropagation()}
           >
+            {orgSecretary && (
+              <>
+                <div className="px-3 py-2 text-[10px] leading-snug text-fg-secondary font-medium">
+                  {t('contextMenu.orgSecretaryProtected')}
+                </div>
+                <div className="border-t border-border-default/50 my-1" />
+              </>
+            )}
             <button onClick={() => { setAgentMenu(null); onViewProfile(a.id); }}
               className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-brand-500 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
@@ -1349,46 +1391,97 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
                 {t('contextMenu.stop')}
               </button>
             )}
-            {agentMenu.teamId && !isManager && (
+            {!orgSecretary && agentMenu.teamId && !isManager && (
               <button onClick={() => { handleSetManager(agentMenu.teamId!, a.id, 'agent'); setAgentMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-amber-600 flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
                 {t('contextMenu.setAsManager')}
               </button>
             )}
-            {agentMenu.teamId && (
+            {!orgSecretary && agentMenu.teamId && (
               <button onClick={() => { handleRemoveFromTeam(agentMenu.teamId!, a.id); setAgentMenu(null); }}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary flex items-center gap-2">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 14 4 9 9 4" /><path d="M20 20v-7a4 4 0 0 0-4-4H4" /></svg>
                 {t('contextMenu.removeFromTeam')}
               </button>
             )}
-            {teams.length > 0 && (
+            {!orgSecretary && (() => {
+              const moveTargets = teams.filter(tm => tm.id !== agentMenu.teamId);
+              if (moveTargets.length === 0) return null;
+              const q = moveToQuery.trim().toLowerCase();
+              const filtered = q
+                ? moveTargets.filter(tm => tm.name.toLowerCase().includes(q))
+                : moveTargets;
+              return (
+                <>
+                  <div className="border-t border-border-default/50 my-1" />
+                  <button
+                    type="button"
+                    onClick={() => setMoveToOpen(v => !v)}
+                    className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary flex items-center gap-2"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5l7 7-7 7" /></svg>
+                    <span className="flex-1">{t('contextMenu.moveTo')}</span>
+                    <svg
+                      width="10"
+                      height="10"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className={`shrink-0 text-fg-tertiary transition-transform ${moveToOpen ? 'rotate-180' : ''}`}
+                    >
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  </button>
+                  {moveToOpen && (
+                    <div className="px-2 pb-1.5" onClick={e => e.stopPropagation()}>
+                      <input
+                        autoFocus
+                        value={moveToQuery}
+                        onChange={e => setMoveToQuery(e.target.value)}
+                        onKeyDown={e => e.stopPropagation()}
+                        placeholder={t('contextMenu.moveToSearch')}
+                        className="w-full mb-1 px-2 py-1.5 text-xs rounded-md bg-surface-overlay border border-border-default text-fg-primary placeholder:text-fg-tertiary outline-none focus:border-brand-500/50"
+                      />
+                      <div className="max-h-36 overflow-y-auto rounded-md">
+                        {filtered.length === 0 ? (
+                          <div className="px-2 py-2 text-[10px] text-fg-tertiary">{t('contextMenu.moveToEmpty')}</div>
+                        ) : (
+                          filtered.map(tm => (
+                            <button
+                              key={tm.id}
+                              type="button"
+                              onClick={async () => {
+                                if (agentMenu.teamId) await api.teams.removeMember(agentMenu.teamId, a.id);
+                                await api.teams.addMember(tm.id, a.id, 'agent');
+                                onRefreshTeams(); onRefreshAgents(); refreshUngrouped();
+                                setAgentMenu(null);
+                              }}
+                              className="w-full text-left px-2 py-1.5 text-xs hover:bg-surface-overlay text-fg-secondary rounded truncate"
+                              title={tm.name}
+                            >
+                              {tm.name}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+            {!orgSecretary && !isSelf && (
               <>
                 <div className="border-t border-border-default/50 my-1" />
-                <div className="px-3 py-1 text-[10px] text-fg-tertiary uppercase flex items-center gap-1.5">
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="M12 5l7 7-7 7" /></svg>
-                  {t('contextMenu.moveTo')}
-                </div>
-                {teams.filter(tm => tm.id !== agentMenu.teamId).map(tm => (
-                  <button key={tm.id} onClick={async () => {
-                    if (agentMenu.teamId) await api.teams.removeMember(agentMenu.teamId, a.id);
-                    await api.teams.addMember(tm.id, a.id, 'agent');
-                    onRefreshTeams(); onRefreshAgents(); refreshUngrouped();
-                    setAgentMenu(null);
-                  }} className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-fg-secondary pl-7">
-                    {tm.name}
-                  </button>
-                ))}
+                <button onClick={() => { handleRemoveFromOrg(a.id, a.name, 'agent'); setAgentMenu(null); }}
+                  className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                  {t('contextMenu.removeFromOrg')}
+                </button>
               </>
-            )}
-            <div className="border-t border-border-default/50 my-1" />
-            {!isSelf && a.role?.toLowerCase() !== 'secretary' && (
-              <button onClick={() => { handleRemoveFromOrg(a.id, a.name, 'agent'); setAgentMenu(null); }}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
-                {t('contextMenu.removeFromOrg')}
-              </button>
             )}
           </div>
         );
@@ -1423,14 +1516,13 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
               setShowNewTeam(false);
               onRefreshTeams();
               setHighlightTeamId(newTeam.id);
-              window.dispatchEvent(new Event('markus:check-license-limits'));
               setTimeout(() => {
                 const el = document.querySelector(`[data-team-id="${newTeam.id}"]`);
                 el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
               }, 300);
               setTimeout(() => setHighlightTeamId(null), 3000);
             } catch (e) {
-              alert(t('chat.failedToCreateTeam', { message: e instanceof Error ? e.message : String(e) }));
+              showToast(t('chat.failedToCreateTeam', { message: e instanceof Error ? e.message : String(e) }), 'error');
             }
           }}
         />

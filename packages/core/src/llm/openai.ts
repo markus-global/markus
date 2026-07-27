@@ -1,5 +1,15 @@
 import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, type ProviderCapabilities, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
-import type { MultiModalProviderInterface, MultiModalToolSchemas, ImageGenOptions, ImageResult, TTSOptions, AudioResult, STTOptions } from './provider.js';
+import {
+  defaultVoiceForModel,
+  formatUpstreamMediaError,
+  type MultiModalProviderInterface,
+  type MultiModalToolSchemas,
+  type ImageGenOptions,
+  type ImageResult,
+  type TTSOptions,
+  type AudioResult,
+  type STTOptions,
+} from './provider.js';
 
 interface OpenAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -51,7 +61,8 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     this.baseUrl = config?.baseUrl ?? 'https://api.openai.com';
     this.maxTokens = config?.maxTokens ?? 4096;
     this.chatTimeoutMs = config?.timeoutMs ?? 90_000;
-    this.streamTimeoutMs = config?.timeoutMs ?? 120_000;
+    // Idle gap between chunks (reset on data). Absolute hard cap is separate in chatStream.
+    this.streamTimeoutMs = config?.timeoutMs ?? 180_000;
     this.tokenResolver = tokenResolver;
   }
 
@@ -233,7 +244,17 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     const base = this.baseUrl.replace(/\/+$/, '');
     const endpoint = /\/v\d+$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.streamTimeoutMs);
+    const STREAM_HARD_TIMEOUT_MS = 15 * 60_000;
+    let idleTimeout = setTimeout(() => controller.abort(), this.streamTimeoutMs);
+    const hardTimeout = setTimeout(() => controller.abort(), STREAM_HARD_TIMEOUT_MS);
+    const bumpIdleTimeout = () => {
+      clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(() => controller.abort(), this.streamTimeoutMs);
+    };
+    const clearStreamTimeouts = () => {
+      clearTimeout(idleTimeout);
+      clearTimeout(hardTimeout);
+    };
     if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
     let res: Response;
     try {
@@ -248,7 +269,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
         signal: controller.signal,
       });
     } catch (err) {
-      clearTimeout(timeout);
+      clearStreamTimeouts();
       const msg = err instanceof Error ? err.message : String(err);
       const cause = (err as NodeJS.ErrnoException).cause;
       const detail = cause instanceof Error ? ` (${cause.message})` : '';
@@ -256,11 +277,12 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     }
 
     if (!res.ok) {
-      clearTimeout(timeout);
+      clearStreamTimeouts();
       const errText = await res.text();
       throw new Error(`OpenAI API error ${res.status}: ${errText}`);
     }
 
+    bumpIdleTimeout();
     let content = '';
     let reasoningContent = '';
     const toolCalls: Map<number, { id: string; name: string; args: string }> = new Map();
@@ -270,14 +292,19 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     let cachedTokens = 0;
 
     const reader = res.body?.getReader();
-    if (!reader) throw new Error('No response body reader');
+    if (!reader) {
+      clearStreamTimeouts();
+      throw new Error('No response body reader');
+    }
 
     const decoder = new TextDecoder();
     let buffer = '';
 
+    try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      bumpIdleTimeout();
       buffer += decoder.decode(value, { stream: true });
 
       const lines = buffer.split('\n');
@@ -344,8 +371,9 @@ export class OpenAIProvider implements MultiModalProviderInterface {
         } catch { /* skip unparseable lines */ }
       }
     }
-
-    clearTimeout(timeout);
+    } finally {
+      clearStreamTimeouts();
+    }
 
     const resultToolCalls = [...toolCalls.values()]
       .filter((tc) => tc.name)
@@ -451,11 +479,13 @@ export class OpenAIProvider implements MultiModalProviderInterface {
         },
       },
       text_to_speech: {
-        description: 'Convert text to speech using OpenAI.',
+        description:
+          'Convert text to speech using OpenAI (synchronous — blocks until full audio returns). ' +
+          'Long text is slow; split paragraphs into short sentences and call multiple times.',
         inputSchema: {
           type: 'object',
           properties: {
-            text: { type: 'string', description: 'The text to convert to speech' },
+            text: { type: 'string', description: 'Text to synthesize. Keep short per call; split long narration.' },
             model: { type: 'string', description: 'Model to use (default from routing config). e.g. "tts-1", "tts-1-hd"' },
             voice: { type: 'string', enum: ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'], description: 'Voice to use (default: alloy)' },
             speed: { type: 'number', description: 'Speech speed (0.25-4.0, default: 1.0)' },
@@ -506,7 +536,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Image generation API error ${res.status}: ${errText}`);
+      throw new Error(`Image generation API error ${formatUpstreamMediaError(res.status, errText)}`);
     }
 
     const data = await res.json() as {
@@ -530,10 +560,13 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     const endpoint = /\/v\d+$/.test(base) ? `${base}/audio/speech` : `${base}/v1/audio/speech`;
 
     const format = options?.responseFormat ?? 'mp3';
+    const model = options?.model ?? 'tts-1';
     const body: Record<string, unknown> = {
-      model: options?.model ?? 'tts-1',
+      model,
       input: text,
-      voice: options?.voice ?? 'alloy',
+      // OpenAI's /audio/speech requires a voice; default via the family-aware
+      // helper (falls back to "alloy" for OpenAI-family models).
+      voice: options?.voice ?? defaultVoiceForModel(model) ?? 'alloy',
       response_format: format,
     };
     if (options?.speed) body['speed'] = options.speed;
@@ -543,12 +576,12 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(180_000),
     });
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`TTS API error ${res.status}: ${errText}`);
+      throw new Error(`TTS API error ${formatUpstreamMediaError(res.status, errText)}`);
     }
 
     const arrayBuf = await res.arrayBuffer();
@@ -580,7 +613,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`STT API error ${res.status}: ${errText}`);
+      throw new Error(`STT API error ${formatUpstreamMediaError(res.status, errText)}`);
     }
 
     const responseFormat = options?.responseFormat ?? 'text';

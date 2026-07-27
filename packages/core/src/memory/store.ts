@@ -10,7 +10,16 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { createLogger, getTextContent, type LLMMessage, MEMORY_MD_SECTION_MAX_CHARS, MEMORY_MD_TOTAL_MAX_CHARS } from '@markus/shared';
+import {
+  createLogger,
+  getTextContent,
+  type LLMMessage,
+  MEMORY_MD_SECTION_MAX_CHARS,
+  MEMORY_MD_TOTAL_MAX_CHARS,
+  SESSION_STORAGE_COMPACT_KEEP,
+  SESSION_STORAGE_COMPACT_TRIGGER,
+  SESSION_STORAGE_TOOL_SHRINK_CHARS,
+} from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
@@ -352,7 +361,15 @@ export class MemoryStore implements IMemoryStore {
 
   // --- Long-term: MEMORY.md ---
 
-  addLongTermMemory(key: string, content: string): void {
+  /**
+   * Write/replace a curated MEMORY.md section.
+   *
+   * Returns a structured result so callers (the memory tools) can surface a refusal
+   * to the model instead of the write silently no-op'ing (B1). `{ ok: true }` on success;
+   * `{ ok: false, reason }` when the write is refused (over the total cap even after
+   * compression) or errors.
+   */
+  addLongTermMemory(key: string, content: string): { ok: boolean; reason?: string } {
     let truncatedContent = content;
     if (truncatedContent.length > MEMORY_MD_SECTION_MAX_CHARS) {
       log.warn('Section content exceeds limit, truncating', {
@@ -398,20 +415,22 @@ export class MemoryStore implements IMemoryStore {
             log.warn('MEMORY.md still exceeds limit even after compression, refusing write', {
               key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
             });
-            return;
+            return { ok: false, reason: `MEMORY.md is full (> ${MEMORY_MD_TOTAL_MAX_CHARS} chars) even after compression; write refused. Prune or shorten sections, or use memory_save (## _observations) instead.` };
           }
         } else {
           log.warn('MEMORY.md still exceeds limit after compression, refusing write', {
             key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
           });
-          return;
+          return { ok: false, reason: `MEMORY.md is full (> ${MEMORY_MD_TOTAL_MAX_CHARS} chars) and could not be compressed further; write refused. Prune or shorten sections, or use memory_save (## _observations) instead.` };
         }
       }
 
       writeFileSync(this.longTermFile, updated);
       log.debug('Long-term memory updated', { key, sectionChars: truncatedContent.length, totalChars: updated.length });
+      return { ok: true };
     } catch (err) {
       log.warn('Failed to write long-term memory', { key, error: String(err) });
+      return { ok: false, reason: `Failed to write MEMORY.md: ${String(err)}` };
     }
   }
 
@@ -523,30 +542,41 @@ export class MemoryStore implements IMemoryStore {
   // --- Disk persistence ---
 
   private checkAndCompact(session: ConversationSession): void {
-    // Single storage-time compaction policy: trigger at 60 messages, keep 30.
-    // Context-engine handles per-LLM-call compression separately.
-    if (session.messages.length <= 60) return;
-
+    // Keep full transcripts by default. Per-request packing uses the model
+    // window — we do not drop turns early to "save tokens".
+    // 1) Shrink only pathological old tool blobs.
+    // 2) Permanent summarize+truncate only at a very high message count (safety).
     let shrunk = 0;
-    const recentBoundary = session.messages.length - 30;
+    const keepRecentForShrink = Math.min(SESSION_STORAGE_COMPACT_KEEP, session.messages.length);
+    const recentBoundary = Math.max(0, session.messages.length - keepRecentForShrink);
     for (let i = 0; i < recentBoundary; i++) {
       const m = session.messages[i]!;
       const text = getTextContent(m.content);
-      if (m.role === 'tool' && text.length > 20_000) {
+      if (m.role === 'tool' && text.length > SESSION_STORAGE_TOOL_SHRINK_CHARS) {
         const origLen = text.length;
-        const headSize = Math.min(1500, Math.floor(origLen * 0.3));
-        const tailSize = Math.min(500, Math.floor(origLen * 0.1));
+        const headSize = Math.min(4_000, Math.floor(origLen * 0.3));
+        const tailSize = Math.min(1_500, Math.floor(origLen * 0.1));
         const head = text.slice(0, headSize);
         const tail = text.slice(-tailSize);
         m.content = `[Tool result compacted: ${origLen} chars → ${headSize + tailSize} char preview]\n${head}\n[... ${origLen - headSize - tailSize} chars omitted ...]\n${tail}`;
         shrunk++;
       }
     }
+    if (shrunk > 0) {
+      log.info('Shrunk oversized tool results in session storage', {
+        sessionId: session.id, messageCount: session.messages.length, shrunkToolResults: shrunk,
+      });
+    }
 
-    log.info('Auto-compacting session by count', {
-      sessionId: session.id, messageCount: session.messages.length, shrunkToolResults: shrunk,
+    if (session.messages.length <= SESSION_STORAGE_COMPACT_TRIGGER) return;
+
+    log.info('Auto-compacting session by safety count threshold', {
+      sessionId: session.id,
+      messageCount: session.messages.length,
+      keepLast: SESSION_STORAGE_COMPACT_KEEP,
+      trigger: SESSION_STORAGE_COMPACT_TRIGGER,
     });
-    this.compactSession(session.id, 30);
+    this.compactSession(session.id, SESSION_STORAGE_COMPACT_KEEP);
   }
 
   private static readonly MAX_MEMORY_ENTRIES = 500;

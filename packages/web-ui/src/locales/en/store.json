@@ -1,10 +1,29 @@
 {
-  "title": "Store",
+  "title": "Community",
   "tabs": {
+    "discover": "Discover",
     "agents": "Agents",
     "teams": "Teams",
     "skills": "Skills",
+    "connectors": "Connectors",
     "installed": "Installed"
+  },
+  "discover": {
+    "title": "Markus Plaza",
+    "subtitle": "Discover agents, AI squads, skills and connectors shared by the community — an open ecosystem built by creators.",
+    "trending": "Trending",
+    "trendingSub": "Fastest-growing assets by downloads and ratings",
+    "fresh": "New arrivals",
+    "freshSub": "The latest work from creators",
+    "topCreators": "Top creators",
+    "topCreatorsSub": "Ecosystem contribution leaderboard",
+    "empty": "The ecosystem is growing",
+    "emptyHint": "Be one of the first creators — share your first asset"
+  },
+  "connectorStore": {
+    "searchPlaceholder": "Search connectors (MCP)...",
+    "empty": "No connectors yet",
+    "emptyHint": "Connectors let agents plug into external tools and services (MCP)"
   },
   "agentStore": {
     "title": "Agent Store",
@@ -55,6 +74,7 @@
     "title": "Skill Store",
     "tabs": {
       "installed": "Installed",
+      "all": "Skills",
       "builtin": "Built-in",
       "skillhub": "SkillHub",
       "skillssh": "skills.sh",
@@ -111,7 +131,9 @@
     "upgraded": "Upgraded!",
     "failed": "Failed",
     "purchaseRequired": "Purchase required",
-    "buy": "Buy {{price}}",
+    "buy": "Buy",
+    "waitingPurchase": "Waiting for purchase...",
+    "buyOnHub": "Buy on Hub",
     "view": "View →"
   },
   "installedTab": {
@@ -123,7 +145,12 @@
     "filterAll": "All",
     "filterAgents": "Agents",
     "filterTeams": "Teams",
-    "filterSkills": "Skills"
+    "filterSkills": "Skills",
+    "updateAvailable": "Update available",
+    "updateTo": "Update → v{{version}}",
+    "updating": "Updating...",
+    "updateSuccess": "Updated {{name}} to v{{version}}",
+    "updateFailed": "Failed to update {{name}}"
   },
   "marketplace": {
     "searchPlaceholder": "Search templates...",

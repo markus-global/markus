@@ -2,6 +2,80 @@
 
 > Last updated: 2026-07
 
+This is the **entry point** for Markus technical documentation. Each domain has one
+authoritative document; a mechanism is described in full only in its home document
+and cross-referenced elsewhere. Start here, then follow the map below.
+
+---
+
+## 0. Documentation Map
+
+### 0.1 Document Index
+
+| Document | Domain (single responsibility) |
+|----------|-------------------------------|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) *(this file)* | System overview, package structure, core concepts, channels, deployment, observability |
+| [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | Unified cognitive cycle, Cognitive Preparation Pipeline (CPP), heartbeat integration |
+| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Memory layers (ROLE / MEMORY / session / notebook / activity), storage compaction, memory flush |
+| [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) | Prompt & context assembly, LLM call taxonomy, context packing, prompt caching |
+| [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
+| [STATE-MACHINES.md](./STATE-MACHINES.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
+| [TOOL-SYSTEM.md](./TOOL-SYSTEM.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
+| [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events |
+| [CODING-TOOLS.md](./CODING-TOOLS.md) | External coding CLI integration (Claude Code / Codex / Cursor Agent) |
+| [API.md](./API.md) | REST / WebSocket API reference |
+| [GUIDE.md](./GUIDE.md) | Setup, deployment, and usage guide |
+| [REMOTE-ACCESS.md](./REMOTE-ACCESS.md) | Remote access configuration |
+| [RELEASE-AND-DISTRIBUTION.md](./RELEASE-AND-DISTRIBUTION.md) | Release process and distribution |
+
+### 0.2 Relationship Graph
+
+```mermaid
+flowchart TD
+  ARCH[ARCHITECTURE - entry point]
+
+  subgraph cognition [Cognition]
+    COG[COGNITIVE-ARCHITECTURE]
+    MEM[MEMORY-SYSTEM]
+    PROMPT[PROMPT-ENGINEERING]
+  end
+
+  subgraph execution [Execution]
+    MAILBOX[MAILBOX-SYSTEM]
+    FSM[STATE-MACHINES]
+    TOOLS[TOOL-SYSTEM]
+    STREAM[STREAMING-AND-REATTACH]
+  end
+
+  subgraph integration [Integration and Reference]
+    CODING[CODING-TOOLS]
+    API[API]
+    GUIDE[GUIDE]
+  end
+
+  ARCH --> cognition
+  ARCH --> execution
+  ARCH --> integration
+
+  MAILBOX -->|item terminal states| FSM
+  MAILBOX -->|preempt aborts stream| STREAM
+  COG -->|context assembly| PROMPT
+  PROMPT -->|packing triggers flush| MEM
+  PROMPT -->|tool defs and results| TOOLS
+  TOOLS -->|tool errors surfaced as events| STREAM
+  COG -->|CPP writes notebook| MEM
+```
+
+### 0.3 Cross-Document Conventions
+
+- **Single source of truth**: a mechanism is fully specified only in its home document.
+- **Spec sections**: feature specs follow a fixed template — Behavior / Invariants /
+  Design rationale (with Pi/Hermes comparison where relevant) / Testing (required
+  cases + test files) / Status (planned | implemented).
+- **Doc/code accuracy**: documented behavior must match the code. When they diverge,
+  fix the code or the doc in the same change; never leave a documented-but-unimplemented
+  behavior unmarked.
+
 ---
 
 ## 1. Overview
@@ -681,7 +755,68 @@ Agents understand the workflow and governance rules through three layers:
 
 ---
 
-## 11. Deployment
+## 11. Observability
+
+`AgentMetricsCollector` ([`packages/core/src/agent-metrics.ts`](../packages/core/src/agent-metrics.ts))
+aggregates per-agent counters (tokens, cost, CU, requests, tool calls, errors, heartbeat
+success, response time) from the audit callback and event bus, and exposes
+`AgentMetricsSnapshot` over the API for the dashboard.
+
+### 11.1 Spec: harness-health metrics (C2)
+
+The existing counters cover cost/throughput but not the harness-discipline signals this
+architecture depends on. This spec adds four metrics so regressions in context and
+completion behavior are visible.
+
+- **Behavior**: the collector additionally tracks:
+  - **compression count** — how often per-call context packing had to compress (over budget),
+  - **completion-marker failure rate** — share of non-chat turns that finished without a marker
+    (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) completion marker),
+  - **prompt cache-hit rate** — from provider usage where reported (see the injection-point
+    audit in [PROMPT-ENGINEERING.md §2.2](./PROMPT-ENGINEERING.md)),
+  - **per-turn cost** — cost attributed per completed turn.
+- **Invariants**: each metric increments on its triggering event and is exposed in the
+  snapshot under `AgentMetricsSnapshot.harness`; adding them does not change agent behavior
+  (measurement only).
+- **Wiring**:
+  - *compression count* — `ContextEngine.prepareMessages` sets `usage.compressed` when it
+    runs token-budget compression; `Agent` calls `recordCompression()` at the chat/stream/
+    task consumers.
+  - *marker failure rate* — the `Agent` attention delegate calls `recordTurn({ isChat,
+    hadCompletionMarker })` after each mailbox turn (chat turns are excluded from the
+    denominator).
+  - *cache-hit rate* — accumulated from the `cacheReadTokens`/`cacheWriteTokens` already
+    present on `llm_request` audit events, over total prompt-side tokens.
+  - *per-turn cost* — `estimatedCost / turnsCompleted` (0 when no USD cost is reported, e.g.
+    CU-billed providers).
+- **Design rationale**: Hermes emphasizes observable execution; these are the metrics that
+  tell you whether packing, marker discipline, and caching are actually holding.
+- **Testing** (`packages/core/test/agent-metrics.test.ts` — the "C2:" cases): firing each
+  triggering event increments the corresponding counter and surfaces in `snapshot.harness`.
+- **Status**: implemented (`HarnessHealthMetrics` on the snapshot; `recordCompression` /
+  `recordTurn` + cache-token accumulation in `AgentMetricsCollector`, wired in `agent.ts`
+  and `context-engine.ts`).
+
+---
+
+## 12. Non-Goals
+
+Markus is deliberately a **product runtime for a digital workforce**, not a minimal coding
+harness. To keep scope disciplined (in the spirit of Pi defining itself by what it refuses),
+the following are explicit non-goals for the core runtime unless a concrete product need
+arises:
+
+- **In-core session tree / branch summaries** — long-collaboration branching is on the
+  roadmap, not core today (Pi's strength; deferred).
+- **Fully autonomous skills self-improvement loop** — agents can use skills/store and dream
+  consolidation, but a default closed loop where the agent authors/edits its own `SKILL.md`
+  is roadmap, not core (weaker than Hermes here by choice, for now).
+- **Maximal always-on tool registry** — Markus keeps a small always-on core + discovery
+  rather than exposing the full registry every call (see [TOOL-SYSTEM.md](./TOOL-SYSTEM.md)).
+
+---
+
+## 13. Deployment
 
 ### Quick start (npm)
 

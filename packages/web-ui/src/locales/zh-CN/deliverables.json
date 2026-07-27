@@ -1,5 +1,5 @@
 {
-  "title": "交付物",
+  "title": "产出",
   "create": "+ 创建",
   "searchPlaceholder": "搜索交付物…",
   "filters": {
@@ -24,7 +24,7 @@
   "empty": {
     "title": "暂无交付物",
     "subtitle": "交付物由智能体在完成任务后自动创建，无需手动添加",
-    "goToWork": "前往工作台创建任务",
+    "goToWork": "前往任务页面创建",
     "noResults": "没有匹配的交付物",
     "noResultsHint": "试试调整搜索词或筛选条件"
   },
@@ -116,7 +116,8 @@
     "openChat": "与智能体对话",
     "closeChat": "关闭对话",
     "placeholder": "给智能体发消息…",
-    "currentDeliverable": "当前交付物"
+    "currentDeliverable": "当前交付物",
+    "selectedFrom": "选自"
   },
   "contextMenu": {
     "addToConversation": "添加到对话"

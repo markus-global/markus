@@ -72,6 +72,14 @@ async function main() {
     console.log('  Web UI not built — skipping static assets (run pnpm --filter @markus/web-ui build first)');
   }
 
+  // Step 5: Ship Chrome extension zip next to markus.mjs (npm + binary layout)
+  console.log('  Ensuring Chrome extension zip…');
+  const ensureScript = resolve(__dirname, '../../scripts/ensure-chrome-extension-zip.mjs');
+  execSync(`node "${ensureScript}" --copy-to "${resolve(__dirname, 'dist')}"`, {
+    cwd: resolve(__dirname, '../..'),
+    stdio: 'inherit',
+  });
+
   console.log(`  Done → ${outfile}`);
 }
 

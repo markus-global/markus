@@ -28,6 +28,20 @@ import {
 
 const log = createLogger('cognitive');
 
+/**
+ * Parse a JSON object out of an LLM response. Reasoning models often emit
+ * hidden reasoning and may wrap the payload in prose or code fences, so we
+ * isolate the outermost {...} before parsing instead of trusting the whole
+ * string. Throws if no object is present (caller falls back gracefully).
+ */
+function parseJsonObject<T>(content: string): T {
+  const raw = (content || '').trim();
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  const slice = start >= 0 && end > start ? raw.slice(start, end + 1) : raw;
+  return JSON.parse(slice) as T;
+}
+
 /** Minimal LLM interface — only needs the non-streaming chat method */
 export interface CognitiveLLM {
   chat(request: LLMRequest, providerName?: string): Promise<LLMResponse>;
@@ -166,14 +180,18 @@ export class CognitivePreparation {
     ].filter(Boolean).join('\n');
 
     try {
+      // No maxTokens cap: reasoning models spend output tokens on hidden
+      // reasoning before emitting the JSON, so an artificial cap gets consumed
+      // by reasoning and leaves `content` empty. The router fills in the
+      // model's real max output (resolveMaxTokens); the model stops naturally
+      // once the small JSON payload is complete.
       const response = await llm.chat({
         messages: [{ role: 'user', content: prompt }],
-        maxTokens: 500,
         temperature: 0.3,
         metadata: { purpose: 'cognitive_appraisal' },
       }, this.config.appraisalModel);
 
-      const parsed = JSON.parse(response.content.trim()) as AppraisalResult;
+      const parsed = parseJsonObject<AppraisalResult>(response.content);
       log.debug('Appraisal completed', { intent: parsed.intent, confidence: parsed.confidence });
       return parsed;
     } catch (err) {
@@ -280,14 +298,15 @@ export class CognitivePreparation {
     ].join('\n');
 
     try {
+      // No maxTokens cap — see appraisal above. The router supplies the
+      // model's real output limit; reasoning models need room before the JSON.
       const response = await llm.chat({
         messages: [{ role: 'user', content: prompt }],
-        maxTokens: 400,
         temperature: 0.3,
         metadata: { purpose: 'cognitive_reflection' },
       }, this.config.appraisalModel);
 
-      const parsed = JSON.parse(response.content.trim()) as ReflectionResult;
+      const parsed = parseJsonObject<ReflectionResult>(response.content);
       log.debug('Reflection completed', { recommendations: parsed.recommendations.length });
       return parsed;
     } catch (err) {

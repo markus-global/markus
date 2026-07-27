@@ -1,5 +1,5 @@
 {
-  "title": "Dashboard",
+  "title": "Overview",
   "subtitle": "Here's what's happening with your AI workforce today.",
   "hireAgent": "Deploy Agent",
   "metricCards": {
@@ -32,14 +32,41 @@
     "createProject": "Create a Project",
     "createProjectDesc": "Set up requirements and let agents plan, execute, and deliver"
   },
+  "claim": {
+    "title": "Claim reward credits",
+    "subtitle": "Get started with Markus Cloud AI — no API key setup needed.",
+    "provider": "Default provider",
+    "creditsUnit": "credits",
+    "oneTimeNote": "One-time reward credits for your account.",
+    "loading": "Checking your account…",
+    "claimNow": "Claim now",
+    "claiming": "Claiming…",
+    "tooSoon": "Almost ready — please wait {{seconds}}s and try again.",
+    "success": "{{amount}} reward credits are on your account. You're ready to go!",
+    "startUsing": "You can start using Markus Cloud now.",
+    "openHub": "Open Hub to claim",
+    "openHubHint": "Continue on Markus Hub to claim your {{amount}} reward credits.",
+    "notClaimable": "These credits aren't available for this account.",
+    "loadFailed": "Couldn't load claim status. Please try again.",
+    "claimFailed": "Couldn't claim credits. Please try again.",
+    "retry": "Retry"
+  },
   "checklist": {
     "title": "Get Started with Markus",
     "subtitle": "Follow these steps to set up your AI workforce and start working.",
     "progress": "{{done}}/{{total}} completed",
     "setup": {
       "title": "System Setup",
+      "claim": "Claim Markus reward credits",
+      "claimDesc": "Claim 1,000 Markus Cloud reward credits and start chatting",
+      "claimAction": "Claim credits",
+      "markus": "Claim Markus reward credits",
+      "markusDesc": "Claim 1,000 Markus Cloud reward credits and start chatting",
+      "markusAction": "Claim credits",
+      "markusActionConfigured": "Manage models",
       "llm": "Configure AI Model",
       "llmDesc": "Set up your LLM provider API key — this is required for agents to work",
+      "llmDescHub": "Use Markus Cloud AI, or add your own provider API key — required for agents to work",
       "llmAction": "Configure",
       "search": "Configure Search Engine",
       "searchDesc": "Set up a search API key so agents can search the internet",
@@ -47,12 +74,6 @@
       "browser": "Set Up Browser Automation",
       "browserDesc": "Install the Chrome extension to let agents control the browser",
       "browserAction": "Set Up",
-      "codingTools": "Configure Coding Tools",
-      "codingToolsDesc": "Connect external coding agents (Cursor, Claude Code, Codex) for programming tasks",
-      "codingToolsAction": "Set up",
-      "license": "Account & License",
-      "licenseDesc": "Connect to Markus Hub and activate an enterprise license to unlock all features",
-      "licenseAction": "Set Up",
       "optional": "Optional",
       "update": "Update"
     },
@@ -67,9 +88,6 @@
       "requirements": "Add Requirements",
       "requirementsDesc": "Add requirements to your project — agents will break them into tasks",
       "requirementsAction": "Ask Secretary",
-      "agent": "Hire an Agent",
-      "agentDesc": "Hire a specialized agent like a researcher, developer, or analyst",
-      "agentAction": "Ask Secretary",
       "team": "Create Tech Frontier Think Tank",
       "teamDesc": "Build an AI think tank with 4 tech visionary personas — Elon Musk, Steve Jobs, Sam Altman, and Jensen Huang — to analyze cutting-edge technology trends from different perspectives",
       "teamAction": "Create Now"
@@ -157,5 +175,54 @@
     "team": "Create Team",
     "skill": "Create Skill",
     "discover": "Discover More"
+  },
+  "usage": {
+    "sectionTitle": "Usage & Rankings",
+    "creditsTitle": "Credit Usage",
+    "kpi": {
+      "cuConsumed": "CU Consumed",
+      "tokensConsumed": "Tokens Used",
+      "todayAmount": "Today: {{amount}}"
+    },
+    "quota": {
+      "title": "Markus Cloud AI",
+      "personalLimitLabel": "Personal Limit",
+      "personalLimit": "Your organization admin has set a personal credit limit for you.",
+      "notConnected": "Not connected to Markus Hub",
+      "connect": "Connect",
+      "connectedAs": "Signed in as @{{username}}",
+      "resetsAt": "Resets {{date}}",
+      "topUp": "Top Up"
+    },
+    "agents": {
+      "title": "Agent Rankings",
+      "noData": "No agent data yet. Start agents to see their activity here.",
+      "name": "Agent",
+      "team": "Team",
+      "tasks": "Tasks",
+      "cuUsed": "CU Used",
+      "tokens": "Tokens",
+      "efficiency": "Efficiency",
+      "total": "Total ({{count}} agents)",
+      "mixedProviders": "Mixed providers — CU only tracks Cloud AI",
+      "showAll": "Show all {{count}}",
+      "showLess": "Show less"
+    },
+    "trends": {
+      "title": "Usage Trends",
+      "expand": "Expand",
+      "collapse": "Collapse",
+      "byDay": "By Day",
+      "byHour": "By Hour",
+      "days": "days",
+      "totalCredits": "Credits Used",
+      "totalTokens": "Tokens Used",
+      "totalRequests": "Requests",
+      "creditsChart": "Credits",
+      "tokensChart": "Tokens",
+      "max": "Max",
+      "noData": "No usage data yet. Connect to Markus Hub to see trends.",
+      "models": "Models"
+    }
   }
 }

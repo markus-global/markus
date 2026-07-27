@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api, hubApi, kebab } from '../api.ts';
 import type { TeamInfo, TeamMemberInfo } from '../api.ts';
 import { Avatar } from '../components/Avatar.tsx';
+import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
 const LazyMarkdownMessage = lazy(() =>
   import('../components/MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage }))
@@ -34,6 +35,7 @@ const STATUS_DOT: Record<string, string> = {
 export function TeamProfile({ teamId, onBack, inline, headless, activeTab: externalTab, onSelectAgent }: Props) {
   const { t } = useTranslation('team');
   const [team, setTeam] = useState<TeamInfo | null>(null);
+  const [notice, setNotice] = useState<{ title: string; message: string; variant?: 'primary' | 'danger' } | null>(null);
   const [tab, setTab] = useState<TeamTab>('overview');
   const effectiveTab = headless && externalTab ? externalTab : tab;
   const [announcements, setAnnouncements] = useState('');
@@ -292,8 +294,10 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
                 },
               };
               await hubApi.publishViaProxy({ itemType: 'team', name: team.name, description: team.description ?? '', category: 'general', config, files });
-              alert(`Published "${team.name}" to Markus Hub`);
-            } catch (e) { alert(`Failed to publish: ${e}`); }
+              setNotice({ title: 'Hub', message: `Published "${team.name}" to Markus Hub`, variant: 'primary' });
+            } catch (e) {
+              setNotice({ title: 'Hub', message: `Failed to publish: ${e}`, variant: 'danger' });
+            }
           }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title="Publish to Markus Hub"><span>↑</span> Hub</button>
           {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
         </div>
@@ -432,6 +436,16 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
           </div>
         )}
       </div>
+      {notice && (
+        <ConfirmModal
+          alertOnly
+          variant={notice.variant ?? 'primary'}
+          title={notice.title}
+          message={notice.message}
+          onConfirm={() => setNotice(null)}
+          onCancel={() => setNotice(null)}
+        />
+      )}
     </div>
   );
 }

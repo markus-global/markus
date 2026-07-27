@@ -65,7 +65,7 @@ vi.mock('@markus/shared', async (importOriginal) => {
     loadConfig: vi.fn(() => ({
       network: { proxy: '', proxyEnabled: false },
       browser: { headless: true },
-      search: { provider: 'duckduckgo', serperApiKey: 'serper-key' },
+      search: { provider: 'serper', serperApiKey: 'serper-key' },
       integrations: { feishu: { appId: 'cli_test', appSecret: 'secret' } },
       agent: {},
       llm: { providers: {} },

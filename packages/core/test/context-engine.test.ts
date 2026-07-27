@@ -179,6 +179,61 @@ describe('buildSystemPrompt', () => {
 
     expect(result.text).toContain('Kubernetes');
   });
+
+  it('appends viewer language and timezone guidance after the timestamp', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_ctx',
+      agentName: 'Ctx Agent',
+      role: MOCK_ROLE,
+      memory,
+      senderIdentity: { id: 'usr_1', name: 'Li', role: 'owner', locale: 'zh-CN', timezone: 'Asia/Shanghai' },
+    });
+
+    expect(result.text).toContain('Current date and time:');
+    expect(result.text).toContain('Asia/Shanghai');
+    expect(result.text).toContain('User locale:');
+    expect(result.text).toContain('Chinese');
+    expect(result.text).toContain('User Language (critical)');
+    expect(result.text).toMatch(/task\/requirement\/deliverable/);
+    // The locale block must come after the timestamp (Tier 3 tail, cache-safe).
+    expect(result.text.indexOf('User locale:')).toBeGreaterThan(result.text.indexOf('Current date and time:'));
+  });
+
+  it('falls back to viewerContext for autonomous runs without a sender', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_ctx',
+      agentName: 'Ctx Agent',
+      role: MOCK_ROLE,
+      memory,
+      viewerContext: { locale: 'ja-JP', timezone: 'Asia/Tokyo' },
+    });
+
+    expect(result.text).toContain('Asia/Tokyo');
+    expect(result.text).toContain('User locale:');
+    expect(result.text).toContain('Japanese');
+    expect(result.text).toMatch(/user-visible field/);
+  });
+
+  it('still instructs language matching when no locale is configured', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_ctx',
+      agentName: 'Ctx Agent',
+      role: MOCK_ROLE,
+      memory,
+    });
+
+    expect(result.text).toContain('User Language (critical)');
+    expect(result.text).toContain('User language: Match the language of the user\'s recent messages');
+  });
 });
 
 describe('prepareMessages', () => {
@@ -228,7 +283,7 @@ describe('prepareMessages', () => {
     expect(String(userMsg!.content).length).toBeLessThan(huge.length);
   });
 
-  it('summarizes when message count exceeds threshold', async () => {
+  it('keeps full history when under the model token budget', async () => {
     const memory = new MemoryStore(tempDir);
     const session = memory.createSession('agt_ctx');
 
@@ -251,8 +306,37 @@ describe('prepareMessages', () => {
       modelMaxOutput: 4000,
     });
 
-    expect(prepared.messages.length).toBeLessThan(66);
-    expect(summarizer.mock.calls.length + prepared.messages.length).toBeGreaterThan(0);
+    // No count-based pre-summarization — 65 short turns fit a 64k window.
+    expect(prepared.messages.filter(m => m.role !== 'system').length).toBe(65);
+    expect(summarizer).not.toHaveBeenCalled();
+  });
+
+  it('compresses when history exceeds the model token budget', async () => {
+    const memory = new MemoryStore(tempDir);
+    const session = memory.createSession('agt_ctx');
+
+    for (let i = 0; i < 40; i++) {
+      memory.appendMessage(session.id, {
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        content: `Turn ${i}: ${'detail '.repeat(200)}`,
+      });
+    }
+
+    const summarizer = vi.fn(async () => 'Earlier conversation summarized.');
+    const engine = makeEngine({ summarizer });
+
+    const prepared = await engine.prepareMessages({
+      systemPrompt: 'System prompt.',
+      sessionMessages: memory.getRecentMessages(session.id, 100),
+      memory,
+      sessionId: session.id,
+      modelContextWindow: 8000,
+      modelMaxOutput: 1000,
+    });
+
+    const nonSystem = prepared.messages.filter(m => m.role !== 'system');
+    expect(nonSystem.length).toBeLessThan(40);
+    expect(prepared.usage.usagePercent).toBeLessThanOrEqual(100);
   });
 
   it('includes tool definition tokens in usage', async () => {

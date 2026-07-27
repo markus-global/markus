@@ -45,13 +45,15 @@ export class MiniMaxProvider extends OpenAIProvider {
         },
       },
       text_to_speech: {
-        description: 'Convert text to speech using MiniMax. Supports Chinese and English voices.',
+        description:
+          'Convert text to speech using MiniMax (synchronous — blocks until full audio returns). ' +
+          'Supports Chinese and English voices. Long text is slow; split into short sentences and call multiple times. Always pass a voice id.',
         inputSchema: {
           type: 'object',
           properties: {
-            text: { type: 'string', description: 'The text to convert to speech' },
+            text: { type: 'string', description: 'Text to synthesize. Keep short per call; split long narration.' },
             model: { type: 'string', description: 'Model to use (default from routing config). e.g. "speech-02-hd"' },
-            voice: { type: 'string', description: 'Voice ID. Chinese: "Chinese (Mandarin)_Gentle_Youth", "Chinese (Mandarin)_Sweet_Lady", "Chinese (Mandarin)_Gentleman", "Chinese (Mandarin)_Warm_Bestie". English: "English_CalmWoman", "English_Trustworth_Man", "English_Gentle-voiced_man"' },
+            voice: { type: 'string', description: 'Voice ID (required for reliability). Chinese: "Chinese (Mandarin)_Gentle_Youth", "Chinese (Mandarin)_Sweet_Lady", "Chinese (Mandarin)_Gentleman", "Chinese (Mandarin)_Warm_Bestie". English: "English_CalmWoman", "English_Trustworth_Man", "English_Gentle-voiced_man"' },
             speed: { type: 'number', description: 'Speech speed (0.5-2.0, default: 1.0)' },
           },
           required: ['text'],
@@ -147,7 +149,7 @@ export class MiniMaxProvider extends OpenAIProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(180_000),
     });
 
     if (!res.ok) {
@@ -194,7 +196,7 @@ export class MiniMaxProvider extends OpenAIProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(120_000),
     });
 
     if (!createRes.ok) {
@@ -215,7 +217,8 @@ export class MiniMaxProvider extends OpenAIProvider {
     }
 
     const queryBase = this.buildEndpoint('/query/video_generation');
-    const maxAttempts = 120;
+    // Poll every 5s up to ~30 min for long video jobs.
+    const maxAttempts = 360;
     for (let i = 0; i < maxAttempts; i++) {
       await sleep(5_000);
 

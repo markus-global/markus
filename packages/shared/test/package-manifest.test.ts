@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { manifestFilename, buildManifest, readManifest, validateManifest, kebab } from '../src/types/package.js';
+import { manifestFilename, buildManifest, readManifest, validateManifest, kebab, isValidPackageSlug, toPackageSlug, ensurePackageSlug, PACKAGE_SLUG_ERROR } from '../src/types/package.js';
 
 describe('manifestFilename', () => {
   it('returns agent.json for agent', () => { expect(manifestFilename('agent')).toBe('agent.json'); });
@@ -19,6 +19,36 @@ describe('kebab', () => {
   });
   it('uses fallback when result would be empty', () => {
     expect(kebab('!!!', 'fallback-name')).toBe('fallback-name');
+  });
+});
+
+describe('isValidPackageSlug / toPackageSlug', () => {
+  it('accepts English kebab-case', () => {
+    expect(isValidPackageSlug('code-reviewer')).toBe(true);
+    expect(isValidPackageSlug('ai')).toBe(true);
+    expect(toPackageSlug('My Agent')).toBe('my-agent');
+  });
+  it('rejects Chinese and empty-after-strip', () => {
+    expect(isValidPackageSlug('智库研究团队')).toBe(false);
+    expect(toPackageSlug('智库研究团队')).toBeNull();
+    expect(toPackageSlug('!!!')).toBeNull();
+  });
+});
+
+describe('ensurePackageSlug', () => {
+  it('keeps valid slugs', () => {
+    expect(ensurePackageSlug('code-reviewer')).toEqual({ slug: 'code-reviewer', converted: false });
+  });
+  it('normalizes spaced ASCII names', () => {
+    expect(ensurePackageSlug('My Agent')).toEqual({ slug: 'my-agent', converted: true });
+  });
+  it('converts Chinese to stable pkg-* slug', () => {
+    const a = ensurePackageSlug('智库研究团队');
+    const b = ensurePackageSlug('智库研究团队');
+    expect(a.converted).toBe(true);
+    expect(a.slug).toMatch(/^pkg-[a-z0-9]+$/);
+    expect(isValidPackageSlug(a.slug)).toBe(true);
+    expect(a.slug).toBe(b.slug);
   });
 });
 
@@ -49,6 +79,12 @@ describe('buildManifest', () => {
     });
     expect(m.type).toBe('skill');
     expect(m.skill?.skillFile).toBe('SKILL.md');
+  });
+
+  it('does not invent pkg-* hash for Chinese name', () => {
+    const m = buildManifest('agent', { name: '智库研究团队', displayName: '智库研究团队' });
+    expect(m.name).toBe('智库研究团队');
+    expect(validateManifest(m)).toContain(PACKAGE_SLUG_ERROR);
   });
 
   it('handles tags as comma-separated string', () => {
@@ -83,23 +119,27 @@ describe('validateManifest', () => {
   });
 
   it('rejects invalid type', () => {
-    expect(validateManifest({ type: 'invalid', name: 'x', version: '1.0.0' }).some(e => e.includes('type'))).toBe(true);
+    expect(validateManifest({ type: 'invalid', name: 'ok', version: '1.0.0' }).some(e => e.includes('type'))).toBe(true);
   });
 
   it('rejects missing name', () => {
     expect(validateManifest({ type: 'agent', version: '1.0.0' }).some(e => e.includes('name'))).toBe(true);
   });
 
+  it('rejects Chinese name', () => {
+    expect(validateManifest({ type: 'agent', name: '智库研究团队', version: '1.0.0' })).toContain(PACKAGE_SLUG_ERROR);
+  });
+
   it('rejects non-semver version', () => {
-    expect(validateManifest({ type: 'agent', name: 'x', version: 'latest' }).some(e => e.includes('semver'))).toBe(true);
+    expect(validateManifest({ type: 'agent', name: 'ok', version: 'latest' }).some(e => e.includes('semver'))).toBe(true);
   });
 
   it('rejects author as non-string', () => {
-    expect(validateManifest({ type: 'agent', name: 'x', version: '1.0.0', author: 123 }).some(e => e.includes('author'))).toBe(true);
+    expect(validateManifest({ type: 'agent', name: 'ok', version: '1.0.0', author: 123 }).some(e => e.includes('author'))).toBe(true);
   });
 
   it('rejects team with empty members', () => {
-    expect(validateManifest({ type: 'team', name: 'x', version: '1.0.0', team: { members: [] } }).some(e => e.includes('members'))).toBe(true);
+    expect(validateManifest({ type: 'team', name: 'ok', version: '1.0.0', team: { members: [] } }).some(e => e.includes('members'))).toBe(true);
   });
 });
 

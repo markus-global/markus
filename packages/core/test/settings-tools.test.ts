@@ -95,20 +95,25 @@ describe('createSettingsTools', () => {
       const tool = findTool(router, 'llm_list_providers');
       const result = JSON.parse(await tool.execute({}));
       expect(result.defaultProvider).toBe('openai');
-      expect(result.enabled_count).toBe(1);
+      expect(result.usable_count).toBe(1);
       expect(result.total_count).toBe(1);
       expect(result.providers).toHaveLength(1);
       expect(result.providers[0].name).toBe('openai');
       expect(result.providers[0].isDefault).toBe(true);
+      expect(result.providers[0].usable).toBe(true);
       expect(result.providers[0].availableModels[0].vision).toBe(true);
     });
 
-    it('includes disabled providers when show_all is true', async () => {
+    it('includes disabled providers when show_all is true, but marks them unusable with no models', async () => {
       const router = createMockRouter();
       const tool = findTool(router, 'llm_list_providers');
       const result = JSON.parse(await tool.execute({ show_all: true }));
       expect(result.total_count).toBe(2);
-      expect(result.providers.some((p: { name: string }) => p.name === 'anthropic')).toBe(true);
+      const anthropic = result.providers.find((p: { name: string }) => p.name === 'anthropic');
+      expect(anthropic).toBeTruthy();
+      expect(anthropic.usable).toBe(false);
+      expect(anthropic.availableModels).toEqual([]);
+      expect(anthropic.unusable_reason).toBeTruthy();
     });
   });
 
@@ -216,6 +221,63 @@ describe('createSettingsTools', () => {
       }));
       expect(result.status).toBe('success');
       expect(result.fallback).toEqual({ provider: 'openai', model: 'tts-1-hd' });
+    });
+
+    it('accepts capability_type aliases (type / capability)', async () => {
+      const router = createMockRouter();
+      const tool = findTool(router, 'llm_set_capability_routing');
+      const result = JSON.parse(await tool.execute({
+        type: 'audio_tts',
+        provider: 'openai',
+        model: 'tts-1',
+      }));
+      expect(result.status).toBe('success');
+      expect(result.capability_type).toBe('audio_tts');
+    });
+
+    it('rejects multimodal chat/audio models for TTS', async () => {
+      const router = createMockRouter();
+      const tool = findTool(router, 'llm_set_capability_routing');
+      const result = JSON.parse(await tool.execute({
+        capability_type: 'audio_tts',
+        provider: 'markus',
+        model: 'openai/gpt-audio',
+      }));
+      expect(result.status).toBe('error');
+      expect(result.error).toMatch(/TTS|chat\/audio/i);
+    });
+
+    it('rejects catalog-tagged models missing the required capability tag', async () => {
+      const router = createMockRouter();
+      (router.getEnhancedSettings as ReturnType<typeof vi.fn>).mockReturnValue({
+        defaultProvider: 'markus',
+        providers: {
+          markus: {
+            displayName: 'Markus',
+            model: 'openai/gpt-audio',
+            configured: true,
+            enabled: true,
+            models: [
+              {
+                id: 'openai/gpt-audio',
+                name: 'GPT Audio',
+                contextWindow: 0,
+                maxOutputTokens: 0,
+                cost: { input: 0, output: 0 },
+                capabilities: ['audioOutput', 'audioInput'],
+              },
+            ],
+          },
+        },
+      });
+      const tool = findTool(router, 'llm_set_capability_routing');
+      const result = JSON.parse(await tool.execute({
+        capability_type: 'audio_tts',
+        provider: 'markus',
+        model: 'openai/gpt-audio',
+      }));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('not tagged');
     });
 
     it('returns llm_get_capability_routing with capability types', async () => {

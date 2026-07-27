@@ -4,43 +4,65 @@ import { AgentBuilder } from '../pages/AgentBuilder.tsx';
 import { TemplateMarketplace } from '../pages/TemplateMarketplace.tsx';
 import { TeamsStore } from '../pages/TeamsStore.tsx';
 import { SkillStore } from '../pages/SkillStore.tsx';
+import { StoreDiscovery } from '../pages/StoreDiscovery.tsx';
+import { InstalledStore } from '../pages/InstalledStore.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { MobileMenuButton } from './MobileMenuButton.tsx';
 import type { AuthUser } from '../api.ts';
+import type { AssetType } from '../lib/assetIdentity.ts';
 
-const tabIds = ['builder', 'agents', 'teams', 'skills'] as const;
+const tabIds = ['builder', 'discover', 'agents', 'teams', 'skills', 'installed'] as const;
 type TabId = (typeof tabIds)[number];
 
-function getInitialTab(): TabId {
-  const stored = localStorage.getItem('markus_nav_storeTab');
-  if (stored) {
-    localStorage.removeItem('markus_nav_storeTab');
-    if (tabIds.includes(stored as TabId)) return stored as TabId;
-  }
-  return 'builder';
+// Connectors are a subtype of skill, so they live inside the Skills tab.
+const TYPE_TO_TAB: Record<string, TabId> = { agent: 'agents', team: 'teams', skill: 'skills', connector: 'skills' };
+
+function isTabId(v: string | null | undefined): v is TabId {
+  return !!v && (tabIds as readonly string[]).includes(v);
+}
+
+function readInitial(): { tab: TabId; installId: string | null } {
+  const lsItem = localStorage.getItem('markus_nav_installItem');
+  const lsTab = localStorage.getItem('markus_nav_storeTab');
+  if (lsItem) localStorage.removeItem('markus_nav_installItem');
+  if (lsTab) localStorage.removeItem('markus_nav_storeTab');
+  const tab: TabId = isTabId(lsTab) ? lsTab : 'builder';
+  return { tab, installId: lsItem };
 }
 
 export function MobileBuilderTabs({ authUser }: { authUser?: AuthUser }) {
-  const { t } = useTranslation(['nav', 'common']);
+  const { t } = useTranslation(['nav', 'store', 'common']);
   const tabs = useMemo(() => [
-    { id: 'builder' as const, label: t('nav:builder') },
+    { id: 'builder' as const, label: t('nav:tabs.create') },
+    { id: 'discover' as const, label: t('nav:tabs.discover') },
     { id: 'agents' as const, label: t('nav:tabs.agents') },
     { id: 'teams' as const, label: t('nav:tabs.teams') },
     { id: 'skills' as const, label: t('nav:tabs.skills') },
+    { id: 'installed' as const, label: t('nav:tabs.installed') },
   ], [t]);
-  const [activeTab, setActiveTab] = useState<TabId>(getInitialTab);
+  const [initial] = useState(readInitial);
+  const [activeTab, setActiveTab] = useState<TabId>(initial.tab);
+  const [highlightItemId, setHighlightItemId] = useState<string | null>(initial.installId);
   const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
 
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
-      if (detail.params?.storeTab && tabIds.includes(detail.params.storeTab as TabId)) {
-        setActiveTab(detail.params.storeTab as TabId);
-      }
+      const tab = detail.params?.storeTab ?? localStorage.getItem('markus_nav_storeTab');
+      if (isTabId(tab)) setActiveTab(tab);
+      const installId = detail.params?.installItem ?? localStorage.getItem('markus_nav_installItem');
+      if (installId) setHighlightItemId(installId);
+      localStorage.removeItem('markus_nav_storeTab');
+      localStorage.removeItem('markus_nav_installItem');
     };
     window.addEventListener('markus:navigate', handler);
     return () => window.removeEventListener('markus:navigate', handler);
   }, []);
+
+  const openType = (type: AssetType, itemId?: string) => {
+    if (itemId) setHighlightItemId(itemId);
+    setActiveTab(TYPE_TO_TAB[type] ?? 'agents');
+  };
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col" onTouchStart={swipe.onTouchStart} onTouchEnd={swipe.onTouchEnd}>
@@ -50,7 +72,7 @@ export function MobileBuilderTabs({ authUser }: { authUser?: AuthUser }) {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex-1 min-w-0 px-3 py-2.5 text-xs font-medium text-center whitespace-nowrap transition-colors border-b-2 ${
+            className={`flex-1 min-w-fit px-3 py-2.5 text-xs font-medium text-center whitespace-nowrap transition-colors border-b-2 ${
               activeTab === tab.id
                 ? 'border-brand-500 text-brand-500'
                 : 'border-transparent text-fg-tertiary'
@@ -61,10 +83,12 @@ export function MobileBuilderTabs({ authUser }: { authUser?: AuthUser }) {
         ))}
       </div>
       <div className="flex-1 overflow-hidden flex flex-col">
-        {activeTab === 'builder' && <AgentBuilder />}
-        {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} />}
-        {activeTab === 'teams' && <TeamsStore />}
-        {activeTab === 'skills' && <SkillStore />}
+        {activeTab === 'builder' && <AgentBuilder authUser={authUser} />}
+        {activeTab === 'discover' && <StoreDiscovery onOpenType={openType} />}
+        {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+        {activeTab === 'teams' && <TeamsStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+        {activeTab === 'skills' && <SkillStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+        {activeTab === 'installed' && <InstalledStore />}
       </div>
     </div>
   );

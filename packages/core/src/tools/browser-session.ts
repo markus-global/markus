@@ -241,6 +241,14 @@ export class BrowserSessionManager {
     return set;
   }
 
+  /** Which session currently owns this page, if any. */
+  private findOwnerOfPage(pageId: number): string | undefined {
+    for (const [key, owned] of this.ownedPages) {
+      if (owned.has(pageId)) return key;
+    }
+    return undefined;
+  }
+
   private parsePageEntries(text: string): Array<{ id: number; url: string; selected: boolean }> {
     const entries: Array<{ id: number; url: string; selected: boolean }> = [];
     const regex = /^(\d+):\s+(\S+)(.*)/gm;
@@ -263,17 +271,22 @@ export class BrowserSessionManager {
         const idMatch = line.match(/^(\d+):/);
         if (!idMatch) return line;
         const id = parseInt(idMatch[1], 10);
-        const tag = owned.has(id) ? ' -- YOUR TAB' : ' -- NOT YOUR TAB';
-        return `${line}${tag}`;
+        if (owned.has(id)) return `${line} -- YOUR TAB`;
+        const other = this.findOwnerOfPage(id);
+        if (other) return `${line} -- OTHER SESSION TAB`;
+        // Unowned = user-opened Markus panel tab (or leftover). Claim via select_page.
+        return `${line} -- SHARED TAB (select_page to claim)`;
       },
     );
   }
 
   private ownedPagesSummary(ownerKey: string): string {
     const owned = this.getOwned(ownerKey);
-    if (owned.size === 0) return 'You currently have no owned tabs in this session. Call new_page or navigate_page to create one.';
+    if (owned.size === 0) {
+      return 'You currently have no owned tabs in this session. Call list_pages, then select_page on a SHARED TAB to claim a user-opened tab, or new_page / navigate_page to create one.';
+    }
     const ids = [...owned].join(', ');
-    return `Your owned tab IDs: [${ids}] (${owned.size} total). You can only operate on these.`;
+    return `Your owned tab IDs: [${ids}] (${owned.size} total). You can operate on these, or select_page on a SHARED TAB to claim another.`;
   }
 
   private ownerKeyFor(agentId: string, sessionId?: string): string {
@@ -444,10 +457,18 @@ export class BrowserSessionManager {
       execute: async (args: Record<string, unknown>) => {
         const ownerKey = this.extractOwnerKey(agentId, args);
         const pageId = typeof args.pageId === 'number' ? args.pageId : undefined;
-        if (pageId !== undefined && !this.getOwned(ownerKey).has(pageId)) {
-          const msg = `Cannot select page ${pageId}: it is NOT your tab. ${this.ownedPagesSummary(ownerKey)}`;
-          log.warn(msg, { ownerKey, pageId });
-          return JSON.stringify({ error: msg });
+        const owned = this.getOwned(ownerKey);
+        let claimingShared = false;
+        if (pageId !== undefined && !owned.has(pageId)) {
+          const otherOwner = this.findOwnerOfPage(pageId);
+          if (otherOwner) {
+            const msg = `Cannot select page ${pageId}: it is NOT your tab (belongs to another session). ${this.ownedPagesSummary(ownerKey)}`;
+            log.warn(msg, { ownerKey, pageId, otherOwner });
+            return JSON.stringify({ error: msg });
+          }
+          // Unowned page = user-opened panel tab. Claiming is the consent step:
+          // the agent must explicitly select_page before operating on it.
+          claimingShared = true;
         }
         if (args.bringToFront === undefined) {
           args.bringToFront = this._bringToFront;
@@ -470,12 +491,17 @@ export class BrowserSessionManager {
             }
           }
 
-          if (pageId !== undefined) {
+          if (pageId !== undefined && !this.isToolError(result)) {
+            owned.add(pageId);
             this.currentPage.set(ownerKey, pageId);
             this.lastActiveSession.set(agentId, { ownerKey, pageId });
           }
           this.markBrowserUsedIfSuccess(ownerKey, result);
-          return this.annotateResponse(result, ownerKey);
+          const annotated = this.annotateResponse(result, ownerKey);
+          if (claimingShared && pageId !== undefined && !this.isToolError(result)) {
+            return `${annotated}\nClaimed shared user tab ${pageId}. You may now operate on it in this session.`;
+          }
+          return annotated;
         });
       },
     };

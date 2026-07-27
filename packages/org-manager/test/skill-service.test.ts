@@ -116,4 +116,30 @@ describe('skill-service', () => {
     await expect(installSkill({ name: 'missing-skill', source: 'skillhub', slug: 'missing' }))
       .rejects.toThrow(/Download failed/);
   });
+
+  it('installSkill re-registers an already-registered skill on upgrade', async () => {
+    const { discoverSkillsInDir } = await import('@markus/core');
+    vi.mocked(discoverSkillsInDir).mockReturnValueOnce([
+      { manifest: { name: 'remote-skill', version: '1.1.0' }, path: '/tmp/skills/remote-skill' },
+    ] as never);
+    mockFetch.mockResolvedValue({ ok: true, text: async () => '# Skill content' });
+    const register = vi.fn();
+    const registry = {
+      get: vi.fn(() => ({ manifest: { name: 'remote-skill', version: '1.0.0' } })),
+      register,
+      unregister: vi.fn(),
+      list: vi.fn(() => []),
+    };
+    const result = await installSkill(
+      {
+        name: 'remote-skill',
+        source: 'skillssh',
+        githubRepo: 'author/repo',
+        githubSkillPath: 'skills/remote',
+      },
+      registry as never,
+    );
+    expect(result.installed).toBe(true);
+    expect(register).toHaveBeenCalled();
+  });
 });

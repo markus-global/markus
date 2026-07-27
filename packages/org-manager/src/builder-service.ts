@@ -28,6 +28,8 @@ export interface ArtifactInfo {
   meta: Record<string, unknown>;
   path: string;
   updatedAt: string;
+  /** local = builder-artifacts; builtin = shipped templates/teams */
+  source?: 'local' | 'builtin';
 }
 
 export interface InstallResult {
@@ -53,7 +55,9 @@ export class BuilderService {
     private orgService: OrganizationService,
     private skillRegistry?: SkillRegistry,
     private wsBroadcast?: WSBroadcastFn,
-  ) {}
+  ) {
+    this.ensureArtifactDirs();
+  }
 
   setTaskService(taskService: TaskService): void {
     this.taskService = taskService;
@@ -61,17 +65,35 @@ export class BuilderService {
 
   setBuiltinTeamTemplatesDir(dir: string): void {
     this.builtinTeamTemplatesDir = dir;
+    this.ensureArtifactDirs();
   }
 
   private get baseDir(): string {
     return join(homedir(), '.markus', 'builder-artifacts');
   }
 
+  /**
+   * Ensure builder-artifacts/{agents,teams,skills} exist so package_list /
+   * file_write / Builder UI share one predictable layout from first boot.
+   */
+  ensureArtifactDirs(): void {
+    for (const typeDir of ['agents', 'teams', 'skills'] as const) {
+      const dir = join(this.baseDir, typeDir);
+      try {
+        mkdirSync(dir, { recursive: true });
+      } catch (error) {
+        log.warn('Failed to create builder-artifacts dir', { dir, error: String(error) });
+      }
+    }
+  }
+
   listArtifacts(type?: 'agent' | 'team' | 'skill'): ArtifactInfo[] {
+    this.ensureArtifactDirs();
     const types = type
       ? [type === 'agent' ? 'agents' : type === 'team' ? 'teams' : 'skills'] as const
       : (['agents', 'teams', 'skills'] as const);
     const artifacts: ArtifactInfo[] = [];
+    const seenTeamNames = new Set<string>();
 
     for (const typeDir of types) {
       const dir = join(this.baseDir, typeDir);
@@ -84,6 +106,7 @@ export class BuilderService {
         const meta: Record<string, unknown> = manifest ? { ...manifest } : { name: entry.name };
         let updatedAt = new Date().toISOString();
         try { updatedAt = statSync(artDir).mtime.toISOString(); } catch { /* ignore */ }
+        if (artType === 'team') seenTeamNames.add(entry.name);
         artifacts.push({
           type: artType,
           name: entry.name,
@@ -91,7 +114,33 @@ export class BuilderService {
           meta,
           path: artDir,
           updatedAt,
+          source: 'local',
         });
+      }
+    }
+
+    // Mirror package_install's builtin-team fallback so package_list can discover them.
+    if ((!type || type === 'team') && this.builtinTeamTemplatesDir && existsSync(this.builtinTeamTemplatesDir)) {
+      try {
+        for (const entry of readdirSync(this.builtinTeamTemplatesDir, { withFileTypes: true })) {
+          if (!entry.isDirectory() || seenTeamNames.has(entry.name)) continue;
+          const artDir = join(this.builtinTeamTemplatesDir, entry.name);
+          const manifest = readManifest(artDir, 'team', FS_HELPER);
+          if (!manifest) continue;
+          let updatedAt = new Date().toISOString();
+          try { updatedAt = statSync(artDir).mtime.toISOString(); } catch { /* ignore */ }
+          artifacts.push({
+            type: 'team',
+            name: entry.name,
+            description: (manifest.description as string) ?? undefined,
+            meta: { ...manifest },
+            path: artDir,
+            updatedAt,
+            source: 'builtin',
+          });
+        }
+      } catch (error) {
+        log.warn('Failed to list builtin team templates', { error: String(error) });
       }
     }
 
@@ -109,10 +158,18 @@ export class BuilderService {
         if (existsSync(builtinDir)) {
           artDir = builtinDir;
         } else {
-          throw new Error(`Team template not found: ${name}. Use package_list to see available packages.`);
+          throw new Error(
+            `Team template not found: ${name}. ` +
+            `Custom teams must live at ~/.markus/builder-artifacts/teams/${name}/ (with team.json). ` +
+            `Use package_list type "team" for local + builtin templates.`,
+          );
         }
       } else {
-        throw new Error(`Artifact not found: ${type}/${name}`);
+        throw new Error(
+          `Artifact not found: ${type}/${name}. ` +
+          `Write it under ~/.markus/builder-artifacts/${typeDir}/${name}/ first, then retry package_install. ` +
+          `Use package_list to see available packages.`,
+        );
       }
     }
 

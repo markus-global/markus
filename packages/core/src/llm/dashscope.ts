@@ -53,11 +53,13 @@ export class DashScopeProvider extends OpenAIProvider {
         },
       },
       text_to_speech: {
-        description: 'Convert text to speech using DashScope/Qwen TTS.',
+        description:
+          'Convert text to speech using DashScope/Qwen TTS (synchronous — blocks until full audio returns). ' +
+          'Long text is slow; split into short sentences and call multiple times.',
         inputSchema: {
           type: 'object',
           properties: {
-            text: { type: 'string', description: 'The text to convert to speech' },
+            text: { type: 'string', description: 'Text to synthesize. Keep short per call; split long narration.' },
             model: { type: 'string', description: 'Model to use (default from routing config). e.g. "cosyvoice-v1", "qwen3-tts-flash"' },
             voice: { type: 'string', description: 'Voice name (e.g. "Cherry", "Aura", "Serene", "Ethan")' },
             speed: { type: 'number', description: 'Speech speed (0.5-2.0, default: 1.0)' },

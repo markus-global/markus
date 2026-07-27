@@ -2,7 +2,7 @@
   "type": "skill",
   "name": "team-building",
   "displayName": "Team Building",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Design and create AI team packages — manifest format, member structure, directory layout, and deployment for Markus team artifacts",
   "author": "markus",
   "category": "development",

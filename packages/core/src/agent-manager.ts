@@ -17,6 +17,9 @@ import {
   type CodingToolName,
   type CodingToolConfig,
   type GoalConfig,
+  type UserInputQuestion,
+  type UserInputAnswer,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { OrgContext } from './context-engine.js';
@@ -26,7 +29,7 @@ import { EventBus } from './events.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { BrowserSessionManager } from './tools/browser-session.js';
-import { createManagerTools, createPackageTools, createSecretaryTools } from './tools/manager.js';
+import { createManagerTools, createPackageTools, createSecretaryTools, type SecretaryToolsContext } from './tools/manager.js';
 import { createWorkflowTools, type WorkflowToolsContext } from './tools/workflow-tools.js';
 import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
@@ -42,6 +45,7 @@ import type { SkillRegistry } from './skills/types.js';
 import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
 import { MarkusBrowserBridge } from './tools/markus-browser-bridge.js';
 import { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/markus-browser-mcp.js';
+import type { EmbeddedBrowserHost } from './tools/embedded-browser-host.js';
 import { runQuickBrowserTest, runChaosBrowserTest, type BrowserTestResult, type ChaosEvent } from './tools/browser-test.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { DelegationManager, type TaskDelegation } from '@markus/a2a';
@@ -319,6 +323,8 @@ export class AgentManager {
   private autoClickAllowDialog = false;
   private chromeAutoClickRunning = false;
   private browserBridge: MarkusBrowserBridge;
+  /** Desktop-only: Electron WebContentsView CDP backend (preferred over npx when set). */
+  private embeddedBrowserHost: EmbeddedBrowserHost | null = null;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   private skillRegistry?: SkillRegistry;
@@ -327,9 +333,11 @@ export class AgentManager {
   private userApprovalRequester?: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
+    questions?: UserInputQuestion[];
     allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
-  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>;
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] }>;
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
+  private runtimeViewerContext?: { locale?: string; timezone?: string };
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
   private deliverableService?: DeliverableServiceBridge;
@@ -352,7 +360,6 @@ export class AgentManager {
     agentId: string,
     request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string }
   ) => Promise<{ approved: boolean; comment?: string }>;
-  private toolCallLimitChecker?: () => { allowed: boolean; reason?: string };
   private stateChangeHandler?: (
     agentId: string,
     state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
@@ -376,6 +383,8 @@ export class AgentManager {
   private builderService?: { listArtifacts: (type?: 'agent' | 'team' | 'skill') => Array<{ type: string; name: string; description?: string }>; installArtifact: (type: 'agent' | 'team' | 'skill', name: string, teamId?: string) => Promise<{ type: string; installed: unknown }> };
   private hubClient?: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> };
   private teamUpdater?: (teamId: string, data: { name?: string; description?: string }) => Promise<{ id: string; name: string; description?: string }>;
+  private teamCreator?: (orgId: string, name: string, description?: string) => Promise<{ id: string; name: string; description?: string }>;
+  private orgTeamLister?: (orgId: string) => Array<{ id: string; name: string; description?: string; memberAgentIds: string[] }>;
   private agentConfigPersister?: (agentId: string, data: Record<string, unknown>) => Promise<void>;
 
   private groupChatHandlers?: {
@@ -628,6 +637,16 @@ export class AgentManager {
     this.autoClickAllowDialog = enabled;
   }
 
+  /**
+   * Wire the Electron embedded-browser CDP host (desktop only).
+   * When available, browser tools prefer this over npx chrome-devtools-mcp
+   * so the agent operates on the same right-panel tabs the user sees.
+   * The Chrome extension bridge still wins when connected (user's real Chrome).
+   */
+  setEmbeddedBrowserHost(host: EmbeddedBrowserHost | null): void {
+    this.embeddedBrowserHost = host;
+  }
+
   startBrowserBridge(port?: number): void {
     if (port !== undefined) {
       this.browserBridge = new MarkusBrowserBridge(port);
@@ -701,8 +720,9 @@ export class AgentManager {
   /**
    * Register chrome-devtools tools for an agent WITHOUT starting the MCP process.
    *
-   * Tool handlers dynamically choose bridge vs npx at CALL TIME:
+   * Tool handlers dynamically choose backend at CALL TIME:
    * - If the Chrome extension is connected, use the WebSocket bridge (no dialog, instant).
+   * - Else if the Electron embedded browser host is available, use WebContentsView CDP.
    * - Otherwise, fall back to npx chrome-devtools-mcp (lazy-started on first call).
    *
    * This ensures agents created before the extension connects can still
@@ -728,6 +748,11 @@ export class AgentManager {
           if (result.error) return `Error: ${result.error}`;
           return result.content;
         }
+        if (this.embeddedBrowserHost?.available()) {
+          const result = await this.embeddedBrowserHost.callTool(tool.name, args);
+          if (result.error) return `Error: ${result.error}`;
+          return result.content;
+        }
         // npx fallback — strip _pageId (npx MCP doesn't understand it;
         // tab selection is handled by ensureCorrectPage + select_page)
         const { _pageId, ...cleanArgs } = args;
@@ -737,7 +762,7 @@ export class AgentManager {
 
     mcpTools = this.browserSessionManager.wrapToolHandlers(mcpTools, agentId);
     this.browserSessionManager.setReconnector(agentId, serverName, async () => {
-      if (!this.browserBridge.connected) {
+      if (!this.browserBridge.connected && !this.embeddedBrowserHost?.available()) {
         await this.mcpManager.disconnectServerScoped(serverName, agentId);
         await this.mcpManager.connectServerScoped(serverName, serverConfig, agentId);
       }
@@ -819,11 +844,24 @@ export class AgentManager {
   setUserApprovalRequester(cb: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
+    questions?: UserInputQuestion[];
     allowFreeform?: boolean; priority?: string; relatedTaskId?: string;
-  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string }>): void {
+  }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] }>): void {
     this.userApprovalRequester = cb;
     for (const info of this.listAgents()) {
       try { this.getAgent(info.id).setUserApprovalRequester(cb); } catch (err) { log.debug('Failed to set approval requester on agent', { agentId: info.id, error: String(err) }); }
+    }
+  }
+
+  /**
+   * Set the locale/timezone used to localize prompts for autonomous runs
+   * (typically the org owner's preferences). Applies to all current agents
+   * and is remembered for agents created later.
+   */
+  setRuntimeViewerContext(ctx: { locale?: string; timezone?: string } | undefined): void {
+    this.runtimeViewerContext = ctx;
+    for (const info of this.listAgents()) {
+      try { this.getAgent(info.id).setRuntimeViewerContext(ctx); } catch (err) { log.debug('Failed to set runtime viewer context on agent', { agentId: info.id, error: String(err) }); }
     }
   }
 
@@ -884,21 +922,36 @@ export class AgentManager {
     if (!request.name?.trim()) throw new Error('Agent name is required');
     const id = genAgentId();
     const roleName = request.roleName || 'custom';
-    const isCustomRole = roleName === 'custom';
+    const buildCustomRole = (): RoleTemplate => ({
+      id: generateId('role'),
+      name: request.name,
+      description: '',
+      category: 'custom' as RoleCategory,
+      systemPrompt: `# ${request.name}\n\nYou are ${request.name}.`,
+      defaultSkills: [],
+      heartbeatChecklist: '',
+      defaultPolicies: [],
+      builtIn: false,
+    });
 
-    const role: RoleTemplate = isCustomRole
-      ? {
-          id: generateId('role'),
-          name: request.name,
-          description: '',
-          category: 'custom' as RoleCategory,
-          systemPrompt: `# ${request.name}\n\nYou are ${request.name}.`,
-          defaultSkills: [],
-          heartbeatChecklist: '',
-          defaultPolicies: [],
-          builtIn: false,
-        }
-      : this.roleLoader.loadRole(roleName);
+    // A roleName may be a built-in template id (e.g. 'developer') or an
+    // arbitrary custom slug from a builder-authored artifact (e.g. a team
+    // member's 'content-director'). Custom slugs have no built-in template, so
+    // loading them would throw — fall back to a placeholder custom role. The
+    // caller copies the real ROLE.md files afterward and calls reloadRole(),
+    // which replaces this transient role with the artifact's actual content.
+    let isCustomRole = roleName === 'custom';
+    let role: RoleTemplate;
+    if (isCustomRole) {
+      role = buildCustomRole();
+    } else {
+      try {
+        role = this.roleLoader.loadRole(roleName);
+      } catch {
+        role = buildCustomRole();
+        isCustomRole = true;
+      }
+    }
 
     const agentDataDir = join(this.dataDir, id);
     mkdirSync(agentDataDir, { recursive: true });
@@ -963,7 +1016,7 @@ export class AgentManager {
         ? { modelMode: 'custom' as const, primary: request.llmProvider }
         : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
       channels: [],
-      heartbeatIntervalMs: request.heartbeatIntervalMs ?? 30 * 60 * 1000,
+      heartbeatIntervalMs: request.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1129,6 +1182,7 @@ export class AgentManager {
     if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
     if (this.userApprovalRequester) agent.setUserApprovalRequester(this.userApprovalRequester);
     if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
+    if (this.runtimeViewerContext) agent.setRuntimeViewerContext(this.runtimeViewerContext);
 
     // A2A tools — every agent can message colleagues (all agents visible for cross-team)
     const a2aContext: A2AContext = {
@@ -1251,6 +1305,12 @@ export class AgentManager {
     // Multi-modal tools — image generation, TTS, STT, video generation
     for (const tool of createMultiModalTools({
       resolveCandidates: (capabilityType) => this.llmRouter.resolveModalityCandidates(capabilityType),
+      resolveProvider: (name) => {
+        const hit = this.llmRouter.resolveProviderByName(name);
+        return hit ? { provider: hit.provider, name: hit.name } : undefined;
+      },
+      listProviderNames: () => this.llmRouter.listRegisteredProviderNames(),
+      isProviderDisabled: (name) => this.llmRouter.isProviderDisabled(name),
     })) {
       agent.registerTool(tool);
     }
@@ -1598,32 +1658,9 @@ export class AgentManager {
       }
     }
 
-    // Secretary tools (team_stop, team_start) — only for agents with secretary role
+    // Secretary tools (list_teams, team_stop, team_start)
     if (request.roleName?.toLowerCase() === 'secretary') {
-      const secretaryTools = createSecretaryTools({
-        listTeams: () => {
-          const teams: Array<{ id: string; name: string; memberCount: number; members: Array<{ id: string; name: string; status: string }> }> = [];
-          for (const [, ag] of this.agents) {
-            if (ag.config.teamId) {
-              const teamId = ag.config.teamId;
-              let team = teams.find(t => t.id === teamId);
-              if (!team) {
-                team = { id: teamId, name: teamId, memberCount: 0, members: [] };
-                teams.push(team);
-              }
-              team.members.push({ id: ag.id, name: ag.config.name, status: ag.getState().status });
-              team.memberCount = team.members.length;
-            }
-          }
-          return teams;
-        },
-        stopTeam: async (teamId: string) => this.stopAgentsByIds(
-          [...this.agents.values()].filter(a => a.config.teamId === teamId).map(a => a.id),
-        ),
-        startTeam: async (teamId: string) => this.startAgentsByIds(
-          [...this.agents.values()].filter(a => a.config.teamId === teamId && a.getState().status === 'offline').map(a => a.id),
-        ),
-      });
+      const secretaryTools = createSecretaryTools(this.buildSecretaryToolsContext(config.orgId ?? 'default'));
       for (const tool of secretaryTools) agent.registerTool(tool);
     }
 
@@ -1662,6 +1699,8 @@ export class AgentManager {
         downloadAndInstall: () => this.hubClient
           ? (itemId) => this.hubClient!.downloadAndInstall(itemId)
           : undefined,
+        ensureTeam: async (name: string, description?: string) =>
+          this.ensureTeam(config.orgId ?? 'default', name, description),
         requestApproval: pkgAh ? (req) => pkgAh(id, req) : undefined,
       });
       for (const tool of packageTools) agent.registerTool(tool);
@@ -1708,9 +1747,7 @@ export class AgentManager {
           ah(id, req)
       );
     }
-    if (this.toolCallLimitChecker) {
-      agent.setToolCallLimitChecker(this.toolCallLimitChecker);
-    }
+
     agent.setStateChangeCallback(this.buildStateChangeCallback());
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
@@ -1825,7 +1862,7 @@ export class AgentManager {
         };
       })(),
       channels: [],
-      heartbeatIntervalMs: row.heartbeatIntervalMs ?? 30 * 60 * 1000,
+      heartbeatIntervalMs: row.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -2032,6 +2069,7 @@ export class AgentManager {
     if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
     if (this.userApprovalRequester) agent.setUserApprovalRequester(this.userApprovalRequester);
     if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
+    if (this.runtimeViewerContext) agent.setRuntimeViewerContext(this.runtimeViewerContext);
 
     const a2aCtx = {
       selfId: id,
@@ -2146,6 +2184,12 @@ export class AgentManager {
 
     for (const tool of createMultiModalTools({
       resolveCandidates: (capabilityType) => this.llmRouter.resolveModalityCandidates(capabilityType),
+      resolveProvider: (name) => {
+        const hit = this.llmRouter.resolveProviderByName(name);
+        return hit ? { provider: hit.provider, name: hit.name } : undefined;
+      },
+      listProviderNames: () => this.llmRouter.listRegisteredProviderNames(),
+      isProviderDisabled: (name) => this.llmRouter.isProviderDisabled(name),
     })) {
       agent.registerTool(tool);
     }
@@ -2455,32 +2499,9 @@ export class AgentManager {
       for (const tool of managerTools) agent.registerTool(tool);
     }
 
-    // Secretary tools (team_stop, team_start) — only for agents with secretary role
+    // Secretary tools (list_teams, team_stop, team_start)
     if (row.roleName?.toLowerCase() === 'secretary') {
-      const secretaryTools = createSecretaryTools({
-        listTeams: () => {
-          const teams: Array<{ id: string; name: string; memberCount: number; members: Array<{ id: string; name: string; status: string }> }> = [];
-          for (const [, ag] of this.agents) {
-            if (ag.config.teamId) {
-              const teamId = ag.config.teamId;
-              let team = teams.find(t => t.id === teamId);
-              if (!team) {
-                team = { id: teamId, name: teamId, memberCount: 0, members: [] };
-                teams.push(team);
-              }
-              team.members.push({ id: ag.id, name: ag.config.name, status: ag.getState().status });
-              team.memberCount = team.members.length;
-            }
-          }
-          return teams;
-        },
-        stopTeam: async (teamId: string) => this.stopAgentsByIds(
-          [...this.agents.values()].filter(a => a.config.teamId === teamId).map(a => a.id),
-        ),
-        startTeam: async (teamId: string) => this.startAgentsByIds(
-          [...this.agents.values()].filter(a => a.config.teamId === teamId && a.getState().status === 'offline').map(a => a.id),
-        ),
-      });
+      const secretaryTools = createSecretaryTools(this.buildSecretaryToolsContext(config.orgId ?? 'default'));
       for (const tool of secretaryTools) agent.registerTool(tool);
     }
 
@@ -2519,6 +2540,8 @@ export class AgentManager {
         downloadAndInstall: () => this.hubClient
           ? (itemId) => this.hubClient!.downloadAndInstall(itemId)
           : undefined,
+        ensureTeam: async (name: string, description?: string) =>
+          this.ensureTeam(config.orgId ?? 'default', name, description),
         requestApproval: pkgAh2 ? (req) => pkgAh2(id, req) : undefined,
       });
       for (const tool of packageTools) agent.registerTool(tool);
@@ -2538,9 +2561,7 @@ export class AgentManager {
           ah(id, req)
       );
     }
-    if (this.toolCallLimitChecker) {
-      agent.setToolCallLimitChecker(this.toolCallLimitChecker);
-    }
+
     agent.setStateChangeCallback(this.buildStateChangeCallback());
     if (this.activityCallbacks) {
       agent.setActivityCallbacks(this.activityCallbacks);
@@ -2693,6 +2714,11 @@ export class AgentManager {
         type: string;
         action: string;
         tokensUsed?: number;
+        inputTokens?: number;
+        outputTokens?: number;
+        cost?: number;
+        cuCost?: number;
+        provider?: string;
         durationMs?: number;
         success: boolean;
         detail?: string;
@@ -2727,12 +2753,6 @@ export class AgentManager {
     }
   }
 
-  setToolCallLimitChecker(checker: () => { allowed: boolean; reason?: string }): void {
-    this.toolCallLimitChecker = checker;
-    for (const [, agent] of this.agents) {
-      agent.setToolCallLimitChecker(checker);
-    }
-  }
 
   /**
    * Build the combined state-change callback for an agent. Handles:
@@ -2813,9 +2833,11 @@ export class AgentManager {
       'agent:focus-changed',
       'agent:message',
       'agent:notify-user',
+      'agent:ui-layout',
       'agent:escalation',
       'agent:activity-log',
       'agent:activity_log',
+      'agent:heartbeat-interval-changed',
       'task:completed',
       'task:failed',
       'mailbox:new-item',
@@ -2926,6 +2948,77 @@ export class AgentManager {
     this.teamUpdater = updater;
   }
 
+  setTeamCreator(creator: (orgId: string, name: string, description?: string) => Promise<{ id: string; name: string; description?: string }>): void {
+    this.teamCreator = creator;
+  }
+
+  setOrgTeamLister(lister: (orgId: string) => Array<{ id: string; name: string; description?: string; memberAgentIds: string[] }>): void {
+    this.orgTeamLister = lister;
+  }
+
+  /** Find a team by display name, or create it (used by package_install team_name). */
+  private async ensureTeam(
+    orgId: string,
+    name: string,
+    description?: string,
+  ): Promise<{ id: string; name: string; created: boolean }> {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('team name is required');
+    const existing = this.orgTeamLister?.(orgId)?.find(
+      t => t.name.trim().toLowerCase() === trimmed.toLowerCase(),
+    );
+    if (existing) return { id: existing.id, name: existing.name, created: false };
+    if (!this.teamCreator) {
+      throw new Error('Team ensure service is not available yet. Please try again in a moment.');
+    }
+    const created = await this.teamCreator(orgId, trimmed, description);
+    return { id: created.id, name: created.name, created: true };
+  }
+
+  private buildSecretaryToolsContext(orgId: string): SecretaryToolsContext {
+    return {
+      listTeams: () => {
+        if (this.orgTeamLister) {
+          return this.orgTeamLister(orgId).map(t => ({
+            id: t.id,
+            name: t.name,
+            description: t.description,
+            memberCount: t.memberAgentIds.length,
+            members: t.memberAgentIds.map(agentId => {
+              try {
+                const ag = this.getAgent(agentId);
+                return { id: agentId, name: ag.config.name, status: ag.getState().status };
+              } catch {
+                return { id: agentId, name: agentId, status: 'unknown' };
+              }
+            }),
+          }));
+        }
+        // Fallback: infer teams from agents that already have a teamId (misses empty teams).
+        const teams: Array<{ id: string; name: string; memberCount: number; members: Array<{ id: string; name: string; status: string }> }> = [];
+        for (const [, ag] of this.agents) {
+          if (ag.config.teamId) {
+            const teamId = ag.config.teamId;
+            let team = teams.find(t => t.id === teamId);
+            if (!team) {
+              team = { id: teamId, name: teamId, memberCount: 0, members: [] };
+              teams.push(team);
+            }
+            team.members.push({ id: ag.id, name: ag.config.name, status: ag.getState().status });
+            team.memberCount = team.members.length;
+          }
+        }
+        return teams;
+      },
+      stopTeam: async (teamId: string) => this.stopAgentsByIds(
+        [...this.agents.values()].filter(a => a.config.teamId === teamId).map(a => a.id),
+      ),
+      startTeam: async (teamId: string) => this.startAgentsByIds(
+        [...this.agents.values()].filter(a => a.config.teamId === teamId && a.getState().status === 'offline').map(a => a.id),
+      ),
+    };
+  }
+
   setAgentConfigPersister(persister: (agentId: string, data: Record<string, unknown>) => Promise<void>): void {
     this.agentConfigPersister = persister;
   }
@@ -3006,7 +3099,7 @@ export class AgentManager {
         let initialHeartbeatDelayMs: number | undefined;
         if (stagger && ids.length > 1) {
           const agent = this.getAgent(id);
-          const intervalMs = agent.config.heartbeatIntervalMs || 30 * 60 * 1000;
+          const intervalMs = agent.config.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS;
           initialHeartbeatDelayMs = Math.floor((i / ids.length) * intervalMs);
         }
         await this.startAgent(id, { initialHeartbeatDelayMs });

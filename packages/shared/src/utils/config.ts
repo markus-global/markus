@@ -16,6 +16,16 @@ export interface MarkusConfig {
       baseUrl?: string;
       model?: string;
       enabled?: boolean;
+      /** Hub geo-aware catalog URL. */
+      modelsUrl?: string;
+      /** @deprecated Legacy Worker subscription key — stripped on normalize/save. */
+      subscriptionKey?: string;
+      /** @deprecated Legacy Cloudflare Worker proxy URL — stripped on normalize/save. */
+      proxyUrl?: string;
+      /** @deprecated Legacy Hub search facade URL — ignored. */
+      searchUrl?: string;
+      /** @deprecated Legacy Worker toggle — ignored. */
+      workerEnabled?: boolean;
     }>;
     /** Custom model definitions added via UI/API, keyed by provider name */
     customModels?: Record<string, Array<{
@@ -100,6 +110,33 @@ export interface MarkusConfig {
       braveApiKey?: string;
       exaApiKey?: string;
       bochaApiKey?: string;
+      /**
+       * Per-provider enable switches. Undefined = enabled (default). When set to
+       * false, the provider is skipped by web_search even if a key is configured.
+       */
+      serperEnabled?: boolean;
+      tavilyEnabled?: boolean;
+      bingEnabled?: boolean;
+      googleEnabled?: boolean;
+      serpapiEnabled?: boolean;
+      braveEnabled?: boolean;
+      exaEnabled?: boolean;
+      bochaEnabled?: boolean;
+      /** Use Markus-hosted search (billed in CU) when no own key is configured. Default: enabled. */
+      useMarkusHosted?: boolean;
+      /**
+       * OpenRouter model id for Markus-hosted search (e.g. 'perplexity/sonar').
+       * Applied as MARKUS_SEARCH_OR_MODEL at runtime.
+       */
+      markusSearchModel?: string;
+      /** Preferred Markus-hosted search provider ('bocha' | 'tavily'). Empty = auto (by language). */
+      markusProvider?: string;
+      /**
+       * UI language (e.g. 'zh-CN' | 'en'), synced from the client. Used to choose
+       * the default Markus-hosted search provider when markusProvider is auto:
+       * Chinese → Bocha, otherwise → Tavily.
+       */
+      language?: string;
     };
     embedding?: { apiKey?: string };
   };

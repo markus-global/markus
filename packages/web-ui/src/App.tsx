@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback, useMemo, memo, lazy, Suspense } from 'react';
-import { type PageId, PAGE, resolvePageId, getPageFromHash, MOBILE_REDIRECTS } from './routes.ts';
+import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, memo, lazy, Suspense } from 'react';
+import { type PageId, PAGE, resolvePageId, getPageFromHash, hashPath, pageToHash, MOBILE_REDIRECTS } from './routes.ts';
+import { setNativeBrowserPagePaintAllowed } from './lib/nativeBrowserOverlay.ts';
 import { HomePage } from './pages/Home.tsx';
 
 const TeamPage = lazy(() => import('./pages/Team.tsx').then(m => ({ default: m.TeamPage })));
@@ -8,7 +9,6 @@ const StorePage = lazy(() => import('./pages/Store.tsx').then(m => ({ default: m
 const AgentBuilder = lazy(() => import('./pages/AgentBuilder.tsx').then(m => ({ default: m.AgentBuilder })));
 const WorkPage = lazy(() => import('./pages/Work.tsx').then(m => ({ default: m.WorkPage })));
 const DeliverablesPage = lazy(() => import('./pages/Deliverables.tsx').then(m => ({ default: m.DeliverablesPage })));
-const ReportsPage = lazy(() => import('./pages/Reports.tsx').then(m => ({ default: m.ReportsPage })));
 const NotificationsPage = lazy(() => import('./pages/Notifications.tsx').then(m => ({ default: m.NotificationsPage })));
 const SearchPage = lazy(() => import('./pages/Search.tsx').then(m => ({ default: m.SearchPage })));
 import { Sidebar } from './components/Sidebar.tsx';
@@ -21,11 +21,13 @@ import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, hubApi, clearHubAuth, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
+import { useLayout } from './contexts/LayoutContext.tsx';
 import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
+import { EditProfileModal } from './components/EditProfileModal.tsx';
 
 const HIDDEN_STYLE: React.CSSProperties = {
   visibility: 'hidden',
@@ -34,6 +36,20 @@ const HIDDEN_STYLE: React.CSSProperties = {
   pointerEvents: 'none',
   zIndex: -1,
 };
+
+/**
+ * Push the browser's current language/timezone to the server if they differ
+ * from what's stored, so the agent can localize prompts (language + timezone).
+ */
+function syncLocalePreferences(user: AuthUser): void {
+  try {
+    const locale = navigator.language;
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const prev = user.preferences ?? {};
+    if (prev.locale === locale && prev.timezone === timezone) return;
+    api.auth.updatePreferences({ locale, timezone }).catch(() => {});
+  } catch { /* Intl / navigator unavailable */ }
+}
 
 function PageFallback() {
   return (
@@ -69,9 +85,22 @@ const PageSlot = memo(function PageSlot({
 // Preserve sub-path hashes (e.g. #team/d) across page switches
 const _savedPageHashes: Record<string, string> = {};
 
+// Resolve a page for the current viewport: on mobile some pages are folded into
+// others (e.g. Store lives inside the Assets page), so apply MOBILE_REDIRECTS.
+function resolveForViewport(p: PageId): PageId {
+  if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
+    return MOBILE_REDIRECTS[p] ?? p;
+  }
+  return p;
+}
+
+function initialPage(): PageId {
+  return resolveForViewport(getPageFromHash());
+}
+
 export function App() {
   const { t } = useTranslation('common');
-  const [page, setPage] = useState<PageId>(getPageFromHash);
+  const [page, setPage] = useState<PageId>(initialPage);
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('markus_onboarded'));
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const isMobile = useIsMobile();
@@ -84,8 +113,9 @@ export function App() {
     collapsedWidth: 64,
     storageKey: 'markus_sidebar',
   });
-  const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([getPageFromHash()]));
+  const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([initialPage()]));
   const [authUser, setAuthUser] = useState<AuthUser | null | 'loading'>('loading');
+  const [showEditProfile, setShowEditProfile] = useState(false);
   const [systemInitialized, setSystemInitialized] = useState<boolean | null>(null);
   const [authStatus, setAuthStatus] = useState<{ hasOwner: boolean; hasMultipleUsers: boolean }>({ hasOwner: false, hasMultipleUsers: false });
   const [skipOnboardingProfile, setSkipOnboardingProfile] = useState(false);
@@ -97,30 +127,77 @@ export function App() {
     const stored = localStorage.getItem('markus_update_dismissed');
     return stored ? stored : null;
   });
-  const [licenseLimit, setLicenseLimit] = useState<{ teams?: boolean; toolCalls?: boolean } | null>(null);
-  const [licenseLimitDismissed, setLicenseLimitDismissed] = useState(false);
+  const [showSearchModal, setShowSearchModal] = useState(false);
 
-  const checkLicenseLimits = useCallback(() => {
-    api.license.get().then(lic => {
-      if (lic.plan === 'enterprise') { setLicenseLimit(null); return; }
-      if (lic.usage && lic.limits) {
-        const hitTeams = lic.limits.maxTeams > 0 && lic.usage.teams >= lic.limits.maxTeams;
-        const hitTools = lic.limits.maxToolCallsPerDay > 0 && lic.usage.toolCallsToday >= lic.limits.maxToolCallsPerDay;
-        if (hitTeams || hitTools) { setLicenseLimit({ teams: hitTeams || undefined, toolCalls: hitTools || undefined }); setLicenseLimitDismissed(false); }
-        else setLicenseLimit(null);
+  const layout = useLayout();
+  const leftCollapsed = layout?.leftCollapsed ?? false;
+  const toggleLeftCollapsed = layout?.toggleLeftCollapsed;
+  const toggleRightPanel = layout?.toggleRightPanel;
+
+  // When the agent opens/selects/closes an embedded browser page, mirror it into the right panel.
+  const openRightPanel = layout?.openRightPanel;
+  const closeRightPanelTab = layout?.closeRightPanelTab;
+  const updateRightPanelBrowserTab = layout?.updateRightPanelBrowserTab;
+  const rightPanelTabsRef = useRef(layout?.rightPanelTabs);
+  rightPanelTabsRef.current = layout?.rightPanelTabs;
+  useEffect(() => {
+    const onPageEvent = window.markusDesktop?.browser?.onPageEvent;
+    if (!onPageEvent || !openRightPanel) return;
+    return onPageEvent((event) => {
+      if (event.type === 'closed') {
+        const tab = rightPanelTabsRef.current?.find(
+          t => t.payload.kind === 'url' && t.payload.browserId === event.browserId,
+        );
+        if (tab && closeRightPanelTab) closeRightPanelTab(tab.id);
+        return;
       }
-    }).catch(() => {});
+      if (event.type === 'navigated') {
+        if (event.browserId && updateRightPanelBrowserTab) {
+          updateRightPanelBrowserTab(event.browserId, {
+            url: event.url,
+            title: event.title || event.url,
+          });
+        }
+        return;
+      }
+      if (event.type === 'opened' || event.type === 'selected') {
+        if (!event.url && !event.browserId) return;
+        // Ignore UI-owned preview hosts (eb_*) — those already have a panel tab.
+        if (event.browserId.startsWith('eb_') && event.type === 'opened') return;
+        openRightPanel({
+          kind: 'url',
+          url: event.url || 'about:blank',
+          title: event.title || event.url || 'Browser',
+          browserId: event.browserId,
+          pageId: event.pageId,
+        });
+      }
+    });
+  }, [openRightPanel, closeRightPanelTab, updateRightPanelBrowserTab]);
+
+  const rightPanelOpen = layout?.rightPanelOpen ?? false;
+
+  // Native WebContentsViews paint above HTML. Gate them synchronously in
+  // useLayoutEffect (before paint) so leaving Team / closing the panel does
+  // not leave a ghost browser over Overview/Settings for multiple frames.
+  useLayoutEffect(() => {
+    const allow = page === PAGE.TEAM && rightPanelOpen;
+    setNativeBrowserPagePaintAllowed(allow);
+  }, [page, rightPanelOpen]);
+
+  // Fresh renderer load: never inherit a stuck native view from a prior session.
+  useEffect(() => {
+    void window.markusDesktop?.browser?.hideAll?.();
   }, []);
 
+  // Keep the L0 app rail in sync with the unified "left collapsed" command
+  // (driven by Cmd+B and by opening the right panel). Skip the initial mount so
+  // the persisted L0 collapse state is preserved on load.
+  const didSyncL0 = useRef(false);
   useEffect(() => {
-    const onVisible = () => { if (document.visibilityState === 'visible') checkLicenseLimits(); };
-    window.addEventListener('markus:check-license-limits', checkLicenseLimits);
-    document.addEventListener('visibilitychange', onVisible);
-    const interval = setInterval(checkLicenseLimits, 5 * 60 * 1000);
-    return () => { window.removeEventListener('markus:check-license-limits', checkLicenseLimits); document.removeEventListener('visibilitychange', onVisible); clearInterval(interval); };
-  }, [checkLicenseLimits]);
-
-  const [showSearchModal, setShowSearchModal] = useState(false);
+    if (!didSyncL0.current) { didSyncL0.current = true; return; }
+    sidebar.setCollapsed(leftCollapsed);
+  }, [leftCollapsed, sidebar.setCollapsed]);
 
   // Global search shortcut: Cmd+P (Mac) / Ctrl+P (Win/Linux)
   useEffect(() => {
@@ -141,18 +218,56 @@ export function App() {
     return () => { document.removeEventListener('keydown', onKey); window.removeEventListener('markus:open-search', onOpen); };
   }, [isMobile]);
 
-  const navigate = useCallback((p: PageId) => {
+  // Layout shortcuts: Cmd/Ctrl+B toggles the left sidebars; Cmd/Ctrl+L toggles the right panel.
+  useEffect(() => {
+    if (isMobile || !toggleLeftCollapsed || !toggleRightPanel) return;
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const onKey = (e: KeyboardEvent) => {
+      const mod = isMac ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+      if (!mod || e.altKey || e.shiftKey) return;
+      const key = e.key.toLowerCase();
+      if (key === 'b') {
+        e.preventDefault();
+        toggleLeftCollapsed();
+      } else if (key === 'l') {
+        e.preventDefault();
+        toggleRightPanel();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isMobile, toggleLeftCollapsed, toggleRightPanel]);
+
+  const navigate = useCallback((p: PageId, params?: Record<string, string>) => {
     let normalized = resolvePageId(p);
     if (isMobile) {
       normalized = MOBILE_REDIRECTS[normalized] ?? normalized;
     } else if (normalized === PAGE.NOTIFICATIONS) {
       normalized = PAGE.HOME;
     }
-    // Save current page's full hash (e.g. 'team/d') so it can be restored later
+    // Hide native browser immediately — don't wait for React commit/effects.
+    if (normalized !== PAGE.TEAM) {
+      setNativeBrowserPagePaintAllowed(false);
+    }
+    // Save current page's full hash (e.g. 'team/d') so it can be restored later.
+    // Compare against the page's slug (not its id) since the address bar shows
+    // slugs — otherwise a plain page hash looks like a sub-route and gets saved.
     const curBase = getPageFromHash();
     const curFull = window.location.hash.slice(1);
-    if (curFull !== curBase) _savedPageHashes[curBase] = curFull;
+    if (curFull !== pageToHash(curBase)) _savedPageHashes[curBase] = curFull;
     else delete _savedPageHashes[curBase];
+
+    // Explicit settings tab (e.g. Hub status → Account) must win over a restored
+    // previous settings sub-hash like #settings/appearance.
+    if (normalized === PAGE.SETTINGS && params?.tab) {
+      const settingsHash = `settings/${params.tab}`;
+      _savedPageHashes[normalized] = settingsHash;
+      history.pushState(null, '', '#' + settingsHash);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      setPage(normalized);
+      setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
+      return;
+    }
 
     // Use pushState (silent, no events) for all URL changes, then dispatch
     // hashchange synchronously so external stores (e.g. Chat's hash store)
@@ -160,11 +275,11 @@ export function App() {
     // Work page manages its own project/filter state in React; don't restore
     // a saved project-specific hash (e.g. work/proj_xxx) when clicking "Work".
     const savedHash = normalized !== PAGE.WORK ? _savedPageHashes[normalized] : undefined;
-    if (savedHash && savedHash !== normalized) {
-      history.pushState(null, '', '#' + normalized);
+    if (savedHash && savedHash !== pageToHash(normalized)) {
+      history.pushState(null, '', hashPath(normalized));
       history.pushState(null, '', '#' + savedHash);
     } else {
-      history.pushState(null, '', '#' + normalized);
+      history.pushState(null, '', hashPath(normalized));
     }
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     setPage(normalized);
@@ -172,8 +287,14 @@ export function App() {
   }, [isMobile]);
 
   useEffect(() => {
-    navBus.setHandler((p) => navigate(p));
+    navBus.setHandler((p, params) => navigate(p, params));
   }, [navigate]);
+
+  useEffect(() => {
+    const openEdit = () => setShowEditProfile(true);
+    window.addEventListener('markus:open-edit-profile', openEdit);
+    return () => window.removeEventListener('markus:open-edit-profile', openEdit);
+  }, []);
 
   // Desktop: adjust traffic light position based on sidebar visibility
   useEffect(() => {
@@ -229,7 +350,7 @@ export function App() {
       urlParams.delete('install');
       urlParams.delete('type');
       const qs = urlParams.toString();
-      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : '') + '#store');
+      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : '') + hashPath(PAGE.STORE));
       setTimeout(() => navBus.navigate(PAGE.STORE, { storeTab, installItem: installItemId }), 300);
     }
 
@@ -237,6 +358,7 @@ export function App() {
       .then(({ user }) => {
         setAuthUser(user);
         setSystemInitialized(true);
+        syncLocalePreferences(user);
         wsClient.connect(user.id);
         checkLlmConfig();
         api.health().then(h => {
@@ -244,7 +366,6 @@ export function App() {
             setUpdateInfo({ latestVersion: h.latestVersion, currentVersion: h.version });
           }
         }).catch(() => {});
-        checkLicenseLimits();
         const doPrefetch = () => {
           prefetch(PREFETCH_KEYS.builderArtifacts, () => api.builder.artifacts.list());
           prefetch(PREFETCH_KEYS.builderAgents, () => api.agents.list());
@@ -273,7 +394,8 @@ export function App() {
       window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
     });
     const onHash = () => {
-      const p = getPageFromHash();
+      const p = resolveForViewport(getPageFromHash());
+      if (p !== PAGE.TEAM) setNativeBrowserPagePaintAllowed(false);
       setPage(p);
       setMountedPages(prev => prev.has(p) ? prev : new Set([...prev, p]));
     };
@@ -294,7 +416,6 @@ export function App() {
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
         [PAGE.NOTIFICATIONS]: <NotificationsPage authUser={currentUser} />,
-        [PAGE.REPORTS]: <ReportsPage authUser={currentUser} />,
         [PAGE.SEARCH]: <SearchPage />,
       };
     }
@@ -306,7 +427,6 @@ export function App() {
       [PAGE.BUILDER]: <AgentBuilder authUser={currentUser} />,
       [PAGE.WORK]: <WorkPage authUser={currentUser} />,
       [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
-      [PAGE.REPORTS]: <ReportsPage authUser={currentUser} />,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id, currentUser?.role, theme.mode, isMobile]);
@@ -339,6 +459,10 @@ export function App() {
       hasMultipleUsers={authStatus.hasMultipleUsers}
       onLogin={(user, needsOnboarding, opts) => {
       setAuthUser(user);
+      // Re-key the WebSocket to this user. The initial connect() ran anonymously
+      // (or not at all when logged out), so without this the socket stays
+      // unbound to the user until a full page reload.
+      wsClient.connect(user.id);
       if (needsOnboarding) {
         localStorage.removeItem('markus_onboarded');
         setShowOnboarding(true);
@@ -362,10 +486,24 @@ export function App() {
       theme={theme.mode}
       onThemeChange={theme.setMode}
       skipProfile={skipOnboardingProfile}
+      onProfileUpdated={(u) => {
+        const next: AuthUser = {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          orgId: u.orgId ?? 'default',
+          avatarUrl: u.avatarUrl,
+        };
+        setAuthUser(next);
+      }}
       onComplete={() => {
         localStorage.setItem('markus_onboarded', '1');
         setShowOnboarding(false);
         setSkipOnboardingProfile(false);
+        // Re-fetch so sidebar / People reflect the name saved during onboarding
+        // (login may have still carried the placeholder "Admin").
+        api.auth.me().then(d => setAuthUser(d.user)).catch(() => {});
         checkLlmConfig();
         navigate(PAGE.HOME);
       }}
@@ -387,6 +525,7 @@ export function App() {
               authUser={authUser}
               collapsed={sidebar.collapsed}
               onToggleCollapse={sidebar.toggle}
+              onLogout={() => { api.auth.logout().catch(() => {}); clearHubAuth(); setAuthUser(null); }}
             />
           </div>
 
@@ -422,21 +561,6 @@ export function App() {
             </span>
           </div>
         )}
-        {licenseLimit && !licenseLimitDismissed && page !== PAGE.SETTINGS && (
-          <div className="flex items-center justify-between px-4 py-2 bg-orange-500/10 border-b border-orange-500/30 text-orange-400 text-sm shrink-0">
-            <span className={isMobile ? 'text-xs' : ''}>
-              {licenseLimit.teams && licenseLimit.toolCalls
-                ? t('license.limitReachedBoth')
-                : licenseLimit.teams
-                  ? t('license.limitReachedTeams')
-                  : t('license.limitReachedToolCalls')}
-            </span>
-            <span className="flex items-center gap-3 shrink-0">
-              <button onClick={() => { window.location.hash = 'settings/account'; }} className="px-3 py-1 bg-orange-600/50 hover:bg-orange-600/70 text-white text-xs rounded-lg transition-colors">{t('license.upgradeLicense')}</button>
-              <button onClick={() => setLicenseLimitDismissed(true)} className="text-fg-tertiary hover:text-fg-secondary text-xs shrink-0">{t('dismiss')}</button>
-            </span>
-          </div>
-        )}
         <main className="flex-1 overflow-hidden flex flex-col relative">
           {(Object.keys(pageElements) as PageId[]).map(id => (
             mountedPages.has(id) ? (
@@ -461,6 +585,16 @@ export function App() {
       {/* Global search modal (desktop) */}
       {!isMobile && showSearchModal && (
         <SearchModal onClose={() => setShowSearchModal(false)} currentPage={page} />
+      )}
+
+      {/* Edit profile — available from sidebar account menu without leaving the page */}
+      {showEditProfile && currentUser && (
+        <EditProfileModal
+          authUser={currentUser}
+          onClose={() => setShowEditProfile(false)}
+          onUserUpdated={(u) => setAuthUser(u)}
+          onSaved={(u) => { setShowEditProfile(false); setAuthUser(u); }}
+        />
       )}
     </div>
   );

@@ -34,11 +34,19 @@
     "loading": "加载中...",
     "by": "作者"
   },
-  "removeFromHubTooltip": "从 Markus Hub 移除",
+  "removeFromHubTooltip": "取消分享：从 Markus Hub 下架，本地文件保留",
+  "unshare": "取消分享",
+  "confirmUnshare": "取消分享",
+  "deleteLocalTooltip": "删除本地文件（不影响已分享到 Hub 的副本）",
+  "confirmDeleteLocal": "删除本地文件",
   "copyHubLinkTooltip": "复制 Hub 链接",
   "confirmDelete": "确认删除",
-  "deleteCannotUndo": "删除「{{name}}」？此操作无法撤销。",
-  "removeFromHub": "从 Markus Hub 移除「{{name}}」？其他人将无法再下载。",
+  "deleteCannotUndo": "删除本地文件「{{name}}」？此操作无法撤销。已分享到 Hub 的副本不会自动下架。",
+  "removeFromHub": "从 Markus Hub 取消分享「{{name}}」？其他人将无法再下载，本地文件会保留。",
+  "confirmInstall": "确认安装",
+  "confirmInstallMsg": "安装「{{name}}」到当前组织？安装后可在团队中使用。",
+  "confirmUninstall": "确认卸载",
+  "confirmUninstallMsg": "卸载「{{name}}」？将从当前组织移除已部署的实例，本地创作文件会保留。",
   "installFailed": "安装失败：{{error}}",
   "uninstallFailed": "卸载失败：{{error}}",
   "shareFailed": "分享失败：{{error}}",
@@ -67,7 +75,22 @@
     "sharing": "正在分享...",
     "updating": "正在更新...",
     "updateVersion": "更新 v{{version}}",
-    "viewOnHub": "在 Hub 查看"
+    "viewOnHub": "在 Hub 查看",
+    "submittedForReview": "已提交审核。审核通过前只有你自己能看到，其他人打开链接会看到「审核中」页面。",
+    "convertedSlug": "已将包标识从「{{previous}}」自动转换为「{{slug}}」（中文标题保留为显示名）。如需更易读的英文 slug，可稍后自行修改。",
+    "convertedAndSubmitted": "已将包标识从「{{previous}}」自动转换为「{{slug}}」，并已提交审核。中文标题保留为显示名。",
+    "updateSubmitted": "更新已提交审核。在新版本审核通过前，之前已通过的版本将继续公开展示。",
+    "underReview": "审核中",
+    "underReviewTip": "此资产正在等待管理员审核。目前只有你自己能看到。",
+    "rejected": "已拒绝",
+    "rejectedTip": "管理员拒绝了此资产，因此不会公开展示。",
+    "updateUnderReview": "更新审核中",
+    "updateUnderReviewTip": "你的最新修改正在等待审核。之前已通过的版本将继续公开展示。"
+  },
+  "pricing": {
+    "label": "价格",
+    "enableTips": "允许用户打赏",
+    "reviewNote": "公开和「仅链接」的资产需经管理员审核后才会对他人可见。"
   },
   "shareMode": {
     "title": "选择分享模式",
@@ -84,7 +107,8 @@
     "share": "分享"
   },
   "visibility": {
-    "label": "可见性",
+    "label": "分享到社区",
+    "subtitle": "选择谁可以看到它并设置价格。公开资产将经过审核，随后出现在 Markus 广场。",
     "public": "公开",
     "publicDesc": "所有人可见，出现在 Hub 搜索中",
     "org": "组织内",

@@ -25,20 +25,39 @@ This skill teaches you how to create Markus agent packages — self-contained di
 
 When the user **installs** the artifact, files are deployed to `~/.markus/agents/{agentId}/role/`. The `ROLE.md` becomes the agent's system prompt — it IS the agent's identity, not an override of a template.
 
+## Package Slug (`name`) — REQUIRED
+
+The manifest `name` is the **package slug**: directory name, Hub URL segment (`/@user/{slug}`), and share/publish id.
+
+**Rules (hard — invalid manifests are rejected on write / save / share):**
+- English **kebab-case** only: lowercase letters `a-z`, digits `0-9`, hyphens `-`
+- 2–64 characters; must **start with a letter**
+- Pattern examples: `code-reviewer`, `paper-mentor`, `seo-auditor`
+- **NOT allowed**: Chinese (`智库研究团队`), spaces, underscores, UPPERCASE, emoji, or empty
+- Put the human-readable title (any language) in **`displayName`**, never in `name`
+
+| User language | `name` (slug) | `displayName` |
+|---|---|---|
+| Chinese “论文导师” | `paper-mentor` | `论文导师` |
+| English “Code Reviewer” | `code-reviewer` | `Code Reviewer` |
+
+If the user only gives a Chinese title, **you invent an English kebab slug** that captures the meaning, set `displayName` to their title, and use the slug for the directory path `~/.markus/builder-artifacts/agents/{name}/`.
+
 ## Two-Step Workflow
 
 Output the agent in two steps — manifest first, then content files. **Never put file content inline in the JSON.**
 
-### Chat Mode vs Task Mode
+### All modes (chat / task / A2A) — same rule
 
-- **Chat mode** (user conversation): Output the manifest JSON in a ```json code block → system auto-saves and creates the directory → then use `file_write` for each content file.
-- **Task mode** (assigned task): Use `file_write` to write the manifest JSON file directly (e.g., `file_write("~/.markus/builder-artifacts/agents/{name}/agent.json", ...)`) → then use `file_write` for each content file. When submitting deliverables, set the reference to the artifact directory path.
-- **A2A mode** (agent-to-agent): Same as task mode — write all files via `file_write`.
+There is **no** chat auto-save. A JSON code block in your reply does **not** create files.
 
-### Step 1: Output Manifest JSON
+1. `file_write("~/.markus/builder-artifacts/agents/{name}/agent.json", ...)` for the manifest
+2. `file_write` for each content file (ROLE.md, HEARTBEAT.md, …)
+3. In task mode, set deliverable references to the artifact directory path
 
-**In chat mode**: Output the agent configuration as a JSON code block. The system auto-saves it.
-**In task/A2A mode**: Write the manifest JSON file directly via `file_write`.
+You may preview JSON in chat **in addition to** writing files — never instead of `file_write`.
+
+### Step 1: Write Manifest JSON via file_write
 
 This JSON contains ONLY metadata — **no file content**.
 
@@ -65,7 +84,7 @@ This JSON contains ONLY metadata — **no file content**.
 }
 ```
 
-The system automatically saves this JSON and creates the directory. After that, you proceed to write files.
+After `agent.json` is written, proceed to write the remaining files with `file_write`.
 
 ### Step 2: Write Files with file_write
 
@@ -115,7 +134,7 @@ file_write("~/.markus/builder-artifacts/agents/code-reviewer/POLICIES.md", "# Po
 
 ### Top-level fields
 - **`type`**: Always `"agent"`
-- **`name`**: **MUST be English kebab-case** (e.g., `code-reviewer`, `paper-mentor`). Even if the user speaks Chinese, use an English slug. This is the directory name.
+- **`name`**: **Package slug** — English kebab-case only (see [Package Slug](#package-slug-name--required)). Invalid/save/share reject Chinese or invalid slugs.
 - **`displayName`**: Human-readable name, can be in any language (e.g., `"论文学习导师"`, `"Code Reviewer"`)
 - **`version`**: Semver (default `"1.0.0"`)
 - **`description`**: What this agent does (can be in any language)
@@ -155,7 +174,7 @@ Once all files are written, tell the user:
 - **DO NOT** put file content in the JSON. Always use `file_write` for files.
 - **DO NOT** default skills to `[]` when relevant skills are available. Check the skills list!
 - **DO NOT** write artifacts to `~/.markus/shared/` or your working directory. Always use `~/.markus/builder-artifacts/agents/{name}/`.
-- **The `name` field MUST be English kebab-case**.
+- **The `name` field MUST be a valid English kebab-case slug** (see Package Slug). Never use Chinese as `name`. Invalid `name` → write/save/share fails.
 - **All top-level fields must be the correct type**: `author` must be a plain string (e.g. `"John"`) — NOT an object. `tags` must be an array of strings. `version` must be semver string. `description` must be a string. The system validates the manifest on write and will reject malformed files.
 - The `ROLE.md` is what makes the agent unique — write at least 5 substantive paragraphs. A generic one-liner is useless.
 - Default `temperature` to 0.7 for general tasks, lower (0.3-0.5) for precision tasks, higher (0.8-1.0) for creative tasks.

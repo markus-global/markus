@@ -87,12 +87,11 @@ describe('SqliteOrgRepo', () => {
   it('creates and finds an organization', () => {
     const db = openSqlite(dbPath);
     const repo = new SqliteOrgRepo(db);
-    const org = repo.createOrg({ id: 'org-1', name: 'Acme', ownerId: 'owner-1', plan: 'pro', maxAgents: 10 });
+    const org = repo.createOrg({ id: 'org-1', name: 'Acme', ownerId: 'owner-1', plan: 'pro' });
     expect(org.id).toBe('org-1');
     expect(org.name).toBe('Acme');
     expect(org.ownerId).toBe('owner-1');
     expect(org.plan).toBe('pro');
-    expect(org.maxAgents).toBe(10);
     expect(org.settings).toEqual({});
 
     const found = repo.findOrgById('org-1');

@@ -8,7 +8,7 @@ import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact
 import { ChatPanel } from '../components/ChatPanel.tsx';
 import { type ContextChip } from '../components/ChatInput.tsx';
 import { navBus } from '../navBus.ts';
-import { PAGE } from '../routes.ts';
+import { PAGE, resolvePageId } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
@@ -121,6 +121,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewFormat, setPreviewFormat] = useState<string>('markdown');
   const [previewImage, setPreviewImage] = useState<{ src: string; name: string } | null>(null);
+  const [previewMedia, setPreviewMedia] = useState<{ kind: 'audio' | 'video'; src: string; name: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showCopyPath, setShowCopyPath] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
@@ -289,7 +290,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   useEffect(() => {
     if (previewMode) return;
-    const navId = localStorage.getItem('markus_nav_openDeliverable');
+    // Support deep links of the form `#deliverables/<id>` (e.g. from a deliverable
+    // tool's accessUrl). The page id is the first hash segment; the second is the id.
+    const hashParts = window.location.hash.slice(1).split('/');
+    const hashId = resolvePageId(hashParts[0]) === PAGE.DELIVERABLES ? hashParts[1] : undefined;
+    const navId = localStorage.getItem('markus_nav_openDeliverable') || hashId;
     if (navId) {
       localStorage.removeItem('markus_nav_openDeliverable');
       if (itemsRef.current.length > 0) {
@@ -427,9 +432,17 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
       const resp = await api.files.preview(d.reference);
       if (resp.type === 'image' && resp.mimeType) {
         setPreviewImage({ src: `data:${resp.mimeType};base64,${resp.content}`, name: resp.name });
-      } else {
+      } else if (resp.type === 'audio' || resp.type === 'video') {
+        const src = resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));
+        setPreviewMedia({ kind: resp.type, src, name: resp.name });
+      } else if (resp.type === 'binary') {
+        setShowCopyPath(true);
+      } else if (typeof resp.content === 'string') {
         setPreviewContent(resp.content);
         setPreviewFormat(resolveFormat({ format: d.format, reference: d.reference, content: resp.content }));
+      } else {
+        setShowCopyPath(true);
       }
     } catch {
       setPreviewContent(null);
@@ -443,6 +456,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setPreviewContent(null);
     setPreviewFormat('markdown');
     setPreviewImage(null);
+    setPreviewMedia(null);
     setShowCopyPath(false);
     if (selected) loadPreview(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -463,6 +477,19 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     });
   }, []);
 
+  // Force a group open regardless of the current default. A group is expanded
+  // when its override-membership equals `defaultCollapsed`, so we add/remove the
+  // key accordingly (no-op if it is already expanded).
+  const expandGroup = useCallback((key: string) => {
+    setGroupOverrides(prev => {
+      if (prev.has(key) === defaultCollapsed) return prev;
+      const next = new Set(prev);
+      if (defaultCollapsed) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, [defaultCollapsed]);
+
   const toggleAllGroups = useCallback(() => {
     setDefaultCollapsed(prev => !prev);
     setGroupOverrides(new Set());
@@ -478,6 +505,30 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   }, []);
 
   const flatItems = useMemo(() => grouped.flatMap(([, g]) => g.items), [grouped]);
+
+  // Desktop: auto-select the most recent deliverable so the detail pane shows
+  // useful content on load instead of a large empty state. Never on mobile
+  // (would push into the detail view) and never over a deep-linked/pending pick.
+  useEffect(() => {
+    if (previewMode || isMobile || loading || selected) return;
+    if (pendingOpenRef.current) return;
+    if (flatItems.length === 0) return;
+    setSelected(flatItems[0]);
+  }, [previewMode, isMobile, loading, selected, flatItems]);
+
+  // Reveal the selected deliverable in the list by expanding its group, so the
+  // user can always see which item is currently shown in the detail pane. Only
+  // fires when the selection changes (not on every group toggle) so manually
+  // collapsing the active group is respected.
+  const lastRevealedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selected) { lastRevealedRef.current = null; return; }
+    if (lastRevealedRef.current === selected.id) return;
+    const entry = grouped.find(([, g]) => g.items.some(it => it.id === selected.id));
+    if (!entry) return; // item not in the loaded groups yet
+    lastRevealedRef.current = selected.id;
+    expandGroup(entry[0]);
+  }, [selected?.id, grouped, expandGroup]);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -1211,6 +1262,15 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                     <div className="flex flex-col items-center gap-2">
                       <img src={previewImage.src} alt={previewImage.name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
                       <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
+                    </div>
+                  ) : previewMedia ? (
+                    <div className="flex flex-col gap-3 py-4">
+                      {previewMedia.kind === 'audio' ? (
+                        <audio controls preload="metadata" src={previewMedia.src} className="w-full" />
+                      ) : (
+                        <video controls preload="metadata" src={previewMedia.src} className="w-full max-h-[60vh] rounded-lg bg-black" />
+                      )}
+                      <span className="text-xs text-fg-tertiary">{previewMedia.name}</span>
                     </div>
                   ) : previewContent ? (
                     editMode ? (

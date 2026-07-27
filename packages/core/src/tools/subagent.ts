@@ -8,6 +8,7 @@ import {
   SUBAGENT_LOG_ENTRY_CHARS,
   SUBAGENT_ERROR_PREVIEW_CHARS,
   SUBAGENT_MAX_PARALLEL,
+  SUBAGENT_MAX_AGGREGATE_ITERATIONS,
   SUBAGENT_MAX_LLM_RETRIES,
   SUBAGENT_RETRY_BASE_MS,
 } from '@markus/shared';
@@ -16,6 +17,7 @@ import type { LLMRouter } from '../llm/router.js';
 import type { ContextEngine } from '../context-engine.js';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { isToolErrorResult } from './result.js';
 
 const log = createLogger('subagent');
 
@@ -45,18 +47,12 @@ export interface SubagentContext {
   getProgressCallback?: () => SubagentProgressCallback | undefined;
 }
 
-function isErrorResult(result: string): boolean {
-  try {
-    const parsed = JSON.parse(result) as Record<string, unknown>;
-    return parsed.status === 'error' || parsed.status === 'denied';
-  } catch {
-    return false;
-  }
-}
+const isErrorResult = isToolErrorResult;
 
 const BLOCKED_TOOLS = new Set([
   'spawn_subagent', 'spawn_subagents',
-  'notify_user', 'request_user_approval', 'discover_tools',
+  'notify_user', 'request_user_input', 'request_user_approval', 'discover_tools',
+  'schedule_wakeup', 'cancel_wakeup',
 ]);
 
 function buildToolMap(
@@ -171,11 +167,20 @@ export async function runSubagentLoop(
     allowedTools?: string[];
     maxIterations?: number;
     onProgress?: SubagentProgressCallback;
+    /**
+     * B4: aggregate iteration budget shared across a `spawn_subagents` fan-out. Each
+     * iteration decrements `remaining`; when it reaches 0 the loop stops early so the
+     * total work of a wide fan-out stays bounded. Mutated in place so the caller can
+     * detect exhaustion after all children settle.
+     */
+    sharedBudget?: { remaining: number };
   },
 ): Promise<string> {
   const hardCap = ctx.maxToolIterations ?? DEFAULT_MAX_SUBAGENT_ITERATIONS;
   const maxIter = Math.min(opts?.maxIterations ?? hardCap, hardCap);
   const onProgress = opts?.onProgress;
+  const sharedBudget = opts?.sharedBudget;
+  let budgetExhausted = false;
 
   const subagentId = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const logEntries: SubagentLogEntry[] = [];
@@ -236,6 +241,17 @@ export async function runSubagentLoop(
       log.warn('Subagent hit max iterations', { parentAgent: ctx.agentId, subagentId, iterations });
       onProgress?.({ type: 'error', content: `Subagent hit max iterations (${maxIter})` });
       break;
+    }
+
+    // B4: enforce the shared aggregate budget across the fan-out.
+    if (sharedBudget) {
+      if (sharedBudget.remaining <= 0) {
+        budgetExhausted = true;
+        log.warn('Subagent stopped: shared aggregate budget exhausted', { parentAgent: ctx.agentId, subagentId, iterations });
+        onProgress?.({ type: 'error', content: 'Shared subagent budget exhausted' });
+        break;
+      }
+      sharedBudget.remaining--;
     }
 
     onProgress?.({
@@ -331,7 +347,12 @@ export async function runSubagentLoop(
   }
 
   const rawResult = response.content;
-  const cleanResult = stripThinkTags(rawResult);
+  let cleanResult = stripThinkTags(rawResult);
+  if (budgetExhausted) {
+    // Make truncation-by-budget visible in the returned result so the parent (and model)
+    // knows this child stopped early rather than finishing its task.
+    cleanResult = `${cleanResult}\n\n[NOTE: subagent stopped early — shared aggregate iteration budget exhausted. Result may be incomplete.]`;
+  }
 
   logEntries.push({
     ts: new Date().toISOString(),
@@ -512,6 +533,10 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
 
       const startTime = Date.now();
 
+      // B4: one aggregate iteration budget shared across all children of this fan-out,
+      // so a wide/parallel spawn cannot silently multiply CU/token spend.
+      const sharedBudget = { remaining: SUBAGENT_MAX_AGGREGATE_ITERATIONS };
+
       const results = await Promise.allSettled(
         tasks.map(async (t) => {
           const perTaskProgress: SubagentProgressCallback | undefined = onProgress
@@ -527,10 +552,13 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
             allowedTools: t.allowed_tools,
             maxIterations: t.max_iterations,
             onProgress: perTaskProgress,
+            sharedBudget,
           });
           return { id: t.id, result };
         })
       );
+
+      const budgetExceeded = sharedBudget.remaining <= 0;
 
       const output: Array<{
         id: string;
@@ -563,8 +591,10 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
 
       return JSON.stringify({
         status: 'completed',
-        summary: `${completed}/${tasks.length} subagents completed successfully${failed > 0 ? `, ${failed} failed` : ''}`,
+        summary: `${completed}/${tasks.length} subagents completed successfully${failed > 0 ? `, ${failed} failed` : ''}${budgetExceeded ? ' (aggregate iteration budget exhausted — some results may be incomplete)' : ''}`,
         durationMs,
+        budgetExceeded,
+        aggregateIterationBudget: SUBAGENT_MAX_AGGREGATE_ITERATIONS,
         results: output,
       });
     },

@@ -40,7 +40,8 @@
     "resumeAllTooltip": "恢复所有智能体",
     "failedToCreateTeam": "创建团队失败：{{message}}",
     "agents": "智能体",
-    "teams": "团队"
+    "teams": "团队",
+    "agentDMs": "智能体私聊"
   },
   "teamProfile": {
     "overview": "概览",
@@ -64,10 +65,13 @@
     "start": "启动",
     "stop": "停止",
     "setAsManager": "设为管理者",
-    "removeFromTeam": "从团队移除",
+    "removeFromTeam": "移出团队",
     "moveTo": "移动到",
+    "moveToSearch": "搜索团队…",
+    "moveToEmpty": "没有匹配的团队",
     "removeFromOrg": "从组织移除",
-    "manageMembers": "管理成员"
+    "manageMembers": "管理成员",
+    "orgSecretaryProtected": "系统秘书 — 不可删除"
   },
   "modals": {
     "createTeam": {
@@ -133,7 +137,7 @@
       "purgeFiles": "同时删除磁盘文件（工作区、记忆、日志）"
     },
     "removeFromTeam": {
-      "title": "从团队移除？",
+      "title": "移出团队？",
       "message": "该成员将移至「未分组」。"
     },
     "removeAgent": {
@@ -201,6 +205,16 @@
     },
     "approvalHistory": "历史记录"
   },
+  "userInput": {
+    "respond": "回复",
+    "submit": "提交",
+    "submitted": "已提交",
+    "next": "下一题",
+    "previous": "上一题",
+    "questionProgress": "第 {{current}} / {{total}} 题",
+    "textPlaceholder": "输入你的回答…",
+    "freeformPlaceholder": "或自行填写答案…"
+  },
   "intro": {
     "secretary": "我刚装好 Markus，帮我上手吧——这里能做什么？",
     "agent": "介绍一下你自己——你能做什么？"
@@ -228,13 +242,25 @@
     "defaultInvalidApiKey": "API 密钥无效",
     "defaultTooManyRequests": "请求过于频繁",
     "defaultServiceDown": "服务暂时不可用",
+    "markusCuExceeded": "⚠ 余额不足，请充值或升级计划：https://markus.global/settings?tab=billing",
+    "markusRateLimited": "⚠ Markus Cloud AI 请求频率达到上限（600次/分钟）。通常几秒后即可恢复。如果有大量智能体并发运行，建议错开任务时间。",
+    "markusWindowExceeded": "⚠ 5 小时滑动窗口用量已达上限。您的计划在 5 小时内允许使用的积分有限。请等待窗口滚动后重试，或升级计划以获得更高的 5 小时窗口额度：https://markus.global/settings?tab=billing",
+    "creditModalTitle": "积分已用完",
+    "creditModalDesc": "您的 Markus Cloud AI 积分已耗尽，请购买更多积分或升级订阅计划以继续使用。",
+    "creditModalDismiss": "稍后再说",
+    "creditModalUpgrade": "充值 / 升级",
     "ai402": "⚠ AI 服务错误：{{detail}}。请充值 API 余额或联系管理员。",
     "ai401": "⚠ AI 服务认证失败：{{detail}}。请检查配置。",
     "ai429": "⚠ 超出速率限制：{{detail}}。请稍后再试。",
+    "ai502": "⚠ AI 上游服务异常：{{detail}}。LLM 供应商可能暂时宕机，请稍后重试。",
     "ai503": "⚠ AI 服务不可用：{{detail}}。请稍后重试。",
-    "aiGeneric": "⚠ AI 服务错误：{{detail}}"
+    "aiGeneric": "⚠ AI 服务错误：{{detail}}",
+    "defaultUpstreamDown": "LLM 供应商返回 502 Bad Gateway"
   },
   "page": {
+    "userInputPrompt_one": "有 {{count}} 个问题等待你回复",
+    "userInputPrompt_other": "有 {{count}} 个问题等待你回复",
+    "userInputRespond": "回复",
     "viewProfileArrow": "查看资料 →",
     "viewAgentProfileArrow": "查看智能体资料 →",
     "viewMindArrow": "查看 Mind →",
@@ -242,9 +268,11 @@
       "resumeTitle": "继续",
       "reaskTitle": "重新提问",
       "retryTitle": "重试",
-      "replyTitle": "回复"
+      "replyTitle": "回复",
+      "aiGeneratedDisclaimer": "内容由 AI 生成，请仔细甄别"
     },
     "stopped": "已停止",
+    "emptyReply": "本次助手没有返回回复，通常是因为请求内容过大或 AI 服务暂时不可用。请点击重试；若持续出现，请在设置中检查积分或切换模型。",
     "fallbackAgent": "智能体",
     "fallbackYou": "你",
     "systemName": "系统",
@@ -258,6 +286,7 @@
     "newChatPlus": "+ 新建",
     "newChatButton": "+ 新对话",
     "historyTitle": "历史",
+    "rightPanelToggle": "开关侧边栏",
     "sessionMain": "主会话",
     "sessionConversation": "对话",
     "noConversationsYet": "暂无对话",
@@ -335,5 +364,11 @@
     "searchPlaceholder": "搜索消息…",
     "searching": "搜索中…",
     "noSearchResults": "未找到相关消息"
+  },
+  "chatModel": {
+    "title": "模型",
+    "search": "搜索模型",
+    "applyGlobal": "应用到全局",
+    "empty": "没有已启用的 Provider / 模型"
   }
 }

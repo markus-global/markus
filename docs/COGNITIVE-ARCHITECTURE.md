@@ -179,6 +179,30 @@ Periodic patrol re-enters the cognitive cycle without external stimulus. Each he
 
 Heartbeat uses D0 (reflexive) depth unless failed tasks or blockers upgrade it.
 
+#### Spec: active-hours timezone (C1)
+
+`HeartbeatScheduler` skips ticks outside `config.activeHours`. Previously
+`isWithinActiveHours()` used the host machine's local clock (`new Date().getHours()`), which
+could disagree with the agent's configured timezone.
+
+- **Behavior**: `activeHours` is evaluated in the **configured timezone** (falling back to
+  host local time only when none is configured or the id is invalid), so an agent set to
+  `09:00–18:00` patrols during those hours in *its* timezone regardless of where the process
+  runs.
+- **Invariants**: same-instant evaluation yields the correct in/out-of-window result for a
+  given configured timezone; the start minute is inclusive and the end minute exclusive; the
+  midnight-wrap case (e.g. `22:00–06:00`) still works.
+- **Testing** (`packages/core/test/heartbeat.test.ts` — the "C1:" cases): with a fixed
+  instant (`2026-07-23T12:00:00Z`) and different configured timezones (UTC / Los_Angeles /
+  Tokyo), assert the active-window decision matches the configured zone, plus the
+  invalid-timezone fallback and midnight-wrap cases.
+- **Status**: implemented (pure `isWithinActiveHours` / `minutesOfDayInTimeZone` via
+  `Intl.DateTimeFormat`; `HeartbeatScheduler.isWithinActiveHours` delegates to them).
+
+> Prompt-cache note: heartbeat situational content (mailbox meta, notebook, timestamps) is
+> injected in Tier 3 (dynamic), never into the stable prefix — see the injection-point
+> ownership audit in [PROMPT-ENGINEERING.md §2.2](./PROMPT-ENGINEERING.md).
+
 ### Goal / Loop Mechanism
 
 Requirements can carry a `GoalConfig` that turns them into **persistent objectives**:

@@ -34,11 +34,19 @@
     "loading": "Loading...",
     "by": "by"
   },
-  "removeFromHubTooltip": "Remove from Markus Hub",
+  "removeFromHubTooltip": "Unshare: remove from Markus Hub, keep local files",
+  "unshare": "Unshare",
+  "confirmUnshare": "Unshare",
+  "deleteLocalTooltip": "Delete local files (does not remove the Hub listing)",
+  "confirmDeleteLocal": "Delete local files",
   "copyHubLinkTooltip": "Copy Hub link",
   "confirmDelete": "Confirm Delete",
-  "deleteCannotUndo": "Delete \"{{name}}\"? This cannot be undone.",
-  "removeFromHub": "Remove \"{{name}}\" from Markus Hub? It will no longer be available for others to download.",
+  "deleteCannotUndo": "Delete local files for \"{{name}}\"? This cannot be undone. The Hub listing is not removed automatically.",
+  "removeFromHub": "Unshare \"{{name}}\" from Markus Hub? Others will no longer be able to download it. Local files are kept.",
+  "confirmInstall": "Confirm Install",
+  "confirmInstallMsg": "Install \"{{name}}\" into this organization? It will become available for your teams.",
+  "confirmUninstall": "Confirm Uninstall",
+  "confirmUninstallMsg": "Uninstall \"{{name}}\"? Deployed instances will be removed from this organization. Local creation files are kept.",
   "installFailed": "Install failed: {{error}}",
   "uninstallFailed": "Uninstall failed: {{error}}",
   "shareFailed": "Share failed: {{error}}",
@@ -67,7 +75,22 @@
     "sharing": "Sharing...",
     "updating": "Updating...",
     "updateVersion": "Update v{{version}}",
-    "viewOnHub": "View on Hub"
+    "viewOnHub": "View on Hub",
+    "submittedForReview": "Submitted for review. Only you can see it until a moderator approves it — others who open the link will see an \"under review\" page.",
+    "convertedSlug": "Package slug auto-converted from \"{{previous}}\" to \"{{slug}}\" (Chinese title kept as display name). You can rename the slug later if you want a more readable English id.",
+    "convertedAndSubmitted": "Package slug auto-converted from \"{{previous}}\" to \"{{slug}}\", then submitted for review. The Chinese title stays as the display name.",
+    "updateSubmitted": "Update submitted for review. The previously approved version stays public until the new version is approved.",
+    "underReview": "Under review",
+    "underReviewTip": "This item is waiting for moderator approval. Only you can see it for now.",
+    "rejected": "Rejected",
+    "rejectedTip": "A moderator rejected this item, so it is not publicly visible.",
+    "updateUnderReview": "Update under review",
+    "updateUnderReviewTip": "Your latest changes are awaiting approval. The previously approved version stays public."
+  },
+  "pricing": {
+    "label": "Price",
+    "enableTips": "Let users send tips",
+    "reviewNote": "Public and link-only items are reviewed by a moderator before they become visible to others."
   },
   "shareMode": {
     "title": "Choose Share Mode",
@@ -84,7 +107,8 @@
     "share": "Share"
   },
   "visibility": {
-    "label": "Visibility",
+    "label": "Share to the community",
+    "subtitle": "Choose who can see it and set a price. Public items are reviewed, then appear in the Markus 广场.",
     "public": "Public",
     "publicDesc": "Visible to everyone, appears in Hub search",
     "org": "Organization",

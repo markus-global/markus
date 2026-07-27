@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useSyncExternalStore, lazy, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../api.ts';
+import { useLayout } from '../contexts/LayoutContext.tsx';
 
 const LazyMarkdownMessage = lazy(() => import('./MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 const LazyContentRenderer = lazy(() => import('./ContentRenderer.tsx').then(m => ({ default: m.ContentRenderer })));
@@ -141,14 +142,22 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
   const [content, setContent] = useState('');
   const [fileType, setFileType] = useState('');
   const [fileName, setFileName] = useState('');
+  const [mimeType, setMimeType] = useState('');
+  const [streamUrl, setStreamUrl] = useState('');
 
   useEffect(() => {
     setLoading(true);
     setError(null);
     api.files.preview(filePath).then((data) => {
-      setContent(data.content);
+      setContent(typeof data.content === 'string' ? data.content : '');
       setFileType(data.type);
       setFileName(data.name);
+      setMimeType(data.mimeType || '');
+      setStreamUrl(
+        data.streamUrl
+        || (data.path ? api.files.streamUrl(data.path) : '')
+        || (data.type === 'audio' || data.type === 'video' ? api.files.streamUrl(filePath) : ''),
+      );
     }).catch((err) => {
       setError(String(err?.message || err));
     }).finally(() => {
@@ -207,12 +216,29 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
               <p className="text-xs text-fg-tertiary">{error}</p>
             </div>
           )}
-          {!loading && !error && fileType === 'image' && (
+          {!loading && !error && fileType === 'image' && content && (
             <div className="flex justify-center">
-              <img src={`data:image/png;base64,${content}`} alt={displayName} className="max-w-full rounded" />
+              <img src={`data:${mimeType || 'image/png'};base64,${content}`} alt={displayName} className="max-w-full rounded" />
             </div>
           )}
-          {!loading && !error && fileType !== 'image' && (
+          {!loading && !error && fileType === 'audio' && streamUrl && (
+            <audio controls preload="metadata" src={streamUrl} className="w-full" />
+          )}
+          {!loading && !error && fileType === 'video' && streamUrl && (
+            <video controls preload="metadata" src={streamUrl} className="w-full max-h-[60vh] rounded-lg bg-black" />
+          )}
+          {!loading && !error && (fileType === 'binary' || (!content && fileType !== 'image' && fileType !== 'audio' && fileType !== 'video')) && (
+            <div className="text-center py-8 space-y-3">
+              <p className="text-sm text-fg-secondary">This file type cannot be previewed.</p>
+              <button
+                className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors"
+                onClick={() => void api.files.reveal(filePath)}
+              >
+                Reveal in file explorer
+              </button>
+            </div>
+          )}
+          {!loading && !error && content && fileType !== 'image' && fileType !== 'audio' && fileType !== 'video' && fileType !== 'binary' && (
             <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
               <LazyContentRenderer content={content} format={fileType === 'text' ? 'text' : fileType} className="text-sm" />
             </Suspense>
@@ -229,20 +255,24 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 export function FilePathLink({ path: filePath }: { path: string }) {
   const info = useFileInfo(filePath);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const layout = useLayout();
 
   const exists = info?.exists ?? false;
-  const isPreviewable = info?.type === 'markdown' || info?.type === 'html' || info?.type === 'json' || info?.type === 'text';
+  const isPreviewable = info?.type === 'markdown' || info?.type === 'html' || info?.type === 'json'
+    || info?.type === 'text' || info?.type === 'image' || info?.type === 'audio' || info?.type === 'video';
 
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (!exists) return;
     if (isPreviewable) {
+      // Prefer the right-side panel when the active page hosts one; else modal.
+      if (layout?.hostAvailable) { layout.openRightPanel({ kind: 'file', path: filePath }); return; }
       setPreviewPath(filePath);
     } else {
       api.files.reveal(filePath);
     }
-  }, [exists, isPreviewable, filePath]);
+  }, [exists, isPreviewable, filePath, layout]);
 
   const iconCls = 'inline w-3 h-3 align-[-0.125em]';
   const fileIcon = isPreviewable

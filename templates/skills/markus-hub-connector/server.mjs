@@ -175,8 +175,19 @@ function buildPayloadFromDir(dir) {
   let readme;
   if (files['README.md']) { readme = files['README.md']; delete files['README.md']; }
 
+  const slugSource = typeof config.name === 'string' ? config.name.trim() : '';
+  const slug = slugSource.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  if (!/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(slug) || slug.length < 2 || slug.length > 64) {
+    return {
+      error: 'Invalid package slug in manifest name. Use English kebab-case (e.g. "think-tank-research"): 2–64 chars, lowercase letters/digits/hyphens, must start with a letter. Put Chinese titles in displayName — Hub rejects Chinese or empty slugs.',
+    };
+  }
+
   return {
-    itemType, name: config.name, description: config.description,
+    itemType,
+    name: config.displayName || config.name,
+    slug,
+    description: config.description,
     category: config.category, tags: config.tags, config, files, readme,
   };
 }

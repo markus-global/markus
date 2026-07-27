@@ -3,17 +3,19 @@
  * from agent message processing to the web UI.
  *
  * Responsibilities:
- * - Manages the SSE connection lifecycle (open → stream → close)
+ * - Manages the SSE connection lifecycle (open → stream → close / reattach)
  * - Buffers text/tool events via SSEBuffer for reliable delivery
+ * - Accumulates events in ActiveStreamRegistry for refresh reattach
  * - Persists user/assistant messages and execution stream entries
- * - Handles WS fallback broadcast on disconnect
- * - Coordinates with AgentMailbox via deferred session restore
- * - Safety timeout to force-stop agents if SSE disconnects mid-processing
+ * - Soft-disconnect (refresh) does NOT cancel the agent; user Stop does
+ * - Handles WS fallback broadcast on disconnect when reattach is unavailable
  */
 import type { ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import type { Agent } from '@markus/core';
-import { createLogger, COMPLETION_MARKER, type LLMStreamEvent } from '@markus/shared';
+import { createLogger, stripCompletionMarkerLeak, SSE_DISCONNECT_FORCE_STOP_MS, type LLMStreamEvent } from '@markus/shared';
 import { SSEBuffer } from './sse-buffer.js';
+import type { ActiveStreamRegistry, ActiveStreamSession } from './active-stream-registry.js';
 
 const log = createLogger('sse-handler');
 
@@ -44,6 +46,8 @@ export interface SSEMessageHandlerOptions {
   isResume?: boolean;
   /** Deferred session restore data — applied when the mailbox item is processed, not at HTTP request time */
   sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null;
+  /** Registry for refresh reattach (optional — when omitted, soft-disconnect still avoids cancel). */
+  activeStreams?: ActiveStreamRegistry;
 }
 
 /**
@@ -52,10 +56,10 @@ export interface SSEMessageHandlerOptions {
 export class SSEHandler {
   private options: SSEMessageHandlerOptions;
   private sseBuffer: SSEBuffer | null = null;
-  private msgSegments: Array<{type: 'text'; content: string; thinking?: string; createdAt?: string} | {type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string}> = [];
+  private msgSegments: Array<{type: 'text'; content: string; thinking?: string; createdAt?: string} | {type: 'tool'; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string; subagentLogs?: Array<{ eventType: string; content: string; metadata?: Record<string, unknown> }>}> = [];
   private textBuf = '';
   private thinkingBuf = '';
-  private runningTools: Array<{tool: string; arguments?: unknown; startedAt: number}> = [];
+  private runningTools: Array<{tool: string; arguments?: unknown; startedAt: number; subagentLogs?: Array<{ eventType: string; content: string; metadata?: Record<string, unknown> }>}> = [];
   private totalTokens = 0;
   private processedTokens = 0;
   private isProcessing = false;
@@ -63,8 +67,32 @@ export class SSEHandler {
   private sseDisconnected = false;
   private cancelToken: { cancelled: boolean; userStopped?: boolean } = { cancelled: false };
   private sessionId: string | null = null;
+  private streamId = randomUUID();
+  private assistantMessageId: string;
+  private activeStream: ActiveStreamSession | null = null;
+  private forceStopTimer: ReturnType<typeof setTimeout> | null = null;
+  private snapshotSyncTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(options: SSEMessageHandlerOptions) {
     this.options = options;
+    this.assistantMessageId = options.messageId ?? `cm_stream_${randomUUID()}`;
+  }
+
+  /** Coalesce high-frequency subagent progress into snapshot updates for reattach. */
+  private scheduleUiSnapshotSync(immediate = false): void {
+    if (immediate) {
+      if (this.snapshotSyncTimer) {
+        clearTimeout(this.snapshotSyncTimer);
+        this.snapshotSyncTimer = null;
+      }
+      this.syncUiSnapshot();
+      return;
+    }
+    if (this.snapshotSyncTimer) return;
+    this.snapshotSyncTimer = setTimeout(() => {
+      this.snapshotSyncTimer = null;
+      this.syncUiSnapshot();
+    }, 200);
   }
 
   /**
@@ -87,24 +115,31 @@ export class SSEHandler {
       this.sseBuffer.onClose(() => {
         if (!this.isComplete) {
           this.sseDisconnected = true;
-          this.cancelToken.cancelled = true;
-          log.warn('SSE client disconnected — cancelling agent', {
+          // Soft disconnect (refresh / nav): do NOT cancel the agent.
+          // Only user Stop / force-stop sets cancelToken.
+          log.info('SSE client disconnected — detaching (agent continues)', {
             agentId: this.options.agentId,
+            streamId: this.streamId,
           });
-          // Persist partial content immediately so it survives a page refresh.
-          // The final persistence after agent completion will overwrite this.
           void this.persistPartialOnDisconnect();
 
-          // Safety timeout: if the agent hasn't completed within 120s after
-          // disconnect, force-stop it to avoid indefinite resource usage.
-          setTimeout(() => {
-            if (!this.isComplete) {
-              log.warn('Force-stopping agent after SSE disconnect timeout', {
+          if (this.forceStopTimer) clearTimeout(this.forceStopTimer);
+          this.forceStopTimer = setTimeout(() => {
+            if (!this.isComplete && !this.cancelToken.userStopped) {
+              log.warn('Force-stopping agent after SSE disconnect grace period', {
                 agentId: this.options.agentId,
+                graceMs: SSE_DISCONNECT_FORCE_STOP_MS,
               });
+              this.cancelToken.cancelled = true;
               this.cancelToken.userStopped = true;
+              this.activeStream?.cancel({
+                type: 'done',
+                content: '',
+                cancelled: true,
+                sessionId: this.sessionId,
+              });
             }
-          }, 120_000);
+          }, SSE_DISCONNECT_FORCE_STOP_MS);
         }
       });
 
@@ -118,12 +153,23 @@ export class SSEHandler {
         );
       } else if (this.options.isResume) {
         this.sessionId = this.options.sessionId ?? null;
+      } else {
+        this.sessionId = this.options.sessionId ?? null;
+      }
+
+      if (this.sessionId && this.options.activeStreams) {
+        this.activeStream = this.options.activeStreams.register({
+          streamId: this.streamId,
+          agentId: this.options.agentId,
+          sessionId: this.sessionId,
+          messageId: this.assistantMessageId,
+        });
       }
 
       // Deliver sessionId early so the client can persist it even if the stream
       // is aborted before the final 'done' event arrives.
-      if (this.sessionId && this.sseBuffer && !this.sseDisconnected) {
-        this.sseBuffer.send({ type: 'session_start', sessionId: this.sessionId });
+      if (this.sessionId) {
+        this.emitEvent({ type: 'session_start', sessionId: this.sessionId, streamId: this.streamId, messageId: this.assistantMessageId });
       }
 
       const reply = await this.options.agent.sendMessageStream(
@@ -144,8 +190,12 @@ export class SSEHandler {
         log.info('Message was merged into active processing — closing SSE without persisting', {
           agentId: this.options.agentId,
         });
+        const mergedDone = { type: 'done' as const, content: '', merged: true, sessionId: this.sessionId, segments: [] as unknown[] };
         if (this.sseBuffer && !this.sseDisconnected) {
-          this.sseBuffer.send({ type: 'done', content: '', merged: true, sessionId: this.sessionId, segments: [] });
+          this.sseBuffer.send(mergedDone);
+        }
+        this.activeStream?.complete(mergedDone);
+        if (this.sseBuffer && !this.sseDisconnected) {
           setTimeout(() => { if (this.sseBuffer) this.sseBuffer.close(); }, 100);
         }
         this.isComplete = true;
@@ -155,16 +205,12 @@ export class SSEHandler {
       const finalNow = new Date().toISOString();
       let finalThinking: string | undefined;
       if (this.thinkingBuf) {
-        if (this.sseBuffer && !this.sseDisconnected) {
-          this.sseBuffer.send({ type: 'thinking_commit', thinking: this.thinkingBuf, createdAt: finalNow });
-        }
+        this.emitEvent({ type: 'thinking_commit', thinking: this.thinkingBuf, createdAt: finalNow });
         finalThinking = this.thinkingBuf;
         this.thinkingBuf = '';
       }
       if (this.textBuf) {
-        if (this.sseBuffer && !this.sseDisconnected) {
-          this.sseBuffer.send({ type: 'text_commit', text: this.textBuf, createdAt: finalNow });
-        }
+        this.emitEvent({ type: 'text_commit', text: this.textBuf, createdAt: finalNow });
         const seg: typeof this.msgSegments[number] = { type: 'text' as const, content: this.textBuf, createdAt: finalNow };
         if (finalThinking) (seg as { thinking?: string }).thinking = finalThinking;
         this.msgSegments.push(seg);
@@ -175,6 +221,7 @@ export class SSEHandler {
 
       const wasCancelled = !!this.cancelToken.userStopped;
       this.finalizeRunningTools();
+      this.syncUiSnapshot();
 
       // Build the best available reply content for persistence.
       // If the agent returned empty/cancelled, reconstruct from accumulated segments.
@@ -187,13 +234,24 @@ export class SSEHandler {
           .join('');
         persistReply = segText || '';
       }
-      // Strip completion marker from persisted/displayed reply
-      persistReply = persistReply.replaceAll(COMPLETION_MARKER, '').trim() || persistReply;
+      // Strip completion marker (and malformed variants) from persisted/displayed reply
+      persistReply = stripCompletionMarkerLeak(persistReply).trim() || persistReply;
+
+      const donePayload = {
+        type: 'done' as const,
+        content: persistReply,
+        agentId: this.options.agentId,
+        sessionId: this.sessionId,
+        segments: this.msgSegments,
+        streamId: this.streamId,
+        messageId: this.assistantMessageId,
+        cancelled: wasCancelled || undefined,
+      };
 
       if (this.sseDisconnected) {
-        // Only send WS fallback if there is real content — don't broadcast
-        // empty/cancelled markers when the user aborted the stream.
-        if (persistReply && !isCancelledReply) {
+        // Prefer active-stream reattach; still WS-fallback for open clients that
+        // never reattached and have no registry subscription.
+        if (persistReply && !isCancelledReply && !this.activeStream) {
           log.info('Agent finished but SSE was disconnected — delivering reply via WebSocket fallback', {
             agentId: this.options.agentId,
             replyLength: persistReply.length,
@@ -212,14 +270,15 @@ export class SSEHandler {
             }
           }
         }
+        // Always push done into the ring so reattached clients finish cleanly.
+        this.activeStream?.complete(donePayload);
       } else {
-        this.sseBuffer.send({ 
-          type: 'done', 
-          content: persistReply, 
-          agentId: this.options.agentId,
-          sessionId: this.sessionId,
-          segments: this.msgSegments 
-        });
+        // Live client: write done to SSE without double-pushing into the ring
+        // (complete() already pushes the terminal event).
+        if (this.sseBuffer && !this.sseDisconnected) {
+          this.sseBuffer.send(donePayload);
+        }
+        this.activeStream?.complete(donePayload);
 
         if (this.sseBuffer) {
           const buffer = this.sseBuffer as unknown as { flush?: () => void };
@@ -233,7 +292,10 @@ export class SSEHandler {
         (s.type === 'text' && ((s as { content?: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
       );
       if (this.options.persistAssistantMessage && this.sessionId && (persistReply || hasSegments)) {
-        const msgMeta: Record<string, unknown> = {};
+        const msgMeta: Record<string, unknown> = {
+          isStreaming: false,
+          streamId: this.streamId,
+        };
         if (this.msgSegments.length > 0) msgMeta.segments = this.msgSegments;
         if (wasCancelled) msgMeta.isStopped = true;
         try {
@@ -242,7 +304,7 @@ export class SSEHandler {
             this.options.agentId,
             persistReply,
             this.options.agent.getState().tokensUsedToday,
-            Object.keys(msgMeta).length > 0 ? msgMeta : undefined,
+            msgMeta,
           );
         } catch (e) {
           log.error('Failed to persist assistant message', { agentId: this.options.agentId, error: String(e) });
@@ -256,6 +318,10 @@ export class SSEHandler {
       this.persistSegmentsToExecutionStream();
 
       this.isComplete = true;
+      if (this.forceStopTimer) {
+        clearTimeout(this.forceStopTimer);
+        this.forceStopTimer = null;
+      }
       
       if (!this.sseDisconnected) {
         setTimeout(() => {
@@ -288,7 +354,7 @@ export class SSEHandler {
         .map(s => (s as { content: string }).content)
         .join('');
       const errReply = partialText || errSuffix.trim();
-      const errMeta = { isError: true, segments: this.msgSegments };
+      const errMeta = { isError: true, isStreaming: false, streamId: this.streamId, segments: this.msgSegments };
 
       if (this.options.persistAssistantMessage && this.sessionId) {
         try {
@@ -299,19 +365,81 @@ export class SSEHandler {
           log.error('Failed to persist error message', { agentId: this.options.agentId, error: String(e) });
         }
       }
+      this.activeStream?.complete({
+        type: 'error',
+        error: String(error).slice(0, 500),
+        sessionId: this.sessionId,
+        streamId: this.streamId,
+      });
       if (this.options.onError) {
         void this.options.onError(error, this.msgSegments)
           .catch(e => log.warn('onError callback failed', { error: String(e) }));
       }
     } finally {
       this.isProcessing = false;
+      if (this.forceStopTimer) {
+        clearTimeout(this.forceStopTimer);
+        this.forceStopTimer = null;
+      }
     }
+  }
+
+  /** Emit to live SSE (if connected) and always to the reattach ring buffer. */
+  private emitEvent(event: { type: string; [key: string]: unknown }): void {
+    this.activeStream?.push(event);
+    if (this.sseBuffer && !this.sseDisconnected) {
+      this.sseBuffer.send(event);
+    }
+  }
+
+  /**
+   * Publish compact UI state for refresh reattach. Ring buffers of text_delta can
+   * drop early tool events; the snapshot keeps tools/text authoritative.
+   */
+  private syncUiSnapshot(): void {
+    if (!this.activeStream) return;
+    const segments = [
+      ...this.msgSegments,
+      ...this.runningTools.map(rt => ({
+        type: 'tool' as const,
+        tool: rt.tool,
+        status: 'running' as const,
+        arguments: rt.arguments,
+        durationMs: Date.now() - rt.startedAt,
+        createdAt: new Date(rt.startedAt).toISOString(),
+        ...(rt.subagentLogs?.length ? { subagentLogs: rt.subagentLogs } : {}),
+      })),
+    ];
+    if (this.textBuf) {
+      segments.push({
+        type: 'text',
+        content: this.textBuf,
+        ...(this.thinkingBuf ? { thinking: this.thinkingBuf } : {}),
+        createdAt: new Date().toISOString(),
+      });
+    } else if (this.thinkingBuf) {
+      segments.push({
+        type: 'text',
+        content: '',
+        thinking: this.thinkingBuf,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    const content = segments
+      .filter(s => s.type === 'text')
+      .map(s => ('content' in s ? s.content : '') || '')
+      .join('');
+    this.activeStream.setUiSnapshot({
+      content,
+      segments,
+      thinking: this.thinkingBuf || undefined,
+    });
   }
 
   private persistSegmentsToExecutionStream(): void {
     const repo = this.options.executionStreamRepo;
     if (!repo) return;
-    const messageId = this.options.messageId ?? `chat_${this.options.agentId}_${Date.now()}`;
+    const messageId = this.assistantMessageId;
 
     let seq = 0;
     const agentId = this.options.agentId;
@@ -335,23 +463,25 @@ export class SSEHandler {
 
   /**
    * Persist whatever content has been accumulated so far when the SSE
-   * connection drops.  This is a best-effort snapshot — the final
-   * persistence after agent completion will overwrite it with the
-   * authoritative result.
+   * connection drops. Soft disconnect marks isStreaming so refresh can reattach.
    */
   private async persistPartialOnDisconnect(): Promise<void> {
     if (!this.options.persistAssistantMessage || !this.sessionId) return;
 
+    this.syncUiSnapshot();
+
     const segments = [...this.msgSegments];
-    // Snapshot running tools as stopped
+    // Snapshot in-flight tools as still running so refresh UI doesn't look "stopped"
+    // while the agent continues (reattach will update to done/error).
     for (const rt of this.runningTools) {
       segments.push({
         type: 'tool',
         tool: rt.tool,
-        status: 'stopped',
+        status: 'running',
         arguments: rt.arguments,
         durationMs: Date.now() - rt.startedAt,
         createdAt: new Date().toISOString(),
+        ...(rt.subagentLogs?.length ? { subagentLogs: rt.subagentLogs } : {}),
       });
     }
     // Include any buffered text
@@ -366,14 +496,17 @@ export class SSEHandler {
 
     if (!partialText && segments.length === 0) return;
 
-    const meta: Record<string, unknown> = { isStopped: true };
+    const meta: Record<string, unknown> = {
+      isStreaming: true,
+      streamId: this.streamId,
+    };
     if (segments.length > 0) meta.segments = segments;
 
     try {
       await this.options.persistAssistantMessage(
         this.sessionId, this.options.agentId, partialText, 0, meta,
       );
-      log.info('Persisted partial content on SSE disconnect', {
+      log.info('Persisted partial streaming content on SSE disconnect', {
         agentId: this.options.agentId,
         segmentCount: segments.length,
         textLength: partialText.length,
@@ -397,21 +530,20 @@ export class SSEHandler {
         arguments: rt.arguments,
         durationMs: Date.now() - rt.startedAt,
         createdAt: new Date().toISOString(),
+        ...(rt.subagentLogs?.length ? { subagentLogs: rt.subagentLogs } : {}),
       });
     }
     this.runningTools = [];
   }
 
   /**
-   * 处理流式事件
+   * 处理流式事件 — always update internal state; wire writes only when connected.
    */
   private handleStreamEvent(event: AgentStreamEvent): void {
-    if (!this.sseBuffer || this.sseDisconnected) return;
-
     // Delay agent_tool start events until AFTER thinking_commit/text_commit
     // flushes, so the client receives them in correct order.
     if (!(event.type === 'agent_tool' && event.phase === 'start')) {
-      this.sseBuffer.send({ ...event });
+      this.emitEvent({ ...event });
     }
     
     if (event.type === 'thinking_delta' && event.thinking) {
@@ -420,6 +552,7 @@ export class SSEHandler {
 
     if (event.type === 'text_delta' && event.text) {
       this.textBuf += event.text;
+      this.syncUiSnapshot();
 
       if (this.options.onTextDelta) {
         this.options.onTextDelta(event.text);
@@ -430,7 +563,12 @@ export class SSEHandler {
       this.totalTokens = Math.max(this.totalTokens, this.processedTokens + 50);
       
       if (tokenEstimate >= 50 || this.processedTokens % 50 < tokenEstimate) {
-        this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, '正在生成回复...');
+        this.emitEvent({
+          type: 'progress',
+          current: this.processedTokens,
+          total: this.totalTokens,
+          message: '正在生成回复...',
+        });
       }
     } else if (event.type === 'agent_tool') {
       if (this.options.onToolEvent) {
@@ -441,7 +579,7 @@ export class SSEHandler {
         const now = new Date().toISOString();
         let turnThinking: string | undefined;
         if (this.thinkingBuf) {
-          this.sseBuffer.send({ type: 'thinking_commit', thinking: this.thinkingBuf, createdAt: now });
+          this.emitEvent({ type: 'thinking_commit', thinking: this.thinkingBuf, createdAt: now });
           turnThinking = this.thinkingBuf;
           this.thinkingBuf = '';
         }
@@ -449,19 +587,26 @@ export class SSEHandler {
           const seg: typeof this.msgSegments[number] = { type: 'text' as const, content: this.textBuf, createdAt: now };
           if (turnThinking) (seg as { thinking?: string }).thinking = turnThinking;
           this.msgSegments.push(seg); 
-          this.sseBuffer.send({ type: 'text_commit', text: this.textBuf, createdAt: now });
+          this.emitEvent({ type: 'text_commit', text: this.textBuf, createdAt: now });
           this.textBuf = ''; 
         } else if (turnThinking) {
           this.msgSegments.push({ type: 'text', content: '', thinking: turnThinking, createdAt: now });
         }
         // Send agent_tool start AFTER thinking/text commits
-        this.sseBuffer.send({ ...event });
+        this.emitEvent({ ...event });
         if (event.tool) {
           this.runningTools.push({ tool: event.tool, arguments: event.arguments, startedAt: Date.now() });
         }
-        this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `正在执行工具: ${event.tool}`);
+        this.syncUiSnapshot();
+        this.emitEvent({
+          type: 'progress',
+          current: this.processedTokens,
+          total: this.totalTokens,
+          message: `正在执行工具: ${event.tool}`,
+        });
       } else if (event.phase === 'end' && event.tool) {
-        this.runningTools = this.runningTools.filter(t => t.tool !== event.tool);
+        const ended = [...this.runningTools].reverse().find(t => t.tool === event.tool);
+        this.runningTools = this.runningTools.filter(t => t !== ended);
         this.msgSegments.push({ 
           type: 'tool', 
           tool: event.tool, 
@@ -471,8 +616,29 @@ export class SSEHandler {
           error: event.error,
           durationMs: event.durationMs,
           createdAt: new Date().toISOString(),
+          ...(ended?.subagentLogs?.length ? { subagentLogs: ended.subagentLogs } : {}),
         });
-        this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, `工具执行完成: ${event.tool}`);
+        this.syncUiSnapshot();
+        this.emitEvent({
+          type: 'progress',
+          current: this.processedTokens,
+          total: this.totalTokens,
+          message: `工具执行完成: ${event.tool}`,
+        });
+      }
+    } else if (event.type === 'subagent_progress' && event.tool && event.subagentEvent) {
+      const reversed = [...this.runningTools].reverse();
+      const target = reversed.find(t => t.tool === event.tool)
+        ?? reversed.find(t => t.tool === 'spawn_subagent' || t.tool === 'spawn_subagents');
+      if (target) {
+        const se = event.subagentEvent;
+        target.subagentLogs = [
+          ...(target.subagentLogs ?? []),
+          { eventType: se.eventType, content: se.content, ...(se.metadata ? { metadata: se.metadata } : {}) },
+        ];
+        // Keep reattach snapshot fresh so refresh mid-run shows nested progress.
+        const flush = se.eventType === 'completed' || se.eventType === 'error';
+        this.scheduleUiSnapshotSync(flush);
       }
     } else if (event.type === 'message_end') {
       // Do NOT flush textBuf/thinkingBuf here.  The agent's
@@ -485,7 +651,12 @@ export class SSEHandler {
         this.totalTokens = Math.max(this.totalTokens, event.usage.outputTokens);
         this.processedTokens = event.usage.outputTokens;
       }
-      this.sseBuffer.sendProgress(this.processedTokens, this.totalTokens, '回复生成完成');
+      this.emitEvent({
+        type: 'progress',
+        current: this.processedTokens,
+        total: this.totalTokens,
+        message: '回复生成完成',
+      });
     }
   }
 
@@ -494,15 +665,17 @@ export class SSEHandler {
    */
   private handleError(error: unknown, res: ServerResponse): void {
     try {
+      const errMsg = typeof error === 'string' ? error : (error instanceof Error ? error.message : String(error));
+      const payload = {
+        type: 'error',
+        error: errMsg,
+        sessionId: this.sessionId,
+        recoverable: false,
+        timestamp: Date.now(),
+        streamId: this.streamId,
+      };
+      this.emitEvent(payload);
       if (this.sseBuffer && !this.sseDisconnected) {
-        const errMsg = typeof error === 'string' ? error : (error instanceof Error ? error.message : String(error));
-        this.sseBuffer.send({
-          type: 'error',
-          error: errMsg,
-          sessionId: this.sessionId,
-          recoverable: false,
-          timestamp: Date.now(),
-        });
         setTimeout(() => {
           if (this.sseBuffer) {
             this.sseBuffer.close();
@@ -515,7 +688,7 @@ export class SSEHandler {
           Connection: 'keep-alive',
           'Access-Control-Allow-Origin': '*',
         });
-        res.write(`data: ${JSON.stringify({ type: 'error', message: String(error), sessionId: this.sessionId })}\\n\\n`);
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
         res.end();
       }
     } catch (e) {
@@ -524,11 +697,18 @@ export class SSEHandler {
   }
 
   /**
-   * 取消处理
+   * 取消处理 (user Stop)
    */
   cancel(): void {
     this.cancelToken.cancelled = true;
     this.cancelToken.userStopped = true;
+    this.activeStream?.cancel({
+      type: 'done',
+      content: '',
+      cancelled: true,
+      sessionId: this.sessionId,
+      streamId: this.streamId,
+    });
     if (this.sseBuffer) {
       this.sseBuffer.close();
       this.sseBuffer = null;
@@ -548,7 +728,7 @@ export class SSEHandler {
     };
   }
 
-  getSegments(): Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'done' | 'error' | 'stopped'}> {
+  getSegments(): Array<{type: 'text'; content: string} | {type: 'tool'; tool: string; status: 'running' | 'done' | 'error' | 'stopped'}> {
     return [...this.msgSegments];
   }
 

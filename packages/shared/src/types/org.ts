@@ -1,3 +1,5 @@
+import type { PlanTier } from './license.js';
+
 export type HumanRole = 'owner' | 'admin' | 'member' | 'guest';
 export type AgentRole = 'manager' | 'worker';
 
@@ -18,8 +20,7 @@ export interface Organization {
   name: string;
   ownerId: string;
   managerAgentId?: string;
-  plan: 'free' | 'pro' | 'enterprise';
-  maxAgents: number;
+  plan: PlanTier;
   createdAt: string;
 }
 

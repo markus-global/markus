@@ -14,6 +14,7 @@ const i18n: Record<string, Record<string, string>> = {
     settings: '设置',
     documentation: '文档',
     reportIssue: '反馈问题',
+    accountBilling: '账户与订阅',
     checkForUpdates: '检查更新…',
     upgradeToFull: '升级到完整版',
     about: '关于 Markus',
@@ -50,6 +51,7 @@ const i18n: Record<string, Record<string, string>> = {
     settings: 'Settings',
     documentation: 'Documentation',
     reportIssue: 'Report Issue',
+    accountBilling: 'Account & Billing',
     checkForUpdates: 'Check for Updates…',
     upgradeToFull: 'Upgrade to Full Version',
     about: 'About Markus',
@@ -174,6 +176,11 @@ export function setupMenu(backendUrl: string): void {
         {
           label: t['reportIssue'],
           click: () => shell.openExternal('https://github.com/markus-global/markus/issues'),
+        },
+        { type: 'separator' },
+        {
+          label: t['accountBilling'],
+          click: () => shell.openExternal('https://markus.global/settings'),
         },
         { type: 'separator' },
         ...(IS_MAS ? [{

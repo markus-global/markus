@@ -282,6 +282,8 @@ describe('executeTool meta-tools', () => {
       title: 'Approve deploy',
       description: 'Deploy v2.0 to production?',
       options: [{ id: 'approve', label: 'Approve' }],
+      allow_multiple: false,
+      allow_freeform: false,
     });
     expect(JSON.parse(approvalRaw).approved).toBe(true);
   });

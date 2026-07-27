@@ -141,8 +141,14 @@ export function createStructuredA2ATools(ctx: StructuredA2AContext): AgentToolHa
         properties: {
           agent_id: { type: 'string', description: 'The ID of the agent to delegate task to' },
           task_id: { type: 'string', description: 'Task ID to delegate' },
-          task_title: { type: 'string', description: 'Task title' },
-          task_description: { type: 'string', description: 'Task description' },
+          task_title: {
+            type: 'string',
+            description: 'Task title in the user\'s language (match User locale / their messages)',
+          },
+          task_description: {
+            type: 'string',
+            description: 'Task description in the user\'s language (same as task_title)',
+          },
           priority: { type: 'string', description: 'Task priority', enum: ['low', 'medium', 'high', 'urgent'] },
           deadline_ms: { type: 'number', description: 'Deadline in milliseconds from now (optional)' },
           required_skills: { type: 'string', description: 'Required skills (optional, comma-separated)' },

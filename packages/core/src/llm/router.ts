@@ -9,9 +9,12 @@ import { FireworksProvider } from './fireworks.js';
 import { CodexResponsesProvider } from './openai-codex.js';
 import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
+import { MarkusProvider, clearMarkusModelListCache } from './markus-provider.js';
+import { isObsoleteMarkusModel } from './hub-recommended-routing.js';
 import { AuthProfileStore } from './auth-profiles.js';
 import { OAuthManager } from './oauth-manager.js';
 import type { ModelCatalogService } from './model-catalog.js';
+
 
 const log = createLogger('llm-router');
 
@@ -166,6 +169,7 @@ export class LLMRouter {
     outputTokens: number;
     durationMs: number;
     finishReason: string;
+    cuCost?: number;
   }) => void;
 
   setLogCallback(cb: typeof this.logCallback): void {
@@ -265,8 +269,13 @@ export class LLMRouter {
    * These should immediately degrade the provider instead of waiting for CIRCUIT_OPEN_AFTER.
    */
   private static isNonRetryableError(error: unknown): boolean {
+    // Credit / key-limit exhaustion must NOT degrade the whole provider —
+    // multimodal tools still need the configured assignment, and the UI maps
+    // CU_EXCEEDED to a recharge hint. Auth/region failures still degrade.
+    if (LLMRouter.isCUExceededError(error)) return false;
     const msg = error instanceof Error ? error.message : String(error);
-    return /\b(401|402|403)\b/.test(msg) ||
+    if (/key limit exceeded|total limit/i.test(msg)) return false;
+    return /\b(401|403)\b/.test(msg) ||
       /insufficient balance/i.test(msg) ||
       /not available in your region/i.test(msg) ||
       /invalid.*api.*key/i.test(msg) ||
@@ -279,6 +288,20 @@ export class LLMRouter {
   private static isRateLimitError(error: unknown): boolean {
     const msg = error instanceof Error ? error.message : String(error);
     return /\b429\b/.test(msg) || /rate.limit/i.test(msg);
+  }
+
+  /** Detect CU-exhausted errors — return friendly error, do NOT fall back to direct mode. */
+  static isCUExceededError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    return msg.includes('CU_EXCEEDED:')
+      || msg.includes('CU_MONTHLY_EXCEEDED')
+      || /key limit exceeded|total limit/i.test(msg);
+  }
+
+  /** Detect Markus-specific rate limit or 5h window exceeded (separate from generic 429). */
+  static isMarkusRateLimited(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message : String(error);
+    return msg.includes('MARKUS_RATE_LIMITED:') || msg.includes('CU_WINDOW_EXCEEDED:');
   }
 
   /**
@@ -392,6 +415,15 @@ export class LLMRouter {
 
   /** Get all model definitions for a provider (builtin + custom), enriched with live catalog pricing */
   private getProviderModels(providerName: string): ModelDefinition[] {
+    // Markus Provider: once the Hub geo-aware OR catalog is loaded, it is the
+    // sole source of truth (OpenRouter slugs). Bare markus-* aliases are obsolete.
+    if (providerName === 'markus') {
+      const hubModels = this.customModelCatalog.get('markus') ?? [];
+      if (hubModels.length > 0) {
+        return hubModels.map(m => this.enrichModelFromCatalog(m));
+      }
+    }
+
     let builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === providerName);
     // For regional aliases, inherit the parent provider's catalog with provider field swapped
     if (builtinModels.length === 0 && REGIONAL_PROVIDER_ALIASES[providerName]) {
@@ -402,6 +434,62 @@ export class LLMRouter {
     const customModels = this.customModelCatalog.get(providerName) ?? [];
     const merged = [...builtinModels, ...customModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
     return merged.map(m => this.enrichModelFromCatalog(m));
+  }
+
+  /**
+   * Fetch the Hub-served OR model catalog into the Markus provider's picker.
+   * Keeps the current active model when it still exists in the catalog;
+   * only when the active model is missing/obsolete does it fall back to Hub default.
+   */
+  async refreshMarkusCatalog(): Promise<number> {
+    const provider = this.providers.get('markus');
+    if (!(provider instanceof MarkusProvider)) return 0;
+
+    clearMarkusModelListCache();
+    const models = await provider.fetchModels();
+    const defs: ModelDefinition[] = models.map(m => {
+      const caps = m.capabilities ?? [];
+      const hasVision = m.supports_vision || caps.includes('vision')
+        || (m.input_modalities?.includes('image') ?? false);
+      return {
+        id: m.id,
+        name: m.display_name || m.id,
+        provider: 'markus',
+        contextWindow: m.context_window,
+        maxOutputTokens: m.max_output_tokens,
+        cost: { input: 0, output: 0 },
+        reasoning: m.supports_reasoning,
+        inputTypes: hasVision ? ['text', 'image'] as Array<'text' | 'image'> : ['text' as const],
+        capabilities: caps.length > 0
+          ? caps
+          : (hasVision ? ['vision'] : undefined),
+        tier: m.tier === 'flash' || m.tier === 'base' ? 'base'
+          : m.tier === 'pro' ? 'pro'
+          : m.tier === 'premium' || m.tier === 'high' || m.tier === 'max' ? 'max'
+          : 'pro',
+        description: m.display_name,
+        route: m.route === 'openrouter' ? m.route : undefined,
+      };
+    });
+    this.customModelCatalog.set('markus', defs);
+
+    if (defs.length === 0) {
+      log.warn('Markus Hub catalog returned 0 models');
+      return 0;
+    }
+
+    const ids = new Set(defs.map(d => d.id));
+    const preferred = models.find(m => m.is_default)?.id ?? defs[0]!.id;
+    // Re-point only when the active model is a legacy bare markus-* alias or
+    // no longer in the catalog. `isObsoleteMarkusModel` is the source of truth.
+    const obsolete = isObsoleteMarkusModel(provider.model) || !ids.has(provider.model);
+    if (obsolete) {
+      provider.configure({ provider: 'markus', model: preferred });
+      log.info('Markus active model set from Hub catalog', { model: preferred, count: defs.length });
+    } else {
+      log.info('Markus Hub catalog refreshed', { model: provider.model, count: defs.length });
+    }
+    return defs.length;
   }
 
   /**
@@ -482,11 +570,18 @@ export class LLMRouter {
       provider = new GoogleProvider(config);
     } else if (name === 'ollama') {
       provider = new OllamaProvider(config);
+    } else if (name === 'markus') {
+      provider = new MarkusProvider(config);
     } else {
       provider = createOpenAICompatible(name, config);
     }
     this.registerProvider(name, provider);
     this.refreshTiers();
+    if (name === 'markus') {
+      void this.refreshMarkusCatalog().catch(err =>
+        log.warn('Failed to refresh Markus Hub catalog after register', { error: String(err) }),
+      );
+    }
   }
 
   private refreshTiers(): void {
@@ -519,6 +614,62 @@ export class LLMRouter {
     if (!existing) return;
     this.customModelCatalog.set(providerName, existing.filter(m => m.id !== modelId));
     log.info(`Removed custom model ${modelId} from provider ${providerName}`);
+  }
+
+  /** Get CU quota info from the Markus provider (if available). */
+  getMarkusQuotaInfo(): {
+    cuCost: number;
+    cuRemaining: number;
+    cuLimit: number;
+    totalCuUsed: number;
+    cuUsedToday: number;
+    lastCuCost: number;
+  } | null {
+    const provider = this.providers.get('markus');
+    if (provider && 'getCuUsageStats' in provider) {
+      const stats = (provider as MarkusProvider).getCuUsageStats();
+      return {
+        cuCost: stats.lastCuCost,
+        cuRemaining: stats.cuRemaining,
+        cuLimit: stats.cuLimit,
+        totalCuUsed: stats.totalCuUsed,
+        cuUsedToday: stats.cuUsedToday,
+        lastCuCost: stats.lastCuCost,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Soft-stop hint from Hub plan remaining CU (entitlement − ledger).
+   * Propagated to MarkusProvider; 0 blocks new chat locally.
+   */
+  setMarkusHubRemainingHint(remaining: number | null): void {
+    // Keep search-tool priority in sync (web_search reads MARKUS_CU_REMAINING).
+    if (remaining === null || remaining === undefined) {
+      delete process.env['MARKUS_CU_REMAINING'];
+    } else {
+      process.env['MARKUS_CU_REMAINING'] = String(Math.max(0, Math.floor(remaining)));
+    }
+    const provider = this.providers.get('markus');
+    if (provider instanceof MarkusProvider) {
+      provider.setHubRemainingHint(remaining);
+    }
+  }
+
+  /** Get cumulative CU usage stats from the Markus provider. */
+  getMarkusCuUsage(): {
+    totalCuUsed: number;
+    cuUsedToday: number;
+    cuRemaining: number;
+    cuLimit: number;
+    lastCuCost: number;
+  } | null {
+    const provider = this.providers.get('markus');
+    if (provider && 'getCuUsageStats' in provider) {
+      return (provider as MarkusProvider).getCuUsageStats();
+    }
+    return null;
   }
 
   enableAutoSelect(tiers?: ProviderTier[]): void {
@@ -581,6 +732,16 @@ export class LLMRouter {
       'audio_tts', 'audio_stt', 'video_generation',
     ]);
 
+    // Drop already-persisted junk keys (e.g. literal "undefined" from bad tool calls).
+    const base: CapabilityRoutingConfig['assignments'] = {};
+    for (const [key, val] of Object.entries(this._capabilityRouting.assignments)) {
+      if (VALID_CAPABILITY_TYPES.has(key)) {
+        base[key as ModelCapabilityType] = val;
+      } else {
+        log.warn('Dropping invalid capability type from existing routing', { capabilityType: key });
+      }
+    }
+
     const incoming = config.assignments ?? {};
     const cleaned: CapabilityRoutingConfig['assignments'] = {};
     for (const [key, val] of Object.entries(incoming)) {
@@ -591,7 +752,7 @@ export class LLMRouter {
       }
     }
 
-    this._capabilityRouting = { assignments: { ...this._capabilityRouting.assignments, ...cleaned } };
+    this._capabilityRouting = { assignments: { ...base, ...cleaned } };
     log.info('Capability routing updated', { assignments: Object.keys(this._capabilityRouting.assignments) });
   }
 
@@ -662,6 +823,29 @@ export class LLMRouter {
   }
 
   /**
+   * Look up any registered provider by name for one-shot tool overrides
+   * (`provider=` + `model=` on generate_image / text_to_speech / …).
+   * Does not require the provider to already be in capability routing.
+   */
+  resolveProviderByName(name: string): { provider: MultiModalProviderInterface; name: string } | undefined {
+    const key = name.trim();
+    if (!key) return undefined;
+    const p = this.providers.get(key);
+    if (!p || !this.isAvailable(key)) return undefined;
+    return { provider: p as MultiModalProviderInterface, name: key };
+  }
+
+  /** Names of registered, enabled, available providers (for tool error hints / one-shot pick). */
+  listRegisteredProviderNames(): string[] {
+    return [...this.providers.keys()].filter(n => this.isAvailable(n)).sort();
+  }
+
+  /** True when the provider exists in the registry but its Settings switch is off. */
+  isProviderDisabled(providerName: string): boolean {
+    return this.providers.has(providerName) && this.disabledProviders.has(providerName);
+  }
+
+  /**
    * Return an ordered list of provider candidates for a capability.
    * Always includes: assignment -> assignment.fallback -> routingDefaultModel -> defaultProvider.
    * When autoFallback is ON, appends all remaining available providers in fallback order.
@@ -692,17 +876,35 @@ export class LLMRouter {
       add(name, model);
     };
 
-    // Explicit assignment — always trust the user's choice
+    // Explicit assignment — always trust the user's choice. Include even when the
+    // provider is circuit-degraded so credit/auth failures surface as real errors
+    // instead of a misleading "No provider configured".
+    const addAssigned = (name: string, model?: string) => {
+      if (seen.has(name)) return;
+      const p = this.providers.get(name);
+      if (!p) return;
+      candidates.push({ provider: p as MultiModalProviderInterface, model, name });
+      seen.add(name);
+    };
     const assignment = this._capabilityRouting.assignments[capabilityType];
     if (assignment) {
-      add(assignment.provider, assignment.model);
-      if (assignment.fallback) add(assignment.fallback.provider, assignment.fallback.model);
+      addAssigned(assignment.provider, assignment.model);
+      if (assignment.fallback) addAssigned(assignment.fallback.provider, assignment.fallback.model);
     }
 
     // routingDefaultModel / defaultProvider are TEXT routing defaults;
     // for non-text tasks, only add them if they actually support the modality.
+    // Critically, `routingDefaultModel.model` is a *text* model — we must NOT
+    // carry it as the model for a media capability,
+    // or we end up POSTing a text id to an image/tts/stt endpoint (yielding a
+    // confusing "model does not exist" 400). For non-text capabilities we
+    // contribute only the PROVIDER and let it resolve a modality-appropriate
+    // model (or fail loudly if none is configured).
     if (this._routingDefaultModel) {
-      addIfCapable(this._routingDefaultModel.provider, this._routingDefaultModel.model);
+      addIfCapable(
+        this._routingDefaultModel.provider,
+        needsCapFilter ? undefined : this._routingDefaultModel.model,
+      );
     }
     addIfCapable(this.defaultProvider);
 
@@ -801,8 +1003,16 @@ export class LLMRouter {
       router.registerProvider('ollama', new OllamaProvider(ollamaConfig));
     }
 
+    const markusConfig = configs?.['markus'];
+    if (markusConfig?.apiKey) {
+      router.registerProvider('markus', new MarkusProvider(markusConfig));
+      void router.refreshMarkusCatalog().catch(err =>
+        log.warn('Failed to refresh Markus Hub catalog on createDefault', { error: String(err) }),
+      );
+    }
+
     for (const [name, cfg] of Object.entries(configs ?? {})) {
-      if (['anthropic', 'openai', 'google', 'ollama'].includes(name)) continue;
+      if (['anthropic', 'openai', 'google', 'ollama', 'markus'].includes(name)) continue;
       if (cfg?.apiKey) {
         router.registerProvider(name, createOpenAICompatible(name, cfg));
       }
@@ -849,11 +1059,15 @@ export class LLMRouter {
 
   private resolveMaxTokens(request: LLMRequest, providerName: string): LLMRequest {
     if (request.maxTokens) return request;
-    const catalogMax = this.getModelMaxOutput(providerName);
-    if (catalogMax && catalogMax > 4096) {
-      return { ...request, maxTokens: catalogMax };
+    // Fill in the model's real output ceiling when it's known. If the catalog
+    // can't resolve it, leave maxTokens unset — the provider then omits
+    // max_tokens and the upstream applies the model's own limit. Never
+    // substitute a hardcoded cap.
+    try {
+      return { ...request, maxTokens: this.getModelMaxOutput(providerName) };
+    } catch {
+      return request;
     }
-    return request;
   }
 
   /**
@@ -863,20 +1077,26 @@ export class LLMRouter {
   private async tryChat(providerName: string, request: LLMRequest, altModel?: string): Promise<{ response: LLMResponse; model: string }> {
     const provider = this.providers.get(providerName)!;
     const originalModel = provider.model;
-    if (altModel && altModel !== originalModel) {
+    // MarkusProvider resolves route/credentials per request.model — avoid mutating
+    // shared provider.model (concurrent Worker + OR chats would cross-contaminate).
+    const useRequestModelOnly = providerName === 'markus' || provider instanceof MarkusProvider;
+    const activeModel = altModel ?? originalModel;
+    const chatRequest = altModel ? { ...request, model: altModel } : request;
+    if (!useRequestModelOnly && altModel && altModel !== originalModel) {
       provider.configure({ provider: providerName as any, model: altModel });
     }
-    const activeModel = provider.model;
     await this.applyJitter(providerName);
     try {
-      const response = await provider.chat(request);
+      const response = await provider.chat(chatRequest);
       this.recordSuccess(providerName, activeModel);
       return { response, model: activeModel };
     } catch (error) {
-      this.recordFailure(providerName, activeModel, error);
+      if (!LLMRouter.isCUExceededError(error)) {
+        this.recordFailure(providerName, activeModel, error);
+      }
       throw LLMRouter.enrichError(error, providerName, activeModel);
     } finally {
-      if (altModel && altModel !== originalModel) {
+      if (!useRequestModelOnly && altModel && altModel !== originalModel) {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
       this.releaseInflight(providerName);
@@ -889,15 +1109,26 @@ export class LLMRouter {
 
     if (providerName) {
       primary = this.selectProvider(request, providerName);
+      // Explicit request.model (Chat UI session/turn override) wins.
+      if (request.model) {
+        routedModel = request.model;
+      } else if (
+        // Explicit provider pin still honors the global text routing model when
+        // it targets the same provider (e.g. Markus + Hub recommended text).
+        this._routingDefaultModel &&
+        this._routingDefaultModel.provider === primary &&
+        !this._capabilityRouting.assignments.text
+      ) {
+        routedModel = this._routingDefaultModel.model;
+      }
     } else {
       const capabilityType = options?.capabilityType ?? LLMRouter.inferCapability(request);
-      if (capabilityType === 'text' && !this._capabilityRouting.assignments.text) {
-        primary = this.selectProvider(request);
-      } else {
-        const routeResult = this.selectForCapability(capabilityType, request, options?.sessionId);
-        primary = routeResult.provider;
-        routedModel = routeResult.model;
-      }
+      // Always use selectForCapability for text so routingDefaultModel is applied.
+      // (Previously text-without-assignment called selectProvider and ignored it,
+      // leaving agents stuck on the provider's active flash model.)
+      const routeResult = this.selectForCapability(capabilityType, request, options?.sessionId);
+      primary = routeResult.provider;
+      routedModel = routeResult.model;
     }
 
     const provider = this.providers.get(primary);
@@ -922,6 +1153,11 @@ export class LLMRouter {
     } catch (error) {
       lastError = error;
       log.error(`LLM request failed for ${primary}:${routedModel ?? provider.model}`, { error: String(error) });
+
+      // CU_EXCEEDED / MARKUS_RATE_LIMITED are Markus-specific — do NOT fall back to BYOK providers
+      if (LLMRouter.isCUExceededError(error) || LLMRouter.isMarkusRateLimited(error)) {
+        throw lastError;
+      }
 
       // Try alternate models on the same provider (only when auto-fallback is enabled)
       if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
@@ -991,27 +1227,31 @@ export class LLMRouter {
   ): Promise<{ response: LLMResponse; model: string }> {
     const provider = this.providers.get(providerName)!;
     const originalModel = provider.model;
-    if (altModel && altModel !== originalModel) {
+    const useRequestModelOnly = providerName === 'markus' || provider instanceof MarkusProvider;
+    const activeModel = altModel ?? originalModel;
+    const streamRequest = altModel ? { ...request, model: altModel } : request;
+    if (!useRequestModelOnly && altModel && altModel !== originalModel) {
       provider.configure({ provider: providerName as any, model: altModel });
     }
-    const activeModel = provider.model;
     await this.applyJitter(providerName);
     try {
       let response: LLMResponse;
       if (provider.chatStream) {
-        response = await provider.chatStream(request, onEvent, signal);
+        response = await provider.chatStream(streamRequest, onEvent, signal);
       } else {
-        response = await provider.chat(request);
+        response = await provider.chat(streamRequest);
         if (response.content) onEvent({ type: 'text_delta', text: response.content });
         onEvent({ type: 'message_end', usage: response.usage, finishReason: response.finishReason });
       }
       this.recordSuccess(providerName, activeModel);
       return { response, model: activeModel };
     } catch (error) {
-      this.recordFailure(providerName, activeModel, error);
+      if (!LLMRouter.isCUExceededError(error)) {
+        this.recordFailure(providerName, activeModel, error);
+      }
       throw LLMRouter.enrichError(error, providerName, activeModel);
     } finally {
-      if (altModel && altModel !== originalModel) {
+      if (!useRequestModelOnly && altModel && altModel !== originalModel) {
         provider.configure({ provider: providerName as any, model: originalModel });
       }
       this.releaseInflight(providerName);
@@ -1024,15 +1264,20 @@ export class LLMRouter {
 
     if (providerName) {
       primary = this.selectProvider(request, providerName);
+      if (request.model) {
+        routedModel = request.model;
+      } else if (
+        this._routingDefaultModel &&
+        this._routingDefaultModel.provider === primary &&
+        !this._capabilityRouting.assignments.text
+      ) {
+        routedModel = this._routingDefaultModel.model;
+      }
     } else {
       const capabilityType = options?.capabilityType ?? LLMRouter.inferCapability(request);
-      if (capabilityType === 'text' && !this._capabilityRouting.assignments.text) {
-        primary = this.selectProvider(request);
-      } else {
-        const routeResult = this.selectForCapability(capabilityType, request, options?.sessionId);
-        primary = routeResult.provider;
-        routedModel = routeResult.model;
-      }
+      const routeResult = this.selectForCapability(capabilityType, request, options?.sessionId);
+      primary = routeResult.provider;
+      routedModel = routeResult.model;
     }
 
     const provider = this.providers.get(primary);
@@ -1060,6 +1305,13 @@ export class LLMRouter {
         throw lastError;
       }
       log.error(`LLM stream request failed for ${primary}:${provider.model}`, { error: String(error) });
+
+      // CU_EXCEEDED / MARKUS_RATE_LIMITED are Markus-specific — do NOT fall back to BYOK providers
+      if (LLMRouter.isCUExceededError(error) || LLMRouter.isMarkusRateLimited(error)) {
+        span.setError(lastError instanceof Error ? lastError : String(lastError));
+        span.end();
+        throw lastError;
+      }
 
       // Try alternate models on the same provider (only when auto-fallback is enabled)
       if (this._autoFallback && !LLMRouter.isNonRetryableError(error)) {
@@ -1130,12 +1382,37 @@ export class LLMRouter {
     this.defaultProvider = name;
     log.info(`Default LLM provider updated to: ${name}`);
 
+    // Keep the global routing default model in sync with the default provider.
+    // Text routing prefers `_routingDefaultModel` over `defaultProvider`, so if
+    // it still points at the *previous* provider's model, agents would keep
+    // using the old provider after a switch. When the default model is unset or
+    // belongs to a different provider, retarget it at the new provider's model.
+    const current = this._routingDefaultModel;
+    if (!current || current.provider !== name) {
+      const model = this.getProviderDefaultModel(name);
+      if (model) {
+        this._routingDefaultModel = { provider: name, model };
+        log.info(`Routing default model synced to new default provider: ${name}:${model}`);
+      }
+    }
+
     // Re-run tier configuration with the new default
     const providerNames = this.listProviders();
     if (this.autoSelect && providerNames.length > 1) {
       this.providerTiers = buildTiers(providerNames, name);
       this.fallbackOrder = [name, ...providerNames.filter(n => n !== name)];
     }
+  }
+
+  /**
+   * The model a provider uses by default: its configured active model, or the
+   * first model in its catalog. Returns undefined for an unknown provider.
+   */
+  getProviderDefaultModel(name: string): string | undefined {
+    const provider = this.providers.get(name);
+    if (!provider) return undefined;
+    if (provider.model) return provider.model;
+    return this.getProviderModels(name)[0]?.id;
   }
 
   /**
@@ -1147,7 +1424,7 @@ export class LLMRouter {
     for (const [name, p] of this.providers.entries()) {
       providers[name] = { model: p.model, configured: true };
     }
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek', 'markus']) {
       if (!providers[name]) {
         providers[name] = { model: '', configured: false };
       }
@@ -1189,7 +1466,7 @@ export class LLMRouter {
       };
     }
 
-    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek']) {
+    for (const name of ['anthropic', 'openai', 'openai-codex', 'google', 'ollama', 'minimax', 'minimax-cn', 'siliconflow', 'siliconflow-intl', 'openrouter', 'zai', 'deepseek', 'markus']) {
       if (!providers[name]) {
         const oauthProfile = this._profileStore?.getDefaultProfile(name);
         const enrichedModels = this.getProviderModels(name);
@@ -1207,7 +1484,12 @@ export class LLMRouter {
       }
     }
 
-    return { defaultProvider: this.defaultProvider, autoFallback: this._autoFallback, providers };
+    return {
+      defaultProvider: this.defaultProvider,
+      autoFallback: this._autoFallback,
+      routingDefaultModel: this._routingDefaultModel ?? null,
+      providers,
+    };
   }
 
   updateProviderModelConfig(providerName: string, config: { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }): void {
@@ -1287,12 +1569,21 @@ export class LLMRouter {
   getModelContextWindow(providerName?: string): number {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);
-    if (!provider) return 64000;
+    if (!provider) {
+      throw new Error(`Cannot resolve context window: provider "${name}" is not registered. Available: ${[...this.providers.keys()].join(', ') || '(none)'}.`);
+    }
     const custom = this.customModelConfigs.get(name);
-    if (custom?.contextWindow) return custom.contextWindow;
+    if (custom?.contextWindow && custom.contextWindow > 0) return custom.contextWindow;
     const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === name)
       ?? this.customModelCatalog.get(name)?.find(m => m.id === provider.model);
-    return catalogEntry?.contextWindow ?? 64000;
+    const ctx = catalogEntry?.contextWindow;
+    // No silent default: a missing/zero context window silently poisons the
+    // context budget (negative message budget → empty reply → agent "stops").
+    // Fail loud so the real cause (catalog not loaded / bad Hub data) surfaces.
+    if (!ctx || ctx <= 0) {
+      throw new Error(`Missing context_window for provider "${name}" (model "${provider.model || '(unset)'}"). The model catalog must supply a real value — refresh the Hub catalog. No default is substituted.`);
+    }
+    return ctx;
   }
 
   getActiveModelMaxOutput(): number {
@@ -1302,12 +1593,18 @@ export class LLMRouter {
   getModelMaxOutput(providerName?: string): number {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);
-    if (!provider) return 4096;
+    if (!provider) {
+      throw new Error(`Cannot resolve max output tokens: provider "${name}" is not registered. Available: ${[...this.providers.keys()].join(', ') || '(none)'}.`);
+    }
     const custom = this.customModelConfigs.get(name);
-    if (custom?.maxOutputTokens) return custom.maxOutputTokens;
+    if (custom?.maxOutputTokens && custom.maxOutputTokens > 0) return custom.maxOutputTokens;
     const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === name)
       ?? this.customModelCatalog.get(name)?.find(m => m.id === provider.model);
-    return catalogEntry?.maxOutputTokens ?? 4096;
+    const out = catalogEntry?.maxOutputTokens;
+    if (!out || out <= 0) {
+      throw new Error(`Missing max_output_tokens for provider "${name}" (model "${provider.model || '(unset)'}"). The model catalog must supply a real value — refresh the Hub catalog. No default is substituted.`);
+    }
+    return out;
   }
 
   getActiveModelName(providerName?: string): string {
@@ -1375,12 +1672,14 @@ export class LLMRouter {
         outputTokens: response.usage.outputTokens,
         durationMs,
         finishReason: response.finishReason,
+        cuCost: response.cuCost,
       });
     } catch { /* logging should never crash the app */ }
   }
 }
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  markus: 'Markus',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   'openai-codex': 'OpenAI Codex (OAuth)',
@@ -1473,6 +1772,8 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'glm-5.1', name: 'GLM-5.1', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 1.4, output: 4.4, cacheRead: 0.26 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
   { id: 'glm-5', name: 'GLM-5', provider: 'zai', contextWindow: 205000, maxOutputTokens: 16384, cost: { input: 1.0, output: 3.2, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
   { id: 'glm-4.7-flashx', name: 'GLM-4.7 FlashX', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 0.07, output: 0.4 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
+  // Markus Cloud — model list is loaded dynamically from Hub
+  // (`/api/models/live/markus` → original OpenRouter ids). No static aliases.
 ];
 
 // ---------------------------------------------------------------------------

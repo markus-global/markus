@@ -128,9 +128,11 @@ export function buildManifest(
     return [];
   };
 
-  const rawName = (raw.name as string) || (raw.displayName as string) || 'unnamed';
-  const name = kebab(rawName);
-  const displayName = (raw.displayName as string) || (raw.name as string) || name;
+  // `name` is the package slug — must already be (or normalize to) English kebab-case.
+  // Non-ASCII names are left as-is so validateManifest can reject them (no silent pkg-* hash).
+  const rawName = String((raw.name as string) || '').trim();
+  const name = toPackageSlug(rawName) ?? rawName;
+  const displayName = (raw.displayName as string) || rawName || name;
 
   const rawAuthor = raw.author;
   const author: string = typeof rawAuthor === 'string' ? rawAuthor
@@ -259,6 +261,8 @@ export function validateManifest(m: unknown): string[] {
     errors.push('type must be "agent", "team", or "skill"');
   if (!o.name || typeof o.name !== 'string' || o.name.trim().length === 0)
     errors.push('name is required');
+  else if (!isValidPackageSlug(o.name))
+    errors.push(PACKAGE_SLUG_ERROR);
   if (!o.version || typeof o.version !== 'string')
     errors.push('version is required');
   if (typeof o.version === 'string' && !/^\d+\.\d+\.\d+/.test(o.version))
@@ -287,14 +291,51 @@ export function validateManifest(m: unknown): string[] {
   return errors;
 }
 
+/** English kebab-case package slug: `code-reviewer`, `frontend-squad` (2–64 chars). */
+export const PACKAGE_SLUG_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+
+export const PACKAGE_SLUG_ERROR =
+  'name must be an English kebab-case slug (e.g. "code-reviewer"): 2–64 chars, lowercase letters/digits/hyphens only, must start with a letter. Chinese, spaces, and underscores are rejected. Put the human-readable title in displayName.';
+
+export function isValidPackageSlug(s: string): boolean {
+  return typeof s === 'string' && s.length >= 2 && s.length <= 64 && PACKAGE_SLUG_RE.test(s);
+}
+
+/**
+ * Normalize a string toward a package slug. Returns null when the input cannot
+ * become a valid English kebab-case slug (e.g. Chinese-only names).
+ */
+export function toPackageSlug(s: string): string | null {
+  const result = s.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+  return isValidPackageSlug(result) ? result : null;
+}
+
+/**
+ * Ensure a package slug is valid. ASCII names normalize to kebab-case;
+ * non-ASCII (e.g. Chinese) get a stable `pkg-<hash>` slug so legacy artifacts
+ * can still be shared without manual rename.
+ */
+export function ensurePackageSlug(raw: string): { slug: string; converted: boolean } {
+  const input = String(raw || '').trim();
+  if (isValidPackageSlug(input)) return { slug: input, converted: false };
+  const normalized = toPackageSlug(input);
+  if (normalized) return { slug: normalized, converted: normalized !== input };
+  return { slug: kebab(input || 'package'), converted: true };
+}
+
 /**
  * Convert a string to a kebab-case slug safe for filesystem paths and URLs.
- * Handles non-ASCII names (e.g. Chinese) by generating a stable hash-based slug.
+ * Prefer `toPackageSlug` for package `name` / Hub publish slugs — this helper
+ * may invent a `pkg-*` hash for non-ASCII input and must not be used to bypass validation.
  */
 export function kebab(s: string, fallback?: string): string {
-  const result = s.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
-  if (result) return result;
-  if (fallback) return fallback;
+  const normalized = toPackageSlug(s);
+  if (normalized) return normalized;
+  if (fallback && isValidPackageSlug(fallback)) return fallback;
+  if (fallback) {
+    const fb = toPackageSlug(fallback);
+    if (fb) return fb;
+  }
   let hash = 0;
   for (let i = 0; i < s.length; i++) hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
   return `pkg-${Math.abs(hash).toString(36)}`;

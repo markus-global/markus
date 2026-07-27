@@ -1,77 +1,110 @@
 {
   "title": "报告",
   "tabs": {
-    "generate": "生成",
+    "dashboard": "仪表盘",
     "history": "历史"
   },
-  "period": {
-    "daily": "按日",
-    "weekly": "按周",
-    "monthly": "按月",
-    "today": "今天",
-    "thisWeek": "本周",
-    "thisMonth": "本月"
+  "kpi": {
+    "tasksCompleted": "已完成任务",
+    "ofTotal": "共 {{total}} 项",
+    "activeContributors": "活跃贡献者",
+    "agentsAndHumans": "{{agents}} 智能体 · {{humans}} 人类",
+    "cuConsumed": "积分消耗",
+    "tokensConsumed": "Token 消耗",
+    "todayAmount": "今日：{{amount}}",
+    "successRate": "成功率",
+    "healthScore": "健康度：{{score}}/100"
   },
-  "usage": {
-    "llmTokens": "LLM Token（累计）",
-    "toolCalls": "工具调用（今天）",
-    "messages": "消息（今天）",
-    "storage": "存储"
+  "quota": {
+    "title": "Cloud AI",
+    "personalLimitLabel": "个人积分限额",
+    "personalLimit": "组织管理员为您设置了个人积分限额。",
+    "notConnected": "未连接到 Markus Hub",
+    "connect": "连接",
+    "bonus": "奖励：{{amount}}",
+    "resetsAt": "重置时间 {{date}}",
+    "topUp": "充值",
+    "windowQuota": "5小时窗口：{{amount}} 积分（可升级）",
+    "windowUsageLabel": "5小时窗口用量",
+    "windowQuotaNone": "5小时窗口：未启用",
+    "rateLimit": "频率限制：600 次/分钟（所有计划统一）"
   },
-  "taskMetrics": {
-    "title": "任务指标",
-    "completed": "已完成",
-    "inProgress": "进行中",
-    "created": "已创建",
-    "blocked": "已阻塞",
-    "failed": "失败"
+  "agents": {
+    "title": "智能体排名",
+    "noData": "暂无智能体数据。启动智能体后可在此查看。",
+    "name": "智能体",
+    "team": "团队",
+    "tasks": "任务",
+    "cuUsed": "积分消耗",
+    "tokens": "Tokens",
+    "efficiency": "效率",
+    "total": "合计（{{count}} 个智能体）",
+    "mixedProviders": "混合供应商 — 积分仅统计 Cloud AI",
+    "showAll": "展开全部 {{count}} 个",
+    "showLess": "收起"
   },
-  "costOverview": {
-    "title": "费用概览",
-    "estCostAllTime": "预估费用（累计）",
-    "tokensToday": "今日 Token",
-    "costToday": "今日费用",
+  "humans": {
+    "title": "团队成员",
+    "name": "姓名",
+    "role": "角色",
+    "team": "团队"
+  },
+  "teamPerf": {
+    "title": "团队表现",
+    "members": "{{agents}}A · {{humans}}H",
+    "tasks": "任务",
+    "cuUsed": "积分",
+    "tokens": "Tokens",
+    "managedBy": "管理者：{{name}}"
+  },
+  "trends": {
+    "title": "用量趋势",
+    "byDay": "按天",
+    "byHour": "按小时",
+    "days": "天",
+    "totalCredits": "积分消耗",
+    "totalTokens": "Token 消耗",
+    "totalRequests": "请求次数",
+    "creditsChart": "积分",
+    "tokensChart": "Tokens",
+    "max": "最大",
+    "noData": "暂无用量数据。连接 Markus Hub 查看趋势。",
+    "models": "模型"
+  },
+  "history": {
+    "planPending": "计划待处理",
+    "planStatus": "计划 {{status}}",
+    "taskMetrics": "任务指标",
+    "metric": {
+      "completed": "已完成",
+      "inProgress": "进行中",
+      "created": "已创建",
+      "blocked": "已阻塞",
+      "failed": "失败"
+    },
+    "costOverview": "费用概览",
     "totalTokens": "Token 总计",
-    "estimatedCost": "预估费用",
-    "trend": "趋势"
-  },
-  "taskSummary": {
-    "title": "任务摘要",
+    "cuUsed": "积分消耗",
+    "trend": "趋势",
+    "taskSummary": "任务摘要",
     "completedCount": "已完成（{{count}}）",
     "inProgressCount": "进行中（{{count}}）",
     "blockedCount": "已阻塞（{{count}}）",
-    "noTasksInPeriod": "该时间段内没有任务。"
-  },
-  "highlights": "要点",
-  "blockers": "阻塞项",
-  "upcomingPlan": {
-    "title": "后续计划",
+    "noTasks": "该时间段内没有任务。",
+    "highlights": "要点",
+    "blockers": "阻塞项",
+    "upcomingPlan": "后续计划",
     "approvePlan": "批准计划",
     "rejectPlan": "拒绝计划",
     "rejectionReason": "拒绝原因：",
     "planApproved": "计划已批准",
     "planRejected": "计划已拒绝",
-    "planPending": "计划待处理",
-    "planStatus": "计划 {{status}}"
+    "noDetailedMetrics": "此报告不包含详细指标数据。",
+    "feedbackTitle": "反馈（{{count}}）",
+    "feedbackPlaceholder": "添加反馈或说明…",
+    "feedbackAdded": "反馈已添加"
   },
-  "noDetailedMetrics": "此报告不包含详细指标数据。",
-  "noReportsYet": "尚未生成报告。请使用「生成」标签页创建。",
-  "feedback": {
-    "title": "反馈（{{count}}）",
-    "placeholder": "添加反馈或说明…",
-    "added": "反馈已添加"
-  },
-  "perAgentUsage": {
-    "title": "各智能体用量",
-    "noData": "暂无智能体用量数据。",
-    "agent": "智能体",
-    "totalTokens": "Token 总计",
-    "today": "今天",
-    "requests": "请求数",
-    "toolCalls": "工具调用",
-    "estCost": "预估费用",
-    "totalAgents": "合计（{{count}} 个智能体）"
-  },
+  "noReportsYet": "尚未生成报告。",
   "reportType": "{{type}} 报告",
   "backToList": "← 返回列表"
 }

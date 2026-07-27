@@ -163,10 +163,15 @@ Everything the agent has experienced. Two substores serving different time horiz
 | Format | `ConversationSession` — `{ id, agentId, messages: LLMMessage[], startedAt, lastActivityAt }` |
 | Write triggers | `appendMessage()` on every LLM turn |
 | Prompt injection | Automatically included as conversation history |
-| Compaction | Auto-compact when session exceeds threshold (keep recent, summarize old) |
+| Compaction | Full transcript kept by default; storage-side safety compaction only at `SESSION_STORAGE_COMPACT_TRIGGER = 2000` messages → keep `SESSION_STORAGE_COMPACT_KEEP = 1000`. Per-LLM-call token packing is separate (see [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) §3.2) |
 | Lifetime | Per-session; new session per task or chat |
 
 Session ID prefixes identify type: `hb_` (heartbeat), `a2a_`, `comment_`, `sys_`, `task_`.
+
+> **Storage compaction is a high-volume safety net, not a token saver.** Below 2000
+> messages the full transcript is kept on disk; only pathological on-disk tool results are
+> shrunk (`SESSION_STORAGE_TOOL_SHRINK_CHARS = 100k`). This mirrors the window-first packing
+> policy — we do not drop turns early to "save tokens".
 
 ### Past Episodes — Activity History
 
@@ -235,7 +240,7 @@ How the agent operates — managed outside `MemoryStore` by the role/skill syste
 | Component | Storage | Loader |
 |-----------|---------|--------|
 | ROLE.md | `~/.markus/agents/{id}/role/ROLE.md` | `RoleLoader` / `EnhancedRoleLoader` (`enhanced-role-loader.ts`) |
-| HEARTBEAT.md | `~/.markus/agents/{id}/HEARTBEAT.md` | Loaded by heartbeat processor |
+| HEARTBEAT.md | `~/.markus/agents/{id}/role/HEARTBEAT.md` | Loaded by heartbeat processor |
 | Skills | Installed via `discover_tools` | Skill registry + MCP |
 
 ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `file_edit`. Changes require proven experience — the self-evolution skill governs when and how agents modify their own identity.
@@ -252,7 +257,8 @@ ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `fi
 ├── MEMORY.md              # Semantic: curated knowledge + ## _observations
 ├── metrics.json           # Health counters (not memory)
 ├── role/
-│   └── ROLE.md            # Procedural: identity
+│   ├── ROLE.md            # Procedural: identity
+│   └── HEARTBEAT.md       # Periodic self-check checklist
 ├── sessions/
 │   └── sess_{ts}_{rand}.json  # Episodic: current conversation
 ├── daily-logs/
@@ -301,6 +307,52 @@ Periodic process that maintains semantic memory health. Runs via `consolidateMem
 
 ---
 
+## 8.7 Memory Flush (spec)
+
+Before the working context fills up, the agent is prompted to persist anything important so
+lossy compaction never silently discards decisions or learned facts. The prompt-side
+mechanics live in [PROMPT-ENGINEERING.md §5.7](./PROMPT-ENGINEERING.md); this is the
+authoritative behavior spec.
+
+- **Behavior**: a **turn-level preflight** runs `memoryFlush` once per session when the
+  previous turn's context usage crossed a high-water threshold (~75%). The flush asks the
+  agent to `memory_save` key decisions/facts and `update_notebook` current state. It runs
+  as an independent `sys_` session.
+- **Invariants**:
+  - Flush fires **at most once per session** (deduplicated), and **before** the compression
+    that would drop older turns.
+  - The flush session is independent, so a flush cannot recurse into another flush or into
+    storage compaction (no `flush → compact → flush` loop).
+  - Low-usage turns never trigger a flush.
+- **Design rationale (Hermes)**: Hermes's compression flushes durable memory to disk *first*;
+  Markus adopts the same "flush before you lose it" ordering, implemented as a preflight so it
+  does not reenter the packing path.
+- **Testing** (`packages/core/test/memory-flush-preflight.test.ts`): the pure decision
+  `shouldMemoryFlushPreflight` fires at/above threshold, not below, not twice per session,
+  never for `sys_` sessions, and not without prior usage. Wiring lives in
+  `Agent.maybeMemoryFlushPreflight` / `recordContextUsage`, invoked before the chat, stream,
+  and task `prepareMessages` calls.
+- **Status**: implemented (`shouldMemoryFlushPreflight` + `maybeMemoryFlushPreflight`, wired
+  into all three main turn paths; `memoryFlush` runs in an independent `sys_` session).
+
+## 8.8 MEMORY.md write-refusal visibility (spec)
+
+`MEMORY.md` enforces per-section (`MEMORY_MD_SECTION_MAX_CHARS = 3000`) and total
+(`MEMORY_MD_TOTAL_MAX_CHARS = 15000`) limits. When a `memory_save` / `memory_update` would
+exceed the cap after compression, the write is refused.
+
+- **Behavior**: a refused write returns a structured failure (`{ ok:false, reason }`,
+  recognized by `isToolErrorResult`) and is surfaced to the activity log / stream (see
+  [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) §4.1) — never a silent no-op the
+  model mistakes for success.
+- **Testing** (`packages/core/test/memory-store.test.ts` "B1:", `memory-tools-extended.test.ts`):
+  an over-cap write returns `{ ok:false, reason }`; the memory tools propagate it as a
+  structured `{ status:'error', ok:false }` result the caller/UI can observe.
+- **Status**: implemented (`MemoryStore.addLongTermMemory` returns `{ ok, reason }`;
+  `memory_update` / `memory_update_longterm` return a structured error on refusal).
+
+---
+
 ## 9. Key Rules
 
 1. **MEMORY.md curated sections are sacred** — only distilled knowledge. Never raw LLM output or debug info.
@@ -322,3 +374,4 @@ Periodic process that maintains semantic memory health. Runs via `consolidateMem
 | [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) | How memory is assembled into system prompts |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Overall system architecture |
 | [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Mailbox stimulus/response feeds into episodic memory |
+| [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) | Surfaces memory-write refusals as visible events |

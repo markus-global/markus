@@ -3,23 +3,29 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
-  api, wsClient,
+  api, wsClient, invalidateApiCache,
   type AgentInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
-  type TaskInfo, type TeamInfo, type AuthUser,
+  type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
+  type SubagentProgressEvent,
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
+import { UserInputModal } from '../components/UserInputModal.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
   ToolCallRow, ExecEntryRow, ThinkingDots,
-  taskLogToEntry, activityLogToEntry, filterCompletedStarts, attachSubagentLogsToEntries,
+  filterCompletedStarts, attachSubagentLogsToEntries,
   type ExecEntry, type ExecutionStreamEntryUI,
 } from '../components/ExecutionTimeline.tsx';
+import { isVirtualScrollAdjustSuppressed } from '../components/execution-utils.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { parseMentionNames, renderMentionText } from '../components/CommentInput.tsx';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
+import { RightPanel } from '../components/RightPanel.tsx';
+import { useLayout } from '../contexts/LayoutContext.tsx';
 import { AgentProfile, TAB_DEF as AGENT_TAB_DEF, type ProfileTab } from './AgentProfile.tsx';
 import { TeamProfile, TABS as TEAM_TABS, type TeamTab } from './TeamProfile.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
@@ -29,26 +35,27 @@ import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
 import { Avatar } from '../components/Avatar.tsx';
+import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
+import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext,
+  storedSegmentsToMsgSegments,
+  appendLiveOutput, appendSubagentLog,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
 import {
   NotificationBadge, ChatAgentLink, AvatarPopover, MessageActions,
-  AgentMessageBody, segmentsToStreamEntries, friendlyAgentError,
+  AgentMessageBody, segmentsToStreamEntries, friendlyAgentError, isMarkusCreditError, dispatchCreditNotification,
 } from './ChatComponents.tsx';
 export type { MsgSegment };
+
+/** L1/L2 team-chat sidebar collapse preference. Only written on manual toggle. */
+const TEAM_SIDEBARS_COLLAPSED_KEY = 'markus_team_sidebars_c';
 
 function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 }
-
-// Components extracted to ChatComponents.tsx:
-// NotificationBadge, ChatAgentLink, AvatarPopover, friendlyAgentError,
-// MessageActions, segmentsToStreamEntries, AgentMessageBody
-
-// (AvatarPopover, ChatAgentLink extracted to ChatComponents.tsx)
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -156,8 +163,117 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     storageKey: 'markus_chat_sidebar',
   });
 
-  // Sidebars collapsed: user can collapse both L1 and L2 together
-  const [sidebarsCollapsed, setSidebarsCollapsed] = useState(false);
+  // Sidebars collapsed: user can collapse both L1 and L2 together.
+  // Persist only explicit user toggles (collapse/expand buttons). Default open.
+  // Transient collapses (Cmd+B, right-panel open) must not write this key.
+  const [sidebarsCollapsed, setSidebarsCollapsed] = useState(() => {
+    try { return localStorage.getItem(TEAM_SIDEBARS_COLLAPSED_KEY) === '1'; }
+    catch { return false; }
+  });
+  const setSidebarsCollapsedPersisted = useCallback((collapsed: boolean) => {
+    setSidebarsCollapsed(collapsed);
+    try { localStorage.setItem(TEAM_SIDEBARS_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* ignore */ }
+  }, []);
+
+  // Unified layout coordination (Cmd+B collapse, Cmd+L right panel, host registration)
+  const layout = useLayout();
+  const layoutLeftCollapsed = layout?.leftCollapsed ?? false;
+  const rightPanelPayload = layout?.rightPanel ?? null;
+  const rightPanelTabs = layout?.rightPanelTabs ?? [];
+  const activeRightPanelTabId = layout?.activeRightPanelTabId ?? null;
+  const rightPanelFullscreen = layout?.rightPanelFullscreen ?? false;
+  // Wide right reserve keeps chat comfortably narrow on ultrawide screens, but
+  // shrinks once the right panel is open (the panel already fills that space).
+  const chatRightReserve = rightPanelPayload ? '2xl:pr-8' : '2xl:pr-[280px]';
+  const setHostAvailable = layout?.setHostAvailable;
+  // Header × collapses the panel (keeps tabs); tab × closes one tab.
+  const collapseRightPanel = layout?.collapseRightPanelOnly ?? layout?.toggleRightPanel;
+  const openRightPanel = layout?.openRightPanel;
+
+  // Right-side resource panel (preview / selection-to-agent).
+  // The rendered width is derived reactively from the space actually available in
+  // the team container (see effectiveRightPanelWidth further below), so the panel
+  // never gets pushed off-screen / truncated — even when the user manually
+  // re-expands the L1/L2 sidebars while the panel is open. `panelWidthPref` is
+  // 'auto' for the even 50/50 split, or a user-chosen pixel width after dragging.
+  const CHAT_MIN_W = 400;
+  const PANEL_MIN_W = 320;
+  const RESIZE_HANDLE_W = 6;
+  // Live width of the team container (already excludes the global L0 rail).
+  const [containerWidth, setContainerWidth] = useState<number>(
+    typeof window !== 'undefined' ? window.innerWidth : 1440,
+  );
+  const [panelWidthPref, setPanelWidthPref] = useState<number | 'auto'>('auto');
+
+  // Drive L1+L2 collapse from the unified command (Cmd+B). React only to *changes*
+  // after mount — never apply the initial L0-persisted leftCollapsed value, so a
+  // hard refresh keeps L1 at its own default/persisted preference (open by default).
+  const prevLayoutLeftCollapsed = useRef(layoutLeftCollapsed);
+  useEffect(() => {
+    if (prevLayoutLeftCollapsed.current === layoutLeftCollapsed) return;
+    prevLayoutLeftCollapsed.current = layoutLeftCollapsed;
+    setSidebarsCollapsed(layoutLeftCollapsed);
+  }, [layoutLeftCollapsed]);
+
+  // Register this page as a right-panel host while it is the active desktop page.
+  useEffect(() => {
+    if (!setHostAvailable) return;
+    setHostAvailable(isActive && !isMobile);
+    return () => setHostAvailable(false);
+  }, [isActive, isMobile, setHostAvailable]);
+
+  // Agent tools open_right_panel / collapse_right_panel (Team Chat only).
+  useEffect(() => {
+    if (previewMode || isMobile || !isActive) return;
+    const unsub = wsClient.on('ui:right_panel', (event) => {
+      const p = event.payload as {
+        agentId?: string;
+        action?: 'open' | 'collapse';
+        panel?: {
+          kind?: 'url' | 'file' | 'deliverable';
+          url?: string;
+          path?: string;
+          title?: string;
+          deliverableId?: string;
+        };
+      };
+      if (p.action === 'collapse') {
+        collapseRightPanel?.();
+        return;
+      }
+      if (p.action !== 'open' || !p.panel || !openRightPanel) return;
+      const panel = p.panel;
+      if (panel.kind === 'url' && panel.url) {
+        const browserId = `eb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+        openRightPanel({
+          kind: 'url',
+          url: panel.url,
+          title: panel.title || panel.url,
+          browserId,
+        });
+        return;
+      }
+      if (panel.kind === 'file' && panel.path) {
+        openRightPanel({ kind: 'file', path: panel.path, title: panel.title });
+        return;
+      }
+      if (panel.kind === 'deliverable' && panel.deliverableId) {
+        void api.deliverables.get(panel.deliverableId).then(res => {
+          if (res.deliverable) {
+            openRightPanel({ kind: 'deliverable', deliverable: res.deliverable });
+          }
+        }).catch(() => { /* ignore missing deliverable */ });
+      }
+    });
+    return unsub;
+  }, [previewMode, isMobile, isActive, collapseRightPanel, openRightPanel]);
+
+  // Add a right-panel selection into the chat as pending context, then focus input.
+  const addChatContext = useCallback((chip: { label: string; content: string }) => {
+    const id = `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    setChatContext(prev => [...prev, { id, ...chip }]);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, []);
 
   // L2: Team detail panel (hidden by default, toggled via header button)
   const [showTeamDetailPanel, setShowTeamDetailPanel] = useState<boolean>(() => {
@@ -190,18 +306,89 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [l2SpaceTight]);
 
   useEffect(() => {
-    if (isMobile || previewMode) return;
+    if (isMobile) return;
     const el = teamContainerRef.current;
     if (!el) return;
     const ro = new ResizeObserver(([entry]) => {
       if (!entry) return;
       const containerW = entry.contentRect.width;
-      const chatAreaIfL2 = containerW - chatSidebar.width - teamDetailPanel.width;
-      setL2SpaceTight(chatAreaIfL2 < 400);
+      setContainerWidth(containerW);
+      if (!previewMode) {
+        const chatAreaIfL2 = containerW - chatSidebar.width - teamDetailPanel.width;
+        setL2SpaceTight(chatAreaIfL2 < 400);
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, [isMobile, previewMode, chatSidebar.width, teamDetailPanel.width]);
+
+  // Space consumed by the L1/L2 sidebars that share the flex row with the chat
+  // column + right panel. A collapsed L1 is fully hidden (0px) and a floating L2
+  // is overlaid (0px in flow), so neither eats into the available width. The
+  // extra buffer covers the sidebars' own resize-handle children (~6px each).
+  const l2InlineOpen = showTeamDetailPanel && !l2SpaceTight && !l2Floating;
+  const leftRailWidth = sidebarsCollapsed
+    ? 0
+    : chatSidebar.width + RESIZE_HANDLE_W + (l2InlineOpen ? teamDetailPanel.width + RESIZE_HANDLE_W : 0);
+  // Width shared by the chat column and the right panel (everything except the
+  // left rails). A small buffer keeps us on the safe side of rounding so the
+  // flex row never overflows.
+  const spaceForChatPanel = Math.max(0, containerWidth - leftRailWidth - RESIZE_HANDLE_W - 8);
+  // Reserve for the chat column scales down when space is tight, so BOTH the chat
+  // and the panel stay fully visible (never truncated) no matter how many
+  // sidebars the user opens or which agent is active. The panel is then capped to
+  // whatever remains — this is the invariant that prevents any overflow.
+  const chatReserve = Math.min(CHAT_MIN_W, Math.floor(spaceForChatPanel * 0.4));
+  const maxRightPanelWidth = Math.max(0, spaceForChatPanel - chatReserve);
+  // Even 50/50 split of the shared space (chat column vs. panel).
+  const evenSplitWidth = Math.min(Math.round(spaceForChatPanel / 2), maxRightPanelWidth);
+  // Reactive: 'auto' keeps the even split as the layout settles/changes; a user
+  // drag pins a pixel width. Either way it is clamped so the panel always fits.
+  const desiredRightPanelWidth = panelWidthPref === 'auto' ? evenSplitWidth : panelWidthPref;
+  const effectiveRightPanelWidth = Math.max(0, Math.min(desiredRightPanelWidth, maxRightPanelWidth));
+
+  // On each fresh open of the right panel: collapse the L1/L2 sidebars to make
+  // room, and re-center to an even 50/50 split. This fires directly on the
+  // open transition (rather than relying on the shared leftCollapsed flag
+  // changing), so it works even when that flag was already set. The user can
+  // still manually re-expand the sidebars afterwards — the width stays clamped.
+  const rightPanelWasOpen = useRef(false);
+  useEffect(() => {
+    const open = (layout?.rightPanel ?? null) !== null;
+    if (open && !rightPanelWasOpen.current) {
+      setSidebarsCollapsed(true);
+      setPanelWidthPref('auto');
+    }
+    rightPanelWasOpen.current = open;
+  }, [layout?.rightPanel]);
+
+  // Custom resize handle for the right panel: seeds the drag from the currently
+  // rendered width (so there's no jump), then pins a user-chosen pixel width.
+  const effectiveRightPanelWidthRef = useRef(effectiveRightPanelWidth);
+  effectiveRightPanelWidthRef.current = effectiveRightPanelWidth;
+  const maxRightPanelWidthRef = useRef(maxRightPanelWidth);
+  maxRightPanelWidthRef.current = maxRightPanelWidth;
+  const onRightPanelResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = effectiveRightPanelWidthRef.current;
+    const onMove = (ev: MouseEvent) => {
+      const next = startW + (startX - ev.clientX); // drag left → wider panel
+      const max = maxRightPanelWidthRef.current;
+      const min = Math.min(PANEL_MIN_W, max); // never below the soft min unless space is tighter
+      setPanelWidthPref(Math.max(min, Math.min(max, next)));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
 
   useEffect(() => {
     if (!l2Floating) return;
@@ -318,6 +505,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const [input, setInput] = useState('');
   const [chatReplyTo, setChatReplyTo] = useState<{ id: string; sender: string; text: string } | null>(null);
+  // Selections sent from the right-side resource panel, prepended to the next message.
+  const [chatContext, setChatContext] = useState<Array<{ id: string; label: string; content: string }>>([]);
   const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
   const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [streamingVisual, setStreamingVisual] = useState(!!previewData?.streamLastMessage);
@@ -332,6 +521,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
     return () => { if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current); };
   }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Badge must follow local SSE/sending state — agent.status can return to idle
+  // while the UI is still flushing thinking/text deltas. Only scan the tail:
+  // streaming bubbles are always near the end of the conversation.
+  const chatStreamActive = sending || streamingVisual || (() => {
+    for (let i = messages.length - 1; i >= Math.max(0, messages.length - 8); i--) {
+      const m = messages[i]!;
+      if (m.isStreaming && !m.isStopped) return true;
+    }
+    return false;
+  })();
 
   // Preview mode: typewriter streaming effect for the last agent message
   const previewStreamRef = useRef<{ fullText: string; timers: ReturnType<typeof setTimeout>[] }>({ fullText: '', timers: [] });
@@ -385,6 +585,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /** Session-scoped model pick from the composer menu (null = use global routing). */
+  const [sessionModelOverride, setSessionModelOverride] = useState<ChatModelSelection | null>(null);
+  const reattachAbortRef = useRef<AbortController | null>(null);
 
   const adjustTextareaHeight = useCallback(() => {
     const el = textareaRef.current;
@@ -418,10 +621,29 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       try { localStorage.setItem(`markus_closed_tabs_${agentId}`, JSON.stringify([...closed])); } catch { /* ignore */ }
     }
   };
+  // Persist the active session per agent so a page refresh restores the same
+  // session the user was on (instead of always snapping back to the main session).
+  const getStoredActiveSession = (agentId: string): string | null => {
+    try { return localStorage.getItem(`markus_active_session_${agentId}`); } catch { return null; }
+  };
+  const setStoredActiveSession = (agentId: string, sessionId: string | null) => {
+    if (!agentId) return;
+    try {
+      if (sessionId && sessionId !== NEW_CHAT_PLACEHOLDER_ID) {
+        localStorage.setItem(`markus_active_session_${agentId}`, sessionId);
+      } else {
+        localStorage.removeItem(`markus_active_session_${agentId}`);
+      }
+    } catch { /* ignore */ }
+  };
 
   const [sessions, setSessions] = useState<ChatSessionInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
+  // Pending request_user_input requests raised by the agent during a direct chat.
+  const [userInputApprovals, setUserInputApprovals] = useState<ApprovalInfo[]>([]);
+  const [activeInputModal, setActiveInputModal] = useState<ApprovalInfo | null>(null);
+  const [respondingInputId, setRespondingInputId] = useState<string | null>(null);
   const [openSessionTabs, _setOpenSessionTabs] = useState<ChatSessionInfo[]>([]);
   // Wrapper that deduplicates tabs by ID to prevent duplicate "main session" entries
   const setOpenSessionTabs: typeof _setOpenSessionTabs = (action) => {
@@ -658,7 +880,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const unsub = wsClient.on('agent:update', () => { throttledRefreshAgents(); throttledRefreshTeams(); });
     const unsubTeamUpdate = wsClient.on('team:update', () => { throttledRefreshTeams(); throttledRefreshGroupChats(); });
     const unsubTeamOnAgentRemoved = wsClient.on('agent:removed', throttledRefreshTeams);
-    const unsubGroup = wsClient.on('chat:group_created', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
+    // Team create must refresh immediately — throttled refresh left sidebar stale so
+    // clicks no-oped until a full page reload (groupChats missing the new team channel).
+    const unsubGroup = wsClient.on('chat:group_created', () => {
+      void refreshGroupChats();
+      void refreshTeams();
+      void refreshAgents();
+    });
     const unsubGroupUpdate = wsClient.on('chat:group_updated', throttledRefreshGroupChats);
     const unsubGroupDelete = wsClient.on('chat:group_deleted', () => { throttledRefreshGroupChats(); throttledRefreshTeams(); });
     const unsubTaskUpdate = wsClient.on('task:update', (event) => {
@@ -740,7 +968,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             enterMobileTeam(teamId);
           } else {
             const teamGc = groupChatsRef.current.find(gc => gc.type === 'team' && gc.teamId === teamId);
-            if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); setShowTeamDetailPanel(true); }
+            setChatMode('channel');
+            setActiveChannel(teamGc?.channelKey ?? `group:${teamId}`);
+            setMainTab('chat');
+            setShowMemberPanel(false);
+            setShowTeamDetailPanel(true);
           }
         }
         if (detail.params?.openHire === 'true') {
@@ -799,7 +1031,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (isMobile) {
         enterMobileTeam(selectTeam);
       } else {
-        pendingSelectTeamRef.current = selectTeam;
+        const teamGc = groupChatsRef.current.find(gc => gc.type === 'team' && gc.teamId === selectTeam);
+        setChatMode('channel');
+        setActiveChannel(teamGc?.channelKey ?? `group:${selectTeam}`);
+        setMainTab('chat');
+        setShowMemberPanel(false);
+        setShowTeamDetailPanel(true);
       }
     }
     window.addEventListener('markus:navigate', handleNav);
@@ -809,13 +1046,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   useEffect(() => {
     const teamId = pendingSelectTeamRef.current;
-    if (!teamId || groupChats.length === 0) return;
+    if (!teamId) return;
     const teamGc = groupChats.find(gc => gc.type === 'team' && gc.teamId === teamId);
-    if (teamGc) {
-      pendingSelectTeamRef.current = null;
-      setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); setShowTeamDetailPanel(true);
-    }
-  }, [groupChats]);
+    // Enter as soon as we know the team id — synthetic channel works even before groupChats refresh.
+    pendingSelectTeamRef.current = null;
+    setChatMode('channel');
+    setActiveChannel(teamGc?.channelKey ?? `group:${teamId}`);
+    setMainTab('chat');
+    setShowMemberPanel(false);
+    setShowTeamDetailPanel(true);
+  }, [groupChats, teams]);
 
   // Auto-select secretary agent when no valid agent is selected.
   // Also handles stale IDs from localStorage (e.g. deleted agents).
@@ -823,7 +1063,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (previewMode && previewData?.chatMode === 'channel') return;
     if (agents.length === 0) return;
     if (selectedAgent && agents.some(a => a.id === selectedAgent)) return;
-    const secretary = agents.find(a => a.role === 'secretary')
+    const secretary = agents.find(a => !a.teamId && a.role?.toLowerCase() === 'secretary')
+      ?? agents.find(a => a.role?.toLowerCase() === 'secretary')
       ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
     if (secretary) {
       setChatMode('direct');
@@ -837,33 +1078,48 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [agents, selectedAgent]);
 
   // Track whether the user is at the bottom of the chat scroll container.
-  // Every scroll event checks position; programmatic scrolls (from
-  // scrollChatToBottom) are flagged so they don't flip userAtBottomRef off.
+  // Programmatic scrolls must not mark the user as "scrolled up", but we still
+  // sync the jump button from the real DOM position (virtualizer size changes
+  // often leave a residual gap that would otherwise keep the button stuck on).
   const isProgrammaticScrollRef = useRef(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const newMsgCountRef = useRef(0);
   const [newMsgCount, setNewMsgCount] = useState(0);
+  const syncChatBottomState = useCallback((opts?: { fromProgrammatic?: boolean }) => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    // Virtualizer totalSize is estimate-based; keep a looser threshold so the
+    // jump button doesn't stick on when the last bubble is already in view.
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distance < 160;
+    if (atBottom) {
+      userAtBottomRef.current = true;
+      setShowScrollBtn(false);
+      newMsgCountRef.current = 0;
+      setNewMsgCount(0);
+      return;
+    }
+    // During programmatic snap-to-bottom, ignore transient mid-scroll gaps.
+    if (opts?.fromProgrammatic || isProgrammaticScrollRef.current) return;
+    userAtBottomRef.current = false;
+    setShowScrollBtn(true);
+  }, []);
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
-    const isAtBottom = () => el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     const onScroll = () => {
-      if (isProgrammaticScrollRef.current) return;
-      if (isAtBottom()) {
-        userAtBottomRef.current = true;
-        setShowScrollBtn(false);
-        newMsgCountRef.current = 0;
-        setNewMsgCount(0);
-      } else {
-        userAtBottomRef.current = false;
-        setShowScrollBtn(true);
-      }
+      syncChatBottomState({ fromProgrammatic: isProgrammaticScrollRef.current });
     };
     el.addEventListener('scroll', onScroll, { passive: true });
+    // Virtualizer totalSize / streaming height changes don't always fire scroll.
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => syncChatBottomState()) : null;
+    ro?.observe(el);
+    syncChatBottomState();
     return () => {
       el.removeEventListener('scroll', onScroll);
+      ro?.disconnect();
     };
-  }, [mobileLayer]);
+  }, [mobileLayer, syncChatBottomState]);
 
   // visibleMessages + virtualizer must be declared before scrollChatToBottom
   const visibleMessages = useMemo(() =>
@@ -883,6 +1139,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     overscan: 8,
   });
 
+  // NOTE: `shouldAdjustScrollPositionOnItemSizeChange` is a settable INSTANCE
+  // property in virtual-core (not an option passed through setOptions), so it must
+  // be assigned directly on the instance. When the user expands/collapses a row
+  // inside a message we return false so the virtualizer skips its scroll
+  // compensation and the clicked row stays anchored (top-fixed) — otherwise, for
+  // a row near the viewport top, the default `item.start < scrollOffset` rule
+  // shifts the whole list up and the clicked header scrolls off-screen. Outside a
+  // user toggle we replicate the library default so normal scrolling through
+  // not-yet-measured items above the viewport stays stable.
+  chatVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+    if (isVirtualScrollAdjustSuppressed()) return false;
+    return item.start < (instance.scrollOffset ?? 0);
+  };
+
   // NOTE: Do NOT call chatVirtualizer.measure() on message changes.
   // measureElement uses ResizeObserver internally (v3+) which automatically
   // detects height changes in rendered items. Calling measure() resets ALL
@@ -890,21 +1160,31 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'instant') => {
     isProgrammaticScrollRef.current = true;
+    const finish = () => {
+      isProgrammaticScrollRef.current = false;
+      // We intentionally scrolled to the last message — hide the jump control
+      // even if estimate-based scrollHeight still reports a residual gap.
+      userAtBottomRef.current = true;
+      setShowScrollBtn(false);
+      newMsgCountRef.current = 0;
+      setNewMsgCount(0);
+      requestAnimationFrame(() => syncChatBottomState({ fromProgrammatic: true }));
+    };
     if (visibleMessages.length > 0) {
       chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior });
       // Re-scroll after virtualizer measures actual item sizes
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior: 'instant' });
-          requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
+          requestAnimationFrame(finish);
         });
       });
     } else {
       const el = chatScrollRef.current;
       if (el) el.scrollTo({ top: el.scrollHeight, behavior });
-      requestAnimationFrame(() => { isProgrammaticScrollRef.current = false; });
+      requestAnimationFrame(finish);
     }
-  }, [visibleMessages.length, chatVirtualizer]);
+  }, [visibleMessages.length, chatVirtualizer, syncChatBottomState]);
 
   // ── Preserve scroll position across page-level navigation ──
   // PageSlot now uses visibility:hidden + position:absolute instead of
@@ -913,7 +1193,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const isActiveRef = useRef(isActive);
   useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
-  // Snap to bottom after DOM updates, but only if user hasn't scrolled up.
+  // Snap to bottom after message DOM updates, but only if user hasn't scrolled up.
+  // Do NOT depend on `activities` — activity ticks during streaming would force
+  // repeated scrollToBottom and fight the user / expand-anchor.
   // When items are prepended (loadMore), anchor scroll to the previously top-visible item.
   useLayoutEffect(() => {
     if (skipScrollRef.current) {
@@ -927,17 +1209,34 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
     if (!isActiveRef.current) return;
     if (!userAtBottomRef.current) return;
+    // Expanding/collapsing a tool row temporarily owns scroll anchoring —
+    // don't yank back to bottom while that suppression window is open.
+    if (isVirtualScrollAdjustSuppressed()) return;
     scrollChatToBottom();
-  }, [messages, activities, scrollChatToBottom, chatVirtualizer]);
+  }, [messages, scrollChatToBottom, chatVirtualizer]);
 
   const prevMainTabRef = useRef(mainTab);
   useEffect(() => {
     const wasProfile = prevMainTabRef.current !== 'chat';
     prevMainTabRef.current = mainTab;
-    if (mainTab === 'chat' && wasProfile && userAtBottomRef.current) {
-      requestAnimationFrame(() => scrollChatToBottom());
+    // Returning to the chat tab: the message list is virtualized inside a
+    // container that was `display:none` while off-tab, so the virtualizer's
+    // scroll element measured 0px and its visible range stayed pinned near the
+    // top. A streaming message appended while we were away therefore sits
+    // outside the rendered range and looks like it "disappeared". Re-scroll to
+    // the bottom across several frames so the virtualizer re-measures the now
+    // visible container and brings the in-progress message back into view.
+    // Always do this while a stream is running, even if the last scroll left us
+    // slightly off-bottom.
+    if (mainTab === 'chat' && wasProfile && (userAtBottomRef.current || sending)) {
+      const timers: Array<ReturnType<typeof setTimeout>> = [];
+      const raf = requestAnimationFrame(() => scrollChatToBottom('instant'));
+      for (const delay of [60, 160, 320]) {
+        timers.push(setTimeout(() => scrollChatToBottom('instant'), delay));
+      }
+      return () => { cancelAnimationFrame(raf); for (const t of timers) clearTimeout(t); };
     }
-  }, [mainTab, scrollChatToBottom]);
+  }, [mainTab, sending, scrollChatToBottom]);
 
   // Load channel messages from DB → store in buffer + update display
   const loadChannelMessages = useCallback(async (channel: string, bufferKey?: string) => {
@@ -967,7 +1266,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const { count, hasMore: more, oldestCursor } = await loadAndDisplay(sessionId, convKey, async () => {
         const result = await api.sessions.getMessages(sessionId, 50);
         const msgs = result.messages.map(dbMsgToChat).filter(m =>
-          m.sender !== 'agent' || m.text || (m.segments && m.segments.length > 0)
+          m.sender !== 'agent' || m.text || (m.segments && m.segments.length > 0) || m.isStreaming
         );
         return {
           messages: msgs,
@@ -982,6 +1281,364 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (currentConvKeyRef.current === convKey) setLoadingChat(false);
     }
   }, [loadAndDisplay]);
+
+  /**
+   * After refresh / session switch: if the server still has an active generation
+   * for this session, reattach SSE and continue streaming into the last agent bubble.
+   * Must consume text + tool + commit events the same way as a live send().
+   */
+  const reattachCooldownRef = useRef<Map<string, number>>(new Map());
+  const tryReattachActiveStream = useCallback(async (agentId: string, sessionId: string, convKey: string) => {
+    if (!agentId || !sessionId || sessionId === NEW_CHAT_PLACEHOLDER_ID) return;
+    try {
+      // Live send() still owns this session's SSE — keep consuming there; a second
+      // attach would double-apply tool/subagent events.
+      if (
+        abortControllerRef.current
+        && !abortControllerRef.current.signal.aborted
+        && getStreamSession(convKey)?.has(sessionId)
+      ) {
+        beginStream(convKey);
+        if (currentConvKeyRef.current === convKey) setSending(true);
+        return;
+      }
+
+      // Prevent attach storms when the browser is out of sockets / soft-disconnect loops.
+      const cooldownKey = `${agentId}:${sessionId}`;
+      const lastAttempt = reattachCooldownRef.current.get(cooldownKey) ?? 0;
+      if (Date.now() - lastAttempt < 1500) return;
+
+      const status = await api.sessions.streamStatus(agentId, sessionId);
+      const msgs = msgBuffers.get(convKey) ?? [];
+      const last = [...msgs].reverse().find(m => m.sender === 'agent');
+      // `active` stays true for ~90s after done/error so late refresh can drain
+      // the terminal event — only attach when still streaming, or when the UI
+      // bubble is still marked in-flight and needs the final `done`.
+      const serverStreaming = status.status === 'streaming';
+      const lateTerminal = !!status.active
+        && (status.status === 'done' || status.status === 'error')
+        && !!last?.isStreaming;
+      if (!serverStreaming && !lateTerminal) return;
+
+      reattachCooldownRef.current.set(cooldownKey, Date.now());
+      reattachAbortRef.current?.abort();
+      const abortCtrl = new AbortController();
+      reattachAbortRef.current = abortCtrl;
+      beginStream(convKey);
+      setSending(true);
+      setStreamSession(convKey, sessionId);
+
+      // Ensure there is an agent bubble to stream into. Keep DB tool segments as
+      // an interim view — server `snapshot` (or live tool events) will replace/
+      // update them. Do NOT wipe tools here: ring replay alone can miss early
+      // tool events once the text_delta ring overflows.
+      let agentMsgId = last?.id;
+      if (!last || last.isError) {
+        agentMsgId = `reattach_${Date.now()}`;
+        updateConvMsgs(convKey, prev => [
+          ...prev,
+          { id: agentMsgId!, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), isStreaming: true, segments: [] },
+        ], sessionId);
+      } else {
+        // Keep tool cards from soft-disconnect DB persist; drop text segments so
+        // ring text_delta fallback (no snapshot) does not duplicate DB text.
+        const revivedTools = (last.segments ?? [])
+          .filter((s): s is Extract<typeof s, { type: 'tool' }> => s.type === 'tool')
+          .map(s =>
+            s.status === 'stopped' || s.status === 'running'
+              ? { ...s, status: 'running' as const }
+              : s,
+          );
+        updateConvMsgs(convKey, prev => prev.map(m =>
+          m.id === last.id
+            ? {
+                ...m,
+                text: '',
+                isStreaming: true,
+                isStopped: false,
+                segments: revivedTools,
+                committedSegments: undefined,
+              }
+            : m,
+        ), sessionId);
+      }
+
+      let insideThink = false;
+      const appendTextChunk = (chunk: string) => {
+        if (currentConvKeyRef.current !== convKey) return;
+        lastSseEventTimeRef.current = Date.now();
+        updateConvMsgsRaf(convKey, prev => {
+          const u = [...prev];
+          const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
+          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent')?.j ?? -1;
+          if (i < 0) return prev;
+          const segs = u[i]!.segments ?? [];
+          const lastSeg = segs[segs.length - 1];
+          const prevThinking = lastSeg?.type === 'text' ? (lastSeg as { thinking?: string }).thinking ?? '' : '';
+
+          let thinking = '';
+          let content = '';
+          let remaining = chunk;
+          while (remaining.length > 0) {
+            if (insideThink) {
+              const closeIdx = remaining.indexOf('</think>');
+              if (closeIdx >= 0) {
+                thinking += remaining.slice(0, closeIdx);
+                remaining = remaining.slice(closeIdx + '</think>'.length);
+                insideThink = false;
+              } else {
+                thinking += remaining;
+                remaining = '';
+              }
+            } else {
+              const openIdx = remaining.indexOf('<think>');
+              if (openIdx >= 0) {
+                content += remaining.slice(0, openIdx);
+                remaining = remaining.slice(openIdx + '<think>'.length);
+                insideThink = true;
+              } else {
+                content += remaining;
+                remaining = '';
+              }
+            }
+          }
+          const mergedThinking = (prevThinking + thinking) || undefined;
+          const newSegs = lastSeg?.type === 'text'
+            ? [...segs.slice(0, -1), { type: 'text' as const, content: lastSeg.content + content, thinking: mergedThinking, createdAt: lastSeg.createdAt }]
+            : [...segs, { type: 'text' as const, content, thinking: mergedThinking, createdAt: new Date().toISOString() }];
+          u[i] = { ...u[i]!, text: (u[i]!.text ?? '') + content, segments: newSegs, isStreaming: true };
+          return u;
+        }, sessionId);
+      };
+
+      const handleToolEvent = (event: AgentToolEvent) => {
+        if (currentConvKeyRef.current !== convKey) return;
+        lastSseEventTimeRef.current = Date.now();
+        if (event.phase === 'heartbeat') return;
+        if (event.phase === 'start' || event.phase === 'end') {
+          appendConvActivity(convKey, { ...event, phase: event.phase, ts: Date.now() }, sessionId);
+        }
+        if (event.phase === 'start') {
+          const toolKey = `${event.tool}_${Date.now()}`;
+          const now = new Date().toISOString();
+          // Revive a soft-disconnect "stopped/running" tool for the same name, else push a new one.
+          const reviveOrPush = (list: MsgSegment[]): MsgSegment[] => {
+            const arr = [...list];
+            for (let i = arr.length - 1; i >= 0; i--) {
+              const s = arr[i]!;
+              if (s.type === 'tool' && s.tool === event.tool && (s.status === 'running' || s.status === 'stopped')) {
+                arr[i] = { ...s, status: 'running', args: event.arguments ?? s.args };
+                return arr;
+              }
+            }
+            arr.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
+            return arr;
+          };
+          updateConvMsgs(convKey, prev => {
+            const u = [...prev];
+            const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
+            if (idx < 0) return prev;
+            const segs = reviveOrPush(u[idx]!.segments ?? []);
+            // Keep committedSegments (snapshot-seeded) in sync so the always-expanded
+            // full log renders tools that arrive live after reattach.
+            const prevCommitted = u[idx]!.committedSegments;
+            const committed = prevCommitted ? reviveOrPush(prevCommitted) : prevCommitted;
+            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed, isStreaming: true };
+            return u;
+          }, sessionId);
+        } else if (event.phase === 'end') {
+          const now = new Date().toISOString();
+          const finalize = (list: MsgSegment[]): MsgSegment[] => {
+            const arr = [...list];
+            for (let i = arr.length - 1; i >= 0; i--) {
+              const s = arr[i]!;
+              if (s.type === 'tool' && s.tool === event.tool && (s.status === 'running' || s.status === 'stopped')) {
+                arr[i] = {
+                  ...s,
+                  status: event.success === false ? 'error' : 'done',
+                  args: event.arguments ?? s.args,
+                  result: event.result,
+                  error: event.error,
+                  durationMs: event.durationMs,
+                  liveOutput: undefined,
+                  createdAt: now,
+                };
+                break;
+              }
+            }
+            return arr;
+          };
+          updateConvMsgs(convKey, prev => {
+            const u = [...prev];
+            const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
+            if (idx < 0) return prev;
+            const segs = finalize(u[idx]!.segments ?? []);
+            const prevCommitted = u[idx]!.committedSegments;
+            const committed = prevCommitted ? finalize(prevCommitted) : prevCommitted;
+            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed, isStreaming: true };
+            return u;
+          }, sessionId);
+        } else if (event.phase === 'subagent_progress' && event.subagentEvent) {
+          const appendLog = (list: MsgSegment[]): MsgSegment[] => {
+            const next = [...list];
+            for (let i = next.length - 1; i >= 0; i--) {
+              const s = next[i]!;
+              if (s.type === 'tool' && (s.tool === 'spawn_subagent' || s.tool === 'spawn_subagents') && (s.status === 'running' || s.status === 'stopped')) {
+                next[i] = { ...s, status: 'running', subagentLogs: appendSubagentLog(s.subagentLogs, event.subagentEvent!) };
+                break;
+              }
+            }
+            return next;
+          };
+          updateConvMsgsRaf(convKey, prev => {
+            const u = [...prev];
+            const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
+            if (idx < 0) return prev;
+            const segs = appendLog(u[idx]!.segments ?? []);
+            const prevCommitted = u[idx]!.committedSegments;
+            const committed = prevCommitted ? appendLog(prevCommitted) : prevCommitted;
+            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed, isStreaming: true };
+            return u;
+          }, sessionId);
+        }
+      };
+
+      const handleCommitEvent = (event: StreamCommitEvent) => {
+        if (currentConvKeyRef.current !== convKey) return;
+        lastSseEventTimeRef.current = Date.now();
+        updateConvMsgs(convKey, prev => {
+          const u = [...prev];
+          const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
+          if (idx < 0) return prev;
+          const committed = [...(u[idx]!.committedSegments ?? [])];
+          if (event.type === 'thinking_commit') {
+            committed.push({ type: 'text', content: '', thinking: event.content, createdAt: event.createdAt });
+          } else if (event.type === 'text_commit') {
+            committed.push({ type: 'text', content: event.content, createdAt: event.createdAt });
+          } else {
+            return prev;
+          }
+          u[idx] = { ...u[idx]!, committedSegments: committed, isStreaming: true };
+          return u;
+        }, sessionId);
+      };
+
+      const handleSnapshot = (snapshot: { content: string; segments: Array<{ type: string; content?: string; thinking?: string; tool?: string; status?: string; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string; subagentLogs?: SubagentProgressEvent[] }> }) => {
+        if (currentConvKeyRef.current !== convKey) return;
+        lastSseEventTimeRef.current = Date.now();
+        const segs = (snapshot.segments ?? []).map((s, si) =>
+          s.type === 'tool'
+            ? {
+                type: 'tool' as const,
+                key: `${s.tool}_${si}`,
+                tool: s.tool ?? 'tool',
+                status: (s.status === 'error' ? 'error' : s.status === 'running' || s.status === 'stopped' ? 'running' : 'done') as 'running' | 'done' | 'error' | 'stopped',
+                args: s.arguments,
+                result: s.result,
+                error: s.error,
+                durationMs: s.durationMs,
+                createdAt: s.createdAt,
+                ...(s.subagentLogs?.length ? { subagentLogs: s.subagentLogs } : {}),
+              }
+            : {
+                type: 'text' as const,
+                content: s.content ?? '',
+                thinking: s.thinking,
+                createdAt: s.createdAt,
+              },
+        );
+        updateConvMsgs(convKey, prev => {
+          const u = [...prev];
+          const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
+          if (idx < 0) return prev;
+          u[idx] = {
+            ...u[idx]!,
+            text: snapshot.content || u[idx]!.text,
+            segments: segs,
+            committedSegments: segs,
+            isStreaming: true,
+            isStopped: false,
+          };
+          return u;
+        }, sessionId);
+        // Rebuild activity chips from restored tool segments.
+        for (const s of segs) {
+          if (s.type !== 'tool') continue;
+          appendConvActivity(convKey, {
+            tool: s.tool,
+            phase: s.status === 'running' || s.status === 'stopped' ? 'start' : 'end',
+            success: s.status !== 'error',
+            arguments: s.args,
+            result: s.result,
+            error: s.error,
+            durationMs: s.durationMs,
+            ts: Date.now(),
+          }, sessionId);
+        }
+      };
+
+      // Prefer server snapshot (tools + text). Falls back to ring replay if older server.
+      const result = await api.sessions.reattachStream(
+        agentId,
+        sessionId,
+        {
+          onChunk: appendTextChunk,
+          onActivity: handleToolEvent,
+          onCommit: handleCommitEvent,
+          onSnapshot: handleSnapshot,
+        },
+        abortCtrl.signal,
+        0,
+      );
+
+      if (!result.attached) {
+        // Keep isStreaming if DB said so — agent may still be working; user can resume.
+        endStream(convKey);
+        if (currentConvKeyRef.current === convKey) setSending(false);
+        return;
+      }
+
+      if (currentConvKeyRef.current === convKey) {
+        updateConvMsgs(convKey, prev => {
+          const u = [...prev];
+          const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
+          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent')?.j ?? -1;
+          if (i < 0) return prev;
+          const msg = u[i]!;
+          const finalSegs = result.segments?.length
+            ? storedSegmentsToMsgSegments(result.segments, msg.segments)
+            : undefined;
+          u[i] = {
+            ...msg,
+            text: result.content || msg.text,
+            isStreaming: false,
+            isStopped: false,
+            ...(finalSegs
+              ? { segments: finalSegs, committedSegments: finalSegs }
+              : {}),
+          };
+          return u;
+        }, sessionId);
+        setSending(false);
+      }
+      endStream(convKey);
+      if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
+    } catch (err) {
+      // Aborted by a newer reattach / navigation — leave stream state alone.
+      if (err instanceof Error && err.name === 'AbortError') return;
+      endStream(convKey);
+      if (currentConvKeyRef.current === convKey) setSending(false);
+    }
+  }, [appendConvActivity, beginStream, endStream, getStreamSession, msgBuffers, setStreamSession, updateConvMsgs, updateConvMsgsRaf]);
+
+  // Returning to Team after visiting another page: reattach if a generation is
+  // still running (SSE may have been killed while the tab was hidden).
+  useEffect(() => {
+    if (!isActive || previewMode || chatMode !== 'direct' || !selectedAgent) return;
+    const sid = activeSessionId;
+    if (!sid || sid === NEW_CHAT_PLACEHOLDER_ID) return;
+    void tryReattachActiveStream(selectedAgent, sid, currentConvKeyRef.current);
+  }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, tryReattachActiveStream]);
 
   // Load sessions list for agent
   const loadSessions = useCallback(async (agentId: string) => {
@@ -1118,6 +1775,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           ? makeDmChannel(authUser?.id ?? '', activeDmUserId)
           : activeChannel;
         loadChannelMessages(channelName, newKey);
+      } else if (
+        chatMode === 'direct'
+        && selectedAgent
+        && savedActiveSession
+        && savedActiveSession !== NEW_CHAT_PLACEHOLDER_ID
+      ) {
+        // Resume server stream if the original SSE dropped while we were away.
+        // Live send() is skipped inside tryReattachActiveStream when it still owns the connection.
+        void tryReattachActiveStream(selectedAgent, savedActiveSession, newKey);
       }
     } else {
       // First visit for this conversation — load from DB
@@ -1142,14 +1808,36 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const defaultTabs = mainSession
               ? [mainSession, ...s.filter(ss => !ss.isMain && !closedIds.has(ss.id)).slice(0, 4)]
               : s.filter(ss => !closedIds.has(ss.id)).slice(0, 5);
-            const initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : defaultTabs;
-            const restoreId = savedActiveSession !== undefined ? savedActiveSession : (mainSession?.id ?? initialTabs[0]!.id);
+            let initialTabs = (savedTabs && savedTabs.length > 0) ? savedTabs : defaultTabs;
+            // Prefer, in order: the in-memory buffer (survives tab switches within a
+            // session), the localStorage value (survives a full page refresh), then
+            // the main session. This keeps the user on the session they left off on.
+            const storedActive = getStoredActiveSession(selectedAgent!);
+            const restoreId = savedActiveSession !== undefined
+              ? savedActiveSession
+              : (storedActive ?? mainSession?.id ?? initialTabs[0]!.id);
+            // If the session we want to restore exists on the server but isn't in the
+            // default tab set (e.g. an older session), surface it as a tab so it can
+            // be activated instead of silently falling back to the first tab.
+            if (restoreId && restoreId !== NEW_CHAT_PLACEHOLDER_ID && !initialTabs.some(t => t.id === restoreId)) {
+              const found = s.find(ss => ss.id === restoreId);
+              if (found) initialTabs = [...initialTabs, found];
+            }
             const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
             setActiveSessionId(validId);
+            setStoredActiveSession(selectedAgent!, validId);
             setOpenSessionTabs(initialTabs);
-            loadSessionMessages(validId!, newKey);
+            const restored = s.find(ss => ss.id === validId);
+            const mo = restored?.metadata?.modelOverride;
+            setSessionModelOverride(mo?.provider && mo?.model ? { provider: mo.provider, model: mo.model } : null);
+            void loadSessionMessages(validId!, newKey).then(() => {
+              if (currentConvKeyRef.current === newKey && selectedAgent) {
+                void tryReattachActiveStream(selectedAgent, validId!, newKey);
+              }
+            });
           } else {
             setActiveSessionId(null);
+            setSessionModelOverride(null);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
           }
         });
@@ -1263,7 +1951,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return unsub;
   }, [previewMode, activeChannel]);
 
-  // WS live updates for proactive agent messages (direct mode)
+  // WS live updates for proactive agent/user messages (direct mode)
   useEffect(() => {
     if (previewMode) return;
     const unsub = wsClient.on('chat:proactive_message', (event) => {
@@ -1274,15 +1962,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const agentName = (p['agentName'] as string) ?? t('page.fallbackAgent');
       const message = (p['message'] as string) ?? '';
       const sessionId = (p['sessionId'] as string) ?? '';
+      const messageId = (p['messageId'] as string) ?? '';
       const meta = (p['metadata'] as Record<string, unknown>) ?? {};
       if (!agentId || !message) return;
       if (message === '[cancelled]' || message === '[Stream cancelled]') return;
 
-      const isActivity = !!meta.activityLog || message.startsWith('[ACTIVITY:');
+      const isUserTurn = meta.role === 'user';
+      const isActivity = !isUserTurn && (!!meta.activityLog || message.startsWith('[ACTIVITY:'));
 
       // Strip notify_context HTML comments from real-time messages
       const { cleaned: displayMessage, priority: parsedPriority } = stripNotifyContext(message);
-      const isNotify = !!meta.notifyUser || displayMessage !== message;
+      const isNotify = !isUserTurn && (!!meta.notifyUser || displayMessage !== message);
 
       // Session-aware routing: only display proactive messages in the correct
       // session context to prevent messages from appearing in unrelated sessions.
@@ -1298,46 +1988,69 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         }
       }
 
-      const isWsFallback = !!meta.isMainSession;
+      const isWsFallback = !!meta.isMainSession && !isUserTurn;
+      const proactiveSession = sessionId || activeSessionId;
+      const fallbackUserText = typeof meta.userText === 'string' ? meta.userText : '';
+      const fallbackUserId = typeof meta.userMessageId === 'string' ? meta.userMessageId : '';
 
       const newMsg: ChatMsg = {
-        id: `proactive_${Date.now()}`,
-        sender: 'agent',
+        id: messageId || `proactive_${Date.now()}`,
+        sender: isUserTurn ? 'user' : 'agent',
         text: displayMessage,
         time: new Date().toLocaleTimeString(),
-        agentName,
-        agentId,
-        ...(isNotify ? { isNotification: true, notifyPriority: (meta.priority as string) ?? parsedPriority } : {}),
-        ...(isActivity ? {
-          isActivityLog: true,
-          activityType: meta.activityType as string | undefined,
-          outcome: meta.outcome as string | undefined,
-          mailboxItemId: meta.mailboxItemId as string | undefined,
-          taskId: meta.taskId as string | undefined,
-          requirementId: meta.requirementId as string | undefined,
-        } : {}),
-        ...(!isActivity && meta.taskId ? { taskId: meta.taskId as string } : {}),
-        ...(!isActivity && meta.requirementId ? { requirementId: meta.requirementId as string } : {}),
+        ...(isUserTurn
+          ? {}
+          : {
+              agentName,
+              agentId,
+              ...(isNotify ? { isNotification: true, notifyPriority: (meta.priority as string) ?? parsedPriority } : {}),
+              ...(isActivity ? {
+                isActivityLog: true,
+                activityType: meta.activityType as string | undefined,
+                outcome: meta.outcome as string | undefined,
+                mailboxItemId: meta.mailboxItemId as string | undefined,
+                taskId: meta.taskId as string | undefined,
+                requirementId: meta.requirementId as string | undefined,
+              } : {}),
+              ...(!isActivity && meta.taskId ? { taskId: meta.taskId as string } : {}),
+              ...(!isActivity && meta.requirementId ? { requirementId: meta.requirementId as string } : {}),
+            }),
       };
 
       // WS fallback messages (from SSE disconnect recovery) should replace the
       // last partial/stopped agent message rather than duplicating it.
-      const proactiveSession = sessionId || activeSessionId;
-      if (isWsFallback) {
-        updateConvMsgs(key, prev => {
-          for (let i = prev.length - 1; i >= 0; i--) {
-            const msg = prev[i]!;
+      updateConvMsgs(key, prev => {
+        if (prev.some(m => m.id === newMsg.id)) return prev;
+
+        // Feishu assistant event may carry the inbound user text as a safety net.
+        let base = prev;
+        if (!isUserTurn && fallbackUserText) {
+          const hasUser = base.some(m =>
+            (fallbackUserId && m.id === fallbackUserId)
+            || (m.sender === 'user' && m.text === fallbackUserText),
+          );
+          if (!hasUser) {
+            base = [...base, {
+              id: fallbackUserId || `feishu_user_${newMsg.id}`,
+              sender: 'user' as const,
+              text: fallbackUserText,
+              time: new Date().toLocaleTimeString(),
+            }];
+          }
+        }
+
+        if (isWsFallback) {
+          for (let i = base.length - 1; i >= 0; i--) {
+            const msg = base[i]!;
             if (msg.sender === 'agent' && msg.agentId === agentId && msg.isStopped) {
-              const updated = [...prev];
+              const updated = [...base];
               updated[i] = { ...newMsg, id: msg.id };
               return updated;
             }
           }
-          return [...prev, newMsg];
-        }, proactiveSession || undefined);
-      } else {
-        updateConvMsgs(key, prev => [...prev, newMsg], proactiveSession || undefined);
-      }
+        }
+        return [...base, newMsg];
+      }, proactiveSession || undefined);
     });
     return unsub;
   }, [previewMode, updateConvMsgs, t, activeSessionId]);
@@ -1385,7 +2098,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   };
 
   const send = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean }) => {
-    const text = (retryText ?? input).trim();
+    const ctxPrefix = (!retryText && chatContext.length > 0)
+      ? chatContext.map(c => c.content).join('\n\n') + '\n\n'
+      : '';
+    const text = (retryText ?? (ctxPrefix + input)).trim();
     if (!text && pendingImages.length === 0) return;
     if (chatMode === 'direct' && !selectedAgent) return;
     userAtBottomRef.current = true;
@@ -1473,6 +2189,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
     if (!retryText) {
       setInput('');
+      setChatContext([]);
     }
     setPendingImages([]);
     setMentionDropdown(false);
@@ -1511,6 +2228,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           return newMsgs.length > 0 ? [...without, ...newMsgs] : prev;
         });
       } catch (e) {
+        if (isMarkusCreditError(e)) dispatchCreditNotification();
         updateConvMsgs(sendKey, prev => [...prev, {
           id: `err_${Date.now()}`, sender: 'agent', text: t('page.errorWithMessage', { message: String(e) }),
           time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
@@ -1565,6 +2283,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           return newMsgs.length > 0 ? [...without, ...newMsgs] : prev;
         });
       } catch (e) {
+        if (isMarkusCreditError(e)) dispatchCreditNotification();
         const friendly = friendlyAgentError(e, t) || t('page.errorWithMessage', { message: String(e) });
         updateConvMsgs(sendKey, prev => [...prev, {
           id: `err_${Date.now()}`, sender: 'agent', text: friendly,
@@ -1668,6 +2387,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             clearStreamSession(sendKey, prevStreamSessionId);
           }
           setStreamSession(sendKey, event.sessionId);
+          // Persist composer model pick onto the newly created session
+          if (sessionModelOverride) {
+            void api.sessions.setModelOverride(event.sessionId, sessionModelOverride).catch(() => {});
+          }
           // Seed the session cache with current buffer so streaming reads don't start empty
           const currentBuf = msgBuffers.get(sendKey);
           if (currentBuf && currentBuf.length > 0) {
@@ -1681,6 +2404,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             if (!currentSess || currentSess === NEW_CHAT_PLACEHOLDER_ID || currentSess === event.sessionId) {
               setActiveSessionId(event.sessionId);
               activeSessionBuffer.set(sendKey, event.sessionId);
+              if (selectedAgent) setStoredActiveSession(selectedAgent, event.sessionId);
               setOpenSessionTabs(prev => {
                 // Replace placeholder if exists; otherwise ensure the session tab is present
                 if (prev.some(t => t.id === NEW_CHAT_PLACEHOLDER_ID)) {
@@ -1747,7 +2471,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             return u;
           }, streamSessionId);
         } else if (event.phase === 'output') {
-          updateConvMsgs(sendKey, prev => {
+          // RAF-batch high-frequency stdout chunks (same as text deltas).
+          updateConvMsgsRaf(sendKey, prev => {
             const u = [...prev];
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx < 0) return prev;
@@ -1755,7 +2480,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             for (let i = segs.length - 1; i >= 0; i--) {
               const s = segs[i]!;
               if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-                segs[i] = { ...s, liveOutput: (s.liveOutput ?? '') + (event.output ?? '') };
+                segs[i] = { ...s, liveOutput: appendLiveOutput(s.liveOutput, event.output ?? '') };
                 break;
               }
             }
@@ -1763,19 +2488,25 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             return u;
           }, streamSessionId);
         } else if (event.phase === 'subagent_progress' && event.subagentEvent) {
-          updateConvMsgs(sendKey, prev => {
+          // RAF-batch nested progress; cap retained rows so long sub-agents don't balloon DOM.
+          updateConvMsgsRaf(sendKey, prev => {
             const u = [...prev];
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx < 0) return prev;
-            const segs = [...(u[idx]!.segments ?? [])];
-            for (let i = segs.length - 1; i >= 0; i--) {
-              const s = segs[i]!;
-              if (s.type === 'tool' && (s.tool === 'spawn_subagent' || s.tool === 'spawn_subagents') && s.status === 'running') {
-                segs[i] = { ...s, subagentLogs: [...(s.subagentLogs ?? []), event.subagentEvent!] };
-                break;
+            const appendLog = (list: MsgSegment[]): MsgSegment[] => {
+              const next = [...list];
+              for (let i = next.length - 1; i >= 0; i--) {
+                const s = next[i]!;
+                if (s.type === 'tool' && (s.tool === 'spawn_subagent' || s.tool === 'spawn_subagents') && s.status === 'running') {
+                  next[i] = { ...s, subagentLogs: appendSubagentLog(s.subagentLogs, event.subagentEvent!) };
+                  break;
+                }
               }
-            }
-            u[idx] = { ...u[idx]!, segments: segs };
+              return next;
+            };
+            const segs = appendLog(u[idx]!.segments ?? []);
+            const committed = appendLog(u[idx]!.committedSegments ?? []);
+            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
             return u;
           }, streamSessionId);
         } else {
@@ -1785,9 +2516,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             if (idx < 0) return prev;
             const now = new Date().toISOString();
             const segs = [...(u[idx]!.segments ?? [])];
+            let endedSubagentLogs: Extract<MsgSegment, { type: 'tool' }>['subagentLogs'];
             for (let i = segs.length - 1; i >= 0; i--) {
               const s = segs[i]!;
               if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
+                endedSubagentLogs = s.subagentLogs;
                 segs[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined, createdAt: now };
                 break;
               }
@@ -1796,7 +2529,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             for (let i = committed.length - 1; i >= 0; i--) {
               const s = committed[i]!;
               if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-                committed[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined, createdAt: now };
+                // Prefer logs accumulated on the live segment (progress may have
+                // arrived before this committed row existed).
+                committed[i] = {
+                  ...s,
+                  status: event.success === false ? 'error' : 'done',
+                  args: event.arguments,
+                  result: event.result,
+                  error: event.error,
+                  durationMs: event.durationMs,
+                  liveOutput: undefined,
+                  createdAt: now,
+                  subagentLogs: endedSubagentLogs ?? s.subagentLogs,
+                };
                 break;
               }
             }
@@ -1832,6 +2577,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           handleCommitEvent,
           fileNamesToSend,
           replyCtx,
+          sessionModelOverride,
         );
         if (currentConvKeyRef.current === sendKey) {
           // Message was merged into the agent's active processing — remove the
@@ -1849,11 +2595,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               const u = [...prev];
               const idx = u.findIndex(m => m.id === agentMsgId);
               if (idx < 0) return prev;
-              const finalSegs: MsgSegment[] = streamResult.segments!.map((s, i) =>
-                s.type === 'tool'
-                  ? { type: 'tool' as const, key: `${s.tool}_${i}`, tool: s.tool, status: s.status, args: s.arguments, result: s.result, error: s.error, durationMs: s.durationMs, createdAt: s.createdAt }
-                  : { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt }
-              );
+              const finalSegs = storedSegmentsToMsgSegments(streamResult.segments!, u[idx]!.segments);
               let finalText = streamResult.content || u[idx]!.text;
               if (!finalText) {
                 finalText = finalSegs
@@ -1920,6 +2662,49 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               }
             }
           });
+
+          // Soft disconnect (refresh / browser killing the SSE): the fetch ends
+          // without a terminal `done`, but the agent may still be running. Keep
+          // nested subagent progress and reattach instead of freezing the bubble.
+          const resumeSessionId = streamResult.sessionId
+            ?? (streamSessionAtStart && streamSessionAtStart !== NEW_CHAT_PLACEHOLDER_ID
+              ? streamSessionAtStart
+              : null);
+          if (
+            !abortCtrl.signal.aborted
+            && !streamResult.merged
+            // `segments === undefined` means the SSE closed without a terminal `done`.
+            && streamResult.segments === undefined
+            && chatMode === 'direct'
+            && selectedAgent
+            && resumeSessionId
+          ) {
+            try {
+              const st = await api.sessions.streamStatus(selectedAgent, resumeSessionId);
+              // `active` stays true briefly after done/error (TTL) — only resume mid-run.
+              if (st.status === 'streaming') {
+                updateConvMsgs(sendKey, prev => prev.map(m =>
+                  m.id === agentMsgId
+                    ? {
+                        ...m,
+                        isStreaming: true,
+                        isStopped: false,
+                        segments: (m.segments ?? []).map(s =>
+                          s.type === 'tool' && (s.status === 'stopped' || s.status === 'running')
+                            ? { ...s, status: 'running' as const }
+                            : s,
+                        ),
+                      }
+                    : m,
+                ), resumeSessionId);
+                decrementSending(sendKey);
+                if (abortControllerRef.current === abortCtrl) abortControllerRef.current = null;
+                setStreamSession(sendKey, resumeSessionId);
+                void tryReattachActiveStream(selectedAgent, resumeSessionId, sendKey);
+                return;
+              }
+            } catch { /* fall through to normal cleanup */ }
+          }
         }
       } catch (e) {
         // Preserve sessionId from error so subsequent messages stay in the same session
@@ -1942,6 +2727,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             }
           });
         }
+
+        if (isMarkusCreditError(e)) dispatchCreditNotification();
 
         const errText = friendlyAgentError(e, t);
         if (errText) {
@@ -2073,7 +2860,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   sendRef.current = send;
 
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
-  const [, setExpandedMsgIds] = useState<Set<string>>(new Set());
+  const [retryConfirm, setRetryConfirm] = useState<{
+    retryMsg: ChatMsg;
+    userMsg: ChatMsg | null;
+    retryText: string;
+    followCount: number;
+  } | null>(null);
 
   const lastAgentMsgId = useMemo(() => {
     for (let j = messages.length - 1; j >= 0; j--) {
@@ -2091,6 +2883,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setTimeout(() => setCopiedMsgId(prev => prev === msg.id ? null : prev), 2000);
   }, []);
 
+  const executeRetry = useCallback((retryMsg: ChatMsg, userMsg: ChatMsg | null, retryText: string) => {
+    const convKey = currentConvKeyRef.current;
+    const currentMsgs = msgBuffers.get(convKey) ?? messages;
+    const retryIdx = currentMsgs.findIndex(m => m.id === retryMsg.id);
+    if (retryIdx < 0) return;
+    // Remove the agent bubble, all messages after it, and (if immediately preceding) the user message
+    const removeUserToo = userMsg && retryIdx > 0 && currentMsgs[retryIdx - 1]?.id === userMsg.id;
+    updateConvMsgs(convKey, prev => {
+      const idx = prev.findIndex(m => m.id === (removeUserToo ? userMsg!.id : retryMsg.id));
+      return idx >= 0 ? prev.slice(0, idx) : prev;
+    });
+    void send(retryText, { isRetry: true });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, updateConvMsgs]);
+
   const handleRetry = useCallback((retryMsg: ChatMsg) => {
     const convKey = currentConvKeyRef.current;
     const currentMsgs = msgBuffers.get(convKey) ?? messages;
@@ -2107,18 +2914,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const hasFollowingMsgs = retryIdx < currentMsgs.length - 1;
     if (hasFollowingMsgs) {
       const followCount = currentMsgs.length - 1 - retryIdx;
-      if (!window.confirm(followCount === 1 ? t('page.retryConfirmSingular') : t('page.retryConfirmPlural', { count: followCount }))) return;
+      setRetryConfirm({ retryMsg, userMsg, retryText, followCount });
+      return;
     }
 
-    // Remove the agent bubble, all messages after it, and (if immediately preceding) the user message
-    const removeUserToo = userMsg && retryIdx > 0 && currentMsgs[retryIdx - 1]?.id === userMsg.id;
-    updateConvMsgs(convKey, prev => {
-      const idx = prev.findIndex(m => m.id === (removeUserToo ? userMsg!.id : retryMsg.id));
-      return idx >= 0 ? prev.slice(0, idx) : prev;
-    });
-    void send(retryText, { isRetry: true });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, updateConvMsgs, t]);
+    executeRetry(retryMsg, userMsg, retryText);
+  }, [messages, executeRetry]);
 
   const handleResume = useCallback((resumeMsg: ChatMsg) => {
     const convKey = currentConvKeyRef.current;
@@ -2189,6 +2990,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setActivities([]);
     }
     activeSessionBuffer.set(key, s.id);
+    if (selectedAgent) setStoredActiveSession(selectedAgent, s.id);
     if (prevSessionId && prevSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
       saveSessionToCache(key, prevSessionId);
     }
@@ -2199,6 +3001,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // Always attempt DB load to sync with server. The phase-aware loadSessionMessages
     // blocks display writes during streaming, preventing race conditions.
     await loadSessionMessages(s.id, key);
+    const mo = s.metadata?.modelOverride;
+    setSessionModelOverride(mo?.provider && mo?.model ? { provider: mo.provider, model: mo.model } : null);
+    if (selectedAgent && !isStreaming) {
+      void tryReattachActiveStream(selectedAgent, s.id, key);
+    }
   };
 
   const closeSessionTab = (sessionId: string) => {
@@ -2448,6 +3255,61 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }).catch(() => {});
   }, [previewMode, activeChannel, groupChats]);
 
+  // Load pending request_user_input requests for the agent in the active direct chat.
+  const refreshUserInputs = useCallback(async () => {
+    if (previewMode || chatMode !== 'direct' || !selectedAgent) { setUserInputApprovals([]); return; }
+    try {
+      // Bypass GET dedup cache — otherwise a pre-approval poll (empty list) can
+      // shadow the WS-driven refresh for up to DEDUP_TTL_MS and hide the chat card.
+      invalidateApiCache('/approvals');
+      const { approvals } = await api.approvals.list('pending');
+      setUserInputApprovals(approvals.filter(a =>
+        a.status === 'pending' &&
+        Array.isArray(a.questions) && a.questions.length > 0 &&
+        ((a.details?.agentId as string | undefined) ?? a.agentId) === selectedAgent,
+      ));
+    } catch { /* */ }
+  }, [previewMode, chatMode, selectedAgent]);
+
+  useEffect(() => {
+    refreshUserInputs();
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRefresh = () => {
+      if (debounceTimer) return;
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void refreshUserInputs();
+      }, 400);
+    };
+    const unsubA = wsClient.on('approval:requested', scheduleRefresh);
+    const unsubN = wsClient.on('notification', scheduleRefresh);
+    // Keep the in-chat card in sync when the user responds from another surface
+    // (e.g. the notification bell modal) — the resolved approval drops out of the
+    // pending list and the card disappears instead of looking re-submittable.
+    const onNotifChanged = () => scheduleRefresh();
+    window.addEventListener('markus:notifications-changed', onNotifChanged);
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      unsubA();
+      unsubN();
+      window.removeEventListener('markus:notifications-changed', onNotifChanged);
+    };
+  }, [refreshUserInputs]);
+
+  const handleUserInputSubmit = useCallback(async (
+    approvalId: string,
+    r: { approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] },
+  ) => {
+    setRespondingInputId(approvalId);
+    try {
+      await api.approvals.respond(approvalId, r.approved, authUser?.id, r.comment, r.selectedOption, r.answers);
+      setUserInputApprovals(prev => prev.filter(a => a.id !== approvalId));
+      setActiveInputModal(null);
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
+    } catch { /* */ }
+    setRespondingInputId(null);
+  }, [authUser?.id]);
+
   const modeTitle =
     chatMode === 'channel' ? (activeGroupChat?.name ?? activeChannel) :
     chatMode === 'direct'  ? (currentAgent?.name ?? t('page.selectAgent')) :
@@ -2469,8 +3331,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   return (
     <div ref={teamContainerRef} className="flex-1 overflow-hidden flex relative">
-      {/* ── Left sidebar (ChatTeamSidebar) — L1 ── */}
-      <ChatTeamSidebar
+      {/* ── Left sidebar (ChatTeamSidebar) — L1 (hidden in preview fullscreen) ── */}
+      {!rightPanelFullscreen && <ChatTeamSidebar
         authUser={authUser}
         agents={agents}
         teams={teams}
@@ -2487,11 +3349,22 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
         onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
         onSelectTeam={(teamId) => {
+          // Team channels are synthetic `group:{teamId}` — do not depend on a refreshed
+          // groupChats entry (that race made brand-new teams unclickable until reload).
           const teamGc = groupChats.find(gc => gc.type === 'team' && gc.teamId === teamId);
+          const channelKey = teamGc?.channelKey ?? `group:${teamId}`;
           if (isMobile) {
             enterMobileTeam(teamId);
           } else {
-            if (teamGc) { setChatMode('channel'); setActiveChannel(teamGc.channelKey); setMainTab('chat'); setShowMemberPanel(false); if (!showTeamDetailPanel && !l2SpaceTight) setShowTeamDetailPanel(true); }
+            setChatMode('channel');
+            setActiveChannel(channelKey);
+            setMainTab('chat');
+            setShowMemberPanel(false);
+            if (!showTeamDetailPanel && !l2SpaceTight) setShowTeamDetailPanel(true);
+            if (!teamGc) {
+              void refreshGroupChats();
+              void refreshTeams();
+            }
           }
         }}
         selectedTeamId={activeTeamId ?? (chatMode === 'direct' && currentAgent?.teamId ? currentAgent.teamId : null)}
@@ -2506,9 +3379,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         width={isMobile ? undefined : chatSidebar.width}
         onResizeStart={isMobile ? undefined : chatSidebar.onResizeStart}
         hidden={(isMobile && mobileLayer !== 'roster') || (!isMobile && sidebarsCollapsed)}
-        onCollapse={() => setSidebarsCollapsed(true)}
+        onCollapse={() => setSidebarsCollapsedPersisted(true)}
         initialLoading={initialLoading}
-      />
+      />}
 
       {/* ── L2: Mobile team detail view ── */}
       {isMobile && mobileLayer === 'team' && mobileTeamId && (() => {
@@ -2593,9 +3466,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         );
       })()}
 
-      {/* ── L2: Team detail panel (desktop only) ── */}
+      {/* ── L2: Team detail panel (desktop only; hidden in preview fullscreen) ── */}
       {/* Inline mode: when space allows */}
-      {showTeamDetailPanel && !l2SpaceTight && !isMobile && !sidebarsCollapsed && (() => {
+      {!rightPanelFullscreen && showTeamDetailPanel && !l2SpaceTight && !isMobile && !sidebarsCollapsed && (() => {
         const l2TeamId = activeTeamId ?? (chatMode === 'direct' ? currentAgent?.teamId : undefined);
         if (!l2TeamId) return null;
         const panelTeam = teams.find(t => t.id === l2TeamId);
@@ -2626,7 +3499,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         );
       })()}
       {/* Floating mode: when space is tight, show as overlay */}
-      {l2Floating && !isMobile && !sidebarsCollapsed && (() => {
+      {!rightPanelFullscreen && l2Floating && !isMobile && !sidebarsCollapsed && (() => {
         const l2TeamId = activeTeamId ?? (chatMode === 'direct' ? currentAgent?.teamId : undefined);
         if (!l2TeamId) return null;
         const panelTeam = teams.find(t => t.id === l2TeamId);
@@ -2661,9 +3534,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         );
       })()}
 
-      {/* ── Main area ── */}
-      {(!isMobile || showChatOnMobile) && (
-      <div className={`flex-1 overflow-hidden flex flex-col ${isMobile ? 'min-w-0' : 'min-w-[400px]'}`}>
+      {/* ── Main area (hidden in preview fullscreen) ── */}
+      {!rightPanelFullscreen && (!isMobile || showChatOnMobile) && (
+      <div className={`flex-1 overflow-hidden flex flex-col ${isMobile || rightPanelPayload ? 'min-w-0' : 'min-w-[400px]'}`}>
         {/* Header */}
         <div className="shrink-0 relative pb-2">
           {isMobile ? (
@@ -2678,7 +3551,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 </button>
                 <span className="font-semibold text-sm truncate min-w-0 flex-1">{modeTitle}</span>
                 {chatMode === 'direct' && currentAgent && (
-                  <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
+                  <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} streamActive={chatStreamActive} />
                 )}
               </div>
               {/* Mobile Row 2: tabs + actions */}
@@ -2783,7 +3656,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 {/* Expand sidebars button — shown when sidebars are collapsed */}
                 {sidebarsCollapsed && !isMobile && (
                   <button
-                    onClick={() => setSidebarsCollapsed(false)}
+                    onClick={() => setSidebarsCollapsedPersisted(false)}
                     className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
                     title={t('page.toggleSidebar')}
                   >
@@ -2844,7 +3717,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         </span>
                       )}
                       {chatMode === 'direct' && currentAgent && (
-                        <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
+                        <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} streamActive={chatStreamActive} />
                       )}
                     </div>
                     {(chatMode === 'direct' || (chatMode === 'channel' && activeTeamId)) && (
@@ -2924,6 +3797,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         </svg>
                       </button>
                     </div>
+                  )}
+                  {!isMobile && layout && (
+                    <button
+                      onClick={() => layout.toggleRightPanel()}
+                      className={`p-1.5 rounded-md transition-colors ${rightPanelPayload ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
+                      title={t('page.rightPanelToggle', { defaultValue: 'Toggle side panel' })}
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <rect x="3" y="4" width="18" height="16" rx="2" />
+                        <path d="M15 4v16" />
+                      </svg>
+                    </button>
                   )}
                 </div>
               </div>
@@ -3255,7 +4140,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               <span className="text-xs text-fg-tertiary">{t('page.loadingEarlierMessages')}</span>
             </div>
           )}
-          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto ${isMobile ? 'p-2.5' : 'p-5 2xl:pr-[280px]'}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
+          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto ${isMobile ? 'p-2.5' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
           {visibleMessages.length > 0 && (
           <div style={{ height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
@@ -3268,7 +4153,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               const showDateSep = curDate && curDate !== prevDate;
               const isLastMsg = vIdx === visibleMessages.length - 1;
               const isPending = isLastPending && isLastMsg;
-              const isStreamingMsg = isPending && sending;
+              const isStreamingMsg = (isPending && sending) || !!msg.isStreaming;
               const showStreamingBubble = (isLastVisualStreaming && isLastMsg) || isStreamingMsg;
               const showActions = chatMode === 'channel' || (!isStreamingMsg || msg.isStopped);
 
@@ -3372,19 +4257,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                             }
                           </div>
                         : msg.sender === 'agent' && chatMode === 'channel' && !(msg.segments && msg.segments.length > 0)
-                          ? <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
-                          : <AgentMessageBody
-                              msg={msg}
-                              isStreaming={isStreamingMsg}
-                              liveActivities={isStreamingMsg ? activities : []}
-                              onViewModeChange={(mode) => setExpandedMsgIds(prev => {
-                                const next = new Set(prev);
-                                if (mode === 'full') next.add(msg.id); else next.delete(msg.id);
-                                return next;
-                              })}
-                              onMentionClick={handleMentionClick}
-                              knownNames={agentNames}
-                            />
+                          ? <ErrorBoundary
+                              resetKeys={[msg.text]}
+                              fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
+                            >
+                              <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
+                            </ErrorBoundary>
+                          : <ErrorBoundary
+                              resetKeys={[msg.id, msg.text, msg.segments?.length, isStreamingMsg]}
+                              fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
+                            >
+                              <AgentMessageBody
+                                msg={msg}
+                                isStreaming={isStreamingMsg}
+                                liveActivities={isStreamingMsg ? activities : []}
+                                onMentionClick={handleMentionClick}
+                                knownNames={agentNames}
+                              />
+                            </ErrorBoundary>
                       }
                       {msg.isNotification && (
                         <NotificationBadge priority={msg.notifyPriority} />
@@ -3432,23 +4322,31 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           <div ref={messagesEnd} />
         </div>
 
-          {/* Scroll to bottom button */}
+          {/* Scroll to bottom — same horizontal box as the input (max-w-3xl + right reserve) */}
           {showScrollBtn && mainTab === 'chat' && (
-            <button
-              onClick={() => {
-                userAtBottomRef.current = true;
-                scrollChatToBottom('smooth');
-                setShowScrollBtn(false);
-                newMsgCountRef.current = 0;
-                setNewMsgCount(0);
-              }}
-              className={`absolute ${isMobile ? 'bottom-4' : 'bottom-28'} left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/95 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary`}
+            <div
+              className={`absolute ${isMobile ? 'bottom-4' : 'bottom-28'} inset-x-0 z-10 pointer-events-none ${
+                isMobile ? 'px-3' : `px-5 ${chatRightReserve}`
+              }`}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
-              {newMsgCount > 0
-                ? t('page.newMessages', { count: newMsgCount })
-                : t('page.scrollToBottom')}
-            </button>
+              <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex justify-center`}>
+                <button
+                  onClick={() => {
+                    userAtBottomRef.current = true;
+                    scrollChatToBottom('smooth');
+                    setShowScrollBtn(false);
+                    newMsgCountRef.current = 0;
+                    setNewMsgCount(0);
+                  }}
+                  className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/95 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+                  {newMsgCount > 0
+                    ? t('page.newMessages', { count: newMsgCount })
+                    : t('page.scrollToBottom')}
+                </button>
+              </div>
+            </div>
           )}
 
         {/* Avatar popover */}
@@ -3472,8 +4370,62 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           </div>
         )}
 
+        {/* Pending user-input requests raised by the agent in this direct chat */}
+        {chatMode === 'direct' && userInputApprovals.length > 0 && (
+          <div className={`${isMobile ? 'px-3' : 'px-5'} pb-1 shrink-0 ${isEmptyChat ? '' : chatRightReserve}`}>
+            <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex flex-col gap-1.5`}>
+              {userInputApprovals.map(a => (
+                <button
+                  key={a.id}
+                  onClick={() => setActiveInputModal(a)}
+                  className="w-full text-left px-3.5 py-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15 transition-colors flex items-center gap-3"
+                >
+                  <span className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-500 flex items-center justify-center shrink-0">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z" /><path d="M12 8v4" /><path d="M12 16h.01" /></svg>
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm font-medium text-fg-primary truncate">{a.title}</span>
+                    <span className="block text-xs text-fg-tertiary truncate">
+                      {t('page.userInputPrompt', { count: a.questions?.length ?? 1, defaultValue: `${a.questions?.length ?? 1} question(s) awaiting your response` })}
+                    </span>
+                  </span>
+                  <span className="text-xs font-medium text-amber-500 shrink-0 inline-flex items-center gap-1">
+                    {t('page.userInputRespond', { defaultValue: 'Respond' })}
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {activeInputModal && (
+          <UserInputModal
+            approval={activeInputModal}
+            submitting={respondingInputId === activeInputModal.id}
+            readOnly={activeInputModal.status !== 'pending'}
+            onClose={() => setActiveInputModal(null)}
+            onSubmit={(r) => handleUserInputSubmit(activeInputModal.id, r)}
+          />
+        )}
+        {retryConfirm && (
+          <ConfirmModal
+            variant="primary"
+            title={t('page.retry', { defaultValue: 'Retry' })}
+            message={retryConfirm.followCount === 1
+              ? t('page.retryConfirmSingular')
+              : t('page.retryConfirmPlural', { count: retryConfirm.followCount })}
+            confirmLabel={t('common:confirm')}
+            onConfirm={() => {
+              const pending = retryConfirm;
+              setRetryConfirm(null);
+              executeRetry(pending.retryMsg, pending.userMsg, pending.retryText);
+            }}
+            onCancel={() => setRetryConfirm(null)}
+          />
+        )}
+
         {/* Input (only in chat tab) */}
-        <div className={`${isMobile ? 'px-3 py-2' : 'px-5 py-3'} relative shrink-0 ${isEmptyChat ? '' : '2xl:pr-[280px]'}`} onDrop={handleDrop} onDragOver={handleDragOver}>
+        <div className={`${isMobile ? 'px-3 py-2' : 'px-5 py-3'} relative shrink-0 ${isEmptyChat ? '' : chatRightReserve}`} onDrop={handleDrop} onDragOver={handleDragOver}>
           <div className={`bg-surface-primary border border-border-default shadow-lg shadow-black/10 ${isMobile ? 'rounded-2xl p-3' : 'rounded-2xl p-3 max-w-3xl mx-auto'}`}>
           {mentionDropdown && allMentionItems.length > 0 && (
             <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-64 max-w-xs w-72 overflow-y-auto">
@@ -3508,6 +4460,26 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   <span className="flex-1 min-w-0 truncate">{item.entity.name}</span>
                   <span className="text-xs text-fg-tertiary ml-auto">{item.entity.role}</span>
                 </button>
+              ))}
+            </div>
+          )}
+          {chatContext.length > 0 && (
+            <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+              {chatContext.map(chip => (
+                <span
+                  key={chip.id}
+                  className="inline-flex items-center gap-1 max-w-[240px] pl-2 pr-1 py-1 rounded-lg bg-brand-500/10 text-brand-500 text-xs border border-brand-500/20"
+                  title={chip.content}
+                >
+                  <span className="truncate">{chip.label}</span>
+                  <button
+                    onClick={() => setChatContext(prev => prev.filter(c => c.id !== chip.id))}
+                    className="w-4 h-4 flex items-center justify-center rounded hover:bg-brand-500/20 shrink-0"
+                    aria-label={t('common:remove', { defaultValue: 'Remove' })}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </span>
               ))}
             </div>
           )}
@@ -3571,41 +4543,63 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={e => {
-                handleInputChange(e.target.value);
-                adjustTextareaHeight();
-              }}
-              onKeyDown={e => {
-                if (mentionDropdown && allMentionItems.length > 0) {
-                  const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
-                  const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
-                  const isSelect = e.key === 'Enter' || e.key === 'Tab';
-                  const isClose = e.key === 'Escape';
-                  if (isUp) { e.preventDefault(); setMentionSelectedIndex(prev => (prev - 1 + allMentionItems.length) % allMentionItems.length); return; }
-                  if (isDown) { e.preventDefault(); setMentionSelectedIndex(prev => (prev + 1) % allMentionItems.length); return; }
-                  if (isSelect) {
-                    e.preventDefault();
-                    const sel = allMentionItems[mentionSelectedIndex];
-                    if (sel) {
-                      if (sel.kind === 'agent') insertMention(sel.agent.name);
-                      else insertMention(sel.entity.name, sel.entity.entityType, sel.entity.id);
+            <div className="flex-1 relative min-w-0">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={e => {
+                  handleInputChange(e.target.value);
+                  adjustTextareaHeight();
+                }}
+                onKeyDown={e => {
+                  if (mentionDropdown && allMentionItems.length > 0) {
+                    const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
+                    const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
+                    const isSelect = e.key === 'Enter' || e.key === 'Tab';
+                    const isClose = e.key === 'Escape';
+                    if (isUp) { e.preventDefault(); setMentionSelectedIndex(prev => (prev - 1 + allMentionItems.length) % allMentionItems.length); return; }
+                    if (isDown) { e.preventDefault(); setMentionSelectedIndex(prev => (prev + 1) % allMentionItems.length); return; }
+                    if (isSelect) {
+                      e.preventDefault();
+                      const sel = allMentionItems[mentionSelectedIndex];
+                      if (sel) {
+                        if (sel.kind === 'agent') insertMention(sel.agent.name);
+                        else insertMention(sel.entity.name, sel.entity.entityType, sel.entity.id);
+                      }
+                      return;
                     }
-                    return;
+                    if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
                   }
-                  if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
-                }
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
-              }}
-              onPaste={handlePaste}
-              placeholder={placeholder}
-              disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
-              rows={2}
-              className="flex-1 px-4 py-3 bg-transparent rounded-xl text-sm outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-relaxed placeholder:text-fg-secondary"
-              style={{ minHeight: '52px', maxHeight: '120px' }}
-            />
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+                }}
+                onPaste={handlePaste}
+                placeholder={placeholder}
+                disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
+                rows={2}
+                className="w-full px-4 py-3 pb-8 bg-transparent rounded-xl text-sm outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-relaxed placeholder:text-fg-secondary"
+                style={{ minHeight: '52px', maxHeight: '120px' }}
+              />
+              {chatMode === 'direct' && (
+                <div className="absolute right-1.5 bottom-1">
+                  <ChatModelMenu
+                    value={sessionModelOverride}
+                    disabled={!selectedAgent || isAgentOffline}
+                    onSelect={(sel, applyGlobal) => {
+                      setSessionModelOverride(sel);
+                      const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
+                      void applyChatModelSelection(sid, sel, applyGlobal).catch(() => { /* ignore */ });
+                      if (sid) {
+                        setSessions(prev => prev.map(s =>
+                          s.id === sid
+                            ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: sel } }
+                            : s,
+                        ));
+                      }
+                    }}
+                  />
+                </div>
+              )}
+            </div>
             {sending && chatMode !== 'dm' && (
               <button
                 onClick={stopSending}
@@ -3631,21 +4625,58 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       </div>
       )}
 
+      {/* ── Right-side resource panel (preview / selection-to-agent) ── */}
+      {!isMobile && rightPanelPayload && collapseRightPanel && (
+        <RightPanel
+          payload={rightPanelPayload}
+          onClose={collapseRightPanel}
+          width={rightPanelFullscreen ? containerWidth : effectiveRightPanelWidth}
+          onResizeStart={onRightPanelResizeStart}
+          onAddToChat={addChatContext}
+          tabs={rightPanelTabs}
+          activeTabId={activeRightPanelTabId}
+          onSelectTab={layout?.setActiveRightPanelTab}
+          onCloseTab={layout?.closeRightPanelTab}
+          onNewTab={() => {
+            if (!openRightPanel) return;
+            const browserId = `eb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+            openRightPanel({
+              kind: 'url',
+              url: 'about:blank',
+              title: 'New Tab',
+              browserId,
+            });
+          }}
+          fullscreen={rightPanelFullscreen}
+          onToggleFullscreen={layout?.toggleRightPanelFullscreen}
+        />
+      )}
+
     </div>
   );
 }
 
-function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; tasks: TaskInfo[]; onViewProfile?: (agentId: string, opts?: { tab?: 'overview' }) => void }) {
+function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
+  agent: AgentInfo;
+  tasks: TaskInfo[];
+  onViewProfile?: (agentId: string, opts?: { tab?: 'overview' }) => void;
+  /** Chat SSE / local sending can outlive agent.status flipping back to idle. */
+  streamActive?: boolean;
+}) {
   const { t } = useTranslation(['team', 'common']);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const isWorking = agent.status === 'working';
+  const isWorking = agent.status === 'working' || !!streamActive;
   const isError = agent.status === 'error';
-  const hasRecentError = !isError && !!agent.lastError && !!agent.lastErrorAt
-    && (Date.now() - new Date(agent.lastErrorAt).getTime()) < 30 * 60 * 1000;
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
   const activity = agent.currentActivity;
+
+  useEffect(() => {
+    if (isError && agent.lastError && isMarkusCreditError(agent.lastError)) {
+      dispatchCreditNotification();
+    }
+  }, [isError, agent.lastError]);
 
   useEffect(() => {
     if (!open) return;
@@ -3676,7 +4707,6 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
   }, [open]);
 
   const dotColor = isError ? 'bg-red-400 animate-pulse'
-    : hasRecentError ? 'bg-amber-400'
     : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
   const label = isError ? t('common:status.error') : isWorking ? t('common:status.working') : t('common:status.idle');
 
@@ -3692,15 +4722,13 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
       <button
         onClick={() => setOpen(o => !o)}
         className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full transition-colors ${
-          isWorking && !hasRecentError ? 'bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20'
+          isWorking ? 'bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20'
           : isError ? 'bg-red-500/10 border border-red-500/20 hover:bg-red-500/20'
-          : hasRecentError ? 'bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20'
           : 'bg-green-500/10 border border-green-500/20 hover:bg-green-500/20'
         }`}
       >
         <span className={`w-2 h-2 rounded-full ${dotColor}`} />
-        <span className={`text-xs ${isError ? 'text-red-500' : hasRecentError ? 'text-amber-600' : isWorking ? 'text-blue-500' : 'text-green-600'}`}>{label}</span>
-        {hasRecentError && <span className="text-[9px] text-amber-500">⚠</span>}
+        <span className={`text-xs ${isError ? 'text-red-500' : isWorking ? 'text-blue-500' : 'text-green-600'}`}>{label}</span>
         {agent.mailboxDepth != null && agent.mailboxDepth > 0 && (
           <span className="text-[9px] bg-fg-tertiary/20 text-fg-tertiary rounded-full px-1.5">{agent.mailboxDepth}</span>
         )}
@@ -3711,7 +4739,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
           <p className="text-[10px] text-red-500 uppercase font-semibold">{t('page.errorDetails')}</p>
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
             <pre className="text-[10px] text-red-500/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
-              {agent.lastError || t('page.agentErrorFallback')}
+              {friendlyAgentError(agent.lastError, t) || agent.lastError || t('page.agentErrorFallback')}
             </pre>
             {agent.lastErrorAt && <div className="text-[9px] text-red-500/50 mt-1.5 border-t border-red-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
           </div>
@@ -3721,19 +4749,6 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: { agent: AgentInfo; t
           >
             {t('page.viewAgentProfileArrow')}
           </button>
-        </div>
-      )}
-
-      {open && hasRecentError && (
-        <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-amber-500/30 rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
-          <p className="text-[10px] text-amber-600 uppercase font-semibold">{t('page.recentErrorDetails')}</p>
-          <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5">
-            <pre className="text-[10px] text-amber-600/80 leading-relaxed whitespace-pre-wrap break-all font-mono line-clamp-6">
-              {agent.lastError}
-            </pre>
-            {agent.lastErrorAt && <div className="text-[9px] text-amber-500/50 mt-1.5 border-t border-amber-500/10 pt-1">{new Date(agent.lastErrorAt).toLocaleString()}</div>}
-          </div>
-          <div className="text-[10px] text-fg-tertiary">{t('page.errorRecovered')}</div>
         </div>
       )}
 

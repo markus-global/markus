@@ -1,12 +1,17 @@
 import { useEffect, useState, useMemo, useRef, useCallback, forwardRef } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { api, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type ProjectInfo, type StorageInfo, type DeliverableInfo } from '../api.ts';
+import { api, hubApi, getHubToken, restoreHubTokenFromBackend, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type ProjectInfo, type StorageInfo, type DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
+import { ClaimFreeCreditsModal } from '../components/ClaimFreeCreditsModal.tsx';
+import {
+  OverviewUsageTier,
+  useOverviewUsageData,
+} from '../components/OverviewUsage.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 const DONUT_COLORS: Record<string, string> = {
@@ -65,17 +70,36 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [recentDeliverables, setRecentDeliverables] = useState<DeliverableInfo[]>([]);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(previewData?.storageInfo ?? null);
   const [usageInfo, setUsageInfo] = useState<{ llmTokens: number; storageBytes: number } | null>(previewData?.usageInfo ?? null);
+  const [cuQuota, setCuQuota] = useState<{ available: boolean; cuRemaining: number; cuLimit: number; cuUsedToday?: number } | null>(null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showWorkingModal, setShowWorkingModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
+  const [markusConfigured, setMarkusConfigured] = useState(false);
+  const [freeCreditsClaimed, setFreeCreditsClaimed] = useState(false);
   const [browserConnected, setBrowserConnected] = useState<boolean | null>(null);
-  const [licenseConfigured, setLicenseConfigured] = useState<boolean | null>(null);
-  const [codingToolsConfigured, setCodingToolsConfigured] = useState(false);
+  const [showClaimModal, setShowClaimModal] = useState(false);
+  const showClaimModalRef = useRef(false);
+  showClaimModalRef.current = showClaimModal;
   const [checklistDismissed, setChecklistDismissed] = useState(() => localStorage.getItem('markus_checklist_dismissed') === 'true');
   const [secretaryHasChat, setSecretaryHasChat] = useState(false);
   const [checklistReady, setChecklistReady] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
+
+  const handleClaimed = useCallback(() => {
+    setFreeCreditsClaimed(true);
+    api.cu.status().then(setCuQuota).catch(() => {});
+    api.settings.getLlm().then(d => {
+      setLlmConfigured(Object.values(d.providers).some(p => p.configured));
+      setMarkusConfigured(!!d.providers['markus']?.configured);
+    }).catch(() => {});
+    // OverviewUsage listens for this and refetches hubApi.user.plan().
+    window.dispatchEvent(new CustomEvent('markus:data-changed'));
+    // Hub plan can lag a beat after bonus grant — one short retry.
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('markus:data-changed'));
+    }, 800);
+  }, []);
 
   useEffect(() => {
     if (!showCreateMenu) return;
@@ -100,18 +124,17 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   }, [previewMode, previewData]);
 
   const refresh = useCallback(() => {
-    const agentsP = api.agents.list().then(async d => {
+    // Keep checklist gating on fast list endpoints only. Nested session fetches
+    // must not block checklistReady (a hang previously hid the whole guide).
+    const agentsP = api.agents.list().then(d => {
       setAgents(d.agents);
       const sec = d.agents.find(a => a.role === 'secretary') ?? d.agents.find(a => a.name?.toLowerCase().includes('secretary'));
-      if (sec) {
-        try {
-          const r = await api.sessions.listByAgent(sec.id, 1);
-          if (r.sessions.length > 0) {
-            const m = await api.sessions.getMessages(r.sessions[0]!.id, 1);
-            setSecretaryHasChat(m.messages.length > 0);
-          }
-        } catch { /* ignore */ }
-      }
+      if (!sec) return;
+      void api.sessions.listByAgent(sec.id, 1).then(async r => {
+        if (r.sessions.length === 0) return;
+        const m = await api.sessions.getMessages(r.sessions[0]!.id, 1);
+        setSecretaryHasChat(m.messages.length > 0);
+      }).catch(() => {});
     }).catch(() => {});
     const teamsP = api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
     api.tasks.board().then(d => setBoard(d.board)).catch(() => {});
@@ -130,19 +153,28 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     }).catch(() => {});
     api.system.storage().then(setStorageInfo).catch(() => {});
     api.usage.summary().then(d => setUsageInfo(d.usage)).catch(() => {});
+    api.cu.status().then(setCuQuota).catch(() => {});
     const llmP = api.settings.getLlm().then(d => {
       setLlmConfigured(Object.values(d.providers).some(p => p.configured));
+      setMarkusConfigured(!!d.providers['markus']?.configured);
     }).catch(() => {});
     const browserP = api.settings.getBrowser().then(d => {
       setBrowserConnected(d.extensionConnected);
     }).catch(() => {});
-    const licenseP = api.license.get().then(d => {
-      setLicenseConfigured(d.plan !== 'free');
-    }).catch(() => {});
-    const codingP = api.settings.getCodingTools().then(d => {
-      setCodingToolsConfigured(d.enabled && Object.values(d.tools).some(t => t.enabled));
-    }).catch(() => {});
-    Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, browserP, licenseP, codingP]).then(() => {
+    // Hub JWT may only live on disk (~/.markus/hub-token) until restored.
+    // Await restore before deciding whether the claim checklist step applies.
+    const claimP = restoreHubTokenFromBackend()
+      .then((token) => {
+        if (!token && !getHubToken()) {
+          setFreeCreditsClaimed(false);
+          return;
+        }
+        return hubApi.user.claimFreeCreditsStatus()
+          .then(s => setFreeCreditsClaimed(!!s.claimed))
+          .catch(() => { /* keep prior / false */ });
+      })
+      .catch(() => {});
+    Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, browserP, claimP]).then(() => {
       setChecklistReady(true);
     });
   }, [opsPeriod]);
@@ -152,8 +184,24 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     refresh();
     const i = setInterval(refresh, 60_000);
     const onDataChanged = () => refresh();
+    // While the claim modal is driving Hub login, skip a full Overview refresh —
+    // it re-renders Home and used to re-trigger the modal's status load (flicker).
+    const onHubAuth = () => {
+      if (showClaimModalRef.current) {
+        void hubApi.user.claimFreeCreditsStatus()
+          .then(s => setFreeCreditsClaimed(!!s.claimed))
+          .catch(() => {});
+        return;
+      }
+      refresh();
+    };
     window.addEventListener('markus:data-changed', onDataChanged);
-    return () => { clearInterval(i); window.removeEventListener('markus:data-changed', onDataChanged); };
+    window.addEventListener('markus:hub-auth', onHubAuth);
+    return () => {
+      clearInterval(i);
+      window.removeEventListener('markus:data-changed', onDataChanged);
+      window.removeEventListener('markus:hub-auth', onHubAuth);
+    };
   }, [previewMode, opsPeriod, isActive, refresh]);
 
   // ── Computed ──
@@ -183,21 +231,11 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     });
   }, [teams, agents]);
 
-  const topPerformers = useMemo(() => {
-    if (!ops) return [];
-    return [...ops.agentEfficiency].filter(a => a.taskMetrics.completed > 0).sort((a, b) => b.taskMetrics.completed - a.taskMetrics.completed).slice(0, 3);
-  }, [ops]);
-
-  const allRankedAgents = useMemo(() => {
-    if (!ops) return [];
-    const score = (a: typeof ops.agentEfficiency[0]) => {
-      const w = 0.3 + 0.7 * Math.min(1, (a.taskMetrics.completed + a.taskMetrics.failed) / 3);
-      return a.healthScore * w + a.taskMetrics.completed * 0.5;
-    };
-    return [...ops.agentEfficiency].sort((a, b) => score(b) - score(a));
-  }, [ops]);
-
   const workingAgentsList = agents.filter(a => a.status === 'working');
+
+  // Own-provider users don't need Markus Cloud AI quota/trends on Overview.
+  const showMarkusUsage = !(llmConfigured === true && !markusConfigured);
+  const usageData = useOverviewUsageData(!previewMode && isActive, ops, teams);
 
   const nav = previewMode ? (() => {}) as typeof navBus.navigate : navBus.navigate;
 
@@ -249,15 +287,6 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     return m;
   }, [board]);
 
-  const urgentHighActive = useMemo(() => {
-    let count = 0;
-    for (const [status, tasks] of Object.entries(board)) {
-      if (status === 'completed' || status === 'archived' || status === 'cancelled') continue;
-      count += tasks.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
-    }
-    return count;
-  }, [board]);
-
   const agentNameMap = useMemo(() => {
     const m = new Map<string, string>();
     for (const a of agents) m.set(a.id, a.name);
@@ -271,9 +300,8 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     const leftActHeader = 2;
     const leftFixed = leftOverview + leftGap + leftActHeader;
 
-    const rightPerf = topPerformers.length > 0 ? 2 + topPerformers.length : 0;
-    const rightTeamsNatural = 2 + teamSummaries.length;
-    const rightNatural = rightPerf + rightTeamsNatural;
+    const rightTeamsNatural = teamSummaries.length > 0 ? 2 + teamSummaries.length : 0;
+    const rightNatural = Math.max(rightTeamsNatural, 4);
 
     const wc = workingAgentsList.length;
     const naturalMax = wc > 0 ? 8 : 12;
@@ -292,7 +320,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     }
 
     return { activityLimit: act, teamsLimit: teams };
-  }, [topPerformers, teamSummaries, totalRootTasks, projects, allRequirements, deliverableTotal, workingAgentsList]);
+  }, [teamSummaries, totalRootTasks, projects, allRequirements, deliverableTotal, workingAgentsList]);
 
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -323,7 +351,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           <MetricCard label={t('metricCards.working')} value={String(workingAgents)} sub={`/${agents.length}`}
             icon={<MetricIcon type="working" />} pulse={workingAgents > 0} onClick={() => setShowWorkingModal(true)} />
           <MetricCard label={t('metricCards.tasksDone')} value={`${completed}`} sub={`/${totalRootTasks}`}
-            icon={<MetricIcon type="tasks" />} badge={urgentHighActive > 0 ? `${urgentHighActive} urgent/high` : undefined} onClick={() => navBus.navigate(PAGE.WORK)} />
+            icon={<MetricIcon type="tasks" />} onClick={() => navBus.navigate(PAGE.WORK)} />
           <MetricCard label={t('metricCards.projects')} value={String(activeProjects)}
             icon={<MetricIcon type="projects" />} onClick={() => navBus.navigate(PAGE.WORK)} />
           <MetricCard label={t('metricCards.health')} value={`${llmConfigured === false ? 100 : ops?.systemHealth.overallScore ?? '—'}`} sub={llmConfigured === false || ops ? '%' : undefined}
@@ -433,16 +461,10 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           </div>
         )}
 
-        {/* ── Onboarding Checklist ── */}
-        {!checklistDismissed && !checklistReady && (
-          <div className="bg-gradient-to-br from-brand-600/10 via-surface-secondary to-surface-secondary border border-brand-500/20 rounded-2xl p-5 sm:p-6">
-            <div className="flex items-center justify-center py-10 gap-3 text-fg-tertiary">
-              <div className="w-5 h-5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm">{t('common:loading')}</span>
-            </div>
-          </div>
-        )}
-        {!checklistDismissed && checklistReady && (() => {
+        {/* ── Onboarding Checklist ──
+             No loading placeholder: the card only renders once it is ready and
+             has real content, so it never flashes an empty "loading" box. */}
+        {checklistReady && (() => {
           const navigateToSecretary = (prompt: string) => {
             const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
             navBus.navigate(PAGE.TEAM, {
@@ -451,18 +473,48 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
             });
           };
 
+          // Claim credits whenever Hub session or Markus Cloud is present.
+          // Do not gate on localStorage alone — JWT may restore from disk after paint.
+          const hubConnected = !!getHubToken();
+          const showClaimStep = hubConnected || markusConfigured;
+          const llmReady = llmConfigured === true || markusConfigured;
           const setupSteps = [
-            { id: 'llm', done: llmConfigured === true, isSetup: true, label: t('checklist.setup.llm'), desc: t('checklist.setup.llmDesc'), action: t('checklist.setup.llmAction'), onClick: () => { window.location.hash = '#settings/providers'; } },
-            { id: 'browser', done: browserConnected === true, isSetup: true, optional: true, label: t('checklist.setup.browser'), desc: t('checklist.setup.browserDesc'), action: t('checklist.setup.browserAction'), onClick: () => { window.location.hash = '#settings/browser'; } },
-            { id: 'coding-tools', done: codingToolsConfigured, isSetup: true, optional: true, label: t('checklist.setup.codingTools'), desc: t('checklist.setup.codingToolsDesc'), action: t('checklist.setup.codingToolsAction'), onClick: () => { window.location.hash = '#settings/coding-tools'; } },
-            { id: 'license', done: licenseConfigured === true, isSetup: true, optional: true, label: t('checklist.setup.license'), desc: t('checklist.setup.licenseDesc'), action: t('checklist.setup.licenseAction'), onClick: () => { window.location.hash = '#settings/account'; } },
+            ...(showClaimStep
+              ? [{
+                  id: 'claim',
+                  done: freeCreditsClaimed,
+                  isSetup: true,
+                  label: t('checklist.setup.claim'),
+                  desc: t('checklist.setup.claimDesc'),
+                  action: t('checklist.setup.claimAction'),
+                  onClick: () => { setShowClaimModal(true); },
+                }]
+              : []),
+            {
+              id: 'llm',
+              done: llmReady,
+              isSetup: true,
+              label: t('checklist.setup.llm'),
+              desc: showClaimStep ? t('checklist.setup.llmDescHub') : t('checklist.setup.llmDesc'),
+              action: t('checklist.setup.llmAction'),
+              onClick: () => { window.location.hash = '#settings/providers'; },
+            },
+            {
+              id: 'browser',
+              done: browserConnected === true,
+              isSetup: true,
+              optional: true,
+              label: t('checklist.setup.browser'),
+              desc: t('checklist.setup.browserDesc'),
+              action: t('checklist.setup.browserAction'),
+              onClick: () => { window.location.hash = '#settings/browser'; },
+            },
           ];
 
           const exploreSteps = [
             { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
             { id: 'project', done: projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
             { id: 'requirements', done: allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
-            { id: 'agent', done: agents.length > 1, label: t('checklist.explore.agent'), desc: t('checklist.explore.agentDesc'), action: t('checklist.explore.agentAction'), onClick: () => navigateToSecretary('帮我招聘一个研究员（Researcher）智能体，用于信息收集和分析') },
             { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary('帮我组建一个名为「科技前沿智库」的团队，成员包括4位科技领袖角色的智能体：埃隆·马斯克（关注太空、电动车、AI安全）、史蒂夫·乔布斯（关注产品设计与用户体验）、山姆·奥特曼（关注AGI与AI创业生态）、黄仁勋（关注GPU、AI算力与数据中心）。团队目标是从不同视角分析科技前沿趋势。') },
           ];
 
@@ -470,8 +522,12 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           const doneCount = allSteps.filter(s => s.done).length;
           const totalSteps = allSteps.length;
           const allRequiredDone = setupSteps.filter(s => !s.optional).every(s => s.done) && exploreSteps.every(s => s.done);
+          const requiredSetupIncomplete = setupSteps.some(s => !s.optional && !s.done);
 
           if (allRequiredDone) return null;
+          // Honor dismiss only after required setup is done; otherwise local users
+          // who closed the card too early would permanently lose "配置模型" guidance.
+          if (checklistDismissed && !requiredSetupIncomplete) return null;
 
           const renderStep = (step: typeof allSteps[0] & { optional?: boolean; isSetup?: boolean }) => (
             <div key={step.id} className="flex items-start gap-3 py-2.5 px-3 rounded-lg hover:bg-surface-elevated/50 transition-colors group">
@@ -650,77 +706,69 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
 
           {/* ── Right Column (1/3) ── */}
           <div className="space-y-6">
-
-            {/* Top Performers + Teams (combined card) */}
-            <div className="bg-surface-elevated shadow-sm rounded-2xl overflow-hidden">
-              {/* Top Performers section (on top) */}
-              {topPerformers.length > 0 && (
-                <div className="p-5 pb-4">
+            {teamSummaries.length > 0 && (
+              <div className="bg-surface-elevated shadow-sm rounded-2xl overflow-hidden">
+                <div className="p-5">
                   <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-sm font-semibold text-fg-primary">{t('topPerformers.title')}</h3>
-                    <button onClick={() => setShowWorkingModal(true)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
+                    <h3 className="text-sm font-semibold text-fg-primary">{t('teamOverview.title')}</h3>
+                    <button onClick={() => navBus.navigate(PAGE.TEAM)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
                   </div>
                   <div className="space-y-0.5">
-                    {topPerformers.map((agent, idx) => (
-                      <div key={agent.agentId} className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
-                        onClick={() => navBus.navigate(PAGE.TEAM, { selectAgent: agent.agentId })}>
-                        <span className={`text-[10px] font-bold w-4 text-center ${idx === 0 ? 'text-amber-400' : idx === 1 ? 'text-gray-400' : 'text-amber-600'}`}>{idx + 1}</span>
-                        <Avatar name={agent.agentName} size={24} bgClass="bg-brand-600/20 text-brand-300" />
-                        <span className="text-xs font-medium text-fg-primary truncate flex-1">{agent.agentName}</span>
-                        <span className="text-[10px] text-fg-tertiary tabular-nums">{agent.taskMetrics.completed} {t('topPerformers.done')}</span>
+                    {teamSummaries.slice(0, teamsLimit).map(ts => (
+                      <div key={ts.team.id} className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
+                        onClick={() => navBus.navigate(PAGE.TEAM, { selectTeam: ts.team.id })}>
+                        <div className="w-7 h-7 rounded-md bg-brand-600/15 flex items-center justify-center text-[10px] font-bold text-brand-400 shrink-0">{ts.team.name.charAt(0)}</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-medium text-fg-primary truncate">{ts.team.name}</div>
+                        </div>
+                        <div className="flex items-center -space-x-1 shrink-0">
+                          {ts.agents.slice(0, 3).map(a => (
+                            <Avatar key={a.id} name={a.name} avatarUrl={(a as any).avatarUrl} size={18} bgClass="bg-surface-overlay text-fg-secondary ring-1 ring-surface-elevated" />
+                          ))}
+                        </div>
+                        {ts.working > 0 && <span className="text-[10px] text-green-500 font-medium shrink-0">{ts.working}/{ts.total}</span>}
                       </div>
                     ))}
+                    {teamsLimit < teamSummaries.length && (
+                      <button onClick={() => navBus.navigate(PAGE.TEAM)}
+                        className="w-full text-center text-[11px] text-brand-400 hover:text-brand-300 font-medium py-1.5">
+                        +{teamSummaries.length - teamsLimit} more
+                      </button>
+                    )}
                   </div>
                 </div>
-              )}
-
-              {/* Teams section — only show when teams exist */}
-              {teamSummaries.length > 0 && (
-              <div className={`p-5 ${topPerformers.length > 0 ? 'pt-3 border-t border-border-subtle/50' : ''}`}>
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold text-fg-primary">{t('teamOverview.title')}</h3>
-                  <button onClick={() => navBus.navigate(PAGE.TEAM)} className="text-[11px] text-brand-400 hover:text-brand-300 font-medium">{t('common:viewAll')}</button>
-                </div>
-                <div className="space-y-0.5">
-                  {teamSummaries.slice(0, teamsLimit).map(ts => (
-                    <div key={ts.team.id} className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
-                      onClick={() => navBus.navigate(PAGE.TEAM, { selectTeam: ts.team.id })}>
-                      <div className="w-7 h-7 rounded-md bg-brand-600/15 flex items-center justify-center text-[10px] font-bold text-brand-400 shrink-0">{ts.team.name.charAt(0)}</div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium text-fg-primary truncate">{ts.team.name}</div>
-                      </div>
-                      <div className="flex items-center -space-x-1 shrink-0">
-                        {ts.agents.slice(0, 3).map(a => (
-                          <Avatar key={a.id} name={a.name} avatarUrl={(a as any).avatarUrl} size={18} bgClass="bg-surface-overlay text-fg-secondary ring-1 ring-surface-elevated" />
-                        ))}
-                      </div>
-                      {ts.working > 0 && <span className="text-[10px] text-green-500 font-medium shrink-0">{ts.working}/{ts.total}</span>}
-                    </div>
-                  ))}
-                  {teamsLimit < teamSummaries.length && (
-                    <button onClick={() => navBus.navigate(PAGE.TEAM)}
-                      className="w-full text-center text-[11px] text-brand-400 hover:text-brand-300 font-medium py-1.5">
-                      +{teamSummaries.length - teamsLimit} more
-                    </button>
-                  )}
-                </div>
               </div>
-              )}
-            </div>
-
+            )}
           </div>
         </div>
+
+        {/* ── Usage tier (collapsed by default; action-first Overview) ── */}
+        {!previewMode && llmConfigured !== null && (
+          <OverviewUsageTier
+            contributors={usageData.contributors}
+            hubPlan={usageData.hubPlan}
+            hubConnected={usageData.hubConnected}
+            showMarkusUsage={showMarkusUsage}
+          />
+        )}
       </div>
 
-      {/* ── Working & Ranking Modal ── */}
-      {showWorkingModal && ops && <WorkingModal workingAgents={workingAgentsList} rankedAgents={allRankedAgents} onClose={() => setShowWorkingModal(false)} t={t} />}
+      {/* ── Working Agents Modal ── */}
+      {showWorkingModal && <WorkingModal workingAgents={workingAgentsList} onClose={() => setShowWorkingModal(false)} t={t} />}
 
       {/* ── Health Modal ── */}
       {showHealthModal && (
         <HealthModal ops={ops} completed={completed} totalRootTasks={totalRootTasks}
           workingAgents={workingAgents} totalAgents={agents.length}
-          usageInfo={usageInfo} storageInfo={storageInfo}
+          usageInfo={usageInfo} storageInfo={storageInfo} cuQuota={cuQuota}
           onClose={() => setShowHealthModal(false)} t={t} />
+      )}
+
+      {showClaimModal && (
+        <ClaimFreeCreditsModal
+          onClose={() => setShowClaimModal(false)}
+          onClaimed={handleClaimed}
+        />
       )}
     </div>
   );
@@ -916,108 +964,39 @@ function DeliverableTypeIcon({ type, artifactType }: { type: string; artifactTyp
   );
 }
 
-// ── Working & Ranking Modal ─────────────────────────────────────────────────
+// ── Working Agents Modal ────────────────────────────────────────────────────
 
-type RankSortKey = 'tasks' | 'health' | 'tokens' | 'errors';
-type RankedAgent = { agentId: string; agentName: string; role: string; agentRole: string; healthScore: number; tokenUsage: { input: number; output: number; cost: number }; taskMetrics: { completed: number; failed: number }; errorRate: number };
-
-function WorkingModal({ workingAgents, rankedAgents, onClose, t }: {
+function WorkingModal({ workingAgents, onClose, t }: {
   workingAgents: AgentInfo[];
-  rankedAgents: RankedAgent[];
   onClose: () => void; t: TFunction;
 }) {
-  const [sortKey, setSortKey] = useState<RankSortKey>('tasks');
-  const [sortAsc, setSortAsc] = useState(false);
-
-  const toggleSort = useCallback((key: RankSortKey) => {
-    if (key === sortKey) { setSortAsc(prev => !prev); }
-    else { setSortKey(key); setSortAsc(false); }
-  }, [sortKey]);
-
-  const sorted = useMemo(() => {
-    const dir = sortAsc ? 1 : -1;
-    const cmp = (a: RankedAgent, b: RankedAgent): number => {
-      switch (sortKey) {
-        case 'tasks': return (b.taskMetrics.completed - a.taskMetrics.completed) * dir;
-        case 'health': return (b.healthScore - a.healthScore) * dir;
-        case 'tokens': return ((b.tokenUsage.input + b.tokenUsage.output) - (a.tokenUsage.input + a.tokenUsage.output)) * dir;
-        case 'errors': return (b.errorRate - a.errorRate) * dir;
-      }
-    };
-    return [...rankedAgents].sort(cmp);
-  }, [rankedAgents, sortKey, sortAsc]);
-
-  const colBtn = (key: RankSortKey, label: string, w: string) => (
-    <button onClick={() => toggleSort(key)}
-      className={`${w} text-center cursor-pointer transition-colors ${sortKey === key ? 'text-brand-400 font-bold' : ''}`}>
-      {label}{sortKey === key ? (sortAsc ? ' ↑' : ' ↓') : ''}
-    </button>
-  );
-
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-surface-elevated rounded-xl border border-border-default shadow-2xl w-[600px] max-w-[90vw] max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-elevated rounded-xl border border-border-default shadow-2xl w-[420px] max-w-[90vw] max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="px-5 py-4 border-b border-border-default flex items-center justify-between shrink-0">
-          <h3 className="text-sm font-semibold">{t('ranking.title')}</h3>
+          <h3 className="text-sm font-semibold">{t('ranking.workingNow')}</h3>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary hover:text-fg-primary">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
           </button>
         </div>
-        <div className="overflow-y-auto flex-1 scrollbar-thin">
-          {/* Working agents section */}
-          {workingAgents.length > 0 && (
-            <div className="px-5 py-4 border-b border-border-default/50">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                <h4 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('ranking.workingNow')}</h4>
-                <span className="text-[10px] text-fg-muted">{workingAgents.length}</span>
-              </div>
-              <div className="space-y-0.5">
-                {workingAgents.map(a => (
-                  <div key={a.id} className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
-                    onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { agentId: a.id }); }}>
-                    <Avatar name={a.name} avatarUrl={(a as any).avatarUrl} size={26} bgClass="bg-brand-600/30 text-brand-300" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>
-                      <div className="text-[10px] text-fg-tertiary truncate">{(a as any).currentActivity?.label ?? '—'}</div>
-                    </div>
-                    <span className="text-[10px] text-green-500 font-medium shrink-0">Working</span>
+        <div className="overflow-y-auto flex-1 scrollbar-thin px-5 py-4">
+          {workingAgents.length > 0 ? (
+            <div className="space-y-0.5">
+              {workingAgents.map(a => (
+                <div key={a.id} className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
+                  onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { agentId: a.id }); }}>
+                  <Avatar name={a.name} avatarUrl={(a as any).avatarUrl} size={26} bgClass="bg-brand-600/30 text-brand-300" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>
+                    <div className="text-[10px] text-fg-tertiary truncate">{(a as any).currentActivity?.label ?? '—'}</div>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Sortable ranking table header */}
-          <div className="px-4 py-2 flex items-center gap-3 text-[10px] text-fg-tertiary uppercase tracking-wider font-medium border-b border-border-default/50 select-none">
-            <span className="w-7 text-center">#</span>
-            <span className="flex-1">{t('ranking.agent')}</span>
-            {colBtn('health', t('ranking.health'), 'w-14')}
-            {colBtn('tasks', t('ranking.tasks'), 'w-14')}
-            {colBtn('tokens', t('ranking.tokens'), 'w-16')}
-            {colBtn('errors', t('ranking.errorRate'), 'w-14')}
-          </div>
-          {sorted.map((agent, idx) => {
-            const hc = agent.healthScore >= 80 ? 'text-green-500' : agent.healthScore >= 50 ? 'text-amber-500' : 'text-red-500';
-            const ep = Math.round(agent.errorRate * 100);
-            const medal = idx < 3 ? ['text-amber-400', 'text-gray-400', 'text-amber-600'][idx] : 'text-fg-tertiary';
-            const totalTokens = agent.tokenUsage.input + agent.tokenUsage.output;
-            return (
-              <div key={agent.agentId} className="px-4 py-2.5 flex items-center gap-3 hover:bg-surface-overlay/50 cursor-pointer transition-colors border-b border-border-default/30 last:border-0"
-                onClick={() => { onClose(); navBus.navigate(PAGE.TEAM, { selectAgent: agent.agentId }); }}>
-                <span className={`w-7 text-center text-xs font-bold ${medal}`}>{idx + 1}</span>
-                <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <Avatar name={agent.agentName} size={26} bgClass="bg-brand-600/20 text-brand-300" />
-                  <div className="min-w-0"><div className="text-xs font-medium text-fg-primary truncate">{agent.agentName}</div><div className="text-[10px] text-fg-tertiary truncate">{agent.role || agent.agentRole || '—'}</div></div>
+                  <span className="text-[10px] text-green-500 font-medium shrink-0">Working</span>
                 </div>
-                <span className={`w-14 text-center text-xs font-semibold ${hc}`}>{agent.healthScore}%</span>
-                <span className="w-14 text-center text-xs text-fg-secondary">{agent.taskMetrics.completed}<span className="text-fg-tertiary">/{agent.taskMetrics.completed + agent.taskMetrics.failed}</span></span>
-                <span className="w-16 text-center text-xs text-fg-secondary tabular-nums">{formatTokenCount(totalTokens)}</span>
-                <span className={`w-14 text-center text-xs ${ep > 20 ? 'text-red-500' : ep > 5 ? 'text-amber-500' : 'text-green-500'}`}>{ep}%</span>
-              </div>
-            );
-          })}
-          {sorted.length === 0 && <div className="py-8 text-center text-xs text-fg-tertiary">{t('ranking.noData')}</div>}
+              ))}
+            </div>
+          ) : (
+            <div className="py-8 text-center text-xs text-fg-tertiary">{t('ranking.noData')}</div>
+          )}
         </div>
       </div>
     </div>
@@ -1026,11 +1005,12 @@ function WorkingModal({ workingAgents, rankedAgents, onClose, t }: {
 
 // ── Health Modal ────────────────────────────────────────────────────────────
 
-function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgents, usageInfo, storageInfo, onClose, t }: {
+function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgents, usageInfo, storageInfo, cuQuota, onClose, t }: {
   ops: OpsDashboard | null; completed: number; totalRootTasks: number;
   workingAgents: number; totalAgents: number;
   usageInfo: { llmTokens: number; storageBytes: number } | null;
   storageInfo: StorageInfo | null;
+  cuQuota: { available: boolean; cuRemaining: number; cuLimit: number; cuUsedToday?: number } | null;
   onClose: () => void; t: TFunction;
 }) {
   return (
@@ -1070,6 +1050,32 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
               <span className="text-xs font-semibold text-fg-primary">{formatTokenCount(usageInfo.llmTokens)}</span>
             </div>
           )}
+          {cuQuota?.available && cuQuota.cuLimit > 0 && (() => {
+            const used = cuQuota.cuLimit - cuQuota.cuRemaining;
+            const pct = Math.min(100, Math.round((used / cuQuota.cuLimit) * 100));
+            const textColor = pct >= 95 ? 'text-red-500' : pct >= 80 ? 'text-amber-500' : 'text-green-500';
+            const barColor = pct >= 95 ? 'bg-red-500' : pct >= 80 ? 'bg-amber-500' : 'bg-green-500';
+            return (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs text-fg-secondary">CU Quota</span>
+                  <span className={`text-xs font-semibold ${textColor}`}>
+                    {formatTokenCount(used)} / {formatTokenCount(cuQuota.cuLimit)} ({pct}%)
+                  </span>
+                </div>
+                <div className="h-2 rounded-full bg-surface-overlay/60 overflow-hidden">
+                  <div className={`h-full rounded-full ${barColor} transition-all duration-500`}
+                    style={{ width: `${pct}%` }} />
+                </div>
+                {cuQuota.cuUsedToday != null && cuQuota.cuUsedToday > 0 && (
+                  <div className="flex items-center justify-between mt-1.5">
+                    <span className="text-xs text-fg-tertiary">Today&apos;s CU Used</span>
+                    <span className="text-xs font-semibold text-fg-secondary">{formatTokenCount(cuQuota.cuUsedToday)}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           {workingAgents > 0 && (
             <div className="flex items-center justify-between">
               <span className="text-xs text-fg-secondary">{t('systemHealth.currentWorking')}</span>

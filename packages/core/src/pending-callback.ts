@@ -10,12 +10,34 @@ import { createLogger } from '@markus/shared';
 
 const log = createLogger('pending-callback');
 
+/** Kinds of async operation that report back through the mailbox. */
+export type CallbackType = 'background_exec' | 'wakeup' | 'a2a_reply';
+
+/**
+ * How a resolved callback is delivered:
+ * - `in_session`: re-enter the originating session (a `callback_result` mailbox item)
+ *   so the agent continues where it left off — used for interactive/awaited work.
+ * - `mailbox`: surface as a fresh `system_event` (a new attention cycle) — used for
+ *   autonomous/background completions and scheduled wakeups.
+ */
+export type CallbackDelivery = 'in_session' | 'mailbox';
+
 export interface PendingCallback {
   id: string;
   agentId: string;
   originSessionId: string;
-  type: 'background_exec';
+  type: CallbackType;
+  /** Delivery form on resolution. Defaults to `in_session` when omitted (legacy bg-exec). */
+  deliveryMode?: CallbackDelivery;
   command?: string;
+  /** Free-text reason/label (e.g. wakeup note, delegation goal). */
+  note?: string;
+  /** Correlates an external event to this callback (taskId / conversation_id). */
+  correlationId?: string;
+  /** For scheduled wakeups: epoch ms at which the wakeup is due. */
+  wakeAt?: number;
+  /** For recurring wakeups: re-arm interval in ms after firing. */
+  recurringMs?: number;
   registeredAt: number;
   timeoutMs: number;
 }
@@ -23,16 +45,37 @@ export interface PendingCallback {
 export interface CallbackResult {
   callbackId: string;
   originSessionId: string;
-  type: 'background_exec';
+  type: CallbackType;
+  deliveryMode: CallbackDelivery;
   success: boolean;
   summary: string;
   detail?: string;
 }
 
+/**
+ * Storage-facing shape. Kept structurally loose (`type`/`deliveryMode` as strings)
+ * so the storage package stays decoupled from core's union types; `setPersistence`
+ * normalizes into `PendingCallback` on load.
+ */
+export interface PersistedCallback {
+  id: string;
+  agentId: string;
+  originSessionId: string;
+  type: string;
+  deliveryMode?: string;
+  command?: string;
+  note?: string;
+  correlationId?: string;
+  wakeAt?: number;
+  recurringMs?: number;
+  registeredAt: number;
+  timeoutMs: number;
+}
+
 export interface CallbackPersistence {
-  save(cb: PendingCallback): void;
+  save(cb: PersistedCallback): void;
   remove(id: string): void;
-  loadAll(): PendingCallback[];
+  loadAll(): PersistedCallback[];
 }
 
 export class PendingCallbackRegistry {
@@ -41,8 +84,12 @@ export class PendingCallbackRegistry {
 
   setPersistence(p: CallbackPersistence): void {
     this.persistence = p;
-    for (const cb of p.loadAll()) {
-      this.callbacks.set(cb.id, cb);
+    for (const raw of p.loadAll()) {
+      this.callbacks.set(raw.id, {
+        ...raw,
+        type: raw.type as CallbackType,
+        deliveryMode: (raw.deliveryMode as CallbackDelivery | undefined) ?? 'in_session',
+      });
     }
     if (this.callbacks.size > 0) {
       log.info('Restored pending callbacks from persistence', { count: this.callbacks.size });
@@ -67,6 +114,21 @@ export class PendingCallbackRegistry {
 
   getByAgentId(agentId: string): PendingCallback[] {
     return [...this.callbacks.values()].filter(cb => cb.agentId === agentId);
+  }
+
+  /** Find a callback by its correlation id (conversation_id) for a specific agent. */
+  findByCorrelation(agentId: string, correlationId: string): PendingCallback | undefined {
+    for (const cb of this.callbacks.values()) {
+      if (cb.agentId === agentId && cb.correlationId === correlationId) return cb;
+    }
+    return undefined;
+  }
+
+  /** Scheduled wakeups whose `wakeAt` is due (<= now). */
+  getDueWakeups(now = Date.now()): PendingCallback[] {
+    return [...this.callbacks.values()].filter(
+      cb => cb.wakeAt !== undefined && cb.wakeAt <= now,
+    );
   }
 
   /** Returns callbacks that have exceeded their timeout. */
