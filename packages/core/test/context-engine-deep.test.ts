@@ -116,6 +116,123 @@ describe('ContextEngine identity and trust', () => {
       expect(result.text).toContain(`**${level}**`);
     }
   });
+
+  it('filters otherTeams by project teamIds when projectContext is provided', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'Agent',
+      role: MOCK_ROLE,
+      memory,
+      identity: {
+        self: { name: 'Agent', agentRole: 'worker', skills: [] },
+        organization: { id: 'org_1', name: 'Acme Inc' },
+        team: { id: 'team_a', name: 'Team Alpha' },
+        colleagues: [
+          { id: 'agt_a1', name: 'Alpha One', role: 'worker', status: 'idle' },
+        ],
+        humans: [],
+        otherTeams: [
+          {
+            id: 'team_b', name: 'Beta Team',
+            members: [{ id: 'agt_b1', name: 'Beta One', role: 'worker' }],
+          },
+          {
+            id: 'team_c', name: 'Gamma Team',
+            members: [{ id: 'agt_c1', name: 'Gamma One', role: 'worker' }],
+          },
+        ],
+      },
+      projectContext: {
+        project: {
+          id: 'proj_1', name: 'Project X', description: 'Test project',
+          status: 'active', teamIds: ['team_a', 'team_b'],
+        },
+      },
+    });
+
+    // Team Beta is in project's teamIds → should appear
+    expect(result.text).toContain('Beta Team');
+    expect(result.text).toContain('Beta One');
+    // Team Gamma is NOT in project's teamIds → should NOT appear
+    expect(result.text).not.toContain('Gamma Team');
+  });
+
+  it('shows all otherTeams when projectContext has no teamIds', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'Agent',
+      role: MOCK_ROLE,
+      memory,
+      identity: {
+        self: { name: 'Agent', agentRole: 'worker', skills: [] },
+        organization: { id: 'org_1', name: 'Acme Inc' },
+        team: { id: 'team_a', name: 'Team Alpha' },
+        colleagues: [],
+        humans: [],
+        otherTeams: [
+          {
+            id: 'team_b', name: 'Beta Team',
+            members: [{ id: 'agt_b1', name: 'Beta One', role: 'worker' }],
+          },
+          {
+            id: 'team_c', name: 'Gamma Team',
+            members: [{ id: 'agt_c1', name: 'Gamma One', role: 'worker' }],
+          },
+        ],
+      },
+      projectContext: {
+        project: {
+          id: 'proj_1', name: 'Project X', description: 'Test project',
+          status: 'active',
+          // No teamIds — should show all teams
+        },
+      },
+    });
+
+    // Both teams should appear since no teamIds filter
+    expect(result.text).toContain('Beta Team');
+    expect(result.text).toContain('Gamma Team');
+  });
+
+  it('shows all otherTeams when no projectContext', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'Agent',
+      role: MOCK_ROLE,
+      memory,
+      identity: {
+        self: { name: 'Agent', agentRole: 'worker', skills: [] },
+        organization: { id: 'org_1', name: 'Acme Inc' },
+        team: { id: 'team_a', name: 'Team Alpha' },
+        colleagues: [],
+        humans: [],
+        otherTeams: [
+          {
+            id: 'team_b', name: 'Beta Team',
+            members: [{ id: 'agt_b1', name: 'Beta One', role: 'worker' }],
+          },
+          {
+            id: 'team_c', name: 'Gamma Team',
+            members: [{ id: 'agt_c1', name: 'Gamma One', role: 'worker' }],
+          },
+        ],
+      },
+      // No projectContext at all — should show all teams
+    });
+
+    // Both teams should appear since no project context
+    expect(result.text).toContain('Beta Team');
+    expect(result.text).toContain('Gamma Team');
+  });
 });
 
 describe('ContextEngine task board and mailbox', () => {
