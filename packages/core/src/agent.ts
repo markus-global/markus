@@ -196,7 +196,7 @@ export type ApprovalCallback = (request: {
 }) => Promise<{ approved: boolean; comment?: string }>;
 
 export interface TaskProjectContext {
-  project: { id: string; name: string; description: string; status: string };
+  project: { id: string; name: string; description: string; status: string; teamIds?: string[] };
   repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
 }
 

@@ -139,7 +139,7 @@ export class ContextEngine {
     deliverableContext?: string;
     environment?: EnvironmentProfile;
     projectContext?: {
-      project: { id: string; name: string; description: string; status: string };
+      project: { id: string; name: string; description: string; status: string; teamIds?: string[] };
       repositories?: Array<{ localPath: string; defaultBranch: string; role: string }>;
       governanceRules?: string;
       teamRole?: string;
@@ -387,6 +387,7 @@ export class ContextEngine {
       role: opts.role,
       identity: opts.identity,
       availableSkillCount: opts.availableSkills?.length ?? 0,
+      projectTeamIds: opts.projectContext?.project?.teamIds,
     }));
 
     const orgCtx = this.buildOrgContextSection(opts.orgContext, opts.contextMdPath);
@@ -1236,6 +1237,7 @@ export class ContextEngine {
     role: RoleTemplate;
     identity?: IdentityContext;
     availableSkillCount?: number;
+    projectTeamIds?: string[];
   }): string {
     const lines: string[] = ['\n## Your Identity'];
 
@@ -1290,9 +1292,18 @@ export class ContextEngine {
       }
 
       if (opts.identity.otherTeams && opts.identity.otherTeams.length > 0) {
-        lines.push('\n### Other Teams (for cross-team coordination)');
-        for (const t of opts.identity.otherTeams) {
-          lines.push(`- **${t.name}**: ${t.members.map(m => `${m.name} (${m.role})`).join(', ')}`);
+        // Filter otherTeams when executing within a project: only show teams that
+        // are members of the current project. In non-project contexts (heartbeat,
+        // free chat), retain the full list for cross-team awareness.
+        let relevantTeams = opts.identity.otherTeams;
+        if (opts.projectTeamIds && opts.projectTeamIds.length > 0) {
+          relevantTeams = opts.identity.otherTeams.filter(t => opts.projectTeamIds!.includes(t.id));
+        }
+        if (relevantTeams.length > 0) {
+          lines.push('\n### Other Teams (for cross-team coordination)');
+          for (const t of relevantTeams) {
+            lines.push(`- **${t.name}**: ${t.members.map(m => `${m.name} (${m.role})`).join(', ')}`);
+          }
         }
       }
 

@@ -1252,6 +1252,7 @@ export class TaskService {
             name: project.name,
             description: project.description,
             status: project.status,
+            teamIds: project.teamIds,
           },
           repositories: repos.map(r => ({
             localPath: r.localPath,
