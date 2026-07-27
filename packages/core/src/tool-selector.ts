@@ -1,5 +1,4 @@
 import { createLogger, type LLMTool } from '@markus/shared';
-import type { SkillManifest } from './skills/types.js';
 
 const log = createLogger('tool-selector');
 
@@ -143,7 +142,8 @@ export class ToolSelector {
     isReview?: boolean;
     /** Team Chat (DM) — enables right-panel layout tools. */
     isChat?: boolean;
-    skillCatalog?: SkillManifest[];
+    /** Slim skill catalog: just { name } — full descriptions loaded on demand via list_skills. */
+    skillCatalog?: Array<{ name: string }>;
   }): LLMTool[] {
     const selected = new Set<string>();
 
@@ -506,7 +506,7 @@ export class ToolSelector {
   private buildDiscoverTool(
     allTools: Map<string, { name: string; description: string }>,
     alreadySelected: Set<string>,
-    skillCatalog?: SkillManifest[],
+    skillCatalog?: Array<{ name: string }>,
   ): LLMTool {
     const parts: string[] = [];
     parts.push(`You have ${alreadySelected.size} tools active.`);
@@ -514,26 +514,21 @@ export class ToolSelector {
     if (skillCatalog && skillCatalog.length > 0) {
       const maxSkills = 30;
       const shown = skillCatalog.slice(0, maxSkills);
-      parts.push(`\nSkills available (activate by name to load instructions into your context):`);
-      for (const skill of shown) {
-        const desc = skill.description.slice(0, 80);
-        const tag = skill.instructions ? 'has instructions' : 'no instructions';
-        parts.push(`  [${skill.name}] ${desc} (${tag})`);
-      }
+      parts.push(`\nSkills available (${skillCatalog.length} total — activate by name to load full instructions; use mode="list_skills" for details):`);
+      parts.push(shown.map(s => s.name).join(', '));
       if (skillCatalog.length > maxSkills) {
-        parts.push(`  ... and ${skillCatalog.length - maxSkills} more (use mode="list_skills" to see all)`);
+        parts.push(`  ... and ${skillCatalog.length - maxSkills} more`);
       }
     }
 
     const unloaded: string[] = [];
-    for (const [name, tool] of allTools) {
+    for (const [name] of allTools) {
       if (!alreadySelected.has(name)) {
-        unloaded.push(`${name}: ${tool.description.slice(0, 120)}`);
+        unloaded.push(name);
       }
     }
     if (unloaded.length > 0) {
-      parts.push(`\nInactive tools (${unloaded.length}):`);
-      parts.push(unloaded.join('\n'));
+      parts.push(`\nInactive tools (${unloaded.length}): ${unloaded.join(', ')}`);
     }
 
     parts.push('\nUsage: pass skill/tool names in "name" to activate them. Works in all modes.');

@@ -5866,7 +5866,7 @@ export class Agent {
       isTaskExecution: context?.isTaskExecution,
       isReview: context?.isReview,
       isChat: context?.isChat,
-      skillCatalog: this.skillRegistry?.list(),
+      skillCatalog: this.skillRegistry?.getSkillCatalog().map(s => ({ name: s.name })),
     });
 
     return tools;
