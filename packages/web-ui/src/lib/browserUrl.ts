@@ -30,7 +30,7 @@ function isAbsoluteFilesystemPath(input: string): boolean {
 }
 
 function pathToFileUrl(absPath: string): string {
-  let p = absPath.replace(/\\/g, '/');
+  const p = absPath.replace(/\\/g, '/');
   // UNC \\server\share → file://server/share
   if (p.startsWith('//')) {
     return `file:${encodePathKeepSlashes(p)}`;

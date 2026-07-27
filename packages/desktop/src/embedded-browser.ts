@@ -223,7 +223,7 @@ function openUrlInNewEmbeddedTab(rawUrl: string): void {
   if (!/^(https?:|file:|about:)/i.test(target)) return;
   const newId = `rb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const created = createEmbeddedBrowser(newId, target);
-  if (created.ok && created.pageId != null) {
+  if (created.ok && created.pageId !== null && created.pageId !== undefined) {
     selectedPageId = created.pageId;
     emitPageEvent({
       type: 'selected',
