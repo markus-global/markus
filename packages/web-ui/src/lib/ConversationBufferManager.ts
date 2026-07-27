@@ -135,14 +135,19 @@ export class ConversationBufferManager {
     }
 
     const phase = this.getPhase(convKey);
+    // Accept the result when this session is still the one being loaded OR the
+    // one the user is viewing. Relying only on `loadingSession` drops the first
+    // response when a second load for the same conversation races ahead.
+    const activeSessionId = this.activeSession.get(convKey);
     const isCurrentView = this.currentConvKey === convKey
-                       && this.loadingSession === sessionId;
+      && (this.loadingSession === sessionId || activeSessionId === sessionId);
 
     if (isCurrentView && phase !== 'streaming') {
       const displayMsgs = cacheIsFresher
         ? this.sessionMsgCache.get(sessionId)!
         : msgs;
       this.msgBuffers.set(convKey, displayMsgs);
+      this.loadingSession = sessionId;
       this.completeLoad(convKey);
       return { displayChanged: true, newMessages: displayMsgs };
     }

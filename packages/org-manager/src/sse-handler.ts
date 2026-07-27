@@ -35,7 +35,9 @@ export interface SSEMessageHandlerOptions {
     broadcastAgentUpdate?: (agentId: string, status: string) => void;
     broadcastProactiveMessage?: (agentId: string, agentName: string, sessionId: string, messageId: string, message: string, metadata?: Record<string, unknown>, targetUserId?: string) => void;
   };
-  persistUserMessage?: (agentId: string, text: string, senderId?: string, images?: string[], sessionId?: string) => Promise<string | null>;
+  persistUserMessage?: (agentId: string, text: string, senderId?: string, images?: string[], sessionId?: string) => Promise<string | { sessionId: string; messageId?: string } | null>;
+  /** Optional: remove a just-persisted user message when the turn was merged into an active one. */
+  deleteUserMessage?: (messageId: string) => void;
   persistAssistantMessage?: (sessionId: string | null, agentId: string, reply: string, tokensUsed: number, meta?: unknown) => Promise<void>;
   onTextDelta?: (text: string) => void;
   onToolEvent?: (event: AgentStreamEvent) => void;
@@ -143,14 +145,23 @@ export class SSEHandler {
         }
       });
 
+      let persistedUserMessageId: string | undefined;
       if (this.options.persistUserMessage && !this.options.isResume) {
-        this.sessionId = await this.options.persistUserMessage(
+        const persisted = await this.options.persistUserMessage(
           this.options.agentId,
           this.options.userText,
           this.options.senderId,
           this.options.images,
           this.options.sessionId,
         );
+        if (typeof persisted === 'string') {
+          this.sessionId = persisted;
+        } else if (persisted) {
+          this.sessionId = persisted.sessionId;
+          persistedUserMessageId = persisted.messageId;
+        } else {
+          this.sessionId = this.options.sessionId ?? null;
+        }
       } else if (this.options.isResume) {
         this.sessionId = this.options.sessionId ?? null;
       } else {
@@ -169,7 +180,13 @@ export class SSEHandler {
       // Deliver sessionId early so the client can persist it even if the stream
       // is aborted before the final 'done' event arrives.
       if (this.sessionId) {
-        this.emitEvent({ type: 'session_start', sessionId: this.sessionId, streamId: this.streamId, messageId: this.assistantMessageId });
+        this.emitEvent({
+          type: 'session_start',
+          sessionId: this.sessionId,
+          streamId: this.streamId,
+          messageId: this.assistantMessageId,
+          userMessageId: persistedUserMessageId,
+        });
       }
 
       const reply = await this.options.agent.sendMessageStream(
@@ -187,10 +204,26 @@ export class SSEHandler {
       );
 
       if (reply === '[merged]') {
-        log.info('Message was merged into active processing — closing SSE without persisting', {
+        log.info('Message was merged into active processing — closing SSE without persisting assistant', {
           agentId: this.options.agentId,
         });
-        const mergedDone = { type: 'done' as const, content: '', merged: true, sessionId: this.sessionId, segments: [] as unknown[] };
+        // The follow-up was absorbed into the live turn. Drop the standalone DB
+        // user row so reload does not show an extra bubble for the merged text.
+        if (persistedUserMessageId && this.options.deleteUserMessage) {
+          try {
+            this.options.deleteUserMessage(persistedUserMessageId);
+          } catch (err) {
+            log.warn('Failed to delete merged user message', { error: String(err) });
+          }
+        }
+        const mergedDone = {
+          type: 'done' as const,
+          content: '',
+          merged: true,
+          sessionId: this.sessionId,
+          userMessageId: persistedUserMessageId,
+          segments: [] as unknown[],
+        };
         if (this.sseBuffer && !this.sseDisconnected) {
           this.sseBuffer.send(mergedDone);
         }

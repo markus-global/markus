@@ -34,16 +34,19 @@ interface MarkusDesktopAPI {
     hideAll(): Promise<{ ok: boolean }>;
     navigate(id: string, url: string): Promise<{ ok: boolean; error?: string }>;
     action(id: string, action: 'back' | 'forward' | 'reload' | 'stop'): Promise<{ ok: boolean; error?: string }>;
-    getState(id: string): Promise<{ ok: boolean; url?: string; title?: string; canGoBack?: boolean; canGoForward?: boolean; pageId?: number; error?: string }>;
+    getState(id: string): Promise<{ ok: boolean; url?: string; title?: string; canGoBack?: boolean; canGoForward?: boolean; isLoading?: boolean; loadError?: string; directoryPath?: string; pageId?: number; error?: string }>;
     executeJs(id: string, code: string): Promise<{ ok: boolean; result?: unknown; error?: string }>;
     capture(id: string): Promise<{ ok: boolean; pngBase64?: string; error?: string }>;
     cdp(id: string, method: string, params?: Record<string, unknown>): Promise<{ ok: boolean; result?: unknown; error?: string }>;
     onPageEvent?(callback: (event: {
-      type: 'opened' | 'closed' | 'navigated' | 'selected';
+      type: 'opened' | 'closed' | 'navigated' | 'selected' | 'loading' | 'loaded' | 'load-failed' | 'directory';
       pageId: number;
       browserId: string;
       url?: string;
       title?: string;
+      isLoading?: boolean;
+      error?: string;
+      directoryPath?: string;
     }) => void): () => void;
   };
 }

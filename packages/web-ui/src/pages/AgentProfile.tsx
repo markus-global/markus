@@ -2228,14 +2228,21 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
 
   if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">{t('agent:profilePage.mind.loading')}</div>;
 
+  const queueDepth = mind?.mailboxDepth ?? mind?.queuedItems?.length ?? 0;
   const effectiveAttentionState: string = (() => {
     const raw = mind?.attentionState ?? 'idle';
     if (raw === 'deciding') return 'deciding';
+    // Focused without a focus object is a transient race — keep "focused" only when
+    // we still have a focus; otherwise fall back. But idle + non-empty queue is NOT
+    // truly idle (lost-wakeup / about to pick) — surface as deciding so the UI
+    // doesn't claim "waiting for mail" while work is piled up.
+    if (raw === 'idle' && queueDepth > 0) return 'deciding';
     if (raw !== 'idle' && !mind?.currentFocus) return 'idle';
     return raw;
   })();
 
   const hasStaleProcessingItems = effectiveAttentionState === 'idle' && mailbox?.history?.some(h => h.status === 'processing');
+  const hasStuckQueue = (mind?.attentionState ?? 'idle') === 'idle' && queueDepth > 0;
 
   return (
     <div className="space-y-4">
@@ -2274,8 +2281,10 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
                 )}
               </span>
             );
-          })() : effectiveAttentionState === 'deciding' ? (
-            <span className="text-sm text-amber-500">{t('agent:profilePage.mind.decidingWaiting', { count: mind?.mailboxDepth ?? 0 })}</span>
+          })() : hasStuckQueue ? (
+            <span className="text-sm text-amber-500">{t('agent:profilePage.mind.queuedButIdle', { count: queueDepth, defaultValue: 'Queue has {{count}} item(s) — attention loop should pick them up…' })}</span>
+          ) : effectiveAttentionState === 'deciding' ? (
+            <span className="text-sm text-amber-500">{t('agent:profilePage.mind.decidingWaiting', { count: queueDepth })}</span>
           ) : (
             <span className="text-sm text-fg-tertiary">{t('agent:profilePage.mind.idleWaiting')}</span>
           )}

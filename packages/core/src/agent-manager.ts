@@ -39,6 +39,7 @@ import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
 import { createSettingsTools } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
+import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
@@ -327,6 +328,8 @@ export class AgentManager {
   private embeddedBrowserHost: EmbeddedBrowserHost | null = null;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
+  /** When set, register native Feishu send tools (incl. local image upload). */
+  private feishuToolsConfig?: FeishuToolsConfig;
   private skillRegistry?: SkillRegistry;
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
@@ -475,6 +478,7 @@ export class AgentManager {
     eventBus?: EventBus;
     securityPolicy?: SecurityPolicy;
     mcpServers?: Record<string, MCPServerConfig>;
+    feishuToolsConfig?: FeishuToolsConfig;
     skillRegistry?: SkillRegistry;
     taskService?: TaskServiceBridge;
     templateRegistry?: TemplateRegistry;
@@ -492,6 +496,7 @@ export class AgentManager {
     this.browserBridge = new MarkusBrowserBridge();
     this.globalSecurityPolicy = options.securityPolicy;
     this.globalMcpServers = options.mcpServers;
+    this.feishuToolsConfig = options.feishuToolsConfig;
     this.skillRegistry = options.skillRegistry;
     this.taskService = options.taskService;
 
@@ -701,6 +706,23 @@ export class AgentManager {
       args.push('--browserUrl', `http://127.0.0.1:${this.remoteDebuggingPort}`);
     }
     return { ...config, args };
+  }
+
+  /** Native Feishu tools that cover gaps in lark-mcp (local image upload/send). */
+  private registerFeishuTools(agent: Agent): void {
+    if (!this.feishuToolsConfig) return;
+    try {
+      const tools = createFeishuTools(this.feishuToolsConfig);
+      const names: string[] = [];
+      for (const tool of tools) {
+        agent.registerTool(tool);
+        names.push(tool.name);
+      }
+      agent.activateTools(names);
+      log.info('Native Feishu tools registered', { toolCount: tools.length, tools: names });
+    } catch (error) {
+      log.warn('Failed to register native Feishu tools', { error: String(error) });
+    }
   }
 
   /**
@@ -1733,6 +1755,8 @@ export class AgentManager {
       }
     }
 
+    this.registerFeishuTools(agent);
+
     if (this.agentAuditCallback) {
       const cb = this.agentAuditCallback;
       agent.setAuditCallback(event => cb(id, event));
@@ -2020,6 +2044,8 @@ export class AgentManager {
         })();
       }
     }
+
+    this.registerFeishuTools(agent);
 
     // Set skill MCP activator callback for runtime activation via discover_tools
     agent.setSkillMcpActivator(async (skillName, mcpServers) => {

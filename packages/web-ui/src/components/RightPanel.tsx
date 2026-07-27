@@ -162,7 +162,12 @@ export function RightPanel({
     api.files.preview(reference).then((resp) => {
       if (cancelled) return;
       if (resp.type === 'image') {
-        setPreview({ mode: 'image', src: `data:${resp.mimeType || 'image/png'};base64,${resp.content}`, name: resp.name || title });
+        // Prefer stream URL (works for large webp/png); fall back to legacy base64 content.
+        const src = resp.content
+          ? `data:${resp.mimeType || 'image/png'};base64,${resp.content}`
+          : (resp.streamUrl
+            || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(reference)));
+        setPreview({ mode: 'image', src, name: resp.name || title });
         return;
       }
       if (resp.type === 'audio') {

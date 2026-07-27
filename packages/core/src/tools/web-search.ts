@@ -576,8 +576,16 @@ async function searchMarkus(query: string, maxResults: number): Promise<SearchRe
 
   const bodyText = await res.text().catch(() => '');
   if (!res.ok) {
-    if (res.status === 402 || /CU_EXCEEDED|key limit exceeded|total limit/i.test(bodyText)) {
+    // OpenRouter 402 = payment_required; 429 = rate limit (not credits). Prefer explicit
+    // credit wording so a transient upstream 402 is not always "credits exhausted".
+    if (
+      /CU_EXCEEDED|CU_MONTHLY_EXCEEDED/i.test(bodyText)
+      || (res.status === 402 && /insufficient (credits?|quota|balance)|key limit exceeded|payment_required|credits? (exhausted|exceeded)/i.test(bodyText || 'payment_required'))
+    ) {
       throw new Error('CU_EXCEEDED: Credits exhausted. Please top up or upgrade your plan.');
+    }
+    if (res.status === 429) {
+      throw new Error(`MARKUS_RATE_LIMITED: ${bodyText.slice(0, 200) || 'Rate limit exceeded'}`);
     }
     let detail = '';
     try {

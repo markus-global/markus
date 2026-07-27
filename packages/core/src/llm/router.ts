@@ -125,7 +125,8 @@ export class LLMRouter {
   private autoSelect = false;
   private providerTiers: ProviderTier[] = [];
   private fallbackOrder: string[] = [];
-  private _autoFallback = true;
+  /** Off by default: fail loud so users see the real error and switch manually. */
+  private _autoFallback = false;
   /** Health tracked per model: key = "providerName:modelId" */
   private modelHealth = new Map<string, ModelHealth>();
   /** Provider-level degradation for non-retryable (auth/billing) errors */
@@ -282,6 +283,61 @@ export class LLMRouter {
       /authentication/i.test(msg) ||
       /\b400\b.*invalid_request_error/i.test(msg) ||
       /reasoning_content.*must be passed back/i.test(msg);
+  }
+
+  /**
+   * Keep a requested model only when it belongs to the target provider.
+   * Prevents OpenRouter-style slugs (e.g. `z-ai/glm-5.2`) from being forced onto
+   * Ollama/Anthropic/etc. during auto-select or cross-provider fallback.
+   */
+  private resolveModelForProvider(providerName: string, requestedModel?: string): string | undefined {
+    if (!requestedModel) return undefined;
+    const provider = this.providers.get(providerName);
+    if (!provider) return undefined;
+
+    // Markus / OpenRouter catalogs use vendor/model slugs natively.
+    if (providerName === 'markus' || provider instanceof MarkusProvider) return requestedModel;
+    if (providerName === 'openrouter') return requestedModel;
+
+    if (provider.model === requestedModel) return requestedModel;
+
+    const catalog = this.getProviderModels(providerName);
+    if (catalog.some(m => m.id === requestedModel)) return requestedModel;
+
+    log.warn('Ignoring cross-provider model id', {
+      providerName,
+      requestedModel,
+      using: provider.model || '(provider default)',
+    });
+    return undefined;
+  }
+
+  /** Strip request.model so the target provider uses its own configured model. */
+  private requestForProvider(providerName: string, request: LLMRequest, model?: string): LLMRequest {
+    const resolved = this.resolveModelForProvider(providerName, model ?? request.model);
+    if (resolved) return { ...request, model: resolved };
+    if (!request.model) return request;
+    const { model: _drop, ...rest } = request;
+    return rest;
+  }
+
+  /**
+   * Prefer the original (primary) failure when fallback only produced a
+   * misleading "model not found" from forcing a foreign model id.
+   */
+  private static preferPrimaryError(primary: unknown, last: unknown): Error {
+    const primaryMsg = primary instanceof Error ? primary.message : String(primary);
+    const lastMsg = last instanceof Error ? last.message : String(last);
+    if (
+      primaryMsg &&
+      lastMsg !== primaryMsg &&
+      (/not available in your region/i.test(primaryMsg) ||
+        /\b(401|403)\b/.test(primaryMsg) ||
+        /model ['`][^'`]+['`] not found/i.test(lastMsg))
+    ) {
+      return primary instanceof Error ? primary : new Error(primaryMsg);
+    }
+    return last instanceof Error ? last : new Error(lastMsg);
   }
 
   /** Detect rate-limit (429) errors which should use a shorter circuit breaker cooldown. */
@@ -769,25 +825,29 @@ export class LLMRouter {
    * Pure lookup: explicit assignment -> default model -> any available provider.
    */
   selectForCapability(capabilityType: ModelCapabilityType, request: LLMRequest, _sessionId?: string): { provider: string; model?: string } {
+    // Enabled in Settings (not merely circuit-healthy). Circuit-degraded providers
+    // are still returned so the real upstream error surfaces instead of a silent switch.
+    const isEnabled = (name: string) => this.providers.has(name) && !this.disabledProviders.has(name);
+
     // 1. Check explicit assignment
     const assignment = this._capabilityRouting.assignments[capabilityType];
     if (assignment) {
-      if (this.isAvailable(assignment.provider)) {
+      if (isEnabled(assignment.provider)) {
         return { provider: assignment.provider, model: assignment.model };
       }
-      if (assignment.fallback && this.isAvailable(assignment.fallback.provider)) {
+      if (this._autoFallback && assignment.fallback && isEnabled(assignment.fallback.provider)) {
         log.warn(`Capability ${capabilityType} primary ${assignment.provider} unavailable, using fallback`);
         return { provider: assignment.fallback.provider, model: assignment.fallback.model };
       }
       log.warn(`Capability ${capabilityType} assignment ${assignment.provider} unavailable, falling through to default`);
     }
 
-    // 2. Fallback to default model
-    if (this._routingDefaultModel && this.providers.has(this._routingDefaultModel.provider) && this.isAvailable(this._routingDefaultModel.provider)) {
+    // 2. Routing default model (honor even when circuit-degraded)
+    if (this._routingDefaultModel && isEnabled(this._routingDefaultModel.provider)) {
       return { provider: this._routingDefaultModel.provider, model: this._routingDefaultModel.model };
     }
 
-    // 3. Final fallback: any available provider
+    // 3. Last resort: any provider
     return { provider: this.selectProvider(request) };
   }
 
@@ -917,10 +977,16 @@ export class LLMRouter {
   }
 
   private selectProvider(request: LLMRequest, explicit?: string): string {
-    // If an explicit provider is requested AND it is available, honour the request.
-    // If it is disabled/degraded, fall through to normal selection so we don't
-    // send traffic to a provider the user intentionally turned off.
-    if (explicit && this.isAvailable(explicit)) return explicit;
+    // Honour an explicit provider pin (Chat UI / agent override) even when the
+    // circuit breaker marked it degraded — fail loud with the real error instead
+    // of silently switching to another provider (which previously reused the
+    // foreign model id and produced confusing "model not found" errors).
+    if (explicit && this.providers.has(explicit) && !this.disabledProviders.has(explicit)) {
+      if (!this.isAvailable(explicit)) {
+        log.warn(`Explicit provider ${explicit} is circuit-degraded — still using it (no silent switch)`);
+      }
+      return explicit;
+    }
     if (explicit && this.disabledProviders.has(explicit)) {
       log.warn(`Explicit provider ${explicit} is disabled — falling through to auto-select`);
     }
@@ -1135,6 +1201,8 @@ export class LLMRouter {
     if (!provider) {
       throw new Error(`LLM provider not found: ${primary}. Available: ${[...this.providers.keys()].join(', ')}`);
     }
+    routedModel = this.resolveModelForProvider(primary, routedModel);
+    request = this.requestForProvider(primary, request, routedModel);
     request = this.resolveMaxTokens(request, primary);
 
     log.debug(`Sending request to ${primary}`, { model: routedModel ?? provider.model, messageCount: request.messages.length });
@@ -1142,6 +1210,7 @@ export class LLMRouter {
     const span = startSpan('llm.chat', { provider: primary, model: routedModel ?? provider.model });
     const startTime = Date.now();
     let lastError: unknown = null;
+    let primaryError: unknown = null;
 
     // Try primary provider's active model (or routed model)
     try {
@@ -1152,6 +1221,7 @@ export class LLMRouter {
       return response;
     } catch (error) {
       lastError = error;
+      primaryError = error;
       log.error(`LLM request failed for ${primary}:${routedModel ?? provider.model}`, { error: String(error) });
 
       // CU_EXCEEDED / MARKUS_RATE_LIMITED are Markus-specific — do NOT fall back to BYOK providers
@@ -1177,12 +1247,13 @@ export class LLMRouter {
         }
       }
 
-      // Fallback to other providers
+      // Fallback to other providers — always use that provider's own model
       for (const fallbackName of this.getFallbacks(primary)) {
         const fb = this.providers.get(fallbackName)!;
+        const fbRequest = this.requestForProvider(fallbackName, request);
         log.info(`Falling back to ${fallbackName}`, { model: fb.model });
         try {
-          const { response, model } = await this.tryChat(fallbackName, request);
+          const { response, model } = await this.tryChat(fallbackName, fbRequest);
           span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
           log.info(`Fallback to ${fallbackName} succeeded`);
           this.emitLog(fallbackName, model, request, response, Date.now() - startTime);
@@ -1193,9 +1264,10 @@ export class LLMRouter {
         }
       }
 
-      span.setError(lastError instanceof Error ? lastError : String(lastError));
+      const finalError = LLMRouter.preferPrimaryError(primaryError, lastError);
+      span.setError(finalError);
       span.end();
-      throw lastError;
+      throw finalError;
     }
   }
 
@@ -1284,12 +1356,15 @@ export class LLMRouter {
     if (!provider) {
       throw new Error(`LLM provider not found: ${primary}. Available: ${[...this.providers.keys()].join(', ')}`);
     }
+    routedModel = this.resolveModelForProvider(primary, routedModel);
+    request = this.requestForProvider(primary, request, routedModel);
     request = this.resolveMaxTokens(request, primary);
 
     const span = startSpan('llm.chatStream', { provider: primary, model: routedModel ?? provider.model });
     const startTime = Date.now();
 
     let lastError: unknown = null;
+    let primaryError: unknown = null;
 
     // Try primary provider's routed model (or its default model)
     try {
@@ -1299,12 +1374,13 @@ export class LLMRouter {
       return response;
     } catch (error) {
       lastError = error;
+      primaryError = error;
       if (signal?.aborted) {
         span.setError(lastError instanceof Error ? lastError : String(lastError));
         span.end();
         throw lastError;
       }
-      log.error(`LLM stream request failed for ${primary}:${provider.model}`, { error: String(error) });
+      log.error(`LLM stream request failed for ${primary}:${routedModel ?? provider.model}`, { error: String(error) });
 
       // CU_EXCEEDED / MARKUS_RATE_LIMITED are Markus-specific — do NOT fall back to BYOK providers
       if (LLMRouter.isCUExceededError(error) || LLMRouter.isMarkusRateLimited(error)) {
@@ -1336,11 +1412,13 @@ export class LLMRouter {
         }
       }
 
-      // Fallback to other providers
+      // Fallback to other providers — always use that provider's own model
       for (const fallbackName of this.getFallbacks(primary)) {
-        log.info(`Stream fallback to ${fallbackName}`);
+        const fb = this.providers.get(fallbackName)!;
+        const fbRequest = this.requestForProvider(fallbackName, request);
+        log.info(`Stream fallback to ${fallbackName}`, { model: fb.model });
         try {
-          const { response, model } = await this.tryStream(fallbackName, request, onEvent, signal);
+          const { response, model } = await this.tryStream(fallbackName, fbRequest, onEvent, signal);
           span.end({ inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens, finishReason: response.finishReason });
           this.emitLog(fallbackName, model, request, response, Date.now() - startTime);
           log.info(`Stream fallback to ${fallbackName} succeeded`);
@@ -1352,9 +1430,10 @@ export class LLMRouter {
         }
       }
 
-      span.setError(lastError instanceof Error ? lastError : String(lastError));
+      const finalError = LLMRouter.preferPrimaryError(primaryError, lastError);
+      span.setError(finalError);
       span.end();
-      throw lastError;
+      throw finalError;
     }
   }
 

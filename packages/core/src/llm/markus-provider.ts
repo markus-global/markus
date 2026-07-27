@@ -21,6 +21,7 @@ import {
 } from '@markus/shared';
 import {
   CREDIT_EXCEEDED_MSG,
+  UPSTREAM_BILLING_MISMATCH_MSG,
   defaultVoiceForModel,
   formatUpstreamMediaError,
   isCreditExhaustedHttp,
@@ -38,6 +39,7 @@ import {
 /** Re-export for callers/tests that import helpers from this module. */
 export {
   CREDIT_EXCEEDED_MSG,
+  UPSTREAM_BILLING_MISMATCH_MSG,
   formatUpstreamMediaError,
   isCreditExhaustedHttp,
 } from './provider.js';
@@ -650,6 +652,37 @@ export class MarkusProvider implements MultiModalProviderInterface {
     return synced.remainingCu > 0 || synced.remainingUsd > 0;
   }
 
+  /**
+   * Resolve an upstream payment/credit HTTP status against Hub books.
+   * Only emit CU_EXCEEDED (+ credit modal) when Hub confirms remaining is zero.
+   */
+  private async resolveCreditHttpError(
+    status: number,
+    errText: string,
+    alreadyRetried: boolean,
+  ): Promise<'retry'> {
+    const synced = await this.syncHubCredits({ force: true });
+    const hubHasBudget = !!synced && (synced.remainingCu > 0 || synced.remainingUsd > 0);
+    const hubEmpty = !!synced && synced.remainingCu <= 0 && synced.remainingUsd <= 0;
+
+    if (!alreadyRetried && hubHasBudget) return 'retry';
+
+    if (hubEmpty) {
+      fireCreditExhaustedEvent();
+      throw new Error(CREDIT_EXCEEDED_MSG);
+    }
+
+    // Hub still has budget (after retry) or sync failed — do not claim credits exhausted.
+    const detail = (errText || '')
+      .replace(/https?:\/\/[^\s]*openrouter\.ai[^\s]*/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 180);
+    throw new Error(
+      `${UPSTREAM_BILLING_MISMATCH_MSG} (HTTP ${status}${detail ? `: ${detail}` : ''})`,
+    );
+  }
+
   /** Soft-stop before network I/O when remaining credits are already known to be zero. */
   private async assertCreditsAvailable(): Promise<void> {
     const softZero =
@@ -657,13 +690,22 @@ export class MarkusProvider implements MultiModalProviderInterface {
       || this.lastQuotaInfo?.cuRemaining === 0;
     if (!softZero) return;
 
-    if (await this.tryRecoverCredits()) return;
+    const synced = await this.syncHubCredits({ force: true });
+    if (synced && (synced.remainingCu > 0 || synced.remainingUsd > 0)) return;
 
-    fireCreditExhaustedEvent();
-    if (this.hubRemainingHint === 0) {
-      throw new Error('CU_EXCEEDED: Organization credits exhausted');
+    if (synced && synced.remainingCu <= 0 && synced.remainingUsd <= 0) {
+      fireCreditExhaustedEvent();
+      if (this.hubRemainingHint === 0) {
+        throw new Error('CU_EXCEEDED: Organization credits exhausted');
+      }
+      throw new Error('CU_EXCEEDED: Credits exhausted');
     }
-    throw new Error('CU_EXCEEDED: Credits exhausted');
+
+    // Sync unavailable — clear stale local zeros so we don't false-block.
+    this.hubRemainingHint = null;
+    if (this.lastQuotaInfo) {
+      this.lastQuotaInfo = { ...this.lastQuotaInfo, cuRemaining: -1 };
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -695,11 +737,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
       if (isCreditExhaustedHttp(response.status, errText)) {
-        if (!_retried && await this.tryRecoverCredits()) {
-          return this.chat(request, true);
-        }
-        fireCreditExhaustedEvent();
-        throw new Error(CREDIT_EXCEEDED_MSG);
+        const outcome = await this.resolveCreditHttpError(response.status, errText, _retried);
+        if (outcome === 'retry') return this.chat(request, true);
       }
       throw new Error(`Markus proxy error ${response.status}: ${errText}`);
     }
@@ -795,11 +834,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
         throw new Error(`${prefix}: ${errText}`);
       }
       if (isCreditExhaustedHttp(res.status, errText)) {
-        if (!_retried && await this.tryRecoverCredits()) {
-          return this.chatStream(request, onEvent, signal, true);
-        }
-        fireCreditExhaustedEvent();
-        throw new Error(CREDIT_EXCEEDED_MSG);
+        const outcome = await this.resolveCreditHttpError(res.status, errText, _retried);
+        if (outcome === 'retry') return this.chatStream(request, onEvent, signal, true);
       }
       throw new Error(`Markus proxy error ${res.status}: ${errText}`);
     }

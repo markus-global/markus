@@ -229,8 +229,8 @@ export function ChatPanel({
     setActivities([]);
 
     const agentMsgId = `a_${Date.now()}`;
-    const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString() };
     const agentCreatedAt = new Date().toISOString();
+    const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt };
 
     setMessages(prev => [
       ...prev,
@@ -596,7 +596,9 @@ export function ChatPanel({
             const prevMsg = idx > 0 ? messages[idx - 1] : null;
             const curDate = getDateKey(msg.rawCreatedAt);
             const prevDate = prevMsg ? getDateKey(prevMsg.rawCreatedAt) : '';
-            const showDateSep = curDate && curDate !== prevDate;
+            // Both sides need a date — missing rawCreatedAt on optimistic bubbles used to
+            // insert a spurious "Today" divider between every user/agent pair.
+            const showDateSep = Boolean(curDate && prevDate && curDate !== prevDate);
             const isLastMsg = idx === messages.length - 1;
             const isStreamingMsg = isLastPending && isLastMsg;
             const showStreamingBubble = isStreamingMsg;
@@ -628,8 +630,8 @@ export function ChatPanel({
                       <span className="text-[10px] text-fg-tertiary">{formatSmartTime(msg.time, msg.rawCreatedAt, dateLabels)}</span>
                     </div>
                     <div className={`mt-0.5 ${msg.sender === 'agent' ? 'py-0.5' : 'bg-surface-secondary rounded-xl px-3 py-2 w-fit max-w-full'} ${
-                      msg.isError ? 'border-b-2 border-red-500/60' : ''
-                    } ${showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
+                      showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''
+                    }`}>
                       {msg.sender === 'user'
                         ? <div className="text-sm text-fg-secondary whitespace-pre-wrap">{msg.text}</div>
                         : msg.segments && msg.segments.length > 0
@@ -638,7 +640,9 @@ export function ChatPanel({
                               isStreaming={isStreamingMsg}
                               liveActivities={isStreamingMsg ? activities : []}
                             />
-                          : <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" />
+                          : msg.isError || msg.text.startsWith('⚠')
+                            ? <div className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">{msg.text.replace(/^⚠\s*/, '')}</div>
+                            : <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" />
                       }
                     </div>
                   </div>

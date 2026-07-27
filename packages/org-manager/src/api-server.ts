@@ -1840,7 +1840,12 @@ export class APIServer {
       const title = !session!.title ? userMessage.slice(0, 60) : undefined;
       const meta: Record<string, unknown> = { ...(extraMeta ?? {}) };
       if (images?.length) meta.images = images;
-      if (replyTo) { meta.replyToId = replyTo.id; meta.replyToSender = replyTo.sender; meta.replyToText = replyTo.text; }
+      if (replyTo) {
+        meta.replyToId = replyTo.id;
+        meta.replyToSender = replyTo.sender;
+        // Keep a short preview for the quote chip; full body lives on the referenced message.
+        meta.replyToText = replyTo.text.slice(0, 200);
+      }
       const saved = await this.storage.chatSessionRepo.appendMessage(
         session!.id,
         agentId,
@@ -3677,9 +3682,13 @@ export class APIServer {
         return;
       }
       if (action === 'cancel-processing') {
-        const agent = this.orgService.getAgentManager().getAgent(agentId!);
-        agent.cancelActiveStream();
-        this.json(res, 200, { status: 'cancelled' });
+        try {
+          const agent = this.orgService.getAgentManager().getAgent(agentId!);
+          agent.cancelActiveStream();
+          this.json(res, 200, { status: 'cancelled' });
+        } catch (err) {
+          this.json(res, 404, { error: err instanceof Error ? err.message : String(err) });
+        }
         return;
       }
       if (action === 'daily-report') {
@@ -3759,26 +3768,32 @@ export class APIServer {
         }
 
         const userText = body['text'] as string;
+        // Persist plain user text; inject reply context only into the LLM turn so
+        // reload does not show the quoted agent message inside the user bubble.
+        const agentText = replyTo
+          ? `[REPLY] The user is replying to ${replyTo.sender}'s message:\n"""\n${replyTo.text.slice(0, 4000)}\n"""\n\n${userText}`
+          : userText;
         const inject = body['inject'] as boolean | undefined;
 
         if (inject) {
           if (this.storage && sessionId) {
             await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo);
           }
-          agent.injectFollowUp(userText, senderId, senderInfo, images);
+          agent.injectFollowUp(agentText, senderId, senderInfo, images);
           this.json(res, 200, { injected: true });
           return;
         }
 
-        // Wrap persistUserMessage to bind DB session → memory session on first message
+        // Wrap persistUserMessage to bind DB session → memory session on first message.
+        // Always persist the plain userText (ignore SSE handler's agent-facing text).
         const bindingPersist = async (
-          aId: string, text: string, sId?: string, imgs?: string[], sessId?: string,
-        ): Promise<string | null> => {
-          const persisted = await this.persistUserMessage(aId, text, sId, imgs, sessId, replyTo);
+          aId: string, _text: string, sId?: string, imgs?: string[], sessId?: string,
+        ): Promise<{ sessionId: string; messageId: string } | null> => {
+          const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo);
           if (persisted && !sessId) {
             agent.bindDbSession(persisted.sessionId);
           }
-          return persisted?.sessionId ?? null;
+          return persisted ? { sessionId: persisted.sessionId, messageId: persisted.messageId } : null;
         };
 
         if (stream) {
@@ -3801,7 +3816,7 @@ export class APIServer {
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
-            userText,
+            userText: agentText,
             images,
             fileNames,
             senderId,
@@ -3809,6 +3824,9 @@ export class APIServer {
             sessionId,
             wsBroadcaster: this.ws,
             persistUserMessage: bindingPersist,
+            deleteUserMessage: (messageId: string) => {
+              this.storage?.chatSessionRepo.deleteMessage(messageId);
+            },
             persistAssistantMessage: this.persistAssistantMessage.bind(this),
             executionStreamRepo: this.storage?.executionStreamRepo,
             isResume,
@@ -3819,22 +3837,23 @@ export class APIServer {
           await sseHandler.handle(res);
         } else {
           const userMsgPersisted = await bindingPersist(agentId!, userText, senderId, images, sessionId);
+          const persistedSessionId = userMsgPersisted?.sessionId ?? null;
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
           const deferredRestoreNonStream = agent.isProcessing() ? sessionRestoreData : undefined;
           try {
-            reply = await agent.sendMessage(userText, senderId, senderInfo, {
+            reply = await agent.sendMessage(agentText, senderId, senderInfo, {
               images, fileNames, toolEventCollector: toolEvents,
               ...(deferredRestoreNonStream !== undefined ? { sessionRestore: deferredRestoreNonStream } : {}),
             });
           } catch (err) {
             const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
             void this.persistAssistantMessage(
-              userMsgPersisted, agentId!, errText, 0, { isError: true },
+              persistedSessionId, agentId!, errText, 0, { isError: true },
             );
             throw err;
           }
-          this.json(res, 200, { reply, sessionId: userMsgPersisted });
+          this.json(res, 200, { reply, sessionId: persistedSessionId });
           const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
           const segments: Array<Record<string, unknown>> = [];
           if (thinking.length > 0) segments.push({ type: 'text', content: '', thinking: thinking.join('\n\n') });
@@ -3844,7 +3863,7 @@ export class APIServer {
           if (segments.length > 0) segments.push({ type: 'text', content: cleanReply });
           const meta = segments.length > 0 ? { segments } : undefined;
           void this.persistAssistantMessage(
-            userMsgPersisted,
+            persistedSessionId,
             agentId!,
             reply,
             agent.getState().tokensUsedToday,
@@ -10638,7 +10657,9 @@ EXPLANATION_END`;
 
         const ext = extname(resolved).toLowerCase();
         const name = resolved.split('/').pop() || 'file';
-        const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
+        // Browser-previewable still images — served via stream (not base64) so large
+        // generated assets (webp/png) are not rejected by the inline size cap.
+        const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico', '.avif']);
         const audioExts = new Set(['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma', '.opus']);
         const videoExts = new Set(['.mp4', '.webm', '.mov', '.mkv', '.avi', '.m4v']);
         const binaryExts = new Set([
@@ -10647,6 +10668,11 @@ EXPLANATION_END`;
           '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm',
           '.woff', '.woff2', '.ttf', '.otf', '.eot',
         ]);
+        const imageMime: Record<string, string> = {
+          '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+          '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+          '.bmp': 'image/bmp', '.ico': 'image/x-icon', '.avif': 'image/avif',
+        };
         const audioMime: Record<string, string> = {
           '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
           '.flac': 'audio/flac', '.aac': 'audio/aac', '.m4a': 'audio/mp4',
@@ -10657,6 +10683,14 @@ EXPLANATION_END`;
           '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.m4v': 'video/mp4',
         };
 
+        if (imageExts.has(ext)) {
+          this.json(res, 200, {
+            type: 'image', name, path: resolved, size: stat.size,
+            mimeType: imageMime[ext] ?? 'application/octet-stream',
+            streamUrl: `/api/files/stream?path=${encodeURIComponent(resolved)}`,
+          });
+          return;
+        }
         if (audioExts.has(ext)) {
           this.json(res, 200, {
             type: 'audio', name, path: resolved, size: stat.size,
@@ -10681,21 +10715,9 @@ EXPLANATION_END`;
           return;
         }
 
-        const maxSize = 2 * 1024 * 1024; // 2MB limit for inlined text/image previews
+        const maxSize = 2 * 1024 * 1024; // 2MB limit for inlined text previews
         if (stat.size > maxSize) {
           this.json(res, 413, { error: 'File too large for preview', size: stat.size, maxSize });
-          return;
-        }
-
-        if (imageExts.has(ext)) {
-          const data = readFileSync(resolved);
-          const mimeMap: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
-          this.json(res, 200, {
-            type: 'image',
-            name,
-            mimeType: mimeMap[ext] ?? 'application/octet-stream',
-            content: data.toString('base64'),
-          });
           return;
         }
 
@@ -10760,6 +10782,7 @@ EXPLANATION_END`;
           '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.m4v': 'video/mp4',
           '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
           '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+          '.bmp': 'image/bmp', '.ico': 'image/x-icon', '.avif': 'image/avif',
         };
         const mime = mimeMap[ext] ?? 'application/octet-stream';
         const size = statSync(resolved).size;

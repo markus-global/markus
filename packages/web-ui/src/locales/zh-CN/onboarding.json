@@ -41,7 +41,7 @@
     "openClawFoundLabel": "已找到：",
     "openClawProviders": "（{{count}} 个提供商）",
     "autoFallback": "模型出错时自动切换",
-    "autoFallbackDesc": "主模型失败时自动尝试其他提供商/模型"
+    "autoFallbackDesc": "可选；默认关闭。开启后主模型失败时才自动尝试其他提供商"
   },
   "search": {
     "title": "网络搜索（可选）",

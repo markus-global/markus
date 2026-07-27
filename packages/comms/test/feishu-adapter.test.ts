@@ -9,6 +9,7 @@ function makeMockClient(): Partial<FeishuClient> {
     getTenantToken: vi.fn().mockResolvedValue('mock-token'),
     sendTextMessage: vi.fn().mockResolvedValue('om_mock_sent'),
     sendInteractiveMessage: vi.fn().mockResolvedValue('om_mock_card'),
+    sendLocalImage: vi.fn().mockResolvedValue('om_mock_image'),
     replyMessage: vi.fn().mockResolvedValue('om_mock_reply'),
     replyCard: vi.fn().mockResolvedValue('om_mock_reply_card'),
     updateMessage: vi.fn().mockResolvedValue(undefined),
@@ -368,9 +369,9 @@ describe('FeishuAdapter', () => {
       expect(mockClient.sendInteractiveMessage).toHaveBeenCalled();
     });
 
-    it('sendMessage with asImage sends text', async () => {
-      await adapter.sendMessage('oc_channel', 'image-url', { asImage: true });
-      expect(mockClient.sendTextMessage).toHaveBeenCalledWith('oc_channel', 'image-url', 'chat_id');
+    it('sendMessage with asImage uploads local image path', async () => {
+      await adapter.sendMessage('oc_channel', '/tmp/poster.webp', { asImage: true });
+      expect(mockClient.sendLocalImage).toHaveBeenCalledWith('oc_channel', '/tmp/poster.webp', 'chat_id');
     });
 
     it('skips duplicate events', async () => {

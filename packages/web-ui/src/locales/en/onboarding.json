@@ -41,7 +41,7 @@
     "openClawFoundLabel": "Found:",
     "openClawProviders": "({{count}} providers)",
     "autoFallback": "Auto-switch model on failure",
-    "autoFallbackDesc": "Try other providers/models if the primary fails"
+    "autoFallbackDesc": "Optional; off by default. When on, try other providers if the primary fails"
   },
   "search": {
     "title": "Web Search (Optional)",

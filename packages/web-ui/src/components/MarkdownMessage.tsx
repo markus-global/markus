@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, useEffect, useCallback, memo } from 'react';
+import { useMemo, useState, useRef, useEffect, useCallback, memo, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
@@ -362,8 +362,44 @@ function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: s
 
 // ─── Image Preview Modal ────────────────────────────────────────────────────
 
+async function fetchImageBlob(src: string): Promise<Blob> {
+  const res = await fetch(src);
+  if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
+  return res.blob();
+}
+
+/** Clipboard image write usually wants image/png — convert when needed. */
+async function blobAsPng(blob: Blob): Promise<Blob> {
+  if (blob.type === 'image/png') return blob;
+  const bmp = await createImageBitmap(blob);
+  const canvas = document.createElement('canvas');
+  canvas.width = bmp.width;
+  canvas.height = bmp.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.drawImage(bmp, 0, 0);
+  bmp.close();
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(b => (b ? resolve(b) : reject(new Error('PNG encode failed'))), 'image/png');
+  });
+}
+
+function guessImageFilename(src: string, blob: Blob): string {
+  try {
+    const path = src.startsWith('data:') ? '' : new URL(src, window.location.href).pathname;
+    const base = path.split('/').pop() || '';
+    if (base && /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(base)) return decodeURIComponent(base);
+  } catch { /* ignore */ }
+  const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+  return `image.${ext}`;
+}
+
 function ImagePreviewModal({ src, onClose }: { src: string; onClose: () => void }) {
+  const { t } = useTranslation('common');
+  const [flash, setFlash] = useState<string | null>(null);
+  const [busy, setBusy] = useState<'copy' | 'download' | null>(null);
   useNativeBrowserOverlay(true);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -372,19 +408,89 @@ function ImagePreviewModal({ src, onClose }: { src: string; onClose: () => void 
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  const showFlash = useCallback((msg: string) => {
+    setFlash(msg);
+    window.setTimeout(() => setFlash(null), 1600);
+  }, []);
+
+  const handleCopy = useCallback(async (e: ReactMouseEvent) => {
+    e.stopPropagation();
+    if (busy) return;
+    setBusy('copy');
+    try {
+      const blob = await fetchImageBlob(src);
+      const png = await blobAsPng(blob);
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+      showFlash(t('imageCopied'));
+    } catch {
+      showFlash(t('imageCopyFailed'));
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, showFlash, src, t]);
+
+  const handleDownload = useCallback(async (e: ReactMouseEvent) => {
+    e.stopPropagation();
+    if (busy) return;
+    setBusy('download');
+    try {
+      const blob = await fetchImageBlob(src);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = guessImageFilename(src, blob);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showFlash(t('imageDownloaded'));
+    } catch {
+      showFlash(t('imageDownloadFailed'));
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, showFlash, src, t]);
+
+  const toolBtn =
+    'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm transition-colors disabled:opacity-50';
+
   return createPortal(
     <div
       className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4"
       onClick={onClose}
     >
-      <button
-        onClick={onClose}
-        className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors z-10"
+      <div
+        className="absolute top-4 right-4 z-10 flex items-center gap-2"
+        onClick={e => e.stopPropagation()}
       >
-        <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-        </svg>
-      </button>
+        <button type="button" className={toolBtn} onClick={handleCopy} disabled={!!busy} title={t('copyImage')}>
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+          </svg>
+          {t('copy')}
+        </button>
+        <button type="button" className={toolBtn} onClick={handleDownload} disabled={!!busy} title={t('downloadImage')}>
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          {t('downloadImage')}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+          title={t('close')}
+        >
+          <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      {flash && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-lg bg-black/70 text-white text-xs">
+          {flash}
+        </div>
+      )}
       <img
         src={src}
         alt="Preview"

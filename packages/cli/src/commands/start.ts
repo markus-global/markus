@@ -260,9 +260,9 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
-  // Apply auto-fallback setting
-  if (config.llm.autoFallback === false) {
-    llmRouter.setAutoFallback(false);
+  // Apply auto-fallback setting (router defaults to off — fail loud)
+  if (typeof config.llm.autoFallback === 'boolean') {
+    llmRouter.setAutoFallback(config.llm.autoFallback);
   }
 
   // Apply capability routing config
@@ -359,6 +359,16 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     log.info('Feishu MCP server configured', { presets, localBin: !!larkMcpBin });
   }
 
+  const feishuToolsConfig = (feishuAppId && feishuAppSecret)
+    ? {
+        appId: feishuAppId,
+        appSecret: feishuAppSecret,
+        domain: feishuIntegration?.domain,
+        defaultChatId: typeof feishuIntegration?.notifyChatId === 'string' ? feishuIntegration.notifyChatId : undefined,
+        defaultOpenId: typeof feishuIntegration?.notifyOpenId === 'string' ? feishuIntegration.notifyOpenId : undefined,
+      }
+    : undefined;
+
   const agentManager = new AgentManager({
     llmRouter,
     roleLoader,
@@ -367,6 +377,7 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     skillRegistry,
     taskService,
     mcpServers,
+    feishuToolsConfig,
   });
 
   if (config.agent?.maxToolIterations) {

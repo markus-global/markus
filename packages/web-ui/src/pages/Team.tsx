@@ -40,7 +40,7 @@ import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext,
-  storedSegmentsToMsgSegments,
+  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages,
   appendLiveOutput, appendSubagentLog,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
@@ -589,13 +589,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [sessionModelOverride, setSessionModelOverride] = useState<ChatModelSelection | null>(null);
   const reattachAbortRef = useRef<AbortController | null>(null);
 
+  /** Compact (1-line) composer vs taller empty-chat starter. Synced before render. */
+  const compactComposerRef = useRef(false);
+
   const adjustTextareaHeight = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
+    const compact = compactComposerRef.current;
+    const minH = compact ? 36 : 52;
+    const maxH = compact ? 160 : 120;
     el.style.height = 'auto';
-    const h = Math.max(52, Math.min(el.scrollHeight, 120));
+    const h = Math.max(minH, Math.min(el.scrollHeight, maxH));
     el.style.height = `${h}px`;
-    el.style.overflowY = h >= 120 ? 'auto' : 'hidden';
+    el.style.overflowY = h >= maxH ? 'auto' : 'hidden';
   }, []);
 
   useEffect(() => {
@@ -1126,6 +1132,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     chatMode === 'channel' ? messages : messages.filter(m => !m.isActivityLog),
     [messages, chatMode]
   );
+
+  // Keep composer height in sync when switching empty ↔ non-empty sessions.
+  useEffect(() => {
+    compactComposerRef.current = mainTab === 'chat' && visibleMessages.length > 0;
+    adjustTextareaHeight();
+  }, [mainTab, visibleMessages.length, adjustTextareaHeight]);
+
   const chatVirtualizer = useVirtualizer({
     count: visibleMessages.length,
     getScrollElement: () => chatScrollRef.current,
@@ -1261,13 +1274,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // Load session messages from DB — phase-aware via ConversationBufferManager.
   // During streaming phase, DB data is written to cache only, never to display.
   const loadSessionMessages = useCallback(async (sessionId: string, convKey: string): Promise<number> => {
-    if (currentConvKeyRef.current === convKey) setLoadingChat(true);
+    // Soft-refresh (buffer already has messages) should not flash a full-page spinner.
+    const showSpinner = currentConvKeyRef.current === convKey
+      && (msgBuffers.get(convKey)?.length ?? 0) === 0;
+    if (showSpinner) setLoadingChat(true);
     try {
       const { count, hasMore: more, oldestCursor } = await loadAndDisplay(sessionId, convKey, async () => {
         const result = await api.sessions.getMessages(sessionId, 50);
-        const msgs = result.messages.map(dbMsgToChat).filter(m =>
+        const msgs = dedupeAdjacentUserMessages(result.messages.map(dbMsgToChat).filter(m =>
           m.sender !== 'agent' || m.text || (m.segments && m.segments.length > 0) || m.isStreaming
-        );
+        ));
         return {
           messages: msgs,
           hasMore: result.hasMore,
@@ -1278,9 +1294,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       oldestMsgId.current = oldestCursor;
       return count;
     } finally {
-      if (currentConvKeyRef.current === convKey) setLoadingChat(false);
+      if (showSpinner && currentConvKeyRef.current === convKey) setLoadingChat(false);
     }
-  }, [loadAndDisplay]);
+  }, [loadAndDisplay, msgBuffers]);
 
   /**
    * After refresh / session switch: if the server still has an active generation
@@ -1290,6 +1306,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const reattachCooldownRef = useRef<Map<string, number>>(new Map());
   const tryReattachActiveStream = useCallback(async (agentId: string, sessionId: string, convKey: string) => {
     if (!agentId || !sessionId || sessionId === NEW_CHAT_PLACEHOLDER_ID) return;
+    let abortCtrl: AbortController | null = null;
     try {
       // Live send() still owns this session's SSE — keep consuming there; a second
       // attach would double-apply tool/subagent events.
@@ -1322,7 +1339,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       reattachCooldownRef.current.set(cooldownKey, Date.now());
       reattachAbortRef.current?.abort();
-      const abortCtrl = new AbortController();
+      abortCtrl = new AbortController();
       reattachAbortRef.current = abortCtrl;
       beginStream(convKey);
       setSending(true);
@@ -1624,10 +1641,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       endStream(convKey);
       if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
     } catch (err) {
-      // Aborted by a newer reattach / navigation — leave stream state alone.
-      if (err instanceof Error && err.name === 'AbortError') return;
+      // Aborted by stop / newer reattach / navigation — always clear local stream UI.
+      if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
       endStream(convKey);
       if (currentConvKeyRef.current === convKey) setSending(false);
+      if (err instanceof Error && err.name === 'AbortError') return;
     }
   }, [appendConvActivity, beginStream, endStream, getStreamSession, msgBuffers, setStreamSession, updateConvMsgs, updateConvMsgsRaf]);
 
@@ -1759,17 +1777,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // If no saved tabs, we'll populate from DB below for direct mode
     setShowSessions(false);
 
-    if (bufferedMsgs !== undefined) {
-      // Already have content (possibly mid-stream) — show immediately
+    // Empty in-memory buffers must NOT skip the DB load — a prior race can leave
+    // `[]` in the map and make history look "missing" until a full page refresh.
+    const hasBufferedContent = bufferedMsgs !== undefined && bufferedMsgs.length > 0;
+
+    if (hasBufferedContent) {
+      // Already have content (possibly mid-stream) — show immediately, then soft-refresh
       if (!isSendingNow) bufMgr.completeLoad(newKey);
       setLoadingChat(false);
-      setMessages(bufferedMsgs);
+      setMessages(bufferedMsgs!);
       setHasMore(false);
       if (savedActiveSession !== undefined) {
         setActiveSessionId(savedActiveSession);
       }
       if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
-      // For channel/dm modes, refresh from server in background to catch anything we missed
+      // Refresh from server in background to catch anything we missed while away
       if (chatMode === 'channel' || chatMode === 'dm') {
         const channelName = chatMode === 'dm'
           ? makeDmChannel(authUser?.id ?? '', activeDmUserId)
@@ -1781,16 +1803,26 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         && savedActiveSession
         && savedActiveSession !== NEW_CHAT_PLACEHOLDER_ID
       ) {
-        // Resume server stream if the original SSE dropped while we were away.
-        // Live send() is skipped inside tryReattachActiveStream when it still owns the connection.
-        void tryReattachActiveStream(selectedAgent, savedActiveSession, newKey);
+        if (!isSendingNow) {
+          void loadSessionMessages(savedActiveSession, newKey).then(() => {
+            if (currentConvKeyRef.current === newKey && selectedAgent) {
+              void tryReattachActiveStream(selectedAgent, savedActiveSession, newKey);
+            }
+          });
+        } else {
+          // Resume server stream if the original SSE dropped while we were away.
+          void tryReattachActiveStream(selectedAgent, savedActiveSession, newKey);
+        }
       }
     } else {
-      // First visit for this conversation — load from DB
+      // First visit / empty buffer — show loading spinner, then load from DB
       beginLoad(newKey);
+      setLoadingChat(true);
       setMessages([]);
       setHasMore(false);
       oldestMsgId.current = null;
+      // Clear a stale empty entry so later visits don't treat it as "already loaded"
+      msgBuffers.delete(newKey);
 
       if (chatMode === 'channel' || chatMode === 'dm') {
         const channelName = chatMode === 'dm'
@@ -1825,6 +1857,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             }
             const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
             setActiveSessionId(validId);
+            activeSessionBuffer.set(newKey, validId);
             setStoredActiveSession(selectedAgent!, validId);
             setOpenSessionTabs(initialTabs);
             const restored = s.find(ss => ss.id === validId);
@@ -1838,9 +1871,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           } else {
             setActiveSessionId(null);
             setSessionModelOverride(null);
+            setLoadingChat(false);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
           }
+        }).catch(() => {
+          if (currentConvKeyRef.current === newKey) setLoadingChat(false);
         });
+      } else {
+        setLoadingChat(false);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2080,9 +2118,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const parseMentions = (text: string) => parseMentionNames(text);
 
   const stopSending = () => {
+    // 1) Tell the backend to stop FIRST. Aborting the SSE alone is a soft
+    // disconnect — the agent keeps working for up to SSE_DISCONNECT_FORCE_STOP_MS
+    // unless cancel-processing marks userStopped.
+    const agentId = chatMode === 'direct' ? selectedAgent : null;
+    if (agentId) {
+      void api.agents.cancelProcessing(agentId).catch(() => {});
+    }
+
+    // 2) Abort both the live send() stream and any reattachStream consumer.
+    // Previously only abortControllerRef was cleared — after refresh/reattach
+    // the stop button looked clickable but did nothing to the open SSE.
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
-    // Immediately unblock the UI — don't wait for the async send() to catch the abort
+    reattachAbortRef.current?.abort();
+    reattachAbortRef.current = null;
+
+    // 3) Unblock the UI immediately
     const sendKey = currentConvKeyRef.current;
     resetSending(sendKey);
     actBuffers.delete(activeSessionId ?? sendKey);
@@ -2090,13 +2142,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     endStream(sendKey);
     setSending(false);
     setActivities([]);
-    // Tell the backend to stop the agent's active stream so it doesn't keep
-    // processing after the SSE connection is torn down.
-    if (chatMode === 'direct' && selectedAgent) {
-      void api.agents.cancelProcessing(selectedAgent).catch(() => {});
-    }
   };
 
+  const lastSendGuardRef = useRef<{ text: string; at: number } | null>(null);
   const send = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean }) => {
     const ctxPrefix = (!retryText && chatContext.length > 0)
       ? chatContext.map(c => c.content).join('\n\n') + '\n\n'
@@ -2106,17 +2154,55 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (chatMode === 'direct' && !selectedAgent) return;
     userAtBottomRef.current = true;
 
+    // Ignore accidental double-submit of the same text (double Enter / double click).
+    const now = Date.now();
+    const prevSend = lastSendGuardRef.current;
+    if (
+      !options?.isRetry
+      && !options?.isResume
+      && text
+      && prevSend
+      && prevSend.text === text
+      && now - prevSend.at < 1500
+    ) {
+      return;
+    }
+    lastSendGuardRef.current = { text, at: now };
+
     // If agent is currently streaming in this same conversation, interrupt it first.
     // If the user is in a DIFFERENT session (e.g., new chat tab) while another session
     // streams, DON'T abort — the agent's mailbox will queue or merge the new message.
     if (sending && chatMode === 'direct') {
       const isSameSession = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID;
       if (isSameSession) {
+        const prevKey = currentConvKeyRef.current;
+        const buf = msgBuffers.get(prevKey) ?? [];
+        const lastUser = [...buf].reverse().find(m => m.sender === 'user');
+        // Same text already in-flight — don't stack another user bubble; retry the turn.
+        if (lastUser?.text === text && !options?.isRetry && !options?.isResume) {
+          abortControllerRef.current?.abort();
+          abortControllerRef.current = null;
+          void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
+          resetSending(prevKey);
+          actBuffers.delete(activeSessionId ?? prevKey);
+          endStream(prevKey);
+          // Drop the in-flight user+empty agent pair before the retry re-adds them.
+          updateConvMsgs(prevKey, prev => {
+            const u = [...prev];
+            // Remove trailing empty/partial agent, then the matching user bubble.
+            if (u.length > 0 && u[u.length - 1]!.sender === 'agent') u.pop();
+            if (u.length > 0 && u[u.length - 1]!.sender === 'user' && u[u.length - 1]!.text === text) u.pop();
+            return u;
+          });
+          setSending(false);
+          setActivities([]);
+          await new Promise(r => setTimeout(r, 50));
+          return send(text, { isRetry: true });
+        }
         // Same session: interrupt current stream and resend
         abortControllerRef.current?.abort();
         abortControllerRef.current = null;
         void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
-        const prevKey = currentConvKeyRef.current;
         resetSending(prevKey);
         actBuffers.delete(activeSessionId ?? prevKey);
         endStream(prevKey);
@@ -2210,7 +2296,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       // Human-to-human DM or personal notepad — no agent routing
       const dmChannel = makeDmChannel(authUser?.id ?? '', activeDmUserId);
       const optId = `opt_${Date.now()}`;
-      const userMsgDm: ChatMsg = { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString() };
+      const userMsgDm: ChatMsg = { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: new Date().toISOString() };
       if (replyCtx) { userMsgDm.replyToId = replyCtx.id; userMsgDm.replyToSender = replyCtx.sender; userMsgDm.replyToText = replyCtx.text; }
       updateConvMsgs(sendKey, prev => [...prev, userMsgDm]);
       try {
@@ -2238,7 +2324,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (currentConvKeyRef.current === sendKey) setSending(false);
     } else if (chatMode === 'channel') {
       const optId = `opt_${Date.now()}`;
-      const userMsgCh: ChatMsg = { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString() };
+      const userMsgCh: ChatMsg = { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: new Date().toISOString() };
       if (replyCtx) { userMsgCh.replyToId = replyCtx.id; userMsgCh.replyToSender = replyCtx.sender; userMsgCh.replyToText = replyCtx.text; }
       updateConvMsgs(sendKey, prev => [...prev, userMsgCh]);
 
@@ -2264,11 +2350,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       }
 
       try {
-        const channelTextWithQuote = replyCtx
-          ? `> **${replyCtx.sender}**: ${replyCtx.text}\n\n${text}`
-          : text;
+        // Persist/send only the user's text. Reply context is carried via replyToId
+        // (server prefixes [REPLY] for the agent; UI shows the quote header from metadata).
         const result = await api.channels.sendMessage(activeChannel, {
-          text: channelTextWithQuote, senderName: authUser?.name ?? t('page.fallbackYou'), mentions,
+          text, senderName: authUser?.name ?? t('page.fallbackYou'), mentions,
           senderId: authUser?.id,
           orgId: 'default',
           replyToId: replyCtx?.id,
@@ -2297,7 +2382,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } else {
       // direct — build an interleaved segment stream
       beginStream(sendKey);
-      const agentMsgId = `a_${Date.now()}`;
+      const sendNonce = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const agentMsgId = `a_${sendNonce}`;
+      const optimisticUserId = `u_${sendNonce}`;
       // Mutable session ID that gets resolved when session_start event arrives
       let streamSessionId: string | null = activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId;
       if (options?.isResume) {
@@ -2310,7 +2397,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         ], streamSessionId);
       } else {
         const agentCreatedAt = new Date().toISOString();
-        const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString() };
+        const userMsg: ChatMsg = { id: optimisticUserId, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt };
         if (imagesToSend?.length) userMsg.images = imagesToSend;
         if (replyCtx) { userMsg.replyToId = replyCtx.id; userMsg.replyToSender = replyCtx.sender; userMsg.replyToText = replyCtx.text; }
         updateConvMsgs(sendKey, prev => [
@@ -2390,6 +2477,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           // Persist composer model pick onto the newly created session
           if (sessionModelOverride) {
             void api.sessions.setModelOverride(event.sessionId, sessionModelOverride).catch(() => {});
+          }
+          // Replace optimistic user id with the server-persisted id so reload/dedupe align.
+          if (event.userMessageId && !options?.isResume) {
+            updateConvMsgs(sendKey, prev => prev.map(m =>
+              m.id === optimisticUserId ? { ...m, id: event.userMessageId! } : m
+            ), event.sessionId);
           }
           // Seed the session cache with current buffer so streaming reads don't start empty
           const currentBuf = msgBuffers.get(sendKey);
@@ -2562,11 +2655,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       try {
         lastSseEventTimeRef.current = Date.now();
         const effectiveSessionId = activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId;
-        const textWithQuote = replyCtx
-          ? `> **${replyCtx.sender}**: ${replyCtx.text}\n\n${text}`
-          : text;
+        // Persist/send only the user's text. Reply context goes via replyTo metadata
+        // so reload does not show the quoted agent message inside the user bubble.
         const streamResult = await api.agents.messageStream(
-          selectedAgent, textWithQuote,
+          selectedAgent, text,
           appendTextChunk,
           handleToolEvent,
           abortCtrl.signal,
@@ -2581,9 +2673,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         );
         if (currentConvKeyRef.current === sendKey) {
           // Message was merged into the agent's active processing — remove the
-          // empty agent placeholder bubble since no separate reply will arrive.
+          // empty agent placeholder and the follow-up user bubble (server also
+          // deletes that DB row so reload won't resurrect it).
           if (streamResult.merged) {
-            updateConvMsgs(sendKey, prev => prev.filter(m => m.id !== agentMsgId), streamSessionId);
+            updateConvMsgs(sendKey, prev => prev.filter(m =>
+              m.id !== agentMsgId && m.id !== optimisticUserId
+            ), streamSessionId);
           }
 
           // Apply server's authoritative final segments and content so the
@@ -3328,6 +3423,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // ── Render ────────────────────────────────────────────────────────────────────
   const showChatOnMobile = isMobile && mobileLayer === 'chat';
   const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !sending && !loadingChat;
+  // Non-empty sessions: Cursor-style single-line composer that grows with content.
+  const compactComposer = mainTab === 'chat' && visibleMessages.length > 0;
+  compactComposerRef.current = compactComposer;
 
   return (
     <div ref={teamContainerRef} className="flex-1 overflow-hidden flex relative">
@@ -4124,11 +4222,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         {/* Chat Tab: Messages */}
         <div className={`flex-1 overflow-hidden flex flex-col relative ${isEmptyChat ? 'justify-center' : ''} ${mainTab !== 'chat' ? 'hidden' : ''}`}>
           {loadingChat && visibleMessages.length === 0 && (
-            <div className="flex-1 flex items-center justify-center">
-              <svg className="animate-spin h-5 w-5 text-brand-400" viewBox="0 0 24 24" fill="none">
+            <div className="flex-1 flex flex-col items-center justify-center gap-3">
+              <svg className="animate-spin h-6 w-6 text-brand-400" viewBox="0 0 24 24" fill="none">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
+              <span className="text-xs text-fg-tertiary animate-pulse">
+                {t('page.loadingChat', { defaultValue: 'Loading conversation…' })}
+              </span>
             </div>
           )}
           {loadingMore && (
@@ -4150,7 +4251,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               const prevMsg = vIdx > 0 ? visibleMessages[vIdx - 1] : null;
               const curDate = getDateKey(msg.rawCreatedAt);
               const prevDate = prevMsg ? getDateKey(prevMsg.rawCreatedAt) : '';
-              const showDateSep = curDate && curDate !== prevDate;
+              // Require both sides to have a date — optimistic local bubbles often omit
+              // rawCreatedAt, which previously made every agent reply look like a new day ("今天").
+              const showDateSep = Boolean(curDate && prevDate && curDate !== prevDate);
               const isLastMsg = vIdx === visibleMessages.length - 1;
               const isPending = isLastPending && isLastMsg;
               const isStreamingMsg = (isPending && sending) || !!msg.isStreaming;
@@ -4232,10 +4335,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       </button>
                     )}
                     <div className={`mt-0.5 ${msg.sender === 'agent' ? 'py-1' : 'bg-surface-secondary rounded-2xl px-3.5 py-2.5 w-fit max-w-full'} ${
-                      msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'))
-                        ? 'border-b-2 border-red-500/60'
-                        : ''
-                    } ${showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
+                      showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''
+                    }`}>
                       {msg.sender === 'user'
                         ? <div className="text-sm text-fg-secondary whitespace-pre-wrap">
                             {msg.images && msg.images.length > 0 && (
@@ -4426,7 +4527,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
         {/* Input (only in chat tab) */}
         <div className={`${isMobile ? 'px-3 py-2' : 'px-5 py-3'} relative shrink-0 ${isEmptyChat ? '' : chatRightReserve}`} onDrop={handleDrop} onDragOver={handleDragOver}>
-          <div className={`bg-surface-primary border border-border-default shadow-lg shadow-black/10 ${isMobile ? 'rounded-2xl p-3' : 'rounded-2xl p-3 max-w-3xl mx-auto'}`}>
+          <div className={`bg-surface-primary border border-border-default shadow-lg shadow-black/10 ${
+            isMobile
+              ? `${compactComposer ? 'rounded-2xl p-2' : 'rounded-2xl p-3'}`
+              : `${compactComposer ? 'rounded-2xl p-2' : 'rounded-2xl p-3'} max-w-3xl mx-auto`
+          }`}>
           {mentionDropdown && allMentionItems.length > 0 && (
             <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-64 max-w-xs w-72 overflow-y-auto">
               <div className="px-3 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
@@ -4536,88 +4641,104 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
-              className="px-2.5 py-2.5 text-fg-tertiary hover:text-fg-secondary disabled:opacity-40 transition-colors rounded-xl hover:bg-surface-elevated"
+              className={`${compactComposer ? 'p-1.5 mb-0.5' : 'px-2.5 py-2.5'} text-fg-tertiary hover:text-fg-secondary disabled:opacity-40 transition-colors rounded-xl hover:bg-surface-elevated shrink-0`}
               title={t('page.attachFilesTitle')}
             >
-              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <svg className={compactComposer ? 'w-[18px] h-[18px]' : 'w-5 h-5'} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
-            <div className="flex-1 relative min-w-0">
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={e => {
-                  handleInputChange(e.target.value);
-                  adjustTextareaHeight();
-                }}
-                onKeyDown={e => {
-                  if (mentionDropdown && allMentionItems.length > 0) {
-                    const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
-                    const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
-                    const isSelect = e.key === 'Enter' || e.key === 'Tab';
-                    const isClose = e.key === 'Escape';
-                    if (isUp) { e.preventDefault(); setMentionSelectedIndex(prev => (prev - 1 + allMentionItems.length) % allMentionItems.length); return; }
-                    if (isDown) { e.preventDefault(); setMentionSelectedIndex(prev => (prev + 1) % allMentionItems.length); return; }
-                    if (isSelect) {
-                      e.preventDefault();
-                      const sel = allMentionItems[mentionSelectedIndex];
-                      if (sel) {
-                        if (sel.kind === 'agent') insertMention(sel.agent.name);
-                        else insertMention(sel.entity.name, sel.entity.entityType, sel.entity.id);
-                      }
-                      return;
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={e => {
+                handleInputChange(e.target.value);
+                adjustTextareaHeight();
+              }}
+              onKeyDown={e => {
+                if (mentionDropdown && allMentionItems.length > 0) {
+                  const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
+                  const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
+                  const isSelect = e.key === 'Enter' || e.key === 'Tab';
+                  const isClose = e.key === 'Escape';
+                  if (isUp) { e.preventDefault(); setMentionSelectedIndex(prev => (prev - 1 + allMentionItems.length) % allMentionItems.length); return; }
+                  if (isDown) { e.preventDefault(); setMentionSelectedIndex(prev => (prev + 1) % allMentionItems.length); return; }
+                  if (isSelect) {
+                    e.preventDefault();
+                    const sel = allMentionItems[mentionSelectedIndex];
+                    if (sel) {
+                      if (sel.kind === 'agent') insertMention(sel.agent.name);
+                      else insertMention(sel.entity.name, sel.entity.entityType, sel.entity.id);
                     }
-                    if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
+                    return;
                   }
-                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
-                }}
-                onPaste={handlePaste}
-                placeholder={placeholder}
-                disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
-                rows={2}
-                className="w-full px-4 py-3 pb-8 bg-transparent rounded-xl text-sm outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-relaxed placeholder:text-fg-secondary"
-                style={{ minHeight: '52px', maxHeight: '120px' }}
-              />
+                  if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
+                }
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+              }}
+              onPaste={handlePaste}
+              placeholder={placeholder}
+              disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
+              rows={compactComposer ? 1 : 2}
+              className={`flex-1 min-w-0 bg-transparent rounded-xl text-sm outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-relaxed placeholder:text-fg-secondary ${
+                compactComposer ? 'px-2 py-1.5' : 'px-4 py-3'
+              }`}
+              style={{
+                minHeight: compactComposer ? '36px' : '52px',
+                maxHeight: compactComposer ? '160px' : '120px',
+              }}
+            />
+            {/* Bottom-right: model picker + send (Cursor-style) */}
+            <div className="flex items-center gap-1.5 shrink-0 pb-0.5">
               {chatMode === 'direct' && (
-                <div className="absolute right-1.5 bottom-1">
-                  <ChatModelMenu
-                    value={sessionModelOverride}
-                    disabled={!selectedAgent || isAgentOffline}
-                    onSelect={(sel, applyGlobal) => {
-                      setSessionModelOverride(sel);
-                      const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-                      void applyChatModelSelection(sid, sel, applyGlobal).catch(() => { /* ignore */ });
-                      if (sid) {
-                        setSessions(prev => prev.map(s =>
-                          s.id === sid
-                            ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: sel } }
-                            : s,
-                        ));
-                      }
-                    }}
-                  />
-                </div>
+                <ChatModelMenu
+                  value={sessionModelOverride}
+                  disabled={!selectedAgent || isAgentOffline}
+                  onSelect={(sel, applyGlobal) => {
+                    setSessionModelOverride(sel);
+                    const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
+                    void applyChatModelSelection(sid, sel, applyGlobal).catch(() => { /* ignore */ });
+                    if (sid) {
+                      setSessions(prev => prev.map(s =>
+                        s.id === sid
+                          ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: sel } }
+                          : s,
+                      ));
+                    }
+                  }}
+                />
+              )}
+              {sending && chatMode !== 'dm' ? (
+                <button
+                  onClick={stopSending}
+                  className={`${compactComposer ? 'w-8 h-8 rounded-full flex items-center justify-center' : 'px-3 py-2.5 rounded-xl'} bg-red-600 hover:bg-red-500 text-white text-sm transition-colors`}
+                  title={t('page.stopAgent')}
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="4" y="4" width="16" height="16" rx="2" />
+                  </svg>
+                </button>
+              ) : (
+                <button
+                  onClick={() => void send()}
+                  disabled={(chatMode === 'direct' && (!selectedAgent || isAgentOffline)) || (!input.trim() && pendingImages.length === 0)}
+                  className={
+                    compactComposer
+                      ? 'w-8 h-8 rounded-full flex items-center justify-center bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white transition-colors'
+                      : 'px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors'
+                  }
+                  title={t('common:send')}
+                >
+                  {compactComposer ? (
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path d="M12 19V5M5 12l7-7 7 7" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  ) : (
+                    t('common:send')
+                  )}
+                </button>
               )}
             </div>
-            {sending && chatMode !== 'dm' && (
-              <button
-                onClick={stopSending}
-                className="px-3 py-2.5 bg-red-600 hover:bg-red-500 text-white text-sm rounded-xl transition-colors flex items-center gap-1.5"
-                title={t('page.stopAgent')}
-              >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="4" y="4" width="16" height="16" rx="2" />
-                </svg>
-              </button>
-            )}
-            <button
-              onClick={() => void send()}
-              disabled={(chatMode === 'direct' && (!selectedAgent || isAgentOffline)) || (!input.trim() && pendingImages.length === 0)}
-              className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
-            >
-              {t('common:send')}
-            </button>
           </div>
           </div>
         </div>

@@ -1824,7 +1824,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
               <button
                 onClick={async () => {
-                  const newVal = !(llm?.autoFallback ?? true);
+                  const newVal = !(llm?.autoFallback ?? false);
                   try {
                     const res = await fetch('/api/settings/llm', {
                       method: 'POST', headers: authHeaders(),
@@ -1836,9 +1836,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     }
                   } catch { /* ignore */ }
                 }}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? true) ? 'bg-green-500' : 'bg-gray-600'}`}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? false) ? 'bg-green-500' : 'bg-gray-600'}`}
               >
-                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? true) ? 'translate-x-4' : 'translate-x-1'}`} />
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? false) ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
             </div>
           </div>

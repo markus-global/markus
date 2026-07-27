@@ -95,6 +95,11 @@ export interface MarkusConfig {
     feishu?: {
       appId?: string;
       appSecret?: string;
+      domain?: string;
+      /** Default group chat_id for notifications / agent sends */
+      notifyChatId?: string;
+      /** Default user open_id for p2p ("send to my Feishu") */
+      notifyOpenId?: string;
       mcp?: {
         enabled?: boolean;
         presets?: string[];

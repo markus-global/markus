@@ -252,10 +252,15 @@
     "ai402": "⚠ AI service error: {{detail}}. Please top up the API balance or contact your administrator.",
     "ai401": "⚠ AI service authentication failed: {{detail}}. Please check the configuration.",
     "ai429": "⚠ Rate limit exceeded: {{detail}}. Please wait a moment and try again.",
+    "ai409": "⚠ Request conflict: {{detail}}. Please retry.",
     "ai502": "⚠ AI upstream service error: {{detail}}. The LLM provider may be temporarily down. Please try again later.",
     "ai503": "⚠ AI service unavailable: {{detail}}. Please try again later.",
+    "aiUpstreamBillingMismatch": "⚠ Upstream billing error, but your Markus credits still remain. Please retry shortly or switch model. {{detail}}",
+    "aiRegionBlocked": "⚠ Model {{model}} is not available in your region. Please switch to another model in the chat composer.",
     "aiGeneric": "⚠ AI service error: {{detail}}",
-    "defaultUpstreamDown": "LLM provider returned 502 Bad Gateway"
+    "defaultUpstreamDown": "LLM provider returned 502 Bad Gateway",
+    "defaultUpstreamBillingMismatch": "Upstream payment error with remaining local credits",
+    "defaultConflict": "Conflicting request"
   },
   "page": {
     "userInputPrompt_one": "{{count}} question awaiting your response",

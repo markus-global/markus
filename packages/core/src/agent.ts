@@ -519,9 +519,12 @@ export class Agent {
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
 
     // Route background_exec completion through the mailbox for proper attention handling.
+    // IMPORTANT: onBackgroundCompletion is a process-wide bus — only the agent that
+    // registered the bg session may deliver a callback. Falling back to
+    // `currentSessionId` used to fan out one completion into N ghost mailbox items.
     this._bgCompletionUnsub = onBackgroundCompletion((notification) => {
-      const originSession = this.bgSessionOrigin.get(notification.sessionId)
-        ?? this.currentSessionId;
+      const originSession = this.bgSessionOrigin.get(notification.sessionId);
+      if (!originSession) return;
       this.bgSessionOrigin.delete(notification.sessionId);
 
       const status = notification.exitCode === 0 ? 'succeeded' : `failed (exit ${notification.exitCode})`;
@@ -2135,15 +2138,42 @@ export class Agent {
 
   /** Cancel any active streaming response (user-initiated) */
   cancelActiveStream(): void {
-    if (this.activeStreamToken) {
+    // Always keep a durable token so a stop that arrives before handleMessageStream
+    // links the SSE cancelToken is not lost (previously this was a silent no-op).
+    if (!this.activeStreamToken) {
+      this.activeStreamToken = { cancelled: true, userStopped: true };
+    } else {
       this.activeStreamToken.cancelled = true;
       this.activeStreamToken.userStopped = true;
-      log.info('Active stream cancelled by user', { agentId: this.id });
+    }
+    this.markStreamCancelTokensStopped();
+    log.info('Active stream cancelled by user', { agentId: this.id });
+  }
+
+  /** Mark every known stream cancel token (active + mailbox) as user-stopped. */
+  private markStreamCancelTokensStopped(): void {
+    const mark = (ct: unknown) => {
+      if (!ct || typeof ct !== 'object') return;
+      const token = ct as { cancelled?: boolean; userStopped?: boolean };
+      token.cancelled = true;
+      token.userStopped = true;
+    };
+    mark(this.activeStreamToken);
+    const focus = this.attentionController.getCurrentFocus();
+    const focusExtra = focus?.payload?.extra as { cancelToken?: unknown } | undefined;
+    mark(focusExtra?.cancelToken);
+    for (const item of this.mailbox.getQueuedItems()) {
+      const extra = item.payload?.extra as { cancelToken?: unknown } | undefined;
+      mark(extra?.cancelToken);
     }
   }
 
   /** Get a cancel token for the current stream */
   getStreamCancelToken(): { cancelled: boolean; userStopped?: boolean } {
+    // Preserve an in-flight user stop across token rotation.
+    if (this.activeStreamToken?.userStopped) {
+      return this.activeStreamToken;
+    }
     this.activeStreamToken = { cancelled: false };
     return this.activeStreamToken;
   }
@@ -3996,6 +4026,11 @@ export class Agent {
     // cancelActiveStream() (called via the cancel-processing API)
     // properly propagates userStopped to this stream.
     if (cancelToken) {
+      // A stop that arrived before this turn started must not be wiped.
+      if (this.activeStreamToken?.userStopped) {
+        cancelToken.cancelled = true;
+        cancelToken.userStopped = true;
+      }
       this.activeStreamToken = cancelToken;
     }
 
@@ -4257,9 +4292,12 @@ export class Agent {
               const runTool = () => this.executeTool(tc, toolOutputCb, this.currentSessionId);
               try {
                 const isSubagentTool = tc.name === 'spawn_subagent' || tc.name === 'spawn_subagents';
-                let result = isSubagentTool
-                  ? await chatSubagentContext.run({ subagentProgress: subagentProgressCb }, runTool)
-                  : await runTool();
+                // Race tools against user stop — otherwise Stop waits until every
+                // in-flight tool finishes before the loop can observe userStopped.
+                const toolPromise = isSubagentTool
+                  ? chatSubagentContext.run({ subagentProgress: subagentProgressCb }, runTool)
+                  : runTool();
+                let result = await this.raceAgainstUserStop(toolPromise, cancelToken);
                 result = this.offloadLargeResult(tc.name, result);
                 const isToolError = isErrorResult(result);
                 const durationMs = Date.now() - toolStart;
@@ -4275,6 +4313,7 @@ export class Agent {
                 return { toolCallId: tc.id, content: result };
               } catch (toolErr) {
                 const durationMs = Date.now() - toolStart;
+                const cancelled = cancelToken?.userStopped || /cancelled by user/i.test(String(toolErr));
                 this.emitAudit({
                   type: 'tool_call',
                   action: tc.name,
@@ -4283,8 +4322,8 @@ export class Agent {
                   detail: String(toolErr),
                 });
                 if (streamActId) this.emitActivityLog(streamActId, 'tool_end', tc.name, { arguments: tc.arguments, error: String(toolErr), durationMs, success: false });
-                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false, arguments: tc.arguments, error: String(toolErr), durationMs });
-                return { toolCallId: tc.id, content: `Error: ${String(toolErr)}` };
+                onEvent({ type: 'agent_tool', tool: tc.name, phase: 'end', success: false, arguments: tc.arguments, error: cancelled ? 'cancelled by user' : String(toolErr), durationMs });
+                return { toolCallId: tc.id, content: cancelled ? 'Error: cancelled by user' : `Error: ${String(toolErr)}` };
               }
             })
           );
@@ -4295,6 +4334,22 @@ export class Agent {
               content: tr.content,
               toolCallId: tr.toolCallId,
             });
+          }
+
+          if (cancelToken?.userStopped) {
+            log.info('Stream cancelled by user after tool batch', { agentId: this.id });
+            if (this.currentSessionId) {
+              const content = lastResponseContent
+                ? lastResponseContent + '\n\n[interrupted by user]'
+                : '[interrupted by user]';
+              this.memory.appendMessage(this.currentSessionId, {
+                role: 'assistant',
+                content,
+              });
+            }
+            if (streamChatActivityId) this.endActivity(streamChatActivityId);
+            if (this.activeTasks.size === 0) this.setStatus('idle');
+            return '[cancelled]';
           }
 
           for (let i = 0; i < response.toolCalls!.length; i++) {
@@ -6544,6 +6599,45 @@ export class Agent {
       msg.includes('dns') ||
       msg.includes('aborted') ||
       msg.includes('aborterror');
+  }
+
+  /**
+   * Resolve `promise` unless the user hits Stop first. Rejects with
+   * "cancelled by user" so tool loops can unwind promptly (the underlying
+   * tool may still finish in the background).
+   */
+  private raceAgainstUserStop<T>(
+    promise: Promise<T>,
+    cancelToken?: { userStopped?: boolean },
+  ): Promise<T> {
+    if (!cancelToken) return promise;
+    if (cancelToken.userStopped) return Promise.reject(new Error('cancelled by user'));
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const timer = setInterval(() => {
+        if (!settled && cancelToken.userStopped) {
+          settled = true;
+          clearInterval(timer);
+          reject(new Error('cancelled by user'));
+        }
+      }, 100);
+      promise.then(
+        (value) => {
+          if (!settled) {
+            settled = true;
+            clearInterval(timer);
+            resolve(value);
+          }
+        },
+        (err) => {
+          if (!settled) {
+            settled = true;
+            clearInterval(timer);
+            reject(err);
+          }
+        },
+      );
+    });
   }
 
   private async withNetworkRetry<T>(fn: () => Promise<T>, label: string, signal?: AbortSignal): Promise<T> {

@@ -174,11 +174,18 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
         if (!itemId || !reason) {
           return JSON.stringify({ status: 'error', error: 'item_id and reason are required' });
         }
+        const before = ctx.getMindState().queuedItems.some(i => i.id === itemId);
         const ok = ctx.dropItem(itemId, reason);
         if (!ok) {
-          return JSON.stringify({ status: 'error', error: 'Item not found, not queued, or is a protected human_chat item' });
+          return JSON.stringify({ status: 'error', error: 'Item is a protected human_chat item or not droppable while processing' });
         }
-        return JSON.stringify({ status: 'dropped', item_id: itemId });
+        return JSON.stringify({
+          status: before ? 'dropped' : 'already_resolved',
+          item_id: itemId,
+          note: before
+            ? undefined
+            : 'Item was not in the live queue (already handled or orphaned); marked resolved.',
+        });
       },
     },
 

@@ -79,18 +79,43 @@ export function defaultVoiceForModel(model?: string): string | undefined {
  * Unwrap `{ error: { message } }`, keep voice enumerations intact, and cap length
  * so a huge voice list cannot blow the agent's context.
  */
-/** True when status/body indicate credits / key USD limit exhausted (not region/auth). */
+/**
+ * True when status/body look like OpenRouter *payment/credit* errors.
+ *
+ * Per OpenRouter docs (errors-and-debugging / limits):
+ * - 402 Payment Required → account or API key has insufficient credits (`payment_required`)
+ * - 429 → rate limit (NOT credits)
+ * - 403 → moderation / permission (NOT credits unless body explicitly says key/credit limit)
+ * - 409 Conflict → not used by OpenRouter for billing; never treat as credits
+ *
+ * Callers must still confirm with Hub remaining before surfacing CU_EXCEEDED to users —
+ * a stale OR key can 402 while Hub still shows budget.
+ */
 export function isCreditExhaustedHttp(status: number, bodyText: string): boolean {
-  if (status === 402) return true;
+  if (status === 409 || status === 429) return false;
   const t = bodyText || '';
   if (/CU_EXCEEDED|CU_MONTHLY_EXCEEDED/i.test(t)) return true;
-  if (status === 403 || status === 400) {
-    return /key limit exceeded|total limit|insufficient (credits?|quota|balance)|credits? (exhausted|exceeded)|quota exceeded/i.test(t);
+  // Official OR meaning of 402.
+  if (status === 402) {
+    if (!t.trim()) return true;
+    if (/payment_required|insufficient (credits?|quota|balance)|credits? (exhausted|exceeded)|key limit exceeded|quota exceeded/i.test(t)) {
+      return true;
+    }
+    // Generic 402 bodies still mean payment required per OR docs.
+    return !/rate.?limit|moderation|forbidden|unauthorized/i.test(t);
   }
-  return /key limit exceeded|total limit/i.test(t);
+  // Legacy / odd gateways sometimes put key-cap text on 400/403 — require explicit credit wording.
+  if (status === 403 || status === 400) {
+    return /key limit exceeded|insufficient (credits?|quota|balance)|credits? (exhausted|exceeded)|payment_required/i.test(t);
+  }
+  return false;
 }
 
 export const CREDIT_EXCEEDED_MSG = 'CU_EXCEEDED: Credits exhausted. Please top up or upgrade your plan.';
+
+/** Hub still has budget after an upstream 402 — do not claim the user is out of credits. */
+export const UPSTREAM_BILLING_MISMATCH_MSG =
+  'MARKUS_UPSTREAM_ERROR: Upstream returned a payment/credit error, but Hub still shows remaining credits. Please retry shortly or switch model.';
 
 export function formatUpstreamMediaError(status: number, errText: string): string {
   if (isCreditExhaustedHttp(status, errText)) {

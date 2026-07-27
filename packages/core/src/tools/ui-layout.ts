@@ -50,9 +50,21 @@ export function parseOpenRightPanelArgs(
   }
 
   if (url) {
-    let normalized = url;
-    if (normalized !== 'about:blank' && !/^https?:\/\//i.test(normalized) && !normalized.startsWith('file:')) {
-      normalized = `https://${normalized}`;
+    let normalized = url.trim();
+    if (normalized !== 'about:blank' && !/^[a-z][a-z0-9+.-]*:/i.test(normalized)) {
+      // Absolute local paths → file://; bare hosts → https://
+      if (
+        normalized.startsWith('/')
+        || /^[a-zA-Z]:[\\/]/.test(normalized)
+        || normalized.startsWith('\\\\')
+      ) {
+        const p = normalized.replace(/\\/g, '/');
+        normalized = /^[a-zA-Z]:\//.test(p)
+          ? `file:///${encodeURI(p).replace(/#/g, '%23')}`
+          : `file://${encodeURI(p).replace(/#/g, '%23')}`;
+      } else {
+        normalized = `https://${normalized}`;
+      }
     }
     return { ok: true, panel: { kind: 'url', url: normalized, title } };
   }

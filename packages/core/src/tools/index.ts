@@ -25,6 +25,7 @@ export { createRecallTool, type RecallContext, type RecallCallbacks } from './re
 export { createMailboxTools, type MailboxToolContext } from './mailbox-tools.js';
 export { createWorkflowTools, type WorkflowToolsContext } from './workflow-tools.js';
 export { createMultiModalTools, type MultiModalToolsContext } from './multimodal.js';
+export { createFeishuTools, type FeishuToolsConfig } from './feishu.js';
 export { toolOk, toolErr, isToolErrorResult } from './result.js';
 export {
   parseOpenRightPanelArgs,

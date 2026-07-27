@@ -1,5 +1,6 @@
 export { FeishuAdapter } from './feishu/adapter.js';
 export { FeishuClient } from './feishu/client.js';
+export type { ReceiveIdType, FeishuConfig, SendMsgType } from './feishu/client.js';
 export { buildStatusCard, buildTaskCard, buildProgressCard, buildAgentResponseCard } from './feishu/cards.js';
 export type { AgentCardPhase, ToolCallEntry } from './feishu/cards.js';
 export { WebUIAdapter } from './webui/adapter.js';

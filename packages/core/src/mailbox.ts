@@ -87,11 +87,15 @@ export class AgentMailbox {
     let expired = 0;
     const now = Date.now();
     const queuedItems = this.persistence?.loadQueued?.(this.agentId) ?? [];
+    const staleTypes = new Set(TRIAGE_STALE_DROP_TYPES);
     for (const item of queuedItems) {
       if (this.queue.some(q => q.id === item.id)) continue;
 
       const age = now - new Date(item.queuedAt).getTime();
-      if (age > MAILBOX_QUEUED_TTL_MS) {
+      // Hard TTL for everything; informational/callback ghosts expire sooner so a
+      // long-running agent does not keep replaying stale background completions.
+      const ttl = staleTypes.has(item.sourceType) ? TRIAGE_STALE_INFO_TTL_MS : MAILBOX_QUEUED_TTL_MS;
+      if (age > ttl) {
         this.persistence?.updateStatus(item.id, 'dropped');
         expired++;
         continue;
@@ -112,6 +116,8 @@ export class AgentMailbox {
         merged,
       });
     }
+    // If the attention loop is already waiting, restored items must wake it.
+    if (restored > 0) this.wakeIdleLoop();
     return { dropped, restored, expired, merged };
   }
 
@@ -410,20 +416,38 @@ export class AgentMailbox {
    * Block until an item is available, then dequeue it.
    * Throws `MailboxCancelledError` if woken by `cancelWait()` with an empty queue
    * (normal shutdown path — the attention loop should catch and exit cleanly).
+   *
+   * Arms the idle waiter BEFORE re-checking the queue so an enqueue that lands
+   * between the empty check and wait cannot lose its wakeup (classic lost-wakeup
+   * race — leaves attention "idle" forever with items still queued).
    */
   async dequeueAsync(): Promise<MailboxItem> {
-    const item = this.dequeue();
-    if (item) return item;
+    for (;;) {
+      const item = this.dequeue();
+      if (item) return item;
 
-    await new Promise<void>(resolve => {
-      this.idleResolve = resolve;
-    });
+      await new Promise<void>(resolve => {
+        this.idleResolve = resolve;
+        // Close the race: work may have arrived after the empty dequeue above.
+        if (this.queue.length > 0) {
+          this.idleResolve = undefined;
+          resolve();
+        }
+      });
 
-    const afterWake = this.dequeue();
-    if (!afterWake) {
+      const afterWake = this.dequeue();
+      if (afterWake) return afterWake;
+      // cancelWait() (or a spurious wake) with an empty queue
       throw new MailboxCancelledError();
     }
-    return afterWake;
+  }
+
+  /**
+   * Nudge the attention loop if it is parked idle while work is already queued.
+   * Used by the watchdog / recovery paths as a belt-and-suspenders wakeup.
+   */
+  nudgeIfPending(): void {
+    if (this.queue.length > 0) this.wakeIdleLoop();
   }
 
   /**
@@ -503,10 +527,15 @@ export class AgentMailbox {
 
   /**
    * Drop an item from the queue.
+   * If the item is not in the in-memory queue (ghost / already dequeued), still
+   * mark it dropped in persistence so agent tools can clear orphans idempotently.
    */
   drop(itemId: string): MailboxItem | undefined {
     const idx = this.queue.findIndex(i => i.id === itemId);
-    if (idx === -1) return undefined;
+    if (idx === -1) {
+      this.persistence?.updateStatus(itemId, 'dropped');
+      return undefined;
+    }
 
     const [item] = this.queue.splice(idx, 1);
     item.status = 'dropped';

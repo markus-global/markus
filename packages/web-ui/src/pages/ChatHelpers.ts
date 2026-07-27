@@ -167,17 +167,62 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
     base.replyToId = m.metadata.replyToId as string;
     base.replyToSender = m.metadata.replyToSender as string;
     base.replyToText = m.metadata.replyToText as string;
+    // Heal legacy rows that embedded the quote into content before reply metadata existed.
+    base.text = stripEmbeddedReplyQuote(base.text, base.replyToSender, base.replyToText);
   }
   return base;
+}
+
+/** Remove legacy `> **sender**: …\n\n` prefix when reply metadata already carries the quote. */
+export function stripEmbeddedReplyQuote(
+  content: string,
+  replyToSender?: string,
+  replyToText?: string,
+): string {
+  if (!content || !replyToSender || !replyToText) return content;
+  const prefix = `> **${replyToSender}**: ${replyToText}\n\n`;
+  if (content.startsWith(prefix)) return content.slice(prefix.length);
+  return content;
+}
+
+/**
+ * Collapse accidental adjacent duplicate user bubbles (same text, within a short window).
+ * Does not touch intentional repeats that have an assistant turn between them.
+ */
+export function dedupeAdjacentUserMessages(msgs: ChatMsg[], windowMs = 120_000): ChatMsg[] {
+  if (msgs.length < 2) return msgs;
+  const out: ChatMsg[] = [];
+  for (const m of msgs) {
+    const prev = out[out.length - 1];
+    if (
+      m.sender === 'user'
+      && prev?.sender === 'user'
+      && prev.text === m.text
+      && prev.text.length > 0
+      && prev.text.length <= 500
+    ) {
+      const prevTs = prev.rawCreatedAt ? Date.parse(prev.rawCreatedAt) : NaN;
+      const curTs = m.rawCreatedAt ? Date.parse(m.rawCreatedAt) : NaN;
+      if (!Number.isFinite(prevTs) || !Number.isFinite(curTs) || Math.abs(curTs - prevTs) <= windowMs) {
+        continue;
+      }
+    }
+    out.push(m);
+  }
+  return out;
 }
 
 export function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): ChatMsg {
   const isError = m.senderType === 'system' || (m.senderType === 'agent' && m.text.startsWith('⚠'));
   const isSelf = m.senderType === 'human' && (!authUserId || m.senderId === authUserId);
+  let text = m.text;
+  if (isSelf && m.replyToId && m.replyToSender && m.replyToText) {
+    text = stripEmbeddedReplyQuote(text, m.replyToSender, m.replyToText);
+  }
   const base: ChatMsg = {
     id: m.id,
     sender: isSelf ? 'user' : 'agent',
-    text: m.text,
+    text,
     time: new Date(m.createdAt).toLocaleTimeString(),
     rawCreatedAt: m.createdAt,
     agentName: isSelf ? undefined : m.senderName,

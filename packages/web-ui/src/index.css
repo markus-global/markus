@@ -299,6 +299,25 @@ body {
   animation: skeleton-shimmer 1.4s ease-in-out infinite;
 }
 
+/* Running tool / thinking label — soft bright↔dim sweep */
+@keyframes activity-text-shimmer {
+  0% { background-position: 100% center; }
+  100% { background-position: -100% center; }
+}
+.activity-text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-fg-tertiary) 0%,
+    var(--color-fg-primary) 45%,
+    var(--color-fg-tertiary) 90%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: activity-text-shimmer 1.6s ease-in-out infinite;
+}
+
 /* Horizontal scroll rail with snap for discovery carousels */
 .rail {
   @apply flex gap-4 overflow-x-auto;

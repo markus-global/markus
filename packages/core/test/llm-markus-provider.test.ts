@@ -166,13 +166,33 @@ describe('MarkusProvider CU tracking', () => {
     expect(provider.getCostUsdStats().lastCostUsd).toBe(0.01);
   });
 
-  it('throws CU_EXCEEDED on 402', async () => {
+  it('throws CU_EXCEEDED on 402 only when Hub confirms zero remaining', async () => {
+    const p = new MarkusProvider({
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-chat',
+    });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ error: { message: 'quota exceeded' } }, 402))
+      .mockResolvedValueOnce(mockResponse({
+        ok: true,
+        remainingCu: 0,
+        openrouter: { remainingUsd: 0 },
+      }, 200));
+    await expect(
+      p.chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toThrow('CU_EXCEEDED:');
+  });
+
+  it('throws MARKUS_UPSTREAM_ERROR on 402 when Hub sync is unavailable', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
       mockResponse({ error: { message: 'quota exceeded' } }, 402),
     );
     await expect(
       provider.chat({ messages: [{ role: 'user', content: 'hi' }] }),
-    ).rejects.toThrow('CU_EXCEEDED:');
+    ).rejects.toThrow('MARKUS_UPSTREAM_ERROR:');
   });
 
   it('on 402: calls Hub cu/sync and retries once when remaining > 0', async () => {
@@ -219,6 +239,33 @@ describe('MarkusProvider CU tracking', () => {
       p.chat({ messages: [{ role: 'user', content: 'hi' }] }),
     ).rejects.toThrow('CU_EXCEEDED:');
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it('on 402: does not claim CU_EXCEEDED when Hub still has remaining after retry', async () => {
+    const p = new MarkusProvider({
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-chat',
+    });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ error: { message: 'key limit exceeded' } }, 402))
+      .mockResolvedValueOnce(mockResponse({
+        ok: true,
+        remainingCu: 5000,
+        openrouter: { remainingUsd: 5 },
+      }, 200))
+      .mockResolvedValueOnce(mockResponse({ error: { message: 'key limit exceeded' } }, 402))
+      .mockResolvedValueOnce(mockResponse({
+        ok: true,
+        remainingCu: 5000,
+        openrouter: { remainingUsd: 5 },
+      }, 200));
+
+    await expect(
+      p.chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toThrow(/MARKUS_UPSTREAM_ERROR:/);
   });
 
   it('throws MARKUS_RATE_LIMITED on 429', async () => {
@@ -489,7 +536,7 @@ describe('MarkusProvider CU tracking', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('maps OpenRouter 403 key-limit to CU_EXCEEDED without vendor URL', async () => {
+  it('maps OpenRouter 403 key-limit without claiming CU_EXCEEDED when Hub budget unknown', async () => {
     const dual = new MarkusProvider({
       apiKey: 'sk-or-member',
       baseUrl: 'https://openrouter.ai/api/v1',
@@ -512,7 +559,7 @@ describe('MarkusProvider CU tracking', () => {
     } catch (e) {
       err = e;
     }
-    expect(String(err)).toMatch(/^Error: CU_EXCEEDED:/);
+    expect(String(err)).toMatch(/^Error: MARKUS_UPSTREAM_ERROR:/);
     expect(String(err)).not.toMatch(/openrouter\.ai/i);
   });
 
@@ -754,7 +801,9 @@ describe('soft-stop when remaining credits are 0', () => {
     clearMarkusModelListCache();
   });
 
-  it('refuses chat when hubRemainingHint is 0 and Hub sync is unavailable', async () => {
+  it('does not soft-block when hubRemainingHint is 0 but Hub sync is unavailable', async () => {
+    // Without a confirmed Hub empty balance, do not claim CU_EXCEEDED.
+    vi.mocked(fetch).mockResolvedValue(mockResponse(chatCompletionBody('ok'), 200));
     const p = new MarkusProvider({
       provider: 'markus',
       apiKey: 'sk-or-test',
@@ -762,12 +811,33 @@ describe('soft-stop when remaining credits are 0', () => {
       model: 'deepseek/deepseek-chat',
     });
     p.setHubRemainingHint(0);
+    const res = await p.chat({
+      messages: [{ role: 'user', content: 'hi' }],
+      model: 'deepseek/deepseek-chat',
+    });
+    expect(res.content).toBe('ok');
+    expect(fetch).toHaveBeenCalled();
+  });
+
+  it('refuses chat when Hub sync confirms remaining is zero', async () => {
+    const p = new MarkusProvider({
+      provider: 'markus',
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-chat',
+    });
+    p.setHubRemainingHint(0);
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse({
+      ok: true,
+      remainingCu: 0,
+      openrouter: { remainingUsd: 0 },
+    }, 200));
     await expect(p.chat({
       messages: [{ role: 'user', content: 'hi' }],
       model: 'deepseek/deepseek-chat',
     })).rejects.toThrow(/CU_EXCEEDED/);
-    // No hubUrl/hubToken → sync short-circuits without fetch
-    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('allows chat again after hint is cleared', async () => {

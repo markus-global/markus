@@ -152,14 +152,13 @@ export function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
 
 // ─── Credit error detection ───────────────────────────────────────────────────
 
-/** Returns true if the error is a Markus Cloud AI credit/quota error. */
+/** Returns true if the error is a confirmed Markus Cloud AI credit/quota error. */
 export function isMarkusCreditError(err: unknown): boolean {
   const raw = String(err);
+  // Upstream 402 while Hub still has budget — not a user credit-exhausted state.
+  if (raw.includes('MARKUS_UPSTREAM_ERROR')) return false;
   return raw.includes('CU_EXCEEDED')
-    || raw.includes('CU_MONTHLY_EXCEEDED')
-    || /key limit exceeded|total limit/i.test(raw)
-    || (/\b403\b/.test(raw) && /limit|insufficient|credit|quota/i.test(raw))
-    || (/\b402\b/.test(raw) && /credit|quota|balance|limit/i.test(raw));
+    || raw.includes('CU_MONTHLY_EXCEEDED');
 }
 
 const CREDIT_MUTE_KEY = 'markus:credit-notif-muted';
@@ -211,19 +210,23 @@ export function friendlyAgentError(err: unknown, t: TFunction): string {
   // this function works regardless of the caller's default namespace.
   const e = (key: string, opts?: Record<string, unknown>) => t(`team:errors.${key}`, opts);
 
-  if (isMarkusCreditError(raw) || raw.includes('CU_EXCEEDED') || /key limit exceeded|total limit/i.test(raw))
+  if (raw.includes('MARKUS_UPSTREAM_ERROR'))
+    return e('aiUpstreamBillingMismatch', { detail: detail || e('defaultUpstreamBillingMismatch') });
+  if (isMarkusCreditError(raw) || raw.includes('CU_EXCEEDED'))
     return e('markusCuExceeded');
   if (raw.includes('CU_WINDOW_EXCEEDED'))
     return e('markusWindowExceeded');
   if (raw.includes('MARKUS_RATE_LIMITED'))
     return e('markusRateLimited');
 
-  if (raw.includes('402') || /insufficient.?balance/i.test(raw))
-    return e('markusCuExceeded');
+  if (/not available in your region/i.test(raw))
+    return e('aiRegionBlocked', { model: (raw.match(/\[(?:markus|openrouter):([^\]]+)\]/i)?.[1] || '').trim() || '—' });
   if (raw.includes('401') || /unauthorized|invalid.?api.?key/i.test(raw))
     return e('ai401', { detail: detail || e('defaultInvalidApiKey') });
   if (raw.includes('429') || /rate.?limit/i.test(raw))
     return e('ai429', { detail: detail || e('defaultTooManyRequests') });
+  if (/\b409\b/.test(raw) || /conflict/i.test(raw))
+    return e('ai409', { detail: detail || e('defaultConflict') });
   if (raw.includes('502') || /bad.?gateway/i.test(raw))
     return e('ai502', { detail: detail || e('defaultUpstreamDown') });
   if (raw.includes('503') || /service.?unavailable/i.test(raw))
@@ -260,7 +263,7 @@ export function MessageActions({
         }
         {isCopied ? t('common:copied') : t('common:copy')}
       </button>
-      {canRetry && onResume && (
+      {canRetry && isStopped && onResume && (
         <button onClick={() => onResume(msg)} className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-green-500 hover:text-green-400 hover:bg-green-500/10 transition-colors" title={t('page.messageActions.resumeTitle')}>
           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
           {t('page.messageActions.resumeTitle')}
@@ -532,11 +535,20 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           : <RequirementApprovalCard key={c.key} info={c.info} />
         )}
 
-        {!isStreaming && !displayText && !hasTools && inlineCards.length === 0 && !isStopped && (
-          <div className="flex items-start gap-1.5 text-[13px] text-amber-500/90 leading-relaxed">
-            <span aria-hidden>⚠️</span>
+        {!isStreaming && !displayText && !hasTools && inlineCards.length === 0 && !isStopped && !msg.isError && (
+          <div className="flex items-start gap-1.5 text-[13px] text-fg-tertiary leading-relaxed">
             <span>{t('page.emptyReply')}</span>
           </div>
+        )}
+
+        {/* Ensure rate-limit / model errors always surface as calm grey copy, even if
+            the timeline only captured tool rows before the stream failed. */}
+        {!isStreaming && (msg.isError || msg.text.startsWith('⚠')) && msg.text && !(
+          segments?.some(s => s.type === 'text' && s.content && (s.content === msg.text || s.content.startsWith('⚠')))
+        ) && (
+          <p className="mt-1.5 text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">
+            {msg.text.replace(/^⚠\s*/, '')}
+          </p>
         )}
 
         {isStopped && (
@@ -566,10 +578,13 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           persistent={!isStreaming && hasActivities}
         />
       )}
-      {legacyText ? <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} /> : null}
-      {!isStreaming && !legacyText && !hasActivities && !isStopped && msg.sender === 'agent' && (
-        <div className="flex items-start gap-1.5 text-[13px] text-amber-500/90 leading-relaxed">
-          <span aria-hidden>⚠️</span>
+      {legacyText
+        ? (msg.isError || legacyText.startsWith('⚠')
+          ? <p className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">{legacyText.replace(/^⚠\s*/, '')}</p>
+          : <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} />)
+        : null}
+      {!isStreaming && !legacyText && !hasActivities && !isStopped && !msg.isError && msg.sender === 'agent' && (
+        <div className="flex items-start gap-1.5 text-[13px] text-fg-tertiary leading-relaxed">
           <span>{t('page.emptyReply')}</span>
         </div>
       )}

@@ -245,8 +245,12 @@ jobs:
       - name: Build Electron app
         run: pnpm --filter @markus/desktop build:electron
 
+      # PowerShell treats `ls -lh` as Get-ChildItem -lh (invalid). Use bash.
       - name: Verify Electron dist includes extension zip
-        run: ls -lh packages/desktop/dist/markus-browser-extension.zip
+        shell: bash
+        run: |
+          test -f packages/desktop/dist/markus-browser-extension.zip
+          ls -lh packages/desktop/dist/markus-browser-extension.zip
 
       # Fetch the ssign client used by build/sign.cjs and export its native
       # Windows path so electron-builder's custom signer can find it.

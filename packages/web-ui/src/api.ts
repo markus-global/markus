@@ -20,6 +20,8 @@ export interface AgentToolEvent {
 
 export interface StreamCommitEvent {
   type: 'thinking_commit' | 'text_commit' | 'session_start';
+  /** Server-persisted user message id (session_start) — used to replace optimistic UI ids. */
+  userMessageId?: string;
   content: string;
   createdAt: string;
   sessionId?: string;
@@ -1238,7 +1240,14 @@ export const api = {
                 const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; thinking?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string }; sessionId?: string };
                 if (event.type === 'session_start' && event.sessionId) {
                   resultSessionId = event.sessionId;
-                  onCommit?.({ type: 'session_start', content: '', createdAt: new Date().toISOString(), sessionId: event.sessionId });
+                  const userMessageId = (event as { userMessageId?: string }).userMessageId;
+                  onCommit?.({
+                    type: 'session_start',
+                    content: '',
+                    createdAt: new Date().toISOString(),
+                    sessionId: event.sessionId,
+                    userMessageId,
+                  });
                 } else if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
                   onChunk(event.text);

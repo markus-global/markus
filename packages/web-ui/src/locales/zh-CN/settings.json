@@ -90,7 +90,7 @@
     "noProviders": "尚未配置提供商",
     "updated": "默认提供商已更新为 {{name}}",
     "autoFallback": "自动切换模型",
-    "autoFallbackDesc": "启用后，当主模型出错时自动尝试其他提供商/模型。禁用后，仅使用所选模型 — 出错时不会自动切换。"
+    "autoFallbackDesc": "默认关闭。开启后主模型出错时会自动尝试其他提供商/模型；关闭则直接报错，由你手动切换。"
   },
   "modelRouting": {
     "title": "模型路由",

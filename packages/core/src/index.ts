@@ -176,6 +176,8 @@ export {
   type SubagentProgressCallback,
   createMultiModalTools,
   type MultiModalToolsContext,
+  createFeishuTools,
+  type FeishuToolsConfig,
 } from './tools/index.js';
 export {
   ToolLoopDetector,

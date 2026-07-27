@@ -11,6 +11,7 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **Conversation buffer 状态机** — 抽取会话缓冲状态机，修复聊天竞态与流式重连边界
 - **Hub recommended routing** — Hub 推荐路由与模型目录 / 路由能力增强
 - **Team Chat 菜单优化** — 「移动到」可搜索折叠、组织秘书保护、文案改为「移出团队」
+- **飞书原生发图** — `feishu_send_image` / `feishu_send_message`，支持本地图片上传发送
 
 ### Bug Fixes
 
@@ -19,6 +20,14 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **搜索优先级** — Hub 已连接且有余额时优先 Markus 搜索，否则 BYOK
 - **任务与通知稳定性** — 任务状态实时更新、deliberation / notify 上下文、triage 完整性
 - **性能与前端** — Prompt cache 友好与 Tier 3 token 成本优化；web-ui 路由拆分、共享缓存、轮询去重
+
+### v0.9.0-rc.2
+
+- **图片预览** — 大图（webp/png 等）改走 stream，不再被 2MB base64 上限误判为无法预览
+- **Team Chat 历史加载** — 修复空 buffer 跳过 DB 拉取；进入会话显示 loading，加载后展示消息
+- **Mailbox 幽灵条目** — 修复 background_exec 完成回调广播到所有 Agent；过期 callback_result 自动清理；drop 幂等
+- **注意力空闲卡死** — 修复 dequeueAsync lost-wakeup；idle 且有队列时 watchdog nudge；UI 不再显示「等待新邮件」
+- **引用回复 / 重复继续** — 引用内容不写入用户气泡；发送去重与 Resume 按钮可见性修正
 
 ### Stats
 

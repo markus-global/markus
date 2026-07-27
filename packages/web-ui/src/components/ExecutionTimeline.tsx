@@ -40,8 +40,8 @@ export {
 export function ThinkingDots({ label }: { label?: string }) {
   const { t } = useTranslation('common');
   return (
-    <div className="flex items-center gap-1.5 text-xs text-fg-secondary py-0.5">
-      <span>{label ?? t('execution.thinking')}</span>
+    <div className="flex items-center gap-1.5 text-xs py-0.5">
+      <span className="activity-text-shimmer">{label ?? t('execution.thinking')}</span>
       <span className="flex gap-0.5">
         {[0, 150, 300].map(d => (
           <span key={d} className="w-1 h-1 rounded-full bg-brand-400 animate-bounce"
@@ -850,7 +850,7 @@ export function ToolCallRow({ info, time, hideApprovalCards }: {
             }`}
           />
           <span className={`text-xs leading-snug shrink-0 ${
-            info.status === 'running' ? 'text-brand-500'
+            info.status === 'running' ? 'activity-text-shimmer'
             : info.status === 'error' || isStopped ? 'text-fg-tertiary opacity-70'
             : 'text-fg-secondary'
           }`}>{t(`execution.tools.${meta.key}`, { defaultValue: meta.label })}{info.status === 'running' ? '…' : ''}</span>
@@ -931,7 +931,7 @@ function ThinkingRow({ content, time, defaultExpanded }: { content: string; time
             Thinking always "succeeds", so it keeps a steady violet accent that gives
             it its own identity, distinct from the green/red status colors of tools. */}
         <NamedIcon name="sparkles" size={15} className="shrink-0 text-violet-400" />
-        <span className="shrink-0 text-fg-secondary">{t('execution.thinking')}</span>
+        <span className={`shrink-0 ${defaultExpanded ? 'activity-text-shimmer' : 'text-fg-secondary'}`}>{t('execution.thinking')}</span>
         {/* Chevron sits right after the title, not pinned to the far right. */}
         <svg className={`w-3 h-3 shrink-0 text-fg-tertiary transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
         {expanded && time && <span className="ml-auto shrink-0 text-[10px] text-fg-tertiary tabular-nums">{time}</span>}
@@ -975,6 +975,17 @@ export function ExecEntryRow({ entry, showTime, isLast, defaultThinkingExpanded,
     return <ThinkingRow content={entry.content} time={entry.time} showTime={showTime} defaultExpanded={defaultThinkingExpanded} />;
   }
   if (entry.type === 'text') {
+    // Rate-limit / agent failures are stored as ⚠-prefixed prose — render calmly in
+    // tertiary grey instead of the default answer style (and never as a red bar).
+    if (entry.content.startsWith('⚠')) {
+      return (
+        <div className="min-w-0 pl-[23px] pr-1 overflow-hidden">
+          <p className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap break-words">
+            {entry.content.replace(/^⚠\s*/, '')}
+          </p>
+        </div>
+      );
+    }
     // Plain answer prose, indented to align with the icon-rows' labels. No box or
     // icon — being clean prose is what distinguishes it from thinking/tools.
     return (
@@ -1002,9 +1013,9 @@ export function ExecEntryRow({ entry, showTime, isLast, defaultThinkingExpanded,
   if (entry.type === 'error') {
     return (
       <div className="flex items-start gap-2 py-0.5 min-w-0">
-        <NamedIcon name="alert-circle" size={15} className="shrink-0 mt-0.5 text-red-500" />
-        <span className="text-xs text-red-500 leading-relaxed break-words min-w-0">
-          <span className="font-medium">{t('execution.errorPrefix')}</span> {entry.content}
+        <NamedIcon name="alert-circle" size={15} className="shrink-0 mt-0.5 text-fg-tertiary" />
+        <span className="text-xs text-fg-tertiary leading-relaxed break-words min-w-0">
+          <span className="font-medium">{t('execution.errorPrefix')}</span> {entry.content.replace(/^⚠\s*/, '')}
         </span>
       </div>
     );

@@ -370,9 +370,11 @@ export const TRIAGE_ITEM_CONTENT_CHARS = 3000;
 export const TRIAGE_STALE_INFO_TTL_MS = 4 * 60 * 60 * 1000;
 
 /** Informational mailbox types eligible for age-based auto-drop before triage.
- *  These types carry context that decays rapidly and do not require LLM processing. */
+ *  These types carry context that decays rapidly and do not require LLM processing.
+ *  `callback_result` is included so orphaned/unprocessed background completions
+ *  (and historically fan-out ghosts) do not wedge the queue forever. */
 export const TRIAGE_STALE_DROP_TYPES: readonly string[] = [
-  'task_status_update', 'heartbeat', 'memory_consolidation', 'daily_report',
+  'task_status_update', 'heartbeat', 'memory_consolidation', 'daily_report', 'callback_result',
 ];
 
 /** Max tool-use iterations allowed during triage deliberation.

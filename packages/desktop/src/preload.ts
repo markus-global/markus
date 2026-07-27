@@ -59,18 +59,24 @@ contextBridge.exposeInMainWorld('markusDesktop', {
     cdp: (id: string, method: string, params?: Record<string, unknown>) =>
       ipcRenderer.invoke('browser:cdp', id, method, params),
     onPageEvent: (callback: (event: {
-      type: 'opened' | 'closed' | 'navigated' | 'selected';
+      type: 'opened' | 'closed' | 'navigated' | 'selected' | 'loading' | 'loaded' | 'load-failed' | 'directory';
       pageId: number;
       browserId: string;
       url?: string;
       title?: string;
+      isLoading?: boolean;
+      error?: string;
+      directoryPath?: string;
     }) => void) => {
       const handler = (_: unknown, event: {
-        type: 'opened' | 'closed' | 'navigated' | 'selected';
+        type: 'opened' | 'closed' | 'navigated' | 'selected' | 'loading' | 'loaded' | 'load-failed' | 'directory';
         pageId: number;
         browserId: string;
         url?: string;
         title?: string;
+        isLoading?: boolean;
+        error?: string;
+        directoryPath?: string;
       }) => callback(event);
       ipcRenderer.on('browser:page-event', handler);
       return () => { ipcRenderer.removeListener('browser:page-event', handler); };

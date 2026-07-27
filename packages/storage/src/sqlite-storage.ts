@@ -2252,6 +2252,12 @@ export class SqliteChatSessionRepo {
     return { content, metadata: rawMeta ? JSON.parse(rawMeta) : undefined };
   }
 
+  /** Delete a single chat message by id (e.g. undo a merged follow-up persist). */
+  deleteMessage(messageId: string): boolean {
+    const result = this.db.prepare('DELETE FROM chat_messages WHERE id = ?').run(messageId);
+    return result.changes > 0;
+  }
+
   /**
    * Remove the last user+assistant exchange from a session (for retry).
    * Deletes from the end backwards through the last assistant message

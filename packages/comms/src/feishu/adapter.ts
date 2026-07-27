@@ -120,7 +120,8 @@ export class FeishuAdapter implements CommAdapter {
       return this.client.sendInteractiveMessage(channelId, JSON.parse(content), idType);
     }
     if (feishuOpts?.asImage) {
-      return this.client.sendTextMessage(channelId, content, idType);
+      // `content` is treated as a local filesystem path to the image.
+      return this.client.sendLocalImage(channelId, content, idType);
     }
     return this.client.sendTextMessage(channelId, content, idType);
   }

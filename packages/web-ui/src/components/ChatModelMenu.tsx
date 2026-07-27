@@ -20,13 +20,14 @@ interface ChatModelMenuProps {
 }
 
 /**
- * Compact floating model picker for Chat composer.
- * "Apply to global" defaults OFF every time the menu opens (one-shot).
+ * Compact model picker for the chat composer.
+ * "Apply to global" defaults ON — switching the model updates global routing
+ * unless the user turns the toggle off for a session-only override.
  */
 export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps) {
   const { t } = useTranslation('team');
   const [open, setOpen] = useState(false);
-  const [applyGlobal, setApplyGlobal] = useState(false);
+  const [applyGlobal, setApplyGlobal] = useState(true);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [providers, setProviders] = useState<ProviderModels[]>([]);
@@ -49,6 +50,24 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
           models?: Array<{ id: string; name?: string }>;
         }>;
       };
+
+      // If Markus is configured but catalog is still empty, force a Hub refresh.
+      const markusInfo = data.providers?.['markus'];
+      if (markusInfo?.configured && markusInfo.enabled !== false
+          && (!markusInfo.models || markusInfo.models.length === 0)) {
+        try {
+          const live = await fetch('/api/models/live/markus', { credentials: 'include' });
+          if (live.ok) {
+            const body = await live.json() as { models?: Array<{ id: string; name?: string }> };
+            if (body.models?.length) {
+              markusInfo.models = body.models;
+            }
+          }
+        } catch {
+          /* non-fatal — keep empty catalog */
+        }
+      }
+
       const list: ProviderModels[] = [];
       for (const [name, info] of Object.entries(data.providers ?? {})) {
         // Only providers that are configured and switched on (same rule as Settings routing).
@@ -92,7 +111,7 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
 
   useEffect(() => {
     if (!open) return;
-    setApplyGlobal(false);
+    setApplyGlobal(true);
     setQuery('');
     void loadModels();
   }, [open, loadModels]);
@@ -123,8 +142,11 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
   }, [providers, query]);
 
   const effective = value ?? globalDefault;
-  // Trigger shows the raw model id (session override or global default).
-  const label = effective?.model ?? '';
+  // Trigger shows a short model id (session override or global default).
+  const shortModel = effective?.model
+    ? (effective.model.includes('/') ? effective.model.split('/').pop()! : effective.model)
+    : '';
+  const label = shortModel || t('chatModel.title', { defaultValue: 'Model' });
 
   return (
     <div ref={rootRef} className="relative shrink-0">
@@ -132,10 +154,10 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
         type="button"
         disabled={disabled}
         onClick={() => setOpen(v => !v)}
-        className="max-w-[220px] px-2 py-1.5 text-[11px] text-fg-secondary hover:text-fg-primary disabled:opacity-40 rounded-lg hover:bg-surface-elevated transition-colors flex items-center gap-1"
+        className="max-w-[180px] px-1.5 py-1 text-[12px] text-fg-secondary hover:text-fg-primary disabled:opacity-40 rounded-md hover:bg-surface-elevated transition-colors flex items-center gap-1"
         title={effective ? `${effective.provider}: ${effective.model}` : t('chatModel.title', { defaultValue: 'Model' })}
       >
-        <span className="truncate">{label || t('chatModel.title', { defaultValue: 'Model' })}</span>
+        <span className="truncate">{label}</span>
         <svg className="w-3 h-3 shrink-0 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
         </svg>

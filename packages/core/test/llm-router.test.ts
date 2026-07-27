@@ -340,6 +340,7 @@ describe('LLMRouter utilities', () => {
     router.registerProvider('primary', mockProvider('primary', 'm1'));
     router.registerProvider('fallback', mockProvider('fallback', 'm2'));
     router.setProviderEnabled('primary', false);
+    router.setAutoFallback(true);
     router.setCapabilityRouting({
       assignments: {
         text: {
@@ -352,6 +353,53 @@ describe('LLMRouter utilities', () => {
 
     const selected = router.selectForCapability('text', { messages: [{ role: 'user', content: 'Hi' }] });
     expect(selected.provider).toBe('fallback');
+  });
+
+  it('does not use assignment fallback when autoFallback is off', () => {
+    const router = new LLMRouter('anthropic');
+    router.registerProvider('primary', mockProvider('primary', 'm1'));
+    router.registerProvider('fallback', mockProvider('fallback', 'm2'));
+    router.registerProvider('anthropic', mockProvider('anthropic', 'claude'));
+    router.setProviderEnabled('primary', false);
+    router.setAutoFallback(false);
+    router.setCapabilityRouting({
+      assignments: {
+        text: {
+          provider: 'primary',
+          model: 'm1',
+          fallback: { provider: 'fallback', model: 'm2' },
+        },
+      },
+    });
+
+    const selected = router.selectForCapability('text', { messages: [{ role: 'user', content: 'Hi' }] });
+    expect(selected.provider).not.toBe('fallback');
+  });
+
+  it('honours explicit provider pin even when circuit-degraded', async () => {
+    const router = new LLMRouter('markus');
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash', async () => {
+      throw new Error('Markus proxy error 403: {"error":{"message":"This model is not available in your region.","code":403}}');
+    });
+    const ollama = mockProvider('ollama', 'qwen3.6');
+    router.registerProvider('markus', markus);
+    router.registerProvider('ollama', ollama);
+    router.setAutoFallback(false);
+    router.setFallbackOrder(['markus', 'ollama']);
+
+    // First call degrades markus
+    await expect(router.chat(
+      { messages: [{ role: 'user', content: 'Hi' }], model: 'anthropic/claude-opus-5' },
+      'markus',
+    )).rejects.toThrow(/not available in your region/);
+
+    // Second call must still hit markus (not silently switch to ollama with foreign model id)
+    await expect(router.chat(
+      { messages: [{ role: 'user', content: 'Hi again' }], model: 'anthropic/claude-opus-5' },
+      'markus',
+    )).rejects.toThrow(/not available in your region/);
+    expect(ollama.chat).not.toHaveBeenCalled();
+    expect(markus.chat).toHaveBeenCalledTimes(2);
   });
 
   it('resolveModalityProvider returns assigned provider', () => {
