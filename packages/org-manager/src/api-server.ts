@@ -3568,7 +3568,7 @@ export class APIServer {
         }
       }
       // Mark the org-level Secretary so UI can hide delete/move without brittle role-string checks.
-      const orgSecretaryId = this.orgService.findOrgSecretary()?.id;
+      const orgSecretaryId = this.orgService.findOrgSecretary?.()?.id;
       if (orgSecretaryId) {
         agents = agents.map(a =>
           a.id === orgSecretaryId ? { ...a, isOrgSecretary: true, protected: true } : a

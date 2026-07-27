@@ -11,6 +11,12 @@ describe('PROVIDERS', () => {
       expect(p.id).toBeTruthy();
       expect(p.label).toBeTruthy();
       expect(p.envKey).toBeTruthy();
+      // Hub-driven providers (e.g. markus) intentionally ship empty local catalogs.
+      if (p.id === 'markus') {
+        expect(p.models).toEqual([]);
+        expect(p.defaultModel).toBe('');
+        continue;
+      }
       expect(p.defaultModel).toBeTruthy();
       expect(p.models.length).toBeGreaterThan(0);
       expect(p.models).toContain(p.defaultModel);

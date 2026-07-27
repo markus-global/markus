@@ -43,7 +43,8 @@ vi.mock('node:fs', async (importOriginal) => {
         return JSON.stringify({ network: {}, browser: {}, search: {}, integrations: { feishu: { appId: 'cli_test', appSecret: 'secret' } } });
       }
       if (s.endsWith('.png')) return Buffer.from('fake-png');
-      if (s.includes('preview-test.md')) return '# Preview\n\nHello';
+      // Buffer required: preview handler calls .subarray() for binary sniffing.
+      if (s.includes('preview-test.md')) return Buffer.from('# Preview\n\nHello');
       return '# Test Role\n\nRole content';
     }),
     readdirSync: vi.fn((p: string, options?: { withFileTypes?: boolean }) => {

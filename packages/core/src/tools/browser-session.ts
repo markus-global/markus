@@ -462,7 +462,7 @@ export class BrowserSessionManager {
         if (pageId !== undefined && !owned.has(pageId)) {
           const otherOwner = this.findOwnerOfPage(pageId);
           if (otherOwner) {
-            const msg = `Cannot select page ${pageId}: it belongs to another session. ${this.ownedPagesSummary(ownerKey)}`;
+            const msg = `Cannot select page ${pageId}: it is NOT your tab (belongs to another session). ${this.ownedPagesSummary(ownerKey)}`;
             log.warn(msg, { ownerKey, pageId, otherOwner });
             return JSON.stringify({ error: msg });
           }

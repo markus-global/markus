@@ -487,6 +487,12 @@ function createMockOrgService(agentManager = createMockAgentManager()): Organiza
     listHumanUsers: vi.fn(() => [{ id: 'user-1', name: 'Test User' }]),
     getRoleDetails: vi.fn((name: string) => ({ name, description: `${name} role`, category: 'builtin' })),
     isProtectedAgent: vi.fn((id: string) => id === 'secretary'),
+    findOrgSecretary: vi.fn(() => ({
+      id: 'secretary',
+      name: 'Secretary',
+      role: 'secretary',
+      agentRole: 'secretary',
+    })),
     resolveHumanIdentity: vi.fn((id: string) => ({ id, name: 'Test User', role: 'owner' })),
     getHumanUser: vi.fn((id: string) => ({ id, name: 'Test User', email: 'test@example.com', role: 'owner' })),
     syncHumanIdentity: vi.fn(),
