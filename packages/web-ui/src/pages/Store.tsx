@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { TemplateMarketplace } from './TemplateMarketplace.tsx';
+import { TemplateMarketplace, installHubItem } from './TemplateMarketplace.tsx';
 import { TeamsStore } from './TeamsStore.tsx';
 import { SkillStore } from './SkillStore.tsx';
 import { InstalledStore } from './InstalledStore.tsx';
 import { StoreDiscovery } from './StoreDiscovery.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
-import type { AuthUser } from '../api.ts';
+import { hubApi, type AuthUser, type HubItem } from '../api.ts';
 import type { AssetType } from '../lib/assetIdentity.ts';
 
 const tabs = [{ id: 'discover' }, { id: 'agents' }, { id: 'teams' }, { id: 'skills' }, { id: 'installed' }] as const;
@@ -29,72 +29,187 @@ function isValidTab(v: string | null): v is TabId {
   return v === 'discover' || v === 'agents' || v === 'teams' || v === 'skills' || v === 'installed';
 }
 
-function readInitialState(): { tab: TabId; installId: string | null } {
+/** Peek deep-link target without consuming — StrictMode runs state inits twice. */
+function peekInstallDeepLink(): { tab: TabId; installId: string | null } {
   const lsItem = localStorage.getItem('markus_nav_installItem');
   const lsTab = localStorage.getItem('markus_nav_storeTab');
-  if (lsItem) localStorage.removeItem('markus_nav_installItem');
-  if (lsTab) localStorage.removeItem('markus_nav_storeTab');
   if (lsItem) {
-    const tab: TabId = isValidTab(lsTab) ? lsTab : 'agents';
-    return { tab, installId: lsItem };
+    return { tab: isValidTab(lsTab) ? lsTab : 'agents', installId: lsItem };
   }
 
   const params = new URLSearchParams(window.location.search);
   const id = params.get('install');
   if (id) {
     const itemType = params.get('type');
-    const tab: TabId = (itemType && TYPE_TO_TAB[itemType]) || 'agents';
+    return { tab: (itemType && TYPE_TO_TAB[itemType]) || 'agents', installId: id };
+  }
+
+  return { tab: isValidTab(lsTab) ? lsTab! : 'discover', installId: null };
+}
+
+function consumeInstallDeepLink(): void {
+  localStorage.removeItem('markus_nav_installItem');
+  localStorage.removeItem('markus_nav_storeTab');
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('install') || params.has('type')) {
     params.delete('install');
     params.delete('type');
     const qs = params.toString();
     window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash);
-    return { tab, installId: id };
   }
+}
 
-  const tab: TabId = isValidTab(lsTab) ? lsTab : 'discover';
-  return { tab, installId: null };
+/** Banner for Hub → desktop deep links: fetch by id so we don't depend on search page size. */
+function DeepLinkBanner({
+  itemId,
+  onDismiss,
+  onInstalled,
+}: {
+  itemId: string;
+  onDismiss: () => void;
+  onInstalled: () => void;
+}) {
+  const { t } = useTranslation(['store', 'common']);
+  const [item, setItem] = useState<HubItem | null>(null);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'missing'>('loading');
+  const [installing, setInstalling] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setStatus('loading');
+    setItem(null);
+    setMsg('');
+    hubApi.getItem(itemId)
+      .then(({ item: fetched }) => {
+        if (cancelled) return;
+        if (fetched) {
+          setItem(fetched);
+          setStatus('ready');
+        } else {
+          setStatus('missing');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setStatus('missing');
+      });
+    return () => { cancelled = true; };
+  }, [itemId]);
+
+  const handleInstall = async () => {
+    if (!item || installing) return;
+    setInstalling(true);
+    setMsg('');
+    try {
+      await installHubItem(item);
+      setMsg(t('deepLink.installed'));
+      onInstalled();
+    } catch (err: unknown) {
+      const text = err instanceof Error ? err.message : '';
+      setMsg(text.includes('402') || text.includes('Purchase') ? t('deepLink.purchaseRequired') : t('deepLink.failed'));
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  return (
+    <div className="shrink-0 mx-3 mt-3 mb-1 rounded-xl border border-brand-500/30 bg-brand-600/10 px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-brand-400/90 mb-0.5">
+          {t('deepLink.fromHub')}
+        </div>
+        {status === 'loading' && (
+          <p className="text-sm text-fg-secondary">{t('deepLink.loading')}</p>
+        )}
+        {status === 'missing' && (
+          <p className="text-sm text-rose-300">{t('deepLink.missing')}</p>
+        )}
+        {status === 'ready' && item && (
+          <>
+            <p className="text-sm font-semibold text-fg-primary truncate">{item.name}</p>
+            {item.description && (
+              <p className="text-xs text-fg-tertiary line-clamp-2 mt-0.5">{item.description}</p>
+            )}
+            {msg && <p className="text-xs mt-1 text-brand-300">{msg}</p>}
+          </>
+        )}
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {status === 'ready' && item && (
+          <button
+            type="button"
+            disabled={installing}
+            onClick={() => void handleInstall()}
+            className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white disabled:opacity-60"
+          >
+            {installing ? t('deepLink.installing') : t('deepLink.install')}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="px-2.5 py-2 rounded-lg text-xs text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/60"
+        >
+          {t('deepLink.dismiss')}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export function StorePage({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation(['store', 'common']);
-  const [initial] = useState(readInitialState);
+  const [initial] = useState(peekInstallDeepLink);
   const [activeTab, setActiveTab] = useState<TabId>(initial.tab);
   const isMobile = useIsMobile();
   const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
   const [highlightItemId, setHighlightItemId] = useState<string | null>(initial.installId);
 
+  // Consume after mount (once). Do not clear in useState init — StrictMode double-invokes it.
+  useEffect(() => {
+    const peek = peekInstallDeepLink();
+    if (peek.installId) {
+      setHighlightItemId(peek.installId);
+      if (isValidTab(peek.tab)) setActiveTab(peek.tab);
+      consumeInstallDeepLink();
+    }
+  }, []);
+
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
-      if (detail.page === 'store') {
-        const tab = localStorage.getItem('markus_nav_storeTab');
-        if (tab) {
-          localStorage.removeItem('markus_nav_storeTab');
-          if (isValidTab(tab)) setActiveTab(tab);
-        }
-        const installId = localStorage.getItem('markus_nav_installItem');
-        if (installId) {
-          localStorage.removeItem('markus_nav_installItem');
-          setHighlightItemId(installId);
-        }
+      if (detail.page === 'store' || detail.page === 'explore') {
+        const tab = detail.params?.storeTab ?? localStorage.getItem('markus_nav_storeTab');
+        const installId = detail.params?.installItem ?? localStorage.getItem('markus_nav_installItem');
+        if (tab && isValidTab(tab)) setActiveTab(tab);
+        if (installId) setHighlightItemId(installId);
+        if (tab || installId) consumeInstallDeepLink();
       }
     };
     window.addEventListener('markus:navigate', handler);
     return () => window.removeEventListener('markus:navigate', handler);
   }, []);
-
   const openType = (type: AssetType, itemId?: string) => {
     const tab = TYPE_TO_TAB[type] ?? 'agents';
     if (itemId) setHighlightItemId(itemId);
     setActiveTab(tab);
   };
 
+  const clearHighlight = () => setHighlightItemId(null);
+
   const renderContent = () => (
     <>
+      {highlightItemId && (
+        <DeepLinkBanner
+          itemId={highlightItemId}
+          onDismiss={clearHighlight}
+          onInstalled={clearHighlight}
+        />
+      )}
       {activeTab === 'discover' && <StoreDiscovery onOpenType={openType} />}
-      {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
-      {activeTab === 'teams' && <TeamsStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
-      {activeTab === 'skills' && <SkillStore highlightItemId={highlightItemId} onHighlightDone={() => setHighlightItemId(null)} />}
+      {activeTab === 'agents' && <TemplateMarketplace authUser={authUser} highlightItemId={highlightItemId} onHighlightDone={clearHighlight} />}
+      {activeTab === 'teams' && <TeamsStore highlightItemId={highlightItemId} onHighlightDone={clearHighlight} />}
+      {activeTab === 'skills' && <SkillStore highlightItemId={highlightItemId} onHighlightDone={clearHighlight} />}
       {activeTab === 'installed' && <InstalledStore />}
     </>
   );

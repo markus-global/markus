@@ -1,5 +1,5 @@
 import { ipcMain, app, shell, Notification, BrowserWindow } from 'electron';
-import { consumePendingDeepLinkAuth } from './protocol.js';
+import { consumePendingDeepLinkAuth, consumePendingInstall } from './protocol.js';
 import {
   createEmbeddedBrowser,
   destroyEmbeddedBrowser,
@@ -20,6 +20,8 @@ export function setupIpcHandlers(): void {
 
   // Hand a pending markus://auth deep-link session to the renderer (cold start).
   ipcMain.handle('auth:consume-pending-deep-link', () => consumePendingDeepLinkAuth());
+  // Hub → desktop install deep link (cold start if renderer missed IPC).
+  ipcMain.handle('install:consume-pending-deep-link', () => consumePendingInstall());
 
   ipcMain.handle('app:open-external', (_event, url: string) => {
     return shell.openExternal(url);

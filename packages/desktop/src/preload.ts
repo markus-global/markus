@@ -40,6 +40,12 @@ contextBridge.exposeInMainWorld('markusDesktop', {
   },
   consumePendingDeepLinkAuth: () => ipcRenderer.invoke('auth:consume-pending-deep-link'),
 
+  // Hub marketplace install (markus://install?id=&type=).
+  onDeepLinkInstall: (callback: (data: { id: string; type: string }) => void) => {
+    ipcRenderer.on('install:deep-link', (_event, data) => callback(data));
+  },
+  consumePendingDeepLinkInstall: () => ipcRenderer.invoke('install:consume-pending-deep-link'),
+
   setTrafficLightPosition: (x: number, y: number) =>
     ipcRenderer.invoke('app:set-traffic-light-position', x, y),
 

@@ -14,6 +14,123 @@ export function consumePendingDeepLinkAuth(): string | null {
   return s;
 }
 
+/** Full http URL to open after backend/splash is ready (cold-start race). */
+let pendingLaunchUrl: string | null = null;
+export function consumePendingLaunchUrl(): string | null {
+  const u = pendingLaunchUrl;
+  pendingLaunchUrl = null;
+  return u;
+}
+
+export type PendingInstall = { id: string; type: string };
+let pendingInstall: PendingInstall | null = null;
+export function consumePendingInstall(): PendingInstall | null {
+  const p = pendingInstall;
+  pendingInstall = null;
+  return p;
+}
+
+function isBackendUrl(url: string): boolean {
+  return url.startsWith('http://localhost:') || url.startsWith('http://127.0.0.1:');
+}
+
+/**
+ * Open a backend UI URL. If the window is still on splash (or not created),
+ * stash it for main.ts to load after the server is up — otherwise splash /
+ * plain backendUrl would overwrite the install deep link.
+ */
+function openOrQueueBackendUrl(targetUrl: string): void {
+  pendingLaunchUrl = targetUrl;
+  const win = getMainWindow();
+  if (!win) return;
+
+  if (!win.isVisible()) win.show();
+  if (win.isMinimized()) win.restore();
+  win.focus();
+
+  const current = win.webContents.getURL();
+  if (isBackendUrl(current)) {
+    pendingLaunchUrl = null;
+    void win.loadURL(targetUrl);
+  }
+}
+
+function focusMainWindow(): void {
+  const win = getMainWindow();
+  if (!win) return;
+  if (!win.isVisible()) win.show();
+  if (win.isMinimized()) win.restore();
+  win.focus();
+}
+
+function handleProtocolUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const backendUrl = BACKEND_URL;
+
+    if (parsed.hostname === 'invite') {
+      const token = parsed.searchParams.get('token');
+      if (token) {
+        openOrQueueBackendUrl(`${backendUrl}/#invite?token=${token}`);
+        return true;
+      }
+    } else if (parsed.hostname === 'install') {
+      // Hub marketplace: markus://install?id=ITEM_ID&type=agent|team|skill
+      // Web UI reads ?install=&type= and opens Explore (Store) install flow.
+      const id = parsed.searchParams.get('id') || parsed.searchParams.get('item') || '';
+      const type = parsed.searchParams.get('type') || '';
+      if (id) {
+        pendingInstall = { id, type };
+        const qs = new URLSearchParams({ install: id });
+        if (type) qs.set('type', type);
+        // Address-bar slug for Store is `#explore` (see web-ui routes PAGE_HASH).
+        const target = `${backendUrl}/?${qs.toString()}#explore`;
+        openOrQueueBackendUrl(target);
+        const win = getMainWindow();
+        if (win && isBackendUrl(win.webContents.getURL())) {
+          win.webContents.send('install:deep-link', { id, type });
+        }
+      } else {
+        openOrQueueBackendUrl(`${backendUrl}/#explore`);
+      }
+      return true;
+    } else if (parsed.hostname === 'open') {
+      const path = parsed.searchParams.get('path') ?? '';
+      openOrQueueBackendUrl(`${backendUrl}/#${path}`);
+      return true;
+    } else if (parsed.hostname === 'auth') {
+      // OAuth handoff from the system browser. Focus the app and tell the
+      // renderer to finish sign-in for this connect session. Always stash the
+      // session too, so a cold start (or an event that races the renderer's
+      // listener registration) is still picked up on mount.
+      const session = parsed.searchParams.get('auth_session') || parsed.searchParams.get('session') || '';
+      pendingAuthSession = session || null;
+      const win = getMainWindow();
+      if (win) {
+        focusMainWindow();
+        win.webContents.send('auth:deep-link', { session });
+      } else {
+        restoreOrCreateWindow(backendUrl);
+      }
+      return true;
+    } else {
+      openOrQueueBackendUrl(backendUrl);
+      return true;
+    }
+  } catch {
+    openOrQueueBackendUrl(BACKEND_URL);
+    return true;
+  }
+  return false;
+}
+
+// macOS may deliver open-url before app.whenReady(); register early so cold
+// starts from markus://install are not dropped.
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleProtocolUrl(url);
+});
+
 export function registerProtocol(): void {
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
@@ -22,12 +139,6 @@ export function registerProtocol(): void {
   } else {
     app.setAsDefaultProtocolClient(PROTOCOL);
   }
-
-  // macOS: protocol URLs arrive via open-url event
-  app.on('open-url', (event, url) => {
-    event.preventDefault();
-    handleProtocolUrl(url);
-  });
 
   // Windows/Linux: protocol URL on cold start arrives in process.argv
   if (process.platform !== 'darwin') {
@@ -38,48 +149,12 @@ export function registerProtocol(): void {
 
 /**
  * Handle a protocol URL from a second instance launch (Windows/Linux).
- * Called from the second-instance handler in main.ts.
+ * @returns true if a markus:// URL was handled (caller should not open bare backend).
  */
-export function handleSecondInstanceArgs(argv: string[]): void {
+export function handleSecondInstanceArgs(argv: string[]): boolean {
   const protocolUrl = argv.find(arg => arg.startsWith(`${PROTOCOL}://`));
   if (protocolUrl) {
-    handleProtocolUrl(protocolUrl);
+    return handleProtocolUrl(protocolUrl);
   }
-}
-
-function handleProtocolUrl(url: string): void {
-  try {
-    const parsed = new URL(url);
-    const backendUrl = BACKEND_URL;
-
-    if (parsed.hostname === 'invite') {
-      const token = parsed.searchParams.get('token');
-      if (token) {
-        restoreOrCreateWindow(`${backendUrl}/#invite?token=${token}`);
-      }
-    } else if (parsed.hostname === 'open') {
-      const path = parsed.searchParams.get('path') ?? '';
-      restoreOrCreateWindow(`${backendUrl}/#${path}`);
-    } else if (parsed.hostname === 'auth') {
-      // OAuth handoff from the system browser. Focus the app and tell the
-      // renderer to finish sign-in for this connect session. Always stash the
-      // session too, so a cold start (or an event that races the renderer's
-      // listener registration) is still picked up on mount.
-      const session = parsed.searchParams.get('auth_session') || parsed.searchParams.get('session') || '';
-      pendingAuthSession = session || null;
-      const win = getMainWindow();
-      if (win) {
-        if (!win.isVisible()) win.show();
-        if (win.isMinimized()) win.restore();
-        win.focus();
-        win.webContents.send('auth:deep-link', { session });
-      } else {
-        restoreOrCreateWindow(backendUrl);
-      }
-    } else {
-      restoreOrCreateWindow(backendUrl);
-    }
-  } catch {
-    restoreOrCreateWindow(BACKEND_URL);
-  }
+  return false;
 }

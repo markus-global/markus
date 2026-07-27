@@ -113,6 +113,11 @@ export function restoreOrCreateWindow(url: string): void {
     // shown — reveal it before focusing.
     if (!mainWindow.isVisible()) mainWindow.show();
     if (mainWindow.isMinimized()) mainWindow.restore();
+    // Deep links (install/invite/open) must navigate, not only focus.
+    if (url) {
+      const current = mainWindow.webContents.getURL();
+      if (current !== url) void mainWindow.loadURL(url);
+    }
     mainWindow.focus();
   } else {
     const win = createMainWindow();

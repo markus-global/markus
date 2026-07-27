@@ -215,7 +215,8 @@ function HubSkillCard({ item, installedSkills, purchased, onMsg, onRefresh, high
     if (highlight && cardRef.current) {
       cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
       setGlowing(true);
-      const timer = setTimeout(() => { setGlowing(false); onHighlightDone?.(); }, 4000);
+      // Keep parent highlightId until banner dismiss/install — only end the glow pulse here.
+      const timer = setTimeout(() => { setGlowing(false); }, 4000);
       return () => clearTimeout(timer);
     }
   }, [highlight, onHighlightDone]);
@@ -355,11 +356,40 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
           ? hubApi.purchases.mine().then(r => setHubPurchasedIds(new Set(r.purchases.map(pp => pp.itemId)))).catch(() => {})
           : Promise.resolve(),
       ]);
-      setHubSkills(d?.items ?? []);
-      setConnectorItems(c?.items ?? []);
+      let skills = d?.items ?? [];
+      let connectors = c?.items ?? [];
+      if (highlightItemId) {
+        const inSkills = skills.some((i) => i.id === highlightItemId);
+        const inConnectors = connectors.some((i) => i.id === highlightItemId);
+        if (!inSkills && !inConnectors) {
+          try {
+            const { item } = await hubApi.getItem(highlightItemId);
+            if (item?.subtype === 'connector') {
+              connectors = [item, ...connectors];
+            } else if (item) {
+              skills = [item, ...skills];
+            } else {
+              onHighlightDone?.();
+            }
+          } catch {
+            onHighlightDone?.();
+          }
+        } else {
+          if (inSkills) {
+            const hit = skills.find((i) => i.id === highlightItemId)!;
+            skills = [hit, ...skills.filter((i) => i.id !== highlightItemId)];
+          }
+          if (inConnectors) {
+            const hit = connectors.find((i) => i.id === highlightItemId)!;
+            connectors = [hit, ...connectors.filter((i) => i.id !== highlightItemId)];
+          }
+        }
+      }
+      setHubSkills(skills);
+      setConnectorItems(connectors);
     } catch { /* */ }
     setLoadingHub(false);
-  }, []);
+  }, [highlightItemId, onHighlightDone]);
 
   useEffect(() => { loadInstalled(); loadBuiltin(); loadSkillhub(); loadSkillssh(); }, []);
   useEffect(() => { if (tab === 'skills') loadHubSkills(hubSearch); }, [tab, hubSearch, loadHubSkills]);

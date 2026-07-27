@@ -26,6 +26,8 @@ interface MarkusDesktopAPI {
   onNotificationClick(callback: (nav: { page?: string; params?: Record<string, string>; openNotifications?: boolean }) => void): void;
   onDeepLinkAuth(callback: (data: { session: string }) => void): void;
   consumePendingDeepLinkAuth(): Promise<string | null>;
+  onDeepLinkInstall?(callback: (data: { id: string; type: string }) => void): void;
+  consumePendingDeepLinkInstall?(): Promise<{ id: string; type: string } | null>;
   setTrafficLightPosition(x: number, y: number): Promise<void>;
   browser?: {
     create(id: string, url?: string): Promise<{ ok: boolean; pageId?: number; error?: string }>;

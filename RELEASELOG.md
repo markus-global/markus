@@ -34,6 +34,12 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **CI / typecheck** — `@markus/core` 补充 `@markus/comms` project reference，修复干净环境下 `feishu.ts` 找不到模块
 - **Lint** — embedded browser / browserUrl 的 eqeqeq、prefer-const 修复
 
+### v0.9.0-rc.4
+
+- **Hub → Markus 安装深链** — 支持 `markus://install?id=&type=`；冷启动保留 pending URL，打开 Explore 并高亮目标条目
+- **Explore 安装引导** — DeepLinkBanner + Hub 单项拉取合并进列表，避免目标不在首页结果时无反馈
+- **StrictMode / 路由** — 修复 `install` 状态被二次 init 清空；保留 query 并重试导航，保证 banner 可见
+
 ### Stats
 
 - 290 files changed, +36,540 / −12,148 lines

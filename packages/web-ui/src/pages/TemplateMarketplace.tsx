@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, hubApi, kebab, ownsHubItem, type AuthUser, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
+import { mergeHighlightedHubItem } from '../lib/hubDeepLink.ts';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 import { AssetCard } from '../components/AssetCard.tsx';
 import { Masonry } from '../components/Masonry.tsx';
@@ -112,15 +113,17 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
           ? hubApi.purchases.mine().then(r => setPurchasedIds(new Set(r.purchases.map(p => p.itemId)))).catch(() => {})
           : Promise.resolve(),
       ]);
-      setHubItems(hubRes?.items ?? []);
+      const merged = await mergeHighlightedHubItem(hubRes?.items ?? [], highlightItemId);
+      setHubItems(merged.items);
       setTemplates(Array.isArray(tplRes.templates) ? tplRes.templates : []);
+      if (merged.missing) onHighlightDone?.();
     } catch {
       setTemplates([]);
       setHubItems([]);
     } finally {
       setLoading(false);
     }
-  }, [search, loadLocalStatus]);
+  }, [search, loadLocalStatus, highlightItemId, onHighlightDone]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -476,7 +479,8 @@ function HubAgentCard({ item, localInfo, purchased, onStatusChange, highlight, o
     if (highlight && cardRef.current) {
       cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
       setGlowing(true);
-      const timer = setTimeout(() => { setGlowing(false); onHighlightDone?.(); }, 4000);
+      // Keep parent highlightId until banner dismiss/install — only end the glow pulse here.
+      const timer = setTimeout(() => { setGlowing(false); }, 4000);
       return () => clearTimeout(timer);
     }
   }, [highlight, onHighlightDone]);

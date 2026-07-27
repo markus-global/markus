@@ -6,7 +6,7 @@ import { setupMenu } from './menu.js';
 import { setupTray, destroyTray } from './tray.js';
 import { setupIpcHandlers } from './ipc-handlers.js';
 import { setupAutoUpdater } from './updater.js';
-import { registerProtocol, handleSecondInstanceArgs } from './protocol.js';
+import { registerProtocol, handleSecondInstanceArgs, consumePendingLaunchUrl } from './protocol.js';
 import { startNotificationBridge, stopNotificationBridge } from './notifications.js';
 
 app.setName('Markus');
@@ -100,8 +100,10 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
-    handleSecondInstanceArgs(argv);
-    restoreOrCreateWindow(backendUrl);
+    // If argv carries markus://install|auth|…, protocol handler navigates.
+    // Do not follow with bare backendUrl — that would wipe ?install= / #explore.
+    const handledProtocol = handleSecondInstanceArgs(argv);
+    if (!handledProtocol) restoreOrCreateWindow(backendUrl);
   });
 }
 
@@ -203,7 +205,9 @@ app.whenReady().then(async () => {
     }
 
     startNotificationBridge(backendUrl);
-    win.loadURL(backendUrl);
+    // Prefer a deep-link target queued during splash (markus://install, etc.).
+    const launchUrl = consumePendingLaunchUrl() ?? backendUrl;
+    win.loadURL(launchUrl);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error('[main] backend startup error:', errorMsg);

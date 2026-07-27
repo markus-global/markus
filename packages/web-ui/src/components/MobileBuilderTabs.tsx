@@ -21,11 +21,9 @@ function isTabId(v: string | null | undefined): v is TabId {
   return !!v && (tabIds as readonly string[]).includes(v);
 }
 
-function readInitial(): { tab: TabId; installId: string | null } {
+function peekInstall(): { tab: TabId; installId: string | null } {
   const lsItem = localStorage.getItem('markus_nav_installItem');
   const lsTab = localStorage.getItem('markus_nav_storeTab');
-  if (lsItem) localStorage.removeItem('markus_nav_installItem');
-  if (lsTab) localStorage.removeItem('markus_nav_storeTab');
   const tab: TabId = isTabId(lsTab) ? lsTab : 'builder';
   return { tab, installId: lsItem };
 }
@@ -40,10 +38,20 @@ export function MobileBuilderTabs({ authUser }: { authUser?: AuthUser }) {
     { id: 'skills' as const, label: t('nav:tabs.skills') },
     { id: 'installed' as const, label: t('nav:tabs.installed') },
   ], [t]);
-  const [initial] = useState(readInitial);
+  const [initial] = useState(peekInstall);
   const [activeTab, setActiveTab] = useState<TabId>(initial.tab);
   const [highlightItemId, setHighlightItemId] = useState<string | null>(initial.installId);
   const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
+
+  useEffect(() => {
+    const peek = peekInstall();
+    if (peek.installId) {
+      setHighlightItemId(peek.installId);
+      if (isTabId(peek.tab)) setActiveTab(peek.tab);
+      localStorage.removeItem('markus_nav_installItem');
+      localStorage.removeItem('markus_nav_storeTab');
+    }
+  }, []);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -58,7 +66,6 @@ export function MobileBuilderTabs({ authUser }: { authUser?: AuthUser }) {
     window.addEventListener('markus:navigate', handler);
     return () => window.removeEventListener('markus:navigate', handler);
   }, []);
-
   const openType = (type: AssetType, itemId?: string) => {
     if (itemId) setHighlightItemId(itemId);
     setActiveTab(TYPE_TO_TAB[type] ?? 'agents');
