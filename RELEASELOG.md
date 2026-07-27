@@ -29,6 +29,11 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **注意力空闲卡死** — 修复 dequeueAsync lost-wakeup；idle 且有队列时 watchdog nudge；UI 不再显示「等待新邮件」
 - **引用回复 / 重复继续** — 引用内容不写入用户气泡；发送去重与 Resume 按钮可见性修正
 
+### v0.9.0-rc.3
+
+- **CI / typecheck** — `@markus/core` 补充 `@markus/comms` project reference，修复干净环境下 `feishu.ts` 找不到模块
+- **Lint** — embedded browser / browserUrl 的 eqeqeq、prefer-const 修复
+
 ### Stats
 
 - 290 files changed, +36,540 / −12,148 lines
