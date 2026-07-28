@@ -844,7 +844,7 @@ export class APIServer {
         const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
         const res = await self.hubFetch(`${hubUrl}/api/items/${itemId}/download`, { method: 'POST', headers });
         if (!res.ok) throw new Error(`Hub download failed: ${res.status}`);
-        const data = await res.json() as { name: string; itemType: string; files?: Record<string, string>; config?: unknown; description?: string; slug?: string };
+        const data = await res.json() as { name: string; itemType: string; files?: Record<string, string>; config?: unknown; description?: string; slug?: string; version?: string };
         const name = data.name;
         const config = (data.config ?? {}) as Record<string, unknown>;
         // Prefer the Hub's canonical slug / manifest name so non-ASCII display
@@ -855,6 +855,7 @@ export class APIServer {
           || name;
         const slug = kebab(canonicalName, 'hub-pkg');
         const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
+        const version = (data.version || (typeof config.version === 'string' ? config.version : '') || '').trim() || undefined;
         const typeDir = mode === 'agent' ? 'agents' : mode === 'team' ? 'teams' : 'skills';
         const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, slug);
         mkdirSync(artDir, { recursive: true });
@@ -865,7 +866,18 @@ export class APIServer {
             writeFileSync(filePath, content, 'utf-8');
           }
         } else if (data.config) {
-          writeFileSync(join(artDir, manifestFilename(mode as PackageType)), JSON.stringify(data.config, null, 2), 'utf-8');
+          const cfg = { ...config, ...(version ? { version } : {}), source: { type: 'hub', hubItemId: itemId } };
+          writeFileSync(join(artDir, manifestFilename(mode as PackageType)), JSON.stringify(cfg, null, 2), 'utf-8');
+        }
+        // Stamp marketplace version (+ hub source) so UI doesn't treat 1.0.0 as outdated.
+        const mfPath = join(artDir, manifestFilename(mode as PackageType));
+        if (existsSync(mfPath)) {
+          try {
+            const mf = JSON.parse(readFileSync(mfPath, 'utf-8')) as Record<string, unknown>;
+            if (version) mf.version = version;
+            mf.source = { type: 'hub', hubItemId: itemId };
+            writeFileSync(mfPath, JSON.stringify(mf, null, 2), 'utf-8');
+          } catch { /* skip if manifest invalid */ }
         }
         return self.builderService!.installArtifact(mode, slug);
       },

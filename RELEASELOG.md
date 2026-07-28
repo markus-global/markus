@@ -40,6 +40,11 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **Explore 安装引导** — DeepLinkBanner + Hub 单项拉取合并进列表，避免目标不在首页结果时无反馈
 - **StrictMode / 路由** — 修复 `install` 状态被二次 init 清空；保留 query 并重试导航，保证 banner 可见
 
+### v0.9.0-rc.5
+
+- **Hub 安装版本戳** — 安装时把 Hub 资产 `version` 写入本地 manifest，避免默认 `1.0.0` 导致安装后误显示「升级」
+- **Agent hub_install** — `downloadAndInstall` 同步写入 version / hub source，与 UI 安装行为对齐
+
 ### Stats
 
 - 290 files changed, +36,540 / −12,148 lines

@@ -1723,8 +1723,8 @@ export const api = {
         request<{ type: string; name: string; path: string; files: Record<string, string> }>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}`),
       save: (mode: 'agent' | 'team' | 'skill', artifact: Record<string, unknown>) =>
         request<{ type: string; name: string; path: string }>('/builder/artifacts/save', { method: 'POST', body: JSON.stringify({ mode, artifact }) }),
-      import: (type: 'agent' | 'team' | 'skill', name: string, files: Record<string, string>, source?: { type: string; hubItemId?: string; url?: string }) =>
-        request<{ type: string; name: string; path: string }>('/builder/artifacts/import', { method: 'POST', body: JSON.stringify({ type, name, files, source }) }),
+      import: (type: 'agent' | 'team' | 'skill', name: string, files: Record<string, string>, source?: { type: string; hubItemId?: string; url?: string }, version?: string) =>
+        request<{ type: string; name: string; path: string }>('/builder/artifacts/import', { method: 'POST', body: JSON.stringify({ type, name, files, source, version }) }),
       install: (type: string, name: string) =>
         request<Record<string, unknown>>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}/install`, { method: 'POST' }),
       uninstall: (type: string, name: string) =>

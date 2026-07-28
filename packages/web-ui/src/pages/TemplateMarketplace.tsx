@@ -381,10 +381,13 @@ export function installHubItem(item: HubItem): Promise<string> {
     const slug = hubItemSlug(item, config);
     const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
     const hubSource = { type: 'hub', hubItemId: item.id };
+    // Prefer Hub marketplace version so local install matches the card and
+    // does not fall back to buildManifest's default 1.0.0 (false Upgrade).
+    const version = (data.version || item.version || (typeof config.version === 'string' ? config.version : '') || '').trim() || undefined;
     if (data.files && Object.keys(data.files).length > 0) {
-      await api.builder.artifacts.import(mode, slug, data.files, hubSource);
+      await api.builder.artifacts.import(mode, slug, data.files, hubSource, version);
     } else {
-      const artifact = { ...config, name: slug, displayName: (config.displayName as string) || name, description: item.description, source: hubSource };
+      const artifact = { ...config, ...(version ? { version } : {}), name: slug, displayName: (config.displayName as string) || name, description: item.description, source: hubSource };
       await api.builder.artifacts.save(mode, artifact);
     }
     await api.builder.artifacts.install(mode, slug);
