@@ -180,11 +180,11 @@ export class CognitivePreparation {
     ].filter(Boolean).join('\n');
 
     try {
-      // No maxTokens cap: reasoning models spend output tokens on hidden
-      // reasoning before emitting the JSON, so an artificial cap gets consumed
-      // by reasoning and leaves `content` empty. The router fills in the
-      // model's real max output (resolveMaxTokens); the model stops naturally
-      // once the small JSON payload is complete.
+      // No maxTokens: do not inject the catalog output ceiling (or any artificial
+      // cap). Reasoning may spend tokens before the JSON; omitting max_tokens lets
+      // the upstream apply its default, and the model stops once the small JSON
+      // payload is complete. (Injecting catalog max_output broke OpenRouter prepaid
+      // keys that reserve credits against max_tokens.)
       const response = await llm.chat({
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.3,

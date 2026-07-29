@@ -1124,35 +1124,23 @@ export class LLMRouter {
   }
 
   /**
-   * Per-request max_tokens ceiling sent to upstream APIs.
+   * Decide whether to put `max_tokens` on the wire.
    *
-   * Catalog `max_output_tokens` is often the model's absolute ceiling (DeepSeek
-   * V4 Flash reports 393216 via OpenRouter). OpenRouter prepaid / member keys
-   * reserve credits against `max_tokens` before the call — sending the full
-   * ceiling makes every chat look unaffordable even when Markus CU remains.
-   * Keep getModelMaxOutput() for context budgeting; only cap the wire value.
+   * Catalog `max_output_tokens` is the model's absolute ceiling (DeepSeek V4
+   * Flash reports 393216 via OpenRouter). That value is for context budgeting
+   * (`getModelMaxOutput`), NOT a per-request reservation. OpenRouter prepaid /
+   * member keys reserve credits against `max_tokens` before the call — injecting
+   * the catalog ceiling made every chat look unaffordable while Markus CU still
+   * had balance.
+   *
+   * Policy: only honor an explicit `request.maxTokens` from the caller (agent
+   * config, tool, etc.). Otherwise leave unset so the provider omits the field
+   * (OpenRouter) or applies its own constructor default (Anthropic requires the
+   * field and already defaults to 4096). Never invent a hardcoded request cap
+   * and never copy the catalog ceiling onto the wire.
    */
-  static readonly REQUEST_MAX_TOKENS_CAP = 32_768;
-
-  private resolveMaxTokens(request: LLMRequest, providerName: string): LLMRequest {
-    // Explicit request values still get capped — callers sometimes pass the
-    // catalog ceiling through (e.g. after a Hub catalog refresh).
-    if (request.maxTokens && request.maxTokens > 0) {
-      return {
-        ...request,
-        maxTokens: Math.min(request.maxTokens, LLMRouter.REQUEST_MAX_TOKENS_CAP),
-      };
-    }
-    try {
-      const catalogMax = this.getModelMaxOutput(providerName);
-      return {
-        ...request,
-        maxTokens: Math.min(catalogMax, LLMRouter.REQUEST_MAX_TOKENS_CAP),
-      };
-    } catch {
-      // Catalog missing — omit max_tokens so upstream applies its own default.
-      return request;
-    }
+  private resolveMaxTokens(request: LLMRequest, _providerName: string): LLMRequest {
+    return request;
   }
 
   /**

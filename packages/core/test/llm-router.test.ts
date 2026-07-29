@@ -764,8 +764,8 @@ describe('LLMRouter text chat honors routingDefaultModel', () => {
   });
 });
 
-describe('LLMRouter resolveMaxTokens cap', () => {
-  it('caps catalog max_output (e.g. DeepSeek 393216) so OpenRouter does not reserve unaffordable credits', async () => {
+describe('LLMRouter resolveMaxTokens', () => {
+  it('does not inject catalog max_output onto the wire (OpenRouter reserves against max_tokens)', async () => {
     const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash');
     const router = new LLMRouter('markus');
     router.registerProvider('markus', markus);
@@ -773,14 +773,13 @@ describe('LLMRouter resolveMaxTokens cap', () => {
 
     await router.chat({ messages: [{ role: 'user', content: 'Hi' }] });
 
-    expect(markus.chat).toHaveBeenCalledWith(
-      expect.objectContaining({ maxTokens: LLMRouter.REQUEST_MAX_TOKENS_CAP }),
-    );
+    const sent = (markus.chat as ReturnType<typeof vi.fn>).mock.calls[0]![0] as LLMRequest;
+    expect(sent.maxTokens).toBeUndefined();
     // Catalog ceiling remains available for context budgeting.
     expect(router.getModelMaxOutput('markus')).toBe(393_216);
   });
 
-  it('also caps an explicit request maxTokens above the wire ceiling', async () => {
+  it('still honors an explicit request.maxTokens from the caller', async () => {
     const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash');
     const router = new LLMRouter('markus');
     router.registerProvider('markus', markus);
@@ -788,11 +787,11 @@ describe('LLMRouter resolveMaxTokens cap', () => {
 
     await router.chat({
       messages: [{ role: 'user', content: 'Hi' }],
-      maxTokens: 393_216,
+      maxTokens: 4096,
     });
 
     expect(markus.chat).toHaveBeenCalledWith(
-      expect.objectContaining({ maxTokens: LLMRouter.REQUEST_MAX_TOKENS_CAP }),
+      expect.objectContaining({ maxTokens: 4096 }),
     );
   });
 });
