@@ -11,32 +11,61 @@ const LOG_LEVELS: Record<LogLevel, number> = {
   error: 3,
 };
 
-// Singleton file stream for all runtime logs
-const LOG_DIR = join(homedir(), '.markus', 'logs');
-let runtimeLogStream: ReturnType<typeof createWriteStream> | null = null;
+// Singleton file stream for all runtime logs. Resolve dir at use-time so tests
+// that mock os.homedir() see the mocked path (module-load const would freeze
+// the real home).
+function getLogDir(): string {
+  return join(homedir(), '.markus', 'logs');
+}
 
-function ensureLogDir(): void {
-  if (!existsSync(LOG_DIR)) {
-    mkdirSync(LOG_DIR, { recursive: true, mode: 0o755 });
+let runtimeLogStream: ReturnType<typeof createWriteStream> | null = null;
+let runtimeLogPath: string | null = null;
+
+function ensureLogDir(dir: string): void {
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true, mode: 0o755 });
   }
 }
 
 function getRuntimeLogPath(): string {
   const date = new Date().toISOString().slice(0, 10);
-  return join(LOG_DIR, `runtime-${date}.log`);
+  return join(getLogDir(), `runtime-${date}.log`);
 }
 
 function initRuntimeLogger(): void {
-  if (runtimeLogStream) return;
-  ensureLogDir();
-  runtimeLogStream = createWriteStream(getRuntimeLogPath(), { flags: 'a', mode: 0o644 });
+  const path = getRuntimeLogPath();
+  if (runtimeLogStream && runtimeLogPath === path) return;
+  if (runtimeLogStream) {
+    runtimeLogStream.end();
+    runtimeLogStream = null;
+  }
+  try {
+    ensureLogDir(getLogDir());
+    runtimeLogStream = createWriteStream(path, { flags: 'a', mode: 0o644 });
+    runtimeLogPath = path;
+    // Directory may be deleted by tests (or user cleanup) while the stream is
+    // still open — without a listener that becomes an uncaught Exception and
+    // fails the Vitest run even when all tests passed.
+    runtimeLogStream.on('error', () => {
+      runtimeLogStream = null;
+      runtimeLogPath = null;
+    });
+  } catch {
+    runtimeLogStream = null;
+    runtimeLogPath = null;
+  }
 }
 
 function writeToFile(line: string): void {
-  if (!runtimeLogStream) return;
-  runtimeLogStream.write(line + '\n');
+  try {
+    initRuntimeLogger();
+    if (!runtimeLogStream) return;
+    runtimeLogStream.write(line + '\n');
+  } catch {
+    runtimeLogStream = null;
+    runtimeLogPath = null;
+  }
 }
-
 export class Logger {
   private minLevel: number;
 
@@ -80,7 +109,6 @@ export class Logger {
     const line = `${prefix} ${msg}${suffix}`;
 
     // Write to log file only — stderr/stdout reserved for user-facing output
-    initRuntimeLogger();
     writeToFile(line);
   }
 }
@@ -91,7 +119,10 @@ export function createLogger(name: string, level?: LogLevel): Logger {
 
 export function closeRuntimeLogger(): void {
   if (runtimeLogStream) {
-    runtimeLogStream.end();
+    try {
+      runtimeLogStream.end();
+    } catch { /* already closed / dir gone */ }
     runtimeLogStream = null;
+    runtimeLogPath = null;
   }
 }

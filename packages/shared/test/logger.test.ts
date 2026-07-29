@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 const mockWriteStream = {
   write: vi.fn(),
   end: vi.fn(),
+  on: vi.fn().mockReturnThis(),
 };
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -29,6 +30,7 @@ describe('shared Logger', () => {
     process.env.HOME = tmpHome;
     mockWriteStream.write.mockClear();
     mockWriteStream.end.mockClear();
+    mockWriteStream.on.mockClear();
     delete process.env.LOG_LEVEL;
     vi.resetModules();
   });
@@ -97,5 +99,18 @@ describe('shared Logger', () => {
     createLogger('close-test').info('msg');
     closeRuntimeLogger();
     expect(mockWriteStream.end).toHaveBeenCalled();
+  });
+
+  it('stream error handler clears the singleton without throwing', async () => {
+    const { createLogger, closeRuntimeLogger } = await loadLogger();
+    createLogger('err-test').info('msg');
+    expect(mockWriteStream.on).toHaveBeenCalledWith('error', expect.any(Function));
+    const onError = mockWriteStream.on.mock.calls.find((c) => c[0] === 'error')?.[1] as () => void;
+    expect(() => onError()).not.toThrow();
+    // After error, a new write re-inits instead of using a dead stream.
+    mockWriteStream.write.mockClear();
+    createLogger('err-test').info('again');
+    expect(mockWriteStream.write).toHaveBeenCalled();
+    closeRuntimeLogger();
   });
 });
