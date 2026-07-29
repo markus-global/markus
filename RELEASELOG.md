@@ -58,6 +58,10 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **Hub 登录 UX（需已部署 Hub）** — 成功页替换表单、禁止自动 `markus://`、验证防双点/重发；Login「已在浏览器打开」+ 取消等待
 - **登录后 Cloud AI 就绪** — `hub-login` 内 await OpenRouter sync + 推荐路由；能力分配在 catalog 未就绪时不 persist 清空
 
+### v0.9.0-rc.8
+
+- **重新发版** — rc.7 的 Publish 因 Windows job 长时间 waiting 未完成制品；含 telemetry 测试中 runtime logger ENOENT 修复后重打 tag 触发发布
+
 ### Stats
 
 - 290 files changed, +36,540 / −12,148 lines
