@@ -67,6 +67,9 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
+  # Per-user install: do not prompt for admin elevation (avoids UAC dead-ends and
+  # keeps shortcuts/protocol registration in HKCU where customCheckAppRunning works).
+  allowElevation: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
   # Explicit HKCU protocol registration (see build/installer.nsh) — required for

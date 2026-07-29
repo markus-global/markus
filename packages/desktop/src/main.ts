@@ -6,7 +6,7 @@ import { setupMenu } from './menu.js';
 import { setupTray, destroyTray } from './tray.js';
 import { setupIpcHandlers } from './ipc-handlers.js';
 import { setupAutoUpdater } from './updater.js';
-import { registerProtocol, handleSecondInstanceArgs, consumePendingLaunchUrl } from './protocol.js';
+import { registerProtocol, handleSecondInstanceArgs, consumePendingLaunchUrl, setProtocolBackendUrl } from './protocol.js';
 import { startNotificationBridge, stopNotificationBridge } from './notifications.js';
 
 app.setName('Markus');
@@ -55,8 +55,19 @@ async function stopPortProcess(port: number): Promise<void> {
   const getPids = (): string[] => {
     try {
       if (process.platform === 'win32') {
-        const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf-8' });
-        return [...new Set(out.split('\n').map(l => l.trim().split(/\s+/).pop()).filter(Boolean))];
+        // Parse Local Address port exactly — `findstr :8056` also matches :18056.
+        const out = execSync('netstat -ano -p tcp', { encoding: 'utf-8' });
+        const pids: string[] = [];
+        for (const line of out.split('\n')) {
+          if (!/LISTENING/i.test(line)) continue;
+          const parts = line.trim().split(/\s+/);
+          // Proto LocalAddress ForeignAddress State PID
+          const local = parts[1] ?? '';
+          const pid = parts[4];
+          const m = /:(\d+)$/.exec(local);
+          if (m && Number(m[1]) === port && pid && /^\d+$/.test(pid)) pids.push(pid);
+        }
+        return [...new Set(pids)];
       }
       return execSync(`lsof -ti :${port} 2>/dev/null`, { encoding: 'utf-8' }).trim().split('\n').filter(Boolean);
     } catch { return []; }
@@ -94,7 +105,17 @@ async function stopPortProcess(port: number): Promise<void> {
 let backendReady = false;
 let backendUrl = 'http://localhost:8056';
 
-// Single instance lock — prevent multiple instances
+async function waitForBackendHealth(url: string, attempts = 30): Promise<void> {
+  for (let i = 0; i < attempts; i++) {
+    const h = await probeHealth(url);
+    if (h.running) return;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  throw new Error(`Backend health check failed at ${url}`);
+}
+
+// Single instance lock — prevent multiple instances. Without the lock, a second
+// process must not run whenReady (it would race for port 8056 / windows).
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -105,11 +126,9 @@ if (!gotLock) {
     const handledProtocol = handleSecondInstanceArgs(argv);
     if (!handledProtocol) restoreOrCreateWindow(backendUrl);
   });
-}
 
 app.whenReady().then(async () => {
   console.log('[main] app ready, appPath:', app.getAppPath());
-
   // Set templates dir — unpacked from asar so fs.lstat/readdir work
   const templatesDir = join(app.getAppPath().replace('app.asar', 'app.asar.unpacked'), 'dist', 'templates');
   process.env['MARKUS_TEMPLATES_DIR'] = templatesDir;
@@ -178,6 +197,7 @@ app.whenReady().then(async () => {
     if (health.running && health.sameVersion) {
       console.log('[main] reusing existing Markus server (same version:', health.version, ')');
       updateSplash(t('Connecting to running server...', '正在连接已运行的服务...'));
+      setProtocolBackendUrl(backendUrl);
       backendReady = true;
     } else {
       if (health.running) {
@@ -189,6 +209,7 @@ app.whenReady().then(async () => {
         onProgress: (_step, message) => updateSplash(message),
       });
       backendUrl = instance.url;
+      setProtocolBackendUrl(backendUrl);
       backendReady = true;
 
       // Wire embedded WebContentsView as a CDP backend for browser tools.
@@ -205,6 +226,9 @@ app.whenReady().then(async () => {
     }
 
     startNotificationBridge(backendUrl);
+    // start() now awaits listen, but still retry health before loading the UI
+    // so a slow bind / antivirus delay cannot flash a failed page.
+    await waitForBackendHealth(backendUrl);
     // Prefer a deep-link target queued during splash (markus://install, etc.).
     const launchUrl = consumePendingLaunchUrl() ?? backendUrl;
     win.loadURL(launchUrl);
@@ -308,8 +332,24 @@ app.on('activate', () => {
   }
 });
 
-app.on('before-quit', async () => {
+let quitting = false;
+app.on('before-quit', (event) => {
+  if (quitting) return;
+  // Prevent default once so we can await a bounded shutdown; then force-exit
+  // so Windows upgrades are not blocked by a hung backend close.
+  event.preventDefault();
+  quitting = true;
   stopNotificationBridge();
   destroyTray();
-  await shutdownBackend();
+  const timeout = setTimeout(() => {
+    console.warn('[main] shutdown timed out — forcing exit');
+    app.exit(0);
+  }, 2000);
+  void shutdownBackend()
+    .catch((err) => console.warn('[main] shutdown error:', err))
+    .finally(() => {
+      clearTimeout(timeout);
+      app.exit(0);
+    });
 });
+} // end gotLock

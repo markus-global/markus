@@ -1,17 +1,28 @@
 import { app } from 'electron';
-import { getMainWindow, restoreOrCreateWindow } from './window.js';
+import { getMainWindow } from './window.js';
 
 const PROTOCOL = 'markus';
-const BACKEND_URL = 'http://localhost:8056';
+
+/** Resolved once the desktop backend URL is known (may differ from 8056 in tests). */
+let backendUrl = 'http://localhost:8056';
+export function setProtocolBackendUrl(url: string): void {
+  backendUrl = url.replace(/\/+$/, '');
+}
 
 // Session id from a markus://auth deep link that arrived before the renderer was
 // ready to receive it (typically a cold start launched by the deep link). The
-// renderer consumes it on mount via the 'auth:consume-pending-deep-link' IPC.
+// renderer peeks/consumes it on mount via IPC.
 let pendingAuthSession: string | null = null;
+export function peekPendingDeepLinkAuth(): string | null {
+  return pendingAuthSession;
+}
 export function consumePendingDeepLinkAuth(): string | null {
   const s = pendingAuthSession;
   pendingAuthSession = null;
   return s;
+}
+export function clearPendingDeepLinkAuth(): void {
+  pendingAuthSession = null;
 }
 
 /** Full http URL to open after backend/splash is ready (cold-start race). */
@@ -61,12 +72,12 @@ function focusMainWindow(): void {
   if (!win.isVisible()) win.show();
   if (win.isMinimized()) win.restore();
   win.focus();
+  try { win.flashFrame(true); } catch { /* unsupported */ }
 }
 
 function handleProtocolUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    const backendUrl = BACKEND_URL;
 
     if (parsed.hostname === 'invite') {
       const token = parsed.searchParams.get('token');
@@ -103,14 +114,16 @@ function handleProtocolUrl(url: string): boolean {
       // renderer to finish sign-in for this connect session. Always stash the
       // session too, so a cold start (or an event that races the renderer's
       // listener registration) is still picked up on mount.
+      //
+      // Cold start: do NOT create a window here — main.ts owns window creation
+      // after the backend is up. Creating early races splash and can leave a
+      // blank/broken second window.
       const session = parsed.searchParams.get('auth_session') || parsed.searchParams.get('session') || '';
       pendingAuthSession = session || null;
       const win = getMainWindow();
       if (win) {
         focusMainWindow();
         win.webContents.send('auth:deep-link', { session });
-      } else {
-        restoreOrCreateWindow(backendUrl);
       }
       return true;
     } else {
@@ -118,7 +131,7 @@ function handleProtocolUrl(url: string): boolean {
       return true;
     }
   } catch {
-    openOrQueueBackendUrl(BACKEND_URL);
+    openOrQueueBackendUrl(backendUrl);
     return true;
   }
   return false;

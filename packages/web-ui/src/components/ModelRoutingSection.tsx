@@ -138,8 +138,12 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
   // Drop capability assignments that are no longer in the catalog for that
   // capability (stale Hub factory defaults). Leave the slot empty — do not
   // auto-fill suggestions; Hub null / missing recs stay blank.
+  // Never persist clears while the catalog is still loading / empty — first
+  // boot races used to wipe valid assignments into red empty slots.
   useEffect(() => {
     if (!loaded || !fullModelList || fullModelList.length === 0) return;
+    // Require at least one concrete model id before treating the catalog as ready.
+    if (!fullModelList.some(m => !!m.modelId)) return;
     setAssignments(prev => {
       let changed = false;
       const next: Partial<Record<ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO>> = { ...prev };
@@ -148,6 +152,9 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
           const a = next[cap];
           if (!a?.model) continue;
           const filtered = filterModelsForCapability(fullModelList, cap);
+          // If this capability has zero candidates, catalog for that facet is
+          // not ready — skip (do not clear + persist).
+          if (filtered.length === 0) continue;
           const ok = filtered.some(m => m.provider === a.provider && m.modelId === a.model);
           if (!ok) {
             delete next[cap];

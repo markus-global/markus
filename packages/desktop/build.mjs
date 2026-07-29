@@ -8,7 +8,7 @@
 import { build } from 'esbuild';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cpSync, existsSync, mkdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -65,6 +65,30 @@ async function main() {
   // Copy splash.html and icon
   cpSync(resolve(__dirname, 'src/splash.html'), resolve(__dirname, 'dist/splash.html'));
   cpSync(resolve(__dirname, 'build/icon.png'), resolve(__dirname, 'dist/icon.png'));
+
+  // Windows shortcuts need build/icon.ico. Generate a Vista+ PNG-in-ICO from
+  // icon.png when missing so electron-builder win.icon always resolves.
+  const icoPath = resolve(__dirname, 'build/icon.ico');
+  const pngPath = resolve(__dirname, 'build/icon.png');
+  if (!existsSync(icoPath)) {
+    console.log('  Generating build/icon.ico from icon.png...');
+    const png = readFileSync(pngPath);
+    const header = Buffer.alloc(6);
+    header.writeUInt16LE(0, 0);
+    header.writeUInt16LE(1, 2);
+    header.writeUInt16LE(1, 4);
+    const entry = Buffer.alloc(16);
+    entry[0] = 0; // 256
+    entry[1] = 0;
+    entry.writeUInt16LE(1, 4);
+    entry.writeUInt16LE(32, 6);
+    entry.writeUInt32LE(png.length, 8);
+    entry.writeUInt32LE(22, 12);
+    writeFileSync(icoPath, Buffer.concat([header, entry, png]));
+  }
+  if (!existsSync(icoPath)) {
+    throw new Error('build/icon.ico missing — Windows shortcuts would have no brand icon');
+  }
 
   // Copy web-ui dist if available
   const webUiDist = resolve(__dirname, '../web-ui/dist');

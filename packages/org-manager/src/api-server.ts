@@ -1930,13 +1930,19 @@ export class APIServer {
     }
   }
 
-  start(): void {
-    this.server = createServer((req, res) => this.handleRequest(req, res));
-    this.ws.attach(this.server);
-    this.server.listen(this.port, '0.0.0.0', () => {
-      log.info(`API server listening on 0.0.0.0:${this.port} (HTTP + WebSocket)`);
+  start(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.server = createServer((req, res) => this.handleRequest(req, res));
+      this.ws.attach(this.server);
+      this.server.once('error', (err) => {
+        reject(err);
+      });
+      this.server.listen(this.port, '0.0.0.0', () => {
+        log.info(`API server listening on 0.0.0.0:${this.port} (HTTP + WebSocket)`);
+        resolve();
+      });
+      this.tryInitFeishuNotifier();
     });
-    this.tryInitFeishuNotifier();
   }
 
   stop(): void {
@@ -2768,6 +2774,26 @@ export class APIServer {
         log.warn('Failed to sync preferred org name to Hub', { error: (err as Error).message });
       }
 
+      // Await OpenRouter + recommended routing before returning so the client
+      // does not enter onboarding / chat with an empty Markus Cloud provider.
+      let cloudAiReady = false;
+      let cloudAiError: string | undefined;
+      try {
+        const sync = await this.syncOpenRouterCredentialsFromHub({ force: true });
+        if (sync.ok) {
+          cloudAiReady = true;
+          await this.applyHubRecommendationsAfterConnect(sync.modelsUrl, { force: false }).catch((err) => {
+            log.warn('hub-login: apply recommendations failed', { error: (err as Error).message });
+          });
+        } else {
+          cloudAiError = sync.error ?? 'OpenRouter sync failed';
+          log.warn('hub-login: OpenRouter sync failed', { error: cloudAiError });
+        }
+      } catch (err) {
+        cloudAiError = err instanceof Error ? err.message : String(err);
+        log.warn('hub-login: OpenRouter sync threw', { error: cloudAiError });
+      }
+
       const finalUser = userRow!;
       await this.storage.userRepo.updateLastLogin(finalUser.id);
       const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
@@ -2789,6 +2815,8 @@ export class APIServer {
           avatarUrl: finalUser.avatarUrl ?? undefined,
         },
         needsOnboarding: isFirstLogin,
+        cloudAiReady,
+        ...(cloudAiError ? { cloudAiError } : {}),
       });
       return;
     }

@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('markusDesktop', {
 
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
+  focusWindow: () => ipcRenderer.invoke('app:focus-window'),
   openInBrowser: () => ipcRenderer.invoke('app:open-in-browser'),
 
   showNotification: (title: string, body: string) =>
@@ -38,7 +39,9 @@ contextBridge.exposeInMainWorld('markusDesktop', {
   onDeepLinkAuth: (callback: (data: { session: string }) => void) => {
     ipcRenderer.on('auth:deep-link', (_event, data) => callback(data));
   },
+  peekPendingDeepLinkAuth: () => ipcRenderer.invoke('auth:peek-pending-deep-link'),
   consumePendingDeepLinkAuth: () => ipcRenderer.invoke('auth:consume-pending-deep-link'),
+  clearPendingDeepLinkAuth: () => ipcRenderer.invoke('auth:clear-pending-deep-link'),
 
   // Hub marketplace install (markus://install?id=&type=).
   onDeepLinkInstall: (callback: (data: { id: string; type: string }) => void) => {

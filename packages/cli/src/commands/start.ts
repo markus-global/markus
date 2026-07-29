@@ -1258,7 +1258,7 @@ async function startServerCore(
     }
   }
 
-  apiServer.start();
+  await apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
   deliverableService.setWSBroadcaster(apiServer.getWSBroadcaster());

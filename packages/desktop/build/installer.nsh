@@ -12,3 +12,13 @@
 !macro customUnInstall
   DeleteRegKey HKCU "Software\Classes\markus"
 !macroend
+
+; Force-close a running Markus before upgrade. The stock electron-builder check
+; fails when the app is tray-hidden, slow to quit, or ignores WM_CLOSE — leaving
+; users stuck on "Markus cannot be closed…".
+!macro customCheckAppRunning
+  DetailPrint "Closing Markus if it is still running..."
+  nsExec::ExecToLog 'taskkill /F /IM Markus.exe /T'
+  Pop $0
+  Sleep 800
+!macroend
