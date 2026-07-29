@@ -206,6 +206,62 @@ describe('applyHubRecommendedRouting', () => {
     expect(result.capabilityRouting.assignments.image_generation?.model).toBe('openai/gpt-image-1');
   });
 
+  it('Hub null multimodal leaves slots empty and clears prior Markus assignments without force', () => {
+    const result = applyHubRecommendedRouting(
+      {
+        defaultProvider: 'markus',
+        routingDefaultModel: { provider: 'markus', model: 'deepseek/deepseek-v4-flash' },
+        capabilityRouting: {
+          assignments: {
+            image_generation: { provider: 'markus', model: 'openai/gpt-image-1' },
+            audio_tts: { provider: 'markus', model: 'deepgram/aura-2' },
+            image_recognition: { provider: 'openai', model: 'gpt-4o' },
+          },
+        },
+      },
+      {
+        text: 'deepseek/deepseek-v4-flash',
+        image_recognition: null,
+        image_generation: null,
+        audio_tts: null,
+        audio_stt: null,
+        video_generation: null,
+      },
+      { force: false, greenfield: false },
+    );
+    expect(result.changed).toBe(true);
+    // Markus-sourced factory defaults cleared when Hub has no recommendation
+    expect(result.capabilityRouting.assignments.image_generation).toBeUndefined();
+    expect(result.capabilityRouting.assignments.audio_tts).toBeUndefined();
+    // BYOK assignment preserved when Hub slot is null (non-force)
+    expect(result.capabilityRouting.assignments.image_recognition).toEqual({
+      provider: 'openai',
+      model: 'gpt-4o',
+    });
+  });
+
+  it('greenfield with all-null Hub multimodal does not invent defaults', () => {
+    const result = applyHubRecommendedRouting(
+      { defaultProvider: 'anthropic', capabilityRouting: { assignments: {} } },
+      {
+        text: 'deepseek/deepseek-v4-flash',
+        image_recognition: null,
+        image_generation: null,
+        audio_tts: null,
+        audio_stt: null,
+        video_generation: null,
+      },
+      { greenfield: true, force: false },
+    );
+    expect(result.changed).toBe(true);
+    expect(result.routingDefaultModel?.model).toBe('deepseek/deepseek-v4-flash');
+    expect(result.capabilityRouting.assignments.image_generation).toBeUndefined();
+    expect(result.capabilityRouting.assignments.audio_tts).toBeUndefined();
+    expect(result.capabilityRouting.assignments.audio_stt).toBeUndefined();
+    expect(result.capabilityRouting.assignments.image_recognition).toBeUndefined();
+    expect(result.capabilityRouting.assignments.video_generation).toBeUndefined();
+  });
+
   it('Hub text recommendation OR slug becomes routingDefaultModel', () => {
     const greenfield = applyHubRecommendedRouting(
       { defaultProvider: 'anthropic', capabilityRouting: { assignments: {} } },

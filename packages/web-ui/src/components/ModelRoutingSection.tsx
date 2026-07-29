@@ -127,6 +127,40 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
 
   const allModels = fullModelList ?? fallbackModels;
 
+  const assignmentKey = useMemo(
+    () => Object.entries(assignments)
+      .map(([k, v]) => `${k}:${v?.provider ?? ''}/${v?.model ?? ''}`)
+      .sort()
+      .join('|'),
+    [assignments],
+  );
+
+  // Drop capability assignments that are no longer in the catalog for that
+  // capability (stale Hub factory defaults). Leave the slot empty — do not
+  // auto-fill suggestions; Hub null / missing recs stay blank.
+  useEffect(() => {
+    if (!loaded || !fullModelList || fullModelList.length === 0) return;
+    setAssignments(prev => {
+      let changed = false;
+      const next: Partial<Record<ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO>> = { ...prev };
+      for (const group of CAPABILITY_GROUPS) {
+        for (const cap of group.capabilities) {
+          const a = next[cap];
+          if (!a?.model) continue;
+          const filtered = filterModelsForCapability(fullModelList, cap);
+          const ok = filtered.some(m => m.provider === a.provider && m.modelId === a.model);
+          if (!ok) {
+            delete next[cap];
+            changed = true;
+          }
+        }
+      }
+      if (!changed) return prev;
+      debouncedSave(next);
+      return next;
+    });
+  }, [loaded, fullModelList, providerKey, debouncedSave, assignmentKey]);
+
   const reloadRouting = useCallback(() => {
     fetch('/api/settings/llm/routing', { credentials: 'include' })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
@@ -384,7 +418,7 @@ function CapabilityGroup({
                     <ModelSelect
                       value=""
                       options={filteredModels}
-                      placeholder={suggestionLabel ? `${suggestionLabel} (${t('modelRouting.suggested')})` : t('modelRouting.selectModel')}
+                      placeholder={t('modelRouting.selectModel')}
                       onChange={val => {
                         if (!val) {
                           onAssign(capabilityType, null);

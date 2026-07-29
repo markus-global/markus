@@ -45,6 +45,12 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **Hub 安装版本戳** — 安装时把 Hub 资产 `version` 写入本地 manifest，避免默认 `1.0.0` 导致安装后误显示「升级」
 - **Agent hub_install** — `downloadAndInstall` 同步写入 version / hub source，与 UI 安装行为对齐
 
+### v0.9.0-rc.6
+
+- **Windows `markus://` 协议** — NSIS 安装写入 HKCU URL protocol；启动时强制重新注册，修复系统浏览器登录后无法回跳桌面端
+- **桌面 Hub 登录轮询** — 打开浏览器后立即轮询；窗口 focus / 可见时立刻再查，避免后台定时器节流导致切回应用仍不完成登录
+- **能力分配无工厂默认** — Hub 未推荐的多模态槽位保持空；失效 assignment 自动清理，不再误显示假「已选推荐」
+
 ### Stats
 
 - 290 files changed, +36,540 / −12,148 lines

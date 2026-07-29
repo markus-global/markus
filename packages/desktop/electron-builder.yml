@@ -2,6 +2,11 @@ appId: com.markus.desktop
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/
 productName: Markus
+# Deep links: markus://auth, markus://install, … (macOS Info.plist + Windows registry via NSIS)
+protocols:
+  - name: Markus
+    schemes:
+      - markus
 directories:
   output: dist-electron
   buildResources: build
@@ -64,6 +69,9 @@ nsis:
   perMachine: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  # Explicit HKCU protocol registration (see build/installer.nsh) — required for
+  # per-user Windows installs so Hub login can return via markus://auth.
+  include: build/installer.nsh
 
 linux:
   executableName: markus

@@ -144,11 +144,12 @@ export function applyHubRecommendedRouting(
     const modelId = recs[cap]?.trim() || null;
     const existing = assignments[cap];
     if (!modelId) {
-      // Hub explicitly recommends "no dedicated model" for this capability
-      // (fall back to the text default / vision-capable chat model). On force
-      // restore we must CLEAR any previous wrong assignment — otherwise a stale
-      // gemini-image / lyria pick survives and the Settings UI paints red.
-      if (force && existing?.model) {
+      // Hub has no recommendation for this capability — leave the slot empty.
+      // Clear previous Markus-sourced / force / greenfield assignments so we do
+      // not keep factory defaults (gpt-image-1, aura-2, …) that paint Settings red.
+      // Preserve non-Markus (BYOK) picks unless force restore.
+      const wasMarkus = existing?.provider === 'markus';
+      if (existing?.model && (force || greenfield || wasMarkus)) {
         delete assignments[cap];
         changed = true;
       }

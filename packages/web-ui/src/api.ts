@@ -2620,20 +2620,28 @@ desktopBridge()?.onDeepLinkAuth?.((d) => { _deepLinkAuthHandler?.(d?.session ?? 
 function runDesktopHubAuth(sessionId: string, method: string | undefined, desktop: DesktopBridge): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false;
+    let inFlight = false;
     const finish = (ok: boolean, err?: Error) => {
       if (settled) return;
       settled = true;
       clearInterval(pollTimer);
       clearTimeout(timeoutTimer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
       if (_deepLinkAuthHandler === onDeepLink) _deepLinkAuthHandler = null;
       if (ok) resolve(); else reject(err);
     };
     const tryComplete = async () => {
-      if (settled) return;
-      const data = await fetchConnectStatus(sessionId);
-      if (data?.ready && data.token && data.user) {
-        applyHubConnect(data);
-        finish(true);
+      if (settled || inFlight) return;
+      inFlight = true;
+      try {
+        const data = await fetchConnectStatus(sessionId);
+        if (data?.ready && data.token && data.user) {
+          applyHubConnect(data);
+          finish(true);
+        }
+      } finally {
+        inFlight = false;
       }
     };
     // Deep-link accelerator: complete immediately when the OS routes the return
@@ -2641,10 +2649,18 @@ function runDesktopHubAuth(sessionId: string, method: string | undefined, deskto
     const onDeepLink = (session: string) => { if (!session || session === sessionId) void tryComplete(); };
     _deepLinkAuthHandler = onDeepLink;
 
+    // Chromium throttles timers hard while the app is backgrounded (user is in
+    // the system browser). Kick the poll as soon as Markus is focused again.
+    const onFocus = () => { void tryComplete(); };
+    const onVisibility = () => { if (document.visibilityState === 'visible') void tryComplete(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+
     let url = `${HUB_URL}/auth/connect?session=${encodeURIComponent(sessionId)}&redirect=${encodeURIComponent('markus://auth')}`;
     if (method) url += `&method=${encodeURIComponent(method)}`;
     desktop.openExternal(url);
 
+    void tryComplete();
     const pollTimer = setInterval(() => { void tryComplete(); }, 1500);
     const timeoutTimer = setTimeout(() => finish(false, new Error('Hub login timed out')), 5 * 60_000);
   });

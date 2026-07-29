@@ -90,9 +90,14 @@ export function Login({ onLogin, hasOwner }: HubLoginProps) {
     let cancelled = false;
     desktop.consumePendingDeepLinkAuth().then(async (session) => {
       if (cancelled || !session) return;
-      // Consent gate: don't silently auto-complete sign-in until the user has
-      // accepted the Terms & Privacy at least once on this device.
-      if (!agreed) return;
+      // Consent: allow stored prior acceptance (checkbox starts unchecked each mount).
+      let hasStoredConsent = false;
+      try { hasStoredConsent = !!localStorage.getItem(LEGAL_CONSENT_KEY); } catch { /* ignore */ }
+      if (!agreed && !hasStoredConsent) {
+        setError(t('login.consentRequired'));
+        return;
+      }
+      if (hasStoredConsent && !agreed) setAgreed(true);
       setError('');
       setLoading('hub');
       try {

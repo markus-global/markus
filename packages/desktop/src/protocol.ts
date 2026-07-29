@@ -132,13 +132,18 @@ app.on('open-url', (event, url) => {
 });
 
 export function registerProtocol(): void {
+  // Always (re)register so Windows HKCU picks up markus:// even when the NSIS
+  // installer missed it, or the install path changed after an update.
+  let ok = false;
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
-      app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [process.argv[1]!]);
+      ok = app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [process.argv[1]!]);
     }
   } else {
-    app.setAsDefaultProtocolClient(PROTOCOL);
+    ok = app.setAsDefaultProtocolClient(PROTOCOL);
   }
+  const isDefault = app.isDefaultProtocolClient(PROTOCOL);
+  console.log(`[protocol] register ${PROTOCOL}:// → set=${ok} isDefault=${isDefault} platform=${process.platform}`);
 
   // Windows/Linux: protocol URL on cold start arrives in process.argv
   if (process.platform !== 'darwin') {
