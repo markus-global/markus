@@ -1,5 +1,6 @@
 import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, type ProviderCapabilities, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
 import {
+  DEFAULT_REQUEST_MAX_TOKENS,
   defaultVoiceForModel,
   formatUpstreamMediaError,
   type MultiModalProviderInterface,
@@ -59,7 +60,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     this.model = config?.model ?? 'gpt-4o';
     this.apiKey = config?.apiKey ?? process.env['OPENAI_API_KEY'] ?? '';
     this.baseUrl = config?.baseUrl ?? 'https://api.openai.com';
-    this.maxTokens = config?.maxTokens ?? 4096;
+    this.maxTokens = config?.maxTokens ?? DEFAULT_REQUEST_MAX_TOKENS;
     this.chatTimeoutMs = config?.timeoutMs ?? 90_000;
     // Idle gap between chunks (reset on data). Absolute hard cap is separate in chatStream.
     this.streamTimeoutMs = config?.timeoutMs ?? 180_000;

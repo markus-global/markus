@@ -1135,9 +1135,10 @@ export class LLMRouter {
    *
    * Policy: only honor an explicit `request.maxTokens` from the caller (agent
    * config, tool, etc.). Otherwise leave unset so the provider omits the field
-   * (OpenRouter) or applies its own constructor default (Anthropic requires the
-   * field and already defaults to 4096). Never invent a hardcoded request cap
-   * and never copy the catalog ceiling onto the wire.
+   * (Markus/OpenRouter) or applies its own constructor default
+   * (`DEFAULT_REQUEST_MAX_TOKENS` = 32k for Anthropic/OpenAI/Google/Ollama,
+   * which require the field on the wire). Never copy the catalog ceiling onto
+   * the wire.
    */
   private resolveMaxTokens(request: LLMRequest, _providerName: string): LLMRequest {
     return request;

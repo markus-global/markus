@@ -136,6 +136,7 @@ export {
   createMaxLengthGuardrail,
 } from './guardrails.js';
 export type { InputGuardrail, OutputGuardrail, GuardrailResult } from './guardrails.js';
+export { DEFAULT_REQUEST_MAX_TOKENS } from './llm/provider.js';
 export type { LLMProviderInterface, MultiModalProviderInterface, ImageGenOptions, ImageResult, TTSOptions, AudioResult, STTOptions, VideoGenOptions, VideoResult } from './llm/provider.js';
 export {
   ShellTool,

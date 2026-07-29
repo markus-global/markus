@@ -1,5 +1,5 @@
 import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
-import type { LLMProviderInterface } from './provider.js';
+import { DEFAULT_REQUEST_MAX_TOKENS, type LLMProviderInterface } from './provider.js';
 
 interface AnthropicAPIMessage {
   role: 'user' | 'assistant';
@@ -48,7 +48,7 @@ export class AnthropicProvider implements LLMProviderInterface {
     this.model = config?.model ?? 'claude-sonnet-4-20250514';
     this.apiKey = config?.apiKey ?? process.env['ANTHROPIC_API_KEY'] ?? '';
     this.baseUrl = config?.baseUrl ?? 'https://api.anthropic.com';
-    this.maxTokens = config?.maxTokens ?? 4096;
+    this.maxTokens = config?.maxTokens ?? DEFAULT_REQUEST_MAX_TOKENS;
   }
 
   configure(config: LLMProviderConfig): void {

@@ -1,5 +1,17 @@
 import type { LLMRequest, LLMResponse, LLMStreamEvent, LLMProviderConfig, ProviderCapabilities } from '@markus/shared';
 
+/**
+ * Default `max_tokens` for providers that require the field on the wire
+ * (Anthropic, OpenAI-compatible, Google, Ollama).
+ *
+ * 4096 is too tight for agent coding turns (large patches / tool args get cut
+ * off). 32k is enough headroom for typical digital-employee work without
+ * approaching catalog ceilings (100k–393k) that break prepaid OpenRouter keys
+ * when injected as a reservation. Markus/OpenRouter still omits max_tokens by
+ * default — this constant is only for native BYOK providers.
+ */
+export const DEFAULT_REQUEST_MAX_TOKENS = 32_768;
+
 export interface LLMProviderInterface {
   readonly name: string;
   readonly model: string;
