@@ -1123,15 +1123,34 @@ export class LLMRouter {
     return router;
   }
 
+  /**
+   * Per-request max_tokens ceiling sent to upstream APIs.
+   *
+   * Catalog `max_output_tokens` is often the model's absolute ceiling (DeepSeek
+   * V4 Flash reports 393216 via OpenRouter). OpenRouter prepaid / member keys
+   * reserve credits against `max_tokens` before the call — sending the full
+   * ceiling makes every chat look unaffordable even when Markus CU remains.
+   * Keep getModelMaxOutput() for context budgeting; only cap the wire value.
+   */
+  static readonly REQUEST_MAX_TOKENS_CAP = 32_768;
+
   private resolveMaxTokens(request: LLMRequest, providerName: string): LLMRequest {
-    if (request.maxTokens) return request;
-    // Fill in the model's real output ceiling when it's known. If the catalog
-    // can't resolve it, leave maxTokens unset — the provider then omits
-    // max_tokens and the upstream applies the model's own limit. Never
-    // substitute a hardcoded cap.
+    // Explicit request values still get capped — callers sometimes pass the
+    // catalog ceiling through (e.g. after a Hub catalog refresh).
+    if (request.maxTokens && request.maxTokens > 0) {
+      return {
+        ...request,
+        maxTokens: Math.min(request.maxTokens, LLMRouter.REQUEST_MAX_TOKENS_CAP),
+      };
+    }
     try {
-      return { ...request, maxTokens: this.getModelMaxOutput(providerName) };
+      const catalogMax = this.getModelMaxOutput(providerName);
+      return {
+        ...request,
+        maxTokens: Math.min(catalogMax, LLMRouter.REQUEST_MAX_TOKENS_CAP),
+      };
     } catch {
+      // Catalog missing — omit max_tokens so upstream applies its own default.
       return request;
     }
   }

@@ -764,6 +764,39 @@ describe('LLMRouter text chat honors routingDefaultModel', () => {
   });
 });
 
+describe('LLMRouter resolveMaxTokens cap', () => {
+  it('caps catalog max_output (e.g. DeepSeek 393216) so OpenRouter does not reserve unaffordable credits', async () => {
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash');
+    const router = new LLMRouter('markus');
+    router.registerProvider('markus', markus);
+    router.updateProviderModelConfig('markus', { maxOutputTokens: 393_216 });
+
+    await router.chat({ messages: [{ role: 'user', content: 'Hi' }] });
+
+    expect(markus.chat).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTokens: LLMRouter.REQUEST_MAX_TOKENS_CAP }),
+    );
+    // Catalog ceiling remains available for context budgeting.
+    expect(router.getModelMaxOutput('markus')).toBe(393_216);
+  });
+
+  it('also caps an explicit request maxTokens above the wire ceiling', async () => {
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash');
+    const router = new LLMRouter('markus');
+    router.registerProvider('markus', markus);
+    router.updateProviderModelConfig('markus', { maxOutputTokens: 393_216 });
+
+    await router.chat({
+      messages: [{ role: 'user', content: 'Hi' }],
+      maxTokens: 393_216,
+    });
+
+    expect(markus.chat).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTokens: LLMRouter.REQUEST_MAX_TOKENS_CAP }),
+    );
+  });
+});
+
 describe('LLMRouter.createDefault extended', () => {
   it('registers deepseek via openai-compatible factory', () => {
     const router = LLMRouter.createDefault({
