@@ -65,6 +65,7 @@ export interface ChatMessageInfo {
 
 export interface ChannelMsgMetadata {
   thinking?: string[];
+  images?: string[];
   toolCalls?: Array<{
     tool: string;
     status: 'done' | 'error';
@@ -1940,7 +1941,7 @@ export const api = {
       request<{ messages: ChannelMessageInfo[]; hasMore: boolean }>(
         `/channels/${encodeURIComponent(channel)}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),
-    sendMessage: (channel: string, data: { text: string; senderId?: string; senderName?: string; mentions?: string[]; targetAgentId?: string; orgId?: string; humanOnly?: boolean; replyToId?: string }) =>
+    sendMessage: (channel: string, data: { text: string; senderId?: string; senderName?: string; mentions?: string[]; targetAgentId?: string; orgId?: string; humanOnly?: boolean; replyToId?: string; images?: string[] }) =>
       request<{ userMessage: ChannelMessageInfo | null; agentMessage: ChannelMessageInfo | null }>(
         `/channels/${encodeURIComponent(channel)}/messages`,
         { method: 'POST', body: JSON.stringify(data) }
@@ -2976,6 +2977,7 @@ export const hubApi = {
   },
   user: {
     plan: () => hubRequest<{
+      orgId?: string | null;
       planType: string; planStatus: string;
       monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null;
       bonusCu: number; purchasedCu: number; windowQuotaCu: number;

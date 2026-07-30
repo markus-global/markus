@@ -94,6 +94,39 @@ describe('SSEHandler', () => {
     expect(onError).toHaveBeenCalled();
   });
 
+  it('does not re-mark isStreaming after stream error + SSE close', async () => {
+    const agent = createAgent({
+      sendMessageStream: vi.fn(async () => {
+        throw new Error('MARKUS_UPSTREAM_ERROR: HTTP 402');
+      }),
+    });
+    const persistAssistant = vi.fn(async () => {});
+    const persistUser = vi.fn(async () => 'sess-err');
+    const handler = new SSEHandler({
+      agentId: 'agent-1',
+      agent: agent as never,
+      userText: 'draw a selfie',
+      persistUserMessage: persistUser,
+      persistAssistantMessage: persistAssistant,
+      onError: vi.fn(async () => {}),
+    });
+
+    const res = new MockResponse() as unknown as ServerResponse;
+    await handler.handle(res);
+    // handleError schedules sseBuffer.close() after 100ms — that used to race
+    // and rewrite metadata with isStreaming:true.
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(persistAssistant).toHaveBeenCalled();
+    const lastMeta = persistAssistant.mock.calls.at(-1)?.[4] as { isStreaming?: boolean; isError?: boolean };
+    expect(lastMeta?.isStreaming).toBe(false);
+    expect(lastMeta?.isError).toBe(true);
+    const streamingWrites = persistAssistant.mock.calls.filter(
+      (c) => (c[4] as { isStreaming?: boolean })?.isStreaming === true,
+    );
+    expect(streamingWrites).toHaveLength(0);
+  });
+
   it('rejects concurrent handle calls', async () => {
     const agent = createAgent({
       sendMessageStream: vi.fn(() => new Promise(() => {})),

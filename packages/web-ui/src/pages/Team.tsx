@@ -1609,9 +1609,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       );
 
       if (!result.attached) {
-        // Keep isStreaming if DB said so — agent may still be working; user can resume.
+        // No live stream to reattach — clear stuck「思考中」locally (DB heal
+        // runs on message load / process start; this covers the current view).
         endStream(convKey);
-        if (currentConvKeyRef.current === convKey) setSending(false);
+        if (currentConvKeyRef.current === convKey) {
+          updateConvMsgs(convKey, prev => {
+            const u = [...prev];
+            const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
+            const i = idx >= 0
+              ? idx
+              : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
+            if (i < 0) return prev;
+            const msg = u[i]!;
+            if (!msg.isStreaming) return prev;
+            u[i] = {
+              ...msg,
+              isStreaming: false,
+              isStopped: msg.isError ? msg.isStopped : true,
+            };
+            return u;
+          }, sessionId);
+          setSending(false);
+        }
         return;
       }
 
@@ -2293,10 +2312,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
 
     if (chatMode === 'dm') {
-      // Human-to-human DM or personal notepad — no agent routing
+      // Human-to-human DM or personal notepad — store only, never route to agents/LLM.
       const dmChannel = makeDmChannel(authUser?.id ?? '', activeDmUserId);
       const optId = `opt_${Date.now()}`;
       const userMsgDm: ChatMsg = { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: new Date().toISOString() };
+      if (imagesToSend?.length) userMsgDm.images = imagesToSend;
       if (replyCtx) { userMsgDm.replyToId = replyCtx.id; userMsgDm.replyToSender = replyCtx.sender; userMsgDm.replyToText = replyCtx.text; }
       updateConvMsgs(sendKey, prev => [...prev, userMsgDm]);
       try {
@@ -2305,6 +2325,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           senderId: authUser?.id,
           mentions: [], orgId: 'default',
           humanOnly: true, // never route to agents
+          ...(imagesToSend?.length ? { images: imagesToSend } : {}),
         });
         if (result.userMessage) addRecentMsgId(result.userMessage.id);
         updateConvMsgs(sendKey, prev => {
@@ -2315,10 +2336,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         });
       } catch (e) {
         if (isMarkusCreditError(e)) dispatchCreditNotification();
-        updateConvMsgs(sendKey, prev => [...prev, {
-          id: `err_${Date.now()}`, sender: 'agent', text: t('page.errorWithMessage', { message: String(e) }),
-          time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
-        }]);
+        updateConvMsgs(sendKey, prev => {
+          const without = prev.filter(m => m.id !== optId);
+          return [...without, {
+            id: `err_${Date.now()}`, sender: 'agent', text: t('page.errorWithMessage', { message: String(e) }),
+            time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
+          }];
+        });
       }
       decrementSending(sendKey);
       if (currentConvKeyRef.current === sendKey) setSending(false);

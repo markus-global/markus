@@ -3278,6 +3278,16 @@ export class APIServer {
       }
       const limit = parseInt(url.searchParams.get('limit') ?? '50');
       const before = url.searchParams.get('before') ?? undefined;
+      const agentIdForStream = this.storage.chatSessionRepo.getSession(sessionId)?.agentId;
+      const live = agentIdForStream
+        ? this.activeStreams.getByAgentSession(agentIdForStream, sessionId)
+        : null;
+      const liveStreamId = live?.status === 'streaming' ? live.streamId : null;
+      // Heal orphan streaming bubbles when this session has no live generation
+      // (covers the SSE error race and any path that left isStreaming:true).
+      try {
+        this.storage.chatSessionRepo.clearOrphanStreamingFlagsForSession(sessionId, liveStreamId);
+      } catch { /* best-effort */ }
       const result = await this.storage.chatSessionRepo.getMessages(sessionId, limit, before);
       this.json(res, 200, result);
       return;
@@ -3311,7 +3321,8 @@ export class APIServer {
       if (!authUser) return;
       const channel = decodeURIComponent(path.split('/')[3]!);
       const body = await this.readBody(req);
-      const text = body['text'] as string;
+      const text = (body['text'] as string) ?? '';
+      const images = (body['images'] as string[] | undefined)?.filter(Boolean);
       const resolvedIdentity = this.orgService.resolveHumanIdentity(authUser.userId);
       const senderId = authUser.userId;
       const senderName = resolvedIdentity?.name ?? (body['senderName'] as string) ?? 'You';
@@ -3320,9 +3331,16 @@ export class APIServer {
       const replyToId = body['replyToId'] as string | undefined;
       const orgId = (body['orgId'] as string) ?? 'default';
 
-      // Persist user message
+      if (!text.trim() && !images?.length) {
+        this.json(res, 400, { error: 'Message text or images required' });
+        return;
+      }
+
+      // Persist user message (notes/DM may be image-only — store in metadata)
       let userMsg: ChannelMsg | undefined;
       if (this.storage) {
+        const meta: Record<string, unknown> = {};
+        if (images?.length) meta.images = images;
         userMsg = await this.storage.channelMessageRepo.append({
           orgId,
           channel,
@@ -3332,6 +3350,7 @@ export class APIServer {
           text,
           mentions,
           replyToId,
+          ...(Object.keys(meta).length ? { metadata: meta } : {}),
         });
       }
 

@@ -747,6 +747,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           <OverviewUsageTier
             contributors={usageData.contributors}
             hubPlan={usageData.hubPlan}
+            hubOrgMeta={usageData.hubOrgMeta}
             hubConnected={usageData.hubConnected}
             showMarkusUsage={showMarkusUsage}
           />

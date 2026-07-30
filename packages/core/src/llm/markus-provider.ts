@@ -25,6 +25,7 @@ import {
   defaultVoiceForModel,
   formatUpstreamMediaError,
   isCreditExhaustedHttp,
+  parseOpenRouterAffordableTokens,
   type MultiModalProviderInterface,
   type MultiModalToolSchemas,
   type ImageGenOptions,
@@ -42,6 +43,7 @@ export {
   UPSTREAM_BILLING_MISMATCH_MSG,
   formatUpstreamMediaError,
   isCreditExhaustedHttp,
+  parseOpenRouterAffordableTokens,
 } from './provider.js';
 
 const log = createLogger('markus-provider');
@@ -655,29 +657,55 @@ export class MarkusProvider implements MultiModalProviderInterface {
   /**
    * Resolve an upstream payment/credit HTTP status against Hub books.
    * Only emit CU_EXCEEDED (+ credit modal) when Hub confirms remaining is zero.
+   *
+   * OpenRouter often 402s because omitted `max_tokens` defaults to a high
+   * reservation (e.g. 65536) while the key can only afford N. That clamp retry
+   * must NOT depend on Hub cu/sync succeeding — sync can 401 while the OR key
+   * is merely over-reserved (tonight's logs: cu/sync 401 → skipped clamp →
+   * misleading "Hub still shows remaining credits").
    */
   private async resolveCreditHttpError(
     status: number,
     errText: string,
     alreadyRetried: boolean,
-  ): Promise<'retry'> {
+  ): Promise<{ retry: true; maxTokens?: number }> {
+    const affordable = parseOpenRouterAffordableTokens(errText);
     const synced = await this.syncHubCredits({ force: true });
     const hubHasBudget = !!synced && (synced.remainingCu > 0 || synced.remainingUsd > 0);
     const hubEmpty = !!synced && synced.remainingCu <= 0 && synced.remainingUsd <= 0;
 
-    if (!alreadyRetried && hubHasBudget) return 'retry';
+    // Clamp retry is driven by OR's afford ceiling; Hub empty is the only veto.
+    if (!alreadyRetried && affordable != null && !hubEmpty) {
+      log.info('Retrying with OpenRouter-affordable max_tokens', {
+        maxTokens: affordable,
+        hubSynced: !!synced,
+        hubHasBudget,
+      });
+      return { retry: true, maxTokens: affordable };
+    }
+
+    if (!alreadyRetried && hubHasBudget) {
+      return { retry: true };
+    }
 
     if (hubEmpty) {
       fireCreditExhaustedEvent();
       throw new Error(CREDIT_EXCEEDED_MSG);
     }
 
-    // Hub still has budget (after retry) or sync failed — do not claim credits exhausted.
     const detail = (errText || '')
       .replace(/https?:\/\/[^\s]*openrouter\.ai[^\s]*/gi, '')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 180);
+
+    // Sync failed — do not claim Hub still has credits.
+    if (!synced) {
+      throw new Error(
+        `MARKUS_UPSTREAM_ERROR: Upstream returned a payment/credit error, and Hub credit sync failed. Please reconnect Hub or retry. (HTTP ${status}${detail ? `: ${detail}` : ''})`,
+      );
+    }
+
     throw new Error(
       `${UPSTREAM_BILLING_MISMATCH_MSG} (HTTP ${status}${detail ? `: ${detail}` : ''})`,
     );
@@ -738,7 +766,12 @@ export class MarkusProvider implements MultiModalProviderInterface {
       const errText = await response.text().catch(() => '');
       if (isCreditExhaustedHttp(response.status, errText)) {
         const outcome = await this.resolveCreditHttpError(response.status, errText, _retried);
-        if (outcome === 'retry') return this.chat(request, true);
+        if (outcome.retry) {
+          const next = outcome.maxTokens
+            ? { ...request, maxTokens: outcome.maxTokens }
+            : request;
+          return this.chat(next, true);
+        }
       }
       throw new Error(`Markus proxy error ${response.status}: ${errText}`);
     }
@@ -835,7 +868,12 @@ export class MarkusProvider implements MultiModalProviderInterface {
       }
       if (isCreditExhaustedHttp(res.status, errText)) {
         const outcome = await this.resolveCreditHttpError(res.status, errText, _retried);
-        if (outcome === 'retry') return this.chatStream(request, onEvent, signal, true);
+        if (outcome.retry) {
+          const next = outcome.maxTokens
+            ? { ...request, maxTokens: outcome.maxTokens }
+            : request;
+          return this.chatStream(next, onEvent, signal, true);
+        }
       }
       throw new Error(`Markus proxy error ${res.status}: ${errText}`);
     }
@@ -1315,10 +1353,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * Always returns `data[].b64_json` (+ optional `media_type`) — never a durable URL.
    * We decode + persist immediately so callers never need to shuttle megabytes of base64.
    */
-  async generateImage(prompt: string, options?: ImageGenOptions): Promise<ImageResult[]> {
+  async generateImage(prompt: string, options?: ImageGenOptions, _retried = false): Promise<ImageResult[]> {
     if (!this.hasOpenRouterCreds()) {
       throw new Error('Image generation requires Markus OpenRouter credentials (Hub connect)');
     }
+    await this.assertCreditsAvailable();
     const model = this.resolveMediaModel(options?.model, 'image generation', 'openai/gpt-image-1');
     const endpoint = this.openaiCompatUrl('images');
     const body: Record<string, unknown> = {
@@ -1339,6 +1378,12 @@ export class MarkusProvider implements MultiModalProviderInterface {
     });
     if (!res.ok) {
       const errText = await res.text();
+      // Same as chat: never claim CU_EXCEEDED from OR 402 alone — Hub may still
+      // have budget (stale key / per-request reservation). Confirm via cu/sync.
+      if (isCreditExhaustedHttp(res.status, errText)) {
+        const outcome = await this.resolveCreditHttpError(res.status, errText, _retried);
+        if (outcome.retry) return this.generateImage(prompt, options, true);
+      }
       throw new Error(`Image generation API error ${formatUpstreamMediaError(res.status, errText)}`);
     }
     const data = await res.json() as {
@@ -1399,10 +1444,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * OpenRouter TTS: `POST /api/v1/audio/speech` → raw audio bytestream (not JSON).
    * Formats: `mp3` | `pcm` (default upstream is pcm — we always request mp3 unless overridden).
    */
-  async generateSpeech(text: string, options?: TTSOptions): Promise<AudioResult> {
+  async generateSpeech(text: string, options?: TTSOptions, _retried = false): Promise<AudioResult> {
     if (!this.hasOpenRouterCreds()) {
       throw new Error('TTS requires Markus OpenRouter credentials (Hub connect)');
     }
+    await this.assertCreditsAvailable();
     const endpoint = this.openaiCompatUrl('audio/speech');
     const model = this.resolveMediaModel(options?.model, 'TTS', 'deepgram/aura-2');
     // OpenRouter only documents mp3|pcm. Coerce other OpenAI-style formats to mp3.
@@ -1429,6 +1475,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
     });
     if (!res.ok) {
       const errText = await res.text();
+      if (isCreditExhaustedHttp(res.status, errText)) {
+        const outcome = await this.resolveCreditHttpError(res.status, errText, _retried);
+        if (outcome.retry) return this.generateSpeech(text, options, true);
+      }
       throw new Error(
         `TTS API error for model "${model}": ${formatUpstreamMediaError(res.status, errText)}. ` +
           `Retry with a different model arg (e.g. deepgram/aura-2 or minimax/speech-2.8-hd).`,
@@ -1451,10 +1501,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * (`data` = raw base64, `format` = wav|mp3|…). Response is `{ text }`.
    * Multipart also works, but JSON is the documented primary path and avoids the 25MB multipart cap.
    */
-  async transcribeSpeech(audio: Buffer, options?: STTOptions): Promise<string> {
+  async transcribeSpeech(audio: Buffer, options?: STTOptions, _retried = false): Promise<string> {
     if (!this.hasOpenRouterCreds()) {
       throw new Error('STT requires Markus OpenRouter credentials (Hub connect)');
     }
+    await this.assertCreditsAvailable();
     const endpoint = this.openaiCompatUrl('audio/transcriptions');
     const model = this.resolveMediaModel(options?.model, 'STT', 'deepgram/nova-3');
     const format = detectAudioFormat(audio);
@@ -1477,6 +1528,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
     });
     if (!res.ok) {
       const errText = await res.text();
+      if (isCreditExhaustedHttp(res.status, errText)) {
+        const outcome = await this.resolveCreditHttpError(res.status, errText, _retried);
+        if (outcome.retry) return this.transcribeSpeech(audio, options, true);
+      }
       throw new Error(`STT API error ${formatUpstreamMediaError(res.status, errText)}`);
     }
     const data = await res.json() as { text?: string };
@@ -1493,10 +1548,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * `output_modalities: ["video"]` and are NOT chat-completion models.
    * Workflow: POST /videos → poll polling_url → download unsigned_urls[0].
    */
-  async generateVideo(prompt: string, options?: VideoGenOptions): Promise<VideoResult> {
+  async generateVideo(prompt: string, options?: VideoGenOptions, _retried = false): Promise<VideoResult> {
     if (!this.hasOpenRouterCreds()) {
       throw new Error('Video generation requires Markus OpenRouter credentials (Hub connect)');
     }
+    await this.assertCreditsAvailable();
     const model = this.resolveMediaModel(options?.model, 'video generation', 'alibaba/happyhorse-1.1');
     const endpoint = this.openaiCompatUrl('videos');
     const body: Record<string, unknown> = { model, prompt };
@@ -1517,6 +1573,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
     });
     if (!createRes.ok) {
       const errText = await createRes.text();
+      if (isCreditExhaustedHttp(createRes.status, errText)) {
+        const outcome = await this.resolveCreditHttpError(createRes.status, errText, _retried);
+        if (outcome.retry) return this.generateVideo(prompt, options, true);
+      }
       throw new Error(`Video generation API error ${formatUpstreamMediaError(createRes.status, errText)}`);
     }
     const created = await createRes.json() as {

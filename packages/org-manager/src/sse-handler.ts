@@ -369,7 +369,13 @@ export class SSEHandler {
         agentId: this.options.agentId, 
         error: String(error) 
       });
-      
+
+      // Mark complete BEFORE handleError schedules sseBuffer.close(). Otherwise
+      // onClose sees !isComplete and persistPartialOnDisconnect() rewrites the
+      // row with isStreaming:true — UI stays on「思考中」even after the turn
+      // failed (and after restart, with no live agent work).
+      this.isComplete = true;
+
       this.handleError(error, res);
 
       // Persist error as assistant message so it survives page reloads.
@@ -499,6 +505,8 @@ export class SSEHandler {
    * connection drops. Soft disconnect marks isStreaming so refresh can reattach.
    */
   private async persistPartialOnDisconnect(): Promise<void> {
+    // Turn already finished (success or error) — never re-mark as streaming.
+    if (this.isComplete) return;
     if (!this.options.persistAssistantMessage || !this.sessionId) return;
 
     this.syncUiSnapshot();
@@ -534,6 +542,10 @@ export class SSEHandler {
       streamId: this.streamId,
     };
     if (segments.length > 0) meta.segments = segments;
+
+    // Re-check: error/success may have completed while we were building the
+    // snapshot (persistPartial is fire-and-forget from onClose).
+    if (this.isComplete) return;
 
     try {
       await this.options.persistAssistantMessage(

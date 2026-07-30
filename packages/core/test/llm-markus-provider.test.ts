@@ -6,7 +6,7 @@ import {
   resolveMarkusRoute,
   stripMarkusNamespace,
 } from '../src/llm/markus-provider.js';
-import { defaultVoiceForModel } from '../src/llm/provider.js';
+import { defaultVoiceForModel, parseOpenRouterAffordableTokens } from '../src/llm/provider.js';
 
 function mockResponse(
   body: unknown,
@@ -55,6 +55,15 @@ describe('stripMarkusNamespace', () => {
   it('leaves bare vendor slugs untouched', () => {
     expect(stripMarkusNamespace('openai/gpt-image-1')).toBe('openai/gpt-image-1');
     expect(stripMarkusNamespace('deepseek/deepseek-v4-flash')).toBe('deepseek/deepseek-v4-flash');
+  });
+});
+
+describe('parseOpenRouterAffordableTokens', () => {
+  it('parses can-only-afford from OpenRouter 402 bodies', () => {
+    expect(parseOpenRouterAffordableTokens(
+      'You requested up to 65536 tokens, but can only afford 28046.',
+    )).toBe(Math.floor(28046 * 0.98));
+    expect(parseOpenRouterAffordableTokens('no afford info')).toBeNull();
   });
 });
 
@@ -192,7 +201,28 @@ describe('MarkusProvider CU tracking', () => {
     );
     await expect(
       provider.chat({ messages: [{ role: 'user', content: 'hi' }] }),
-    ).rejects.toThrow('MARKUS_UPSTREAM_ERROR:');
+    ).rejects.toThrow(/MARKUS_UPSTREAM_ERROR:.*Hub credit sync failed|remaining credits/i);
+  });
+
+  it('on 402: clamps max_tokens even when Hub cu/sync returns 401', async () => {
+    const p = new MarkusProvider({
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-v4-flash',
+    });
+    const affordMsg =
+      'This request requires more credits, or fewer max_tokens. You requested up to 65536 tokens, but can only afford 28046.';
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ error: { message: affordMsg } }, 402))
+      .mockResolvedValueOnce(mockResponse({ error: 'unauthorized' }, 401)) // cu/sync
+      .mockResolvedValueOnce(mockResponse(chatCompletionBody('ok-despite-sync-401', 0.01)));
+
+    const res = await p.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.content).toBe('ok-despite-sync-401');
+    const retryBody = JSON.parse(vi.mocked(fetch).mock.calls[2]![1]!.body as string);
+    expect(retryBody.max_tokens).toBe(Math.floor(28046 * 0.98));
   });
 
   it('on 402: calls Hub cu/sync and retries once when remaining > 0', async () => {
@@ -217,6 +247,31 @@ describe('MarkusProvider CU tracking', () => {
     expect(res.content).toBe('recovered');
     expect(vi.mocked(fetch).mock.calls[1]?.[0]).toBe('http://hub.test/api/user/cu/sync');
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+
+  it('on 402: retries with affordable max_tokens from OpenRouter error body', async () => {
+    const p = new MarkusProvider({
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-v4-flash',
+    });
+    const affordMsg =
+      'This request requires more credits, or fewer max_tokens. You requested up to 65536 tokens, but can only afford 28046.';
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ error: { message: affordMsg } }, 402))
+      .mockResolvedValueOnce(mockResponse({
+        ok: true,
+        remainingCu: 3000,
+        openrouter: { remainingUsd: 2 },
+      }, 200))
+      .mockResolvedValueOnce(mockResponse(chatCompletionBody('ok-after-clamp', 0.01)));
+
+    const res = await p.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.content).toBe('ok-after-clamp');
+    const retryBody = JSON.parse(vi.mocked(fetch).mock.calls[2]![1]!.body as string);
+    expect(retryBody.max_tokens).toBe(Math.floor(28046 * 0.98));
   });
 
   it('on 402: still CU_EXCEEDED when sync reports zero remaining', async () => {
@@ -688,6 +743,55 @@ describe('MarkusProvider multimodal (OpenRouter path)', () => {
     await dualProvider().generateImage('x');
     const urls = vi.mocked(fetch).mock.calls.map(c => String(c[0]));
     expect(urls.every(u => !u.includes('hub.test'))).toBe(true);
+  });
+
+  it('generateImage 402: does not claim CU_EXCEEDED when Hub still has remaining', async () => {
+    const p = new MarkusProvider({
+      apiKey: 'sk-or-member',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'bytedance-seed/seedream-4.5',
+    });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ error: { message: 'Insufficient credits' } }, 402))
+      .mockResolvedValueOnce(mockResponse({
+        ok: true,
+        remainingCu: 3000,
+        openrouter: { remainingUsd: 2 },
+      }, 200))
+      .mockResolvedValueOnce(mockResponse({ error: { message: 'Insufficient credits' } }, 402))
+      .mockResolvedValueOnce(mockResponse({
+        ok: true,
+        remainingCu: 3000,
+        openrouter: { remainingUsd: 2 },
+      }, 200));
+
+    await expect(
+      p.generateImage('portrait', { model: 'bytedance-seed/seedream-4.5' }),
+    ).rejects.toThrow(/MARKUS_UPSTREAM_ERROR:/);
+    expect(vi.mocked(fetch).mock.calls.some(c => String(c[0]).includes('/api/user/cu/sync'))).toBe(true);
+  });
+
+  it('generateImage 402: CU_EXCEEDED only when Hub confirms zero remaining', async () => {
+    const p = new MarkusProvider({
+      apiKey: 'sk-or-member',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'bytedance-seed/seedream-4.5',
+    });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ error: { message: 'Insufficient credits' } }, 402))
+      .mockResolvedValueOnce(mockResponse({
+        ok: true,
+        remainingCu: 0,
+        openrouter: { remainingUsd: 0 },
+      }, 200));
+
+    await expect(
+      p.generateImage('portrait', { model: 'bytedance-seed/seedream-4.5' }),
+    ).rejects.toThrow(/CU_EXCEEDED:/);
   });
 
   it('refuses to send a text model to a media endpoint (no confusing 404)', async () => {

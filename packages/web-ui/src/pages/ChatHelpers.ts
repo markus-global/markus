@@ -232,9 +232,12 @@ export function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): Ch
     replyToSender: m.replyToSender,
     replyToText: m.replyToText,
   };
-  if (m.metadata && m.senderType === 'agent') {
+  const meta = m.metadata as ChannelMsgMetadata | null | undefined;
+  if (meta?.images?.length) {
+    base.images = meta.images;
+  }
+  if (meta && m.senderType === 'agent') {
     const segments: MsgSegment[] = [];
-    const meta = m.metadata as ChannelMsgMetadata;
     if (meta.thinking?.length) {
       segments.push({ type: 'text', content: '', thinking: meta.thinking.join('\n\n') });
     }

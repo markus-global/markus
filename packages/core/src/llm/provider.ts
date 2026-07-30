@@ -129,6 +129,27 @@ export const CREDIT_EXCEEDED_MSG = 'CU_EXCEEDED: Credits exhausted. Please top u
 export const UPSTREAM_BILLING_MISMATCH_MSG =
   'MARKUS_UPSTREAM_ERROR: Upstream returned a payment/credit error, but Hub still shows remaining credits. Please retry shortly or switch model.';
 
+/**
+ * OpenRouter 402 bodies often include:
+ *   "You requested up to N tokens, but can only afford M."
+ * When `max_tokens` is omitted, OR still reserves against a high default
+ * (commonly 65536). Parse M so callers can retry with an affordable cap.
+ */
+export function parseOpenRouterAffordableTokens(errText: string): number | null {
+  const m = (errText || '').match(/can only afford\s+(\d+)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 1) return null;
+  // Leave a tiny margin — OR affordability is approximate.
+  return Math.max(1, Math.floor(n * 0.98));
+}
+
+/**
+ * Format a media-API error for the agent/tool layer.
+ * MarkusProvider must resolve credit-like HTTP statuses via Hub cu/sync
+ * *before* calling this — otherwise a stale OpenRouter 402 is mislabeled
+ * as CU_EXCEEDED while Hub still has budget.
+ */
 export function formatUpstreamMediaError(status: number, errText: string): string {
   if (isCreditExhaustedHttp(status, errText)) {
     return CREDIT_EXCEEDED_MSG;

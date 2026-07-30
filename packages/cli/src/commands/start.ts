@@ -955,6 +955,13 @@ async function startServerCore(
       log.warn('Legacy chat message migration failed', { error: String(e) });
     }
 
+    // No in-flight streams survive process restart — clear stuck「思考中」bubbles.
+    try {
+      storage.chatSessionRepo.clearOrphanStreamingFlags();
+    } catch (e) {
+      log.warn('Orphan streaming flag cleanup failed', { error: String(e) });
+    }
+
     // Resolve the owner/first user for session ownership
     const defaultSessionUserId: string = ownerUserId;
 
