@@ -920,6 +920,40 @@ describe('LLMRouter.chatStream', () => {
   });
 });
 
+describe('LLMRouter CU_EXCEEDED does not fall back to BYOK', () => {
+  it('rethrows CU_EXCEEDED without trying openai/other providers', async () => {
+    const router = new LLMRouter('markus');
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash', async () => {
+      throw new Error('CU_EXCEEDED: Credits exhausted. Please top up or upgrade your plan.');
+    });
+    const openai = mockProvider('openai', 'gpt-4o', async () => successResponse('from openai'));
+    router.registerProvider('markus', markus);
+    router.registerProvider('openai', openai);
+    router.setFallbackOrder(['markus', 'openai']);
+    router.setAutoFallback(true);
+
+    await expect(router.chat({ messages: [{ role: 'user', content: 'Hi' }] }))
+      .rejects.toThrow(/CU_EXCEEDED:/);
+    expect(openai.chat).not.toHaveBeenCalled();
+  });
+
+  it('rethrows MARKUS_RATE_LIMITED without BYOK fallback', async () => {
+    const router = new LLMRouter('markus');
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash', async () => {
+      throw new Error('MARKUS_RATE_LIMITED: temporary');
+    });
+    const openai = mockProvider('openai', 'gpt-4o');
+    router.registerProvider('markus', markus);
+    router.registerProvider('openai', openai);
+    router.setFallbackOrder(['markus', 'openai']);
+    router.setAutoFallback(true);
+
+    await expect(router.chat({ messages: [{ role: 'user', content: 'Hi' }] }))
+      .rejects.toThrow(/MARKUS_RATE_LIMITED:/);
+    expect(openai.chat).not.toHaveBeenCalled();
+  });
+});
+
 describe('LLMRouter OAuth integration', () => {
   it('initOAuth creates profile store and oauth manager once', () => {
     const router = new LLMRouter('openai');
