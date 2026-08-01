@@ -274,11 +274,10 @@ export const ARCHIVE_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 // ─── Group Chat Channel Context ──────────────────────────────────────────
 
-/** Number of recent channel messages loaded into the LLM conversation history
- *  when processing a group-chat reply.  Higher values give agents more context
- *  but increase token usage.  The prompt tells the agent how many messages it
- *  already has so it doesn't needlessly call recall_context. */
-export const CHANNEL_CONTEXT_MESSAGES = 40;
+/** Number of recent channel messages loaded from DB and injected into the
+ *  system prompt (Tier 3 Channel History). Keep load + inject + prompt copy
+ *  aligned — do not load a larger window than we inject. */
+export const CHANNEL_CONTEXT_MESSAGES = 15;
 
 // ─── Mailbox Item TTL ────────────────────────────────────────────────────────
 
@@ -545,9 +544,9 @@ export const HEARTBEAT_STARTUP_JITTER_MS = 10_000;
 export const LLM_CIRCUIT_RESET_RATE_LIMIT_MS = 30 * 1000;
 
 // ─── Session / Context Packing ───────────────────────────────────────────────
-// Industry-style policy: keep full session history and pack against the real
-// model context window. Do NOT preemptively drop turns to "save tokens".
-// Count-based compaction is only a disk/RAM safety net at very high volume.
+// Budget-first policy: pack against the model window AND any provider afford
+// hint (e.g. OpenRouter key credit ceiling). Proactively compact before the
+// window is full so long sessions stay under OR afford (~30–40k), not 80k+.
 
 /** Permanent storage compact trigger (message count). Below this, keep the
  *  full transcript on disk. Token packing is handled per LLM call. */
@@ -563,6 +562,81 @@ export const SESSION_STORAGE_TOOL_SHRINK_CHARS = 100_000;
 /** Per-request: only shrink a single message above this many chars before
  *  budget checks (pathological payloads). Normal history is left intact. */
 export const CONTEXT_ABSURD_MESSAGE_CHARS = 200_000;
+
+/** When message history exceeds this fraction of the packing budget, run
+ *  compact/summarize even if still under the hard window. */
+export const CONTEXT_PROACTIVE_COMPACT_RATIO = 0.55;
+
+/** Max chat messages loaded from DB into memory on session restore. */
+export const SESSION_RESTORE_MAX_MESSAGES = 80;
+
+/** Soft token budget for messages kept at restore time (chars/3.5 heuristic). */
+export const SESSION_RESTORE_MAX_MESSAGE_TOKENS = 24_000;
+
+/** Tool results longer than this (chars) are offloaded to disk with a short
+ *  preview left in the conversation. */
+export const TOOL_RESULT_OFFLOAD_CHARS = 12_000;
+
+/** Max colleagues listed in the identity section; remainder via team_list. */
+export const SYSTEM_COLLEAGUES_MAX = 10;
+
+/** Max other teams listed in the identity section. */
+export const SYSTEM_OTHER_TEAMS_MAX = 5;
+
+/** Max members shown per other-team line. */
+export const SYSTEM_OTHER_TEAM_MEMBERS_MAX = 6;
+
+/** Max humans listed in the identity section. */
+export const SYSTEM_HUMANS_MAX = 8;
+
+/** Reserve this many tokens for model output when clamping to an OR prompt
+ *  afford hint (prompt limit from "Prompt tokens limit exceeded: X > Y"). */
+export const PROMPT_AFFORD_OUTPUT_RESERVE = 4_096;
+
+// ─── Agent Runtime: Context Economics (see docs/AGENT-RUNTIME.md §3) ─────────
+
+/** Max tool-definition tokens for reflex pack (heartbeat / dream / flush). */
+export const TOOL_DEF_BUDGET_REFLEX = 3_000;
+/** Max tool-definition tokens for converse pack (chat / a2a / comments). */
+export const TOOL_DEF_BUDGET_CONVERSE = 6_000;
+/** Max tool-definition tokens for execute pack (task_execution). */
+export const TOOL_DEF_BUDGET_EXECUTE = 10_000;
+/** Max tool-definition tokens for govern pack (review / deliberation). */
+export const TOOL_DEF_BUDGET_GOVERN = 8_000;
+
+/** ROLE.md truncation before system-prompt injection. */
+export const ROLE_PROMPT_MAX_TOKENS = 2_500;
+/** knowledge.md injection cap for converse/execute/govern. */
+export const KNOWLEDGE_PROMPT_MAX_TOKENS = 1_500;
+/** knowledge.md injection for reflex (0 = omit full dump). */
+export const KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX = 0;
+/** Max state.md lines injected in reflex profile. */
+export const STATE_PROMPT_MAX_LINES_REFLEX = 5;
+/** Default TTL for state.md snapshot entries (days). */
+export const STATE_TTL_DAYS = 7;
+
+/** Cold-start acceptance: converse system+toolDefs. */
+export const COLD_CONVERSE_FIXED_MAX = 12_000;
+/** Cold-start acceptance: reflex system+toolDefs. */
+export const COLD_REFLEX_FIXED_MAX = 8_000;
+
+/** Hard cap on converse systemTokens after assemble (Afford.S3). */
+export const SYSTEM_PROMPT_BUDGET_CONVERSE = 8_000;
+/** Tier-3 rediscovery catalog hard cap in chars (Afford.S2). */
+export const DEFERRED_CATALOG_MAX_CHARS = 1_500;
+/** Safety tokens subtracted from OR reservation afford when clamping max_tokens. */
+export const MAX_TOKENS_AFFORD_SAFETY = 64;
+/** Margin when computing max_tokens from promptAfford − estimatedPrompt. */
+export const MAX_TOKENS_REMAINING_MARGIN = 500;
+/** Floor for clamped max_tokens retries. */
+export const MAX_TOKENS_CLAMP_FLOOR = 512;
+
+/** Consecutive idle heartbeats before skipping LLM (deep sleep). */
+export const DEEP_SLEEP_IDLE_HEARTBEATS = 3;
+/** Soft warning threshold for subtask_create count. */
+export const SUBTASK_SOFT_CAP = 8;
+/** Extra safety tokens on top of output reserve for afford fail-closed. */
+export const PROMPT_AFFORD_SAFETY_MARGIN = 500;
 
 /** Max concurrent in-flight LLM requests per provider before jitter kicks in.
  *  When exceeded, additional requests add a random delay to spread the load

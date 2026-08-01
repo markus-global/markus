@@ -518,6 +518,7 @@ export function RightPanel({
                 format={preview.format}
                 className="text-fg-secondary text-sm"
                 onHtmlSelection={handleHtmlSelection}
+                basePath={reference ? reference.replace(/[/\\][^/\\]+$/, '') : undefined}
               />
             </div>
           )}

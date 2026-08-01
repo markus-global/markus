@@ -14,6 +14,8 @@ export interface A2AContext {
   createGroupChat?: (name: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
   listGroupChats?: () => Promise<Array<{ id: string; name: string; type: string; channelKey: string }>>;
   getChannelMessages?: (channelKey: string, limit: number, before?: string) => Promise<{ messages: Array<{ id?: string; senderName: string; senderType: string; text: string; replyToId?: string; replyToSender?: string; replyToText?: string; createdAt: string }>; hasMore: boolean }>;
+  /** Personal DM chat_sessions history (LEARNING-LOOP §9.3). Authz: own agent only. */
+  getChatSessionMessages?: (sessionId: string, limit: number, before?: string) => Promise<{ messages: Array<{ id?: string; role: string; text: string; createdAt: string }>; hasMore: boolean }>;
 }
 
 export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
@@ -176,7 +178,7 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         }
       },
     } as AgentToolHandler] : []),
-    ...(ctx.getChannelMessages ? [{
+    ...((ctx.getChannelMessages || ctx.getChatSessionMessages) ? [{
       name: 'recall_context',
       description: [
         'Recall historical context you may need to respond effectively.',
@@ -184,7 +186,8 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         '',
         'Supported scopes:',
         '• "channel" — Read chat messages from a group chat or DM channel. Requires channel_key.',
-        '  Use when you joined a discussion late, were @mentioned, or need to understand prior conversation.',
+        '• "chat_session" — Read messages from a personal user↔agent chat session (chat_sessions). Requires session_id.',
+        '  Use when an evolution/Remember prompt transcript was truncated and you need older history.',
         '',
         'For other context types, use these existing tools instead:',
         '• task_get — Full task details including all comments (scope=task context)',
@@ -197,14 +200,18 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         properties: {
           scope: {
             type: 'string',
-            enum: ['channel'],
-            description: 'Type of context to recall. Currently: "channel" for chat/group messages.',
+            enum: ['channel', 'chat_session'],
+            description: 'Type of context to recall.',
           },
           channel_key: {
             type: 'string',
             description: 'Required when scope="channel". The channel key (e.g., "group:<teamId>" for team chats, "dm:<id1>_<id2>" for DMs).',
           },
-          limit: { type: 'number', description: 'Number of items to fetch (default 80, max 200).' },
+          session_id: {
+            type: 'string',
+            description: 'Required when scope="chat_session". Personal chat session id (e.g. parentSessionId from a Remember/evolution prompt).',
+          },
+          limit: { type: 'number', description: 'Number of items to fetch (channel default 80 max 200; chat_session default 40 max 100).' },
           before: { type: 'string', description: 'ISO timestamp — fetch items older than this for pagination. Omit for most recent.' },
         },
         required: ['scope'],
@@ -212,11 +219,13 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
       async execute(args: Record<string, unknown>): Promise<string> {
         // Infer scope from provided arguments when the LLM omits it
         let scope = args['scope'] as string | undefined;
-        if (!scope && args['channel_key']) {
-          scope = 'channel';
-        }
+        if (!scope && args['channel_key']) scope = 'channel';
+        if (!scope && args['session_id']) scope = 'chat_session';
 
         if (scope === 'channel') {
+          if (!ctx.getChannelMessages) {
+            return JSON.stringify({ status: 'error', error: 'channel recall is not available' });
+          }
           const channelKey = args['channel_key'] as string;
           if (!channelKey) {
             return JSON.stringify({ status: 'error', error: 'channel_key is required when scope="channel"' });
@@ -224,7 +233,7 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
           const limit = Math.min((args['limit'] as number) ?? 80, 200);
           const before = args['before'] as string | undefined;
           try {
-            const result = await ctx.getChannelMessages!(channelKey, limit, before);
+            const result = await ctx.getChannelMessages(channelKey, limit, before);
             const formatted = result.messages.map(m => {
               const prefix = m.id ? `[${m.id}]` : '';
               const sender = m.senderType === 'agent' ? `[agent] ${m.senderName}` : `[human] ${m.senderName}`;
@@ -242,9 +251,36 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
           }
         }
 
+        if (scope === 'chat_session') {
+          if (!ctx.getChatSessionMessages) {
+            return JSON.stringify({ status: 'error', error: 'chat_session recall is not available' });
+          }
+          const sessionId = (args['session_id'] as string | undefined)?.trim();
+          if (!sessionId) {
+            return JSON.stringify({ status: 'error', error: 'session_id is required when scope="chat_session"' });
+          }
+          const limit = Math.min((args['limit'] as number) ?? 40, 100);
+          const before = args['before'] as string | undefined;
+          try {
+            const result = await ctx.getChatSessionMessages(sessionId, limit, before);
+            const formatted = result.messages.map(m => {
+              const prefix = m.id ? `[${m.id}]` : '';
+              return `${prefix}[${m.createdAt}] [${m.role}]: ${m.text.slice(0, 2000)}`;
+            });
+            return JSON.stringify({
+              messages: formatted,
+              count: result.messages.length,
+              hasMore: result.hasMore,
+              oldestTimestamp: result.messages[0]?.createdAt,
+            });
+          } catch (err) {
+            return JSON.stringify({ status: 'error', error: String(err) });
+          }
+        }
+
         return JSON.stringify({
           status: 'error',
-          error: `Unknown scope: "${scope}". Use "channel" for chat messages, or use task_get / requirement_get / recall_activity for other context.`,
+          error: `Unknown scope: "${scope}". Use "channel" or "chat_session", or use task_get / requirement_get / recall_activity for other context.`,
         });
       },
     } as AgentToolHandler] : []),

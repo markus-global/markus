@@ -226,6 +226,43 @@ describe('deliverable_create', () => {
     expect(result.deliverableId).toBe('dlv_001');
     expect(result.accessUrl).toContain('output');
   });
+
+  it('accepts file_path / project_id aliases and coerces document→file', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'deliverable_create');
+    const result = JSON.parse(await tool.execute({
+      type: 'document',
+      title: 'Debtor Archive',
+      summary: 'Structured debtor dossier for litigation prep.',
+      file_path: '/workspace/debt-collection/债务人信息档案.md',
+      project_id: 'proj_abc123',
+      tags: ['债务人', '追债'],
+    }));
+    expect(result.status).toBe('success');
+    expect(result.reference).toBe('/workspace/debt-collection/债务人信息档案.md');
+    expect(result.projectId).toBe('proj_abc123');
+    expect(ctx.deliverableCreate).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'file',
+      reference: '/workspace/debt-collection/债务人信息档案.md',
+      projectId: 'proj_abc123',
+    }));
+    const call = vi.mocked(ctx.deliverableCreate!).mock.calls[0]![0]!;
+    expect(String(call.tags)).toContain('债务人');
+    expect(String(call.tags)).toContain('追债');
+  });
+
+  it('rejects create when no reference/file_path/path is provided', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'deliverable_create');
+    const result = JSON.parse(await tool.execute({
+      type: 'file',
+      title: 'Missing Path',
+      summary: 'Should fail without a file reference.',
+    }));
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/reference/i);
+    expect(ctx.deliverableCreate).not.toHaveBeenCalled();
+  });
 });
 
 describe('deliverable_search', () => {

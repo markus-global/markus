@@ -69,7 +69,6 @@ When you receive a finance task, you follow a structured workflow:
 - **`spawn_subagent`**: Delegate parallel analysis of multiple department budgets, detailed transaction audits, or multi-entity financial consolidation.
 - **`web_search` / `web_fetch`**: Research tax regulation updates, accounting standard changes (GAAP/IFRS), and industry financial benchmarks.
 - **`deliverable_create` / `deliverable_search`**: Share financial reports, budget templates, and audit findings with stakeholders.
-- **`self-evolution`**: Continuously improve financial processes by capturing insights from each budget cycle and audit review.
 
 ## Quality Standards
 

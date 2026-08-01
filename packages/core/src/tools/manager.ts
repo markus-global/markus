@@ -83,8 +83,9 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
         'Install into the live org. ' +
         'type "team": install a team package directory (builtin or ~/.markus/builder-artifacts/teams/{name}/) — creates the team AND all members in one step. ' +
         'type "agent": hire one agent from a builtin role or ~/.markus/builder-artifacts/agents/{name}/; optional team_id (existing) or team_name (find-or-create team, then place the agent). ' +
-        'type "skill": install a skill package. ' +
-        'Requires user approval. Custom packages must already exist under builder-artifacts (workspace/ writes are ignored). Use package_list first.',
+        'type "skill": install a skill package. For skills, set impact "low" to install without HITL (narrow tip, no MCP/network/secrets); ' +
+        'impact "high" (default if omitted) requires user approval. Agent/team installs always require approval. ' +
+        'Custom packages must already exist under builder-artifacts (workspace/ writes are ignored). Use package_list first.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -107,6 +108,11 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
             type: 'array',
             items: { type: 'string' },
             description: 'Optional skill IDs to assign to the new agent',
+          },
+          impact: {
+            type: 'string',
+            enum: ['low', 'high'],
+            description: 'For type "skill" only: "low" skips HITL; "high" (default) requires approval. Ignored for agent/team (always approved).',
           },
         },
         required: ['type', 'name'],
@@ -132,7 +138,11 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
             return { teamId: team.id, teamCreated: team.created, teamName: team.name };
           };
 
-          if (ctx.requestApproval) {
+          const impactRaw = (args['impact'] as string | undefined)?.trim()?.toLowerCase();
+          const skillImpactLow = type === 'skill' && impactRaw === 'low';
+          const needsApproval = !skillImpactLow;
+
+          if (needsApproval && ctx.requestApproval) {
             const { approved, comment } = await ctx.requestApproval({
               toolName: 'package_install',
               toolArgs: {
@@ -141,6 +151,7 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
                 agent_name: args['agent_name'],
                 team_id: args['team_id'],
                 team_name: args['team_name'],
+                impact: impactRaw === 'low' || impactRaw === 'high' ? impactRaw : type === 'skill' ? 'high' : undefined,
               },
               reason: `Agent wants to install ${type} "${name}" into the organization`,
             });

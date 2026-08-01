@@ -1449,6 +1449,18 @@ export class LLMRouter {
     return this.providers.get(name);
   }
 
+  /**
+   * OpenRouter prompt-token afford ceiling from a prior 402, used to pack
+   * context below key credit limits (not the model window).
+   */
+  getPromptAffordTokens(providerName?: string): number | null {
+    const name = providerName ?? this.defaultProvider;
+    const provider = this.providers.get(name) as
+      | { getLastPromptAffordTokens?: () => number | null }
+      | undefined;
+    return provider?.getLastPromptAffordTokens?.() ?? null;
+  }
+
   listProviders(): string[] {
     return [...this.providers.keys()];
   }

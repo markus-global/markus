@@ -43,7 +43,15 @@ export interface ChatSessionInfo {
   userId: string | null;
   title: string | null;
   isMain?: boolean;
-  metadata?: { modelOverride?: { provider: string; model: string } } | null;
+  metadata?: {
+    modelOverride?: { provider: string; model: string };
+    kind?: string;
+    parentSessionId?: string;
+    sourceMessageId?: string;
+    sourceAgentId?: string;
+    sourceExcerpt?: string;
+    createdFrom?: string;
+  } | null;
   createdAt: string;
   lastMessageAt: string;
 }
@@ -58,7 +66,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -1135,6 +1143,23 @@ export const api = {
     /** @deprecated Use start() instead */
     resume: (id: string) => request<{ status: string }>(`/agents/${id}/start`, { method: 'POST' }),
     cancelProcessing: (id: string) => request(`/agents/${id}/cancel-processing`, { method: 'POST' }),
+    evolveFromMessage: (
+      id: string,
+      body: {
+        parentSessionId: string;
+        sourceMessageId?: string;
+        sourceText?: string;
+        userNote?: string;
+      },
+    ) =>
+      request<{
+        sessionId: string;
+        agentId: string;
+        seedPrompt: string;
+        truncated: boolean;
+        focusMarked: boolean;
+        parentSessionId: string;
+      }>(`/agents/${id}/evolve-from-message`, { method: 'POST', body: JSON.stringify(body) }),
     remove: (id: string, opts?: { purgeFiles?: boolean }) =>
       request(`/agents/${id}${opts?.purgeFiles ? '?purgeFiles=true' : ''}`, { method: 'DELETE' }),
     updateConfig: (id: string, patch: Record<string, unknown>) =>
@@ -1198,7 +1223,7 @@ export const api = {
     },
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[], replyTo?: { id: string; sender: string; text: string } | null, modelOverride?: { provider: string; model: string } | null): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean }> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[], replyTo?: { id: string; sender: string; text: string } | null, modelOverride?: { provider: string; model: string } | null): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -1261,7 +1286,16 @@ export const api = {
                   // Keep empty arrays too — distinguishes a real terminal `done` from soft disconnect.
                   if (doneSegments) resultSegments = doneSegments;
                   const merged = !!(event as Record<string, unknown>).merged;
-                  resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, merged });
+                  const cancelled = !!(event as Record<string, unknown>).cancelled;
+                  const emptyReply = !!(event as Record<string, unknown>).emptyReply;
+                  resolve({
+                    content: fullContent,
+                    sessionId: resultSessionId,
+                    segments: resultSegments,
+                    merged,
+                    cancelled,
+                    emptyReply,
+                  });
                   reader.cancel().catch(() => {});
                   return;
                 } else if (event.type === 'error') {

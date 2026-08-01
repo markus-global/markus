@@ -7,7 +7,7 @@ import {
 } from '../api.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 import {
-  AgentMessageBody, segmentsToStreamEntries, friendlyAgentError,
+  AgentMessageBody, MessageActions, RememberModal, friendlyAgentError,
 } from '../pages/ChatComponents.tsx';
 import { Avatar } from './Avatar.tsx';
 import { ChatInput, type ContextChip, type MentionItem, type MentionChip } from './ChatInput.tsx';
@@ -204,30 +204,39 @@ export function ChatPanel({
     void api.agents.cancelProcessing(agentId).catch(() => {});
   }, [agentId]);
 
-  const send = useCallback(async () => {
-    const parts: string[] = [];
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [rememberTarget, setRememberTarget] = useState<ChatMsg | null>(null);
+  const [rememberBusy, setRememberBusy] = useState(false);
 
-    if (currentMentionChips.length > 0) {
-      parts.push(currentMentionChips.map(c => `@[${c.name}](${c.entityType}:${c.entityId})`).join(' '));
-    }
+  const send = useCallback(async (overrideText?: string, sessionIdOverride?: string | null) => {
+    let text = overrideText?.trim() ?? '';
+    if (!text) {
+      const parts: string[] = [];
 
-    if (contextChips?.length) {
-      for (const chip of contextChips) {
-        parts.push(`[${chip.type}: ${chip.label}]\n${chip.content}`);
+      if (currentMentionChips.length > 0) {
+        parts.push(currentMentionChips.map(c => `@[${c.name}](${c.entityType}:${c.entityId})`).join(' '));
       }
+
+      if (contextChips?.length) {
+        for (const chip of contextChips) {
+          parts.push(`[${chip.type}: ${chip.label}]\n${chip.content}`);
+        }
+      }
+
+      if (input.trim()) parts.push(input.trim());
+      text = parts.join('\n\n');
     }
-
-    if (input.trim()) parts.push(input.trim());
-
-    const text = parts.join('\n\n');
     if (!text) return;
 
-    setInput('');
-    setCurrentMentionChips([]);
+    if (!overrideText) {
+      setInput('');
+      setCurrentMentionChips([]);
+    }
     userAtBottomRef.current = true;
     setSending(true);
     setActivities([]);
 
+    const streamSessionId = sessionIdOverride !== undefined ? sessionIdOverride : sessionId;
     const agentMsgId = `a_${Date.now()}`;
     const agentCreatedAt = new Date().toISOString();
     const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt };
@@ -416,7 +425,7 @@ export function ChatPanel({
         handleToolEvent,
         abortCtrl.signal,
         undefined,
-        sessionId,
+        streamSessionId,
         undefined,
         undefined,
         handleCommitEvent,
@@ -510,8 +519,44 @@ export function ChatPanel({
     abortRef.current = null;
   }, [input, agentId, sessionId, t, currentMentionChips, contextChips]);
 
+  const handleCopy = useCallback((msg: ChatMsg) => {
+    void navigator.clipboard.writeText(msg.text || '').then(() => {
+      setCopiedMsgId(msg.id);
+      setTimeout(() => setCopiedMsgId(prev => (prev === msg.id ? null : prev)), 1500);
+    });
+  }, []);
+
+  const handleRememberConfirm = async (userNote: string) => {
+    if (!rememberTarget || !sessionId) return;
+    setRememberBusy(true);
+    try {
+      const result = await api.agents.evolveFromMessage(agentId, {
+        parentSessionId: sessionId,
+        sourceMessageId: rememberTarget.id.startsWith('a_') || rememberTarget.id.startsWith('u_')
+          ? undefined
+          : rememberTarget.id,
+        sourceText: (rememberTarget.text || '').slice(0, 500) || undefined,
+        userNote: userNote.trim() || undefined,
+      });
+      setRememberTarget(null);
+      setSessionId(result.sessionId);
+      setMessages([]);
+      await send(result.seedPrompt, result.sessionId);
+    } catch (err) {
+      console.error('evolve-from-message failed', err);
+    } finally {
+      setRememberBusy(false);
+    }
+  };
+
   const lastMsg = messages[messages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
+  const lastAgentMsgId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]!.sender === 'agent') return messages[i]!.id;
+    }
+    return null;
+  }, [messages]);
 
   const [entityMentions, setEntityMentions] = useState<MentionItem[]>([]);
 
@@ -645,6 +690,16 @@ export function ChatPanel({
                             : <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" />
                       }
                     </div>
+                    {!isStreamingMsg && (
+                      <MessageActions
+                        msg={msg}
+                        onCopy={handleCopy}
+                        onRemember={setRememberTarget}
+                        showRemember
+                        isCopied={copiedMsgId === msg.id}
+                        isLastAgentMsg={msg.id === lastAgentMsgId}
+                      />
+                    )}
                   </div>
                 </div>
               </div>
@@ -653,6 +708,14 @@ export function ChatPanel({
         )}
         <div ref={messagesEndRef} />
       </div>
+
+      {rememberTarget && (
+        <RememberModal
+          busy={rememberBusy}
+          onConfirm={(note) => { void handleRememberConfirm(note); }}
+          onCancel={() => { if (!rememberBusy) setRememberTarget(null); }}
+        />
+      )}
 
       {/* Scroll to bottom */}
       {showScrollBtn && (
@@ -674,7 +737,7 @@ export function ChatPanel({
         <ChatInput
           value={input}
           onChange={setInput}
-          onSend={send}
+          onSend={() => { void send(); }}
           disabled={!agentId}
           placeholder={t('page.placeholder.direct')}
           sending={sending}

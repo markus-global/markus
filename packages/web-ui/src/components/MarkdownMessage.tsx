@@ -8,7 +8,10 @@ import remarkBreaks from 'remark-breaks';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import 'katex/dist/katex.min.css';
+import { api } from '../api.ts';
 import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
+import { isElectron, openExternal } from '../hooks/useElectron.ts';
+import { useLayout } from '../contexts/LayoutContext.tsx';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
 import { CodeBlock } from './CodeBlock.tsx';
 import { MermaidBlock } from './MermaidBlock.tsx';
@@ -19,6 +22,11 @@ import {
   preprocessMentions, preprocessEntityLinksInCode, preprocessEntityIds,
   looksLikePlantUML, looksLikeMermaid,
 } from './markdown-utils.ts';
+import {
+  classifyMarkdownHref,
+  rehypeSlugifyHeadings,
+  scrollToMarkdownFragment,
+} from './markdown-links.ts';
 import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
 import { TypographySettings, loadTypographyConfig, resolveTypographyCSS } from './TypographySettings.tsx';
 import { navBus } from '../navBus.ts';
@@ -41,7 +49,13 @@ function chatUrlTransform(url: string): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const REMARK_PLUGINS: any[] = [remarkGfm, remarkMath, remarkBreaks];
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const REHYPE_PLUGINS: any[] = [[rehypeKatex, { strict: 'ignore' }], [rehypeHighlight, { detect: true, ignoreMissing: true }]];
+const REHYPE_PLUGINS: any[] = [
+  rehypeSlugifyHeadings,
+  [rehypeKatex, { strict: 'ignore' }],
+  [rehypeHighlight, { detect: true, ignoreMissing: true }],
+];
+
+const MD_LINK_CLASS = 'text-brand-500 hover:text-brand-500 underline break-all cursor-pointer';
 
 interface Props {
   content: string;
@@ -171,8 +185,9 @@ const mdComponents = {
   blockquote: ({ children }: { children?: React.ReactNode }) => (
     <blockquote className="border-l-2 border-brand-500 pl-3 my-2 text-fg-secondary italic">{children}</blockquote>
   ),
+  // Static fallback — real click routing is in MarkdownMessage components.a
   a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500 underline break-all">{children}</a>
+    <a href={href} className={MD_LINK_CLASS}>{children}</a>
   ),
   hr: () => <hr className="border-border-default my-3" />,
   table: ({ children }: { children?: React.ReactNode }) => (
@@ -657,6 +672,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   const { thinking, rest } = extractThinkBlocks(content);
   const contentRef = useRef<HTMLDivElement>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const layout = useLayout();
 
   const preprocess = useCallback((text: string) => {
     let t = transformOutsideCode(text, normalizeMathDelimiters);
@@ -667,6 +683,43 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   }, [knownNames]);
 
   const processedRest = useMemo(() => preprocess(rest), [rest, preprocess]);
+
+  const handleRoutedLinkClick = useCallback((e: ReactMouseEvent, href: string) => {
+    const classified = classifyMarkdownHref(href, basePath);
+    if (classified.kind === 'passthrough') return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (classified.kind === 'fragment') {
+      scrollToMarkdownFragment(contentRef.current, classified.id);
+      return;
+    }
+
+    if (classified.kind === 'file') {
+      if (layout?.hostAvailable) {
+        layout.openRightPanel({
+          kind: 'file',
+          path: classified.path,
+          title: classified.path.split(/[/\\]/).pop(),
+        });
+      } else {
+        // No right-panel host (e.g. some settings pages) — reveal in OS file manager.
+        void api.files.reveal(classified.path).catch(() => {});
+      }
+      return;
+    }
+
+    if (classified.kind === 'external') {
+      // Prefer the in-app EmbeddedBrowser when the page hosts a right panel
+      // (desktop Electron). Otherwise open the system / browser tab.
+      if (layout?.hostAvailable && /^https?:\/\//i.test(classified.url)) {
+        layout.openRightPanel({ kind: 'url', url: classified.url, title: classified.url });
+        return;
+      }
+      openExternal(classified.url);
+    }
+  }, [basePath, layout]);
 
   const components = useMemo(() => {
     return {
@@ -719,12 +772,47 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
             }
           }
         }
+        // Agents often emit `[Title](proj_…)` / `[Title](dlv_…)` without a scheme.
+        // Treat bare Markus entity ids as in-app chips — never open as relative URLs.
+        if (href && looksLikeEntityId(href)) {
+          return <EntityChip id={href.trim()} label={children} />;
+        }
+
+        const classified = classifyMarkdownHref(href, basePath);
+        if (classified.kind === 'fragment' || classified.kind === 'file' || classified.kind === 'external') {
+          return (
+            <a
+              href={href}
+              className={MD_LINK_CLASS}
+              onClick={(e) => handleRoutedLinkClick(e, href!)}
+              title={
+                classified.kind === 'fragment' ? `#${classified.id}`
+                  : classified.kind === 'file' ? classified.path
+                    : classified.url
+              }
+            >
+              {children}
+            </a>
+          );
+        }
+
+        // Unknown relative routes — still avoid target=_blank on localhost Electron.
         return (
-          <a href={href} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500 underline break-all">{children}</a>
+          <a
+            href={href}
+            className={MD_LINK_CLASS}
+            onClick={(e) => {
+              if (isElectron() && href && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) {
+                e.preventDefault();
+              }
+            }}
+          >
+            {children}
+          </a>
         );
       },
     };
-  }, [onMentionClick, basePath]);
+  }, [onMentionClick, basePath, handleRoutedLinkClick]);
 
   return (
     <div className="relative group/md">

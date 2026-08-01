@@ -114,6 +114,66 @@ describe('createA2ATools', () => {
     const unknown = JSON.parse(await findA2ATool(ctx, 'recall_context').execute({ scope: 'unknown' }));
     expect(unknown.status).toBe('error');
   });
+
+  it('B-recall-chat-session-paginates via session_id + before', async () => {
+    const getChatSessionMessages = vi.fn(async (_sessionId: string, limit: number, before?: string) => ({
+      messages: [
+        {
+          id: 'cm_old',
+          role: 'user',
+          text: before ? `older-than-${before}` : 'recent',
+          createdAt: '2026-07-26T09:00:00.000Z',
+        },
+      ].slice(0, limit),
+      hasMore: true,
+    }));
+    const ctx = makeA2AContext({
+      getChannelMessages: undefined,
+      getChatSessionMessages,
+    });
+    const result = JSON.parse(await findA2ATool(ctx, 'recall_context').execute({
+      scope: 'chat_session',
+      session_id: 'cs_parent',
+      limit: 40,
+      before: '2026-07-26T12:00:00.000Z',
+    }));
+    expect(result.count).toBe(1);
+    expect(result.hasMore).toBe(true);
+    expect(result.messages[0]).toContain('older-than-2026-07-26T12:00:00.000Z');
+    expect(getChatSessionMessages).toHaveBeenCalledWith('cs_parent', 40, '2026-07-26T12:00:00.000Z');
+
+    const inferred = JSON.parse(await findA2ATool(ctx, 'recall_context').execute({
+      session_id: 'cs_parent',
+    }));
+    expect(inferred.count).toBe(1);
+  });
+
+  it('B-recall-chat-session-rejects-foreign when getter throws', async () => {
+    const ctx = makeA2AContext({
+      getChannelMessages: undefined,
+      getChatSessionMessages: vi.fn(async () => {
+        throw new Error("Cannot recall messages from another agent's chat session");
+      }),
+    });
+    const result = JSON.parse(await findA2ATool(ctx, 'recall_context').execute({
+      scope: 'chat_session',
+      session_id: 'cs_foreign',
+    }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('another agent');
+  });
+
+  it('recall_context chat_session requires session_id', async () => {
+    const ctx = makeA2AContext({
+      getChannelMessages: undefined,
+      getChatSessionMessages: vi.fn(async () => ({ messages: [], hasMore: false })),
+    });
+    const result = JSON.parse(await findA2ATool(ctx, 'recall_context').execute({
+      scope: 'chat_session',
+    }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('session_id');
+  });
 });
 
 describe('createRecallTool', () => {

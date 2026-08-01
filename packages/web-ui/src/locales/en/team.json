@@ -274,6 +274,13 @@
       "reaskTitle": "Re-ask",
       "retryTitle": "Retry",
       "replyTitle": "Reply",
+      "rememberTitle": "Remember",
+      "rememberModalTitle": "Remember this experience?",
+      "rememberModalHint": "Optional: tell the agent what to encode from this conversation.",
+      "rememberModalPlaceholder": "e.g. Always confirm before editing ROLE.md",
+      "rememberConfirm": "Start evolution",
+      "rememberCancel": "Cancel",
+      "evolvedFrom": "Evolution session — reviewing a previous conversation",
       "aiGeneratedDisclaimer": "AI-generated content — please verify carefully"
     },
     "stopped": "Stopped",

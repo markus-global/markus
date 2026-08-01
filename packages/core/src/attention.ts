@@ -126,6 +126,8 @@ export class AttentionController {
   private state: AttentionState = 'idle';
   private currentFocus: MailboxItem | undefined;
   private interruptSignal = false;
+  /** Explicit user cancel of the focused item (Cancel button) — not a new-mail preempt. */
+  private userCancelCurrent = false;
   private pendingInterruptItem: MailboxItem | undefined;
   private criticalInterruptResolve?: () => void;
   private running = false;
@@ -783,6 +785,27 @@ export class AttentionController {
     this.lastYieldDecision = undefined;
   }
 
+  /**
+   * User clicked Cancel on the current focused mailbox item (Agent Profile).
+   * Forces the next yield point to return `cancel` so non-stream work
+   * (heartbeat / handleMessage) actually stops — not only SSE streams.
+   */
+  requestUserCancelCurrent(): void {
+    if (!this.currentFocus) return;
+    this.userCancelCurrent = true;
+    this.interruptSignal = true;
+    log.info('User cancel requested for current focus', {
+      agentId: this.agentId,
+      itemId: this.currentFocus.id,
+      type: this.currentFocus.sourceType,
+    });
+  }
+
+  /** Clear a pending user-cancel flag (e.g. after the focused item finishes). */
+  clearUserCancelCurrent(): void {
+    this.userCancelCurrent = false;
+  }
+
   /** True if a human_chat arrived during deliberation, signalling early abort. */
   get shouldAbortDeliberation(): boolean {
     return this.deliberationAbortSignal;
@@ -822,6 +845,17 @@ export class AttentionController {
     item?: MailboxItem;
     reasoning?: string;
   }> {
+    // Explicit Cancel button — stop current focus immediately (before new-mail logic).
+    if (this.userCancelCurrent && this.currentFocus) {
+      this.userCancelCurrent = false;
+      this.interruptSignal = false;
+      this.lastYieldDecision = 'cancel';
+      return {
+        decision: 'cancel',
+        reasoning: 'User cancelled current processing',
+      };
+    }
+
     // Deliberation is mostly atomic, but critical user messages (human_chat)
     // must still be able to preempt — users should never wait for deliberation.
     if (this.isDeliberating) {

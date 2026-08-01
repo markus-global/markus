@@ -251,7 +251,28 @@ app.whenReady().then(async () => {
 
   // Set window open handler DIRECTLY on the main window's webContents
   win.webContents.setWindowOpenHandler(({ url }) => {
-    // Allow local URLs (backend)
+    // Hash-only / unknown SPA fragments must NOT open a second Markus window —
+    // markdown TOC links like `#section` resolve to localhost/#section and would
+    // otherwise land on Home. Deny and let the renderer handle in-doc scroll.
+    try {
+      const parsed = new URL(url);
+      const isLocalApp = parsed.origin === new URL(backendUrl).origin
+        || parsed.hostname === 'localhost'
+        || parsed.hostname === '127.0.0.1';
+      if (isLocalApp) {
+        const page = (parsed.hash || '').replace(/^#/, '').split(/[/?]/)[0] || '';
+        // Allow real app routes (e.g. #team, #work/…) and auth paths; deny bare heading slugs.
+        // Must match packages/web-ui/src/routes.ts PAGE_HASH + HASH_ALIASES (+ auth).
+        const knownAppPages = /^(overview|team|tasks|explore|assets|output|settings|notifications|search|home|work|store|builder|deliverables|chat|dashboard|projects|login|auth)/i;
+        if (page && !knownAppPages.test(page) && !parsed.pathname.includes('/auth')) {
+          return { action: 'deny' };
+        }
+        return { action: 'allow' };
+      }
+    } catch {
+      /* fall through */
+    }
+    // Allow local URLs (backend) that passed the SPA-hash check above
     if (url.startsWith('http://localhost') || url.startsWith(backendUrl)) {
       return { action: 'allow' };
     }

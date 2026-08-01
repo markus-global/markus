@@ -41,9 +41,13 @@ import {
   PRIORITY_LABELS,
   safeSlice,
   clampHeartbeatIntervalMs,
+  TOOL_RESULT_OFFLOAD_CHARS,
+  SESSION_RESTORE_MAX_MESSAGES,
+  SESSION_RESTORE_MAX_MESSAGE_TOKENS,
   type GoalConfig,
   type UserInputQuestion,
   type UserInputAnswer,
+  DEFERRED_CATALOG_MAX_CHARS,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -55,10 +59,19 @@ import { MemoryStore, loadNotebook, saveNotebook, type NotebookEntry, type Noteb
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
-import { ContextEngine, type OrgContext, type LLMSummarizer } from './context-engine.js';
+import { ContextEngine, type OrgContext, type LLMSummarizer, type SystemPromptSegment } from './context-engine.js';
 import { CognitivePreparation, selectCognitiveDepth } from './cognitive.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
+import {
+  scenarioToPack,
+  getReflexAllowlist,
+  formatEvictedToolCatalog,
+  type CapabilityPack,
+} from './capability-packs.js';
+import { ensureAffordablePromptPack } from './afford-guard.js';
+import { shouldEnterDeepSleep, nextDeepSleepIntervalMs, resetIdleOnWake } from './deep-sleep.js';
+import { recordSkillActivation } from './learning-loop.js';
 import type { SkillRegistry } from './skills/types.js';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -1081,19 +1094,24 @@ export class Agent {
   private createAttentionDelegate(): AttentionDelegate {
     return {
       processMailboxItem: async (item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string) => {
-        const result = await this.processMailboxItemInternal(item, batchItems, batchContext);
-        // C2 (measurement only): record turn-level harness health. Chat turns are exempt
-        // from the completion-marker protocol; non-chat turns missing a marker feed the
-        // marker-failure rate.
         try {
-          this.metricsCollector.recordTurn({
-            isChat: item.sourceType === 'human_chat',
-            hadCompletionMarker: typeof result === 'string' && result.includes(COMPLETION_MARKER),
-          });
-        } catch (err) {
-          log.debug('recordTurn failed', { agentId: this.id, itemId: item.id, error: String(err) });
+          const result = await this.processMailboxItemInternal(item, batchItems, batchContext);
+          // C2 (measurement only): record turn-level harness health. Chat turns are exempt
+          // from the completion-marker protocol; non-chat turns missing a marker feed the
+          // marker-failure rate.
+          try {
+            this.metricsCollector.recordTurn({
+              isChat: item.sourceType === 'human_chat',
+              hadCompletionMarker: typeof result === 'string' && result.includes(COMPLETION_MARKER),
+            });
+          } catch (err) {
+            log.debug('recordTurn failed', { agentId: this.id, itemId: item.id, error: String(err) });
+          }
+          return result;
+        } finally {
+          // Always clear cancel flags so the next mailbox item starts clean.
+          this.clearProcessingCancel();
         }
-        return result;
       },
       onDecisionMade: (decision: AttentionDecision) => {
         log.debug('Attention decision', {
@@ -1279,8 +1297,7 @@ export class Agent {
         memory: this.memory,
         sessionId,
         agentId: this.id,
-        modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-        modelMaxOutput: this.getModelMaxOutputForBudget(),
+        ...this.getPrepareBudgetOpts(),
         toolDefinitions: llmTools,
       });
 
@@ -1664,11 +1681,15 @@ export class Agent {
         }
 
         case 'heartbeat': {
-          await this.handleHeartbeat({
+          const hbResult = await this.handleHeartbeat({
             agentId: this.id,
             triggeredAt: item.queuedAt,
           });
-          const hbReply = COMPLETION_MARKER;
+          // Propagate preempt/cancel so attention defers or drops correctly
+          // (previously always returned COMPLETION_MARKER, hiding interruptions).
+          const hbReply = (hbResult === '[preempted]' || hbResult === '[cancelled]')
+            ? hbResult
+            : COMPLETION_MARKER;
           resolveResponse(hbReply);
           return hbReply;
         }
@@ -1916,7 +1937,9 @@ export class Agent {
     const session = this.memory.createSession(this.id);
     this.dbSessionMap.set(dbSessionId, session.id);
 
-    for (const msg of dbMessages) {
+    // Trim before loading into memory — don't wait for the first LLM pack.
+    const trimmed = Agent.trimMessagesForRestore(dbMessages);
+    for (const msg of trimmed) {
       if (msg.role === 'user' || msg.role === 'assistant') {
         this.memory.appendMessage(session.id, {
           role: msg.role as 'user' | 'assistant',
@@ -1927,8 +1950,63 @@ export class Agent {
 
     this.currentSessionId = session.id;
     log.info(
-      `Restored session context for DB session ${dbSessionId} → memory session ${session.id} (${dbMessages.length} messages)`
+      `Restored session context for DB session ${dbSessionId} → memory session ${session.id} (${trimmed.length}/${dbMessages.length} messages after restore trim)`
     );
+  }
+
+  /**
+   * Keep the newest turns within count + soft token budgets so session
+   * restore does not inflate the first LLM call to 50k–80k+ prompt tokens.
+   */
+  static trimMessagesForRestore(
+    dbMessages: Array<{ role: string; content: string }>,
+    maxMessages = SESSION_RESTORE_MAX_MESSAGES,
+    maxTokens = SESSION_RESTORE_MAX_MESSAGE_TOKENS,
+  ): Array<{ role: string; content: string }> {
+    const chat = dbMessages.filter(m => m.role === 'user' || m.role === 'assistant');
+    const droppedByCount = Math.max(0, chat.length - maxMessages);
+    let slice = droppedByCount > 0 ? chat.slice(-maxMessages) : chat;
+    let tokens = 0;
+    let start = 0;
+    for (let i = slice.length - 1; i >= 0; i--) {
+      const est = Math.ceil((slice[i]!.content?.length ?? 0) / 3.5);
+      if (tokens + est > maxTokens && i < slice.length - 1) {
+        start = i + 1;
+        break;
+      }
+      tokens += est;
+      start = i;
+    }
+    const droppedByTokens = start;
+    const dropped = droppedByCount + droppedByTokens;
+    if (dropped > 0) {
+      const kept = slice.slice(start);
+      return [
+        {
+          role: 'user',
+          content: `[Earlier conversation trimmed on restore — ${dropped} older messages omitted to stay within context budget. Use memory_search / recall_activity if you need prior details.]`,
+        },
+        ...kept,
+      ];
+    }
+    return slice;
+  }
+
+  /** Shared packing budget fields for prepareMessages (window + OR afford). */
+  private getPrepareBudgetOpts(): {
+    modelContextWindow: number;
+    modelMaxOutput: number | undefined;
+    promptAffordTokens: number | null;
+  } {
+    const provider = this.getEffectiveProvider();
+    const afford = typeof this.llmRouter.getPromptAffordTokens === 'function'
+      ? this.llmRouter.getPromptAffordTokens(provider)
+      : null;
+    return {
+      modelContextWindow: this.llmRouter.getModelContextWindow(provider),
+      modelMaxOutput: this.getModelMaxOutputForBudget(),
+      promptAffordTokens: afford ?? null,
+    };
   }
 
   getStopReason(): string | undefined {
@@ -2136,22 +2214,25 @@ export class Agent {
     return this.taskExecutor.cancelTask(taskId);
   }
 
-  /** Cancel any active streaming response (user-initiated) */
+  /** Cancel the currently focused work (user-initiated Cancel button / stop). */
   cancelActiveStream(): void {
-    // Always keep a durable token so a stop that arrives before handleMessageStream
-    // links the SSE cancelToken is not lost (previously this was a silent no-op).
+    // Durable token so a stop that arrives before handleMessageStream links
+    // the SSE cancelToken is not lost.
     if (!this.activeStreamToken) {
       this.activeStreamToken = { cancelled: true, userStopped: true };
     } else {
       this.activeStreamToken.cancelled = true;
       this.activeStreamToken.userStopped = true;
     }
-    this.markStreamCancelTokensStopped();
-    log.info('Active stream cancelled by user', { agentId: this.id });
+    // Only the *current* focus — never poison queued human_chat waiting next.
+    this.markCurrentFocusCancelTokenStopped();
+    // Make non-stream paths (heartbeat / handleMessage) observe cancel at yield.
+    this.attentionController.requestUserCancelCurrent();
+    log.info('Active processing cancelled by user', { agentId: this.id });
   }
 
-  /** Mark every known stream cancel token (active + mailbox) as user-stopped. */
-  private markStreamCancelTokensStopped(): void {
+  /** Mark only the focused item's stream cancel token (not the whole queue). */
+  private markCurrentFocusCancelTokenStopped(): void {
     const mark = (ct: unknown) => {
       if (!ct || typeof ct !== 'object') return;
       const token = ct as { cancelled?: boolean; userStopped?: boolean };
@@ -2162,16 +2243,30 @@ export class Agent {
     const focus = this.attentionController.getCurrentFocus();
     const focusExtra = focus?.payload?.extra as { cancelToken?: unknown } | undefined;
     mark(focusExtra?.cancelToken);
-    for (const item of this.mailbox.getQueuedItems()) {
-      const extra = item.payload?.extra as { cancelToken?: unknown } | undefined;
-      mark(extra?.cancelToken);
+  }
+
+  /**
+   * Clear cancel flags after a mailbox item finishes so the *next* item
+   * (e.g. human_chat after a cancelled heartbeat) is not immediately dropped.
+   */
+  clearProcessingCancel(): void {
+    this.attentionController.clearUserCancelCurrent();
+    if (this.activeStreamToken?.userStopped || this.activeStreamToken?.cancelled) {
+      this.activeStreamToken = { cancelled: false };
     }
+  }
+
+  /** True when the user asked to stop the current turn (Cancel / stop). */
+  private isUserProcessingCancelled(): boolean {
+    return !!(this.activeStreamToken?.userStopped);
   }
 
   /** Get a cancel token for the current stream */
   getStreamCancelToken(): { cancelled: boolean; userStopped?: boolean } {
-    // Preserve an in-flight user stop across token rotation.
-    if (this.activeStreamToken?.userStopped) {
+    // Fresh token per stream turn. cancelActiveStream() mutates the in-flight
+    // object; we must NOT reuse a previous turn's userStopped (that poisoned
+    // the next human_chat after cancelling a heartbeat — see runtime logs).
+    if (this.activeStreamToken && !this.activeStreamToken.cancelled && !this.activeStreamToken.userStopped) {
       return this.activeStreamToken;
     }
     this.activeStreamToken = { cancelled: false };
@@ -2265,7 +2360,7 @@ export class Agent {
   ]);
 
   private offloadLargeResult(toolName: string, result: string): string {
-    const OFFLOAD_THRESHOLD = 50_000;
+    const OFFLOAD_THRESHOLD = TOOL_RESULT_OFFLOAD_CHARS;
     if (result.length <= OFFLOAD_THRESHOLD) return result;
 
     // file_read already has built-in auto-limiting — don't re-offload its output
@@ -3012,8 +3107,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.getModelMaxOutputForBudget(),
+          ...this.getPrepareBudgetOpts(),
           toolDefinitions: browserTools,
           systemCacheSegments,
         });
@@ -3326,6 +3420,13 @@ export class Agent {
     senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
     options?: HandleMessageOptions,
   ): Promise<string> {
+    // User Cancel on a non-stream turn (heartbeat etc.) — stop before spending an LLM call.
+    if (this.isUserProcessingCancelled()) {
+      log.info('handleMessage cancelled by user before start', { agentId: this.id, scenario: options?.scenario });
+      if (this.activeTasks.size === 0) this.setStatus('idle');
+      return '[cancelled]';
+    }
+
     if (this.activeTasks.size === 0) {
       this.setStatus('working');
     }
@@ -3423,7 +3524,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
 
-    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -3461,8 +3562,14 @@ export class Agent {
       userMessage: toolSelectCtx.userMessage,
       isReview: scenario === 'review',
       isChat: scenario === 'chat',
+      isTaskExecution: scenario === 'task_execution',
       extraRecentToolNames: toolSelectCtx.sessionToolNames,
+      scenario,
     });
+    ({ text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
+      systemPrompt,
+      systemCacheSegments,
+    ));
     if (options?.allowedTools) {
       const allowed = options.allowedTools;
       // Restrict to the scenario's allow-list...
@@ -3492,21 +3599,78 @@ export class Agent {
     await this.maybeMemoryFlushPreflight(sessionId);
 
     const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
-    const prepared = await this.contextEngine.prepareMessages({
+    let prepared = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
       memory: this.memory,
       sessionId,
       agentId: this.id,
-      modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-      modelMaxOutput: this.getModelMaxOutputForBudget(),
+      ...this.getPrepareBudgetOpts(),
       toolDefinitions: llmTools,
       systemCacheSegments,
     });
+
+    // Afford fail-closed (Afford.S1): shared helper for stream + non-stream.
+    ({ prepared, llmTools, systemPrompt, systemCacheSegments } = await this.applyAffordGuard({
+      prepared,
+      llmTools,
+      systemPrompt,
+      systemCacheSegments,
+      sessionMessages,
+      sessionId,
+      scenario,
+      rebuildReflex: async () => {
+        const built = await this.contextEngine.buildSystemPrompt({
+          agentId: this.id,
+          agentName: this.config.name,
+          role: this.role,
+          orgContext: this.orgContext,
+          contextMdPath: this.contextMdPath,
+          memory: this.memory,
+          currentQuery: effectiveMessage,
+          identity: this.identityContext,
+          senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
+          viewerContext: this.runtimeViewerContext,
+          environment: this.environmentProfile,
+          scenario: 'heartbeat',
+          promptProfile: 'reflex',
+          agentWorkspace: this.pathPolicy ? {
+            primaryWorkspace: this.pathPolicy.primaryWorkspace,
+            sharedWorkspace: this.pathPolicy.sharedWorkspace,
+            builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
+          } : undefined,
+          agentDataDir: this.dataDir,
+          availableSkills: this.availableSkillCatalog,
+          mailboxContext: this.getMailboxContext(),
+          notebookWriter: this.getNotebookWriter(),
+          ...this.getTeamContextParams(),
+        });
+        const tools = this.buildToolDefinitions({
+          userMessage: toolSelectCtx.userMessage,
+          scenario: 'heartbeat',
+          pack: 'reflex',
+          ignoreSticky: true,
+        });
+        return {
+          systemPrompt: built.text,
+          systemCacheSegments: built.segments,
+          llmTools: tools,
+        };
+      },
+    }));
+
     const messages = prepared.messages;
     this.recordContextUsage(sessionId, prepared.usage.usagePercent);
     if (prepared.usage.compressed) this.metricsCollector.recordCompression(); // C2
-    log.debug('Context usage for chat', { usagePercent: prepared.usage.usagePercent, totalUsed: prepared.usage.totalUsed });
+    log.info('Prompt token metrics (chat)', {
+      systemTokens: prepared.usage.systemTokens,
+      historyTokens: prepared.usage.messageTokens,
+      toolDefTokens: prepared.usage.toolDefTokens,
+      totalPromptTokens: prepared.usage.totalUsed,
+      compactStage: prepared.usage.compactStage,
+      packingBudget: prepared.usage.packingBudget,
+      promptAffordTokens: prepared.usage.promptAffordTokens,
+    });
 
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     try {
@@ -3667,13 +3831,12 @@ export class Agent {
             }
           }
 
-          // Early preemption check after parallel tools complete — if an
-          // interrupt arrived during tool execution, skip the next LLM call and
-          // go straight to the yield point. Do NOT break out of the while-loop
-          // here: breaking exits without a preemption marker, causing the item
-          // to be marked completed instead of deferred.
-          if (isPreemptable && this.attentionController.hasInterruptPending()) {
-            log.info('Interrupt arrived during parallel tool execution, skipping to yield point', {
+          // Early preemption / user-cancel check after parallel tools complete.
+          // Do NOT break out of the while-loop here: breaking exits without a
+          // preemption marker, causing the item to be marked completed instead
+          // of deferred/cancelled.
+          if (isPreemptable && (this.attentionController.hasInterruptPending() || this.isUserProcessingCancelled())) {
+            log.info('Interrupt/cancel arrived during parallel tool execution, skipping to yield point', {
               agentId: this.id, scenario,
             });
             const earlyYield = await this.checkAttentionYieldPoint();
@@ -3684,6 +3847,9 @@ export class Agent {
                 preemptedBy: earlyYield.item?.sourceType,
               });
               return marker;
+            }
+            if (this.isUserProcessingCancelled()) {
+              return '[cancelled]';
             }
           }
         }
@@ -3705,6 +3871,9 @@ export class Agent {
           // The high-priority item will be processed immediately after this chat completes.
           this.attentionController.restoreInterruptSignal(chatYield.item);
         }
+        if (isPreemptable && this.isUserProcessingCancelled()) {
+          return '[cancelled]';
+        }
         if (chatYield.decision === 'merge' && chatYield.item) {
           const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
           this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });
@@ -3720,8 +3889,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.getModelMaxOutputForBudget(),
+          ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -3770,8 +3938,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.getModelMaxOutputForBudget(),
+          ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -3834,8 +4001,7 @@ export class Agent {
             memory: this.memory,
             sessionId,
             agentId: this.id,
-            modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-            modelMaxOutput: this.getModelMaxOutputForBudget(),
+            ...this.getPrepareBudgetOpts(),
             toolDefinitions: llmTools,
             systemCacheSegments,
           });
@@ -3874,8 +4040,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.getModelMaxOutputForBudget(),
+          ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -3936,8 +4101,7 @@ export class Agent {
             memory: this.memory,
             sessionId,
             agentId: this.id,
-            modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-            modelMaxOutput: this.getModelMaxOutputForBudget(),
+            ...this.getPrepareBudgetOpts(),
             toolDefinitions: llmTools,
             systemCacheSegments,
           });
@@ -4080,7 +4244,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
 
-    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -4111,27 +4275,90 @@ export class Agent {
     });
 
     this.activeScenario = 'chat';
-    const llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage, isChat: true });
+    let llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage, isChat: true });
+    ({ text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
+      systemPrompt,
+      systemCacheSegments,
+    ));
 
     // A2: flush important memory to disk before context fills (turn-level preflight).
     await this.maybeMemoryFlushPreflight(this.currentSessionId);
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
-    const preparedStream = await this.contextEngine.prepareMessages({
+    let preparedStream = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
       memory: this.memory,
       sessionId: this.currentSessionId,
       agentId: this.id,
-      modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-      modelMaxOutput: this.getModelMaxOutputForBudget(),
+      ...this.getPrepareBudgetOpts(),
       toolDefinitions: llmTools,
       systemCacheSegments,
     });
+    ({
+      prepared: preparedStream,
+      llmTools,
+      systemPrompt,
+      systemCacheSegments,
+    } = await this.applyAffordGuard({
+      prepared: preparedStream,
+      llmTools,
+      systemPrompt,
+      systemCacheSegments,
+      sessionMessages,
+      sessionId: this.currentSessionId,
+      scenario: 'chat',
+      rebuildReflex: async () => {
+        const built = await this.contextEngine.buildSystemPrompt({
+          agentId: this.id,
+          agentName: this.config.name,
+          role: this.role,
+          orgContext: this.orgContext,
+          contextMdPath: this.contextMdPath,
+          memory: this.memory,
+          currentQuery: effectiveMessage,
+          identity: this.identityContext,
+          senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
+          viewerContext: this.runtimeViewerContext,
+          environment: this.environmentProfile,
+          scenario: 'heartbeat',
+          promptProfile: 'reflex',
+          agentWorkspace: this.pathPolicy ? {
+            primaryWorkspace: this.pathPolicy.primaryWorkspace,
+            sharedWorkspace: this.pathPolicy.sharedWorkspace,
+            builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
+          } : undefined,
+          agentDataDir: this.dataDir,
+          availableSkills: this.availableSkillCatalog,
+          mailboxContext: this.getMailboxContext(),
+          notebookWriter: this.getNotebookWriter(),
+          ...this.getTeamContextParams(),
+        });
+        const tools = this.buildToolDefinitions({
+          userMessage: effectiveMessage,
+          scenario: 'heartbeat',
+          pack: 'reflex',
+          ignoreSticky: true,
+        });
+        return {
+          systemPrompt: built.text,
+          systemCacheSegments: built.segments,
+          llmTools: tools,
+        };
+      },
+    }));
     const messages = preparedStream.messages;
     this.recordContextUsage(this.currentSessionId, preparedStream.usage.usagePercent);
     if (preparedStream.usage.compressed) this.metricsCollector.recordCompression(); // C2
-    log.debug('Context usage for stream', { usagePercent: preparedStream.usage.usagePercent });
+    log.info('Context usage for stream', {
+      systemTokens: preparedStream.usage.systemTokens,
+      historyTokens: preparedStream.usage.messageTokens,
+      toolDefTokens: preparedStream.usage.toolDefTokens,
+      totalPromptTokens: preparedStream.usage.totalUsed,
+      compactStage: preparedStream.usage.compactStage,
+      promptAffordTokens: preparedStream.usage.promptAffordTokens,
+      usagePercent: preparedStream.usage.usagePercent,
+    });
 
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
 
@@ -4411,8 +4638,7 @@ export class Agent {
           memory: this.memory,
           sessionId: this.currentSessionId,
           agentId: this.id,
-          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.getModelMaxOutputForBudget(),
+          ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -4887,15 +5113,23 @@ export class Agent {
         memory: this.memory,
         sessionId,
         agentId: this.id,
-        modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-        modelMaxOutput: this.getModelMaxOutputForBudget(),
+        ...this.getPrepareBudgetOpts(),
         toolDefinitions: llmTools,
         systemCacheSegments,
       });
       const messages = preparedTask.messages;
       this.recordContextUsage(sessionId, preparedTask.usage.usagePercent);
       if (preparedTask.usage.compressed) this.metricsCollector.recordCompression(); // C2
-      log.debug('Context usage for task execution', { taskId, usagePercent: preparedTask.usage.usagePercent, totalUsed: preparedTask.usage.totalUsed });
+      log.info('Context usage for task execution', {
+        taskId,
+        systemTokens: preparedTask.usage.systemTokens,
+        historyTokens: preparedTask.usage.messageTokens,
+        toolDefTokens: preparedTask.usage.toolDefTokens,
+        totalPromptTokens: preparedTask.usage.totalUsed,
+        compactStage: preparedTask.usage.compactStage,
+        promptAffordTokens: preparedTask.usage.promptAffordTokens,
+        usagePercent: preparedTask.usage.usagePercent,
+      });
 
       let taskLlmStart = Date.now();
       let response = await this.withNetworkRetry(
@@ -5109,8 +5343,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.getModelMaxOutputForBudget(),
+          ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -5178,8 +5411,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.getModelMaxOutputForBudget(),
+          ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -5415,8 +5647,7 @@ export class Agent {
         memory: this.memory,
         sessionId,
         agentId: this.id,
-        modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-        modelMaxOutput: this.getModelMaxOutputForBudget(),
+        ...this.getPrepareBudgetOpts(),
         toolDefinitions: llmTools,
         systemCacheSegments,
       });
@@ -5525,8 +5756,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          modelContextWindow: this.llmRouter.getModelContextWindow(this.getEffectiveProvider()),
-          modelMaxOutput: this.getModelMaxOutputForBudget(),
+          ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
         });
@@ -5891,6 +6121,110 @@ export class Agent {
     return text + attachmentText;
   }
 
+  /** Afford.S2: inject short deferred-tool catalog into system Tier 3 (not tool schema). */
+  private appendDeferredToolCatalog(
+    systemPrompt: string,
+    segments: SystemPromptSegment[],
+  ): { text: string; segments: SystemPromptSegment[] } {
+    const deferred = this.toolSelector.consumeDeferredCatalog();
+    if (!deferred.length) return { text: systemPrompt, segments };
+    const catalog = formatEvictedToolCatalog(deferred, DEFERRED_CATALOG_MAX_CHARS);
+    if (!catalog) return { text: systemPrompt, segments };
+    const nextSegments = [...segments, { content: catalog }];
+    return {
+      text: `${systemPrompt}\n${catalog}`,
+      segments: nextSegments,
+    };
+  }
+
+  /**
+   * Afford.S1: shared afford gate for handleMessage + handleMessageStream.
+   * Downgrades once to reflex (rebuild system + tools); rejects with prompt_pack_rejected.
+   */
+  private async applyAffordGuard(opts: {
+    prepared: Awaited<ReturnType<ContextEngine['prepareMessages']>>;
+    llmTools: LLMTool[];
+    systemPrompt: string;
+    systemCacheSegments: SystemPromptSegment[];
+    sessionMessages: LLMMessage[];
+    sessionId: string;
+    scenario: string;
+    /** Rebuild slim reflex system+tools (MUST refresh both — tools-only made fixed worse). */
+    rebuildReflex: () => Promise<{
+      systemPrompt: string;
+      systemCacheSegments: SystemPromptSegment[];
+      llmTools: LLMTool[];
+    }>;
+  }): Promise<{
+    prepared: Awaited<ReturnType<ContextEngine['prepareMessages']>>;
+    llmTools: LLMTool[];
+    systemPrompt: string;
+    systemCacheSegments: SystemPromptSegment[];
+  }> {
+    const afford = this.getPrepareBudgetOpts().promptAffordTokens;
+    let prepared = opts.prepared;
+    let llmTools = opts.llmTools;
+    let systemPrompt = opts.systemPrompt;
+    let systemCacheSegments = opts.systemCacheSegments;
+    let alreadyDowngraded = scenarioToPack(opts.scenario) === 'reflex';
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const decision = ensureAffordablePromptPack({
+        systemTokens: prepared.usage.systemTokens,
+        toolDefTokens: prepared.usage.toolDefTokens,
+        afford,
+        alreadyDowngraded,
+      });
+      if (decision.status === 'ok') {
+        return { prepared, llmTools, systemPrompt, systemCacheSegments };
+      }
+      if (decision.status === 'downgrade_needed') {
+        log.warn('Prompt fixed prefix over afford — downgrading to reflex pack', {
+          agentId: this.id,
+          fixed: decision.fixed,
+          afford: decision.afford,
+          systemTokens: prepared.usage.systemTokens,
+          toolDefTokens: prepared.usage.toolDefTokens,
+        });
+        const rebuilt = await opts.rebuildReflex();
+        systemPrompt = rebuilt.systemPrompt;
+        systemCacheSegments = rebuilt.systemCacheSegments;
+        llmTools = rebuilt.llmTools;
+        this.toolSelector.consumeDeferredCatalog();
+        prepared = await this.contextEngine.prepareMessages({
+          systemPrompt,
+          sessionMessages: opts.sessionMessages,
+          memory: this.memory,
+          sessionId: opts.sessionId,
+          agentId: this.id,
+          ...this.getPrepareBudgetOpts(),
+          toolDefinitions: llmTools,
+          systemCacheSegments,
+        });
+        log.info('Reflex afford downgrade rebuilt', {
+          agentId: this.id,
+          systemTokens: prepared.usage.systemTokens,
+          toolDefTokens: prepared.usage.toolDefTokens,
+          fixed: prepared.usage.systemTokens + prepared.usage.toolDefTokens,
+          toolCount: llmTools.length,
+        });
+        alreadyDowngraded = true;
+        continue;
+      }
+      log.error('prompt_pack_rejected — fixed prefix exceeds provider afford', {
+        agentId: this.id,
+        fixed: decision.fixed,
+        afford: decision.afford,
+        needed: decision.needed,
+      });
+      throw new Error(
+        `prompt_pack_rejected: system+tools (${decision.fixed}) exceed provider afford (${decision.afford}). `
+        + 'Reduce skills/tools, lower model, or top up credits.',
+      );
+    }
+    return { prepared, llmTools, systemPrompt, systemCacheSegments };
+  }
+
   private buildToolDefinitions(context?: {
     userMessage?: string;
     isTaskExecution?: boolean;
@@ -5899,18 +6233,28 @@ export class Agent {
     isChat?: boolean;
     /** Extra names forced into selection (e.g. tools already used in this session). */
     extraRecentToolNames?: string[];
+    /** Scenario capability pack override. */
+    pack?: CapabilityPack;
+    scenario?: string;
+    /** Afford downgrade: ignore session sticky / activated extras. */
+    ignoreSticky?: boolean;
   }): LLMTool[] {
     const isManager = this.config.agentRole === 'manager';
     const isSecretary = this.role.name.toLowerCase() === 'secretary';
 
     // Include tools the agent explicitly requested via discover_tools
-    const recentPlusActivated = [
-      ...this.recentToolNames,
-      ...this.activatedExtraTools,
-      ...(context?.extraRecentToolNames ?? []),
-    ];
+    const recentPlusActivated = context?.ignoreSticky
+      ? [...(context?.extraRecentToolNames ?? [])]
+      : [
+          ...this.recentToolNames,
+          ...this.activatedExtraTools,
+          ...(context?.extraRecentToolNames ?? []),
+        ];
 
     const effectiveTools = taskAsyncContext.getStore()?.tools ?? this.tools;
+    const pack = context?.pack
+      ?? (context?.scenario ? scenarioToPack(context.scenario) : undefined)
+      ?? (context?.isTaskExecution ? 'execute' as const : context?.isReview ? 'govern' as const : 'converse' as const);
 
     const tools = this.toolSelector.selectTools({
       allTools: effectiveTools,
@@ -5922,6 +6266,7 @@ export class Agent {
       isReview: context?.isReview,
       isChat: context?.isChat,
       skillCatalog: this.skillRegistry?.list(),
+      pack,
     });
 
     return tools;
@@ -6037,6 +6382,15 @@ export class Agent {
         if (skill) {
           if (skill.manifest.instructions) {
             this.activatedSkillInstructions.set(name, skill.manifest.instructions);
+          }
+          // Skill stats (LEARNING-LOOP §4) — does not affect trust score
+          try {
+            const skillDir = skill.manifest.sourcePath;
+            if (typeof skillDir === 'string' && skillDir) {
+              recordSkillActivation(skillDir);
+            }
+          } catch (err) {
+            log.debug('Skill stats activation record failed', { skill: name, error: String(err) });
           }
 
           let mcpToolCount = 0;
@@ -6678,34 +7032,59 @@ export class Agent {
   private async handleHeartbeat(ctx: {
     agentId: string;
     triggeredAt: string;
-  }): Promise<void> {
+  }): Promise<string | void> {
     log.info('Processing heartbeat check-in');
 
-    // Skip idle heartbeats when nothing has changed, but force a real LLM
-    // heartbeat every MAX_CONSECUTIVE_IDLE_SKIPS to ensure periodic patrol.
-    const MAX_CONSECUTIVE_IDLE_SKIPS = 3;
+    // Deep sleep / idle skip — AGENT-RUNTIME deep sleep Spec.
     const queuedNonHeartbeat = this.mailbox.getQueuedItems().filter(
       i => i.sourceType !== 'heartbeat' && i.status === 'queued'
     ).length;
+    const humanOrTaskMail = this.mailbox.getQueuedItems().some(
+      i => i.status === 'queued' && (
+        i.sourceType === 'human_chat'
+        || i.sourceType === 'task_status_update'
+        || i.sourceType === 'task_comment'
+      ),
+    );
     const fingerprint = `q:${queuedNonHeartbeat}`;
-    const shouldForce = this.consecutiveIdleHeartbeats >= MAX_CONSECUTIVE_IDLE_SKIPS;
-    if (fingerprint === this.lastHeartbeatFingerprint && queuedNonHeartbeat === 0 && !shouldForce) {
-      this.consecutiveIdleHeartbeats++;
-      log.info('Heartbeat: no changes detected, skipping LLM call', {
+    const unchanged = fingerprint === this.lastHeartbeatFingerprint && queuedNonHeartbeat === 0;
+    if (unchanged) this.consecutiveIdleHeartbeats++;
+    else this.consecutiveIdleHeartbeats = resetIdleOnWake();
+    this.lastHeartbeatFingerprint = fingerprint;
+
+    const deepSleep = shouldEnterDeepSleep({
+      consecutiveIdleHeartbeats: this.consecutiveIdleHeartbeats,
+      hasActiveTasks: false,
+      hasPendingReviews: false,
+      hasHumanOrTaskMailbox: humanOrTaskMail || queuedNonHeartbeat > 0,
+    });
+
+    // Skip LLM while unchanged (including deep sleep). No forced patrol when org is quiet —
+    // wake on human_chat / task / review mailbox items (fingerprint change).
+    if (unchanged) {
+      log.info('Heartbeat: skipping LLM (idle/deep-sleep)', {
         consecutiveIdle: this.consecutiveIdleHeartbeats,
+        deepSleep,
       });
       const skipActivityId = this.startActivity('heartbeat', 'Heartbeat check-in (idle skip)', {});
-      this.emitActivityLog(skipActivityId, 'text', `No changes detected (idle ${this.consecutiveIdleHeartbeats}/${MAX_CONSECUTIVE_IDLE_SKIPS}). Skipping LLM patrol — next forced patrol in ${MAX_CONSECUTIVE_IDLE_SKIPS - this.consecutiveIdleHeartbeats} heartbeat(s).`);
-      this.endActivity(skipActivityId);
+      this.emitActivityLog(
+        skipActivityId,
+        'text',
+        deepSleep
+          ? `Deep sleep (idle ${this.consecutiveIdleHeartbeats}). No LLM call; interval may extend.`
+          : `No changes detected (idle ${this.consecutiveIdleHeartbeats}). Skipping LLM.`,
+      );
+      this.endActivity(skipActivityId, { success: true });
       this.state.lastHeartbeat = new Date().toISOString();
       this.metricsCollector.recordHeartbeat(true, true);
+      if (deepSleep) {
+        try {
+          const cur = (this as unknown as { heartbeatIntervalMs?: number }).heartbeatIntervalMs ?? 6 * 3600_000;
+          const next = nextDeepSleepIntervalMs(cur);
+          this.heartbeat?.updateInterval?.(next);
+        } catch { /* optional */ }
+      }
       return;
-    }
-    this.lastHeartbeatFingerprint = fingerprint;
-    if (shouldForce) {
-      log.info('Heartbeat: forcing LLM patrol after consecutive idle skips', {
-        consecutiveIdle: this.consecutiveIdleHeartbeats,
-      });
     }
     this.consecutiveIdleHeartbeats = 0;
 
@@ -6781,26 +7160,12 @@ export class Agent {
       ].join('\n');
     }
 
-    // --- Self-evolution reflection section (all agents) ---
-    const roleMdAbs = join(this.dataDir, 'role', 'ROLE.md');
-    const heartbeatMdAbs = join(this.dataDir, 'role', 'HEARTBEAT.md');
+    // Learning Loop is system-triggered (LEARNING-LOOP.md) — no long self-evolution essay in reflex.
     const selfEvolutionSection = [
       '',
-      '## Self-Evolution (since last heartbeat)',
-      'Review your recently completed tasks (`task_list`). For anything **specific, actionable, and non-obvious** you learned, record it — route by type (always `memory_search` first to update rather than duplicate):',
-      'Insight format: `[INSIGHT] <one-line summary>`; tags always start with `"insight"`, then a category (e.g. `coding`, `tool:<name>`, `domain:<topic>`).',
-      '',
-      '| Observation type | Action |',
-      '|---|---|',
-      '| Single insight / gotcha | `memory_save` (tags: `["insight"]`) |',
-      '| Tool tip or preference | `memory_save` (tags: `["insight", "tool:<name>"]`) |',
-      '| Multi-step repeatable workflow | `memory_update_longterm({ section: "procedures", mode: "patch" })` |',
-      '| Practice worth sharing | Create a skill (skill-building), then `package_install` |',
-      `| Behavioral rule / guiding principle | Append to \`${roleMdAbs}\` (\`file_read\` → \`file_edit\`) |`,
-      `| New recurring patrol check | Update \`${heartbeatMdAbs}\` (\`file_read\` → \`file_edit\`) |`,
-      '',
-      `A high revision rate (tasks with \`executionRound > 1\`) signals your knowledge/\`${roleMdAbs}\` is not covering real failure patterns — fix that. Skip this entirely if nothing meaningful happened.`,
-      'Do not write ROLE.md or HEARTBEAT.md under the working directory or agent-home root; only the `role/` paths above are loaded.',
+      '## Learning note',
+      'Do not distill skills here. Post-task distillation and Dream librarian handle evolution.',
+      'If you notice a one-line insight, `memory_save` it; otherwise skip.',
     ].join('\n');
 
     // Drain any background process completion notifications
@@ -6891,25 +7256,8 @@ export class Agent {
       '- If nothing needs attention and no daily report is due, respond with exactly: HEARTBEAT_OK',
     ].join('\n');
 
-    const baseTools = [
-      'task_create', 'task_list', 'task_update', 'task_get', 'task_note',
-      'task_comment', 'requirement_comment',
-      'file_read', 'agent_send_message',
-      'requirement_propose', 'requirement_list', 'requirement_update_status',
-      'memory_save', 'memory_search', 'memory_update', 'memory_update_longterm',
-      'update_notebook', 'update_working_memory',
-      'discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'recall_activity',
-      'schedule_wakeup', 'cancel_wakeup', 'set_heartbeat_interval',
-      'package_install', 'package_list',
-      'goal_create', 'goal_update', 'goal_status',
-    ];
-    if (isManager) {
-      baseTools.push(
-        'task_board_health', 'task_cleanup_duplicates', 'task_assign',
-        'team_status', 'deliverable_create', 'deliverable_search',
-      );
-    }
-    const HEARTBEAT_ALLOWED_TOOLS = new Set(baseTools);
+    // Reflex pack allowlist (AGENT-RUNTIME §2.2) — no package/goal/spawn fat.
+    const HEARTBEAT_ALLOWED_TOOLS = getReflexAllowlist(isManager);
 
     const HEARTBEAT_MAX_RETRIES = 3;
     const HEARTBEAT_RETRY_BASE_MS = 3000;
@@ -6923,6 +7271,15 @@ export class Agent {
           scenario: 'heartbeat',
           maxToolIterations: Agent.HEARTBEAT_MAX_TOOL_ITERATIONS,
         });
+
+        if (reply === '[preempted]' || reply === '[cancelled]') {
+          this.emitActivityLog(activityId, 'text',
+            reply === '[cancelled]' ? 'Heartbeat cancelled by user.' : 'Heartbeat paused for higher-priority work.');
+          this.endActivity(activityId, { success: false });
+          this.metricsCollector.recordHeartbeat(false);
+          return reply;
+        }
+
         this.state.lastHeartbeat = new Date().toISOString();
         this.metricsCollector.recordHeartbeat(true);
 
@@ -6945,7 +7302,7 @@ export class Agent {
           this.memory.writeDailyLog(this.id, `[Heartbeat] ${cleanReply}`);
         }
         this.endActivity(activityId);
-        return;
+        return reply;
       } catch (error) {
         lastError = error;
         if (attempt < HEARTBEAT_MAX_RETRIES) {
@@ -7062,6 +7419,10 @@ export class Agent {
         try {
           await this.dreamConsolidateMemory(entries);
           this.pruneMemoryMd();
+          try {
+            const mem = this.memory as IMemoryStore;
+            mem.pruneStateMemory?.();
+          } catch { /* optional state.md TTL */ }
         } finally {
           Agent.releaseDreamSlot();
         }

@@ -683,6 +683,21 @@ describe('org context and callbacks', () => {
     expect(token.userStopped).toBe(true);
   });
 
+  it('clearProcessingCancel prevents cancel from poisoning the next stream turn', () => {
+    const agent = createTestAgent(makeMockRouter());
+    const first = agent.getStreamCancelToken();
+    agent.cancelActiveStream();
+    expect(first.userStopped).toBe(true);
+
+    // After a mailbox item finishes, cancel flags must not stick to the next turn
+    // (regression: cancelling heartbeat dropped the following human_chat).
+    agent.clearProcessingCancel();
+    const next = agent.getStreamCancelToken();
+    expect(next).not.toBe(first);
+    expect(next.cancelled).toBe(false);
+    expect(next.userStopped).toBeFalsy();
+  });
+
   it('getContextEngine returns shared context engine instance', () => {
     const agent = createTestAgent(makeMockRouter());
     expect(agent.getContextEngine()).toBeDefined();

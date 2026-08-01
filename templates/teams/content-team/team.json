@@ -6,7 +6,18 @@
   "description": "A multi-platform content creation team with specialized writers for Chinese and English markets. Editor-in-Chief plans the editorial calendar and reviews content; Chinese writer handles WeChat public accounts and Zhihu long-form articles; Little Red Book (Xiaohongshu) operator creates image-text notes and short videos; English writer produces X.com threads and LinkedIn articles; General content creator handles multi-platform adaptation and asset reuse. Each writer owns their platform domain. Designed for content operations, brand marketing, and cross-platform content strategies.",
   "author": "Markus Team",
   "category": "productivity",
-  "tags": ["content", "writing", "marketing", "multi-platform", "social-media", "wechat", "xiaohongshu", "x.com", "linkedin", "zhihu"],
+  "tags": [
+    "content",
+    "writing",
+    "marketing",
+    "multi-platform",
+    "social-media",
+    "wechat",
+    "xiaohongshu",
+    "x.com",
+    "linkedin",
+    "zhihu"
+  ],
   "icon": "edit",
   "starterTasks": [
     {
@@ -46,7 +57,7 @@
         "roleName": "project-manager",
         "count": 1,
         "description": "选题策划、内容审核、发布排期协调",
-        "skills": ["self-evolution"]
+        "skills": []
       },
       {
         "name": "Chinese Writer",
@@ -54,7 +65,7 @@
         "roleName": "content-writer",
         "count": 1,
         "description": "微信公众号/知乎长文写作",
-        "skills": ["self-evolution"]
+        "skills": []
       },
       {
         "name": "Xiaohongshu Operator",
@@ -62,7 +73,10 @@
         "roleName": "content-writer",
         "count": 1,
         "description": "小红书图文/短视频创作与发布",
-        "skills": ["chrome-devtools", "xhs-posting", "self-evolution"]
+        "skills": [
+          "chrome-devtools",
+          "xhs-posting"
+        ]
       },
       {
         "name": "English Writer",
@@ -70,7 +84,9 @@
         "roleName": "content-writer",
         "count": 1,
         "description": "X.com/LinkedIn 英文推文与文章",
-        "skills": ["x-com-browser-posting", "self-evolution"]
+        "skills": [
+          "x-com-browser-posting"
+        ]
       },
       {
         "name": "General Content Creator",
@@ -78,9 +94,11 @@
         "roleName": "content-writer",
         "count": 1,
         "description": "多平台适应、素材复用、抖音口播文案",
-        "skills": ["self-evolution"]
+        "skills": []
       }
     ],
-    "workflows": ["workflows/content-publishing.yaml"]
+    "workflows": [
+      "workflows/content-publishing.yaml"
+    ]
   }
 }

@@ -145,6 +145,53 @@ export function parseOpenRouterAffordableTokens(errText: string): number | null 
 }
 
 /**
+ * Clamp max_tokens for an OpenRouter reservation-afford retry (Afford.S4).
+ * `max_tokens = min(N, max(512, N - safety))` → effectively max(512, N - safety).
+ */
+export function clampReservationMaxTokens(
+  affordable: number,
+  safety = 64,
+  floor = 512,
+): number {
+  if (!(affordable > 0)) return floor;
+  return Math.max(floor, Math.min(affordable, affordable - Math.max(0, safety)));
+}
+
+/**
+ * Proactive max_tokens clamp from known prompt afford (Afford.S4).
+ * `max_tokens ≤ promptAfford - estimatedPrompt - margin`, floored at 512.
+ */
+export function clampMaxTokensToRemainingAfford(opts: {
+  requested: number | undefined;
+  promptAfford: number;
+  estimatedPrompt: number;
+  margin?: number;
+  floor?: number;
+}): number {
+  const margin = opts.margin ?? 500;
+  const floor = opts.floor ?? 512;
+  const remaining = Math.max(
+    floor,
+    Math.floor(opts.promptAfford - Math.max(0, opts.estimatedPrompt) - margin),
+  );
+  if (opts.requested == null || !(opts.requested > 0)) return remaining;
+  return Math.min(opts.requested, remaining);
+}
+
+/**
+ * OpenRouter 402 when the *prompt* itself exceeds key affordability:
+ *   "Prompt tokens limit exceeded: 86869 > 37406"
+ * Returns the afford ceiling (Y), not the requested size (X).
+ */
+export function parseOpenRouterPromptAffordableTokens(errText: string): number | null {
+  const m = (errText || '').match(/Prompt tokens limit exceeded:\s*\d+\s*>\s*(\d+)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.max(1, Math.floor(n * 0.95));
+}
+
+/**
  * Format a media-API error for the agent/tool layer.
  * MarkusProvider must resolve credit-like HTTP statuses via Hub cu/sync
  * *before* calling this — otherwise a stale OpenRouter 402 is mislabeled

@@ -45,7 +45,7 @@ import {
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
 import {
-  NotificationBadge, ChatAgentLink, AvatarPopover, MessageActions,
+  NotificationBadge, ChatAgentLink, AvatarPopover, MessageActions, RememberModal,
   AgentMessageBody, segmentsToStreamEntries, friendlyAgentError, isMarkusCreditError, dispatchCreditNotification,
 } from './ChatComponents.tsx';
 export type { MsgSegment };
@@ -2163,8 +2163,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setActivities([]);
   };
 
+  const [rememberTarget, setRememberTarget] = useState<ChatMsg | null>(null);
+  const [rememberBusy, setRememberBusy] = useState(false);
+
   const lastSendGuardRef = useRef<{ text: string; at: number } | null>(null);
-  const send = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean }) => {
+  const send = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean; sessionIdOverride?: string }) => {
     const ctxPrefix = (!retryText && chatContext.length > 0)
       ? chatContext.map(c => c.content).join('\n\n') + '\n\n'
       : '';
@@ -2410,7 +2413,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const agentMsgId = `a_${sendNonce}`;
       const optimisticUserId = `u_${sendNonce}`;
       // Mutable session ID that gets resolved when session_start event arrives
-      let streamSessionId: string | null = activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId;
+      let streamSessionId: string | null = options?.sessionIdOverride
+        ?? (activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId);
       if (options?.isResume) {
         // Resume: don't add a duplicate user message — just append the
         // agent continuation placeholder after the existing partial response.
@@ -2670,7 +2674,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       const abortCtrl = new AbortController();
       abortControllerRef.current = abortCtrl;
-      const streamSessionAtStart = activeSessionId;
+      const effectiveSessionId = options?.sessionIdOverride
+        ?? (activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId);
+      const streamSessionAtStart = effectiveSessionId;
       // Add this session to the set of actively streaming sessions for this agent.
       if (streamSessionAtStart) {
         setStreamSession(sendKey, streamSessionAtStart);
@@ -2678,7 +2684,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       try {
         lastSseEventTimeRef.current = Date.now();
-        const effectiveSessionId = activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId;
         // Persist/send only the user's text. Reply context goes via replyTo metadata
         // so reload does not show the quoted agent message inside the user bubble.
         const streamResult = await api.agents.messageStream(
@@ -2722,7 +2727,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   .map(s => (s as { content: string }).content)
                   .join('');
               }
-              u[idx] = { ...u[idx]!, text: finalText, segments: finalSegs, committedSegments: finalSegs };
+              const empty = !finalText?.trim() && !finalSegs.some(s =>
+                (s.type === 'text' && (s.content || s.thinking)) || s.type === 'tool'
+              );
+              u[idx] = {
+                ...u[idx]!,
+                text: finalText,
+                segments: finalSegs,
+                committedSegments: finalSegs,
+                isStopped: streamResult.cancelled || u[idx]!.isStopped,
+                emptyReply: streamResult.emptyReply || empty || undefined,
+                isError: streamResult.emptyReply || empty ? true : u[idx]!.isError,
+              };
               return u;
             }, streamSessionId);
           }
@@ -2742,8 +2758,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 .map(s => s.content)
                 .join('');
               const finalText = committedText || streamResult.content || msg.text;
-              if (committed.length > 0 || finalText) {
-                u[idx] = { ...msg, text: finalText, segments: committed.length > 0 ? committed : msg.segments };
+              const empty = !finalText?.trim() && committed.length === 0;
+              if (committed.length > 0 || finalText || streamResult.cancelled || streamResult.emptyReply || empty) {
+                u[idx] = {
+                  ...msg,
+                  text: finalText,
+                  segments: committed.length > 0 ? committed : msg.segments,
+                  isStopped: streamResult.cancelled || msg.isStopped,
+                  emptyReply: streamResult.emptyReply || empty || undefined,
+                  isError: (streamResult.emptyReply || empty) ? true : msg.isError,
+                };
               }
               return u;
             }, streamSessionId);
@@ -3084,6 +3108,56 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
     textareaRef.current?.focus();
   }, [authUser?.name, chatMode, t]);
+
+  const handleRememberConfirm = async (userNote: string) => {
+    if (!rememberTarget || !selectedAgent || chatMode !== 'direct') return;
+    const parentSessionId = activeSessionId;
+    if (!parentSessionId || parentSessionId === NEW_CHAT_PLACEHOLDER_ID) return;
+    setRememberBusy(true);
+    try {
+      const result = await api.agents.evolveFromMessage(selectedAgent, {
+        parentSessionId,
+        sourceMessageId: rememberTarget.id.startsWith('a_') || rememberTarget.id.startsWith('u_')
+          ? undefined
+          : rememberTarget.id,
+        sourceText: (rememberTarget.text || '').slice(0, 500) || undefined,
+        userNote: userNote.trim() || undefined,
+      });
+      const nowIso = new Date().toISOString();
+      const childSession: ChatSessionInfo = {
+        id: result.sessionId,
+        agentId: selectedAgent,
+        userId: authUser?.id ?? null,
+        title: 'Remember / Evolution',
+        isMain: false,
+        metadata: {
+          kind: 'evolution',
+          parentSessionId: result.parentSessionId,
+          sourceMessageId: rememberTarget.id,
+          sourceAgentId: selectedAgent,
+          createdFrom: 'remember_button',
+        },
+        createdAt: nowIso,
+        lastMessageAt: nowIso,
+      };
+      setRememberTarget(null);
+      setSessions(prev => [childSession, ...prev.filter(s => s.id !== childSession.id)]);
+      setOpenSessionTabs(prev => prev.some(t => t.id === childSession.id) ? prev : [...prev, childSession]);
+      setActiveSessionId(childSession.id);
+      const key = makeConvKey('direct', selectedAgent, activeChannel, activeDmUserId);
+      activeSessionBuffer.set(key, childSession.id);
+      setStoredActiveSession(selectedAgent, childSession.id);
+      resetConv(key);
+      setMessages([]);
+      setHasMore(false);
+      oldestMsgId.current = null;
+      await send(result.seedPrompt, { sessionIdOverride: result.sessionId });
+    } catch (err) {
+      console.error('evolve-from-message failed', err);
+    } finally {
+      setRememberBusy(false);
+    }
+  };
 
   const switchSession = async (s: ChatSessionInfo) => {
     const prevSessionId = activeSessionId;
@@ -4051,6 +4125,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               ))}
             </div>
           )}
+          {chatMode === 'direct' && mainTab === 'chat'
+            && (openSessionTabs.find(s => s.id === activeSessionId) ?? sessions.find(s => s.id === activeSessionId))
+              ?.metadata?.kind === 'evolution' && (
+            <div className="px-4 py-1.5 text-[11px] text-fg-tertiary border-b border-border-default bg-surface-secondary/40">
+              {t('page.messageActions.evolvedFrom')}
+            </div>
+          )}
 
           {/* Group chat member management panel */}
           {chatMode === 'channel' && activeGroupChat?.type === 'custom' && showMemberPanel && (() => {
@@ -4406,8 +4487,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       )}
                     </div>
                     {showActions && !previewMode && (
-                      <div className={`transition-opacity ${msg.isStopped || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
-                        <MessageActions msg={msg} onCopy={handleCopy} onRetry={handleRetry} onResume={handleResume} onReply={handleReplyMsg} isCopied={copiedMsgId === msg.id} isLastAgentMsg={msg.id === lastAgentMsgId} />
+                      <div className={`transition-opacity ${msg.isStopped || msg.isError || msg.emptyReply || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
+                        <MessageActions
+                          msg={msg}
+                          onCopy={handleCopy}
+                          onRetry={handleRetry}
+                          onResume={handleResume}
+                          onReply={handleReplyMsg}
+                          onRemember={chatMode === 'direct' ? setRememberTarget : undefined}
+                          showRemember={chatMode === 'direct'}
+                          isCopied={copiedMsgId === msg.id}
+                          isLastAgentMsg={msg.id === lastAgentMsgId}
+                        />
                       </div>
                     )}
                   </div>
@@ -4546,6 +4637,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               executeRetry(pending.retryMsg, pending.userMsg, pending.retryText);
             }}
             onCancel={() => setRetryConfirm(null)}
+          />
+        )}
+        {rememberTarget && (
+          <RememberModal
+            busy={rememberBusy}
+            onConfirm={(note) => { void handleRememberConfirm(note); }}
+            onCancel={() => { if (!rememberBusy) setRememberTarget(null); }}
           />
         )}
 

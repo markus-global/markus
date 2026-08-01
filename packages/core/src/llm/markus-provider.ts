@@ -26,6 +26,9 @@ import {
   formatUpstreamMediaError,
   isCreditExhaustedHttp,
   parseOpenRouterAffordableTokens,
+  parseOpenRouterPromptAffordableTokens,
+  clampReservationMaxTokens,
+  clampMaxTokensToRemainingAfford,
   type MultiModalProviderInterface,
   type MultiModalToolSchemas,
   type ImageGenOptions,
@@ -44,7 +47,11 @@ export {
   formatUpstreamMediaError,
   isCreditExhaustedHttp,
   parseOpenRouterAffordableTokens,
+  parseOpenRouterPromptAffordableTokens,
+  clampReservationMaxTokens,
+  clampMaxTokensToRemainingAfford,
 } from './provider.js';
+// normalizeMarkusHubOrigin exported above with resolveMarkusRoute
 
 const log = createLogger('markus-provider');
 
@@ -275,6 +282,25 @@ export function resolveMarkusRoute(
 }
 
 /**
+ * Apex `markus.global` 307s to `www.markus.global`. Node/fetch strips
+ * `Authorization` on that cross-origin redirect → cu/sync 401 forever.
+ * Always prefer the www origin for Hub API calls.
+ */
+export function normalizeMarkusHubOrigin(originOrUrl: string): string {
+  const raw = (originOrUrl || '').trim().replace(/\/+$/, '');
+  if (!raw) return '';
+  try {
+    const u = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    if (u.hostname === 'markus.global') {
+      u.hostname = 'www.markus.global';
+    }
+    return u.origin;
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Normalize an outgoing model id before sending it to OpenRouter.
  *
  * Catalog / routing ids are OpenRouter slugs (e.g. `deepseek/deepseek-v4-flash`).
@@ -449,6 +475,41 @@ export class MarkusProvider implements MultiModalProviderInterface {
   /** Direct path: last/aggregate usage cost for local UX only (not ledgered by this client). */
   private lastCostUsd = 0;
   private totalCostUsd = 0;
+  /** Last OpenRouter prompt-token afford ceiling (from 402 "Prompt tokens limit exceeded"). */
+  private lastPromptAffordTokens: number | null = null;
+  /** When lastPromptAffordTokens was recorded (stale afford must not permanently block). */
+  private lastPromptAffordAt = 0;
+  /** Last observed prompt token count (from usage) for proactive max_tokens clamp. */
+  private lastPromptTokensEstimate: number | null = null;
+
+  /** Ignore cached OR prompt-afford after this (key top-ups / pack shrinks invalidate it). */
+  private static readonly PROMPT_AFFORD_TTL_MS = 90_000;
+
+  /** Prompt-token budget hint for context packing (null if unknown / expired). */
+  getLastPromptAffordTokens(): number | null {
+    if (this.lastPromptAffordTokens == null) return null;
+    if (Date.now() - this.lastPromptAffordAt > MarkusProvider.PROMPT_AFFORD_TTL_MS) {
+      log.info('Clearing stale OpenRouter prompt afford', {
+        promptAffordTokens: this.lastPromptAffordTokens,
+        ageMs: Date.now() - this.lastPromptAffordAt,
+      });
+      this.lastPromptAffordTokens = null;
+      this.lastPromptAffordAt = 0;
+      return null;
+    }
+    return this.lastPromptAffordTokens;
+  }
+
+  /** Drop cached afford after a successful turn or when Hub shows healthy OR USD. */
+  clearPromptAffordHint(reason?: string): void {
+    if (this.lastPromptAffordTokens == null) return;
+    log.info('Clearing OpenRouter prompt afford hint', {
+      promptAffordTokens: this.lastPromptAffordTokens,
+      reason: reason ?? 'manual',
+    });
+    this.lastPromptAffordTokens = null;
+    this.lastPromptAffordAt = 0;
+  }
 
   /** Fetch available models from the Hub live catalog. Cached 10 minutes. */
   async fetchModels(): Promise<MarkusModelInfo[]> {
@@ -575,13 +636,15 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
   private resolveHubBase(): string {
     const explicit = (this.hubUrl || process.env['MARKUS_HUB_URL'] || '').replace(/\/+$/, '');
-    if (explicit) return explicit;
-    if (this.modelsUrl) {
+    const raw = explicit || (() => {
+      if (!this.modelsUrl) return '';
       try {
         return new URL(this.modelsUrl).origin;
-      } catch { /* ignore */ }
-    }
-    return '';
+      } catch {
+        return '';
+      }
+    })();
+    return normalizeMarkusHubOrigin(raw);
   }
 
   private resolveHubToken(): string {
@@ -599,7 +662,12 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * Event-driven Hub sync: renew period if due, reconcile + align OpenRouter keys.
    * Used before soft-stop and once after upstream credit-exhausted responses.
    */
-  async syncHubCredits(opts?: { force?: boolean; minIntervalMs?: number }): Promise<{
+  async syncHubCredits(opts?: {
+    force?: boolean;
+    minIntervalMs?: number;
+    /** Default true. Set false when handling a 402 so the just-recorded afford packing hint survives. */
+    clearStaleAfford?: boolean;
+  }): Promise<{
     remainingCu: number;
     remainingUsd: number;
   } | null> {
@@ -637,6 +705,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
         if (this.lastQuotaInfo) {
           this.lastQuotaInfo = { ...this.lastQuotaInfo, cuRemaining: Math.max(remainingCu, 1) };
         }
+        // Preflight sync with healthy OR USD → drop stale fail-closed ceiling.
+        // Skip when clearStaleAfford=false (inside 402 handler — keep packing hint).
+        if (opts?.clearStaleAfford !== false && remainingUsd >= 0.05) {
+          this.clearPromptAffordHint('hub_sync_or_usd');
+        }
       } else {
         this.hubRemainingHint = 0;
       }
@@ -669,19 +742,33 @@ export class MarkusProvider implements MultiModalProviderInterface {
     errText: string,
     alreadyRetried: boolean,
   ): Promise<{ retry: true; maxTokens?: number }> {
+    const promptAfford = parseOpenRouterPromptAffordableTokens(errText);
+    if (promptAfford != null) {
+      this.lastPromptAffordTokens = promptAfford;
+      this.lastPromptAffordAt = Date.now();
+      log.warn('OpenRouter prompt afford recorded for context packing', {
+        promptAffordTokens: promptAfford,
+        ttlMs: MarkusProvider.PROMPT_AFFORD_TTL_MS,
+      });
+    }
+
     const affordable = parseOpenRouterAffordableTokens(errText);
-    const synced = await this.syncHubCredits({ force: true });
+    // Keep the afford hint we just recorded for packing; do not clear on this sync.
+    const synced = await this.syncHubCredits({ force: true, clearStaleAfford: false });
     const hubHasBudget = !!synced && (synced.remainingCu > 0 || synced.remainingUsd > 0);
     const hubEmpty = !!synced && synced.remainingCu <= 0 && synced.remainingUsd <= 0;
 
-    // Clamp retry is driven by OR's afford ceiling; Hub empty is the only veto.
-    if (!alreadyRetried && affordable != null && !hubEmpty) {
+    // Prompt-limit 402s are not fixed by lowering max_tokens — packing must shrink next turn.
+    // Still allow a max_tokens clamp retry when OR only reports reservation afford.
+    if (!alreadyRetried && affordable != null && promptAfford == null && !hubEmpty) {
+      const maxTokens = clampReservationMaxTokens(affordable);
       log.info('Retrying with OpenRouter-affordable max_tokens', {
-        maxTokens: affordable,
+        maxTokens,
+        affordable,
         hubSynced: !!synced,
         hubHasBudget,
       });
-      return { retry: true, maxTokens: affordable };
+      return { retry: true, maxTokens };
     }
 
     if (!alreadyRetried && hubHasBudget) {
@@ -791,6 +878,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
     }
     llmResponse.creditWarning = this.checkLowCredit();
     this.recordCU(llmResponse);
+    // Successful completion ⇒ key accepted this pack; drop stale afford ceiling.
+    this.clearPromptAffordHint('chat_success');
 
     return llmResponse;
   }
@@ -962,6 +1051,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
               const u = chunk.usage as Record<string, number>;
               promptTokens = u.prompt_tokens ?? 0;
               completionTokens = u.completion_tokens ?? 0;
+              if (promptTokens > 0) this.lastPromptTokensEstimate = promptTokens;
               if (target.route === 'openrouter') {
                 this.recordCostUsd(chunk.usage as Record<string, unknown>);
               }
@@ -1021,6 +1111,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     streamResult.creditWarning = this.checkLowCredit();
 
     this.cuCache.add(promptTokens, completionTokens);
+    this.clearPromptAffordHint('stream_success');
     return streamResult;
   }
 
@@ -1045,6 +1136,19 @@ export class MarkusProvider implements MultiModalProviderInterface {
     return stripMarkusNamespace((modelId ?? this.model ?? '').trim());
   }
 
+  /** Rough prompt-token estimate for proactive max_tokens clamp (chars/4). */
+  private estimateRequestPromptTokens(request: LLMRequest): number {
+    try {
+      const payload = JSON.stringify({
+        messages: request.messages,
+        tools: request.tools,
+      });
+      return Math.max(1, Math.ceil(payload.length / 4));
+    } catch {
+      return this.lastPromptTokensEstimate ?? 4_000;
+    }
+  }
+
   private buildBody(request: LLMRequest, stream: boolean, route: MarkusRoute): Record<string, unknown> {
     // Catalog ids are OR slugs; strip optional legacy `markus/` gateway prefix.
     const outgoingModel = this.resolveOutgoingModel(request.model);
@@ -1059,7 +1163,19 @@ export class MarkusProvider implements MultiModalProviderInterface {
     };
     // Only cap output when a real value is known (from the request or config).
     // Otherwise omit it so the upstream uses the model's own maximum.
-    const maxTokens = request.maxTokens ?? this.maxTokens;
+    // Afford.S4: when prompt afford is known, proactively clamp so we never
+    // send a doomed high reservation (e.g. 13156) before the first 402.
+    let maxTokens = request.maxTokens ?? this.maxTokens;
+    if (this.lastPromptAffordTokens != null && this.lastPromptAffordTokens > 0) {
+      const estimatedPrompt =
+        this.lastPromptTokensEstimate
+        ?? this.estimateRequestPromptTokens(request);
+      maxTokens = clampMaxTokensToRemainingAfford({
+        requested: maxTokens && maxTokens > 0 ? maxTokens : undefined,
+        promptAfford: this.lastPromptAffordTokens,
+        estimatedPrompt,
+      });
+    }
     if (maxTokens && maxTokens > 0) body['max_tokens'] = maxTokens;
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.tools?.length) body['tools'] = convertToolsForOpenRouter(request.tools);
@@ -1172,6 +1288,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
       extractReasoningText(message?.reasoning) ||
       extractReasoningText(message?.thinking) ||
       extractReasoningText(message?.reasoning_details);
+
+    if (usage?.prompt_tokens && usage.prompt_tokens > 0) {
+      this.lastPromptTokensEstimate = usage.prompt_tokens;
+    }
 
     const result: LLMResponse = {
       content,

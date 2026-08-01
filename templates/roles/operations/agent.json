@@ -6,9 +6,16 @@
   "description": "专业运营管理Agent — 流程优化、资源调配、KPI追踪、风险管理、运营数据分析",
   "author": "",
   "category": "management",
-  "tags": ["operations", "process-optimization", "resource-allocation", "kpi-tracking", "risk-management", "analytics"],
+  "tags": [
+    "operations",
+    "process-optimization",
+    "resource-allocation",
+    "kpi-tracking",
+    "risk-management",
+    "analytics"
+  ],
   "dependencies": {
-    "skills": ["self-evolution"],
+    "skills": [],
     "env": []
   },
   "agent": {

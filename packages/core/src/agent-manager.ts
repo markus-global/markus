@@ -412,6 +412,12 @@ export class AgentManager {
       limit: number,
       before?: string
     ) => Promise<{ messages: Array<{ id?: string; senderName: string; senderType: string; text: string; replyToId?: string; replyToSender?: string; replyToText?: string; createdAt: string }>; hasMore: boolean }>;
+    getChatSessionMessages?: (
+      sessionId: string,
+      limit: number,
+      before?: string,
+      agentId?: string,
+    ) => Promise<{ messages: Array<{ id?: string; role: string; text: string; createdAt: string }>; hasMore: boolean }>;
     ensureDmChannel?: (
       channelKey: string,
       member1: { id: string; name: string },
@@ -427,16 +433,18 @@ export class AgentManager {
     const ds = this.deliverableService;
     return {
       deliverableCreate: async (opts) => {
+        // Tags are normalized to a comma-separated string in deliverable_create.
         const tags = opts.tags?.split(',').map(t => t.trim()).filter(Boolean);
         return ds.create({
-          type: opts.type,
+          type: opts.type as 'file' | 'directory',
           title: opts.title,
           summary: opts.summary,
           reference: opts.reference,
           format: opts.format,
           tags,
           agentId,
-          projectId,
+          // Prefer per-call project_id from the tool; fall back to callback-scoped project.
+          projectId: opts.projectId ?? projectId,
         });
       },
       deliverableSearch: async (opts) => {
@@ -1083,19 +1091,13 @@ export class AgentManager {
 
     const agent = new Agent(agentOpts);
 
-    // Inject always-on builtin skill instructions into every agent (text only, no MCP)
+    // Progressive disclosure: skill catalog is metadata-only (name + description).
+    // Full SKILL.md bodies enter context only after discover_tools activation.
     if (this.skillRegistry) {
-      const builtinInstructions = this.skillRegistry.getBuiltinInstructions();
-      for (const [skillName, instructions] of builtinInstructions) {
-        agent.injectSkillInstructions(skillName, instructions);
-      }
-      if (builtinInstructions.size > 0) {
-        log.info(`Always-on builtin skills injected for agent ${id}`, { skills: [...builtinInstructions.keys()] });
-      }
       agent.setAvailableSkillCatalog(this.skillRegistry.getSkillCatalog());
     }
 
-    // Inject explicitly assigned skill instructions and connect skill MCP servers
+    // Connect MCP servers for assigned skills (tools only — instructions on demand)
     if (this.skillRegistry && config.skills.length > 0) {
       const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
       if (missingSkills.length > 0) {
@@ -1103,12 +1105,6 @@ export class AgentManager {
           missing: missingSkills,
           available: this.skillRegistry.list().map(s => s.name),
         });
-      }
-      const skillInstructions = this.skillRegistry.getInstructionsForSkills(config.skills);
-      for (const [skillName, instructions] of skillInstructions) {
-        if (!agent.hasSkillInstructions(skillName)) {
-          agent.injectSkillInstructions(skillName, instructions);
-        }
       }
 
       // Connect MCP servers declared by explicitly assigned skills
@@ -1281,6 +1277,10 @@ export class AgentManager {
               this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
             listGroupChats: this.groupChatHandlers.listGroupChats,
             getChannelMessages: this.groupChatHandlers.getChannelMessages,
+            getChatSessionMessages: this.groupChatHandlers.getChatSessionMessages
+              ? (sessionId: string, limit: number, before?: string) =>
+                  this.groupChatHandlers!.getChatSessionMessages!(sessionId, limit, before, id)
+              : undefined,
           }
         : {}),
     };
@@ -1927,16 +1927,12 @@ export class AgentManager {
       cognitive: this._cognitiveConfig,
     });
 
-    // Inject always-on builtin skill instructions into every agent (text only, no MCP)
+    // Progressive disclosure: catalog metadata only; full bodies via discover_tools
     if (this.skillRegistry) {
-      const builtinInstructions = this.skillRegistry.getBuiltinInstructions();
-      for (const [skillName, instructions] of builtinInstructions) {
-        agent.injectSkillInstructions(skillName, instructions);
-      }
       agent.setAvailableSkillCatalog(this.skillRegistry.getSkillCatalog());
     }
 
-    // Inject explicitly assigned skill instructions and connect skill MCP servers
+    // Connect MCP servers for assigned skills (tools only — instructions on demand)
     if (this.skillRegistry && config.skills.length > 0) {
       const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
       if (missingSkills.length > 0) {
@@ -1944,12 +1940,6 @@ export class AgentManager {
           missing: missingSkills,
           available: this.skillRegistry.list().map(s => s.name),
         });
-      }
-      const skillInstructions = this.skillRegistry.getInstructionsForSkills(config.skills);
-      for (const [skillName, instructions] of skillInstructions) {
-        if (!agent.hasSkillInstructions(skillName)) {
-          agent.injectSkillInstructions(skillName, instructions);
-        }
       }
 
       // Connect MCP servers declared by explicitly assigned skills (background, non-blocking).
@@ -2168,6 +2158,10 @@ export class AgentManager {
               this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
             listGroupChats: this.groupChatHandlers.listGroupChats,
             getChannelMessages: this.groupChatHandlers.getChannelMessages,
+            getChatSessionMessages: this.groupChatHandlers.getChatSessionMessages
+              ? (sessionId: string, limit: number, before?: string) =>
+                  this.groupChatHandlers!.getChatSessionMessages!(sessionId, limit, before, id)
+              : undefined,
           }
         : {}),
     };
@@ -3074,6 +3068,12 @@ export class AgentManager {
       limit: number,
       before?: string
     ) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
+    getChatSessionMessages?: (
+      sessionId: string,
+      limit: number,
+      before?: string,
+      agentId?: string,
+    ) => Promise<{ messages: Array<{ id?: string; role: string; text: string; createdAt: string }>; hasMore: boolean }>;
     ensureDmChannel?: (
       channelKey: string,
       member1: { id: string; name: string },

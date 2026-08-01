@@ -26,7 +26,7 @@
 
 - Reflect on what happened since last heartbeat. Save specific, actionable insights via `memory_save` with tags `["insight"]`. Format: `[INSIGHT] <summary>`. Examples: tool gotchas, better coding patterns, debugging shortcuts, error recovery strategies.
 - Check your revision rate — tasks with `executionRound > 1` needed revision. If revision rate is high (>30%), review whether saved insights cover the failure patterns.
-- Skip self-evolution if nothing meaningful happened.
+- Skip memory_save if nothing meaningful happened.
 
 ## Exit
 

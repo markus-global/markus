@@ -270,6 +270,13 @@ export class SSEHandler {
       // Strip completion marker (and malformed variants) from persisted/displayed reply
       persistReply = stripCompletionMarkerLeak(persistReply).trim() || persistReply;
 
+      // Empty assistant turn (cancel / failed start) — still a terminal outcome the
+      // client must see as stopped/error so Retry is available after refresh.
+      const isEmptyTerminal = !persistReply && this.msgSegments.every(s =>
+        s.type !== 'tool' && !(s.type === 'text' && ((s as { content?: string }).content || (s as { thinking?: string }).thinking))
+      );
+      const treatAsStopped = wasCancelled || (isCancelledReply && isEmptyTerminal);
+
       const donePayload = {
         type: 'done' as const,
         content: persistReply,
@@ -278,7 +285,8 @@ export class SSEHandler {
         segments: this.msgSegments,
         streamId: this.streamId,
         messageId: this.assistantMessageId,
-        cancelled: wasCancelled || undefined,
+        cancelled: treatAsStopped || undefined,
+        emptyReply: isEmptyTerminal || undefined,
       };
 
       if (this.sseDisconnected) {
@@ -324,18 +332,23 @@ export class SSEHandler {
       const hasSegments = this.msgSegments.length > 0 && this.msgSegments.some(s =>
         (s.type === 'text' && ((s as { content?: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
       );
-      if (this.options.persistAssistantMessage && this.sessionId && (persistReply || hasSegments)) {
+      // Persist empty cancelled/failed replies too — otherwise refresh wipes the
+      // bubble and the user has no Retry target.
+      if (this.options.persistAssistantMessage && this.sessionId && (persistReply || hasSegments || treatAsStopped || isEmptyTerminal)) {
         const msgMeta: Record<string, unknown> = {
           isStreaming: false,
           streamId: this.streamId,
         };
         if (this.msgSegments.length > 0) msgMeta.segments = this.msgSegments;
-        if (wasCancelled) msgMeta.isStopped = true;
+        if (treatAsStopped) msgMeta.isStopped = true;
+        if (isEmptyTerminal && !treatAsStopped) msgMeta.isError = true;
+        if (isEmptyTerminal) msgMeta.emptyReply = true;
+        const storedContent = persistReply || (isEmptyTerminal ? '' : persistReply);
         try {
           await this.options.persistAssistantMessage(
             this.sessionId,
             this.options.agentId,
-            persistReply,
+            storedContent,
             this.options.agent.getState().tokensUsedToday,
             msgMeta,
           );

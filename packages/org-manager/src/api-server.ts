@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -61,6 +61,7 @@ import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
 import { ActiveStreamRegistry } from './active-stream-registry.js';
 import { installSkill } from './skill-service.js';
+import { buildEvolveSeedPrompt, formatEvolveTranscript, type EvolveSourceMessage } from './evolve-from-message.js';
 import type { LocalFileStorageProvider } from './file-storage-provider.js';
 import {
   signToken,
@@ -760,6 +761,24 @@ export class APIServer {
             replyToId: m.replyToId,
             replyToSender: m.replyToSender,
             replyToText: m.replyToText,
+            createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
+          })),
+          hasMore: result.hasMore,
+        };
+      },
+      getChatSessionMessages: async (sessionId: string, limit: number, before?: string, agentId?: string) => {
+        if (!this.storage) return { messages: [], hasMore: false };
+        const session = this.storage.chatSessionRepo.getSession(sessionId);
+        if (!session) throw new Error(`Chat session not found: ${sessionId}`);
+        if (agentId && session.agentId !== agentId) {
+          throw new Error('Cannot recall messages from another agent\'s chat session');
+        }
+        const result = await this.storage.chatSessionRepo.getMessages(sessionId, limit, before);
+        return {
+          messages: result.messages.map((m: { id: string; role: string; content: string; createdAt: Date | string }) => ({
+            id: m.id,
+            role: m.role,
+            text: stripInternalBlocks(m.content),
             createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
           })),
           hasMore: result.hasMore,
@@ -2182,7 +2201,7 @@ export class APIServer {
           );
           const sessionId = mainSession.id;
           mainSessionId = sessionId;
-          const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
+          const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, SESSION_RESTORE_MAX_MESSAGES);
           sessionRestoreData = {
             dbSessionId: sessionId,
             messages: histResult.messages.map((m: { role: string; content: string }) => ({
@@ -3707,6 +3726,85 @@ export class APIServer {
       return;
     }
 
+    if (path.match(/^\/api\/agents\/[^/]+\/evolve-from-message$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage unavailable' });
+        return;
+      }
+      const agentId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const parentSessionId = (body['parentSessionId'] as string | undefined)?.trim();
+      const sourceMessageId = (body['sourceMessageId'] as string | undefined)?.trim();
+      const sourceText = (body['sourceText'] as string | undefined)?.trim();
+      const userNote = (body['userNote'] as string | undefined)?.trim();
+
+      if (!parentSessionId) {
+        this.json(res, 400, { error: 'parentSessionId is required' });
+        return;
+      }
+
+      try {
+        this.orgService.getAgentManager().getAgent(agentId);
+      } catch {
+        this.json(res, 404, { error: 'Agent not found' });
+        return;
+      }
+
+      const parent = this.storage.chatSessionRepo.getSession(parentSessionId);
+      if (!parent || parent.agentId !== agentId) {
+        this.json(res, 400, { error: 'parentSessionId must be a personal DM session for this agent' });
+        return;
+      }
+      if (parent.userId && parent.userId !== authUser.userId) {
+        this.json(res, 403, { error: 'parentSessionId is not your DM session with this agent' });
+        return;
+      }
+
+      const hist = await this.storage.chatSessionRepo.getMessages(parentSessionId, 80);
+      const { transcript, truncated, focusMarked } = formatEvolveTranscript(
+        hist.messages.map((m: { id: string; role: string; content: string; createdAt: Date | string; metadata?: unknown }) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
+          metadata: (m.metadata ?? null) as EvolveSourceMessage['metadata'],
+        })),
+        { focusMessageId: sourceMessageId, focusText: sourceText },
+      );
+
+      const child = this.storage.chatSessionRepo.createSession(agentId, authUser.userId);
+      this.storage.chatSessionRepo.updateSessionMetadata(child.id, {
+        kind: 'evolution',
+        parentSessionId,
+        sourceMessageId: sourceMessageId || undefined,
+        sourceAgentId: agentId,
+        sourceExcerpt: (sourceText || transcript).slice(0, 240),
+        createdFrom: 'remember_button',
+      });
+      this.storage.chatSessionRepo.updateLastMessage(child.id, 'Remember / Evolution');
+
+      const seedPrompt = buildEvolveSeedPrompt({
+        parentSessionId,
+        evolutionSessionId: child.id,
+        sourceMessageId,
+        userNote,
+        transcript,
+        truncated,
+      });
+
+      this.json(res, 200, {
+        sessionId: child.id,
+        agentId,
+        seedPrompt,
+        truncated,
+        focusMarked,
+        parentSessionId,
+      });
+      return;
+    }
+
     if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -3801,7 +3899,7 @@ export class APIServer {
             if (isRetry) {
               this.storage.chatSessionRepo.deleteLastExchange(sessionId);
             }
-            const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
+            const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, SESSION_RESTORE_MAX_MESSAGES);
             sessionRestoreData = {
               dbSessionId: sessionId,
               messages: histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
@@ -10480,6 +10578,49 @@ EXPLANATION_END`;
       return;
     }
 
+    // Evolution metrics (LEARNING-LOOP §6 / C-metrics-api)
+    if (path === '/api/evolution/metrics' && req.method === 'GET') {
+      try {
+        const raw = this.taskService?.listTasks?.({ limit: 500 } as never) ?? [];
+        const list: Array<{
+          status?: string;
+          executionRound?: number;
+          activatedSkills?: string[];
+          distilled?: boolean;
+        }> = Array.isArray(raw) ? raw : ((raw as { tasks?: typeof list }).tasks ?? []);
+        const completed = list.filter((t) => t.status === 'completed');
+        const reviewed = list.filter((t) => t.status === 'completed' || t.status === 'review');
+        const firstPass = completed.filter((t) => (t.executionRound ?? 1) <= 1);
+        const withSkill = completed.filter((t) =>
+          Array.isArray(t.activatedSkills) && t.activatedSkills.length > 0);
+        const distilled = completed.filter((t) => t.distilled);
+        const c = completed.length;
+        const r = reviewed.length;
+        this.json(res, 200, {
+          metrics: {
+            skillReuseRate: c > 0 ? withSkill.length / c : 0,
+            firstPassRate: r > 0 ? firstPass.length / r : 0,
+            distillRate: c > 0 ? distilled.length / c : 0,
+            tasksCompleted: c,
+            tasksWithSkill: withSkill.length,
+            tasksReviewed: r,
+            tasksFirstPass: firstPass.length,
+            tasksDistilled: distilled.length,
+          },
+        });
+      } catch (err) {
+        this.json(res, 200, {
+          metrics: {
+            skillReuseRate: 0,
+            firstPassRate: 0,
+            distillRate: 0,
+            note: `metrics unavailable: ${String(err).slice(0, 120)}`,
+          },
+        });
+      }
+      return;
+    }
+
     // ── Governance: System Controls ──────────────────────────────────────────
 
     if (path === '/api/system/pause-all' && req.method === 'POST') {
@@ -11762,7 +11903,8 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+\/model-override$/, 'PUT'),
-      regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message|evolve-from-message)$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/evolve-from-message$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/mailbox$/, 'GET'),
@@ -12053,6 +12195,7 @@ EXPLANATION_END`;
 
       // ── System ───────────────────────────────────────────────────────────
       exact('/api/health', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'),
+      exact('/api/evolution/metrics', 'GET'),
       exact('/api/system/pause-all', 'POST'),
       exact('/api/system/resume-all', 'POST'),
       exact('/api/system/emergency-stop', 'POST'),
@@ -12311,7 +12454,7 @@ EXPLANATION_END`;
     config: { id: string; roleId?: string };
     role: { name: string };
   }): string | null {
-    // Prefer agent's own per-agent role directory (supports self-evolution)
+    // Prefer agent's own per-agent role directory (supports ROLE/HEARTBEAT Learning Habits edits)
     const agentDataDir = join(this.orgService.getAgentManager().getDataDir(), agent.config.id);
     const agentRoleDir = join(agentDataDir, 'role');
     if (existsSync(join(agentRoleDir, 'ROLE.md'))) return agentRoleDir;

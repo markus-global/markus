@@ -141,7 +141,7 @@ invoke_coding_tool({
 ```
 invoke_coding_tool({
   tool: "cursor-agent",
-  prompt: "Add the coding-tools skill templates under templates/skills/. Follow the existing skill.json + SKILL.md pattern from templates/skills/self-evolution/.",
+  prompt: "Add the coding-tools skill templates under templates/skills/. Follow the existing skill.json + SKILL.md pattern from templates/skills/Learning Habits/.",
   workdir: "/path/to/markus-monorepo",
   task_id: "task-789"
 })

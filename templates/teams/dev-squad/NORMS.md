@@ -59,7 +59,7 @@ This is the most important rule for parallel development:
 
 - Document non-obvious decisions as `deliverable_create` (type: "architecture_decision").
 - Save reusable patterns and gotchas via `memory_save` with appropriate tags.
-- After completing a complex task, record lessons learned during the self-evolution reflection.
+- After completing a complex task, record lessons learned during the Learning Habits reflection.
 
 ## Quality Gates by Phase
 

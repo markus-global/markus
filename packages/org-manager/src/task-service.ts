@@ -3455,7 +3455,7 @@ export class TaskService {
     }
   }
 
-  acceptTask(taskId: string, reviewerId?: string): Task {
+  acceptTask(taskId: string, reviewerId?: string, notes?: string): Task {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (task.status !== 'review') {
@@ -3469,26 +3469,50 @@ export class TaskService {
       this.assertReviewerAllowed(reviewerId, task);
     }
 
+    // approved_with_notes: persist notes, still complete (STATE-MACHINES Spec)
+    if (notes?.trim()) {
+      task.notes = task.notes ?? [];
+      const stamp = new Date().toISOString();
+      task.notes.push(`[${stamp}] approved_with_notes: ${notes.trim()}`);
+      (task as { reviewVerdict?: string }).reviewVerdict = 'approved_with_notes';
+      if (this.taskRepo) {
+        this.taskRepo.update(task.id, { notes: task.notes })
+          .catch(err => log.warn('Failed to persist approved_with_notes', { error: String(err) }));
+      }
+    } else {
+      (task as { reviewVerdict?: string }).reviewVerdict = 'approved';
+    }
+
     // Transition to completed — updateTaskStatus handles all side effects
-    this.updateTaskStatus(task.id, 'completed', reviewerId, false, false, 'agent', 'Review accepted');
+    this.updateTaskStatus(
+      task.id,
+      'completed',
+      reviewerId,
+      false,
+      false,
+      'agent',
+      notes?.trim() ? `Review accepted with notes: ${notes.trim().slice(0, 200)}` : 'Review accepted',
+    );
 
     this.auditService?.record({
       orgId: task.orgId,
       agentId: reviewerId,
       type: 'task_review_accepted',
-      action: 'accept_task',
-      detail: `Task "${task.title}" accepted and completed`,
+      action: notes?.trim() ? 'accept_task_with_notes' : 'accept_task',
+      detail: notes?.trim()
+        ? `Task "${task.title}" accepted with notes`
+        : `Task "${task.title}" accepted and completed`,
       taskId: task.id,
       projectId: task.projectId,
       success: true,
-      metadata: { workerAgentId: task.assignedAgentId },
+      metadata: { workerAgentId: task.assignedAgentId, notes: notes?.trim() },
     });
 
     if (task.assignedAgentId && this.agentManager) {
       this.triggerPostTaskReflection(task);
     }
 
-    log.info(`Task accepted and completed: ${task.title}`, { id: task.id });
+    log.info(`Task accepted and completed: ${task.title}`, { id: task.id, withNotes: !!notes?.trim() });
     return task;
   }
 
@@ -3516,6 +3540,17 @@ export class TaskService {
     }
 
     const hadRevisions = (task.executionRound ?? 1) > 1;
+    // LEARNING-LOOP §2: gate distillation (trivial first-pass short tasks skip)
+    const toolCallCount = Number((task as { toolCallCount?: number }).toolCallCount ?? 0);
+    const shouldDistill =
+      task.status === 'failed'
+      || hadRevisions
+      || toolCallCount >= 5
+      || toolCallCount === 0; // unknown count: keep prior behavior (reflect)
+    if (!shouldDistill) {
+      log.debug('Skipping distillation — predicates not met', { taskId: task.id, toolCallCount });
+      return;
+    }
 
     // Build execution trace summary from available task data
     const traceParts: string[] = [];
@@ -3554,16 +3589,16 @@ export class TaskService {
           '2. What did you change in the successful round?',
           '3. What is the generalizable lesson? Is it SOP-worthy (multi-step repeatable procedure)?',
           '',
-          'Save each lesson using `memory_save` with tags `["lesson", ...]`.',
-          'If it is a repeatable multi-step procedure, promote to SOP via `memory_update_longterm({ section: "sops", mode: "patch" })`.',
-          'If the best practice would benefit other agents on the team, create a shareable skill via **skill-building** and install it with `package_install`.',
+          'Follow **Learning Habits** (encode-where):',
+          'Save lessons with `memory_save` tags `["lesson", ...]`.',
+          'Repeatable personal procedures → `memory_update_longterm`.',
+          'Team-reusable practices → create under `builder-artifacts/skills/` then `package_install` with impact low/high per Learning Habits.',
           '',
-          '**Direct self-evolution** — consider the simplest, most impactful options:',
-          '- If this lesson reveals a behavioral rule that should always guide your work, append it to your ROLE.md via `file_edit`.',
-          '- If you should be checking for this class of issue regularly, add a check to your HEARTBEAT.md via `file_edit`.',
+          'Also consider: append a lasting behavioral rule to ROLE.md via `file_edit` (ask human first if rewriting identity/scope);',
+          'add a recurring check to HEARTBEAT.md if you should patrol for this class of issue.',
         ].join('\n')
       : [
-          '[SELF-EVOLUTION — Post-Task Reflection (Success)]',
+          '[DISTILLATION — Post-Task Reflection (Success)]',
           '',
           `Task "${task.title}" (ID: ${task.id}) was completed successfully on the first attempt.`,
           '',
@@ -3573,23 +3608,17 @@ export class TaskService {
           'First-pass approval is a strong signal. Reflect on what made this work:',
           '1. Were there tools, patterns, or approaches that proved especially effective?',
           '2. Is there a reusable technique or SOP worth remembering for similar future tasks?',
-          '3. Would this best practice benefit other agents on the team? If so, consider creating a shareable skill.',
+          '3. Would this best practice benefit other agents? If so, create a skill under builder-artifacts and install with appropriate impact.',
           '',
-          'If you identify a meaningful insight, save it using `memory_save` with tags `["lesson", "best-practice", ...]`.',
-          'If it is a multi-step workflow, promote to SOP via `memory_update_longterm({ section: "sops", mode: "patch" })`.',
-          'If worth sharing with the team, create a skill via **skill-building** and install with `package_install`.',
+          'Follow **Learning Habits**: `memory_save` / `memory_update_longterm` / ROLE / HEARTBEAT / skill + impact install.',
           '',
-          '**Direct self-evolution** — consider the simplest, most impactful options:',
-          '- If this success reveals a guiding principle or working style worth keeping, append it to your ROLE.md via `file_edit`.',
-          '- If there is a periodic check that would help maintain this quality, add it to your HEARTBEAT.md via `file_edit`.',
-          '',
-          'If nothing noteworthy stands out, it is fine to skip saving.',
+          'If nothing noteworthy stands out, respond with none / skip.',
         ].join('\n');
 
     void agent.sendMessage(prompt, undefined, undefined, {
       sourceType: 'system_event',
       sessionId: `sys_${agent.id}_${Date.now()}`,
-      scenario: 'heartbeat',
+      scenario: 'memory_consolidation',
     }).catch(err => {
       log.warn('Post-task reflection failed', { taskId: task.id, error: String(err) });
     });

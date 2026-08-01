@@ -836,8 +836,21 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const sub = await ctx.addSubtask!(args['task_id'] as string, args['title'] as string);
-                return JSON.stringify({ status: 'success', subtask: sub });
+                const { SUBTASK_SOFT_CAP } = await import('@markus/shared');
+                const taskId = args['task_id'] as string;
+                const sub = await ctx.addSubtask!(taskId, args['title'] as string);
+                const subMeta = sub as unknown as { parentSubtaskCount?: number };
+                const count = typeof subMeta.parentSubtaskCount === 'number'
+                  ? subMeta.parentSubtaskCount
+                  : undefined;
+                const warning = count != null && count >= SUBTASK_SOFT_CAP
+                  ? `Subtask count (${count}) exceeds soft cap ${SUBTASK_SOFT_CAP} — prefer fewer, larger steps.`
+                  : undefined;
+                return JSON.stringify({
+                  status: 'success',
+                  subtask: sub,
+                  ...(warning ? { warning } : {}),
+                });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

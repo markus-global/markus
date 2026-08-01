@@ -2607,8 +2607,18 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
           message={t('agent:profilePage.mind.cancelConfirmMessage')}
           confirmLabel={t('agent:profilePage.mind.cancelCurrentBtn')}
           onConfirm={() => {
-            api.agents.cancelProcessing(agentId).then(() => load());
             setCancelConfirmId(null);
+            api.agents.cancelProcessing(agentId).then(() => {
+              // Cancel takes effect at the next yield — poll so the row leaves
+              // "processing" / "思考中" instead of looking unchanged.
+              let tries = 0;
+              const poll = () => {
+                tries += 1;
+                void load();
+                if (tries < 8) window.setTimeout(poll, 750);
+              };
+              poll();
+            }).catch(() => { void load(); });
           }}
           onCancel={() => setCancelConfirmId(null)}
         />

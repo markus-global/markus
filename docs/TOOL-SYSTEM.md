@@ -6,7 +6,8 @@ How Markus decides **which tools an agent can see**, how tool results are shaped
 returned, how the **tool-execution loop** drives the model until it is done, and how
 **subagents** are spawned with budget guardrails.
 
-Related docs: [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) (how tool definitions and
+Related docs: [AGENT-RUNTIME.md](./AGENT-RUNTIME.md) (SSOT for packs/budgets),
+[PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) (how tool definitions and
 results are packed into context), [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) (the attention
 loop that owns each turn), [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) (how
 tool progress and tool errors reach the client), [CODING-TOOLS.md](./CODING-TOOLS.md)
@@ -18,20 +19,59 @@ tool progress and tool errors reach the client), [CODING-TOOLS.md](./CODING-TOOL
 
 Not every registered tool is sent to the model on every call. Sending the full registry
 would inflate the system/tool prefix (token tax) and dilute the model's attention. The
-[`ToolSelector`](../packages/core/src/tool-selector.ts) chooses a working set per call.
+[`ToolSelector`](../packages/core/src/tool-selector.ts) chooses a working set per call
+**within a Scenario Capability Pack** ([AGENT-RUNTIME.md](./AGENT-RUNTIME.md) §2).
+
+### 1.0 Spec: Scenario Capability Packs
+
+MUST: Each scenario maps to exactly one pack: `reflex` | `converse` | `execute` | `govern`.
+
+| Pack | Scenarios | `toolDefTokens` budget |
+|------|-----------|------------------------|
+| `reflex` | heartbeat, memory_consolidation, memory_flush, dream | 3_000 |
+| `converse` | chat, a2a, group_chat, comment_response, requirement_action | 6_000 |
+| `execute` | task_execution | 10_000 |
+| `govern` | review, deliberation | 8_000 |
+
+MUST: `reflex` default allowlist MUST be the slim core in AGENT-RUNTIME §2.2
+(MUST NOT include `package_install`, `goal_*`, `spawn_subagent(s)`, `deliverable_create`, …).
+
+MUST: Default `converse` MUST NOT include `spawn_subagents` or `deliverable_create`
+(available via `discover_tools` only).
+
+MUST: `execute` MUST include code/shell/coding capability groups.
+
+Test IDs: `A-pack-reflex-tools`, `A-pack-converse-no-spawn`, `A-pack-execute-has-code`.
+
+### 1.0.1 Spec: ToolDef budget eviction
+
+MUST: After selection, if estimated tool-definition tokens exceed the pack budget, keep
+pack core + `discover_tools` + HITL tools, then evict largest / least-recent extras until
+under budget.
+
+MUST (§Afford.S2): Evicted names MUST appear in a compact **system Tier 3** catalog
+(name-only or name + ≤40 chars, total ≤ `DEFERRED_CATALOG_MAX_CHARS` ≈ 1500 chars)
+for rediscovery via `discover_tools`.
+
+MUST NOT: Append the eviction catalog into `discover_tools.description` (inflates
+`toolDefTokens` and defeats the pack budget).
+
+MUST: `recentToolNames` / activated extras remain session-sticky but MUST NOT break the budget.
+
+Test IDs: `A-tooldef-budget`, `A-tooldef-sticky-capped`, `S-catalog-not-in-tooldef`.
 
 ### 1.1 Selection inputs
 
-`selectTools()` unions the following sources into the working set:
+`selectTools()` unions the following sources into the working set **for the active pack**:
 
 | Source | What it adds | Notes |
 |--------|--------------|-------|
-| **Base tools** (`BASE_TOOL_NAMES`) | Always included | Messaging, task CRUD, memory, deliverable search, subagent spawn |
-| **Role tools** | `isManager` / `isTaskExecution` / `isReview` add role-specific groups | e.g. task execution unions `code` + `shell` + `coding` groups |
-| **Keyword groups** (`TOOL_GROUPS`) | A group's tools when the user message matches a keyword (EN + ZH) | Accelerator for niche capabilities (browser, image, audio/video, llm-settings, …) |
-| **Recent tools** (`recentToolNames`) | Tools used earlier in the session | Keeps short follow-ups working (session-aware reactivation) |
-| **`discover_tools`** | Always appended | Lets the model pull in any not-yet-selected tool on demand |
-| **`notify_user` / `request_user_input`** | Always appended | Human communication + HITL |
+| **Pack core** | Pack-specific always-on tools | Replaces unbounded global BASE for converse/reflex |
+| **Role tools** | `isManager` / `isTaskExecution` / `isReview` within pack rules | e.g. execute unions `code` + `shell` + `coding` |
+| **Keyword groups** (`TOOL_GROUPS`) | Accelerator when message matches | MUST respect toolDef budget |
+| **Recent tools** (`recentToolNames`) | Session reactivation | Sticky but budget-capped |
+| **`discover_tools`** | Always appended | Progressive disclosure entry point |
+| **`notify_user` / `request_user_input`** | Always appended (non-dream) | Human communication + HITL |
 
 ### 1.2 Design rationale (Pi / Hermes)
 

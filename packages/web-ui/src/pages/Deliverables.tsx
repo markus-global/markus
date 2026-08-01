@@ -1286,7 +1286,13 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                       </div>
                     ) : (
                       <div key="preview" className="animate-fadeIn">
-                      <ContentRenderer content={previewContent} format={previewFormat} className="text-fg-secondary text-sm" onHtmlSelection={handleHtmlSelection} />
+                      <ContentRenderer
+                        content={previewContent}
+                        format={previewFormat}
+                        className="text-fg-secondary text-sm"
+                        onHtmlSelection={handleHtmlSelection}
+                        basePath={selected?.reference ? selected.reference.replace(/[/\\][^/\\]+$/, '') : undefined}
+                      />
                       </div>
                     )
                   ) : showCopyPath ? (

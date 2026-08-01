@@ -1,10 +1,20 @@
 # Agent Memory System
 
-Architecture and data flows for the Markus agent memory system. Persistent cognition uses a **two-file model** — `NOTEBOOK.md` (cognitive workspace) and `MEMORY.md` (long-term knowledge) — grounded in Tulving-style procedural / semantic / episodic persistence plus cognitive-science working-memory models.
+Architecture and data flows for the Markus agent memory system. Persistent cognition uses
+**NOTEBOOK.md** (cognitive workspace) plus a **dual long-term store** — `knowledge.md`
+(permanent) and `state.md` (TTL snapshots) — with a legacy `MEMORY.md` migration path.
+Grounded in Tulving-style procedural / semantic / episodic persistence plus cognitive-science
+working-memory models.
+
+> **SSOT budgets/injection**: [AGENT-RUNTIME.md](./AGENT-RUNTIME.md) §6.
+> **Learning / dream librarian**: [LEARNING-LOOP.md](./LEARNING-LOOP.md).
 
 ## 1. Design Principles
 
-1. **Two-file model**: `NOTEBOOK.md` holds the situational cognitive workspace; `MEMORY.md` holds curated knowledge plus a `## _observations` buffer. Both are human-readable markdown on disk.
+1. **Workspace + dual semantic store**: `NOTEBOOK.md` is the situational cognitive workspace;
+   `knowledge.md` holds permanent curated knowledge; `state.md` holds time-bounded snapshots
+   (default TTL `STATE_TTL_DAYS = 7`). Observations buffer is never fully prompt-injected.
+   Legacy `MEMORY.md` MUST migrate on first load.
 2. **Tulving mapping + notebook**: Persistent layers align with Tulving-style cognition — **Procedural** (ROLE.md), **Semantic** (MEMORY.md), **Episodic** (sessions + activities). The **Notebook** replaces volatile in-memory working memory with a persistent scratchpad always injected into the system prompt.
 3. **SQLite for history**: Activity history lives in SQLite — indexed, searchable, and queryable via tools.
 4. **Context is currency**: Every byte in the LLM prompt competes for limited context window. Retrieval must maximize signal-to-noise.
@@ -15,7 +25,21 @@ Architecture and data flows for the Markus agent memory system. Persistent cogni
 | Concept | Markus mapping |
 |---------|----------------|
 | **Baddeley — Working Memory Model** | `NOTEBOOK.md` = central executive + visuospatial sketchpad: limited-capacity, actively maintained situational state |
-| **Cowan — Embedded Processes** | Curated sections of `MEMORY.md` = activated long-term memory, always in prompt |
+| **Cowan — Embedded Processes** | Capped `knowledge.md` = activated long-term memory in prompt (profile-dependent) |
+
+### 1.1 Spec: knowledge.md / state.md
+
+MUST: Prefer `knowledge.md` + `state.md` on disk under the agent data dir.
+MUST: On first load, if only `MEMORY.md` exists, split heuristically:
+dated / “silent” / “current” / progress snapshots → `state.md`; remainder → `knowledge.md`.
+MUST: Prompt injection of knowledge MUST honor `KNOWLEDGE_PROMPT_MAX_TOKENS`
+(`0` for reflex profile — omit full dump).
+MUST: Reflex MAY inject ≤ `STATE_PROMPT_MAX_LINES_REFLEX` lines from `state.md`.
+MUST: Dream/consolidation MUST expire state entries older than `STATE_TTL_DAYS`.
+MUST: `memory_update_longterm` / curated updates write `knowledge.md`.
+SHOULD: Expose `state_update` (or equivalent) for TTL snapshots.
+
+Test IDs: `A-knowledge-cap`, `C-dream-state-ttl`.
 | **Kahneman — Dual Process** | System 1 = fast retrieval (`memory_search`, prompt injection); System 2 = CPP deliberative processing writes `cpp`-managed notebook entries |
 
 ## 2. Four-Layer Architecture
@@ -28,9 +52,11 @@ Architecture and data flows for the Markus agent memory system. Persistent cogni
 │  Code: RoleLoader, Agent.reloadRole(), skill system           │
 ├───────────────────────────────────────────────────────────────┤
 │  Semantic Memory — "what I know"                              │
-│  MEMORY.md — curated sections + ## _observations buffer       │
+│  knowledge.md — permanent curated sections                    │
+│  state.md — TTL snapshots (progress, silence counters, …)     │
+│  ## _observations — raw buffer (not fully injected)           │
 │  Code: MemoryStore (addEntry, search, addLongTermMemory)      │
-│  Tools: memory_save, memory_search, memory_update             │
+│  Tools: memory_save, memory_search, memory_update, state_update│
 ├───────────────────────────────────────────────────────────────┤
 │  Episodic Memory — "what I've experienced"                    │
 │  Current episode: sessions/*.json (active conversation)       │
@@ -243,7 +269,7 @@ How the agent operates — managed outside `MemoryStore` by the role/skill syste
 | HEARTBEAT.md | `~/.markus/agents/{id}/role/HEARTBEAT.md` | Loaded by heartbeat processor |
 | Skills | Installed via `discover_tools` | Skill registry + MCP |
 
-ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `file_edit`. Changes require proven experience — the self-evolution skill governs when and how agents modify their own identity.
+ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `file_edit`. Changes require proven experience — platform **Learning Habits** ([LEARNING-LOOP.md](./LEARNING-LOOP.md) §8) govern when and how agents modify identity, memory, HEARTBEAT, or skills (including user-initiated Remember sessions in §9).
 
 ---
 

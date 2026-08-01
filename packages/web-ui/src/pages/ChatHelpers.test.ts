@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { dedupeAdjacentUserMessages, stripEmbeddedReplyQuote, type ChatMsg } from './ChatHelpers.ts';
+import {
+  dedupeAdjacentUserMessages,
+  isRememberActionVisible,
+  stripEmbeddedReplyQuote,
+  type ChatMsg,
+} from './ChatHelpers.ts';
 
 describe('stripEmbeddedReplyQuote', () => {
   it('strips legacy quote prefix when metadata matches', () => {
@@ -12,6 +17,18 @@ describe('stripEmbeddedReplyQuote', () => {
     expect(stripEmbeddedReplyQuote('将这个图片发到我的飞书。', '智能体', 'hello')).toBe(
       '将这个图片发到我的飞书。',
     );
+  });
+});
+
+describe('Remember action visibility (LEARNING-LOOP §9.1)', () => {
+  it('B-ui-remember-action-on-dm-agent-bubble', () => {
+    expect(isRememberActionVisible(true, 'agent')).toBe(true);
+  });
+
+  it('B-ui-remember-hidden-in-group-and-a2a', () => {
+    expect(isRememberActionVisible(false, 'agent')).toBe(false);
+    expect(isRememberActionVisible(undefined, 'agent')).toBe(false);
+    expect(isRememberActionVisible(true, 'user')).toBe(false);
   });
 });
 

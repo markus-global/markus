@@ -62,7 +62,8 @@ export class InMemorySkillRegistry implements SkillRegistry {
   getBuiltinSkillCatalog(): Array<{ name: string; description: string; category: string }> {
     const catalog: Array<{ name: string; description: string; category: string }> = [];
     for (const [, skill] of this.skills) {
-      if (skill.manifest.builtIn && !skill.manifest.alwaysOn) {
+      // Include alwaysOn builtins as metadata — full bodies activate via discover_tools
+      if (skill.manifest.builtIn) {
         catalog.push({
           name: skill.manifest.name,
           description: skill.manifest.description,
@@ -76,13 +77,13 @@ export class InMemorySkillRegistry implements SkillRegistry {
   getSkillCatalog(): Array<{ name: string; description: string; category: string }> {
     const catalog: Array<{ name: string; description: string; category: string }> = [];
     for (const [, skill] of this.skills) {
-      if (!skill.manifest.alwaysOn) {
-        catalog.push({
-          name: skill.manifest.name,
-          description: skill.manifest.description,
-          category: skill.manifest.category,
-        });
-      }
+      // Progressive disclosure (Hermes L0–L1): metadata for every skill, including
+      // alwaysOn. Full SKILL.md bodies enter context only after discover_tools.
+      catalog.push({
+        name: skill.manifest.name,
+        description: skill.manifest.description,
+        category: skill.manifest.category,
+      });
     }
     return catalog;
   }

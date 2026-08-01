@@ -39,12 +39,16 @@ export interface IMemoryStore {
   removeEntriesByTag(tag: string): number;
   getObservations(): MemoryEntry[];
 
-  // -- Semantic Memory: curated knowledge (MEMORY.md) --
+  // -- Semantic Memory: curated knowledge (MEMORY.md / knowledge.md) --
   addLongTermMemory(key: string, content: string): { ok: boolean; reason?: string };
   getLongTermMemory(): string;
   getLongTermMemoryExcluding(sections: string[]): string;
   getLongTermSection(sectionName: string): string;
   compressLongTermMemory(): { charsBefore: number; charsAfter: number; sectionsBefore: number; sectionsAfter: number; truncatedChunks: number };
+  /** Optional state.md snapshot for reflex prompts (AGENT-RUNTIME memory taxonomy). */
+  getStateMemory?(): string;
+  /** Optional TTL prune for state.md (Dream librarian). */
+  pruneStateMemory?(): void;
 
   // -- Episodic Memory: conversation sessions --
   getSession(sessionId: string): ConversationSession | undefined;

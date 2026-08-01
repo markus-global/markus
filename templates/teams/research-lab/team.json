@@ -6,7 +6,16 @@
   "description": "A structured think tank research team. The Director defines research directions and assigns tasks; Senior Researcher leads deep investigations and produces reports; Junior Researcher handles data collection, preliminary analysis and literature review; Coordinator manages schedules, meeting notes, and deliverable organization. Designed for deep research projects, competitive analysis, industry reports, and knowledge synthesis. Features parallel investigation tracks, adversarial hypothesis testing, and evidence-based synthesis.",
   "author": "Markus Team",
   "category": "research",
-  "tags": ["research", "think-tank", "investigation", "analysis", "report", "knowledge", "synthesis", "deep-research"],
+  "tags": [
+    "research",
+    "think-tank",
+    "investigation",
+    "analysis",
+    "report",
+    "knowledge",
+    "synthesis",
+    "deep-research"
+  ],
   "icon": "search",
   "starterTasks": [
     {
@@ -50,7 +59,7 @@
         "roleName": "project-manager",
         "count": 1,
         "description": "制定调研方向、分配任务、审核综合产出",
-        "skills": ["self-evolution"]
+        "skills": []
       },
       {
         "name": "Senior Researcher",
@@ -58,7 +67,7 @@
         "roleName": "research-assistant",
         "count": 1,
         "description": "深度调研、报告撰写、方法论证",
-        "skills": ["self-evolution"]
+        "skills": []
       },
       {
         "name": "Junior Researcher",
@@ -66,7 +75,7 @@
         "roleName": "research-assistant",
         "count": 1,
         "description": "资料收集、初步分析、文献综述",
-        "skills": ["self-evolution"]
+        "skills": []
       },
       {
         "name": "Coordinator",
@@ -74,7 +83,7 @@
         "roleName": "operations",
         "count": 1,
         "description": "会议记录、进度跟踪、交付物整理",
-        "skills": ["self-evolution"]
+        "skills": []
       }
     ]
   }

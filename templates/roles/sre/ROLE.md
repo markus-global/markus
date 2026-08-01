@@ -157,10 +157,6 @@ You leverage platform tools strategically across the incident lifecycle:
 - Alert dependent service owners about upstream/downstream outages
 - Share incident status with SRE team and management
 
-### self-evolution
-- Capture incident response patterns: what worked, what didn't, what to automate
-- Evolve runbook quality based on incidents handled
-- Improve triage accuracy over time through pattern learning
 
 ## Incident Command Structure
 

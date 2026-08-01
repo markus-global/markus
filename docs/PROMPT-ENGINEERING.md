@@ -67,10 +67,9 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()` and organi
 ║                                                          ║
 ║   1. Role System Prompt (from ROLE.md)                   ║
 ║   2. Policies                                            ║
-║   3. Deliverable Format                                  ║
-║   4. Task & Requirement Workflow                         ║
-║   5. Tool Usage Rules                                    ║
-║   6. Communication Rules                                 ║
+║   3. Tool Usage / Search / Learning Habits / Autonomy / Security (L0) ║
+║   4. Resource refs + User Language                       ║
+║   5. Task Workflow (summary only — full checklist = L3)  ║
 ╠══════════════════════════════════════════════════════════╣
 ║  TIER 2 — SEMI-STABLE (cache breakpoint ✓)              ║
 ║  Changes with org/config/session, not per query.         ║
@@ -180,16 +179,77 @@ The context engine no longer injects separate `## Cognitive Context`, `## Retrie
 
 Legacy aliases `update_working_memory` / `clear_working_memory` remain for backward compatibility.
 
+#### Content layers (within the 3-tier cache)
+
+| Layer | Content | When |
+|-------|---------|------|
+| **L0** | Role, tool rules, search, **Learning Habits** (≤1600 chars; look-back / encode-where / skill impact — [LEARNING-LOOP.md](./LEARNING-LOOP.md) §8), autonomy, security, resource refs, user language, shortest task workflow | Always (non-dream) |
+| **L1** | Identity (capped roster), org/workspace, knowledge, active tasks | Identity always; tasks when present |
+| **L2** | Skill catalog metadata (name + one-line description) | Always via identity / discover_tools |
+| **L3+** | Skill full bodies, Error Recovery, Quality Gates, full Task Workflow, deliverable format | `discover_tools` activate, or scenarios: `task_execution` / `review` / `deliberation` / `comment_response` |
+
+> **SSOT**: Budgets, packs, and afford fail-closed rules live in [AGENT-RUNTIME.md](./AGENT-RUNTIME.md). The sections below are normative Spec supplements.
+
+### 2.3 Spec: Prompt profiles (`promptProfile`)
+
+MUST: `buildSystemPrompt()` MUST accept `promptProfile: 'reflex' | 'converse' | 'execute' | 'govern'` derived from the scenario pack ([AGENT-RUNTIME.md](./AGENT-RUNTIME.md) §2 / §4).
+
+| Section | reflex | converse | execute/govern |
+|---------|--------|----------|----------------|
+| ROLE | capped (`ROLE_PROMPT_MAX_TOKENS`) | capped | capped |
+| knowledge.md as `## Your Knowledge` | omitted | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS`) | capped |
+| state.md | ≤ `STATE_PROMPT_MAX_LINES_REFLEX` lines | optional short | optional short |
+| L3 quality/git/error-recovery | omitted | omitted | included |
+| Channel history / shared deliverables | omitted | optional short | as needed |
+| Full roster | manager + ≤3 active | existing caps | existing caps |
+
+MUST: ROLE text MUST be truncated to `ROLE_PROMPT_MAX_TOKENS` before injection.
+MUST: knowledge injection MUST exclude observations buffer.
+MUST NOT: Inject full `state.md` history into reflex.
+
+Test IDs: `A-profile-reflex-omits`, `A-profile-role-cap`, `A-knowledge-cap`.
+
+### 2.4 Spec: Afford fail-closed packing
+
+MUST: After assembling system + tools, compute `fixed = systemTokens + toolDefTokens`.
+MUST: If `promptAffordTokens != null` and
+`fixed + PROMPT_AFFORD_OUTPUT_RESERVE + safetyMargin > promptAffordTokens`:
+1. Downgrade once to `reflex` pack + profile and re-assemble.
+2. If still over, MUST NOT call the provider; return actionable error (`prompt_pack_rejected`).
+MUST: Heartbeat paths that hit reject MUST end activity with `success: false`.
+MUST NOT: Only shrink `messageBudget` while shipping an over-afford fixed prefix.
+
+MUST (§Afford.S1): `handleMessageStream` MUST use the same `ensureAffordablePromptPack`
+gate as `handleMessage` before any provider call.
+
+MUST (§Afford.S3): `promptProfile=converse` → `systemTokens ≤ SYSTEM_PROMPT_BUDGET_CONVERSE`
+(8000) after section trim.
+
+MUST (§Afford.S4): Provider MUST clamp `max_tokens` to remaining afford (proactive when
+`lastPromptAffordTokens` known; reactive on reservation 402).
+
+Test IDs: `A-afford-downgrade`, `A-afford-heartbeat-fail`, `S-stream-afford-reject`,
+`S-stream-afford-downgrade`, `S-converse-system-budget`, `S-max-tokens-clamp-remaining`.
+
+Cold-start acceptance: converse fixed ≤ 12_000; reflex fixed ≤ 8_000
+(`A-budget-contract-converse`, `A-budget-contract-reflex`).
+
 #### Identity Section (§7)
 Source: `buildIdentitySection()`.  
 Contains:
 - Agent name, role, position (manager vs worker)
-- Active skills (already installed)
+- Assigned skills (names only — activate via `discover_tools` for full instructions)
 - Organization name, Agent ID
 - Manager info (for workers)
-- Colleague list (name, role, type, status, skills)
-- Human team members
+- Colleague list capped at `SYSTEM_COLLEAGUES_MAX` (10); remainder via `team_list` / `agent_list_colleagues`
+- Other teams capped at `SYSTEM_OTHER_TEAMS_MAX`; humans at `SYSTEM_HUMANS_MAX`
 - **Manager Responsibilities** (for managers): Routing, Coordination, Reporting, Cross-team, Escalation, Hiring
+
+#### Skills (Hermes L0–L1 progressive disclosure)
+Skill **full bodies are not injected at spawn** (including former `alwaysOn` builtins and
+assigned skills). The catalog lists name + description; agents call
+`discover_tools({ name: [...] })` to load `<skill>` instructions into Tier 3 dynamic
+context. MCP servers for assigned skills still connect at spawn (tools only).
 
 #### Task Board (§23)
 Source: `opts.assignedTasks`.  
@@ -224,7 +284,8 @@ Placed at the **end of Tier 2** so the identity/org/memory prefix remains stable
 |----------|-----------------|-------------------|-------------------|
 | `chat` | Inline immediate-answer work. Sustained implementation → `task_create`. | **Directly visible** to the chatting human (real-time stream) | Speak naturally; `agent_send_message` for agents |
 | `task_execution` | Isolated session. Decompose → execute → `task_submit_review`. | Visible in **task execution logs** (Work page) | `notify_user` for critical updates; `agent_send_message` for agents |
-| `heartbeat` | Brief check-in: review tasks, retry failures, active goals, self-evolution. Inline prompt includes `## Active Goals` when standing goals exist. | **Not visible** to anyone | `notify_user` (only way to reach humans); `agent_send_message` for agents |
+| `heartbeat` | Brief check-in: review tasks, retry failures, active goals; at most one-line `memory_save` (no long evolution essays). Inline prompt includes `## Active Goals` when standing goals exist. | **Not visible** to anyone | `notify_user` (only way to reach humans); `agent_send_message` for agents |
+| `chat` (evolution child) | User-initiated Remember session ([LEARNING-LOOP.md](./LEARNING-LOOP.md) §9): seeded with parent DM transcript + `parentSessionId`; agent follows Learning Habits and may page history via `recall_context(scope=chat_session)`. | Visible to the human in that personal session | Same as chat; high-impact skill/ROLE changes use `request_user_input` |
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
 | `group_chat` | Team group chat channel. Silence by default, @mention routing, processing checklist, reply-in-group rules. | Visible to **all team members** | `agent_send_group_message` for replies; `notify_user` for private escalation |
 | `comment_response` | Context-first protocol. Batch awareness (handle bundled comments as one). Use `reply_to_comment_id` for structural quoting. Convergence check before replying. | **Not directly visible** | `task_comment` / `requirement_comment` for thread (with `reply_to_comment_id`); `notify_user` if urgent |
@@ -289,27 +350,32 @@ Token estimates use tiktoken when available (model-specific encoding), falling b
 
 ### 3.2 Compression Pipeline
 
-**Policy: window-first, compress only when over budget.** Markus does **not** drop or
-pre-summarize turns just to save tokens. It keeps the full session and packs against the
-real model window; compression stages run only when the message tokens exceed the budget.
-(This replaced an older count-based rule that summarized at ">60 messages, keep 40".)
+**Policy: budget-first (model window AND provider afford).** Markus packs against the
+real model window, then further clamps by any OpenRouter prompt-afford hint (from a prior
+`Prompt tokens limit exceeded: X > Y` 402). Compression runs when history exceeds
+`CONTEXT_PROACTIVE_COMPACT_RATIO` (55%) of the message budget — not only when the hard
+window overflows. Session restore also trims before the first LLM call
+(`SESSION_RESTORE_MAX_MESSAGES` / `SESSION_RESTORE_MAX_MESSAGE_TOKENS`).
 
 ```
 Session Messages
        │
        ▼
- Stage 1: Pathological single-message shrink ONLY
-   └─ shrinkOversizedMessages(cap: CONTEXT_ABSURD_MESSAGE_CHARS = 200k)
-   └─ sanitizeMessageSequence()          (no count cap, no pre-shrink of normal history)
+ Stage 0: Clamp messageBudget by promptAffordTokens − PROMPT_AFFORD_OUTPUT_RESERVE
        │
        ▼
- (below runs only if totalTokens > messageBudget)
+ Stage 1: Pathological single-message shrink ONLY
+   └─ shrinkOversizedMessages(cap: CONTEXT_ABSURD_MESSAGE_CHARS = 200k)
+   └─ sanitizeMessageSequence()
+       │
+       ▼
+ (runs if totalTokens > messageBudget OR > proactive 55% threshold)
        │
        ▼
  Stage 2: Token-budget-driven compression (progressive)
    ├─ 2a: shrinkOversizedMessages(cap: max(8000, budget/4)) + compactOldTurns()
-   ├─ 2b: smartSummarizeAndTruncate(keep: max(40, 70%)) — keep the majority of recent turns
-   └─ 2c: stronger summarize(keep: max(20, 45%)) + re-shrink
+   ├─ 2b: smartSummarizeAndTruncate(keep: max(24, 55%))
+   └─ 2c: stronger summarize(keep: max(16, 40%)) + re-shrink
        │
        ▼
  Stage 3: Last-resort trimming
@@ -317,18 +383,22 @@ Session Messages
        │
        ▼
  Final: [system prompt, ...compressed messages]
+ Metrics: systemTokens / historyTokens / toolDefTokens / totalPromptTokens / compactStage
 ```
 
 - **Safety margin**: `min(contextWindow * 0.08, 16000)` — modest, to prefer packing
   history over reserving unused slack.
+- **Channel history**: `CHANNEL_CONTEXT_MESSAGES = 15` (load, inject, and prompt copy aligned).
+- **Tool result offload**: `TOOL_RESULT_OFFLOAD_CHARS = 12_000` (preview kept in context).
 - **Storage-side compaction** is a separate, high-volume safety net (not a per-call token
   saver): on-disk sessions are compacted only at
   `SESSION_STORAGE_COMPACT_TRIGGER = 2000` messages, keeping
   `SESSION_STORAGE_COMPACT_KEEP = 1000`; oversized on-disk tool results are shrunk at
   `SESSION_STORAGE_TOOL_SHRINK_CHARS = 100k`. See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
 
-**Design rationale (Hermes)**: aligns with the industry practice of filling the window and
-compressing only over budget — the opposite of self-limiting to save tokens.
+**Design rationale (Hermes progressive disclosure + afford-aware packing)**: keep cold-start
+system+tools lean (~10k target), activate skill bodies on demand, and never fill a 128k/1M
+window when the provider key can only afford ~37k prompt tokens.
 
 **Lightweight sessions**: All interactions (heartbeat, A2A, memory flush, comments) use the same `prepareMessages()` pipeline. Sessions are persisted to JSON files for full traceability. The `scenario` parameter controls what context is included in the system prompt — lightweight scenarios (`heartbeat`, `a2a`, `comment_response`) skip heavy context like assigned tasks, deliverables, and chat session lists.
 

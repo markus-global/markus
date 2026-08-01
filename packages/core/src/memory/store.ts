@@ -21,6 +21,7 @@ import {
   SESSION_STORAGE_TOOL_SHRINK_CHARS,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
+import { ensureKnowledgeStateFiles, readState, pruneExpiredState, writeState } from './taxonomy.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
 
@@ -185,8 +186,30 @@ export class MemoryStore implements IMemoryStore {
     mkdirSync(this.dataDir, { recursive: true });
     mkdirSync(this.sessionsDir, { recursive: true });
     mkdirSync(this.logsDir, { recursive: true });
+    ensureKnowledgeStateFiles(dataDir);
+    const knowledgeFile = join(dataDir, 'knowledge.md');
+    if (existsSync(knowledgeFile)) this.longTermFile = knowledgeFile;
     this.loadFromDisk();
     this.loadSessionsFromDisk();
+  }
+
+  /** state.md short snapshot for reflex prompts. */
+  getStateMemory(): string {
+    try {
+      return readState(this.dataDir);
+    } catch {
+      return '';
+    }
+  }
+
+  /** Expire TTL'd state.md entries (Dream librarian). */
+  pruneStateMemory(): void {
+    try {
+      const pruned = pruneExpiredState(readState(this.dataDir));
+      writeState(this.dataDir, pruned || '# State\n');
+    } catch (err) {
+      log.debug('pruneStateMemory failed', { error: String(err) });
+    }
   }
 
   // --- Short-term: session messages ---

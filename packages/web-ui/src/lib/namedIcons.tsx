@@ -74,7 +74,7 @@ const SKILL_ICON_BY_NAME: Record<string, string> = {
   markitdown: 'file-text',
   'markus-admin-cli': 'terminal',
   codex: 'code',
-  'self-evolution': 'sparkles',
+
   'team-building': 'users',
   'claude-code': 'code',
   'skill-building': 'wrench',

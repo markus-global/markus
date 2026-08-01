@@ -161,7 +161,7 @@ If the user only gives a Chinese title, **you invent an English kebab slug**, se
 - **`skillFile`**: Always `"SKILL.md"` — the entry point instruction document
 - **`requiredPermissions`**: (optional) Array of permissions: `"shell"`, `"file"`, `"network"`, `"browser"`
 - **`mcpServers`**: (optional) Map of MCP server name → config. Each config has `command`, `args?`, `env?`. Use `${SKILL_DIR}` in args/env to reference the skill directory.
-- **`alwaysOn`**: (optional, boolean) If `true`, the skill's instructions are automatically injected into **every** agent's context at startup. Only use this for foundational skills that all agents must always follow (e.g., `self-evolution`). Default is `false` — non-alwaysOn built-in skills are listed as "available" in the agent's identity section and can be activated on-demand via `discover_tools`.
+- **`alwaysOn`**: (optional, boolean) If `true`, the skill is listed in every agent's discoverable catalog as a foundational skill (e.g., Learning Habits). Full instructions are **not** auto-injected — agents activate via `discover_tools({ name: [...] })` (Hermes progressive disclosure). Default is `false`.
 
 ## After Creation
 

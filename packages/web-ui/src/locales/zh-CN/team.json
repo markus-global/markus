@@ -274,6 +274,13 @@
       "reaskTitle": "重新提问",
       "retryTitle": "重试",
       "replyTitle": "回复",
+      "rememberTitle": "记住这次经验",
+      "rememberModalTitle": "记住这次经验？",
+      "rememberModalHint": "可选：告诉智能体希望沉淀什么。",
+      "rememberModalPlaceholder": "例如：修改 ROLE.md 前先征求确认",
+      "rememberConfirm": "开始进化",
+      "rememberCancel": "取消",
+      "evolvedFrom": "进化会话 — 正在复盘此前的对话",
       "aiGeneratedDisclaimer": "内容由 AI 生成，请仔细甄别"
     },
     "stopped": "已停止",

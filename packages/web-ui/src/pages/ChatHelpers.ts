@@ -20,6 +20,8 @@ export interface ChatMsg {
   activities?: ActivityStep[];
   isError?: boolean;
   isStopped?: boolean;
+  /** True when the assistant turn finished with no content (survives refresh). */
+  emptyReply?: boolean;
   /** True when the assistant turn is still generating (survives refresh via reattach). */
   isStreaming?: boolean;
   images?: string[];
@@ -34,6 +36,11 @@ export interface ChatMsg {
   requirementId?: string;
   isNotification?: boolean;
   notifyPriority?: string;
+}
+
+/** Remember is only for user↔agent personal DM (`showRemember` from ChatPanel / chatMode=direct). */
+export function isRememberActionVisible(showRemember: boolean | undefined, sender: ChatMsg['sender']): boolean {
+  return !!showRemember && sender === 'agent';
 }
 
 export type ChatMode = 'channel' | 'direct' | 'dm';
@@ -127,6 +134,11 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   }
   if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
     base.isError = true;
+  }
+  if (m.metadata?.emptyReply || (m.role === 'assistant' && !m.content && !m.metadata?.segments?.length && (m.metadata?.isError || m.metadata?.isStopped))) {
+    base.emptyReply = true;
+    // Surface as error so Retry is always visible (not hover-only).
+    if (!base.isStopped) base.isError = true;
   }
   if (m.metadata?.isStreaming) {
     base.isStreaming = true;

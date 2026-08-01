@@ -113,14 +113,21 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
         : 'https://openrouter.ai/api/v1';
 
     let markusModelsUrl = markusCfg.modelsUrl ?? process.env['MARKUS_MODELS_URL'] ?? '';
-    const hubBase = (config.hub?.url || process.env['MARKUS_HUB_URL'] || '').replace(/\/+$/, '');
+    // Prefer www — apex markus.global 307-redirects and Node fetch drops Authorization.
+    const hubBase = (config.hub?.url || process.env['MARKUS_HUB_URL'] || 'https://www.markus.global')
+      .replace(/\/+$/, '')
+      .replace(/^https?:\/\/markus\.global$/i, 'https://www.markus.global');
     if (!markusModelsUrl && hubBase) {
       markusModelsUrl = `${hubBase}/api/models/live/markus`;
     }
-    if (markusModelsUrl && hubBase) {
+    if (markusModelsUrl) {
       try {
         const mu = new URL(markusModelsUrl);
-        const hu = new URL(hubBase.includes('://') ? hubBase : `http://${hubBase}`);
+        if (mu.hostname === 'markus.global') {
+          mu.hostname = 'www.markus.global';
+          markusModelsUrl = mu.toString().replace(/\/$/, '');
+        }
+        const hu = new URL(hubBase.includes('://') ? hubBase : `https://${hubBase}`);
         if (mu.host !== hu.host) {
           markusModelsUrl = `${hubBase}/api/models/live/markus`;
         }
@@ -166,12 +173,23 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
       process.env['MARKUS_MODELS_URL'] = markusModelsUrl;
     }
 
+    // Hub JWT + canonical www origin — required for POST /api/user/cu/sync.
+    // modelsUrl often uses apex markus.global which 307→www and drops Authorization.
+    const hubTokenPath = join(homedir(), '.markus', 'hub-token');
+    const hubToken = existsSync(hubTokenPath)
+      ? readFileSync(hubTokenPath, 'utf-8').trim()
+      : (process.env['MARKUS_HUB_TOKEN'] || '');
+    const hubUrl = (config.hub?.url || process.env['MARKUS_HUB_URL'] || 'https://www.markus.global')
+      .replace(/\/+$/, '');
+
     providerConfigs['markus'] = {
       provider: 'markus',
       model: markusCfg.model ?? '',
       apiKey: markusOrKey,
       baseUrl: markusOrBase,
       ...(markusModelsUrl ? { modelsUrl: markusModelsUrl } : {}),
+      hubUrl,
+      ...(hubToken ? { hubToken } : {}),
       timeoutMs: llmTimeoutMs,
     };
   } else if (config.llm.defaultProvider === 'markus') {

@@ -5,8 +5,15 @@ import {
   formatUpstreamMediaError,
   resolveMarkusRoute,
   stripMarkusNamespace,
+  normalizeMarkusHubOrigin,
 } from '../src/llm/markus-provider.js';
-import { defaultVoiceForModel, parseOpenRouterAffordableTokens } from '../src/llm/provider.js';
+import {
+  defaultVoiceForModel,
+  parseOpenRouterAffordableTokens,
+  parseOpenRouterPromptAffordableTokens,
+  clampReservationMaxTokens,
+  clampMaxTokensToRemainingAfford,
+} from '../src/llm/provider.js';
 
 function mockResponse(
   body: unknown,
@@ -45,6 +52,15 @@ describe('resolveMarkusRoute', () => {
   });
 });
 
+describe('normalizeMarkusHubOrigin', () => {
+  it('rewrites apex markus.global to www (avoids cu/sync 401 on 307)', () => {
+    expect(normalizeMarkusHubOrigin('https://markus.global')).toBe('https://www.markus.global');
+    expect(normalizeMarkusHubOrigin('https://markus.global/api/models/live/markus'))
+      .toBe('https://www.markus.global');
+    expect(normalizeMarkusHubOrigin('https://www.markus.global')).toBe('https://www.markus.global');
+  });
+});
+
 describe('stripMarkusNamespace', () => {
   it('strips a leading markus/ (slash) gateway prefix', () => {
     expect(stripMarkusNamespace('markus/openai/gpt-image-1')).toBe('openai/gpt-image-1');
@@ -64,6 +80,35 @@ describe('parseOpenRouterAffordableTokens', () => {
       'You requested up to 65536 tokens, but can only afford 28046.',
     )).toBe(Math.floor(28046 * 0.98));
     expect(parseOpenRouterAffordableTokens('no afford info')).toBeNull();
+  });
+});
+
+describe('parseOpenRouterPromptAffordableTokens', () => {
+  it('parses prompt tokens limit ceiling from OpenRouter 402 bodies', () => {
+    expect(parseOpenRouterPromptAffordableTokens(
+      'Prompt tokens limit exceeded: 86869 > 37406',
+    )).toBe(Math.floor(37406 * 0.95));
+    expect(parseOpenRouterPromptAffordableTokens('can only afford 28046')).toBeNull();
+  });
+});
+
+describe('S-max-tokens-clamp-remaining (Afford.S4)', () => {
+  it('clamps reservation afford with floor 512', () => {
+    expect(clampReservationMaxTokens(7378)).toBeLessThanOrEqual(7378);
+    expect(clampReservationMaxTokens(7378)).toBeGreaterThanOrEqual(512);
+    expect(clampReservationMaxTokens(100)).toBe(512);
+  });
+
+  it('clamps first-request max_tokens to remaining afford', () => {
+    const clamped = clampMaxTokensToRemainingAfford({
+      requested: 13_156,
+      promptAfford: 20_000,
+      estimatedPrompt: 12_000,
+      margin: 500,
+    });
+    expect(clamped).toBeLessThanOrEqual(20_000 - 12_000 - 500);
+    expect(clamped).toBeLessThan(13_156);
+    expect(clamped).toBeGreaterThanOrEqual(512);
   });
 });
 
@@ -222,7 +267,9 @@ describe('MarkusProvider CU tracking', () => {
     const res = await p.chat({ messages: [{ role: 'user', content: 'hi' }] });
     expect(res.content).toBe('ok-despite-sync-401');
     const retryBody = JSON.parse(vi.mocked(fetch).mock.calls[2]![1]!.body as string);
-    expect(retryBody.max_tokens).toBe(Math.floor(28046 * 0.98));
+    const affordable = parseOpenRouterAffordableTokens(affordMsg)!;
+    expect(retryBody.max_tokens).toBe(clampReservationMaxTokens(affordable));
+    expect(retryBody.max_tokens).toBeLessThanOrEqual(affordable);
   });
 
   it('on 402: calls Hub cu/sync and retries once when remaining > 0', async () => {
@@ -271,7 +318,82 @@ describe('MarkusProvider CU tracking', () => {
     const res = await p.chat({ messages: [{ role: 'user', content: 'hi' }] });
     expect(res.content).toBe('ok-after-clamp');
     const retryBody = JSON.parse(vi.mocked(fetch).mock.calls[2]![1]!.body as string);
-    expect(retryBody.max_tokens).toBe(Math.floor(28046 * 0.98));
+    const affordable = parseOpenRouterAffordableTokens(affordMsg)!;
+    expect(retryBody.max_tokens).toBe(clampReservationMaxTokens(affordable));
+  });
+
+  it('S-max-tokens-clamp-remaining: 402 afford 7378 → retry max_tokens ≤ 7378; proactive clamp when promptAfford known', async () => {
+    const p = new MarkusProvider({
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-v4-flash',
+      maxTokens: 13_156,
+    });
+    const affordMsg =
+      'This request requires more credits, or fewer max_tokens. You requested up to 13156 tokens, but can only afford 7378.';
+    // Tight prompt afford so remaining output << 13156 after margin
+    const promptLimitMsg = 'Prompt tokens limit exceeded: 20000 > 8000';
+    vi.mocked(fetch)
+      // Turn 1: reservation 402 → clamp retry
+      .mockResolvedValueOnce(mockResponse({ error: { message: affordMsg } }, 402))
+      .mockResolvedValueOnce(mockResponse({
+        ok: true,
+        remainingCu: 3000,
+        openrouter: { remainingUsd: 2 },
+      }, 200))
+      .mockResolvedValueOnce(mockResponse(chatCompletionBody('after-7378', 0.01)))
+      // Turn 2: record prompt afford; sync 401 so request fails but hint is kept
+      .mockResolvedValueOnce(mockResponse({ error: { message: promptLimitMsg } }, 402))
+      .mockResolvedValueOnce(mockResponse({ error: 'unauthorized' }, 401))
+      // Turn 3: first request should already be clamped (no 402)
+      .mockResolvedValueOnce(mockResponse(chatCompletionBody('proactive-ok', 0.01)));
+
+    const r1 = await p.chat({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 13_156 });
+    expect(r1.content).toBe('after-7378');
+    const retry1 = JSON.parse(vi.mocked(fetch).mock.calls[2]![1]!.body as string);
+    expect(retry1.max_tokens).toBeLessThanOrEqual(7378);
+    expect(retry1.max_tokens).toBeGreaterThanOrEqual(512);
+
+    await expect(
+      p.chat({ messages: [{ role: 'user', content: 'hi2' }], maxTokens: 13_156 }),
+    ).rejects.toThrow(/MARKUS_UPSTREAM_ERROR/);
+    expect(p.getLastPromptAffordTokens()).toBe(Math.floor(8000 * 0.95));
+
+    const r3 = await p.chat({
+      messages: [{ role: 'user', content: 'x'.repeat(4000) }],
+      maxTokens: 13_156,
+    });
+    expect(r3.content).toBe('proactive-ok');
+    const lastCall = vi.mocked(fetch).mock.calls.at(-1)!;
+    const body3 = JSON.parse(lastCall[1]!.body as string);
+    expect(body3.max_tokens).toBeLessThan(13_156);
+    expect(body3.max_tokens).toBeGreaterThanOrEqual(512);
+    // Success clears the stale ceiling
+    expect(p.getLastPromptAffordTokens()).toBeNull();
+  });
+
+  it('clears cached prompt afford after successful chat', async () => {
+    const p = new MarkusProvider({
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-v4-flash',
+    });
+    const promptLimitMsg = 'Prompt tokens limit exceeded: 50000 > 20000';
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ error: { message: promptLimitMsg } }, 402))
+      .mockResolvedValueOnce(mockResponse({
+        ok: true,
+        remainingCu: 50,
+        openrouter: { remainingUsd: 0.01 },
+      }, 200))
+      .mockResolvedValueOnce(mockResponse(chatCompletionBody('ok', 0.01)));
+
+    await p.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(p.getLastPromptAffordTokens()).toBeNull();
   });
 
   it('on 402: still CU_EXCEEDED when sync reports zero remaining', async () => {

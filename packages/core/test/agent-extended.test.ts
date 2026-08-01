@@ -216,6 +216,17 @@ describe('skill and context helpers', () => {
     expect(agent.getActiveSkillNames()).toContain('search');
   });
 
+  it('trimMessagesForRestore keeps recent turns and inserts a trim marker', () => {
+    const msgs = Array.from({ length: 120 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `msg-${i}-${'x'.repeat(200)}`,
+    }));
+    const trimmed = Agent.trimMessagesForRestore(msgs, 40, 8_000);
+    expect(trimmed.length).toBeLessThan(msgs.length);
+    expect(trimmed[0]?.content).toMatch(/trimmed on restore/i);
+    expect(trimmed.some(m => m.content.includes('msg-119'))).toBe(true);
+  });
+
   it('addDynamicContextProvider injects runtime context into prompts', async () => {
     const router = makeMockRouter();
     const agent = createAgent(router);
