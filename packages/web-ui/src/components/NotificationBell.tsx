@@ -427,6 +427,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     await api.notifications.markRead(id);
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
     setUnreadCount(prev => Math.max(0, prev - 1));
+    window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
   };
 
   const navigateForNotification = (n: NotificationInfo) => {
@@ -605,12 +606,14 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
       setUnreadCount(0);
       invalidateApiCache('/notifications');
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
     } catch {
       const unread = displayNotifications.filter(n => !n.read);
       await Promise.all(unread.map(n => api.notifications.markRead(n.id)));
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
       setUnreadCount(0);
       invalidateApiCache('/notifications');
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
     }
   };
 

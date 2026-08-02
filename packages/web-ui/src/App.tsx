@@ -21,7 +21,7 @@ import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, hubApi, clearHubAuth, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
-import { useLayout } from './contexts/LayoutContext.tsx';
+import { useLayout, isBrowserTabReopenSuppressed } from './contexts/LayoutContext.tsx';
 import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
@@ -162,8 +162,11 @@ export function App() {
       }
       if (event.type === 'opened' || event.type === 'selected') {
         if (!event.url && !event.browserId) return;
-        // Ignore UI-owned preview hosts (eb_*) — those already have a panel tab.
-        if (event.browserId.startsWith('eb_') && event.type === 'opened') return;
+        // UI-owned preview hosts (eb_*) already have a panel tab — never re-open
+        // them from native events (selected/opened after destroy looks like "can't close").
+        if (event.browserId.startsWith('eb_')) return;
+        // User just closed this browserId; ignore in-flight create/select echoes.
+        if (isBrowserTabReopenSuppressed(event.browserId)) return;
         openRightPanel({
           kind: 'url',
           url: event.url || 'about:blank',

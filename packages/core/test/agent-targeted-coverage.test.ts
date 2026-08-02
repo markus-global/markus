@@ -255,11 +255,13 @@ describe('executeTool meta-tools', () => {
   });
 
   it('notify_user and request_user_approval via executeTool', async () => {
-    const events: unknown[] = [];
+    const events: Array<Record<string, unknown>> = [];
     const agent = createAgent(makeMockRouter());
-    agent.getEventBus().on('agent:notify-user', (e) => events.push(e));
+    agent.getEventBus().on('agent:notify-user', (e) => events.push(e as Record<string, unknown>));
     const session = agent.getMemory().createSession(agent.id);
     (agent as unknown as { currentSessionId: string }).currentSessionId = session.id;
+    (agent as unknown as { activeScenario: string }).activeScenario = 'chat';
+    agent.bindDbSession('cs_chat_notify_1');
 
     const missing = await execTool(agent, 'notify_user', { title: '', body: '' });
     expect(JSON.parse(missing).status).toBe('error');
@@ -272,6 +274,18 @@ describe('executeTool meta-tools', () => {
     });
     expect(JSON.parse(notifyRaw).status).toBe('ok');
     expect(events).toHaveLength(1);
+    expect(events[0]?.sessionId).toBe('cs_chat_notify_1');
+
+    // Background scenarios (e.g. heartbeat) must not pin a non-main chat session.
+    events.length = 0;
+    (agent as unknown as { activeScenario: string }).activeScenario = 'heartbeat';
+    const hbRaw = await execTool(agent, 'notify_user', {
+      title: 'Heartbeat note',
+      body: 'Patrol finished',
+    });
+    expect(JSON.parse(hbRaw).status).toBe('ok');
+    expect(events).toHaveLength(1);
+    expect(events[0]?.sessionId).toBeUndefined();
 
     agent.setUserApprovalRequester(async () => ({
       approved: true,

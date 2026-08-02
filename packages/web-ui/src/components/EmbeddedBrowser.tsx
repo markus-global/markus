@@ -118,6 +118,9 @@ export function EmbeddedBrowser({
         if (event.url && document.activeElement !== addressRef.current) {
           setAddress(event.url === 'about:blank' ? '' : event.url);
         }
+        // After load, re-sync host bounds so a freshly painted WebContentsView
+        // is not stuck blank until the next unrelated layout change.
+        window.dispatchEvent(new Event('markus:embedded-browser-resync'));
         return;
       }
       if (event.type === 'load-failed') {

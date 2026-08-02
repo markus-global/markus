@@ -351,6 +351,17 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
         title: view.webContents.getTitle(),
         isLoading: false,
       });
+      // Pages that finish loading just after a show/restack can paint blank
+      // until bounds are reapplied — nudge the surface if this tab is on screen.
+      if (s.visible) {
+        try {
+          const b = s.view.getBounds();
+          if (b.width >= 2 && b.height >= 2) {
+            s.view.setBounds(b);
+            setSlotPainted(s, true);
+          }
+        } catch { /* ignore */ }
+      }
     });
     view.webContents.on('did-fail-load', (_e, _code, errorDescription, validatedURL, isMainFrame) => {
       if (!isMainFrame) return;
@@ -490,6 +501,17 @@ export function setEmbeddedBrowserBounds(
       slot.layoutAligned = false;
     } else {
       const sizeChanged = slot.lastUiWidth !== w || slot.lastUiHeight !== h;
+      const becomingVisible = !slot.visible;
+      // Only re-stack when showing a hidden view. Doing remove/addChildView on
+      // every bounds sync (scroll/ResizeObserver) tears down the compositor and
+      // leaves a blank page until the next layout change.
+      if (becomingVisible) {
+        const win = getWin();
+        if (win) {
+          try { win.contentView.removeChildView(slot.view); } catch { /* not attached */ }
+          try { win.contentView.addChildView(slot.view); } catch { /* ignore */ }
+        }
+      }
       slot.view.setBounds({ x, y, width: w, height: h });
       slot.lastUiX = x;
       slot.lastUiY = y;
@@ -498,7 +520,7 @@ export function setEmbeddedBrowserBounds(
       setSlotPainted(slot, true);
       // Re-align when size changes, when first shown, or when agent left a
       // sticky device-metrics override (common after snapshot/resize_page).
-      if (sizeChanged || slot.hasDeviceMetricsOverride || !slot.layoutAligned) {
+      if (sizeChanged || becomingVisible || slot.hasDeviceMetricsOverride || !slot.layoutAligned) {
         alignLayoutViewportToUi(slot);
         slot.layoutAligned = true;
       }

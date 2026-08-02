@@ -1080,15 +1080,28 @@ async function startServerCore(
       }
     });
 
-    // notify_user: persist as regular chat message + WS broadcast + notification bell
+    // notify_user: persist as regular chat message + WS broadcast + notification bell.
+    // Chat scenario passes the active DB sessionId; background work falls back to main.
     agentManager.getEventBus().on('agent:notify-user', async (evt: unknown) => {
-      const { agentId, title, body, priority, taskId, requirementId, targetUserId } = evt as {
+      const { agentId, title, body, priority, taskId, requirementId, targetUserId, sessionId: eventSessionId } = evt as {
         agentId: string; title: string; body: string; priority?: NotificationPriority;
-        taskId?: string; requirementId?: string; targetUserId?: string;
+        taskId?: string; requirementId?: string; targetUserId?: string; sessionId?: string;
       };
       try {
         const sessionUserId = targetUserId || defaultSessionUserId;
         const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId, sessionUserId);
+        let targetSession = mainSession;
+        if (eventSessionId && eventSessionId !== mainSession.id) {
+          const requested = storage.chatSessionRepo.getSession(eventSessionId);
+          if (requested && requested.agentId === agentId) {
+            targetSession = requested;
+          } else {
+            log.warn('notify_user session missing or mismatched — falling back to main', {
+              agentId, eventSessionId, requestedAgentId: requested?.agentId,
+            });
+          }
+        }
+        const isMainSession = !!targetSession.isMain || targetSession.id === mainSession.id;
         const agent = agentManager.getAgent(agentId);
         const contextParts: string[] = [];
         if (taskId) contextParts.push(`task_id=${taskId}`);
@@ -1105,15 +1118,16 @@ async function startServerCore(
           ...(requirementId ? { requirementId } : {}),
         };
         const msg = storage.chatSessionRepo.appendMessage(
-          mainSession.id, agentId, 'assistant', formattedMsg, 0, msgMetadata,
+          targetSession.id, agentId, 'assistant', formattedMsg, 0, msgMetadata,
         );
-        storage.chatSessionRepo.updateLastMessage(mainSession.id);
-        ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, formattedMsg, {
-          isMainSession: true,
+        storage.chatSessionRepo.updateLastMessage(targetSession.id);
+        ws.broadcastProactiveMessage(agentId, agent.config.name, targetSession.id, msg.id, formattedMsg, {
+          isMainSession,
           notifyUser: true,
           priority: priority ?? 'normal',
           taskId,
           requirementId,
+          messageId: msg.id,
         }, sessionUserId);
         const hasTask = !!taskId;
         hitlService.notify({
@@ -1123,8 +1137,16 @@ async function startServerCore(
           actionType: hasTask ? 'navigate' : 'open_chat',
           actionTarget: hasTask
             ? JSON.stringify({ path: `/work?openTask=${taskId}` })
-            : JSON.stringify({ agentId, sessionId: mainSession.id }),
-          metadata: { agentId, agentName: agent.config.name, taskId, requirementId, sessionId: mainSession.id },
+            : JSON.stringify({ agentId, sessionId: targetSession.id, messageId: msg.id }),
+          metadata: {
+            agentId,
+            agentName: agent.config.name,
+            taskId,
+            requirementId,
+            sessionId: targetSession.id,
+            // Lets the chat UI show a bottom card instead of also rendering this bubble.
+            messageId: msg.id,
+          },
         });
       } catch (e) {
         log.warn('Failed to handle notify-user event', { agentId, error: String(e) });

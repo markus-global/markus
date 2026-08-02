@@ -6535,10 +6535,13 @@ export class Agent {
         }
 
         // Emit event — start.ts handler does DB persist + WS broadcast + notification.
-        // Always use undefined for sessionId so start.ts resolves the correct main session.
+        // Chat turns: land in the active DB chat session.
+        // Heartbeat / task / requirement / other background scenarios: main session.
+        const chatDbSessionId =
+          this.activeScenario === 'chat' ? (this.getDbSessionId() ?? undefined) : undefined;
         this.eventBus.emit('agent:notify-user', {
           agentId: this.id,
-          sessionId: undefined,
+          sessionId: chatDbSessionId,
           targetUserId: explicitTargetUser ?? this.currentInteractingUserId,
           title,
           body,

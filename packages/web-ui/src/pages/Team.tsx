@@ -7,11 +7,12 @@ import {
   type AgentInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
   type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
-  type SubagentProgressEvent,
+  type NotificationInfo, type SubagentProgressEvent,
 } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
 import { UserInputModal } from '../components/UserInputModal.tsx';
+import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
   ToolCallRow, ExecEntryRow, ThinkingDots,
@@ -52,6 +53,21 @@ export type { MsgSegment };
 
 /** L1/L2 team-chat sidebar collapse preference. Only written on manual toggle. */
 const TEAM_SIDEBARS_COLLAPSED_KEY = 'markus_team_sidebars_c';
+
+/** Session id carried by a notify_user → agent_report notification. */
+function notifySessionId(n: NotificationInfo): string | undefined {
+  const meta = n.metadata ?? {};
+  if (typeof meta.sessionId === 'string' && meta.sessionId) return meta.sessionId;
+  if (n.actionType === 'open_chat' && n.actionTarget) {
+    try {
+      const target = typeof n.actionTarget === 'string' ? JSON.parse(n.actionTarget) : n.actionTarget;
+      if (target && typeof target === 'object' && typeof (target as { sessionId?: unknown }).sessionId === 'string') {
+        return (target as { sessionId: string }).sessionId;
+      }
+    } catch { /* ignore */ }
+  }
+  return undefined;
+}
 
 function agentInitials(name: string) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
@@ -605,8 +621,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, []);
 
   useEffect(() => {
-    adjustTextareaHeight();
-  }, [input, adjustTextareaHeight]);
+    // Layout may switch between single-row and two-row when content appears; remeasure after paint.
+    const id = requestAnimationFrame(() => adjustTextareaHeight());
+    return () => cancelAnimationFrame(id);
+  }, [input, pendingImages.length, adjustTextareaHeight]);
 
   // Session management (direct mode)
   // Persist closed session tabs in localStorage so they don't reappear on refresh
@@ -650,6 +668,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [userInputApprovals, setUserInputApprovals] = useState<ApprovalInfo[]>([]);
   const [activeInputModal, setActiveInputModal] = useState<ApprovalInfo | null>(null);
   const [respondingInputId, setRespondingInputId] = useState<string | null>(null);
+  // Unread notify_user (agent_report) cards for the active direct-chat session.
+  const [sessionNotifyCards, setSessionNotifyCards] = useState<NotificationInfo[]>([]);
+  const [activeNotifyModal, setActiveNotifyModal] = useState<NotificationInfo | null>(null);
+  const [acknowledgingNotifyId, setAcknowledgingNotifyId] = useState<string | null>(null);
+  // Message ids currently represented by a bottom notify card — hide the duplicate bubble.
+  const [hiddenNotifyMsgIds, setHiddenNotifyMsgIds] = useState<string[]>([]);
   const [openSessionTabs, _setOpenSessionTabs] = useState<ChatSessionInfo[]>([]);
   // Wrapper that deduplicates tabs by ID to prevent duplicate "main session" entries
   const setOpenSessionTabs: typeof _setOpenSessionTabs = (action) => {
@@ -1083,55 +1107,121 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   }, [agents, selectedAgent]);
 
-  // Track whether the user is at the bottom of the chat scroll container.
-  // Programmatic scrolls must not mark the user as "scrolled up", but we still
-  // sync the jump button from the real DOM position (virtualizer size changes
-  // often leave a residual gap that would otherwise keep the button stuck on).
+  // Sticky-bottom follow: auto-scroll while the user is at/near the bottom.
+  // During streaming, programmatic follow must not override a manual scroll-away;
+  // once the user scrolls back to the latest output, follow resumes.
   const isProgrammaticScrollRef = useRef(false);
+  /** True after an explicit user scroll-away until they return to the bottom. */
+  const userPinnedAwayRef = useRef(false);
+  /** Wheel / touch / scrollbar drag — honored even while a programmatic scroll is in flight. */
+  const userScrollIntentRef = useRef(false);
+  const lastChatScrollTopRef = useRef(0);
+  /** Bumped to cancel in-flight scrollChatToBottom rAF chains. */
+  const scrollFollowGenRef = useRef(0);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const newMsgCountRef = useRef(0);
   const [newMsgCount, setNewMsgCount] = useState(0);
+  const resumeChatScrollFollow = useCallback(() => {
+    userPinnedAwayRef.current = false;
+    userScrollIntentRef.current = false;
+    userAtBottomRef.current = true;
+  }, []);
+  const pinChatScrollAway = useCallback(() => {
+    userPinnedAwayRef.current = true;
+    userAtBottomRef.current = false;
+    // Cancel any in-flight programmatic follow so streaming cannot yank the viewport.
+    scrollFollowGenRef.current += 1;
+    isProgrammaticScrollRef.current = false;
+    setShowScrollBtn(true);
+  }, []);
   const syncChatBottomState = useCallback((opts?: { fromProgrammatic?: boolean }) => {
     const el = chatScrollRef.current;
     if (!el) return;
     // Virtualizer totalSize is estimate-based; keep a looser threshold so the
     // jump button doesn't stick on when the last bubble is already in view.
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const atBottom = distance < 160;
-    if (atBottom) {
-      userAtBottomRef.current = true;
+    const nearBottom = distance < 160;
+    // Require getting closer than this before reclaiming follow after a pin-away,
+    // so a tiny slack gap doesn't immediately re-stick while the user is reading.
+    const resumeBottom = distance < 48;
+    const prevTop = lastChatScrollTopRef.current;
+    const scrollingUp = el.scrollTop < prevTop - 2;
+    lastChatScrollTopRef.current = el.scrollTop;
+
+    // Upward movement during follow = user taking over (wheel/touch/scrollbar),
+    // even while a programmatic snap is in flight and even inside the near-bottom
+    // slack zone (otherwise a small scroll-up keeps getting yanked back).
+    if (scrollingUp && distance > 20) {
+      userScrollIntentRef.current = true;
+      pinChatScrollAway();
+      return;
+    }
+
+    if (userScrollIntentRef.current) {
+      if (resumeBottom) {
+        resumeChatScrollFollow();
+        setShowScrollBtn(false);
+        newMsgCountRef.current = 0;
+        setNewMsgCount(0);
+      } else {
+        pinChatScrollAway();
+      }
+      return;
+    }
+
+    if (nearBottom && !userPinnedAwayRef.current) {
+      resumeChatScrollFollow();
       setShowScrollBtn(false);
       newMsgCountRef.current = 0;
       setNewMsgCount(0);
       return;
     }
+
     // During programmatic snap-to-bottom, ignore transient mid-scroll gaps.
     if (opts?.fromProgrammatic || isProgrammaticScrollRef.current) return;
-    userAtBottomRef.current = false;
-    setShowScrollBtn(true);
-  }, []);
+    // Streaming/layout growth can push distance past the threshold without any
+    // user gesture. Keep following in that case; only show the jump control once
+    // the user has actually pinned away.
+    if (!userPinnedAwayRef.current && userAtBottomRef.current) return;
+    if (userPinnedAwayRef.current) {
+      userAtBottomRef.current = false;
+      setShowScrollBtn(true);
+    }
+  }, [pinChatScrollAway, resumeChatScrollFollow]);
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
+    const markUserScrollIntent = () => {
+      userScrollIntentRef.current = true;
+    };
     const onScroll = () => {
       syncChatBottomState({ fromProgrammatic: isProgrammaticScrollRef.current });
     };
+    el.addEventListener('wheel', markUserScrollIntent, { passive: true });
+    el.addEventListener('touchmove', markUserScrollIntent, { passive: true });
     el.addEventListener('scroll', onScroll, { passive: true });
     // Virtualizer totalSize / streaming height changes don't always fire scroll.
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => syncChatBottomState()) : null;
     ro?.observe(el);
+    lastChatScrollTopRef.current = el.scrollTop;
     syncChatBottomState();
     return () => {
+      el.removeEventListener('wheel', markUserScrollIntent);
+      el.removeEventListener('touchmove', markUserScrollIntent);
       el.removeEventListener('scroll', onScroll);
       ro?.disconnect();
     };
   }, [mobileLayer, syncChatBottomState]);
 
-  // visibleMessages + virtualizer must be declared before scrollChatToBottom
-  const visibleMessages = useMemo(() =>
-    chatMode === 'channel' ? messages : messages.filter(m => !m.isActivityLog),
-    [messages, chatMode]
-  );
+  // visibleMessages + virtualizer must be declared before scrollChatToBottom.
+  // Unread notify_user items are shown as bottom cards — suppress the duplicate bubble
+  // until the user acknowledges (then the history message reappears).
+  const hiddenNotifyMsgIdSet = useMemo(() => new Set(hiddenNotifyMsgIds), [hiddenNotifyMsgIds]);
+  const visibleMessages = useMemo(() => {
+    const base = chatMode === 'channel' ? messages : messages.filter(m => !m.isActivityLog);
+    if (hiddenNotifyMsgIdSet.size === 0) return base;
+    return base.filter(m => !(m.isNotification && hiddenNotifyMsgIdSet.has(m.id)));
+  }, [messages, chatMode, hiddenNotifyMsgIdSet]);
 
   // Keep composer height in sync when switching empty ↔ non-empty sessions.
   useEffect(() => {
@@ -1172,22 +1262,51 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // cached sizes back to estimateSize(72px), causing severe overlap artifacts.
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'instant') => {
+    // Never reclaim the viewport while the user is reading earlier content.
+    if (!userAtBottomRef.current || userPinnedAwayRef.current) return;
+
+    const gen = ++scrollFollowGenRef.current;
     isProgrammaticScrollRef.current = true;
+    const stillFollowing = () =>
+      gen === scrollFollowGenRef.current
+      && userAtBottomRef.current
+      && !userPinnedAwayRef.current;
+
     const finish = () => {
+      if (gen !== scrollFollowGenRef.current) return;
       isProgrammaticScrollRef.current = false;
-      // We intentionally scrolled to the last message — hide the jump control
-      // even if estimate-based scrollHeight still reports a residual gap.
-      userAtBottomRef.current = true;
-      setShowScrollBtn(false);
-      newMsgCountRef.current = 0;
-      setNewMsgCount(0);
-      requestAnimationFrame(() => syncChatBottomState({ fromProgrammatic: true }));
+      if (!stillFollowing()) {
+        syncChatBottomState();
+        return;
+      }
+      // Confirm from DOM instead of forcing stickiness — residual virtualizer
+      // gaps shouldn't re-pin the user if they already scrolled away.
+      const el = chatScrollRef.current;
+      if (el) {
+        lastChatScrollTopRef.current = el.scrollTop;
+        const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+        if (distance < 160 && !userPinnedAwayRef.current) {
+          resumeChatScrollFollow();
+          setShowScrollBtn(false);
+          newMsgCountRef.current = 0;
+          setNewMsgCount(0);
+        }
+      }
+      requestAnimationFrame(() => {
+        if (gen === scrollFollowGenRef.current) {
+          syncChatBottomState({ fromProgrammatic: true });
+        }
+      });
     };
     if (visibleMessages.length > 0) {
       chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior });
       // Re-scroll after virtualizer measures actual item sizes
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
+          if (!stillFollowing()) {
+            if (gen === scrollFollowGenRef.current) isProgrammaticScrollRef.current = false;
+            return;
+          }
           chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior: 'instant' });
           requestAnimationFrame(finish);
         });
@@ -1197,7 +1316,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (el) el.scrollTo({ top: el.scrollHeight, behavior });
       requestAnimationFrame(finish);
     }
-  }, [visibleMessages.length, chatVirtualizer, syncChatBottomState]);
+  }, [visibleMessages.length, chatVirtualizer, syncChatBottomState, resumeChatScrollFollow]);
 
   // ── Preserve scroll position across page-level navigation ──
   // PageSlot now uses visibility:hidden + position:absolute instead of
@@ -1221,7 +1340,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       return;
     }
     if (!isActiveRef.current) return;
-    if (!userAtBottomRef.current) return;
+    if (!userAtBottomRef.current || userPinnedAwayRef.current) return;
     // Expanding/collapsing a tool row temporarily owns scroll anchoring —
     // don't yank back to bottom while that suppression window is open.
     if (isVirtualScrollAdjustSuppressed()) return;
@@ -1239,9 +1358,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // outside the rendered range and looks like it "disappeared". Re-scroll to
     // the bottom across several frames so the virtualizer re-measures the now
     // visible container and brings the in-progress message back into view.
-    // Always do this while a stream is running, even if the last scroll left us
-    // slightly off-bottom.
-    if (mainTab === 'chat' && wasProfile && (userAtBottomRef.current || sending)) {
+    // Only reclaim the viewport if the user was already following the latest
+    // output — don't override a deliberate scroll-away while streaming.
+    if (mainTab === 'chat' && wasProfile && userAtBottomRef.current && !userPinnedAwayRef.current) {
       const timers: Array<ReturnType<typeof setTimeout>> = [];
       const raf = requestAnimationFrame(() => scrollChatToBottom('instant'));
       for (const delay of [60, 160, 320]) {
@@ -1760,7 +1879,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
     // Snap to bottom when entering a NEW conversation (or first mount)
     if (prevKey !== newKey) {
-      userAtBottomRef.current = true;
+      resumeChatScrollFollow();
       setShowScrollBtn(false);
       newMsgCountRef.current = 0;
       setNewMsgCount(0);
@@ -2074,6 +2193,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             }),
       };
 
+      // Unread notify_user is surfaced as a bottom card — hide the bubble immediately
+      // so it doesn't flash before the notifications refresh lands.
+      if (isNotify && newMsg.id) {
+        setHiddenNotifyMsgIds(prev => (prev.includes(newMsg.id) ? prev : [...prev, newMsg.id]));
+      }
+
       // WS fallback messages (from SSE disconnect recovery) should replace the
       // last partial/stopped agent message rather than duplicating it.
       updateConvMsgs(key, prev => {
@@ -2174,7 +2299,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const text = (retryText ?? (ctxPrefix + input)).trim();
     if (!text && pendingImages.length === 0) return;
     if (chatMode === 'direct' && !selectedAgent) return;
-    userAtBottomRef.current = true;
+    resumeChatScrollFollow();
 
     // Ignore accidental double-submit of the same text (double Enter / double click).
     const now = Date.now();
@@ -3165,7 +3290,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setShowSessions(false);
     setHasMore(false);
     oldestMsgId.current = null;
-    userAtBottomRef.current = true;
+    resumeChatScrollFollow();
     setShowScrollBtn(false);
     newMsgCountRef.current = 0;
     setNewMsgCount(0);
@@ -3464,14 +3589,54 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } catch { /* */ }
   }, [previewMode, chatMode, selectedAgent]);
 
+  // Load unread notify_user cards for the active session (mirrors user-input cards).
+  const refreshSessionNotifies = useCallback(async () => {
+    if (
+      previewMode
+      || chatMode !== 'direct'
+      || !selectedAgent
+      || !activeSessionId
+      || activeSessionId === NEW_CHAT_PLACEHOLDER_ID
+    ) {
+      setSessionNotifyCards([]);
+      return;
+    }
+    try {
+      invalidateApiCache('/notifications');
+      const { notifications } = await api.notifications.list(authUser?.id, true, {
+        type: 'agent_report',
+        limit: 30,
+      });
+      const cards = notifications
+        .filter(n =>
+          !n.read
+          && n.type === 'agent_report'
+          && !n.metadata?.creditExhausted
+          && ((n.metadata?.agentId as string | undefined) === selectedAgent)
+          && notifySessionId(n) === activeSessionId,
+        )
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, 5);
+      setSessionNotifyCards(cards);
+      // Authoritative hide-set from unread cards (clears stale optimistic ids after read).
+      setHiddenNotifyMsgIds(
+        cards
+          .map(n => n.metadata?.messageId)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+      );
+    } catch { /* */ }
+  }, [previewMode, chatMode, selectedAgent, activeSessionId, authUser?.id]);
+
   useEffect(() => {
     refreshUserInputs();
+    refreshSessionNotifies();
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const scheduleRefresh = () => {
       if (debounceTimer) return;
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
         void refreshUserInputs();
+        void refreshSessionNotifies();
       }, 400);
     };
     const unsubA = wsClient.on('approval:requested', scheduleRefresh);
@@ -3487,7 +3652,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       unsubN();
       window.removeEventListener('markus:notifications-changed', onNotifChanged);
     };
-  }, [refreshUserInputs]);
+  }, [refreshUserInputs, refreshSessionNotifies]);
 
   const handleUserInputSubmit = useCallback(async (
     approvalId: string,
@@ -3502,6 +3667,22 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } catch { /* */ }
     setRespondingInputId(null);
   }, [authUser?.id]);
+
+  const handleNotifyAcknowledge = useCallback(async (notificationId: string) => {
+    setAcknowledgingNotifyId(notificationId);
+    try {
+      const card = sessionNotifyCards.find(n => n.id === notificationId) ?? activeNotifyModal;
+      const messageId = typeof card?.metadata?.messageId === 'string' ? card.metadata.messageId : null;
+      await api.notifications.markRead(notificationId);
+      setSessionNotifyCards(prev => prev.filter(n => n.id !== notificationId));
+      if (messageId) {
+        setHiddenNotifyMsgIds(prev => prev.filter(id => id !== messageId));
+      }
+      setActiveNotifyModal(null);
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
+    } catch { /* */ }
+    setAcknowledgingNotifyId(null);
+  }, [sessionNotifyCards, activeNotifyModal]);
 
   const modeTitle =
     chatMode === 'channel' ? (activeGroupChat?.name ?? activeChannel) :
@@ -3524,6 +3705,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // Non-empty sessions: Cursor-style single-line composer that grows with content.
   const compactComposer = mainTab === 'chat' && visibleMessages.length > 0;
   compactComposerRef.current = compactComposer;
+  // Typed / attached content → full-width textarea; model + send on a dedicated bottom row.
+  const composerExpanded = Boolean(input.trim() || pendingImages.length > 0);
 
   return (
     <div ref={teamContainerRef} className="flex-1 overflow-hidden flex relative">
@@ -4548,7 +4731,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex justify-center`}>
                 <button
                   onClick={() => {
-                    userAtBottomRef.current = true;
+                    resumeChatScrollFollow();
                     scrollChatToBottom('smooth');
                     setShowScrollBtn(false);
                     newMsgCountRef.current = 0;
@@ -4586,8 +4769,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           </div>
         )}
 
-        {/* Pending user-input requests raised by the agent in this direct chat */}
-        {chatMode === 'direct' && userInputApprovals.length > 0 && (
+        {/* Pending user-input / notify_user cards for this direct-chat session */}
+        {chatMode === 'direct' && (userInputApprovals.length > 0 || sessionNotifyCards.length > 0) && (
           <div className={`${isMobile ? 'px-3' : 'px-5'} pb-1 shrink-0 ${isEmptyChat ? '' : chatRightReserve}`}>
             <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex flex-col gap-1.5`}>
               {userInputApprovals.map(a => (
@@ -4611,6 +4794,39 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   </span>
                 </button>
               ))}
+              {sessionNotifyCards.map(n => {
+                const isHigh = n.priority === 'high' || n.priority === 'urgent';
+                return (
+                  <button
+                    key={n.id}
+                    onClick={() => setActiveNotifyModal(n)}
+                    className={`w-full text-left px-3.5 py-2.5 rounded-xl border transition-colors flex items-center gap-3 ${
+                      isHigh
+                        ? 'border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15'
+                        : 'border-blue-500/40 bg-blue-500/10 hover:bg-blue-500/15'
+                    }`}
+                  >
+                    <span className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                      isHigh ? 'bg-amber-500/20 text-amber-500' : 'bg-blue-500/20 text-blue-500'
+                    }`}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                      </svg>
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-medium text-fg-primary truncate">{n.title}</span>
+                      <span className="block text-xs text-fg-tertiary truncate">
+                        {n.body?.replace(/\s+/g, ' ').trim() || t('page.notifyUserPrompt', { defaultValue: 'Agent notification awaiting your attention' })}
+                      </span>
+                    </span>
+                    <span className={`text-xs font-medium shrink-0 inline-flex items-center gap-1 ${isHigh ? 'text-amber-500' : 'text-blue-500'}`}>
+                      {t('page.notifyUserView', { defaultValue: 'View' })}
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
@@ -4621,6 +4837,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             readOnly={activeInputModal.status !== 'pending'}
             onClose={() => setActiveInputModal(null)}
             onSubmit={(r) => handleUserInputSubmit(activeInputModal.id, r)}
+          />
+        )}
+        {activeNotifyModal && (
+          <NotifyUserModal
+            notification={activeNotifyModal}
+            agentName={currentAgent?.name}
+            acknowledging={acknowledgingNotifyId === activeNotifyModal.id}
+            onClose={() => setActiveNotifyModal(null)}
+            onAcknowledge={() => handleNotifyAcknowledge(activeNotifyModal.id)}
           />
         )}
         {retryConfirm && (
@@ -4759,59 +4984,60 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </button>
             </div>
           )}
-          <div className="flex gap-2 items-end">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
-              className={`${compactComposer ? 'p-1.5 mb-0.5' : 'px-2.5 py-2.5'} text-fg-tertiary hover:text-fg-secondary disabled:opacity-40 transition-colors rounded-xl hover:bg-surface-elevated shrink-0`}
-              title={t('page.attachFilesTitle')}
-            >
-              <svg className={compactComposer ? 'w-[18px] h-[18px]' : 'w-5 h-5'} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={e => {
-                handleInputChange(e.target.value);
-                adjustTextareaHeight();
-              }}
-              onKeyDown={e => {
-                if (mentionDropdown && allMentionItems.length > 0) {
-                  const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
-                  const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
-                  const isSelect = e.key === 'Enter' || e.key === 'Tab';
-                  const isClose = e.key === 'Escape';
-                  if (isUp) { e.preventDefault(); setMentionSelectedIndex(prev => (prev - 1 + allMentionItems.length) % allMentionItems.length); return; }
-                  if (isDown) { e.preventDefault(); setMentionSelectedIndex(prev => (prev + 1) % allMentionItems.length); return; }
-                  if (isSelect) {
-                    e.preventDefault();
-                    const sel = allMentionItems[mentionSelectedIndex];
-                    if (sel) {
-                      if (sel.kind === 'agent') insertMention(sel.agent.name);
-                      else insertMention(sel.entity.name, sel.entity.entityType, sel.entity.id);
+          <div className={composerExpanded ? 'flex flex-col gap-2 min-w-0' : 'flex gap-2 items-end min-w-0'}>
+            <div className={composerExpanded ? 'flex gap-2 items-end min-w-0' : 'contents'}>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
+                className={`${compactComposer ? 'p-1.5' : 'px-2.5 py-2.5'} text-fg-tertiary hover:text-fg-secondary disabled:opacity-40 transition-colors rounded-xl hover:bg-surface-elevated shrink-0 self-end mb-0.5`}
+                title={t('page.attachFilesTitle')}
+              >
+                <svg className={compactComposer ? 'w-[18px] h-[18px]' : 'w-5 h-5'} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={e => {
+                  handleInputChange(e.target.value);
+                  adjustTextareaHeight();
+                }}
+                onKeyDown={e => {
+                  if (mentionDropdown && allMentionItems.length > 0) {
+                    const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
+                    const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
+                    const isSelect = e.key === 'Enter' || e.key === 'Tab';
+                    const isClose = e.key === 'Escape';
+                    if (isUp) { e.preventDefault(); setMentionSelectedIndex(prev => (prev - 1 + allMentionItems.length) % allMentionItems.length); return; }
+                    if (isDown) { e.preventDefault(); setMentionSelectedIndex(prev => (prev + 1) % allMentionItems.length); return; }
+                    if (isSelect) {
+                      e.preventDefault();
+                      const sel = allMentionItems[mentionSelectedIndex];
+                      if (sel) {
+                        if (sel.kind === 'agent') insertMention(sel.agent.name);
+                        else insertMention(sel.entity.name, sel.entity.entityType, sel.entity.id);
+                      }
+                      return;
                     }
-                    return;
+                    if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
                   }
-                  if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
-                }
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
-              }}
-              onPaste={handlePaste}
-              placeholder={placeholder}
-              disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
-              rows={compactComposer ? 1 : 2}
-              className={`flex-1 min-w-0 bg-transparent rounded-xl text-sm outline-none disabled:opacity-40 transition-colors resize-none overflow-hidden leading-relaxed placeholder:text-fg-secondary ${
-                compactComposer ? 'px-2 py-1.5' : 'px-4 py-3'
-              }`}
-              style={{
-                minHeight: compactComposer ? '36px' : '52px',
-                maxHeight: compactComposer ? '160px' : '120px',
-              }}
-            />
-            {/* Bottom-right: model picker + send (Cursor-style) */}
-            <div className="flex items-center gap-1.5 shrink-0 pb-0.5">
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+                }}
+                onPaste={handlePaste}
+                placeholder={placeholder}
+                disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
+                rows={compactComposer ? 1 : 2}
+                className={`flex-1 min-w-0 w-full bg-transparent rounded-xl text-sm outline-none disabled:opacity-40 transition-colors resize-none overflow-y-auto leading-relaxed placeholder:text-fg-secondary ${
+                  compactComposer ? 'px-2 py-1.5' : 'px-4 py-3'
+                }`}
+                style={{
+                  minHeight: compactComposer ? '36px' : '52px',
+                  maxHeight: compactComposer ? '160px' : '120px',
+                }}
+              />
+            </div>
+            <div className={`flex items-center gap-1.5 shrink-0 ${composerExpanded ? 'justify-end' : ''}`}>
               {chatMode === 'direct' && (
                 <ChatModelMenu
                   value={sessionModelOverride}
