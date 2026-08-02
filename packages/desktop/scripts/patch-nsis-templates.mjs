@@ -50,9 +50,24 @@ const templatesDir = resolveTemplatesDir();
 console.log(`[patch-nsis] templates: ${templatesDir}`);
 
 // 1) Never MessageBox/Quit on "app running" — best-effort taskkill only.
+//    Also skip getProcessInfo.nsh: after rewriting CHECK_APP_RUNNING it is
+//    unused, and makensis fails with "warning 6010: uninstall function
+//    un._GetProcessInfo not referenced" (warnings treated as errors).
 patchFile(
   join(templatesDir, 'include', 'allowOnlyOneInstallerInstance.nsh'),
   [
+    {
+      name: 'skip getProcessInfo include',
+      from: `!ifmacrondef customCheckAppRunning
+  !include "getProcessInfo.nsh"
+  Var pid
+!endif`,
+      to: `; Markus patch: skip getProcessInfo.nsh (unused after CHECK_APP_RUNNING rewrite).
+; Leaving it in causes: warning 6010 un._GetProcessInfo not referenced → error.
+!ifmacrondef customCheckAppRunning
+  Var pid
+!endif`,
+    },
     {
       name: 'CHECK_APP_RUNNING',
       from: `!macro CHECK_APP_RUNNING
