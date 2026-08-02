@@ -255,7 +255,7 @@ describe('AgentManager extended coverage', () => {
     expect(agent.getTools().has('recall_activity')).toBe(true);
   });
 
-  it('injects builtin skill instructions from registry', async () => {
+  it('catalogs always-on builtins; instructions load via discover_tools', async () => {
     const { InMemorySkillRegistry } = await import('../src/skills/registry.js');
     const registry = new InMemorySkillRegistry();
     registry.register({
@@ -279,6 +279,18 @@ describe('AgentManager extended coverage', () => {
       orgId: 'org_builtin',
       tools: [],
     });
+    // Progressive disclosure: alwaysOn builtins are catalog metadata until activated.
+    expect(agent.getAvailableSkillCatalog().some(s => s.name === 'always-on')).toBe(true);
+    expect(agent.hasSkillInstructions('always-on')).toBe(false);
+
+    const raw = await (agent as unknown as {
+      executeTool: (tc: { id: string; name: string; arguments: Record<string, unknown> }) => Promise<string>;
+    }).executeTool({
+      id: 'tc_activate_always_on',
+      name: 'discover_tools',
+      arguments: { name: ['always-on'] },
+    });
+    expect(JSON.parse(raw).status).toBe('ok');
     expect(agent.hasSkillInstructions('always-on')).toBe(true);
   });
 

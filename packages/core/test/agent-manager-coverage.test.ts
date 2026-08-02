@@ -653,7 +653,7 @@ describe('AgentManager comprehensive tool execution', () => {
     await manager.stopAgent(b.id);
   });
 
-  it('createAgent with skill registry injects instructions and catalog', async () => {
+  it('createAgent with skill registry catalogs skills; instructions load via discover_tools', async () => {
     const { InMemorySkillRegistry } = await import('../src/skills/registry.js');
     const registry = new InMemorySkillRegistry();
     registry.register({
@@ -685,8 +685,17 @@ describe('AgentManager comprehensive tool execution', () => {
       skills: ['search'],
     });
 
-    expect(agent.hasSkillInstructions('search')).toBe(true);
+    // Progressive disclosure: createAgent exposes catalog only; bodies activate on demand.
     expect(agent.getAvailableSkillCatalog().some(s => s.name === 'search')).toBe(true);
+    expect(agent.hasSkillInstructions('search')).toBe(false);
+
+    const raw = await (agent as unknown as PrivateAgentExec).executeTool({
+      id: 'tc_activate_search',
+      name: 'discover_tools',
+      arguments: { name: ['search'] },
+    });
+    expect(JSON.parse(raw).status).toBe('ok');
+    expect(agent.hasSkillInstructions('search')).toBe(true);
   });
 
   it('createAgent from developer template provisions role and memory files', async () => {
