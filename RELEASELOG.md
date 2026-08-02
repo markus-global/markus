@@ -81,6 +81,11 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **Windows 安装目录空洞** — 自定义 NSIS 脚本改名为 `markus-installer.nsh`，避免遮蔽官方 `installer.nsh`（否则 `installApplicationFiles` 不执行）
 - **Windows 快捷方式** — `SetShellVarContext current` 强制写当前用户桌面与开始菜单；注册 App Paths；关闭 elevate helper
 
+### v0.9.0-rc.12
+
+- **Windows 升级弹窗「无法关闭」** — 根因是旧版静默卸载失败 5 次后父安装器复用同一文案；安装前强杀安装目录进程，并清除旧 `UninstallString` 跳过坏卸载器（Electron 覆盖安装）
+- **Windows 桌面快捷方式** — 去掉错误的 `menuCategory: false`；`CreateShortCut` + PowerShell `GetFolderPath('Desktop')` 双通道强制创建
+
 ### Stats
 
 - 290 files changed, +36,540 / −12,148 lines

@@ -79,10 +79,10 @@ nsis:
   createDesktopShortcut: always
   createStartMenuShortcut: true
   shortcutName: Markus
-  menuCategory: false
-  # Must NOT be named installer.nsh — that filename is reserved by electron-builder's
-  # stock include (installApplicationFiles). Shadowing it yields a hollow install dir.
-  # customCheckAppRunning replaces stock CHECK_APP_RUNNING (false-positive prone).
+  # Must NOT be named installer.nsh — that basename is reserved by electron-builder's
+  # stock include (installApplicationFiles).
+  # customCheckAppRunning + customUnInstallCheck: see build/markus-installer.nsh.
+  # (menuCategory must stay unset — YAML false becomes MENU_FILENAME=false.)
   include: markus-installer.nsh
 
 linux:
