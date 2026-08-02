@@ -24,6 +24,9 @@ import {
 } from './markdown-utils.ts';
 import {
   classifyMarkdownHref,
+  isLocalFilesystemPath,
+  normalizeLocalFilesystemPath,
+  normalizeWindowsPathsInMarkdown,
   rehypeSlugifyHeadings,
   scrollToMarkdownFragment,
 } from './markdown-links.ts';
@@ -43,7 +46,10 @@ import { ErrorBoundary } from './ErrorBoundary.tsx';
 // survive sanitization because they start with `#`.
 const CUSTOM_URI_SCHEME_RE = /^(deliverable|task|requirement|project|agent|team|workflow):/i;
 function chatUrlTransform(url: string): string {
-  return CUSTOM_URI_SCHEME_RE.test(url) ? url : defaultUrlTransform(url);
+  // react-markdown's defaultUrlTransform treats `C:` / `file:` as unsafe schemes
+  // and blanks the src — which breaks Windows local image markdown.
+  if (CUSTOM_URI_SCHEME_RE.test(url) || isLocalFilesystemPath(url)) return url;
+  return defaultUrlTransform(url);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -208,18 +214,28 @@ const mdComponents = {
 
 // ─── Image support ───────────────────────────────────────────────────────────
 
-const LOCAL_PATH_RE = /^(?:\/[\w.\-@+ ]|~\/|\.\.?\/|[A-Z]:\\)/;
 const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
 
 function isLocalImagePath(src: string): boolean {
-  return LOCAL_PATH_RE.test(src) && IMAGE_EXTS.test(src);
+  const normalized = normalizeLocalFilesystemPath(src);
+  return isLocalFilesystemPath(src) && IMAGE_EXTS.test(normalized.split('?')[0] ?? normalized);
 }
 
 function resolveImagePath(src: string, basePath?: string): string {
-  if (src.startsWith('/') || src.startsWith('~/') || /^[A-Z]:\\/.test(src)) return src;
-  if ((src.startsWith('./') || src.startsWith('../')) && basePath) {
-    const base = basePath.endsWith('/') ? basePath : basePath + '/';
-    const parts = (base + src).split('/');
+  const normalized = normalizeLocalFilesystemPath(src);
+  if (
+    normalized.startsWith('/')
+    || normalized.startsWith('~/')
+    || /^[A-Za-z]:\//.test(normalized)
+    || normalized.startsWith('//')
+  ) {
+    return normalized;
+  }
+  if ((normalized.startsWith('./') || normalized.startsWith('../')) && basePath) {
+    const base = basePath.replace(/\\/g, '/').endsWith('/')
+      ? basePath.replace(/\\/g, '/')
+      : `${basePath.replace(/\\/g, '/')}/`;
+    const parts = (base + normalized).split('/');
     const resolved: string[] = [];
     for (const p of parts) {
       if (p === '..') resolved.pop();
@@ -227,7 +243,7 @@ function resolveImagePath(src: string, basePath?: string): string {
     }
     return '/' + resolved.join('/');
   }
-  return src;
+  return normalized;
 }
 
 function localImageUrl(filePath: string): string {
@@ -676,6 +692,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
 
   const preprocess = useCallback((text: string) => {
     let t = transformOutsideCode(text, normalizeMathDelimiters);
+    t = transformOutsideCode(t, normalizeWindowsPathsInMarkdown);
     t = transformOutsideCode(t, preprocessEntityLinksInCode);
     t = transformOutsideCode(t, preprocessEntityIds);
     t = transformOutsideCode(t, s => preprocessMentions(s, knownNames));

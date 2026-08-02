@@ -70,8 +70,11 @@ nsis:
   # Per-user install: do not prompt for admin elevation (avoids UAC dead-ends and
   # keeps shortcuts/protocol registration in HKCU where customCheckAppRunning works).
   allowElevation: false
-  createDesktopShortcut: true
+  # "always" recreates the desktop shortcut on upgrade even if the user deleted it.
+  # installer.nsh also force-creates Desktop + Start Menu .lnk as a belt-and-suspenders.
+  createDesktopShortcut: always
   createStartMenuShortcut: true
+  shortcutName: Markus
   # Explicit HKCU protocol registration (see build/installer.nsh) — required for
   # per-user Windows installs so Hub login can return via markus://auth.
   include: build/installer.nsh

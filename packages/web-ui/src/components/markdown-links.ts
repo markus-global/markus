@@ -19,6 +19,52 @@ const ABS_FILE_RE = /^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\)/;
 const REL_FILE_RE = /^\.{1,2}\//;
 /** Paths that look like files (have an extension) rather than site routes. */
 const FILE_EXT_RE = /\.[a-zA-Z0-9]{1,12}(?:$|[?#])/;
+const WIN_DRIVE_RE = /^[A-Za-z]:[\\/]/;
+const UNC_PATH_RE = /^\\\\[^\\]/;
+
+/** True for Windows drive / UNC / file:// / POSIX abs / ~/ relative-home paths. */
+export function isLocalFilesystemPath(src: string): boolean {
+  const s = src.trim();
+  if (!s) return false;
+  if (/^file:/i.test(s)) return true;
+  if (WIN_DRIVE_RE.test(s) || UNC_PATH_RE.test(s)) return true;
+  if (s.startsWith('~/') || s.startsWith('/')) return true;
+  if (REL_FILE_RE.test(s)) return true;
+  return false;
+}
+
+/**
+ * Normalize local filesystem URLs for `/api/files/image` and file preview.
+ * - file:///C:/Users/... → C:/Users/...
+ * - C:\\Users\\... or C:\Users\... → C:/Users/...
+ */
+export function normalizeLocalFilesystemPath(src: string): string {
+  let p = src.trim();
+  if (/^file:/i.test(p)) {
+    try {
+      p = decodeURIComponent(p.replace(/^file:\/\//i, ''));
+    } catch {
+      p = p.replace(/^file:\/\//i, '');
+    }
+    // file:///C:/Users → /C:/Users → C:/Users
+    if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1);
+  }
+  // Collapse markdown-escaped doubled backslashes, then prefer `/` for APIs.
+  p = p.replace(/\\+/g, '/');
+  return p;
+}
+
+/**
+ * Rewrite Windows absolute paths inside markdown link/image destinations to use
+ * forward slashes so CommonMark does not eat `\.markus` via backslash escapes.
+ */
+export function normalizeWindowsPathsInMarkdown(text: string): string {
+  return text.replace(
+    /(!?\[[^\]]*]\()((?:[A-Za-z]:|\\\\)[^)\n]*)(\))/g,
+    (_m, open: string, path: string, close: string) =>
+      `${open}${path.replace(/\\+/g, '/')}${close}`,
+  );
+}
 
 /** GitHub-flavored-ish heading slug (unicode letters kept). */
 export function slugifyHeading(text: string): string {
@@ -84,6 +130,12 @@ export function classifyMarkdownHref(href: string | undefined, basePath?: string
     return { kind: 'fragment', id: decodeURIComponent(trimmed.slice(1)) };
   }
 
+  // Windows drive / UNC before the generic scheme check — `C:` looks like a URI scheme.
+  if (WIN_DRIVE_RE.test(trimmed) || UNC_PATH_RE.test(trimmed)) {
+    const { path, fragment } = splitFragment(trimmed);
+    return { kind: 'file', path: resolvePathAgainstBase(path, basePath), fragment };
+  }
+
   // Protocol URLs
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
     if (/^https?:\/\//i.test(trimmed) || /^mailto:/i.test(trimmed)) {
@@ -91,10 +143,7 @@ export function classifyMarkdownHref(href: string | undefined, basePath?: string
     }
     // file:// → local path
     if (/^file:\/\//i.test(trimmed)) {
-      let p = trimmed.replace(/^file:\/\//i, '');
-      // file:///Users/... → /Users/...
-      if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1); // Windows file:///C:/...
-      return { kind: 'file', path: decodeURIComponent(p) };
+      return { kind: 'file', path: normalizeLocalFilesystemPath(trimmed) };
     }
     return { kind: 'passthrough' };
   }

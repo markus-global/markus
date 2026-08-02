@@ -69,6 +69,12 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **通用关键词搜索** — `task_list`、SkillHub / skill loader / 模板搜索共用 `tokenizeSearchQuery`，避免整句 substring 漏检
 - **notify_user UX** — 通知栏点击打开 Chat 时不提前 mark-read（保留「知道了」卡片）；剥离 segment 中的 `notify_context` 泄漏；虚拟列表 `getItemKey` + 按 `createdAt` 插入，修复气泡重叠
 
+### v0.9.0-rc.10
+
+- **Windows 安装快捷方式** — NSIS 强制创建桌面与开始菜单 `Markus.lnk`（`createDesktopShortcut: always`）
+- **Windows 菜单栏** — 隐藏原生「文件/编辑/视图…」菜单栏，保留快捷键
+- **Windows Markdown 本地图** — 正确识别 `C:\` / `C:/` / `file:///C:/` 路径并经 `/api/files/image` 渲染；生图 markdown 改用正斜杠
+
 ### Stats
 
 - 290 files changed, +36,540 / −12,148 lines

@@ -126,7 +126,7 @@ function useFileInfo(path: string): FileInfo | undefined {
 
 // ─── File path detection ─────────────────────────────────────────────────────
 
-const FILE_PATH_RE = /^(?:\/[\w.\-@+]+(?:\/[\w.\-@+ ]*)*|~\/[\w.\-@+]+(?:\/[\w.\-@+ ]*)*|[A-Z]:\\[\w.\-@+ ]+(?:\\[\w.\-@+ ]*)*|\.\.?\/[\w.\-@+]+(?:\/[\w.\-@+ ]*)*)$/;
+const FILE_PATH_RE = /^(?:\/[\w.\-@+]+(?:\/[\w.\-@+ ]*)*|~\/[\w.\-@+]+(?:\/[\w.\-@+ ]*)*|[A-Za-z]:(?:\\|\/)[\w.\-@+ ]+(?:(?:\\|\/)[\w.\-@+ ]*)*|\.\.?\/[\w.\-@+]+(?:\/[\w.\-@+ ]*)*)$/;
 
 export function looksLikeFilePath(text: string): boolean {
   if (text.length < 2 || text.length > 500) return false;

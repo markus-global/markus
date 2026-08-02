@@ -62,6 +62,9 @@ export function createMainWindow(show = true): BrowserWindow {
     minWidth: 800,
     minHeight: 600,
     show,
+    // Windows/Linux: keep Menu.setApplicationMenu for accelerators (Ctrl+R, etc.)
+    // but hide the native File/Edit/View bar — it looks like a legacy desktop app.
+    ...(process.platform !== 'darwin' ? { autoHideMenuBar: true } : {}),
     ...(process.platform === 'darwin' ? {
       titleBarStyle: 'hiddenInset' as const,
       trafficLightPosition: { x: 16, y: 16 },
@@ -81,6 +84,10 @@ export function createMainWindow(show = true): BrowserWindow {
   }
 
   mainWindow = new BrowserWindow(windowOpts);
+
+  if (process.platform !== 'darwin') {
+    mainWindow.setMenuBarVisibility(false);
+  }
 
   // Only maximize when actually showing — maximizing a hidden window can force
   // it visible on some platforms, defeating a hidden auto-start launch.
