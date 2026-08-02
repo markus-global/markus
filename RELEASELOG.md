@@ -75,6 +75,12 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **Windows 菜单栏** — 隐藏原生「文件/编辑/视图…」菜单栏，保留快捷键
 - **Windows Markdown 本地图** — 正确识别 `C:\` / `C:/` / `file:///C:/` 路径并经 `/api/files/image` 渲染；生图 markdown 改用正斜杠
 
+### v0.9.0-rc.11
+
+- **Windows 安装误报「正在运行」** — 覆盖 electron-builder 进程检测（PowerShell/`tasklist` 误判），安装时只做精确 `taskkill`，不再弹窗中止
+- **Windows 安装目录空洞** — 自定义 NSIS 脚本改名为 `markus-installer.nsh`，避免遮蔽官方 `installer.nsh`（否则 `installApplicationFiles` 不执行）
+- **Windows 快捷方式** — `SetShellVarContext current` 强制写当前用户桌面与开始菜单；注册 App Paths；关闭 elevate helper
+
 ### Stats
 
 - 290 files changed, +36,540 / −12,148 lines

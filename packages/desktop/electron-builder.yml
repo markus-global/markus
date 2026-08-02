@@ -49,6 +49,7 @@ win:
   target:
     - target: nsis
       arch: [x64]
+  executableName: Markus
   icon: build/icon.ico
   # Full Windows signing (app exe + installer) via Certum SimplySign. The custom
   # signer shells out to `ssign`; it no-ops when CERTUM_* env vars are absent so
@@ -70,14 +71,19 @@ nsis:
   # Per-user install: do not prompt for admin elevation (avoids UAC dead-ends and
   # keeps shortcuts/protocol registration in HKCU where customCheckAppRunning works).
   allowElevation: false
+  # No elevate helper binary — avoids extra processes that confuse "app running" checks
+  # and is unnecessary when allowElevation is false.
+  packElevateHelper: false
   # "always" recreates the desktop shortcut on upgrade even if the user deleted it.
-  # installer.nsh also force-creates Desktop + Start Menu .lnk as a belt-and-suspenders.
+  # markus-installer.nsh also force-creates Desktop + Start Menu .lnk (current user).
   createDesktopShortcut: always
   createStartMenuShortcut: true
   shortcutName: Markus
-  # Explicit HKCU protocol registration (see build/installer.nsh) — required for
-  # per-user Windows installs so Hub login can return via markus://auth.
-  include: build/installer.nsh
+  menuCategory: false
+  # Must NOT be named installer.nsh — that filename is reserved by electron-builder's
+  # stock include (installApplicationFiles). Shadowing it yields a hollow install dir.
+  # customCheckAppRunning replaces stock CHECK_APP_RUNNING (false-positive prone).
+  include: markus-installer.nsh
 
 linux:
   executableName: markus
