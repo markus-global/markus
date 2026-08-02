@@ -1628,7 +1628,7 @@ export class ContextEngine {
     const promptAfford = opts.promptAffordTokens && opts.promptAffordTokens > 0
       ? opts.promptAffordTokens
       : undefined;
-    if (promptAfford != null) {
+    if (promptAfford !== undefined) {
       const affordForPrompt = Math.max(
         MIN_MESSAGE_BUDGET + staticOverhead,
         promptAfford - PROMPT_AFFORD_OUTPUT_RESERVE,

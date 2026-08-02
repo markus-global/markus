@@ -1965,7 +1965,7 @@ export class Agent {
   ): Array<{ role: string; content: string }> {
     const chat = dbMessages.filter(m => m.role === 'user' || m.role === 'assistant');
     const droppedByCount = Math.max(0, chat.length - maxMessages);
-    let slice = droppedByCount > 0 ? chat.slice(-maxMessages) : chat;
+    const slice = droppedByCount > 0 ? chat.slice(-maxMessages) : chat;
     let tokens = 0;
     let start = 0;
     for (let i = slice.length - 1; i >= 0; i--) {

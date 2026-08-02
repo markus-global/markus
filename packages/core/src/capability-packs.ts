@@ -132,7 +132,7 @@ export function evictToolsToBudget(
   budget: number,
   protectedNames: Set<string> = TOOL_DEF_PROTECTED,
 ): { tools: ToolDefLike[]; evicted: Array<{ name: string; description: string }> } {
-  let current = [...tools];
+  const current = [...tools];
   const evicted: Array<{ name: string; description: string }> = [];
 
   const sizeOf = (t: ToolDefLike) => JSON.stringify(t).length;

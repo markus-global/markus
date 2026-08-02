@@ -25,7 +25,7 @@ export function evaluatePromptAfford(opts: {
 }): AffordEvaluation {
   const fixed = Math.max(0, opts.systemTokens) + Math.max(0, opts.toolDefTokens);
   const afford = opts.promptAffordTokens;
-  if (afford == null || !(afford > 0)) {
+  if (afford === null || afford === undefined || !(afford > 0)) {
     return { ok: true, fixed };
   }
   const reserve = opts.outputReserve ?? PROMPT_AFFORD_OUTPUT_RESERVE;

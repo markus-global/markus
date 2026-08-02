@@ -487,7 +487,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
   /** Prompt-token budget hint for context packing (null if unknown / expired). */
   getLastPromptAffordTokens(): number | null {
-    if (this.lastPromptAffordTokens == null) return null;
+    if (this.lastPromptAffordTokens === null) return null;
     if (Date.now() - this.lastPromptAffordAt > MarkusProvider.PROMPT_AFFORD_TTL_MS) {
       log.info('Clearing stale OpenRouter prompt afford', {
         promptAffordTokens: this.lastPromptAffordTokens,
@@ -502,7 +502,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
   /** Drop cached afford after a successful turn or when Hub shows healthy OR USD. */
   clearPromptAffordHint(reason?: string): void {
-    if (this.lastPromptAffordTokens == null) return;
+    if (this.lastPromptAffordTokens === null) return;
     log.info('Clearing OpenRouter prompt afford hint', {
       promptAffordTokens: this.lastPromptAffordTokens,
       reason: reason ?? 'manual',
@@ -743,7 +743,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     alreadyRetried: boolean,
   ): Promise<{ retry: true; maxTokens?: number }> {
     const promptAfford = parseOpenRouterPromptAffordableTokens(errText);
-    if (promptAfford != null) {
+    if (promptAfford !== null) {
       this.lastPromptAffordTokens = promptAfford;
       this.lastPromptAffordAt = Date.now();
       log.warn('OpenRouter prompt afford recorded for context packing', {
@@ -760,7 +760,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
     // Prompt-limit 402s are not fixed by lowering max_tokens — packing must shrink next turn.
     // Still allow a max_tokens clamp retry when OR only reports reservation afford.
-    if (!alreadyRetried && affordable != null && promptAfford == null && !hubEmpty) {
+    if (!alreadyRetried && affordable !== null && promptAfford === null && !hubEmpty) {
       const maxTokens = clampReservationMaxTokens(affordable);
       log.info('Retrying with OpenRouter-affordable max_tokens', {
         maxTokens,
@@ -1166,7 +1166,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     // Afford.S4: when prompt afford is known, proactively clamp so we never
     // send a doomed high reservation (e.g. 13156) before the first 402.
     let maxTokens = request.maxTokens ?? this.maxTokens;
-    if (this.lastPromptAffordTokens != null && this.lastPromptAffordTokens > 0) {
+    if (this.lastPromptAffordTokens !== null && this.lastPromptAffordTokens > 0) {
       const estimatedPrompt =
         this.lastPromptTokensEstimate
         ?? this.estimateRequestPromptTokens(request);

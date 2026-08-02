@@ -843,7 +843,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 const count = typeof subMeta.parentSubtaskCount === 'number'
                   ? subMeta.parentSubtaskCount
                   : undefined;
-                const warning = count != null && count >= SUBTASK_SOFT_CAP
+                const warning = count !== undefined && count >= SUBTASK_SOFT_CAP
                   ? `Subtask count (${count}) exceeds soft cap ${SUBTASK_SOFT_CAP} — prefer fewer, larger steps.`
                   : undefined;
                 return JSON.stringify({

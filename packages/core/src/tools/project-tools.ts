@@ -650,7 +650,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   status: 'success',
                   deliverableId: result.id,
                   deliverableStatus: result.status,
-                  ...(version != null ? { version } : {}),
+                  ...(version !== undefined && version !== null ? { version } : {}),
                   ...(changelog ? { changelog } : {}),
                 };
                 if (ctx.webUiBaseUrl) {

@@ -174,7 +174,7 @@ export function clampMaxTokensToRemainingAfford(opts: {
     floor,
     Math.floor(opts.promptAfford - Math.max(0, opts.estimatedPrompt) - margin),
   );
-  if (opts.requested == null || !(opts.requested > 0)) return remaining;
+  if (opts.requested === undefined || !(opts.requested > 0)) return remaining;
   return Math.min(opts.requested, remaining);
 }
 

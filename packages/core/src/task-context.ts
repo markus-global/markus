@@ -19,7 +19,7 @@ export function formatTaskContextForPrompt(ctx: TaskContextPackage): string {
   if (ctx.deliverableRefs?.length) {
     lines.push('### Related deliverables');
     for (const d of ctx.deliverableRefs.slice(0, 8)) {
-      lines.push(`- ${d.title} (\`${d.id}\`${d.version != null ? ` v${d.version}` : ''})`);
+      lines.push(`- ${d.title} (\`${d.id}\`${d.version !== undefined && d.version !== null ? ` v${d.version}` : ''})`);
     }
   }
   if (ctx.predecessorSummary) {
