@@ -1,4 +1,9 @@
-import { createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS } from '@markus/shared';
+import {
+  createLogger,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  tokenizeSearchQuery,
+  scoreKeywordHaystack,
+} from '@markus/shared';
 import type { AgentTemplate, TemplateSearchQuery, TemplateSearchResult, TemplateSource } from './types.js';
 
 const log = createLogger('template-registry');
@@ -93,12 +98,22 @@ export class TemplateRegistry {
       results = results.filter(t => query.tags!.some(tag => t.tags.includes(tag)));
     }
     if (query.text) {
-      const lower = query.text.toLowerCase();
-      results = results.filter(t =>
-        t.name.toLowerCase().includes(lower) ||
-        t.description.toLowerCase().includes(lower) ||
-        t.tags.some(tag => tag.toLowerCase().includes(lower))
-      );
+      const tokens = tokenizeSearchQuery(query.text);
+      const full = query.text.trim().toLowerCase();
+      if (tokens.length > 0) {
+        const scored = results
+          .map((t) => ({
+            t,
+            score: scoreKeywordHaystack(
+              `${t.name} ${t.description} ${t.tags.join(' ')}`,
+              tokens,
+              full,
+            ),
+          }))
+          .filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score);
+        results = scored.map((x) => x.t);
+      }
     }
 
     return { templates: results, total: results.length };

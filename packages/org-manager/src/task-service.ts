@@ -40,8 +40,18 @@ import {
   TASK_LIST_PAGE_MAX,
   withJitter,
   PREEMPT_REQUEUE_DELAY_MS,
+  tokenizeSearchQuery,
+  scoreKeywordHaystack,
 } from '@markus/shared';
-import type { AgentManager, TaskProjectContext, ReviewService, ReviewReport } from '@markus/core';
+import {
+  shouldDistillTask,
+  getDistillationAllowlist,
+  buildDistillationPrompt,
+  type AgentManager,
+  type TaskProjectContext,
+  type ReviewService,
+  type ReviewReport,
+} from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow, RequirementCommentRepo } from '@markus/storage';
 import type { HITLService } from './hitl-service.js';
@@ -2541,12 +2551,24 @@ export class TaskService {
     if (opts?.projectId) result = result.filter(t => t.projectId === opts.projectId);
     if (opts?.requirementId) result = result.filter(t => t.requirementId === opts.requirementId);
 
-    // ── Search (case-insensitive substring match on title + description) ──
+    // ── Search (keyword OR-match on title + description; not whole-phrase-only) ──
     if (opts?.search) {
-      const q = opts.search.toLowerCase();
-      result = result.filter(
-        t => t.title?.toLowerCase().includes(q) || t.description?.toLowerCase().includes(q),
-      );
+      const tokens = tokenizeSearchQuery(opts.search);
+      const full = opts.search.trim().toLowerCase();
+      if (tokens.length > 0) {
+        const scored = result
+          .map((t) => ({
+            t,
+            score: scoreKeywordHaystack(
+              `${t.title ?? ''} ${t.description ?? ''}`,
+              tokens,
+              full,
+            ),
+          }))
+          .filter((s) => s.score > 0)
+          .sort((a, b) => b.score - a.score);
+        result = scored.map((s) => s.t);
+      }
     }
 
     const total = result.length;
@@ -3540,13 +3562,20 @@ export class TaskService {
     }
 
     const hadRevisions = (task.executionRound ?? 1) > 1;
-    // LEARNING-LOOP §2: gate distillation (trivial first-pass short tasks skip)
-    const toolCallCount = Number((task as { toolCallCount?: number }).toolCallCount ?? 0);
-    const shouldDistill =
-      task.status === 'failed'
-      || hadRevisions
-      || toolCallCount >= 5
-      || toolCallCount === 0; // unknown count: keep prior behavior (reflect)
+    // LEARNING-LOOP §2: known count < 5 without other predicates skips;
+    // missing telemetry is transitional — still distill (cannot force-fire on known-zero).
+    const rawToolCount = (task as { toolCallCount?: number }).toolCallCount;
+    const hasKnownToolCount = typeof rawToolCount === 'number' && Number.isFinite(rawToolCount);
+    const toolCallCount = hasKnownToolCount ? rawToolCount : 0;
+    // Accept path leaves task.status === 'completed'. Never distill on failed.
+    const shouldDistill = (
+      shouldDistillTask({
+        toolCallCount,
+        hadRejection: hadRevisions,
+        similarTaskCount: 0,
+        status: 'completed',
+      }) || !hasKnownToolCount
+    );
     if (!shouldDistill) {
       log.debug('Skipping distillation — predicates not met', { taskId: task.id, toolCallCount });
       return;
@@ -3574,51 +3603,21 @@ export class TaskService {
     }
     const traceSection = traceParts.join('\n');
 
-    const prompt = hadRevisions
-      ? [
-          '[SELF-EVOLUTION — Post-Task Reflection (Revision)]',
-          '',
-          `Task "${task.title}" (ID: ${task.id}) was completed after ${task.executionRound} execution rounds.`,
-          'This means the task required revision — something in your initial approach needed correction.',
-          '',
-          '## Execution Trace',
-          traceSection,
-          '',
-          'Use the trace above to ground your reflection:',
-          '1. What went wrong in earlier rounds? What feedback or error caused the revision?',
-          '2. What did you change in the successful round?',
-          '3. What is the generalizable lesson? Is it SOP-worthy (multi-step repeatable procedure)?',
-          '',
-          'Follow **Learning Habits** (encode-where):',
-          'Save lessons with `memory_save` tags `["lesson", ...]`.',
-          'Repeatable personal procedures → `memory_update_longterm`.',
-          'Team-reusable practices → create under `builder-artifacts/skills/` then `package_install` with impact low/high per Learning Habits.',
-          '',
-          'Also consider: append a lasting behavioral rule to ROLE.md via `file_edit` (ask human first if rewriting identity/scope);',
-          'add a recurring check to HEARTBEAT.md if you should patrol for this class of issue.',
-        ].join('\n')
-      : [
-          '[DISTILLATION — Post-Task Reflection (Success)]',
-          '',
-          `Task "${task.title}" (ID: ${task.id}) was completed successfully on the first attempt.`,
-          '',
-          '## Execution Trace',
-          traceSection,
-          '',
-          'First-pass approval is a strong signal. Reflect on what made this work:',
-          '1. Were there tools, patterns, or approaches that proved especially effective?',
-          '2. Is there a reusable technique or SOP worth remembering for similar future tasks?',
-          '3. Would this best practice benefit other agents? If so, create a skill under builder-artifacts and install with appropriate impact.',
-          '',
-          'Follow **Learning Habits**: `memory_save` / `memory_update_longterm` / ROLE / HEARTBEAT / skill + impact install.',
-          '',
-          'If nothing noteworthy stands out, respond with none / skip.',
-        ].join('\n');
+    // Distillation only on completed (caller is accept path). Failed waits for completion.
+    const prompt = buildDistillationPrompt({
+      taskId: task.id,
+      title: task.title,
+      kind: hadRevisions ? 'revision' : 'success',
+      executionRound: task.executionRound,
+      traceSection,
+    });
 
+    const isManager = agent.config?.agentRole === 'manager';
     void agent.sendMessage(prompt, undefined, undefined, {
       sourceType: 'system_event',
       sessionId: `sys_${agent.id}_${Date.now()}`,
-      scenario: 'memory_consolidation',
+      scenario: 'distillation',
+      allowedTools: getDistillationAllowlist(isManager),
     }).catch(err => {
       log.warn('Post-task reflection failed', { taskId: task.id, error: String(err) });
     });

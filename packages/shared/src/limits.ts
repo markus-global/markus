@@ -186,8 +186,8 @@ export const PREEMPT_REQUEUE_DELAY_MS = 3_000;
 // These control how much memory context is injected into the system prompt.
 // All agents see this on every LLM call — tuning affects quality vs. token cost.
 
-/** Max characters for the unified "## Your Knowledge" section from MEMORY.md.
- *  MEMORY.md is loaded as a single section — no separate SOPs/lessons/etc.
+/** Max characters for the unified "## Your Knowledge" section from knowledge.md.
+ *  knowledge.md curated sections are loaded as a single block — no separate SOPs/lessons/etc.
  *  8000 chars ≈ ~2000 tokens — fits ~5 sections of agent-organized knowledge. */
 export const SYSTEM_KNOWLEDGE_CHARS = 8000;
 
@@ -196,11 +196,11 @@ export const SYSTEM_SOPS_CHARS = 3000;
 /** @deprecated Use SYSTEM_KNOWLEDGE_CHARS. Kept for backward compat. */
 export const SYSTEM_LONGTERM_MEMORY_CHARS = 5000;
 
-/** Hard cap on individual MEMORY.md section content (chars).
+/** Hard cap on individual knowledge.md section content (chars).
  *  Prevents any single section from growing unbounded. */
 export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
 
-/** Hard cap on total MEMORY.md file size (chars).
+/** Hard cap on total knowledge.md file size (chars).
  *  Prevents the file from growing without bound even if the agent
  *  keeps creating new sections.  15 000 chars ≈ 5 sections × 3 000. */
 export const MEMORY_MD_TOTAL_MAX_CHARS = 15_000;

@@ -18,7 +18,7 @@
   - What documentation structures or explanation patterns worked well?
   - Were there code-to-docs verification workflows worth reusing?
   - Save insights via `memory_save` with `tags: ["insight", "documentation"]` and `[INSIGHT]` format.
-  - Promote repeatable documentation workflows to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - Promote repeatable documentation workflows to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
 
 ## Self-Evolution
 

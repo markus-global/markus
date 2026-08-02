@@ -1,10 +1,47 @@
 import { describe, expect, it } from 'vitest';
 import {
   dedupeAdjacentUserMessages,
+  dbMsgToChat,
+  insertChatMsgByCreatedAt,
   isRememberActionVisible,
   stripEmbeddedReplyQuote,
+  stripNotifyContext,
   type ChatMsg,
 } from './ChatHelpers.ts';
+import type { ChatMessageInfo } from '../api.ts';
+
+describe('stripNotifyContext', () => {
+  it('strips notify_context comment and extracts priority', () => {
+    const raw = '雷达发现：AREX\n\n<!-- notify_context: priority=low -->';
+    const { cleaned, priority } = stripNotifyContext(raw);
+    expect(cleaned).toBe('雷达发现：AREX');
+    expect(cleaned).not.toContain('notify_context');
+    expect(priority).toBe('low');
+  });
+
+  it('dbMsgToChat strips notify_context from text segments (not only msg.text)', () => {
+    const m = {
+      id: 'msg_1',
+      agentId: 'agt_1',
+      role: 'assistant',
+      content: 'Summary\n\n<!-- notify_context: priority=low -->',
+      createdAt: '2026-08-02T07:04:00.000Z',
+      metadata: {
+        notifyUser: true,
+        priority: 'low',
+        segments: [
+          { type: 'text', content: 'Summary\n\n<!-- notify_context: priority=low -->' },
+        ],
+      },
+    } as ChatMessageInfo;
+    const chat = dbMsgToChat(m);
+    expect(chat.text).not.toContain('notify_context');
+    expect(chat.isNotification).toBe(true);
+    expect(chat.notifyPriority).toBe('low');
+    const textSeg = chat.segments?.find(s => s.type === 'text');
+    expect(textSeg && textSeg.type === 'text' ? textSeg.content : '').not.toContain('notify_context');
+  });
+});
 
 describe('stripEmbeddedReplyQuote', () => {
   it('strips legacy quote prefix when metadata matches', () => {
@@ -29,6 +66,38 @@ describe('Remember action visibility (LEARNING-LOOP §9.1)', () => {
     expect(isRememberActionVisible(false, 'agent')).toBe(false);
     expect(isRememberActionVisible(undefined, 'agent')).toBe(false);
     expect(isRememberActionVisible(true, 'user')).toBe(false);
+  });
+});
+
+describe('insertChatMsgByCreatedAt', () => {
+  it('inserts an older notify before a newer in-flight bubble', () => {
+    const newer: ChatMsg = {
+      id: 'stream_1',
+      sender: 'agent',
+      text: 'thinking…',
+      time: '15:35',
+      rawCreatedAt: '2026-08-02T07:35:00.000Z',
+    };
+    const older: ChatMsg = {
+      id: 'notify_1',
+      sender: 'agent',
+      text: '通知系统测试',
+      time: '15:34',
+      rawCreatedAt: '2026-08-02T07:34:00.000Z',
+      isNotification: true,
+    };
+    const result = insertChatMsgByCreatedAt([newer], older);
+    expect(result.map((m) => m.id)).toEqual(['notify_1', 'stream_1']);
+  });
+
+  it('appends when message is newest', () => {
+    const a: ChatMsg = {
+      id: 'a', sender: 'user', text: 'hi', time: '15:33', rawCreatedAt: '2026-08-02T07:33:00.000Z',
+    };
+    const b: ChatMsg = {
+      id: 'b', sender: 'agent', text: 'ok', time: '15:34', rawCreatedAt: '2026-08-02T07:34:00.000Z',
+    };
+    expect(insertChatMsgByCreatedAt([a], b).map((m) => m.id)).toEqual(['a', 'b']);
   });
 });
 

@@ -5,10 +5,29 @@
 
 ---
 
+## §0 Architecture map (one SOP, five triggers)
+
+**Learning Habits** (§8) is the single encode SOP. Triggers must not steal each other's jobs:
+
+| Mechanism | Trigger | Scenario | Habits injected? | Job |
+|-----------|---------|----------|------------------|-----|
+| Learning Habits | Always (non-dream) | N/A (L0 text) | — | Look back / me-vs-others / encode / verify |
+| Remember | User button (DM) | `chat` child session | Yes | Human-driven chat replay (§9) |
+| Distillation | Task **completed** (predicates) | **`distillation`** | **Yes** | Trajectory → Learning Habits encode (§2) |
+| Dream | obs ≥50, ~1×/day | `memory_consolidation` | **No** | Hygiene: dedupe/merge/promote/TTL (§5) |
+| Memory Flush | Context high-water | `memory_flush` / sys | No essay | Preserve before compaction |
+| Heartbeat | Timer | `heartbeat` | Yes (short) | Patrol only; ≤1-line `memory_save` (§7) |
+
+MUST NOT: Run post-task reflection under `memory_consolidation` (that scenario is Dream-only).
+MUST NOT: Use Dream to encode a fresh task trajectory (Distillation owns that).
+
+---
+
 ## §1 Goals
 
-Turn successful/failed task trajectories into durable assets (insights → knowledge → staged skills)
-without bloating the Context Surface. Skill library growth MUST only increase L0 catalog size.
+Turn **completed** task trajectories (especially those with reviewer/user feedback via revision)
+into durable assets (memory → skills) without bloating the Context Surface.
+Skill library growth MUST only increase L0 catalog size.
 
 ---
 
@@ -16,37 +35,55 @@ without bloating the Context Surface. Skill library growth MUST only increase L0
 
 ### §2.1 Trigger
 
-MUST: After a task reaches `completed` or `failed`, or after a rejection→revision→later-approval
-path that recorded a rejection, evaluate distillation predicates asynchronously (MUST NOT block
-the task status transition).
+MUST: After a task reaches **`completed`** (including rejection→revision→later-approval),
+evaluate distillation predicates asynchronously (MUST NOT block the status transition).
 
-MUST fire when **any** of:
+MUST NOT: Run distillation on `failed` / cancelled / still-open tasks — there is no accepted
+outcome yet; wait until completion (or human Remember §9).
 
-1. Tool-call count on the execution trajectory ≥ 5
-2. Task experienced at least one review rejection in its life
+MUST fire when status is `completed` and **any** of:
+
+1. Tool-call count on the execution trajectory ≥ 5 (**known** count)
+2. Task experienced at least one review rejection / `executionRound > 1` (feedback exists)
 3. ≥ 2 similar tasks completed in a recent window (same project + overlapping title tokens)
-4. Terminal status is `failed`
 
-MUST NOT fire when none of the above hold (trivial tasks).
+MUST NOT fire when none of the above hold (trivial first-pass short tasks).
+When tool-call count is unknown/missing, runtime MAY still distill on `completed` (transitional
+until telemetry lands) — MUST NOT treat a **known** low count as “unknown”.
 
-Test IDs: `B-hook-skip-trivial`, `B-hook-fire-complex`, `B-hook-fire-failed`.
+Test IDs: `B-hook-skip-trivial`, `B-hook-fire-complex`, `B-hook-skip-failed`.
 
 ### §2.2 Execution
 
-MUST: Run in a lightweight session (`scenario: memory_consolidation` or `distillation`) with
-`reflex` or slim `govern` tools — MUST NOT use full `execute` pack.
+MUST: Run with `scenario: distillation` (capability pack `reflex` + distillation allowlist).
+MUST NOT: Use `scenario: memory_consolidation` for post-task reflection.
 
-MUST: Output one of: `none` | `insight` | `staged_skill`.
+MUST: Inject `## Learning Habits` (§8) into the system prompt for `distillation`
+(`B-distill-habits-injected`). Dream MUST omit Habits (`B-dream-no-habits`).
 
-- `insight` → `memory_save` (observations) and/or knowledge patch
-- `staged_skill` → staging path (§3)
-- `none` → record “distilled” marker; stop
+MUST: Tool allowlist = reflex core ∪
+`memory_update`, `memory_update_longterm`, `file_write`, `file_edit`,
+`package_list`, `package_install`.
+MUST NOT: Include `hub_install` / agent|team auto-deploy on the distillation turn
+(`B-distill-no-hub-install`). Skill install MUST follow §8.3 impact/HITL
+(`B-distill-package-install-allowed`): high/omitted → `request_user_input` then install;
+low → may install directly.
+
+MUST NOT: Require a structured JSON outcome enum. The agent follows Learning Habits —
+encode with tools when there is a durable lesson; if nothing noteworthy, stop quietly.
+
+Test IDs: `B-distill-uses-distillation-scenario`, `B-distill-habits-injected`,
+`B-distill-package-install-allowed`.
 
 ---
 
-## §3 Staged skills + approval
+## §3 Staged skills + approval (optional helper)
 
-MUST: Drafts MUST NOT become live installed skills until human approve.
+Primary agent path is §8.3: create under `builder-artifacts/skills/` then `package_install`
+with impact/HITL. This section is an optional staging helper when the agent prefers a draft
+before install.
+
+MUST: `.pending/` drafts MUST NOT become live until human approve (or the agent installs via §8.3).
 
 Storage options (either is compliant):
 
@@ -89,6 +126,9 @@ Test IDs: `B-stats-activate`, `B-stats-success`, `B-stats-reject-feedback`.
 
 ## §5 Dream Librarian
 
+MUST: Dream runs only as `scenario: memory_consolidation` (hygiene). MUST NOT inject Learning Habits.
+MUST NOT: Use Dream for post-task trajectory reflection (§2 owns that).
+
 MUST: Periodic dream/consolidation SHOULD also:
 
 1. Suggest archive for skills with `usage_count = 0` and age > 30 days
@@ -99,7 +139,8 @@ MUST: Periodic dream/consolidation SHOULD also:
 6. When negative feedback ≥ 3 on a skill, open/suggest a revision task
 7. When ≥ 3 agents independently record the same insight theme, suggest a team skill
 
-Test IDs: `C-dream-archive-suggest`, `C-dream-state-ttl`, `C-dream-promote-insight`.
+Test IDs: `C-dream-archive-suggest`, `C-dream-state-ttl`, `C-dream-promote-insight`,
+`B-dream-no-habits`.
 
 ---
 
@@ -112,7 +153,7 @@ MUST: Evolution metrics API exposes:
 
 - skill reuse rate = tasks that activated ≥1 skill / tasks completed
 - first-pass rate = tasks approved without prior rejection / tasks reviewed
-- distill rate = tasks that produced insight or staged_skill / tasks completed
+- distill rate = tasks that ran post-task distillation / tasks completed
 
 Healthy distill rate band: 10–30% (informational).
 
@@ -123,7 +164,7 @@ Test IDs: `C-fanout-cap`, `C-fanout-tag-match`, `C-metrics-api`.
 ## §7 Heartbeat
 
 MUST NOT: Inject long self-evolution essays into reflex heartbeat prompts.
-System distillation (§2–§5) and Prompt Habits (§8) cover learning; heartbeat MAY at most
+Distillation (§2), Dream (§5), and Prompt Habits (§8) cover learning; heartbeat MAY at most
 `memory_save` a one-line insight.
 
 Test ID: `B-hb-no-evolution-essay`.
@@ -133,8 +174,9 @@ Test ID: `B-hb-no-evolution-essay`.
 ## §8 Prompt Habits (Look back / Encode where / Skill impact)
 
 MUST: Platform Tier-1 L0 injects a short `## Learning Habits` section into
-`ContextEngine.buildSystemPrompt()` for all non-`memory_consolidation` scenarios
-(including `chat`, `group_chat`, `task_execution`, `review`, `heartbeat`).
+`ContextEngine.buildSystemPrompt()` for all scenarios **except** `memory_consolidation`
+(Dream). MUST include `distillation`, `chat`, `group_chat`, `task_execution`, `review`,
+`heartbeat`.
 
 MUST: Section length ≤ **1600 characters**.
 
@@ -154,18 +196,29 @@ MUST NOT require look-back for greetings / one-shot factual lookups / pure acks.
 ### §8.2 Encode where
 
 After complex, corrected, failed-then-fixed, or reusable work, SHOULD encode using the
-**lightest store that changes future behavior**:
+**lightest store that changes future behavior**.
+
+**Me vs others (first cut):**
+
+| Audience | Store |
+|---|---|
+| Only helps *this* agent / *this* user (prefs, one-off lessons, personal workflows) | Memory (`memory_save` / `memory_update` → `knowledge.md`) or ROLE / HEARTBEAT |
+| Helps *other agents* as an executable playbook / MCP / shared workflow | Skill under `builder-artifacts/skills/` then §8.3 install |
+
+Skill MUST be steps/tools/boundaries — MUST NOT be a diary dump of transcripts.
+Same theme recurring 3+ times AND shareable → SHOULD promote memory → skill.
 
 | Learned what | Where |
 |---|---|
 | One-off lesson / gotcha | `memory_save` |
-| Personal multi-step procedure | `memory_update_longterm` → MEMORY.md |
+| Personal multi-step procedure | `memory_update` / `memory_update_longterm` → `knowledge.md` curated section |
 | Always-on behavioral rule (this agent) | append ROLE.md via `file_edit`; identity/scope rewrite → ask human first |
 | Recurring patrol check | edit HEARTBEAT.md (keep lean) |
 | Team-reusable / MCP / shared workflow | create under `builder-artifacts/skills/` then §8.3 install |
 
-SHOULD prefer concrete `[INSIGHT]` one-liners; SHOULD prune stale MEMORY/HEARTBEAT entries;
-MUST NOT dump raw transcripts into memory.
+SHOULD prefer concrete `[INSIGHT]` one-liners; SHOULD prune stale `knowledge.md` / HEARTBEAT entries;
+MUST NOT dump raw transcripts into memory. Tool results SHOULD report `store: "knowledge.md"`
+(legacy `MEMORY.md` is not the write target).
 
 ### §8.3 Skill install impact
 

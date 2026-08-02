@@ -33,15 +33,15 @@ describe('learning loop (LEARNING-LOOP.md)', () => {
     ).toBe(true);
   });
 
-  it('B-hook-fire-failed: failed always fires', () => {
+  it('B-hook-skip-failed: failed never fires (wait for completion / feedback)', () => {
     expect(
       shouldDistillTask({
-        toolCallCount: 0,
-        hadRejection: false,
-        similarTaskCount: 0,
+        toolCallCount: 20,
+        hadRejection: true,
+        similarTaskCount: 5,
         status: 'failed',
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('B-stats-activate / B-stats-success / B-stats-reject-feedback', () => {

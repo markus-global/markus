@@ -19,7 +19,7 @@
   - What coding patterns, debugging strategies, or decomposition approaches worked?
   - Did the reviewer leave feedback worth remembering?
   - Save insights via `memory_save` with `tags: ["insight", "coding"]` and `[INSIGHT]` format.
-  - If you found a repeatable workflow (e.g., "how to set up a new module", "how to debug integration tests"), promote it to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - If you found a repeatable workflow (e.g., "how to set up a new module", "how to debug integration tests"), promote it to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
   - When 3+ related insights accumulate, consider updating your ROLE.md with the new guideline.
 
 ## Self-Evolution

@@ -66,13 +66,40 @@ export function appendSubagentLog<T>(logs: T[] | undefined, entry: T, max = MAX_
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const NOTIFY_CONTEXT_RE = /\n*<!-- notify_context:.*?-->/g;
+/**
+ * Insert a chat message by `rawCreatedAt` (bubble start time). Falls back to append
+ * when timestamps are missing. Used for proactive/notify WS so late delivery still
+ * lands before an in-flight reply that started later.
+ */
+export function insertChatMsgByCreatedAt(msgs: ChatMsg[], msg: ChatMsg): ChatMsg[] {
+  if (msgs.some((m) => m.id === msg.id)) return msgs;
+  const t = msg.rawCreatedAt ? Date.parse(msg.rawCreatedAt) : NaN;
+  if (!Number.isFinite(t) || msgs.length === 0) return [...msgs, msg];
+  let i = msgs.length;
+  while (i > 0) {
+    const prev = msgs[i - 1]!;
+    const pt = prev.rawCreatedAt ? Date.parse(prev.rawCreatedAt) : NaN;
+    // Missing timestamps stay at the end (append-like); only shift past newer known times.
+    if (!Number.isFinite(pt) || pt <= t) break;
+    i--;
+  }
+  if (i === msgs.length) return [...msgs, msg];
+  const next = msgs.slice();
+  next.splice(i, 0, msg);
+  return next;
+}
+
+/** Matches `<!-- notify_context: ... -->` including optional surrounding newlines. */
+const NOTIFY_CONTEXT_RE = /\n*<!--\s*notify_context:\s*([\s\S]*?)-->/g;
 
 export function stripNotifyContext(text: string): { cleaned: string; priority?: string } {
-  const match = text.match(/<!-- notify_context:([^>]*?)-->/);
+  if (!text.includes('notify_context')) {
+    return { cleaned: text };
+  }
   let priority: string | undefined;
-  if (match) {
-    const priMatch = match[1].match(/priority=(\w+)/);
+  const match = text.match(/<!--\s*notify_context:\s*([\s\S]*?)-->/);
+  if (match?.[1]) {
+    const priMatch = match[1].match(/priority\s*=\s*(\w+)/i);
     if (priMatch) priority = priMatch[1];
   }
   return { cleaned: text.replace(NOTIFY_CONTEXT_RE, '').trimEnd(), priority };
@@ -85,7 +112,8 @@ export function storedSegmentToMsgSegment(
   live?: MsgSegment,
 ): MsgSegment {
   if (s.type !== 'tool') {
-    return { type: 'text' as const, content: s.content, thinking: s.thinking, createdAt: s.createdAt };
+    const { cleaned } = stripNotifyContext(s.content ?? '');
+    return { type: 'text' as const, content: cleaned, thinking: s.thinking, createdAt: s.createdAt };
   }
   const liveTool = live?.type === 'tool' && live.tool === s.tool ? live : undefined;
   const serverLen = s.subagentLogs?.length ?? 0;

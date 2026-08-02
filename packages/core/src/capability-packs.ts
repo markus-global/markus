@@ -94,6 +94,23 @@ export function getReflexAllowlist(isManager: boolean): Set<string> {
   return set;
 }
 
+/** Distillation extras beyond reflex (LEARNING-LOOP §2.2 / AGENT-RUNTIME §2.2.1). */
+export const DISTILLATION_EXTRA_TOOLS = [
+  'memory_update',
+  'memory_update_longterm',
+  'file_write',
+  'file_edit',
+  'package_list',
+  'package_install',
+] as const;
+
+/** Reflex + encode/install tools for post-task distillation. */
+export function getDistillationAllowlist(isManager: boolean): Set<string> {
+  const set = getReflexAllowlist(isManager);
+  for (const t of DISTILLATION_EXTRA_TOOLS) set.add(t);
+  return set;
+}
+
 export type ToolDefLike = {
   name: string;
   description: string;

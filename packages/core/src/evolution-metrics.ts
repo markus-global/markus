@@ -18,14 +18,15 @@ export function computeEvolutionMetrics(opts: {
   tasksWithSkillActivation: number;
   tasksReviewed: number;
   tasksApprovedWithoutPriorRejection: number;
-  tasksWithDistillOutcome: number;
+  /** Tasks that ran post-task distillation (LEARNING-LOOP §2), not a JSON outcome enum. */
+  tasksDistilled: number;
 }): EvolutionMetrics {
   const {
     tasksCompleted: completed,
     tasksWithSkillActivation: withSkill,
     tasksReviewed: reviewed,
     tasksApprovedWithoutPriorRejection: firstPass,
-    tasksWithDistillOutcome: distilled,
+    tasksDistilled: distilled,
   } = opts;
   return {
     skillReuseRate: completed > 0 ? withSkill / completed : 0,

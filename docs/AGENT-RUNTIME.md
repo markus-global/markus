@@ -41,13 +41,19 @@ Test IDs: `A-skill-l0-only`, `A-tooldef-budget`.
 
 ### §1.3 Execute ≠ learn
 
-MUST: Task execution MUST NOT write new team skills. Distillation runs after `completed` / `failed` (or rejection-revision paths) via the Learning Loop hook.
+MUST: Task execution MUST NOT write new team skills. Distillation runs after **`completed`**
+(including rejection→revision→approval) via the Learning Loop hook with **`scenario: distillation`**
+([LEARNING-LOOP.md](./LEARNING-LOOP.md) §2) — MUST NOT reuse Dream's `memory_consolidation`.
+MUST NOT: Distill on `failed`.
 
-Test IDs: `B-hook-skip-trivial`, `B-hook-fire-complex`, `B-stage-not-live`.
+Test IDs: `B-hook-skip-trivial`, `B-hook-fire-complex`, `B-hook-skip-failed`,
+`B-distill-uses-distillation-scenario`.
 
 ### §1.4 Human gate for evolution
 
-MUST: Agent-authored skill drafts MUST land in a staging area; they become live only after human approve.
+MUST: High-impact (or impact-omitted) skill installs require human approve via HITL
+([LEARNING-LOOP.md](./LEARNING-LOOP.md) §8.3). Low-impact skill installs MAY proceed without HITL.
+Optional `.pending/` staging (§3) remains a helper path.
 
 MUST NOT: Couple skill usage/success metrics to trust score.
 
@@ -61,7 +67,7 @@ Test IDs: `B-approve-install`, `B-reject-feedback`, `B-stats-reject-feedback`.
 
 | Pack | Scenarios | ToolDef budget (tokens) | Prompt profile |
 |------|-----------|-------------------------|----------------|
-| `reflex` | `heartbeat`, `memory_consolidation`, `memory_flush`, dream | 3_000 | `reflex` |
+| `reflex` | `heartbeat`, `memory_consolidation` (Dream), `memory_flush`, `distillation` | 3_000 | `reflex` |
 | `converse` | `chat`, `a2a`, `group_chat`, `comment_response`, `requirement_action` | 6_000 | `converse` |
 | `execute` | `task_execution` | 10_000 | `execute` |
 | `govern` | `review`, `deliberation` | 8_000 | `govern` |
@@ -81,7 +87,18 @@ MUST NOT: Include `package_install`, `package_list`, `goal_create`, `goal_update
 `spawn_subagent`, `spawn_subagents`, `deliverable_create`, `requirement_propose`,
 `memory_update_longterm` in the default reflex allowlist (reachable only via `discover_tools`).
 
-Test IDs: `A-pack-reflex-tools`, `B-hb-no-evolution-essay`.
+### §2.2.1 Distillation allowlist extras
+
+MUST: When `scenario: distillation`, the runtime MAY widen the allowlist with:
+`memory_update`, `memory_update_longterm`, `file_write`, `file_edit`,
+`package_list`, `package_install` (plus reflex core, which already includes `request_user_input`).
+MUST NOT: Add `hub_install` on the distillation turn.
+MUST: Skill `package_install` follows Learning Habits impact/HITL
+([LEARNING-LOOP.md](./LEARNING-LOOP.md) §2.2 / §8.3) — high/omitted impact asks first.
+MUST: Inject Learning Habits for `distillation`; MUST NOT inject them for `memory_consolidation`.
+
+Test IDs: `A-pack-reflex-tools`, `B-hb-no-evolution-essay`, `B-distill-package-install-allowed`,
+`B-distill-habits-injected`, `B-dream-no-habits`.
 
 ### §2.3 Converse / execute / govern
 
@@ -196,7 +213,7 @@ Test IDs: `A-knowledge-cap`, `C-dream-state-ttl`.
 
 ## §7 Learning Loop (summary)
 
-State machine: `task terminal → DistillationHook → none|insight|staged_skill → (approve) live skill → stats → DreamLibrarian → fanout`.
+State machine: `task completed → DistillationHook → Habits encode (memory / skill+HITL) → stats → DreamLibrarian → fanout`.
 
 Also: platform **Learning Habits** L0 (look-back / encode-where / skill impact) and user-initiated
 **Remember-from-message** → child evolution session (user↔agent DM only).
@@ -264,6 +281,6 @@ Live (operator):
 1. Cold chat: log `systemTokens`+`toolDefTokens` ≤ 12k
 2. Cold heartbeat / deep sleep: ≤ 8k fixed; idle skips LLM
 3. Low afford: `prompt_pack_rejected` without OR call
-4. Complex task complete → distillation / insight path
+4. Complex task complete → distillation (Habits encode; skill install via §8.3 HITL)
 5. Deliverable update returns `version` bump
 6. `acceptTask(..., notes)` stores `approved_with_notes`

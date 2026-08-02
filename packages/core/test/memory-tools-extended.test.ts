@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { tokenizeSearchQuery, scoreKeywordHaystack } from '@markus/shared';
 import { createMemoryTools, type AgentMemoryContext } from '../src/tools/memory.js';
 import type { IMemoryStore, MemoryEntry } from '../src/memory/types.js';
 import type { SemanticMemorySearch } from '../src/memory/semantic-search.js';
@@ -8,9 +9,16 @@ function createMockMemory(entries: MemoryEntry[] = []): IMemoryStore {
   return {
     addEntry: vi.fn((e: MemoryEntry) => { data.push(e); }),
     getEntries: vi.fn((_type?: string, limit?: number) => data.slice(0, limit ?? data.length)),
-    search: vi.fn((query: string) => data.filter(e => e.content.includes(query))),
+    search: vi.fn((query: string) => {
+      const tokens = tokenizeSearchQuery(query);
+      const full = query.trim().toLowerCase();
+      return data
+        .map((e) => ({ e, score: scoreKeywordHaystack(e.content, tokens, full) }))
+        .filter((x) => x.score > 0)
+        .map((x) => x.e);
+    }),
     getEntriesByTag: vi.fn(),
-    getEntryById: vi.fn(),
+    getObservations: vi.fn(() => [...data]),
     removeEntries: vi.fn((ids: string[]) => {
       const before = data.length;
       for (let i = data.length - 1; i >= 0; i--) {
@@ -27,10 +35,14 @@ function createMockMemory(entries: MemoryEntry[] = []): IMemoryStore {
       return before - data.length;
     }),
     replaceEntries: vi.fn(),
+    getStoreFileName: vi.fn(() => 'knowledge.md'),
     addLongTermMemory: vi.fn().mockReturnValue({ ok: true }),
     getLongTermMemory: vi.fn().mockReturnValue(''),
     getLongTermSection: vi.fn((section: string) => (section === 'notes' ? 'Existing note' : '')),
     getLongTermMemoryExcluding: vi.fn().mockReturnValue(''),
+    compressLongTermMemory: vi.fn().mockReturnValue({
+      charsBefore: 0, charsAfter: 0, sectionsBefore: 0, sectionsAfter: 0, truncatedChunks: 0,
+    }),
     createSession: vi.fn(),
     getSession: vi.fn(),
     appendMessage: vi.fn(),
@@ -40,8 +52,10 @@ function createMockMemory(entries: MemoryEntry[] = []): IMemoryStore {
     getLatestMainSession: vi.fn(),
     getOrCreateSession: vi.fn(),
     compactSession: vi.fn(),
+    summarizeAndTruncate: vi.fn(),
     writeDailyLog: vi.fn(),
     getDailyLog: vi.fn().mockReturnValue(''),
+    getRecentDailyLogs: vi.fn().mockReturnValue(''),
   };
 }
 
@@ -78,13 +92,64 @@ describe('memory tools extended', () => {
       tags: 'deploy, ops',
     }));
     expect(saved.status).toBe('saved');
+    expect(saved.store).toBe('knowledge.md');
     expect(memory.addEntry).toHaveBeenCalled();
+    const firstEntry = vi.mocked(memory.addEntry).mock.calls[0]![0] as MemoryEntry;
+    expect(firstEntry.type).toBe('insight');
 
     await findTool(ctx, 'memory_save').execute({
       content: 'Second note',
       tags: ['ui', 'design'],
     });
     expect(semanticSearch.indexMemory).toHaveBeenCalled();
+  });
+
+  it('A-memory-save-rejects-array and does not write', async () => {
+    const memory = createMockMemory();
+    const ctx: AgentMemoryContext = { agentId: 'agt_1', agentName: 'Agent', memory };
+    const result = JSON.parse(await findTool(ctx, 'memory_save').execute([
+      { severity: 'insight', summary: 'x', content: 'body', tags: ['t'] },
+    ] as unknown as Record<string, unknown>));
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/array/i);
+    expect(memory.addEntry).not.toHaveBeenCalled();
+  });
+
+  it('A-memory-save-no-empty-write', async () => {
+    const memory = createMockMemory();
+    const ctx: AgentMemoryContext = { agentId: 'agt_1', agentName: 'Agent', memory };
+    const missing = JSON.parse(await findTool(ctx, 'memory_save').execute({ summary: 'no content' }));
+    expect(missing.status).toBe('error');
+    expect(memory.addEntry).not.toHaveBeenCalled();
+
+    const empty = JSON.parse(await findTool(ctx, 'memory_save').execute({ content: '   ' }));
+    expect(empty.status).toBe('error');
+    expect(memory.addEntry).not.toHaveBeenCalled();
+  });
+
+  it('A-tool-result-store-path on memory_update', async () => {
+    const memory = createMockMemory();
+    const ctx: AgentMemoryContext = { agentId: 'agt_1', agentName: 'Agent', memory };
+    const result = JSON.parse(await findTool(ctx, 'memory_update').execute({
+      section: 'procedures',
+      content: 'Do X then Y',
+      mode: 'replace',
+    }));
+    expect(result.status).toBe('updated');
+    expect(result.store).toBe('knowledge.md');
+  });
+
+  it('A-memory-update-append-alias maps to patch', async () => {
+    const memory = createMockMemory();
+    const ctx: AgentMemoryContext = { agentId: 'agt_1', agentName: 'Agent', memory };
+    const result = JSON.parse(await findTool(ctx, 'memory_update_longterm').execute({
+      section: 'notes',
+      content: ' more',
+      mode: 'append',
+    }));
+    expect(result.status).toBe('updated');
+    expect(result.mode).toBe('patch');
+    expect(memory.addLongTermMemory).toHaveBeenCalledWith('notes', 'Existing note\n more');
   });
 
   it('memory_list returns recent entries', async () => {

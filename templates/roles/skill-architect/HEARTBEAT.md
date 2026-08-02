@@ -18,7 +18,7 @@
   - What skill design patterns or instruction structures worked well?
   - Were there compatibility or testing approaches worth reusing?
   - Save insights via `memory_save` with `tags: ["insight", "skills"]` and `[INSIGHT]` format.
-  - Promote repeatable skill design workflows to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - Promote repeatable skill design workflows to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
 
 ## Self-Evolution
 

@@ -13,7 +13,7 @@ import {
   type TaskApprovalInfo, type RequirementApprovalInfo,
 } from '../components/ExecutionTimeline.tsx';
 import { Avatar } from '../components/Avatar.tsx';
-import { isRememberActionVisible, type ChatMsg, type MsgSegment } from './ChatHelpers.ts';
+import { isRememberActionVisible, stripNotifyContext, type ChatMsg, type MsgSegment } from './ChatHelpers.ts';
 export { isRememberActionVisible };
 
 // ─── NotificationBadge ────────────────────────────────────────────────────────
@@ -503,7 +503,8 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
         thinkBuf += seg.thinking;
         emitThinking();
       }
-      processText(seg.content);
+      // notify_context is agent-internal; never surface it in the execution timeline.
+      processText(stripNotifyContext(seg.content).cleaned);
     }
   }
 
@@ -573,6 +574,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
     const stripMarkup = (t: string) => t
+      .replace(/\n*<!--\s*notify_context:\s*[\s\S]*?-->/g, '')
       .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
       .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
       .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')

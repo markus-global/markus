@@ -12545,7 +12545,7 @@ EXPLANATION_END`;
         const agent = (() => { try { return am.getAgent(entry.name); } catch { return null; } })();
         const subItems = [
           { name: 'workspace', size: dirSize(join(agentDir, 'workspace')) },
-          { name: 'memory', size: dirSize(join(agentDir, 'sessions')) + (existsSync(join(agentDir, 'memories.json')) ? statSync(join(agentDir, 'memories.json')).size : 0) + (existsSync(join(agentDir, 'MEMORY.md')) ? statSync(join(agentDir, 'MEMORY.md')).size : 0) },
+          { name: 'memory', size: dirSize(join(agentDir, 'sessions')) + (existsSync(join(agentDir, 'memories.json')) ? statSync(join(agentDir, 'memories.json')).size : 0) + (existsSync(join(agentDir, 'knowledge.md')) ? statSync(join(agentDir, 'knowledge.md')).size : 0) + (existsSync(join(agentDir, 'MEMORY.md')) ? statSync(join(agentDir, 'MEMORY.md')).size : 0) },
           { name: 'role', size: dirSize(join(agentDir, 'role')) },
           { name: 'tool-outputs', size: dirSize(join(agentDir, 'tool-outputs')) },
           { name: 'daily-logs', size: dirSize(join(agentDir, 'daily-logs')) },

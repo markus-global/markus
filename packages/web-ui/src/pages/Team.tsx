@@ -40,7 +40,7 @@ import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from 
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
-  dbMsgToChat, channelMsgToChat, stripNotifyContext,
+  dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   storedSegmentsToMsgSegments, dedupeAdjacentUserMessages,
   appendLiveOutput, appendSubagentLog,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
@@ -1232,6 +1232,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const chatVirtualizer = useVirtualizer({
     count: visibleMessages.length,
     getScrollElement: () => chatScrollRef.current,
+    // Key by message id so mid-list unhide (notify ack) doesn't reuse height
+    // cache from a different row — index-only cache caused bubble overlap.
+    getItemKey: (index) => visibleMessages[index]?.id ?? index,
     estimateSize: (index) => {
       const msg = visibleMessages[index];
       if (!msg) return 120;
@@ -2168,12 +2171,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const proactiveSession = sessionId || activeSessionId;
       const fallbackUserText = typeof meta.userText === 'string' ? meta.userText : '';
       const fallbackUserId = typeof meta.userMessageId === 'string' ? meta.userMessageId : '';
+      // Bubble clock = message start time (WS envelope / server createdAt), not "now" on render.
+      const createdAt =
+        (typeof meta.createdAt === 'string' && meta.createdAt)
+        || (typeof (event as { timestamp?: string }).timestamp === 'string'
+          ? (event as { timestamp: string }).timestamp
+          : undefined)
+        || new Date().toISOString();
+      const displayTime = (() => {
+        try { return new Date(createdAt).toLocaleTimeString(); }
+        catch { return new Date().toLocaleTimeString(); }
+      })();
 
       const newMsg: ChatMsg = {
         id: messageId || `proactive_${Date.now()}`,
         sender: isUserTurn ? 'user' : 'agent',
         text: displayMessage,
-        time: new Date().toLocaleTimeString(),
+        time: displayTime,
+        rawCreatedAt: createdAt,
         ...(isUserTurn
           ? {}
           : {
@@ -2231,7 +2246,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             }
           }
         }
-        return [...base, newMsg];
+        // Chronological insert — late notify WS must not always append after an
+        // in-flight reply that started later (would look "inserted in the wrong place").
+        return insertChatMsgByCreatedAt(base, newMsg);
       }, proactiveSession || undefined);
     });
     return unsub;

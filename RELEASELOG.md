@@ -62,6 +62,13 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 
 - **重新发版** — rc.7 的 Publish 因 Windows job 长时间 waiting 未完成制品；含 telemetry 测试中 runtime logger ENOENT 修复后重打 tag 触发发布
 
+### v0.9.0-rc.9
+
+- **Post-task Distillation** — 任务 **completed** 后走 `scenario: distillation`（不再误用 Dream）；注入 Learning Habits；允许 `package_install`（§8.3 impact/HITL）；失败任务不蒸馏
+- **Memory / knowledge.md** — 搜索改为关键词 OR 匹配，并覆盖 curated 段落；语义命中时合并 curated 结果
+- **通用关键词搜索** — `task_list`、SkillHub / skill loader / 模板搜索共用 `tokenizeSearchQuery`，避免整句 substring 漏检
+- **notify_user UX** — 通知栏点击打开 Chat 时不提前 mark-read（保留「知道了」卡片）；剥离 segment 中的 `notify_context` 泄漏；虚拟列表 `getItemKey` + 按 `createdAt` 插入，修复气泡重叠
+
 ### Stats
 
 - 290 files changed, +36,540 / −12,148 lines

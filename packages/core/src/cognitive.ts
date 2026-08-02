@@ -59,6 +59,7 @@ export interface RetrievalBackend {
 const SCENARIO_DEPTH_MAP: Record<string, CognitiveDepth> = {
   heartbeat: CognitiveDepth.D0_Reflexive,
   memory_consolidation: CognitiveDepth.D0_Reflexive,
+  distillation: CognitiveDepth.D1_Reactive,
   chat: CognitiveDepth.D1_Reactive,
   a2a: CognitiveDepth.D1_Reactive,
   comment_response: CognitiveDepth.D1_Reactive,

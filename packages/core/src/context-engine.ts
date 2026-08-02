@@ -287,10 +287,16 @@ export class ContextEngine {
       stable.push('');
       stable.push('\n## Learning Habits');
       stable.push('Get smarter over time. Prefer the lightest store that changes future behavior.');
-      stable.push('**Look back** (before non-trivial work): read `## Your Knowledge`; `memory_search` / `recall_activity` for similar past work; `discover_tools` if a catalog skill matches. Skip for greetings / one-shot lookups.');
-      stable.push('**Encode where** (after complex, corrected, or reusable work): one-off → `memory_save` (`[INSIGHT]` one-liners); personal multi-step → `memory_update_longterm` (MEMORY.md); always-on rule → append ROLE.md (ask human first if rewriting identity/scope); patrol check → HEARTBEAT.md (keep lean); team-reusable/MCP → create under `builder-artifacts/skills/` then install.');
-      stable.push('**Skill install impact**: low (narrow, no MCP/network/secrets) → `package_install({ type:"skill", name, impact:"low" })` directly; high (broad/MCP/org process) → `request_user_input` then `package_install(..., impact:"high")`. Omitted impact = high. Agents/teams always need explicit human ask + approval.');
-      stable.push('Do not dump transcripts; prune stale MEMORY/HEARTBEAT. Heartbeat: at most one-line `memory_save` — no skill/ROLE distillation there.');
+      stable.push('**Look back** (MUST before non-trivial work): skim `## Your Knowledge`; `memory_search` / `recall_activity` when work resembles the past, a tool failed before, or the user corrects you; `discover_tools` if a catalog skill matches. Skip greetings / one-shots.');
+      stable.push('**Me vs others**: only helps *you* → memory. Helps *other agents* as an executable playbook/MCP flow → Skill (steps/tools/boundaries, not a diary).');
+      stable.push('**Encode** (MUST same turn after user correction, failed→fixed, or reusable multi-step):');
+      stable.push('- One lesson → `memory_save` once `{ content, type:"insight", tags }` — never an array.');
+      stable.push('- Your multi-step procedure → `memory_update`/`memory_update_longterm` on a `knowledge.md` section (`patch`/`append` preferred; = `## Your Knowledge`).');
+      stable.push('- Your always-on rule → ROLE.md (ask before identity/scope rewrite); patrol → HEARTBEAT.md.');
+      stable.push('- Shared executable workflow → `builder-artifacts/skills/` then `package_install`. Theme 3+ times + shareable → promote memory→skill.');
+      stable.push('**Verify**: trust tool JSON (`status` + `store:"knowledge.md"`). On error retry — never claim success. Observations not auto-injected; `memory_search` next time.');
+      stable.push('**Skill install impact**: low (narrow, no MCP/network/secrets) → `package_install({ type:"skill", name, impact:"low" })`; high (broad/MCP/org) → `request_user_input` then impact:"high". Omitted = high. Agents/teams always HITL.');
+      stable.push('No transcript dumps; prune stale knowledge/HEARTBEAT. Heartbeat: ≤1-line `memory_save`. Legacy `MEMORY.md` is not the write target.');
 
       stable.push('');
       stable.push('\n## Autonomy & Escalation');      stable.push('Calibrate how much to act on your own vs. ask first:');
@@ -392,8 +398,10 @@ export class ContextEngine {
         semiStable.push('  Important files (use these **exact absolute paths** — do not invent other locations):');
         semiStable.push(`  - Persona / identity: \`${home}/role/ROLE.md\``);
         semiStable.push(`  - Heartbeat checklist: \`${home}/role/HEARTBEAT.md\``);
-        semiStable.push(`  - Long-term memory: \`${home}/MEMORY.md\``);
+        semiStable.push(`  - Long-term memory (SSOT): \`${home}/knowledge.md\``);
+        semiStable.push(`  - Short TTL state: \`${home}/state.md\``);
         semiStable.push(`  - Notebook: \`${home}/NOTEBOOK.md\``);
+        semiStable.push('  Prefer memory tools (`memory_save` / `memory_update`) over editing these files by hand. Legacy `MEMORY.md` is not the write target.');
         semiStable.push('  ROLE.md and HEARTBEAT.md live under `role/` only. Creating them in the working directory or agent-home root will not take effect.');
       }
       const artifactsDir = opts.agentWorkspace?.builderArtifactsDir;
@@ -1327,6 +1335,15 @@ export class ContextEngine {
         lines.push('Your ONLY job is to review the memory entries provided in the user message and output a JSON consolidation plan.');
         lines.push('Do NOT call any tools. Do NOT take any actions. Do NOT discuss tasks or projects.');
         lines.push('Respond with ONLY the JSON object as specified in the user message.');
+        break;
+
+      case 'distillation':
+        lines.push('You are in **post-task distillation mode** — encode lessons from a **completed** task.');
+        lines.push('');
+        lines.push('**Communication channel**: Background system session. Free-text is not a chat reply; tools have effect.');
+        lines.push('');
+        lines.push('Follow **Learning Habits**: personal lesson → memory tools; shareable playbook → `builder-artifacts/skills/` then `package_install` (low impact may install; high/omitted → `request_user_input` first).');
+        lines.push('Never `hub_install` or auto-deploy agents/teams. If nothing durable → stop without tools.');
         break;
 
       case 'deliberation':

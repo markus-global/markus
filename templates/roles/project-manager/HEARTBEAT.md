@@ -19,7 +19,7 @@
   - What coordination or task-creation patterns led to smooth execution?
   - Were there blocker resolution or escalation approaches worth reusing?
   - Save insights via `memory_save` with `tags: ["insight", "project-management"]` and `[INSIGHT]` format.
-  - Promote repeatable PM workflows to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - Promote repeatable PM workflows to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
 
 ## Self-Evolution
 

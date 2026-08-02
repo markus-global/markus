@@ -356,6 +356,24 @@ describe('TaskService', () => {
       expect(result.tasks[0]?.title).toBe('Alpha task');
     });
 
+    it('queryTasks keyword-OR matches non-contiguous multi-word search', () => {
+      ts.createTask(createDefaults({
+        title: 'Deploy wallet entropy checker',
+        description: 'Validate BIP-39 seeds before shipping',
+        creatorRole: 'human',
+      }) as never);
+      const hit = ts.queryTasks({
+        orgId: ORG,
+        search: 'BIP-39 entropy deploy wallet',
+      });
+      expect(hit.tasks.some((t) => t.title.includes('entropy'))).toBe(true);
+      const miss = ts.queryTasks({
+        orgId: ORG,
+        search: 'cooking pasta recipe',
+      });
+      expect(miss.total).toBe(0);
+    });
+
     it('returns tasks grouped on board', () => {
       const board = ts.getTaskBoard(ORG);
       expect(board.pending.length + board.in_progress.length).toBeGreaterThan(0);
@@ -498,6 +516,66 @@ describe('TaskService', () => {
       const task = await createTaskInReview(ts);
       const accepted = ts.acceptTask(task.id, REVIEWER);
       expect(accepted.status).toBe('completed');
+    });
+
+    it('B-distill-uses-distillation-scenario / B-distill-package-install-allowed: accept triggers distillation', async () => {
+      const task = await createTaskInReview(ts);
+      // Unknown toolCallCount → transitional distill on completed
+      ts.acceptTask(task.id, REVIEWER);
+      const agent = agentManager.getAgent(AGENT_A);
+      expect(agent.sendMessage).toHaveBeenCalled();
+      const call = agent.sendMessage.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && String(c[0]).includes('[DISTILLATION'),
+      );
+      expect(call).toBeTruthy();
+      const [prompt, , , opts] = call as [string, unknown, unknown, {
+        scenario?: string;
+        allowedTools?: Set<string>;
+        sourceType?: string;
+      }];
+      expect(opts.scenario).toBe('distillation');
+      expect(opts.sourceType).toBe('system_event');
+      expect(opts.allowedTools).toBeInstanceOf(Set);
+      expect(opts.allowedTools!.has('package_install')).toBe(true);
+      expect(opts.allowedTools!.has('package_list')).toBe(true);
+      expect(opts.allowedTools!.has('memory_save')).toBe(true);
+      expect(opts.allowedTools!.has('request_user_input')).toBe(true);
+      expect(opts.allowedTools!.has('hub_install')).toBe(false);
+      expect(prompt).toContain('Learning Habits');
+      expect(prompt).not.toMatch(/"outcome"|staged_skill/);
+      expect(prompt).not.toMatch(/memory_consolidation/);
+    });
+
+    it('B-hook-skip-trivial: known low toolCallCount skips distillation on first-pass accept', async () => {
+      const task = await createTaskInReview(ts);
+      (task as { toolCallCount?: number }).toolCallCount = 2;
+      ts.acceptTask(task.id, REVIEWER);
+      const agent = agentManager.getAgent(AGENT_A);
+      const distillCalls = agent.sendMessage.mock.calls.filter(
+        (c: unknown[]) => typeof c[0] === 'string' && String(c[0]).includes('[DISTILLATION'),
+      );
+      expect(distillCalls).toHaveLength(0);
+    });
+
+    it('B-distill revision: post-revision accept uses revision prompt', async () => {
+      const taskCommentRepo = {
+        add: vi.fn().mockResolvedValue({ id: 'c1' }),
+        getByTask: vi.fn().mockResolvedValue([]),
+      };
+      ts.setTaskCommentRepo(taskCommentRepo as never);
+      const task = await createTaskInReview(ts);
+      await ts.requestRevision(task.id, 'Fix tests', REVIEWER);
+      await ts.submitForReview(task.id, [{ type: 'file', reference: '/tmp/out2.txt', summary: 'Fixed' }]);
+      ts.acceptTask(task.id, REVIEWER);
+      const agent = agentManager.getAgent(AGENT_A);
+      const call = agent.sendMessage.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && String(c[0]).includes('[DISTILLATION'),
+      );
+      expect(call).toBeTruthy();
+      const [prompt, , , opts] = call as [string, unknown, unknown, { scenario?: string }];
+      expect(opts.scenario).toBe('distillation');
+      expect(prompt).toMatch(/Revision/);
+      expect(prompt).toMatch(/feedback/i);
     });
 
     it('rejects self-review', async () => {

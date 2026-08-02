@@ -56,7 +56,7 @@ Check `task_list` for tasks recently completed by you or your team members. For 
 
 For identified best practices:
 - Save via `memory_save` with `tags: ["insight", "secretary"]` and `[INSIGHT]` format.
-- If it is a multi-step workflow (e.g., "new agent onboarding procedure", "org knowledge audit process"), promote it to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+- If it is a multi-step workflow (e.g., "new agent onboarding procedure", "org knowledge audit process"), promote it to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
 - When 3+ related insights accumulate, update `role/ROLE.md` under your agent home (absolute path in system context; read first via `file_read`, append only, log with `tags: ["insight", "role-evolution"]`). Do not write ROLE.md in the working directory.
 
 ## Self-Evolution Reflection

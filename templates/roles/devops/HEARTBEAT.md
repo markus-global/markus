@@ -19,7 +19,7 @@
   - What operational patterns or runbook steps worked well?
   - Were there deployment or rollback procedures worth documenting?
   - Save insights via `memory_save` with `tags: ["insight", "devops"]` and `[INSIGHT]` format.
-  - Promote repeatable runbooks to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - Promote repeatable runbooks to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
 
 ## Self-Evolution
 

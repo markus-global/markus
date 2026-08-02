@@ -719,12 +719,30 @@ describe('Learning Habits (LEARNING-LOOP §8)', () => {
       expect(result.text).toContain('memory_search');
       expect(result.text).toContain('recall_activity');
       expect(result.text).toContain('memory_save');
+      expect(result.text).toMatch(/Me vs others|other agents/i);
       expect(result.text).toMatch(/builder-artifacts\/skills|impact:\s*"low"|impact.*low/i);
       expect(result.text).not.toContain('.pending/');
     }
   });
 
-  it('B-prompt-learning-habits-absent-dream: memory_consolidation omits Learning Habits', async () => {
+  it('B-distill-habits-injected: distillation includes Learning Habits, no JSON outcome ritual', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_ctx',
+      agentName: 'Ctx Agent',
+      role: MOCK_ROLE,
+      memory,
+      scenario: 'distillation',
+    });
+    expect(result.text).toContain('## Learning Habits');
+    expect(result.text).toMatch(/post-task distillation|distillation mode/i);
+    expect(result.text).toMatch(/package_install/);
+    expect(result.text).toMatch(/request_user_input/);
+    expect(result.text).not.toMatch(/"outcome"|staged_skill/);
+  });
+
+  it('B-prompt-learning-habits-absent-dream / B-dream-no-habits: memory_consolidation omits Learning Habits', async () => {
     const memory = new MemoryStore(tempDir);
     const engine = makeEngine();
     const result = await engine.buildSystemPrompt({

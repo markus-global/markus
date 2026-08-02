@@ -70,6 +70,40 @@ describe('evolve-from-message helpers', () => {
     expect(transcript).toContain('[tool memory_save done]');
     expect(transcript).toContain('>>> FOCUS');
     expect(focusMarked).toBe(true);
+    // Messages emit oldest → newest even if input is newest-first.
+    expect(transcript.indexOf('Please remember this')).toBeLessThan(transcript.indexOf('>>> FOCUS'));
+    // Tool-only segments: final content is appended after tools (execution order).
+    const focusBlock = transcript.split('\n\n').find((b) => b.includes('>>> FOCUS')) ?? '';
+    expect(focusBlock.indexOf('[tool memory_save done]')).toBeLessThan(focusBlock.indexOf('Done'));
+  });
+
+  it('emits interleaved segment order (tool → text → tool → text)', () => {
+    const messages: EvolveSourceMessage[] = [
+      {
+        id: 'm1',
+        role: 'assistant',
+        content: 'IntroFinal',
+        createdAt: '2026-07-26T12:00:00.000Z',
+        metadata: {
+          segments: [
+            { type: 'tool', tool: 'discover_tools', status: 'done', result: 'ok' },
+            { type: 'text', content: 'Intro' },
+            { type: 'tool', tool: 'feishu_send', status: 'done', result: 'sent' },
+            { type: 'text', content: 'Final' },
+          ],
+        },
+      },
+    ];
+    const { transcript } = formatEvolveTranscript(messages);
+    expect(transcript).not.toContain('IntroFinal'); // do not dump concatenated content again
+    const order = [
+      transcript.indexOf('[tool discover_tools done]'),
+      transcript.indexOf('\nIntro\n'),
+      transcript.indexOf('[tool feishu_send done]'),
+      transcript.indexOf('\nFinal'),
+    ];
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
   it('B-evolve-seed-marks-focus-message by sourceText fallback', () => {
@@ -93,6 +127,10 @@ describe('evolve-from-message helpers', () => {
     const { truncated, transcript } = formatEvolveTranscript(messages);
     expect(truncated).toBe(true);
     expect(transcript.split('\n\n').length).toBeLessThanOrEqual(EVOLVE_TRANSCRIPT_MAX_MESSAGES);
+    // Keep the recent window, still ordered oldest → newest.
+    expect(transcript).not.toContain('msg-0');
+    expect(transcript).toContain(`msg-${EVOLVE_TRANSCRIPT_MAX_MESSAGES + 4}`);
+    expect(transcript.indexOf('msg-5')).toBeLessThan(transcript.indexOf(`msg-${EVOLVE_TRANSCRIPT_MAX_MESSAGES + 4}`));
   });
 
   it('B-evolve-seed-includes-parent-session-id and habits instructions', () => {
@@ -112,6 +150,11 @@ describe('evolve-from-message helpers', () => {
     expect(seed).toContain('Learning Habits');
     expect(seed).toContain('package_install');
     expect(seed).toContain('truncated');
+    expect(seed).toContain('memory_search');
+    expect(seed).toContain('store:"knowledge.md"');
+    expect(seed).toContain('never an array');
+    expect(seed).toMatch(/me vs others|other agents/i);
+    expect(seed).toContain('builder-artifacts/skills');
   });
 });
 

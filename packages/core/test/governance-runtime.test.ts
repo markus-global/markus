@@ -29,7 +29,7 @@ describe('governance runtime helpers', () => {
       tasksWithSkillActivation: 0,
       tasksReviewed: 0,
       tasksApprovedWithoutPriorRejection: 0,
-      tasksWithDistillOutcome: 0,
+      tasksDistilled: 0,
     });
     expect(m.skillReuseRate).toBe(0);
   });

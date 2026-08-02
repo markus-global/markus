@@ -2,17 +2,20 @@
  * MemoryStore — the agent's file-system-based memory.
  *
  * Covers two of Tulving's three memory systems:
- * - Semantic Memory: unified MEMORY.md (curated sections + ## _observations buffer)
+ * - Semantic Memory: knowledge.md SSOT (curated sections + ## _observations buffer)
  * - Episodic Memory: conversation sessions (sessions/*.json)
  *
  * Additionally exports Notebook (NOTEBOOK.md) parse/serialize for the cognitive workspace.
  * Procedural Memory (ROLE.md + skills) is managed by RoleLoader and the skill system.
+ * Legacy MEMORY.md is migrated once via ensureKnowledgeStateFiles and is never written.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, statSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import {
   createLogger,
   getTextContent,
+  tokenizeSearchQuery,
+  scoreKeywordHaystack,
   type LLMMessage,
   MEMORY_MD_SECTION_MAX_CHARS,
   MEMORY_MD_TOTAL_MAX_CHARS,
@@ -21,13 +24,18 @@ import {
   SESSION_STORAGE_TOOL_SHRINK_CHARS,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
-import { ensureKnowledgeStateFiles, readState, pruneExpiredState, writeState } from './taxonomy.js';
+import { ensureKnowledgeStateFiles, knowledgePath, readState, pruneExpiredState, writeState } from './taxonomy.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
 
 const log = createLogger('memory-store');
 
-const VALID_TYPES = new Set<string>(['conversation', 'fact', 'task_result', 'note']);
+const VALID_TYPES = new Set<string>(['conversation', 'fact', 'task_result', 'note', 'insight']);
+
+/** Prevent section bodies from introducing sibling ## headings that split the store. */
+export function sanitizeSectionBody(content: string): string {
+  return content.replace(/^## /gm, '### ');
+}
 
 /** Reject objects that are clearly not MemoryEntry-shaped. */
 function isValidEntry(raw: unknown): raw is Record<string, unknown> {
@@ -182,15 +190,18 @@ export class MemoryStore implements IMemoryStore {
     this.dataDir = dataDir;
     this.sessionsDir = join(dataDir, 'sessions');
     this.logsDir = join(dataDir, 'daily-logs');
-    this.longTermFile = join(dataDir, 'MEMORY.md');
     mkdirSync(this.dataDir, { recursive: true });
     mkdirSync(this.sessionsDir, { recursive: true });
     mkdirSync(this.logsDir, { recursive: true });
     ensureKnowledgeStateFiles(dataDir);
-    const knowledgeFile = join(dataDir, 'knowledge.md');
-    if (existsSync(knowledgeFile)) this.longTermFile = knowledgeFile;
+    // SSOT: always knowledge.md after ensure (never write legacy MEMORY.md).
+    this.longTermFile = knowledgePath(dataDir);
     this.loadFromDisk();
     this.loadSessionsFromDisk();
+  }
+
+  getStoreFileName(): string {
+    return basename(this.longTermFile);
   }
 
   /** state.md short snapshot for reflex prompts. */
@@ -234,8 +245,42 @@ export class MemoryStore implements IMemoryStore {
   }
 
   search(query: string): MemoryEntry[] {
-    const lower = query.toLowerCase();
-    return this.entries.filter((e) => e.content.toLowerCase().includes(lower));
+    const tokens = tokenizeSearchQuery(query);
+    if (tokens.length === 0) return [];
+
+    const fullLower = query.trim().toLowerCase();
+    const scored: Array<{ entry: MemoryEntry; score: number }> = [];
+
+    for (const e of this.entries) {
+      const score = scoreKeywordHaystack(
+        `${e.content}\n${formatTags(e.metadata)}`,
+        tokens,
+        fullLower,
+      );
+      if (score > 0) scored.push({ entry: e, score });
+    }
+
+    // Curated knowledge.md sections (tool claims to search these; observations alone are incomplete)
+    const curated = this.getLongTermMemory();
+    for (const section of parseCuratedSections(curated)) {
+      const body = `## ${section.name}\n${section.body}`;
+      const score = scoreKeywordHaystack(body, tokens, fullLower);
+      if (score <= 0) continue;
+      scored.push({
+        entry: {
+          id: `curated_${slugSectionId(section.name)}`,
+          timestamp: '',
+          type: 'fact',
+          content: body.length > 2500 ? `${body.slice(0, 2500)}\n…` : body,
+          metadata: { source: 'curated', section: section.name, store: 'knowledge.md' },
+        },
+        // Slight boost so durable curated knowledge ranks above raw observations at equal hit count
+        score: score + 0.25,
+      });
+    }
+
+    scored.sort((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id));
+    return scored.map((s) => s.entry);
   }
 
   removeEntries(ids: string[]): number {
@@ -382,10 +427,10 @@ export class MemoryStore implements IMemoryStore {
     return logs.join('\n\n');
   }
 
-  // --- Long-term: MEMORY.md ---
+  // --- Long-term: knowledge.md ---
 
   /**
-   * Write/replace a curated MEMORY.md section.
+   * Write/replace a curated knowledge.md section.
    *
    * Returns a structured result so callers (the memory tools) can surface a refusal
    * to the model instead of the write silently no-op'ing (B1). `{ ok: true }` on success;
@@ -393,7 +438,7 @@ export class MemoryStore implements IMemoryStore {
    * compression) or errors.
    */
   addLongTermMemory(key: string, content: string): { ok: boolean; reason?: string } {
-    let truncatedContent = content;
+    let truncatedContent = sanitizeSectionBody(content);
     if (truncatedContent.length > MEMORY_MD_SECTION_MAX_CHARS) {
       log.warn('Section content exceeds limit, truncating', {
         key, original: content.length, limit: MEMORY_MD_SECTION_MAX_CHARS,
@@ -418,7 +463,7 @@ export class MemoryStore implements IMemoryStore {
 
       if (updated.length > MEMORY_MD_TOTAL_MAX_CHARS) {
         // Attempt auto-compression first before refusing the write
-        log.warn('MEMORY.md total size exceeds limit, attempting compression', {
+        log.warn('knowledge.md total size exceeds limit, attempting compression', {
           key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
         });
         const compressed = this.compressLongTermMemory();
@@ -435,25 +480,25 @@ export class MemoryStore implements IMemoryStore {
             updated = existing + `\n${sectionHeader}\n${truncatedContent}\n`;
           }
           if (updated.length > MEMORY_MD_TOTAL_MAX_CHARS) {
-            log.warn('MEMORY.md still exceeds limit even after compression, refusing write', {
+            log.warn('knowledge.md still exceeds limit even after compression, refusing write', {
               key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
             });
-            return { ok: false, reason: `MEMORY.md is full (> ${MEMORY_MD_TOTAL_MAX_CHARS} chars) even after compression; write refused. Prune or shorten sections, or use memory_save (## _observations) instead.` };
+            return { ok: false, reason: `knowledge.md is full (> ${MEMORY_MD_TOTAL_MAX_CHARS} chars) even after compression; write refused. Prune or shorten sections, or use memory_save (## _observations) instead.` };
           }
         } else {
-          log.warn('MEMORY.md still exceeds limit after compression, refusing write', {
+          log.warn('knowledge.md still exceeds limit after compression, refusing write', {
             key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
           });
-          return { ok: false, reason: `MEMORY.md is full (> ${MEMORY_MD_TOTAL_MAX_CHARS} chars) and could not be compressed further; write refused. Prune or shorten sections, or use memory_save (## _observations) instead.` };
+          return { ok: false, reason: `knowledge.md is full (> ${MEMORY_MD_TOTAL_MAX_CHARS} chars) and could not be compressed further; write refused. Prune or shorten sections, or use memory_save (## _observations) instead.` };
         }
       }
 
       writeFileSync(this.longTermFile, updated);
-      log.debug('Long-term memory updated', { key, sectionChars: truncatedContent.length, totalChars: updated.length });
+      log.debug('Long-term memory updated', { key, sectionChars: truncatedContent.length, totalChars: updated.length, store: this.getStoreFileName() });
       return { ok: true };
     } catch (err) {
       log.warn('Failed to write long-term memory', { key, error: String(err) });
-      return { ok: false, reason: `Failed to write MEMORY.md: ${String(err)}` };
+      return { ok: false, reason: `Failed to write knowledge.md: ${String(err)}` };
     }
   }
 
@@ -605,7 +650,7 @@ export class MemoryStore implements IMemoryStore {
   private static readonly MAX_MEMORY_ENTRIES = 500;
 
   private loadFromDisk(): void {
-    // Migration: if memories.json exists, convert to ## _observations in MEMORY.md
+    // Migration: if memories.json exists, convert to ## _observations in knowledge.md
     const memFile = join(this.dataDir, 'memories.json');
     if (existsSync(memFile)) {
       try {
@@ -615,11 +660,11 @@ export class MemoryStore implements IMemoryStore {
           entries = entries.slice(-MemoryStore.MAX_MEMORY_ENTRIES);
         }
         this.entries = entries;
-        // Migrate: write observations into MEMORY.md and remove memories.json
+        // Migrate: write observations into knowledge.md and remove memories.json
         this.saveToDisk();
         try {
           unlinkSync(memFile);
-          log.info(`Migrated ${entries.length} entries from memories.json to MEMORY.md ## _observations`);
+          log.info(`Migrated ${entries.length} entries from memories.json to knowledge.md ## _observations`);
         } catch { /* best effort deletion */ }
         return;
       } catch {
@@ -627,14 +672,23 @@ export class MemoryStore implements IMemoryStore {
       }
     }
 
-    // Load observations from ## _observations section of MEMORY.md
+    // Load observations from ## _observations section of knowledge.md
     this.entries = this.parseObservationsFromMemoryMd();
+    const before = this.entries.length;
+    this.entries = this.entries.filter(e => e.content.trim().length > 0);
+    if (this.entries.length < before) {
+      log.info('Pruned empty observation entries on load', {
+        removed: before - this.entries.length,
+        store: this.getStoreFileName(),
+      });
+      this.saveToDisk();
+    }
     if (this.entries.length > 0) {
-      log.info(`Loaded ${this.entries.length} observation entries from MEMORY.md`);
+      log.info(`Loaded ${this.entries.length} observation entries from ${this.getStoreFileName()}`);
     }
   }
 
-  /** Parse the ## _observations section of MEMORY.md into MemoryEntry[] */
+  /** Parse the ## _observations section of knowledge.md into MemoryEntry[] */
   private parseObservationsFromMemoryMd(): MemoryEntry[] {
     if (!existsSync(this.longTermFile)) return [];
     try {
@@ -677,7 +731,7 @@ export class MemoryStore implements IMemoryStore {
       }
       return entries;
     } catch (err) {
-      log.warn('Failed to parse observations from MEMORY.md', { error: String(err) });
+      log.warn('Failed to parse observations from knowledge.md', { error: String(err) });
       return [];
     }
   }
@@ -748,14 +802,17 @@ export class MemoryStore implements IMemoryStore {
 
   private saveToDisk(): void {
     try {
-      // Serialize observations as ## _observations subsections within MEMORY.md
+      // Serialize observations as ## _observations subsections within knowledge.md
       const obsLines: string[] = [
         '## _observations',
         '<!-- This section is the observation buffer. Searched on-demand, NOT always injected into prompt. -->',
         '<!-- Dream cycle consolidates recurring patterns into curated sections above. -->',
         '',
       ];
-      const entries = this.entries.slice(-MemoryStore.MAX_MEMORY_ENTRIES);
+      const entries = this.entries
+        .filter(e => e.content.trim().length > 0)
+        .slice(-MemoryStore.MAX_MEMORY_ENTRIES);
+      this.entries = entries;
       for (const entry of entries) {
         const tags = Array.isArray(entry.metadata?.tags)
           ? (entry.metadata!.tags as string[]).join(', ')
@@ -767,7 +824,7 @@ export class MemoryStore implements IMemoryStore {
       }
       const obsSection = obsLines.join('\n');
 
-      // Read existing MEMORY.md, replace or append ## _observations
+      // Read existing knowledge.md, replace or append ## _observations
       let existing = '';
       if (existsSync(this.longTermFile)) {
         existing = readFileSync(this.longTermFile, 'utf-8');
@@ -784,7 +841,7 @@ export class MemoryStore implements IMemoryStore {
       }
       writeFileSync(this.longTermFile, updated);
     } catch (err) {
-      log.warn('Failed to save observations to MEMORY.md', { error: String(err) });
+      log.warn('Failed to save observations to knowledge.md', { error: String(err) });
     }
   }
 
@@ -805,7 +862,7 @@ export class MemoryStore implements IMemoryStore {
     }, 1000);
   }
 
-  /** Compress MEMORY.md — truncate oversized sections to prevent context bloat */
+  /** Compress knowledge.md — truncate oversized sections to prevent context bloat */
   compressLongTermMemory(): { charsBefore: number; charsAfter: number; sectionsBefore: number; sectionsAfter: number; truncatedChunks: number } {
     if (!existsSync(this.longTermFile)) {
       return { charsBefore: 0, charsAfter: 0, sectionsBefore: 0, sectionsAfter: 0, truncatedChunks: 0 };
@@ -872,4 +929,33 @@ export class MemoryStore implements IMemoryStore {
       truncatedChunks,
     };
   }
+}
+
+function formatTags(metadata?: Record<string, unknown>): string {
+  const tags = metadata?.tags;
+  return Array.isArray(tags) ? tags.map(String).join(' ') : '';
+}
+
+function parseCuratedSections(markdown: string): Array<{ name: string; body: string }> {
+  if (!markdown.trim()) return [];
+  const sections: Array<{ name: string; body: string }> = [];
+  const re = /^## (.+)$/gm;
+  let match: RegExpExecArray | null;
+  const headers: Array<{ name: string; index: number; headerLen: number }> = [];
+  while ((match = re.exec(markdown)) !== null) {
+    headers.push({ name: match[1]!.trim(), index: match.index, headerLen: match[0].length });
+  }
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i]!;
+    const start = h.index + h.headerLen;
+    const end = i + 1 < headers.length ? headers[i + 1]!.index : markdown.length;
+    const body = markdown.slice(start, end).trim();
+    if (h.name === '_observations') continue;
+    sections.push({ name: h.name, body });
+  }
+  return sections;
+}
+
+function slugSectionId(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gi, '_').replace(/^_|_$/g, '').slice(0, 80) || 'section';
 }

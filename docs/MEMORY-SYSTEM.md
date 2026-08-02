@@ -15,7 +15,7 @@ working-memory models.
    `knowledge.md` holds permanent curated knowledge; `state.md` holds time-bounded snapshots
    (default TTL `STATE_TTL_DAYS = 7`). Observations buffer is never fully prompt-injected.
    Legacy `MEMORY.md` MUST migrate on first load.
-2. **Tulving mapping + notebook**: Persistent layers align with Tulving-style cognition — **Procedural** (ROLE.md), **Semantic** (MEMORY.md), **Episodic** (sessions + activities). The **Notebook** replaces volatile in-memory working memory with a persistent scratchpad always injected into the system prompt.
+2. **Tulving mapping + notebook**: Persistent layers align with Tulving-style cognition — **Procedural** (ROLE.md), **Semantic** (`knowledge.md` + `state.md`), **Episodic** (sessions + activities). The **Notebook** replaces volatile in-memory working memory with a persistent scratchpad always injected into the system prompt.
 3. **SQLite for history**: Activity history lives in SQLite — indexed, searchable, and queryable via tools.
 4. **Context is currency**: Every byte in the LLM prompt competes for limited context window. Retrieval must maximize signal-to-noise.
 5. **Agent autonomy**: Agents decide what to remember (`memory_save`), what to distill (`memory_update`), and how to evolve (ROLE.md edits).
@@ -84,7 +84,7 @@ Persistent markdown replacing the former volatile in-memory working memory.
 | Format | `## key` headings with metadata comments + body text |
 | Entry fields | `key`, `text`, `managed` (`agent` \| `system` \| `cpp`), `updatedAt` |
 | Prompt injection | Always loaded as `## Notebook` |
-| Limits | 15 agent-managed entries, 6000 chars each; oldest evicted when full |
+| Limits | **4 agent-managed** entries (`NOTEBOOK_MAX_AGENT_ENTRIES`), 6000 chars each; oldest *agent* entry evicted when inserting a new key. `system` / `cpp` entries do **not** count toward the 4. |
 
 **Managed tags**:
 
@@ -92,12 +92,13 @@ Persistent markdown replacing the former volatile in-memory working memory.
 - `system` — triage → `"triage-decision"`, deliberation → `"deliberation"`, etc.
 - `cpp` — Cognitive Preparation Pipeline writes situational context
 
-**Lifecycle**: Loaded at agent startup → updated in-process → debounced persist (2s) to disk. Survives restarts.
+**Lifecycle**: Loaded at agent startup → updated in-process → debounced persist (2s) to `NOTEBOOK.md`. Survives restarts.
+**Cleanup**: `clear_notebook({ key })` removes one entry; `clear_notebook` without key clears the whole notebook. Prompt guidance: clear when a task completes or context goes stale. No TTL auto-prune — eviction is capacity-based (4 agent slots).
 
 **Relationship to other layers**:
 
-- More volatile than `MEMORY.md` curated sections but always in prompt
-- Raw observations → `memory_save` → `## _observations`
+- More volatile than `knowledge.md` curated sections but always in prompt
+- Raw observations → `memory_save` → `knowledge.md` `## _observations`
 - Validated knowledge → `memory_update` → curated sections above `_observations`
 
 ### Code Location
@@ -117,12 +118,15 @@ Persistent markdown replacing the former volatile in-memory working memory.
 
 ---
 
-## 3. Semantic Memory (MEMORY.md)
+## 3. Semantic Memory (`knowledge.md` SSOT)
 
-Unified file for both curated knowledge and raw observations.
+**Canonical on-disk store** for curated knowledge + the observation buffer is
+`knowledge.md` under the agent data dir. Legacy `MEMORY.md` is migrated once on first
+load (`ensureKnowledgeStateFiles`) and MUST NOT be written afterward. Tool results
+SHOULD report `store: "knowledge.md"` so agents do not invent a wrong path.
 
 ```
-MEMORY.md
+knowledge.md
 ├── ## conventions          ← agent-organized curated sections
 ├── ## procedures
 ├── ## preferences
@@ -130,15 +134,28 @@ MEMORY.md
 └── ## _observations        ← raw observation buffer (NOT in prompt)
     ├── ### obs_123...
     └── ### obs_456...
+
+state.md                    ← TTL snapshots (default STATE_TTL_DAYS = 7)
+NOTEBOOK.md                 ← situational workspace (always in prompt)
+MEMORY.md                   ← DEPRECATED legacy; migrate → knowledge/state once
 ```
+
+### Lifecycle (Inject / Update / Clean)
+
+| Phase | What | When |
+|-------|------|------|
+| **Inject** | Curated sections → `## Your Knowledge` (capped; omitted for reflex). Observations **not** injected. Notebook always. `state.md` short lines for reflex only. | Every non-reflex turn packing |
+| **Update** | `memory_save` → `_observations` (one entry; `content` required). `memory_update` / `memory_update_longterm` → named curated section (`replace` / `patch`; `append` aliases `patch`). | Immediate on tool call |
+| **Clean** | Dream (`memory_consolidation` only): dedupe / merge / promote (3+ theme) when ≥50 observations (≤1×/day; ≤4×/day if ≥500). Empty observations rejected on write and pruned on load. Section ≤3000 / file ≤15000 chars (compress or refuse). `state.md` TTL prune in dream. Post-task encode is **Distillation** (`scenario: distillation`), not Dream — see [LEARNING-LOOP.md](./LEARNING-LOOP.md) §0. | `consolidateMemory()` + write-time guards |
 
 ### Curated Sections
 
 | Attribute | Value |
 |-----------|-------|
 | Write triggers | `memory_update` tool, Dream Cycle promotion |
-| System prompt | Always loaded as `## Your Knowledge` (excludes `## _observations`) |
+| System prompt | Loaded as `## Your Knowledge` when knowledge token cap > 0 (excludes `## _observations`) |
 | Limits | 3000 chars/section (`MEMORY_MD_SECTION_MAX_CHARS`), 15000 chars total (`MEMORY_MD_TOTAL_MAX_CHARS`) |
+| Body rule | Section bodies MUST NOT introduce sibling `## ` headings (store sanitizes `## ` → `### `) |
 
 The agent organizes sections freely — common patterns: `conventions`, `procedures`, `preferences`, `domain-knowledge`.
 
@@ -147,19 +164,26 @@ The agent organizes sections freely — common patterns: `conventions`, `procedu
 | Attribute | Value |
 |-----------|-------|
 | Format | `### {id}` subsections with HTML comment metadata + content |
-| Entry types | `fact`, `note`, `task_result`, `conversation` |
-| Write triggers | `memory_save` tool, task reflection |
+| Entry types | `fact`, `note`, `insight`, `task_result`, `conversation` |
+| Write triggers | `memory_save` tool (single object; not an array), task reflection |
 | Prompt injection | **Not** injected — searched on demand via `memory_search` |
 | Search | Substring match + optional vector overlay (`SemanticMemorySearch`) |
-| Max entries | 500 (oldest trimmed on save) |
+| Max entries | 500 (oldest trimmed on save); empty `content` refused |
 
-**Entry lifecycle**: `memory_save` → buffered in `_observations` → searched via `memory_search` → consolidated by Dream Cycle (merge/prune/promote) → promoted to curated sections.
+**Entry lifecycle**: `memory_save` → buffered in `_observations` → searched via `memory_search` → consolidated by Dream Cycle (merge/prune/promote) → promoted to curated sections in `knowledge.md`.
 
 **Tags** (in metadata comments): `insight`, `role-evolution`, `domain:<topic>`
 
-### Migration from memories.json
+### Migration
 
-On first load, if `memories.json` exists, entries migrate into `## _observations` within `MEMORY.md` and the JSON file is deleted. No manual migration required.
+1. On first load, if only legacy `MEMORY.md` exists → split into `knowledge.md` + `state.md`.
+2. If `memories.json` exists → migrate entries into `knowledge.md` `## _observations`, delete JSON.
+3. After migration, all reads/writes use `knowledge.md`; stale `MEMORY.md` is ignored.
+
+### Convergence test IDs
+
+`A-memory-save-rejects-array`, `A-memory-save-no-empty-write`, `A-memory-update-append-alias`,
+`A-section-no-h2-bleed`, `A-tool-result-store-path`, `A-legacy-memory-not-written`.
 
 ---
 
@@ -171,9 +195,9 @@ Five primary tools (down from seven). Legacy aliases (`memory_list`, `memory_del
 |------|---------|
 | `update_notebook` | Upsert a keyed entry in NOTEBOOK.md |
 | `clear_notebook` | Remove one entry or all agent-managed entries |
-| `memory_save` | Append observation to `## _observations` |
-| `memory_update` | Update curated section (`replace` / `patch`) or delete observations by ID (`mode: delete`) |
-| `memory_search` | Search observations and curated knowledge; empty query lists recent observations |
+| `memory_save` | Append one observation to `knowledge.md` `## _observations` (`content` required; rejects arrays / empty) |
+| `memory_update` | Update curated `knowledge.md` section (`replace` / `patch`; `append`→`patch`) or delete observations (`mode: delete`) |
+| `memory_search` | Keyword search over observations **and** curated `knowledge.md` sections (token OR-match, ranked by hits); empty query lists recent observations. Falls back from semantic→keyword when embeddings miss. |
 
 ---
 
@@ -280,7 +304,9 @@ ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `fi
 ```
 ~/.markus/agents/{agent-id}/
 ├── NOTEBOOK.md            # Notebook: persistent cognitive workspace
-├── MEMORY.md              # Semantic: curated knowledge + ## _observations
+├── knowledge.md           # Semantic SSOT: curated knowledge + ## _observations
+├── state.md               # TTL snapshots (Dream librarian)
+├── MEMORY.md              # DEPRECATED legacy (migrate once; do not write)
 ├── metrics.json           # Health counters (not memory)
 ├── role/
 │   ├── ROLE.md            # Procedural: identity
@@ -293,7 +319,8 @@ ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `fi
 └── tool-outputs/          # Tool result offloads (not memory)
 ```
 
-> **Note**: `memories.json` is deprecated. Existing files auto-migrate to `MEMORY.md ## _observations` on first load.
+> **Note**: `memories.json` and `MEMORY.md` are deprecated. They auto-migrate into
+> `knowledge.md` / `state.md` on first load; subsequent tool writes target `knowledge.md` only.
 
 ### SQLite (`~/.markus/data.db`)
 
@@ -310,7 +337,7 @@ ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `fi
 
 ## 8. Consolidation (Dream Cycle)
 
-Periodic process that maintains semantic memory health. Runs via `consolidateMemory()`. All consolidation happens within `MEMORY.md`.
+Periodic process that maintains semantic memory health. Runs via `consolidateMemory()`. All consolidation happens within `knowledge.md` (plus `state.md` TTL prune).
 
 ### Trigger
 
@@ -325,11 +352,12 @@ Periodic process that maintains semantic memory health. Runs via `consolidateMem
 4. Apply merges: replace groups with merged entry in `_observations`
 5. Apply promotions: append synthesized content to curated sections above `_observations`
 
-### MEMORY.md Hygiene (`pruneMemoryMd`)
+### knowledge.md Hygiene (`pruneMemoryMd`)
 
 - Remove `## daily-report-*` sections (belong in daily-logs/)
 - Enforce section char limits (3000/section, 15000 total)
 - Strip leaked LLM artifacts (`<think>` blocks)
+- Drop empty observation entries left by legacy buggy writes
 
 ---
 
@@ -361,10 +389,10 @@ authoritative behavior spec.
 - **Status**: implemented (`shouldMemoryFlushPreflight` + `maybeMemoryFlushPreflight`, wired
   into all three main turn paths; `memoryFlush` runs in an independent `sys_` session).
 
-## 8.8 MEMORY.md write-refusal visibility (spec)
+## 8.8 knowledge.md write-refusal visibility (spec)
 
-`MEMORY.md` enforces per-section (`MEMORY_MD_SECTION_MAX_CHARS = 3000`) and total
-(`MEMORY_MD_TOTAL_MAX_CHARS = 15000`) limits. When a `memory_save` / `memory_update` would
+`knowledge.md` enforces per-section (`MEMORY_MD_SECTION_MAX_CHARS = 3000`) and total
+(`MEMORY_MD_TOTAL_MAX_CHARS = 15000`) limits. When a curated `memory_update` would
 exceed the cap after compression, the write is refused.
 
 - **Behavior**: a refused write returns a structured failure (`{ ok:false, reason }`,
@@ -381,7 +409,7 @@ exceed the cap after compression, the write is refused.
 
 ## 9. Key Rules
 
-1. **MEMORY.md curated sections are sacred** — only distilled knowledge. Never raw LLM output or debug info.
+1. **`knowledge.md` curated sections are sacred** — only distilled knowledge. Never raw LLM output or debug info. Do not teach agents to write `MEMORY.md`.
 2. **`## _observations` is the observation buffer** — not injected into prompts; vector index is a secondary search overlay.
 3. **NOTEBOOK.md is always in prompt** — keep entries concise; use `memory_save` for durable observations.
 4. **Activity history is episodic memory** — retrieved via `recall_activity` to inform future decisions.

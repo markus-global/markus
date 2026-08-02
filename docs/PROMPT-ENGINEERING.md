@@ -83,7 +83,7 @@ The system prompt is assembled by `ContextEngine.buildSystemPrompt()` and organi
 ║  11. User Profiles (users/*.md) + Team Context           ║
 ║  12. Trust Level                                         ║
 ║  13. Environment Profile                                 ║
-║  14. Your Knowledge (MEMORY.md curated — no _observations)║
+║  14. Your Knowledge (knowledge.md curated — no _observations)║
 ║  15. Scenario Section (mode-specific instructions)       ║
 ╠══════════════════════════════════════════════════════════╣
 ║  TIER 3 — DYNAMIC (no cache breakpoint)                  ║
@@ -112,7 +112,7 @@ The system prompt uses a **3-tier cache architecture** with explicit cache break
 
 1. **Tier 1 (Stable)**: Role, policies, tool usage rules, communication rules. Scenario-free — these rarely change for the same agent and stay cached across ALL mode switches (chat ↔ heartbeat ↔ a2a ↔ deliberation). A cache breakpoint after this tier allows the provider to cache this prefix across all calls.
 
-2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, `## Your Knowledge` (curated MEMORY.md), then scenario instructions at the end. These change when the agent's configuration, team, or memory changes, but remain stable within a session. Scenario is placed last so the identity/org/memory prefix remains stable across mode switches (benefits OpenAI implicit prefix caching). A cache breakpoint here enables caching the combined Tier 1+2 prefix.
+2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, `## Your Knowledge` (curated `knowledge.md`), then scenario instructions at the end. These change when the agent's configuration, team, or memory changes, but remain stable within a session. Scenario is placed last so the identity/org/memory prefix remains stable across mode switches (benefits OpenAI implicit prefix caching). A cache breakpoint here enables caching the combined Tier 1+2 prefix.
 
 3. **Tier 3 (Dynamic)**: Project context, announcements, feedback, available skills (query-filtered), task board, `## Notebook`, team status, channel history, mailbox state, timestamps. These change per call and are kept as small as possible. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn and improve implicit prefix caching on OpenAI-compatible providers. No cache breakpoint — this section is always re-processed.
 
@@ -160,7 +160,7 @@ Source: `role.systemPrompt` parsed from the agent's `ROLE.md`.
 Contains the core behavioral instructions, personality, and domain expertise.
 
 #### Your Knowledge (§14)
-Source: `memory.getLongTermMemory()` — curated sections from `MEMORY.md`.  
+Source: `memory.getLongTermMemory()` — curated sections from `knowledge.md` (legacy `MEMORY.md` is migrated once and not written afterward).
 The `## _observations` buffer is **excluded** from the prompt; observations are surfaced via `memory_search`, CPP retrieval, or mechanical relevance matching (written to Notebook as `relevant-context`). This section represents the agent's consolidated long-term knowledge — procedures, conventions, domain facts the agent maintains via `memory_update`.
 
 #### Dynamic Context — Notebook (§21)
@@ -286,6 +286,7 @@ Placed at the **end of Tier 2** so the identity/org/memory prefix remains stable
 | `task_execution` | Isolated session. Decompose → execute → `task_submit_review`. | Visible in **task execution logs** (Work page) | `notify_user` for critical updates; `agent_send_message` for agents |
 | `heartbeat` | Brief check-in: review tasks, retry failures, active goals; at most one-line `memory_save` (no long evolution essays). Inline prompt includes `## Active Goals` when standing goals exist. | **Not visible** to anyone | `notify_user` (only way to reach humans); `agent_send_message` for agents |
 | `chat` (evolution child) | User-initiated Remember session ([LEARNING-LOOP.md](./LEARNING-LOOP.md) §9): seeded with parent DM transcript + `parentSessionId`; agent follows Learning Habits and may page history via `recall_context(scope=chat_session)`. | Visible to the human in that personal session | Same as chat; high-impact skill/ROLE changes use `request_user_input` |
+| `distillation` | Post-task Learning Loop ([LEARNING-LOOP.md](./LEARNING-LOOP.md) §2): on **completed** only; Habits encode (memory/skill); `package_install` with §8.3 impact/HITL. No JSON outcome ritual. | **Not visible**; system session | Memory / file encode + skill create/install (approval for high impact) |
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
 | `group_chat` | Team group chat channel. Silence by default, @mention routing, processing checklist, reply-in-group rules. | Visible to **all team members** | `agent_send_group_message` for replies; `notify_user` for private escalation |
 | `comment_response` | Context-first protocol. Batch awareness (handle bundled comments as one). Use `reply_to_comment_id` for structural quoting. Convergence check before replying. | **Not directly visible** | `task_comment` / `requirement_comment` for thread (with `reply_to_comment_id`); `notify_user` if urgent |
@@ -673,8 +674,8 @@ Five primary memory tools (down from seven); legacy aliases preserved:
 |------|---------|
 | `update_notebook` | Upsert a keyed entry in `NOTEBOOK.md` (situational workspace) |
 | `clear_notebook` | Remove one entry or all agent-managed entries |
-| `memory_save` | Append to `## _observations` in MEMORY.md |
-| `memory_update` | Edit curated MEMORY.md sections (always in `## Your Knowledge`) |
+| `memory_save` | Append one observation to `## _observations` in `knowledge.md` |
+| `memory_update` | Edit curated `knowledge.md` sections (always in `## Your Knowledge`) |
 | `memory_search` | Search observations and curated knowledge |
 
 **Legacy aliases** (same handlers): `update_working_memory`, `clear_working_memory`, `memory_list`, `memory_delete`, `memory_update_longterm`, `memory_search_longterm`.
@@ -748,7 +749,7 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 | Document | Relationship |
 |----------|-------------|
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Notebook + MEMORY.md layers; `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
+| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Notebook + `knowledge.md` / `state.md` layers; `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
 | [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | CPP writes to Notebook via `notebookWriter`; cognitive depth levels (§4.2 step 0) |
 | `packages/core/src/agent.ts` | Implementation of all 7 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation |

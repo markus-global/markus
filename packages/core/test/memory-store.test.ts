@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { MemoryStore } from '../src/memory/store.js';
+import { MemoryStore, sanitizeSectionBody } from '../src/memory/store.js';
 import type { MemoryEntry, ConversationSession } from '../src/memory/types.js';
 
 function makeTempDir(): string {
@@ -32,7 +32,7 @@ describe('MemoryStore — addLongTermMemory result (B1)', () => {
     expect(res).toEqual({ ok: true });
   });
 
-  it('returns { ok: false, reason } when MEMORY.md is full (refused write)', () => {
+  it('returns { ok: false, reason } when knowledge.md is full (refused write)', () => {
     // Each section is capped at 3000 chars; total cap is 15000. Fill past the total
     // so a later write is refused (compression cannot free capped sections).
     const big = 'x'.repeat(3000);
@@ -97,6 +97,43 @@ describe('MemoryStore — Semantic: observation buffer', () => {
     expect(store.search('typescript')).toHaveLength(1);
     expect(store.search('is')).toHaveLength(2);
     expect(store.search('rust')).toHaveLength(0);
+  });
+
+  it('search matches keywords independently (not whole-phrase-only)', () => {
+    store.addEntry({
+      id: 'e1',
+      timestamp: '2024-01-01',
+      type: 'insight',
+      content: 'Use BIP-39 checksums when validating wallet seed phrases. Weak entropy fails entropy_check.',
+    });
+    store.addEntry({
+      id: 'e2',
+      timestamp: '2024-01-01',
+      type: 'note',
+      content: 'Unrelated cooking recipe for pasta',
+    });
+
+    const hits = store.search('seed entropy detection entropy_check weak seed detection BIP-39');
+    expect(hits.some((h) => h.id === 'e1')).toBe(true);
+    expect(hits.some((h) => h.id === 'e2')).toBe(false);
+    expect(hits[0]?.id).toBe('e1');
+  });
+
+  it('search includes curated knowledge.md sections', () => {
+    store.addLongTermMemory(
+      'Crypto Security Tool Building',
+      'Key Lessons:\n- Detect weak seed entropy before BIP-39 mnemonic generation.\n- Run entropy_check on candidate seeds.',
+    );
+    store.addEntry({
+      id: 'obs1',
+      timestamp: '2024-01-01',
+      type: 'note',
+      content: 'unrelated observation about standup notes',
+    });
+
+    const hits = store.search('BIP-39 entropy_check weak seed');
+    expect(hits.some((h) => h.id.startsWith('curated_'))).toBe(true);
+    expect(hits.some((h) => String(h.metadata?.section ?? '').includes('Crypto'))).toBe(true);
   });
 
   it('removeEntries removes by ID and persists', () => {
@@ -177,7 +214,7 @@ describe('MemoryStore — Semantic: observation buffer', () => {
 // Semantic Memory: Curated Knowledge (MEMORY.md)
 // =============================================================================
 
-describe('MemoryStore — Semantic: MEMORY.md', () => {
+describe('MemoryStore — Semantic: knowledge.md', () => {
   let tmp: string;
   let store: MemoryStore;
 
@@ -224,7 +261,7 @@ describe('MemoryStore — Semantic: MEMORY.md', () => {
     expect(section.length).toBeLessThanOrEqual(3000);
   });
 
-  it('refuses write when total MEMORY.md exceeds limit', () => {
+  it('refuses write when total knowledge.md exceeds limit', () => {
     for (let i = 0; i < 6; i++) {
       store.addLongTermMemory(`section-${i}`, 'a'.repeat(2500));
     }
@@ -234,19 +271,58 @@ describe('MemoryStore — Semantic: MEMORY.md', () => {
     expect(after).toBe(before);
   });
 
-  it('persists MEMORY.md to disk', () => {
+  it('persists knowledge.md to disk', () => {
     store.addLongTermMemory('test', 'persisted');
+    expect(store.getStoreFileName()).toBe('knowledge.md');
+    expect(fs.existsSync(path.join(tmp, 'knowledge.md'))).toBe(true);
     const reloaded = new MemoryStore(tmp);
     expect(reloaded.getLongTermSection('test')).toBe('persisted');
   });
 
-  it('compressLongTermMemory returns zeros for empty memory', () => {
+  it('A-section-no-h2-bleed sanitizes ## in section bodies', () => {
+    expect(sanitizeSectionBody('## Key Lessons\nbody')).toBe('### Key Lessons\nbody');
+    store.addLongTermMemory('Crypto Security Tool Building', '## Key Lessons\nAlways test.');
+    const curated = store.getLongTermMemory();
+    expect(curated).toContain('## Crypto Security Tool Building');
+    expect(curated).toContain('### Key Lessons');
+    expect(curated.match(/^## Key Lessons/m)).toBeNull();
+  });
+
+  it('A-legacy-memory-not-written: updates knowledge.md only', () => {
+    const legacyPath = path.join(tmp, 'MEMORY.md');
+    fs.writeFileSync(legacyPath, '# legacy\n## Old\nstale\n', 'utf8');
+    const before = fs.readFileSync(legacyPath, 'utf8');
+    store.addLongTermMemory('fresh', 'new knowledge');
+    store.addEntry({ id: 'obs_1', timestamp: new Date().toISOString(), type: 'insight', content: 'an insight' });
+    expect(fs.readFileSync(legacyPath, 'utf8')).toBe(before);
+    expect(fs.readFileSync(path.join(tmp, 'knowledge.md'), 'utf8')).toContain('new knowledge');
+    expect(fs.readFileSync(path.join(tmp, 'knowledge.md'), 'utf8')).toContain('an insight');
+  });
+
+  it('prunes empty observations on load', () => {
+    const knowledgePath = path.join(tmp, 'knowledge.md');
+    fs.writeFileSync(knowledgePath, [
+      '# Knowledge',
+      '',
+      '## _observations',
+      '### obs_empty',
+      '<!-- type: fact -->',
+      '',
+      '',
+      '### obs_ok',
+      '<!-- type: insight -->',
+      'real content',
+      '',
+    ].join('\n'), 'utf8');
+    const reloaded = new MemoryStore(tmp);
+    expect(reloaded.getEntries().map(e => e.id)).toEqual(['obs_ok']);
+    expect(reloaded.getEntries()[0]!.type).toBe('insight');
+  });
+
+  it('compressLongTermMemory handles bootstrap knowledge.md', () => {
     const result = store.compressLongTermMemory();
-    expect(result.charsBefore).toBe(0);
-    expect(result.charsAfter).toBe(0);
-    expect(result.sectionsBefore).toBe(0);
-    expect(result.sectionsAfter).toBe(0);
     expect(result.truncatedChunks).toBe(0);
+    expect(result.charsAfter).toBeLessThanOrEqual(result.charsBefore);
   });
 
   it('compressLongTermMemory is no-op when within per-section and total limits', () => {

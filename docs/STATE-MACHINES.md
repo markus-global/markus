@@ -243,8 +243,9 @@ Test IDs: `A-deep-sleep-skip`, `A-deep-sleep-wake`.
 
 ### Spec: Post-task distillation
 
-MUST: On task `completed`/`failed` (and gated predicates), enqueue Learning Loop distillation
+MUST: On task `completed` (and gated predicates), enqueue Learning Loop distillation
 ([LEARNING-LOOP.md](./LEARNING-LOOP.md)) without blocking the status transition.
+MUST NOT: Distill on `failed` — wait for completion or human Remember.
 
 ---
 

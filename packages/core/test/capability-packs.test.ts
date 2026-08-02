@@ -2,6 +2,7 @@ import {
   scenarioToPack,
   packToolDefBudget,
   getReflexAllowlist,
+  getDistillationAllowlist,
   CONVERSE_FORBIDDEN_DEFAULT,
   estimateToolDefTokens,
   evictToolsToBudget,
@@ -46,6 +47,19 @@ describe('capability packs (AGENT-RUNTIME §2)', () => {
     expect(scenarioToPack('review')).toBe('govern');
     expect(packToolDefBudget('reflex')).toBe(TOOL_DEF_BUDGET_REFLEX);
     expect(packToolDefBudget('converse')).toBe(TOOL_DEF_BUDGET_CONVERSE);
+  });
+
+  it('B-distill-uses-distillation-scenario / B-distill-package-install-allowed: distillation pack + install tools', () => {
+    expect(scenarioToPack('distillation')).toBe('reflex');
+    const allow = getDistillationAllowlist(false);
+    expect(allow.has('memory_save')).toBe(true);
+    expect(allow.has('memory_update')).toBe(true);
+    expect(allow.has('file_write')).toBe(true);
+    expect(allow.has('package_install')).toBe(true);
+    expect(allow.has('package_list')).toBe(true);
+    expect(allow.has('request_user_input')).toBe(true);
+    expect(allow.has('hub_install')).toBe(false);
+    expect(getReflexAllowlist(false).has('package_install')).toBe(false);
   });
 });
 

@@ -369,8 +369,8 @@ describe('memory consolidation and dream cycle', () => {
     expect(router.chat).toHaveBeenCalled();
   });
 
-  it('consolidateMemory runs dream cycle and prunes MEMORY.md', async () => {
-    writeFileSync(join(tempDir, 'MEMORY.md'), [
+  it('consolidateMemory runs dream cycle and prunes knowledge.md', async () => {
+    writeFileSync(join(tempDir, 'knowledge.md'), [
       '## daily-report-2024-06-01',
       'Old daily report content',
       '## procedures',
@@ -407,9 +407,9 @@ describe('memory consolidation and dream cycle', () => {
     await (agent as unknown as PrivateAgent).consolidateMemory();
     await agent.stop();
 
-    const memoryMd = readFileSync(join(tempDir, 'MEMORY.md'), 'utf-8');
-    expect(memoryMd).not.toContain('daily-report-2024');
-    expect(memoryMd).not.toContain('<think>');
+    const knowledgeMd = readFileSync(join(tempDir, 'knowledge.md'), 'utf-8');
+    expect(knowledgeMd).not.toContain('daily-report-2024');
+    expect(knowledgeMd).not.toContain('<think>');
   });
 
   it('memoryFlush prompts agent when session has substantive content', async () => {

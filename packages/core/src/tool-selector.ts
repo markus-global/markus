@@ -476,7 +476,7 @@ export class ToolSelector {
             items: {
               type: 'object',
               properties: {
-                type: { type: 'string', enum: ['working', 'longterm'], description: 'working = volatile per-session memory, longterm = persisted to MEMORY.md' },
+                type: { type: 'string', enum: ['working', 'longterm'], description: 'working = volatile per-session memory, longterm = persisted to knowledge.md' },
                 key: { type: 'string', description: 'Memory key/section name' },
                 content: { type: 'string', description: 'Content to store' },
               },

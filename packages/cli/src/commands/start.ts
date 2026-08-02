@@ -1128,6 +1128,8 @@ async function startServerCore(
           taskId,
           requirementId,
           messageId: msg.id,
+          // Bubble start time for chronological insert / header clock (not "now" on client).
+          createdAt: msg.createdAt,
         }, sessionUserId);
         const hasTask = !!taskId;
         hitlService.notify({

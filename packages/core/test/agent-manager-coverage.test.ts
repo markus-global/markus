@@ -700,7 +700,7 @@ describe('AgentManager comprehensive tool execution', () => {
 
     const agentDir = join(dataDir, agent.id);
     expect(existsSync(join(agentDir, 'role', 'ROLE.md'))).toBe(true);
-    expect(existsSync(join(agentDir, 'MEMORY.md'))).toBe(true);
+    expect(existsSync(join(agentDir, 'knowledge.md'))).toBe(true);
     expect(existsSync(join(agentDir, 'sessions'))).toBe(true);
     expect(existsSync(join(agentDir, 'daily-logs'))).toBe(true);
   });

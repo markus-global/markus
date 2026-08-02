@@ -1,7 +1,20 @@
 import { describe, it, expect, vi } from 'vitest';
+import { tokenizeSearchQuery, scoreKeywordHaystack } from '@markus/shared';
 import { createMemoryTools, type AgentMemoryContext } from '../src/tools/memory.js';
 import type { IMemoryStore, MemoryEntry } from '../src/memory/types.js';
 import type { SemanticMemorySearch } from '../src/memory/semantic-search.js';
+
+/** Mock search mirrors real MemoryStore keyword OR-match (not whole-phrase-only). */
+function keywordSearchEntries(data: MemoryEntry[], query: string): MemoryEntry[] {
+  const tokens = tokenizeSearchQuery(query);
+  const full = query.trim().toLowerCase();
+  return data
+    .map((e) => ({ e, score: scoreKeywordHaystack(e.content, tokens, full) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.e)
+    .slice(0, 10);
+}
 
 function createMockMemory(entries?: MemoryEntry[]): IMemoryStore {
   const data: MemoryEntry[] = entries ?? [];
@@ -10,19 +23,20 @@ function createMockMemory(entries?: MemoryEntry[]): IMemoryStore {
     getEntries: vi.fn((type?: string) =>
       type ? data.filter(e => e.type === type) : [...data],
     ),
-    search: vi.fn((query: string) => {
-      const lower = query.toLowerCase();
-      return data.filter(e => e.content.toLowerCase().includes(lower)).slice(0, 10);
-    }),
+    search: vi.fn((query: string) => keywordSearchEntries(data, query)),
     getEntriesByTag: vi.fn(),
-    getEntryById: vi.fn(),
+    getObservations: vi.fn(() => [...data]),
     removeEntries: vi.fn(),
     removeEntriesByTag: vi.fn(),
     replaceEntries: vi.fn(),
+    getStoreFileName: vi.fn(() => 'knowledge.md'),
     addLongTermMemory: vi.fn(),
     getLongTermMemory: vi.fn().mockReturnValue(''),
     getLongTermSection: vi.fn().mockReturnValue(''),
     getLongTermMemoryExcluding: vi.fn().mockReturnValue(''),
+    compressLongTermMemory: vi.fn().mockReturnValue({
+      charsBefore: 0, charsAfter: 0, sectionsBefore: 0, sectionsAfter: 0, truncatedChunks: 0,
+    }),
     createSession: vi.fn(),
     getSession: vi.fn(),
     appendMessage: vi.fn(),
@@ -32,8 +46,10 @@ function createMockMemory(entries?: MemoryEntry[]): IMemoryStore {
     getLatestMainSession: vi.fn(),
     getOrCreateSession: vi.fn(),
     compactSession: vi.fn(),
+    summarizeAndTruncate: vi.fn(),
     writeDailyLog: vi.fn(),
     getDailyLog: vi.fn().mockReturnValue(''),
+    getRecentDailyLogs: vi.fn().mockReturnValue(''),
   };
 }
 
@@ -71,10 +87,47 @@ describe('memory_search tool', () => {
     expect(result.count).toBe(1);
     expect(result.results[0].content).toBe('TypeScript is awesome');
     expect(result.searchMethod).toBe('semantic');
-    expect(ctx.memory.search).not.toHaveBeenCalled();
+    // Keyword search still runs so curated sections can merge in
+    expect(ctx.memory.search).toHaveBeenCalledWith('TypeScript');
   });
 
-  it('falls back to substring when semantic search returns 0 results', async () => {
+  it('merges curated keyword hits when semantic returns observation hits', async () => {
+    const memory = createMockMemory([
+      { id: 'obs1', timestamp: '2024-01-01', type: 'note', content: 'standup notes' },
+    ]);
+    (memory.search as ReturnType<typeof vi.fn>).mockImplementation((query: string) => {
+      const kw = keywordSearchEntries(
+        [
+          { id: 'obs1', timestamp: '2024-01-01', type: 'note', content: 'standup notes' },
+          {
+            id: 'curated_crypto',
+            timestamp: '',
+            type: 'fact',
+            content: '## Crypto\nBIP-39 entropy_check lessons',
+            metadata: { source: 'curated', section: 'Crypto' },
+          },
+        ],
+        query,
+      );
+      return kw;
+    });
+    const ctx: AgentMemoryContext = {
+      agentId: 'test-agent',
+      agentName: 'Test Agent',
+      memory,
+      semanticSearch: createMockSemanticSearch(true, [
+        { id: 'sem1', timestamp: '2024-01-01', type: 'fact', content: 'wallet seed observation' },
+      ]),
+    };
+    const tools = createMemoryTools(ctx);
+    const searchTool = tools.find(t => t.name === 'memory_search')!;
+    const result = JSON.parse(await searchTool.execute({ query: 'BIP-39 entropy_check' }));
+    expect(result.searchMethod).toBe('semantic+keyword');
+    expect(result.results.some((r: { id: string }) => r.id === 'sem1')).toBe(true);
+    expect(result.results.some((r: { id: string }) => r.id === 'curated_crypto')).toBe(true);
+  });
+
+  it('falls back to keyword when semantic search returns 0 results', async () => {
     const ctx: AgentMemoryContext = {
       agentId: 'test-agent',
       agentName: 'Test Agent',
@@ -88,11 +141,11 @@ describe('memory_search tool', () => {
     const result = JSON.parse(await searchTool.execute({ query: 'TypeScript' }));
     expect(result.count).toBe(1);
     expect(result.results[0].content).toBe('TypeScript is great');
-    expect(result.searchMethod).toBe('substring');
+    expect(result.searchMethod).toBe('keyword');
     expect(ctx.memory.search).toHaveBeenCalledWith('TypeScript');
   });
 
-  it('falls back to substring when semantic search throws', async () => {
+  it('falls back to keyword when semantic search throws', async () => {
     const ctx: AgentMemoryContext = {
       agentId: 'test-agent',
       agentName: 'Test Agent',
@@ -112,10 +165,10 @@ describe('memory_search tool', () => {
     const result = JSON.parse(await searchTool.execute({ query: 'TypeScript' }));
     expect(result.count).toBe(1);
     expect(result.results[0].content).toBe('TypeScript is great');
-    expect(result.searchMethod).toBe('substring');
+    expect(result.searchMethod).toBe('keyword');
   });
 
-  it('uses substring search when semantic search is not enabled', async () => {
+  it('uses keyword search when semantic search is not enabled', async () => {
     const ctx: AgentMemoryContext = {
       agentId: 'test-agent',
       agentName: 'Test Agent',
@@ -128,6 +181,6 @@ describe('memory_search tool', () => {
     const result = JSON.parse(await searchTool.execute({ query: 'TypeScript' }));
     expect(result.count).toBe(1);
     expect(result.results[0].content).toBe('TypeScript is great');
-    expect(result.searchMethod).toBe('substring');
+    expect(result.searchMethod).toBe('keyword');
   });
 });

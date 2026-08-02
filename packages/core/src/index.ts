@@ -286,6 +286,8 @@ export {
   scenarioToPack,
   packToolDefBudget,
   getReflexAllowlist,
+  getDistillationAllowlist,
+  DISTILLATION_EXTRA_TOOLS,
   estimateToolDefTokens,
   evictToolsToBudget,
   formatEvictedToolCatalog,
@@ -300,6 +302,11 @@ export {
   loadSkillStats,
   type SkillStats,
 } from './learning-loop.js';
+export {
+  buildDistillationPrompt,
+  type DistillationPromptInput,
+  type DistillationPromptKind,
+} from './distillation.js';
 export { computeEvolutionMetrics, type EvolutionMetrics } from './evolution-metrics.js';
 export { formatTaskContextForPrompt, buildTaskContextPackage } from './task-context.js';
 export { matchAgentsForSkillFanout, applyFanoutDailyCap } from './skill-fanout.js';

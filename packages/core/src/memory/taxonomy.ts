@@ -52,6 +52,7 @@ export function ensureKnowledgeStateFiles(dataDir: string): void {
     const { knowledge, state } = splitLegacyMemory(raw);
     writeFileSync(k, knowledge || '# Knowledge\n', 'utf8');
     writeFileSync(s, state || '# State\n', 'utf8');
+    // Legacy MEMORY.md kept on disk for forensics but is no longer the write target.
     return;
   }
   if (!existsSync(k)) writeFileSync(k, '# Knowledge\n', 'utf8');

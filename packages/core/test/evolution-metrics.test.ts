@@ -7,7 +7,7 @@ describe('evolution metrics (LEARNING-LOOP §6)', () => {
       tasksWithSkillActivation: 4,
       tasksReviewed: 8,
       tasksApprovedWithoutPriorRejection: 6,
-      tasksWithDistillOutcome: 2,
+      tasksDistilled: 2,
     });
     expect(m.skillReuseRate).toBeCloseTo(0.4);
     expect(m.firstPassRate).toBeCloseTo(0.75);

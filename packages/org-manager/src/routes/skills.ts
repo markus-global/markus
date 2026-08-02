@@ -3,7 +3,19 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { discoverSkillsInDir, WELL_KNOWN_SKILL_DIRS } from '@markus/core';
-import { buildManifest, manifestFilename, createLogger, kebab, validateManifest, ensurePackageSlug, isValidPackageSlug, compareVersions, type PackageType } from '@markus/shared';
+import {
+  buildManifest,
+  manifestFilename,
+  createLogger,
+  kebab,
+  validateManifest,
+  ensurePackageSlug,
+  isValidPackageSlug,
+  compareVersions,
+  tokenizeSearchQuery,
+  scoreKeywordHaystack,
+  type PackageType,
+} from '@markus/shared';
 import { installSkill } from '../skill-service.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { APIServer } from '../api-server.js';
@@ -1027,15 +1039,29 @@ export async function handleSkillsRoutes(
         }
 
         if (q) {
-          const lower = q.toLowerCase();
-          skills = skills.filter(s =>
-            s.name.toLowerCase().includes(lower) ||
-            s.slug.toLowerCase().includes(lower) ||
-            (s.description_zh ?? s.description ?? '').toLowerCase().includes(lower)
-          );
-        }
-
-        if (sort === 'downloads') skills.sort((a, b) => b.downloads - a.downloads);
+          const tokens = tokenizeSearchQuery(q);
+          const full = q.trim().toLowerCase();
+          if (tokens.length > 0) {
+            const scored = skills
+              .map((s) => ({
+                s,
+                kw: scoreKeywordHaystack(
+                  `${s.name} ${s.slug} ${s.description_zh ?? s.description ?? ''}`,
+                  tokens,
+                  full,
+                ),
+              }))
+              .filter((x) => x.kw > 0);
+            scored.sort((a, b) => {
+              if (b.kw !== a.kw) return b.kw - a.kw;
+              if (sort === 'downloads') return b.s.downloads - a.s.downloads;
+              if (sort === 'stars') return b.s.stars - a.s.stars;
+              if (sort === 'installs') return b.s.installs - a.s.installs;
+              return b.s.score - a.s.score;
+            });
+            skills = scored.map((x) => x.s);
+          }
+        } else if (sort === 'downloads') skills.sort((a, b) => b.downloads - a.downloads);
         else if (sort === 'stars') skills.sort((a, b) => b.stars - a.stars);
         else if (sort === 'installs') skills.sort((a, b) => b.installs - a.installs);
         else skills.sort((a, b) => b.score - a.score);

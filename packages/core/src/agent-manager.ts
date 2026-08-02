@@ -1011,18 +1011,17 @@ export class AgentManager {
       ].join('\n'), 'utf-8');
     }
 
-    // Create memory system directories (sessions/, daily-logs/) and MEMORY.md
+    // Create memory system directories (sessions/, daily-logs/) and knowledge.md / state.md
     // These are declared in system docs but not always created during initialization
     const sessionsDir = join(agentDataDir, 'sessions');
     const dailyLogsDir = join(agentDataDir, 'daily-logs');
-    const memoryPath = join(agentDataDir, 'MEMORY.md');
     mkdirSync(sessionsDir, { recursive: true });
     mkdirSync(dailyLogsDir, { recursive: true });
-    if (!existsSync(memoryPath)) {
-      writeFileSync(memoryPath, [
-        '# Agent Memory',
-        '',
-        '## Your Knowledge',
+    const knowledgePath = join(agentDataDir, 'knowledge.md');
+    const statePath = join(agentDataDir, 'state.md');
+    if (!existsSync(knowledgePath)) {
+      writeFileSync(knowledgePath, [
+        '# Knowledge',
         '',
         '## procedures',
         '',
@@ -1031,6 +1030,9 @@ export class AgentManager {
         '## lessons-learned',
         '',
       ].join('\n'), 'utf-8');
+    }
+    if (!existsSync(statePath)) {
+      writeFileSync(statePath, '# State\n', 'utf-8');
     }
 
     const config: AgentConfig = {

@@ -2,7 +2,13 @@ import { join, resolve } from 'node:path';
 import { existsSync, writeFileSync, mkdirSync, readFileSync, readdirSync, copyFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, buildManifest, manifestFilename } from '@markus/shared';
+import {
+  createLogger,
+  buildManifest,
+  manifestFilename,
+  tokenizeSearchQuery,
+  scoreKeywordHaystack,
+} from '@markus/shared';
 import { discoverSkillsInDir, type SkillRegistry } from '@markus/core';
 
 const log = createLogger('skill-service');
@@ -48,6 +54,11 @@ const cache = new Map<string, { data: unknown; ts: number }>();
 const CACHE_TTL_MS = 600_000; // 10 min
 const SKILLHUB_CACHE_TTL_MS = 3_600_000; // 1 hour
 
+/** Test helper — clears in-memory SkillHub / skills.sh response cache. */
+export function clearSkillRegistryCacheForTests(): void {
+  cache.clear();
+}
+
 // ── Search functions ─────────────────────────────────────────────────────────
 
 export async function searchSkillHub(query: string): Promise<SkillSearchResult[]> {
@@ -75,14 +86,25 @@ export async function searchSkillHub(query: string): Promise<SkillSearchResult[]
 
   let skills = allData!.skills;
   if (query) {
-    const lower = query.toLowerCase();
-    skills = skills.filter(s =>
-      s.name.toLowerCase().includes(lower) ||
-      s.slug.toLowerCase().includes(lower) ||
-      (s.description_zh ?? s.description ?? '').toLowerCase().includes(lower)
-    );
+    const tokens = tokenizeSearchQuery(query);
+    const full = query.trim().toLowerCase();
+    if (tokens.length > 0) {
+      const scored = skills
+        .map((s) => ({
+          s,
+          score: scoreKeywordHaystack(
+            `${s.name} ${s.slug} ${s.description_zh ?? s.description ?? ''}`,
+            tokens,
+            full,
+          ),
+        }))
+        .filter((x) => x.score > 0)
+        .sort((a, b) => b.score - a.score || b.s.score - a.s.score);
+      skills = scored.map((x) => x.s);
+    }
+  } else {
+    skills.sort((a, b) => b.score - a.score);
   }
-  skills.sort((a, b) => b.score - a.score);
 
   return skills.slice(0, 15).map(s => ({
     name: s.name,

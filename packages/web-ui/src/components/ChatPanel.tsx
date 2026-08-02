@@ -13,7 +13,7 @@ import { Avatar } from './Avatar.tsx';
 import { ChatInput, type ContextChip, type MentionItem, type MentionChip } from './ChatInput.tsx';
 import {
   type MsgSegment, type ChatMsg,
-  dbMsgToChat, stripNotifyContext, storedSegmentsToMsgSegments,
+  dbMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt, storedSegmentsToMsgSegments,
   appendLiveOutput, appendSubagentLog,
   formatSmartTime, getDateKey, formatDateLabel,
 } from '../pages/ChatHelpers.ts';
@@ -149,11 +149,22 @@ export function ChatPanel({
       const isNotify = !isUserTurn && (!!meta.notifyUser || displayMessage !== message);
       const fallbackUserText = typeof meta.userText === 'string' ? meta.userText : '';
       const fallbackUserId = typeof meta.userMessageId === 'string' ? meta.userMessageId : '';
+      const createdAt =
+        (typeof meta.createdAt === 'string' && meta.createdAt)
+        || (typeof (event as { timestamp?: string }).timestamp === 'string'
+          ? (event as { timestamp: string }).timestamp
+          : undefined)
+        || new Date().toISOString();
+      const displayTime = (() => {
+        try { return new Date(createdAt).toLocaleTimeString(); }
+        catch { return new Date().toLocaleTimeString(); }
+      })();
       const newMsg: ChatMsg = {
         id: messageId || `proactive_${Date.now()}`,
         sender: isUserTurn ? 'user' : 'agent',
         text: displayMessage,
-        time: new Date().toLocaleTimeString(),
+        time: displayTime,
+        rawCreatedAt: createdAt,
         ...(isUserTurn
           ? {}
           : {
@@ -171,15 +182,16 @@ export function ChatPanel({
             || (m.sender === 'user' && m.text === fallbackUserText),
           );
           if (!hasUser) {
-            base = [...base, {
+            base = insertChatMsgByCreatedAt(base, {
               id: fallbackUserId || `feishu_user_${newMsg.id}`,
               sender: 'user' as const,
               text: fallbackUserText,
-              time: new Date().toLocaleTimeString(),
-            }];
+              time: displayTime,
+              rawCreatedAt: createdAt,
+            });
           }
         }
-        return [...base, newMsg];
+        return insertChatMsgByCreatedAt(base, newMsg);
       });
     });
     return unsub;

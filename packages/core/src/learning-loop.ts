@@ -28,7 +28,8 @@ export function shouldDistillTask(opts: {
   similarTaskCount: number;
   status: string;
 }): boolean {
-  if (opts.status === 'failed') return true;
+  // Only completed tasks — failed has no accepted outcome / feedback yet.
+  if (opts.status !== 'completed') return false;
   if (opts.hadRejection) return true;
   if (opts.toolCallCount >= 5) return true;
   if (opts.similarTaskCount >= 2) return true;
@@ -93,8 +94,6 @@ export function shouldSuppressSkillDraft(
   const fp = draftFingerprint.toLowerCase();
   return feedback.some((f) => f.toLowerCase().includes(fp));
 }
-
-export type DistillOutcome = 'none' | 'insight' | 'staged_skill';
 
 export function skillPendingDir(artifactsRoot: string, name: string): string {
   return join(artifactsRoot, 'skills', '.pending', name);

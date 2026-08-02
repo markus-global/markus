@@ -1,4 +1,11 @@
-import { createLogger, generateId, readManifest, type StarterTaskDef } from '@markus/shared';
+import {
+  createLogger,
+  generateId,
+  readManifest,
+  tokenizeSearchQuery,
+  scoreKeywordHaystack,
+  type StarterTaskDef,
+} from '@markus/shared';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,12 +78,21 @@ export class TeamTemplateRegistry {
   }
 
   search(query: string): TeamTemplate[] {
-    const lower = query.toLowerCase();
-    return this.list().filter(t =>
-      t.name.toLowerCase().includes(lower) ||
-      t.description.toLowerCase().includes(lower) ||
-      t.tags?.some(tag => tag.toLowerCase().includes(lower))
-    );
+    const tokens = tokenizeSearchQuery(query);
+    const full = query.trim().toLowerCase();
+    if (tokens.length === 0) return [];
+    return this.list()
+      .map((t) => ({
+        t,
+        score: scoreKeywordHaystack(
+          `${t.name} ${t.description} ${(t.tags ?? []).join(' ')}`,
+          tokens,
+          full,
+        ),
+      }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.t);
   }
 }
 

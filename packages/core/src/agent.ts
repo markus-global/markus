@@ -235,7 +235,7 @@ export interface AgentOptions {
   cognitive?: CognitiveConfig;
 }
 
-export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'group_chat' | 'comment_response' | 'memory_consolidation' | 'review' | 'requirement_action' | 'workflow_action' | 'deliberation';
+export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'group_chat' | 'comment_response' | 'memory_consolidation' | 'distillation' | 'review' | 'requirement_action' | 'workflow_action' | 'deliberation';
 
 interface HandleMessageOptions {
   sessionId?: string;
@@ -3464,6 +3464,10 @@ export class Agent {
         case 'memory_consolidation':
           actType = 'internal';
           actLabel = 'Memory Consolidation';
+          break;
+        case 'distillation':
+          actType = 'internal';
+          actLabel = 'Post-Task Distillation';
           break;
         case 'requirement_action':
           actType = 'internal';
@@ -7373,13 +7377,14 @@ export class Agent {
         'The conversation context is approaching its limit and will be compacted soon.',
         'Review the recent conversation and save any important information that should be remembered long-term.',
         '',
-        'Use `memory_save` to save observations to MEMORY.md (## _observations section):',
+        'Use `memory_save` once per observation to knowledge.md (## _observations):',
         '- Key decisions or conclusions reached',
         '- Important facts learned about the project or user preferences',
         '- Task outcomes or status changes',
         '- Technical details that would be costly to rediscover',
         '',
-        'Also use `update_notebook` to ensure your Notebook captures current working state.',
+        'Call shape: `{ content, type?, tags? }` — never an array. Verify `{ status:"saved", store:"knowledge.md" }`.',
+        'Also use `update_notebook` for current working state.',
         '',
         'Only save genuinely important information. Skip routine exchanges.',
         'If nothing important needs saving, just respond with "No important information to save."',
@@ -7464,17 +7469,17 @@ export class Agent {
     const prompt = [
       '[MEMORY CONSOLIDATION — Dream Cycle]',
       '',
-      `You have ${batch.length} observation entries from MEMORY.md ## _observations${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and:`,
+      `You have ${batch.length} observation entries from knowledge.md ## _observations${truncated ? ` (showing most recent ${MAX_ENTRIES_FOR_LLM} of ${entries.length} total)` : ''}. Review them and:`,
       '',
       '**Phase 1 — Clean up observations:**',
       '1. **Duplicates**: entries saying essentially the same thing → remove',
       '2. **Outdated**: entries superseded by newer information → remove',
       '3. **Merge candidates**: multiple entries about the same topic → combine into one',
       '',
-      '**Phase 2 — Promote recurring patterns to curated MEMORY.md sections:**',
+      '**Phase 2 — Promote recurring patterns to curated knowledge.md sections:**',
       '4. **Pattern promotion**: If 3+ observations share a common theme (e.g., same type of mistake, same tool approach),',
       '   synthesize them into a consolidated insight and mark the source entries for removal.',
-      '   Use the `section` field to specify which curated MEMORY.md section the promoted content belongs to.',
+      '   Use the `section` field to specify which curated knowledge.md section the promoted content belongs to.',
       '   The agent organizes their own sections — use whatever section name fits the content.',
       '   Promoted content becomes persistent long-term knowledge above ## _observations.',
       '',
@@ -7495,7 +7500,7 @@ export class Agent {
       '- Be conservative. Only remove entries you are confident are redundant or outdated.',
       '- When merging, preserve all unique information from the originals.',
       '- Promote only when 3+ entries point to the same pattern.',
-      '- The `section` field uses the agent\'s own MEMORY.md section names (agent-organized, not fixed).',
+      '- The `section` field uses the agent\'s own knowledge.md section names (agent-organized, not fixed).',
       '- If nothing needs consolidation, return { "remove": [], "merge": [], "promote": [] }',
       '',
       '## Current Memory Entries',
@@ -7589,7 +7594,7 @@ export class Agent {
         }
       }
 
-      // Phase 2: Promote recurring patterns to MEMORY.md and prune source entries
+      // Phase 2: Promote recurring patterns to knowledge.md and prune source entries
       if (plan.promote?.length) {
         for (const promo of plan.promote) {
           if (!promo.sourceIds?.length || !promo.content || !promo.section) continue;
@@ -7606,7 +7611,7 @@ export class Agent {
             }
           }
           promotedCount++;
-          log.debug('Dream cycle: promoted pattern to MEMORY.md', {
+          log.debug('Dream cycle: promoted pattern to knowledge.md', {
             section, sourceCount: promo.sourceIds.length, removed,
             contentPreview: promo.content.slice(0, 100),
           });
@@ -7631,9 +7636,9 @@ export class Agent {
   }
 
   /**
-   * Enforce MEMORY.md hygiene: remove daily-report sections (they belong in
+   * Enforce knowledge.md hygiene: remove daily-report sections (they belong in
    * daily-logs/), strip leaked LLM <think> blocks, and enforce section/total
-   * size limits via heuristic compression.
+   * size limits via heuristic compression. Preserves ## _observations.
    */
   private pruneMemoryMd(): void {
     const content = this.memory.getLongTermMemory();
@@ -7727,15 +7732,24 @@ export class Agent {
 
     const pruned = outputLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
     if (pruned !== content.trim()) {
-      const memoryMdPath = join(this.dataDir, 'MEMORY.md');
-      writeFileSync(memoryMdPath, pruned + '\n');
-      log.info('Pruned MEMORY.md: removed daily-report sections and LLM artifacts', { agentId: this.id });
+      const knowledgeMdPath = join(this.dataDir, 'knowledge.md');
+      let obsTail = '';
+      try {
+        if (existsSync(knowledgeMdPath)) {
+          const existing = readFileSync(knowledgeMdPath, 'utf-8');
+          const obsStart = existing.indexOf('\n## _observations');
+          if (obsStart >= 0) obsTail = existing.slice(obsStart);
+          else if (existing.startsWith('## _observations')) obsTail = '\n' + existing;
+        }
+      } catch { /* best-effort preserve observations */ }
+      writeFileSync(knowledgeMdPath, pruned + (obsTail ? '\n' + obsTail.replace(/^\n+/, '') : '') + '\n');
+      log.info('Pruned knowledge.md: removed daily-report sections and LLM artifacts', { agentId: this.id });
     }
 
     // Pass 3: heuristic compression — enforce per-section & total size limits
     const compressed = this.memory.compressLongTermMemory();
     if (compressed.truncatedChunks > 0) {
-      log.info('Compressed MEMORY.md during Dream Cycle', {
+      log.info('Compressed knowledge.md during Dream Cycle', {
         agentId: this.id,
         charsBefore: compressed.charsBefore,
         charsAfter: compressed.charsAfter,
