@@ -86,6 +86,11 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **Windows 升级弹窗「无法关闭」** — 根因是旧版静默卸载失败 5 次后父安装器复用同一文案；安装前强杀安装目录进程，并清除旧 `UninstallString` 跳过坏卸载器（Electron 覆盖安装）
 - **Windows 桌面快捷方式** — 去掉错误的 `menuCategory: false`；`CreateShortCut` + PowerShell `GetFolderPath('Desktop')` 双通道强制创建
 
+### v0.9.0-rc.13
+
+- **Windows 安装弹窗（硬修）** — 打包前直接 patch electron-builder NSIS 模板：进程检测只 `taskkill` 不弹窗；旧卸载失败 5 次后静默继续覆盖安装
+- **Windows 桌面快捷方式（硬修）** — 应用首次启动时用 PowerShell 强制创建桌面/开始菜单快捷方式（不依赖 NSIS）
+
 ### Stats
 
 - 290 files changed, +36,540 / −12,148 lines

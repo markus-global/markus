@@ -8,6 +8,7 @@ import { setupIpcHandlers } from './ipc-handlers.js';
 import { setupAutoUpdater } from './updater.js';
 import { registerProtocol, handleSecondInstanceArgs, consumePendingLaunchUrl, setProtocolBackendUrl } from './protocol.js';
 import { startNotificationBridge, stopNotificationBridge } from './notifications.js';
+import { ensureWindowsShortcuts } from './windows-shortcuts.js';
 
 app.setName('Markus');
 
@@ -136,6 +137,8 @@ app.whenReady().then(async () => {
 
   registerProtocol();
   setupIpcHandlers();
+  // NSIS upgrades often skip desktop shortcuts — create them from the app.
+  void ensureWindowsShortcuts();
 
   // Handle file downloads (e.g. Chrome extension zip from Settings)
   session.defaultSession.on('will-download', (_event, item) => {
