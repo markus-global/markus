@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { createLogger } from '@markus/shared';
 
 const log = createLogger('feishu-client');
@@ -77,6 +79,40 @@ export class FeishuClient {
 
   async sendTextMessage(chatId: string, text: string, idType: ReceiveIdType = 'chat_id'): Promise<string> {
     return this.sendMessage(chatId, 'text', JSON.stringify({ text }), idType);
+  }
+
+  /**
+   * Upload a local image for IM messages (msg_type=image).
+   * Feishu: POST /open-apis/im/v1/images (multipart: image_type + image).
+   */
+  async uploadImage(filePath: string, imageType: 'message' | 'avatar' = 'message'): Promise<string> {
+    const token = await this.getTenantToken();
+    const bytes = await readFile(filePath);
+    const form = new FormData();
+    form.append('image_type', imageType);
+    form.append('image', new Blob([new Uint8Array(bytes)]), basename(filePath));
+
+    const res = await fetch(`${this.domain}/open-apis/im/v1/images`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+
+    const data = (await res.json()) as ApiResponse<{ image_key?: string }>;
+    if (data.code !== 0 || !data.data?.image_key) {
+      throw new Error(`Feishu image upload failed: ${data.msg || 'unknown error'}`);
+    }
+    return data.data.image_key;
+  }
+
+  async sendImageMessage(receiveId: string, imageKey: string, idType: ReceiveIdType = 'chat_id'): Promise<string> {
+    return this.sendMessage(receiveId, 'image', JSON.stringify({ image_key: imageKey }), idType);
+  }
+
+  /** Upload a local image file and send it as an IM image message. */
+  async sendLocalImage(receiveId: string, filePath: string, idType: ReceiveIdType = 'chat_id'): Promise<string> {
+    const imageKey = await this.uploadImage(filePath);
+    return this.sendImageMessage(receiveId, imageKey, idType);
   }
 
   async sendRichTextMessage(chatId: string, title: string, content: Array<Array<Record<string, unknown>>>, idType: ReceiveIdType = 'chat_id'): Promise<string> {

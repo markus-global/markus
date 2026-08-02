@@ -340,6 +340,7 @@ describe('LLMRouter utilities', () => {
     router.registerProvider('primary', mockProvider('primary', 'm1'));
     router.registerProvider('fallback', mockProvider('fallback', 'm2'));
     router.setProviderEnabled('primary', false);
+    router.setAutoFallback(true);
     router.setCapabilityRouting({
       assignments: {
         text: {
@@ -352,6 +353,53 @@ describe('LLMRouter utilities', () => {
 
     const selected = router.selectForCapability('text', { messages: [{ role: 'user', content: 'Hi' }] });
     expect(selected.provider).toBe('fallback');
+  });
+
+  it('does not use assignment fallback when autoFallback is off', () => {
+    const router = new LLMRouter('anthropic');
+    router.registerProvider('primary', mockProvider('primary', 'm1'));
+    router.registerProvider('fallback', mockProvider('fallback', 'm2'));
+    router.registerProvider('anthropic', mockProvider('anthropic', 'claude'));
+    router.setProviderEnabled('primary', false);
+    router.setAutoFallback(false);
+    router.setCapabilityRouting({
+      assignments: {
+        text: {
+          provider: 'primary',
+          model: 'm1',
+          fallback: { provider: 'fallback', model: 'm2' },
+        },
+      },
+    });
+
+    const selected = router.selectForCapability('text', { messages: [{ role: 'user', content: 'Hi' }] });
+    expect(selected.provider).not.toBe('fallback');
+  });
+
+  it('honours explicit provider pin even when circuit-degraded', async () => {
+    const router = new LLMRouter('markus');
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash', async () => {
+      throw new Error('Markus proxy error 403: {"error":{"message":"This model is not available in your region.","code":403}}');
+    });
+    const ollama = mockProvider('ollama', 'qwen3.6');
+    router.registerProvider('markus', markus);
+    router.registerProvider('ollama', ollama);
+    router.setAutoFallback(false);
+    router.setFallbackOrder(['markus', 'ollama']);
+
+    // First call degrades markus
+    await expect(router.chat(
+      { messages: [{ role: 'user', content: 'Hi' }], model: 'anthropic/claude-opus-5' },
+      'markus',
+    )).rejects.toThrow(/not available in your region/);
+
+    // Second call must still hit markus (not silently switch to ollama with foreign model id)
+    await expect(router.chat(
+      { messages: [{ role: 'user', content: 'Hi again' }], model: 'anthropic/claude-opus-5' },
+      'markus',
+    )).rejects.toThrow(/not available in your region/);
+    expect(ollama.chat).not.toHaveBeenCalled();
+    expect(markus.chat).toHaveBeenCalledTimes(2);
   });
 
   it('resolveModalityProvider returns assigned provider', () => {
@@ -716,6 +764,38 @@ describe('LLMRouter text chat honors routingDefaultModel', () => {
   });
 });
 
+describe('LLMRouter resolveMaxTokens', () => {
+  it('does not inject catalog max_output onto the wire (OpenRouter reserves against max_tokens)', async () => {
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash');
+    const router = new LLMRouter('markus');
+    router.registerProvider('markus', markus);
+    router.updateProviderModelConfig('markus', { maxOutputTokens: 393_216 });
+
+    await router.chat({ messages: [{ role: 'user', content: 'Hi' }] });
+
+    const sent = (markus.chat as ReturnType<typeof vi.fn>).mock.calls[0]![0] as LLMRequest;
+    expect(sent.maxTokens).toBeUndefined();
+    // Catalog ceiling remains available for context budgeting.
+    expect(router.getModelMaxOutput('markus')).toBe(393_216);
+  });
+
+  it('still honors an explicit request.maxTokens from the caller', async () => {
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash');
+    const router = new LLMRouter('markus');
+    router.registerProvider('markus', markus);
+    router.updateProviderModelConfig('markus', { maxOutputTokens: 393_216 });
+
+    await router.chat({
+      messages: [{ role: 'user', content: 'Hi' }],
+      maxTokens: 4096,
+    });
+
+    expect(markus.chat).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTokens: 4096 }),
+    );
+  });
+});
+
 describe('LLMRouter.createDefault extended', () => {
   it('registers deepseek via openai-compatible factory', () => {
     const router = LLMRouter.createDefault({
@@ -837,6 +917,40 @@ describe('LLMRouter.chatStream', () => {
     router.registerProvider('openai', mockProvider('openai', 'gpt-4o'));
     router.setLogCallback(() => { throw new Error('log failed'); });
     await expect(router.chat({ messages: [{ role: 'user', content: 'Hi' }] })).resolves.toBeDefined();
+  });
+});
+
+describe('LLMRouter CU_EXCEEDED does not fall back to BYOK', () => {
+  it('rethrows CU_EXCEEDED without trying openai/other providers', async () => {
+    const router = new LLMRouter('markus');
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash', async () => {
+      throw new Error('CU_EXCEEDED: Credits exhausted. Please top up or upgrade your plan.');
+    });
+    const openai = mockProvider('openai', 'gpt-4o', async () => successResponse('from openai'));
+    router.registerProvider('markus', markus);
+    router.registerProvider('openai', openai);
+    router.setFallbackOrder(['markus', 'openai']);
+    router.setAutoFallback(true);
+
+    await expect(router.chat({ messages: [{ role: 'user', content: 'Hi' }] }))
+      .rejects.toThrow(/CU_EXCEEDED:/);
+    expect(openai.chat).not.toHaveBeenCalled();
+  });
+
+  it('rethrows MARKUS_RATE_LIMITED without BYOK fallback', async () => {
+    const router = new LLMRouter('markus');
+    const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash', async () => {
+      throw new Error('MARKUS_RATE_LIMITED: temporary');
+    });
+    const openai = mockProvider('openai', 'gpt-4o');
+    router.registerProvider('markus', markus);
+    router.registerProvider('openai', openai);
+    router.setFallbackOrder(['markus', 'openai']);
+    router.setAutoFallback(true);
+
+    await expect(router.chat({ messages: [{ role: 'user', content: 'Hi' }] }))
+      .rejects.toThrow(/MARKUS_RATE_LIMITED:/);
+    expect(openai.chat).not.toHaveBeenCalled();
   });
 });
 

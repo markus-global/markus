@@ -6,7 +6,15 @@
   "description": "A high-performance development team that follows a structured Plan → Implement → Review → Validate workflow. Features parallel implementation with worktree isolation, two-stage review (code + QA), subagent-driven deep analysis, and dependency-aware task scheduling. Suitable for feature sprints, refactoring campaigns, and production-grade software delivery.",
   "author": "Markus Team",
   "category": "development",
-  "tags": ["development", "agile", "sprint", "feature", "software", "tdd", "code-review"],
+  "tags": [
+    "development",
+    "agile",
+    "sprint",
+    "feature",
+    "software",
+    "tdd",
+    "code-review"
+  ],
   "icon": "users",
   "i18n": {
     "zh-CN": {
@@ -28,35 +36,46 @@
         "role": "manager",
         "roleName": "project-manager",
         "count": 1,
-        "skills": ["team-building"]
+        "skills": [
+          "team-building"
+        ]
       },
       {
         "name": "Backend Developer",
         "role": "worker",
         "roleName": "developer",
         "count": 1,
-        "skills": ["self-evolution", "coding-tools"]
+        "skills": [
+          "coding-tools"
+        ]
       },
       {
         "name": "Frontend Developer",
         "role": "worker",
         "roleName": "developer",
         "count": 1,
-        "skills": ["chrome-devtools", "self-evolution", "coding-tools"]
+        "skills": [
+          "chrome-devtools",
+          "coding-tools"
+        ]
       },
       {
         "name": "Code Reviewer",
         "role": "worker",
         "roleName": "reviewer",
         "count": 1,
-        "skills": ["self-evolution", "coding-tools"]
+        "skills": [
+          "coding-tools"
+        ]
       },
       {
         "name": "QA Engineer",
         "role": "worker",
         "roleName": "qa-engineer",
         "count": 1,
-        "skills": ["self-evolution", "coding-tools"]
+        "skills": [
+          "coding-tools"
+        ]
       }
     ]
   }

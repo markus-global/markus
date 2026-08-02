@@ -113,14 +113,21 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
         : 'https://openrouter.ai/api/v1';
 
     let markusModelsUrl = markusCfg.modelsUrl ?? process.env['MARKUS_MODELS_URL'] ?? '';
-    const hubBase = (config.hub?.url || process.env['MARKUS_HUB_URL'] || '').replace(/\/+$/, '');
+    // Prefer www — apex markus.global 307-redirects and Node fetch drops Authorization.
+    const hubBase = (config.hub?.url || process.env['MARKUS_HUB_URL'] || 'https://www.markus.global')
+      .replace(/\/+$/, '')
+      .replace(/^https?:\/\/markus\.global$/i, 'https://www.markus.global');
     if (!markusModelsUrl && hubBase) {
       markusModelsUrl = `${hubBase}/api/models/live/markus`;
     }
-    if (markusModelsUrl && hubBase) {
+    if (markusModelsUrl) {
       try {
         const mu = new URL(markusModelsUrl);
-        const hu = new URL(hubBase.includes('://') ? hubBase : `http://${hubBase}`);
+        if (mu.hostname === 'markus.global') {
+          mu.hostname = 'www.markus.global';
+          markusModelsUrl = mu.toString().replace(/\/$/, '');
+        }
+        const hu = new URL(hubBase.includes('://') ? hubBase : `https://${hubBase}`);
         if (mu.host !== hu.host) {
           markusModelsUrl = `${hubBase}/api/models/live/markus`;
         }
@@ -166,12 +173,23 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
       process.env['MARKUS_MODELS_URL'] = markusModelsUrl;
     }
 
+    // Hub JWT + canonical www origin — required for POST /api/user/cu/sync.
+    // modelsUrl often uses apex markus.global which 307→www and drops Authorization.
+    const hubTokenPath = join(homedir(), '.markus', 'hub-token');
+    const hubToken = existsSync(hubTokenPath)
+      ? readFileSync(hubTokenPath, 'utf-8').trim()
+      : (process.env['MARKUS_HUB_TOKEN'] || '');
+    const hubUrl = (config.hub?.url || process.env['MARKUS_HUB_URL'] || 'https://www.markus.global')
+      .replace(/\/+$/, '');
+
     providerConfigs['markus'] = {
       provider: 'markus',
       model: markusCfg.model ?? '',
       apiKey: markusOrKey,
       baseUrl: markusOrBase,
       ...(markusModelsUrl ? { modelsUrl: markusModelsUrl } : {}),
+      hubUrl,
+      ...(hubToken ? { hubToken } : {}),
       timeoutMs: llmTimeoutMs,
     };
   } else if (config.llm.defaultProvider === 'markus') {
@@ -260,9 +278,9 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     }
   }
 
-  // Apply auto-fallback setting
-  if (config.llm.autoFallback === false) {
-    llmRouter.setAutoFallback(false);
+  // Apply auto-fallback setting (router defaults to off — fail loud)
+  if (typeof config.llm.autoFallback === 'boolean') {
+    llmRouter.setAutoFallback(config.llm.autoFallback);
   }
 
   // Apply capability routing config
@@ -359,6 +377,16 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     log.info('Feishu MCP server configured', { presets, localBin: !!larkMcpBin });
   }
 
+  const feishuToolsConfig = (feishuAppId && feishuAppSecret)
+    ? {
+        appId: feishuAppId,
+        appSecret: feishuAppSecret,
+        domain: feishuIntegration?.domain,
+        defaultChatId: typeof feishuIntegration?.notifyChatId === 'string' ? feishuIntegration.notifyChatId : undefined,
+        defaultOpenId: typeof feishuIntegration?.notifyOpenId === 'string' ? feishuIntegration.notifyOpenId : undefined,
+      }
+    : undefined;
+
   const agentManager = new AgentManager({
     llmRouter,
     roleLoader,
@@ -367,6 +395,7 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     skillRegistry,
     taskService,
     mcpServers,
+    feishuToolsConfig,
   });
 
   if (config.agent?.maxToolIterations) {
@@ -944,6 +973,13 @@ async function startServerCore(
       log.warn('Legacy chat message migration failed', { error: String(e) });
     }
 
+    // No in-flight streams survive process restart — clear stuck「思考中」bubbles.
+    try {
+      storage.chatSessionRepo.clearOrphanStreamingFlags();
+    } catch (e) {
+      log.warn('Orphan streaming flag cleanup failed', { error: String(e) });
+    }
+
     // Resolve the owner/first user for session ownership
     const defaultSessionUserId: string = ownerUserId;
 
@@ -1044,15 +1080,28 @@ async function startServerCore(
       }
     });
 
-    // notify_user: persist as regular chat message + WS broadcast + notification bell
+    // notify_user: persist as regular chat message + WS broadcast + notification bell.
+    // Chat scenario passes the active DB sessionId; background work falls back to main.
     agentManager.getEventBus().on('agent:notify-user', async (evt: unknown) => {
-      const { agentId, title, body, priority, taskId, requirementId, targetUserId } = evt as {
+      const { agentId, title, body, priority, taskId, requirementId, targetUserId, sessionId: eventSessionId } = evt as {
         agentId: string; title: string; body: string; priority?: NotificationPriority;
-        taskId?: string; requirementId?: string; targetUserId?: string;
+        taskId?: string; requirementId?: string; targetUserId?: string; sessionId?: string;
       };
       try {
         const sessionUserId = targetUserId || defaultSessionUserId;
         const mainSession = storage.chatSessionRepo.getOrCreateMainSession(agentId, sessionUserId);
+        let targetSession = mainSession;
+        if (eventSessionId && eventSessionId !== mainSession.id) {
+          const requested = storage.chatSessionRepo.getSession(eventSessionId);
+          if (requested && requested.agentId === agentId) {
+            targetSession = requested;
+          } else {
+            log.warn('notify_user session missing or mismatched — falling back to main', {
+              agentId, eventSessionId, requestedAgentId: requested?.agentId,
+            });
+          }
+        }
+        const isMainSession = !!targetSession.isMain || targetSession.id === mainSession.id;
         const agent = agentManager.getAgent(agentId);
         const contextParts: string[] = [];
         if (taskId) contextParts.push(`task_id=${taskId}`);
@@ -1069,15 +1118,18 @@ async function startServerCore(
           ...(requirementId ? { requirementId } : {}),
         };
         const msg = storage.chatSessionRepo.appendMessage(
-          mainSession.id, agentId, 'assistant', formattedMsg, 0, msgMetadata,
+          targetSession.id, agentId, 'assistant', formattedMsg, 0, msgMetadata,
         );
-        storage.chatSessionRepo.updateLastMessage(mainSession.id);
-        ws.broadcastProactiveMessage(agentId, agent.config.name, mainSession.id, msg.id, formattedMsg, {
-          isMainSession: true,
+        storage.chatSessionRepo.updateLastMessage(targetSession.id);
+        ws.broadcastProactiveMessage(agentId, agent.config.name, targetSession.id, msg.id, formattedMsg, {
+          isMainSession,
           notifyUser: true,
           priority: priority ?? 'normal',
           taskId,
           requirementId,
+          messageId: msg.id,
+          // Bubble start time for chronological insert / header clock (not "now" on client).
+          createdAt: msg.createdAt,
         }, sessionUserId);
         const hasTask = !!taskId;
         hitlService.notify({
@@ -1087,8 +1139,16 @@ async function startServerCore(
           actionType: hasTask ? 'navigate' : 'open_chat',
           actionTarget: hasTask
             ? JSON.stringify({ path: `/work?openTask=${taskId}` })
-            : JSON.stringify({ agentId, sessionId: mainSession.id }),
-          metadata: { agentId, agentName: agent.config.name, taskId, requirementId, sessionId: mainSession.id },
+            : JSON.stringify({ agentId, sessionId: targetSession.id, messageId: msg.id }),
+          metadata: {
+            agentId,
+            agentName: agent.config.name,
+            taskId,
+            requirementId,
+            sessionId: targetSession.id,
+            // Lets the chat UI show a bottom card instead of also rendering this bubble.
+            messageId: msg.id,
+          },
         });
       } catch (e) {
         log.warn('Failed to handle notify-user event', { agentId, error: String(e) });
@@ -1247,7 +1307,7 @@ async function startServerCore(
     }
   }
 
-  apiServer.start();
+  await apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
   deliverableService.setWSBroadcaster(apiServer.getWSBroadcaster());

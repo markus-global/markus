@@ -1,6 +1,14 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, ensureHubAuth, completeHubAuthFromSession, getHubToken, getHubUser, saveHubAuth, clearHubAuth, type AuthUser } from '../api.ts';
+import {
+  api,
+  ensureHubAuth,
+  cancelHubAuth,
+  completeHubAuthFromSession,
+  getHubToken,
+  getHubUser,
+  type AuthUser,
+} from '../api.ts';
 
 interface HubLoginProps {
   onLogin: (user: AuthUser, needsOnboarding: boolean, opts?: { fromHub?: boolean }) => void;
@@ -52,26 +60,48 @@ export function Login({ onLogin, hasOwner }: HubLoginProps) {
     return true;
   };
 
+  const finishHubLogin = async () => {
+    const hubToken = getHubToken();
+    const hubUser = getHubUser();
+    if (!hubToken || !hubUser) {
+      setError(t('login.hubUnavailable'));
+      return;
+    }
+    const result = await api.auth.hubLogin(hubToken, hubUser);
+    const desktop = (window as unknown as {
+      markusDesktop?: { clearPendingDeepLinkAuth?: () => void | Promise<void> };
+    }).markusDesktop;
+    void desktop?.clearPendingDeepLinkAuth?.();
+    if (result.cloudAiReady === false) {
+      try {
+        sessionStorage.setItem(
+          'markus:cloud-ai-warning',
+          result.cloudAiError
+            ? t('login.cloudAiNotReady', { error: result.cloudAiError })
+            : t('login.cloudAiNotReadyGeneric'),
+        );
+      } catch { /* ignore */ }
+    }
+    onLogin(result.user, result.needsOnboarding ?? false, { fromHub: true });
+  };
+
   const handleHubLogin = async (method?: string, isRetry = false) => {
     if (!isRetry && !ensureConsent()) return;
     setError('');
     setLoading(method ?? 'hub');
     try {
-      await ensureHubAuth(method);
-      const hubToken = getHubToken();
-      const hubUser = getHubUser();
-      if (!hubToken || !hubUser) {
-        setError(t('login.hubUnavailable'));
+      if (isRetry && getHubToken() && getHubUser()) {
+        // Token already from browser — retry hub-login only (do not reopen browser).
+        await finishHubLogin();
         return;
       }
-      const { user, needsOnboarding } = await api.auth.hubLogin(hubToken, hubUser);
-      onLogin(user, needsOnboarding ?? false, { fromHub: true });
+      await ensureHubAuth(method);
+      await finishHubLogin();
     } catch (e) {
       const msg = e instanceof Error ? e.message : '';
       if (msg.includes('cancelled')) {
-        // User closed popup — not an error
+        // User cancelled waiting — not an error
       } else if (!isRetry && getHubToken()) {
-        clearHubAuth();
         return handleHubLogin(method, true);
       } else {
         setError(msg || t('login.hubUnavailable'));
@@ -81,36 +111,56 @@ export function Login({ onLogin, hasOwner }: HubLoginProps) {
     }
   };
 
-  // Cold start: the desktop app can be launched by a markus://auth deep link
-  // after the user finished Hub sign-in in their browser. Adopt the session the
-  // deep link carried and finish login without the user clicking again.
+  const handleCancelHubWait = () => {
+    cancelHubAuth();
+    setLoading(null);
+    setError('');
+  };
+
+  // Cold start / return via markus://auth: peek first so a missing consent
+  // checkbox does not consume (and lose) the session. Re-runs when `agreed`
+  // flips true so the user can accept terms then finish automatically.
   useEffect(() => {
-    const desktop = (window as unknown as { markusDesktop?: { consumePendingDeepLinkAuth?: () => Promise<string | null> } }).markusDesktop;
-    if (!desktop?.consumePendingDeepLinkAuth) return;
+    const desktop = (window as unknown as {
+      markusDesktop?: {
+        peekPendingDeepLinkAuth?: () => Promise<string | null>;
+        consumePendingDeepLinkAuth?: () => Promise<string | null>;
+      };
+    }).markusDesktop;
+    if (!desktop?.peekPendingDeepLinkAuth && !desktop?.consumePendingDeepLinkAuth) return;
     let cancelled = false;
-    desktop.consumePendingDeepLinkAuth().then(async (session) => {
+    (async () => {
+      const peeked = desktop.peekPendingDeepLinkAuth
+        ? await desktop.peekPendingDeepLinkAuth()
+        : null;
+      if (cancelled || !peeked) return;
+      let hasStoredConsent = false;
+      try { hasStoredConsent = !!localStorage.getItem(LEGAL_CONSENT_KEY); } catch { /* ignore */ }
+      if (!agreed && !hasStoredConsent) {
+        setError(t('login.consentRequired'));
+        return;
+      }
+      if (hasStoredConsent && !agreed) setAgreed(true);
+      recordConsent();
+      const session = desktop.consumePendingDeepLinkAuth
+        ? await desktop.consumePendingDeepLinkAuth()
+        : peeked;
       if (cancelled || !session) return;
-      // Consent gate: don't silently auto-complete sign-in until the user has
-      // accepted the Terms & Privacy at least once on this device.
-      if (!agreed) return;
       setError('');
       setLoading('hub');
       try {
         const ok = await completeHubAuthFromSession(session);
-        const hubToken = getHubToken();
-        const hubUser = getHubUser();
-        if (!ok || !hubToken || !hubUser) { setError(t('login.hubUnavailable')); return; }
-        const { user, needsOnboarding } = await api.auth.hubLogin(hubToken, hubUser);
-        onLogin(user, needsOnboarding ?? false, { fromHub: true });
+        if (!ok || !getHubToken() || !getHubUser()) { setError(t('login.hubUnavailable')); return; }
+        await finishHubLogin();
       } catch {
         setError(t('login.hubUnavailable'));
       } finally {
         if (!cancelled) setLoading(null);
       }
-    }).catch(() => {});
+    })().catch(() => {});
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [agreed]);
 
   const handleLocalLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -174,6 +224,19 @@ export function Login({ onLogin, hasOwner }: HubLoginProps) {
                 </svg>
                 {loading === 'email' ? t('login.connectingHub') : t('login.withEmail')}
               </button>
+
+              {loading && (loading === 'google' || loading === 'github' || loading === 'email' || loading === 'hub') && (
+                <div className="px-3 py-2.5 bg-brand-500/10 border border-brand-500/30 rounded-lg text-xs text-fg-secondary space-y-2">
+                  <p>{t('login.browserOpened')}</p>
+                  <button
+                    type="button"
+                    onClick={handleCancelHubWait}
+                    className="text-brand-500 hover:text-brand-400 underline font-medium"
+                  >
+                    {t('login.cancelWaiting')}
+                  </button>
+                </div>
+              )}
 
               {error && (
                 <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">

@@ -119,7 +119,7 @@ describe('InMemorySkillRegistry', () => {
     expect(alwaysOn.has('catalog-only')).toBe(false);
   });
 
-  it('builds builtin and full skill catalogs excluding alwaysOn', () => {
+  it('builds builtin and full skill catalogs including alwaysOn (metadata progressive disclosure)', () => {
     registry.register({
       manifest: baseManifest({ name: 'builtin-catalog', builtIn: true, category: 'devops' }),
     });
@@ -131,10 +131,10 @@ describe('InMemorySkillRegistry', () => {
     });
 
     const builtinCatalog = registry.getBuiltinSkillCatalog();
-    expect(builtinCatalog.map(c => c.name)).toEqual(['builtin-catalog']);
+    expect(builtinCatalog.map(c => c.name).sort()).toEqual(['always-on', 'builtin-catalog']);
 
     const fullCatalog = registry.getSkillCatalog();
-    expect(fullCatalog.map(c => c.name).sort()).toEqual(['builtin-catalog', 'installed']);
+    expect(fullCatalog.map(c => c.name).sort()).toEqual(['always-on', 'builtin-catalog', 'installed']);
   });
 });
 

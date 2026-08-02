@@ -18,7 +18,7 @@
   - What writing approaches led to first-pass approval?
   - What tone, structure, or research patterns worked well?
   - Save insights via `memory_save` with `tags: ["insight", "writing"]` and `[INSIGHT]` format.
-  - Promote repeatable workflows to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - Promote repeatable workflows to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
 
 ## Self-Evolution
 

@@ -299,6 +299,25 @@ body {
   animation: skeleton-shimmer 1.4s ease-in-out infinite;
 }
 
+/* Running tool / thinking label — soft bright↔dim sweep */
+@keyframes activity-text-shimmer {
+  0% { background-position: 100% center; }
+  100% { background-position: -100% center; }
+}
+.activity-text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-fg-tertiary) 0%,
+    var(--color-fg-primary) 45%,
+    var(--color-fg-tertiary) 90%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: activity-text-shimmer 1.6s ease-in-out infinite;
+}
+
 /* Horizontal scroll rail with snap for discovery carousels */
 .rail {
   @apply flex gap-4 overflow-x-auto;
@@ -331,6 +350,47 @@ body {
 
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/*
+ * Electron / platform chrome
+ *
+ * macOS hiddenInset: traffic lights overlay the webview. Pages whose leftmost
+ * chrome is NOT the main Markus sidebar (e.g. Settings) must use
+ * `.electron-mac-sidebar-header` (or `.electron-mac-top-safe`) for clearance.
+ *
+ * Window drag: ONLY via `[data-electron-drag]` on real chrome nodes.
+ * Never set `-webkit-app-region: drag` on `body` — it breaks `position:
+ * absolute/fixed` descendants (Deliverables chat FAB jumps to top-right).
+ * Never combine drag overlays with `pointer-events: none`.
+ * Never raise z-index on all buttons (breaks dropdown stacking).
+ */
+html.electron-darwin {
+  --electron-mac-titlebar: 40px;
+}
+html.electron-darwin [data-electron-drag] {
+  -webkit-app-region: drag;
+}
+html.electron-darwin button,
+html.electron-darwin a,
+html.electron-darwin input,
+html.electron-darwin select,
+html.electron-darwin textarea,
+html.electron-darwin [role="button"],
+html.electron-darwin [contenteditable="true"],
+html.electron-darwin [data-no-drag] {
+  -webkit-app-region: no-drag;
+}
+/* Traffic-light clearance on the drag header itself (not a non-drag parent). */
+html.electron-darwin .electron-mac-sidebar-header {
+  padding-top: var(--electron-mac-titlebar) !important;
+  height: auto !important;
+  min-height: calc(3.5rem + var(--electron-mac-titlebar));
+}
+/* Generic top safe inset for edge panels without the shared header class.
+   Adds titlebar clearance on top of the element's own padding (e.g. pt-4). */
+html.electron-darwin .electron-mac-top-safe {
+  padding-top: calc(var(--electron-mac-titlebar) + 0.75rem) !important;
 }
 
 @property --border-angle {
@@ -389,9 +449,10 @@ body {
   from { transform: translateX(-100%); }
   to { transform: translateX(0); }
 }
+/* Opacity-only: transform here fights absolute bottom/right + hover:scale. */
 @keyframes fabIn {
-  from { opacity: 0; transform: scale(0.6) translateY(8px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .animate-fadeIn {
   animation: fadeIn 0.15s ease-out;

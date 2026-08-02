@@ -21,7 +21,7 @@ import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, hubApi, clearHubAuth, type AuthUser, wsClient } from './api.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
-import { useLayout } from './contexts/LayoutContext.tsx';
+import { useLayout, isBrowserTabReopenSuppressed } from './contexts/LayoutContext.tsx';
 import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
@@ -162,8 +162,11 @@ export function App() {
       }
       if (event.type === 'opened' || event.type === 'selected') {
         if (!event.url && !event.browserId) return;
-        // Ignore UI-owned preview hosts (eb_*) — those already have a panel tab.
-        if (event.browserId.startsWith('eb_') && event.type === 'opened') return;
+        // UI-owned preview hosts (eb_*) already have a panel tab — never re-open
+        // them from native events (selected/opened after destroy looks like "can't close").
+        if (event.browserId.startsWith('eb_')) return;
+        // User just closed this browserId; ignore in-flight create/select echoes.
+        if (isBrowserTabReopenSuppressed(event.browserId)) return;
         openRightPanel({
           kind: 'url',
           url: event.url || 'about:blank',
@@ -337,22 +340,39 @@ export function App() {
       .catch(() => {});
   }, []);
 
+  const applyInstallDeepLink = useCallback((installItemId: string, itemType?: string | null) => {
+    if (!installItemId) return;
+    const tabMap: Record<string, string> = { agent: 'agents', team: 'teams', skill: 'skills' };
+    const storeTab = (itemType && tabMap[itemType]) || 'agents';
+    localStorage.setItem('markus_nav_installItem', installItemId);
+    localStorage.setItem('markus_nav_storeTab', storeTab);
+    // Keep ?install= in the URL until Store consumes it (auth/onboarding may delay mount).
+    const urlParams = new URLSearchParams(window.location.search);
+    if (!urlParams.get('install')) {
+      urlParams.set('install', installItemId);
+      if (itemType) urlParams.set('type', itemType);
+    }
+    const qs = urlParams.toString();
+    window.history.replaceState(null, '', `${window.location.pathname}?${qs}${hashPath(PAGE.STORE)}`);
+    const go = () => navBus.navigate(PAGE.STORE, { storeTab, installItem: installItemId });
+    // Immediate + delayed: Store may not be mounted yet (auth gate / lazy chunk).
+    go();
+    setTimeout(go, 500);
+    setTimeout(go, 1500);
+  }, []);
+
   useEffect(() => {
-    // Deep link: ?install=ITEM_ID&type=agent|team|skill — navigate to Store if not already there
+    // Deep link: ?install=ITEM_ID&type=agent|team|skill — always apply (hash may already be #explore)
     const urlParams = new URLSearchParams(window.location.search);
     const installItemId = urlParams.get('install');
-    if (installItemId && getPageFromHash() !== PAGE.STORE) {
-      const itemType = urlParams.get('type');
-      const tabMap: Record<string, string> = { agent: 'agents', team: 'teams', skill: 'skills' };
-      const storeTab = (itemType && tabMap[itemType]) || 'agents';
-      localStorage.setItem('markus_nav_installItem', installItemId);
-      localStorage.setItem('markus_nav_storeTab', storeTab);
-      urlParams.delete('install');
-      urlParams.delete('type');
-      const qs = urlParams.toString();
-      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : '') + hashPath(PAGE.STORE));
-      setTimeout(() => navBus.navigate(PAGE.STORE, { storeTab, installItem: installItemId }), 300);
-    }
+    if (installItemId) applyInstallDeepLink(installItemId, urlParams.get('type'));
+
+    // Desktop IPC: warm markus://install while UI is already loaded
+    const desktop = window.markusDesktop;
+    desktop?.onDeepLinkInstall?.(({ id, type }) => applyInstallDeepLink(id, type));
+    void desktop?.consumePendingDeepLinkInstall?.().then((pending) => {
+      if (pending?.id) applyInstallDeepLink(pending.id, pending.type);
+    });
 
     api.auth.me()
       .then(({ user }) => {

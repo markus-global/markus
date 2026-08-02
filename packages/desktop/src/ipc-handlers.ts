@@ -1,5 +1,10 @@
 import { ipcMain, app, shell, Notification, BrowserWindow } from 'electron';
-import { consumePendingDeepLinkAuth } from './protocol.js';
+import {
+  consumePendingDeepLinkAuth,
+  peekPendingDeepLinkAuth,
+  clearPendingDeepLinkAuth,
+  consumePendingInstall,
+} from './protocol.js';
 import {
   createEmbeddedBrowser,
   destroyEmbeddedBrowser,
@@ -19,10 +24,26 @@ export function setupIpcHandlers(): void {
   });
 
   // Hand a pending markus://auth deep-link session to the renderer (cold start).
+  // peek = read without clearing (consent gate); consume = take ownership.
+  ipcMain.handle('auth:peek-pending-deep-link', () => peekPendingDeepLinkAuth());
   ipcMain.handle('auth:consume-pending-deep-link', () => consumePendingDeepLinkAuth());
+  ipcMain.handle('auth:clear-pending-deep-link', () => { clearPendingDeepLinkAuth(); });
+  // Hub → desktop install deep link (cold start if renderer missed IPC).
+  ipcMain.handle('install:consume-pending-deep-link', () => consumePendingInstall());
 
-  ipcMain.handle('app:open-external', (_event, url: string) => {
-    return shell.openExternal(url);
+  ipcMain.handle('app:open-external', async (_event, url: string) => {
+    await shell.openExternal(url);
+    return { ok: true };
+  });
+
+  ipcMain.handle('app:focus-window', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    if (!win) return { ok: false };
+    if (!win.isVisible()) win.show();
+    if (win.isMinimized()) win.restore();
+    win.focus();
+    try { win.flashFrame(true); } catch { /* unsupported */ }
+    return { ok: true };
   });
 
   ipcMain.handle('app:open-in-browser', () => {

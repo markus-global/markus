@@ -4,6 +4,7 @@ import {
   searchSkillsSh,
   searchRegistries,
   installSkill,
+  clearSkillRegistryCacheForTests,
 } from '../src/skill-service.js';
 
 const mockFetch = vi.fn();
@@ -34,6 +35,7 @@ vi.mock('@markus/core', () => ({
 describe('skill-service', () => {
   beforeEach(() => {
     mockFetch.mockReset();
+    clearSkillRegistryCacheForTests();
   });
 
   it('searchSkillHub filters and caches results', async () => {
@@ -51,6 +53,44 @@ describe('skill-service', () => {
     expect(results[0]?.name).toBe('Alpha Skill');
     await searchSkillHub('alpha');
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('searchSkillHub matches multi-word queries by keyword OR (not whole phrase)', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        skills: [
+          {
+            slug: 'pdf-tables',
+            name: 'PDF Table Extractor',
+            description: 'Extract tables from PDF documents',
+            description_zh: '从 PDF 提取表格',
+            version: '1.0',
+            homepage: 'https://x',
+            tags: [],
+            downloads: 1,
+            stars: 1,
+            installs: 10,
+            score: 80,
+          },
+          {
+            slug: 'unrelated',
+            name: 'Weather Bot',
+            description: 'Forecast rain',
+            version: '1.0',
+            homepage: 'https://y',
+            tags: [],
+            downloads: 1,
+            stars: 1,
+            installs: 5,
+            score: 50,
+          },
+        ],
+      }),
+    });
+    const results = await searchSkillHub('pdf table extract documents');
+    expect(results.some((r) => r.slug === 'pdf-tables')).toBe(true);
+    expect(results.some((r) => r.slug === 'unrelated')).toBe(false);
   });
 
   it('searchSkillHub returns empty on fetch failure', async () => {

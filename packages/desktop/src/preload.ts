@@ -1,11 +1,27 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+// Apply chrome classes as early as possible so traffic-light padding exists
+// before React paints (main-process insertCSS was easy to miss / race).
+function markElectronChrome(): void {
+  document.documentElement.classList.add('electron-app');
+  if (process.platform === 'darwin') {
+    document.documentElement.classList.add('electron-darwin');
+  }
+  (window as unknown as { __MARKUS_ELECTRON__?: boolean }).__MARKUS_ELECTRON__ = true;
+}
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', markElectronChrome);
+} else {
+  markElectronChrome();
+}
+
 contextBridge.exposeInMainWorld('markusDesktop', {
   platform: process.platform,
   isMAS: process.env['MARKUS_MAS'] === 'true',
 
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
+  focusWindow: () => ipcRenderer.invoke('app:focus-window'),
   openInBrowser: () => ipcRenderer.invoke('app:open-in-browser'),
 
   showNotification: (title: string, body: string) =>
@@ -38,7 +54,15 @@ contextBridge.exposeInMainWorld('markusDesktop', {
   onDeepLinkAuth: (callback: (data: { session: string }) => void) => {
     ipcRenderer.on('auth:deep-link', (_event, data) => callback(data));
   },
+  peekPendingDeepLinkAuth: () => ipcRenderer.invoke('auth:peek-pending-deep-link'),
   consumePendingDeepLinkAuth: () => ipcRenderer.invoke('auth:consume-pending-deep-link'),
+  clearPendingDeepLinkAuth: () => ipcRenderer.invoke('auth:clear-pending-deep-link'),
+
+  // Hub marketplace install (markus://install?id=&type=).
+  onDeepLinkInstall: (callback: (data: { id: string; type: string }) => void) => {
+    ipcRenderer.on('install:deep-link', (_event, data) => callback(data));
+  },
+  consumePendingDeepLinkInstall: () => ipcRenderer.invoke('install:consume-pending-deep-link'),
 
   setTrafficLightPosition: (x: number, y: number) =>
     ipcRenderer.invoke('app:set-traffic-light-position', x, y),
@@ -59,18 +83,24 @@ contextBridge.exposeInMainWorld('markusDesktop', {
     cdp: (id: string, method: string, params?: Record<string, unknown>) =>
       ipcRenderer.invoke('browser:cdp', id, method, params),
     onPageEvent: (callback: (event: {
-      type: 'opened' | 'closed' | 'navigated' | 'selected';
+      type: 'opened' | 'closed' | 'navigated' | 'selected' | 'loading' | 'loaded' | 'load-failed' | 'directory';
       pageId: number;
       browserId: string;
       url?: string;
       title?: string;
+      isLoading?: boolean;
+      error?: string;
+      directoryPath?: string;
     }) => void) => {
       const handler = (_: unknown, event: {
-        type: 'opened' | 'closed' | 'navigated' | 'selected';
+        type: 'opened' | 'closed' | 'navigated' | 'selected' | 'loading' | 'loaded' | 'load-failed' | 'directory';
         pageId: number;
         browserId: string;
         url?: string;
         title?: string;
+        isLoading?: boolean;
+        error?: string;
+        directoryPath?: string;
       }) => callback(event);
       ipcRenderer.on('browser:page-event', handler);
       return () => { ipcRenderer.removeListener('browser:page-event', handler); };

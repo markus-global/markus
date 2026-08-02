@@ -109,10 +109,13 @@ async function persistImageResult(img: ImageResult, index: number): Promise<{
   const ext = guessImageExt(img.url, img.base64);
   const filepath = join(mediaDir('images'), `img-${Date.now()}-${index}.${ext}`);
   writeFileSync(filepath, bytes);
+  // Emit forward-slash paths so Markdown does not treat `\.markus` as an escape
+  // (CommonMark) and so Windows `C:\...` survives remark's URL sanitizer path.
+  const mdPath = filepath.replace(/\\/g, '/');
   return {
     filePath: filepath,
     revisedPrompt: img.revisedPrompt,
-    markdown: `![generated image](${filepath})`,
+    markdown: `![generated image](${mdPath})`,
   };
 }
 

@@ -2,7 +2,7 @@
  * Agent Memory Types
  *
  * Organized by Tulving's cognitive classification:
- * - Semantic: observations + curated knowledge (unified MEMORY.md)
+ * - Semantic: observations + curated knowledge (knowledge.md SSOT; MEMORY.md legacy)
  * - Episodic: conversation sessions (sessions/*.json)
  * - Procedural: identity & skills (managed by RoleLoader, not here)
  */
@@ -11,7 +11,7 @@ import type { LLMMessage } from '@markus/shared';
 export interface MemoryEntry {
   id: string;
   timestamp: string;
-  type: 'conversation' | 'fact' | 'task_result' | 'note';
+  type: 'conversation' | 'fact' | 'task_result' | 'note' | 'insight';
   content: string;
   metadata?: Record<string, unknown>;
 }
@@ -29,7 +29,7 @@ export interface ConversationSession {
  * MemoryStore is the primary implementation.
  */
 export interface IMemoryStore {
-  // -- Semantic Memory: observation buffer (## _observations in MEMORY.md) --
+  // -- Semantic Memory: observation buffer (## _observations in knowledge.md) --
   addEntry(entry: MemoryEntry): void;
   getEntries(type?: MemoryEntry['type'], limit?: number): MemoryEntry[];
   getEntriesByTag(tag: string, limit?: number): MemoryEntry[];
@@ -39,12 +39,18 @@ export interface IMemoryStore {
   removeEntriesByTag(tag: string): number;
   getObservations(): MemoryEntry[];
 
-  // -- Semantic Memory: curated knowledge (MEMORY.md) --
+  // -- Semantic Memory: curated knowledge (knowledge.md SSOT) --
+  /** Basename of the on-disk semantic store (normally "knowledge.md"). */
+  getStoreFileName(): string;
   addLongTermMemory(key: string, content: string): { ok: boolean; reason?: string };
   getLongTermMemory(): string;
   getLongTermMemoryExcluding(sections: string[]): string;
   getLongTermSection(sectionName: string): string;
   compressLongTermMemory(): { charsBefore: number; charsAfter: number; sectionsBefore: number; sectionsAfter: number; truncatedChunks: number };
+  /** Optional state.md snapshot for reflex prompts (AGENT-RUNTIME memory taxonomy). */
+  getStateMemory?(): string;
+  /** Optional TTL prune for state.md (Dream librarian). */
+  pruneStateMemory?(): void;
 
   // -- Episodic Memory: conversation sessions --
   getSession(sessionId: string): ConversationSession | undefined;

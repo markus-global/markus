@@ -2252,6 +2252,12 @@ export class SqliteChatSessionRepo {
     return { content, metadata: rawMeta ? JSON.parse(rawMeta) : undefined };
   }
 
+  /** Delete a single chat message by id (e.g. undo a merged follow-up persist). */
+  deleteMessage(messageId: string): boolean {
+    const result = this.db.prepare('DELETE FROM chat_messages WHERE id = ?').run(messageId);
+    return result.changes > 0;
+  }
+
   /**
    * Remove the last user+assistant exchange from a session (for retry).
    * Deletes from the end backwards through the last assistant message
@@ -2294,6 +2300,78 @@ export class SqliteChatSessionRepo {
       createdAt: toDate(r['created_at'] as string)!,
       lastMessageAt: toDate(r['last_message_at'] as string)!,
     };
+  }
+
+  /**
+   * Clear stuck `isStreaming` flags left by crash/restart or the SSE error
+   * race (soft-disconnect rewrite after a failed turn). Safe at process start
+   * because ActiveStreamRegistry does not survive restart.
+   */
+  clearOrphanStreamingFlags(): number {
+    const rows = this.db
+      .prepare(
+        `SELECT id, metadata FROM chat_messages
+         WHERE role = 'assistant'
+           AND metadata IS NOT NULL
+           AND json_extract(metadata, '$.isStreaming') = 1`,
+      )
+      .all() as Array<{ id: string; metadata: string }>;
+
+    if (rows.length === 0) return 0;
+
+    const update = this.db.prepare('UPDATE chat_messages SET metadata = ? WHERE id = ?');
+    let cleared = 0;
+    for (const row of rows) {
+      try {
+        const meta = JSON.parse(row.metadata) as Record<string, unknown>;
+        if (meta.isStreaming !== true) continue;
+        meta.isStreaming = false;
+        // Preserve real errors; otherwise mark stopped so UI leaves「思考中」.
+        if (meta.isError !== true) meta.isStopped = true;
+        update.run(JSON.stringify(meta), row.id);
+        cleared++;
+      } catch {
+        /* skip malformed metadata */
+      }
+    }
+    if (cleared > 0) {
+      log.info(`Cleared isStreaming on ${cleared} orphan assistant message(s)`);
+    }
+    return cleared;
+  }
+
+  /**
+   * Clear `isStreaming` on assistant rows for a session that are not the
+   * currently live stream (used when loading history while agent is idle).
+   */
+  clearOrphanStreamingFlagsForSession(sessionId: string, liveStreamId?: string | null): number {
+    const rows = this.db
+      .prepare(
+        `SELECT id, metadata FROM chat_messages
+         WHERE session_id = ? AND role = 'assistant'
+           AND metadata IS NOT NULL
+           AND json_extract(metadata, '$.isStreaming') = 1`,
+      )
+      .all(sessionId) as Array<{ id: string; metadata: string }>;
+
+    if (rows.length === 0) return 0;
+
+    const update = this.db.prepare('UPDATE chat_messages SET metadata = ? WHERE id = ?');
+    let cleared = 0;
+    for (const row of rows) {
+      try {
+        const meta = JSON.parse(row.metadata) as Record<string, unknown>;
+        if (meta.isStreaming !== true) continue;
+        if (liveStreamId && meta.streamId === liveStreamId) continue;
+        meta.isStreaming = false;
+        if (meta.isError !== true) meta.isStopped = true;
+        update.run(JSON.stringify(meta), row.id);
+        cleared++;
+      } catch {
+        /* skip malformed metadata */
+      }
+    }
+    return cleared;
   }
 
   /**

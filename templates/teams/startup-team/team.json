@@ -6,7 +6,15 @@
   "description": "A lean startup team built for speed. Product Manager drives strategy, Full-Stack Dev ships features rapidly, Growth Lead handles marketing and analytics, and DevOps keeps everything running. Each member owns their domain end-to-end. Designed for MVP development, rapid iteration, and growth experiments with subagent-assisted research and background deployment.",
   "author": "Markus Team",
   "category": "startup",
-  "tags": ["startup", "lean", "mvp", "product", "growth", "iteration", "agile"],
+  "tags": [
+    "startup",
+    "lean",
+    "mvp",
+    "product",
+    "growth",
+    "iteration",
+    "agile"
+  ],
   "icon": "zap",
   "i18n": {
     "zh-CN": {
@@ -26,21 +34,24 @@
         "role": "manager",
         "roleName": "product-manager",
         "count": 1,
-        "skills": ["self-evolution"]
+        "skills": []
       },
       {
         "name": "Full-Stack Developer",
         "role": "worker",
         "roleName": "developer",
         "count": 2,
-        "skills": ["chrome-devtools", "self-evolution", "coding-tools"]
+        "skills": [
+          "chrome-devtools",
+          "coding-tools"
+        ]
       },
       {
         "name": "Growth Lead",
         "role": "worker",
         "roleName": "marketing",
         "count": 1,
-        "skills": ["self-evolution"]
+        "skills": []
       }
     ]
   }

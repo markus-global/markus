@@ -319,7 +319,7 @@ When a user assigns work that is too large or complex to complete in a single co
 Each agent has a dedicated **working directory** (for project work) and an **agent home** (for identity/memory files). Both absolute paths are listed in the system context under "Your Workspace & Files".
 
 - Persona and heartbeat files are only under `agent-home/role/` (`ROLE.md`, `HEARTBEAT.md`).
-- Long-term memory / notebook live at agent-home root (`MEMORY.md`, `NOTEBOOK.md`).
+- Long-term memory / notebook live at agent-home root (`knowledge.md`, `state.md`, `NOTEBOOK.md`). Legacy `MEMORY.md` is not the write target.
 - Do not create `ROLE.md` or `HEARTBEAT.md` in the working directory — those copies are ignored.
 - You can read and write elsewhere, but **you cannot write to other agents' directories**.
 
@@ -396,10 +396,10 @@ When evaluating a colleague's task in `review`:
 
 Your team maintains two tiers of persistent information:
 
-### Personal Memory (MEMORY.md)
-- Use `memory_save` for personal notes, preferences, and lessons learned
-- Use `memory_search` to recall past decisions and context
-- This is YOUR private workspace — other agents cannot see it
+### Personal Memory (`knowledge.md`) vs Skills
+- **Only helps you** → memory: `memory_save` once per observation (`{ content, type?, tags? }` — never an array); multi-step personal procedures → `memory_update` / `memory_update_longterm` (shown as `## Your Knowledge`)
+- **Helps other agents** as an executable playbook/MCP flow → Skill under `builder-artifacts/skills/` then install (steps/tools/boundaries — not a diary dump)
+- Use `memory_search` before non-trivial work; memory is YOUR private workspace — other agents cannot see it
 
 ### Shared Deliverables
 - **Workflow**: Write the actual content to a file FIRST (using `shell_execute` or file tools), then call `deliverable_create` to register it — the `summary` field is a brief description, NOT the full content

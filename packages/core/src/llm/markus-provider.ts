@@ -21,9 +21,14 @@ import {
 } from '@markus/shared';
 import {
   CREDIT_EXCEEDED_MSG,
+  UPSTREAM_BILLING_MISMATCH_MSG,
   defaultVoiceForModel,
   formatUpstreamMediaError,
   isCreditExhaustedHttp,
+  parseOpenRouterAffordableTokens,
+  parseOpenRouterPromptAffordableTokens,
+  clampReservationMaxTokens,
+  clampMaxTokensToRemainingAfford,
   type MultiModalProviderInterface,
   type MultiModalToolSchemas,
   type ImageGenOptions,
@@ -38,9 +43,15 @@ import {
 /** Re-export for callers/tests that import helpers from this module. */
 export {
   CREDIT_EXCEEDED_MSG,
+  UPSTREAM_BILLING_MISMATCH_MSG,
   formatUpstreamMediaError,
   isCreditExhaustedHttp,
+  parseOpenRouterAffordableTokens,
+  parseOpenRouterPromptAffordableTokens,
+  clampReservationMaxTokens,
+  clampMaxTokensToRemainingAfford,
 } from './provider.js';
+// normalizeMarkusHubOrigin exported above with resolveMarkusRoute
 
 const log = createLogger('markus-provider');
 
@@ -271,6 +282,25 @@ export function resolveMarkusRoute(
 }
 
 /**
+ * Apex `markus.global` 307s to `www.markus.global`. Node/fetch strips
+ * `Authorization` on that cross-origin redirect → cu/sync 401 forever.
+ * Always prefer the www origin for Hub API calls.
+ */
+export function normalizeMarkusHubOrigin(originOrUrl: string): string {
+  const raw = (originOrUrl || '').trim().replace(/\/+$/, '');
+  if (!raw) return '';
+  try {
+    const u = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    if (u.hostname === 'markus.global') {
+      u.hostname = 'www.markus.global';
+    }
+    return u.origin;
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Normalize an outgoing model id before sending it to OpenRouter.
  *
  * Catalog / routing ids are OpenRouter slugs (e.g. `deepseek/deepseek-v4-flash`).
@@ -445,6 +475,41 @@ export class MarkusProvider implements MultiModalProviderInterface {
   /** Direct path: last/aggregate usage cost for local UX only (not ledgered by this client). */
   private lastCostUsd = 0;
   private totalCostUsd = 0;
+  /** Last OpenRouter prompt-token afford ceiling (from 402 "Prompt tokens limit exceeded"). */
+  private lastPromptAffordTokens: number | null = null;
+  /** When lastPromptAffordTokens was recorded (stale afford must not permanently block). */
+  private lastPromptAffordAt = 0;
+  /** Last observed prompt token count (from usage) for proactive max_tokens clamp. */
+  private lastPromptTokensEstimate: number | null = null;
+
+  /** Ignore cached OR prompt-afford after this (key top-ups / pack shrinks invalidate it). */
+  private static readonly PROMPT_AFFORD_TTL_MS = 90_000;
+
+  /** Prompt-token budget hint for context packing (null if unknown / expired). */
+  getLastPromptAffordTokens(): number | null {
+    if (this.lastPromptAffordTokens === null) return null;
+    if (Date.now() - this.lastPromptAffordAt > MarkusProvider.PROMPT_AFFORD_TTL_MS) {
+      log.info('Clearing stale OpenRouter prompt afford', {
+        promptAffordTokens: this.lastPromptAffordTokens,
+        ageMs: Date.now() - this.lastPromptAffordAt,
+      });
+      this.lastPromptAffordTokens = null;
+      this.lastPromptAffordAt = 0;
+      return null;
+    }
+    return this.lastPromptAffordTokens;
+  }
+
+  /** Drop cached afford after a successful turn or when Hub shows healthy OR USD. */
+  clearPromptAffordHint(reason?: string): void {
+    if (this.lastPromptAffordTokens === null) return;
+    log.info('Clearing OpenRouter prompt afford hint', {
+      promptAffordTokens: this.lastPromptAffordTokens,
+      reason: reason ?? 'manual',
+    });
+    this.lastPromptAffordTokens = null;
+    this.lastPromptAffordAt = 0;
+  }
 
   /** Fetch available models from the Hub live catalog. Cached 10 minutes. */
   async fetchModels(): Promise<MarkusModelInfo[]> {
@@ -571,13 +636,15 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
   private resolveHubBase(): string {
     const explicit = (this.hubUrl || process.env['MARKUS_HUB_URL'] || '').replace(/\/+$/, '');
-    if (explicit) return explicit;
-    if (this.modelsUrl) {
+    const raw = explicit || (() => {
+      if (!this.modelsUrl) return '';
       try {
         return new URL(this.modelsUrl).origin;
-      } catch { /* ignore */ }
-    }
-    return '';
+      } catch {
+        return '';
+      }
+    })();
+    return normalizeMarkusHubOrigin(raw);
   }
 
   private resolveHubToken(): string {
@@ -595,7 +662,12 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * Event-driven Hub sync: renew period if due, reconcile + align OpenRouter keys.
    * Used before soft-stop and once after upstream credit-exhausted responses.
    */
-  async syncHubCredits(opts?: { force?: boolean; minIntervalMs?: number }): Promise<{
+  async syncHubCredits(opts?: {
+    force?: boolean;
+    minIntervalMs?: number;
+    /** Default true. Set false when handling a 402 so the just-recorded afford packing hint survives. */
+    clearStaleAfford?: boolean;
+  }): Promise<{
     remainingCu: number;
     remainingUsd: number;
   } | null> {
@@ -633,6 +705,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
         if (this.lastQuotaInfo) {
           this.lastQuotaInfo = { ...this.lastQuotaInfo, cuRemaining: Math.max(remainingCu, 1) };
         }
+        // Preflight sync with healthy OR USD → drop stale fail-closed ceiling.
+        // Skip when clearStaleAfford=false (inside 402 handler — keep packing hint).
+        if (opts?.clearStaleAfford !== false && remainingUsd >= 0.05) {
+          this.clearPromptAffordHint('hub_sync_or_usd');
+        }
       } else {
         this.hubRemainingHint = 0;
       }
@@ -650,6 +727,77 @@ export class MarkusProvider implements MultiModalProviderInterface {
     return synced.remainingCu > 0 || synced.remainingUsd > 0;
   }
 
+  /**
+   * Resolve an upstream payment/credit HTTP status against Hub books.
+   * Only emit CU_EXCEEDED (+ credit modal) when Hub confirms remaining is zero.
+   *
+   * OpenRouter often 402s because omitted `max_tokens` defaults to a high
+   * reservation (e.g. 65536) while the key can only afford N. That clamp retry
+   * must NOT depend on Hub cu/sync succeeding — sync can 401 while the OR key
+   * is merely over-reserved (tonight's logs: cu/sync 401 → skipped clamp →
+   * misleading "Hub still shows remaining credits").
+   */
+  private async resolveCreditHttpError(
+    status: number,
+    errText: string,
+    alreadyRetried: boolean,
+  ): Promise<{ retry: true; maxTokens?: number }> {
+    const promptAfford = parseOpenRouterPromptAffordableTokens(errText);
+    if (promptAfford !== null) {
+      this.lastPromptAffordTokens = promptAfford;
+      this.lastPromptAffordAt = Date.now();
+      log.warn('OpenRouter prompt afford recorded for context packing', {
+        promptAffordTokens: promptAfford,
+        ttlMs: MarkusProvider.PROMPT_AFFORD_TTL_MS,
+      });
+    }
+
+    const affordable = parseOpenRouterAffordableTokens(errText);
+    // Keep the afford hint we just recorded for packing; do not clear on this sync.
+    const synced = await this.syncHubCredits({ force: true, clearStaleAfford: false });
+    const hubHasBudget = !!synced && (synced.remainingCu > 0 || synced.remainingUsd > 0);
+    const hubEmpty = !!synced && synced.remainingCu <= 0 && synced.remainingUsd <= 0;
+
+    // Prompt-limit 402s are not fixed by lowering max_tokens — packing must shrink next turn.
+    // Still allow a max_tokens clamp retry when OR only reports reservation afford.
+    if (!alreadyRetried && affordable !== null && promptAfford === null && !hubEmpty) {
+      const maxTokens = clampReservationMaxTokens(affordable);
+      log.info('Retrying with OpenRouter-affordable max_tokens', {
+        maxTokens,
+        affordable,
+        hubSynced: !!synced,
+        hubHasBudget,
+      });
+      return { retry: true, maxTokens };
+    }
+
+    if (!alreadyRetried && hubHasBudget) {
+      return { retry: true };
+    }
+
+    if (hubEmpty) {
+      fireCreditExhaustedEvent();
+      throw new Error(CREDIT_EXCEEDED_MSG);
+    }
+
+    const detail = (errText || '')
+      .replace(/https?:\/\/[^\s]*openrouter\.ai[^\s]*/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 180);
+
+    // Sync failed — do not claim Hub still has credits.
+    if (!synced) {
+      throw new Error(
+        `MARKUS_UPSTREAM_ERROR: Upstream returned a payment/credit error, and Hub credit sync failed. Please reconnect Hub or retry. (HTTP ${status}${detail ? `: ${detail}` : ''})`,
+      );
+    }
+
+    throw new Error(
+      `${UPSTREAM_BILLING_MISMATCH_MSG} (HTTP ${status}${detail ? `: ${detail}` : ''})`,
+    );
+  }
+
   /** Soft-stop before network I/O when remaining credits are already known to be zero. */
   private async assertCreditsAvailable(): Promise<void> {
     const softZero =
@@ -657,13 +805,22 @@ export class MarkusProvider implements MultiModalProviderInterface {
       || this.lastQuotaInfo?.cuRemaining === 0;
     if (!softZero) return;
 
-    if (await this.tryRecoverCredits()) return;
+    const synced = await this.syncHubCredits({ force: true });
+    if (synced && (synced.remainingCu > 0 || synced.remainingUsd > 0)) return;
 
-    fireCreditExhaustedEvent();
-    if (this.hubRemainingHint === 0) {
-      throw new Error('CU_EXCEEDED: Organization credits exhausted');
+    if (synced && synced.remainingCu <= 0 && synced.remainingUsd <= 0) {
+      fireCreditExhaustedEvent();
+      if (this.hubRemainingHint === 0) {
+        throw new Error('CU_EXCEEDED: Organization credits exhausted');
+      }
+      throw new Error('CU_EXCEEDED: Credits exhausted');
     }
-    throw new Error('CU_EXCEEDED: Credits exhausted');
+
+    // Sync unavailable — clear stale local zeros so we don't false-block.
+    this.hubRemainingHint = null;
+    if (this.lastQuotaInfo) {
+      this.lastQuotaInfo = { ...this.lastQuotaInfo, cuRemaining: -1 };
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -695,11 +852,13 @@ export class MarkusProvider implements MultiModalProviderInterface {
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
       if (isCreditExhaustedHttp(response.status, errText)) {
-        if (!_retried && await this.tryRecoverCredits()) {
-          return this.chat(request, true);
+        const outcome = await this.resolveCreditHttpError(response.status, errText, _retried);
+        if (outcome.retry) {
+          const next = outcome.maxTokens
+            ? { ...request, maxTokens: outcome.maxTokens }
+            : request;
+          return this.chat(next, true);
         }
-        fireCreditExhaustedEvent();
-        throw new Error(CREDIT_EXCEEDED_MSG);
       }
       throw new Error(`Markus proxy error ${response.status}: ${errText}`);
     }
@@ -719,6 +878,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
     }
     llmResponse.creditWarning = this.checkLowCredit();
     this.recordCU(llmResponse);
+    // Successful completion ⇒ key accepted this pack; drop stale afford ceiling.
+    this.clearPromptAffordHint('chat_success');
 
     return llmResponse;
   }
@@ -795,11 +956,13 @@ export class MarkusProvider implements MultiModalProviderInterface {
         throw new Error(`${prefix}: ${errText}`);
       }
       if (isCreditExhaustedHttp(res.status, errText)) {
-        if (!_retried && await this.tryRecoverCredits()) {
-          return this.chatStream(request, onEvent, signal, true);
+        const outcome = await this.resolveCreditHttpError(res.status, errText, _retried);
+        if (outcome.retry) {
+          const next = outcome.maxTokens
+            ? { ...request, maxTokens: outcome.maxTokens }
+            : request;
+          return this.chatStream(next, onEvent, signal, true);
         }
-        fireCreditExhaustedEvent();
-        throw new Error(CREDIT_EXCEEDED_MSG);
       }
       throw new Error(`Markus proxy error ${res.status}: ${errText}`);
     }
@@ -888,6 +1051,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
               const u = chunk.usage as Record<string, number>;
               promptTokens = u.prompt_tokens ?? 0;
               completionTokens = u.completion_tokens ?? 0;
+              if (promptTokens > 0) this.lastPromptTokensEstimate = promptTokens;
               if (target.route === 'openrouter') {
                 this.recordCostUsd(chunk.usage as Record<string, unknown>);
               }
@@ -947,6 +1111,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     streamResult.creditWarning = this.checkLowCredit();
 
     this.cuCache.add(promptTokens, completionTokens);
+    this.clearPromptAffordHint('stream_success');
     return streamResult;
   }
 
@@ -971,6 +1136,19 @@ export class MarkusProvider implements MultiModalProviderInterface {
     return stripMarkusNamespace((modelId ?? this.model ?? '').trim());
   }
 
+  /** Rough prompt-token estimate for proactive max_tokens clamp (chars/4). */
+  private estimateRequestPromptTokens(request: LLMRequest): number {
+    try {
+      const payload = JSON.stringify({
+        messages: request.messages,
+        tools: request.tools,
+      });
+      return Math.max(1, Math.ceil(payload.length / 4));
+    } catch {
+      return this.lastPromptTokensEstimate ?? 4_000;
+    }
+  }
+
   private buildBody(request: LLMRequest, stream: boolean, route: MarkusRoute): Record<string, unknown> {
     // Catalog ids are OR slugs; strip optional legacy `markus/` gateway prefix.
     const outgoingModel = this.resolveOutgoingModel(request.model);
@@ -985,7 +1163,19 @@ export class MarkusProvider implements MultiModalProviderInterface {
     };
     // Only cap output when a real value is known (from the request or config).
     // Otherwise omit it so the upstream uses the model's own maximum.
-    const maxTokens = request.maxTokens ?? this.maxTokens;
+    // Afford.S4: when prompt afford is known, proactively clamp so we never
+    // send a doomed high reservation (e.g. 13156) before the first 402.
+    let maxTokens = request.maxTokens ?? this.maxTokens;
+    if (this.lastPromptAffordTokens !== null && this.lastPromptAffordTokens > 0) {
+      const estimatedPrompt =
+        this.lastPromptTokensEstimate
+        ?? this.estimateRequestPromptTokens(request);
+      maxTokens = clampMaxTokensToRemainingAfford({
+        requested: maxTokens && maxTokens > 0 ? maxTokens : undefined,
+        promptAfford: this.lastPromptAffordTokens,
+        estimatedPrompt,
+      });
+    }
     if (maxTokens && maxTokens > 0) body['max_tokens'] = maxTokens;
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.tools?.length) body['tools'] = convertToolsForOpenRouter(request.tools);
@@ -1098,6 +1288,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
       extractReasoningText(message?.reasoning) ||
       extractReasoningText(message?.thinking) ||
       extractReasoningText(message?.reasoning_details);
+
+    if (usage?.prompt_tokens && usage.prompt_tokens > 0) {
+      this.lastPromptTokensEstimate = usage.prompt_tokens;
+    }
 
     const result: LLMResponse = {
       content,
@@ -1279,10 +1473,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * Always returns `data[].b64_json` (+ optional `media_type`) — never a durable URL.
    * We decode + persist immediately so callers never need to shuttle megabytes of base64.
    */
-  async generateImage(prompt: string, options?: ImageGenOptions): Promise<ImageResult[]> {
+  async generateImage(prompt: string, options?: ImageGenOptions, _retried = false): Promise<ImageResult[]> {
     if (!this.hasOpenRouterCreds()) {
       throw new Error('Image generation requires Markus OpenRouter credentials (Hub connect)');
     }
+    await this.assertCreditsAvailable();
     const model = this.resolveMediaModel(options?.model, 'image generation', 'openai/gpt-image-1');
     const endpoint = this.openaiCompatUrl('images');
     const body: Record<string, unknown> = {
@@ -1303,6 +1498,12 @@ export class MarkusProvider implements MultiModalProviderInterface {
     });
     if (!res.ok) {
       const errText = await res.text();
+      // Same as chat: never claim CU_EXCEEDED from OR 402 alone — Hub may still
+      // have budget (stale key / per-request reservation). Confirm via cu/sync.
+      if (isCreditExhaustedHttp(res.status, errText)) {
+        const outcome = await this.resolveCreditHttpError(res.status, errText, _retried);
+        if (outcome.retry) return this.generateImage(prompt, options, true);
+      }
       throw new Error(`Image generation API error ${formatUpstreamMediaError(res.status, errText)}`);
     }
     const data = await res.json() as {
@@ -1363,10 +1564,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * OpenRouter TTS: `POST /api/v1/audio/speech` → raw audio bytestream (not JSON).
    * Formats: `mp3` | `pcm` (default upstream is pcm — we always request mp3 unless overridden).
    */
-  async generateSpeech(text: string, options?: TTSOptions): Promise<AudioResult> {
+  async generateSpeech(text: string, options?: TTSOptions, _retried = false): Promise<AudioResult> {
     if (!this.hasOpenRouterCreds()) {
       throw new Error('TTS requires Markus OpenRouter credentials (Hub connect)');
     }
+    await this.assertCreditsAvailable();
     const endpoint = this.openaiCompatUrl('audio/speech');
     const model = this.resolveMediaModel(options?.model, 'TTS', 'deepgram/aura-2');
     // OpenRouter only documents mp3|pcm. Coerce other OpenAI-style formats to mp3.
@@ -1393,6 +1595,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
     });
     if (!res.ok) {
       const errText = await res.text();
+      if (isCreditExhaustedHttp(res.status, errText)) {
+        const outcome = await this.resolveCreditHttpError(res.status, errText, _retried);
+        if (outcome.retry) return this.generateSpeech(text, options, true);
+      }
       throw new Error(
         `TTS API error for model "${model}": ${formatUpstreamMediaError(res.status, errText)}. ` +
           `Retry with a different model arg (e.g. deepgram/aura-2 or minimax/speech-2.8-hd).`,
@@ -1415,10 +1621,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * (`data` = raw base64, `format` = wav|mp3|…). Response is `{ text }`.
    * Multipart also works, but JSON is the documented primary path and avoids the 25MB multipart cap.
    */
-  async transcribeSpeech(audio: Buffer, options?: STTOptions): Promise<string> {
+  async transcribeSpeech(audio: Buffer, options?: STTOptions, _retried = false): Promise<string> {
     if (!this.hasOpenRouterCreds()) {
       throw new Error('STT requires Markus OpenRouter credentials (Hub connect)');
     }
+    await this.assertCreditsAvailable();
     const endpoint = this.openaiCompatUrl('audio/transcriptions');
     const model = this.resolveMediaModel(options?.model, 'STT', 'deepgram/nova-3');
     const format = detectAudioFormat(audio);
@@ -1441,6 +1648,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
     });
     if (!res.ok) {
       const errText = await res.text();
+      if (isCreditExhaustedHttp(res.status, errText)) {
+        const outcome = await this.resolveCreditHttpError(res.status, errText, _retried);
+        if (outcome.retry) return this.transcribeSpeech(audio, options, true);
+      }
       throw new Error(`STT API error ${formatUpstreamMediaError(res.status, errText)}`);
     }
     const data = await res.json() as { text?: string };
@@ -1457,10 +1668,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * `output_modalities: ["video"]` and are NOT chat-completion models.
    * Workflow: POST /videos → poll polling_url → download unsigned_urls[0].
    */
-  async generateVideo(prompt: string, options?: VideoGenOptions): Promise<VideoResult> {
+  async generateVideo(prompt: string, options?: VideoGenOptions, _retried = false): Promise<VideoResult> {
     if (!this.hasOpenRouterCreds()) {
       throw new Error('Video generation requires Markus OpenRouter credentials (Hub connect)');
     }
+    await this.assertCreditsAvailable();
     const model = this.resolveMediaModel(options?.model, 'video generation', 'alibaba/happyhorse-1.1');
     const endpoint = this.openaiCompatUrl('videos');
     const body: Record<string, unknown> = { model, prompt };
@@ -1481,6 +1693,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
     });
     if (!createRes.ok) {
       const errText = await createRes.text();
+      if (isCreditExhaustedHttp(createRes.status, errText)) {
+        const outcome = await this.resolveCreditHttpError(createRes.status, errText, _retried);
+        if (outcome.retry) return this.generateVideo(prompt, options, true);
+      }
       throw new Error(`Video generation API error ${formatUpstreamMediaError(createRes.status, errText)}`);
     }
     const created = await createRes.json() as {

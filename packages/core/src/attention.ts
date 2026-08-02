@@ -126,6 +126,8 @@ export class AttentionController {
   private state: AttentionState = 'idle';
   private currentFocus: MailboxItem | undefined;
   private interruptSignal = false;
+  /** Explicit user cancel of the focused item (Cancel button) — not a new-mail preempt. */
+  private userCancelCurrent = false;
   private pendingInterruptItem: MailboxItem | undefined;
   private criticalInterruptResolve?: () => void;
   private running = false;
@@ -156,6 +158,8 @@ export class AttentionController {
 
   /** True while the runLoop's while-body is executing; false after the loop exits. */
   private loopAlive = false;
+  /** Bumped on each launchLoop so a superseded loop exits instead of double-consuming. */
+  private loopGeneration = 0;
 
   constructor(
     agentId: string,
@@ -212,15 +216,18 @@ export class AttentionController {
    * outer try-catch inside the loop body.
    */
   private launchLoop(): void {
-    this.loopPromise = this.runLoop().catch(err => {
-      if (this.running) {
+    const gen = ++this.loopGeneration;
+    // Wake any prior waiter so a superseded loop can exit cleanly.
+    this.mailbox.cancelWait();
+    this.loopPromise = this.runLoop(gen).catch(err => {
+      if (this.running && gen === this.loopGeneration) {
         log.error('Attention loop exited unexpectedly — restarting in 2 s', {
           agentId: this.agentId,
           error: String(err),
           stack: (err as Error)?.stack,
         });
         setTimeout(() => {
-          if (this.running) this.launchLoop();
+          if (this.running && gen === this.loopGeneration) this.launchLoop();
         }, 2000);
       }
     });
@@ -288,6 +295,26 @@ export class AttentionController {
               cleaned,
             });
           }
+          // Also age-out stale informational/callback ghosts while idle so the
+          // queue cannot fill with items that never reach pre-triage cleanup.
+          if (this.mailbox.depth > 0) {
+            const purged = this.mailbox.purgeStaleItems();
+            if (purged > 0) {
+              log.info('Watchdog: purged stale mailbox items', {
+                agentId: this.agentId,
+                purged,
+              });
+            }
+          }
+          // Self-heal lost-wakeup: idle with a non-empty queue means the loop
+          // is parked without having seen the enqueue signal — nudge it.
+          if (this.state === 'idle' && this.mailbox.depth > 0) {
+            log.warn('Watchdog: idle with queued mail — nudging attention loop', {
+              agentId: this.agentId,
+              queueDepth: this.mailbox.depth,
+            });
+            this.mailbox.nudgeIfPending();
+          }
         } catch (err) { log.debug('Triage scoring failed', { error: String(err) }); }
       }
     }, WATCHDOG_INTERVAL_MS);
@@ -312,10 +339,10 @@ export class AttentionController {
    * in the queue AND a TriageJudge is configured, perform LLM-driven
    * deliberation to decide which item to process first.
    */
-  private async runLoop(): Promise<void> {
+  private async runLoop(gen: number): Promise<void> {
     this.loopAlive = true;
     try {
-      while (this.running) {
+      while (this.running && gen === this.loopGeneration) {
         try {
           this.setState('idle');
           this.currentFocus = undefined;
@@ -329,8 +356,14 @@ export class AttentionController {
             item = await this.mailbox.dequeueAsync();
           } catch {
             // MailboxCancelledError (or any error) while not running → clean exit
-            if (!this.running) break;
+            if (!this.running || gen !== this.loopGeneration) break;
             continue;
+          }
+
+          // Superseded by a newer launchLoop — put the item back for the new loop.
+          if (gen !== this.loopGeneration) {
+            try { this.mailbox.putBack(item); } catch { /* ignore */ }
+            break;
           }
 
           if (!this.running) {
@@ -490,7 +523,7 @@ export class AttentionController {
         }
       }
     } finally {
-      this.loopAlive = false;
+      if (gen === this.loopGeneration) this.loopAlive = false;
     }
   }
 
@@ -752,6 +785,27 @@ export class AttentionController {
     this.lastYieldDecision = undefined;
   }
 
+  /**
+   * User clicked Cancel on the current focused mailbox item (Agent Profile).
+   * Forces the next yield point to return `cancel` so non-stream work
+   * (heartbeat / handleMessage) actually stops — not only SSE streams.
+   */
+  requestUserCancelCurrent(): void {
+    if (!this.currentFocus) return;
+    this.userCancelCurrent = true;
+    this.interruptSignal = true;
+    log.info('User cancel requested for current focus', {
+      agentId: this.agentId,
+      itemId: this.currentFocus.id,
+      type: this.currentFocus.sourceType,
+    });
+  }
+
+  /** Clear a pending user-cancel flag (e.g. after the focused item finishes). */
+  clearUserCancelCurrent(): void {
+    this.userCancelCurrent = false;
+  }
+
   /** True if a human_chat arrived during deliberation, signalling early abort. */
   get shouldAbortDeliberation(): boolean {
     return this.deliberationAbortSignal;
@@ -791,6 +845,17 @@ export class AttentionController {
     item?: MailboxItem;
     reasoning?: string;
   }> {
+    // Explicit Cancel button — stop current focus immediately (before new-mail logic).
+    if (this.userCancelCurrent && this.currentFocus) {
+      this.userCancelCurrent = false;
+      this.interruptSignal = false;
+      this.lastYieldDecision = 'cancel';
+      return {
+        decision: 'cancel',
+        reasoning: 'User cancelled current processing',
+      };
+    }
+
     // Deliberation is mostly atomic, but critical user messages (human_chat)
     // must still be able to preempt — users should never wait for deliberation.
     if (this.isDeliberating) {
@@ -1274,10 +1339,27 @@ export class AttentionController {
 
   dropItem(itemId: string, reason: string): boolean {
     const item = this.mailbox.getById(itemId);
-    if (!item || item.status !== 'queued') return false;
-    if (item.sourceType === 'human_chat') return false;
+    if (item) {
+      if (item.status !== 'queued') return false;
+      if (item.sourceType === 'human_chat') return false;
+      this.mailbox.drop(itemId);
+      const decision = this.recordDecision('drop', item, reason);
+      this.delegate?.onDecisionMade(decision);
+      return true;
+    }
+    // Ghost / already-handled: not in the live queue. Force-drop in persistence
+    // so the agent stops looping on "Item not found" for stale IDs.
     this.mailbox.drop(itemId);
-    const decision = this.recordDecision('drop', item, reason);
+    const decision = this.recordDecision('drop', {
+      id: itemId,
+      agentId: this.agentId,
+      sourceType: 'system_event',
+      priority: 4,
+      status: 'dropped',
+      payload: { summary: `Ghost/orphan drop: ${reason}`, content: reason },
+      metadata: {},
+      queuedAt: new Date().toISOString(),
+    }, reason);
     this.delegate?.onDecisionMade(decision);
     return true;
   }

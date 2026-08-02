@@ -255,7 +255,7 @@ Organization (Org)
 | **`NOTEBOOK.md`** | Persistent cognitive workspace — situational state, CPP/triage outputs | Always loaded as `## Notebook` |
 | **`MEMORY.md`** | Curated long-term knowledge + raw `## _observations` buffer | Curated sections as `## Your Knowledge`; observations excluded |
 
-The **dream cycle** (`memory_consolidation`) operates within `MEMORY.md` — consolidating observations into curated sections and pruning stale content.
+The **dream cycle** (`memory_consolidation`) operates within `knowledge.md` — consolidating observations into curated sections and pruning stale content. Post-task learning uses a separate `distillation` scenario ([LEARNING-LOOP.md](./LEARNING-LOOP.md) §0 / §2).
 
 **Memory layers (Tulving's classification):**
 
@@ -405,6 +405,24 @@ LLMRouter
 - Supports streaming (SSE) and non-streaming modes
 - Timeouts: chat 60s / stream 120s
 - Auto-fallback to backup provider on failure
+- **Exception**: `CU_EXCEEDED` / `MARKUS_RATE_LIMITED` (Markus Cloud credits) must **not** fall back to user BYOK providers — surface top-up/upgrade instead
+
+### 3.9 Billing client (Hub CU)
+
+Desktop does **not** own a separate personal ledger. Plan, quota, and keys come from the user's **Hub organization**. Authoritative Hub docs (sibling repo `markus-hub`):
+
+- Subscription / CU / Waffo: `docs/subscription-billing.md`
+- OpenRouter keys / hard-stop / reconcile: `docs/model-service.md`
+
+Client touchpoints:
+
+| Surface | Role |
+|---------|------|
+| `MarkusProvider` | Member OR key; on 402 / soft stop → `POST /api/user/cu/sync` once, then retry or emit `CU_EXCEEDED` only if Hub remaining is zero |
+| `LLMRouter` | Must not route Markus credit exhaustion to BYOK |
+| OverviewUsage / claim UI | Reads `GET /api/user/plan`; Free claim deep-links to Hub `?claim=1` |
+
+Frozen response-field contract (keep in sync with Hub handlers): [`packages/core/test/hub-billing-contract.test.ts`](../packages/core/test/hub-billing-contract.test.ts) — mirrors Hub `billing-crossflows` plan + `cu/sync` keys (`remainingCu`, `openrouter.remainingUsd`, `planSource`, buckets, etc.).
 
 ---
 

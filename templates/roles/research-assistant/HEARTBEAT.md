@@ -18,7 +18,7 @@
   - What research methods or source evaluation approaches worked well?
   - Were there citation or synthesis patterns worth reusing?
   - Save insights via `memory_save` with `tags: ["insight", "research"]` and `[INSIGHT]` format.
-  - Promote repeatable research workflows to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - Promote repeatable research workflows to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
 
 ## Self-Evolution
 

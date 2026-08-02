@@ -905,10 +905,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   return (
     <div className="flex-1 flex overflow-hidden">
-      {/* Settings Sidebar */}
+      {/* Settings Sidebar — on macOS Electron this is the window edge (main app
+          sidebar is hidden), so the header must clear traffic lights. */}
       <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-border-default bg-surface-secondary overflow-y-auto">
-        <div className="px-3 pt-4 pb-2">
+        <div data-electron-drag className="electron-mac-top-safe px-3 pt-4 pb-2">
           <button
+            data-no-drag
             onClick={() => { navBus.navigate(PAGE.HOME); }}
             className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-fg-secondary hover:text-fg-primary hover:bg-surface-overlay transition-colors"
           >
@@ -1824,7 +1826,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
               <button
                 onClick={async () => {
-                  const newVal = !(llm?.autoFallback ?? true);
+                  const newVal = !(llm?.autoFallback ?? false);
                   try {
                     const res = await fetch('/api/settings/llm', {
                       method: 'POST', headers: authHeaders(),
@@ -1836,9 +1838,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     }
                   } catch { /* ignore */ }
                 }}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? true) ? 'bg-green-500' : 'bg-gray-600'}`}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? false) ? 'bg-green-500' : 'bg-gray-600'}`}
               >
-                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? true) ? 'translate-x-4' : 'translate-x-1'}`} />
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? false) ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
             </div>
           </div>

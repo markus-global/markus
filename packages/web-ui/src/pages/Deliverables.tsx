@@ -750,7 +750,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
       {/* Left sidebar — always mounted on mobile to preserve scroll position */}
       <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0`}
         style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : sidebarCollapsed ? { display: 'none' } : { width: listPanel.width }}>
-        <div className="p-4 space-y-3">
+        <div data-electron-drag className="p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
               {isMobile && <MobileMenuButton />}
@@ -990,10 +990,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         </div>
       )}
 
-      {/* Right detail panel */}
+      {/* Right detail panel — data-no-drag keeps absolute FAB positioning stable
+          under Electron -webkit-app-region rules. */}
       {(!isMobile || mobileShowDetail) && (
-      <div className="flex-1 overflow-hidden min-w-0 flex relative">
-        <div ref={detailContentRef} className="flex-1 overflow-y-auto min-w-0">
+      <div data-no-drag className="flex-1 overflow-hidden min-w-0 flex relative self-stretch">
+        <div ref={detailContentRef} className="flex-1 overflow-y-auto min-w-0 h-full">
         {/* Expand sidebar button — shown when collapsed */}
         {sidebarCollapsed && !isMobile && (
           <div className="sticky top-0 z-10 bg-surface-primary/80 backdrop-blur-sm px-4 py-2 flex items-center gap-2">
@@ -1286,7 +1287,13 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                       </div>
                     ) : (
                       <div key="preview" className="animate-fadeIn">
-                      <ContentRenderer content={previewContent} format={previewFormat} className="text-fg-secondary text-sm" onHtmlSelection={handleHtmlSelection} />
+                      <ContentRenderer
+                        content={previewContent}
+                        format={previewFormat}
+                        className="text-fg-secondary text-sm"
+                        onHtmlSelection={handleHtmlSelection}
+                        basePath={selected?.reference ? selected.reference.replace(/[/\\][^/\\]+$/, '') : undefined}
+                      />
                       </div>
                     )
                   ) : showCopyPath ? (
@@ -1328,11 +1335,12 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
       </div>
 
-        {/* Floating chat FAB — positioned in the non-scrolling parent */}
+        {/* Floating chat FAB — bottom-right of the detail panel (not the viewport) */}
         {selected?.agentId && !chatPanelOpen && !isMobile && (
           <button
+            type="button"
             onClick={() => setChatPanelOpen(true)}
-            className="absolute bottom-6 right-6 w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-all hover:scale-105 z-20 animate-fab-in"
+            className="absolute bottom-6 right-6 z-20 w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-transform hover:scale-105 animate-fab-in"
             title={t('chat.openChat')}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

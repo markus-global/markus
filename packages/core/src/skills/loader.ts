@@ -1,4 +1,4 @@
-import { createLogger, readManifest } from '@markus/shared';
+import { createLogger, readManifest, tokenizeSearchQuery, scoreKeywordHaystack } from '@markus/shared';
 import type { SkillManifest, SkillInstance, SkillCategory } from './types.js';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -183,12 +183,22 @@ export class SkillLoader {
     }
 
     if (query?.text) {
-      const lower = query.text.toLowerCase();
-      manifests = manifests.filter(m =>
-        m.name.toLowerCase().includes(lower) ||
-        m.description.toLowerCase().includes(lower) ||
-        m.tags?.some(t => t.toLowerCase().includes(lower))
-      );
+      const tokens = tokenizeSearchQuery(query.text);
+      const full = query.text.trim().toLowerCase();
+      if (tokens.length > 0) {
+        const scored = manifests
+          .map((m) => ({
+            m,
+            score: scoreKeywordHaystack(
+              `${m.name} ${m.description} ${(m.tags ?? []).join(' ')}`,
+              tokens,
+              full,
+            ),
+          }))
+          .filter((x) => x.score > 0)
+          .sort((a, b) => b.score - a.score);
+        manifests = scored.map((x) => x.m);
+      }
     }
 
     return { manifests, total: manifests.length };

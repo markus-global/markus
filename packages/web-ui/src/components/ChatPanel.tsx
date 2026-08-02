@@ -7,13 +7,13 @@ import {
 } from '../api.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 import {
-  AgentMessageBody, segmentsToStreamEntries, friendlyAgentError,
+  AgentMessageBody, MessageActions, RememberModal, friendlyAgentError,
 } from '../pages/ChatComponents.tsx';
 import { Avatar } from './Avatar.tsx';
 import { ChatInput, type ContextChip, type MentionItem, type MentionChip } from './ChatInput.tsx';
 import {
   type MsgSegment, type ChatMsg,
-  dbMsgToChat, stripNotifyContext, storedSegmentsToMsgSegments,
+  dbMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt, storedSegmentsToMsgSegments,
   appendLiveOutput, appendSubagentLog,
   formatSmartTime, getDateKey, formatDateLabel,
 } from '../pages/ChatHelpers.ts';
@@ -149,11 +149,22 @@ export function ChatPanel({
       const isNotify = !isUserTurn && (!!meta.notifyUser || displayMessage !== message);
       const fallbackUserText = typeof meta.userText === 'string' ? meta.userText : '';
       const fallbackUserId = typeof meta.userMessageId === 'string' ? meta.userMessageId : '';
+      const createdAt =
+        (typeof meta.createdAt === 'string' && meta.createdAt)
+        || (typeof (event as { timestamp?: string }).timestamp === 'string'
+          ? (event as { timestamp: string }).timestamp
+          : undefined)
+        || new Date().toISOString();
+      const displayTime = (() => {
+        try { return new Date(createdAt).toLocaleTimeString(); }
+        catch { return new Date().toLocaleTimeString(); }
+      })();
       const newMsg: ChatMsg = {
         id: messageId || `proactive_${Date.now()}`,
         sender: isUserTurn ? 'user' : 'agent',
         text: displayMessage,
-        time: new Date().toLocaleTimeString(),
+        time: displayTime,
+        rawCreatedAt: createdAt,
         ...(isUserTurn
           ? {}
           : {
@@ -171,15 +182,16 @@ export function ChatPanel({
             || (m.sender === 'user' && m.text === fallbackUserText),
           );
           if (!hasUser) {
-            base = [...base, {
+            base = insertChatMsgByCreatedAt(base, {
               id: fallbackUserId || `feishu_user_${newMsg.id}`,
               sender: 'user' as const,
               text: fallbackUserText,
-              time: new Date().toLocaleTimeString(),
-            }];
+              time: displayTime,
+              rawCreatedAt: createdAt,
+            });
           }
         }
-        return [...base, newMsg];
+        return insertChatMsgByCreatedAt(base, newMsg);
       });
     });
     return unsub;
@@ -204,33 +216,42 @@ export function ChatPanel({
     void api.agents.cancelProcessing(agentId).catch(() => {});
   }, [agentId]);
 
-  const send = useCallback(async () => {
-    const parts: string[] = [];
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [rememberTarget, setRememberTarget] = useState<ChatMsg | null>(null);
+  const [rememberBusy, setRememberBusy] = useState(false);
 
-    if (currentMentionChips.length > 0) {
-      parts.push(currentMentionChips.map(c => `@[${c.name}](${c.entityType}:${c.entityId})`).join(' '));
-    }
+  const send = useCallback(async (overrideText?: string, sessionIdOverride?: string | null) => {
+    let text = overrideText?.trim() ?? '';
+    if (!text) {
+      const parts: string[] = [];
 
-    if (contextChips?.length) {
-      for (const chip of contextChips) {
-        parts.push(`[${chip.type}: ${chip.label}]\n${chip.content}`);
+      if (currentMentionChips.length > 0) {
+        parts.push(currentMentionChips.map(c => `@[${c.name}](${c.entityType}:${c.entityId})`).join(' '));
       }
+
+      if (contextChips?.length) {
+        for (const chip of contextChips) {
+          parts.push(`[${chip.type}: ${chip.label}]\n${chip.content}`);
+        }
+      }
+
+      if (input.trim()) parts.push(input.trim());
+      text = parts.join('\n\n');
     }
-
-    if (input.trim()) parts.push(input.trim());
-
-    const text = parts.join('\n\n');
     if (!text) return;
 
-    setInput('');
-    setCurrentMentionChips([]);
+    if (!overrideText) {
+      setInput('');
+      setCurrentMentionChips([]);
+    }
     userAtBottomRef.current = true;
     setSending(true);
     setActivities([]);
 
+    const streamSessionId = sessionIdOverride !== undefined ? sessionIdOverride : sessionId;
     const agentMsgId = `a_${Date.now()}`;
-    const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString() };
     const agentCreatedAt = new Date().toISOString();
+    const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt };
 
     setMessages(prev => [
       ...prev,
@@ -416,7 +437,7 @@ export function ChatPanel({
         handleToolEvent,
         abortCtrl.signal,
         undefined,
-        sessionId,
+        streamSessionId,
         undefined,
         undefined,
         handleCommitEvent,
@@ -510,8 +531,44 @@ export function ChatPanel({
     abortRef.current = null;
   }, [input, agentId, sessionId, t, currentMentionChips, contextChips]);
 
+  const handleCopy = useCallback((msg: ChatMsg) => {
+    void navigator.clipboard.writeText(msg.text || '').then(() => {
+      setCopiedMsgId(msg.id);
+      setTimeout(() => setCopiedMsgId(prev => (prev === msg.id ? null : prev)), 1500);
+    });
+  }, []);
+
+  const handleRememberConfirm = async (userNote: string) => {
+    if (!rememberTarget || !sessionId) return;
+    setRememberBusy(true);
+    try {
+      const result = await api.agents.evolveFromMessage(agentId, {
+        parentSessionId: sessionId,
+        sourceMessageId: rememberTarget.id.startsWith('a_') || rememberTarget.id.startsWith('u_')
+          ? undefined
+          : rememberTarget.id,
+        sourceText: (rememberTarget.text || '').slice(0, 500) || undefined,
+        userNote: userNote.trim() || undefined,
+      });
+      setRememberTarget(null);
+      setSessionId(result.sessionId);
+      setMessages([]);
+      await send(result.seedPrompt, result.sessionId);
+    } catch (err) {
+      console.error('evolve-from-message failed', err);
+    } finally {
+      setRememberBusy(false);
+    }
+  };
+
   const lastMsg = messages[messages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
+  const lastAgentMsgId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]!.sender === 'agent') return messages[i]!.id;
+    }
+    return null;
+  }, [messages]);
 
   const [entityMentions, setEntityMentions] = useState<MentionItem[]>([]);
 
@@ -596,7 +653,9 @@ export function ChatPanel({
             const prevMsg = idx > 0 ? messages[idx - 1] : null;
             const curDate = getDateKey(msg.rawCreatedAt);
             const prevDate = prevMsg ? getDateKey(prevMsg.rawCreatedAt) : '';
-            const showDateSep = curDate && curDate !== prevDate;
+            // Both sides need a date — missing rawCreatedAt on optimistic bubbles used to
+            // insert a spurious "Today" divider between every user/agent pair.
+            const showDateSep = Boolean(curDate && prevDate && curDate !== prevDate);
             const isLastMsg = idx === messages.length - 1;
             const isStreamingMsg = isLastPending && isLastMsg;
             const showStreamingBubble = isStreamingMsg;
@@ -628,8 +687,8 @@ export function ChatPanel({
                       <span className="text-[10px] text-fg-tertiary">{formatSmartTime(msg.time, msg.rawCreatedAt, dateLabels)}</span>
                     </div>
                     <div className={`mt-0.5 ${msg.sender === 'agent' ? 'py-0.5' : 'bg-surface-secondary rounded-xl px-3 py-2 w-fit max-w-full'} ${
-                      msg.isError ? 'border-b-2 border-red-500/60' : ''
-                    } ${showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''}`}>
+                      showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''
+                    }`}>
                       {msg.sender === 'user'
                         ? <div className="text-sm text-fg-secondary whitespace-pre-wrap">{msg.text}</div>
                         : msg.segments && msg.segments.length > 0
@@ -638,9 +697,21 @@ export function ChatPanel({
                               isStreaming={isStreamingMsg}
                               liveActivities={isStreamingMsg ? activities : []}
                             />
-                          : <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" />
+                          : msg.isError || msg.text.startsWith('⚠')
+                            ? <div className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">{msg.text.replace(/^⚠\s*/, '')}</div>
+                            : <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" />
                       }
                     </div>
+                    {!isStreamingMsg && (
+                      <MessageActions
+                        msg={msg}
+                        onCopy={handleCopy}
+                        onRemember={setRememberTarget}
+                        showRemember
+                        isCopied={copiedMsgId === msg.id}
+                        isLastAgentMsg={msg.id === lastAgentMsgId}
+                      />
+                    )}
                   </div>
                 </div>
               </div>
@@ -649,6 +720,14 @@ export function ChatPanel({
         )}
         <div ref={messagesEndRef} />
       </div>
+
+      {rememberTarget && (
+        <RememberModal
+          busy={rememberBusy}
+          onConfirm={(note) => { void handleRememberConfirm(note); }}
+          onCancel={() => { if (!rememberBusy) setRememberTarget(null); }}
+        />
+      )}
 
       {/* Scroll to bottom */}
       {showScrollBtn && (
@@ -670,7 +749,7 @@ export function ChatPanel({
         <ChatInput
           value={input}
           onChange={setInput}
-          onSend={send}
+          onSend={() => { void send(); }}
           disabled={!agentId}
           placeholder={t('page.placeholder.direct')}
           sending={sending}

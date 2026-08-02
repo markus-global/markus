@@ -8,10 +8,52 @@
  * Agent control: webContents.debugger speaks CDP — the same protocol used by
  * chrome-devtools-mcp / the Chrome extension bridge.
  */
+import { existsSync, statSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebContentsView, session, type BrowserWindow } from 'electron';
 import { getMainWindow } from './window.js';
 
 const PARTITION = 'persist:markus-embedded-browser';
+
+/**
+ * Accept http(s), file://, about:blank, and bare filesystem paths so the
+ * address bar / agent tools can open local files (e.g. /Users/.../logo.png).
+ */
+export function normalizeEmbeddedBrowserUrl(raw: string): string {
+  const next = raw.trim();
+  if (!next) return next;
+  if (next === 'about:blank') return next;
+
+  if (/^[a-z][a-z0-9+.-]*:/i.test(next)) {
+    if (/^file:/i.test(next)) {
+      try { return new URL(next).href; } catch { /* repair below */ }
+      const rest = next.replace(/^file:/i, '').replace(/\\/g, '/');
+      const path = rest.replace(/^\/\/(localhost)?/i, '') || rest;
+      const abs = path.startsWith('/') || /^[a-zA-Z]:\//.test(path)
+        ? (path.startsWith('/') && /^\/[a-zA-Z]:\//.test(path) ? path.slice(1) : path)
+        : `/${path}`;
+      try { return pathToFileURL(abs).href; } catch { return next; }
+    }
+    return next;
+  }
+
+  // Absolute local paths
+  if (next.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(next) || next.startsWith('\\\\')) {
+    try { return pathToFileURL(next).href; } catch { return next; }
+  }
+
+  return `https://${next}`;
+}
+
+/** If url is a local file:// directory, return its filesystem path; else null. */
+export function localDirectoryPathFromUrl(url: string): string | null {
+  if (!url || !/^file:/i.test(url)) return null;
+  try {
+    const p = fileURLToPath(url);
+    if (existsSync(p) && statSync(p).isDirectory()) return p;
+  } catch { /* ignore */ }
+  return null;
+}
 
 /** Working viewport while the native view is hidden (agent CDP / layout). */
 const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
@@ -24,6 +66,17 @@ interface BrowserSlot {
   visible: boolean;
   /** Defer first load until a non-zero working viewport exists. */
   pendingUrl?: string;
+  /** True while webContents is loading a document. */
+  isLoading: boolean;
+  /** Last load failure message (cleared on next successful start). */
+  loadError?: string;
+  /**
+   * When set, navigation targeted a local directory. Chromium cannot render
+   * folders — UI should show a friendly prompt and hide the native view.
+   */
+  directoryPath?: string;
+  /** file:// URL corresponding to directoryPath (for the address bar). */
+  directoryUrl?: string;
   /** True after agent CDP Emulation.setDeviceMetricsOverride; cleared when UI size changes. */
   hasDeviceMetricsOverride?: boolean;
   lastUiX?: number;
@@ -81,9 +134,36 @@ function ensureWorkingViewport(slot: BrowserSlot): void {
 function flushPendingUrl(slot: BrowserSlot): void {
   if (!slot.pendingUrl) return;
   ensureWorkingViewport(slot);
-  const pending = slot.pendingUrl;
+  const pending = normalizeEmbeddedBrowserUrl(slot.pendingUrl);
   slot.pendingUrl = undefined;
+  if (applyDirectoryNavigation(slot, pending)) return;
   void slot.view.webContents.loadURL(pending).catch(() => {});
+}
+
+/** Intercept local directory navigations — Chromium returns ERR_FILE_NOT_FOUND. */
+function applyDirectoryNavigation(slot: BrowserSlot, url: string): boolean {
+  const dir = localDirectoryPathFromUrl(url);
+  if (!dir) {
+    slot.directoryPath = undefined;
+    slot.directoryUrl = undefined;
+    return false;
+  }
+  slot.directoryPath = dir;
+  slot.directoryUrl = url;
+  slot.isLoading = false;
+  slot.loadError = undefined;
+  try { slot.view.webContents.stop(); } catch { /* ignore */ }
+  // Do not loadURL — React shows a folder prompt while the native view is hidden.
+  emitPageEvent({
+    type: 'directory',
+    pageId: slot.pageId,
+    browserId: slot.id,
+    url,
+    directoryPath: dir,
+    isLoading: false,
+    title: dir.split(/[/\\]/).filter(Boolean).pop() || dir,
+  });
+  return true;
 }
 
 const slots = new Map<string, BrowserSlot>();
@@ -92,11 +172,14 @@ let nextPageId = 1;
 let selectedPageId: number | null = null;
 
 export type EmbeddedPageListener = (event: {
-  type: 'opened' | 'closed' | 'navigated' | 'selected';
+  type: 'opened' | 'closed' | 'navigated' | 'selected' | 'loading' | 'loaded' | 'load-failed' | 'directory';
   pageId: number;
   browserId: string;
   url?: string;
   title?: string;
+  isLoading?: boolean;
+  error?: string;
+  directoryPath?: string;
 }) => void;
 
 const pageListeners = new Set<EmbeddedPageListener>();
@@ -129,6 +212,29 @@ function allocatePageId(id: string): number {
   return pageId;
 }
 
+/**
+ * Open target=_blank / window.open into a right-panel tab instead of an OS popup.
+ * Emits `opened` so the renderer creates a tab (browserId must not be `eb_*`).
+ */
+function openUrlInNewEmbeddedTab(rawUrl: string): void {
+  const target = normalizeEmbeddedBrowserUrl(rawUrl || 'about:blank');
+  if (!target) return;
+  // Deny non-navigable schemes (javascript:, etc.)
+  if (!/^(https?:|file:|about:)/i.test(target)) return;
+  const newId = `rb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const created = createEmbeddedBrowser(newId, target);
+  if (created.ok && created.pageId !== null && created.pageId !== undefined) {
+    selectedPageId = created.pageId;
+    emitPageEvent({
+      type: 'selected',
+      pageId: created.pageId,
+      browserId: newId,
+      url: target,
+      title: target === 'about:blank' ? 'New Tab' : target,
+    });
+  }
+}
+
 export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; pageId?: number; error?: string } {
   try {
     const win = getWin();
@@ -159,6 +265,58 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
     win.contentView.addChildView(view);
     try { (view as ViewWithVisibility).setVisible?.(false); } catch { /* ignore */ }
 
+    // Links with target=_blank / window.open → new right-panel tab (no popup window).
+    view.webContents.setWindowOpenHandler(({ url: openUrl }) => {
+      const next = (openUrl || '').trim();
+      if (next && next !== 'about:blank') {
+        openUrlInNewEmbeddedTab(next);
+        return { action: 'deny' };
+      }
+      // window.open() with no URL often uses about:blank then navigates.
+      // Allow a hidden guest briefly, then steal the first real navigation into a tab.
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          show: false,
+          width: 0,
+          height: 0,
+          webPreferences: {
+            partition: PARTITION,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+          },
+        },
+      };
+    });
+    view.webContents.on('did-create-window', (childWindow) => {
+      const child = childWindow.webContents;
+      let captured = false;
+      const capture = (navUrl: string) => {
+        if (captured) return;
+        const next = (navUrl || '').trim();
+        if (!next || next === 'about:blank') return;
+        captured = true;
+        try { childWindow.close(); } catch { /* ignore */ }
+        openUrlInNewEmbeddedTab(next);
+      };
+      child.on('will-navigate', (e, navUrl) => {
+        e.preventDefault();
+        capture(navUrl);
+      });
+      child.on('did-navigate', (_e, navUrl) => capture(navUrl));
+      child.on('page-title-updated', () => {
+        const u = child.getURL();
+        if (u && u !== 'about:blank') capture(u);
+      });
+      // Safety: never leave a hidden popup around.
+      setTimeout(() => {
+        if (!captured) {
+          try { childWindow.close(); } catch { /* ignore */ }
+        }
+      }, 15_000);
+    });
+
     view.webContents.on('page-title-updated', (_e, title) => {
       emitPageEvent({ type: 'navigated', pageId, browserId: id, url: view.webContents.getURL(), title });
     });
@@ -167,6 +325,61 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
     });
     view.webContents.on('did-navigate-in-page', (_e, navUrl) => {
       emitPageEvent({ type: 'navigated', pageId, browserId: id, url: navUrl, title: view.webContents.getTitle() });
+    });
+    view.webContents.on('did-start-loading', () => {
+      const s = slots.get(id);
+      if (!s) return;
+      s.isLoading = true;
+      s.loadError = undefined;
+      emitPageEvent({
+        type: 'loading',
+        pageId,
+        browserId: id,
+        url: view.webContents.getURL(),
+        isLoading: true,
+      });
+    });
+    view.webContents.on('did-stop-loading', () => {
+      const s = slots.get(id);
+      if (!s) return;
+      s.isLoading = false;
+      emitPageEvent({
+        type: 'loaded',
+        pageId,
+        browserId: id,
+        url: view.webContents.getURL(),
+        title: view.webContents.getTitle(),
+        isLoading: false,
+      });
+      // Pages that finish loading just after a show/restack can paint blank
+      // until bounds are reapplied — nudge the surface if this tab is on screen.
+      if (s.visible) {
+        try {
+          const b = s.view.getBounds();
+          if (b.width >= 2 && b.height >= 2) {
+            s.view.setBounds(b);
+            setSlotPainted(s, true);
+          }
+        } catch { /* ignore */ }
+      }
+    });
+    view.webContents.on('did-fail-load', (_e, _code, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return;
+      const s = slots.get(id);
+      if (!s) return;
+      s.isLoading = false;
+      const failedUrl = validatedURL || view.webContents.getURL();
+      // Fallback: directory navigations that slipped past the pre-check.
+      if (applyDirectoryNavigation(s, normalizeEmbeddedBrowserUrl(failedUrl))) return;
+      s.loadError = errorDescription || 'Load failed';
+      emitPageEvent({
+        type: 'load-failed',
+        pageId,
+        browserId: id,
+        url: failedUrl,
+        isLoading: false,
+        error: s.loadError,
+      });
     });
     view.webContents.on('did-finish-load', () => {
       const s = slots.get(id);
@@ -178,7 +391,8 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
       pageId,
       view,
       visible: false,
-      pendingUrl: url || undefined,
+      pendingUrl: url ? normalizeEmbeddedBrowserUrl(url) : undefined,
+      isLoading: false,
       lastUiWidth: DEFAULT_VIEWPORT.width,
       lastUiHeight: DEFAULT_VIEWPORT.height,
     };
@@ -287,6 +501,17 @@ export function setEmbeddedBrowserBounds(
       slot.layoutAligned = false;
     } else {
       const sizeChanged = slot.lastUiWidth !== w || slot.lastUiHeight !== h;
+      const becomingVisible = !slot.visible;
+      // Only re-stack when showing a hidden view. Doing remove/addChildView on
+      // every bounds sync (scroll/ResizeObserver) tears down the compositor and
+      // leaves a blank page until the next layout change.
+      if (becomingVisible) {
+        const win = getWin();
+        if (win) {
+          try { win.contentView.removeChildView(slot.view); } catch { /* not attached */ }
+          try { win.contentView.addChildView(slot.view); } catch { /* ignore */ }
+        }
+      }
       slot.view.setBounds({ x, y, width: w, height: h });
       slot.lastUiX = x;
       slot.lastUiY = y;
@@ -295,7 +520,7 @@ export function setEmbeddedBrowserBounds(
       setSlotPainted(slot, true);
       // Re-align when size changes, when first shown, or when agent left a
       // sticky device-metrics override (common after snapshot/resize_page).
-      if (sizeChanged || slot.hasDeviceMetricsOverride || !slot.layoutAligned) {
+      if (sizeChanged || becomingVisible || slot.hasDeviceMetricsOverride || !slot.layoutAligned) {
         alignLayoutViewportToUi(slot);
         slot.layoutAligned = true;
       }
@@ -313,7 +538,9 @@ export function navigateEmbeddedBrowser(id: string, url: string): { ok: boolean;
   try {
     ensureWorkingViewport(slot);
     slot.pendingUrl = undefined;
-    void slot.view.webContents.loadURL(url);
+    const target = normalizeEmbeddedBrowserUrl(url);
+    if (applyDirectoryNavigation(slot, target)) return { ok: true };
+    void slot.view.webContents.loadURL(target);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -330,8 +557,12 @@ export function embeddedBrowserAction(
   try {
     if (action === 'back' && wc.canGoBack()) wc.goBack();
     else if (action === 'forward' && wc.canGoForward()) wc.goForward();
-    else if (action === 'reload') wc.reload();
-    else if (action === 'stop') wc.stop();
+    else if (action === 'reload') {
+      if (slot.directoryUrl && applyDirectoryNavigation(slot, slot.directoryUrl)) {
+        return { ok: true };
+      }
+      wc.reload();
+    } else if (action === 'stop') wc.stop();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -344,6 +575,9 @@ export function getEmbeddedBrowserState(id: string): {
   title?: string;
   canGoBack?: boolean;
   canGoForward?: boolean;
+  isLoading?: boolean;
+  loadError?: string;
+  directoryPath?: string;
   pageId?: number;
   error?: string;
 } {
@@ -352,10 +586,16 @@ export function getEmbeddedBrowserState(id: string): {
   const wc = slot.view.webContents;
   return {
     ok: true,
-    url: wc.getURL(),
-    title: wc.getTitle(),
+    // Prefer the directory file:// URL so the address bar stays meaningful.
+    url: slot.directoryUrl || wc.getURL(),
+    title: slot.directoryPath
+      ? (slot.directoryPath.split(/[/\\]/).filter(Boolean).pop() || slot.directoryPath)
+      : wc.getTitle(),
     canGoBack: wc.canGoBack(),
     canGoForward: wc.canGoForward(),
+    isLoading: slot.isLoading || wc.isLoading(),
+    loadError: slot.loadError,
+    directoryPath: slot.directoryPath,
     pageId: slot.pageId,
   };
 }

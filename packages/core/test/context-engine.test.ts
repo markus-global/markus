@@ -537,3 +537,236 @@ describe('buildSystemPrompt knowledge and deliverables', () => {
     expect(result.text).toContain('Sprint 12');
   });
 });
+
+describe('context budget overhaul', () => {
+  it('keeps skill full bodies out of chat prompt until dynamicContext activates them', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const skillBody = 'UNIQUE_SKILL_BODY_AGENT_BUILDING_XYZ — write manifests under builder-artifacts';
+
+    const before = await engine.buildSystemPrompt({
+      agentId: 'agt_sec',
+      agentName: 'Secretary',
+      role: MOCK_ROLE,
+      memory,
+      scenario: 'chat',
+      availableSkills: [{
+        name: 'agent-building',
+        description: 'Design agent packages',
+        category: 'development',
+      }],
+      identity: {
+        self: {
+          id: 'agt_sec',
+          name: 'Secretary',
+          role: 'Secretary',
+          agentRole: 'manager',
+          skills: ['agent-building'],
+        },
+        organization: { id: 'org_1', name: 'Acme' },
+        colleagues: [],
+        humans: [],
+      },
+    });
+
+    expect(before.text).toContain('agent-building');
+    expect(before.text).toContain('discover_tools');
+    expect(before.text).not.toContain(skillBody);
+    expect(before.text).not.toContain('## Task & Requirement Workflow');
+    expect(before.text).toContain('## Task Workflow (summary)');
+    expect(before.text).not.toContain('## Quality Gates');
+
+    const after = await engine.buildSystemPrompt({
+      agentId: 'agt_sec',
+      agentName: 'Secretary',
+      role: MOCK_ROLE,
+      memory,
+      scenario: 'chat',
+      dynamicContext: `<skill name="agent-building">\n${skillBody}\n</skill>`,
+    });
+    expect(after.text).toContain(skillBody);
+  });
+
+  it('loads full task workflow only in task_execution scenario', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_ctx',
+      agentName: 'Ctx Agent',
+      role: MOCK_ROLE,
+      memory,
+      scenario: 'task_execution',
+    });
+    expect(result.text).toContain('## Task & Requirement Workflow');
+    expect(result.text).toContain('## Quality Gates');
+    expect(result.text).toContain('## Error Recovery');
+  });
+
+  it('caps colleague roster in identity and points to team_list', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const colleagues = Array.from({ length: 18 }, (_, i) => ({
+      id: `agt_${i}`,
+      name: `Agent${i}`,
+      role: 'Worker',
+      type: 'agent' as const,
+      skills: ['coding'],
+    }));
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_mgr',
+      agentName: 'Manager',
+      role: MOCK_ROLE,
+      memory,
+      identity: {
+        self: {
+          id: 'agt_mgr',
+          name: 'Manager',
+          role: 'Manager',
+          agentRole: 'manager',
+          skills: [],
+        },
+        organization: { id: 'org_1', name: 'Acme' },
+        team: { id: 'team_1', name: 'Platform' },
+        colleagues,
+        humans: [{ id: 'usr_1', name: 'Owner', role: 'owner' }],
+      },
+    });
+
+    expect(result.text).toContain('Agent0');
+    expect(result.text).toContain('Agent9');
+    expect(result.text).not.toContain('Agent17');
+    expect(result.text).toContain('team_list');
+    expect(result.text).toMatch(/8 more teammates/);
+  });
+
+  it('proactively compresses when history exceeds 55% of message budget', async () => {
+    const memory = new MemoryStore(tempDir);
+    const session = memory.createSession('agt_ctx');
+    // ~60 turns × ~2.8k chars ≈ well above 55% of a 32k-window message budget
+    for (let i = 0; i < 60; i++) {
+      memory.appendMessage(session.id, {
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        content: `Turn ${i}: ${'payload '.repeat(400)}`,
+      });
+    }
+
+    const summarizer = vi.fn(async () => 'Earlier conversation summarized.');
+    const engine = makeEngine({ summarizer });
+    const prepared = await engine.prepareMessages({
+      systemPrompt: 'System.',
+      sessionMessages: memory.getRecentMessages(session.id, 200),
+      memory,
+      sessionId: session.id,
+      modelContextWindow: 32_000,
+      modelMaxOutput: 4_000,
+    });
+
+    expect(prepared.usage.compressed).toBe(true);
+    expect(['proactive', 'over_budget', 'summarize', 'trim']).toContain(prepared.usage.compactStage);
+    expect(prepared.usage.compactStage).not.toBe('none');
+  });
+
+  it('clamps packing budget when promptAffordTokens is set', async () => {
+    const memory = new MemoryStore(tempDir);
+    const session = memory.createSession('agt_ctx');
+    for (let i = 0; i < 80; i++) {
+      memory.appendMessage(session.id, {
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        content: `Turn ${i}: ${'detail '.repeat(200)}`,
+      });
+    }
+
+    const engine = makeEngine({ summarizer: async () => 'summary' });
+    const prepared = await engine.prepareMessages({
+      systemPrompt: 'System prompt for afford test.',
+      sessionMessages: memory.getRecentMessages(session.id, 200),
+      memory,
+      sessionId: session.id,
+      modelContextWindow: 128_000,
+      modelMaxOutput: 16_000,
+      promptAffordTokens: 20_000,
+    });
+
+    expect(prepared.usage.promptAffordTokens).toBe(20_000);
+    expect(prepared.usage.totalUsed).toBeLessThan(20_000);
+    expect(prepared.usage.compressed).toBe(true);
+    expect(prepared.usage.packingBudget).toBeLessThan(40_000);
+  });
+});
+
+describe('Learning Habits (LEARNING-LOOP §8)', () => {
+  function extractLearningHabits(text: string): string {
+    const start = text.indexOf('## Learning Habits');
+    if (start < 0) return '';
+    const rest = text.slice(start);
+    const next = rest.search(/\n## (?!Learning Habits)/);
+    return next < 0 ? rest : rest.slice(0, next);
+  }
+
+  it('B-prompt-learning-habits-present: chat and task_execution include Learning Habits cues', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    for (const scenario of ['chat', 'task_execution'] as const) {
+      const result = await engine.buildSystemPrompt({
+        agentId: 'agt_ctx',
+        agentName: 'Ctx Agent',
+        role: MOCK_ROLE,
+        memory,
+        scenario,
+      });
+      expect(result.text).toContain('## Learning Habits');
+      expect(result.text).toContain('memory_search');
+      expect(result.text).toContain('recall_activity');
+      expect(result.text).toContain('memory_save');
+      expect(result.text).toMatch(/Me vs others|other agents/i);
+      expect(result.text).toMatch(/builder-artifacts\/skills|impact:\s*"low"|impact.*low/i);
+      expect(result.text).not.toContain('.pending/');
+    }
+  });
+
+  it('B-distill-habits-injected: distillation includes Learning Habits, no JSON outcome ritual', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_ctx',
+      agentName: 'Ctx Agent',
+      role: MOCK_ROLE,
+      memory,
+      scenario: 'distillation',
+    });
+    expect(result.text).toContain('## Learning Habits');
+    expect(result.text).toMatch(/post-task distillation|distillation mode/i);
+    expect(result.text).toMatch(/package_install/);
+    expect(result.text).toMatch(/request_user_input/);
+    expect(result.text).not.toMatch(/"outcome"|staged_skill/);
+  });
+
+  it('B-prompt-learning-habits-absent-dream / B-dream-no-habits: memory_consolidation omits Learning Habits', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_ctx',
+      agentName: 'Ctx Agent',
+      role: MOCK_ROLE,
+      memory,
+      scenario: 'memory_consolidation',
+    });
+    expect(result.text).not.toContain('## Learning Habits');
+  });
+
+  it('B-prompt-learning-habits-budget: Learning Habits section ≤ 1600 chars', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_ctx',
+      agentName: 'Ctx Agent',
+      role: MOCK_ROLE,
+      memory,
+      scenario: 'chat',
+    });
+    const section = extractLearningHabits(result.text);
+    expect(section.length).toBeGreaterThan(0);
+    expect(section.length).toBeLessThanOrEqual(1600);
+  });
+});

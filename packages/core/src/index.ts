@@ -136,6 +136,7 @@ export {
   createMaxLengthGuardrail,
 } from './guardrails.js';
 export type { InputGuardrail, OutputGuardrail, GuardrailResult } from './guardrails.js';
+export { DEFAULT_REQUEST_MAX_TOKENS } from './llm/provider.js';
 export type { LLMProviderInterface, MultiModalProviderInterface, ImageGenOptions, ImageResult, TTSOptions, AudioResult, STTOptions, VideoGenOptions, VideoResult } from './llm/provider.js';
 export {
   ShellTool,
@@ -176,6 +177,8 @@ export {
   type SubagentProgressCallback,
   createMultiModalTools,
   type MultiModalToolsContext,
+  createFeishuTools,
+  type FeishuToolsConfig,
 } from './tools/index.js';
 export {
   ToolLoopDetector,
@@ -277,3 +280,33 @@ export { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/mark
 export type { EmbeddedBrowserHost, EmbeddedBrowserToolResult } from './tools/embedded-browser-host.js';
 export type { BrowserTestResult, BrowserTestStep, ChaosEvent, ChaosOpResult, ChaosStats, ChaosDone } from './tools/browser-test.js';
 export { getAdapter, getAllAdapters } from './coding-tools/index.js';
+
+// Agent Runtime — Context Economics + Learning Loop
+export {
+  scenarioToPack,
+  packToolDefBudget,
+  getReflexAllowlist,
+  getDistillationAllowlist,
+  DISTILLATION_EXTRA_TOOLS,
+  estimateToolDefTokens,
+  evictToolsToBudget,
+  formatEvictedToolCatalog,
+  type CapabilityPack,
+  type PromptProfile,
+} from './capability-packs.js';
+export { evaluatePromptAfford, ensureAffordablePromptPack } from './afford-guard.js';
+export { shouldEnterDeepSleep, nextDeepSleepIntervalMs } from './deep-sleep.js';
+export {
+  shouldDistillTask,
+  recordSkillActivation,
+  loadSkillStats,
+  type SkillStats,
+} from './learning-loop.js';
+export {
+  buildDistillationPrompt,
+  type DistillationPromptInput,
+  type DistillationPromptKind,
+} from './distillation.js';
+export { computeEvolutionMetrics, type EvolutionMetrics } from './evolution-metrics.js';
+export { formatTaskContextForPrompt, buildTaskContextPackage } from './task-context.js';
+export { matchAgentsForSkillFanout, applyFanoutDailyCap } from './skill-fanout.js';

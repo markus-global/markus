@@ -134,6 +134,18 @@ export function RightPanel({
   useEffect(() => {
     let cancelled = false;
     setSelectionToolbar(null);
+
+    // URL tabs switch instantly — do not flash a shared "loading" skeleton that
+    // makes one tab's navigation look like it blocks the whole panel.
+    if (payload.kind === 'url') {
+      setPreview({ mode: 'url', url: payload.url, browserId: payload.browserId });
+      return () => { cancelled = true; };
+    }
+    if (isUrl(reference)) {
+      setPreview({ mode: 'url', url: reference });
+      return () => { cancelled = true; };
+    }
+
     setPreview({ mode: 'loading' });
 
     // Builder artifacts have no file body — surface the summary + open-in-page.
@@ -141,16 +153,8 @@ export function RightPanel({
       setPreview({ mode: 'artifact', summary: payload.deliverable.summary || payload.deliverable.title || '' });
       return () => { cancelled = true; };
     }
-    if (payload.kind === 'url') {
-      setPreview({ mode: 'url', url: payload.url, browserId: payload.browserId });
-      return () => { cancelled = true; };
-    }
     if (!reference) {
       setPreview({ mode: 'unpreviewable', reference: '', isDirectory: false });
-      return () => { cancelled = true; };
-    }
-    if (isUrl(reference)) {
-      setPreview({ mode: 'url', url: reference });
       return () => { cancelled = true; };
     }
     const isDirectory = payload.kind === 'deliverable' && payload.deliverable.type === 'directory';
@@ -162,7 +166,12 @@ export function RightPanel({
     api.files.preview(reference).then((resp) => {
       if (cancelled) return;
       if (resp.type === 'image') {
-        setPreview({ mode: 'image', src: `data:${resp.mimeType || 'image/png'};base64,${resp.content}`, name: resp.name || title });
+        // Prefer stream URL (works for large webp/png); fall back to legacy base64 content.
+        const src = resp.content
+          ? `data:${resp.mimeType || 'image/png'};base64,${resp.content}`
+          : (resp.streamUrl
+            || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(reference)));
+        setPreview({ mode: 'image', src, name: resp.name || title });
         return;
       }
       if (resp.type === 'audio') {
@@ -301,11 +310,14 @@ export function RightPanel({
         style={fullscreen ? undefined : { width }}
         data-right-panel
       >
-        {/* Single chrome row: tabs (or title) + panel actions — saves a header band. */}
-        <header className="h-10 shrink-0 flex items-center gap-1 pl-1.5 pr-1.5 border-b border-border-default">
+        {/* Single chrome row: tabs (or title) + panel actions — saves a header band.
+            z-20 keeps chrome above panel content; native views still paint above HTML
+            but must be bounds-synced only to the host below this header. */}
+        <header className="relative z-20 h-10 shrink-0 flex items-center gap-1 pl-1.5 pr-1.5 border-b border-border-default bg-surface-primary">
           {(showTabs || onNewTab) ? (
             <div
               ref={tabStripRef}
+              role="tablist"
               className="flex-1 min-w-0 flex flex-nowrap items-center gap-0.5 overflow-x-auto overflow-y-hidden overscroll-x-contain scrollbar-thin"
               onWheel={e => {
                 const el = e.currentTarget;
@@ -318,41 +330,55 @@ export function RightPanel({
               {tabs?.map(tab => {
                 const active = tab.id === activeTabId;
                 return (
-                  <button
-                    type="button"
+                  // Sibling buttons (never nest <button>): select + close stay independent.
+                  <div
                     key={tab.id}
-                    ref={active ? activeTabBtnRef : undefined}
-                    className={`group shrink-0 flex items-center gap-1 max-w-[160px] pl-2.5 pr-1 py-1 rounded-md text-[11px] cursor-pointer border transition-colors ${
+                    className={`group shrink-0 flex items-center max-w-[160px] rounded-md text-[11px] border transition-colors ${
                       active
                         ? 'bg-surface-elevated border-border-default text-fg-primary'
                         : 'border-transparent text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
                     }`}
-                    onClick={() => onSelectTab?.(tab.id)}
-                    title={tab.title}
                   >
-                    <span className="truncate min-w-0">{tab.title}</span>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      ref={active ? activeTabBtnRef : undefined}
+                      className="min-w-0 flex-1 truncate pl-2.5 pr-1 py-1 text-left cursor-pointer"
+                      title={tab.title}
+                      onPointerDown={e => {
+                        // pointerdown beats click cancellation when native views steal focus.
+                        if (e.button !== 0) return;
+                        onSelectTab?.(tab.id);
+                      }}
+                      onClick={() => onSelectTab?.(tab.id)}
+                    >
+                      {tab.title}
+                    </button>
                     {onCloseTab && (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={e => { e.stopPropagation(); onCloseTab(tab.id); }}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            onCloseTab(tab.id);
-                          }
+                      <button
+                        type="button"
+                        onPointerDown={e => {
+                          if (e.button !== 0) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onCloseTab(tab.id);
                         }}
-                        className={`shrink-0 p-0.5 rounded hover:bg-surface-overlay transition-colors ${
+                        onClick={e => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onCloseTab(tab.id);
+                        }}
+                        className={`shrink-0 mr-1 p-0.5 rounded hover:bg-surface-overlay transition-colors ${
                           active ? 'text-fg-tertiary hover:text-fg-secondary' : 'text-fg-muted hover:text-fg-secondary opacity-70 group-hover:opacity-100'
                         }`}
                         title={t('common:closeTab', { defaultValue: 'Close tab' })}
                         aria-label={t('common:closeTab', { defaultValue: 'Close tab' })}
                       >
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                      </span>
+                      </button>
                     )}
-                  </button>
+                  </div>
                 );
               })}
               {onNewTab && (
@@ -513,6 +539,7 @@ export function RightPanel({
                 format={preview.format}
                 className="text-fg-secondary text-sm"
                 onHtmlSelection={handleHtmlSelection}
+                basePath={reference ? reference.replace(/[/\\][^/\\]+$/, '') : undefined}
               />
             </div>
           )}
@@ -525,7 +552,13 @@ export function RightPanel({
 
           {preview.mode === 'url' && (
             <div className="flex-1 min-h-0 min-w-0 w-full flex flex-col">
-              <EmbeddedBrowser url={preview.url} browserId={preview.browserId} className="flex-1 min-h-0" />
+              {/* key forces per-tab React state (address/loading) — native view is already per browserId */}
+              <EmbeddedBrowser
+                key={preview.browserId || preview.url}
+                url={preview.url}
+                browserId={preview.browserId}
+                className="flex-1 min-h-0"
+              />
             </div>
           )}
 

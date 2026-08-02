@@ -73,12 +73,19 @@ manage tasks, create calendar events, operate Bitable databases, and send messag
 1. **Format appropriately** — Use markdown formatting for rich messages
 2. **Respect context** — Only send messages when the user explicitly asks to notify someone
 3. **Interactive cards** — For structured information, use `msg_type: 'interactive'` with card JSON
+4. **Send text** — Prefer native tool `feishu_send_message` (or MCP `im.v1.message.create`)
+5. **Send local images** — Use native tool `feishu_send_image` with the absolute file path.
+   Feishu MCP **cannot** upload images/files. Never claim an image was sent via MCP alone.
+6. **Empty chat list** — `im.v1.chat.list` only returns groups the bot has joined. If it returns
+   `items: []`, do **not** give up: resolve the user's `open_id` (e.g. via
+   `calendar.v4.calendar.primary` → `user_id`, or `contact.v3.user.batchGetId`) and send with
+   `receive_id_type=open_id` (p2p / "发到我的飞书").
 
 ## Important Notes
 
 - Tool names are prefixed with `feishu-lark__` (e.g., `feishu-lark__docx.builtin.search`)
 - Document editing is NOT supported — you can only read and import
-- File upload/download is NOT supported via MCP
+- File/image upload via MCP is NOT supported — use `feishu_send_image` for local images
 - Always handle API errors gracefully and report them to the user
 - Respect rate limits: 1000 requests/minute per API endpoint
 

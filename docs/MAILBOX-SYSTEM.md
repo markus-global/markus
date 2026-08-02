@@ -708,7 +708,7 @@ tool: agent_send_message ──►  AgentManager.sendMessage()
 
 Benefits over ephemeral session IDs:
 
-- **Persistent history** — both agents recall past exchanges via `recall_context` with the `channel_key`
+- **Persistent history** — both agents recall past exchanges via `recall_context` with `scope: "channel"` and `channel_key`. Personal user↔agent DM **chat sessions** (`chat_sessions` table) use `recall_context` with `scope: "chat_session"` and `session_id` (pagination via `before` / `limit`) — see [LEARNING-LOOP.md](./LEARNING-LOOP.md) §9.3.
 - **Stable sessions** — all messages in a pair share one session ID derived from the channel key
 - **Enqueue-time dedup** — messages from the same `channelKey` coalesce (§14)
 - **Group chat parity** — DM channels use the same `groupChatRepo`, member resolution, and API paths as custom group chats

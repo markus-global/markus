@@ -203,7 +203,49 @@ When a task enters `review` status (via `updateTaskStatus`), the system automati
 ### Reviewer Actions
 
 - **Approve**: Calls `acceptTask(taskId)` → task moves to `completed`
+- **Approve with notes** (`approved_with_notes`): Task moves to `completed` (or continues downstream);
+  notes are stored on the task (note / metadata) and SHOULD surface to the assignee via notebook/state
+  on the next related turn. Minor issues MUST NOT force a full revision round.
 - **Request Revision**: Calls `requestRevision(taskId, reason)` → task moves to `in_progress` with incremented `executionRound`
+
+### Spec: `approved_with_notes`
+
+MUST: Review verdict enum includes `approved` | `approved_with_notes` | `rejected`.
+MUST: `approved_with_notes` completes the review gate without requiring another full execution round.
+MUST: Notes are persisted and visible to the assignee.
+Test ID: `C-review-notes`.
+
+### Spec: `task_context` on assign
+
+MUST: When a task is assigned, the system attaches a read-only `task_context` package:
+parent requirement summary, related deliverable refs (+ version), predecessor output summary,
+project knowledge pointer. MUST inject into the assignee's first `execute` pack turn under a hard cap.
+Test ID: `C-task-context-inject`.
+
+### Spec: Deliverable versioning
+
+MUST: `deliverable_update` increments `version` and appends a `changelog` entry.
+MUST: Reads return current `version`.
+Test ID: `C-deliv-version`.
+
+### Spec: Subtask soft cap
+
+MUST: When subtask count would exceed `SUBTASK_SOFT_CAP` (8), the tool MUST warn in the result
+but MUST NOT block creation.
+Test ID: `C-subtask-soft-cap`.
+
+### Spec: Deep sleep (heartbeat)
+
+MUST: After `DEEP_SLEEP_IDLE_HEARTBEATS` consecutive idle/zero-change heartbeats with no active
+tasks/pending reviews and no human/task mailbox pressure, heartbeat MUST skip the LLM call,
+extend interval (≤ 24h), and wake on `human_chat` / new task / review events.
+Test IDs: `A-deep-sleep-skip`, `A-deep-sleep-wake`.
+
+### Spec: Post-task distillation
+
+MUST: On task `completed` (and gated predicates), enqueue Learning Loop distillation
+([LEARNING-LOOP.md](./LEARNING-LOOP.md)) without blocking the status transition.
+MUST NOT: Distill on `failed` — wait for completion or human Remember.
 
 ---
 

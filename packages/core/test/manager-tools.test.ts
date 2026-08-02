@@ -11,7 +11,7 @@ import {
 function createMockManagerContext(overrides?: Partial<ManagerToolsContext>): ManagerToolsContext {
   return {
     listAgents: vi.fn(() => [
-      { id: 'agt_001', name: 'Alice', role: 'developer', status: 'active', skills: ['self-evolution'] },
+      { id: 'agt_001', name: 'Alice', role: 'developer', status: 'active', skills: ['coding-tools'] },
       { id: 'agt_002', name: 'Bob', role: 'reviewer', status: 'idle', skills: [] },
     ]),
     delegateMessage: vi.fn(async () => 'ok'),
@@ -308,6 +308,47 @@ describe('package_install', () => {
       toolName: 'package_install',
       toolArgs: expect.objectContaining({ team_id: undefined }),
     }));
+  });
+
+  it('B-skill-install-low-skips-hitl: skill + impact=low skips requestApproval', async () => {
+    const requestApproval = vi.fn(async () => ({ approved: true }));
+    const installArtifactFn = vi.fn(async () => ({ type: 'skill', installed: { name: 'my-skill' } }));
+    const ctx = createMockPackageContext({
+      installArtifact: () => installArtifactFn,
+      requestApproval,
+    });
+    const tool = findPackageTool(ctx, 'package_install');
+    const result = JSON.parse(await tool.execute({ type: 'skill', name: 'my-skill', impact: 'low' }));
+    expect(result.status).toBe('success');
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(installArtifactFn).toHaveBeenCalled();
+  });
+
+  it('B-skill-install-high-requires-hitl: skill + impact=high (or omitted) requires approval', async () => {
+    const requestApproval = vi.fn(async () => ({ approved: true }));
+    const installArtifactFn = vi.fn(async () => ({ type: 'skill', installed: { name: 'my-skill' } }));
+    const ctx = createMockPackageContext({
+      installArtifact: () => installArtifactFn,
+      requestApproval,
+    });
+    const tool = findPackageTool(ctx, 'package_install');
+    await tool.execute({ type: 'skill', name: 'my-skill', impact: 'high' });
+    expect(requestApproval).toHaveBeenCalled();
+    requestApproval.mockClear();
+    await tool.execute({ type: 'skill', name: 'my-skill' });
+    expect(requestApproval).toHaveBeenCalled();
+  });
+
+  it('B-agent-install-always-hitl: agent install always requests approval even with impact=low', async () => {
+    const requestApproval = vi.fn(async () => ({ approved: true }));
+    const installArtifactFn = vi.fn(async () => ({ type: 'agent', installed: { name: 'bot' } }));
+    const ctx = createMockPackageContext({
+      installArtifact: () => installArtifactFn,
+      requestApproval,
+    });
+    const tool = findPackageTool(ctx, 'package_install');
+    await tool.execute({ type: 'agent', name: 'custom-dev', impact: 'low' });
+    expect(requestApproval).toHaveBeenCalled();
   });
 });
 

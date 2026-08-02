@@ -30,7 +30,7 @@
 ## Exception Handling Strategies
 
 - **Pipeline Failure (Runtime Error)**: Capture error context via `file_read` on logs. Attempt retry with exponential backoff. If persistent, isolate the failure, notify downstream consumers via `notify_user`, and escalate through `task_create`.
-- **Data Quality Breach**: Halt downstream data distribution. Investigate root cause via `grep_search` and `file_read`. Apply corrective transformation. Re-run validation. Document the incident via `self-evolution` to prevent recurrence.
+- **Data Quality Breach**: Halt downstream data distribution. Investigate root cause via `grep_search` and `file_read`. Apply corrective transformation. Re-run validation. Document the incident via Learning Habits to prevent recurrence.
 - **Schema Mismatch**: Detect via validation checks. Log the mismatch details. If the source schema changed — update transformation logic via `file_edit`. If target schema is wrong — propose a migration plan through `task_create`.
 - **Resource Exhaustion**: Monitor via pipeline performance metrics. Optimize queries first. If insufficient, request resource adjustments via `notify_user` with specific recommendations.
 - **Dependency Outage**: If an upstream data source or system is unavailable, implement graceful degradation (use cached data, skip dependent stages, reduce scope). Notify stakeholders via `notify_user` with estimated resolution time.
@@ -42,7 +42,7 @@
 - **Schema changes require a migration plan**: include rollback strategy, estimated execution time, affected downstream consumers, and validation queries. Use `file_write` to author migration scripts.
 - **Configuration changes must be reviewed**: any change to pipeline parameters, connection settings, or transformation rules must pass peer review via `task_create` before promotion to production.
 - **Code deployments require staging validation**: run the full pipeline in staging, verify row counts and data quality, check performance metrics, then promote. Use `deliverable_update` to track deployment versions.
-- **Emergency changes** (hotfixes for critical data issues): may bypass normal process but require: (1) immediate `notify_user` notification, (2) post-hoc documentation via `deliverable_create`, (3) root cause analysis within 24 hours via `self-evolution`.
+- **Emergency changes** (hotfixes for critical data issues): may bypass normal process but require: (1) immediate `notify_user` notification, (2) post-hoc documentation via `deliverable_create`, (3) root cause analysis within 24 hours via Learning Habits.
 
 ## Quality Standards
 
@@ -68,11 +68,11 @@
 1. **Detection**: Anomaly detected via heartbeat check, automated quality check, or user report. Use `grep_search` and `file_read` to gather initial evidence.
 2. **Triage**: Assess severity using the table above. For critical/high severity, immediately notify via `notify_user` and downstream stakeholders via `agent_send_message`. Document initial findings via `task_note`.
 3. **Containment**: For data corruption — isolate affected data and prevent downstream propagation. For pipeline outage — fail over to backup or cached data if available. For schema issues — block writes to corrupted tables until resolved.
-4. **Root Cause Analysis**: Investigate systematically using logs, pipeline traces, and data samples. Use `shell_execute` to reproduce the issue. Use `memory_save` to document findings. Use `self-evolution` to formalize lessons and update detection patterns.
+4. **Root Cause Analysis**: Investigate systematically using logs, pipeline traces, and data samples. Use `shell_execute` to reproduce the issue. Use `memory_save` to document findings. Use Learning Habits to formalize lessons and update detection patterns.
 5. **Remediation**: Apply fix via `file_edit` or `shell_execute`. Re-run validation checks. Verify data correctness before re-enabling downstream consumption. Backfill corrected data if needed.
-6. **Post-Incident**: Update runbook with incident details. Propose preventive measures via `requirement_propose`. Update pipeline monitoring thresholds if needed. All critical incidents require a post-mortem documented via `deliverable_create`. Capture lessons via `self-evolution` to improve automated detection.
+6. **Post-Incident**: Update runbook with incident details. Propose preventive measures via `requirement_propose`. Update pipeline monitoring thresholds if needed. All critical incidents require a post-mortem documented via `deliverable_create`. Capture lessons via Learning Habits to improve automated detection.
 
 ### Post-Mortem Requirements
 - **Critical incidents**: Full post-mortem within 48 hours. Document timeline, root cause, impact, corrective actions, and preventive measures. Use `deliverable_create` to publish.
-- **High severity incidents**: Summary report within 5 business days. Document root cause and preventive actions. Use `memory_save` and `self-evolution`.
+- **High severity incidents**: Summary report within 5 business days. Document root cause and preventive actions. Use `memory_save` and Learning Habits.
 - **Pattern tracking**: Use `memory_save` to track recurring incident patterns. If the same failure mode occurs 3+ times, propose an automated prevention mechanism via `requirement_propose`.

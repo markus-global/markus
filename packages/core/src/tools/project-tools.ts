@@ -100,6 +100,7 @@ export interface ProjectToolsContext {
     reference?: string;
     format?: string;
     tags?: string;
+    projectId?: string;
   }) => Promise<{ id: string; type: string; title: string; status: string }>;
   deliverableSearch?: (opts: {
     query?: string;
@@ -401,14 +402,14 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
           {
             name: 'deliverable_create',
             description:
-              'Register a deliverable (file, directory, or artifact) that has already been created on disk. Write the actual content to a file FIRST using shell_execute or other file tools, then call this to track it. If the reference path already exists as a deliverable, the existing record is updated instead of creating a duplicate.',
+              'Register a deliverable (file, directory, or artifact) that has already been created on disk. Write the actual content to a file FIRST using shell_execute or other file tools, then call this to track it. Pass the absolute path as `reference` (aliases: `file_path`, `path`). Optionally link a project via `project_id`. If the reference path already exists as a deliverable, the existing record is updated instead of creating a duplicate.',
             inputSchema: {
               type: 'object',
               properties: {
                 type: {
                   type: 'string',
                   enum: ['file', 'directory'],
-                  description: 'file = any file-based content (docs, reports, code, etc.), directory = folder of files',
+                  description: 'file = any file-based content (docs, reports, code, etc.), directory = folder of files. Aliases like "document"/"report" are coerced to "file".',
                 },
                 title: {
                   type: 'string',
@@ -422,31 +423,74 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 },
                 reference: {
                   type: 'string',
-                  description: 'Path to the file or directory that contains the actual content (must already exist)',
+                  description: 'Absolute path to the file or directory that contains the actual content (must already exist). Prefer absolute workspace paths.',
+                },
+                file_path: {
+                  type: 'string',
+                  description: 'Alias for `reference` (absolute path to the file on disk).',
+                },
+                path: {
+                  type: 'string',
+                  description: 'Alias for `reference` (absolute path to the file or directory on disk).',
+                },
+                project_id: {
+                  type: 'string',
+                  description: 'Optional project ID to associate this deliverable with (e.g. proj_…).',
                 },
                 format: {
                   type: 'string',
                   description: 'Content format of the deliverable file: markdown, html, text, json, csv, etc. Auto-detected from file extension if omitted.',
                 },
-                tags: { type: 'string', description: 'Comma-separated tags for discoverability' },
+                tags: {
+                  type: 'string',
+                  description: 'Comma-separated tags for discoverability (array of strings is also accepted).',
+                },
               },
               required: ['type', 'title', 'summary'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
+                const rawType = String(args['type'] ?? 'file').trim().toLowerCase();
+                const type = rawType === 'directory' || rawType === 'dir' || rawType === 'folder'
+                  ? 'directory'
+                  : 'file';
+                const reference = (
+                  (typeof args['reference'] === 'string' && args['reference'])
+                  || (typeof args['file_path'] === 'string' && args['file_path'])
+                  || (typeof args['path'] === 'string' && args['path'])
+                  || ''
+                ).trim();
+                if (!reference) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: 'reference (or file_path/path) is required — pass the absolute path of the file/directory you already wrote to disk',
+                  });
+                }
+                const projectId = (
+                  (typeof args['project_id'] === 'string' && args['project_id'])
+                  || (typeof args['projectId'] === 'string' && args['projectId'])
+                  || ''
+                ).trim() || undefined;
+                const tagsRaw = args['tags'];
+                const tags = Array.isArray(tagsRaw)
+                  ? tagsRaw.map(String).map(t => t.trim()).filter(Boolean).join(', ')
+                  : (typeof tagsRaw === 'string' ? tagsRaw : undefined);
                 const result = await ctx.deliverableCreate!({
-                  type: args['type'] as string,
+                  type,
                   title: args['title'] as string,
                   summary: args['summary'] as string,
-                  reference: args['reference'] as string | undefined,
+                  reference,
                   format: args['format'] as string | undefined,
-                  tags: args['tags'] as string | undefined,
+                  tags,
+                  projectId,
                 });
                 const resp: Record<string, unknown> = {
                   status: 'success',
                   deliverableId: result.id,
                   deliverableType: result.type,
                   deliverableStatus: result.status,
+                  reference,
+                  ...(projectId ? { projectId } : {}),
                 };
                 if (ctx.webUiBaseUrl) {
                   resp.accessUrl = `${ctx.webUiBaseUrl}/#output/${result.id}`;
@@ -593,7 +637,22 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   }
                 );
                 if (!result) return JSON.stringify({ status: 'error', error: 'Deliverable not found' });
-                const resp: Record<string, unknown> = { status: 'success', deliverableId: result.id, deliverableStatus: result.status };
+                // Versioning (STATE-MACHINES Spec): bump version + changelog when present
+                const meta = result as unknown as {
+                  id: string;
+                  status: string;
+                  version?: number;
+                  changelog?: string[];
+                };
+                const version = typeof meta.version === 'number' ? meta.version : undefined;
+                const changelog = Array.isArray(meta.changelog) ? meta.changelog : undefined;
+                const resp: Record<string, unknown> = {
+                  status: 'success',
+                  deliverableId: result.id,
+                  deliverableStatus: result.status,
+                  ...(version !== undefined && version !== null ? { version } : {}),
+                  ...(changelog ? { changelog } : {}),
+                };
                 if (ctx.webUiBaseUrl) {
                   resp.accessUrl = `${ctx.webUiBaseUrl}/#output/${result.id}`;
                 }

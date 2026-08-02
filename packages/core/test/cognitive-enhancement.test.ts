@@ -76,10 +76,10 @@ describe('Notebook file I/O — loadNotebook / saveNotebook', () => {
 });
 
 // =============================================================================
-// Unified MEMORY.md — observations section
+// Unified knowledge.md — observations section
 // =============================================================================
 
-describe('Unified MEMORY.md — observations in ## _observations', () => {
+describe('Unified knowledge.md — observations in ## _observations', () => {
   let tmp: string;
   let store: MemoryStore;
   beforeEach(() => {
@@ -88,13 +88,13 @@ describe('Unified MEMORY.md — observations in ## _observations', () => {
   });
   afterEach(() => rmdir(tmp));
 
-  it('saves observations to ## _observations section in MEMORY.md', () => {
+  it('saves observations to ## _observations section in knowledge.md', () => {
     store.addEntry({ id: 'obs_1', timestamp: '2024-01-01', type: 'note', content: 'user prefers concise responses' });
     store.addEntry({ id: 'obs_2', timestamp: '2024-01-02', type: 'fact', content: 'project uses TypeScript' });
 
-    const memoryMd = path.join(tmp, 'MEMORY.md');
-    expect(fs.existsSync(memoryMd)).toBe(true);
-    const content = fs.readFileSync(memoryMd, 'utf-8');
+    const knowledgeMd = path.join(tmp, 'knowledge.md');
+    expect(fs.existsSync(knowledgeMd)).toBe(true);
+    const content = fs.readFileSync(knowledgeMd, 'utf-8');
     expect(content).toContain('## _observations');
     expect(content).toContain('user prefers concise responses');
     expect(content).toContain('project uses TypeScript');
@@ -109,8 +109,8 @@ describe('Unified MEMORY.md — observations in ## _observations', () => {
   });
 
   it('getLongTermMemory() excludes _observations section', () => {
-    const memoryMd = path.join(tmp, 'MEMORY.md');
-    fs.writeFileSync(memoryMd, '# Agent Knowledge\n\n## procedures\nAlways test before deploying.\n\n## _observations\n### obs_1\nsome observation\n');
+    const knowledgeMd = path.join(tmp, 'knowledge.md');
+    fs.writeFileSync(knowledgeMd, '# Agent Knowledge\n\n## procedures\nAlways test before deploying.\n\n## _observations\n### obs_1\nsome observation\n');
     const store2 = new MemoryStore(tmp);
     const longTerm = store2.getLongTermMemory();
     expect(longTerm).toContain('procedures');
@@ -119,7 +119,7 @@ describe('Unified MEMORY.md — observations in ## _observations', () => {
     expect(longTerm).not.toContain('some observation');
   });
 
-  it('migrates memories.json to MEMORY.md on load', () => {
+  it('migrates memories.json to knowledge.md on load', () => {
     const memoriesJson = path.join(tmp, 'memories.json');
     fs.writeFileSync(memoriesJson, JSON.stringify([
       { id: 'old_1', timestamp: '2024-01-01', type: 'fact', content: 'legacy observation' },

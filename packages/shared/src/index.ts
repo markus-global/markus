@@ -23,6 +23,7 @@ export * from './utils/logger.js';
 export * from './utils/id.js';
 export * from './utils/text.js';
 export * from './utils/platform.js';
+export * from './utils/keyword-search.js';
 export * from './models.js';
 export * from './version.js';
 export * from './update-checker.js';

@@ -25,6 +25,6 @@
 - [ ] Review open data quality issues in the task board — use `task_list` with status filters
 - [ ] Check scheduled maintenance tasks (vacuum, partition cleanup, stats refresh)
 - [ ] Update pipeline documentation if schemas or logic changed — use `deliverable_update`
-- [ ] Consolidate lessons from recent incidents via `self-evolution` — capture failure patterns and prevention steps
+- [ ] Consolidate lessons from recent incidents via Learning Habits — capture failure patterns and prevention steps
 - [ ] Archive outdated pipeline specs and deliverables — use `deliverable_update` to mark as outdated
 - [ ] Verify backup and recovery procedures for critical data assets

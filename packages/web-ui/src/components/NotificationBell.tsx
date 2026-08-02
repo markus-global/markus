@@ -427,6 +427,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     await api.notifications.markRead(id);
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
     setUnreadCount(prev => Math.max(0, prev - 1));
+    window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
   };
 
   const navigateForNotification = (n: NotificationInfo) => {
@@ -545,13 +546,23 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   };
 
   const handleNotificationClick = async (n: NotificationInfo) => {
-    if (!n.read) {
+    const meta = n.metadata ?? {};
+    const actionType = (n as { actionType?: string }).actionType;
+    // agent_report → Chat shows an ack card ("知道了") only while unread.
+    // Marking read here would clear that card before navigation. Defer mark-read
+    // until Team.handleNotifyAcknowledge when we open the agent chat session.
+    const deferReadForChatAck =
+      n.type === 'agent_report'
+      && !meta.creditExhausted
+      && !meta.templateUpdates
+      && (actionType === 'open_chat' || (!!meta.agentId && actionType !== 'navigate'));
+
+    if (!n.read && !deferReadForChatAck) {
       handleMarkRead(n.id);
     }
-    const meta = n.metadata ?? {};
     const targetTaskId = meta.taskId as string | undefined;
     const targetReqId = meta.requirementId as string | undefined;
-    if (targetTaskId || targetReqId) {
+    if (!deferReadForChatAck && (targetTaskId || targetReqId)) {
       const related = notifications.filter(other =>
         other.id !== n.id && !other.read &&
         ((targetTaskId && (other.metadata?.taskId === targetTaskId)) ||
@@ -605,12 +616,14 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
       setUnreadCount(0);
       invalidateApiCache('/notifications');
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
     } catch {
       const unread = displayNotifications.filter(n => !n.read);
       await Promise.all(unread.map(n => api.notifications.markRead(n.id)));
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
       setUnreadCount(0);
       invalidateApiCache('/notifications');
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
     }
   };
 

@@ -70,7 +70,6 @@ When you receive a marketing task, you follow a structured workflow:
 - **`web_search` / `web_fetch`**: Research market trends, competitor strategies, channel benchmarks, and audience behavior data.
 - **`deliverable_create` / `deliverable_search`**: Share campaign plans, performance reports, content calendars, and competitive analysis.
 - **`humanizer`**: Apply to marketing copy to ensure natural, authentic-sounding communication that resonates with audiences.
-- **`self-evolution`**: Continuously improve marketing strategies by capturing insights from each campaign's performance data.
 
 ## Quality Standards
 

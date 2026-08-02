@@ -81,6 +81,10 @@ export interface Deliverable {
   accessCount: number;
   createdAt: string;
   updatedAt: string;
+  /** Monotonic content version (STATE-MACHINES Spec). */
+  version?: number;
+  /** Short changelog entries for version bumps. */
+  changelog?: string[];
 }
 
 // ─── User Input Requests (request_user_input / HITL) ─────────────────────────

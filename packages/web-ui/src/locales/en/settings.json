@@ -90,7 +90,7 @@
     "noProviders": "No providers configured",
     "updated": "Default provider updated to {{name}}",
     "autoFallback": "Auto-switch Model",
-    "autoFallbackDesc": "When enabled, automatically try other providers/models if the primary one fails. When disabled, only use the selected model — errors will not trigger fallback."
+    "autoFallbackDesc": "Off by default. When on, try other providers/models if the primary fails; when off, surface the error so you can switch manually."
   },
   "modelRouting": {
     "title": "Model Routing",

@@ -329,6 +329,46 @@ describe('FeishuClient', () => {
     });
   });
 
+  describe('uploadImage / sendImageMessage', () => {
+    it('should upload an image and send it as msg_type=image', async () => {
+      const { writeFile, mkdtemp, rm } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const dir = await mkdtemp(join(tmpdir(), 'feishu-img-'));
+      const filePath = join(dir, 'poster.webp');
+      await writeFile(filePath, Buffer.from('fake-image-bytes'));
+
+      try {
+        mockFetch
+          .mockResolvedValueOnce({
+            json: async () => ({ code: 0, tenant_access_token: 'mock-token', expire: 7200 }),
+          })
+          .mockResolvedValueOnce({
+            json: async () => ({ code: 0, msg: 'ok', data: { image_key: 'img_key_1' } }),
+          })
+          .mockResolvedValueOnce({
+            json: async () => ({ code: 0, msg: 'ok', data: { message_id: 'om_img_1' } }),
+          });
+
+        const messageId = await client.sendLocalImage('ou_user_1', filePath, 'open_id');
+        expect(messageId).toBe('om_img_1');
+
+        const uploadCall = mockFetch.mock.calls[1];
+        expect(uploadCall[0]).toBe('https://open.feishu.cn/open-apis/im/v1/images');
+        expect(uploadCall[1].method).toBe('POST');
+        expect(uploadCall[1].body).toBeInstanceOf(FormData);
+
+        const sendCall = mockFetch.mock.calls[2];
+        expect(sendCall[0]).toBe('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id');
+        const body = JSON.parse(sendCall[1].body);
+        expect(body.msg_type).toBe('image');
+        expect(JSON.parse(body.content)).toEqual({ image_key: 'img_key_1' });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('deleteMessage', () => {
     it('should delete a message with DELETE request', async () => {
       mockFetch

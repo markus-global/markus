@@ -19,6 +19,23 @@ export interface RightPanelTab {
 
 const MAX_RIGHT_PANEL_TABS = 10;
 
+/** After user/agent closes a native browser tab, ignore briefly-late opened/selected events. */
+const browserReopenSuppressUntil = new Map<string, number>();
+
+export function suppressBrowserTabReopen(browserId: string, ms = 3000): void {
+  browserReopenSuppressUntil.set(browserId, Date.now() + ms);
+}
+
+export function isBrowserTabReopenSuppressed(browserId: string): boolean {
+  const until = browserReopenSuppressUntil.get(browserId);
+  if (until == null) return false;
+  if (Date.now() > until) {
+    browserReopenSuppressUntil.delete(browserId);
+    return false;
+  }
+  return true;
+}
+
 function payloadKey(payload: RightPanelPayload): string {
   if (payload.kind === 'file') return `file:${payload.path}`;
   if (payload.kind === 'url') return `url:${payload.browserId || payload.url}`;
@@ -136,6 +153,7 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
 
   const destroyBrowserIfNeeded = (payload: RightPanelPayload | undefined) => {
     if (payload?.kind === 'url' && payload.browserId) {
+      suppressBrowserTabReopen(payload.browserId);
       void window.markusDesktop?.browser?.destroy(payload.browserId);
     }
   };
@@ -144,6 +162,7 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     let closingPayload: RightPanelPayload | undefined;
     let nextActive: string | null | undefined;
     let clearedAll = false;
+    const currentActive = activeTabIdRef.current;
     setTabs(prev => {
       const idx = prev.findIndex(t => t.id === tabId);
       if (idx < 0) return prev;
@@ -151,9 +170,14 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
       const next = prev.filter(t => t.id !== tabId);
       lastTabsRef.current = next;
       clearedAll = next.length === 0;
+      // Match what the UI treats as active: explicit id if still present, else tabs[0].
+      const displayedActive = prev.some(t => t.id === currentActive)
+        ? currentActive
+        : (prev[0]?.id ?? null);
+      const wasDisplayedActive = displayedActive === tabId;
       // Only compute fallback here; apply setActiveTabId after the updater.
       nextActive = undefined; // means "leave active unchanged" unless we closed the active tab
-      if (lastActiveRef.current === tabId || next.length === 0) {
+      if (wasDisplayedActive || next.length === 0) {
         nextActive = next[Math.min(idx, next.length - 1)]?.id ?? null;
       }
       return next;

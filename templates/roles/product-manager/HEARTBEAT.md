@@ -10,7 +10,7 @@
   - What product management patterns worked? (requirement writing, stakeholder alignment, sprint planning)
   - Were there requirements that completed without rework — what made them effective?
   - Save insights via `memory_save` with `tags: ["insight", "product"]` and `[INSIGHT]` format.
-  - If you found a repeatable PM workflow (e.g., "how to write effective requirements", "how to prioritize cross-team dependencies"), promote it to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - If you found a repeatable PM workflow (e.g., "how to write effective requirements", "how to prioritize cross-team dependencies"), promote it to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
   - When 3+ related insights accumulate, consider updating your ROLE.md with the new guideline.
 - **Self-evolution**: Reflect on what happened since last heartbeat. Save specific, actionable insights via `memory_save` with tags `["insight"]`. Format: `[INSIGHT] <summary>`. Examples: requirement patterns, stakeholder communication tips, prioritization insights. Skip if nothing meaningful happened.
 - If nothing changed since last summary, respond HEARTBEAT_OK.

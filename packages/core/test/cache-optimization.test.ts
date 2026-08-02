@@ -13,7 +13,7 @@ import { AnthropicProvider } from '../src/llm/anthropic.js';
 import { ContextEngine } from '../src/context-engine.js';
 import type { LLMMessage, LLMResponse, RoleTemplate } from '@markus/shared';
 
-const EXPECTED_CHANNEL_CONTEXT_MESSAGES = 40;
+const EXPECTED_CHANNEL_CONTEXT_MESSAGES = 15;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. Anthropic Provider — Cache Breakpoints & Metrics
@@ -562,7 +562,7 @@ describe('ContextEngine — cache optimization', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Cache optimization constants', () => {
-  it('CHANNEL_CONTEXT_MESSAGES should be 40 (reduced from 80)', async () => {
+  it('CHANNEL_CONTEXT_MESSAGES should be 15 (aligned load/inject)', async () => {
     // Read the source file directly since compiled .js may be stale
     const fs = await import('node:fs');
     const src = fs.readFileSync(

@@ -1,5 +1,13 @@
 import { createLogger, type LLMTool } from '@markus/shared';
 import type { SkillManifest } from './skills/types.js';
+import {
+  type CapabilityPack,
+  CONVERSE_FORBIDDEN_DEFAULT,
+  evictToolsToBudget,
+  getReflexAllowlist,
+  packToolDefBudget,
+  TOOL_DEF_PROTECTED,
+} from './capability-packs.js';
 
 const log = createLogger('tool-selector');
 
@@ -10,6 +18,9 @@ const log = createLogger('tool-selector');
  * Tool names must correspond to actual tools from createBuiltinTools() or
  * other tool providers (A2A, task, memory, etc.).
  */
+
+/** Evicted-tool catalog from the last selectTools call (Afford.S2 side channel). */
+type DeferredCatalogEntry = { name: string; description: string };
 
 export interface ToolGroup {
   name: string;
@@ -105,7 +116,8 @@ const TOOL_GROUPS: ToolGroup[] = [
 ];
 
 /**
- * Base tools that are ALWAYS included in every LLM call.
+ * Converse/execute base tools (spawn_subagents / deliverable_create are
+ * discover-only per AGENT-RUNTIME §2.3 — not in the default set).
  */
 const BASE_TOOL_NAMES = new Set([
   'agent_send_message',
@@ -118,18 +130,25 @@ const BASE_TOOL_NAMES = new Set([
   'memory_save',
   'memory_search',
   'deliverable_search',
-  'deliverable_create',
   'spawn_subagent',
-  'spawn_subagents',
 ]);
 
 export class ToolSelector {
   private groups: ToolGroup[];
   private baseToolNames: Set<string>;
+  /** Side channel: tools evicted in the last selectTools (inject into system Tier 3). */
+  private lastDeferredCatalog: DeferredCatalogEntry[] = [];
 
   constructor(customGroups?: ToolGroup[]) {
     this.groups = customGroups ?? TOOL_GROUPS;
     this.baseToolNames = new Set(BASE_TOOL_NAMES);
+  }
+
+  /** Consume deferred catalog from the last selectTools (clears after read). */
+  consumeDeferredCatalog(): DeferredCatalogEntry[] {
+    const catalog = this.lastDeferredCatalog;
+    this.lastDeferredCatalog = [];
+    return catalog;
   }
 
   selectTools(opts: {
@@ -144,14 +163,25 @@ export class ToolSelector {
     /** Team Chat (DM) — enables right-panel layout tools. */
     isChat?: boolean;
     skillCatalog?: SkillManifest[];
+    /** Scenario capability pack (AGENT-RUNTIME §2). Default converse. */
+    pack?: CapabilityPack;
   }): LLMTool[] {
+    const pack: CapabilityPack = opts.pack
+      ?? (opts.isTaskExecution ? 'execute' : opts.isReview ? 'govern' : 'converse');
     const selected = new Set<string>();
 
-    for (const name of this.baseToolNames) {
-      if (opts.allTools.has(name)) selected.add(name);
+    if (pack === 'reflex') {
+      for (const name of getReflexAllowlist(!!opts.isManager)) {
+        if (opts.allTools.has(name)) selected.add(name);
+      }
+    } else {
+      for (const name of this.baseToolNames) {
+        if (opts.allTools.has(name)) selected.add(name);
+      }
     }
 
-    if (opts.isManager) {
+    // Manager/secretary package unions — not in reflex (discover only).
+    if (pack !== 'reflex' && opts.isManager) {
       for (const group of this.groups) {
         if (group.name === 'manager' || group.name === 'packages') {
           for (const name of group.toolNames) {
@@ -161,7 +191,7 @@ export class ToolSelector {
       }
     }
 
-    if (opts.isSecretary) {
+    if (pack !== 'reflex' && opts.isSecretary) {
       for (const group of this.groups) {
         if (group.name === 'secretary' || group.name === 'packages') {
           for (const name of group.toolNames) {
@@ -205,25 +235,24 @@ export class ToolSelector {
       }
     }
 
-    // Keyword matching is an ACCELERATOR, not the sole gate: base/core tools,
-    // discover_tools, notify_user and request_user_input are added unconditionally
-    // above/below, so an empty or synthetic-continuation message (no keywords) still
-    // yields a functional core toolset. A missing/blank message must never throw.
-    const contextLower = (opts.userMessage ?? '').toLowerCase();
-    for (const group of this.groups) {
-      if (group.toolNames.some(n => selected.has(n))) continue;
-      const matched = group.keywords.some(kw => contextLower.includes(kw));
-      if (matched) {
-        for (const name of group.toolNames) {
+    // Keyword / recent are accelerators — skipped for reflex (slim patrol pack).
+    if (pack !== 'reflex') {
+      const contextLower = (opts.userMessage ?? '').toLowerCase();
+      for (const group of this.groups) {
+        if (group.toolNames.some(n => selected.has(n))) continue;
+        const matched = group.keywords.some(kw => contextLower.includes(kw));
+        if (matched) {
+          for (const name of group.toolNames) {
+            if (opts.allTools.has(name)) selected.add(name);
+          }
+          log.debug('Tool group activated by keyword', { group: group.name });
+        }
+      }
+
+      if (opts.recentToolNames) {
+        for (const name of opts.recentToolNames) {
           if (opts.allTools.has(name)) selected.add(name);
         }
-        log.debug('Tool group activated by keyword', { group: group.name });
-      }
-    }
-
-    if (opts.recentToolNames) {
-      for (const name of opts.recentToolNames) {
-        if (opts.allTools.has(name)) selected.add(name);
       }
     }
 
@@ -447,7 +476,7 @@ export class ToolSelector {
             items: {
               type: 'object',
               properties: {
-                type: { type: 'string', enum: ['working', 'longterm'], description: 'working = volatile per-session memory, longterm = persisted to MEMORY.md' },
+                type: { type: 'string', enum: ['working', 'longterm'], description: 'working = volatile per-session memory, longterm = persisted to knowledge.md' },
                 key: { type: 'string', description: 'Memory key/section name' },
                 content: { type: 'string', description: 'Content to store' },
               },
@@ -490,13 +519,52 @@ export class ToolSelector {
       },
     });
 
+    // Converse: spawn_subagents / deliverable_create are discover-only.
+    if (pack === 'converse' || pack === 'govern') {
+      for (let i = result.length - 1; i >= 0; i--) {
+        const n = result[i]?.name;
+        if (n && CONVERSE_FORBIDDEN_DEFAULT.has(n)) result.splice(i, 1);
+      }
+    }
+
+    // Reflex: keep only allowlist + protected HITL/discover (drop extras pushed below).
+    if (pack === 'reflex') {
+      const allow = getReflexAllowlist(!!opts.isManager);
+      for (const p of TOOL_DEF_PROTECTED) allow.add(p);
+      for (let i = result.length - 1; i >= 0; i--) {
+        const n = result[i]?.name;
+        if (n && !allow.has(n)) result.splice(i, 1);
+      }
+    }
+
+    const budget = packToolDefBudget(pack);
+    // Only HITL/discover are eviction-immune. Reflex allowlist already filtered
+    // the working set; marking every allowlisted tool protected made tiktoken
+    // estimates permanently exceed TOOL_DEF_BUDGET_REFLEX (afford downgrade bug).
+    const protectedNames = new Set(TOOL_DEF_PROTECTED);
+    const { tools: capped, evicted } = evictToolsToBudget(result, budget, protectedNames);
+    // Afford.S2: catalog goes to system Tier 3 via consumeDeferredCatalog — NOT tool schema.
+    this.lastDeferredCatalog = evicted.map((e) => ({
+      name: e.name,
+      description: (e.description || '').slice(0, 40),
+    }));
+    if (evicted.length) {
+      log.info('Tool defs capped to pack budget', {
+        pack,
+        budget,
+        kept: capped.length,
+        evicted: evicted.map((e) => e.name),
+      });
+    }
+
     log.debug('Tool selection complete', {
       total: opts.allTools.size,
-      selected: result.length,
+      selected: capped.length,
+      pack,
       groups: this.groups.filter(g => g.toolNames.some(n => selected.has(n))).map(g => g.name),
     });
 
-    return result;
+    return capped;
   }
 
   /**

@@ -20,6 +20,8 @@ export interface AgentToolEvent {
 
 export interface StreamCommitEvent {
   type: 'thinking_commit' | 'text_commit' | 'session_start';
+  /** Server-persisted user message id (session_start) — used to replace optimistic UI ids. */
+  userMessageId?: string;
   content: string;
   createdAt: string;
   sessionId?: string;
@@ -41,7 +43,15 @@ export interface ChatSessionInfo {
   userId: string | null;
   title: string | null;
   isMain?: boolean;
-  metadata?: { modelOverride?: { provider: string; model: string } } | null;
+  metadata?: {
+    modelOverride?: { provider: string; model: string };
+    kind?: string;
+    parentSessionId?: string;
+    sourceMessageId?: string;
+    sourceAgentId?: string;
+    sourceExcerpt?: string;
+    createdFrom?: string;
+  } | null;
   createdAt: string;
   lastMessageAt: string;
 }
@@ -56,13 +66,14 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
   tokensUsed: number;
   createdAt: string;
 }
 
 export interface ChannelMsgMetadata {
   thinking?: string[];
+  images?: string[];
   toolCalls?: Array<{
     tool: string;
     status: 'done' | 'error';
@@ -1132,6 +1143,23 @@ export const api = {
     /** @deprecated Use start() instead */
     resume: (id: string) => request<{ status: string }>(`/agents/${id}/start`, { method: 'POST' }),
     cancelProcessing: (id: string) => request(`/agents/${id}/cancel-processing`, { method: 'POST' }),
+    evolveFromMessage: (
+      id: string,
+      body: {
+        parentSessionId: string;
+        sourceMessageId?: string;
+        sourceText?: string;
+        userNote?: string;
+      },
+    ) =>
+      request<{
+        sessionId: string;
+        agentId: string;
+        seedPrompt: string;
+        truncated: boolean;
+        focusMarked: boolean;
+        parentSessionId: string;
+      }>(`/agents/${id}/evolve-from-message`, { method: 'POST', body: JSON.stringify(body) }),
     remove: (id: string, opts?: { purgeFiles?: boolean }) =>
       request(`/agents/${id}${opts?.purgeFiles ? '?purgeFiles=true' : ''}`, { method: 'DELETE' }),
     updateConfig: (id: string, patch: Record<string, unknown>) =>
@@ -1195,7 +1223,7 @@ export const api = {
     },
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[], replyTo?: { id: string; sender: string; text: string } | null, modelOverride?: { provider: string; model: string } | null): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean }> => {
+    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[], replyTo?: { id: string; sender: string; text: string } | null, modelOverride?: { provider: string; model: string } | null): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -1238,7 +1266,14 @@ export const api = {
                 const event = JSON.parse(trimmed.slice(6)) as { type: string; text?: string; content?: string; thinking?: string; tool?: string; phase?: 'start' | 'end'; success?: boolean; arguments?: unknown; result?: string; error?: string; durationMs?: number; toolCall?: { id?: string; name?: string }; sessionId?: string };
                 if (event.type === 'session_start' && event.sessionId) {
                   resultSessionId = event.sessionId;
-                  onCommit?.({ type: 'session_start', content: '', createdAt: new Date().toISOString(), sessionId: event.sessionId });
+                  const userMessageId = (event as { userMessageId?: string }).userMessageId;
+                  onCommit?.({
+                    type: 'session_start',
+                    content: '',
+                    createdAt: new Date().toISOString(),
+                    sessionId: event.sessionId,
+                    userMessageId,
+                  });
                 } else if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
                   onChunk(event.text);
@@ -1251,7 +1286,16 @@ export const api = {
                   // Keep empty arrays too — distinguishes a real terminal `done` from soft disconnect.
                   if (doneSegments) resultSegments = doneSegments;
                   const merged = !!(event as Record<string, unknown>).merged;
-                  resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, merged });
+                  const cancelled = !!(event as Record<string, unknown>).cancelled;
+                  const emptyReply = !!(event as Record<string, unknown>).emptyReply;
+                  resolve({
+                    content: fullContent,
+                    sessionId: resultSessionId,
+                    segments: resultSegments,
+                    merged,
+                    cancelled,
+                    emptyReply,
+                  });
                   reader.cancel().catch(() => {});
                   return;
                 } else if (event.type === 'error') {
@@ -1714,8 +1758,8 @@ export const api = {
         request<{ type: string; name: string; path: string; files: Record<string, string> }>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}`),
       save: (mode: 'agent' | 'team' | 'skill', artifact: Record<string, unknown>) =>
         request<{ type: string; name: string; path: string }>('/builder/artifacts/save', { method: 'POST', body: JSON.stringify({ mode, artifact }) }),
-      import: (type: 'agent' | 'team' | 'skill', name: string, files: Record<string, string>, source?: { type: string; hubItemId?: string; url?: string }) =>
-        request<{ type: string; name: string; path: string }>('/builder/artifacts/import', { method: 'POST', body: JSON.stringify({ type, name, files, source }) }),
+      import: (type: 'agent' | 'team' | 'skill', name: string, files: Record<string, string>, source?: { type: string; hubItemId?: string; url?: string }, version?: string) =>
+        request<{ type: string; name: string; path: string }>('/builder/artifacts/import', { method: 'POST', body: JSON.stringify({ type, name, files, source, version }) }),
       install: (type: string, name: string) =>
         request<Record<string, unknown>>(`/builder/artifacts/${type}s/${encodeURIComponent(name)}/install`, { method: 'POST' }),
       uninstall: (type: string, name: string) =>
@@ -1762,7 +1806,10 @@ export const api = {
     login: (email: string, password: string) =>
       request<{ user: AuthUser; needsOnboarding?: boolean }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
     hubLogin: (hubToken: string, hubUser: { id: string; username: string; email?: string; displayName?: string; avatarUrl?: string }) =>
-      request<{ user: AuthUser; needsOnboarding?: boolean }>('/auth/hub-login', { method: 'POST', body: JSON.stringify({ hubToken, hubUser }) }),
+      request<{ user: AuthUser; needsOnboarding?: boolean; cloudAiReady?: boolean; cloudAiError?: string }>(
+        '/auth/hub-login',
+        { method: 'POST', body: JSON.stringify({ hubToken, hubUser }) },
+      ),
     logout: () => request('/auth/logout', { method: 'POST' }),
     me: () => request<{ user: AuthUser }>('/auth/me'),
     changePassword: (currentPassword: string, newPassword: string) =>
@@ -1928,7 +1975,7 @@ export const api = {
       request<{ messages: ChannelMessageInfo[]; hasMore: boolean }>(
         `/channels/${encodeURIComponent(channel)}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),
-    sendMessage: (channel: string, data: { text: string; senderId?: string; senderName?: string; mentions?: string[]; targetAgentId?: string; orgId?: string; humanOnly?: boolean; replyToId?: string }) =>
+    sendMessage: (channel: string, data: { text: string; senderId?: string; senderName?: string; mentions?: string[]; targetAgentId?: string; orgId?: string; humanOnly?: boolean; replyToId?: string; images?: string[] }) =>
       request<{ userMessage: ChannelMessageInfo | null; agentMessage: ChannelMessageInfo | null }>(
         `/channels/${encodeURIComponent(channel)}/messages`,
         { method: 'POST', body: JSON.stringify(data) }
@@ -2335,6 +2382,7 @@ export const wsClient = new WSClient();
 // ── Markus Hub API Client ────────────────────────────────────────────────────
 
 let HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'https://markus.global';
+let _hubUrlReady: Promise<void> | null = null;
 
 // Fetch hub URL from server config (overrides default if available),
 // and sync existing Hub token to backend for agent tool access.
@@ -2353,10 +2401,24 @@ async function refreshHubUserFromToken(): Promise<HubUser | null> {
   return getHubUser();
 }
 
+async function refreshHubUrlFromSettings(): Promise<void> {
+  if ((window as unknown as Record<string, boolean>).__MARKUS_PREVIEW__) return;
+  try {
+    const r = await request<{ hubUrl: string }>('/settings/hub');
+    if (r.hubUrl) HUB_URL = r.hubUrl;
+  } catch { /* keep default */ }
+}
+
+function ensureHubUrlLoaded(): Promise<void> {
+  if (!_hubUrlReady) {
+    _hubUrlReady = refreshHubUrlFromSettings().finally(() => { /* keep settled promise */ });
+  }
+  return _hubUrlReady;
+}
+
 if (!(window as unknown as Record<string, boolean>).__MARKUS_PREVIEW__) {
-  request<{ hubUrl: string }>('/settings/hub')
-    .then(async r => {
-      if (r.hubUrl) HUB_URL = r.hubUrl;
+  _hubUrlReady = refreshHubUrlFromSettings()
+    .then(async () => {
       const existingToken = localStorage.getItem('markus_hub_token');
       if (existingToken) {
         request('/settings/hub-token', { method: 'POST', body: JSON.stringify({ token: existingToken }) }).catch(() => {});
@@ -2523,9 +2585,9 @@ function syncHubTokenToBackend(token: string | null): void {
 }
 
 /** Persist Hub connect OpenRouter member credentials (chat + search). */
-function syncOpenRouterCredentialsToBackend(opts: { openrouter?: OpenRouterConnect }): void {
+async function syncOpenRouterCredentialsToBackend(opts: { openrouter?: OpenRouterConnect }): Promise<void> {
   if (!opts.openrouter?.key) return;
-  request('/settings/subscription-key', {
+  await request('/settings/subscription-key', {
     method: 'POST',
     body: JSON.stringify({ openrouter: opts.openrouter }),
   }).catch(() => {});
@@ -2553,11 +2615,11 @@ async function fetchConnectStatus(sessionId: string): Promise<ConnectStatus | nu
   } catch { return null; }
 }
 
-function applyHubConnect(data: ConnectStatus): void {
+async function applyHubConnect(data: ConnectStatus): Promise<void> {
   if (!data.token || !data.user) return;
   saveHubAuth(data.token, data.user);
   if (data.openrouter?.key) {
-    syncOpenRouterCredentialsToBackend({ openrouter: data.openrouter });
+    await syncOpenRouterCredentialsToBackend({ openrouter: data.openrouter });
   }
   // Best-effort: push locally preferred org name (from onboarding) to Hub.
   void syncPreferredOrgNameToHub();
@@ -2580,9 +2642,12 @@ export async function syncPreferredOrgNameToHub(): Promise<void> {
 }
 
 interface DesktopBridge {
-  openExternal: (url: string) => void;
+  openExternal: (url: string) => void | Promise<unknown>;
+  focusWindow?: () => void | Promise<unknown>;
   onDeepLinkAuth?: (cb: (d: { session?: string }) => void) => void;
+  peekPendingDeepLinkAuth?: () => Promise<string | null>;
   consumePendingDeepLinkAuth?: () => Promise<string | null>;
+  clearPendingDeepLinkAuth?: () => Promise<void> | void;
 }
 function desktopBridge(): DesktopBridge | undefined {
   return (window as unknown as { markusDesktop?: DesktopBridge }).markusDesktop;
@@ -2592,13 +2657,17 @@ function desktopBridge(): DesktopBridge | undefined {
  * Poll a known connect session until the Hub reports it ready (or timeout).
  * Used for the desktop cold-start case, where the app is launched by the
  * markus://auth deep link and adopts the session id it carries.
+ * When the session is ready, always overwrite the local Hub token (stale tokens
+ * must not short-circuit a fresh connect).
  */
 export async function completeHubAuthFromSession(sessionId: string, timeoutMs = 120_000): Promise<boolean> {
-  if (getHubToken()) return true;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const data = await fetchConnectStatus(sessionId);
-    if (data?.ready && data.token && data.user) { applyHubConnect(data); return true; }
+    if (data?.ready && data.token && data.user) {
+      await applyHubConnect(data);
+      return true;
+    }
     await new Promise(r => setTimeout(r, 1200));
   }
   return false;
@@ -2608,23 +2677,46 @@ export async function completeHubAuthFromSession(sessionId: string, timeoutMs = 
 let _deepLinkAuthHandler: ((session: string) => void) | null = null;
 desktopBridge()?.onDeepLinkAuth?.((d) => { _deepLinkAuthHandler?.(d?.session ?? ''); });
 
+let _cancelDesktopHubAuth: (() => void) | null = null;
+
+/** Cancel an in-flight desktop Hub sign-in (user clicked Cancel on Login). */
+export function cancelHubAuth(): void {
+  _cancelDesktopHubAuth?.();
+  _hubAuthPromise = null;
+}
+
 function runDesktopHubAuth(sessionId: string, method: string | undefined, desktop: DesktopBridge): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false;
+    let inFlight = false;
     const finish = (ok: boolean, err?: Error) => {
       if (settled) return;
       settled = true;
+      _cancelDesktopHubAuth = null;
       clearInterval(pollTimer);
       clearTimeout(timeoutTimer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
       if (_deepLinkAuthHandler === onDeepLink) _deepLinkAuthHandler = null;
-      if (ok) resolve(); else reject(err);
+      if (ok) {
+        void desktop.focusWindow?.();
+        resolve();
+      } else {
+        reject(err);
+      }
     };
+    _cancelDesktopHubAuth = () => finish(false, new Error('Hub login cancelled'));
     const tryComplete = async () => {
-      if (settled) return;
-      const data = await fetchConnectStatus(sessionId);
-      if (data?.ready && data.token && data.user) {
-        applyHubConnect(data);
-        finish(true);
+      if (settled || inFlight) return;
+      inFlight = true;
+      try {
+        const data = await fetchConnectStatus(sessionId);
+        if (data?.ready && data.token && data.user) {
+          await applyHubConnect(data);
+          finish(true);
+        }
+      } finally {
+        inFlight = false;
       }
     };
     // Deep-link accelerator: complete immediately when the OS routes the return
@@ -2632,9 +2724,20 @@ function runDesktopHubAuth(sessionId: string, method: string | undefined, deskto
     const onDeepLink = (session: string) => { if (!session || session === sessionId) void tryComplete(); };
     _deepLinkAuthHandler = onDeepLink;
 
+    // Chromium throttles timers hard while the app is backgrounded (user is in
+    // the system browser). Kick the poll as soon as Markus is focused again.
+    const onFocus = () => { void tryComplete(); };
+    const onVisibility = () => { if (document.visibilityState === 'visible') void tryComplete(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+
     let url = `${HUB_URL}/auth/connect?session=${encodeURIComponent(sessionId)}&redirect=${encodeURIComponent('markus://auth')}`;
     if (method) url += `&method=${encodeURIComponent(method)}`;
-    desktop.openExternal(url);
+    void Promise.resolve(desktop.openExternal(url)).then(() => {
+      void tryComplete();
+    }).catch((err) => {
+      finish(false, err instanceof Error ? err : new Error('Failed to open browser'));
+    });
 
     const pollTimer = setInterval(() => { void tryComplete(); }, 1500);
     const timeoutTimer = setTimeout(() => finish(false, new Error('Hub login timed out')), 5 * 60_000);
@@ -2670,7 +2773,7 @@ function runPopupHubAuth(sessionId: string, method?: string): Promise<void> {
       const data = await fetchConnectStatus(sessionId);
       if (data?.ready && data.token && data.user) {
         settled = true;
-        applyHubConnect(data);
+        await applyHubConnect(data);
         cleanup();
         popup?.close();
         resolve();
@@ -2725,6 +2828,7 @@ export function ensureHubAuth(methodOrOpts?: string | EnsureHubAuthOpts): Promis
 
   if (opts.force) {
     // Cancel any in-flight non-forced auth and clear the stale session.
+    _cancelDesktopHubAuth?.();
     _hubAuthPromise = null;
     if (getHubToken() || getHubUser()) clearHubAuth();
   } else if (getHubToken()) {
@@ -2734,9 +2838,12 @@ export function ensureHubAuth(methodOrOpts?: string | EnsureHubAuthOpts): Promis
 
   const sessionId = `cs_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const desktop = desktopBridge();
-  const p = desktop
-    ? runDesktopHubAuth(sessionId, opts.method, desktop)
-    : runPopupHubAuth(sessionId, opts.method);
+  const p = (async () => {
+    // Avoid opening prod Hub while local/dev settings still loading.
+    await ensureHubUrlLoaded();
+    if (desktop) await runDesktopHubAuth(sessionId, opts.method, desktop);
+    else await runPopupHubAuth(sessionId, opts.method);
+  })();
   _hubAuthPromise = p;
   void p.catch(() => {}).finally(() => { if (_hubAuthPromise === p) _hubAuthPromise = null; });
   return p;
@@ -2904,6 +3011,7 @@ export const hubApi = {
   },
   user: {
     plan: () => hubRequest<{
+      orgId?: string | null;
       planType: string; planStatus: string;
       monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null;
       bonusCu: number; purchasedCu: number; windowQuotaCu: number;

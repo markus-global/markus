@@ -2,6 +2,7 @@ import { BrowserWindow, screen, app } from 'electron';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { isAppQuitting } from './app-lifecycle.js';
 
 const STATE_FILE = join(homedir(), '.markus', 'window-state.json');
 
@@ -62,6 +63,9 @@ export function createMainWindow(show = true): BrowserWindow {
     minWidth: 800,
     minHeight: 600,
     show,
+    // Windows/Linux: keep Menu.setApplicationMenu for accelerators (Ctrl+R, etc.)
+    // but hide the native File/Edit/View bar — it looks like a legacy desktop app.
+    ...(process.platform !== 'darwin' ? { autoHideMenuBar: true } : {}),
     ...(process.platform === 'darwin' ? {
       titleBarStyle: 'hiddenInset' as const,
       trafficLightPosition: { x: 16, y: 16 },
@@ -82,14 +86,23 @@ export function createMainWindow(show = true): BrowserWindow {
 
   mainWindow = new BrowserWindow(windowOpts);
 
+  if (process.platform !== 'darwin') {
+    mainWindow.setMenuBarVisibility(false);
+  }
+
   // Only maximize when actually showing — maximizing a hidden window can force
   // it visible on some platforms, defeating a hidden auto-start launch.
   if (show && state.isMaximized) {
     mainWindow.maximize();
   }
 
-  mainWindow.on('close', () => {
+  // Close = hide to tray (keep backend). Explicit Quit sets isAppQuitting.
+  mainWindow.on('close', (event) => {
     if (mainWindow) saveWindowState(mainWindow);
+    if (!isAppQuitting()) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
   });
 
   mainWindow.on('closed', () => {
@@ -113,6 +126,11 @@ export function restoreOrCreateWindow(url: string): void {
     // shown — reveal it before focusing.
     if (!mainWindow.isVisible()) mainWindow.show();
     if (mainWindow.isMinimized()) mainWindow.restore();
+    // Deep links (install/invite/open) must navigate, not only focus.
+    if (url) {
+      const current = mainWindow.webContents.getURL();
+      if (current !== url) void mainWindow.loadURL(url);
+    }
     mainWindow.focus();
   } else {
     const win = createMainWindow();

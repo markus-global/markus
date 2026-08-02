@@ -1,5 +1,5 @@
 import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, type ProviderCapabilities, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
-import type { MultiModalProviderInterface, MultiModalToolSchemas, ImageGenOptions, ImageResult } from './provider.js';
+import { DEFAULT_REQUEST_MAX_TOKENS, type MultiModalProviderInterface, type MultiModalToolSchemas, type ImageGenOptions, type ImageResult } from './provider.js';
 
 type GeminiPart =
   | { text: string }
@@ -41,7 +41,7 @@ export class GoogleProvider implements MultiModalProviderInterface {
     this.model = config?.model ?? 'gemini-2.0-flash';
     this.apiKey = config?.apiKey ?? process.env['GOOGLE_API_KEY'] ?? '';
     this.baseUrl = config?.baseUrl ?? 'https://generativelanguage.googleapis.com';
-    this.maxTokens = config?.maxTokens ?? 4096;
+    this.maxTokens = config?.maxTokens ?? DEFAULT_REQUEST_MAX_TOKENS;
   }
 
   configure(config: LLMProviderConfig): void {

@@ -83,8 +83,8 @@ function TimelineItem({ item }: { item: ToolItem; idx: number; total: number }) 
         }`}
       />
       <span className={`text-xs ${
-        item.status === 'running' ? 'text-brand-500'
-        : item.status === 'error' ? 'text-red-500'
+        item.status === 'running' ? 'activity-text-shimmer'
+        : item.status === 'error' ? 'text-fg-tertiary'
         : 'text-fg-secondary'
       }`}>{t(`execution.tools.${meta.key}`, { defaultValue: meta.label })}{item.status === 'running' ? '…' : ''}</span>
       {item.status === 'running' && <Spinner />}
@@ -146,8 +146,8 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
   // Nothing has happened yet → a lightweight thinking indicator.
   if (!hasAny) {
     return (
-      <div className="flex items-center gap-1.5 text-xs text-fg-secondary py-0.5">
-        <span className="mr-0.5">{t('activity.thinking')}</span>
+      <div className="flex items-center gap-1.5 text-xs py-0.5">
+        <span className="mr-0.5 activity-text-shimmer">{t('activity.thinking')}</span>
         <PulsingDots />
       </div>
     );
@@ -181,7 +181,7 @@ export function ActivityIndicator({ activities, isActive, persistent }: Props) {
         className="flex items-center gap-1.5 text-xs w-full min-w-0 select-none text-fg-tertiary hover:text-fg-secondary transition-colors"
       >
         <span className={`shrink-0 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}>▶</span>
-        <span className={`truncate font-medium ${spinning ? 'text-brand-500' : 'text-fg-secondary'}`}>{headLabel}</span>
+        <span className={`truncate font-medium ${spinning ? 'activity-text-shimmer' : 'text-fg-secondary'}`}>{headLabel}</span>
         <span className="shrink-0">· {t('activity.step', { count: timeline.length })}</span>
         {errorCount > 0 && <span className="text-red-500 shrink-0">· {t('activity.failed', { count: errorCount })}</span>}
         {spinning && <Spinner />}

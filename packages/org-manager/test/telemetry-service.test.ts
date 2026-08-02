@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir } from 'node:os';
+import { closeRuntimeLogger } from '@markus/shared';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -12,6 +13,7 @@ describe('TelemetryService', () => {
 
   beforeEach(async () => {
     vi.resetModules();
+    closeRuntimeLogger();
     configDir = mkdtempSync(join(tmpdir(), 'telemetry-'));
     mkdirSync(join(configDir, '.markus', 'logs'), { recursive: true });
     vi.doMock('node:os', async (importOriginal) => {
@@ -25,6 +27,9 @@ describe('TelemetryService', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    // Close the runtime log stream before deleting the temp homedir — otherwise
+    // a late WriteStream flush throws ENOENT and fails the whole Vitest run.
+    closeRuntimeLogger();
     rmSync(configDir, { recursive: true, force: true });
   });
 

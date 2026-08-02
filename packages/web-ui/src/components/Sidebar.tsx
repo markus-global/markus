@@ -25,9 +25,18 @@ export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggle
   const { t } = useTranslation(['nav', 'common']);
 
   return (
-    <aside className="h-dvh bg-surface-secondary flex flex-col shrink-0 overflow-hidden">
-      <div className={`flex items-center ${collapsed ? 'px-2 py-3.5 justify-center' : 'px-4 h-14 justify-between'}`}>
-        <button onClick={onToggleCollapse} title={collapsed ? t('sidebar.expandSidebar') : t('sidebar.collapseSidebar')} className="flex items-center gap-2.5 min-w-0 group">
+    <aside className="markus-app-sidebar h-dvh bg-surface-secondary flex flex-col shrink-0 overflow-hidden">
+      {/* Drag region includes traffic-light clearance (padding is on this node, not aside). */}
+      <div
+        data-electron-drag
+        className={`electron-mac-sidebar-header flex items-center ${collapsed ? 'px-2 py-3.5 justify-center' : 'px-4 h-14 justify-between'}`}
+      >
+        <button
+          data-no-drag
+          onClick={onToggleCollapse}
+          title={collapsed ? t('sidebar.expandSidebar') : t('sidebar.collapseSidebar')}
+          className="flex items-center gap-2.5 min-w-0 group"
+        >
           <img src="/logo.png" alt="Markus" className="w-8 h-8 rounded-lg shrink-0" />
           {!collapsed && <span className="text-[15px] font-bold tracking-tight text-fg-primary whitespace-nowrap">Markus</span>}
         </button>

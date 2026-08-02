@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, useEffect, useCallback, memo } from 'react';
+import { useMemo, useState, useRef, useEffect, useCallback, memo, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
@@ -8,7 +8,10 @@ import remarkBreaks from 'remark-breaks';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import 'katex/dist/katex.min.css';
+import { api } from '../api.ts';
 import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
+import { isElectron, openExternal } from '../hooks/useElectron.ts';
+import { useLayout } from '../contexts/LayoutContext.tsx';
 import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
 import { CodeBlock } from './CodeBlock.tsx';
 import { MermaidBlock } from './MermaidBlock.tsx';
@@ -19,6 +22,14 @@ import {
   preprocessMentions, preprocessEntityLinksInCode, preprocessEntityIds,
   looksLikePlantUML, looksLikeMermaid,
 } from './markdown-utils.ts';
+import {
+  classifyMarkdownHref,
+  isLocalFilesystemPath,
+  normalizeLocalFilesystemPath,
+  normalizeWindowsPathsInMarkdown,
+  rehypeSlugifyHeadings,
+  scrollToMarkdownFragment,
+} from './markdown-links.ts';
 import { copyPlainText, copyAsHtml } from './markdown-copy.ts';
 import { TypographySettings, loadTypographyConfig, resolveTypographyCSS } from './TypographySettings.tsx';
 import { navBus } from '../navBus.ts';
@@ -35,13 +46,22 @@ import { ErrorBoundary } from './ErrorBoundary.tsx';
 // survive sanitization because they start with `#`.
 const CUSTOM_URI_SCHEME_RE = /^(deliverable|task|requirement|project|agent|team|workflow):/i;
 function chatUrlTransform(url: string): string {
-  return CUSTOM_URI_SCHEME_RE.test(url) ? url : defaultUrlTransform(url);
+  // react-markdown's defaultUrlTransform treats `C:` / `file:` as unsafe schemes
+  // and blanks the src — which breaks Windows local image markdown.
+  if (CUSTOM_URI_SCHEME_RE.test(url) || isLocalFilesystemPath(url)) return url;
+  return defaultUrlTransform(url);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const REMARK_PLUGINS: any[] = [remarkGfm, remarkMath, remarkBreaks];
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const REHYPE_PLUGINS: any[] = [[rehypeKatex, { strict: 'ignore' }], [rehypeHighlight, { detect: true, ignoreMissing: true }]];
+const REHYPE_PLUGINS: any[] = [
+  rehypeSlugifyHeadings,
+  [rehypeKatex, { strict: 'ignore' }],
+  [rehypeHighlight, { detect: true, ignoreMissing: true }],
+];
+
+const MD_LINK_CLASS = 'text-brand-500 hover:text-brand-500 underline break-all cursor-pointer';
 
 interface Props {
   content: string;
@@ -171,8 +191,9 @@ const mdComponents = {
   blockquote: ({ children }: { children?: React.ReactNode }) => (
     <blockquote className="border-l-2 border-brand-500 pl-3 my-2 text-fg-secondary italic">{children}</blockquote>
   ),
+  // Static fallback — real click routing is in MarkdownMessage components.a
   a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500 underline break-all">{children}</a>
+    <a href={href} className={MD_LINK_CLASS}>{children}</a>
   ),
   hr: () => <hr className="border-border-default my-3" />,
   table: ({ children }: { children?: React.ReactNode }) => (
@@ -193,18 +214,28 @@ const mdComponents = {
 
 // ─── Image support ───────────────────────────────────────────────────────────
 
-const LOCAL_PATH_RE = /^(?:\/[\w.\-@+ ]|~\/|\.\.?\/|[A-Z]:\\)/;
 const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
 
 function isLocalImagePath(src: string): boolean {
-  return LOCAL_PATH_RE.test(src) && IMAGE_EXTS.test(src);
+  const normalized = normalizeLocalFilesystemPath(src);
+  return isLocalFilesystemPath(src) && IMAGE_EXTS.test(normalized.split('?')[0] ?? normalized);
 }
 
 function resolveImagePath(src: string, basePath?: string): string {
-  if (src.startsWith('/') || src.startsWith('~/') || /^[A-Z]:\\/.test(src)) return src;
-  if ((src.startsWith('./') || src.startsWith('../')) && basePath) {
-    const base = basePath.endsWith('/') ? basePath : basePath + '/';
-    const parts = (base + src).split('/');
+  const normalized = normalizeLocalFilesystemPath(src);
+  if (
+    normalized.startsWith('/')
+    || normalized.startsWith('~/')
+    || /^[A-Za-z]:\//.test(normalized)
+    || normalized.startsWith('//')
+  ) {
+    return normalized;
+  }
+  if ((normalized.startsWith('./') || normalized.startsWith('../')) && basePath) {
+    const base = basePath.replace(/\\/g, '/').endsWith('/')
+      ? basePath.replace(/\\/g, '/')
+      : `${basePath.replace(/\\/g, '/')}/`;
+    const parts = (base + normalized).split('/');
     const resolved: string[] = [];
     for (const p of parts) {
       if (p === '..') resolved.pop();
@@ -212,7 +243,7 @@ function resolveImagePath(src: string, basePath?: string): string {
     }
     return '/' + resolved.join('/');
   }
-  return src;
+  return normalized;
 }
 
 function localImageUrl(filePath: string): string {
@@ -362,8 +393,44 @@ function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: s
 
 // ─── Image Preview Modal ────────────────────────────────────────────────────
 
+async function fetchImageBlob(src: string): Promise<Blob> {
+  const res = await fetch(src);
+  if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
+  return res.blob();
+}
+
+/** Clipboard image write usually wants image/png — convert when needed. */
+async function blobAsPng(blob: Blob): Promise<Blob> {
+  if (blob.type === 'image/png') return blob;
+  const bmp = await createImageBitmap(blob);
+  const canvas = document.createElement('canvas');
+  canvas.width = bmp.width;
+  canvas.height = bmp.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.drawImage(bmp, 0, 0);
+  bmp.close();
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(b => (b ? resolve(b) : reject(new Error('PNG encode failed'))), 'image/png');
+  });
+}
+
+function guessImageFilename(src: string, blob: Blob): string {
+  try {
+    const path = src.startsWith('data:') ? '' : new URL(src, window.location.href).pathname;
+    const base = path.split('/').pop() || '';
+    if (base && /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(base)) return decodeURIComponent(base);
+  } catch { /* ignore */ }
+  const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+  return `image.${ext}`;
+}
+
 function ImagePreviewModal({ src, onClose }: { src: string; onClose: () => void }) {
+  const { t } = useTranslation('common');
+  const [flash, setFlash] = useState<string | null>(null);
+  const [busy, setBusy] = useState<'copy' | 'download' | null>(null);
   useNativeBrowserOverlay(true);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -372,19 +439,89 @@ function ImagePreviewModal({ src, onClose }: { src: string; onClose: () => void 
     return () => document.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  const showFlash = useCallback((msg: string) => {
+    setFlash(msg);
+    window.setTimeout(() => setFlash(null), 1600);
+  }, []);
+
+  const handleCopy = useCallback(async (e: ReactMouseEvent) => {
+    e.stopPropagation();
+    if (busy) return;
+    setBusy('copy');
+    try {
+      const blob = await fetchImageBlob(src);
+      const png = await blobAsPng(blob);
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+      showFlash(t('imageCopied'));
+    } catch {
+      showFlash(t('imageCopyFailed'));
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, showFlash, src, t]);
+
+  const handleDownload = useCallback(async (e: ReactMouseEvent) => {
+    e.stopPropagation();
+    if (busy) return;
+    setBusy('download');
+    try {
+      const blob = await fetchImageBlob(src);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = guessImageFilename(src, blob);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showFlash(t('imageDownloaded'));
+    } catch {
+      showFlash(t('imageDownloadFailed'));
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, showFlash, src, t]);
+
+  const toolBtn =
+    'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-sm transition-colors disabled:opacity-50';
+
   return createPortal(
     <div
       className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4"
       onClick={onClose}
     >
-      <button
-        onClick={onClose}
-        className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors z-10"
+      <div
+        className="absolute top-4 right-4 z-10 flex items-center gap-2"
+        onClick={e => e.stopPropagation()}
       >
-        <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-        </svg>
-      </button>
+        <button type="button" className={toolBtn} onClick={handleCopy} disabled={!!busy} title={t('copyImage')}>
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+          </svg>
+          {t('copy')}
+        </button>
+        <button type="button" className={toolBtn} onClick={handleDownload} disabled={!!busy} title={t('downloadImage')}>
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          {t('downloadImage')}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+          title={t('close')}
+        >
+          <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      {flash && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-10 px-3 py-1.5 rounded-lg bg-black/70 text-white text-xs">
+          {flash}
+        </div>
+      )}
       <img
         src={src}
         alt="Preview"
@@ -551,9 +688,11 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   const { thinking, rest } = extractThinkBlocks(content);
   const contentRef = useRef<HTMLDivElement>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const layout = useLayout();
 
   const preprocess = useCallback((text: string) => {
     let t = transformOutsideCode(text, normalizeMathDelimiters);
+    t = transformOutsideCode(t, normalizeWindowsPathsInMarkdown);
     t = transformOutsideCode(t, preprocessEntityLinksInCode);
     t = transformOutsideCode(t, preprocessEntityIds);
     t = transformOutsideCode(t, s => preprocessMentions(s, knownNames));
@@ -561,6 +700,43 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   }, [knownNames]);
 
   const processedRest = useMemo(() => preprocess(rest), [rest, preprocess]);
+
+  const handleRoutedLinkClick = useCallback((e: ReactMouseEvent, href: string) => {
+    const classified = classifyMarkdownHref(href, basePath);
+    if (classified.kind === 'passthrough') return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (classified.kind === 'fragment') {
+      scrollToMarkdownFragment(contentRef.current, classified.id);
+      return;
+    }
+
+    if (classified.kind === 'file') {
+      if (layout?.hostAvailable) {
+        layout.openRightPanel({
+          kind: 'file',
+          path: classified.path,
+          title: classified.path.split(/[/\\]/).pop(),
+        });
+      } else {
+        // No right-panel host (e.g. some settings pages) — reveal in OS file manager.
+        void api.files.reveal(classified.path).catch(() => {});
+      }
+      return;
+    }
+
+    if (classified.kind === 'external') {
+      // Prefer the in-app EmbeddedBrowser when the page hosts a right panel
+      // (desktop Electron). Otherwise open the system / browser tab.
+      if (layout?.hostAvailable && /^https?:\/\//i.test(classified.url)) {
+        layout.openRightPanel({ kind: 'url', url: classified.url, title: classified.url });
+        return;
+      }
+      openExternal(classified.url);
+    }
+  }, [basePath, layout]);
 
   const components = useMemo(() => {
     return {
@@ -613,12 +789,47 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
             }
           }
         }
+        // Agents often emit `[Title](proj_…)` / `[Title](dlv_…)` without a scheme.
+        // Treat bare Markus entity ids as in-app chips — never open as relative URLs.
+        if (href && looksLikeEntityId(href)) {
+          return <EntityChip id={href.trim()} label={children} />;
+        }
+
+        const classified = classifyMarkdownHref(href, basePath);
+        if (classified.kind === 'fragment' || classified.kind === 'file' || classified.kind === 'external') {
+          return (
+            <a
+              href={href}
+              className={MD_LINK_CLASS}
+              onClick={(e) => handleRoutedLinkClick(e, href!)}
+              title={
+                classified.kind === 'fragment' ? `#${classified.id}`
+                  : classified.kind === 'file' ? classified.path
+                    : classified.url
+              }
+            >
+              {children}
+            </a>
+          );
+        }
+
+        // Unknown relative routes — still avoid target=_blank on localhost Electron.
         return (
-          <a href={href} target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500 underline break-all">{children}</a>
+          <a
+            href={href}
+            className={MD_LINK_CLASS}
+            onClick={(e) => {
+              if (isElectron() && href && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) {
+                e.preventDefault();
+              }
+            }}
+          >
+            {children}
+          </a>
         );
       },
     };
-  }, [onMentionClick, basePath]);
+  }, [onMentionClick, basePath, handleRoutedLinkClick]);
 
   return (
     <div className="relative group/md">

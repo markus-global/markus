@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, hubApi, kebab, ownsHubItem, type AuthUser, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
+import { mergeHighlightedHubItem } from '../lib/hubDeepLink.ts';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 import { AssetCard } from '../components/AssetCard.tsx';
 import { Masonry } from '../components/Masonry.tsx';
@@ -112,15 +113,17 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
           ? hubApi.purchases.mine().then(r => setPurchasedIds(new Set(r.purchases.map(p => p.itemId)))).catch(() => {})
           : Promise.resolve(),
       ]);
-      setHubItems(hubRes?.items ?? []);
+      const merged = await mergeHighlightedHubItem(hubRes?.items ?? [], highlightItemId);
+      setHubItems(merged.items);
       setTemplates(Array.isArray(tplRes.templates) ? tplRes.templates : []);
+      if (merged.missing) onHighlightDone?.();
     } catch {
       setTemplates([]);
       setHubItems([]);
     } finally {
       setLoading(false);
     }
-  }, [search, loadLocalStatus]);
+  }, [search, loadLocalStatus, highlightItemId, onHighlightDone]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -378,10 +381,13 @@ export function installHubItem(item: HubItem): Promise<string> {
     const slug = hubItemSlug(item, config);
     const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
     const hubSource = { type: 'hub', hubItemId: item.id };
+    // Prefer Hub marketplace version so local install matches the card and
+    // does not fall back to buildManifest's default 1.0.0 (false Upgrade).
+    const version = (data.version || item.version || (typeof config.version === 'string' ? config.version : '') || '').trim() || undefined;
     if (data.files && Object.keys(data.files).length > 0) {
-      await api.builder.artifacts.import(mode, slug, data.files, hubSource);
+      await api.builder.artifacts.import(mode, slug, data.files, hubSource, version);
     } else {
-      const artifact = { ...config, name: slug, displayName: (config.displayName as string) || name, description: item.description, source: hubSource };
+      const artifact = { ...config, ...(version ? { version } : {}), name: slug, displayName: (config.displayName as string) || name, description: item.description, source: hubSource };
       await api.builder.artifacts.save(mode, artifact);
     }
     await api.builder.artifacts.install(mode, slug);
@@ -476,7 +482,8 @@ function HubAgentCard({ item, localInfo, purchased, onStatusChange, highlight, o
     if (highlight && cardRef.current) {
       cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
       setGlowing(true);
-      const timer = setTimeout(() => { setGlowing(false); onHighlightDone?.(); }, 4000);
+      // Keep parent highlightId until banner dismiss/install — only end the glow pulse here.
+      const timer = setTimeout(() => { setGlowing(false); }, 4000);
       return () => clearTimeout(timer);
     }
   }, [highlight, onHighlightDone]);

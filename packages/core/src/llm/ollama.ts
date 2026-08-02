@@ -1,5 +1,5 @@
 import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
-import type { LLMProviderInterface } from './provider.js';
+import { DEFAULT_REQUEST_MAX_TOKENS, type LLMProviderInterface } from './provider.js';
 
 interface OllamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -34,7 +34,7 @@ export class OllamaProvider implements LLMProviderInterface {
   constructor(config?: LLMProviderConfig) {
     this.model = config?.model ?? 'llama3.1';
     this.baseUrl = config?.baseUrl ?? 'http://localhost:11434';
-    this.maxTokens = config?.maxTokens ?? 4096;
+    this.maxTokens = config?.maxTokens ?? DEFAULT_REQUEST_MAX_TOKENS;
   }
 
   configure(config: LLMProviderConfig): void {

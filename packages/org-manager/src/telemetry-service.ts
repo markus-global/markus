@@ -52,6 +52,7 @@ export class TelemetryService {
   private hubUrl: string;
   private instanceId: string;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private initialTimer: ReturnType<typeof setTimeout> | null = null;
   private statsProvider: StatsProvider | null = null;
 
   constructor(hubUrl: string, instanceId: string) {
@@ -96,7 +97,10 @@ export class TelemetryService {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => void this.report(), REPORT_INTERVAL_MS);
-    setTimeout(() => void this.report(), 60_000);
+    this.initialTimer = setTimeout(() => {
+      this.initialTimer = null;
+      void this.report();
+    }, 60_000);
   }
 
   private async report(): Promise<void> {
@@ -142,6 +146,10 @@ export class TelemetryService {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.initialTimer) {
+      clearTimeout(this.initialTimer);
+      this.initialTimer = null;
     }
   }
 }

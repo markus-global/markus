@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -61,6 +61,7 @@ import { WSBroadcaster } from './ws-server.js';
 import { SSEHandler } from './sse-handler.js';
 import { ActiveStreamRegistry } from './active-stream-registry.js';
 import { installSkill } from './skill-service.js';
+import { buildEvolveSeedPrompt, formatEvolveTranscript, type EvolveSourceMessage } from './evolve-from-message.js';
 import type { LocalFileStorageProvider } from './file-storage-provider.js';
 import {
   signToken,
@@ -765,6 +766,24 @@ export class APIServer {
           hasMore: result.hasMore,
         };
       },
+      getChatSessionMessages: async (sessionId: string, limit: number, before?: string, agentId?: string) => {
+        if (!this.storage) return { messages: [], hasMore: false };
+        const session = this.storage.chatSessionRepo.getSession(sessionId);
+        if (!session) throw new Error(`Chat session not found: ${sessionId}`);
+        if (agentId && session.agentId !== agentId) {
+          throw new Error('Cannot recall messages from another agent\'s chat session');
+        }
+        const result = await this.storage.chatSessionRepo.getMessages(sessionId, limit, before);
+        return {
+          messages: result.messages.map((m: { id: string; role: string; content: string; createdAt: Date | string }) => ({
+            id: m.id,
+            role: m.role,
+            text: stripInternalBlocks(m.content),
+            createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
+          })),
+          hasMore: result.hasMore,
+        };
+      },
       ensureDmChannel: async (
         channelKey: string,
         member1: { id: string; name: string },
@@ -844,7 +863,7 @@ export class APIServer {
         const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
         const res = await self.hubFetch(`${hubUrl}/api/items/${itemId}/download`, { method: 'POST', headers });
         if (!res.ok) throw new Error(`Hub download failed: ${res.status}`);
-        const data = await res.json() as { name: string; itemType: string; files?: Record<string, string>; config?: unknown; description?: string; slug?: string };
+        const data = await res.json() as { name: string; itemType: string; files?: Record<string, string>; config?: unknown; description?: string; slug?: string; version?: string };
         const name = data.name;
         const config = (data.config ?? {}) as Record<string, unknown>;
         // Prefer the Hub's canonical slug / manifest name so non-ASCII display
@@ -855,6 +874,7 @@ export class APIServer {
           || name;
         const slug = kebab(canonicalName, 'hub-pkg');
         const mode = (data.itemType === 'team' ? 'team' : data.itemType === 'skill' ? 'skill' : 'agent') as 'agent' | 'team' | 'skill';
+        const version = (data.version || (typeof config.version === 'string' ? config.version : '') || '').trim() || undefined;
         const typeDir = mode === 'agent' ? 'agents' : mode === 'team' ? 'teams' : 'skills';
         const artDir = join(homedir(), '.markus', 'builder-artifacts', typeDir, slug);
         mkdirSync(artDir, { recursive: true });
@@ -865,7 +885,18 @@ export class APIServer {
             writeFileSync(filePath, content, 'utf-8');
           }
         } else if (data.config) {
-          writeFileSync(join(artDir, manifestFilename(mode as PackageType)), JSON.stringify(data.config, null, 2), 'utf-8');
+          const cfg = { ...config, ...(version ? { version } : {}), source: { type: 'hub', hubItemId: itemId } };
+          writeFileSync(join(artDir, manifestFilename(mode as PackageType)), JSON.stringify(cfg, null, 2), 'utf-8');
+        }
+        // Stamp marketplace version (+ hub source) so UI doesn't treat 1.0.0 as outdated.
+        const mfPath = join(artDir, manifestFilename(mode as PackageType));
+        if (existsSync(mfPath)) {
+          try {
+            const mf = JSON.parse(readFileSync(mfPath, 'utf-8')) as Record<string, unknown>;
+            if (version) mf.version = version;
+            mf.source = { type: 'hub', hubItemId: itemId };
+            writeFileSync(mfPath, JSON.stringify(mf, null, 2), 'utf-8');
+          } catch { /* skip if manifest invalid */ }
         }
         return self.builderService!.installArtifact(mode, slug);
       },
@@ -1840,7 +1871,12 @@ export class APIServer {
       const title = !session!.title ? userMessage.slice(0, 60) : undefined;
       const meta: Record<string, unknown> = { ...(extraMeta ?? {}) };
       if (images?.length) meta.images = images;
-      if (replyTo) { meta.replyToId = replyTo.id; meta.replyToSender = replyTo.sender; meta.replyToText = replyTo.text; }
+      if (replyTo) {
+        meta.replyToId = replyTo.id;
+        meta.replyToSender = replyTo.sender;
+        // Keep a short preview for the quote chip; full body lives on the referenced message.
+        meta.replyToText = replyTo.text.slice(0, 200);
+      }
       const saved = await this.storage.chatSessionRepo.appendMessage(
         session!.id,
         agentId,
@@ -1913,13 +1949,19 @@ export class APIServer {
     }
   }
 
-  start(): void {
-    this.server = createServer((req, res) => this.handleRequest(req, res));
-    this.ws.attach(this.server);
-    this.server.listen(this.port, '0.0.0.0', () => {
-      log.info(`API server listening on 0.0.0.0:${this.port} (HTTP + WebSocket)`);
+  start(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.server = createServer((req, res) => this.handleRequest(req, res));
+      this.ws.attach(this.server);
+      this.server.once('error', (err) => {
+        reject(err);
+      });
+      this.server.listen(this.port, '0.0.0.0', () => {
+        log.info(`API server listening on 0.0.0.0:${this.port} (HTTP + WebSocket)`);
+        resolve();
+      });
+      this.tryInitFeishuNotifier();
     });
-    this.tryInitFeishuNotifier();
   }
 
   stop(): void {
@@ -2159,7 +2201,7 @@ export class APIServer {
           );
           const sessionId = mainSession.id;
           mainSessionId = sessionId;
-          const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
+          const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, SESSION_RESTORE_MAX_MESSAGES);
           sessionRestoreData = {
             dbSessionId: sessionId,
             messages: histResult.messages.map((m: { role: string; content: string }) => ({
@@ -2751,6 +2793,26 @@ export class APIServer {
         log.warn('Failed to sync preferred org name to Hub', { error: (err as Error).message });
       }
 
+      // Await OpenRouter + recommended routing before returning so the client
+      // does not enter onboarding / chat with an empty Markus Cloud provider.
+      let cloudAiReady = false;
+      let cloudAiError: string | undefined;
+      try {
+        const sync = await this.syncOpenRouterCredentialsFromHub({ force: true });
+        if (sync.ok) {
+          cloudAiReady = true;
+          await this.applyHubRecommendationsAfterConnect(sync.modelsUrl, { force: false }).catch((err) => {
+            log.warn('hub-login: apply recommendations failed', { error: (err as Error).message });
+          });
+        } else {
+          cloudAiError = sync.error ?? 'OpenRouter sync failed';
+          log.warn('hub-login: OpenRouter sync failed', { error: cloudAiError });
+        }
+      } catch (err) {
+        cloudAiError = err instanceof Error ? err.message : String(err);
+        log.warn('hub-login: OpenRouter sync threw', { error: cloudAiError });
+      }
+
       const finalUser = userRow!;
       await this.storage.userRepo.updateLastLogin(finalUser.id);
       const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
@@ -2772,6 +2834,8 @@ export class APIServer {
           avatarUrl: finalUser.avatarUrl ?? undefined,
         },
         needsOnboarding: isFirstLogin,
+        cloudAiReady,
+        ...(cloudAiError ? { cloudAiError } : {}),
       });
       return;
     }
@@ -3233,6 +3297,16 @@ export class APIServer {
       }
       const limit = parseInt(url.searchParams.get('limit') ?? '50');
       const before = url.searchParams.get('before') ?? undefined;
+      const agentIdForStream = this.storage.chatSessionRepo.getSession(sessionId)?.agentId;
+      const live = agentIdForStream
+        ? this.activeStreams.getByAgentSession(agentIdForStream, sessionId)
+        : null;
+      const liveStreamId = live?.status === 'streaming' ? live.streamId : null;
+      // Heal orphan streaming bubbles when this session has no live generation
+      // (covers the SSE error race and any path that left isStreaming:true).
+      try {
+        this.storage.chatSessionRepo.clearOrphanStreamingFlagsForSession(sessionId, liveStreamId);
+      } catch { /* best-effort */ }
       const result = await this.storage.chatSessionRepo.getMessages(sessionId, limit, before);
       this.json(res, 200, result);
       return;
@@ -3266,7 +3340,8 @@ export class APIServer {
       if (!authUser) return;
       const channel = decodeURIComponent(path.split('/')[3]!);
       const body = await this.readBody(req);
-      const text = body['text'] as string;
+      const text = (body['text'] as string) ?? '';
+      const images = (body['images'] as string[] | undefined)?.filter(Boolean);
       const resolvedIdentity = this.orgService.resolveHumanIdentity(authUser.userId);
       const senderId = authUser.userId;
       const senderName = resolvedIdentity?.name ?? (body['senderName'] as string) ?? 'You';
@@ -3275,9 +3350,16 @@ export class APIServer {
       const replyToId = body['replyToId'] as string | undefined;
       const orgId = (body['orgId'] as string) ?? 'default';
 
-      // Persist user message
+      if (!text.trim() && !images?.length) {
+        this.json(res, 400, { error: 'Message text or images required' });
+        return;
+      }
+
+      // Persist user message (notes/DM may be image-only — store in metadata)
       let userMsg: ChannelMsg | undefined;
       if (this.storage) {
+        const meta: Record<string, unknown> = {};
+        if (images?.length) meta.images = images;
         userMsg = await this.storage.channelMessageRepo.append({
           orgId,
           channel,
@@ -3287,6 +3369,7 @@ export class APIServer {
           text,
           mentions,
           replyToId,
+          ...(Object.keys(meta).length ? { metadata: meta } : {}),
         });
       }
 
@@ -3643,6 +3726,85 @@ export class APIServer {
       return;
     }
 
+    if (path.match(/^\/api\/agents\/[^/]+\/evolve-from-message$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage unavailable' });
+        return;
+      }
+      const agentId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      const parentSessionId = (body['parentSessionId'] as string | undefined)?.trim();
+      const sourceMessageId = (body['sourceMessageId'] as string | undefined)?.trim();
+      const sourceText = (body['sourceText'] as string | undefined)?.trim();
+      const userNote = (body['userNote'] as string | undefined)?.trim();
+
+      if (!parentSessionId) {
+        this.json(res, 400, { error: 'parentSessionId is required' });
+        return;
+      }
+
+      try {
+        this.orgService.getAgentManager().getAgent(agentId);
+      } catch {
+        this.json(res, 404, { error: 'Agent not found' });
+        return;
+      }
+
+      const parent = this.storage.chatSessionRepo.getSession(parentSessionId);
+      if (!parent || parent.agentId !== agentId) {
+        this.json(res, 400, { error: 'parentSessionId must be a personal DM session for this agent' });
+        return;
+      }
+      if (parent.userId && parent.userId !== authUser.userId) {
+        this.json(res, 403, { error: 'parentSessionId is not your DM session with this agent' });
+        return;
+      }
+
+      const hist = await this.storage.chatSessionRepo.getMessages(parentSessionId, 80);
+      const { transcript, truncated, focusMarked } = formatEvolveTranscript(
+        hist.messages.map((m: { id: string; role: string; content: string; createdAt: Date | string; metadata?: unknown }) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : String(m.createdAt),
+          metadata: (m.metadata ?? null) as EvolveSourceMessage['metadata'],
+        })),
+        { focusMessageId: sourceMessageId, focusText: sourceText },
+      );
+
+      const child = this.storage.chatSessionRepo.createSession(agentId, authUser.userId);
+      this.storage.chatSessionRepo.updateSessionMetadata(child.id, {
+        kind: 'evolution',
+        parentSessionId,
+        sourceMessageId: sourceMessageId || undefined,
+        sourceAgentId: agentId,
+        sourceExcerpt: (sourceText || transcript).slice(0, 240),
+        createdFrom: 'remember_button',
+      });
+      this.storage.chatSessionRepo.updateLastMessage(child.id, 'Remember / Evolution');
+
+      const seedPrompt = buildEvolveSeedPrompt({
+        parentSessionId,
+        evolutionSessionId: child.id,
+        sourceMessageId,
+        userNote,
+        transcript,
+        truncated,
+      });
+
+      this.json(res, 200, {
+        sessionId: child.id,
+        agentId,
+        seedPrompt,
+        truncated,
+        focusMarked,
+        parentSessionId,
+      });
+      return;
+    }
+
     if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -3677,9 +3839,13 @@ export class APIServer {
         return;
       }
       if (action === 'cancel-processing') {
-        const agent = this.orgService.getAgentManager().getAgent(agentId!);
-        agent.cancelActiveStream();
-        this.json(res, 200, { status: 'cancelled' });
+        try {
+          const agent = this.orgService.getAgentManager().getAgent(agentId!);
+          agent.cancelActiveStream();
+          this.json(res, 200, { status: 'cancelled' });
+        } catch (err) {
+          this.json(res, 404, { error: err instanceof Error ? err.message : String(err) });
+        }
         return;
       }
       if (action === 'daily-report') {
@@ -3733,7 +3899,7 @@ export class APIServer {
             if (isRetry) {
               this.storage.chatSessionRepo.deleteLastExchange(sessionId);
             }
-            const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, 200);
+            const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, SESSION_RESTORE_MAX_MESSAGES);
             sessionRestoreData = {
               dbSessionId: sessionId,
               messages: histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
@@ -3759,26 +3925,32 @@ export class APIServer {
         }
 
         const userText = body['text'] as string;
+        // Persist plain user text; inject reply context only into the LLM turn so
+        // reload does not show the quoted agent message inside the user bubble.
+        const agentText = replyTo
+          ? `[REPLY] The user is replying to ${replyTo.sender}'s message:\n"""\n${replyTo.text.slice(0, 4000)}\n"""\n\n${userText}`
+          : userText;
         const inject = body['inject'] as boolean | undefined;
 
         if (inject) {
           if (this.storage && sessionId) {
             await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo);
           }
-          agent.injectFollowUp(userText, senderId, senderInfo, images);
+          agent.injectFollowUp(agentText, senderId, senderInfo, images);
           this.json(res, 200, { injected: true });
           return;
         }
 
-        // Wrap persistUserMessage to bind DB session → memory session on first message
+        // Wrap persistUserMessage to bind DB session → memory session on first message.
+        // Always persist the plain userText (ignore SSE handler's agent-facing text).
         const bindingPersist = async (
-          aId: string, text: string, sId?: string, imgs?: string[], sessId?: string,
-        ): Promise<string | null> => {
-          const persisted = await this.persistUserMessage(aId, text, sId, imgs, sessId, replyTo);
+          aId: string, _text: string, sId?: string, imgs?: string[], sessId?: string,
+        ): Promise<{ sessionId: string; messageId: string } | null> => {
+          const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo);
           if (persisted && !sessId) {
             agent.bindDbSession(persisted.sessionId);
           }
-          return persisted?.sessionId ?? null;
+          return persisted ? { sessionId: persisted.sessionId, messageId: persisted.messageId } : null;
         };
 
         if (stream) {
@@ -3801,7 +3973,7 @@ export class APIServer {
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
-            userText,
+            userText: agentText,
             images,
             fileNames,
             senderId,
@@ -3809,6 +3981,9 @@ export class APIServer {
             sessionId,
             wsBroadcaster: this.ws,
             persistUserMessage: bindingPersist,
+            deleteUserMessage: (messageId: string) => {
+              this.storage?.chatSessionRepo.deleteMessage(messageId);
+            },
             persistAssistantMessage: this.persistAssistantMessage.bind(this),
             executionStreamRepo: this.storage?.executionStreamRepo,
             isResume,
@@ -3819,22 +3994,23 @@ export class APIServer {
           await sseHandler.handle(res);
         } else {
           const userMsgPersisted = await bindingPersist(agentId!, userText, senderId, images, sessionId);
+          const persistedSessionId = userMsgPersisted?.sessionId ?? null;
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
           const deferredRestoreNonStream = agent.isProcessing() ? sessionRestoreData : undefined;
           try {
-            reply = await agent.sendMessage(userText, senderId, senderInfo, {
+            reply = await agent.sendMessage(agentText, senderId, senderInfo, {
               images, fileNames, toolEventCollector: toolEvents,
               ...(deferredRestoreNonStream !== undefined ? { sessionRestore: deferredRestoreNonStream } : {}),
             });
           } catch (err) {
             const errText = `⚠ AI service error: ${String(err).slice(0, 500)}`;
             void this.persistAssistantMessage(
-              userMsgPersisted, agentId!, errText, 0, { isError: true },
+              persistedSessionId, agentId!, errText, 0, { isError: true },
             );
             throw err;
           }
-          this.json(res, 200, { reply, sessionId: userMsgPersisted });
+          this.json(res, 200, { reply, sessionId: persistedSessionId });
           const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
           const segments: Array<Record<string, unknown>> = [];
           if (thinking.length > 0) segments.push({ type: 'text', content: '', thinking: thinking.join('\n\n') });
@@ -3844,7 +4020,7 @@ export class APIServer {
           if (segments.length > 0) segments.push({ type: 'text', content: cleanReply });
           const meta = segments.length > 0 ? { segments } : undefined;
           void this.persistAssistantMessage(
-            userMsgPersisted,
+            persistedSessionId,
             agentId!,
             reply,
             agent.getState().tokensUsedToday,
@@ -10402,6 +10578,49 @@ EXPLANATION_END`;
       return;
     }
 
+    // Evolution metrics (LEARNING-LOOP §6 / C-metrics-api)
+    if (path === '/api/evolution/metrics' && req.method === 'GET') {
+      try {
+        const raw = this.taskService?.listTasks?.({ limit: 500 } as never) ?? [];
+        const list: Array<{
+          status?: string;
+          executionRound?: number;
+          activatedSkills?: string[];
+          distilled?: boolean;
+        }> = Array.isArray(raw) ? raw : ((raw as { tasks?: typeof list }).tasks ?? []);
+        const completed = list.filter((t) => t.status === 'completed');
+        const reviewed = list.filter((t) => t.status === 'completed' || t.status === 'review');
+        const firstPass = completed.filter((t) => (t.executionRound ?? 1) <= 1);
+        const withSkill = completed.filter((t) =>
+          Array.isArray(t.activatedSkills) && t.activatedSkills.length > 0);
+        const distilled = completed.filter((t) => t.distilled);
+        const c = completed.length;
+        const r = reviewed.length;
+        this.json(res, 200, {
+          metrics: {
+            skillReuseRate: c > 0 ? withSkill.length / c : 0,
+            firstPassRate: r > 0 ? firstPass.length / r : 0,
+            distillRate: c > 0 ? distilled.length / c : 0,
+            tasksCompleted: c,
+            tasksWithSkill: withSkill.length,
+            tasksReviewed: r,
+            tasksFirstPass: firstPass.length,
+            tasksDistilled: distilled.length,
+          },
+        });
+      } catch (err) {
+        this.json(res, 200, {
+          metrics: {
+            skillReuseRate: 0,
+            firstPassRate: 0,
+            distillRate: 0,
+            note: `metrics unavailable: ${String(err).slice(0, 120)}`,
+          },
+        });
+      }
+      return;
+    }
+
     // ── Governance: System Controls ──────────────────────────────────────────
 
     if (path === '/api/system/pause-all' && req.method === 'POST') {
@@ -10638,7 +10857,9 @@ EXPLANATION_END`;
 
         const ext = extname(resolved).toLowerCase();
         const name = resolved.split('/').pop() || 'file';
-        const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
+        // Browser-previewable still images — served via stream (not base64) so large
+        // generated assets (webp/png) are not rejected by the inline size cap.
+        const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico', '.avif']);
         const audioExts = new Set(['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma', '.opus']);
         const videoExts = new Set(['.mp4', '.webm', '.mov', '.mkv', '.avi', '.m4v']);
         const binaryExts = new Set([
@@ -10647,6 +10868,11 @@ EXPLANATION_END`;
           '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm',
           '.woff', '.woff2', '.ttf', '.otf', '.eot',
         ]);
+        const imageMime: Record<string, string> = {
+          '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+          '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+          '.bmp': 'image/bmp', '.ico': 'image/x-icon', '.avif': 'image/avif',
+        };
         const audioMime: Record<string, string> = {
           '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
           '.flac': 'audio/flac', '.aac': 'audio/aac', '.m4a': 'audio/mp4',
@@ -10657,6 +10883,14 @@ EXPLANATION_END`;
           '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.m4v': 'video/mp4',
         };
 
+        if (imageExts.has(ext)) {
+          this.json(res, 200, {
+            type: 'image', name, path: resolved, size: stat.size,
+            mimeType: imageMime[ext] ?? 'application/octet-stream',
+            streamUrl: `/api/files/stream?path=${encodeURIComponent(resolved)}`,
+          });
+          return;
+        }
         if (audioExts.has(ext)) {
           this.json(res, 200, {
             type: 'audio', name, path: resolved, size: stat.size,
@@ -10681,21 +10915,9 @@ EXPLANATION_END`;
           return;
         }
 
-        const maxSize = 2 * 1024 * 1024; // 2MB limit for inlined text/image previews
+        const maxSize = 2 * 1024 * 1024; // 2MB limit for inlined text previews
         if (stat.size > maxSize) {
           this.json(res, 413, { error: 'File too large for preview', size: stat.size, maxSize });
-          return;
-        }
-
-        if (imageExts.has(ext)) {
-          const data = readFileSync(resolved);
-          const mimeMap: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
-          this.json(res, 200, {
-            type: 'image',
-            name,
-            mimeType: mimeMap[ext] ?? 'application/octet-stream',
-            content: data.toString('base64'),
-          });
           return;
         }
 
@@ -10760,6 +10982,7 @@ EXPLANATION_END`;
           '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.m4v': 'video/mp4',
           '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
           '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+          '.bmp': 'image/bmp', '.ico': 'image/x-icon', '.avif': 'image/avif',
         };
         const mime = mimeMap[ext] ?? 'application/octet-stream';
         const size = statSync(resolved).size;
@@ -11680,7 +11903,8 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+\/model-override$/, 'PUT'),
-      regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message|evolve-from-message)$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/evolve-from-message$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/mailbox$/, 'GET'),
@@ -11971,6 +12195,7 @@ EXPLANATION_END`;
 
       // ── System ───────────────────────────────────────────────────────────
       exact('/api/health', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'),
+      exact('/api/evolution/metrics', 'GET'),
       exact('/api/system/pause-all', 'POST'),
       exact('/api/system/resume-all', 'POST'),
       exact('/api/system/emergency-stop', 'POST'),
@@ -12229,7 +12454,7 @@ EXPLANATION_END`;
     config: { id: string; roleId?: string };
     role: { name: string };
   }): string | null {
-    // Prefer agent's own per-agent role directory (supports self-evolution)
+    // Prefer agent's own per-agent role directory (supports ROLE/HEARTBEAT Learning Habits edits)
     const agentDataDir = join(this.orgService.getAgentManager().getDataDir(), agent.config.id);
     const agentRoleDir = join(agentDataDir, 'role');
     if (existsSync(join(agentRoleDir, 'ROLE.md'))) return agentRoleDir;
@@ -12320,7 +12545,7 @@ EXPLANATION_END`;
         const agent = (() => { try { return am.getAgent(entry.name); } catch { return null; } })();
         const subItems = [
           { name: 'workspace', size: dirSize(join(agentDir, 'workspace')) },
-          { name: 'memory', size: dirSize(join(agentDir, 'sessions')) + (existsSync(join(agentDir, 'memories.json')) ? statSync(join(agentDir, 'memories.json')).size : 0) + (existsSync(join(agentDir, 'MEMORY.md')) ? statSync(join(agentDir, 'MEMORY.md')).size : 0) },
+          { name: 'memory', size: dirSize(join(agentDir, 'sessions')) + (existsSync(join(agentDir, 'memories.json')) ? statSync(join(agentDir, 'memories.json')).size : 0) + (existsSync(join(agentDir, 'knowledge.md')) ? statSync(join(agentDir, 'knowledge.md')).size : 0) + (existsSync(join(agentDir, 'MEMORY.md')) ? statSync(join(agentDir, 'MEMORY.md')).size : 0) },
           { name: 'role', size: dirSize(join(agentDir, 'role')) },
           { name: 'tool-outputs', size: dirSize(join(agentDir, 'tool-outputs')) },
           { name: 'daily-logs', size: dirSize(join(agentDir, 'daily-logs')) },

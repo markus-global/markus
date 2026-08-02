@@ -35,7 +35,9 @@ export interface SSEMessageHandlerOptions {
     broadcastAgentUpdate?: (agentId: string, status: string) => void;
     broadcastProactiveMessage?: (agentId: string, agentName: string, sessionId: string, messageId: string, message: string, metadata?: Record<string, unknown>, targetUserId?: string) => void;
   };
-  persistUserMessage?: (agentId: string, text: string, senderId?: string, images?: string[], sessionId?: string) => Promise<string | null>;
+  persistUserMessage?: (agentId: string, text: string, senderId?: string, images?: string[], sessionId?: string) => Promise<string | { sessionId: string; messageId?: string } | null>;
+  /** Optional: remove a just-persisted user message when the turn was merged into an active one. */
+  deleteUserMessage?: (messageId: string) => void;
   persistAssistantMessage?: (sessionId: string | null, agentId: string, reply: string, tokensUsed: number, meta?: unknown) => Promise<void>;
   onTextDelta?: (text: string) => void;
   onToolEvent?: (event: AgentStreamEvent) => void;
@@ -143,14 +145,23 @@ export class SSEHandler {
         }
       });
 
+      let persistedUserMessageId: string | undefined;
       if (this.options.persistUserMessage && !this.options.isResume) {
-        this.sessionId = await this.options.persistUserMessage(
+        const persisted = await this.options.persistUserMessage(
           this.options.agentId,
           this.options.userText,
           this.options.senderId,
           this.options.images,
           this.options.sessionId,
         );
+        if (typeof persisted === 'string') {
+          this.sessionId = persisted;
+        } else if (persisted) {
+          this.sessionId = persisted.sessionId;
+          persistedUserMessageId = persisted.messageId;
+        } else {
+          this.sessionId = this.options.sessionId ?? null;
+        }
       } else if (this.options.isResume) {
         this.sessionId = this.options.sessionId ?? null;
       } else {
@@ -169,7 +180,13 @@ export class SSEHandler {
       // Deliver sessionId early so the client can persist it even if the stream
       // is aborted before the final 'done' event arrives.
       if (this.sessionId) {
-        this.emitEvent({ type: 'session_start', sessionId: this.sessionId, streamId: this.streamId, messageId: this.assistantMessageId });
+        this.emitEvent({
+          type: 'session_start',
+          sessionId: this.sessionId,
+          streamId: this.streamId,
+          messageId: this.assistantMessageId,
+          userMessageId: persistedUserMessageId,
+        });
       }
 
       const reply = await this.options.agent.sendMessageStream(
@@ -187,10 +204,26 @@ export class SSEHandler {
       );
 
       if (reply === '[merged]') {
-        log.info('Message was merged into active processing — closing SSE without persisting', {
+        log.info('Message was merged into active processing — closing SSE without persisting assistant', {
           agentId: this.options.agentId,
         });
-        const mergedDone = { type: 'done' as const, content: '', merged: true, sessionId: this.sessionId, segments: [] as unknown[] };
+        // The follow-up was absorbed into the live turn. Drop the standalone DB
+        // user row so reload does not show an extra bubble for the merged text.
+        if (persistedUserMessageId && this.options.deleteUserMessage) {
+          try {
+            this.options.deleteUserMessage(persistedUserMessageId);
+          } catch (err) {
+            log.warn('Failed to delete merged user message', { error: String(err) });
+          }
+        }
+        const mergedDone = {
+          type: 'done' as const,
+          content: '',
+          merged: true,
+          sessionId: this.sessionId,
+          userMessageId: persistedUserMessageId,
+          segments: [] as unknown[],
+        };
         if (this.sseBuffer && !this.sseDisconnected) {
           this.sseBuffer.send(mergedDone);
         }
@@ -237,6 +270,13 @@ export class SSEHandler {
       // Strip completion marker (and malformed variants) from persisted/displayed reply
       persistReply = stripCompletionMarkerLeak(persistReply).trim() || persistReply;
 
+      // Empty assistant turn (cancel / failed start) — still a terminal outcome the
+      // client must see as stopped/error so Retry is available after refresh.
+      const isEmptyTerminal = !persistReply && this.msgSegments.every(s =>
+        s.type !== 'tool' && !(s.type === 'text' && ((s as { content?: string }).content || (s as { thinking?: string }).thinking))
+      );
+      const treatAsStopped = wasCancelled || (isCancelledReply && isEmptyTerminal);
+
       const donePayload = {
         type: 'done' as const,
         content: persistReply,
@@ -245,7 +285,8 @@ export class SSEHandler {
         segments: this.msgSegments,
         streamId: this.streamId,
         messageId: this.assistantMessageId,
-        cancelled: wasCancelled || undefined,
+        cancelled: treatAsStopped || undefined,
+        emptyReply: isEmptyTerminal || undefined,
       };
 
       if (this.sseDisconnected) {
@@ -291,18 +332,23 @@ export class SSEHandler {
       const hasSegments = this.msgSegments.length > 0 && this.msgSegments.some(s =>
         (s.type === 'text' && ((s as { content?: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
       );
-      if (this.options.persistAssistantMessage && this.sessionId && (persistReply || hasSegments)) {
+      // Persist empty cancelled/failed replies too — otherwise refresh wipes the
+      // bubble and the user has no Retry target.
+      if (this.options.persistAssistantMessage && this.sessionId && (persistReply || hasSegments || treatAsStopped || isEmptyTerminal)) {
         const msgMeta: Record<string, unknown> = {
           isStreaming: false,
           streamId: this.streamId,
         };
         if (this.msgSegments.length > 0) msgMeta.segments = this.msgSegments;
-        if (wasCancelled) msgMeta.isStopped = true;
+        if (treatAsStopped) msgMeta.isStopped = true;
+        if (isEmptyTerminal && !treatAsStopped) msgMeta.isError = true;
+        if (isEmptyTerminal) msgMeta.emptyReply = true;
+        const storedContent = persistReply || (isEmptyTerminal ? '' : persistReply);
         try {
           await this.options.persistAssistantMessage(
             this.sessionId,
             this.options.agentId,
-            persistReply,
+            storedContent,
             this.options.agent.getState().tokensUsedToday,
             msgMeta,
           );
@@ -336,7 +382,13 @@ export class SSEHandler {
         agentId: this.options.agentId, 
         error: String(error) 
       });
-      
+
+      // Mark complete BEFORE handleError schedules sseBuffer.close(). Otherwise
+      // onClose sees !isComplete and persistPartialOnDisconnect() rewrites the
+      // row with isStreaming:true — UI stays on「思考中」even after the turn
+      // failed (and after restart, with no live agent work).
+      this.isComplete = true;
+
       this.handleError(error, res);
 
       // Persist error as assistant message so it survives page reloads.
@@ -466,6 +518,8 @@ export class SSEHandler {
    * connection drops. Soft disconnect marks isStreaming so refresh can reattach.
    */
   private async persistPartialOnDisconnect(): Promise<void> {
+    // Turn already finished (success or error) — never re-mark as streaming.
+    if (this.isComplete) return;
     if (!this.options.persistAssistantMessage || !this.sessionId) return;
 
     this.syncUiSnapshot();
@@ -501,6 +555,10 @@ export class SSEHandler {
       streamId: this.streamId,
     };
     if (segments.length > 0) meta.segments = segments;
+
+    // Re-check: error/success may have completed while we were building the
+    // snapshot (persistPartial is fire-and-forget from onClose).
+    if (this.isComplete) return;
 
     try {
       await this.options.persistAssistantMessage(

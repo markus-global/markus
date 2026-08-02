@@ -11,6 +11,7 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **Conversation buffer 状态机** — 抽取会话缓冲状态机，修复聊天竞态与流式重连边界
 - **Hub recommended routing** — Hub 推荐路由与模型目录 / 路由能力增强
 - **Team Chat 菜单优化** — 「移动到」可搜索折叠、组织秘书保护、文案改为「移出团队」
+- **飞书原生发图** — `feishu_send_image` / `feishu_send_message`，支持本地图片上传发送
 
 ### Bug Fixes
 
@@ -19,6 +20,76 @@ Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消�
 - **搜索优先级** — Hub 已连接且有余额时优先 Markus 搜索，否则 BYOK
 - **任务与通知稳定性** — 任务状态实时更新、deliberation / notify 上下文、triage 完整性
 - **性能与前端** — Prompt cache 友好与 Tier 3 token 成本优化；web-ui 路由拆分、共享缓存、轮询去重
+
+### v0.9.0-rc.2
+
+- **图片预览** — 大图（webp/png 等）改走 stream，不再被 2MB base64 上限误判为无法预览
+- **Team Chat 历史加载** — 修复空 buffer 跳过 DB 拉取；进入会话显示 loading，加载后展示消息
+- **Mailbox 幽灵条目** — 修复 background_exec 完成回调广播到所有 Agent；过期 callback_result 自动清理；drop 幂等
+- **注意力空闲卡死** — 修复 dequeueAsync lost-wakeup；idle 且有队列时 watchdog nudge；UI 不再显示「等待新邮件」
+- **引用回复 / 重复继续** — 引用内容不写入用户气泡；发送去重与 Resume 按钮可见性修正
+
+### v0.9.0-rc.3
+
+- **CI / typecheck** — `@markus/core` 补充 `@markus/comms` project reference，修复干净环境下 `feishu.ts` 找不到模块
+- **Lint** — embedded browser / browserUrl 的 eqeqeq、prefer-const 修复
+
+### v0.9.0-rc.4
+
+- **Hub → Markus 安装深链** — 支持 `markus://install?id=&type=`；冷启动保留 pending URL，打开 Explore 并高亮目标条目
+- **Explore 安装引导** — DeepLinkBanner + Hub 单项拉取合并进列表，避免目标不在首页结果时无反馈
+- **StrictMode / 路由** — 修复 `install` 状态被二次 init 清空；保留 query 并重试导航，保证 banner 可见
+
+### v0.9.0-rc.5
+
+- **Hub 安装版本戳** — 安装时把 Hub 资产 `version` 写入本地 manifest，避免默认 `1.0.0` 导致安装后误显示「升级」
+- **Agent hub_install** — `downloadAndInstall` 同步写入 version / hub source，与 UI 安装行为对齐
+
+### v0.9.0-rc.6
+
+- **Windows `markus://` 协议** — NSIS 安装写入 HKCU URL protocol；启动时强制重新注册，修复系统浏览器登录后无法回跳桌面端
+- **桌面 Hub 登录轮询** — 打开浏览器后立即轮询；窗口 focus / 可见时立刻再查，避免后台定时器节流导致切回应用仍不完成登录
+- **能力分配无工厂默认** — Hub 未推荐的多模态槽位保持空；失效 assignment 自动清理，不再误显示假「已选推荐」
+
+### v0.9.0-rc.7
+
+- **Windows 安装体验** — NSIS 升级时 `taskkill` 强制结束 Markus；`allowElevation: false`；生成 `icon.ico` 保证桌面快捷方式品牌图标
+- **首启稳定性** — 未拿到单实例锁不跑 `whenReady`；API `listen` await + health 重试；`before-quit` 2s 超时强制退出
+- **Hub 登录 UX（需已部署 Hub）** — 成功页替换表单、禁止自动 `markus://`、验证防双点/重发；Login「已在浏览器打开」+ 取消等待
+- **登录后 Cloud AI 就绪** — `hub-login` 内 await OpenRouter sync + 推荐路由；能力分配在 catalog 未就绪时不 persist 清空
+
+### v0.9.0-rc.8
+
+- **重新发版** — rc.7 的 Publish 因 Windows job 长时间 waiting 未完成制品；含 telemetry 测试中 runtime logger ENOENT 修复后重打 tag 触发发布
+
+### v0.9.0-rc.9
+
+- **Post-task Distillation** — 任务 **completed** 后走 `scenario: distillation`（不再误用 Dream）；注入 Learning Habits；允许 `package_install`（§8.3 impact/HITL）；失败任务不蒸馏
+- **Memory / knowledge.md** — 搜索改为关键词 OR 匹配，并覆盖 curated 段落；语义命中时合并 curated 结果
+- **通用关键词搜索** — `task_list`、SkillHub / skill loader / 模板搜索共用 `tokenizeSearchQuery`，避免整句 substring 漏检
+- **notify_user UX** — 通知栏点击打开 Chat 时不提前 mark-read（保留「知道了」卡片）；剥离 segment 中的 `notify_context` 泄漏；虚拟列表 `getItemKey` + 按 `createdAt` 插入，修复气泡重叠
+
+### v0.9.0-rc.10
+
+- **Windows 安装快捷方式** — NSIS 强制创建桌面与开始菜单 `Markus.lnk`（`createDesktopShortcut: always`）
+- **Windows 菜单栏** — 隐藏原生「文件/编辑/视图…」菜单栏，保留快捷键
+- **Windows Markdown 本地图** — 正确识别 `C:\` / `C:/` / `file:///C:/` 路径并经 `/api/files/image` 渲染；生图 markdown 改用正斜杠
+
+### v0.9.0-rc.11
+
+- **Windows 安装误报「正在运行」** — 覆盖 electron-builder 进程检测（PowerShell/`tasklist` 误判），安装时只做精确 `taskkill`，不再弹窗中止
+- **Windows 安装目录空洞** — 自定义 NSIS 脚本改名为 `markus-installer.nsh`，避免遮蔽官方 `installer.nsh`（否则 `installApplicationFiles` 不执行）
+- **Windows 快捷方式** — `SetShellVarContext current` 强制写当前用户桌面与开始菜单；注册 App Paths；关闭 elevate helper
+
+### v0.9.0-rc.12
+
+- **Windows 升级弹窗「无法关闭」** — 根因是旧版静默卸载失败 5 次后父安装器复用同一文案；安装前强杀安装目录进程，并清除旧 `UninstallString` 跳过坏卸载器（Electron 覆盖安装）
+- **Windows 桌面快捷方式** — 去掉错误的 `menuCategory: false`；`CreateShortCut` + PowerShell `GetFolderPath('Desktop')` 双通道强制创建
+
+### v0.9.0-rc.13
+
+- **Windows 安装弹窗（硬修）** — 打包前直接 patch electron-builder NSIS 模板：进程检测只 `taskkill` 不弹窗；旧卸载失败 5 次后静默继续覆盖安装
+- **Windows 桌面快捷方式（硬修）** — 应用首次启动时用 PowerShell 强制创建桌面/开始菜单快捷方式（不依赖 NSIS）
 
 ### Stats
 

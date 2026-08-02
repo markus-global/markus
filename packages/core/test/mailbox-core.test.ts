@@ -168,6 +168,38 @@ describe('AgentMailbox async and persistence', () => {
     await expect(waitPromise).rejects.toBeInstanceOf(MailboxCancelledError);
   });
 
+  it('dequeueAsync does not lose wakeup when item arrives during arming', async () => {
+    const { mailbox } = makeMailbox();
+    // Simulate the classic race: enqueue lands after the empty check but the
+    // waiter must still observe it (re-check after arming idleResolve).
+    const waitPromise = mailbox.dequeueAsync();
+    // Enqueue synchronously on the same turn as the wait promise microtask.
+    mailbox.enqueue('heartbeat', { summary: 'race', content: 'body' });
+    const item = await waitPromise;
+    expect(item.payload.summary).toBe('race');
+    expect(mailbox.depth).toBe(0);
+  });
+
+  it('nudgeIfPending wakes an idle waiter when queue is non-empty', async () => {
+    const { mailbox } = makeMailbox();
+    // Manually insert without wakeIdleLoop by using recover path semantics:
+    // enqueue wakes; instead, put an item then cancel the first wait and re-wait.
+    mailbox.enqueue('heartbeat', { summary: 'pending', content: 'body' });
+    // Drain without consuming via a waiter that is not armed — depth stays 1
+    // after we cancel a wait on empty… so dequeue once into processing then putBack.
+    const dequeued = mailbox.dequeue();
+    expect(dequeued).toBeDefined();
+    mailbox.putBack(dequeued!);
+    expect(mailbox.depth).toBe(1);
+
+    const waitPromise = mailbox.dequeueAsync();
+    // If the waiter armed on a non-empty queue, it should resolve immediately
+    // via the post-arm re-check (no explicit nudge needed). Nudge is belt-and-suspenders.
+    mailbox.nudgeIfPending();
+    const item = await waitPromise;
+    expect(item.payload.summary).toBe('pending');
+  });
+
   it('recoverStaleItems restores queued items and drops expired ones', () => {
     const oldQueuedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
     const freshQueuedAt = new Date().toISOString();

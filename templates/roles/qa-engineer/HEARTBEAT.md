@@ -18,7 +18,7 @@
   - What test strategies or reproduction techniques were effective?
   - Were there common defect patterns worth standardizing checks for?
   - Save insights via `memory_save` with `tags: ["insight", "testing"]` and `[INSIGHT]` format.
-  - Promote repeatable test workflows to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - Promote repeatable test workflows to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
 
 ## Self-Evolution
 

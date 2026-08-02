@@ -64,10 +64,17 @@ export interface SkillRegistry {
   list(): SkillManifest[];
   /** Return instructions for all prompt-based skills in the given list */
   getInstructionsForSkills(skillNames: string[]): Map<string, string>;
-  /** Return instructions for always-on builtin skills (auto-injected into every agent) */
+  /**
+   * Return instructions for always-on builtin skills.
+   * Progressive disclosure: these are NOT auto-injected into the system prompt;
+   * agents activate them via `discover_tools`. Kept for registry introspection.
+   */
   getBuiltinInstructions(): Map<string, string>;
   /** Return name+description catalog of non-alwaysOn builtin skills (for system prompt discoverability) */
   getBuiltinSkillCatalog(): Array<{ name: string; description: string; category: string }>;
-  /** Return name+description catalog of ALL non-alwaysOn skills (builtin + installed) for system prompt */
+  /**
+   * Return name+description catalog of ALL skills (including alwaysOn) for
+   * progressive disclosure — full bodies load only via `discover_tools`.
+   */
   getSkillCatalog(): Array<{ name: string; description: string; category: string }>;
 }

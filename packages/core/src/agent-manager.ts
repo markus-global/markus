@@ -39,6 +39,7 @@ import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
 import { createSettingsTools } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
+import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
@@ -327,6 +328,8 @@ export class AgentManager {
   private embeddedBrowserHost: EmbeddedBrowserHost | null = null;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
+  /** When set, register native Feishu send tools (incl. local image upload). */
+  private feishuToolsConfig?: FeishuToolsConfig;
   private skillRegistry?: SkillRegistry;
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
@@ -409,6 +412,12 @@ export class AgentManager {
       limit: number,
       before?: string
     ) => Promise<{ messages: Array<{ id?: string; senderName: string; senderType: string; text: string; replyToId?: string; replyToSender?: string; replyToText?: string; createdAt: string }>; hasMore: boolean }>;
+    getChatSessionMessages?: (
+      sessionId: string,
+      limit: number,
+      before?: string,
+      agentId?: string,
+    ) => Promise<{ messages: Array<{ id?: string; role: string; text: string; createdAt: string }>; hasMore: boolean }>;
     ensureDmChannel?: (
       channelKey: string,
       member1: { id: string; name: string },
@@ -424,16 +433,18 @@ export class AgentManager {
     const ds = this.deliverableService;
     return {
       deliverableCreate: async (opts) => {
+        // Tags are normalized to a comma-separated string in deliverable_create.
         const tags = opts.tags?.split(',').map(t => t.trim()).filter(Boolean);
         return ds.create({
-          type: opts.type,
+          type: opts.type as 'file' | 'directory',
           title: opts.title,
           summary: opts.summary,
           reference: opts.reference,
           format: opts.format,
           tags,
           agentId,
-          projectId,
+          // Prefer per-call project_id from the tool; fall back to callback-scoped project.
+          projectId: opts.projectId ?? projectId,
         });
       },
       deliverableSearch: async (opts) => {
@@ -475,6 +486,7 @@ export class AgentManager {
     eventBus?: EventBus;
     securityPolicy?: SecurityPolicy;
     mcpServers?: Record<string, MCPServerConfig>;
+    feishuToolsConfig?: FeishuToolsConfig;
     skillRegistry?: SkillRegistry;
     taskService?: TaskServiceBridge;
     templateRegistry?: TemplateRegistry;
@@ -492,6 +504,7 @@ export class AgentManager {
     this.browserBridge = new MarkusBrowserBridge();
     this.globalSecurityPolicy = options.securityPolicy;
     this.globalMcpServers = options.mcpServers;
+    this.feishuToolsConfig = options.feishuToolsConfig;
     this.skillRegistry = options.skillRegistry;
     this.taskService = options.taskService;
 
@@ -701,6 +714,23 @@ export class AgentManager {
       args.push('--browserUrl', `http://127.0.0.1:${this.remoteDebuggingPort}`);
     }
     return { ...config, args };
+  }
+
+  /** Native Feishu tools that cover gaps in lark-mcp (local image upload/send). */
+  private registerFeishuTools(agent: Agent): void {
+    if (!this.feishuToolsConfig) return;
+    try {
+      const tools = createFeishuTools(this.feishuToolsConfig);
+      const names: string[] = [];
+      for (const tool of tools) {
+        agent.registerTool(tool);
+        names.push(tool.name);
+      }
+      agent.activateTools(names);
+      log.info('Native Feishu tools registered', { toolCount: tools.length, tools: names });
+    } catch (error) {
+      log.warn('Failed to register native Feishu tools', { error: String(error) });
+    }
   }
 
   /**
@@ -981,18 +1011,17 @@ export class AgentManager {
       ].join('\n'), 'utf-8');
     }
 
-    // Create memory system directories (sessions/, daily-logs/) and MEMORY.md
+    // Create memory system directories (sessions/, daily-logs/) and knowledge.md / state.md
     // These are declared in system docs but not always created during initialization
     const sessionsDir = join(agentDataDir, 'sessions');
     const dailyLogsDir = join(agentDataDir, 'daily-logs');
-    const memoryPath = join(agentDataDir, 'MEMORY.md');
     mkdirSync(sessionsDir, { recursive: true });
     mkdirSync(dailyLogsDir, { recursive: true });
-    if (!existsSync(memoryPath)) {
-      writeFileSync(memoryPath, [
-        '# Agent Memory',
-        '',
-        '## Your Knowledge',
+    const knowledgePath = join(agentDataDir, 'knowledge.md');
+    const statePath = join(agentDataDir, 'state.md');
+    if (!existsSync(knowledgePath)) {
+      writeFileSync(knowledgePath, [
+        '# Knowledge',
         '',
         '## procedures',
         '',
@@ -1001,6 +1030,9 @@ export class AgentManager {
         '## lessons-learned',
         '',
       ].join('\n'), 'utf-8');
+    }
+    if (!existsSync(statePath)) {
+      writeFileSync(statePath, '# State\n', 'utf-8');
     }
 
     const config: AgentConfig = {
@@ -1061,19 +1093,13 @@ export class AgentManager {
 
     const agent = new Agent(agentOpts);
 
-    // Inject always-on builtin skill instructions into every agent (text only, no MCP)
+    // Progressive disclosure: skill catalog is metadata-only (name + description).
+    // Full SKILL.md bodies enter context only after discover_tools activation.
     if (this.skillRegistry) {
-      const builtinInstructions = this.skillRegistry.getBuiltinInstructions();
-      for (const [skillName, instructions] of builtinInstructions) {
-        agent.injectSkillInstructions(skillName, instructions);
-      }
-      if (builtinInstructions.size > 0) {
-        log.info(`Always-on builtin skills injected for agent ${id}`, { skills: [...builtinInstructions.keys()] });
-      }
       agent.setAvailableSkillCatalog(this.skillRegistry.getSkillCatalog());
     }
 
-    // Inject explicitly assigned skill instructions and connect skill MCP servers
+    // Connect MCP servers for assigned skills (tools only — instructions on demand)
     if (this.skillRegistry && config.skills.length > 0) {
       const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
       if (missingSkills.length > 0) {
@@ -1081,12 +1107,6 @@ export class AgentManager {
           missing: missingSkills,
           available: this.skillRegistry.list().map(s => s.name),
         });
-      }
-      const skillInstructions = this.skillRegistry.getInstructionsForSkills(config.skills);
-      for (const [skillName, instructions] of skillInstructions) {
-        if (!agent.hasSkillInstructions(skillName)) {
-          agent.injectSkillInstructions(skillName, instructions);
-        }
       }
 
       // Connect MCP servers declared by explicitly assigned skills
@@ -1259,6 +1279,10 @@ export class AgentManager {
               this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
             listGroupChats: this.groupChatHandlers.listGroupChats,
             getChannelMessages: this.groupChatHandlers.getChannelMessages,
+            getChatSessionMessages: this.groupChatHandlers.getChatSessionMessages
+              ? (sessionId: string, limit: number, before?: string) =>
+                  this.groupChatHandlers!.getChatSessionMessages!(sessionId, limit, before, id)
+              : undefined,
           }
         : {}),
     };
@@ -1733,6 +1757,8 @@ export class AgentManager {
       }
     }
 
+    this.registerFeishuTools(agent);
+
     if (this.agentAuditCallback) {
       const cb = this.agentAuditCallback;
       agent.setAuditCallback(event => cb(id, event));
@@ -1903,16 +1929,12 @@ export class AgentManager {
       cognitive: this._cognitiveConfig,
     });
 
-    // Inject always-on builtin skill instructions into every agent (text only, no MCP)
+    // Progressive disclosure: catalog metadata only; full bodies via discover_tools
     if (this.skillRegistry) {
-      const builtinInstructions = this.skillRegistry.getBuiltinInstructions();
-      for (const [skillName, instructions] of builtinInstructions) {
-        agent.injectSkillInstructions(skillName, instructions);
-      }
       agent.setAvailableSkillCatalog(this.skillRegistry.getSkillCatalog());
     }
 
-    // Inject explicitly assigned skill instructions and connect skill MCP servers
+    // Connect MCP servers for assigned skills (tools only — instructions on demand)
     if (this.skillRegistry && config.skills.length > 0) {
       const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
       if (missingSkills.length > 0) {
@@ -1920,12 +1942,6 @@ export class AgentManager {
           missing: missingSkills,
           available: this.skillRegistry.list().map(s => s.name),
         });
-      }
-      const skillInstructions = this.skillRegistry.getInstructionsForSkills(config.skills);
-      for (const [skillName, instructions] of skillInstructions) {
-        if (!agent.hasSkillInstructions(skillName)) {
-          agent.injectSkillInstructions(skillName, instructions);
-        }
       }
 
       // Connect MCP servers declared by explicitly assigned skills (background, non-blocking).
@@ -2020,6 +2036,8 @@ export class AgentManager {
         })();
       }
     }
+
+    this.registerFeishuTools(agent);
 
     // Set skill MCP activator callback for runtime activation via discover_tools
     agent.setSkillMcpActivator(async (skillName, mcpServers) => {
@@ -2142,6 +2160,10 @@ export class AgentManager {
               this.groupChatHandlers!.createGroupChat(name, id, config.name, memberIds),
             listGroupChats: this.groupChatHandlers.listGroupChats,
             getChannelMessages: this.groupChatHandlers.getChannelMessages,
+            getChatSessionMessages: this.groupChatHandlers.getChatSessionMessages
+              ? (sessionId: string, limit: number, before?: string) =>
+                  this.groupChatHandlers!.getChatSessionMessages!(sessionId, limit, before, id)
+              : undefined,
           }
         : {}),
     };
@@ -3048,6 +3070,12 @@ export class AgentManager {
       limit: number,
       before?: string
     ) => Promise<{ messages: Array<{ senderName: string; senderType: string; text: string; createdAt: string }>; hasMore: boolean }>;
+    getChatSessionMessages?: (
+      sessionId: string,
+      limit: number,
+      before?: string,
+      agentId?: string,
+    ) => Promise<{ messages: Array<{ id?: string; role: string; text: string; createdAt: string }>; hasMore: boolean }>;
     ensureDmChannel?: (
       channelKey: string,
       member1: { id: string; name: string },

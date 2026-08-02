@@ -975,7 +975,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     <>
       <div className={`bg-surface-primary flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
         {/* Header with title + manage button */}
-        <div className="px-4 h-14 flex items-center shrink-0 gap-2">
+        <div data-electron-drag className="px-4 h-14 flex items-center shrink-0 gap-2">
           {isMobile && <MobileMenuButton />}
           {!isMobile && onCollapse && (
             <button
@@ -990,7 +990,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
           )}
           <h2 className="text-lg font-semibold">{t('chat.title')}</h2>
           {isAdmin && (
-            <div className="ml-auto relative" ref={actionMenuRef}>
+            <div data-no-drag className="ml-auto relative" ref={actionMenuRef}>
               <button
                 onClick={() => setActionMenu(!actionMenu)}
                 className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-fg-secondary hover:text-fg-primary bg-surface-elevated/60 hover:bg-surface-elevated rounded-md transition-colors"
@@ -1008,7 +1008,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
                   const pad = 8;
                   if (rect.right > vw - pad) { el.style.left = 'auto'; el.style.right = '0'; }
                   if (rect.left < pad) { el.style.left = '0'; el.style.right = 'auto'; }
-                }} className="absolute right-0 top-full mt-1 w-48 max-w-[calc(100vw-1rem)] bg-surface-secondary border border-border-default rounded-lg shadow-xl z-30 overflow-hidden">
+                }} className="absolute right-0 top-full mt-1 w-48 max-w-[calc(100vw-1rem)] bg-surface-elevated border border-border-default rounded-lg shadow-xl z-50 overflow-hidden">
                   <button onClick={() => { setActionMenu(false); setShowMethodChoice('agent'); }}
                     className="w-full text-left px-4 py-2.5 text-xs text-fg-secondary hover:bg-surface-elevated transition-colors">
                     <div className="font-medium flex items-center gap-1.5">

@@ -1,5 +1,16 @@
 {
   "title": "Community",
+  "deepLink": {
+    "fromHub": "From Markus Hub",
+    "loading": "Loading item from Hub…",
+    "missing": "This Hub item could not be loaded. It may be private, removed, or Hub is unreachable.",
+    "install": "Install",
+    "installing": "Installing…",
+    "installed": "Installed",
+    "purchaseRequired": "Purchase required on Hub before installing",
+    "failed": "Install failed",
+    "dismiss": "Dismiss"
+  },
   "tabs": {
     "discover": "Discover",
     "agents": "Agents",

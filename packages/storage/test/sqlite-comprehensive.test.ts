@@ -554,6 +554,22 @@ describe('SqliteChatSessionRepo', () => {
     ).run(session.id);
     expect(repo.migrateLegacyMessages()).toBeGreaterThanOrEqual(1);
 
+    const stuck = repo.appendMessage(session.id, 'agent-1', 'assistant', '⚠ failed', 0, {
+      isStreaming: true,
+      isError: true,
+      streamId: 'dead-stream',
+    });
+    expect(repo.clearOrphanStreamingFlags()).toBeGreaterThanOrEqual(1);
+    const healed = repo.getMessages(session.id, 50).messages.find(m => m.id === stuck.id);
+    expect((healed?.metadata as { isStreaming?: boolean })?.isStreaming).toBe(false);
+
+    repo.upsertStreamingAssistantMessage(session.id, 'agent-1', 'partial…', 0, {
+      isStreaming: true,
+      streamId: 'live-keep',
+    });
+    expect(repo.clearOrphanStreamingFlagsForSession(session.id, 'live-keep')).toBe(0);
+    expect(repo.clearOrphanStreamingFlagsForSession(session.id, null)).toBeGreaterThanOrEqual(1);
+
     repo.deleteSession('legacy-session');
     expect(repo.getSession('legacy-session')).toBeNull();
   });

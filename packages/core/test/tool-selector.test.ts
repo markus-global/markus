@@ -25,7 +25,7 @@ describe('ToolSelector', () => {
   it('always includes base tools when available', () => {
     const selector = new ToolSelector();
     const allTools = makeToolMap(ALL_BUILTIN);
-    const selected = selector.selectTools({ allTools, userMessage: 'hello' });
+    const selected = selector.selectTools({ allTools, userMessage: 'hello', pack: 'converse' });
     const names = selected.map((t) => t.name);
 
     expect(names).toContain('agent_send_message');
@@ -33,6 +33,42 @@ describe('ToolSelector', () => {
     expect(names).toContain('memory_search');
     expect(names).toContain('discover_tools');
     expect(names).toContain('notify_user');
+    // A-pack-converse-no-spawn
+    expect(names).not.toContain('spawn_subagents');
+    expect(names).not.toContain('deliverable_create');
+  });
+
+  it('A-pack-reflex-tools: reflex pack excludes package/goal/spawn', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap([
+      ...ALL_BUILTIN,
+      'package_install', 'goal_create', 'discover_tools', 'notify_user',
+      'request_user_input', 'schedule_wakeup', 'set_heartbeat_interval',
+      'check_mailbox', 'update_notebook', 'task_get',
+    ]);
+    const names = selector.selectTools({
+      allTools,
+      userMessage: 'heartbeat',
+      pack: 'reflex',
+    }).map((t) => t.name);
+    expect(names).toContain('task_list');
+    expect(names).toContain('discover_tools');
+    expect(names).not.toContain('package_install');
+    expect(names).not.toContain('goal_create');
+    expect(names).not.toContain('spawn_subagents');
+  });
+
+  it('A-pack-execute-has-code: execute pack includes shell/code tools', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap(ALL_BUILTIN);
+    const names = selector.selectTools({
+      allTools,
+      userMessage: 'implement the feature',
+      isTaskExecution: true,
+      pack: 'execute',
+    }).map((t) => t.name);
+    expect(names).toContain('shell_execute');
+    expect(names).toContain('file_read');
   });
 
   it('offers right-panel tools only in Team Chat', () => {

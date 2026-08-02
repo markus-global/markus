@@ -3,7 +3,19 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { discoverSkillsInDir, WELL_KNOWN_SKILL_DIRS } from '@markus/core';
-import { buildManifest, manifestFilename, createLogger, kebab, validateManifest, ensurePackageSlug, isValidPackageSlug, compareVersions, type PackageType } from '@markus/shared';
+import {
+  buildManifest,
+  manifestFilename,
+  createLogger,
+  kebab,
+  validateManifest,
+  ensurePackageSlug,
+  isValidPackageSlug,
+  compareVersions,
+  tokenizeSearchQuery,
+  scoreKeywordHaystack,
+  type PackageType,
+} from '@markus/shared';
 import { installSkill } from '../skill-service.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { APIServer } from '../api-server.js';
@@ -611,6 +623,7 @@ export async function handleSkillsRoutes(
       const name = body['name'] as string;
       const files = body['files'] as Record<string, string> | undefined;
       const source = body['source'] as { type: string; hubItemId?: string; url?: string } | undefined;
+      const version = typeof body['version'] === 'string' && body['version'].trim() ? body['version'].trim() : undefined;
       if (!type || !['agent', 'team', 'skill'].includes(type) || !name || !files) {
         server.json(res, 400, { error: 'type (agent|team|skill), name, and files are required' });
         return true;
@@ -625,14 +638,16 @@ export async function handleSkillsRoutes(
           writeFileSync(filePath, content, 'utf-8');
         }
 
-        // Write source tracking into manifest if source provided
-        if (source) {
+        // Stamp Hub source / marketplace version into the local manifest so
+        // Install vs Upgrade compares against the asset version, not 1.0.0.
+        if (source || version) {
           const mfName = manifestFilename(type as PackageType);
           const mfPath = join(artDir, mfName);
           if (existsSync(mfPath)) {
             try {
               const mf = JSON.parse(readFileSync(mfPath, 'utf-8'));
-              mf.source = source;
+              if (source) mf.source = source;
+              if (version) mf.version = version;
               writeFileSync(mfPath, JSON.stringify(mf, null, 2), 'utf-8');
             } catch { /* skip if manifest invalid */ }
           }
@@ -1024,15 +1039,29 @@ export async function handleSkillsRoutes(
         }
 
         if (q) {
-          const lower = q.toLowerCase();
-          skills = skills.filter(s =>
-            s.name.toLowerCase().includes(lower) ||
-            s.slug.toLowerCase().includes(lower) ||
-            (s.description_zh ?? s.description ?? '').toLowerCase().includes(lower)
-          );
-        }
-
-        if (sort === 'downloads') skills.sort((a, b) => b.downloads - a.downloads);
+          const tokens = tokenizeSearchQuery(q);
+          const full = q.trim().toLowerCase();
+          if (tokens.length > 0) {
+            const scored = skills
+              .map((s) => ({
+                s,
+                kw: scoreKeywordHaystack(
+                  `${s.name} ${s.slug} ${s.description_zh ?? s.description ?? ''}`,
+                  tokens,
+                  full,
+                ),
+              }))
+              .filter((x) => x.kw > 0);
+            scored.sort((a, b) => {
+              if (b.kw !== a.kw) return b.kw - a.kw;
+              if (sort === 'downloads') return b.s.downloads - a.s.downloads;
+              if (sort === 'stars') return b.s.stars - a.s.stars;
+              if (sort === 'installs') return b.s.installs - a.s.installs;
+              return b.s.score - a.s.score;
+            });
+            skills = scored.map((x) => x.s);
+          }
+        } else if (sort === 'downloads') skills.sort((a, b) => b.downloads - a.downloads);
         else if (sort === 'stars') skills.sort((a, b) => b.stars - a.stars);
         else if (sort === 'installs') skills.sort((a, b) => b.installs - a.installs);
         else skills.sort((a, b) => b.score - a.score);

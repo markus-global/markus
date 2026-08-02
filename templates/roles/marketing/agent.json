@@ -6,9 +6,18 @@
   "description": "专业营销策略Agent — 营销策略制定、渠道分析、Campaign管理、用户增长、数据分析",
   "author": "",
   "category": "marketing",
-  "tags": ["marketing", "strategy", "campaign-management", "channel-analysis", "user-growth", "analytics"],
+  "tags": [
+    "marketing",
+    "strategy",
+    "campaign-management",
+    "channel-analysis",
+    "user-growth",
+    "analytics"
+  ],
   "dependencies": {
-    "skills": ["self-evolution", "humanizer"],
+    "skills": [
+      "humanizer"
+    ],
     "env": []
   },
   "agent": {

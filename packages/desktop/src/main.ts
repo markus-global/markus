@@ -6,8 +6,10 @@ import { setupMenu } from './menu.js';
 import { setupTray, destroyTray } from './tray.js';
 import { setupIpcHandlers } from './ipc-handlers.js';
 import { setupAutoUpdater } from './updater.js';
-import { registerProtocol, handleSecondInstanceArgs } from './protocol.js';
+import { registerProtocol, handleSecondInstanceArgs, consumePendingLaunchUrl, setProtocolBackendUrl } from './protocol.js';
 import { startNotificationBridge, stopNotificationBridge } from './notifications.js';
+import { ensureWindowsShortcuts } from './windows-shortcuts.js';
+import { setAppQuitting } from './app-lifecycle.js';
 
 app.setName('Markus');
 
@@ -55,8 +57,19 @@ async function stopPortProcess(port: number): Promise<void> {
   const getPids = (): string[] => {
     try {
       if (process.platform === 'win32') {
-        const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf-8' });
-        return [...new Set(out.split('\n').map(l => l.trim().split(/\s+/).pop()).filter(Boolean))];
+        // Parse Local Address port exactly — `findstr :8056` also matches :18056.
+        const out = execSync('netstat -ano -p tcp', { encoding: 'utf-8' });
+        const pids: string[] = [];
+        for (const line of out.split('\n')) {
+          if (!/LISTENING/i.test(line)) continue;
+          const parts = line.trim().split(/\s+/);
+          // Proto LocalAddress ForeignAddress State PID
+          const local = parts[1] ?? '';
+          const pid = parts[4];
+          const m = /:(\d+)$/.exec(local);
+          if (m && Number(m[1]) === port && pid && /^\d+$/.test(pid)) pids.push(pid);
+        }
+        return [...new Set(pids)];
       }
       return execSync(`lsof -ti :${port} 2>/dev/null`, { encoding: 'utf-8' }).trim().split('\n').filter(Boolean);
     } catch { return []; }
@@ -94,20 +107,30 @@ async function stopPortProcess(port: number): Promise<void> {
 let backendReady = false;
 let backendUrl = 'http://localhost:8056';
 
-// Single instance lock — prevent multiple instances
+async function waitForBackendHealth(url: string, attempts = 30): Promise<void> {
+  for (let i = 0; i < attempts; i++) {
+    const h = await probeHealth(url);
+    if (h.running) return;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  throw new Error(`Backend health check failed at ${url}`);
+}
+
+// Single instance lock — prevent multiple instances. Without the lock, a second
+// process must not run whenReady (it would race for port 8056 / windows).
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
-    handleSecondInstanceArgs(argv);
-    restoreOrCreateWindow(backendUrl);
+    // If argv carries markus://install|auth|…, protocol handler navigates.
+    // Do not follow with bare backendUrl — that would wipe ?install= / #explore.
+    const handledProtocol = handleSecondInstanceArgs(argv);
+    if (!handledProtocol) restoreOrCreateWindow(backendUrl);
   });
-}
 
 app.whenReady().then(async () => {
   console.log('[main] app ready, appPath:', app.getAppPath());
-
   // Set templates dir — unpacked from asar so fs.lstat/readdir work
   const templatesDir = join(app.getAppPath().replace('app.asar', 'app.asar.unpacked'), 'dist', 'templates');
   process.env['MARKUS_TEMPLATES_DIR'] = templatesDir;
@@ -115,6 +138,8 @@ app.whenReady().then(async () => {
 
   registerProtocol();
   setupIpcHandlers();
+  // NSIS upgrades often skip desktop shortcuts — create them from the app.
+  void ensureWindowsShortcuts();
 
   // Handle file downloads (e.g. Chrome extension zip from Settings)
   session.defaultSession.on('will-download', (_event, item) => {
@@ -176,6 +201,7 @@ app.whenReady().then(async () => {
     if (health.running && health.sameVersion) {
       console.log('[main] reusing existing Markus server (same version:', health.version, ')');
       updateSplash(t('Connecting to running server...', '正在连接已运行的服务...'));
+      setProtocolBackendUrl(backendUrl);
       backendReady = true;
     } else {
       if (health.running) {
@@ -187,6 +213,7 @@ app.whenReady().then(async () => {
         onProgress: (_step, message) => updateSplash(message),
       });
       backendUrl = instance.url;
+      setProtocolBackendUrl(backendUrl);
       backendReady = true;
 
       // Wire embedded WebContentsView as a CDP backend for browser tools.
@@ -203,7 +230,12 @@ app.whenReady().then(async () => {
     }
 
     startNotificationBridge(backendUrl);
-    win.loadURL(backendUrl);
+    // start() now awaits listen, but still retry health before loading the UI
+    // so a slow bind / antivirus delay cannot flash a failed page.
+    await waitForBackendHealth(backendUrl);
+    // Prefer a deep-link target queued during splash (markus://install, etc.).
+    const launchUrl = consumePendingLaunchUrl() ?? backendUrl;
+    win.loadURL(launchUrl);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error('[main] backend startup error:', errorMsg);
@@ -223,7 +255,28 @@ app.whenReady().then(async () => {
 
   // Set window open handler DIRECTLY on the main window's webContents
   win.webContents.setWindowOpenHandler(({ url }) => {
-    // Allow local URLs (backend)
+    // Hash-only / unknown SPA fragments must NOT open a second Markus window —
+    // markdown TOC links like `#section` resolve to localhost/#section and would
+    // otherwise land on Home. Deny and let the renderer handle in-doc scroll.
+    try {
+      const parsed = new URL(url);
+      const isLocalApp = parsed.origin === new URL(backendUrl).origin
+        || parsed.hostname === 'localhost'
+        || parsed.hostname === '127.0.0.1';
+      if (isLocalApp) {
+        const page = (parsed.hash || '').replace(/^#/, '').split(/[/?]/)[0] || '';
+        // Allow real app routes (e.g. #team, #work/…) and auth paths; deny bare heading slugs.
+        // Must match packages/web-ui/src/routes.ts PAGE_HASH + HASH_ALIASES (+ auth).
+        const knownAppPages = /^(overview|team|tasks|explore|assets|output|settings|notifications|search|home|work|store|builder|deliverables|chat|dashboard|projects|login|auth)/i;
+        if (page && !knownAppPages.test(page) && !parsed.pathname.includes('/auth')) {
+          return { action: 'deny' };
+        }
+        return { action: 'allow' };
+      }
+    } catch {
+      /* fall through */
+    }
+    // Allow local URLs (backend) that passed the SPA-hash check above
     if (url.startsWith('http://localhost') || url.startsWith(backendUrl)) {
       return { action: 'allow' };
     }
@@ -252,50 +305,25 @@ app.whenReady().then(async () => {
     return { action: 'deny' };
   });
 
-  // Inject Electron-specific styles and mark environment when web UI loads
+  // Mark Electron env when web UI loads (chrome CSS lives in web-ui; class also set in preload).
   win.webContents.on('did-finish-load', () => {
     const currentUrl = win.webContents.getURL();
-    if (currentUrl.startsWith('http://localhost') || currentUrl.startsWith(backendUrl)) {
-      win.webContents.executeJavaScript(`window.__MARKUS_ELECTRON__ = true;`).catch(() => {});
-      if (process.platform === 'darwin') {
-        // macOS: inject CSS for traffic light clearance and drag region
-        win.webContents.insertCSS(`
-          html.electron-app aside {
-            padding-top: 48px !important;
-          }
-          html.electron-app aside > :first-child {
-            -webkit-app-region: drag;
-          }
-          html.electron-app body::before {
-            content: '';
-            display: block;
-            position: fixed;
-            top: 0; left: 0; right: 0;
-            height: 48px;
-            -webkit-app-region: drag;
-            z-index: 99999;
-            pointer-events: none;
-          }
-          html.electron-app button,
-          html.electron-app a,
-          html.electron-app input,
-          html.electron-app select,
-          html.electron-app textarea,
-          html.electron-app [role="button"],
-          html.electron-app [data-no-drag] {
-            -webkit-app-region: no-drag;
-          }
-        `).catch(() => {});
-      }
-      win.webContents.executeJavaScript(`document.documentElement.classList.add('electron-app');`).catch(() => {});
+    if (currentUrl.startsWith('http://localhost') || currentUrl.startsWith('http://127.0.0.1') || currentUrl.startsWith(backendUrl)) {
+      win.webContents.executeJavaScript(`
+        window.__MARKUS_ELECTRON__ = true;
+        document.documentElement.classList.add('electron-app');
+        if (${JSON.stringify(process.platform)} === 'darwin') {
+          document.documentElement.classList.add('electron-darwin');
+        }
+      `).catch(() => {});
     }
   });
 });
 
+// Keep backend + tray alive when the last window is closed (macOS and Windows).
+// User exits explicitly via tray / menu Quit.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  /* no-op */
 });
 
 app.on('activate', () => {
@@ -304,8 +332,30 @@ app.on('activate', () => {
   }
 });
 
-app.on('before-quit', async () => {
+let quitting = false;
+app.on('before-quit', (event) => {
+  if (quitting) return;
+  // Prevent default once so we can await a bounded shutdown; then force-exit
+  // so Windows upgrades are not blocked by a hung backend close.
+  event.preventDefault();
+  quitting = true;
+  setAppQuitting(true);
+  // Allow the hidden main window to actually close now.
+  const win = getMainWindow();
+  if (win && !win.isDestroyed()) {
+    win.destroy();
+  }
   stopNotificationBridge();
   destroyTray();
-  await shutdownBackend();
+  const timeout = setTimeout(() => {
+    console.warn('[main] shutdown timed out — forcing exit');
+    app.exit(0);
+  }, 2000);
+  void shutdownBackend()
+    .catch((err) => console.warn('[main] shutdown error:', err))
+    .finally(() => {
+      clearTimeout(timeout);
+      app.exit(0);
+    });
 });
+} // end gotLock

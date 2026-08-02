@@ -6,6 +6,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 
 interface HubPlanInfo {
+  orgId?: string | null;
   planType: string; planStatus: string;
   monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null;
   bonusCu: number; purchasedCu: number; windowQuotaCu: number;
@@ -50,6 +51,7 @@ function formatCu(n: number): string {
 export function useOverviewUsageData(active: boolean, ops: OpsDashboard | null, teams: TeamInfo[]) {
   const [agents, setAgents] = useState<AgentUsageInfo[]>([]);
   const [hubPlan, setHubPlan] = useState<HubPlanInfo | null>(null);
+  const [hubOrgMeta, setHubOrgMeta] = useState<{ role: string; memberCount: number } | null>(null);
   const [hubConnected, setHubConnected] = useState(hubApi.isAuthenticated());
 
   const fetchUsage = useCallback(async () => {
@@ -60,10 +62,18 @@ export function useOverviewUsageData(active: boolean, ops: OpsDashboard | null, 
   }, []);
 
   const fetchHubData = useCallback(async () => {
-    if (!hubApi.isAuthenticated()) { setHubConnected(false); return; }
+    if (!hubApi.isAuthenticated()) { setHubConnected(false); setHubOrgMeta(null); return; }
     setHubConnected(true);
     // Daily credit trends live on Hub Settings only — Overview just needs quota.
-    try { const plan = await hubApi.user.plan(); setHubPlan(plan); } catch { /* */ }
+    try {
+      const [plan, mine] = await Promise.all([
+        hubApi.user.plan(),
+        api.hubOrgs.mine().catch(() => null),
+      ]);
+      setHubPlan(plan);
+      const org = mine?.orgs?.find(o => o.id === plan.orgId) ?? mine?.orgs?.[0];
+      setHubOrgMeta(org ? { role: org.role, memberCount: org.memberCount ?? 1 } : null);
+    } catch { /* */ }
   }, []);
 
   useEffect(() => {
@@ -128,6 +138,7 @@ export function useOverviewUsageData(active: boolean, ops: OpsDashboard | null, 
   return {
     contributors,
     hubPlan,
+    hubOrgMeta,
     hubConnected,
   };
 }
@@ -172,8 +183,10 @@ function CollapsibleUsageCard({
   );
 }
 
-export function CloudQuotaBar({ hubConnected, hubPlan }: {
-  hubConnected: boolean; hubPlan: HubPlanInfo | null;
+export function CloudQuotaBar({ hubConnected, hubPlan, hubOrgMeta }: {
+  hubConnected: boolean;
+  hubPlan: HubPlanInfo | null;
+  hubOrgMeta?: { role: string; memberCount: number } | null;
 }) {
   const { t } = useTranslation('home');
   const hubUser = getHubUser();
@@ -202,6 +215,12 @@ export function CloudQuotaBar({ hubConnected, hubPlan }: {
   }
 
   const hasMemberLimit = hubPlan.memberCuLimit != null && hubPlan.memberCuLimit > 0;
+  // Owners/admins (and solo orgs) set their own allocation — don't imply a third-party admin.
+  const isSelfManagedOrg = !hubOrgMeta
+    || hubOrgMeta.role === 'owner'
+    || hubOrgMeta.role === 'admin'
+    || hubOrgMeta.memberCount <= 1;
+  const showAdminLimitBanner = hasMemberLimit && !isSelfManagedOrg;
   const totalQuota = hasMemberLimit
     ? hubPlan.memberCuLimit!
     : (hubPlan.monthlyQuotaCu ?? 0) + (hubPlan.bonusCu ?? 0) + (hubPlan.purchasedCu ?? 0);
@@ -217,7 +236,7 @@ export function CloudQuotaBar({ hubConnected, hubPlan }: {
 
   return (
     <div className="px-4 sm:px-5 pb-4">
-      {hasMemberLimit && (
+      {showAdminLimitBanner && (
         <div className="mb-2 px-3 py-1.5 rounded-lg text-[10px] bg-amber-500/8 text-amber-500/80 border border-amber-500/15">
           {t('usage.quota.personalLimit')}
         </div>
@@ -225,7 +244,9 @@ export function CloudQuotaBar({ hubConnected, hubPlan }: {
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-xs font-semibold text-fg-secondary">
-            {hasMemberLimit ? t('usage.quota.personalLimitLabel') : t('usage.quota.title')}
+            {hasMemberLimit && !isSelfManagedOrg
+              ? t('usage.quota.personalLimitLabel')
+              : t('usage.quota.title')}
           </span>
           <span className="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-brand-500/10 text-brand-500 uppercase shrink-0">
             {hubPlan.planType}
@@ -451,11 +472,13 @@ function SortTH({ label, col, current, desc, onSort, align }: {
 export function OverviewUsageTier({
   contributors,
   hubPlan,
+  hubOrgMeta,
   hubConnected,
   showMarkusUsage,
 }: {
   contributors: Contributor[];
   hubPlan: HubPlanInfo | null;
+  hubOrgMeta?: { role: string; memberCount: number } | null;
   hubConnected: boolean;
   showMarkusUsage: boolean;
 }) {
@@ -467,7 +490,7 @@ export function OverviewUsageTier({
 
       {showMarkusUsage && (
         <CollapsibleUsageCard title={t('usage.creditsTitle')}>
-          <CloudQuotaBar hubConnected={hubConnected} hubPlan={hubPlan} />
+          <CloudQuotaBar hubConnected={hubConnected} hubPlan={hubPlan} hubOrgMeta={hubOrgMeta} />
         </CollapsibleUsageCard>
       )}
 

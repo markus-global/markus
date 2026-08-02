@@ -95,6 +95,8 @@ export class DeliverableService {
       accessCount: 0,
       createdAt: now,
       updatedAt: now,
+      version: 1,
+      changelog: [`${now}: created`],
     };
 
     await this.repo?.create({
@@ -239,6 +241,11 @@ export class DeliverableService {
     ]);
     const hasSignificantChange = changed.some(f => SIGNIFICANT_FIELDS.has(f));
     const now = hasSignificantChange ? new Date().toISOString() : d.updatedAt;
+
+    // Version + changelog on every non-no-op update (STATE-MACHINES Spec)
+    d.version = (d.version ?? 1) + 1;
+    const entry = `${now}: updated ${changed.join(', ')}`;
+    d.changelog = [...(d.changelog ?? []), entry].slice(-50);
 
     if (data.type !== undefined) d.type = data.type;
     if (data.title !== undefined) d.title = data.title;

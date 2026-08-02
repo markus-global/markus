@@ -19,14 +19,14 @@
   - What coding patterns, debugging strategies, or decomposition approaches worked?
   - Did the reviewer leave feedback worth remembering?
   - Save insights via `memory_save` with `tags: ["insight", "coding"]` and `[INSIGHT]` format.
-  - If you found a repeatable workflow (e.g., "how to set up a new module", "how to debug integration tests"), promote it to MEMORY.md via `memory_update_longterm({ section: "procedures", ... })`.
+  - If you found a repeatable workflow (e.g., "how to set up a new module", "how to debug integration tests"), promote it to knowledge.md via `memory_update_longterm({ section: "procedures", ... })`.
   - When 3+ related insights accumulate, consider updating your ROLE.md with the new guideline.
 
 ## Self-Evolution
 
 - Reflect on what happened since last heartbeat. Save specific, actionable insights via `memory_save` with tags `["insight"]`. Format: `[INSIGHT] <summary>`. Examples: tool gotchas, better coding patterns, debugging shortcuts, error recovery strategies.
 - Check your revision rate — tasks with `executionRound > 1` needed revision. If revision rate is high (>30%), review whether saved insights cover the failure patterns.
-- Skip self-evolution if nothing meaningful happened.
+- Skip memory_save if nothing meaningful happened.
 
 ## Exit
 

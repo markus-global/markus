@@ -1,5 +1,17 @@
 import type { LLMRequest, LLMResponse, LLMStreamEvent, LLMProviderConfig, ProviderCapabilities } from '@markus/shared';
 
+/**
+ * Default `max_tokens` for providers that require the field on the wire
+ * (Anthropic, OpenAI-compatible, Google, Ollama).
+ *
+ * 4096 is too tight for agent coding turns (large patches / tool args get cut
+ * off). 32k is enough headroom for typical digital-employee work without
+ * approaching catalog ceilings (100k–393k) that break prepaid OpenRouter keys
+ * when injected as a reservation. Markus/OpenRouter still omits max_tokens by
+ * default — this constant is only for native BYOK providers.
+ */
+export const DEFAULT_REQUEST_MAX_TOKENS = 32_768;
+
 export interface LLMProviderInterface {
   readonly name: string;
   readonly model: string;
@@ -79,19 +91,112 @@ export function defaultVoiceForModel(model?: string): string | undefined {
  * Unwrap `{ error: { message } }`, keep voice enumerations intact, and cap length
  * so a huge voice list cannot blow the agent's context.
  */
-/** True when status/body indicate credits / key USD limit exhausted (not region/auth). */
+/**
+ * True when status/body look like OpenRouter *payment/credit* errors.
+ *
+ * Per OpenRouter docs (errors-and-debugging / limits):
+ * - 402 Payment Required → account or API key has insufficient credits (`payment_required`)
+ * - 429 → rate limit (NOT credits)
+ * - 403 → moderation / permission (NOT credits unless body explicitly says key/credit limit)
+ * - 409 Conflict → not used by OpenRouter for billing; never treat as credits
+ *
+ * Callers must still confirm with Hub remaining before surfacing CU_EXCEEDED to users —
+ * a stale OR key can 402 while Hub still shows budget.
+ */
 export function isCreditExhaustedHttp(status: number, bodyText: string): boolean {
-  if (status === 402) return true;
+  if (status === 409 || status === 429) return false;
   const t = bodyText || '';
   if (/CU_EXCEEDED|CU_MONTHLY_EXCEEDED/i.test(t)) return true;
-  if (status === 403 || status === 400) {
-    return /key limit exceeded|total limit|insufficient (credits?|quota|balance)|credits? (exhausted|exceeded)|quota exceeded/i.test(t);
+  // Official OR meaning of 402.
+  if (status === 402) {
+    if (!t.trim()) return true;
+    if (/payment_required|insufficient (credits?|quota|balance)|credits? (exhausted|exceeded)|key limit exceeded|quota exceeded/i.test(t)) {
+      return true;
+    }
+    // Generic 402 bodies still mean payment required per OR docs.
+    return !/rate.?limit|moderation|forbidden|unauthorized/i.test(t);
   }
-  return /key limit exceeded|total limit/i.test(t);
+  // Legacy / odd gateways sometimes put key-cap text on 400/403 — require explicit credit wording.
+  if (status === 403 || status === 400) {
+    return /key limit exceeded|insufficient (credits?|quota|balance)|credits? (exhausted|exceeded)|payment_required/i.test(t);
+  }
+  return false;
 }
 
 export const CREDIT_EXCEEDED_MSG = 'CU_EXCEEDED: Credits exhausted. Please top up or upgrade your plan.';
 
+/** Hub still has budget after an upstream 402 — do not claim the user is out of credits. */
+export const UPSTREAM_BILLING_MISMATCH_MSG =
+  'MARKUS_UPSTREAM_ERROR: Upstream returned a payment/credit error, but Hub still shows remaining credits. Please retry shortly or switch model.';
+
+/**
+ * OpenRouter 402 bodies often include:
+ *   "You requested up to N tokens, but can only afford M."
+ * When `max_tokens` is omitted, OR still reserves against a high default
+ * (commonly 65536). Parse M so callers can retry with an affordable cap.
+ */
+export function parseOpenRouterAffordableTokens(errText: string): number | null {
+  const m = (errText || '').match(/can only afford\s+(\d+)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 1) return null;
+  // Leave a tiny margin — OR affordability is approximate.
+  return Math.max(1, Math.floor(n * 0.98));
+}
+
+/**
+ * Clamp max_tokens for an OpenRouter reservation-afford retry (Afford.S4).
+ * `max_tokens = min(N, max(512, N - safety))` → effectively max(512, N - safety).
+ */
+export function clampReservationMaxTokens(
+  affordable: number,
+  safety = 64,
+  floor = 512,
+): number {
+  if (!(affordable > 0)) return floor;
+  return Math.max(floor, Math.min(affordable, affordable - Math.max(0, safety)));
+}
+
+/**
+ * Proactive max_tokens clamp from known prompt afford (Afford.S4).
+ * `max_tokens ≤ promptAfford - estimatedPrompt - margin`, floored at 512.
+ */
+export function clampMaxTokensToRemainingAfford(opts: {
+  requested: number | undefined;
+  promptAfford: number;
+  estimatedPrompt: number;
+  margin?: number;
+  floor?: number;
+}): number {
+  const margin = opts.margin ?? 500;
+  const floor = opts.floor ?? 512;
+  const remaining = Math.max(
+    floor,
+    Math.floor(opts.promptAfford - Math.max(0, opts.estimatedPrompt) - margin),
+  );
+  if (opts.requested === undefined || !(opts.requested > 0)) return remaining;
+  return Math.min(opts.requested, remaining);
+}
+
+/**
+ * OpenRouter 402 when the *prompt* itself exceeds key affordability:
+ *   "Prompt tokens limit exceeded: 86869 > 37406"
+ * Returns the afford ceiling (Y), not the requested size (X).
+ */
+export function parseOpenRouterPromptAffordableTokens(errText: string): number | null {
+  const m = (errText || '').match(/Prompt tokens limit exceeded:\s*\d+\s*>\s*(\d+)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.max(1, Math.floor(n * 0.95));
+}
+
+/**
+ * Format a media-API error for the agent/tool layer.
+ * MarkusProvider must resolve credit-like HTTP statuses via Hub cu/sync
+ * *before* calling this — otherwise a stale OpenRouter 402 is mislabeled
+ * as CU_EXCEEDED while Hub still has budget.
+ */
 export function formatUpstreamMediaError(status: number, errText: string): string {
   if (isCreditExhaustedHttp(status, errText)) {
     return CREDIT_EXCEEDED_MSG;

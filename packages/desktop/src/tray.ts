@@ -16,18 +16,19 @@ export function setupTray(backendUrl: string): void {
   tray = new Tray(icon);
   tray.setToolTip('Markus');
 
+  const isZh = app.getLocale().startsWith('zh');
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: 'Show Window',
+      label: isZh ? '显示窗口' : 'Show Window',
       click: () => restoreOrCreateWindow(backendUrl),
     },
     {
-      label: 'Open in Browser',
+      label: isZh ? '在浏览器中打开' : 'Open in Browser',
       click: () => shell.openExternal(backendUrl),
     },
     { type: 'separator' },
     {
-      label: 'Quit Markus',
+      label: isZh ? '退出 Markus' : 'Quit Markus',
       click: () => app.quit(),
     },
   ]);
