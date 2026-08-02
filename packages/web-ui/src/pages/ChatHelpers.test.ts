@@ -22,9 +22,11 @@ describe('stripNotifyContext', () => {
   it('dbMsgToChat strips notify_context from text segments (not only msg.text)', () => {
     const m = {
       id: 'msg_1',
+      sessionId: 'sess_1',
       agentId: 'agt_1',
       role: 'assistant',
       content: 'Summary\n\n<!-- notify_context: priority=low -->',
+      tokensUsed: 0,
       createdAt: '2026-08-02T07:04:00.000Z',
       metadata: {
         notifyUser: true,
