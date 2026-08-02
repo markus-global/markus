@@ -2,6 +2,7 @@ import { BrowserWindow, screen, app } from 'electron';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { isAppQuitting } from './app-lifecycle.js';
 
 const STATE_FILE = join(homedir(), '.markus', 'window-state.json');
 
@@ -95,8 +96,13 @@ export function createMainWindow(show = true): BrowserWindow {
     mainWindow.maximize();
   }
 
-  mainWindow.on('close', () => {
+  // Close = hide to tray (keep backend). Explicit Quit sets isAppQuitting.
+  mainWindow.on('close', (event) => {
     if (mainWindow) saveWindowState(mainWindow);
+    if (!isAppQuitting()) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
   });
 
   mainWindow.on('closed', () => {

@@ -9,6 +9,7 @@ import { setupAutoUpdater } from './updater.js';
 import { registerProtocol, handleSecondInstanceArgs, consumePendingLaunchUrl, setProtocolBackendUrl } from './protocol.js';
 import { startNotificationBridge, stopNotificationBridge } from './notifications.js';
 import { ensureWindowsShortcuts } from './windows-shortcuts.js';
+import { setAppQuitting } from './app-lifecycle.js';
 
 app.setName('Markus');
 
@@ -304,50 +305,25 @@ app.whenReady().then(async () => {
     return { action: 'deny' };
   });
 
-  // Inject Electron-specific styles and mark environment when web UI loads
+  // Mark Electron env when web UI loads (chrome CSS lives in web-ui; class also set in preload).
   win.webContents.on('did-finish-load', () => {
     const currentUrl = win.webContents.getURL();
-    if (currentUrl.startsWith('http://localhost') || currentUrl.startsWith(backendUrl)) {
-      win.webContents.executeJavaScript(`window.__MARKUS_ELECTRON__ = true;`).catch(() => {});
-      if (process.platform === 'darwin') {
-        // macOS: inject CSS for traffic light clearance and drag region
-        win.webContents.insertCSS(`
-          html.electron-app aside {
-            padding-top: 48px !important;
-          }
-          html.electron-app aside > :first-child {
-            -webkit-app-region: drag;
-          }
-          html.electron-app body::before {
-            content: '';
-            display: block;
-            position: fixed;
-            top: 0; left: 0; right: 0;
-            height: 48px;
-            -webkit-app-region: drag;
-            z-index: 99999;
-            pointer-events: none;
-          }
-          html.electron-app button,
-          html.electron-app a,
-          html.electron-app input,
-          html.electron-app select,
-          html.electron-app textarea,
-          html.electron-app [role="button"],
-          html.electron-app [data-no-drag] {
-            -webkit-app-region: no-drag;
-          }
-        `).catch(() => {});
-      }
-      win.webContents.executeJavaScript(`document.documentElement.classList.add('electron-app');`).catch(() => {});
+    if (currentUrl.startsWith('http://localhost') || currentUrl.startsWith('http://127.0.0.1') || currentUrl.startsWith(backendUrl)) {
+      win.webContents.executeJavaScript(`
+        window.__MARKUS_ELECTRON__ = true;
+        document.documentElement.classList.add('electron-app');
+        if (${JSON.stringify(process.platform)} === 'darwin') {
+          document.documentElement.classList.add('electron-darwin');
+        }
+      `).catch(() => {});
     }
   });
 });
 
+// Keep backend + tray alive when the last window is closed (macOS and Windows).
+// User exits explicitly via tray / menu Quit.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  /* no-op */
 });
 
 app.on('activate', () => {
@@ -363,6 +339,12 @@ app.on('before-quit', (event) => {
   // so Windows upgrades are not blocked by a hung backend close.
   event.preventDefault();
   quitting = true;
+  setAppQuitting(true);
+  // Allow the hidden main window to actually close now.
+  const win = getMainWindow();
+  if (win && !win.isDestroyed()) {
+    win.destroy();
+  }
   stopNotificationBridge();
   destroyTray();
   const timeout = setTimeout(() => {

@@ -905,10 +905,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   return (
     <div className="flex-1 flex overflow-hidden">
-      {/* Settings Sidebar */}
+      {/* Settings Sidebar — on macOS Electron this is the window edge (main app
+          sidebar is hidden), so the header must clear traffic lights. */}
       <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-border-default bg-surface-secondary overflow-y-auto">
-        <div className="px-3 pt-4 pb-2">
+        <div data-electron-drag className="electron-mac-top-safe px-3 pt-4 pb-2">
           <button
+            data-no-drag
             onClick={() => { navBus.navigate(PAGE.HOME); }}
             className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-fg-secondary hover:text-fg-primary hover:bg-surface-overlay transition-colors"
           >

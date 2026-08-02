@@ -1,5 +1,20 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+// Apply chrome classes as early as possible so traffic-light padding exists
+// before React paints (main-process insertCSS was easy to miss / race).
+function markElectronChrome(): void {
+  document.documentElement.classList.add('electron-app');
+  if (process.platform === 'darwin') {
+    document.documentElement.classList.add('electron-darwin');
+  }
+  (window as unknown as { __MARKUS_ELECTRON__?: boolean }).__MARKUS_ELECTRON__ = true;
+}
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', markElectronChrome);
+} else {
+  markElectronChrome();
+}
+
 contextBridge.exposeInMainWorld('markusDesktop', {
   platform: process.platform,
   isMAS: process.env['MARKUS_MAS'] === 'true',

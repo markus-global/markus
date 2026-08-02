@@ -326,8 +326,11 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin">
-      {/* ── Header ── */}
-      <div className={`flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 ${previewMode ? '' : 'max-w-7xl mx-auto'} w-full`}>
+      {/* ── Header (data-electron-drag: empty space + title move the window on macOS) ── */}
+      <div
+        data-electron-drag
+        className={`flex items-center justify-between px-4 sm:px-6 lg:px-8 h-14 sm:h-16 ${previewMode ? '' : 'max-w-7xl mx-auto'} w-full`}
+      >
         <div className="flex items-center gap-2">
           {isMobile && <MobileMenuButton />}
           <div>
@@ -335,7 +338,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
             <p className="text-xs text-fg-tertiary hidden sm:block">{t('subtitle')}</p>
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div data-no-drag className="flex items-center gap-1.5">
           <button onClick={() => previewMode ? undefined : isMobile ? navBus.navigate(PAGE.SEARCH) : window.dispatchEvent(new CustomEvent('markus:open-search'))}
             className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label="Search">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>

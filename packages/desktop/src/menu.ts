@@ -122,9 +122,11 @@ export function setupMenu(backendUrl: string): void {
           },
         },
         { type: 'separator' },
-        isMac
-          ? { role: 'close' as const, label: t['close'] }
-          : { role: 'quit' as const, label: t['quit'] },
+        { role: 'close' as const, label: t['close'] },
+        ...(!isMac ? [
+          { type: 'separator' as const },
+          { role: 'quit' as const, label: t['quit'] },
+        ] : []),
       ],
     },
     {
