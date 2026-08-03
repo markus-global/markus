@@ -2519,7 +2519,10 @@ function TaskDetailPanel({
                   {task.createdBy && !task.createdBy.startsWith('agt_') ? t('work:task.startExecution') : t('work:task.approve')}
                 </button>
                 {task.createdBy && !task.createdBy.startsWith('agt_') ? (
-                  <button onClick={() => void doUpdate(() => api.tasks.cancel(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.cancelTask')}</button>
+                  <button onClick={async () => {
+                    const { count } = await api.tasks.getDependentCount(task.id);
+                    setCancelConfirm({ dependentCount: count });
+                  }} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.cancelTask')}</button>
                 ) : (
                   <button onClick={() => setRejectConfirm(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.reject')}</button>
                 )}

@@ -2457,7 +2457,9 @@ export class TaskService {
   }
 
   cancelTask(id: string, cascade: boolean, updatedBy?: string, updatedByType?: 'human' | 'agent' | 'system'): Task {
-    const task = this.updateTaskStatus(id, 'cancelled', updatedBy, false, false, updatedByType);
+    // _internal=true: cancel is an explicit endpoint (like reject), so pending→cancelled
+    // must bypass the "use approve/reject" guard that blocks generic status updates.
+    const task = this.updateTaskStatus(id, 'cancelled', updatedBy, true, false, updatedByType);
     if (task.taskType === 'scheduled' && task.scheduleConfig && !task.scheduleConfig.paused) {
       task.scheduleConfig.paused = true;
       this.updateScheduleConfig(id, task.scheduleConfig)

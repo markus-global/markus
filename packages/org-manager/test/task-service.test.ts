@@ -1281,6 +1281,13 @@ describe('TaskService', () => {
       expect(webhook).toHaveBeenCalledWith(expect.objectContaining({ type: 'status_changed', status: 'cancelled' }));
     });
 
+    it('cancelTask can cancel a pending task without approve/reject', () => {
+      const task = ts.createTask(createDefaults({ creatorRole: 'human' }) as never);
+      expect(task.status).toBe('pending');
+      const cancelled = ts.cancelTask(task.id, false, 'user-1', 'human');
+      expect(cancelled.status).toBe('cancelled');
+    });
+
     it('assignTask to new agent updates assignment', () => {
       const task = ts.createTask(createDefaults({ creatorRole: 'human' }) as never);
       const assigned = ts.assignTask(task.id, AGENT_B, 'user-1');
