@@ -1045,6 +1045,30 @@ async function startServerCore(
         log.warn('Failed to persist heartbeat interval change', { agentId, error: String(e) });
       }
     });
+    // Embedded-browser tab claim/release — UI shows which agent controls a tab.
+    agentManager.getEventBus().on('browser:tab-ownership', (evt: unknown) => {
+      const event = evt as { action: 'claimed' | 'released'; pageId: number; agentId: string };
+      let agentName = event.agentId;
+      try {
+        const agent = agentManager.getAgent(event.agentId);
+        agentName = agent?.config?.name || event.agentId;
+      } catch { /* agent may already be gone on release */ }
+      try {
+        ws.broadcast({
+          type: 'ui:browser_ownership',
+          payload: {
+            action: event.action,
+            pageId: event.pageId,
+            agentId: event.action === 'released' ? null : event.agentId,
+            agentName: event.action === 'released' ? null : agentName,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e) {
+        log.warn('Failed to broadcast browser ownership', { pageId: event.pageId, error: String(e) });
+      }
+    });
+
     // Team Chat right-panel open/collapse — deliver to the interacting user's UI.
     agentManager.getEventBus().on('agent:ui-layout', (evt: unknown) => {
       const event = evt as {

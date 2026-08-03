@@ -289,7 +289,7 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
-      <div className="px-6 h-14 flex items-center justify-between shrink-0 gap-3">
+      <div data-electron-drag className="px-6 h-14 flex items-center justify-between shrink-0 gap-3">
         <h2 className="text-lg font-semibold">{t('teamStore.title')}</h2>
         <input
           type="text"

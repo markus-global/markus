@@ -5233,10 +5233,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             </div>
           </div>
         ) : (
-        <div className="flex items-center gap-3 px-6 h-14 shrink-0">
+        <div data-electron-drag className="flex items-center gap-3 px-6 h-14 shrink-0">
           {/* Project title + settings */}
           {selectedProject ? (
-            <div className="flex items-center gap-1 shrink-0">
+            <div data-no-drag className="flex items-center gap-1 shrink-0">
               <InlineEditableText
                 value={selectedProject.name}
                 onSave={async (name) => { await api.projects.update(selectedProject.id, { name } as Partial<ProjectInfo>); refreshProjects(); }}

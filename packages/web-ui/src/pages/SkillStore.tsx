@@ -569,7 +569,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
       <div className={`${isMobile ? 'px-4' : 'px-6'} shrink-0`}>
-        <div className="flex items-center h-14">
+        <div data-electron-drag className="flex items-center h-14">
           <h2 className="text-lg font-semibold">{t('skillStore.title')}</h2>
         </div>
         <div className={`flex ${isMobile ? 'flex-wrap' : ''} gap-1 pb-2 overflow-x-auto scrollbar-hide`}>

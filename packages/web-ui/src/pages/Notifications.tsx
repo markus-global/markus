@@ -9,7 +9,7 @@ export function NotificationsPage({ authUser }: { authUser?: { id: string; name:
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center gap-2 px-4 h-14">
+      <div data-electron-drag className="flex items-center gap-2 px-4 h-14">
         {isMobile && <MobileMenuButton />}
         <h2 className="text-base font-bold">{t('notifications')}</h2>
       </div>

@@ -1552,6 +1552,10 @@ export const api = {
       body: ids ? JSON.stringify({ ids }) : undefined,
     }),
   },
+  browser: {
+    tabOwnership: () =>
+      request<{ ownership: Array<{ pageId: number; agentId: string; agentName: string }> }>('/browser/tab-ownership'),
+  },
   settings: {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),
     /** Local preferred org name (markus.json). Applied to Hub org on connect. */
