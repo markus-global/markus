@@ -1,5 +1,12 @@
 # Release Log
 
+## v0.9.2
+
+### Bug Fixes
+
+- **CN 模型默认 heal** — 地理过滤后粘性 `routingDefaultModel`（如 Claude Opus）不再留在聊天 chip；自动回落到 Hub 目录内可用模型并写回配置
+- **Hub 额度进度条** — Overview / Settings 使用 `creditsBudgetCu`（已用 + 剩余），烧过后的 M+B+P 面额不再把总额错显示成缩水值
+
 ## v0.9.0
 
 Markus Cloud / Hub 额度与计费体验落地；认知增强与统一 A2A 消息；聊天会话 buffer 状态机重构；飞书主会话同步与 Agent DM 确认死循环防护；搜索优先级与 Team Chat 菜单体验优化。
