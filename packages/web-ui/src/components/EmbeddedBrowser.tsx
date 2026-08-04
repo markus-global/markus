@@ -20,10 +20,13 @@ export function EmbeddedBrowser({
   url,
   browserId: externalBrowserId,
   className,
+  onMeta,
 }: {
   url: string;
   browserId?: string;
   className?: string;
+  /** Sync native pageId (and optional url/title) back to the right-panel tab model. */
+  onMeta?: (meta: { pageId?: number; url?: string; title?: string }) => void;
 }) {
   const { t } = useTranslation('common');
   const reactId = useId().replace(/:/g, '');
@@ -74,6 +77,13 @@ export function EmbeddedBrowser({
       setIsLoading(!!state.isLoading);
       setLoadError(state.loadError ?? null);
       setDirectoryPath(state.directoryPath ?? null);
+      if (state.pageId != null || state.url || state.title) {
+        onMeta?.({
+          pageId: state.pageId,
+          url: state.url && state.url !== 'about:blank' ? state.url : undefined,
+          title: state.title || undefined,
+        });
+      }
     })();
     return () => {
       cancelled = true;

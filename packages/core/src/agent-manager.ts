@@ -501,6 +501,9 @@ export class AgentManager {
       this.triggerChromeDialogAutoClick(serverName);
     });
     this.browserSessionManager = new BrowserSessionManager();
+    this.browserSessionManager.onOwnershipChange((event) => {
+      this.eventBus.emit('browser:tab-ownership', event);
+    });
     this.browserBridge = new MarkusBrowserBridge();
     this.globalSecurityPolicy = options.securityPolicy;
     this.globalMcpServers = options.mcpServers;
@@ -683,6 +686,18 @@ export class AgentManager {
 
   getBrowserBridge(): MarkusBrowserBridge {
     return this.browserBridge;
+  }
+
+  /** Current agent→page ownership for embedded-browser UI badges. */
+  getBrowserTabOwnership(): Array<{ pageId: number; agentId: string; agentName: string }> {
+    return this.browserSessionManager.listOwnership().map(({ pageId, agentId }) => {
+      let agentName = agentId;
+      try {
+        const agent = this.agents.get(agentId);
+        if (agent) agentName = agent.config.name || agentId;
+      } catch { /* agent may be mid-removal */ }
+      return { pageId, agentId, agentName };
+    });
   }
 
   async runQuickBrowserTest(): Promise<BrowserTestResult> {

@@ -4048,7 +4048,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             return (
             <div className="flex flex-col">
               {/* Row 1: L1/L2 toggle + avatar + name/desc + action buttons */}
-              <div className="flex items-center px-4 h-14 gap-2.5">
+              <div data-electron-drag className="flex items-center px-4 h-14 gap-2.5">
                 {/* Expand sidebars button — shown when sidebars are collapsed */}
                 {sidebarsCollapsed && !isMobile && (
                   <button
@@ -4080,18 +4080,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
                 {/* Avatar */}
                 {showEntityInfo && (
-                  chatMode === 'channel' && activeTeamId ? (
-                    <div className="w-9 h-9 rounded-xl bg-brand-600 text-white flex items-center justify-center text-sm font-bold shrink-0">
+                  <div data-no-drag className="shrink-0">
+                  {chatMode === 'channel' && activeTeamId ? (
+                    <div className="w-9 h-9 rounded-xl bg-brand-600 text-white flex items-center justify-center text-sm font-bold">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                     </div>
                   ) : (
                     <Avatar name={headerAvatarName} avatarUrl={headerAvatarUrl} size={36} className="rounded-xl shrink-0" />
-                  )
+                  )}
+                  </div>
                 )}
 
                 {/* Name & Description (inline editable) */}
                 {showEntityInfo ? (
-                  <div className="flex-1 min-w-0">
+                  <div data-no-drag className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       {editingHeaderName ? (
                         <input
@@ -4151,7 +4153,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 )}
 
                 {/* Right side buttons */}
-                <div className="ml-auto flex items-center gap-2 shrink-0">
+                <div data-no-drag className="ml-auto flex items-center gap-2 shrink-0">
                   <button
                     onClick={() => { setSearchOpen(!searchOpen); if (!searchOpen) { setSearchQuery(''); setSearchResults([]); } }}
                     className={`p-1.5 rounded-md transition-colors ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
@@ -5135,6 +5137,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           }}
           fullscreen={rightPanelFullscreen}
           onToggleFullscreen={layout?.toggleRightPanelFullscreen}
+          onBrowserMeta={layout?.updateRightPanelBrowserTab
+            ? (browserId, meta) => layout.updateRightPanelBrowserTab(browserId, meta)
+            : undefined}
         />
       )}
 

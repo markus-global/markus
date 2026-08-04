@@ -70,8 +70,8 @@ export interface LayoutContextValue {
   closeRightPanel: () => void;
   closeRightPanelTab: (tabId: string) => void;
   setActiveRightPanelTab: (tabId: string) => void;
-  /** Update url/title for an embedded-browser tab (navigation sync). */
-  updateRightPanelBrowserTab: (browserId: string, patch: { url?: string; title?: string }) => void;
+  /** Update url/title/pageId for an embedded-browser tab (navigation sync). */
+  updateRightPanelBrowserTab: (browserId: string, patch: { url?: string; title?: string; pageId?: number }) => void;
   toggleRightPanel: () => void;
   /** Collapse the panel if open; never opens / restores (unlike toggle). */
   collapseRightPanelOnly: () => void;
@@ -210,18 +210,27 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     lastActiveRef.current = tabId;
   }, []);
 
-  const updateRightPanelBrowserTab = useCallback((browserId: string, patch: { url?: string; title?: string }) => {
+  const updateRightPanelBrowserTab = useCallback((browserId: string, patch: { url?: string; title?: string; pageId?: number }) => {
     setTabs(prev => {
       let changed = false;
       const next = prev.map(t => {
         if (t.payload.kind !== 'url' || t.payload.browserId !== browserId) return t;
-        changed = true;
         const url = patch.url ?? t.payload.url;
         const title = patch.title || t.payload.title || url;
+        const pageId = patch.pageId ?? t.payload.pageId;
+        if (
+          url === t.payload.url
+          && title === (t.payload.title || t.title)
+          && pageId === t.payload.pageId
+          && title === t.title
+        ) {
+          return t;
+        }
+        changed = true;
         return {
           ...t,
           title,
-          payload: { ...t.payload, url, title },
+          payload: { ...t.payload, url, title, ...(pageId != null ? { pageId } : {}) },
         };
       });
       if (changed) lastTabsRef.current = next;

@@ -73,6 +73,32 @@ describe('BrowserSessionManager', () => {
     expect(bsm.getOwnedTabIds(agentId, sessionA)).toEqual([9]);
   });
 
+  it('emits ownership events on claim and release for UI badges', async () => {
+    const events: Array<{ action: string; pageId: number; agentId: string }> = [];
+    const unsub = bsm.onOwnershipChange((e) => {
+      events.push({ action: e.action, pageId: e.pageId, agentId: e.agentId });
+    });
+
+    const handlers = bsm.wrapToolHandlers([
+      makeHandler('select_page', () => 'Selected page 4\n'),
+      makeHandler('close_page', () => 'Closed page 4\n'),
+      makeHandler('list_pages', () => '4: https://example.com [selected]\n'),
+    ], agentId);
+
+    const select = handlers.find(h => h.name.endsWith('__select_page'))!;
+    await select.execute({ _browserSessionId: sessionA, pageId: 4 });
+    expect(events).toContainEqual({ action: 'claimed', pageId: 4, agentId });
+    expect(bsm.listOwnership()).toEqual([
+      expect.objectContaining({ pageId: 4, agentId }),
+    ]);
+
+    const close = handlers.find(h => h.name.endsWith('__close_page'))!;
+    await close.execute({ _browserSessionId: sessionA, pageId: 4 });
+    expect(events).toContainEqual({ action: 'released', pageId: 4, agentId });
+    expect(bsm.listOwnership()).toEqual([]);
+    unsub();
+  });
+
   it('list_pages annotates owned vs shared vs other-session tabs', async () => {
     const handlers = bsm.wrapToolHandlers([
       makeHandler('new_page', (args) => {

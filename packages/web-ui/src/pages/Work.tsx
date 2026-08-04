@@ -2519,7 +2519,10 @@ function TaskDetailPanel({
                   {task.createdBy && !task.createdBy.startsWith('agt_') ? t('work:task.startExecution') : t('work:task.approve')}
                 </button>
                 {task.createdBy && !task.createdBy.startsWith('agt_') ? (
-                  <button onClick={() => void doUpdate(() => api.tasks.cancel(task.id))} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.cancelTask')}</button>
+                  <button onClick={async () => {
+                    const { count } = await api.tasks.getDependentCount(task.id);
+                    setCancelConfirm({ dependentCount: count });
+                  }} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.cancelTask')}</button>
                 ) : (
                   <button onClick={() => setRejectConfirm(true)} disabled={actionInFlight} className="px-3 py-1.5 text-xs text-red-500 border border-red-500/30 rounded-lg hover:bg-red-500/10 disabled:opacity-50">{t('work:task.reject')}</button>
                 )}
@@ -5230,10 +5233,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             </div>
           </div>
         ) : (
-        <div className="flex items-center gap-3 px-6 h-14 shrink-0">
+        <div data-electron-drag className="flex items-center gap-3 px-6 h-14 shrink-0">
           {/* Project title + settings */}
           {selectedProject ? (
-            <div className="flex items-center gap-1 shrink-0">
+            <div data-no-drag className="flex items-center gap-1 shrink-0">
               <InlineEditableText
                 value={selectedProject.name}
                 onSave={async (name) => { await api.projects.update(selectedProject.id, { name } as Partial<ProjectInfo>); refreshProjects(); }}

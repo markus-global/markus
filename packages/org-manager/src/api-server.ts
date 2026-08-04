@@ -10679,6 +10679,12 @@ EXPLANATION_END`;
       return;
     }
 
+    if (path === '/api/browser/tab-ownership' && req.method === 'GET') {
+      const am = this.orgService.getAgentManager();
+      this.json(res, 200, { ownership: am.getBrowserTabOwnership() });
+      return;
+    }
+
     if (path === '/api/system/storage' && req.method === 'GET') {
       try {
         const dataDir = join(homedir(), '.markus');
@@ -12200,6 +12206,7 @@ EXPLANATION_END`;
       exact('/api/system/resume-all', 'POST'),
       exact('/api/system/emergency-stop', 'POST'),
       exact('/api/system/status', 'GET'),
+      exact('/api/browser/tab-ownership', 'GET'),
       exact('/api/system/storage', 'GET'),
       exact('/api/system/storage/orphans', 'GET', 'DELETE'),
       exact('/api/system/announcements', 'GET', 'POST'),

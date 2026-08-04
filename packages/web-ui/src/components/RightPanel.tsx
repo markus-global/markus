@@ -1,11 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api } from '../api.ts';
+import { api, wsClient } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { openExternal } from '../hooks/useElectron.ts';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from './ContentRenderer.tsx';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import type { RightPanelPayload, RightPanelTab } from '../contexts/LayoutContext.tsx';
+
+type TabOwner = { agentId: string; agentName: string };
+
+function toFileUrl(filePath: string): string {
+  if (/^(https?|file):\/\//i.test(filePath)) return filePath;
+  // Windows: C:\foo → file:///C:/foo ; POSIX: /foo → file:///foo
+  if (/^[a-zA-Z]:[\\/]/.test(filePath)) {
+    return `file:///${filePath.replace(/\\/g, '/')}`;
+  }
+  const normalized = filePath.startsWith('/') ? filePath : `/${filePath}`;
+  return `file://${normalized}`;
+}
 
 export interface ChatContextChip {
   label: string;
@@ -79,6 +92,7 @@ export function RightPanel({
   onNewTab,
   fullscreen,
   onToggleFullscreen,
+  onBrowserMeta,
 }: {
   payload: RightPanelPayload;
   onClose: () => void;
@@ -92,14 +106,52 @@ export function RightPanel({
   onNewTab?: () => void;
   fullscreen?: boolean;
   onToggleFullscreen?: () => void;
+  onBrowserMeta?: (browserId: string, meta: { pageId?: number; url?: string; title?: string }) => void;
 }) {
   const { t } = useTranslation(['deliverables', 'agent', 'common']);
   const [preview, setPreview] = useState<PreviewState>({ mode: 'loading' });
   const [copied, setCopied] = useState(false);
   const [selectionToolbar, setSelectionToolbar] = useState<SelectionToolbar | null>(null);
+  const [tabOwners, setTabOwners] = useState<Record<number, TabOwner>>({});
   const contentRef = useRef<HTMLDivElement>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
   const activeTabBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Hydrate + live-update which agent currently owns each embedded-browser pageId.
+  useEffect(() => {
+    let cancelled = false;
+    void api.browser.tabOwnership().then(res => {
+      if (cancelled) return;
+      const next: Record<number, TabOwner> = {};
+      for (const row of res.ownership ?? []) {
+        next[row.pageId] = { agentId: row.agentId, agentName: row.agentName || row.agentId };
+      }
+      setTabOwners(next);
+    }).catch(() => { /* endpoint may be unavailable in preview */ });
+
+    const unsub = wsClient.on('ui:browser_ownership', (event) => {
+      const p = event.payload as {
+        action?: 'claimed' | 'released';
+        pageId?: number;
+        agentId?: string | null;
+        agentName?: string | null;
+      };
+      if (typeof p.pageId !== 'number') return;
+      setTabOwners(prev => {
+        if (p.action === 'released' || !p.agentId) {
+          if (!(p.pageId! in prev)) return prev;
+          const next = { ...prev };
+          delete next[p.pageId!];
+          return next;
+        }
+        return {
+          ...prev,
+          [p.pageId!]: { agentId: p.agentId, agentName: p.agentName || p.agentId },
+        };
+      });
+    });
+    return () => { cancelled = true; unsub(); };
+  }, []);
 
   const reference = payloadReference(payload);
   const title = payloadTitle(payload);
@@ -289,6 +341,57 @@ export function RightPanel({
     }).catch(() => {});
   };
 
+  /** One chrome action: deliverable → Output page; url/file → system browser (or default app). */
+  const openExternally = useCallback(async () => {
+    if (payload.kind === 'deliverable') {
+      navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: payload.deliverable.id });
+      return;
+    }
+
+    if (payload.kind === 'url') {
+      let target = payload.url;
+      if (payload.browserId && window.markusDesktop?.browser) {
+        try {
+          const s = await window.markusDesktop.browser.getState(payload.browserId);
+          if (s.ok) {
+            if (s.directoryPath) {
+              await api.system.openPath(s.directoryPath).catch(() => api.files.reveal(s.directoryPath!));
+              return;
+            }
+            if (s.url && s.url !== 'about:blank') target = s.url;
+          }
+        } catch { /* fall through with payload.url */ }
+      }
+      if (!target || target === 'about:blank') return;
+      if (/^https?:\/\//i.test(target) || /^file:\/\//i.test(target)) {
+        openExternal(target);
+        return;
+      }
+      // Local path typed into the address bar
+      await api.system.openPath(target).catch(() => openExternal(toFileUrl(target)));
+      return;
+    }
+
+    // file
+    const path = payload.path;
+    if (!path) return;
+    if (/^https?:\/\//i.test(path) || /^file:\/\//i.test(path)) {
+      openExternal(path);
+      return;
+    }
+    await api.system.openPath(path).catch(() => openExternal(toFileUrl(path)));
+  }, [payload]);
+
+  const canOpenExternally = payload.kind === 'deliverable'
+    ? !!payload.deliverable.id
+    : payload.kind === 'url'
+      ? !!(payload.url && payload.url !== 'about:blank') || !!payload.browserId
+      : !!payload.path;
+
+  const openExternallyTitle = payload.kind === 'deliverable'
+    ? t('agent:deliverables.openInPage', { defaultValue: 'Open in Output' })
+    : t('common:openInSystemBrowser');
+
   // Local path that can be revealed in Finder / Explorer (not a remote URL / embedded browser).
   const canRevealInFileBrowser = !!reference && !isUrl(reference)
     && (payload.kind === 'file' || payload.kind === 'deliverable');
@@ -313,9 +416,10 @@ export function RightPanel({
         {/* Single chrome row: tabs (or title) + panel actions — saves a header band.
             z-20 keeps chrome above panel content; native views still paint above HTML
             but must be bounds-synced only to the host below this header. */}
-        <header className="relative z-20 h-10 shrink-0 flex items-center gap-1 pl-1.5 pr-1.5 border-b border-border-default bg-surface-primary">
+        <header data-electron-drag className="relative z-20 h-10 shrink-0 flex items-center gap-1 pl-1.5 pr-1.5 border-b border-border-default bg-surface-primary">
           {(showTabs || onNewTab) ? (
             <div
+              data-no-drag
               ref={tabStripRef}
               role="tablist"
               className="flex-1 min-w-0 flex flex-nowrap items-center gap-0.5 overflow-x-auto overflow-y-hidden overscroll-x-contain scrollbar-thin"
@@ -329,14 +433,23 @@ export function RightPanel({
             >
               {tabs?.map(tab => {
                 const active = tab.id === activeTabId;
+                const pageId = tab.payload.kind === 'url' ? tab.payload.pageId : undefined;
+                const owner = pageId != null ? tabOwners[pageId] : undefined;
+                const tabTitle = owner
+                  ? `${tab.title} — ${t('common:browserTabControlledBy', { name: owner.agentName })}`
+                  : tab.title;
                 return (
                   // Sibling buttons (never nest <button>): select + close stay independent.
                   <div
                     key={tab.id}
-                    className={`group shrink-0 flex items-center max-w-[160px] rounded-md text-[11px] border transition-colors ${
+                    className={`group shrink-0 flex items-center max-w-[200px] rounded-md text-[11px] border transition-colors ${
                       active
-                        ? 'bg-surface-elevated border-border-default text-fg-primary'
-                        : 'border-transparent text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
+                        ? owner
+                          ? 'bg-brand-500/10 border-brand-500/35 text-fg-primary'
+                          : 'bg-surface-elevated border-border-default text-fg-primary'
+                        : owner
+                          ? 'border-brand-500/25 text-fg-secondary hover:bg-brand-500/8'
+                          : 'border-transparent text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
                     }`}
                   >
                     <button
@@ -344,8 +457,8 @@ export function RightPanel({
                       role="tab"
                       aria-selected={active}
                       ref={active ? activeTabBtnRef : undefined}
-                      className="min-w-0 flex-1 truncate pl-2.5 pr-1 py-1 text-left cursor-pointer"
-                      title={tab.title}
+                      className="min-w-0 flex-1 truncate pl-2.5 pr-1 py-1 text-left cursor-pointer flex items-center gap-1"
+                      title={tabTitle}
                       onPointerDown={e => {
                         // pointerdown beats click cancellation when native views steal focus.
                         if (e.button !== 0) return;
@@ -353,7 +466,16 @@ export function RightPanel({
                       }}
                       onClick={() => onSelectTab?.(tab.id)}
                     >
-                      {tab.title}
+                      {owner && (
+                        <span
+                          className="shrink-0 inline-flex items-center gap-0.5 max-w-[72px] px-1 py-px rounded text-[9px] font-semibold tracking-wide bg-brand-500/20 text-brand-500"
+                          title={t('common:browserTabControlledBy', { name: owner.agentName })}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse shrink-0" aria-hidden />
+                          <span className="truncate">{owner.agentName}</span>
+                        </span>
+                      )}
+                      <span className="truncate min-w-0">{tab.title}</span>
                     </button>
                     {onCloseTab && (
                       <button
@@ -401,11 +523,13 @@ export function RightPanel({
             </span>
           )}
 
-          <div className="shrink-0 flex items-center gap-0.5 pl-1 border-l border-border-default/60">
-            {payload.kind === 'deliverable' && (
+          <div data-no-drag className="shrink-0 flex items-center gap-0.5 pl-1 border-l border-border-default/60">
+            {canOpenExternally && (
               <button
-                onClick={() => navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: payload.deliverable.id })}
-                title={t('agent:deliverables.openInPage', { defaultValue: 'Open in page' })}
+                type="button"
+                onClick={() => { void openExternally(); }}
+                title={openExternallyTitle}
+                aria-label={openExternallyTitle}
                 className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -558,6 +682,9 @@ export function RightPanel({
                 url={preview.url}
                 browserId={preview.browserId}
                 className="flex-1 min-h-0"
+                onMeta={preview.browserId && onBrowserMeta
+                  ? (meta) => onBrowserMeta(preview.browserId!, meta)
+                  : undefined}
               />
             </div>
           )}

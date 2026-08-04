@@ -12,6 +12,14 @@ const SESSION_KEY = '_browserSessionId';
 /** Error substring that chrome-devtools-mcp returns when the selected page is gone. */
 const STALE_PAGE_ERROR = 'The selected page has been closed';
 
+/** Fired when an agent claims or releases a browser tab (for UI badges). */
+export type BrowserTabOwnershipEvent = {
+  action: 'claimed' | 'released';
+  pageId: number;
+  agentId: string;
+  ownerKey: string;
+};
+
 /**
  * Tracks browser tab ownership per session and wraps chrome-devtools MCP
  * tool handlers to enforce strict tab isolation.
@@ -78,10 +86,74 @@ export class BrowserSessionManager {
   private _bringToFront = false;
   private _autoCloseTabs = true;
 
+  private ownershipListeners = new Set<(e: BrowserTabOwnershipEvent) => void>();
+
   get bringToFront(): boolean { return this._bringToFront; }
   set bringToFront(v: boolean) { this._bringToFront = v; }
   get autoCloseTabs(): boolean { return this._autoCloseTabs; }
   set autoCloseTabs(v: boolean) { this._autoCloseTabs = v; }
+
+  /** Subscribe to tab claim/release events (UI badge wiring). */
+  onOwnershipChange(listener: (e: BrowserTabOwnershipEvent) => void): () => void {
+    this.ownershipListeners.add(listener);
+    return () => { this.ownershipListeners.delete(listener); };
+  }
+
+  /** Snapshot of currently owned tabs for UI hydration. */
+  listOwnership(): Array<{ pageId: number; agentId: string; ownerKey: string }> {
+    const out: Array<{ pageId: number; agentId: string; ownerKey: string }> = [];
+    for (const [ownerKey, owned] of this.ownedPages) {
+      const agentId = this.agentIdFromOwnerKey(ownerKey);
+      for (const pageId of owned) {
+        out.push({ pageId, agentId, ownerKey });
+      }
+    }
+    return out;
+  }
+
+  private agentIdFromOwnerKey(ownerKey: string): string {
+    const idx = ownerKey.indexOf('::');
+    return idx === -1 ? ownerKey : ownerKey.slice(0, idx);
+  }
+
+  private emitOwnership(event: BrowserTabOwnershipEvent): void {
+    for (const listener of this.ownershipListeners) {
+      try { listener(event); } catch (err) {
+        log.warn('Ownership listener error', { error: String(err) });
+      }
+    }
+  }
+
+  /** Claim a page for an owner key; emits `claimed` when newly assigned. */
+  private assignPage(ownerKey: string, pageId: number): void {
+    const owned = this.getOwned(ownerKey);
+    if (owned.has(pageId)) return;
+    const other = this.findOwnerOfPage(pageId);
+    if (other && other !== ownerKey) {
+      this.releasePage(other, pageId);
+    }
+    owned.add(pageId);
+    this.emitOwnership({
+      action: 'claimed',
+      pageId,
+      agentId: this.agentIdFromOwnerKey(ownerKey),
+      ownerKey,
+    });
+  }
+
+  /** Release a page from an owner key; emits `released` when removed. */
+  private releasePage(ownerKey: string, pageId: number): boolean {
+    const owned = this.ownedPages.get(ownerKey);
+    if (!owned?.has(pageId)) return false;
+    owned.delete(pageId);
+    this.emitOwnership({
+      action: 'released',
+      pageId,
+      agentId: this.agentIdFromOwnerKey(ownerKey),
+      ownerKey,
+    });
+    return true;
+  }
 
   /**
    * Register a reconnect callback for a specific MCP server of an agent.
@@ -105,8 +177,8 @@ export class BrowserSessionManager {
    */
   handleTabClosed(pageId: number | undefined): void {
     if (pageId === undefined) return;
-    for (const [key, owned] of this.ownedPages) {
-      if (owned.delete(pageId)) {
+    for (const key of [...this.ownedPages.keys()]) {
+      if (this.releasePage(key, pageId)) {
         log.debug(`Removed closed page ${pageId} from ownership set ${key}`);
       }
     }
@@ -177,9 +249,9 @@ export class BrowserSessionManager {
       const prefix = `${agentId}::`;
       for (const [key, owned] of this.ownedPages) {
         if (key === agentId || key.startsWith(prefix)) {
-          for (const pageId of owned) {
+          for (const pageId of [...owned]) {
             if (!liveIds.has(pageId)) {
-              owned.delete(pageId);
+              this.releasePage(key, pageId);
               log.debug(`Pruned stale page ${pageId} from ${key}`);
             }
           }
@@ -413,9 +485,8 @@ export class BrowserSessionManager {
               ?? pages.find((p) => p.selected)
               ?? (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
             if (newPage) {
-              // Re-fetch owned after potential reconnect (reconnect clears state)
-              const currentOwned = this.getOwned(ownerKey);
-              currentOwned.add(newPage.id);
+              // Re-fetch after potential reconnect, then claim for UI + isolation.
+              this.assignPage(ownerKey, newPage.id);
               this.currentPage.set(ownerKey, newPage.id);
               this.lastActiveSession.set(agentId, { ownerKey, pageId: newPage.id });
               log.debug(`Page ${newPage.id} (${newPage.url}) assigned to ${ownerKey}`);
@@ -481,7 +552,7 @@ export class BrowserSessionManager {
             if (ok) {
               // Remove only the failed page from ownership
               if (pageId !== undefined) {
-                this.getOwned(ownerKey).delete(pageId);
+                this.releasePage(ownerKey, pageId);
                 if (this.currentPage.get(ownerKey) === pageId) {
                   this.currentPage.delete(ownerKey);
                 }
@@ -492,7 +563,7 @@ export class BrowserSessionManager {
           }
 
           if (pageId !== undefined && !this.isToolError(result)) {
-            owned.add(pageId);
+            this.assignPage(ownerKey, pageId);
             this.currentPage.set(ownerKey, pageId);
             this.lastActiveSession.set(agentId, { ownerKey, pageId });
           }
@@ -525,7 +596,7 @@ export class BrowserSessionManager {
           // adjusted currentPage yet, handleTabClosed will delete it outright
           // instead of letting us switch to the next owned tab.
           if (pageId !== undefined) {
-            this.getOwned(ownerKey).delete(pageId);
+            this.releasePage(ownerKey, pageId);
             if (this.currentPage.get(ownerKey) === pageId) {
               const remaining = this.getOwned(ownerKey);
               const next = remaining.size > 0 ? [...remaining][remaining.size - 1] : undefined;
@@ -640,14 +711,13 @@ export class BrowserSessionManager {
       }
 
       if (!this.isStalePageError(result)) {
-        const owned = this.getOwned(ownerKey);
         const pages = this.parsePageEntries(result);
         // Prefer highest-ID page (the just-created tab always gets the
         // highest auto-incremented ID). Only fall back to [selected] if
         // no pages exist at all.
         const newPage = (pages.length > 0 ? pages.reduce((a, b) => (a.id > b.id ? a : b)) : undefined);
         if (newPage) {
-          owned.add(newPage.id);
+          this.assignPage(ownerKey, newPage.id);
           this.currentPage.set(ownerKey, newPage.id);
           this.lastActiveSession.set(agentId, { ownerKey, pageId: newPage.id });
           log.info(`Auto-created page ${newPage.id} (${newPage.url}) for ${ownerKey}`);
@@ -693,7 +763,7 @@ export class BrowserSessionManager {
             const ok = await this.reconnectMcp(agentId);
             if (ok) {
               if (currentPageId !== undefined) {
-                this.getOwned(ownerKey).delete(currentPageId);
+                this.releasePage(ownerKey, currentPageId);
                 this.currentPage.delete(ownerKey);
               }
               return `The tab you were operating on was closed externally. `
@@ -713,9 +783,12 @@ export class BrowserSessionManager {
   cleanupAgent(agentId: string): void {
     const prefix = `${agentId}::`;
     let total = 0;
-    for (const [key, owned] of this.ownedPages) {
+    for (const [key, owned] of [...this.ownedPages]) {
       if (key === agentId || key.startsWith(prefix)) {
         total += owned.size;
+        for (const pageId of [...owned]) {
+          this.releasePage(key, pageId);
+        }
         this.ownedPages.delete(key);
         this.currentPage.delete(key);
       }

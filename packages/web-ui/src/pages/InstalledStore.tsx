@@ -170,7 +170,7 @@ export function InstalledStore() {
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
-      <div className={`${isMobile ? 'px-4' : 'px-6'} h-14 flex items-center shrink-0 gap-3`}>
+      <div data-electron-drag className={`${isMobile ? 'px-4' : 'px-6'} h-14 flex items-center shrink-0 gap-3`}>
         <h2 className="text-lg font-semibold">{t('installedTab.title')}</h2>
         {Object.keys(updates).length > 0 && (
           <span className="px-2 py-0.5 text-[11px] font-medium rounded-md bg-amber-500/15 text-amber-600 border border-amber-500/25">
