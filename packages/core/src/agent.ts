@@ -6864,7 +6864,7 @@ export class Agent {
     // yields a misleading "required" error and the model retries the same call.
     const baseArgs = addArgCasingAliases(beforeResult.modifiedArgs ?? toolCall.arguments);
     const effectiveArgs = sessionId
-      ? { ...baseArgs, _browserSessionId: sessionId }
+      ? { ...baseArgs, _browserSessionId: sessionId, _terminalSessionId: sessionId }
       : baseArgs;
 
     let lastError: unknown;

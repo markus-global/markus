@@ -13,6 +13,14 @@
   "delete": "Delete",
   "remove": "Remove",
   "edit": "Edit",
+  "fileEditor": {
+    "preview": "Preview",
+    "saved": "Saved",
+    "saveFailed": "Save failed",
+    "unsaved": "Unsaved changes",
+    "revert": "Revert",
+    "discardConfirm": "Discard unsaved changes?"
+  },
   "create": "Create",
   "creating": "Creating...",
   "refresh": "Refresh",
@@ -475,5 +483,31 @@
     "notificationBody_one": "{{count}} installed skill has a newer version from this Markus release. Open Store → Installed to update.",
     "notificationBody_other": "{{count}} installed skills have newer versions from this Markus release. Open Store → Installed to update.",
     "actionHint": "View updates"
-  }
+  },
+  "shortcuts": {
+    "title": "Keyboard shortcuts",
+    "close": "Close",
+    "groups": {
+      "layout": "Layout",
+      "search": "Search",
+      "rightPanel": "Right panel",
+      "terminal": "Terminal",
+      "help": "Help"
+    },
+    "toggleLeft": "Toggle left sidebar",
+    "toggleBrowser": "Toggle right panel · Browser",
+    "toggleTerminal": "Toggle right panel · Terminal",
+    "search": "Global search",
+    "nextTab": "Next right-panel tab",
+    "prevTab": "Previous right-panel tab",
+    "tabN": "Jump to Nth right-panel tab",
+    "closeTab": "Close right-panel tab",
+    "newTab": "New browser tab / shell",
+    "help": "Show keyboard shortcuts",
+    "termSearch": "Search in terminal",
+    "termToChat": "Add terminal selection to chat"
+  },
+  "browserMode": "Browser",
+  "terminalMode": "Terminal",
+  "addRecentOutput": "Add recent output to chat"
 }

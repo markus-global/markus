@@ -47,6 +47,11 @@ import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
 import { MarkusBrowserBridge } from './tools/markus-browser-bridge.js';
 import { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/markus-browser-mcp.js';
 import type { EmbeddedBrowserHost } from './tools/embedded-browser-host.js';
+import type { EmbeddedTerminalHost } from './tools/embedded-terminal-host.js';
+import {
+  TerminalSessionManager,
+  createTerminalToolHandlers,
+} from './tools/terminal-session.js';
 import { runQuickBrowserTest, runChaosBrowserTest, type BrowserTestResult, type ChaosEvent } from './tools/browser-test.js';
 import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { DelegationManager, type TaskDelegation } from '@markus/a2a';
@@ -320,12 +325,15 @@ export class AgentManager {
   private sharedDataDir?: string;
   private mcpManager: MCPClientManager;
   private browserSessionManager: BrowserSessionManager;
+  private terminalSessionManager: TerminalSessionManager;
   private remoteDebuggingPort = 0;
   private autoClickAllowDialog = false;
   private chromeAutoClickRunning = false;
   private browserBridge: MarkusBrowserBridge;
   /** Desktop-only: Electron WebContentsView CDP backend (preferred over npx when set). */
   private embeddedBrowserHost: EmbeddedBrowserHost | null = null;
+  /** Desktop-only: node-pty right-panel terminal backend. */
+  private embeddedTerminalHost: EmbeddedTerminalHost | null = null;
   private globalSecurityPolicy?: SecurityPolicy;
   private globalMcpServers?: Record<string, MCPServerConfig>;
   /** When set, register native Feishu send tools (incl. local image upload). */
@@ -504,6 +512,10 @@ export class AgentManager {
     this.browserSessionManager.onOwnershipChange((event) => {
       this.eventBus.emit('browser:tab-ownership', event);
     });
+    this.terminalSessionManager = new TerminalSessionManager();
+    this.terminalSessionManager.onOwnershipChange((event) => {
+      this.eventBus.emit('terminal:session-ownership', event);
+    });
     this.browserBridge = new MarkusBrowserBridge();
     this.globalSecurityPolicy = options.securityPolicy;
     this.globalMcpServers = options.mcpServers;
@@ -661,6 +673,45 @@ export class AgentManager {
    */
   setEmbeddedBrowserHost(host: EmbeddedBrowserHost | null): void {
     this.embeddedBrowserHost = host;
+  }
+
+  /**
+   * Wire the Electron embedded-terminal PTY host (desktop only).
+   * When available, terminal__* tools operate on the same right-panel tabs the user sees.
+   */
+  setEmbeddedTerminalHost(host: EmbeddedTerminalHost | null): void {
+    this.embeddedTerminalHost = host;
+    this.terminalSessionManager.setHost(host);
+    // Register tools on already-loaded agents so host hot-wiring after create still works.
+    if (host?.available()) {
+      for (const [agentId, agent] of this.agents) {
+        this.attachTerminalTools(agent, agentId);
+      }
+    }
+  }
+
+  /** Current agent→terminal ownership for right-panel UI badges. */
+  getTerminalSessionOwnership(): Array<{ terminalId: string; agentId: string; agentName: string }> {
+    return this.terminalSessionManager.listOwnership().map(({ terminalId, agentId }) => {
+      let agentName = agentId;
+      try {
+        const agent = this.agents.get(agentId);
+        if (agent) agentName = agent.config.name || agentId;
+      } catch { /* agent may be mid-removal */ }
+      return { terminalId, agentId, agentName };
+    });
+  }
+
+  private attachTerminalTools(agent: Agent, agentId: string): void {
+    const host = this.embeddedTerminalHost;
+    if (!host?.available()) return;
+    // Avoid duplicate registration if host is re-wired.
+    if (agent.hasToolPrefix('terminal')) return;
+    const handlers = this.terminalSessionManager.wrapToolHandlers(
+      createTerminalToolHandlers(host),
+      agentId,
+    );
+    for (const tool of handlers) agent.registerTool(tool);
   }
 
   startBrowserBridge(port?: number): void {
@@ -1802,6 +1853,7 @@ export class AgentManager {
       agent.setTeamDataDir(join(homedir(), '.markus', 'teams', config.teamId));
     }
 
+    this.attachTerminalTools(agent, id);
     this.agents.set(id, agent);
     this.delegationManager.registerAgentCard({
       agentId: id,
@@ -2612,6 +2664,7 @@ export class AgentManager {
       agent.setTeamDataDir(join(homedir(), '.markus', 'teams', config.teamId));
     }
 
+    this.attachTerminalTools(agent, id);
     this.agents.set(id, agent);
     this.delegationManager.registerAgentCard({
       agentId: id,
@@ -2681,6 +2734,7 @@ export class AgentManager {
     await agent.stop();
     this.cancelMcpRelease(agentId);
     this.browserSessionManager.cleanupAgent(agentId);
+    this.terminalSessionManager.cleanupAgent(agentId);
     await this.mcpManager.removeAllForScope(agentId);
     this.disabledChangeHandler?.(agentId, true);
   }
@@ -2691,6 +2745,7 @@ export class AgentManager {
       try { await agent.stop(); } catch (err) { log.warn('Agent stop failed during removal, proceeding', { agentId, error: String(err) }); }
       this.cancelMcpRelease(agentId);
       this.browserSessionManager.cleanupAgent(agentId);
+      this.terminalSessionManager.cleanupAgent(agentId);
       await this.mcpManager.removeAllForScope(agentId);
       this.delegationManager.unregisterAgentCard(agentId);
       this.agents.delete(agentId);

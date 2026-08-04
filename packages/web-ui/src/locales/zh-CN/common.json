@@ -13,6 +13,14 @@
   "delete": "删除",
   "remove": "移除",
   "edit": "编辑",
+  "fileEditor": {
+    "preview": "预览",
+    "saved": "已保存",
+    "saveFailed": "保存失败",
+    "unsaved": "有未保存的更改",
+    "revert": "还原",
+    "discardConfirm": "放弃未保存的更改？"
+  },
   "create": "创建",
   "creating": "正在创建...",
   "refresh": "刷新",
@@ -475,5 +483,31 @@
     "notificationBody_one": "有 {{count}} 个已安装技能可随本次 Markus 版本更新。请打开商店 → 已安装 进行更新。",
     "notificationBody_other": "有 {{count}} 个已安装技能可随本次 Markus 版本更新。请打开商店 → 已安装 进行更新。",
     "actionHint": "查看更新"
-  }
+  },
+  "shortcuts": {
+    "title": "键盘快捷键",
+    "close": "关闭",
+    "groups": {
+      "layout": "布局",
+      "search": "搜索",
+      "rightPanel": "右侧栏",
+      "terminal": "终端",
+      "help": "帮助"
+    },
+    "toggleLeft": "折叠/展开左侧栏",
+    "toggleBrowser": "打开/切换右侧栏 · 浏览器",
+    "toggleTerminal": "打开/切换右侧栏 · 终端",
+    "search": "全局搜索",
+    "nextTab": "下一个右侧栏标签页",
+    "prevTab": "上一个右侧栏标签页",
+    "tabN": "跳到第 N 个右侧栏标签页",
+    "closeTab": "关闭右侧栏标签页",
+    "newTab": "新建浏览器标签 / Shell",
+    "help": "显示/隐藏快捷键说明",
+    "termSearch": "在终端内搜索",
+    "termToChat": "将终端选区加入对话"
+  },
+  "browserMode": "浏览器",
+  "terminalMode": "终端",
+  "addRecentOutput": "将最近输出加入对话"
 }

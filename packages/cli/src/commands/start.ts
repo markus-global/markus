@@ -1069,6 +1069,30 @@ async function startServerCore(
       }
     });
 
+    // Embedded-terminal session claim/release — UI badges.
+    agentManager.getEventBus().on('terminal:session-ownership', (evt: unknown) => {
+      const event = evt as { action: 'claimed' | 'released'; terminalId: string; agentId: string };
+      let agentName = event.agentId;
+      try {
+        const agent = agentManager.getAgent(event.agentId);
+        agentName = agent?.config?.name || event.agentId;
+      } catch { /* ignore */ }
+      try {
+        ws.broadcast({
+          type: 'ui:terminal_ownership',
+          payload: {
+            action: event.action,
+            terminalId: event.terminalId,
+            agentId: event.action === 'released' ? null : event.agentId,
+            agentName: event.action === 'released' ? null : agentName,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e) {
+        log.warn('Failed to broadcast terminal ownership', { terminalId: event.terminalId, error: String(e) });
+      }
+    });
+
     // Team Chat right-panel open/collapse — deliver to the interacting user's UI.
     agentManager.getEventBus().on('agent:ui-layout', (evt: unknown) => {
       const event = evt as {
@@ -1076,11 +1100,13 @@ async function startServerCore(
         targetUserId?: string;
         action: 'open' | 'collapse';
         panel?: {
-          kind: 'url' | 'file' | 'deliverable';
+          kind: 'url' | 'file' | 'deliverable' | 'terminal';
           url?: string;
           path?: string;
           title?: string;
           deliverableId?: string;
+          terminalId?: string;
+          cwd?: string;
         };
       };
       try {

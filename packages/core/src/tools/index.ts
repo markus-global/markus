@@ -32,3 +32,9 @@ export {
   type UiLayoutEvent,
   type UiLayoutOpenPayload,
 } from './ui-layout.js';
+export type { EmbeddedTerminalHost, EmbeddedTerminalToolResult } from './embedded-terminal-host.js';
+export {
+  TerminalSessionManager,
+  createTerminalToolHandlers,
+  TERMINAL_TOOL_DESCRIPTORS,
+} from './terminal-session.js';

@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { DeliverableInfo } from '../api.ts';
+import { forgetTerminalId, rememberTerminalId } from '../lib/known-terminals.ts';
 
 /**
  * Payload describing what the right-side panel should display.
@@ -8,7 +9,10 @@ import type { DeliverableInfo } from '../api.ts';
 export type RightPanelPayload =
   | { kind: 'deliverable'; deliverable: DeliverableInfo; sourceMessageId?: string }
   | { kind: 'file'; path: string; title?: string; sourceMessageId?: string }
-  | { kind: 'url'; url: string; title?: string; browserId?: string; pageId?: number };
+  | { kind: 'url'; url: string; title?: string; browserId?: string; pageId?: number }
+  | { kind: 'terminal'; terminalId: string; cwd?: string; title?: string };
+
+export type RightPanelMode = 'browser' | 'terminal';
 
 export interface RightPanelTab {
   id: string;
@@ -16,6 +20,17 @@ export interface RightPanelTab {
   payload: RightPanelPayload;
   pinned?: boolean;
 }
+
+const RIGHT_PANEL_STORAGE_KEY = 'markus_right_panel_v1';
+
+type PersistedRightPanel = {
+  mode: RightPanelMode;
+  browserTabs: RightPanelTab[];
+  browserActiveId: string | null;
+  /** Terminal tabs restored as fresh shells (cwd/title only — no scrollback). */
+  terminalTabs: Array<{ id: string; title: string; cwd?: string }>;
+  terminalActiveId: string | null;
+};
 
 const MAX_RIGHT_PANEL_TABS = 10;
 
@@ -36,9 +51,18 @@ export function isBrowserTabReopenSuppressed(browserId: string): boolean {
   return true;
 }
 
+export function isTerminalPayload(payload: RightPanelPayload): boolean {
+  return payload.kind === 'terminal';
+}
+
+export function isBrowserPoolPayload(payload: RightPanelPayload): boolean {
+  return payload.kind !== 'terminal';
+}
+
 function payloadKey(payload: RightPanelPayload): string {
   if (payload.kind === 'file') return `file:${payload.path}`;
   if (payload.kind === 'url') return `url:${payload.browserId || payload.url}`;
+  if (payload.kind === 'terminal') return `terminal:${payload.terminalId}`;
   const d = payload.deliverable;
   // Prefer stable ids; fall back to reference+title so distinct markdown
   // deliverables with the same generic title don't collapse into one tab.
@@ -52,7 +76,154 @@ function payloadTitle(payload: RightPanelPayload): string {
   if (payload.kind === 'url') {
     return payload.title || payload.url;
   }
+  if (payload.kind === 'terminal') {
+    return payload.title || 'Terminal';
+  }
   return payload.title || payload.path.split(/[/\\]/).pop() || payload.path;
+}
+
+function newTabId(): string {
+  return `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function evictOverLimit(tabs: RightPanelTab[]): RightPanelTab[] {
+  let next = tabs;
+  while (next.length > MAX_RIGHT_PANEL_TABS) {
+    let idx = -1;
+    for (let i = next.length - 1; i >= 0; i--) {
+      if (!next[i]!.pinned) { idx = i; break; }
+    }
+    if (idx < 0) break;
+    next = next.filter((_, i) => i !== idx);
+  }
+  return next;
+}
+
+function destroyBrowserIfNeeded(payload: RightPanelPayload | undefined) {
+  if (payload?.kind === 'url' && payload.browserId) {
+    suppressBrowserTabReopen(payload.browserId);
+    void window.markusDesktop?.browser?.destroy(payload.browserId);
+  }
+}
+
+function destroyTerminalIfNeeded(payload: RightPanelPayload | undefined) {
+  if (payload?.kind === 'terminal' && payload.terminalId) {
+    forgetTerminalId(payload.terminalId);
+    void window.markusDesktop?.terminal?.destroy(payload.terminalId);
+  }
+}
+
+function serializeBrowserTab(tab: RightPanelTab): RightPanelTab | null {
+  const p = tab.payload;
+  if (p.kind === 'terminal') return null;
+  if (p.kind === 'url') {
+    // Drop native browserId — a fresh one is minted on restore.
+    return {
+      id: tab.id,
+      title: tab.title,
+      pinned: tab.pinned,
+      payload: { kind: 'url', url: p.url || 'about:blank', title: p.title || tab.title },
+    };
+  }
+  if (p.kind === 'file') {
+    return {
+      id: tab.id,
+      title: tab.title,
+      pinned: tab.pinned,
+      payload: { kind: 'file', path: p.path, title: p.title },
+    };
+  }
+  // deliverable — keep snapshot for reopen
+  return {
+    id: tab.id,
+    title: tab.title,
+    pinned: tab.pinned,
+    payload: { kind: 'deliverable', deliverable: p.deliverable },
+  };
+}
+
+function hydrateBrowserTab(tab: RightPanelTab, index = 0): RightPanelTab {
+  if (tab.payload.kind === 'url') {
+    const browserId = `eb_${Date.now().toString(36)}_${index.toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    return {
+      ...tab,
+      payload: {
+        kind: 'url',
+        url: tab.payload.url || 'about:blank',
+        title: tab.payload.title || tab.title,
+        browserId,
+      },
+    };
+  }
+  return tab;
+}
+
+function loadPersistedRightPanel(): PersistedRightPanel | null {
+  try {
+    const raw = localStorage.getItem(RIGHT_PANEL_STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as PersistedRightPanel;
+    if (!data || (data.mode !== 'browser' && data.mode !== 'terminal')) return null;
+    if (!Array.isArray(data.browserTabs)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function buildInitialRightPanelState(): {
+  mode: RightPanelMode;
+  browserTabs: RightPanelTab[];
+  browserActiveId: string | null;
+  terminalTabs: RightPanelTab[];
+  terminalActiveId: string | null;
+} {
+  const saved = loadPersistedRightPanel();
+  if (!saved) {
+    return {
+      mode: 'browser',
+      browserTabs: [],
+      browserActiveId: null,
+      terminalTabs: [],
+      terminalActiveId: null,
+    };
+  }
+
+  const browserTabs = saved.browserTabs
+    .map((t, i) => {
+      try { return hydrateBrowserTab(t, i); } catch { return null; }
+    })
+    .filter((t): t is RightPanelTab => !!t && t.payload.kind !== 'terminal');
+
+  const browserActiveId = browserTabs.some(t => t.id === saved.browserActiveId)
+    ? saved.browserActiveId
+    : (browserTabs[0]?.id ?? null);
+
+  // Fresh shells with remembered cwd/title (no PTY scrollback).
+  const terminalTabs: RightPanelTab[] = (saved.terminalTabs || []).map((t, i) => {
+    const terminalId = `term_${Date.now().toString(36)}_${i.toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    rememberTerminalId(terminalId);
+    return {
+      id: t.id || newTabId(),
+      title: t.title || 'Terminal',
+      payload: {
+        kind: 'terminal' as const,
+        terminalId,
+        title: t.title || 'Terminal',
+        cwd: t.cwd,
+      },
+    };
+  });
+
+  const terminalActiveId = terminalTabs.some(t => t.id === saved.terminalActiveId)
+    ? saved.terminalActiveId
+    : (terminalTabs[0]?.id ?? null);
+
+  let mode: RightPanelMode = saved.mode;
+  if (mode === 'terminal' && terminalTabs.length === 0) mode = 'browser';
+  if (mode === 'browser' && browserTabs.length === 0 && terminalTabs.length > 0) mode = 'terminal';
+
+  return { mode, browserTabs, browserActiveId, terminalTabs, terminalActiveId };
 }
 
 export interface LayoutContextValue {
@@ -62,6 +233,10 @@ export interface LayoutContextValue {
   toggleLeftCollapsed: () => void;
 
   /** Right-side content panel (preview / selection-to-agent). */
+  rightPanelMode: RightPanelMode;
+  setRightPanelMode: (mode: RightPanelMode) => void;
+  /** Switch mode and ensure the target pool has a visible tab (restore or create). */
+  switchRightPanelMode: (mode: RightPanelMode) => void;
   rightPanel: RightPanelPayload | null;
   rightPanelOpen: boolean;
   rightPanelTabs: RightPanelTab[];
@@ -72,9 +247,25 @@ export interface LayoutContextValue {
   setActiveRightPanelTab: (tabId: string) => void;
   /** Update url/title/pageId for an embedded-browser tab (navigation sync). */
   updateRightPanelBrowserTab: (browserId: string, patch: { url?: string; title?: string; pageId?: number }) => void;
+  /** Update title/cwd for an embedded-terminal tab. */
+  updateRightPanelTerminalTab: (terminalId: string, patch: { title?: string; cwd?: string }) => void;
+  /** Toggle browser-mode right panel (Cmd/Ctrl+L). */
   toggleRightPanel: () => void;
+  /** Toggle terminal-mode right panel (Cmd/Ctrl+J). */
+  toggleTerminalPanel: () => void;
   /** Collapse the panel if open; never opens / restores (unlike toggle). */
   collapseRightPanelOnly: () => void;
+  /** Cycle active tab within the current mode. */
+  cycleRightPanelTab: (delta: 1 | -1) => void;
+  /** Activate the Nth tab (0-based) within the current mode. */
+  activateRightPanelTabAt: (index: number) => void;
+  /** Open a blank browser tab or shell in the current right-panel mode (Cmd/Ctrl+T). */
+  openNewRightPanelTab: () => void;
+  /**
+   * PTY exited: close the tab when multiple terminals exist;
+   * if it is the only terminal tab, replace it with a fresh shell.
+   */
+  handleTerminalExit: (terminalId: string) => void;
 
   /** Fullscreen preview: hide L1/L2 + chat, show only the right panel. */
   rightPanelFullscreen: boolean;
@@ -98,120 +289,301 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   const [leftCollapsed, setLeftCollapsedState] = useState<boolean>(() => {
     try { return localStorage.getItem('markus_sidebar_c') === '1'; } catch { return false; }
   });
-  const [tabs, setTabs] = useState<RightPanelTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const initialPanel = useMemo(() => buildInitialRightPanelState(), []);
+  const [mode, setMode] = useState<RightPanelMode>(initialPanel.mode);
+  const [browserTabs, setBrowserTabs] = useState<RightPanelTab[]>(initialPanel.browserTabs);
+  const [terminalTabs, setTerminalTabs] = useState<RightPanelTab[]>(initialPanel.terminalTabs);
+  const [browserActiveId, setBrowserActiveId] = useState<string | null>(initialPanel.browserActiveId);
+  const [terminalActiveId, setTerminalActiveId] = useState<string | null>(initialPanel.terminalActiveId);
   const [fullscreen, setFullscreen] = useState(false);
   const [hostAvailable, setHostAvailable] = useState(false);
-  const lastTabsRef = useRef<RightPanelTab[]>([]);
-  const lastActiveRef = useRef<string | null>(null);
-  const activeTabIdRef = useRef<string | null>(null);
-  activeTabIdRef.current = activeTabId;
+
+  const lastBrowserTabsRef = useRef<RightPanelTab[]>(initialPanel.browserTabs);
+  const lastBrowserActiveRef = useRef<string | null>(initialPanel.browserActiveId);
+  const lastTerminalTabsRef = useRef<RightPanelTab[]>(initialPanel.terminalTabs);
+  const lastTerminalActiveRef = useRef<string | null>(initialPanel.terminalActiveId);
+  const browserActiveIdRef = useRef<string | null>(initialPanel.browserActiveId);
+  const terminalActiveIdRef = useRef<string | null>(initialPanel.terminalActiveId);
+  const browserTabsRef = useRef<RightPanelTab[]>(initialPanel.browserTabs);
+  const terminalTabsRef = useRef<RightPanelTab[]>(initialPanel.terminalTabs);
+  const modeRef = useRef<RightPanelMode>(initialPanel.mode);
+  browserActiveIdRef.current = browserActiveId;
+  terminalActiveIdRef.current = terminalActiveId;
+  browserTabsRef.current = browserTabs;
+  terminalTabsRef.current = terminalTabs;
+  modeRef.current = mode;
+
+  // Restored terminal mode → keep native browser views hidden.
+  useEffect(() => {
+    if (initialPanel.mode === 'terminal') {
+      void window.markusDesktop?.browser?.hideAll?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist right-panel tabs across app restarts.
+  useEffect(() => {
+    const browserSerialized = browserTabs
+      .map(serializeBrowserTab)
+      .filter((t): t is RightPanelTab => !!t);
+    const terminalSerialized = terminalTabs
+      .filter(t => t.payload.kind === 'terminal')
+      .map(t => ({
+        id: t.id,
+        title: t.title,
+        cwd: t.payload.kind === 'terminal' ? t.payload.cwd : undefined,
+      }));
+    const payload: PersistedRightPanel = {
+      mode,
+      browserTabs: browserSerialized,
+      browserActiveId,
+      terminalTabs: terminalSerialized,
+      terminalActiveId,
+    };
+    try {
+      localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, JSON.stringify(payload));
+    } catch { /* quota / private mode */ }
+  }, [mode, browserTabs, browserActiveId, terminalTabs, terminalActiveId]);
 
   const setLeftCollapsed = useCallback((v: boolean) => setLeftCollapsedState(v), []);
   const toggleLeftCollapsed = useCallback(() => setLeftCollapsedState(v => !v), []);
 
-  const openRightPanel = useCallback((payload: RightPanelPayload) => {
-    const key = payloadKey(payload);
-    // Id must be stable across React Strict Mode's double-invoke of updaters.
-    // Calling setActiveTabId inside setTabs with a fresh random id left activeTabId
-    // pointing at a tab that was discarded — UI showed the new tab but stayed on the oldest.
-    const newTabId = `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-    let nextActiveId: string | null = null;
-    setTabs(prev => {
-      const existing = prev.find(t => payloadKey(t.payload) === key);
-      if (existing) {
-        nextActiveId = existing.id;
-        lastTabsRef.current = prev;
-        return prev;
-      }
-      const tab: RightPanelTab = {
-        id: newTabId,
-        title: payloadTitle(payload),
-        payload,
-      };
-      // Newest active tab goes first (left) so it's immediately visible.
-      let next = [tab, ...prev];
-      // Evict oldest unpinned tabs (rightmost) when over the limit.
-      while (next.length > MAX_RIGHT_PANEL_TABS) {
-        let idx = -1;
-        for (let i = next.length - 1; i >= 0; i--) {
-          if (!next[i]!.pinned) { idx = i; break; }
-        }
-        if (idx < 0) break;
-        next = next.filter((_, i) => i !== idx);
-      }
-      nextActiveId = newTabId;
-      lastTabsRef.current = next;
-      return next;
-    });
-    if (nextActiveId) {
-      setActiveTabId(nextActiveId);
-      lastActiveRef.current = nextActiveId;
-    }
-    setLeftCollapsedState(true);
+  const hideBrowsers = useCallback(() => {
+    void window.markusDesktop?.browser?.hideAll?.();
   }, []);
 
-  const destroyBrowserIfNeeded = (payload: RightPanelPayload | undefined) => {
-    if (payload?.kind === 'url' && payload.browserId) {
-      suppressBrowserTabReopen(payload.browserId);
-      void window.markusDesktop?.browser?.destroy(payload.browserId);
+  const setRightPanelMode = useCallback((next: RightPanelMode) => {
+    setMode(prev => {
+      if (prev === next) return prev;
+      if (next === 'terminal') {
+        hideBrowsers();
+      }
+      return next;
+    });
+  }, [hideBrowsers]);
+
+  const switchRightPanelMode = useCallback((next: RightPanelMode) => {
+    if (next === 'terminal') {
+      hideBrowsers();
+      setMode('terminal');
+      setLeftCollapsedState(true);
+      // Already showing terminal tabs — just switch.
+      if (terminalTabs.length > 0) return;
+      if (lastTerminalTabsRef.current.length > 0) {
+        const restored = lastTerminalTabsRef.current;
+        const active = lastTerminalActiveRef.current && restored.some(t => t.id === lastTerminalActiveRef.current)
+          ? lastTerminalActiveRef.current
+          : restored[0]!.id;
+        setTerminalTabs(restored);
+        setTerminalActiveId(active);
+        lastTerminalActiveRef.current = active;
+        return;
+      }
+      const blankTabId = newTabId();
+      const terminalId = `term_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      rememberTerminalId(terminalId);
+      const tab: RightPanelTab = {
+        id: blankTabId,
+        title: 'Terminal',
+        payload: { kind: 'terminal', terminalId, title: 'Terminal' },
+      };
+      lastTerminalTabsRef.current = [tab];
+      setTerminalTabs([tab]);
+      setTerminalActiveId(tab.id);
+      lastTerminalActiveRef.current = tab.id;
+      return;
     }
-  };
+
+    setMode('browser');
+    setLeftCollapsedState(true);
+    if (browserTabs.length > 0) return;
+    if (lastBrowserTabsRef.current.length > 0) {
+      const restored = lastBrowserTabsRef.current;
+      const active = lastBrowserActiveRef.current && restored.some(t => t.id === lastBrowserActiveRef.current)
+        ? lastBrowserActiveRef.current
+        : restored[0]!.id;
+      setBrowserTabs(restored);
+      setBrowserActiveId(active);
+      lastBrowserActiveRef.current = active;
+      return;
+    }
+    const blankTabId = newTabId();
+    const blankBrowserId = `eb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    const tab: RightPanelTab = {
+      id: blankTabId,
+      title: 'New Tab',
+      payload: { kind: 'url', url: 'about:blank', title: 'New Tab', browserId: blankBrowserId },
+    };
+    lastBrowserTabsRef.current = [tab];
+    setBrowserTabs([tab]);
+    setBrowserActiveId(tab.id);
+    lastBrowserActiveRef.current = tab.id;
+  }, [browserTabs.length, terminalTabs.length, hideBrowsers]);
+
+  const openRightPanel = useCallback((payload: RightPanelPayload) => {
+    const key = payloadKey(payload);
+    const newId = newTabId();
+    const isTerm = isTerminalPayload(payload);
+
+    // Compute next tabs + active id synchronously via refs.
+    // (React 18 does not run useState updaters inline, so assigning nextActiveId
+    // inside setX(prev => …) left the previous tab selected when opening a file.)
+    if (isTerm) {
+      if (payload.kind === 'terminal') rememberTerminalId(payload.terminalId);
+      setMode('terminal');
+      hideBrowsers();
+      const prev = terminalTabsRef.current;
+      const existing = prev.find(t => payloadKey(t.payload) === key)
+        ?? lastTerminalTabsRef.current.find(t => payloadKey(t.payload) === key);
+      let next: RightPanelTab[];
+      let nextActiveId: string;
+      if (existing) {
+        nextActiveId = existing.id;
+        next = prev.some(t => t.id === existing.id)
+          ? prev
+          : evictOverLimit([existing, ...prev]);
+      } else {
+        const tab: RightPanelTab = {
+          id: newId,
+          title: payloadTitle(payload),
+          payload,
+        };
+        next = evictOverLimit([tab, ...prev]);
+        nextActiveId = newId;
+      }
+      lastTerminalTabsRef.current = next;
+      terminalTabsRef.current = next;
+      setTerminalTabs(next);
+      setTerminalActiveId(nextActiveId);
+      lastTerminalActiveRef.current = nextActiveId;
+      terminalActiveIdRef.current = nextActiveId;
+    } else {
+      setMode('browser');
+      const prev = browserTabsRef.current;
+      const existing = prev.find(t => payloadKey(t.payload) === key)
+        ?? lastBrowserTabsRef.current.find(t => payloadKey(t.payload) === key);
+      let next: RightPanelTab[];
+      let nextActiveId: string;
+      if (existing) {
+        nextActiveId = existing.id;
+        next = prev.some(t => t.id === existing.id)
+          ? prev
+          : evictOverLimit([existing, ...prev]);
+      } else {
+        const tab: RightPanelTab = {
+          id: newId,
+          title: payloadTitle(payload),
+          payload,
+        };
+        next = evictOverLimit([tab, ...prev]);
+        nextActiveId = newId;
+      }
+      lastBrowserTabsRef.current = next;
+      browserTabsRef.current = next;
+      setBrowserTabs(next);
+      setBrowserActiveId(nextActiveId);
+      lastBrowserActiveRef.current = nextActiveId;
+      browserActiveIdRef.current = nextActiveId;
+    }
+    setLeftCollapsedState(true);
+  }, [hideBrowsers]);
 
   const closeRightPanelTab = useCallback((tabId: string) => {
     let closingPayload: RightPanelPayload | undefined;
     let nextActive: string | null | undefined;
     let clearedAll = false;
-    const currentActive = activeTabIdRef.current;
-    setTabs(prev => {
+    let closedFrom: 'browser' | 'terminal' | null = null;
+
+    const currentBrowserActive = browserActiveIdRef.current;
+    setBrowserTabs(prev => {
       const idx = prev.findIndex(t => t.id === tabId);
       if (idx < 0) return prev;
+      closedFrom = 'browser';
       closingPayload = prev[idx]?.payload;
       const next = prev.filter(t => t.id !== tabId);
-      lastTabsRef.current = next;
+      lastBrowserTabsRef.current = next;
       clearedAll = next.length === 0;
-      // Match what the UI treats as active: explicit id if still present, else tabs[0].
-      const displayedActive = prev.some(t => t.id === currentActive)
-        ? currentActive
+      const displayedActive = prev.some(t => t.id === currentBrowserActive)
+        ? currentBrowserActive
         : (prev[0]?.id ?? null);
-      const wasDisplayedActive = displayedActive === tabId;
-      // Only compute fallback here; apply setActiveTabId after the updater.
-      nextActive = undefined; // means "leave active unchanged" unless we closed the active tab
-      if (wasDisplayedActive || next.length === 0) {
+      if (displayedActive === tabId || next.length === 0) {
         nextActive = next[Math.min(idx, next.length - 1)]?.id ?? null;
       }
       return next;
     });
-    if (clearedAll) setFullscreen(false);
-    if (nextActive !== undefined) {
-      setActiveTabId(nextActive);
-      lastActiveRef.current = nextActive;
+
+    if (closedFrom === 'browser') {
+      if (clearedAll && modeRef.current === 'browser') setFullscreen(false);
+      if (nextActive !== undefined) {
+        setBrowserActiveId(nextActive);
+        lastBrowserActiveRef.current = nextActive;
+      }
+      destroyBrowserIfNeeded(closingPayload);
+      return;
     }
-    // Closing a tab (user X) destroys the native view; collapsing the panel does not.
-    // Run after state update so page-event handlers don't re-enter setTabs.
-    destroyBrowserIfNeeded(closingPayload);
+
+    const currentTerminalActive = terminalActiveIdRef.current;
+    setTerminalTabs(prev => {
+      const idx = prev.findIndex(t => t.id === tabId);
+      if (idx < 0) return prev;
+      closedFrom = 'terminal';
+      closingPayload = prev[idx]?.payload;
+      const next = prev.filter(t => t.id !== tabId);
+      lastTerminalTabsRef.current = next;
+      clearedAll = next.length === 0;
+      const displayedActive = prev.some(t => t.id === currentTerminalActive)
+        ? currentTerminalActive
+        : (prev[0]?.id ?? null);
+      if (displayedActive === tabId || next.length === 0) {
+        nextActive = next[Math.min(idx, next.length - 1)]?.id ?? null;
+      }
+      return next;
+    });
+
+    if (closedFrom === 'terminal') {
+      if (clearedAll && modeRef.current === 'terminal') setFullscreen(false);
+      if (nextActive !== undefined) {
+        setTerminalActiveId(nextActive);
+        lastTerminalActiveRef.current = nextActive;
+      }
+      destroyTerminalIfNeeded(closingPayload);
+    }
   }, []);
 
   const closeRightPanel = useCallback(() => {
-    let toDestroy: RightPanelPayload[] = [];
-    setTabs(prev => {
-      toDestroy = prev.map(t => t.payload);
+    let browserDestroy: RightPanelPayload[] = [];
+    let terminalDestroy: RightPanelPayload[] = [];
+    setBrowserTabs(prev => {
+      browserDestroy = prev.map(t => t.payload);
       return [];
     });
-    setActiveTabId(null);
+    setTerminalTabs(prev => {
+      terminalDestroy = prev.map(t => t.payload);
+      return [];
+    });
+    setBrowserActiveId(null);
+    setTerminalActiveId(null);
     setFullscreen(false);
-    lastTabsRef.current = [];
-    lastActiveRef.current = null;
-    for (const payload of toDestroy) destroyBrowserIfNeeded(payload);
+    lastBrowserTabsRef.current = [];
+    lastBrowserActiveRef.current = null;
+    lastTerminalTabsRef.current = [];
+    lastTerminalActiveRef.current = null;
+    for (const payload of browserDestroy) destroyBrowserIfNeeded(payload);
+    for (const payload of terminalDestroy) destroyTerminalIfNeeded(payload);
   }, []);
 
   const setActiveRightPanelTab = useCallback((tabId: string) => {
-    setActiveTabId(tabId);
-    lastActiveRef.current = tabId;
+    if (modeRef.current === 'terminal') {
+      setTerminalActiveId(tabId);
+      lastTerminalActiveRef.current = tabId;
+    } else {
+      setBrowserActiveId(tabId);
+      lastBrowserActiveRef.current = tabId;
+    }
   }, []);
 
   const updateRightPanelBrowserTab = useCallback((browserId: string, patch: { url?: string; title?: string; pageId?: number }) => {
-    setTabs(prev => {
+    setBrowserTabs(prev => {
       let changed = false;
       const next = prev.map(t => {
         if (t.payload.kind !== 'url' || t.payload.browserId !== browserId) return t;
@@ -233,86 +605,317 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
           payload: { ...t.payload, url, title, ...(pageId != null ? { pageId } : {}) },
         };
       });
-      if (changed) lastTabsRef.current = next;
+      if (changed) lastBrowserTabsRef.current = next;
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const updateRightPanelTerminalTab = useCallback((terminalId: string, patch: { title?: string; cwd?: string }) => {
+    setTerminalTabs(prev => {
+      let changed = false;
+      const next = prev.map(t => {
+        if (t.payload.kind !== 'terminal' || t.payload.terminalId !== terminalId) return t;
+        const title = patch.title || t.payload.title || t.title;
+        const cwd = patch.cwd ?? t.payload.cwd;
+        if (title === t.title && cwd === t.payload.cwd && title === (t.payload.title || t.title)) {
+          return t;
+        }
+        changed = true;
+        return {
+          ...t,
+          title,
+          payload: { ...t.payload, title, ...(cwd != null ? { cwd } : {}) },
+        };
+      });
+      if (changed) lastTerminalTabsRef.current = next;
       return changed ? next : prev;
     });
   }, []);
 
   const collapseRightPanelOnly = useCallback(() => {
-    setTabs(prev => {
-      if (prev.length === 0) return prev;
-      lastTabsRef.current = prev;
-      // Remember active tab for the next open — do not clear lastActiveRef.
-      if (activeTabIdRef.current) lastActiveRef.current = activeTabIdRef.current;
-      return [];
-    });
-    setActiveTabId(null);
+    if (modeRef.current === 'terminal') {
+      setTerminalTabs(prev => {
+        if (prev.length === 0) return prev;
+        lastTerminalTabsRef.current = prev;
+        if (terminalActiveIdRef.current) lastTerminalActiveRef.current = terminalActiveIdRef.current;
+        return [];
+      });
+      setTerminalActiveId(null);
+    } else {
+      setBrowserTabs(prev => {
+        if (prev.length === 0) return prev;
+        lastBrowserTabsRef.current = prev;
+        if (browserActiveIdRef.current) lastBrowserActiveRef.current = browserActiveIdRef.current;
+        return [];
+      });
+      setBrowserActiveId(null);
+      hideBrowsers();
+    }
     setFullscreen(false);
-    // Keep sessions for restore, but stop painting immediately.
-    void window.markusDesktop?.browser?.hideAll?.();
-  }, []);
+  }, [hideBrowsers]);
 
+  /** Open/restore browser mode, or collapse if already showing browser tabs. */
   const toggleRightPanel = useCallback(() => {
-    const blankTabId = `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    // Another mode open → switch to browser (restore or blank), don't collapse terminal.
+    if (modeRef.current === 'terminal' && terminalTabs.length > 0) {
+      setMode('browser');
+      if (browserTabs.length > 0) {
+        setLeftCollapsedState(true);
+        return;
+      }
+      if (lastBrowserTabsRef.current.length > 0) {
+        const restored = lastBrowserTabsRef.current;
+        const active = lastBrowserActiveRef.current && restored.some(t => t.id === lastBrowserActiveRef.current)
+          ? lastBrowserActiveRef.current
+          : restored[0]!.id;
+        setBrowserTabs(restored);
+        setBrowserActiveId(active);
+        lastBrowserActiveRef.current = active;
+        setLeftCollapsedState(true);
+        return;
+      }
+      const blankTabId = newTabId();
+      const blankBrowserId = `eb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      const tab: RightPanelTab = {
+        id: blankTabId,
+        title: 'New Tab',
+        payload: { kind: 'url', url: 'about:blank', title: 'New Tab', browserId: blankBrowserId },
+      };
+      lastBrowserTabsRef.current = [tab];
+      setBrowserTabs([tab]);
+      setBrowserActiveId(tab.id);
+      lastBrowserActiveRef.current = tab.id;
+      setLeftCollapsedState(true);
+      return;
+    }
+
+    const blankTabId = newTabId();
     const blankBrowserId = `eb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     let nextActive: string | null | undefined;
     let collapseLeft = false;
     let collapsed = false;
-    setTabs(prev => {
+    setMode('browser');
+    setBrowserTabs(prev => {
       if (prev.length > 0) {
-        // Collapse: hide the panel but keep tabs so they can be restored.
-        lastTabsRef.current = prev;
-        if (activeTabIdRef.current) lastActiveRef.current = activeTabIdRef.current;
+        lastBrowserTabsRef.current = prev;
+        if (browserActiveIdRef.current) lastBrowserActiveRef.current = browserActiveIdRef.current;
         collapsed = true;
         nextActive = null;
         return [];
       }
-      if (lastTabsRef.current.length > 0) {
+      if (lastBrowserTabsRef.current.length > 0) {
         collapseLeft = true;
-        const restored = lastTabsRef.current;
-        // Prefer remembered active tab; fall back to newest (index 0).
-        const active = lastActiveRef.current && restored.some(t => t.id === lastActiveRef.current)
-          ? lastActiveRef.current
+        const restored = lastBrowserTabsRef.current;
+        const active = lastBrowserActiveRef.current && restored.some(t => t.id === lastBrowserActiveRef.current)
+          ? lastBrowserActiveRef.current
           : restored[0]!.id;
         nextActive = active;
         return restored;
       }
-      // No history: open a blank browser tab so the user can type a URL.
       collapseLeft = true;
       const tab: RightPanelTab = {
         id: blankTabId,
         title: 'New Tab',
         payload: { kind: 'url', url: 'about:blank', title: 'New Tab', browserId: blankBrowserId },
       };
-      lastTabsRef.current = [tab];
+      lastBrowserTabsRef.current = [tab];
       nextActive = tab.id;
       return [tab];
     });
     if (collapseLeft) setLeftCollapsedState(true);
     if (collapsed) {
-      setActiveTabId(null);
+      setBrowserActiveId(null);
       setFullscreen(false);
-      // Keep lastActiveRef — next open must restore the same browser tab.
-      void window.markusDesktop?.browser?.hideAll?.();
+      hideBrowsers();
     } else if (nextActive !== undefined && nextActive !== null) {
-      setActiveTabId(nextActive);
-      lastActiveRef.current = nextActive;
+      setBrowserActiveId(nextActive);
+      lastBrowserActiveRef.current = nextActive;
     }
-  }, []);
+  }, [browserTabs.length, terminalTabs.length, hideBrowsers]);
+
+  /** Open/restore terminal mode, or collapse if already showing terminal tabs. */
+  const toggleTerminalPanel = useCallback(() => {
+    if (modeRef.current === 'browser' && browserTabs.length > 0) {
+      setMode('terminal');
+      hideBrowsers();
+      if (terminalTabs.length > 0) {
+        setLeftCollapsedState(true);
+        return;
+      }
+      if (lastTerminalTabsRef.current.length > 0) {
+        const restored = lastTerminalTabsRef.current;
+        const active = lastTerminalActiveRef.current && restored.some(t => t.id === lastTerminalActiveRef.current)
+          ? lastTerminalActiveRef.current
+          : restored[0]!.id;
+        setTerminalTabs(restored);
+        setTerminalActiveId(active);
+        lastTerminalActiveRef.current = active;
+        setLeftCollapsedState(true);
+        return;
+      }
+      const blankTabId = newTabId();
+      const terminalId = `term_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      rememberTerminalId(terminalId);
+      const tab: RightPanelTab = {
+        id: blankTabId,
+        title: 'Terminal',
+        payload: { kind: 'terminal', terminalId, title: 'Terminal' },
+      };
+      lastTerminalTabsRef.current = [tab];
+      setTerminalTabs([tab]);
+      setTerminalActiveId(tab.id);
+      lastTerminalActiveRef.current = tab.id;
+      setLeftCollapsedState(true);
+      return;
+    }
+
+    const blankTabId = newTabId();
+    const terminalId = `term_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    rememberTerminalId(terminalId);
+    let nextActive: string | null | undefined;
+    let collapseLeft = false;
+    let collapsed = false;
+    setMode('terminal');
+    hideBrowsers();
+    setTerminalTabs(prev => {
+      if (prev.length > 0) {
+        lastTerminalTabsRef.current = prev;
+        if (terminalActiveIdRef.current) lastTerminalActiveRef.current = terminalActiveIdRef.current;
+        collapsed = true;
+        nextActive = null;
+        return [];
+      }
+      if (lastTerminalTabsRef.current.length > 0) {
+        collapseLeft = true;
+        const restored = lastTerminalTabsRef.current;
+        const active = lastTerminalActiveRef.current && restored.some(t => t.id === lastTerminalActiveRef.current)
+          ? lastTerminalActiveRef.current
+          : restored[0]!.id;
+        nextActive = active;
+        return restored;
+      }
+      collapseLeft = true;
+      const tab: RightPanelTab = {
+        id: blankTabId,
+        title: 'Terminal',
+        payload: { kind: 'terminal', terminalId, title: 'Terminal' },
+      };
+      lastTerminalTabsRef.current = [tab];
+      nextActive = tab.id;
+      return [tab];
+    });
+    if (collapseLeft) setLeftCollapsedState(true);
+    if (collapsed) {
+      setTerminalActiveId(null);
+      setFullscreen(false);
+    } else if (nextActive !== undefined && nextActive !== null) {
+      setTerminalActiveId(nextActive);
+      lastTerminalActiveRef.current = nextActive;
+    }
+  }, [browserTabs.length, terminalTabs.length, hideBrowsers]);
+
+  const cycleRightPanelTab = useCallback((delta: 1 | -1) => {
+    const tabs = modeRef.current === 'terminal' ? terminalTabs : browserTabs;
+    if (tabs.length < 2) return;
+    const activeId = modeRef.current === 'terminal' ? terminalActiveIdRef.current : browserActiveIdRef.current;
+    const curIdx = Math.max(0, tabs.findIndex(t => t.id === activeId));
+    const nextIdx = (curIdx + delta + tabs.length) % tabs.length;
+    const nextId = tabs[nextIdx]!.id;
+    if (modeRef.current === 'terminal') {
+      setTerminalActiveId(nextId);
+      lastTerminalActiveRef.current = nextId;
+    } else {
+      setBrowserActiveId(nextId);
+      lastBrowserActiveRef.current = nextId;
+    }
+  }, [browserTabs, terminalTabs]);
+
+  const activateRightPanelTabAt = useCallback((index: number) => {
+    const tabs = modeRef.current === 'terminal' ? terminalTabs : browserTabs;
+    const tab = tabs[index];
+    if (!tab) return;
+    if (modeRef.current === 'terminal') {
+      setTerminalActiveId(tab.id);
+      lastTerminalActiveRef.current = tab.id;
+    } else {
+      setBrowserActiveId(tab.id);
+      lastBrowserActiveRef.current = tab.id;
+    }
+  }, [browserTabs, terminalTabs]);
+
+  /** Cmd/Ctrl+T — blank browser tab or new shell in the active right-panel mode. */
+  const openNewRightPanelTab = useCallback(() => {
+    if (modeRef.current === 'terminal') {
+      const terminalId = `term_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      openRightPanel({ kind: 'terminal', terminalId, title: 'Terminal' });
+      return;
+    }
+    const browserId = `eb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    openRightPanel({
+      kind: 'url',
+      url: 'about:blank',
+      title: 'New Tab',
+      browserId,
+    });
+  }, [openRightPanel]);
+
+  const handleTerminalExit = useCallback((terminalId: string) => {
+    const prev = terminalTabsRef.current;
+    const idx = prev.findIndex(
+      t => t.payload.kind === 'terminal' && t.payload.terminalId === terminalId,
+    );
+    if (idx < 0) {
+      forgetTerminalId(terminalId);
+      void window.markusDesktop?.terminal?.destroy(terminalId);
+      return;
+    }
+    const tab = prev[idx]!;
+
+    // Multiple shells: close the exited tab (destroy PTY + remove from strip).
+    if (prev.length > 1) {
+      closeRightPanelTab(tab.id);
+      return;
+    }
+
+    // Sole tab: swap in a fresh shell instead of leaving a dead "exited" pane.
+    forgetTerminalId(terminalId);
+    void window.markusDesktop?.terminal?.destroy(terminalId);
+    const newTerminalId = `term_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    rememberTerminalId(newTerminalId);
+    const title = tab.payload.kind === 'terminal'
+      ? (tab.payload.title || tab.title || 'Terminal')
+      : 'Terminal';
+    const cwd = tab.payload.kind === 'terminal' ? tab.payload.cwd : undefined;
+    const nextTab: RightPanelTab = {
+      id: tab.id,
+      title,
+      payload: { kind: 'terminal', terminalId: newTerminalId, title, cwd },
+    };
+    lastTerminalTabsRef.current = [nextTab];
+    setTerminalTabs([nextTab]);
+    setTerminalActiveId(nextTab.id);
+    lastTerminalActiveRef.current = nextTab.id;
+    if (modeRef.current !== 'terminal') setMode('terminal');
+  }, [closeRightPanelTab]);
 
   const setRightPanelFullscreen = useCallback((v: boolean) => setFullscreen(v), []);
   const toggleRightPanelFullscreen = useCallback(() => setFullscreen(v => !v), []);
 
-  // Newest tabs are prepended at index 0 — fall back there, not to the oldest.
+  const tabs = mode === 'terminal' ? terminalTabs : browserTabs;
+  const activeTabId = mode === 'terminal' ? terminalActiveId : browserActiveId;
   const activeTab = tabs.find(t => t.id === activeTabId) ?? tabs[0] ?? null;
   const rightPanel = activeTab?.payload ?? null;
+  const rightPanelOpen = tabs.length > 0;
 
   const value = useMemo<LayoutContextValue>(() => ({
     leftCollapsed,
     setLeftCollapsed,
     toggleLeftCollapsed,
+    rightPanelMode: mode,
+    setRightPanelMode,
+    switchRightPanelMode,
     rightPanel,
-    rightPanelOpen: tabs.length > 0,
+    rightPanelOpen,
     rightPanelTabs: tabs,
     activeRightPanelTabId: activeTab?.id ?? null,
     openRightPanel,
@@ -320,8 +923,14 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     closeRightPanelTab,
     setActiveRightPanelTab,
     updateRightPanelBrowserTab,
+    updateRightPanelTerminalTab,
     toggleRightPanel,
+    toggleTerminalPanel,
     collapseRightPanelOnly,
+    cycleRightPanelTab,
+    activateRightPanelTabAt,
+    openNewRightPanelTab,
+    handleTerminalExit,
     rightPanelFullscreen: fullscreen,
     setRightPanelFullscreen,
     toggleRightPanelFullscreen,
@@ -329,8 +938,11 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     setHostAvailable,
   }), [
     leftCollapsed, setLeftCollapsed, toggleLeftCollapsed,
-    rightPanel, tabs, activeTab, openRightPanel, closeRightPanel, closeRightPanelTab,
-    setActiveRightPanelTab, updateRightPanelBrowserTab, toggleRightPanel, collapseRightPanelOnly,
+    mode, setRightPanelMode, switchRightPanelMode, rightPanel, rightPanelOpen, tabs, activeTab,
+    openRightPanel, closeRightPanel, closeRightPanelTab,
+    setActiveRightPanelTab, updateRightPanelBrowserTab, updateRightPanelTerminalTab,
+    toggleRightPanel, toggleTerminalPanel, collapseRightPanelOnly,
+    cycleRightPanelTab, activateRightPanelTabAt, openNewRightPanelTab, handleTerminalExit,
     fullscreen, setRightPanelFullscreen, toggleRightPanelFullscreen, hostAvailable,
   ]);
 

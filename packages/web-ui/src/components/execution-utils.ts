@@ -88,6 +88,13 @@ export function isVirtualScrollAdjustSuppressed(): boolean {
 
 const TOOL_META: Record<string, { label: string; icon: string }> = {
   shell_execute:        { label: 'Running command',        icon: '⌨' },
+  list_terminals:       { label: 'Listing terminals',      icon: '⌨' },
+  new_terminal:         { label: 'Opening terminal',       icon: '⌨' },
+  select_terminal:      { label: 'Selecting terminal',     icon: '⌨' },
+  close_terminal:       { label: 'Closing terminal',       icon: '⌨' },
+  read_terminal:        { label: 'Reading terminal',       icon: '⌨' },
+  write_terminal:       { label: 'Writing terminal',       icon: '⌨' },
+  exec_terminal:        { label: 'Running in terminal',    icon: '⌨' },
   file_read:            { label: 'Reading file',           icon: '📄' },
   file_write:           { label: 'Writing file',           icon: '✏' },
   file_edit:            { label: 'Editing file',           icon: '✏' },
@@ -256,6 +263,9 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
 // green (success) / red (failure) instead of a separate status badge.
 const TOOL_ICON_NAME: Record<string, string> = {
   shell_execute: 'square-terminal', background_exec: 'square-terminal', process: 'settings',
+  list_terminals: 'square-terminal', new_terminal: 'square-terminal', select_terminal: 'square-terminal',
+  close_terminal: 'square-terminal', read_terminal: 'square-terminal', write_terminal: 'square-terminal',
+  exec_terminal: 'square-terminal',
   file_read: 'file-text', file_write: 'edit', file_edit: 'edit', apply_patch: 'git-branch',
   list_directory: 'folder', glob_find: 'search', grep_search: 'search',
   web_fetch: 'globe', web_search: 'search', web_extract: 'file-text',

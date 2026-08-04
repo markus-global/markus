@@ -221,9 +221,17 @@ app.whenReady().then(async () => {
         const { createEmbeddedBrowserHost } = await import('./embedded-browser-backend.js');
         const am = instance.apiServer.orgService.getAgentManager() as {
           setEmbeddedBrowserHost?: (host: ReturnType<typeof createEmbeddedBrowserHost>) => void;
+          setEmbeddedTerminalHost?: (host: unknown) => void;
         };
         am.setEmbeddedBrowserHost?.(createEmbeddedBrowserHost());
         console.log('[main] embedded browser CDP host registered');
+        try {
+          const { createEmbeddedTerminalHost } = await import('./embedded-terminal-backend.js');
+          am.setEmbeddedTerminalHost?.(createEmbeddedTerminalHost());
+          console.log('[main] embedded terminal PTY host registered');
+        } catch (termErr) {
+          console.warn('[main] failed to register embedded terminal host:', termErr);
+        }
       } catch (err) {
         console.warn('[main] failed to register embedded browser host:', err);
       }

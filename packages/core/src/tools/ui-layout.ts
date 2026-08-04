@@ -9,7 +9,8 @@
 export type UiLayoutOpenPayload =
   | { kind: 'url'; url: string; title?: string }
   | { kind: 'file'; path: string; title?: string }
-  | { kind: 'deliverable'; deliverableId: string };
+  | { kind: 'deliverable'; deliverableId: string }
+  | { kind: 'terminal'; terminalId?: string; title?: string; cwd?: string };
 
 export type UiLayoutEvent =
   | {
@@ -33,19 +34,33 @@ export function parseOpenRightPanelArgs(
   const deliverableId = typeof args.deliverable_id === 'string'
     ? args.deliverable_id.trim()
     : (typeof args.deliverableId === 'string' ? args.deliverableId.trim() : '');
+  const kindArg = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+  const wantTerminal = kindArg === 'terminal'
+    || args.terminal === true
+    || typeof args.terminalId === 'string'
+    || typeof args.terminal_id === 'string';
   const title = typeof args.title === 'string' ? args.title.trim() : undefined;
+  const cwd = typeof args.cwd === 'string' ? args.cwd.trim() : undefined;
+  const terminalId = typeof args.terminalId === 'string'
+    ? args.terminalId.trim()
+    : (typeof args.terminal_id === 'string' ? args.terminal_id.trim() : undefined);
 
-  const kinds = [url && 'url', path && 'file', deliverableId && 'deliverable'].filter(Boolean);
+  const kinds = [
+    url && 'url',
+    path && 'file',
+    deliverableId && 'deliverable',
+    wantTerminal && 'terminal',
+  ].filter(Boolean);
   if (kinds.length === 0) {
     return {
       ok: false,
-      error: 'Provide one of: url, path, or deliverable_id.',
+      error: 'Provide one of: url, path, deliverable_id, or kind:"terminal".',
     };
   }
   if (kinds.length > 1) {
     return {
       ok: false,
-      error: 'Provide only one of: url, path, or deliverable_id.',
+      error: 'Provide only one of: url, path, deliverable_id, or kind:"terminal".',
     };
   }
 
@@ -70,6 +85,9 @@ export function parseOpenRightPanelArgs(
   }
   if (path) {
     return { ok: true, panel: { kind: 'file', path, title } };
+  }
+  if (wantTerminal) {
+    return { ok: true, panel: { kind: 'terminal', terminalId, title, cwd } };
   }
   return { ok: true, panel: { kind: 'deliverable', deliverableId } };
 }

@@ -5,8 +5,11 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { openExternal } from '../hooks/useElectron.ts';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from './ContentRenderer.tsx';
+import { CodeFileEditor, confirmDiscardDirty, languageFromPath } from './CodeFileEditor.tsx';
+import { FilePreviewEditor } from './FilePreviewEditor.tsx';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
-import type { RightPanelPayload, RightPanelTab } from '../contexts/LayoutContext.tsx';
+import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
+import type { RightPanelMode, RightPanelPayload, RightPanelTab } from '../contexts/LayoutContext.tsx';
 
 type TabOwner = { agentId: string; agentName: string };
 
@@ -32,12 +35,14 @@ function isUrl(s: string): boolean {
 function payloadReference(payload: RightPanelPayload): string {
   if (payload.kind === 'deliverable') return payload.deliverable.reference ?? '';
   if (payload.kind === 'url') return payload.url;
+  if (payload.kind === 'terminal') return payload.terminalId;
   return payload.path;
 }
 
 function payloadTitle(payload: RightPanelPayload): string {
   if (payload.kind === 'deliverable') return payload.deliverable.title || payload.deliverable.reference || '';
   if (payload.kind === 'url') return payload.title || payload.url;
+  if (payload.kind === 'terminal') return payload.title || 'Terminal';
   return payload.title || payload.path.split(/[/\\]/).pop() || payload.path;
 }
 
@@ -45,6 +50,7 @@ function payloadTitle(payload: RightPanelPayload): string {
 function previewIdentity(payload: RightPanelPayload, tabId?: string | null): string {
   if (payload.kind === 'file') return `file:${payload.path}:${tabId ?? ''}`;
   if (payload.kind === 'url') return `url:${payload.browserId || payload.url}:${tabId ?? ''}`;
+  if (payload.kind === 'terminal') return `terminal:${payload.terminalId}:${tabId ?? ''}`;
   const d = payload.deliverable;
   return `deliverable:${d.id || d.reference || d.title || 'unknown'}:${tabId ?? ''}`;
 }
@@ -58,6 +64,7 @@ type PreviewState =
   | { mode: 'binary'; name: string; reference: string; size?: number; extension?: string }
   | { mode: 'artifact'; summary: string }
   | { mode: 'url'; url: string; browserId?: string }
+  | { mode: 'terminal'; terminalId: string; title?: string; cwd?: string }
   | { mode: 'unpreviewable'; reference: string; isDirectory: boolean };
 
 function formatBytes(n?: number): string {
@@ -93,6 +100,11 @@ export function RightPanel({
   fullscreen,
   onToggleFullscreen,
   onBrowserMeta,
+  panelMode = 'browser',
+  onPanelModeChange,
+  onTerminalMeta,
+  onOpenUrlFromTerminal,
+  onOpenPathFromTerminal,
 }: {
   payload: RightPanelPayload;
   onClose: () => void;
@@ -107,15 +119,32 @@ export function RightPanel({
   fullscreen?: boolean;
   onToggleFullscreen?: () => void;
   onBrowserMeta?: (browserId: string, meta: { pageId?: number; url?: string; title?: string }) => void;
+  panelMode?: RightPanelMode;
+  onPanelModeChange?: (mode: RightPanelMode) => void;
+  onTerminalMeta?: (terminalId: string, meta: { title?: string; cwd?: string }) => void;
+  onOpenUrlFromTerminal?: (url: string) => void;
+  onOpenPathFromTerminal?: (path: string) => void;
 }) {
   const { t } = useTranslation(['deliverables', 'agent', 'common']);
   const [preview, setPreview] = useState<PreviewState>({ mode: 'loading' });
   const [copied, setCopied] = useState(false);
   const [selectionToolbar, setSelectionToolbar] = useState<SelectionToolbar | null>(null);
   const [tabOwners, setTabOwners] = useState<Record<number, TabOwner>>({});
+  const [termOwners, setTermOwners] = useState<Record<string, TabOwner>>({});
+  const [editorDirty, setEditorDirty] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
   const activeTabBtnRef = useRef<HTMLButtonElement>(null);
+  const terminalApiRef = useRef<EmbeddedTerminalApi | null>(null);
+  const editorDirtyRef = useRef(false);
+  editorDirtyRef.current = editorDirty;
+
+  const confirmLeaveEditor = useCallback(() => {
+    return confirmDiscardDirty(
+      editorDirtyRef.current,
+      t('common:fileEditor.discardConfirm', { defaultValue: 'Discard unsaved changes?' }),
+    );
+  }, [t]);
 
   // Hydrate + live-update which agent currently owns each embedded-browser pageId.
   useEffect(() => {
@@ -153,6 +182,42 @@ export function RightPanel({
     return () => { cancelled = true; unsub(); };
   }, []);
 
+  // Terminal session ownership badges.
+  useEffect(() => {
+    let cancelled = false;
+    void api.terminal?.sessionOwnership?.().then(res => {
+      if (cancelled) return;
+      const next: Record<string, TabOwner> = {};
+      for (const row of res.ownership ?? []) {
+        next[row.terminalId] = { agentId: row.agentId, agentName: row.agentName || row.agentId };
+      }
+      setTermOwners(next);
+    }).catch(() => { /* optional */ });
+
+    const unsub = wsClient.on('ui:terminal_ownership', (event) => {
+      const p = event.payload as {
+        action?: 'claimed' | 'released';
+        terminalId?: string;
+        agentId?: string | null;
+        agentName?: string | null;
+      };
+      if (typeof p.terminalId !== 'string') return;
+      setTermOwners(prev => {
+        if (p.action === 'released' || !p.agentId) {
+          if (!(p.terminalId! in prev)) return prev;
+          const next = { ...prev };
+          delete next[p.terminalId!];
+          return next;
+        }
+        return {
+          ...prev,
+          [p.terminalId!]: { agentId: p.agentId, agentName: p.agentName || p.agentId },
+        };
+      });
+    });
+    return () => { cancelled = true; unsub(); };
+  }, []);
+
   const reference = payloadReference(payload);
   const title = payloadTitle(payload);
   // Show tabs in the chrome row when present (browser-style). Panel × collapses the panel.
@@ -175,22 +240,32 @@ export function RightPanel({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (!confirmLeaveEditor()) return;
         if (fullscreen && onToggleFullscreen) onToggleFullscreen();
         else onClose();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, fullscreen, onToggleFullscreen]);
+  }, [onClose, fullscreen, onToggleFullscreen, confirmLeaveEditor]);
 
   useEffect(() => {
     let cancelled = false;
     setSelectionToolbar(null);
+    setEditorDirty(false);
 
-    // URL tabs switch instantly — do not flash a shared "loading" skeleton that
-    // makes one tab's navigation look like it blocks the whole panel.
+    // URL / terminal tabs switch instantly — do not flash a shared "loading" skeleton.
     if (payload.kind === 'url') {
       setPreview({ mode: 'url', url: payload.url, browserId: payload.browserId });
+      return () => { cancelled = true; };
+    }
+    if (payload.kind === 'terminal') {
+      setPreview({
+        mode: 'terminal',
+        terminalId: payload.terminalId,
+        title: payload.title,
+        cwd: payload.cwd,
+      });
       return () => { cancelled = true; };
     }
     if (isUrl(reference)) {
@@ -284,18 +359,67 @@ export function RightPanel({
         ].filter(Boolean).join('\n'),
       };
     }
+    if (payload.kind === 'terminal') {
+      return {
+        label: `⌘ ${short}`,
+        content: [
+          `[terminal-selection]`,
+          `Terminal: ${payload.title || 'Terminal'} (${payload.terminalId})`,
+          payload.cwd ? `Cwd: ${payload.cwd}` : '',
+          '"""',
+          text,
+          '"""',
+        ].filter(Boolean).join('\n'),
+      };
+    }
     return {
       label: `“${short}”`,
       content: `${t('deliverables:chat.selectedFrom', { defaultValue: 'Selected from' })} ${sourceLabel}:\n\n"""\n${text}\n"""`,
     };
-  }, [reference, sourceLabel, t]);
+  }, [reference, sourceLabel, t, payload]);
 
   const commitSelection = useCallback((text: string, htmlMeta?: { xpath: string; cssSelector: string }) => {
     if (!text.trim() || !onAddToChat) return;
     onAddToChat(buildChip(text.trim(), htmlMeta));
     setSelectionToolbar(null);
     window.getSelection()?.removeAllRanges();
+    terminalApiRef.current?.clearSelection();
   }, [onAddToChat, buildChip]);
+
+  const addRecentTerminalOutput = useCallback(async () => {
+    if (!onAddToChat || payload.kind !== 'terminal') return;
+    const text = (await terminalApiRef.current?.getRecentOutput(80))?.trim();
+    if (!text) return;
+    const short = text.length > 40 ? `${text.slice(0, 24)}…${text.slice(-12)}` : text;
+    onAddToChat({
+      label: `⌘ ${short}`,
+      content: [
+        `[terminal-output]`,
+        `Terminal: ${payload.title || 'Terminal'} (${payload.terminalId})`,
+        payload.cwd ? `Cwd: ${payload.cwd}` : '',
+        '"""',
+        text,
+        '"""',
+      ].filter(Boolean).join('\n'),
+    });
+  }, [onAddToChat, payload]);
+
+  // Cmd/Ctrl+Shift+A → add terminal selection to chat
+  useEffect(() => {
+    if (payload.kind !== 'terminal' || !onAddToChat) return;
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const onKey = (e: KeyboardEvent) => {
+      const mod = isMac ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+      if (!mod || !e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== 'a') return;
+      const sel = terminalApiRef.current?.getSelection()?.trim();
+      if (!sel) return;
+      e.preventDefault();
+      commitSelection(sel);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [payload.kind, onAddToChat, commitSelection]);
 
   const handleHtmlSelection = useCallback((data: HtmlSelectionData) => {
     if (!data.text.trim() || !onAddToChat) return;
@@ -373,6 +497,7 @@ export function RightPanel({
     }
 
     // file
+    if (payload.kind !== 'file') return;
     const path = payload.path;
     if (!path) return;
     if (/^https?:\/\//i.test(path) || /^file:\/\//i.test(path)) {
@@ -386,7 +511,9 @@ export function RightPanel({
     ? !!payload.deliverable.id
     : payload.kind === 'url'
       ? !!(payload.url && payload.url !== 'about:blank') || !!payload.browserId
-      : !!payload.path;
+      : payload.kind === 'file'
+        ? !!payload.path
+        : false;
 
   const openExternallyTitle = payload.kind === 'deliverable'
     ? t('agent:deliverables.openInPage', { defaultValue: 'Open in Output' })
@@ -417,6 +544,44 @@ export function RightPanel({
             z-20 keeps chrome above panel content; native views still paint above HTML
             but must be bounds-synced only to the host below this header. */}
         <header data-electron-drag className="relative z-20 h-10 shrink-0 flex items-center gap-1 pl-1.5 pr-1.5 border-b border-border-default bg-surface-primary">
+          {/* Mode switcher: Browser (globe) / Terminal (command) */}
+          {onPanelModeChange && (
+            <div data-no-drag className="shrink-0 flex items-center gap-0.5 pr-1 border-r border-border-default/60">
+              <button
+                type="button"
+                onClick={() => onPanelModeChange('browser')}
+                title={t('common:browserMode', { defaultValue: 'Browser' })}
+                aria-label={t('common:browserMode', { defaultValue: 'Browser' })}
+                aria-pressed={panelMode === 'browser'}
+                className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+                  panelMode === 'browser'
+                    ? 'bg-brand-500/15 text-brand-500'
+                    : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                }`}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" />
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={() => onPanelModeChange('terminal')}
+                title={t('common:terminalMode', { defaultValue: 'Terminal' })}
+                aria-label={t('common:terminalMode', { defaultValue: 'Terminal' })}
+                aria-pressed={panelMode === 'terminal'}
+                className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+                  panelMode === 'terminal'
+                    ? 'bg-brand-500/15 text-brand-500'
+                    : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                }`}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+              </button>
+            </div>
+          )}
           {(showTabs || onNewTab) ? (
             <div
               data-no-drag
@@ -434,7 +599,10 @@ export function RightPanel({
               {tabs?.map(tab => {
                 const active = tab.id === activeTabId;
                 const pageId = tab.payload.kind === 'url' ? tab.payload.pageId : undefined;
-                const owner = pageId != null ? tabOwners[pageId] : undefined;
+                const termId = tab.payload.kind === 'terminal' ? tab.payload.terminalId : undefined;
+                const owner = pageId != null
+                  ? tabOwners[pageId]
+                  : (termId ? termOwners[termId] : undefined);
                 const tabTitle = owner
                   ? `${tab.title} — ${t('common:browserTabControlledBy', { name: owner.agentName })}`
                   : tab.title;
@@ -462,9 +630,13 @@ export function RightPanel({
                       onPointerDown={e => {
                         // pointerdown beats click cancellation when native views steal focus.
                         if (e.button !== 0) return;
+                        if (tab.id !== activeTabId && !confirmLeaveEditor()) return;
                         onSelectTab?.(tab.id);
                       }}
-                      onClick={() => onSelectTab?.(tab.id)}
+                      onClick={() => {
+                        if (tab.id !== activeTabId && !confirmLeaveEditor()) return;
+                        onSelectTab?.(tab.id);
+                      }}
                     >
                       {owner && (
                         <span
@@ -484,11 +656,13 @@ export function RightPanel({
                           if (e.button !== 0) return;
                           e.preventDefault();
                           e.stopPropagation();
+                          if (tab.id === activeTabId && !confirmLeaveEditor()) return;
                           onCloseTab(tab.id);
                         }}
                         onClick={e => {
                           e.preventDefault();
                           e.stopPropagation();
+                          if (tab.id === activeTabId && !confirmLeaveEditor()) return;
                           onCloseTab(tab.id);
                         }}
                         className={`shrink-0 mr-1 p-0.5 rounded hover:bg-surface-overlay transition-colors ${
@@ -524,6 +698,19 @@ export function RightPanel({
           )}
 
           <div data-no-drag className="shrink-0 flex items-center gap-0.5 pl-1 border-l border-border-default/60">
+            {payload.kind === 'terminal' && onAddToChat && (
+              <button
+                type="button"
+                onClick={() => { void addRecentTerminalOutput(); }}
+                title={t('common:addRecentOutput', { defaultValue: 'Add recent output to chat' })}
+                aria-label={t('common:addRecentOutput', { defaultValue: 'Add recent output to chat' })}
+                className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+              </button>
+            )}
             {canOpenExternally && (
               <button
                 type="button"
@@ -569,7 +756,7 @@ export function RightPanel({
               </button>
             )}
             <button
-              onClick={onClose}
+              onClick={() => { if (confirmLeaveEditor()) onClose(); }}
               title={t('common:collapsePanel', { defaultValue: 'Hide panel' })}
               aria-label={t('common:collapsePanel', { defaultValue: 'Hide panel' })}
               className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
@@ -584,7 +771,10 @@ export function RightPanel({
         <div
           key={contentKey}
           className={`flex-1 min-w-0 min-h-0 ${
-            preview.mode === 'url' ? 'overflow-hidden p-2 flex flex-col' : 'overflow-auto p-4'
+            preview.mode === 'url' || preview.mode === 'terminal'
+              || (preview.mode === 'content' && ['code', 'json', 'text', 'markdown', 'html'].includes(preview.format))
+              ? 'overflow-hidden p-2 flex flex-col'
+              : 'overflow-auto p-4'
           }`}
         >
           {preview.mode === 'loading' && (
@@ -656,17 +846,48 @@ export function RightPanel({
             </div>
           )}
 
-          {preview.mode === 'content' && (
-            <div ref={contentRef} className="min-w-0 max-w-full break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_img]:max-w-full">
-              <ContentRenderer
-                content={preview.content}
-                format={preview.format}
-                className="text-fg-secondary text-sm"
-                onHtmlSelection={handleHtmlSelection}
-                basePath={reference ? reference.replace(/[/\\][^/\\]+$/, '') : undefined}
-              />
-            </div>
-          )}
+          {preview.mode === 'content' && (() => {
+            const basePath = reference ? reference.replace(/[/\\][^/\\]+$/, '') : undefined;
+            const editablePath = reference && !isUrl(reference) ? reference : '';
+            const fmt = preview.format;
+            if (editablePath && (fmt === 'code' || fmt === 'json' || fmt === 'text')) {
+              return (
+                <div ref={contentRef} className="flex-1 min-h-0 min-w-0 w-full flex flex-col">
+                  <CodeFileEditor
+                    path={editablePath}
+                    initialContent={preview.content}
+                    language={languageFromPath(editablePath, fmt)}
+                    onDirtyChange={setEditorDirty}
+                  />
+                </div>
+              );
+            }
+            if (editablePath && (fmt === 'markdown' || fmt === 'html')) {
+              return (
+                <div ref={contentRef} className="flex-1 min-h-0 min-w-0 w-full flex flex-col">
+                  <FilePreviewEditor
+                    path={editablePath}
+                    content={preview.content}
+                    format={fmt}
+                    basePath={basePath}
+                    onHtmlSelection={handleHtmlSelection}
+                    onDirtyChange={setEditorDirty}
+                  />
+                </div>
+              );
+            }
+            return (
+              <div ref={contentRef} className="min-w-0 max-w-full overflow-auto break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_img]:max-w-full">
+                <ContentRenderer
+                  content={preview.content}
+                  format={fmt}
+                  className="text-fg-secondary text-sm"
+                  onHtmlSelection={handleHtmlSelection}
+                  basePath={basePath}
+                />
+              </div>
+            );
+          })()}
 
           {preview.mode === 'artifact' && (
             <div ref={contentRef} className="min-w-0 max-w-full break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_img]:max-w-full">
@@ -685,6 +906,29 @@ export function RightPanel({
                 onMeta={preview.browserId && onBrowserMeta
                   ? (meta) => onBrowserMeta(preview.browserId!, meta)
                   : undefined}
+              />
+            </div>
+          )}
+
+          {preview.mode === 'terminal' && (
+            <div className="flex-1 min-h-0 min-w-0 w-full flex flex-col">
+              <EmbeddedTerminal
+                key={preview.terminalId}
+                terminalId={preview.terminalId}
+                title={preview.title}
+                cwd={preview.cwd}
+                active
+                apiRef={terminalApiRef}
+                onMeta={onTerminalMeta}
+                onOpenUrl={onOpenUrlFromTerminal}
+                onOpenPath={onOpenPathFromTerminal}
+                onSelection={(sel) => {
+                  if (!sel || !onAddToChat) {
+                    setSelectionToolbar(null);
+                    return;
+                  }
+                  setSelectionToolbar({ x: sel.x, y: sel.y, text: sel.text });
+                }}
               />
             </div>
           )}
@@ -720,12 +964,12 @@ export function RightPanel({
       {selectionToolbar && onAddToChat && (
         <div
           id="right-panel-selection-toolbar"
-          className="fixed z-50 -translate-x-1/2 -translate-y-full bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden"
+          className="fixed z-50 -translate-x-1/2 -translate-y-full rounded-lg shadow-xl overflow-hidden border border-brand-400/40 bg-brand-600"
           style={{ left: selectionToolbar.x, top: selectionToolbar.y - 8 }}
         >
           <button
             onMouseDown={e => { e.preventDefault(); e.stopPropagation(); commitSelection(selectionToolbar.text, selectionToolbar.htmlMeta); }}
-            className="px-3 py-1.5 text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-1.5 whitespace-nowrap"
+            className="px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-500 transition-colors flex items-center gap-1.5 whitespace-nowrap"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

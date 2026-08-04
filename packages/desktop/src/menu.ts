@@ -24,6 +24,8 @@ const i18n: Record<string, Record<string, string>> = {
     unhide: '显示全部',
     quit: '退出 Markus',
     close: '关闭窗口',
+    closeTab: '关闭标签页',
+    newTab: '新建标签页',
     undo: '撤销',
     redo: '重做',
     cut: '剪切',
@@ -61,6 +63,8 @@ const i18n: Record<string, Record<string, string>> = {
     unhide: 'Show All',
     quit: 'Quit Markus',
     close: 'Close Window',
+    closeTab: 'Close Tab',
+    newTab: 'New Tab',
     undo: 'Undo',
     redo: 'Redo',
     cut: 'Cut',
@@ -83,6 +87,12 @@ const i18n: Record<string, Record<string, string>> = {
 function getLocale(): string {
   const locale = app.getLocale();
   return locale.startsWith('zh') ? 'zh' : 'en';
+}
+
+function sendRendererShortcut(type: 'close-tab' | 'new-tab'): void {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send('app:shortcut', { type });
 }
 
 export function setupMenu(backendUrl: string): void {
@@ -122,7 +132,25 @@ export function setupMenu(backendUrl: string): void {
           },
         },
         { type: 'separator' },
-        { role: 'close' as const, label: t['close'] },
+        // Cmd/Ctrl+W closes a right-panel tab (handled in renderer) — never the app window.
+        {
+          label: t['closeTab'],
+          accelerator: 'CmdOrCtrl+W',
+          click: () => sendRendererShortcut('close-tab'),
+        },
+        {
+          label: t['newTab'],
+          accelerator: 'CmdOrCtrl+T',
+          click: () => sendRendererShortcut('new-tab'),
+        },
+        {
+          label: t['close'],
+          accelerator: 'CmdOrCtrl+Shift+W',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            win?.close();
+          },
+        },
         ...(!isMac ? [
           { type: 'separator' as const },
           { role: 'quit' as const, label: t['quit'] },
@@ -164,7 +192,14 @@ export function setupMenu(backendUrl: string): void {
           { type: 'separator' as const },
           { role: 'front' as const, label: t['front'] },
         ] : [
-          { role: 'close' as const, label: t['close'] },
+          {
+            label: t['close'],
+            accelerator: 'CmdOrCtrl+Shift+W',
+            click: () => {
+              const win = BrowserWindow.getFocusedWindow();
+              win?.close();
+            },
+          },
         ]),
       ],
     },

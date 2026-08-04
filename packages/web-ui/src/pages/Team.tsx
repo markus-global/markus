@@ -246,11 +246,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         agentId?: string;
         action?: 'open' | 'collapse';
         panel?: {
-          kind?: 'url' | 'file' | 'deliverable';
+          kind?: 'url' | 'file' | 'deliverable' | 'terminal';
           url?: string;
           path?: string;
           title?: string;
           deliverableId?: string;
+          terminalId?: string;
+          cwd?: string;
         };
       };
       if (p.action === 'collapse') {
@@ -271,6 +273,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       }
       if (panel.kind === 'file' && panel.path) {
         openRightPanel({ kind: 'file', path: panel.path, title: panel.title });
+        return;
+      }
+      if (panel.kind === 'terminal') {
+        const terminalId = panel.terminalId
+          || `term_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+        openRightPanel({
+          kind: 'terminal',
+          terminalId,
+          title: panel.title || 'Terminal',
+          cwd: panel.cwd,
+        });
         return;
       }
       if (panel.kind === 'deliverable' && panel.deliverableId) {
@@ -5127,6 +5140,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           onCloseTab={layout?.closeRightPanelTab}
           onNewTab={() => {
             if (!openRightPanel) return;
+            if (layout?.rightPanelMode === 'terminal') {
+              const terminalId = `term_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+              openRightPanel({
+                kind: 'terminal',
+                terminalId,
+                title: 'Terminal',
+              });
+              return;
+            }
             const browserId = `eb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
             openRightPanel({
               kind: 'url',
@@ -5140,6 +5162,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           onBrowserMeta={layout?.updateRightPanelBrowserTab
             ? (browserId, meta) => layout.updateRightPanelBrowserTab(browserId, meta)
             : undefined}
+          panelMode={layout?.rightPanelMode ?? 'browser'}
+          onPanelModeChange={(mode) => layout?.switchRightPanelMode(mode)}
+          onTerminalMeta={layout?.updateRightPanelTerminalTab
+            ? (terminalId, meta) => layout.updateRightPanelTerminalTab(terminalId, meta)
+            : undefined}
+          onOpenUrlFromTerminal={(url) => {
+            if (!openRightPanel) return;
+            const browserId = `eb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+            openRightPanel({ kind: 'url', url, title: url, browserId });
+          }}
+          onOpenPathFromTerminal={(path) => {
+            openRightPanel?.({ kind: 'file', path, title: path.split(/[/\\]/).pop() || path });
+          }}
         />
       )}
 

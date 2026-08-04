@@ -21,12 +21,28 @@ interface ContentRendererProps {
   onHtmlSelection?: (data: HtmlSelectionData) => void;
 }
 
+const CODE_EXTS = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
+  'py', 'go', 'rs', 'java', 'kt', 'kts',
+  'c', 'cc', 'cpp', 'cxx', 'h', 'hpp', 'hxx',
+  'cs', 'rb', 'php', 'swift', 'scala',
+  'sh', 'bash', 'zsh', 'fish', 'ps1',
+  'sql', 'yaml', 'yml', 'toml', 'xml',
+  'css', 'scss', 'less',
+  'vue', 'svelte', 'graphql', 'gql', 'proto',
+  'dockerfile', 'makefile', 'cmake',
+  'rsx', 'r', 'lua', 'pl', 'pm', 'ex', 'exs', 'erl', 'hs', 'clj',
+  'zig', 'nim', 'dart', 'gradle', 'tf', 'hcl',
+]);
+
 /**
  * Detect content format from a file path extension.
  * Returns undefined if no known format is matched.
  */
 export function detectFormatFromPath(path: string): string | undefined {
-  const ext = path.split('.').pop()?.toLowerCase();
+  const base = path.split(/[/\\]/).pop()?.toLowerCase() || '';
+  if (base === 'dockerfile' || base === 'makefile') return 'code';
+  const ext = base.includes('.') ? base.split('.').pop()! : '';
   switch (ext) {
     case 'md':
     case 'markdown':
@@ -35,11 +51,15 @@ export function detectFormatFromPath(path: string): string | undefined {
     case 'htm':
       return 'html';
     case 'json':
+    case 'jsonc':
       return 'json';
     case 'csv':
     case 'tsv':
       return 'csv';
     default:
+      if (ext && CODE_EXTS.has(ext)) return 'code';
+      // Unknown extension with a dot → treat as editable text, not markdown.
+      if (ext) return 'text';
       return undefined;
   }
 }
@@ -67,7 +87,8 @@ export function detectFormatFromContent(content: string): string | undefined {
  * 1. Explicit format field (highest priority)
  * 2. File extension of reference path
  * 3. Content sniffing
- * 4. Default to 'markdown'
+ * 4. Default to 'text' when a path is present (avoid mis-rendering code as markdown);
+ *    otherwise 'markdown' for free-form content without a path.
  */
 export function resolveFormat(opts: {
   format?: string;
@@ -83,7 +104,7 @@ export function resolveFormat(opts: {
     const detected = detectFormatFromContent(opts.content);
     if (detected) return detected;
   }
-  return 'markdown';
+  return opts.reference ? 'text' : 'markdown';
 }
 
 function HtmlPreview({ content, className, onSelection }: { content: string; className?: string; onSelection?: (data: HtmlSelectionData) => void }) {
@@ -255,6 +276,7 @@ export function ContentRenderer({ content, format, className, basePath, onHtmlSe
 
     case 'csv':
     case 'text':
+    case 'code':
       return (
         <pre className={`text-xs font-mono whitespace-pre-wrap break-words bg-surface-primary/50 rounded-lg p-4 leading-relaxed text-fg-secondary ${className ?? ''}`}>
           {content}

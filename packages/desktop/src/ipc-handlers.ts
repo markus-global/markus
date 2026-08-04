@@ -17,11 +17,23 @@ import {
   captureEmbeddedBrowser,
   debuggerSendEmbeddedBrowser,
 } from './embedded-browser.js';
+import {
+  createEmbeddedTerminal,
+  destroyEmbeddedTerminal,
+  getEmbeddedTerminalBuffer,
+  listEmbeddedTerminals,
+  defaultEmbeddedTerminalCwd,
+  resizeEmbeddedTerminal,
+  selectEmbeddedTerminal,
+  writeEmbeddedTerminal,
+} from './embedded-terminal.js';
 
 export function setupIpcHandlers(): void {
   ipcMain.handle('app:get-version', () => {
     return app.getVersion();
   });
+
+  ipcMain.handle('app:get-default-cwd', () => defaultEmbeddedTerminalCwd());
 
   // Hand a pending markus://auth deep-link session to the renderer (cold start).
   // peek = read without clearing (consent gate); consume = take ownership.
@@ -128,4 +140,16 @@ export function setupIpcHandlers(): void {
   ipcMain.handle('browser:capture', (_e, id: string) => captureEmbeddedBrowser(id));
   ipcMain.handle('browser:cdp', (_e, id: string, method: string, params?: Record<string, unknown>) =>
     debuggerSendEmbeddedBrowser(id, method, params));
+
+  // ── Embedded terminal (right-panel PTY) ───────────────────────────────────
+  ipcMain.handle('terminal:create', (_e, id: string, opts?: { cwd?: string; title?: string; cols?: number; rows?: number }) =>
+    createEmbeddedTerminal(id, opts));
+  ipcMain.handle('terminal:destroy', (_e, id: string) => destroyEmbeddedTerminal(id));
+  ipcMain.handle('terminal:write', (_e, id: string, data: string) => writeEmbeddedTerminal(id, data));
+  ipcMain.handle('terminal:resize', (_e, id: string, cols: number, rows: number) =>
+    resizeEmbeddedTerminal(id, cols, rows));
+  ipcMain.handle('terminal:list', () => listEmbeddedTerminals());
+  ipcMain.handle('terminal:get-buffer', (_e, id: string, opts?: { maxChars?: number; maxLines?: number }) =>
+    getEmbeddedTerminalBuffer(id, opts));
+  ipcMain.handle('terminal:select', (_e, id: string) => selectEmbeddedTerminal(id));
 }
