@@ -366,11 +366,11 @@ export function getEmbeddedTerminalBuffer(
   const slot = sessions.get(id);
   if (!slot) return { ok: false, error: `Terminal not found: ${id}` };
   let content = slot.buffer;
-  if (opts?.maxLines != null && opts.maxLines > 0) {
+  if (opts?.maxLines !== undefined && opts.maxLines > 0) {
     const lines = content.split(/\r?\n/);
     content = lines.slice(-opts.maxLines).join('\n');
   }
-  if (opts?.maxChars != null && opts.maxChars > 0 && content.length > opts.maxChars) {
+  if (opts?.maxChars !== undefined && opts.maxChars > 0 && content.length > opts.maxChars) {
     content = content.slice(content.length - opts.maxChars);
   }
   return { ok: true, content };

@@ -35,10 +35,10 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   const tag = target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
   if (target.isContentEditable) return true;
-  return target.closest('.xterm') != null;
+  return target.closest('.xterm') !== null;
 }
 
 export function isXtermTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
-  return target.closest('.xterm') != null;
+  return target.closest('.xterm') !== null;
 }
