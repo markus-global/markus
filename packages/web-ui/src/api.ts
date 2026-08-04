@@ -3021,6 +3021,8 @@ export const hubApi = {
       bonusCu: number; purchasedCu: number; windowQuotaCu: number;
       windowCuUsed?: number;
       totalConsumedThisPeriod?: number;
+      /** Progress total = used + wallet remaining (survives B/P burns). */
+      creditsBudgetCu?: number;
       memberCuLimit?: number | null;
       memberCuUsed?: number;
     }>('/user/plan'),

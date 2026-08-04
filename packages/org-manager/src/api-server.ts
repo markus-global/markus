@@ -227,6 +227,36 @@ export class APIServer {
     }
   }
 
+  /**
+   * Persist healed Markus active model + routingDefaultModel after catalog geo-filter.
+   * No-op when router state already matches disk.
+   */
+  private persistHealedMarkusRouting(): void {
+    if (!this.llmRouter) return;
+    try {
+      const cfg = loadConfig();
+      const diskMarkus = (cfg.llm.providers?.['markus'] ?? {}) as { model?: string };
+      const active = this.llmRouter.getProvider('markus')?.model;
+      const rdm = this.llmRouter.routingDefaultModel;
+      const diskRdm = cfg.llm.routingDefaultModel;
+      const modelChanged = !!active && active !== diskMarkus.model;
+      const rdmChanged = JSON.stringify(rdm ?? null) !== JSON.stringify(diskRdm ?? null);
+      if (!modelChanged && !rdmChanged) return;
+      const updates: Record<string, unknown> = {};
+      if (rdmChanged) updates.routingDefaultModel = rdm ?? null;
+      if (modelChanged) {
+        updates.providers = { markus: { ...diskMarkus, model: active } };
+      }
+      saveConfig({ llm: updates } as any, this.markusConfigPath);
+      log.info('Persisted healed Markus routing after catalog filter', {
+        model: active,
+        routingDefaultModel: rdm,
+      });
+    } catch (err) {
+      log.warn('Failed to persist healed Markus routing', { error: String(err) });
+    }
+  }
+
   /** Legacy Worker-era keys look like `markus_<hex>`; OpenRouter keys start with `sk-or-`. */
   private isLegacyMarkusSubscriptionKey(apiKey: string | undefined): boolean {
     if (!apiKey) return true;
@@ -6902,10 +6932,20 @@ EXPLANATION_END`;
                 remainingCu?: number;
                 entitlementCu?: number;
                 usedCu?: number;
+                creditsBudgetCu?: number;
               };
-              hubLimit = Number(sync.entitlementCu ?? 0);
-              hubRemaining = Math.max(0, Number(sync.remainingCu ?? 0));
-              totalCuUsed = Number(sync.usedCu ?? totalCuUsed ?? 0);
+              const remaining = Math.max(0, Number(sync.remainingCu ?? 0));
+              const used = Math.max(0, Number(sync.usedCu ?? 0));
+              // Progress total = period budget (used+remaining), not wallet E alone.
+              // entitlementCu is soft-stop remaining; using it as cuLimit showed 0/8977.
+              const budget = Number(sync.creditsBudgetCu ?? 0) > 0
+                ? Number(sync.creditsBudgetCu)
+                : (used + remaining) > 0
+                  ? used + remaining
+                  : Number(sync.entitlementCu ?? 0);
+              hubLimit = budget;
+              hubRemaining = remaining;
+              totalCuUsed = used || totalCuUsed || 0;
               this.llmRouter?.setMarkusHubRemainingHint(hubRemaining);
             }
           }
@@ -6919,10 +6959,15 @@ EXPLANATION_END`;
                 bonusCu?: number;
                 purchasedCu?: number;
                 totalConsumedThisPeriod?: number;
+                creditsBudgetCu?: number;
               };
-              const entitlement =
+              const face =
                 Number(plan.monthlyQuotaCu ?? 0) + Number(plan.bonusCu ?? 0) + Number(plan.purchasedCu ?? 0);
               const consumed = Number(plan.totalConsumedThisPeriod ?? 0);
+              // Prefer period budget (used+remaining); face shrinks after B/P burns.
+              const entitlement = Number(plan.creditsBudgetCu ?? 0) > 0
+                ? Number(plan.creditsBudgetCu)
+                : face;
               hubLimit = entitlement;
               hubRemaining = Math.max(0, entitlement - consumed);
               totalCuUsed = consumed;
@@ -7237,6 +7282,7 @@ EXPLANATION_END`;
         try {
           this.ensureMarkusDirectConfig();
           const count = await this.llmRouter?.refreshMarkusCatalog() ?? 0;
+          this.persistHealedMarkusRouting();
           const settings = this.llmRouter?.getEnhancedSettings();
           const models = settings?.providers?.['markus']?.models ?? [];
           this.json(res, 200, {
@@ -7300,8 +7346,18 @@ EXPLANATION_END`;
         }
         const preview = this.llmRouter.getEnhancedSettings();
         const markus = preview.providers?.['markus'];
-        if (markus?.configured && (!markus.models || markus.models.length === 0)) {
-          await this.llmRouter.refreshMarkusCatalog();
+        if (markus?.configured) {
+          const ids = new Set((markus.models ?? []).map(m => m.id));
+          if (ids.size === 0) {
+            await this.llmRouter.refreshMarkusCatalog();
+          } else {
+            // CN geo (etc.) can drop sticky RDM from the list while chip still shows it.
+            const preferred = (markus.model && ids.has(markus.model))
+              ? markus.model
+              : [...ids][0]!;
+            this.llmRouter.healMarkusRoutingAgainstCatalog(ids, preferred);
+          }
+          this.persistHealedMarkusRouting();
         }
       } catch { /* non-fatal */ }
       this.json(res, 200, this.llmRouter.getEnhancedSettings());

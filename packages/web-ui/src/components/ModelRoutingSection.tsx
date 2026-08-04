@@ -166,6 +166,21 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
       debouncedSave(next);
       return next;
     });
+
+    // Same heal for sticky text default (chip / routingDefaultModel).
+    setDefaultModel(prev => {
+      if (!prev?.model) return prev;
+      const ok = fullModelList.some(m => m.provider === prev.provider && m.modelId === prev.model);
+      if (ok) return prev;
+      const markusFirst = fullModelList.find(m => m.provider === 'markus');
+      const fallback = markusFirst
+        ? { provider: markusFirst.provider, model: markusFirst.modelId }
+        : { provider: fullModelList[0]!.provider, model: fullModelList[0]!.modelId };
+      void onSave({ routingDefaultModel: fallback });
+      return fallback;
+    });
+    // onSave is stable enough from parent; omit from deps to avoid re-heal loops.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, fullModelList, providerKey, debouncedSave, assignmentKey]);
 
   const reloadRouting = useCallback(() => {

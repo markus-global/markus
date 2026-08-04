@@ -764,6 +764,45 @@ describe('LLMRouter text chat honors routingDefaultModel', () => {
   });
 });
 
+describe('LLMRouter.healMarkusRoutingAgainstCatalog', () => {
+  it('rewrites sticky RDM when CN catalog drops Claude Opus', () => {
+    const markus = mockProvider('markus', 'anthropic/claude-opus-5');
+    const router = new LLMRouter('markus');
+    router.registerProvider('markus', markus);
+    router.setRoutingDefaultModel({ provider: 'markus', model: 'anthropic/claude-opus-5' });
+
+    const cnIds = new Set([
+      'qwen/qwen3.7-flash',
+      'moonshotai/kimi-k3',
+      'z-ai/glm-5.2',
+    ]);
+    const healed = router.healMarkusRoutingAgainstCatalog(cnIds, 'qwen/qwen3.7-flash');
+    expect(healed).toBe(true);
+    expect(router.routingDefaultModel).toEqual({
+      provider: 'markus',
+      model: 'qwen/qwen3.7-flash',
+    });
+    expect(markus.configure).toHaveBeenCalledWith({
+      provider: 'markus',
+      model: 'qwen/qwen3.7-flash',
+    });
+  });
+
+  it('leaves RDM alone when still in catalog', () => {
+    const markus = mockProvider('markus', 'qwen/qwen3.7-flash');
+    const router = new LLMRouter('markus');
+    router.registerProvider('markus', markus);
+    router.setRoutingDefaultModel({ provider: 'markus', model: 'qwen/qwen3.7-flash' });
+
+    const healed = router.healMarkusRoutingAgainstCatalog(
+      new Set(['qwen/qwen3.7-flash', 'z-ai/glm-5.2']),
+      'z-ai/glm-5.2',
+    );
+    expect(healed).toBe(false);
+    expect(router.routingDefaultModel?.model).toBe('qwen/qwen3.7-flash');
+  });
+});
+
 describe('LLMRouter resolveMaxTokens', () => {
   it('does not inject catalog max_output onto the wire (OpenRouter reserves against max_tokens)', async () => {
     const markus = mockProvider('markus', 'deepseek/deepseek-v4-flash');

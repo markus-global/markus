@@ -147,6 +147,8 @@ export class LLMRouter {
     assignments: {},
   };
   private _routingDefaultModel?: { provider: string; model: string };
+  /** Hub is_default (or first catalog id) from the last Markus catalog refresh. */
+  private _markusCatalogPreferredId?: string;
 
   private readonly CIRCUIT_OPEN_AFTER = 2;
   private readonly CIRCUIT_RESET_MS = 5 * 60 * 1000;
@@ -536,16 +538,55 @@ export class LLMRouter {
 
     const ids = new Set(defs.map(d => d.id));
     const preferred = models.find(m => m.is_default)?.id ?? defs[0]!.id;
-    // Re-point only when the active model is a legacy bare markus-* alias or
-    // no longer in the catalog. `isObsoleteMarkusModel` is the source of truth.
-    const obsolete = isObsoleteMarkusModel(provider.model) || !ids.has(provider.model);
-    if (obsolete) {
-      provider.configure({ provider: 'markus', model: preferred });
-      log.info('Markus active model set from Hub catalog', { model: preferred, count: defs.length });
+    this._markusCatalogPreferredId = preferred;
+    const healed = this.healMarkusRoutingAgainstCatalog(ids, preferred);
+    if (healed) {
+      log.info('Markus routing healed from Hub catalog', {
+        activeModel: provider.model,
+        routingDefaultModel: this._routingDefaultModel,
+        count: defs.length,
+      });
     } else {
       log.info('Markus Hub catalog refreshed', { model: provider.model, count: defs.length });
     }
     return defs.length;
+  }
+
+  /**
+   * Drop sticky Markus defaults that are no longer in the Hub catalog
+   * (e.g. CN geo-filter removes anthropic/claude-opus-5 while chip still shows it).
+   * Returns true when active model and/or routingDefaultModel were rewritten.
+   */
+  healMarkusRoutingAgainstCatalog(ids?: Set<string>, preferred?: string): boolean {
+    const provider = this.providers.get('markus');
+    if (!provider) return false;
+
+    const catalogIds = ids ?? new Set((this.customModelCatalog.get('markus') ?? []).map(d => d.id));
+    if (catalogIds.size === 0) return false;
+
+    const fallback = preferred
+      ?? this._markusCatalogPreferredId
+      ?? (this.customModelCatalog.get('markus') ?? [])[0]?.id;
+    if (!fallback) return false;
+
+    let healed = false;
+    const activeObsolete = isObsoleteMarkusModel(provider.model) || !catalogIds.has(provider.model);
+    if (activeObsolete) {
+      provider.configure({ provider: 'markus', model: fallback });
+      healed = true;
+    }
+
+    const rdm = this._routingDefaultModel;
+    if (
+      rdm
+      && rdm.provider === 'markus'
+      && (isObsoleteMarkusModel(rdm.model) || !catalogIds.has(rdm.model))
+    ) {
+      this._routingDefaultModel = { provider: 'markus', model: fallback };
+      healed = true;
+    }
+
+    return healed;
   }
 
   /**

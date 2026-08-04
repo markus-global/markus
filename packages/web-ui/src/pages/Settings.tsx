@@ -3613,7 +3613,7 @@ function AccountOverviewSection() {
   const { t } = useTranslation(['settings', 'common']);
 
   // ── Cloud AI plan state ──
-  const [planInfo, setPlanInfo] = useState<{ orgId?: string | null; planType: string; planStatus: string; monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null; bonusCu: number; purchasedCu?: number; windowQuotaCu: number; memberCuLimit?: number | null; memberCuUsed?: number } | null>(null);
+  const [planInfo, setPlanInfo] = useState<{ orgId?: string | null; planType: string; planStatus: string; monthlyQuotaCu: number; cuUsed: number; cuResetAt: string | null; bonusCu: number; purchasedCu?: number; windowQuotaCu: number; totalConsumedThisPeriod?: number; creditsBudgetCu?: number; memberCuLimit?: number | null; memberCuUsed?: number } | null>(null);
   const [planLoading, setPlanLoading] = useState(true);
 
   // ── Org state (read-only) ──
@@ -3676,8 +3676,25 @@ function AccountOverviewSection() {
 
   const primaryOrg = orgs.find(o => o.id === planInfo?.orgId) ?? orgs[0];
   const totalCredits = planInfo
-    ? (planInfo.monthlyQuotaCu ?? 0) + (planInfo.bonusCu ?? 0) + (planInfo.purchasedCu ?? 0)
+    ? (planInfo.creditsBudgetCu
+      ?? (planInfo.monthlyQuotaCu ?? 0) + (planInfo.bonusCu ?? 0) + (planInfo.purchasedCu ?? 0))
     : 0;
+  // Personal A only for admin-capped non-owner members. Owners/solo use period budget
+  // (creditsBudgetCu) — memberCuLimit may still be the old face-collapsed A.
+  const showPersonalLimit = !!(
+    planInfo?.memberCuLimit != null
+    && planInfo.memberCuLimit > 0
+    && primaryOrg
+    && primaryOrg.role !== 'owner'
+    && primaryOrg.role !== 'admin'
+    && primaryOrg.memberCount > 1
+  );
+  const creditsUsed = showPersonalLimit
+    ? Math.round(planInfo?.memberCuUsed ?? 0)
+    : Math.round(planInfo?.totalConsumedThisPeriod ?? planInfo?.cuUsed ?? 0);
+  const creditsTotal = showPersonalLimit
+    ? (planInfo?.memberCuLimit ?? 0)
+    : totalCredits;
 
   if (orgLoading || planLoading) return <div className="text-center py-8 text-fg-tertiary text-sm">{t('common:loading')}</div>;
 
@@ -3701,13 +3718,11 @@ function AccountOverviewSection() {
                 <span className="text-xs text-fg-tertiary">{t('account.currentPlan')}</span>
                 <span className="px-2 py-0.5 rounded text-xs font-semibold capitalize bg-brand-600/10 text-brand-500 border border-brand-500/15">{planInfo.planType}</span>
               </div>
-              {(totalCredits > 0 || (planInfo.memberCuLimit != null && planInfo.memberCuLimit > 0)) && (
+              {creditsTotal > 0 && (
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="text-fg-tertiary">{planInfo.memberCuLimit != null && planInfo.memberCuLimit > 0 ? t('account.personalLimit') : t('account.credits')}</span>
+                  <span className="text-fg-tertiary">{showPersonalLimit ? t('account.personalLimit') : t('account.credits')}</span>
                   <span className="font-medium text-fg-primary tabular-nums">
-                    {planInfo.memberCuLimit != null && planInfo.memberCuLimit > 0
-                      ? `${Math.round(planInfo.memberCuUsed ?? 0).toLocaleString()} / ${planInfo.memberCuLimit.toLocaleString()}`
-                      : `${Math.round(planInfo.cuUsed).toLocaleString()} / ${totalCredits.toLocaleString()}`}
+                    {creditsUsed.toLocaleString()} / {creditsTotal.toLocaleString()}
                   </span>
                 </div>
               )}
