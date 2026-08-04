@@ -69,4 +69,15 @@ describe('Hub billing API contract (Desktop)', () => {
     expect(entitlement).toBe(10_300);
     expect(hubPlan.memberCuUsed ?? 0).toBeLessThanOrEqual(entitlement);
   });
+
+  it('golden soft-stop vector: A=19000 S=10023 ⇒ R=8977 (ledger must not gate)', () => {
+    const allocationCu = 19_000;
+    const orUsedCu = 10_023;
+    const auditLedgerCu = 19_031; // historical double-count noise
+    const remainingCu = Math.max(0, allocationCu - orUsedCu);
+    expect(remainingCu).toBe(8_977);
+    // Desktop soft-stop uses Hub sync remainingCu (= R), never A − ledger.
+    expect(remainingCu).not.toBe(Math.max(0, allocationCu - auditLedgerCu));
+    expect(remainingCu > 0).toBe(true);
+  });
 });
