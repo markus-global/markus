@@ -106,4 +106,43 @@ contextBridge.exposeInMainWorld('markusDesktop', {
       return () => { ipcRenderer.removeListener('browser:page-event', handler); };
     },
   },
+
+  // Embedded terminal (PTY in the right panel)
+  terminal: {
+    create: (id: string, opts?: { cwd?: string; title?: string; cols?: number; rows?: number }) =>
+      ipcRenderer.invoke('terminal:create', id, opts),
+    destroy: (id: string) => ipcRenderer.invoke('terminal:destroy', id),
+    write: (id: string, data: string) => ipcRenderer.invoke('terminal:write', id, data),
+    resize: (id: string, cols: number, rows: number) =>
+      ipcRenderer.invoke('terminal:resize', id, cols, rows),
+    list: () => ipcRenderer.invoke('terminal:list'),
+    getBuffer: (id: string, opts?: { maxChars?: number; maxLines?: number }) =>
+      ipcRenderer.invoke('terminal:get-buffer', id, opts),
+    select: (id: string) => ipcRenderer.invoke('terminal:select', id),
+    onData: (callback: (event: { id: string; data: string }) => void) => {
+      const handler = (_: unknown, event: { id: string; data: string }) => callback(event);
+      ipcRenderer.on('terminal:data', handler);
+      return () => { ipcRenderer.removeListener('terminal:data', handler); };
+    },
+    onExit: (callback: (event: { id: string; exitCode: number }) => void) => {
+      const handler = (_: unknown, event: { id: string; exitCode: number }) => callback(event);
+      ipcRenderer.on('terminal:exit', handler);
+      return () => { ipcRenderer.removeListener('terminal:exit', handler); };
+    },
+    onEvent: (callback: (event: {
+      type: 'opened' | 'closed' | 'selected';
+      id: string;
+      title?: string;
+      cwd?: string;
+    }) => void) => {
+      const handler = (_: unknown, event: {
+        type: 'opened' | 'closed' | 'selected';
+        id: string;
+        title?: string;
+        cwd?: string;
+      }) => callback(event);
+      ipcRenderer.on('terminal:event', handler);
+      return () => { ipcRenderer.removeListener('terminal:event', handler); };
+    },
+  },
 });

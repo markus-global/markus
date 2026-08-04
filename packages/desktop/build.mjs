@@ -20,6 +20,7 @@ const external = [
   'rfb2',
   'ws',
   'node-datachannel',
+  'node-pty',
 ];
 
 async function main() {

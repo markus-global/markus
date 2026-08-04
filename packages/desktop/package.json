@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "electron-updater": "^6.3.9",
+    "node-pty": "^1.0.0",
     "ws": "^8.19.0"
   },
   "devDependencies": {

@@ -27,7 +27,10 @@ import { useIsMobile } from './hooks/useIsMobile.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
+import { ShortcutsHelpModal } from './components/ShortcutsHelpModal.tsx';
 import { EditProfileModal } from './components/EditProfileModal.tsx';
+import { isXtermTarget } from './lib/keyboard-shortcuts.ts';
+import { knownTerminalIds, rememberTerminalId } from './lib/known-terminals.ts';
 
 const HIDDEN_STYLE: React.CSSProperties = {
   visibility: 'hidden',
@@ -128,16 +131,22 @@ export function App() {
     return stored ? stored : null;
   });
   const [showSearchModal, setShowSearchModal] = useState(false);
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
 
   const layout = useLayout();
   const leftCollapsed = layout?.leftCollapsed ?? false;
   const toggleLeftCollapsed = layout?.toggleLeftCollapsed;
   const toggleRightPanel = layout?.toggleRightPanel;
+  const toggleTerminalPanel = layout?.toggleTerminalPanel;
+  const cycleRightPanelTab = layout?.cycleRightPanelTab;
+  const activateRightPanelTabAt = layout?.activateRightPanelTabAt;
+  const rightPanelOpen = layout?.rightPanelOpen ?? false;
 
   // When the agent opens/selects/closes an embedded browser page, mirror it into the right panel.
   const openRightPanel = layout?.openRightPanel;
   const closeRightPanelTab = layout?.closeRightPanelTab;
   const updateRightPanelBrowserTab = layout?.updateRightPanelBrowserTab;
+  const updateRightPanelTerminalTab = layout?.updateRightPanelTerminalTab;
   const rightPanelTabsRef = useRef(layout?.rightPanelTabs);
   rightPanelTabsRef.current = layout?.rightPanelTabs;
   useEffect(() => {
@@ -178,15 +187,64 @@ export function App() {
     });
   }, [openRightPanel, closeRightPanelTab, updateRightPanelBrowserTab]);
 
-  const rightPanelOpen = layout?.rightPanelOpen ?? false;
+  // Mirror agent/desktop terminal open/select/close into the right panel.
+  // IMPORTANT: UI already creates term_* tabs before PTY create/select. Re-calling
+  // openRightPanel on those echoes steals mode back from Browser (globe click) and
+  // remounts xterm in a flicker loop.
+  useEffect(() => {
+    const onEvent = window.markusDesktop?.terminal?.onEvent;
+    if (!onEvent || !openRightPanel) return;
+    return onEvent((event) => {
+      if (event.type === 'closed') {
+        const tab = rightPanelTabsRef.current?.find(
+          t => t.payload.kind === 'terminal' && t.payload.terminalId === event.id,
+        );
+        // Only remove UI tab if still present; LayoutContext destroy already closed PTY.
+        if (tab && closeRightPanelTab) closeRightPanelTab(tab.id);
+        return;
+      }
+      if (event.type === 'selected') {
+        // Never force-open / steal mode on select echoes from the active xterm.
+        if (event.title || event.cwd) {
+          updateRightPanelTerminalTab?.(event.id, { title: event.title, cwd: event.cwd });
+        }
+        return;
+      }
+      if (event.type === 'opened') {
+        if (knownTerminalIds.has(event.id)) {
+          if (event.title || event.cwd) {
+            updateRightPanelTerminalTab?.(event.id, { title: event.title, cwd: event.cwd });
+          }
+          return;
+        }
+        rememberTerminalId(event.id);
+        openRightPanel({
+          kind: 'terminal',
+          terminalId: event.id,
+          title: event.title || 'Terminal',
+          cwd: event.cwd,
+        });
+      }
+    });
+  }, [openRightPanel, closeRightPanelTab, updateRightPanelTerminalTab]);
+
+  // PTY exit → close tab (multi) or replace with a fresh shell (sole tab).
+  const handleTerminalExit = layout?.handleTerminalExit;
+  useEffect(() => {
+    const onExit = window.markusDesktop?.terminal?.onExit;
+    if (!onExit || !handleTerminalExit) return;
+    return onExit((event) => {
+      handleTerminalExit(event.id);
+    });
+  }, [handleTerminalExit]);
 
   // Native WebContentsViews paint above HTML. Gate them synchronously in
   // useLayoutEffect (before paint) so leaving Team / closing the panel does
   // not leave a ghost browser over Overview/Settings for multiple frames.
   useLayoutEffect(() => {
-    const allow = page === PAGE.TEAM && rightPanelOpen;
+    const allow = page === PAGE.TEAM && rightPanelOpen && layout?.rightPanelMode === 'browser';
     setNativeBrowserPagePaintAllowed(allow);
-  }, [page, rightPanelOpen]);
+  }, [page, rightPanelOpen, layout?.rightPanelMode]);
 
   // Fresh renderer load: never inherit a stuck native view from a prior session.
   useEffect(() => {
@@ -221,25 +279,78 @@ export function App() {
     return () => { document.removeEventListener('keydown', onKey); window.removeEventListener('markus:open-search', onOpen); };
   }, [isMobile]);
 
-  // Layout shortcuts: Cmd/Ctrl+B toggles the left sidebars; Cmd/Ctrl+L toggles the right panel.
+  // Layout shortcuts: B left, L browser panel, J terminal panel, / help,
+  // Shift+] / [ cycle tabs, 1–9 jump tab.
   useEffect(() => {
     if (isMobile || !toggleLeftCollapsed || !toggleRightPanel) return;
     const isMac = navigator.platform.toUpperCase().includes('MAC');
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
-      if (!mod || e.altKey || e.shiftKey) return;
+      if (!mod || e.altKey) return;
+
+      // Cmd/Ctrl+/ → shortcuts help (also Cmd+? on US keyboards)
+      if (!e.shiftKey && (e.key === '/' || e.code === 'Slash')) {
+        e.preventDefault();
+        setShowShortcutsHelp(prev => !prev);
+        return;
+      }
+      if (e.shiftKey && (e.key === '?' || e.key === '/')) {
+        e.preventDefault();
+        setShowShortcutsHelp(prev => !prev);
+        return;
+      }
+
+      // Tab cycling within current right-panel mode
+      if (e.shiftKey && rightPanelOpen && cycleRightPanelTab) {
+        if (e.key === ']' || e.code === 'BracketRight') {
+          e.preventDefault();
+          cycleRightPanelTab(1);
+          return;
+        }
+        if (e.key === '[' || e.code === 'BracketLeft') {
+          e.preventDefault();
+          cycleRightPanelTab(-1);
+          return;
+        }
+      }
+
+      // Cmd/Ctrl+1…9 → Nth tab
+      if (!e.shiftKey && rightPanelOpen && activateRightPanelTabAt) {
+        const digit = e.key >= '1' && e.key <= '9' ? Number(e.key) : 0;
+        if (digit >= 1) {
+          e.preventDefault();
+          activateRightPanelTabAt(digit - 1);
+          return;
+        }
+      }
+
+      if (e.shiftKey) return;
       const key = e.key.toLowerCase();
       if (key === 'b') {
         e.preventDefault();
         toggleLeftCollapsed();
       } else if (key === 'l') {
+        // Don't steal Ctrl+L clear-screen from an focused xterm (Cmd+L still toggles on Mac).
+        if (!isMac && isXtermTarget(e.target)) return;
+        if (isMac && isXtermTarget(e.target) && e.ctrlKey) return;
         e.preventDefault();
         toggleRightPanel();
+      } else if (key === 'j' && toggleTerminalPanel) {
+        e.preventDefault();
+        toggleTerminalPanel();
       }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [isMobile, toggleLeftCollapsed, toggleRightPanel]);
+  }, [
+    isMobile,
+    toggleLeftCollapsed,
+    toggleRightPanel,
+    toggleTerminalPanel,
+    cycleRightPanelTab,
+    activateRightPanelTabAt,
+    rightPanelOpen,
+  ]);
 
   const navigate = useCallback((p: PageId, params?: Record<string, string>) => {
     let normalized = resolvePageId(p);
@@ -605,6 +716,9 @@ export function App() {
       {/* Global search modal (desktop) */}
       {!isMobile && showSearchModal && (
         <SearchModal onClose={() => setShowSearchModal(false)} currentPage={page} />
+      )}
+      {!isMobile && (
+        <ShortcutsHelpModal open={showShortcutsHelp} onClose={() => setShowShortcutsHelp(false)} />
       )}
 
       {/* Edit profile — available from sidebar account menu without leaving the page */}

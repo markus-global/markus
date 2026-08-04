@@ -51,6 +51,27 @@ interface MarkusDesktopAPI {
       directoryPath?: string;
     }) => void): () => void;
   };
+  terminal?: {
+    create(id: string, opts?: { cwd?: string; title?: string; cols?: number; rows?: number }): Promise<{
+      ok: boolean;
+      error?: string;
+      info?: { id: string; title: string; cwd: string; pid?: number; exited?: boolean; exitCode?: number };
+    }>;
+    destroy(id: string): Promise<{ ok: boolean }>;
+    write(id: string, data: string): Promise<{ ok: boolean; error?: string }>;
+    resize(id: string, cols: number, rows: number): Promise<{ ok: boolean; error?: string }>;
+    list(): Promise<Array<{ id: string; title: string; cwd: string; pid?: number; exited?: boolean; exitCode?: number }>>;
+    getBuffer(id: string, opts?: { maxChars?: number; maxLines?: number }): Promise<{ ok: boolean; content?: string; error?: string }>;
+    select(id: string): Promise<{ ok: boolean; error?: string }>;
+    onData?(callback: (event: { id: string; data: string }) => void): () => void;
+    onExit?(callback: (event: { id: string; exitCode: number }) => void): () => void;
+    onEvent?(callback: (event: {
+      type: 'opened' | 'closed' | 'selected';
+      id: string;
+      title?: string;
+      cwd?: string;
+    }) => void): () => void;
+  };
 }
 
 interface Window {

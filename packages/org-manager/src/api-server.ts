@@ -10740,6 +10740,13 @@ EXPLANATION_END`;
       this.json(res, 200, { ownership: am.getBrowserTabOwnership() });
       return;
     }
+    if (path === '/api/terminal/session-ownership' && req.method === 'GET') {
+      const am = this.orgService.getAgentManager() as {
+        getTerminalSessionOwnership?: () => Array<{ terminalId: string; agentId: string; agentName: string }>;
+      };
+      this.json(res, 200, { ownership: am.getTerminalSessionOwnership?.() ?? [] });
+      return;
+    }
 
     if (path === '/api/system/storage' && req.method === 'GET') {
       try {
@@ -12263,6 +12270,7 @@ EXPLANATION_END`;
       exact('/api/system/emergency-stop', 'POST'),
       exact('/api/system/status', 'GET'),
       exact('/api/browser/tab-ownership', 'GET'),
+      exact('/api/terminal/session-ownership', 'GET'),
       exact('/api/system/storage', 'GET'),
       exact('/api/system/storage/orphans', 'GET', 'DELETE'),
       exact('/api/system/announcements', 'GET', 'POST'),

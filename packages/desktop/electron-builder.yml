@@ -13,6 +13,8 @@ directories:
 files:
   - dist/**/*
   - "!dist/**/*.map"
+  - node_modules/node-pty/**/*
+  - node_modules/node-addon-api/**/*
 asar: true
 asarUnpack:
   - dist/preload.js
@@ -21,6 +23,7 @@ asarUnpack:
   - dist/templates/**
   - dist/markus-browser-extension.zip
   - dist/data/**
+  - node_modules/node-pty/**/*
 compression: maximum
 
 mac:

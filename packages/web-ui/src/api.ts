@@ -1556,6 +1556,10 @@ export const api = {
     tabOwnership: () =>
       request<{ ownership: Array<{ pageId: number; agentId: string; agentName: string }> }>('/browser/tab-ownership'),
   },
+  terminal: {
+    sessionOwnership: () =>
+      request<{ ownership: Array<{ terminalId: string; agentId: string; agentName: string }> }>('/terminal/session-ownership'),
+  },
   settings: {
     getLlm: () => request<{ defaultProvider: string; providers: Record<string, { model: string; configured: boolean }> }>('/settings/llm'),
     /** Local preferred org name (markus.json). Applied to Hub org on connect. */

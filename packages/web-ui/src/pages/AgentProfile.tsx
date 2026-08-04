@@ -961,6 +961,7 @@ const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'files', prefixes: ['file_read', 'file_write', 'file_edit', 'apply_patch'] },
   { id: 'search', prefixes: ['grep_search', 'glob_find', 'list_directory'] },
   { id: 'runtime', prefixes: ['shell_execute', 'background_exec', 'process'] },
+  { id: 'terminal', prefixes: ['terminal__', 'list_terminals', 'new_terminal', 'select_terminal', 'close_terminal', 'read_terminal', 'write_terminal', 'exec_terminal'] },
   { id: 'web', prefixes: ['web_search', 'web_fetch', 'web_extract'] },
   { id: 'multimodal', prefixes: ['generate_image', 'text_to_speech', 'speech_to_text', 'generate_video'] },
   { id: 'browser', prefixes: ['navigate_page', 'new_page', 'close_page', 'select_page', 'list_pages', 'open_page', 'resize_page', 'click', 'hover', 'fill', 'fill_form', 'type_text', 'press_key', 'take_screenshot', 'take_snapshot', 'evaluate_script', 'wait_for', 'list_console_messages', 'list_network_requests', 'get_console_message', 'get_network_request', 'lighthouse_audit', 'drag', 'upload_file', 'emulate', 'handle_dialog'] },
