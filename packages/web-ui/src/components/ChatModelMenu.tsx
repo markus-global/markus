@@ -83,6 +83,12 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
       list.sort((a, b) => a.displayName.localeCompare(b.displayName));
       setProviders(list);
 
+      const inCatalog = (sel: ChatModelSelection | null | undefined): boolean => {
+        if (!sel?.provider || !sel.model) return false;
+        const p = list.find(x => x.provider === sel.provider);
+        return !!p?.models.some(m => m.id === sel.model);
+      };
+
       // Prefer explicit routing default; else default provider's active model.
       let nextGlobal: ChatModelSelection | null = null;
       if (data.routingDefaultModel?.provider && data.routingDefaultModel?.model) {
@@ -94,6 +100,26 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
         const p = data.providers?.[data.defaultProvider];
         if (p?.model) {
           nextGlobal = { provider: data.defaultProvider, model: p.model };
+        }
+      }
+
+      // Sticky RDM can outlive geo-filtered catalogs (e.g. CN drops Claude).
+      // Fall back to first Markus / first available model and persist globally.
+      if (nextGlobal && !inCatalog(nextGlobal)) {
+        const markus = list.find(p => p.provider === 'markus');
+        const fallback = markus?.models[0]
+          ? { provider: 'markus', model: markus.models[0].id }
+          : list[0]?.models[0]
+            ? { provider: list[0].provider, model: list[0].models[0]!.id }
+            : null;
+        if (fallback) {
+          nextGlobal = fallback;
+          void api.settings.updateRouting({
+            defaultProvider: fallback.provider,
+            routingDefaultModel: fallback,
+          }).catch(() => { /* non-fatal */ });
+        } else {
+          nextGlobal = null;
         }
       }
       setGlobalDefault(nextGlobal);
@@ -141,7 +167,32 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
       .filter(p => p.models.length > 0);
   }, [providers, query]);
 
-  const effective = value ?? globalDefault;
+  const selectionInCatalog = useCallback((sel: ChatModelSelection | null | undefined) => {
+    if (!sel?.provider || !sel.model) return false;
+    // While catalog is loading, don't treat selection as missing.
+    if (providers.length === 0) return true;
+    const p = providers.find(x => x.provider === sel.provider);
+    return !!p?.models.some(m => m.id === sel.model);
+  }, [providers]);
+
+  // Session override can also be sticky-stale after CN catalog filter.
+  useEffect(() => {
+    if (!value || providers.length === 0) return;
+    if (selectionInCatalog(value)) return;
+    const fallback = (globalDefault && selectionInCatalog(globalDefault))
+      ? globalDefault
+      : (() => {
+          const markus = providers.find(p => p.provider === 'markus');
+          if (markus?.models[0]) return { provider: 'markus', model: markus.models[0].id };
+          if (providers[0]?.models[0]) {
+            return { provider: providers[0].provider, model: providers[0].models[0]!.id };
+          }
+          return null;
+        })();
+    if (fallback) onSelect(fallback, false);
+  }, [value, providers, globalDefault, selectionInCatalog, onSelect]);
+
+  const effective = (value && selectionInCatalog(value)) ? value : globalDefault;
   // Trigger shows a short model id (session override or global default).
   const shortModel = effective?.model
     ? (effective.model.includes('/') ? effective.model.split('/').pop()! : effective.model)

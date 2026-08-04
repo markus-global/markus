@@ -12,6 +12,7 @@ interface HubPlanInfo {
   bonusCu: number; purchasedCu: number; windowQuotaCu: number;
   windowCuUsed?: number;
   totalConsumedThisPeriod?: number;
+  creditsBudgetCu?: number;
   memberCuLimit?: number | null;
   memberCuUsed?: number;
 }
@@ -221,12 +222,15 @@ export function CloudQuotaBar({ hubConnected, hubPlan, hubOrgMeta }: {
     || hubOrgMeta.role === 'admin'
     || hubOrgMeta.memberCount <= 1;
   const showAdminLimitBanner = hasMemberLimit && !isSelfManagedOrg;
-  const totalQuota = hasMemberLimit
+  const columnQuota = (hubPlan.monthlyQuotaCu ?? 0) + (hubPlan.bonusCu ?? 0) + (hubPlan.purchasedCu ?? 0);
+  // Self-managed: period budget (used+remaining). Personal A only for admin-capped members.
+  // Never use shrunk M+B+P face after B→M→P burns (that showed 11k instead of 19k).
+  const totalQuota = showAdminLimitBanner
     ? hubPlan.memberCuLimit!
-    : (hubPlan.monthlyQuotaCu ?? 0) + (hubPlan.bonusCu ?? 0) + (hubPlan.purchasedCu ?? 0);
-  const cuUsed = hasMemberLimit
+    : (hubPlan.creditsBudgetCu ?? (hasMemberLimit ? hubPlan.memberCuLimit! : columnQuota));
+  const cuUsed = showAdminLimitBanner
     ? (hubPlan.memberCuUsed ?? 0)
-    : hubPlan.totalConsumedThisPeriod ?? ((hubPlan.monthlyQuotaCu ?? 0) + (hubPlan.bonusCu ?? 0) + (hubPlan.purchasedCu ?? 0) - Math.max(0, (hubPlan.monthlyQuotaCu ?? 0) - (hubPlan.cuUsed ?? 0)) - (hubPlan.bonusCu ?? 0) - (hubPlan.purchasedCu ?? 0));
+    : (hubPlan.totalConsumedThisPeriod ?? hubPlan.memberCuUsed ?? 0);
   const pct = totalQuota > 0 ? Math.min(100, Math.round((cuUsed / totalQuota) * 100)) : 0;
   const barColor = pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : 'bg-brand-500';
 
