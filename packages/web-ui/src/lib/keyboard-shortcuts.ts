@@ -18,6 +18,8 @@ export const KEYBOARD_SHORTCUTS: ShortcutDef[] = [
   { id: 'next-tab', group: 'rightPanel', keys: ['Shift', ']'], label: 'Next right-panel tab', labelKey: 'shortcuts.nextTab' },
   { id: 'prev-tab', group: 'rightPanel', keys: ['Shift', '['], label: 'Previous right-panel tab', labelKey: 'shortcuts.prevTab' },
   { id: 'tab-n', group: 'rightPanel', keys: ['1…9'], label: 'Jump to Nth right-panel tab', labelKey: 'shortcuts.tabN' },
+  { id: 'close-tab', group: 'rightPanel', keys: ['W'], label: 'Close right-panel tab', labelKey: 'shortcuts.closeTab' },
+  { id: 'new-tab', group: 'rightPanel', keys: ['T'], label: 'New browser tab / shell', labelKey: 'shortcuts.newTab' },
   { id: 'help', group: 'help', keys: ['/'], label: 'Show keyboard shortcuts', labelKey: 'shortcuts.help' },
   { id: 'term-search', group: 'terminal', keys: ['F'], label: 'Search in terminal', labelKey: 'shortcuts.termSearch' },
   { id: 'term-to-chat', group: 'terminal', keys: ['Shift', 'A'], label: 'Add terminal selection to chat', labelKey: 'shortcuts.termToChat' },

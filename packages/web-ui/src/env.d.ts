@@ -14,6 +14,8 @@ interface MarkusDesktopAPI {
   platform: string;
   isMAS: boolean;
   getAppVersion(): Promise<string>;
+  /** Desktop process cwd used as default embedded-terminal working directory. */
+  getDefaultCwd?(): Promise<string>;
   openExternal(url: string): Promise<void>;
   openInBrowser(): Promise<void>;
   showNotification(title: string, body: string): Promise<void>;
@@ -22,6 +24,7 @@ interface MarkusDesktopAPI {
   setLoginItemSettings(openAtLogin: boolean): Promise<{ openAtLogin: boolean; error?: string }>;
   onUpdateAvailable(callback: (info: { version: string }) => void): void;
   onUpdateDownloaded(callback: (info: { version: string }) => void): void;
+  onAppShortcut?(callback: (event: { type: 'close-tab' | 'new-tab' }) => void): () => void;
   onNotification(callback: (data: { title: string; body: string; type: string }) => void): void;
   onNotificationClick(callback: (nav: { page?: string; params?: Record<string, string>; openNotifications?: boolean }) => void): void;
   onDeepLinkAuth(callback: (data: { session: string }) => void): void;
@@ -66,7 +69,7 @@ interface MarkusDesktopAPI {
     onData?(callback: (event: { id: string; data: string }) => void): () => void;
     onExit?(callback: (event: { id: string; exitCode: number }) => void): () => void;
     onEvent?(callback: (event: {
-      type: 'opened' | 'closed' | 'selected';
+      type: 'opened' | 'closed' | 'selected' | 'cwd';
       id: string;
       title?: string;
       cwd?: string;

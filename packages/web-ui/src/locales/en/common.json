@@ -13,6 +13,14 @@
   "delete": "Delete",
   "remove": "Remove",
   "edit": "Edit",
+  "fileEditor": {
+    "preview": "Preview",
+    "saved": "Saved",
+    "saveFailed": "Save failed",
+    "unsaved": "Unsaved changes",
+    "revert": "Revert",
+    "discardConfirm": "Discard unsaved changes?"
+  },
   "create": "Create",
   "creating": "Creating...",
   "refresh": "Refresh",
@@ -493,6 +501,8 @@
     "nextTab": "Next right-panel tab",
     "prevTab": "Previous right-panel tab",
     "tabN": "Jump to Nth right-panel tab",
+    "closeTab": "Close right-panel tab",
+    "newTab": "New browser tab / shell",
     "help": "Show keyboard shortcuts",
     "termSearch": "Search in terminal",
     "termToChat": "Add terminal selection to chat"

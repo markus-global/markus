@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import { resolvePathAgainstBase } from './markdown-links.ts';
 import { rememberTerminalId } from '../lib/known-terminals.ts';
 
 export type TerminalSelectionPayload = {
@@ -42,11 +43,40 @@ function readCssVar(name: string, fallback: string): string {
   }
 }
 
+/** Cmd on macOS / Ctrl elsewhere — same gesture as VS Code / iTerm path opens. */
+function isOpenModifier(e: { metaKey: boolean; ctrlKey: boolean }): boolean {
+  const isMac = typeof navigator !== 'undefined'
+    && navigator.platform.toUpperCase().includes('MAC');
+  return isMac ? e.metaKey : e.ctrlKey;
+}
+
 function looksLikeFilePath(text: string): boolean {
-  if (/^https?:\/\//i.test(text)) return false;
+  if (!text || text.includes(' ') || /^https?:\/\//i.test(text)) return false;
   if (/^[a-zA-Z]:[\\/]/.test(text)) return true;
-  if (text.startsWith('/') || text.startsWith('./') || text.startsWith('../')) return true;
-  return /^[\w./\\-]+\.[a-zA-Z0-9]{1,8}$/.test(text) && !text.includes(' ');
+  if (text.startsWith('/') || text.startsWith('~/') || text.startsWith('./') || text.startsWith('../')) {
+    return true;
+  }
+  // Relative path or bare name with a file extension (resolved against cwd on open).
+  return /^[\w./\\-]+\.[a-zA-Z0-9]{1,8}$/.test(text);
+}
+
+/** Absolute / ~/ stay as-is; relative & bare names require a real cwd (not `/`). */
+function resolveTerminalPath(raw: string, cwd?: string): string | null {
+  const path = raw.trim().replace(/\\/g, '/');
+  if (!path || !looksLikeFilePath(path)) return null;
+  if (/^[a-zA-Z]:\//.test(path) || path.startsWith('~/')) return path;
+  if (path.startsWith('/')) {
+    // Classic bad join when spawn cwd was filesystem root: `/packages/...`.
+    // Re-resolve as a project-relative path against the live shell cwd.
+    if (/^\/packages\//.test(path)) {
+      if (!cwd || cwd === '/') return null;
+      return resolvePathAgainstBase(path.slice(1), cwd);
+    }
+    return path;
+  }
+  // Relative path — need a usable working directory (home or project, never bare `/`).
+  if (!cwd || cwd === '/') return null;
+  return resolvePathAgainstBase(path, cwd);
 }
 
 function hasUsableSize(el: HTMLElement): boolean {
@@ -75,10 +105,15 @@ export function EmbeddedTerminal({
   const onSelectionRef = useRef(onSelection);
   const onOpenUrlRef = useRef(onOpenUrl);
   const onOpenPathRef = useRef(onOpenPath);
+  const cwdRef = useRef(cwd);
   onMetaRef.current = onMeta;
   onSelectionRef.current = onSelection;
   onOpenUrlRef.current = onOpenUrl;
   onOpenPathRef.current = onOpenPath;
+  // Only adopt an explicit usable prop cwd — never clobber a live OSC-7 cwd with undefined/`/`.
+  useEffect(() => {
+    if (cwd && cwd !== '/') cwdRef.current = cwd;
+  }, [cwd]);
 
   const [error, setError] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -122,6 +157,7 @@ export function EmbeddedTerminal({
     let ro: ResizeObserver | null = null;
     let unsubData: (() => void) | undefined;
     let unsubExit: (() => void) | undefined;
+    let unsubCwd: (() => void) | undefined;
     let onDataDisp: { dispose: () => void } | null = null;
     let onScrollDisp: { dispose: () => void } | null = null;
     let onSelDisp: { dispose: () => void } | null = null;
@@ -152,7 +188,8 @@ export function EmbeddedTerminal({
       });
       const fit = new FitAddon();
       const search = new SearchAddon();
-      const links = new WebLinksAddon((_event, uri) => {
+      const links = new WebLinksAddon((event, uri) => {
+        if (!isOpenModifier(event)) return;
         onOpenUrlRef.current?.(uri);
       });
       term.loadAddon(fit);
@@ -172,23 +209,34 @@ export function EmbeddedTerminal({
           const line = term!.buffer.active.getLine(y - 1);
           if (!line) { callback(undefined); return; }
           const text = line.translateToString(true);
-          const re = /(?:[A-Za-z]:)?(?:\.\/|\.\.\/|\/)?[\w./\\-]+\.[a-zA-Z0-9]{1,8}/g;
+          // Abs / ~/ paths (any), or relative/bare paths that include a file extension.
+          const re = /(?:(?:[A-Za-z]:|\/|~\/)[\w./\\-]+|(?:\.\.?\/)?[\w./\\-]+\.[a-zA-Z0-9]{1,8})/g;
           const linksOut: Array<{
             range: { start: { x: number; y: number }; end: { x: number; y: number } };
             text: string;
-            activate: () => void;
+            decorations: { pointerCursor: boolean; underline: boolean };
+            activate: (event: MouseEvent) => void;
           }> = [];
           let m: RegExpExecArray | null;
           while ((m = re.exec(text))) {
             const path = m[0];
             if (!looksLikeFilePath(path)) continue;
+            // Skip bare names when we have no cwd to resolve against.
+            if (!resolveTerminalPath(path, cwdRef.current)) continue;
             linksOut.push({
               range: {
                 start: { x: m.index + 1, y },
                 end: { x: m.index + path.length, y },
               },
               text: path,
-              activate: () => onOpenPathRef.current?.(path),
+              // Always underline clickable paths; open still requires Cmd/Ctrl+click.
+              decorations: { pointerCursor: true, underline: true },
+              activate: (event: MouseEvent) => {
+                if (!isOpenModifier(event)) return;
+                const resolved = resolveTerminalPath(path, cwdRef.current);
+                if (!resolved) return;
+                onOpenPathRef.current?.(resolved);
+              },
             });
           }
           callback(linksOut.length ? linksOut : undefined);
@@ -198,13 +246,23 @@ export function EmbeddedTerminal({
       try {
         const cols = Math.max(term.cols || 80, 2);
         const rows = Math.max(term.rows || 24, 1);
-        const created = await api.create(terminalId, { cwd, title, cols, rows });
+        // Prefer home (main-process default). Ignore a stale `/` from earlier builds.
+        let createCwd = cwd || cwdRef.current;
+        if (!createCwd || createCwd === '/') {
+          try {
+            createCwd = await window.markusDesktop?.getDefaultCwd?.();
+          } catch { /* fall through — main process defaultCwd */ }
+        }
+        if (createCwd === '/') createCwd = undefined;
+        if (createCwd) cwdRef.current = createCwd;
+        const created = await api.create(terminalId, { cwd: createCwd, title, cols, rows });
         if (disposed) return;
         if (!created.ok) {
           setError(created.error || 'Failed to create terminal');
           return;
         }
         if (created.info) {
+          if (created.info.cwd) cwdRef.current = created.info.cwd;
           onMetaRef.current?.(terminalId, { title: created.info.title, cwd: created.info.cwd });
         }
         const buf = await api.getBuffer(terminalId, { maxChars: 120_000 });
@@ -225,6 +283,12 @@ export function EmbeddedTerminal({
         if (event.id !== terminalId || !termRef.current) return;
         termRef.current.write(event.data);
         if (!stickBottomRef.current) setHasNewBelow(true);
+      });
+      // Live cwd from OSC 7 (updated on cd) — keep path resolution accurate.
+      unsubCwd = api.onEvent?.((event) => {
+        if (event.id !== terminalId || event.type !== 'cwd' || !event.cwd) return;
+        cwdRef.current = event.cwd;
+        onMetaRef.current?.(terminalId, { cwd: event.cwd });
       });
       // Exit is handled globally (close tab / replace sole shell) — don't paint a dead prompt here.
       unsubExit = api.onExit?.(() => { /* LayoutContext.handleTerminalExit */ });
@@ -326,6 +390,7 @@ export function EmbeddedTerminal({
       if (bootTimer != null) window.clearTimeout(bootTimer);
       unsubData?.();
       unsubExit?.();
+      unsubCwd?.();
       onDataDisp?.dispose();
       onScrollDisp?.dispose();
       onSelDisp?.dispose();

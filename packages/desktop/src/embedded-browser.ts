@@ -265,6 +265,20 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
     win.contentView.addChildView(view);
     try { (view as ViewWithVisibility).setVisible?.(false); } catch { /* ignore */ }
 
+    // When the embedded page has focus, route Cmd/Ctrl+W/T to the app (close/new tab)
+    // instead of letting the guest page or OS window-close handle them.
+    view.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+      const mod = process.platform === 'darwin' ? input.meta : input.control;
+      if (!mod || input.alt || input.shift) return;
+      const key = (input.key || '').toLowerCase();
+      if (key !== 'w' && key !== 't') return;
+      event.preventDefault();
+      try {
+        win.webContents.send('app:shortcut', { type: key === 'w' ? 'close-tab' : 'new-tab' });
+      } catch { /* window gone */ }
+    });
+
     // Links with target=_blank / window.open → new right-panel tab (no popup window).
     view.webContents.setWindowOpenHandler(({ url: openUrl }) => {
       const next = (openUrl || '').trim();

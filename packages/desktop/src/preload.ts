@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('markusDesktop', {
   isMAS: process.env['MARKUS_MAS'] === 'true',
 
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
+  getDefaultCwd: () => ipcRenderer.invoke('app:get-default-cwd') as Promise<string>,
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
   focusWindow: () => ipcRenderer.invoke('app:focus-window'),
   openInBrowser: () => ipcRenderer.invoke('app:open-in-browser'),
@@ -39,6 +40,13 @@ contextBridge.exposeInMainWorld('markusDesktop', {
 
   onUpdateDownloaded: (callback: (info: { version: string }) => void) => {
     ipcRenderer.on('update:downloaded', (_event, info) => callback(info));
+  },
+
+  /** Menu accelerators (Cmd/Ctrl+W / T) → right-panel tab actions. */
+  onAppShortcut: (callback: (event: { type: 'close-tab' | 'new-tab' }) => void) => {
+    const handler = (_: unknown, event: { type: 'close-tab' | 'new-tab' }) => callback(event);
+    ipcRenderer.on('app:shortcut', handler);
+    return () => { ipcRenderer.removeListener('app:shortcut', handler); };
   },
 
   onNotification: (callback: (data: { title: string; body: string; type: string }) => void) => {
@@ -130,13 +138,13 @@ contextBridge.exposeInMainWorld('markusDesktop', {
       return () => { ipcRenderer.removeListener('terminal:exit', handler); };
     },
     onEvent: (callback: (event: {
-      type: 'opened' | 'closed' | 'selected';
+      type: 'opened' | 'closed' | 'selected' | 'cwd';
       id: string;
       title?: string;
       cwd?: string;
     }) => void) => {
       const handler = (_: unknown, event: {
-        type: 'opened' | 'closed' | 'selected';
+        type: 'opened' | 'closed' | 'selected' | 'cwd';
         id: string;
         title?: string;
         cwd?: string;

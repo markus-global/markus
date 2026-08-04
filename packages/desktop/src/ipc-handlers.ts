@@ -22,6 +22,7 @@ import {
   destroyEmbeddedTerminal,
   getEmbeddedTerminalBuffer,
   listEmbeddedTerminals,
+  defaultEmbeddedTerminalCwd,
   resizeEmbeddedTerminal,
   selectEmbeddedTerminal,
   writeEmbeddedTerminal,
@@ -31,6 +32,8 @@ export function setupIpcHandlers(): void {
   ipcMain.handle('app:get-version', () => {
     return app.getVersion();
   });
+
+  ipcMain.handle('app:get-default-cwd', () => defaultEmbeddedTerminalCwd());
 
   // Hand a pending markus://auth deep-link session to the renderer (cold start).
   // peek = read without clearing (consent gate); consume = take ownership.

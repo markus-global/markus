@@ -75,9 +75,14 @@ function loadPty(): PtyModule {
   }
 }
 
+const FISH_OSC7_INIT =
+  "function __markus_osc7 --on-variable PWD --on-event fish_prompt; "
+  + "printf '\\e]7;file://localhost%s\\a' $PWD; end; __markus_osc7";
+
 function shellArgsFor(file: string): string[] {
-  // fish: interactive; bash/zsh: login so profile/rc load like a real terminal.
-  if (/fish$/i.test(file)) return ['-i'];
+  // fish: interactive + silent OSC 7 cwd reporter via -C (no prompt noise).
+  if (/fish$/i.test(file)) return ['-i', '-C', FISH_OSC7_INIT];
+  // bash/zsh: login so profile/rc load like a real terminal.
   if (/\/(?:ba)?sh$|zsh$/i.test(file)) return ['-l'];
   return [];
 }
@@ -114,10 +119,88 @@ function defaultShell(): { file: string; args: string[] } {
   return { file: '/bin/sh', args: [] };
 }
 
-function defaultCwd(cwd?: string): string {
+/** Default embedded-terminal cwd is the user home directory (like a new Terminal.app tab). */
+export function defaultEmbeddedTerminalCwd(cwd?: string): string {
   if (cwd && existsSync(cwd)) return cwd;
   const home = homedir();
-  return existsSync(home) ? home : process.cwd();
+  if (home && existsSync(home)) return home;
+  try {
+    const started = process.cwd();
+    if (started && existsSync(started)) return started;
+  } catch { /* ignore */ }
+  return '/';
+}
+
+function defaultCwd(cwd?: string): string {
+  return defaultEmbeddedTerminalCwd(cwd);
+}
+
+/** Parse OSC 7 (`]7;file://…`) cwd reports from shell integration. */
+function extractOsc7Cwds(chunk: string): string[] {
+  const out: string[] = [];
+  // BEL-terminated or ST-terminated (`ESC \`)
+  const re = /\x1b\]7;([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(chunk))) {
+    const uri = m[1] || '';
+    let path = uri;
+    if (/^file:/i.test(uri)) {
+      try {
+        path = decodeURIComponent(uri.replace(/^file:\/\//i, ''));
+      } catch {
+        path = uri.replace(/^file:\/\//i, '');
+      }
+      // file://hostname/path → drop hostname; file:///path → /path
+      if (/^\/[A-Za-z]:\//.test(path)) {
+        path = path.slice(1); // Windows file:///C:/…
+      } else if (/^[^/]/.test(path) && path.includes('/')) {
+        // hostname/rest → /rest
+        const slash = path.indexOf('/');
+        path = path.slice(slash);
+      }
+    }
+    if (path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)) {
+      out.push(path.replace(/\\/g, '/'));
+    }
+  }
+  return out;
+}
+
+function applyCwdFromChunk(slot: Slot, chunk: string): void {
+  const cwds = extractOsc7Cwds(chunk);
+  if (cwds.length === 0) return;
+  const next = cwds[cwds.length - 1]!;
+  if (!next || next === slot.cwd) return;
+  slot.cwd = next;
+  emitToRenderers('terminal:event', { type: 'cwd', id: slot.id, cwd: next });
+}
+
+/**
+ * Ask bash/zsh to emit OSC 7 on cd / prompt (best-effort).
+ * fish is handled silently via `fish -C` in shellArgsFor.
+ */
+function installCwdReporter(pty: PtyProcess, shellFile: string): void {
+  try {
+    if (/fish$/i.test(shellFile)) return;
+    if (/zsh$/i.test(shellFile)) {
+      pty.write(
+        "functions -q __markus_osc7 2>/dev/null || __markus_osc7() { printf '\\e]7;file://localhost%s\\a' \"$PWD\"; }; "
+        + "typeset -ga precmd_functions chpwd_functions; "
+        + "(( ${precmd_functions[(Ie)__markus_osc7]} )) || precmd_functions+=(__markus_osc7); "
+        + "(( ${chpwd_functions[(Ie)__markus_osc7]} )) || chpwd_functions+=(__markus_osc7); "
+        + "__markus_osc7\n",
+      );
+      return;
+    }
+    if (/(?:ba)?sh$/i.test(shellFile)) {
+      pty.write(
+        "__markus_osc7() { printf '\\e]7;file://localhost%s\\a' \"$PWD\"; }; "
+        + "case \";${PROMPT_COMMAND};\" in *;__markus_osc7;*) ;; *) "
+        + "PROMPT_COMMAND=\"__markus_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\";; esac; "
+        + "__markus_osc7\n",
+      );
+    }
+  } catch { /* non-fatal */ }
 }
 
 function appendBuffer(slot: Slot, data: string): void {
@@ -194,6 +277,7 @@ export function createEmbeddedTerminal(
     };
 
     proc.onData((data) => {
+      applyCwdFromChunk(slot, data);
       appendBuffer(slot, data);
       emitToRenderers('terminal:data', { id, data });
     });
@@ -206,6 +290,8 @@ export function createEmbeddedTerminal(
 
     sessions.set(id, slot);
     selectedId = id;
+    // After the shell starts, install OSC 7 reporters so relative path clicks track `cd`.
+    setTimeout(() => installCwdReporter(proc, file), 80);
     emitToRenderers('terminal:event', { type: 'opened', id, title, cwd });
     return {
       ok: true,

@@ -5,6 +5,8 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { openExternal } from '../hooks/useElectron.ts';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from './ContentRenderer.tsx';
+import { CodeFileEditor, confirmDiscardDirty, languageFromPath } from './CodeFileEditor.tsx';
+import { FilePreviewEditor } from './FilePreviewEditor.tsx';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
 import type { RightPanelMode, RightPanelPayload, RightPanelTab } from '../contexts/LayoutContext.tsx';
@@ -129,10 +131,20 @@ export function RightPanel({
   const [selectionToolbar, setSelectionToolbar] = useState<SelectionToolbar | null>(null);
   const [tabOwners, setTabOwners] = useState<Record<number, TabOwner>>({});
   const [termOwners, setTermOwners] = useState<Record<string, TabOwner>>({});
+  const [editorDirty, setEditorDirty] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
   const activeTabBtnRef = useRef<HTMLButtonElement>(null);
   const terminalApiRef = useRef<EmbeddedTerminalApi | null>(null);
+  const editorDirtyRef = useRef(false);
+  editorDirtyRef.current = editorDirty;
+
+  const confirmLeaveEditor = useCallback(() => {
+    return confirmDiscardDirty(
+      editorDirtyRef.current,
+      t('common:fileEditor.discardConfirm', { defaultValue: 'Discard unsaved changes?' }),
+    );
+  }, [t]);
 
   // Hydrate + live-update which agent currently owns each embedded-browser pageId.
   useEffect(() => {
@@ -228,17 +240,19 @@ export function RightPanel({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (!confirmLeaveEditor()) return;
         if (fullscreen && onToggleFullscreen) onToggleFullscreen();
         else onClose();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, fullscreen, onToggleFullscreen]);
+  }, [onClose, fullscreen, onToggleFullscreen, confirmLeaveEditor]);
 
   useEffect(() => {
     let cancelled = false;
     setSelectionToolbar(null);
+    setEditorDirty(false);
 
     // URL / terminal tabs switch instantly — do not flash a shared "loading" skeleton.
     if (payload.kind === 'url') {
@@ -616,9 +630,13 @@ export function RightPanel({
                       onPointerDown={e => {
                         // pointerdown beats click cancellation when native views steal focus.
                         if (e.button !== 0) return;
+                        if (tab.id !== activeTabId && !confirmLeaveEditor()) return;
                         onSelectTab?.(tab.id);
                       }}
-                      onClick={() => onSelectTab?.(tab.id)}
+                      onClick={() => {
+                        if (tab.id !== activeTabId && !confirmLeaveEditor()) return;
+                        onSelectTab?.(tab.id);
+                      }}
                     >
                       {owner && (
                         <span
@@ -638,11 +656,13 @@ export function RightPanel({
                           if (e.button !== 0) return;
                           e.preventDefault();
                           e.stopPropagation();
+                          if (tab.id === activeTabId && !confirmLeaveEditor()) return;
                           onCloseTab(tab.id);
                         }}
                         onClick={e => {
                           e.preventDefault();
                           e.stopPropagation();
+                          if (tab.id === activeTabId && !confirmLeaveEditor()) return;
                           onCloseTab(tab.id);
                         }}
                         className={`shrink-0 mr-1 p-0.5 rounded hover:bg-surface-overlay transition-colors ${
@@ -736,7 +756,7 @@ export function RightPanel({
               </button>
             )}
             <button
-              onClick={onClose}
+              onClick={() => { if (confirmLeaveEditor()) onClose(); }}
               title={t('common:collapsePanel', { defaultValue: 'Hide panel' })}
               aria-label={t('common:collapsePanel', { defaultValue: 'Hide panel' })}
               className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
@@ -752,6 +772,7 @@ export function RightPanel({
           key={contentKey}
           className={`flex-1 min-w-0 min-h-0 ${
             preview.mode === 'url' || preview.mode === 'terminal'
+              || (preview.mode === 'content' && ['code', 'json', 'text', 'markdown', 'html'].includes(preview.format))
               ? 'overflow-hidden p-2 flex flex-col'
               : 'overflow-auto p-4'
           }`}
@@ -825,17 +846,48 @@ export function RightPanel({
             </div>
           )}
 
-          {preview.mode === 'content' && (
-            <div ref={contentRef} className="min-w-0 max-w-full break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_img]:max-w-full">
-              <ContentRenderer
-                content={preview.content}
-                format={preview.format}
-                className="text-fg-secondary text-sm"
-                onHtmlSelection={handleHtmlSelection}
-                basePath={reference ? reference.replace(/[/\\][^/\\]+$/, '') : undefined}
-              />
-            </div>
-          )}
+          {preview.mode === 'content' && (() => {
+            const basePath = reference ? reference.replace(/[/\\][^/\\]+$/, '') : undefined;
+            const editablePath = reference && !isUrl(reference) ? reference : '';
+            const fmt = preview.format;
+            if (editablePath && (fmt === 'code' || fmt === 'json' || fmt === 'text')) {
+              return (
+                <div ref={contentRef} className="flex-1 min-h-0 min-w-0 w-full flex flex-col">
+                  <CodeFileEditor
+                    path={editablePath}
+                    initialContent={preview.content}
+                    language={languageFromPath(editablePath, fmt)}
+                    onDirtyChange={setEditorDirty}
+                  />
+                </div>
+              );
+            }
+            if (editablePath && (fmt === 'markdown' || fmt === 'html')) {
+              return (
+                <div ref={contentRef} className="flex-1 min-h-0 min-w-0 w-full flex flex-col">
+                  <FilePreviewEditor
+                    path={editablePath}
+                    content={preview.content}
+                    format={fmt}
+                    basePath={basePath}
+                    onHtmlSelection={handleHtmlSelection}
+                    onDirtyChange={setEditorDirty}
+                  />
+                </div>
+              );
+            }
+            return (
+              <div ref={contentRef} className="min-w-0 max-w-full overflow-auto break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_img]:max-w-full">
+                <ContentRenderer
+                  content={preview.content}
+                  format={fmt}
+                  className="text-fg-secondary text-sm"
+                  onHtmlSelection={handleHtmlSelection}
+                  basePath={basePath}
+                />
+              </div>
+            );
+          })()}
 
           {preview.mode === 'artifact' && (
             <div ref={contentRef} className="min-w-0 max-w-full break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_img]:max-w-full">

@@ -140,7 +140,9 @@ export function App() {
   const toggleTerminalPanel = layout?.toggleTerminalPanel;
   const cycleRightPanelTab = layout?.cycleRightPanelTab;
   const activateRightPanelTabAt = layout?.activateRightPanelTabAt;
+  const openNewRightPanelTab = layout?.openNewRightPanelTab;
   const rightPanelOpen = layout?.rightPanelOpen ?? false;
+  const activeRightPanelTabId = layout?.activeRightPanelTabId ?? null;
 
   // When the agent opens/selects/closes an embedded browser page, mirror it into the right panel.
   const openRightPanel = layout?.openRightPanel;
@@ -201,6 +203,10 @@ export function App() {
         );
         // Only remove UI tab if still present; LayoutContext destroy already closed PTY.
         if (tab && closeRightPanelTab) closeRightPanelTab(tab.id);
+        return;
+      }
+      if (event.type === 'cwd') {
+        if (event.cwd) updateRightPanelTerminalTab?.(event.id, { cwd: event.cwd });
         return;
       }
       if (event.type === 'selected') {
@@ -279,8 +285,29 @@ export function App() {
     return () => { document.removeEventListener('keydown', onKey); window.removeEventListener('markus:open-search', onOpen); };
   }, [isMobile]);
 
+  const closeActiveRightPanelTab = useCallback(() => {
+    if (!rightPanelOpen || !activeRightPanelTabId || !closeRightPanelTab) return false;
+    // Browser / terminal (and other right-panel tabs): close active tab only — never the window.
+    closeRightPanelTab(activeRightPanelTabId);
+    return true;
+  }, [rightPanelOpen, activeRightPanelTabId, closeRightPanelTab]);
+
+  // Desktop menu accelerators (Cmd/Ctrl+W / T) arrive via IPC so they never close the window.
+  useEffect(() => {
+    const unsub = window.markusDesktop?.onAppShortcut?.((event) => {
+      if (event.type === 'close-tab') {
+        closeActiveRightPanelTab();
+        return;
+      }
+      if (event.type === 'new-tab') {
+        openNewRightPanelTab?.();
+      }
+    });
+    return () => { unsub?.(); };
+  }, [closeActiveRightPanelTab, openNewRightPanelTab]);
+
   // Layout shortcuts: B left, L browser panel, J terminal panel, / help,
-  // Shift+] / [ cycle tabs, 1–9 jump tab.
+  // Shift+] / [ cycle tabs, 1–9 jump tab, W close tab, T new tab.
   useEffect(() => {
     if (isMobile || !toggleLeftCollapsed || !toggleRightPanel) return;
     const isMac = navigator.platform.toUpperCase().includes('MAC');
@@ -326,6 +353,18 @@ export function App() {
 
       if (e.shiftKey) return;
       const key = e.key.toLowerCase();
+      // Always prevent Cmd/Ctrl+W from reaching the OS / window-close path.
+      if (key === 'w') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeActiveRightPanelTab();
+        return;
+      }
+      if (key === 't') {
+        e.preventDefault();
+        openNewRightPanelTab?.();
+        return;
+      }
       if (key === 'b') {
         e.preventDefault();
         toggleLeftCollapsed();
@@ -340,8 +379,8 @@ export function App() {
         toggleTerminalPanel();
       }
     };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
   }, [
     isMobile,
     toggleLeftCollapsed,
@@ -350,6 +389,8 @@ export function App() {
     cycleRightPanelTab,
     activateRightPanelTabAt,
     rightPanelOpen,
+    closeActiveRightPanelTab,
+    openNewRightPanelTab,
   ]);
 
   const navigate = useCallback((p: PageId, params?: Record<string, string>) => {
