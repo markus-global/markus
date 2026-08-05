@@ -5,13 +5,29 @@ import {
   formatShortcutKeys,
   type ShortcutGroupId,
 } from '../lib/keyboard-shortcuts.ts';
+import { PAGE, type PageId } from '../routes.ts';
 
-const GROUP_ORDER: ShortcutGroupId[] = ['layout', 'search', 'rightPanel', 'terminal', 'help'];
+const GROUP_ORDER: ShortcutGroupId[] = ['layout', 'tasks', 'search', 'rightPanel', 'terminal', 'help'];
 
-export function ShortcutsHelpModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+function pageScope(page: PageId | undefined): 'team' | 'work' | 'any' {
+  if (page === PAGE.TEAM) return 'team';
+  if (page === PAGE.WORK) return 'work';
+  return 'any';
+}
+
+export function ShortcutsHelpModal({
+  open,
+  onClose,
+  page,
+}: {
+  open: boolean;
+  onClose: () => void;
+  page?: PageId;
+}) {
   const { t } = useTranslation('common');
   const isMac = typeof navigator !== 'undefined'
     && navigator.platform.toUpperCase().includes('MAC');
+  const scope = pageScope(page);
 
   useEffect(() => {
     if (!open) return;
@@ -52,7 +68,11 @@ export function ShortcutsHelpModal({ open, onClose }: { open: boolean; onClose: 
         </div>
         <div className="px-4 py-3 space-y-4">
           {GROUP_ORDER.map(group => {
-            const items = KEYBOARD_SHORTCUTS.filter(s => s.group === group);
+            const items = KEYBOARD_SHORTCUTS.filter(s => {
+              if (s.group !== group) return false;
+              const p = s.page ?? 'any';
+              return p === 'any' || p === scope || scope === 'any';
+            });
             if (items.length === 0) return null;
             return (
               <section key={group}>

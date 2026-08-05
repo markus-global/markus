@@ -368,13 +368,15 @@ export function App() {
       if (key === 'b') {
         e.preventDefault();
         toggleLeftCollapsed();
-      } else if (key === 'l') {
+      } else if (page === PAGE.TEAM && key === 'l') {
+        // Team Chat only: browser right panel. Tasks page owns Cmd+L for item detail.
         // Don't steal Ctrl+L clear-screen from an focused xterm (Cmd+L still toggles on Mac).
         if (!isMac && isXtermTarget(e.target)) return;
         if (isMac && isXtermTarget(e.target) && e.ctrlKey) return;
         e.preventDefault();
         toggleRightPanel();
-      } else if (key === 'j' && toggleTerminalPanel) {
+      } else if (page === PAGE.TEAM && key === 'j' && toggleTerminalPanel) {
+        // Team Chat only: terminal right panel. Tasks page owns Cmd+J for project detail.
         e.preventDefault();
         toggleTerminalPanel();
       }
@@ -383,6 +385,7 @@ export function App() {
     return () => document.removeEventListener('keydown', onKey, true);
   }, [
     isMobile,
+    page,
     toggleLeftCollapsed,
     toggleRightPanel,
     toggleTerminalPanel,
@@ -759,7 +762,7 @@ export function App() {
         <SearchModal onClose={() => setShowSearchModal(false)} currentPage={page} />
       )}
       {!isMobile && (
-        <ShortcutsHelpModal open={showShortcutsHelp} onClose={() => setShowShortcutsHelp(false)} />
+        <ShortcutsHelpModal open={showShortcutsHelp} onClose={() => setShowShortcutsHelp(false)} page={page} />
       )}
 
       {/* Edit profile — available from sidebar account menu without leaving the page */}

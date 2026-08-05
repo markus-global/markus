@@ -10,6 +10,7 @@ import { Avatar } from '../components/Avatar.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
+import { ProjectSidebar } from '../components/ProjectSidebar.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -17,6 +18,14 @@ import { usePageActive } from '../hooks/usePageActive.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
+import { useLayout } from '../contexts/LayoutContext.tsx';
+import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+
+const WORK_L1_COLLAPSED_KEY = 'markus_work_l1_collapsed';
+const BOARD_TYPE_ORDER = ['backlog', 'kanban', 'dag', 'workflows'] as const;
+type BoardType = typeof BOARD_TYPE_ORDER[number];
+type RightDetailMode = 'closed' | 'project' | 'item' | 'empty';
+type NavFocus = 'projects' | 'items';
 
 /**
  * Convert a live `agent:activity_log` WS payload into the generic execution
@@ -3100,6 +3109,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   if (isMobile) {
     return (
       <div
+        data-work-item-id={row.data.id}
         onClick={() => row.kind === 'task' ? onTaskClick(row.data) : onReqClick(row.data)}
         className={`px-3 py-2 border-b border-border-default/40 cursor-pointer transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${selected ? 'bg-brand-500/10 border-l-brand-500' : 'active:bg-surface-elevated/50'}`}
       >
@@ -3143,6 +3153,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
 
   return (
     <div
+      data-work-item-id={row.data.id}
       draggable
       onDragStart={e => onRowDragStart(e, idx)}
       onDragEnd={onRowDragEnd}
@@ -4301,6 +4312,9 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const subStatusBadges = useMemo(() => buildSubStatusBadges(t), [t]);
   const reqStatusBadges = useMemo(() => buildReqStatusBadges(t), [t]);
   const isMobile = useIsMobile();
+  const layout = useLayout();
+  const layoutLeftCollapsed = layout?.leftCollapsed ?? false;
+
   const workContainerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   useEffect(() => {
@@ -4311,15 +4325,65 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     setContainerWidth(el.clientWidth);
     return () => ro.disconnect();
   }, []);
-  const availableWidth = containerWidth || window.innerWidth;
-  const containerMeasured = useRef(false);
-  const detailPanel = useResizablePanel({ side: 'right', defaultWidth: Math.round(availableWidth / 2), minWidth: 380, maxWidth: Math.round(availableWidth * 0.8), storageKey: 'markus_projects_detail_v4' });
+
+  // L1 project sidebar — mirrors Team Chat collapse via Cmd+B (layout.leftCollapsed).
+  const [l1Collapsed, setL1Collapsed] = useState(() => {
+    if (previewMode) return false;
+    try { return localStorage.getItem(WORK_L1_COLLAPSED_KEY) === '1'; }
+    catch { return false; }
+  });
+  const setL1CollapsedPersisted = useCallback((collapsed: boolean) => {
+    setL1Collapsed(collapsed);
+    try { localStorage.setItem(WORK_L1_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* ignore */ }
+  }, []);
+  const prevLayoutLeftCollapsed = useRef(layoutLeftCollapsed);
   useEffect(() => {
-    if (containerWidth > 0 && !containerMeasured.current) {
-      containerMeasured.current = true;
-      detailPanel.setWidth(Math.round(containerWidth / 2));
-    }
-  }, [containerWidth]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (previewMode || isMobile) return;
+    if (prevLayoutLeftCollapsed.current === layoutLeftCollapsed) return;
+    prevLayoutLeftCollapsed.current = layoutLeftCollapsed;
+    setL1Collapsed(layoutLeftCollapsed);
+  }, [layoutLeftCollapsed, previewMode, isMobile]);
+
+  const projectSidebar = useResizablePanel({
+    side: 'left',
+    defaultWidth: 240,
+    minWidth: 180,
+    maxWidth: 360,
+    storageKey: 'markus_work_l1',
+  });
+
+  const RESIZE_HANDLE_W = 6;
+  const l1RailWidth = (!isMobile && !l1Collapsed) ? projectSidebar.width + RESIZE_HANDLE_W : 0;
+  const spaceForMainAndDetail = Math.max(0, (containerWidth || window.innerWidth) - l1RailWidth - RESIZE_HANDLE_W - 8);
+  const evenSplitWidth = Math.max(320, Math.round(spaceForMainAndDetail / 2));
+  const [panelWidthPref, setPanelWidthPref] = useState<number | 'auto'>('auto');
+  const maxDetailWidth = Math.max(320, spaceForMainAndDetail - 280);
+  const desiredDetailWidth = panelWidthPref === 'auto' ? Math.min(evenSplitWidth, maxDetailWidth) : panelWidthPref;
+  const effectiveDetailWidth = Math.max(320, Math.min(desiredDetailWidth, maxDetailWidth));
+  const effectiveDetailWidthRef = useRef(effectiveDetailWidth);
+  effectiveDetailWidthRef.current = effectiveDetailWidth;
+  const maxDetailWidthRef = useRef(maxDetailWidth);
+  maxDetailWidthRef.current = maxDetailWidth;
+  const onDetailResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = effectiveDetailWidthRef.current;
+    const onMove = (ev: MouseEvent) => {
+      const next = Math.max(320, Math.min(maxDetailWidthRef.current, startW + (startX - ev.clientX)));
+      setPanelWidthPref(next);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const mobileShowDetailRef = useRef(mobileShowDetail);
   mobileShowDetailRef.current = mobileShowDetail;
@@ -4327,6 +4391,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
   const [viewMode, setViewMode] = useState<ViewMode>('all');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [rightDetailMode, setRightDetailMode] = useState<RightDetailMode>('closed');
+  const [navFocus, setNavFocus] = useState<NavFocus>('projects');
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>(previewData?.board ?? {});
   const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
   const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
@@ -4334,8 +4400,6 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>(previewData?.allRequirements ?? []);
   const [loading, setLoading] = useState(previewData ? false : true);
   const [flash, setFlash] = useState('');
-  const [showProjectSettings, setShowProjectSettings] = useState(false);
-  const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
   const openCreateReq = useCallback(() => {
     setReqProjectId(selectedProjectId ?? '');
     setShowCreateReq(true);
@@ -4365,13 +4429,19 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     }
     return null;
   });
+  // Sync preview selection into right panel on first paint
+  useEffect(() => {
+    if (previewData?.initialSelectedReqId && selectedReq) {
+      setRightDetailMode('item');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [agentFilter, setAgentFilter] = useState<Set<string>>(new Set());
   const [myTasksOnly, setMyTasksOnly] = useState(false);
   const [projectFilter, setProjectFilter] = useState<Set<string>>(new Set());
-  const savedProjectFilterRef = useRef<Set<string>>(new Set());
   const projectFilterRef = useRef<Set<string>>(new Set());
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
-  const [boardType, setBoardType] = useState<'backlog' | 'kanban' | 'dag' | 'workflows'>(previewData?.initialBoardType ?? 'backlog');
+  const [boardType, setBoardType] = useState<BoardType>(previewData?.initialBoardType ?? 'backlog');
   const [dagExpandReqId, setDagExpandReqId] = useState<string | null>(null);
   const boardTabs = useMemo(() => [{ id: 'backlog' as const }, { id: 'kanban' as const }, { id: 'dag' as const }, { id: 'workflows' as const }], []);
   const boardSwipe = useSwipeTabs(boardTabs, boardType, setBoardType);
@@ -4398,7 +4468,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
 
   const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
 
-  // Escape closes the top-most open modal/sheet (NewProjectModal handles its own).
+  // Escape closes the top-most open modal/sheet, then the right detail pane.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
@@ -4406,28 +4476,41 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       else if (showCreateTask) { setShowCreateTask(false); setTaskCreateError(''); }
       else if (showCreateReq) { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); setReqCreateError(''); }
       else if (showFilterSheet) setShowFilterSheet(false);
+      else if (rightDetailMode !== 'closed') {
+        setRightDetailMode('closed');
+        setSelectedTask(null);
+        setSelectedReq(null);
+        if (isMobile && mobileShowDetailRef.current) setMobileShowDetail(false);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [rejectReqId, showCreateTask, showCreateReq, showFilterSheet]);
+  }, [rejectReqId, showCreateTask, showCreateReq, showFilterSheet, rightDetailMode, isMobile]);
 
   const selectedProject = projects.find(p => p.id === selectedProjectId) ?? null;
   const selectedProjectTeamId = selectedProject?.teamIds?.[0] ?? null;
-  const settingsProject = selectedProject ?? projects.find(p => p.id === settingsProjectId) ?? null;
+  const activeProjects = useMemo(
+    () => projects.filter(p => p.status !== 'archived'),
+    [projects],
+  );
 
-  const closeProjectSettings = useCallback(() => {
-    setShowProjectSettings(false);
-    setSettingsProjectId(null);
-  }, []);
+  const openProjectDetail = useCallback(() => {
+    if (!selectedProjectId) return;
+    setSelectedTask(null);
+    setSelectedReq(null);
+    setRightDetailMode('project');
+    setPanelWidthPref('auto');
+    if (isMobile) setMobileShowDetail(true);
+  }, [selectedProjectId, isMobile]);
 
-  const openProjectSettings = useCallback((projectId: string) => {
-    if (showProjectSettings && (selectedProjectId === projectId || settingsProjectId === projectId)) {
-      closeProjectSettings();
+  const toggleProjectDetail = useCallback(() => {
+    if (rightDetailMode === 'project') {
+      setRightDetailMode('closed');
+      if (isMobile) setMobileShowDetail(false);
       return;
     }
-    if (!selectedProjectId) setSettingsProjectId(projectId);
-    setShowProjectSettings(true);
-  }, [showProjectSettings, selectedProjectId, settingsProjectId, closeProjectSettings]);
+    openProjectDetail();
+  }, [rightDetailMode, openProjectDetail, isMobile]);
 
   useEffect(() => { projectFilterRef.current = projectFilter; }, [projectFilter]);
 
@@ -4481,11 +4564,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   }, [previewMode, previewData]);
 
   const handleSelectTask = useCallback((task: TaskInfo) => {
+    setNavFocus('items');
     setSelectedTask(prev => {
-      if (prev?.id === task.id) {
+      if (prev?.id === task.id && rightDetailMode === 'item') {
+        setRightDetailMode('closed');
         if (isMobile && mobileShowDetailRef.current) setMobileShowDetail(false);
         return null;
       }
+      setRightDetailMode('item');
+      setPanelWidthPref('auto');
       if (isMobile) {
         setMobileShowDetail(true);
         history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash);
@@ -4493,14 +4580,18 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       return task;
     });
     setSelectedReq(null);
-  }, [isMobile]);
+  }, [isMobile, rightDetailMode]);
 
   const handleSelectReq = useCallback((req: RequirementInfo) => {
+    setNavFocus('items');
     setSelectedReq(prev => {
-      if (prev?.id === req.id) {
+      if (prev?.id === req.id && rightDetailMode === 'item') {
+        setRightDetailMode('closed');
         if (isMobile && mobileShowDetailRef.current) setMobileShowDetail(false);
         return null;
       }
+      setRightDetailMode('item');
+      setPanelWidthPref('auto');
       if (isMobile) {
         setMobileShowDetail(true);
         history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash);
@@ -4508,20 +4599,37 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       return req;
     });
     setSelectedTask(null);
-  }, [isMobile]);
+  }, [isMobile, rightDetailMode]);
 
   const handleCloseDetail = useCallback(() => {
     setSelectedTask(null);
     setSelectedReq(null);
+    setRightDetailMode('closed');
     if (isMobile && mobileShowDetailRef.current) {
       setMobileShowDetail(false);
     }
   }, [isMobile]);
 
+  const selectedTaskRef = useRef(selectedTask);
+  selectedTaskRef.current = selectedTask;
+  const selectedReqRef = useRef(selectedReq);
+  selectedReqRef.current = selectedReq;
+  const rightDetailModeRef = useRef(rightDetailMode);
+  rightDetailModeRef.current = rightDetailMode;
+  const navFocusRef = useRef(navFocus);
+  navFocusRef.current = navFocus;
+  const l1CollapsedRef = useRef(l1Collapsed);
+  l1CollapsedRef.current = l1Collapsed;
+  const boardTypeRef = useRef(boardType);
+  boardTypeRef.current = boardType;
+
   const handleCloseTask = useCallback(() => {
     setSelectedTask(null);
-    if (!selectedReqRef.current && isMobile && mobileShowDetailRef.current) {
-      setMobileShowDetail(false);
+    if (!selectedReqRef.current) {
+      setRightDetailMode('closed');
+      if (isMobile && mobileShowDetailRef.current) {
+        setMobileShowDetail(false);
+      }
     }
   }, [isMobile]);
 
@@ -4532,28 +4640,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         setMobileShowDetail(false);
         setSelectedTask(null);
         setSelectedReq(null);
+        setRightDetailMode('closed');
       }
     };
     window.addEventListener('popstate', handler);
     return () => window.removeEventListener('popstate', handler);
   }, [isMobile]);
-
-  const selectedTaskRef = useRef(selectedTask);
-  selectedTaskRef.current = selectedTask;
-  const selectedReqRef = useRef(selectedReq);
-  selectedReqRef.current = selectedReq;
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (selectedTaskRef.current) { setSelectedTask(null); return; }
-      if (selectedReqRef.current) { setSelectedReq(null); return; }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, []);
 
   useEffect(() => {
     if (previewMode) return;
@@ -4663,13 +4755,13 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     }
   }, [allRequirements]);
 
-  // Ensure a navigated-to item's project is visible in the current filters
+  // Ensure a navigated-to item's project is selected in L1
   const ensureProjectVisible = useCallback((projectId: string | undefined) => {
     if (!projectId) return;
-    const pf = projectFilterRef.current;
-    if (pf.size > 0 && !pf.has(projectId)) {
-      setProjectFilter(prev => new Set([...prev, projectId]));
-    }
+    setSelectedProjectId(projectId);
+    setViewMode('project');
+    setProjectFilter(new Set());
+    history.replaceState(null, '', hashPath(PAGE.WORK, projectId));
   }, []);
 
   const [scrollToComments, setScrollToComments] = useState(false);
@@ -4677,12 +4769,18 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const forceOpenTask = useCallback((task: TaskInfo, opts?: { scrollToComments?: boolean }) => {
     setSelectedTask(task);
     setSelectedReq(null);
+    setRightDetailMode('item');
+    setNavFocus('items');
+    setPanelWidthPref('auto');
     if (opts?.scrollToComments) setScrollToComments(true);
     if (isMobile) { setMobileShowDetail(true); }
   }, [isMobile]);
   const forceOpenReq = useCallback((req: RequirementInfo, opts?: { scrollToComments?: boolean }) => {
     setSelectedReq(req);
     setSelectedTask(null);
+    setRightDetailMode('item');
+    setNavFocus('items');
+    setPanelWidthPref('auto');
     if (opts?.scrollToComments) setScrollToComments(true);
     if (isMobile) { setMobileShowDetail(true); }
   }, [isMobile]);
@@ -4736,20 +4834,75 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     }
   }, [allRequirements, forceOpenReq, ensureProjectVisible]);
 
+  const selectProject = useCallback((projectId: string, opts?: { keepItemDetail?: boolean }) => {
+    setProjectFilter(new Set());
+    setSelectedProjectId(projectId);
+    setViewMode('project');
+    setNavFocus(l1Collapsed ? 'items' : 'projects');
+    if (!opts?.keepItemDetail) {
+      setSelectedTask(null);
+      setSelectedReq(null);
+      setRightDetailMode(prev => (prev === 'closed' ? prev : 'project'));
+    }
+    history.replaceState(null, '', hashPath(PAGE.WORK, projectId));
+  }, [l1Collapsed]);
+
+  const selectAllProjects = useCallback((opts?: { keepItemDetail?: boolean }) => {
+    setProjectFilter(new Set());
+    setSelectedProjectId(null);
+    setViewMode('all');
+    setNavFocus(l1Collapsed ? 'items' : 'projects');
+    if (!opts?.keepItemDetail) {
+      setSelectedTask(null);
+      setSelectedReq(null);
+      // No single project — close project detail; keep empty shell if panel was open.
+      setRightDetailMode(prev => {
+        if (prev === 'closed') return prev;
+        if (prev === 'project') return 'closed';
+        return 'empty';
+      });
+    }
+    history.replaceState(null, '', hashPath(PAGE.WORK));
+  }, [l1Collapsed]);
+
   // Initial project selection from hash / localStorage (runs once on mount)
+  const didInitProject = useRef(false);
   useEffect(() => {
+    if (didInitProject.current) return;
     const hashParts = window.location.hash.slice(1).split('/');
     if (resolvePageId(hashParts[0]) === PAGE.WORK && hashParts[1]) {
-      selectProject(hashParts[1]);
-    } else {
-      const navProjectId = localStorage.getItem('markus_nav_projectId');
-      if (navProjectId) {
-        localStorage.removeItem('markus_nav_projectId');
-        selectProject(navProjectId);
-      }
+      didInitProject.current = true;
+      selectProject(hashParts[1], { keepItemDetail: true });
+      return;
     }
+    const navProjectId = localStorage.getItem('markus_nav_projectId');
+    if (navProjectId) {
+      didInitProject.current = true;
+      localStorage.removeItem('markus_nav_projectId');
+      selectProject(navProjectId, { keepItemDetail: true });
+      return;
+    }
+    // Default: All projects
+    didInitProject.current = true;
+    selectAllProjects({ keepItemDetail: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // If a selected project disappears (deleted/archived), fall back to All.
+  useEffect(() => {
+    if (loading) return;
+    if (!selectedProjectId) {
+      didInitProject.current = true;
+      if (viewMode !== 'all') setViewMode('all');
+      return;
+    }
+    if (activeProjects.some(p => p.id === selectedProjectId)) {
+      didInitProject.current = true;
+      return;
+    }
+    didInitProject.current = true;
+    selectAllProjects({ keepItemDetail: true });
+  }, [loading, activeProjects, selectedProjectId, selectAllProjects, viewMode]);
 
   // Hash change & custom navigation events
   const prevHashPageRef = useRef(resolvePageId(window.location.hash.slice(1).split('/')[0]));
@@ -4758,13 +4911,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     const onHashChange = () => {
       const parts = window.location.hash.slice(1).split('/');
       const newPage = resolvePageId(parts[0]);
-      const wasOnWork = prevHashPageRef.current === PAGE.WORK;
       prevHashPageRef.current = newPage;
       if (newPage !== PAGE.WORK) return;
-      if (newPage === PAGE.WORK && parts[1]) {
-        selectProject(parts[1]);
-      } else if (wasOnWork) {
-        selectAllTasks();
+      if (parts[1]) {
+        selectProject(parts[1], { keepItemDetail: true });
+      } else {
+        selectAllProjects({ keepItemDetail: true });
       }
     };
 
@@ -4819,31 +4971,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
 
   // ── Actions ──
 
-  const selectProject = (projectId: string) => {
-    if (projectFilterRef.current.size > 0) {
-      savedProjectFilterRef.current = new Set(projectFilterRef.current);
-    }
-    setProjectFilter(new Set());
-    setSelectedProjectId(projectId);
-    setViewMode('project');
-    setSettingsProjectId(null);
-    setShowProjectSettings(false);
-    history.replaceState(null, '', hashPath(PAGE.WORK, projectId));
-  };
-
-  const selectAllTasks = () => {
-    setProjectFilter(savedProjectFilterRef.current);
-    setSelectedProjectId(null);
-    setViewMode('all');
-    setSettingsProjectId(null);
-    setShowProjectSettings(false);
-    history.replaceState(null, '', hashPath(PAGE.WORK));
-  };
-
-  const handleProjectCreated = () => {
+  const handleProjectCreated = (project: ProjectInfo) => {
     setShowCreateProject(false);
     msg(t('work:task.projectCreated'));
-    refreshProjects();
+    setProjects(prev => (prev.some(p => p.id === project.id) ? prev : [...prev, project]));
+    selectProject(project.id);
+    void refreshProjects();
   };
 
   const handleDeleteProject = async (id: string) => {
@@ -4852,7 +4985,9 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     // deletes appear to fire with no prompt.
     try {
       await api.projects.delete(id);
-      if (selectedProjectId === id) selectAllTasks();
+      if (selectedProjectId === id) {
+        selectAllProjects();
+      }
       msg(t('work:task.projectDeleted'));
       refreshProjects(); refreshBoard();
     } catch (e) { msg(t('work:task.errorGeneric', { message: String(e) })); }
@@ -5013,16 +5148,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   };
 
   const toggleProjectFilter = (id: string) => {
-    if (viewMode === 'project') {
-      if (selectedProjectId === id) selectAllTasks();
-      else selectProject(id);
-    } else {
-      setProjectFilter(prev => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id); else next.add(id);
-        return next;
-      });
-    }
+    selectProject(id);
   };
 
   // ── Filter & display helpers ──
@@ -5156,18 +5282,230 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   }, [board]);
 
   const totalTaskCount = Object.values(allTaskCounts).reduce((a, b) => a + b, 0);
+  const projectTaskCount = selectedProjectId ? (allTaskCounts[selectedProjectId] ?? 0) : totalTaskCount;
+
+  // Flat navigable items for j/k (backlog + kanban)
+  const navigableItems = useMemo(() => {
+    const tasks = filterTasks(Object.values(board).flat());
+    const items: Array<{ kind: 'req'; data: RequirementInfo } | { kind: 'task'; data: TaskInfo }> = [];
+    for (const r of filteredReqs) items.push({ kind: 'req', data: r });
+    for (const t of tasks) items.push({ kind: 'task', data: t });
+    return items;
+  }, [board, filteredReqs, showClosed, statusFilter, selectedProjectId, projectFilter, agentFilter, myTasksOnly, authUser?.id, viewMode]);
+
+  const navigableItemsRef = useRef(navigableItems);
+  navigableItemsRef.current = navigableItems;
+  const activeProjectsRef = useRef(activeProjects);
+  activeProjectsRef.current = activeProjects;
+  const selectedProjectIdRef = useRef(selectedProjectId);
+  selectedProjectIdRef.current = selectedProjectId;
+
+  const openItemDetail = useCallback((item: { kind: 'req'; data: RequirementInfo } | { kind: 'task'; data: TaskInfo }) => {
+    if (item.kind === 'req') {
+      setSelectedReq(item.data);
+      setSelectedTask(null);
+    } else {
+      setSelectedTask(item.data);
+      setSelectedReq(null);
+    }
+    setRightDetailMode('item');
+    setPanelWidthPref('auto');
+    setNavFocus('items');
+  }, []);
+
+  const openItemDetailOrEmpty = useCallback(() => {
+    if (rightDetailModeRef.current === 'item' || rightDetailModeRef.current === 'empty') {
+      setRightDetailMode('closed');
+      setSelectedTask(null);
+      setSelectedReq(null);
+      return;
+    }
+    if (selectedTaskRef.current || selectedReqRef.current) {
+      setRightDetailMode('item');
+      setPanelWidthPref('auto');
+      setNavFocus('items');
+      return;
+    }
+    const items = navigableItemsRef.current;
+    if (items.length > 0) {
+      openItemDetail(items[0]!);
+      return;
+    }
+    setSelectedTask(null);
+    setSelectedReq(null);
+    setRightDetailMode('empty');
+    setPanelWidthPref('auto');
+  }, [openItemDetail]);
+
+  // When L1 collapses: force items focus; if project detail open, switch to latest item.
+  useEffect(() => {
+    if (isMobile) return;
+    if (l1Collapsed) {
+      setNavFocus('items');
+      if (rightDetailModeRef.current === 'project') {
+        if (selectedTaskRef.current || selectedReqRef.current) {
+          setRightDetailMode('item');
+        } else {
+          const items = navigableItemsRef.current;
+          if (items.length > 0) openItemDetail(items[0]!);
+          else setRightDetailMode('closed');
+        }
+      }
+    } else if (navFocusRef.current === 'items' && rightDetailModeRef.current === 'closed') {
+      // keep items if user already tabbed; otherwise default projects when reopening L1
+    } else if (!l1Collapsed && rightDetailModeRef.current === 'closed') {
+      setNavFocus('projects');
+    }
+  }, [l1Collapsed, isMobile, openItemDetail]);
+
+  // Tasks-page keyboard: Cmd+J/L, Ctrl+Tab, Tab focus, j/k navigation
+  useEffect(() => {
+    if (previewMode || isMobile || !isActive) return;
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const onKey = (e: KeyboardEvent) => {
+      const mod = isMac ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+
+      // Ctrl+Tab (always Ctrl, even on Mac) cycles board views
+      if (e.ctrlKey && !e.metaKey && e.key === 'Tab') {
+        e.preventDefault();
+        const order = BOARD_TYPE_ORDER;
+        const idx = order.indexOf(boardTypeRef.current);
+        const next = e.shiftKey
+          ? order[(idx - 1 + order.length) % order.length]!
+          : order[(idx + 1) % order.length]!;
+        setBoardType(next);
+        return;
+      }
+
+      if (mod && !e.altKey && !e.shiftKey) {
+        const key = e.key.toLowerCase();
+        if (key === 'j') {
+          e.preventDefault();
+          toggleProjectDetail();
+          return;
+        }
+        if (key === 'l') {
+          e.preventDefault();
+          openItemDetailOrEmpty();
+          return;
+        }
+      }
+
+      if (mod || e.altKey || e.ctrlKey || e.metaKey) return;
+      if (isEditableTarget(e.target)) return;
+
+      // Tab: L1 open → switch nav focus from projects to items
+      if (e.key === 'Tab' && !e.shiftKey && !l1CollapsedRef.current && navFocusRef.current === 'projects') {
+        e.preventDefault();
+        setNavFocus('items');
+        return;
+      }
+
+      const move = e.key === 'j' || e.key === 'ArrowDown' ? 1
+        : e.key === 'k' || e.key === 'ArrowUp' ? -1
+        : 0;
+      if (!move) return;
+
+      const focus = l1CollapsedRef.current ? 'items' : navFocusRef.current;
+      if (focus === 'projects') {
+        e.preventDefault();
+        const list = activeProjectsRef.current;
+        // Index 0 = All, then each project
+        const len = list.length + 1;
+        if (list.length === 0) return;
+        const cur = selectedProjectIdRef.current == null
+          ? 0
+          : list.findIndex(p => p.id === selectedProjectIdRef.current) + 1;
+        const base = cur < 0 ? 0 : cur;
+        const nextIdx = Math.max(0, Math.min(len - 1, base + move));
+        if (nextIdx === 0) {
+          selectAllProjects();
+          requestAnimationFrame(() => {
+            document.querySelector('[data-project-id="__all__"]')?.scrollIntoView({ block: 'nearest' });
+          });
+        } else {
+          const next = list[nextIdx - 1]!;
+          selectProject(next.id);
+          if (rightDetailModeRef.current !== 'closed') {
+            setRightDetailMode('project');
+            setSelectedTask(null);
+            setSelectedReq(null);
+          }
+          requestAnimationFrame(() => {
+            document.querySelector(`[data-project-id="${next.id}"]`)?.scrollIntoView({ block: 'nearest' });
+          });
+        }
+        return;
+      }
+
+      // items focus — only backlog / kanban
+      const bt = boardTypeRef.current;
+      if (bt !== 'backlog' && bt !== 'kanban') return;
+      e.preventDefault();
+      const items = navigableItemsRef.current;
+      if (items.length === 0) {
+        setRightDetailMode(prev => (prev === 'closed' ? 'empty' : prev));
+        return;
+      }
+      const curId = selectedTaskRef.current?.id ?? selectedReqRef.current?.id ?? null;
+      let idx = curId
+        ? items.findIndex(it => it.data.id === curId)
+        : -1;
+      if (idx < 0) idx = move > 0 ? -1 : 0;
+      const nextIdx = Math.max(0, Math.min(items.length - 1, idx + move));
+      openItemDetail(items[nextIdx]!);
+      requestAnimationFrame(() => {
+        document.querySelector(`[data-work-item-id="${items[nextIdx]!.data.id}"]`)?.scrollIntoView({ block: 'nearest' });
+      });
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [
+    previewMode, isMobile, isActive, toggleProjectDetail, openItemDetailOrEmpty,
+    selectProject, selectAllProjects, openItemDetail,
+  ]);
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-fg-tertiary">{t('work:task.loadingPage')}</div>;
 
-  const hasDetail = !!(selectedTask || selectedReq);
-  const dualDetail = !isMobile && !!(selectedTask && selectedReq);
+  const hasDetail = rightDetailMode !== 'closed' || !!(selectedTask || selectedReq);
+  const dualDetail = !isMobile && !!(selectedTask && selectedReq) && rightDetailMode === 'item';
+  const showRightPanel = !isMobile ? hasDetail : mobileShowDetail;
 
   return (
     <div ref={workContainerRef} className="flex-1 overflow-hidden flex bg-surface-primary">
-      {/* ── Task Board + Project Context (left panel) ── */}
+      {/* ── L1 Projects sidebar (desktop) ── */}
+      {!isMobile && (
+        <ProjectSidebar
+          projects={activeProjects}
+          selectedProjectId={selectedProjectId}
+          allSelected={viewMode === 'all' && !selectedProjectId}
+          taskCounts={allTaskCounts}
+          totalTaskCount={totalTaskCount}
+          onSelectAll={() => {
+            selectAllProjects();
+            setNavFocus('projects');
+          }}
+          onSelectProject={(id) => {
+            selectProject(id);
+            setNavFocus('projects');
+          }}
+          onCreateProject={() => setShowCreateProject(true)}
+          onCollapse={() => {
+            const next = !l1Collapsed;
+            setL1CollapsedPersisted(next);
+            layout?.setLeftCollapsed(next);
+          }}
+          width={projectSidebar.width}
+          onResizeStart={projectSidebar.onResizeStart}
+          hidden={l1Collapsed}
+          focused={navFocus === 'projects' && !l1Collapsed}
+        />
+      )}
+
+      {/* ── Task Board + Project Context (main) ── */}
       <div
-        className={`${isMobile ? 'flex-1 min-w-0' : hasDetail ? 'shrink-0 min-w-0' : 'flex-1'} overflow-hidden flex flex-col bg-surface-primary`}
-        style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : (dualDetail ? { width: 0 } : hasDetail ? { width: `calc(100% - ${detailPanel.width}px - 4px)` } : undefined)}
+        className={`${isMobile ? 'flex-1 min-w-0' : dualDetail ? 'w-0 shrink-0 overflow-hidden' : 'flex-1 min-w-0'} overflow-hidden flex flex-col bg-surface-primary`}
+        style={isMobile && mobileShowDetail ? { display: 'none' } : undefined}
       >
         {/* Flash */}
         {flash && <div className="mx-6 mt-2 px-3 py-1.5 bg-green-500/15 text-green-600 text-xs rounded-lg">{flash}</div>}
@@ -5181,14 +5519,14 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               {selectedProject ? (
                 <div className="flex items-center gap-1 min-w-0 flex-1">
                   <span className="text-sm font-semibold text-fg-primary truncate">{selectedProject.name}</span>
-                  <button onClick={() => openProjectSettings(selectedProject.id)}
-                    className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors shrink-0 ${showProjectSettings ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary'}`}>
+                  <button onClick={toggleProjectDetail}
+                    className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors shrink-0 ${rightDetailMode === 'project' ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary'}`}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
                   </button>
                 </div>
               ) : (
                 <h2 className="text-sm font-semibold text-fg-primary min-w-0 flex-1 truncate">
-                  {projects.length === 1 ? projects[0].name : t('work:task.projectsCount', { count: projects.length })}
+                  {t('work:task.projectsCount', { count: activeProjects.length })}
                 </h2>
               )}
               <div className="flex items-center gap-1 shrink-0">
@@ -5219,15 +5557,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                 </button>
               )}
-              {(projectFilter.size > 0 || agentFilter.size > 0 || myTasksOnly || projects.length > 1 || agents.length > 0) && (
+              {(activeProjects.length > 1 || agents.length > 0 || authUser?.id) && (
                 <button onClick={() => setShowFilterSheet(true)}
                   className={`px-2 py-1 text-[11px] rounded-md font-medium transition-colors flex items-center gap-1 ${
-                    projectFilter.size > 0 || agentFilter.size > 0 || myTasksOnly
+                    agentFilter.size > 0 || myTasksOnly
                       ? 'bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/30'
                       : 'border border-border-default text-fg-secondary'
                   }`}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
-                  {(projectFilter.size + agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? t('work:task.filterWithCount', { count: projectFilter.size + agentFilter.size + (myTasksOnly ? 1 : 0) }) : t('work:task.filter')}
+                  {(agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? t('work:task.filterWithCount', { count: agentFilter.size + (myTasksOnly ? 1 : 0) }) : t('work:task.filter')}
                 </button>
               )}
             </div>
@@ -5236,25 +5574,25 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         <div data-electron-drag className="flex items-center gap-3 px-6 h-14 shrink-0">
           {/* Project title + settings */}
           {selectedProject ? (
-            <div data-no-drag className="flex items-center gap-1 shrink-0">
+            <div data-no-drag className="flex items-center gap-1 shrink-0 min-w-0">
               <InlineEditableText
                 value={selectedProject.name}
                 onSave={async (name) => { await api.projects.update(selectedProject.id, { name } as Partial<ProjectInfo>); refreshProjects(); }}
                 className="text-sm font-semibold text-fg-primary"
               />
               <button
-                onClick={() => openProjectSettings(selectedProject.id)}
+                onClick={toggleProjectDetail}
                 className={`w-6 h-6 flex items-center justify-center rounded-md transition-colors ${
-                  showProjectSettings ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                  rightDetailMode === 'project' ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                 }`}
-                title={t('work:project.settingsTitle')}
+                title={`${t('work:project.settingsTitle')} (⌘J)`}
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
               </button>
             </div>
           ) : (
             <h2 className="text-sm font-semibold text-fg-primary shrink-0">
-              {projects.length === 1 ? projects[0].name : t('work:task.projectsCount', { count: projects.length })}
+              {t('work:task.projectsCount', { count: activeProjects.length })}
             </h2>
           )}
           {closedCount > 0 && (
@@ -5264,7 +5602,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           )}
 
           {/* View toggle */}
-          <div className="flex items-center border border-border-default/60 rounded-md overflow-hidden shrink-0">
+          <div data-no-drag className="flex items-center border border-border-default/60 rounded-md overflow-hidden shrink-0">
             {(['backlog', 'kanban', 'dag', 'workflows'] as const).map(v => (
               <button key={v} onClick={() => setBoardType(v)}
                 className={`px-2.5 py-1 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
@@ -5273,8 +5611,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           </div>
 
           {/* Actions */}
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button onClick={() => setShowCreateProject(true)} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">{t('work:task.shortProject')}</button>
+          <div data-no-drag className="flex items-center gap-1.5 shrink-0">
             <button onClick={openCreateReq} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">{t('work:task.newRequirement')}</button>
             <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 border border-amber-500/60 text-amber-600 hover:bg-amber-500/10 text-xs rounded-lg font-medium transition-colors">{t('work:task.newTaskBtn')}</button>
           </div>
@@ -5284,44 +5621,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         </div>
         )}
 
-        {/* Project filter bar — desktop only (hidden in workflows view) */}
-        {!isMobile && boardType !== 'workflows' && projects.length > 1 && !selectedProjectId && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
-          <div className="px-6 py-1.5 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
-            <button onClick={() => setProjectFilter(new Set())}
-              className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${projectFilter.size > 0 ? 'visible opacity-100' : 'invisible opacity-0'}`}>{t('work:task.clear')}</button>
-            {sortedProjects.map(p => {
-              const selected = projectFilter.has(p.id);
-              const count = allTaskCounts[p.id] ?? 0;
-              const editingThis = showProjectSettings && settingsProjectId === p.id;
-              return (
-                <div key={p.id} className={`flex items-center shrink-0 rounded-md overflow-hidden transition-all ${selected ? 'bg-brand-500/15 ring-1 ring-brand-500/30' : ''}`}>
-                  <button onClick={() => toggleProjectFilter(p.id)}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 text-[11px] shrink-0 transition-all ${
-                      selected ? 'text-brand-600' : 'text-fg-tertiary hover:bg-surface-elevated hover:text-fg-secondary'
-                    }`}>
-                    <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'}`}>{p.name[0]?.toUpperCase()}</span>
-                    {p.name}
-                    {count > 0 && <span className="text-[9px] text-fg-tertiary ml-0.5">{count}</span>}
-                  </button>
-                  {selected && (
-                    <button
-                      onClick={() => openProjectSettings(p.id)}
-                      className={`px-1.5 py-1 self-stretch flex items-center border-l border-brand-500/20 transition-colors ${
-                        editingThis ? 'text-fg-primary bg-surface-overlay' : 'text-fg-tertiary hover:text-brand-600 hover:bg-brand-500/10'
-                      }`}
-                      title={t('work:project.editProject')}
-                    >
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
         {/* Team/agent filter bar — desktop only (hidden in workflows view) */}
-        {!isMobile && boardType !== 'workflows' && (teamFilterItems.length > 0 || authUser?.id) && !showProjectSettings && (totalTaskCount > 0 || allRequirements.length > 0) && (
+        {!isMobile && boardType !== 'workflows' && (teamFilterItems.length > 0 || authUser?.id) && (projectTaskCount > 0 || filteredReqs.length > 0 || agentFilter.size > 0 || myTasksOnly) && (
           <div className="px-6 py-1.5 flex items-center gap-1.5 overflow-x-auto scrollbar-hide shrink-0">
             <button type="button" onClick={() => { setAgentFilter(new Set()); setMyTasksOnly(false); }}
               className={`text-[10px] text-fg-tertiary hover:text-fg-secondary px-2 py-1 rounded-md bg-surface-elevated/60 hover:bg-surface-overlay shrink-0 transition-all ${agentFilter.size > 0 || myTasksOnly ? 'visible opacity-100' : 'invisible opacity-0'}`}>{t('work:task.clear')}</button>
@@ -5375,93 +5676,50 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           </div>
         )}
 
-        {showProjectSettings && settingsProject ? (
-          <div className="flex-1 overflow-y-auto">
-            {!selectedProject && (
-              <div className="px-6 py-2 flex items-center gap-2 border-b border-border-default/60 shrink-0">
-                <button onClick={closeProjectSettings} className="text-[11px] text-brand-500 hover:text-brand-400 font-medium flex items-center gap-1 shrink-0">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-                  {t('common:back')}
-                </button>
-                <InlineEditableText
-                  value={settingsProject.name}
-                  onSave={async (name) => { await api.projects.update(settingsProject.id, { name } as Partial<ProjectInfo>); refreshProjects(); }}
-                  className="text-sm font-semibold text-fg-primary truncate min-w-0"
-                />
+        {activeProjects.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center p-8">
+            <div className="max-w-sm w-full text-center space-y-3">
+              <div className="w-12 h-12 mx-auto rounded-xl bg-brand-500/10 flex items-center justify-center">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
               </div>
-            )}
-            <ProjectSettingsPanel
-              project={settingsProject}
-              tasks={Object.values(board).flat()}
-              requirements={allRequirements}
-              agents={agents}
-              onDeleteProject={() => handleDeleteProject(settingsProject.id)}
-              onUpdateProject={async (data) => { await api.projects.update(settingsProject.id, data); }}
-              onRefresh={() => { refreshProjects(); }}
-            />
-          </div>
-        ) : totalTaskCount === 0 && filteredReqs.length === 0 && viewMode === 'project' && selectedProject ? (
-          <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
-            <div className="px-6 py-2 flex items-center gap-2 border-b border-border-default/60 shrink-0 sticky top-0 bg-surface-primary z-10">
-              <button onClick={selectAllTasks} className="text-[11px] text-brand-500 hover:text-brand-400 font-medium flex items-center gap-1 shrink-0">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-                {t('common:back')}
+              <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyNoProjectsTitle')}</h3>
+              <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.emptyNoProjectsHint')}</p>
+              <button onClick={() => setShowCreateProject(true)} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
+                {t('work:project.newProject')}
               </button>
             </div>
-            <ProjectSettingsPanel
-              project={selectedProject}
-              tasks={[]}
-              requirements={[]}
-              agents={agents}
-              onDeleteProject={() => handleDeleteProject(selectedProject.id)}
-              onUpdateProject={async (data) => { await api.projects.update(selectedProject.id, data); }}
-              onRefresh={() => { refreshProjects(); }}
-            />
           </div>
-        ) : totalTaskCount === 0 && filteredReqs.length === 0 ? (
+        ) : filterTasks(Object.values(board).flat()).length === 0 && filteredReqs.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8">
-            {projects.length === 0 ? (
-              <div className="max-w-sm w-full text-center space-y-3">
-                <div className="w-12 h-12 mx-auto rounded-xl bg-brand-500/10 flex items-center justify-center">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
-                </div>
-                <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyNoProjectsTitle')}</h3>
-                <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.emptyNoProjectsHint')}</p>
-                <button onClick={() => setShowCreateProject(true)} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
-                  {t('work:project.newProject')}
-                </button>
+            <div className="max-w-sm w-full text-center space-y-3">
+              <div className="w-12 h-12 mx-auto rounded-xl bg-brand-500/10 flex items-center justify-center">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
               </div>
-            ) : (
-              <div className="w-full max-w-2xl mx-auto space-y-4">
-                <p className="text-xs text-fg-tertiary text-center">{t('work:task.emptyNoReqsHint')}</p>
-                <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
-                  {projects.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => selectProject(p.id)}
-                      className="group flex items-start gap-3 p-4 rounded-xl border border-border-default bg-surface-elevated hover:border-brand-500/50 hover:bg-brand-500/5 transition-all text-left"
-                    >
-                      <div className="w-9 h-9 shrink-0 rounded-lg bg-brand-500/10 flex items-center justify-center">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-brand-500"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium text-fg-primary group-hover:text-brand-500 truncate transition-colors">{p.name}</div>
-                        {p.description && <div className="text-[11px] text-fg-tertiary mt-0.5 line-clamp-2">{p.description}</div>}
-                        <div className="text-[10px] text-fg-quaternary mt-1.5">
-                          {new Date(p.createdAt).toLocaleDateString()}
-                        </div>
-                      </div>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-fg-quaternary group-hover:text-brand-500 shrink-0 mt-1 transition-colors"><polyline points="9 18 15 12 9 6" /></svg>
-                    </button>
-                  ))}
-                </div>
-                <div className="text-center pt-2">
-                  <button onClick={openCreateReq} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
-                    {t('work:task.createRequirementCta')}
+              {(agentFilter.size > 0 || myTasksOnly) ? (
+                <>
+                  <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyFilteredTitle', { defaultValue: 'No matching work' })}</h3>
+                  <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.emptyFilteredHint', { defaultValue: 'Nothing matches the current assignee filter. Clear filters to see all items in this project.' })}</p>
+                  <button type="button" onClick={() => { setAgentFilter(new Set()); setMyTasksOnly(false); }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg font-medium transition-colors">
+                    {t('work:task.clear')}
                   </button>
-                </div>
-              </div>
-            )}
+                </>
+              ) : (
+                <>
+                  <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyNoReqsTitle')}</h3>
+                  <p className="text-xs text-fg-tertiary leading-relaxed whitespace-pre-line">{t('work:task.emptyNoReqsHint')}</p>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    <button onClick={openCreateReq} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
+                      {t('work:task.createRequirementCta')}
+                    </button>
+                    <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs border border-amber-500/60 text-amber-600 hover:bg-amber-500/10 rounded-lg font-medium transition-colors">
+                      {t('work:task.newTaskBtn')}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         ) : boardType === 'backlog' ? (
           <div className="flex-1 min-h-0 flex flex-col" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
@@ -5564,7 +5822,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                             const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 10);
                             const isSelected = selectedReq?.id === req.id;
                             return (
-                              <div key={`req-${req.id}`} role="button" tabIndex={0} draggable
+                              <div key={`req-${req.id}`} data-work-item-id={req.id} role="button" tabIndex={0} draggable
                                 onDragStart={e => onDragStartReq(e, req)} onDragEnd={onDragEnd}
                                 onClick={() => handleSelectReq(req)} onKeyDown={e => e.key === 'Enter' && handleSelectReq(req)}
                                 className={`group rounded-lg p-2.5 border border-transparent transition-all cursor-grab active:cursor-grabbing
@@ -5615,7 +5873,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                               return dep && dep.status === 'completed';
                             }));
                             return (
-                              <div key={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
+                              <div key={task.id} data-work-item-id={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
                                 onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
                                 onClick={() => handleSelectTask(task)} onKeyDown={e => e.key === 'Enter' && handleSelectTask(task)}
                                 className={`group rounded-lg p-2.5 border border-transparent transition-all ${
@@ -5678,17 +5936,53 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       </div>
 
       {/* Resize handle — desktop only, when detail is open */}
-      {!isMobile && hasDetail && (
-        <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={detailPanel.onResizeStart}>
+      {!isMobile && showRightPanel && (
+        <div className="w-1.5 shrink-0 cursor-col-resize group relative flex items-center justify-center" onMouseDown={onDetailResizeStart}>
           <div className="w-px h-2/3 border-l border-dashed border-transparent group-hover:border-border-default group-active:border-fg-tertiary transition-colors" />
         </div>
       )}
 
       {/* Detail panel(s) */}
-      {(!isMobile || mobileShowDetail) && hasDetail && (
-        <div className={`${isMobile ? 'flex-1' : dualDetail ? 'flex-1' : 'shrink-0'} overflow-hidden min-w-0 flex`}
-          style={isMobile || dualDetail ? undefined : { width: detailPanel.width }}>
-          {dualDetail ? (
+      {showRightPanel && (
+        <div className={`${isMobile ? 'flex-1' : dualDetail ? 'flex-1' : 'shrink-0'} overflow-hidden min-w-0 flex border-l border-border-default/60`}
+          style={isMobile || dualDetail ? undefined : { width: effectiveDetailWidth }}>
+          {rightDetailMode === 'project' && selectedProject ? (
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <div className="px-4 py-3 flex items-center gap-2 border-b border-border-default/60 sticky top-0 bg-surface-primary z-10">
+                <h3 className="text-sm font-semibold text-fg-primary truncate flex-1">{t('work:project.settingsTitle')}</h3>
+                <button type="button" onClick={handleCloseDetail}
+                  className="w-7 h-7 flex items-center justify-center rounded-md text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
+                  aria-label={t('common:close')}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
+              </div>
+              <ProjectSettingsPanel
+                project={selectedProject}
+                tasks={Object.values(board).flat().filter(t => t.projectId === selectedProject.id)}
+                requirements={allRequirements.filter(r => r.projectId === selectedProject.id)}
+                agents={agents}
+                onDeleteProject={() => handleDeleteProject(selectedProject.id)}
+                onUpdateProject={async (data) => { await api.projects.update(selectedProject.id, data); refreshProjects(); }}
+                onRefresh={() => { refreshProjects(); }}
+              />
+            </div>
+          ) : rightDetailMode === 'empty' ? (
+            <div className="flex-1 flex items-center justify-center p-8">
+              <div className="max-w-xs w-full text-center space-y-3">
+                <div className="w-12 h-12 mx-auto rounded-xl bg-surface-elevated flex items-center justify-center">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 12h6" /></svg>
+                </div>
+                <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyDetailTitle', { defaultValue: 'No item selected' })}</h3>
+                <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.emptyDetailHint', { defaultValue: 'Select a requirement or task from the list, or create one to get started.' })}</p>
+                <div className="flex items-center justify-center gap-2">
+                  <button onClick={openCreateReq} className="px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium">{t('work:task.newRequirement')}</button>
+                  <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }}
+                    className="px-3 py-1.5 text-[11px] border border-amber-500/60 text-amber-600 rounded-lg font-medium">{t('work:task.newTaskBtn')}</button>
+                </div>
+                <button type="button" onClick={handleCloseDetail} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">{t('common:close')}</button>
+              </div>
+            </div>
+          ) : dualDetail ? (
             <>
               <div className="flex-1 min-w-0 overflow-hidden">
                 <RequirementDetailPanel
@@ -5697,7 +5991,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                   projects={projects}
                   allTasks={Object.values(board).flat()}
                   users={users}
-                  onClose={() => { setSelectedReq(null); }}
+                  onClose={() => { setSelectedReq(null); if (!selectedTask) handleCloseDetail(); }}
                   onApprove={id => { handleApproveReq(id); }}
                   onReject={id => { setRejectReqId(id); }}
                   onCancel={id => { handleDeleteReq(id); setSelectedReq(null); }}
@@ -5706,7 +6000,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                   }}
                   onRefresh={handleReqRefresh}
                   authUser={authUser}
-                  onTaskClick={task => { setSelectedTask(task); }}
+                  onTaskClick={task => { setSelectedTask(task); setRightDetailMode('item'); }}
                   onCreateTask={(reqId, projectId) => {
                     setTaskRequirementId(reqId);
                     if (projectId) setTaskProjectId(projectId);
@@ -5730,7 +6024,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                   authUser={authUser}
                   scrollToComments={scrollToComments}
                   onScrollToCommentsDone={() => setScrollToComments(false)}
-                  onReqClick={req => { setSelectedReq(prev => prev?.id === req.id ? null : req); }}
+                  onReqClick={req => { setSelectedReq(prev => prev?.id === req.id ? null : req); setRightDetailMode('item'); }}
                   onProjectClick={toggleProjectFilter}
                 />
               </div>
@@ -5748,7 +6042,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               authUser={authUser}
               scrollToComments={scrollToComments}
               onScrollToCommentsDone={() => setScrollToComments(false)}
-              onReqClick={req => { setSelectedReq(prev => prev?.id === req.id ? null : req); }}
+              onReqClick={req => { setSelectedReq(req); setSelectedTask(null); setRightDetailMode('item'); }}
               onProjectClick={toggleProjectFilter}
             />
           ) : selectedReq ? (
@@ -5771,6 +6065,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               authUser={authUser}
               onTaskClick={task => {
                 setSelectedTask(task);
+                setSelectedReq(null);
+                setRightDetailMode('item');
                 if (isMobile) { setMobileShowDetail(true); history.pushState({ mobileDetail: PAGE.WORK }, '', window.location.hash); }
               }}
               onCreateTask={(reqId, projectId) => {
@@ -5781,7 +6077,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               onProjectClick={toggleProjectFilter}
               previewMode={previewMode}
             />
-          ) : null}
+          ) : (
+            <div className="flex-1 flex items-center justify-center p-8">
+              <div className="max-w-xs w-full text-center space-y-3">
+                <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyDetailTitle')}</h3>
+                <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.emptyDetailHint')}</p>
+                <button type="button" onClick={handleCloseDetail} className="text-[11px] text-fg-tertiary hover:text-fg-secondary">{t('common:close')}</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -6000,8 +6304,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             <div className="sticky top-0 bg-surface-secondary z-10 px-4 pt-3 pb-2 flex items-center justify-between border-b border-border-default/60">
               <h3 className="text-sm font-semibold text-fg-primary">{t('work:task.filtersSheetTitle')}</h3>
               <div className="flex items-center gap-2">
-                {(projectFilter.size > 0 || agentFilter.size > 0 || myTasksOnly) && (
-                  <button onClick={() => { setProjectFilter(new Set()); setAgentFilter(new Set()); setMyTasksOnly(false); }}
+                {(agentFilter.size > 0 || myTasksOnly) && (
+                  <button onClick={() => { setAgentFilter(new Set()); setMyTasksOnly(false); }}
                     className="text-[11px] text-brand-500 font-medium">{t('work:task.clearAll')}</button>
                 )}
                 <button onClick={() => setShowFilterSheet(false)}
@@ -6010,33 +6314,36 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 </button>
               </div>
             </div>
-            {projects.length > 1 && (
+            {activeProjects.length > 0 && (
               <div className="px-4 py-3">
                 <div className="text-[11px] text-fg-tertiary font-medium uppercase tracking-wider mb-2">{t('work:task.projectsFilterGroup')}</div>
                 <div className="flex flex-wrap gap-1.5">
-                  {sortedProjects.map(p => {
-                    const selected = projectFilter.has(p.id);
+                  <button
+                    type="button"
+                    onClick={() => { selectAllProjects(); setShowFilterSheet(false); }}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] rounded-lg transition-all ${
+                      viewMode === 'all' && !selectedProjectId ? 'bg-brand-500/15 text-brand-600 ring-1 ring-brand-500/30' : 'bg-surface-elevated text-fg-secondary'
+                    }`}
+                  >
+                    {t('work:task.all')}
+                    {totalTaskCount > 0 && <span className="text-[9px] text-fg-tertiary">{totalTaskCount}</span>}
+                  </button>
+                  {activeProjects.map(p => {
+                    const selected = selectedProjectId === p.id;
                     const count = allTaskCounts[p.id] ?? 0;
                     return (
-                      <div key={p.id} className={`flex items-center rounded-lg overflow-hidden transition-all ${selected ? 'bg-brand-500/15 ring-1 ring-brand-500/30' : ''}`}>
-                        <button onClick={() => toggleProjectFilter(p.id)}
-                          className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] transition-all ${
-                            selected ? 'text-brand-600' : 'bg-surface-elevated text-fg-secondary'
-                          }`}>
-                          <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-tertiary'}`}>{p.name[0]?.toUpperCase()}</span>
-                          {p.name}
-                          {count > 0 && <span className="text-[9px] text-fg-tertiary">{count}</span>}
-                        </button>
-                        {selected && (
-                          <button
-                            onClick={() => { setShowFilterSheet(false); openProjectSettings(p.id); }}
-                            className="px-2 py-1.5 self-stretch flex items-center border-l border-brand-500/20 text-fg-tertiary hover:text-brand-600"
-                            title={t('work:project.editProject')}
-                          >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
-                          </button>
-                        )}
-                      </div>
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => { selectProject(p.id); setShowFilterSheet(false); }}
+                        className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] rounded-lg transition-all ${
+                          selected ? 'bg-brand-500/15 text-brand-600 ring-1 ring-brand-500/30' : 'bg-surface-elevated text-fg-secondary'
+                        }`}
+                      >
+                        <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-tertiary'}`}>{p.name[0]?.toUpperCase()}</span>
+                        {p.name}
+                        {count > 0 && <span className="text-[9px] text-fg-tertiary">{count}</span>}
+                      </button>
                     );
                   })}
                 </div>
