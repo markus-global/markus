@@ -9,7 +9,7 @@ import {
   type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
   type NotificationInfo, type SubagentProgressEvent,
 } from '../api.ts';
-import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { MarkdownMessage, ImagePreviewModal } from '../components/MarkdownMessage.tsx';
 import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
 import { UserInputModal } from '../components/UserInputModal.tsx';
 import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
@@ -648,6 +648,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [loadingChat, setLoadingChat] = useState(false);
   // Image attachments
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
+  /** In-app lightbox for chat image attachments (avoid window.open on data: URLs). */
+  const [imagePreviewSrc, setImagePreviewSrc] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /** Session-scoped model pick from the composer menu (null = use global routing). */
@@ -4699,7 +4701,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
                                 {msg.images.map((src, idx) => (
-                                  <img key={idx} src={src} alt="" className="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity" onClick={() => window.open(src, '_blank')} />
+                                  <img
+                                    key={idx}
+                                    src={src}
+                                    alt=""
+                                    className="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                                    onClick={() => setImagePreviewSrc(src)}
+                                  />
                                 ))}
                               </div>
                             )}
@@ -5215,6 +5223,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         />
       )}
 
+      {imagePreviewSrc && (
+        <ImagePreviewModal src={imagePreviewSrc} onClose={() => setImagePreviewSrc(null)} />
+      )}
     </div>
   );
 }
