@@ -5406,16 +5406,20 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     }
   }, [l1Collapsed, isMobile, openItemDetail]);
 
-  // Entering L1 from L0 (App H/L): expand project rail and focus it.
+  // Entering L1 from L0 (App H/L): expand project rail only on pane *entry* — never fight Cmd+B.
   const keyboardPane = layout?.keyboardPane ?? 'content';
+  const prevWorkKeyboardPaneRef = useRef(keyboardPane);
   useEffect(() => {
     if (previewMode || isMobile || !isActive) return;
+    const prev = prevWorkKeyboardPaneRef.current;
+    prevWorkKeyboardPaneRef.current = keyboardPane;
     if (keyboardPane !== 'l1') return;
+    setNavFocus('projects');
+    if (prev === 'l1') return; // already on L1 — allow Cmd+B collapse to stick
     if (l1CollapsedRef.current) {
       setL1CollapsedPersisted(false);
       layout?.setLeftCollapsed(false);
     }
-    setNavFocus('projects');
   }, [keyboardPane, previewMode, isMobile, isActive, setL1CollapsedPersisted, layout]);
 
   // Tasks-page keyboard: Cmd+J/L, Ctrl+Tab, H/L focus panes (content↔L1↔L0), j/k navigation
@@ -5483,6 +5487,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         layout?.setKeyboardPane('l0');
         return;
       }
+      // L from L1 → item list (JK-capable). Item list is deepest — L there is ignored.
       if (
         (bare === 'l' || bare === 'ArrowRight' || (bare === 'Tab' && !e.shiftKey))
         && !l1CollapsedRef.current
@@ -5491,6 +5496,13 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         e.preventDefault();
         setNavFocus('items');
         layout?.setKeyboardPane('content');
+        return;
+      }
+      if (
+        (bare === 'l' || bare === 'ArrowRight')
+        && (l1CollapsedRef.current || navFocusRef.current === 'items')
+      ) {
+        e.preventDefault();
         return;
       }
 
@@ -5593,12 +5605,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           width={projectSidebar.width}
           onResizeStart={projectSidebar.onResizeStart}
           hidden={l1Collapsed}
-          focused={navFocus === 'projects' && !l1Collapsed}
+          focused={keyboardPane === 'l1' && navFocus === 'projects' && !l1Collapsed}
+          onActivate={() => setNavFocus('projects')}
         />
       )}
 
       {/* ── Task Board + Project Context (main) ── */}
       <div
+        data-keyboard-pane="content"
+        onPointerDown={() => setNavFocus('items')}
         className={`${isMobile ? 'flex-1 min-w-0' : dualDetail ? 'w-0 shrink-0 overflow-hidden' : 'flex-1 min-w-0'} overflow-hidden flex flex-col bg-surface-primary`}
         style={isMobile && mobileShowDetail ? { display: 'none' } : undefined}
       >

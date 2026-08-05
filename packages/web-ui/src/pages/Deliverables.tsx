@@ -536,10 +536,13 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Entering L1 from L0: expand the deliverables list rail.
+  // Entering L1 from L0: expand only on pane *entry* — never fight Cmd+B.
+  const prevDeliverablesKeyboardPaneRef = useRef(keyboardPane);
   useEffect(() => {
     if (previewMode || isMobile || !isActive) return;
-    if (keyboardPane !== 'l1') return;
+    const prev = prevDeliverablesKeyboardPaneRef.current;
+    prevDeliverablesKeyboardPaneRef.current = keyboardPane;
+    if (keyboardPane !== 'l1' || prev === 'l1') return;
     if (sidebarCollapsed) setSidebarCollapsed(false);
   }, [keyboardPane, previewMode, isMobile, isActive, sidebarCollapsed]);
 
@@ -573,10 +576,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         layout?.setKeyboardPane('l0');
         return;
       }
+      // L1 list is deepest — L only re-asserts list focus (never leaves the JK pane).
       if (bare === 'l' || bare === 'ArrowRight') {
         e.preventDefault();
         if (sidebarCollapsed) setSidebarCollapsed(false);
-        layout?.setKeyboardPane('l1');
+        if (layout?.keyboardPane !== 'l1') layout?.setKeyboardPane('l1');
         return;
       }
 
@@ -788,7 +792,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* Left sidebar — always mounted on mobile to preserve scroll position */}
-      <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0 ${!isMobile && keyboardPane === 'l1' ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}
+      <div data-keyboard-pane="l1" className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0 ${!isMobile && keyboardPane === 'l1' ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}
         style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : sidebarCollapsed ? { display: 'none' } : { width: listPanel.width }}>
         <div data-electron-drag className="p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">

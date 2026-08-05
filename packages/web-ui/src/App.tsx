@@ -806,7 +806,13 @@ export function App() {
           >
             <Sidebar
               currentPage={page}
-              onNavigate={(p) => { navigate(p); setSidebarOpen(false); setKeyboardPane?.('content'); }}
+              onNavigate={(p) => {
+                navigate(p);
+                setSidebarOpen(false);
+                // Clicking the app rail claims L0 — never dump into content (that kills JK/HL).
+                setKeyboardPane?.('l0');
+                setL0FocusPageId?.(p);
+              }}
               authUser={authUser}
               collapsed={sidebar.collapsed}
               onToggleCollapse={sidebar.toggle}

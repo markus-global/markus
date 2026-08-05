@@ -16,6 +16,8 @@ export interface ProjectSidebarProps {
   onResizeStart?: (e: React.MouseEvent) => void;
   hidden?: boolean;
   focused?: boolean;
+  /** Called when the user pointer-activates this L1 rail (in addition to data-keyboard-pane). */
+  onActivate?: () => void;
 }
 
 export function ProjectSidebar({
@@ -32,6 +34,7 @@ export function ProjectSidebar({
   onResizeStart,
   hidden,
   focused,
+  onActivate,
 }: ProjectSidebarProps) {
   const { t } = useTranslation(['work', 'common']);
   const allIsSelected = allSelected ?? selectedProjectId == null;
@@ -39,6 +42,8 @@ export function ProjectSidebar({
   return (
     <>
       <div
+        data-keyboard-pane="l1"
+        onPointerDown={() => onActivate?.()}
         className="bg-surface-primary flex flex-col shrink-0 border-r border-border-default/60"
         style={hidden ? { display: 'none' } : width != null ? { width } : undefined}
       >

@@ -70,6 +70,8 @@ interface ChatTeamSidebarProps {
   previewMode?: boolean;
   /** Keyboard focus is on this L1 pane (H/L navigation). */
   focused?: boolean;
+  /** When true, L from L1 enters Team L2 instead of jumping to chat content. */
+  l2Available?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -215,6 +217,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   initialLoading,
   previewMode,
   focused,
+  l2Available,
 }: ChatTeamSidebarProps) {
   const { t } = useTranslation(['team', 'common']);
   const isMobile = useIsMobile();
@@ -1027,19 +1030,19 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     });
   }, [onSelectDm, onSelectChannel, onSelectAgent, onSelectTeam]);
 
-  // L1 keyboard: j/k move roster, H → L0, L → content (chat)
+  // L1 keyboard: j/k move roster, H → L0, L → L2 (if open) or content
   useEffect(() => {
     if (previewMode || isMobile || !isActive || hidden) return;
     const onKey = (e: KeyboardEvent) => {
       const pane = layout?.keyboardPane ?? 'content';
-      if (pane === 'l0') return;
+      if (pane === 'l0' || pane === 'l2') return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isEditableTarget(e.target)) return;
 
       const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
 
       if (bare === 'h' || bare === 'ArrowLeft') {
-        if (pane !== 'l1') return; // Team.tsx handles content → L1
+        if (pane !== 'l1') return; // Team.tsx / L2 handle other panes
         e.preventDefault();
         e.stopPropagation();
         layout?.setL0FocusPageId(PAGE.TEAM);
@@ -1051,7 +1054,9 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
         if (pane !== 'l1') return;
         e.preventDefault();
         e.stopPropagation();
-        layout?.setKeyboardPane('content');
+        // Only enter L2 when it exists. Never dump into chat content —
+        // deepest pane keeps JK focus (L would leave the user without JK).
+        if (l2Available) layout?.setKeyboardPane('l2');
         return;
       }
 
@@ -1088,7 +1093,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
   }, [
-    previewMode, isMobile, isActive, hidden, layout, focused,
+    previewMode, isMobile, isActive, hidden, layout, focused, l2Available,
     chatMode, activeDmUserId, authUser?.id, selectedAgent, activeChannel, selectedTeamId,
     activateL1Item,
   ]);
@@ -1100,7 +1105,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
 
   return (
     <>
-      <div className={`bg-surface-primary flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'} ${focused ? 'ring-1 ring-inset ring-brand-500/30' : ''}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
+      <div data-keyboard-pane="l1" className={`bg-surface-primary flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'} ${focused ? 'ring-1 ring-inset ring-brand-500/30' : ''}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
         {/* Header with title + manage button */}
         <div data-electron-drag className="px-4 h-14 flex items-center shrink-0 gap-2">
           {isMobile && <MobileMenuButton />}
