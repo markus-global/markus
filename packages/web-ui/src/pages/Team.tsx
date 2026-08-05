@@ -231,6 +231,42 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setSidebarsCollapsed(layoutLeftCollapsed);
   }, [layoutLeftCollapsed]);
 
+  const keyboardPane = layout?.keyboardPane ?? 'content';
+
+  // Entering L1 from L0: ensure roster sidebars are visible.
+  useEffect(() => {
+    if (previewMode || isMobile || !isActive) return;
+    if (keyboardPane !== 'l1') return;
+    if (sidebarsCollapsed) {
+      setSidebarsCollapsed(false);
+      layout?.setLeftCollapsed(false);
+    }
+  }, [keyboardPane, previewMode, isMobile, isActive, sidebarsCollapsed, layout]);
+
+  // Content → L1 via H (L1 → L0 is handled inside ChatTeamSidebar).
+  useEffect(() => {
+    if (previewMode || isMobile || !isActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (layout?.keyboardPane === 'l0' || layout?.keyboardPane === 'l1') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.target instanceof HTMLElement) {
+        const tag = e.target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
+        if (e.target.closest('.xterm')) return;
+      }
+      const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      if (bare !== 'h' && bare !== 'ArrowLeft') return;
+      e.preventDefault();
+      if (sidebarsCollapsed) {
+        setSidebarsCollapsedPersisted(false);
+        layout?.setLeftCollapsed(false);
+      }
+      layout?.setKeyboardPane('l1');
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [previewMode, isMobile, isActive, layout, sidebarsCollapsed, setSidebarsCollapsedPersisted]);
+
   // Register this page as a right-panel host while it is the active desktop page.
   useEffect(() => {
     if (!setHostAvailable) return;
@@ -3790,6 +3826,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         hidden={(isMobile && mobileLayer !== 'roster') || (!isMobile && sidebarsCollapsed)}
         onCollapse={() => setSidebarsCollapsedPersisted(true)}
         initialLoading={initialLoading}
+        focused={!isMobile && !sidebarsCollapsed && keyboardPane === 'l1'}
       />}
 
       {/* ── L2: Mobile team detail view ── */}

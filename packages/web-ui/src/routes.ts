@@ -131,6 +131,23 @@ export const SIDEBAR_NAV: Array<{ id: PageId; label: string; section: string }> 
   { id: PAGE.SETTINGS,     label: 'Settings',     section: 'system' },
 ];
 
+/** Pages that expose an L1 pane for H/L keyboard navigation with the app rail. */
+export const PAGES_WITH_L1: ReadonlySet<PageId> = new Set([
+  PAGE.TEAM,
+  PAGE.WORK,
+  PAGE.DELIVERABLES,
+  PAGE.STORE,
+  PAGE.SETTINGS,
+]);
+
+/**
+ * Sidebar entries that participate in L0 j/k focus.
+ * Excludes notifications (popover). Settings is included — entering it focuses its L1 tab rail.
+ */
+export const L0_NAV_PAGES: PageId[] = SIDEBAR_NAV
+  .filter(i => i.id !== PAGE.NOTIFICATIONS)
+  .map(i => i.id);
+
 // ── Mobile bottom nav structure ─────────────────────────────────────────────
 
 export type MobileTabId = PageId;

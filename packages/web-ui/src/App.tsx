@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, memo, lazy, Suspense } from 'react';
-import { type PageId, PAGE, resolvePageId, getPageFromHash, hashPath, pageToHash, MOBILE_REDIRECTS } from './routes.ts';
+import { type PageId, PAGE, resolvePageId, getPageFromHash, hashPath, pageToHash, MOBILE_REDIRECTS, L0_NAV_PAGES, PAGES_WITH_L1 } from './routes.ts';
 import { setNativeBrowserPagePaintAllowed } from './lib/nativeBrowserOverlay.ts';
 import { HomePage } from './pages/Home.tsx';
 
@@ -29,7 +29,7 @@ import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
 import { ShortcutsHelpModal } from './components/ShortcutsHelpModal.tsx';
 import { EditProfileModal } from './components/EditProfileModal.tsx';
-import { isXtermTarget } from './lib/keyboard-shortcuts.ts';
+import { isEditableTarget, isXtermTarget } from './lib/keyboard-shortcuts.ts';
 import { knownTerminalIds, rememberTerminalId } from './lib/known-terminals.ts';
 
 const HIDDEN_STYLE: React.CSSProperties = {
@@ -136,6 +136,15 @@ export function App() {
   const layout = useLayout();
   const leftCollapsed = layout?.leftCollapsed ?? false;
   const toggleLeftCollapsed = layout?.toggleLeftCollapsed;
+  const setLeftCollapsed = layout?.setLeftCollapsed;
+  const keyboardPane = layout?.keyboardPane ?? 'l0';
+  const setKeyboardPane = layout?.setKeyboardPane;
+  const l0FocusPageId = layout?.l0FocusPageId ?? null;
+  const setL0FocusPageId = layout?.setL0FocusPageId;
+  const pageRef = useRef(page);
+  pageRef.current = page;
+  /** Page shown before entering Settings — H / Back restores it. */
+  const pageBeforeSettingsRef = useRef<PageId>(PAGE.HOME);
   const toggleRightPanel = layout?.toggleRightPanel;
   const toggleTerminalPanel = layout?.toggleTerminalPanel;
   const cycleRightPanelTab = layout?.cycleRightPanelTab;
@@ -415,6 +424,21 @@ export function App() {
     if (curFull !== pageToHash(curBase)) _savedPageHashes[curBase] = curFull;
     else delete _savedPageHashes[curBase];
 
+    const fromPage = pageRef.current;
+    // Remember origin before Settings so H / Back can restore it.
+    if (normalized === PAGE.SETTINGS && fromPage !== PAGE.SETTINGS) {
+      pageBeforeSettingsRef.current = fromPage;
+      navBus.setSettingsReturnPage(fromPage);
+      // Settings hides the app rail — land on its L1 tab sidebar for JK.
+      setKeyboardPane?.('l1');
+      setL0FocusPageId?.(PAGE.SETTINGS);
+    }
+    // Leaving Settings → restore L0 focus so JK works immediately again.
+    if (fromPage === PAGE.SETTINGS && normalized !== PAGE.SETTINGS) {
+      setKeyboardPane?.('l0');
+      setL0FocusPageId?.(normalized);
+    }
+
     // Explicit settings tab (e.g. Hub status → Account) must win over a restored
     // previous settings sub-hash like #settings/appearance.
     if (normalized === PAGE.SETTINGS && params?.tab) {
@@ -442,11 +466,97 @@ export function App() {
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     setPage(normalized);
     setMountedPages(prev => prev.has(normalized) ? prev : new Set([...prev, normalized]));
-  }, [isMobile]);
+  }, [isMobile, setKeyboardPane, setL0FocusPageId]);
 
   useEffect(() => {
     navBus.setHandler((p, params) => navigate(p, params));
   }, [navigate]);
+
+  // While on L0, keep the rail highlight aligned with the active page
+  // (e.g. Overview selected when the app opens on Overview / when entering L0).
+  useEffect(() => {
+    if (keyboardPane !== 'l0') return;
+    if (page === PAGE.SETTINGS) return; // Settings hides L0; don't steal focus id
+    setL0FocusPageId?.(page);
+  }, [keyboardPane, page, setL0FocusPageId]);
+
+  // L0 app-rail + Settings H: j/k switch pages; L enters L1; H leaves Settings.
+  useEffect(() => {
+    if (isMobile || !setKeyboardPane || !setL0FocusPageId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isEditableTarget(e.target)) return;
+
+      const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+      // Settings L1: H / ← returns to the previous page (app rail is hidden here).
+      if (page === PAGE.SETTINGS && (bare === 'h' || bare === 'ArrowLeft')) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        navBus.leaveSettings();
+        return;
+      }
+
+      if (keyboardPane !== 'l0') return;
+      // While on Settings the app rail is hidden — tab JK is handled in Settings.tsx.
+      if (page === PAGE.SETTINGS) return;
+
+      const focusId = (l0FocusPageId && L0_NAV_PAGES.includes(l0FocusPageId as PageId)
+        ? l0FocusPageId
+        : page) as PageId;
+      const idx = Math.max(0, L0_NAV_PAGES.indexOf(focusId));
+
+      if (bare === 'j' || bare === 'ArrowDown') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const next = L0_NAV_PAGES[Math.min(L0_NAV_PAGES.length - 1, idx + 1)]!;
+        setL0FocusPageId(next);
+        if (next !== page) navigate(next);
+        requestAnimationFrame(() => {
+          document.querySelector(`[data-l0-page-id="${next}"]`)?.scrollIntoView({ block: 'nearest' });
+        });
+        return;
+      }
+      if (bare === 'k' || bare === 'ArrowUp') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const next = L0_NAV_PAGES[Math.max(0, idx - 1)]!;
+        setL0FocusPageId(next);
+        if (next !== page) navigate(next);
+        requestAnimationFrame(() => {
+          document.querySelector(`[data-l0-page-id="${next}"]`)?.scrollIntoView({ block: 'nearest' });
+        });
+        return;
+      }
+      if (bare === 'l' || bare === 'ArrowRight' || bare === 'Enter') {
+        const target = (l0FocusPageId && L0_NAV_PAGES.includes(l0FocusPageId as PageId)
+          ? l0FocusPageId
+          : page) as PageId;
+        // L only enters L1 — page switch is already done by j/k.
+        if (!PAGES_WITH_L1.has(target)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (target !== page) navigate(target);
+        setLeftCollapsed?.(false);
+        setKeyboardPane('l1');
+        return;
+      }
+      // H on L0: no further left pane
+      if (bare === 'h' || bare === 'ArrowLeft') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [
+    isMobile, keyboardPane, l0FocusPageId, page, navigate,
+    setKeyboardPane, setL0FocusPageId, setLeftCollapsed,
+  ]);
 
   useEffect(() => {
     const openEdit = () => setShowEditProfile(true);
@@ -696,11 +806,13 @@ export function App() {
           >
             <Sidebar
               currentPage={page}
-              onNavigate={(p) => { navigate(p); setSidebarOpen(false); }}
+              onNavigate={(p) => { navigate(p); setSidebarOpen(false); setKeyboardPane?.('content'); }}
               authUser={authUser}
               collapsed={sidebar.collapsed}
               onToggleCollapse={sidebar.toggle}
               onLogout={() => { api.auth.logout().catch(() => {}); clearHubAuth(); setAuthUser(null); }}
+              keyboardFocusPageId={l0FocusPageId}
+              keyboardPaneActive={keyboardPane === 'l0'}
             />
           </div>
 

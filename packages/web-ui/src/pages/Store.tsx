@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { TemplateMarketplace, installHubItem } from './TemplateMarketplace.tsx';
 import { TeamsStore } from './TeamsStore.tsx';
@@ -7,6 +7,10 @@ import { InstalledStore } from './InstalledStore.tsx';
 import { StoreDiscovery } from './StoreDiscovery.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { usePageActive } from '../hooks/usePageActive.ts';
+import { useLayout } from '../contexts/LayoutContext.tsx';
+import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import { PAGE } from '../routes.ts';
 import { hubApi, type AuthUser, type HubItem } from '../api.ts';
 import type { AssetType } from '../lib/assetIdentity.ts';
 
@@ -162,8 +166,52 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
   const [initial] = useState(peekInstallDeepLink);
   const [activeTab, setActiveTab] = useState<TabId>(initial.tab);
   const isMobile = useIsMobile();
+  const isActive = usePageActive(PAGE.STORE);
+  const layout = useLayout();
+  const keyboardPane = layout?.keyboardPane ?? 'content';
   const swipe = useSwipeTabs(tabs, activeTab, setActiveTab);
   const [highlightItemId, setHighlightItemId] = useState<string | null>(initial.installId);
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
+
+  // Store L1 = tab rail. H → L0; j/k switch tabs; L focuses L1.
+  useEffect(() => {
+    if (isMobile || !isActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (layout?.keyboardPane === 'l0') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isEditableTarget(e.target)) return;
+      const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+      if (bare === 'h' || bare === 'ArrowLeft') {
+        e.preventDefault();
+        layout?.setL0FocusPageId(PAGE.STORE);
+        layout?.setLeftCollapsed(false);
+        layout?.setKeyboardPane('l0');
+        return;
+      }
+      if (bare === 'l' || bare === 'ArrowRight') {
+        e.preventDefault();
+        layout?.setKeyboardPane('l1');
+        return;
+      }
+
+      const move = bare === 'j' || bare === 'ArrowDown' ? 1
+        : bare === 'k' || bare === 'ArrowUp' ? -1
+        : 0;
+      if (!move) return;
+      e.preventDefault();
+      layout?.setKeyboardPane('l1');
+      const idx = tabs.findIndex(tab => tab.id === activeTabRef.current);
+      const next = tabs[Math.max(0, Math.min(tabs.length - 1, idx + move))]!;
+      setActiveTab(next.id);
+      requestAnimationFrame(() => {
+        document.querySelector(`[data-store-tab-id="${next.id}"]`)?.scrollIntoView({ block: 'nearest' });
+      });
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [isMobile, isActive, layout]);
 
   // Consume after mount (once). Do not clear in useState init — StrictMode double-invokes it.
   useEffect(() => {
@@ -241,17 +289,20 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
 
   return (
     <div className="flex-1 overflow-hidden flex flex-row">
-      <nav className="w-36 shrink-0 bg-surface-secondary rounded-xl m-1 mr-0 flex flex-col py-4 px-2 gap-1">
+      <nav className={`w-36 shrink-0 bg-surface-secondary rounded-xl m-1 mr-0 flex flex-col py-4 px-2 gap-1 ${keyboardPane === 'l1' ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}>
         <div className="px-3 pb-3 mb-1">
           <h2 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('title')}</h2>
         </div>
         {tabs.map(tab => (
           <button
             key={tab.id}
+            data-store-tab-id={tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
               activeTab === tab.id
-                ? 'bg-brand-600/15 text-brand-400 shadow-sm shadow-brand-500/10'
+                ? (keyboardPane === 'l1'
+                  ? 'bg-brand-500/25 text-brand-400 ring-1 ring-inset ring-brand-500/40'
+                  : 'bg-brand-600/15 text-brand-400 shadow-sm shadow-brand-500/10')
                 : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
             }`}
           >

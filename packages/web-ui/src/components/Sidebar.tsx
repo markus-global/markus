@@ -11,6 +11,9 @@ interface Props {
   collapsed?: boolean;
   onToggleCollapse?: () => void;
   onLogout?: () => void;
+  /** Keyboard L0 focus highlight (j/k while pane is l0). */
+  keyboardFocusPageId?: string | null;
+  keyboardPaneActive?: boolean;
 }
 
 function Icon({ d, size = 18 }: { d: string; size?: number }) {
@@ -21,7 +24,10 @@ function Icon({ d, size = 18 }: { d: string; size?: number }) {
   );
 }
 
-export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggleCollapse, onLogout }: Props) {
+export function Sidebar({
+  currentPage, onNavigate, authUser, collapsed, onToggleCollapse, onLogout,
+  keyboardFocusPageId, keyboardPaneActive,
+}: Props) {
   const { t } = useTranslation(['nav', 'common']);
 
   return (
@@ -70,15 +76,19 @@ export function Sidebar({ currentPage, onNavigate, authUser, collapsed, onToggle
                     );
                   }
                   const isActive = currentPage === item.id;
+                  const isKbFocus = keyboardPaneActive && keyboardFocusPageId === item.id;
                   return (
                     <button
                       key={item.id}
+                      data-l0-page-id={item.id}
                       onClick={() => onNavigate(item.id)}
                       title={collapsed ? t(item.id) : undefined}
                       className={`w-full flex items-center ${collapsed ? 'flex-col justify-center px-1 py-1.5 gap-0.5' : 'gap-3 px-3 py-[7px]'} rounded-lg text-[13px] font-medium mb-0.5 transition-colors text-fg-primary ${
-                        isActive
-                          ? 'bg-surface-overlay'
-                          : 'hover:bg-surface-overlay/60'
+                        isKbFocus
+                          ? 'bg-brand-500/25 ring-1 ring-inset ring-brand-500/40'
+                          : isActive
+                            ? 'bg-surface-overlay'
+                            : 'hover:bg-surface-overlay/60'
                       }`}
                     >
                       <Icon d={PAGE_ICONS[item.id] ?? ''} size={collapsed ? 16 : 18} />

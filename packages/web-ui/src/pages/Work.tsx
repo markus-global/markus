@@ -3111,7 +3111,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       <div
         data-work-item-id={row.data.id}
         onClick={() => row.kind === 'task' ? onTaskClick(row.data) : onReqClick(row.data)}
-        className={`px-3 py-2 border-b border-border-default/40 cursor-pointer transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${selected ? 'bg-brand-500/10 border-l-brand-500' : 'active:bg-surface-elevated/50'}`}
+        className={`px-3 py-2 border-b border-border-default/40 cursor-pointer transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${selected ? 'bg-brand-500/25 border-l-brand-500 ring-1 ring-inset ring-brand-500/35' : 'active:bg-surface-elevated/50'}`}
       >
         <div className="flex items-center gap-2 min-w-0">
           {typeBadge}
@@ -3158,7 +3158,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       onDragStart={e => onRowDragStart(e, idx)}
       onDragEnd={onRowDragEnd}
       onClick={() => row.kind === 'task' ? onTaskClick(row.data) : onReqClick(row.data)}
-      className={`flex items-center gap-2 px-6 py-2 border-b border-border-default/40 cursor-pointer transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${dragIdx === idx ? 'opacity-40' : ''} ${selected ? 'bg-brand-500/10 border-l-brand-500 hover:bg-brand-500/15' : 'hover:bg-surface-elevated/50'}`}
+      className={`flex items-center gap-2 px-6 py-2 border-b border-border-default/40 cursor-pointer transition-colors border-l-2 ${GROUP_ACCENT[row.group] ?? 'border-l-gray-700'} ${dragIdx === idx ? 'opacity-40' : ''} ${selected ? 'bg-brand-500/25 border-l-brand-500 ring-1 ring-inset ring-brand-500/35 hover:bg-brand-500/30' : 'hover:bg-surface-elevated/50'}`}
     >
       <div className="w-12 shrink-0">{typeBadge}</div>
       <div className="flex-1 min-w-[200px] text-sm text-fg-primary truncate flex items-center gap-1.5">
@@ -5284,14 +5284,62 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const totalTaskCount = Object.values(allTaskCounts).reduce((a, b) => a + b, 0);
   const projectTaskCount = selectedProjectId ? (allTaskCounts[selectedProjectId] ?? 0) : totalTaskCount;
 
-  // Flat navigable items for j/k (backlog + kanban)
+  // Flat navigable items for j/k — matches visual order (mixed req+task by status/time).
   const navigableItems = useMemo(() => {
     const tasks = filterTasks(Object.values(board).flat());
-    const items: Array<{ kind: 'req'; data: RequirementInfo } | { kind: 'task'; data: TaskInfo }> = [];
-    for (const r of filteredReqs) items.push({ kind: 'req', data: r });
-    for (const t of tasks) items.push({ kind: 'task', data: t });
-    return items;
-  }, [board, filteredReqs, showClosed, statusFilter, selectedProjectId, projectFilter, agentFilter, myTasksOnly, authUser?.id, viewMode]);
+    type NavItem = { kind: 'req'; data: RequirementInfo } | { kind: 'task'; data: TaskInfo };
+    const items: NavItem[] = [];
+
+    if (boardType === 'kanban') {
+      // Column order, then newest-first within each column (same as kanban render).
+      for (const col of BOARD_COLUMNS_BASE) {
+        const colTasks = col.statuses.flatMap(s => tasks.filter(t => t.status === s));
+        const colReqs = filteredReqs.filter(r => REQ_COLUMN_MAP[r.status] === col.id);
+        type Mixed =
+          | { kind: 'req'; data: RequirementInfo; time: number }
+          | { kind: 'task'; data: TaskInfo; time: number };
+        const mixed: Mixed[] = [
+          ...colReqs.map(r => ({ kind: 'req' as const, data: r, time: new Date(r.updatedAt ?? r.createdAt).getTime() })),
+          ...colTasks.map(t => ({ kind: 'task' as const, data: t, time: new Date(t.updatedAt ?? t.createdAt ?? 0).getTime() })),
+        ];
+        mixed.sort((a, b) => b.time - a.time);
+        for (const m of mixed) {
+          if (m.kind === 'req') items.push({ kind: 'req', data: m.data });
+          else items.push({ kind: 'task', data: m.data });
+        }
+      }
+      return items;
+    }
+
+    // Backlog (and fallback): status group order, then updatedAt desc — same as BacklogTable.
+    type Row =
+      | { kind: 'req'; data: RequirementInfo; groupOrder: number; time: number }
+      | { kind: 'task'; data: TaskInfo; groupOrder: number; time: number };
+    const rows: Row[] = [];
+    for (const t of tasks) {
+      const group = taskToGroup(t.status);
+      rows.push({
+        kind: 'task', data: t,
+        groupOrder: GROUP_ORDER[group] ?? 5,
+        time: new Date(t.updatedAt ?? t.createdAt ?? 0).getTime(),
+      });
+    }
+    for (const r of filteredReqs) {
+      const group = REQ_COLUMN_MAP[r.status] ?? 'todo';
+      rows.push({
+        kind: 'req', data: r,
+        groupOrder: GROUP_ORDER[group] ?? 5,
+        time: new Date(r.updatedAt ?? r.createdAt).getTime(),
+      });
+    }
+    rows.sort((a, b) => {
+      if (a.groupOrder !== b.groupOrder) return a.groupOrder - b.groupOrder;
+      return b.time - a.time;
+    });
+    return rows.map((r): NavItem =>
+      r.kind === 'req' ? { kind: 'req', data: r.data } : { kind: 'task', data: r.data },
+    );
+  }, [board, filteredReqs, boardType, showClosed, statusFilter, selectedProjectId, projectFilter, agentFilter, myTasksOnly, authUser?.id, viewMode]);
 
   const navigableItemsRef = useRef(navigableItems);
   navigableItemsRef.current = navigableItems;
@@ -5358,11 +5406,26 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     }
   }, [l1Collapsed, isMobile, openItemDetail]);
 
-  // Tasks-page keyboard: Cmd+J/L, Ctrl+Tab, Tab focus, j/k navigation
+  // Entering L1 from L0 (App H/L): expand project rail and focus it.
+  const keyboardPane = layout?.keyboardPane ?? 'content';
+  useEffect(() => {
+    if (previewMode || isMobile || !isActive) return;
+    if (keyboardPane !== 'l1') return;
+    if (l1CollapsedRef.current) {
+      setL1CollapsedPersisted(false);
+      layout?.setLeftCollapsed(false);
+    }
+    setNavFocus('projects');
+  }, [keyboardPane, previewMode, isMobile, isActive, setL1CollapsedPersisted, layout]);
+
+  // Tasks-page keyboard: Cmd+J/L, Ctrl+Tab, H/L focus panes (content↔L1↔L0), j/k navigation
   useEffect(() => {
     if (previewMode || isMobile || !isActive) return;
     const isMac = navigator.platform.toUpperCase().includes('MAC');
     const onKey = (e: KeyboardEvent) => {
+      // L0 app-rail owns j/k/h/l while focused
+      if (layout?.keyboardPane === 'l0') return;
+
       const mod = isMac ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
 
       // Ctrl+Tab (always Ctrl, even on Mac) cycles board views
@@ -5394,21 +5457,52 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       if (mod || e.altKey || e.ctrlKey || e.metaKey) return;
       if (isEditableTarget(e.target)) return;
 
-      // Tab: L1 open → switch nav focus from projects to items
-      if (e.key === 'Tab' && !e.shiftKey && !l1CollapsedRef.current && navFocusRef.current === 'projects') {
+      const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+      // H / ← : items → L1 → L0
+      // L / → / Tab : L1 → items
+      if (bare === 'h' || bare === 'ArrowLeft') {
+        if (l1CollapsedRef.current) {
+          e.preventDefault();
+          setL1CollapsedPersisted(false);
+          layout?.setLeftCollapsed(false);
+          setNavFocus('projects');
+          layout?.setKeyboardPane('l1');
+          return;
+        }
+        if (navFocusRef.current === 'items') {
+          e.preventDefault();
+          setNavFocus('projects');
+          layout?.setKeyboardPane('l1');
+          return;
+        }
+        // Already on L1 → focus app rail (L0)
+        e.preventDefault();
+        layout?.setL0FocusPageId(PAGE.WORK);
+        layout?.setLeftCollapsed(false);
+        layout?.setKeyboardPane('l0');
+        return;
+      }
+      if (
+        (bare === 'l' || bare === 'ArrowRight' || (bare === 'Tab' && !e.shiftKey))
+        && !l1CollapsedRef.current
+        && navFocusRef.current === 'projects'
+      ) {
         e.preventDefault();
         setNavFocus('items');
+        layout?.setKeyboardPane('content');
         return;
       }
 
-      const move = e.key === 'j' || e.key === 'ArrowDown' ? 1
-        : e.key === 'k' || e.key === 'ArrowUp' ? -1
+      const move = bare === 'j' || bare === 'ArrowDown' ? 1
+        : bare === 'k' || bare === 'ArrowUp' ? -1
         : 0;
       if (!move) return;
 
       const focus = l1CollapsedRef.current ? 'items' : navFocusRef.current;
       if (focus === 'projects') {
         e.preventDefault();
+        layout?.setKeyboardPane('l1');
         const list = activeProjectsRef.current;
         // Index 0 = All, then each project
         const len = list.length + 1;
@@ -5442,6 +5536,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       const bt = boardTypeRef.current;
       if (bt !== 'backlog' && bt !== 'kanban') return;
       e.preventDefault();
+      layout?.setKeyboardPane('content');
       const items = navigableItemsRef.current;
       if (items.length === 0) {
         setRightDetailMode(prev => (prev === 'closed' ? 'empty' : prev));
@@ -5462,7 +5557,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     return () => document.removeEventListener('keydown', onKey, true);
   }, [
     previewMode, isMobile, isActive, toggleProjectDetail, openItemDetailOrEmpty,
-    selectProject, selectAllProjects, openItemDetail,
+    selectProject, selectAllProjects, openItemDetail, setL1CollapsedPersisted, layout,
   ]);
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-fg-tertiary">{t('work:task.loadingPage')}</div>;
@@ -5827,7 +5922,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                 onClick={() => handleSelectReq(req)} onKeyDown={e => e.key === 'Enter' && handleSelectReq(req)}
                                 className={`group rounded-lg p-2.5 border border-transparent transition-all cursor-grab active:cursor-grabbing
                                   ${needsReview ? 'bg-amber-500/[0.06] border-amber-500/30 ring-1 ring-amber-500/15' : 'bg-surface-elevated/80 hover:bg-surface-elevated border-border-default/50 hover:border-brand-400/40'}
-                                  ${isSelected ? 'ring-2 ring-brand-500/50 border-brand-500/40' : ''}`}>
+                                  ${isSelected ? '!bg-brand-500/25 !border-brand-500/50 ring-1 ring-brand-500/40' : ''}`}>
                                 <div className="flex items-center gap-1.5 mb-1">
                                   <span className="w-1 h-1 rounded-full bg-purple-500 shrink-0" />
                                   <span className="text-[10px] font-semibold text-purple-500 uppercase tracking-wide shrink-0">{t('work:task.requirementShort')}</span>
@@ -5884,7 +5979,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                     : isSchedTask
                                       ? 'bg-blue-500/[0.04] border-blue-500/20 hover:border-blue-400/40 cursor-pointer'
                                       : 'bg-surface-elevated/80 hover:bg-surface-elevated border-border-default/50 hover:border-brand-400/40 cursor-grab active:cursor-grabbing'
-                                } ${isSelected ? 'ring-2 ring-brand-500/50 border-brand-500/40' : ''}`}>
+                                } ${isSelected ? '!bg-brand-500/25 !border-brand-500/50 ring-1 ring-brand-500/40' : ''}`}>
                                 <div className="flex items-center gap-1.5 mb-1">
                                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${priorityDot[task.priority] ?? 'bg-gray-400'}`} title={task.priority} />
                                   {isSchedTask && <span className="text-blue-500 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
