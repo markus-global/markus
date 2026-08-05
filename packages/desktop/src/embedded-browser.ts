@@ -431,7 +431,7 @@ function openOauthPopupFromOpenerPage(rawUrl: string, openerSlotId: string): voi
     `window.open(${JSON.stringify(url)}, "_blank", "popup=yes,width=520,height=740");`,
   ).then((handle) => {
     // null handle ⇒ opener wiring failed; fall back so the user can still sign in.
-    if (handle == null) openOauthPopupWithUrl(url, openerSlotId, openerSession);
+    if (handle === null || handle === undefined) openOauthPopupWithUrl(url, openerSlotId, openerSession);
   }).catch(() => {
     openOauthPopupWithUrl(url, openerSlotId, openerSession);
   });
@@ -454,7 +454,7 @@ function openOauthPopupWithUrl(
 
 function resolveOpenerSlotId(preferred?: string): string | undefined {
   if (preferred && slots.has(preferred)) return preferred;
-  if (selectedPageId != null) {
+  if (selectedPageId !== null) {
     const id = pageIdToSlotId.get(selectedPageId);
     if (id && slots.has(id)) return id;
   }
