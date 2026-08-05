@@ -14,6 +14,9 @@ export type RightPanelPayload =
 
 export type RightPanelMode = 'browser' | 'terminal';
 
+/** Keyboard focus zone for H/L pane navigation across L0 app rail and page L1. */
+export type KeyboardPane = 'l0' | 'l1' | 'content';
+
 export interface RightPanelTab {
   id: string;
   title: string;
@@ -232,6 +235,16 @@ export interface LayoutContextValue {
   setLeftCollapsed: (v: boolean) => void;
   toggleLeftCollapsed: () => void;
 
+  /**
+   * Keyboard focus zone: L0 app rail ↔ page L1 ↔ page content.
+   * H moves left (content→l1→l0); L moves right (l0→l1→content).
+   */
+  keyboardPane: KeyboardPane;
+  setKeyboardPane: (pane: KeyboardPane) => void;
+  /** Focused page id while keyboardPane === 'l0' (may differ from the active route while browsing). */
+  l0FocusPageId: string | null;
+  setL0FocusPageId: (pageId: string | null) => void;
+
   /** Right-side content panel (preview / selection-to-agent). */
   rightPanelMode: RightPanelMode;
   setRightPanelMode: (mode: RightPanelMode) => void;
@@ -297,6 +310,12 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   const [terminalActiveId, setTerminalActiveId] = useState<string | null>(initialPanel.terminalActiveId);
   const [fullscreen, setFullscreen] = useState(false);
   const [hostAvailable, setHostAvailable] = useState(false);
+  // Start on L0 so JK can switch pages immediately after launch (Overview focused).
+  const [keyboardPane, setKeyboardPaneState] = useState<KeyboardPane>('l0');
+  const [l0FocusPageId, setL0FocusPageIdState] = useState<string | null>(null);
+
+  const setKeyboardPane = useCallback((pane: KeyboardPane) => setKeyboardPaneState(pane), []);
+  const setL0FocusPageId = useCallback((pageId: string | null) => setL0FocusPageIdState(pageId), []);
 
   const lastBrowserTabsRef = useRef<RightPanelTab[]>(initialPanel.browserTabs);
   const lastBrowserActiveRef = useRef<string | null>(initialPanel.browserActiveId);
@@ -911,6 +930,10 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     leftCollapsed,
     setLeftCollapsed,
     toggleLeftCollapsed,
+    keyboardPane,
+    setKeyboardPane,
+    l0FocusPageId,
+    setL0FocusPageId,
     rightPanelMode: mode,
     setRightPanelMode,
     switchRightPanelMode,
@@ -938,6 +961,7 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     setHostAvailable,
   }), [
     leftCollapsed, setLeftCollapsed, toggleLeftCollapsed,
+    keyboardPane, setKeyboardPane, l0FocusPageId, setL0FocusPageId,
     mode, setRightPanelMode, switchRightPanelMode, rightPanel, rightPanelOpen, tabs, activeTab,
     openRightPanel, closeRightPanel, closeRightPanelTab,
     setActiveRightPanelTab, updateRightPanelBrowserTab, updateRightPanelTerminalTab,

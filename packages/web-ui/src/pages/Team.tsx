@@ -9,7 +9,7 @@ import {
   type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
   type NotificationInfo, type SubagentProgressEvent,
 } from '../api.ts';
-import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
+import { MarkdownMessage, ImagePreviewModal } from '../components/MarkdownMessage.tsx';
 import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
 import { UserInputModal } from '../components/UserInputModal.tsx';
 import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
@@ -230,6 +230,42 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     prevLayoutLeftCollapsed.current = layoutLeftCollapsed;
     setSidebarsCollapsed(layoutLeftCollapsed);
   }, [layoutLeftCollapsed]);
+
+  const keyboardPane = layout?.keyboardPane ?? 'content';
+
+  // Entering L1 from L0: ensure roster sidebars are visible.
+  useEffect(() => {
+    if (previewMode || isMobile || !isActive) return;
+    if (keyboardPane !== 'l1') return;
+    if (sidebarsCollapsed) {
+      setSidebarsCollapsed(false);
+      layout?.setLeftCollapsed(false);
+    }
+  }, [keyboardPane, previewMode, isMobile, isActive, sidebarsCollapsed, layout]);
+
+  // Content → L1 via H (L1 → L0 is handled inside ChatTeamSidebar).
+  useEffect(() => {
+    if (previewMode || isMobile || !isActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (layout?.keyboardPane === 'l0' || layout?.keyboardPane === 'l1') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.target instanceof HTMLElement) {
+        const tag = e.target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
+        if (e.target.closest('.xterm')) return;
+      }
+      const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      if (bare !== 'h' && bare !== 'ArrowLeft') return;
+      e.preventDefault();
+      if (sidebarsCollapsed) {
+        setSidebarsCollapsedPersisted(false);
+        layout?.setLeftCollapsed(false);
+      }
+      layout?.setKeyboardPane('l1');
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [previewMode, isMobile, isActive, layout, sidebarsCollapsed, setSidebarsCollapsedPersisted]);
 
   // Register this page as a right-panel host while it is the active desktop page.
   useEffect(() => {
@@ -612,6 +648,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [loadingChat, setLoadingChat] = useState(false);
   // Image attachments
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
+  /** In-app lightbox for chat image attachments (avoid window.open on data: URLs). */
+  const [imagePreviewSrc, setImagePreviewSrc] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /** Session-scoped model pick from the composer menu (null = use global routing). */
@@ -3790,6 +3828,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         hidden={(isMobile && mobileLayer !== 'roster') || (!isMobile && sidebarsCollapsed)}
         onCollapse={() => setSidebarsCollapsedPersisted(true)}
         initialLoading={initialLoading}
+        focused={!isMobile && !sidebarsCollapsed && keyboardPane === 'l1'}
       />}
 
       {/* ── L2: Mobile team detail view ── */}
@@ -4662,7 +4701,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
                                 {msg.images.map((src, idx) => (
-                                  <img key={idx} src={src} alt="" className="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity" onClick={() => window.open(src, '_blank')} />
+                                  <img
+                                    key={idx}
+                                    src={src}
+                                    alt=""
+                                    className="max-w-[200px] max-h-[150px] rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                                    onClick={() => setImagePreviewSrc(src)}
+                                  />
                                 ))}
                               </div>
                             )}
@@ -5178,6 +5223,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         />
       )}
 
+      {imagePreviewSrc && (
+        <ImagePreviewModal src={imagePreviewSrc} onClose={() => setImagePreviewSrc(null)} />
+      )}
     </div>
   );
 }

@@ -16,6 +16,8 @@ import {
   OpenClawImportModal,
 } from './TeamModals.tsx';
 import { Avatar } from './Avatar.tsx';
+import { useLayout } from '../contexts/LayoutContext.tsx';
+import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 
 // Module-level cache so last-message previews survive unmount/remount cycles on mobile
 let _lastMsgCache: Map<string, string> = new Map();
@@ -23,6 +25,12 @@ let _lastMsgCache: Map<string, string> = new Map();
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type ChatMode = 'channel' | 'direct' | 'dm';
+
+type L1NavItem =
+  | { kind: 'dm'; id: string; userId: string }
+  | { kind: 'channel'; id: string; channelKey: string }
+  | { kind: 'agent'; id: string; agentId: string }
+  | { kind: 'team'; id: string; teamId: string };
 
 interface ChatTeamSidebarProps {
   authUser?: AuthUser;
@@ -60,6 +68,8 @@ interface ChatTeamSidebarProps {
   initialLoading?: boolean;
   /** When true, auto-scroll to the Teams section on mount */
   previewMode?: boolean;
+  /** Keyboard focus is on this L1 pane (H/L navigation). */
+  focused?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -204,10 +214,12 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   width, onResizeStart, hidden, onCollapse,
   initialLoading,
   previewMode,
+  focused,
 }: ChatTeamSidebarProps) {
   const { t } = useTranslation(['team', 'common']);
   const isMobile = useIsMobile();
   const isActive = usePageActive(PAGE.TEAM);
+  const layout = useLayout();
   const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
   const externalMarkusIds = useMemo(() => new Set(externalAgents.map(ea => ea.markusAgentId).filter(Boolean) as string[]), [externalAgents]);
 
@@ -661,6 +673,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
         onPointerUp={handlePointerUp}
       >
         <button
+          data-l1-nav-id={`agent:${a.id}`}
           onClick={() => {
             if (!isDragging) onSelectAgent(a.id);
           }}
@@ -677,7 +690,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
           } ${
             isStopped ? 'opacity-50 text-fg-tertiary' : 'text-fg-primary'
           } ${
-            selected ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
+            l1SelectedClass(selected)
           }`}
         >
           <Avatar
@@ -764,6 +777,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
       >
         <div className="group/teamhdr flex items-center gap-0.5">
           <button
+            data-l1-nav-id={`team:${tid}`}
             onClick={() => {
               if (onSelectTeam && tid !== '_ungrouped') onSelectTeam(tid);
             }}
@@ -776,9 +790,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
             className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors min-w-0 ${
               allStopped ? 'opacity-50 text-fg-tertiary' : 'text-fg-primary'
             } ${
-              isSelected
-                ? 'bg-surface-overlay'
-                : 'hover:bg-surface-overlay/60'
+              l1SelectedClass(isSelected)
             }`}
           >
             <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 relative ${allStopped ? 'bg-surface-overlay/60 text-fg-tertiary' : 'bg-surface-overlay text-fg-primary'}`}>
@@ -971,9 +983,124 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     if (dmHasActiveChannel) setDmSectionExpanded(true);
   }, [dmHasActiveChannel]);
 
+  // Flat L1 roster in visual order for j/k navigation.
+  const l1NavItems = useMemo((): L1NavItem[] => {
+    const items: L1NavItem[] = [];
+    if (authUser) items.push({ kind: 'dm', id: `dm:${authUser.id}`, userId: authUser.id });
+    for (const h of humans) {
+      if (h.id === authUser?.id) continue;
+      items.push({ kind: 'dm', id: `dm:${h.id}`, userId: h.id });
+    }
+    for (const gc of groupChatsByTeam.custom) {
+      items.push({ kind: 'channel', id: `channel:${gc.channelKey}`, channelKey: gc.channelKey });
+    }
+    for (const gc of groupChatsByTeam.unmatched) {
+      items.push({ kind: 'channel', id: `channel:${gc.channelKey}`, channelKey: gc.channelKey });
+    }
+    const agentSource = agentsByTeam.ungrouped.length > 0
+      ? agentsByTeam.ungrouped
+      : (teams.length === 0 ? agents : []);
+    for (const a of agentSource) {
+      items.push({ kind: 'agent', id: `agent:${a.id}`, agentId: a.id });
+    }
+    for (const tm of teams) {
+      items.push({ kind: 'team', id: `team:${tm.id}`, teamId: tm.id });
+    }
+    if (dmSectionExpanded) {
+      for (const gc of groupChatsByTeam.dmChannels) {
+        items.push({ kind: 'channel', id: `channel:${gc.channelKey}`, channelKey: gc.channelKey });
+      }
+    }
+    return items;
+  }, [authUser, humans, groupChatsByTeam, agentsByTeam, teams, agents, dmSectionExpanded]);
+
+  const l1NavItemsRef = useRef(l1NavItems);
+  l1NavItemsRef.current = l1NavItems;
+
+  const activateL1Item = useCallback((item: L1NavItem) => {
+    if (item.kind === 'dm') onSelectDm(item.userId);
+    else if (item.kind === 'channel') onSelectChannel(item.channelKey);
+    else if (item.kind === 'agent') onSelectAgent(item.agentId);
+    else if (item.kind === 'team') onSelectTeam?.(item.teamId);
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-l1-nav-id="${item.id}"]`)?.scrollIntoView({ block: 'nearest' });
+    });
+  }, [onSelectDm, onSelectChannel, onSelectAgent, onSelectTeam]);
+
+  // L1 keyboard: j/k move roster, H → L0, L → content (chat)
+  useEffect(() => {
+    if (previewMode || isMobile || !isActive || hidden) return;
+    const onKey = (e: KeyboardEvent) => {
+      const pane = layout?.keyboardPane ?? 'content';
+      if (pane === 'l0') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isEditableTarget(e.target)) return;
+
+      const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+      if (bare === 'h' || bare === 'ArrowLeft') {
+        if (pane !== 'l1') return; // Team.tsx handles content → L1
+        e.preventDefault();
+        e.stopPropagation();
+        layout?.setL0FocusPageId(PAGE.TEAM);
+        layout?.setLeftCollapsed(false);
+        layout?.setKeyboardPane('l0');
+        return;
+      }
+      if (bare === 'l' || bare === 'ArrowRight') {
+        if (pane !== 'l1') return;
+        e.preventDefault();
+        e.stopPropagation();
+        layout?.setKeyboardPane('content');
+        return;
+      }
+
+      if (pane !== 'l1' && !(focused && (bare === 'j' || bare === 'k' || bare === 'ArrowDown' || bare === 'ArrowUp'))) {
+        return;
+      }
+      const move = bare === 'j' || bare === 'ArrowDown' ? 1
+        : bare === 'k' || bare === 'ArrowUp' ? -1
+        : 0;
+      if (!move) return;
+      e.preventDefault();
+      e.stopPropagation();
+      layout?.setKeyboardPane('l1');
+
+      const items = l1NavItemsRef.current;
+      if (items.length === 0) return;
+
+      let cur = -1;
+      if (chatMode === 'dm') {
+        const uid = activeDmUserId || authUser?.id;
+        if (uid) cur = items.findIndex(it => it.kind === 'dm' && it.userId === uid);
+      } else if (chatMode === 'direct') {
+        cur = items.findIndex(it => it.kind === 'agent' && it.agentId === selectedAgent);
+      } else if (chatMode === 'channel') {
+        cur = items.findIndex(it => it.kind === 'channel' && it.channelKey === activeChannel);
+        if (cur < 0 && selectedTeamId) {
+          cur = items.findIndex(it => it.kind === 'team' && it.teamId === selectedTeamId);
+        }
+      }
+      if (cur < 0) cur = move > 0 ? -1 : 0;
+      const nextIdx = Math.max(0, Math.min(items.length - 1, cur + move));
+      activateL1Item(items[nextIdx]!);
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [
+    previewMode, isMobile, isActive, hidden, layout, focused,
+    chatMode, activeDmUserId, authUser?.id, selectedAgent, activeChannel, selectedTeamId,
+    activateL1Item,
+  ]);
+
+  const l1SelectedClass = (isSelected: boolean) =>
+    isSelected
+      ? (focused ? 'bg-brand-500/25 ring-1 ring-inset ring-brand-500/40' : 'bg-surface-overlay')
+      : 'hover:bg-surface-overlay/60';
+
   return (
     <>
-      <div className={`bg-surface-primary flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
+      <div className={`bg-surface-primary flex flex-col ${width != null ? 'shrink-0' : 'flex-1 min-w-0'} ${focused ? 'ring-1 ring-inset ring-brand-500/30' : ''}`} style={hidden ? { display: 'none' } : width != null ? { width } : undefined}>
         {/* Header with title + manage button */}
         <div data-electron-drag className="px-4 h-14 flex items-center shrink-0 gap-2">
           {isMobile && <MobileMenuButton />}
@@ -1074,11 +1201,10 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
 
             {authUser && (
               <button
+                data-l1-nav-id={`dm:${authUser.id}`}
                 onClick={() => onSelectDm(authUser.id)}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
-                  chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId)
-                    ? 'bg-surface-overlay'
-                    : 'hover:bg-surface-overlay/60'
+                  l1SelectedClass(chatMode === 'dm' && (activeDmUserId === authUser.id || !activeDmUserId))
                 }`}
               >
                 <Avatar
@@ -1101,6 +1227,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
               return (
               <button
                 key={h.id}
+                data-l1-nav-id={`dm:${h.id}`}
                 onClick={() => onSelectDm(h.id)}
                 onContextMenu={e => {
                   if (!isAdmin || h.id === authUser?.id) return;
@@ -1110,7 +1237,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
                 }}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
                   chatMode === 'dm' && activeDmUserId === h.id
-                    ? 'bg-green-500/15'
+                    ? (focused ? 'bg-brand-500/25 ring-1 ring-inset ring-brand-500/40' : 'bg-green-500/15')
                     : 'hover:bg-surface-overlay/60'
                 }`}
               >
@@ -1143,6 +1270,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
                 return (
                   <button
                     key={gc.id}
+                    data-l1-nav-id={`channel:${gc.channelKey}`}
                     onClick={() => onSelectChannel(gc.channelKey)}
                     onContextMenu={e => {
                       e.preventDefault();
@@ -1150,7 +1278,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
                       setGcMenu({ gcId: gc.id, ...pos });
                     }}
                     className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
-                      isActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
+                      l1SelectedClass(isActive)
                     }`}
                   >
                     <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
@@ -1190,11 +1318,10 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
             return (
               <button
                 key={gc.id}
+                data-l1-nav-id={`channel:${gc.channelKey}`}
                 onClick={() => onSelectChannel(gc.channelKey)}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
-                  chatMode === 'channel' && activeChannel === gc.channelKey
-                    ? 'bg-surface-overlay'
-                    : 'hover:bg-surface-overlay/60'
+                  l1SelectedClass(chatMode === 'channel' && activeChannel === gc.channelKey)
                 }`}
               >
                 <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
@@ -1255,9 +1382,10 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
                 return (
                   <button
                     key={gc.id}
+                    data-l1-nav-id={`channel:${gc.channelKey}`}
                     onClick={() => onSelectChannel(gc.channelKey)}
                     className={`w-full flex items-center gap-2.5 px-2.5 pl-5 py-1.5 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
-                      isActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
+                      l1SelectedClass(isActive)
                     }`}
                   >
                     <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 bg-surface-overlay/60 text-fg-tertiary text-[9px]">

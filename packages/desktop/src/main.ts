@@ -308,6 +308,12 @@ app.whenReady().then(async () => {
         },
       };
     }
+    // data:/blob: URLs cannot be opened externally (macOS shows a broken
+    // "choose application" dialog). Deny without shell.openExternal — the
+    // renderer should preview these in-app instead.
+    if (url.startsWith('data:') || url.startsWith('blob:')) {
+      return { action: 'deny' };
+    }
     // All other external URLs → system browser
     shell.openExternal(url);
     return { action: 'deny' };

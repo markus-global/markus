@@ -425,7 +425,8 @@ function guessImageFilename(src: string, blob: Blob): string {
   return `image.${ext}`;
 }
 
-function ImagePreviewModal({ src, onClose }: { src: string; onClose: () => void }) {
+/** Shared lightbox for markdown images and chat attachment thumbnails. */
+export function ImagePreviewModal({ src, onClose }: { src: string; onClose: () => void }) {
   const { t } = useTranslation('common');
   const [flash, setFlash] = useState<string | null>(null);
   const [busy, setBusy] = useState<'copy' | 'download' | null>(null);

@@ -14,6 +14,8 @@ import { usePageActive } from '../hooks/usePageActive.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
+import { useLayout } from '../contexts/LayoutContext.tsx';
+import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 
 const TYPE_META: Record<string, { icon: string; color: string }> = {
   file:      { icon: '\u{1F4C4}', color: 'bg-green-500/10 text-green-600' },
@@ -131,6 +133,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   // Sidebar collapse (Phase 2)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const layout = useLayout();
+  const keyboardPane = layout?.keyboardPane ?? 'content';
 
   // Chat panel (Phase 3)
   const [chatPanelOpen, setChatPanelOpen] = useState(false);
@@ -532,8 +536,17 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // Entering L1 from L0: expand the deliverables list rail.
   useEffect(() => {
+    if (previewMode || isMobile || !isActive) return;
+    if (keyboardPane !== 'l1') return;
+    if (sidebarCollapsed) setSidebarCollapsed(false);
+  }, [keyboardPane, previewMode, isMobile, isActive, sidebarCollapsed]);
+
+  useEffect(() => {
+    if (previewMode || isMobile || !isActive) return;
     const handler = (e: KeyboardEvent) => {
+      if (layout?.keyboardPane === 'l0') return;
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         if (e.key === 'Escape') {
           (e.target as HTMLElement).blur();
@@ -541,26 +554,53 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         }
         return;
       }
+      if (isEditableTarget(e.target)) return;
       if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
         e.preventDefault();
         searchInputRef.current?.focus();
         return;
       }
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+      // H → L0 app rail; L stays on / returns to L1 list
+      if (bare === 'h' || bare === 'ArrowLeft') {
         e.preventDefault();
-        const list = flatItems;
-        if (list.length === 0) return;
-        const curIdx = selected ? list.findIndex(i => i.id === selected.id) : -1;
-        const nextIdx = e.key === 'ArrowDown'
-          ? Math.min(curIdx + 1, list.length - 1)
-          : Math.max(curIdx - 1, 0);
-        handleSelectItem(list[nextIdx]);
+        if (sidebarCollapsed) setSidebarCollapsed(false);
+        layout?.setL0FocusPageId(PAGE.DELIVERABLES);
+        layout?.setLeftCollapsed(false);
+        layout?.setKeyboardPane('l0');
+        return;
       }
+      if (bare === 'l' || bare === 'ArrowRight') {
+        e.preventDefault();
+        if (sidebarCollapsed) setSidebarCollapsed(false);
+        layout?.setKeyboardPane('l1');
+        return;
+      }
+
+      const move = bare === 'j' || bare === 'ArrowDown' ? 1
+        : bare === 'k' || bare === 'ArrowUp' ? -1
+        : 0;
+      if (!move) return;
+      e.preventDefault();
+      layout?.setKeyboardPane('l1');
+      if (sidebarCollapsed) setSidebarCollapsed(false);
+      const list = flatItems;
+      if (list.length === 0) return;
+      const curIdx = selected ? list.findIndex(i => i.id === selected.id) : -1;
+      const base = curIdx < 0 ? (move > 0 ? -1 : 0) : curIdx;
+      const nextIdx = Math.max(0, Math.min(list.length - 1, base + move));
+      handleSelectItem(list[nextIdx]!);
+      requestAnimationFrame(() => {
+        document.querySelector(`[data-deliverable-id="${list[nextIdx]!.id}"]`)?.scrollIntoView({ block: 'nearest' });
+      });
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    document.addEventListener('keydown', handler, true);
+    return () => document.removeEventListener('keydown', handler, true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flatItems, selected]);
+  }, [flatItems, selected, previewMode, isMobile, isActive, layout, sidebarCollapsed]);
 
   const pullStartRef = useRef<{ y: number; scrollTop: number } | null>(null);
   const handlePullStart = useCallback((e: React.TouchEvent) => {
@@ -748,7 +788,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* Left sidebar — always mounted on mobile to preserve scroll position */}
-      <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0`}
+      <div className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0 ${!isMobile && keyboardPane === 'l1' ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}
         style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : sidebarCollapsed ? { display: 'none' } : { width: listPanel.width }}>
         <div data-electron-drag className="p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
@@ -937,8 +977,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 </button>
                 <div className={`overflow-hidden transition-all duration-200 ${isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[5000px] opacity-100'}`}>
                   {group.items.map(item => (
-                  <button key={item.id} onClick={() => handleSelectItem(item)}
-                    className={`w-full text-left px-3 py-2 rounded-lg transition-all duration-150 ${selected?.id === item.id ? 'bg-brand-600/15 border-l-2 border-l-brand-500 border-y border-r border-y-brand-500/20 border-r-brand-500/20' : 'hover:bg-surface-elevated/60 border-l-2 border-l-transparent border-y border-r border-transparent'}`}>
+                  <button key={item.id} data-deliverable-id={item.id} onClick={() => handleSelectItem(item)}
+                    className={`w-full text-left px-3 py-2 rounded-lg transition-all duration-150 ${selected?.id === item.id ? (keyboardPane === 'l1' ? 'bg-brand-500/25 ring-1 ring-inset ring-brand-500/40 border-l-2 border-l-brand-500 border-y border-r border-y-brand-500/20 border-r-brand-500/20' : 'bg-brand-600/15 border-l-2 border-l-brand-500 border-y border-r border-y-brand-500/20 border-r-brand-500/20') : 'hover:bg-surface-elevated/60 border-l-2 border-l-transparent border-y border-r border-transparent'}`}>
                     <div className="flex items-center gap-1.5 min-w-0">
                       {item.artifactType && ARTIFACT_META[item.artifactType] ? (
                         <span className={`text-[10px] px-1 py-0.5 rounded font-medium shrink-0 ${ARTIFACT_META[item.artifactType].color}`}>

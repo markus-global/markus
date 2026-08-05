@@ -6,6 +6,9 @@ import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { usePageActive } from '../hooks/usePageActive.ts';
+import { useLayout } from '../contexts/LayoutContext.tsx';
+import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { isElectron } from '../hooks/useElectron.ts';
 import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
@@ -140,6 +143,9 @@ function getSettingsTab(): SettingsTab | null {
 export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdated }: { theme?: ThemeMode; onThemeChange?: (m: ThemeMode) => void; authUser?: AuthUser; onLogout?: () => void; onUserUpdated?: (u: AuthUser) => void } = {}) {
   const { t, i18n } = useTranslation(['settings', 'common']);
   const isMobile = useIsMobile();
+  const isActive = usePageActive(PAGE.SETTINGS);
+  const layout = useLayout();
+  const keyboardPane = layout?.keyboardPane ?? 'content';
   const [activeTab, setActiveTab] = useState<SettingsTab | null>(getSettingsTab);
 
   useEffect(() => {
@@ -902,17 +908,68 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const canManageOrgSettings = authUser?.role === 'owner' || authUser?.role === 'admin';
 
   const visibleTabs = SETTINGS_TABS.filter(tab => !tab.adminOnly || canManageOrgSettings);
+  /** Flat tab order matching the L1 sidebar visual order (grouped). */
+  const navigableTabs = useMemo(() => {
+    const out: SettingsTabDef[] = [];
+    for (const group of SETTINGS_TAB_GROUPS) {
+      for (const id of group.tabs) {
+        const tab = visibleTabs.find(vt => vt.id === id);
+        if (tab) out.push(tab);
+      }
+    }
+    return out;
+  }, [visibleTabs]);
+  const navigableTabsRef = useRef(navigableTabs);
+  navigableTabsRef.current = navigableTabs;
+  const resolvedTabRef = useRef(resolvedTab);
+  resolvedTabRef.current = resolvedTab;
+  const l1Focused = !isMobile && isActive && keyboardPane === 'l1';
+
+  // Settings L1: j/k switch tabs (H to leave is handled in App).
+  useEffect(() => {
+    if (isMobile || !isActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (layout?.keyboardPane === 'l0') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isEditableTarget(e.target)) return;
+      const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      // H / ← leave Settings — owned by App
+      if (bare === 'h' || bare === 'ArrowLeft') return;
+
+      const move = bare === 'j' || bare === 'ArrowDown' ? 1
+        : bare === 'k' || bare === 'ArrowUp' ? -1
+        : 0;
+      if (!move) return;
+      e.preventDefault();
+      e.stopPropagation();
+      layout?.setKeyboardPane('l1');
+      const tabs = navigableTabsRef.current;
+      if (tabs.length === 0) return;
+      const curId = resolvedTabRef.current;
+      let idx = curId ? tabs.findIndex(t => t.id === curId) : -1;
+      if (idx < 0) idx = move > 0 ? -1 : 0;
+      const nextIdx = Math.max(0, Math.min(tabs.length - 1, idx + move));
+      const next = tabs[nextIdx]!;
+      navigateTab(next.id);
+      requestAnimationFrame(() => {
+        document.querySelector(`[data-settings-tab-id="${next.id}"]`)?.scrollIntoView({ block: 'nearest' });
+      });
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [isMobile, isActive, layout, navigateTab]);
 
   return (
     <div className="flex-1 flex overflow-hidden">
       {/* Settings Sidebar — on macOS Electron this is the window edge (main app
           sidebar is hidden), so the header must clear traffic lights. */}
-      <aside className="hidden md:flex flex-col w-56 shrink-0 border-r border-border-default bg-surface-secondary overflow-y-auto">
+      <aside className={`hidden md:flex flex-col w-56 shrink-0 border-r border-border-default bg-surface-secondary overflow-y-auto ${l1Focused ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}>
         <div data-electron-drag className="electron-mac-top-safe px-3 pt-4 pb-2">
           <button
             data-no-drag
-            onClick={() => { navBus.navigate(PAGE.HOME); }}
+            onClick={() => { navBus.leaveSettings(); }}
             className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-fg-secondary hover:text-fg-primary hover:bg-surface-overlay transition-colors"
+            title={`${t('common:back', { defaultValue: 'Back' })} (H)`}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5" /><polyline points="12 19 5 12 12 5" /></svg>
             {t('common:back', { defaultValue: 'Back' })}
@@ -934,10 +991,16 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   {groupTabs.map(tab => (
                     <button
                       key={tab.id}
-                      onClick={() => navigateTab(tab.id)}
+                      data-settings-tab-id={tab.id}
+                      onClick={() => {
+                        navigateTab(tab.id);
+                        layout?.setKeyboardPane('l1');
+                      }}
                       className={`w-full flex items-center gap-2.5 text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors text-fg-primary ${
                         resolvedTab === tab.id
-                          ? 'bg-surface-overlay'
+                          ? (l1Focused
+                            ? 'bg-brand-500/25 ring-1 ring-inset ring-brand-500/40'
+                            : 'bg-surface-overlay')
                           : 'hover:bg-surface-overlay/60'
                       }`}
                     >
@@ -959,8 +1022,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         <div className="flex flex-col h-full">
           <div className="flex items-center gap-3 px-4 py-3 border-b border-border-default bg-surface-secondary">
             <button
-              onClick={() => navBus.navigate(PAGE.HOME)}
+              onClick={() => navBus.leaveSettings()}
               className="p-1.5 rounded-lg hover:bg-surface-overlay transition-colors"
+              title={`${t('common:back', { defaultValue: 'Back' })} (H)`}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5" /><polyline points="12 19 5 12 12 5" /></svg>
             </button>
