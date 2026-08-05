@@ -12,10 +12,12 @@ import { existsSync, statSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   WebContentsView,
-  shell,
+  BrowserWindow,
   session,
-  type BrowserWindow,
   type BrowserWindowConstructorOptions,
+  type Cookie,
+  type Event as ElectronEvent,
+  type Session,
 } from 'electron';
 import { getMainWindow } from './window.js';
 
@@ -49,9 +51,59 @@ function ensureEmbeddedBrowserSession(): ReturnType<typeof session.fromPartition
 }
 
 /**
- * Auth / wallet login hosts. These are unreliable inside Electron WebContentsView
- * (blank Magic pages, broken opener/postMessage). Industry default: open in the
- * system browser via shell.openExternal and keep the embedded view on the host site.
+ * In-app OAuth / login popups — Electron / Ferdium-style policy:
+ *
+ * 1. `window.open` → `allow` a BrowserWindow that shares the panel's Session
+ *    object (cookies) and keeps `window.opener` when opened from page JS.
+ * 2. Same-tab navigations to an IdP are re-issued as in-page `window.open`
+ *    (not `new BrowserWindow`), so opener is not lost.
+ * 3. Never intercept navigations *inside* the popup.
+ * 4. Assist completion only when the site cannot: after an IdP hop the popup
+ *    settles on the opener's site outside a handshake URL. Then main-process
+ *    closes the popup and refreshes the panel (page `window.close` / opener
+ *    often fail for WebContentsView-hosted flows).
+ * 5. Ordinary foreground/background tabs → right-panel tab, not a popup.
+ */
+
+/** IdP hosts that must not run inside the panel WebContentsView. */
+function isIdentityProviderHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return (
+    h === 'magic.link'
+    || h.endsWith('.magic.link')
+    || h === 'privy.io'
+    || h.endsWith('.privy.io')
+    || h.endsWith('.walletconnect.com')
+    || h === 'verify.walletconnect.com'
+    || h === 'accounts.google.com'
+    || h === 'appleid.apple.com'
+    || h === 'login.microsoftonline.com'
+    || h.endsWith('.auth0.com')
+    || h.endsWith('.okta.com')
+    || h.endsWith('.clerk.accounts.dev')
+    || h.endsWith('.dynamic.xyz')
+    || h.endsWith('.web3auth.io')
+  );
+}
+
+/** True for Google / Magic / … absolute URLs (same-tab panel hijack only). */
+export function isIdentityProviderUrl(raw: string): boolean {
+  const u = (raw || '').trim();
+  if (!u || u === 'about:blank') return false;
+  try {
+    const parsed = new URL(/^[a-z][a-z0-9+.-]*:/i.test(u) ? u : `https://${u}`);
+    return isIdentityProviderHost(parsed.hostname);
+  } catch {
+    const lower = u.toLowerCase();
+    return lower.includes('magic.link')
+      || lower.includes('accounts.google.com')
+      || lower.includes('walletconnect');
+  }
+}
+
+/**
+ * URLs that should use an OAuth-style popup when opened via window.open /
+ * address bar (IdP hosts + common /oauth authorize paths).
  */
 export function isAuthPopupUrl(raw: string): boolean {
   const u = (raw || '').trim();
@@ -69,26 +121,7 @@ export function isAuthPopupUrl(raw: string): boolean {
       || lower.includes('/authorize')
       || lower.includes('walletconnect');
   }
-
-  if (
-    hostname === 'magic.link'
-    || hostname.endsWith('.magic.link')
-    || hostname === 'privy.io'
-    || hostname.endsWith('.privy.io')
-    || hostname.endsWith('.walletconnect.com')
-    || hostname === 'verify.walletconnect.com'
-    || hostname === 'accounts.google.com'
-    || hostname === 'appleid.apple.com'
-    || hostname === 'login.microsoftonline.com'
-    || hostname.endsWith('.auth0.com')
-    || hostname.endsWith('.okta.com')
-    || hostname.endsWith('.clerk.accounts.dev')
-    || hostname.endsWith('.dynamic.xyz')
-    || hostname.endsWith('.web3auth.io')
-  ) {
-    return true;
-  }
-
+  if (isIdentityProviderHost(hostname)) return true;
   return pathname.includes('/oauth')
     || pathname.includes('/authorize')
     || pathname.includes('/auth/login')
@@ -96,72 +129,336 @@ export function isAuthPopupUrl(raw: string): boolean {
     || pathname.includes('/auth/connect');
 }
 
-/** Origins that leave stale sessions in the embedded partition and auto-reopen Magic. */
-const AUTH_STORAGE_ORIGINS = [
-  'https://auth.magic.link',
-  'https://magic.link',
-  'https://api.magic.link',
-];
-
-async function purgeStaleEmbeddedAuthSession(): Promise<void> {
-  const ses = ensureEmbeddedBrowserSession();
-  for (const origin of AUTH_STORAGE_ORIGINS) {
-    try {
-      await ses.clearStorageData({
-        origin,
-        storages: [
-          'cookies',
-          'localstorage',
-          'indexdb',
-          'websql',
-          'serviceworkers',
-          'cachestorage',
-        ],
-      });
-    } catch { /* ignore */ }
+function oauthPopupBrowserOptions(
+  openerSession?: Session,
+): BrowserWindowConstructorOptions {
+  const parent = getMainWindow();
+  const width = 520;
+  const height = 740;
+  let x: number | undefined;
+  let y: number | undefined;
+  if (parent && !parent.isDestroyed()) {
+    const b = parent.getBounds();
+    x = Math.round(b.x + (b.width - width) / 2);
+    y = Math.round(b.y + (b.height - height) / 2);
   }
-  try {
-    const cookies = await ses.cookies.get({});
-    for (const c of cookies) {
-      const domain = (c.domain || '').replace(/^\./, '').toLowerCase();
-      if (domain !== 'magic.link' && !domain.endsWith('.magic.link')) continue;
-      const url = `http${c.secure ? 's' : ''}://${domain}${c.path || '/'}`;
-      try { await ses.cookies.remove(url, c.name); } catch { /* ignore */ }
-    }
-  } catch { /* ignore */ }
-}
-
-let authPartitionPurged = false;
-let lastExternalAuthOpenAt = 0;
-const EXTERNAL_AUTH_DEBOUNCE_MS = 2_500;
-
-/** Open Magic/OAuth in the OS browser; never load it inside the embedded view. */
-function openAuthInSystemBrowser(rawUrl: string): void {
-  const url = (rawUrl || '').trim();
-  if (!url || !/^https?:/i.test(url)) return;
-  const now = Date.now();
-  if (now - lastExternalAuthOpenAt < EXTERNAL_AUTH_DEBOUNCE_MS) return;
-  lastExternalAuthOpenAt = now;
-  if (!authPartitionPurged) {
-    authPartitionPurged = true;
-    void purgeStaleEmbeddedAuthSession();
-  }
-  void shell.openExternal(url);
-}
-
-/** Hidden guest used only to observe about:blank → auth navigations, then hand off. */
-function blankBootstrapWindowOptions(): BrowserWindowConstructorOptions {
   return {
-    show: false,
-    width: 420,
-    height: 640,
+    // No modal parent — parenting under a WebContentsView host often blanks.
+    show: true,
+    width,
+    height,
+    minWidth: 360,
+    minHeight: 480,
+    x,
+    y,
+    autoHideMenuBar: true,
+    title: 'Sign in',
     webPreferences: {
-      partition: PARTITION,
+      // Prefer the opener's Session object (not only partition string) so the
+      // popup and panel share one cookie jar and opener wiring stays intact.
+      ...(openerSession
+        ? { session: openerSession }
+        : { partition: PARTITION }),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
   };
+}
+
+/** Live popups spawned from each panel tab (opener slot id). */
+const popupsByOpener = new Map<string, Set<BrowserWindow>>();
+/** Opener slots currently applying a post-login panel refresh. */
+const oauthAssistInFlight = new Set<string>();
+
+/**
+ * Generation counter per browser id. Closing a tab bumps the epoch so an
+ * in-flight EmbeddedBrowser effect cannot recreate the same id after destroy
+ * (that reloaded Bilibili from t=0 with no UI tab).
+ */
+const browserEpoch = new Map<string, number>();
+
+/**
+ * Ids that were fully closed. Panel browserIds (`eb_*`) are never reused, but
+ * React effects can still call create(id, url) after destroy — that spawned a
+ * headless WebContents (App ignores eb_* "opened" events) and audio restarted
+ * from t=0 with no tab. Keep forever; ids are unique per tab mint.
+ */
+const closedBrowserIds = new Set<string>();
+
+function currentBrowserEpoch(id: string): number {
+  return browserEpoch.get(id) ?? 0;
+}
+
+function bumpBrowserEpoch(id: string): number {
+  const next = currentBrowserEpoch(id) + 1;
+  browserEpoch.set(id, next);
+  return next;
+}
+
+function discardOrphanView(view: WebContentsView): void {
+  try {
+    const win = getWin();
+    if (win) {
+      try { win.contentView.removeChildView(view); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  try {
+    const wc = view.webContents;
+    if (wc.isDestroyed()) return;
+    try { wc.setAudioMuted(true); } catch { /* ignore */ }
+    const closable = wc as typeof wc & {
+      destroy?: () => void;
+      close?: (opts?: { waitForBeforeUnload?: boolean }) => void;
+    };
+    if (typeof closable.destroy === 'function') closable.destroy();
+    else if (typeof closable.close === 'function') closable.close({ waitForBeforeUnload: false });
+  } catch { /* ignore */ }
+}
+
+function openerPageUrl(openerSlotId: string): string | null {
+  const slot = slots.get(openerSlotId);
+  if (!slot) return null;
+  try {
+    const url = slot.view.webContents.getURL();
+    return url && url !== 'about:blank' ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameSiteHost(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.endsWith(`.${b}`) || b.endsWith(`.${a}`)) return true;
+  const stripWww = (h: string) => h.replace(/^www\./, '');
+  return stripWww(a) === stripWww(b);
+}
+
+/** Handshake pages — refreshing these restarts OAuth instead of showing the session. */
+function isOauthHandshakeUrl(raw: string): boolean {
+  const u = (raw || '').trim();
+  if (!u || u === 'about:blank') return false;
+  try {
+    const parsed = new URL(u);
+    const path = parsed.pathname.toLowerCase();
+    if (isIdentityProviderHost(parsed.hostname)) return true;
+    return path.includes('/login/oauth')
+      || path.includes('/oauth/authorize')
+      || path.includes('/oauth/login')
+      || path.includes('/auth/login')
+      || path.includes('/auth/callback')
+      || path.includes('/auth/connect')
+      || path.includes('/sessions/google')
+      || path.includes('/signin')
+      || path.includes('/two-factor')
+      || path.includes('/2fa')
+      || path.includes('/mfa')
+      || /\/login\/?$/.test(path);
+  } catch {
+    return false;
+  }
+}
+
+function waitForCookieActivity(originUrl: string, timeoutMs: number): Promise<void> {
+  const ses = ensureEmbeddedBrowserSession();
+  let originHost = '';
+  try { originHost = new URL(originUrl).hostname.replace(/^www\./, ''); } catch { /* ignore */ }
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      try { ses.cookies.removeListener('changed', onChanged); } catch { /* ignore */ }
+      resolve();
+    };
+    const onChanged = (
+      _event: ElectronEvent,
+      cookie: Cookie,
+      _cause: string,
+      removed: boolean,
+    ) => {
+      if (removed || !originHost) return;
+      const domain = (cookie.domain || '').replace(/^\./, '').replace(/^www\./, '');
+      if (
+        domain === originHost
+        || domain.endsWith(`.${originHost}`)
+        || originHost.endsWith(`.${domain}`)
+      ) {
+        done();
+      }
+    };
+    try { ses.cookies.on('changed', onChanged); } catch { /* ignore */ }
+    setTimeout(done, timeoutMs);
+  });
+}
+
+function refreshOpenerAfterOauth(openerSlotId: string): void {
+  const slot = slots.get(openerSlotId);
+  if (!slot) return;
+  try {
+    const wc = slot.view.webContents;
+    if (wc.isDestroyed()) return;
+    const current = wc.getURL();
+    // Never reload an authorize/login handshake URL — that restarts Google SSO.
+    if (isOauthHandshakeUrl(current)) {
+      const u = new URL(current);
+      void wc.loadURL(`${u.protocol}//${u.host}/`);
+      return;
+    }
+    wc.reload();
+  } catch { /* ignore */ }
+}
+
+/**
+ * When the site cannot close the popup / notify opener (common with
+ * WebContentsView), finish the flow from the main process after a real IdP hop.
+ */
+async function assistOauthCompletion(openerSlotId: string): Promise<void> {
+  if (oauthAssistInFlight.has(openerSlotId)) return;
+  oauthAssistInFlight.add(openerSlotId);
+  try {
+    const openerUrl = openerPageUrl(openerSlotId);
+    if (openerUrl) await waitForCookieActivity(openerUrl, 800);
+    else await new Promise((r) => setTimeout(r, 400));
+    closePopupsForOpener(openerSlotId);
+    refreshOpenerAfterOauth(openerSlotId);
+  } finally {
+    setTimeout(() => oauthAssistInFlight.delete(openerSlotId), 1500);
+  }
+}
+
+function preparePopupContents(popup: BrowserWindow, openerSlotId: string): void {
+  const wc = popup.webContents;
+  try { wc.setUserAgent(chromeLikeUserAgent()); } catch { /* ignore */ }
+
+  const openerSlot = slots.get(openerSlotId);
+  const openerSession = openerSlot?.view.webContents.session;
+
+  wc.setWindowOpenHandler(() => ({
+    action: 'allow',
+    overrideBrowserWindowOptions: oauthPopupBrowserOptions(openerSession),
+  }));
+  wc.on('did-create-window', (child) => {
+    trackOauthPopup(child, openerSlotId);
+  });
+
+  // Assist only after: IdP seen → settled back on opener site (not handshake).
+  // Give the site a brief chance to close itself via opener; then assist.
+  let sawIdentityProvider = false;
+  let assistTimer: ReturnType<typeof setTimeout> | undefined;
+  const onPopupNavigated = (navUrl: string) => {
+    const next = (navUrl || '').trim();
+    if (!next || next === 'about:blank') return;
+    let host = '';
+    try { host = new URL(next).hostname.toLowerCase(); } catch { return; }
+    if (isIdentityProviderHost(host)) {
+      sawIdentityProvider = true;
+      if (assistTimer) clearTimeout(assistTimer);
+      return;
+    }
+    if (!sawIdentityProvider) return;
+    if (isOauthHandshakeUrl(next)) return;
+    const openerUrl = openerPageUrl(openerSlotId);
+    if (!openerUrl) return;
+    let openerHost = '';
+    try { openerHost = new URL(openerUrl).hostname.toLowerCase(); } catch { return; }
+    if (!sameSiteHost(host, openerHost)) return;
+    if (assistTimer) clearTimeout(assistTimer);
+    // Site may still run opener.reload()+close(); only assist if it does not.
+    assistTimer = setTimeout(() => {
+      if (popup.isDestroyed()) return;
+      void assistOauthCompletion(openerSlotId);
+    }, 600);
+  };
+  wc.on('did-navigate', (_e, url) => onPopupNavigated(url));
+  wc.on('did-navigate-in-page', (_e, url) => onPopupNavigated(url));
+  wc.on('did-finish-load', () => {
+    try { onPopupNavigated(wc.getURL()); } catch { /* ignore */ }
+  });
+  popup.on('closed', () => {
+    if (assistTimer) clearTimeout(assistTimer);
+  });
+}
+
+function trackOauthPopup(popup: BrowserWindow, openerSlotId: string): void {
+  let set = popupsByOpener.get(openerSlotId);
+  if (!set) {
+    set = new Set();
+    popupsByOpener.set(openerSlotId, set);
+  }
+  set.add(popup);
+  preparePopupContents(popup, openerSlotId);
+  popup.on('closed', () => {
+    const live = popupsByOpener.get(openerSlotId);
+    if (!live) return;
+    live.delete(popup);
+    if (live.size === 0) popupsByOpener.delete(openerSlotId);
+  });
+}
+
+function closePopupsForOpener(openerSlotId: string): void {
+  const set = popupsByOpener.get(openerSlotId);
+  if (!set) return;
+  popupsByOpener.delete(openerSlotId);
+  for (const win of [...set]) {
+    try { if (!win.isDestroyed()) win.close(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * disposition-aware: JS `window.open` is `new-window`; <a target=_blank> is often
+ * a tab disposition. OAuth SDKs use new-window + about:blank bootstrap.
+ */
+function shouldOpenAsOauthPopup(url: string, disposition?: string): boolean {
+  const next = (url || '').trim();
+  if (!next || next === 'about:blank') return true;
+  if (disposition === 'new-window') return true;
+  return isAuthPopupUrl(next);
+}
+
+/**
+ * Open an IdP URL as a page-initiated popup so `window.opener` is preserved.
+ * Falls back to a main-process BrowserWindow if scripted open fails.
+ */
+function openOauthPopupFromOpenerPage(rawUrl: string, openerSlotId: string): void {
+  const url = (rawUrl || '').trim();
+  if (!url || !/^https?:/i.test(url)) return;
+  const slot = slots.get(openerSlotId);
+  if (!slot) return;
+  const wc = slot.view.webContents;
+  const openerSession = wc.session;
+  void wc.executeJavaScript(
+    `window.open(${JSON.stringify(url)}, "_blank", "popup=yes,width=520,height=740");`,
+  ).then((handle) => {
+    // null handle ⇒ opener wiring failed; fall back so the user can still sign in.
+    if (handle == null) openOauthPopupWithUrl(url, openerSlotId, openerSession);
+  }).catch(() => {
+    openOauthPopupWithUrl(url, openerSlotId, openerSession);
+  });
+}
+
+function openOauthPopupWithUrl(
+  rawUrl: string,
+  openerSlotId: string,
+  openerSession?: Session,
+): void {
+  const url = (rawUrl || '').trim();
+  if (!url || !/^https?:/i.test(url)) return;
+  const slot = slots.get(openerSlotId);
+  const sessionRef = openerSession ?? slot?.view.webContents.session;
+  const win = new BrowserWindow(oauthPopupBrowserOptions(sessionRef));
+  trackOauthPopup(win, openerSlotId);
+  void win.loadURL(url);
+  try { win.focus(); } catch { /* ignore */ }
+}
+
+function resolveOpenerSlotId(preferred?: string): string | undefined {
+  if (preferred && slots.has(preferred)) return preferred;
+  if (selectedPageId != null) {
+    const id = pageIdToSlotId.get(selectedPageId);
+    if (id && slots.has(id)) return id;
+  }
+  return preferred;
 }
 
 /**
@@ -243,6 +540,8 @@ type ViewWithVisibility = WebContentsView & {
 /** Hide/show painting without destroying the page viewport (no 0×0 shrink). */
 function setSlotPainted(slot: BrowserSlot, painted: boolean): void {
   slot.visible = painted;
+  // Do not mute on hide — background tabs should keep playing audio (music, etc.).
+  // Media is halted only in destroyEmbeddedBrowser when the tab is closed.
   const view = slot.view as ViewWithVisibility;
   if (typeof view.setVisible === 'function') {
     try { view.setVisible(painted); } catch { /* ignore */ }
@@ -286,7 +585,7 @@ function flushPendingUrl(slot: BrowserSlot): void {
   const pending = normalizeEmbeddedBrowserUrl(slot.pendingUrl);
   slot.pendingUrl = undefined;
   if (isAuthPopupUrl(pending)) {
-    openAuthInSystemBrowser(pending);
+    openOauthPopupWithUrl(pending, slot.id);
     return;
   }
   if (applyDirectoryNavigation(slot, pending)) return;
@@ -369,39 +668,54 @@ function allocatePageId(id: string): number {
  * Open target=_blank / window.open into a right-panel tab instead of an OS popup.
  * Emits `opened` so the renderer creates a tab (browserId must not be `eb_*`).
  */
-function openUrlInNewEmbeddedTab(rawUrl: string): void {
+function openUrlInNewEmbeddedTab(rawUrl: string, openerSlotId?: string): void {
   const target = normalizeEmbeddedBrowserUrl(rawUrl || 'about:blank');
   if (!target) return;
   // Deny non-navigable schemes (javascript:, etc.)
   if (!/^(https?:|file:|about:)/i.test(target)) return;
   if (isAuthPopupUrl(target)) {
-    openAuthInSystemBrowser(target);
+    const opener = resolveOpenerSlotId(openerSlotId);
+    if (opener) openOauthPopupWithUrl(target, opener);
     return;
   }
   const newId = `rb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const created = createEmbeddedBrowser(newId, target);
-  if (created.ok && created.pageId !== null && created.pageId !== undefined) {
-    selectedPageId = created.pageId;
-    emitPageEvent({
-      type: 'selected',
-      pageId: created.pageId,
-      browserId: newId,
-      url: target,
-      title: target === 'about:blank' ? 'New Tab' : target,
-    });
-  }
+  void createEmbeddedBrowser(newId, target).then((created) => {
+    if (created.ok && created.pageId !== null && created.pageId !== undefined) {
+      selectedPageId = created.pageId;
+      emitPageEvent({
+        type: 'selected',
+        pageId: created.pageId,
+        browserId: newId,
+        url: target,
+        title: target === 'about:blank' ? 'New Tab' : target,
+      });
+    }
+  });
 }
 
-export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; pageId?: number; error?: string } {
+export async function createEmbeddedBrowser(
+  id: string,
+  url?: string,
+): Promise<{ ok: boolean; pageId?: number; error?: string }> {
   try {
     const win = getWin();
     if (!win) return { ok: false, error: 'No main window' };
+    // Hard block: full close tombstones the id. Catches creates that start
+    // AFTER destroy (epoch-at-start alone cannot — they capture the new epoch).
+    if (closedBrowserIds.has(id)) {
+      return { ok: false, error: 'Browser was closed' };
+    }
     ensureEmbeddedBrowserSession();
 
+    const epochAtStart = currentBrowserEpoch(id);
     const prior = slots.get(id);
     const pageId = prior?.pageId ?? allocatePageId(id);
     if (prior) {
-      destroyEmbeddedBrowser(id, { keepPageId: true });
+      await destroyEmbeddedBrowser(id, { keepPageId: true });
+    }
+    // Tab was closed while we awaited teardown of a prior view — do not revive.
+    if (closedBrowserIds.has(id) || currentBrowserEpoch(id) !== epochAtStart) {
+      return { ok: false, error: 'Browser was closed' };
     }
 
     const view = new WebContentsView({
@@ -425,6 +739,11 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
     win.contentView.addChildView(view);
     try { (view as ViewWithVisibility).setVisible?.(false); } catch { /* ignore */ }
 
+    if (closedBrowserIds.has(id) || currentBrowserEpoch(id) !== epochAtStart) {
+      discardOrphanView(view);
+      return { ok: false, error: 'Browser was closed' };
+    }
+
     // When the embedded page has focus, route Cmd/Ctrl+W/T to the app (close/new tab)
     // instead of letting the guest page or OS window-close handle them.
     view.webContents.on('before-input-event', (event, input) => {
@@ -439,55 +758,33 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
       } catch { /* window gone */ }
     });
 
-    // target=_blank / window.open:
-    // - Auth / Magic / OAuth → system browser (never embed; avoids blank auth pages).
-    // - about:blank → brief hidden guest; if it navigates to auth, hand off externally.
-    // - Ordinary links → new right-panel tab.
-    view.webContents.setWindowOpenHandler(({ url: openUrl }) => {
+    // Popup policy — see shouldOpenAsOauthPopup / oauthPopupBrowserOptions.
+    view.webContents.setWindowOpenHandler(({ url: openUrl, disposition }) => {
       const next = (openUrl || '').trim();
-      if (isAuthPopupUrl(next)) {
-        openAuthInSystemBrowser(next);
-        return { action: 'deny' };
-      }
-      if (!next || next === 'about:blank') {
+      if (shouldOpenAsOauthPopup(next, disposition)) {
+        // Panel is applying a just-finished login — ignore SPA re-open noise.
+        if (oauthAssistInFlight.has(id)) return { action: 'deny' };
         return {
           action: 'allow',
-          overrideBrowserWindowOptions: blankBootstrapWindowOptions(),
+          overrideBrowserWindowOptions: oauthPopupBrowserOptions(view.webContents.session),
         };
       }
-      openUrlInNewEmbeddedTab(next);
+      if (next && /^(https?:|file:)/i.test(next)) {
+        openUrlInNewEmbeddedTab(next, id);
+      }
       return { action: 'deny' };
     });
     view.webContents.on('did-create-window', (childWindow) => {
-      const child = childWindow.webContents;
-      const handOffAuth = (navUrl: string) => {
-        const next = (navUrl || '').trim();
-        if (!isAuthPopupUrl(next)) return false;
-        openAuthInSystemBrowser(next);
-        try { childWindow.close(); } catch { /* ignore */ }
-        return true;
-      };
-      child.on('will-navigate', (e, navUrl) => {
-        if (handOffAuth(navUrl)) e.preventDefault();
-      });
-      child.on('did-navigate', (_e, navUrl) => { handOffAuth(navUrl); });
-      setTimeout(() => {
-        try {
-          if (!child.isDestroyed() && (!child.getURL() || child.getURL() === 'about:blank')) {
-            childWindow.close();
-          }
-        } catch { /* ignore */ }
-      }, 15_000);
+      trackOauthPopup(childWindow, id);
     });
 
-    // Same-tab navigation / redirect to Magic/OAuth → system browser; stay on host.
-    const handOffMainFrameAuth = (e: { preventDefault: () => void }, navUrl: string) => {
-      if (!isAuthPopupUrl(navUrl)) return;
+    // Same-tab IdP navigation → re-issue as in-page window.open (keeps opener).
+    // Do not hook will-redirect — denying redirects blanks mid-flow.
+    view.webContents.on('will-navigate', (e, navUrl) => {
+      if (!isIdentityProviderUrl(navUrl)) return;
       e.preventDefault();
-      openAuthInSystemBrowser(navUrl);
-    };
-    view.webContents.on('will-navigate', (e, navUrl) => handOffMainFrameAuth(e, navUrl));
-    view.webContents.on('will-redirect', (e, navUrl) => handOffMainFrameAuth(e, navUrl));
+      openOauthPopupFromOpenerPage(navUrl, id);
+    });
 
     view.webContents.on('page-title-updated', (_e, title) => {
       emitPageEvent({ type: 'navigated', pageId, browserId: id, url: view.webContents.getURL(), title });
@@ -554,6 +851,11 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
       if (s?.visible) alignLayoutViewportToUi(s);
     });
 
+    if (closedBrowserIds.has(id) || currentBrowserEpoch(id) !== epochAtStart) {
+      discardOrphanView(view);
+      return { ok: false, error: 'Browser was closed' };
+    }
+
     const slot: BrowserSlot = {
       id,
       pageId,
@@ -582,27 +884,61 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
   }
 }
 
-export function destroyEmbeddedBrowser(
+/**
+ * Destroy a panel browser. Must fully dispose the WebContents — a crashed
+ * renderer that is not closed will be recovered by Chromium and reload the
+ * last URL (audio restarts from the beginning with no UI tab).
+ */
+export async function destroyEmbeddedBrowser(
   id: string,
   opts?: { keepPageId?: boolean },
-): { ok: boolean } {
+): Promise<{ ok: boolean }> {
+  // Tombstone + bump BEFORE any await so a racing create(id, url) cannot
+  // spawn a headless Bilibili tab while we wait on about:blank.
+  if (!opts?.keepPageId) {
+    closedBrowserIds.add(id);
+    bumpBrowserEpoch(id);
+  }
+
   const slot = slots.get(id);
   if (!slot) return { ok: true };
-  try {
-    const win = getWin();
-    if (win) {
-      try { win.contentView.removeChildView(slot.view); } catch { /* already removed */ }
-    }
-    try {
-      if (slot.view.webContents.debugger.isAttached()) {
-        slot.view.webContents.debugger.detach();
-      }
-    } catch { /* ignore */ }
-    try { (slot.view.webContents as unknown as { destroy?: () => void }).destroy?.(); } catch { /* ignore */ }
-  } catch { /* ignore */ }
+  // Drop from the registry first so no UI path can revive this id mid-teardown.
+  slots.delete(id);
+  closePopupsForOpener(id);
 
   const pageId = slot.pageId;
-  slots.delete(id);
+  const view = slot.view;
+  const wc = view.webContents;
+  try {
+    if (!wc.isDestroyed()) {
+      try { wc.setAudioMuted(true); } catch { /* ignore */ }
+      try { wc.stop(); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+
+  // Tear down immediately. Do not await loadURL('about:blank') — that left an
+  // ~800ms window where React effects recreated the same id as a zombie.
+  // Do not forcefullyCrashRenderer: Chromium recovers and reloads the URL.
+  const win = getWin();
+  if (win) {
+    try { win.contentView.removeChildView(view); } catch { /* already removed */ }
+  }
+  try {
+    if (!wc.isDestroyed() && wc.debugger.isAttached()) {
+      wc.debugger.detach();
+    }
+  } catch { /* ignore */ }
+  try {
+    if (!wc.isDestroyed()) {
+      const closable = wc as typeof wc & {
+        destroy?: () => void;
+        close?: (opts?: { waitForBeforeUnload?: boolean }) => void;
+      };
+      if (typeof closable.destroy === 'function') closable.destroy();
+      else if (typeof closable.close === 'function') closable.close({ waitForBeforeUnload: false });
+    }
+  } catch { /* ignore */ }
+
   if (!opts?.keepPageId) {
     pageIdToSlotId.delete(pageId);
     if (selectedPageId === pageId) {
@@ -704,6 +1040,12 @@ export function setEmbeddedBrowserBounds(
       ensureWorkingViewport(slot);
       setSlotPainted(slot, false);
       slot.layoutAligned = false;
+      // Guest WebContentsView often keeps keyboard focus after hide; return it
+      // to the Markus shell so Cmd+T blank tabs can focus the address bar.
+      const win = getWin();
+      if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+        try { win.webContents.focus(); } catch { /* ignore */ }
+      }
     } else {
       const sizeChanged = slot.lastUiWidth !== w || slot.lastUiHeight !== h;
       const becomingVisible = !slot.visible;
@@ -745,7 +1087,7 @@ export function navigateEmbeddedBrowser(id: string, url: string): { ok: boolean;
     slot.pendingUrl = undefined;
     const target = normalizeEmbeddedBrowserUrl(url);
     if (isAuthPopupUrl(target)) {
-      openAuthInSystemBrowser(target);
+      openOauthPopupWithUrl(target, id);
       return { ok: true };
     }
     if (applyDirectoryNavigation(slot, target)) return { ok: true };
@@ -932,11 +1274,10 @@ export function hideAllEmbeddedBrowsers(): { ok: boolean } {
 
 /** Clear all embedded browsers (e.g. on window close). */
 export function destroyAllEmbeddedBrowsers(): void {
-  for (const id of [...slots.keys()]) {
-    destroyEmbeddedBrowser(id);
-  }
-  nextPageId = 1;
-  selectedPageId = null;
+  void Promise.all([...slots.keys()].map((id) => destroyEmbeddedBrowser(id))).finally(() => {
+    nextPageId = 1;
+    selectedPageId = null;
+  });
 }
 
 /** Expose the partition session for cookie inspection if needed later. */

@@ -60,7 +60,15 @@ export function EmbeddedBrowser({
       if (cancelled) return;
       if (!s.ok) {
         setIsLoading(true);
-        await api.create(browserId, url);
+        const created = await api.create(browserId, url);
+        // Tab closed/switched while create was in flight. Desktop tombstones
+        // closed ids so layout tabs cannot revive headless audio; only
+        // ephemeral ownsView previews destroy on cancel (tab switch must keep
+        // background media for layout browserIds).
+        if (cancelled || !created.ok) {
+          if (cancelled && ownsView) void api.destroy(browserId);
+          return;
+        }
       } else if (url && s.url !== url && !s.directoryPath) {
         setIsLoading(true);
         await api.navigate(browserId, url);
@@ -84,6 +92,14 @@ export function EmbeddedBrowser({
           title: state.title || undefined,
         });
       }
+      // After native create, blank tabs should keep the address bar focused.
+      if (url === 'about:blank') {
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          addressRef.current?.focus({ preventScroll: true });
+          addressRef.current?.select();
+        });
+      }
     })();
     return () => {
       cancelled = true;
@@ -92,14 +108,26 @@ export function EmbeddedBrowser({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, browserId, url, ownsView]);
 
-  // Blank tabs: focus the address bar so the user can type immediately.
+  // Blank tabs (Cmd/Ctrl+T): focus the address bar so the user can type immediately.
+  // Native WebContentsView often steals focus after create/bounds — retry briefly.
   useEffect(() => {
     if (url !== 'about:blank') return;
-    const t = window.setTimeout(() => {
-      addressRef.current?.focus();
-      addressRef.current?.select();
-    }, 0);
-    return () => clearTimeout(t);
+    let cancelled = false;
+    const focusAddress = () => {
+      if (cancelled) return;
+      const el = addressRef.current;
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      el.select();
+    };
+    focusAddress();
+    const timers = [0, 50, 150, 300].map((ms) => window.setTimeout(focusAddress, ms));
+    const raf = requestAnimationFrame(focusAddress);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      for (const id of timers) clearTimeout(id);
+    };
   }, [url, browserId]);
 
   // Prefer page events for snappy loading UX (poll remains for back/forward).
@@ -170,11 +198,13 @@ export function EmbeddedBrowser({
     const sync = () => {
       if (!alive) return;
       // Page leave / panel collapse / HTML modals / folder prompt — hide native paint.
+      // Also keep about:blank hidden so the guest view cannot steal address-bar focus.
       if (
         !isNativeBrowserPagePaintAllowed()
         || !hostPageActive()
         || isNativeBrowserOverlayActive()
         || !!directoryPathRef.current
+        || url === 'about:blank'
       ) {
         void api.setBounds(browserId, { x: 0, y: 0, width: 0, height: 0 }, false);
         return;
@@ -235,12 +265,12 @@ export function EmbeddedBrowser({
       clearInterval(poll);
       void api.setBounds(browserId, { x: 0, y: 0, width: 0, height: 0 }, false);
     };
-  }, [api, browserId]);
+  }, [api, browserId, url]);
 
   // Re-sync bounds whenever folder mode toggles (hide/show native view).
   useEffect(() => {
     window.dispatchEvent(new Event('markus:embedded-browser-resync'));
-  }, [directoryPath]);
+  }, [directoryPath, url]);
 
   if (!api) {
     return (
@@ -314,6 +344,7 @@ export function EmbeddedBrowser({
               spellCheck={false}
               autoCorrect="off"
               autoCapitalize="off"
+              autoFocus={url === 'about:blank'}
               className="w-full px-2 py-1 text-xs bg-surface-primary border border-border-default rounded-md text-fg-primary outline-none focus:border-brand-500"
             />
           </form>
