@@ -135,6 +135,7 @@
   "browserFolderAppExplorer": "资源管理器",
   "browserFolderAppGeneric": "文件管理器",
   "browserLoading": "加载中…",
+  "browserGuestDevTools": "调试此网页（内置浏览器 DevTools）",
   "browserUrlPlaceholder": "输入网址或本地文件路径",
   "signOutConfirmTitle": "确认登出？",
   "signOutConfirmMessage": "登出后需要重新登录才能继续使用 Markus。",

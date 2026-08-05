@@ -43,6 +43,8 @@ interface MarkusDesktopAPI {
     executeJs(id: string, code: string): Promise<{ ok: boolean; result?: unknown; error?: string }>;
     capture(id: string): Promise<{ ok: boolean; pngBase64?: string; error?: string }>;
     cdp(id: string, method: string, params?: Record<string, unknown>): Promise<{ ok: boolean; result?: unknown; error?: string }>;
+    /** Open DevTools for the guest WebContentsView (detached), not the Markus shell. */
+    openDevTools?(id: string): Promise<{ ok: boolean; error?: string }>;
     onPageEvent?(callback: (event: {
       type: 'opened' | 'closed' | 'navigated' | 'selected' | 'loading' | 'loaded' | 'load-failed' | 'directory';
       pageId: number;

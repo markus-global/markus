@@ -10,10 +10,118 @@
  */
 import { existsSync, statSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WebContentsView, session, type BrowserWindow } from 'electron';
+import { WebContentsView, session, type BrowserWindow, type BrowserWindowConstructorOptions } from 'electron';
 import { getMainWindow } from './window.js';
 
 const PARTITION = 'persist:markus-embedded-browser';
+
+/**
+ * Spoof a normal Chrome UA. Default Electron UA contains "Electron/…", which
+ * Magic / wallet / auth SDKs often detect and then blank, loop, or force odd
+ * login redirects that real Chrome never hits.
+ */
+function chromeLikeUserAgent(): string {
+  const chromeVer = process.versions.chrome || '134.0.0.0';
+  const platformPart = process.platform === 'darwin'
+    ? 'Macintosh; Intel Mac OS X 10_15_7'
+    : process.platform === 'win32'
+      ? 'Windows NT 10.0; Win64; x64'
+      : 'X11; Linux x86_64';
+  return `Mozilla/5.0 (${platformPart}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`;
+}
+
+let embeddedSessionReady = false;
+function ensureEmbeddedBrowserSession(): ReturnType<typeof session.fromPartition> {
+  const ses = session.fromPartition(PARTITION);
+  if (!embeddedSessionReady) {
+    embeddedSessionReady = true;
+    try {
+      ses.setUserAgent(chromeLikeUserAgent());
+    } catch { /* ignore */ }
+  }
+  return ses;
+}
+
+/**
+ * Auth / wallet login hosts that need a real popup with window.opener + postMessage.
+ * Rewriting these into a right-panel tab (deny + openUrlInNewEmbeddedTab) breaks
+ * Magic Link / Polymarket and similar OAuth flows — the page loads blank or never
+ * returns control to the opener.
+ */
+export function isAuthPopupUrl(raw: string): boolean {
+  const u = (raw || '').trim();
+  if (!u || u === 'about:blank') return false;
+  let hostname = '';
+  let pathname = '';
+  try {
+    const parsed = new URL(/^[a-z][a-z0-9+.-]*:/i.test(u) ? u : `https://${u}`);
+    hostname = parsed.hostname.toLowerCase();
+    pathname = parsed.pathname.toLowerCase();
+  } catch {
+    const lower = u.toLowerCase();
+    return lower.includes('magic.link')
+      || lower.includes('/oauth')
+      || lower.includes('/authorize')
+      || lower.includes('walletconnect');
+  }
+
+  if (
+    hostname === 'magic.link'
+    || hostname.endsWith('.magic.link')
+    || hostname === 'privy.io'
+    || hostname.endsWith('.privy.io')
+    || hostname.endsWith('.walletconnect.com')
+    || hostname === 'verify.walletconnect.com'
+    || hostname === 'accounts.google.com'
+    || hostname === 'appleid.apple.com'
+    || hostname === 'login.microsoftonline.com'
+    || hostname.endsWith('.auth0.com')
+    || hostname.endsWith('.okta.com')
+    || hostname.endsWith('.clerk.accounts.dev')
+    || hostname.endsWith('.dynamic.xyz')
+    || hostname.endsWith('.web3auth.io')
+  ) {
+    return true;
+  }
+
+  return pathname.includes('/oauth')
+    || pathname.includes('/authorize')
+    || pathname.includes('/auth/login')
+    || pathname.includes('/auth/callback')
+    || pathname.includes('/auth/connect');
+}
+
+function authPopupWindowOptions(): BrowserWindowConstructorOptions {
+  const parent = getMainWindow();
+  const width = 480;
+  const height = 720;
+  let x: number | undefined;
+  let y: number | undefined;
+  if (parent && !parent.isDestroyed()) {
+    const b = parent.getBounds();
+    x = Math.round(b.x + (b.width - width) / 2);
+    y = Math.round(b.y + (b.height - height) / 2);
+  }
+  return {
+    parent: parent ?? undefined,
+    modal: false,
+    show: true,
+    width,
+    height,
+    minWidth: 360,
+    minHeight: 480,
+    x,
+    y,
+    autoHideMenuBar: true,
+    title: 'Sign in',
+    webPreferences: {
+      partition: PARTITION,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  };
+}
 
 /**
  * Accept http(s), file://, about:blank, and bare filesystem paths so the
@@ -239,6 +347,7 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
   try {
     const win = getWin();
     if (!win) return { ok: false, error: 'No main window' };
+    ensureEmbeddedBrowserSession();
 
     const prior = slots.get(id);
     const pageId = prior?.pageId ?? allocatePageId(id);
@@ -254,6 +363,8 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
         sandbox: true,
       },
     });
+    // Belt-and-suspenders: session UA + per-contents UA (some navigations reset).
+    try { view.webContents.setUserAgent(chromeLikeUserAgent()); } catch { /* ignore */ }
     // Real working viewport from the start (hidden). Agent CDP can use it even
     // before the right panel mounts; UI later moves bounds onto the host rect.
     view.setBounds({
@@ -279,56 +390,21 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
       } catch { /* window gone */ }
     });
 
-    // Links with target=_blank / window.open → new right-panel tab (no popup window).
+    // target=_blank / window.open:
+    // - Auth / wallet login → real popup (same partition) so opener + postMessage work.
+    // - Ordinary links → new right-panel tab.
+    // - about:blank (common OAuth bootstrap) → real popup; do NOT steal navigation
+    //   into a tab (that blanked Magic / Polymarket login).
     view.webContents.setWindowOpenHandler(({ url: openUrl }) => {
       const next = (openUrl || '').trim();
-      if (next && next !== 'about:blank') {
-        openUrlInNewEmbeddedTab(next);
-        return { action: 'deny' };
+      if (!next || next === 'about:blank' || isAuthPopupUrl(next)) {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: authPopupWindowOptions(),
+        };
       }
-      // window.open() with no URL often uses about:blank then navigates.
-      // Allow a hidden guest briefly, then steal the first real navigation into a tab.
-      return {
-        action: 'allow',
-        overrideBrowserWindowOptions: {
-          show: false,
-          width: 0,
-          height: 0,
-          webPreferences: {
-            partition: PARTITION,
-            contextIsolation: true,
-            nodeIntegration: false,
-            sandbox: true,
-          },
-        },
-      };
-    });
-    view.webContents.on('did-create-window', (childWindow) => {
-      const child = childWindow.webContents;
-      let captured = false;
-      const capture = (navUrl: string) => {
-        if (captured) return;
-        const next = (navUrl || '').trim();
-        if (!next || next === 'about:blank') return;
-        captured = true;
-        try { childWindow.close(); } catch { /* ignore */ }
-        openUrlInNewEmbeddedTab(next);
-      };
-      child.on('will-navigate', (e, navUrl) => {
-        e.preventDefault();
-        capture(navUrl);
-      });
-      child.on('did-navigate', (_e, navUrl) => capture(navUrl));
-      child.on('page-title-updated', () => {
-        const u = child.getURL();
-        if (u && u !== 'about:blank') capture(u);
-      });
-      // Safety: never leave a hidden popup around.
-      setTimeout(() => {
-        if (!captured) {
-          try { childWindow.close(); } catch { /* ignore */ }
-        }
-      }, 15_000);
+      openUrlInNewEmbeddedTab(next);
+      return { action: 'deny' };
     });
 
     view.webContents.on('page-title-updated', (_e, title) => {
@@ -366,15 +442,11 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
         isLoading: false,
       });
       // Pages that finish loading just after a show/restack can paint blank
-      // until bounds are reapplied — nudge the surface if this tab is on screen.
+      // until bounds are reapplied — nudge a few times (SPA paint is delayed).
       if (s.visible) {
-        try {
-          const b = s.view.getBounds();
-          if (b.width >= 2 && b.height >= 2) {
-            s.view.setBounds(b);
-            setSlotPainted(s, true);
-          }
-        } catch { /* ignore */ }
+        nudgeEmbeddedBrowserPaint(s);
+        setTimeout(() => nudgeEmbeddedBrowserPaint(s), 50);
+        setTimeout(() => nudgeEmbeddedBrowserPaint(s), 250);
       }
     });
     view.webContents.on('did-fail-load', (_e, _code, errorDescription, validatedURL, isMainFrame) => {
@@ -466,6 +538,10 @@ export function destroyEmbeddedBrowser(
  * Emulation.setDeviceMetricsOverride (e.g. 1280px) which makes sites like
  * bilibili lay out wider than the panel and appear clipped. Clear that
  * override whenever the UI is visible so window.innerWidth matches the host.
+ *
+ * Important: only attach CDP for this clear, then detach. Leaving the debugger
+ * attached permanently makes some sites (Polymarket / Magic) detect automation
+ * and blank the page after first paint.
  */
 function alignLayoutViewportToUi(slot: BrowserSlot): void {
   if (!slot.visible) return;
@@ -474,9 +550,13 @@ function alignLayoutViewportToUi(slot: BrowserSlot): void {
   if (!w || !h || w < 2 || h < 2) return;
   const wc = slot.view.webContents;
   void (async () => {
+    let attachedHere = false;
     try {
       if (!wc.debugger.isAttached()) {
-        try { wc.debugger.attach('1.3'); } catch { /* may already be attaching */ }
+        try {
+          wc.debugger.attach('1.3');
+          attachedHere = true;
+        } catch { /* may already be attaching */ }
       }
       if (wc.debugger.isAttached()) {
         await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
@@ -484,6 +564,10 @@ function alignLayoutViewportToUi(slot: BrowserSlot): void {
       }
     } catch {
       slot.hasDeviceMetricsOverride = false;
+    } finally {
+      if (attachedHere) {
+        try { wc.debugger.detach(); } catch { /* ignore */ }
+      }
     }
     // Nudge responsive layouts that already locked to a prior width.
     try {
@@ -493,6 +577,31 @@ function alignLayoutViewportToUi(slot: BrowserSlot): void {
       );
     } catch { /* ignore */ }
   })();
+}
+
+/** Open DevTools for the guest page (not the Markus Electron shell). */
+export function openEmbeddedBrowserDevTools(id: string): { ok: boolean; error?: string } {
+  const slot = slots.get(id);
+  if (!slot) return { ok: false, error: 'Browser not found' };
+  try {
+    // Detached window: docking into the main window changes host bounds and
+    // often hides / blanks the native WebContentsView under the HTML layer.
+    slot.view.webContents.openDevTools({ mode: 'detach' });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Force a compositor / visibility nudge when the view is on screen. */
+function nudgeEmbeddedBrowserPaint(slot: BrowserSlot): void {
+  if (!slot.visible) return;
+  try {
+    const b = slot.view.getBounds();
+    if (b.width < 2 || b.height < 2) return;
+    slot.view.setBounds(b);
+    setSlotPainted(slot, true);
+  } catch { /* ignore */ }
 }
 
 export function setEmbeddedBrowserBounds(
@@ -746,7 +855,7 @@ export function destroyAllEmbeddedBrowsers(): void {
 
 /** Expose the partition session for cookie inspection if needed later. */
 export function getEmbeddedBrowserSession() {
-  return session.fromPartition(PARTITION);
+  return ensureEmbeddedBrowserSession();
 }
 
 export function hasEmbeddedBrowsers(): boolean {

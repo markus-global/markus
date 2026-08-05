@@ -135,6 +135,7 @@
   "browserFolderAppExplorer": "Explorer",
   "browserFolderAppGeneric": "file manager",
   "browserLoading": "Loading…",
+  "browserGuestDevTools": "Inspect this page (guest DevTools)",
   "browserUrlPlaceholder": "URL or local file path",
   "signOutConfirmTitle": "Log out?",
   "signOutConfirmMessage": "You will need to sign in again to continue using Markus.",

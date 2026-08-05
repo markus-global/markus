@@ -320,6 +320,18 @@ export function EmbeddedBrowser({
           {isLoading && (
             <span className="shrink-0 text-[10px] text-fg-tertiary px-1 select-none">{t('browserLoading')}</span>
           )}
+          {api.openDevTools && (
+            <button
+              type="button"
+              onClick={() => void api.openDevTools?.(browserId)}
+              className="w-7 h-7 flex items-center justify-center rounded-md text-fg-tertiary hover:bg-surface-overlay shrink-0"
+              title={t('browserGuestDevTools')}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+              </svg>
+            </button>
+          )}
         </div>
         {/* Indeterminate progress while the native view loads */}
         <div
