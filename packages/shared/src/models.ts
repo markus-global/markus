@@ -17,7 +17,7 @@ export const PROVIDERS: ProviderModel[] = [
     envKey: 'ANTHROPIC_API_KEY',
     defaultModel: 'claude-opus-4-6',
     isAnthropic: true,
-    models: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-3-6'],
+    models: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-3-6', 'claude-sonnet-5', 'claude-fable-5', 'claude-opus-4-8'],
   },
   {
     id: 'openai',
@@ -31,7 +31,7 @@ export const PROVIDERS: ProviderModel[] = [
     label: 'Google Gemini',
     envKey: 'GOOGLE_API_KEY',
     defaultModel: 'gemini-3-1-pro',
-    models: ['gemini-3-1-pro', 'gemini-3-1-flash', 'gemini-3-0-flash', 'gemini-2-5-pro'],
+    models: ['gemini-3-1-pro', 'gemini-3-1-flash', 'gemini-3-0-flash', 'gemini-2-5-pro', 'gemini-3-5-flash'],
   },
   {
     id: 'minimax',
@@ -93,6 +93,8 @@ export const PROVIDERS: ProviderModel[] = [
       'google/gemini-3-1-pro',
       'xiaomi/mimo-v2-pro:free',
       'deepseek-ai/DeepSeek-V3',
+      'anthropic/claude-sonnet-5',
+      'anthropic/claude-fable-5',
     ],
   },
   {
@@ -100,8 +102,8 @@ export const PROVIDERS: ProviderModel[] = [
     label: 'ZAI',
     envKey: 'ZAI_API_KEY',
     baseUrl: 'https://api.z.ai/api/paas/v4',
-    defaultModel: 'glm-5.1',
-    models: ['glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.9', 'glm-4-turbo'],
+    defaultModel: 'glm-5.2',
+    models: ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.9', 'glm-4-turbo'],
   },
   {
     id: 'ollama',
@@ -181,7 +183,7 @@ export const PROVIDERS: ProviderModel[] = [
     envKey: 'XAI_API_KEY',
     baseUrl: 'https://api.x.ai/v1',
     defaultModel: 'grok-3',
-    models: ['grok-3', 'grok-3-mini', 'grok-2'],
+    models: ['grok-4.3', 'grok-3', 'grok-3-mini', 'grok-2'],
   },
   {
     id: 'moonshot',
@@ -189,7 +191,7 @@ export const PROVIDERS: ProviderModel[] = [
     envKey: 'MOONSHOT_API_KEY',
     baseUrl: 'https://api.moonshot.cn/v1',
     defaultModel: 'moonshot-v1-auto',
-    models: ['moonshot-v1-auto', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
+    models: ['moonshot-v1-auto', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k', 'kimi-k2.7-code'],
   },
   {
     id: 'volcengine',
