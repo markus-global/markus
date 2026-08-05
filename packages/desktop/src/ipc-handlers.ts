@@ -16,6 +16,7 @@ import {
   executeInEmbeddedBrowser,
   captureEmbeddedBrowser,
   debuggerSendEmbeddedBrowser,
+  openEmbeddedBrowserDevTools,
 } from './embedded-browser.js';
 import {
   createEmbeddedTerminal,
@@ -140,6 +141,7 @@ export function setupIpcHandlers(): void {
   ipcMain.handle('browser:capture', (_e, id: string) => captureEmbeddedBrowser(id));
   ipcMain.handle('browser:cdp', (_e, id: string, method: string, params?: Record<string, unknown>) =>
     debuggerSendEmbeddedBrowser(id, method, params));
+  ipcMain.handle('browser:open-devtools', (_e, id: string) => openEmbeddedBrowserDevTools(id));
 
   // ── Embedded terminal (right-panel PTY) ───────────────────────────────────
   ipcMain.handle('terminal:create', (_e, id: string, opts?: { cwd?: string; title?: string; cols?: number; rows?: number }) =>

@@ -90,6 +90,7 @@ contextBridge.exposeInMainWorld('markusDesktop', {
     capture: (id: string) => ipcRenderer.invoke('browser:capture', id),
     cdp: (id: string, method: string, params?: Record<string, unknown>) =>
       ipcRenderer.invoke('browser:cdp', id, method, params),
+    openDevTools: (id: string) => ipcRenderer.invoke('browser:open-devtools', id),
     onPageEvent: (callback: (event: {
       type: 'opened' | 'closed' | 'navigated' | 'selected' | 'loading' | 'loaded' | 'load-failed' | 'directory';
       pageId: number;

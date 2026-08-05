@@ -104,7 +104,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       const url = (args.url as string) || 'about:blank';
       const timeout = (args.timeout as number) || 15000;
       const browserId = `agent_page_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-      const created = createEmbeddedBrowser(browserId, url);
+      const created = await createEmbeddedBrowser(browserId, url);
       if (!created.ok || created.pageId === undefined) {
         throw new Error(created.error || 'Failed to create embedded page');
       }
@@ -120,7 +120,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       if (pageId === undefined) throw new Error('pageId is required');
       const id = resolveEmbeddedBrowserId(pageId);
       if (!id) throw new Error(`Page ${pageId} not found`);
-      destroyEmbeddedBrowser(id);
+      await destroyEmbeddedBrowser(id);
       return formatPageList();
     }
 

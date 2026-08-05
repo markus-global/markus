@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { DeliverableInfo } from '../api.ts';
 import { forgetTerminalId, rememberTerminalId } from '../lib/known-terminals.ts';
+import { isEphemeralAuthBrowserUrl } from '../lib/browserAuthUrl.ts';
 
 /**
  * Payload describing what the right-side panel should display.
@@ -97,6 +98,11 @@ function evictOverLimit(tabs: RightPanelTab[]): RightPanelTab[] {
       if (!next[i]!.pinned) { idx = i; break; }
     }
     if (idx < 0) break;
+    const evicted = next[idx];
+    if (evicted) {
+      destroyBrowserIfNeeded(evicted.payload);
+      destroyTerminalIfNeeded(evicted.payload);
+    }
     next = next.filter((_, i) => i !== idx);
   }
   return next;
@@ -120,6 +126,11 @@ function serializeBrowserTab(tab: RightPanelTab): RightPanelTab | null {
   const p = tab.payload;
   if (p.kind === 'terminal') return null;
   if (p.kind === 'url') {
+    // Never persist Magic / OAuth login tabs — stale auth.magic.link?params=
+    // URLs restore as white "Not found" pages and re-trigger login loops.
+    if (isEphemeralAuthBrowserUrl(p.url || '') || isEphemeralAuthBrowserUrl(p.title || '')) {
+      return null;
+    }
     // Drop native browserId — a fresh one is minted on restore.
     return {
       id: tab.id,
@@ -196,7 +207,11 @@ function buildInitialRightPanelState(): {
     .map((t, i) => {
       try { return hydrateBrowserTab(t, i); } catch { return null; }
     })
-    .filter((t): t is RightPanelTab => !!t && t.payload.kind !== 'terminal');
+    .filter((t): t is RightPanelTab => {
+      if (!t || t.payload.kind === 'terminal') return false;
+      if (t.payload.kind === 'url' && isEphemeralAuthBrowserUrl(t.payload.url || '')) return false;
+      return true;
+    });
 
   const browserActiveId = browserTabs.some(t => t.id === saved.browserActiveId)
     ? saved.browserActiveId
@@ -550,85 +565,77 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   }, [hideBrowsers]);
 
   const closeRightPanelTab = useCallback((tabId: string) => {
-    let closingPayload: RightPanelPayload | undefined;
-    let nextActive: string | null | undefined;
-    let clearedAll = false;
-    let closedFrom: 'browser' | 'terminal' | null = null;
-
-    const currentBrowserActive = browserActiveIdRef.current;
-    setBrowserTabs(prev => {
-      const idx = prev.findIndex(t => t.id === tabId);
-      if (idx < 0) return prev;
-      closedFrom = 'browser';
-      closingPayload = prev[idx]?.payload;
-      const next = prev.filter(t => t.id !== tabId);
-      lastBrowserTabsRef.current = next;
-      clearedAll = next.length === 0;
-      const displayedActive = prev.some(t => t.id === currentBrowserActive)
+    // Read from refs synchronously — React 18 does not run useState updaters
+    // inline. Side effects inside setX(prev => …) (destroy native view / PTY)
+    // were skipped, leaving Bilibili audio playing after the tab UI was gone.
+    const browserPrev = browserTabsRef.current;
+    const browserIdx = browserPrev.findIndex(t => t.id === tabId);
+    if (browserIdx >= 0) {
+      const closingPayload = browserPrev[browserIdx]?.payload;
+      const next = browserPrev.filter(t => t.id !== tabId);
+      const currentBrowserActive = browserActiveIdRef.current;
+      const displayedActive = browserPrev.some(t => t.id === currentBrowserActive)
         ? currentBrowserActive
-        : (prev[0]?.id ?? null);
-      if (displayedActive === tabId || next.length === 0) {
-        nextActive = next[Math.min(idx, next.length - 1)]?.id ?? null;
-      }
-      return next;
-    });
+        : (browserPrev[0]?.id ?? null);
+      const nextActive = (displayedActive === tabId || next.length === 0)
+        ? (next[Math.min(browserIdx, next.length - 1)]?.id ?? null)
+        : undefined;
 
-    if (closedFrom === 'browser') {
-      if (clearedAll && modeRef.current === 'browser') setFullscreen(false);
+      lastBrowserTabsRef.current = next;
+      browserTabsRef.current = next;
+      setBrowserTabs(next);
+      if (next.length === 0 && modeRef.current === 'browser') setFullscreen(false);
       if (nextActive !== undefined) {
         setBrowserActiveId(nextActive);
         lastBrowserActiveRef.current = nextActive;
+        browserActiveIdRef.current = nextActive;
       }
       destroyBrowserIfNeeded(closingPayload);
       return;
     }
 
+    const terminalPrev = terminalTabsRef.current;
+    const terminalIdx = terminalPrev.findIndex(t => t.id === tabId);
+    if (terminalIdx < 0) return;
+    const closingPayload = terminalPrev[terminalIdx]?.payload;
+    const next = terminalPrev.filter(t => t.id !== tabId);
     const currentTerminalActive = terminalActiveIdRef.current;
-    setTerminalTabs(prev => {
-      const idx = prev.findIndex(t => t.id === tabId);
-      if (idx < 0) return prev;
-      closedFrom = 'terminal';
-      closingPayload = prev[idx]?.payload;
-      const next = prev.filter(t => t.id !== tabId);
-      lastTerminalTabsRef.current = next;
-      clearedAll = next.length === 0;
-      const displayedActive = prev.some(t => t.id === currentTerminalActive)
-        ? currentTerminalActive
-        : (prev[0]?.id ?? null);
-      if (displayedActive === tabId || next.length === 0) {
-        nextActive = next[Math.min(idx, next.length - 1)]?.id ?? null;
-      }
-      return next;
-    });
+    const displayedActive = terminalPrev.some(t => t.id === currentTerminalActive)
+      ? currentTerminalActive
+      : (terminalPrev[0]?.id ?? null);
+    const nextActive = (displayedActive === tabId || next.length === 0)
+      ? (next[Math.min(terminalIdx, next.length - 1)]?.id ?? null)
+      : undefined;
 
-    if (closedFrom === 'terminal') {
-      if (clearedAll && modeRef.current === 'terminal') setFullscreen(false);
-      if (nextActive !== undefined) {
-        setTerminalActiveId(nextActive);
-        lastTerminalActiveRef.current = nextActive;
-      }
-      destroyTerminalIfNeeded(closingPayload);
+    lastTerminalTabsRef.current = next;
+    terminalTabsRef.current = next;
+    setTerminalTabs(next);
+    if (next.length === 0 && modeRef.current === 'terminal') setFullscreen(false);
+    if (nextActive !== undefined) {
+      setTerminalActiveId(nextActive);
+      lastTerminalActiveRef.current = nextActive;
+      terminalActiveIdRef.current = nextActive;
     }
+    destroyTerminalIfNeeded(closingPayload);
   }, []);
 
   const closeRightPanel = useCallback(() => {
-    let browserDestroy: RightPanelPayload[] = [];
-    let terminalDestroy: RightPanelPayload[] = [];
-    setBrowserTabs(prev => {
-      browserDestroy = prev.map(t => t.payload);
-      return [];
-    });
-    setTerminalTabs(prev => {
-      terminalDestroy = prev.map(t => t.payload);
-      return [];
-    });
-    setBrowserActiveId(null);
-    setTerminalActiveId(null);
-    setFullscreen(false);
+    // Same React 18 rule: collect payloads from refs, not from setState updaters.
+    const browserDestroy = browserTabsRef.current.map(t => t.payload);
+    const terminalDestroy = terminalTabsRef.current.map(t => t.payload);
+    browserTabsRef.current = [];
+    terminalTabsRef.current = [];
     lastBrowserTabsRef.current = [];
     lastBrowserActiveRef.current = null;
     lastTerminalTabsRef.current = [];
     lastTerminalActiveRef.current = null;
+    browserActiveIdRef.current = null;
+    terminalActiveIdRef.current = null;
+    setBrowserTabs([]);
+    setTerminalTabs([]);
+    setBrowserActiveId(null);
+    setTerminalActiveId(null);
+    setFullscreen(false);
     for (const payload of browserDestroy) destroyBrowserIfNeeded(payload);
     for (const payload of terminalDestroy) destroyTerminalIfNeeded(payload);
   }, []);
