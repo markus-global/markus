@@ -34,6 +34,12 @@ type PersistedRightPanel = {
   /** Terminal tabs restored as fresh shells (cwd/title only — no scrollback). */
   terminalTabs: Array<{ id: string; title: string; cwd?: string }>;
   terminalActiveId: string | null;
+  /**
+   * Panel was collapsed (tabs live in last*Ref with empty visible state).
+   * Without this, persist wrote [] and Cmd+R wiped every stashed tab.
+   */
+  browserCollapsed?: boolean;
+  terminalCollapsed?: boolean;
 };
 
 const MAX_RIGHT_PANEL_TABS = 10;
@@ -191,19 +197,27 @@ function buildInitialRightPanelState(): {
   browserActiveId: string | null;
   terminalTabs: RightPanelTab[];
   terminalActiveId: string | null;
+  /** Full browser tab list for lastBrowserTabsRef (even when panel starts collapsed). */
+  stashedBrowserTabs: RightPanelTab[];
+  stashedBrowserActiveId: string | null;
+  stashedTerminalTabs: RightPanelTab[];
+  stashedTerminalActiveId: string | null;
 } {
+  const empty = {
+    mode: 'browser' as RightPanelMode,
+    browserTabs: [] as RightPanelTab[],
+    browserActiveId: null as string | null,
+    terminalTabs: [] as RightPanelTab[],
+    terminalActiveId: null as string | null,
+    stashedBrowserTabs: [] as RightPanelTab[],
+    stashedBrowserActiveId: null as string | null,
+    stashedTerminalTabs: [] as RightPanelTab[],
+    stashedTerminalActiveId: null as string | null,
+  };
   const saved = loadPersistedRightPanel();
-  if (!saved) {
-    return {
-      mode: 'browser',
-      browserTabs: [],
-      browserActiveId: null,
-      terminalTabs: [],
-      terminalActiveId: null,
-    };
-  }
+  if (!saved) return empty;
 
-  const browserTabs = saved.browserTabs
+  const hydratedBrowserTabs = saved.browserTabs
     .map((t, i) => {
       try { return hydrateBrowserTab(t, i); } catch { return null; }
     })
@@ -213,12 +227,12 @@ function buildInitialRightPanelState(): {
       return true;
     });
 
-  const browserActiveId = browserTabs.some(t => t.id === saved.browserActiveId)
+  const stashedBrowserActiveId = hydratedBrowserTabs.some(t => t.id === saved.browserActiveId)
     ? saved.browserActiveId
-    : (browserTabs[0]?.id ?? null);
+    : (hydratedBrowserTabs[0]?.id ?? null);
 
   // Fresh shells with remembered cwd/title (no PTY scrollback).
-  const terminalTabs: RightPanelTab[] = (saved.terminalTabs || []).map((t, i) => {
+  const hydratedTerminalTabs: RightPanelTab[] = (saved.terminalTabs || []).map((t, i) => {
     const terminalId = `term_${Date.now().toString(36)}_${i.toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     rememberTerminalId(terminalId);
     return {
@@ -233,15 +247,33 @@ function buildInitialRightPanelState(): {
     };
   });
 
-  const terminalActiveId = terminalTabs.some(t => t.id === saved.terminalActiveId)
+  const stashedTerminalActiveId = hydratedTerminalTabs.some(t => t.id === saved.terminalActiveId)
     ? saved.terminalActiveId
-    : (terminalTabs[0]?.id ?? null);
+    : (hydratedTerminalTabs[0]?.id ?? null);
+
+  const browserCollapsed = !!saved.browserCollapsed && hydratedBrowserTabs.length > 0;
+  const terminalCollapsed = !!saved.terminalCollapsed && hydratedTerminalTabs.length > 0;
+
+  const browserTabs = browserCollapsed ? [] : hydratedBrowserTabs;
+  const browserActiveId = browserCollapsed ? null : stashedBrowserActiveId;
+  const terminalTabs = terminalCollapsed ? [] : hydratedTerminalTabs;
+  const terminalActiveId = terminalCollapsed ? null : stashedTerminalActiveId;
 
   let mode: RightPanelMode = saved.mode;
-  if (mode === 'terminal' && terminalTabs.length === 0) mode = 'browser';
+  if (mode === 'terminal' && terminalTabs.length === 0 && !terminalCollapsed) mode = 'browser';
   if (mode === 'browser' && browserTabs.length === 0 && terminalTabs.length > 0) mode = 'terminal';
 
-  return { mode, browserTabs, browserActiveId, terminalTabs, terminalActiveId };
+  return {
+    mode,
+    browserTabs,
+    browserActiveId,
+    terminalTabs,
+    terminalActiveId,
+    stashedBrowserTabs: hydratedBrowserTabs,
+    stashedBrowserActiveId,
+    stashedTerminalTabs: hydratedTerminalTabs,
+    stashedTerminalActiveId,
+  };
 }
 
 export interface LayoutContextValue {
@@ -374,10 +406,22 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener('pointerdown', onPointerDown, true);
   }, []);
 
-  const lastBrowserTabsRef = useRef<RightPanelTab[]>(initialPanel.browserTabs);
-  const lastBrowserActiveRef = useRef<string | null>(initialPanel.browserActiveId);
-  const lastTerminalTabsRef = useRef<RightPanelTab[]>(initialPanel.terminalTabs);
-  const lastTerminalActiveRef = useRef<string | null>(initialPanel.terminalActiveId);
+  const lastBrowserTabsRef = useRef<RightPanelTab[]>(
+    initialPanel.stashedBrowserTabs.length > 0
+      ? initialPanel.stashedBrowserTabs
+      : initialPanel.browserTabs,
+  );
+  const lastBrowserActiveRef = useRef<string | null>(
+    initialPanel.stashedBrowserActiveId ?? initialPanel.browserActiveId,
+  );
+  const lastTerminalTabsRef = useRef<RightPanelTab[]>(
+    initialPanel.stashedTerminalTabs.length > 0
+      ? initialPanel.stashedTerminalTabs
+      : initialPanel.terminalTabs,
+  );
+  const lastTerminalActiveRef = useRef<string | null>(
+    initialPanel.stashedTerminalActiveId ?? initialPanel.terminalActiveId,
+  );
   const browserActiveIdRef = useRef<string | null>(initialPanel.browserActiveId);
   const terminalActiveIdRef = useRef<string | null>(initialPanel.terminalActiveId);
   const browserTabsRef = useRef<RightPanelTab[]>(initialPanel.browserTabs);
@@ -389,20 +433,30 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
   terminalTabsRef.current = terminalTabs;
   modeRef.current = mode;
 
-  // Restored terminal mode → keep native browser views hidden.
+  // Restored terminal mode or collapsed browser → keep native browser views hidden.
   useEffect(() => {
-    if (initialPanel.mode === 'terminal') {
+    if (
+      initialPanel.mode === 'terminal'
+      || initialPanel.browserTabs.length === 0
+    ) {
       void window.markusDesktop?.browser?.hideAll?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist right-panel tabs across app restarts.
+  // Persist right-panel tabs across app restarts / Cmd+R shell reload.
+  // When the panel is collapsed, visible state is [] but tabs live in last*Ref —
+  // persist those so a Markus reload does not wipe the session.
   useEffect(() => {
-    const browserSerialized = browserTabs
+    const browserCollapsed = browserTabs.length === 0 && lastBrowserTabsRef.current.length > 0;
+    const terminalCollapsed = terminalTabs.length === 0 && lastTerminalTabsRef.current.length > 0;
+    const browserSource = browserCollapsed ? lastBrowserTabsRef.current : browserTabs;
+    const terminalSource = terminalCollapsed ? lastTerminalTabsRef.current : terminalTabs;
+
+    const browserSerialized = browserSource
       .map(serializeBrowserTab)
       .filter((t): t is RightPanelTab => !!t);
-    const terminalSerialized = terminalTabs
+    const terminalSerialized = terminalSource
       .filter(t => t.payload.kind === 'terminal')
       .map(t => ({
         id: t.id,
@@ -412,9 +466,15 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     const payload: PersistedRightPanel = {
       mode,
       browserTabs: browserSerialized,
-      browserActiveId,
+      browserActiveId: browserCollapsed
+        ? lastBrowserActiveRef.current
+        : browserActiveId,
       terminalTabs: terminalSerialized,
-      terminalActiveId,
+      terminalActiveId: terminalCollapsed
+        ? lastTerminalActiveRef.current
+        : terminalActiveId,
+      browserCollapsed,
+      terminalCollapsed,
     };
     try {
       localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, JSON.stringify(payload));

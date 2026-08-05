@@ -745,12 +745,19 @@ export async function createEmbeddedBrowser(
     }
 
     // When the embedded page has focus, route Cmd/Ctrl+W/T to the app (close/new tab)
-    // instead of letting the guest page or OS window-close handle them.
+    // and Cmd/Ctrl+R to reload this tab (menu also handles R via handleReloadShortcut).
     view.webContents.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown') return;
       const mod = process.platform === 'darwin' ? input.meta : input.control;
-      if (!mod || input.alt || input.shift) return;
+      if (!mod || input.alt) return;
       const key = (input.key || '').toLowerCase();
+      if (key === 'r') {
+        // Stop Chromium default; reload painted tab (menu may also fire — debounced).
+        event.preventDefault();
+        handleReloadShortcut({ ignoreCache: !!input.shift });
+        return;
+      }
+      if (input.shift) return;
       if (key !== 'w' && key !== 't') return;
       event.preventDefault();
       try {
@@ -1270,6 +1277,59 @@ export function hideAllEmbeddedBrowsers(): { ok: boolean } {
     } catch { /* ignore */ }
   }
   return { ok: true };
+}
+
+/** The browser tab currently painted in the right panel (if any). */
+function findVisibleBrowserSlot(): BrowserSlot | undefined {
+  if (selectedPageId !== null) {
+    const id = pageIdToSlotId.get(selectedPageId);
+    if (id) {
+      const selected = slots.get(id);
+      if (selected?.visible) return selected;
+    }
+  }
+  for (const slot of slots.values()) {
+    if (slot.visible) return slot;
+  }
+  return undefined;
+}
+
+/** Guest before-input + menu accelerator can both fire for one Cmd+R. */
+let lastReloadShortcutAt = 0;
+
+/**
+ * Cmd/Ctrl+R (and Shift for ignore-cache): reload the painted browser tab when
+ * the panel is showing one; otherwise reload the Markus shell. Avoids shell
+ * reload recreating tabs while a hidden WebContents keeps playing audio.
+ */
+export function handleReloadShortcut(opts?: { ignoreCache?: boolean }): void {
+  const now = Date.now();
+  if (now - lastReloadShortcutAt < 250) return;
+  lastReloadShortcutAt = now;
+
+  const slot = findVisibleBrowserSlot();
+  if (slot) {
+    try {
+      const wc = slot.view.webContents;
+      if (wc.isDestroyed()) return;
+      if (slot.directoryUrl && applyDirectoryNavigation(slot, slot.directoryUrl)) return;
+      if (opts?.ignoreCache) wc.reloadIgnoringCache();
+      else wc.reload();
+    } catch { /* ignore */ }
+    return;
+  }
+  const win = getWin();
+  if (!win || win.isDestroyed()) return;
+  // Shell reload remints browser/terminal ids — drop native views/PTYs so they
+  // cannot keep playing or linger without a UI tab.
+  destroyAllEmbeddedBrowsers();
+  try {
+    void import('./embedded-terminal.js').then((m) => m.destroyAllEmbeddedTerminals());
+  } catch { /* ignore */ }
+  try {
+    if (opts?.ignoreCache) win.webContents.reloadIgnoringCache();
+    else win.webContents.reload();
+  } catch { /* ignore */ }
 }
 
 /** Clear all embedded browsers (e.g. on window close). */
