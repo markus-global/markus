@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { DeliverableInfo } from '../api.ts';
 import { forgetTerminalId, rememberTerminalId } from '../lib/known-terminals.ts';
+import { isEphemeralAuthBrowserUrl } from '../lib/browserAuthUrl.ts';
 
 /**
  * Payload describing what the right-side panel should display.
@@ -120,6 +121,11 @@ function serializeBrowserTab(tab: RightPanelTab): RightPanelTab | null {
   const p = tab.payload;
   if (p.kind === 'terminal') return null;
   if (p.kind === 'url') {
+    // Never persist Magic / OAuth login tabs — stale auth.magic.link?params=
+    // URLs restore as white "Not found" pages and re-trigger login loops.
+    if (isEphemeralAuthBrowserUrl(p.url || '') || isEphemeralAuthBrowserUrl(p.title || '')) {
+      return null;
+    }
     // Drop native browserId — a fresh one is minted on restore.
     return {
       id: tab.id,
@@ -196,7 +202,11 @@ function buildInitialRightPanelState(): {
     .map((t, i) => {
       try { return hydrateBrowserTab(t, i); } catch { return null; }
     })
-    .filter((t): t is RightPanelTab => !!t && t.payload.kind !== 'terminal');
+    .filter((t): t is RightPanelTab => {
+      if (!t || t.payload.kind === 'terminal') return false;
+      if (t.payload.kind === 'url' && isEphemeralAuthBrowserUrl(t.payload.url || '')) return false;
+      return true;
+    });
 
   const browserActiveId = browserTabs.some(t => t.id === saved.browserActiveId)
     ? saved.browserActiveId

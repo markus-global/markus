@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, memo, lazy, Suspense } from 'react';
 import { type PageId, PAGE, resolvePageId, getPageFromHash, hashPath, pageToHash, MOBILE_REDIRECTS, L0_NAV_PAGES, PAGES_WITH_L1 } from './routes.ts';
 import { setNativeBrowserPagePaintAllowed } from './lib/nativeBrowserOverlay.ts';
+import { isEphemeralAuthBrowserUrl } from './lib/browserAuthUrl.ts';
 import { HomePage } from './pages/Home.tsx';
 
 const TeamPage = lazy(() => import('./pages/Team.tsx').then(m => ({ default: m.TeamPage })));
@@ -172,6 +173,8 @@ export function App() {
         return;
       }
       if (event.type === 'navigated') {
+        // Never sync Magic / OAuth into a panel tab (desktop should open externally).
+        if (event.url && isEphemeralAuthBrowserUrl(event.url)) return;
         if (event.browserId && updateRightPanelBrowserTab) {
           updateRightPanelBrowserTab(event.browserId, {
             url: event.url,
@@ -187,6 +190,8 @@ export function App() {
         if (event.browserId.startsWith('eb_')) return;
         // User just closed this browserId; ignore in-flight create/select echoes.
         if (isBrowserTabReopenSuppressed(event.browserId)) return;
+        // Stale Magic / OAuth URLs must not become right-panel tabs.
+        if (event.url && isEphemeralAuthBrowserUrl(event.url)) return;
         openRightPanel({
           kind: 'url',
           url: event.url || 'about:blank',

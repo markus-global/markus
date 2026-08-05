@@ -10,7 +10,13 @@
  */
 import { existsSync, statSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WebContentsView, session, type BrowserWindow, type BrowserWindowConstructorOptions } from 'electron';
+import {
+  WebContentsView,
+  shell,
+  session,
+  type BrowserWindow,
+  type BrowserWindowConstructorOptions,
+} from 'electron';
 import { getMainWindow } from './window.js';
 
 const PARTITION = 'persist:markus-embedded-browser';
@@ -43,10 +49,9 @@ function ensureEmbeddedBrowserSession(): ReturnType<typeof session.fromPartition
 }
 
 /**
- * Auth / wallet login hosts that need a real popup with window.opener + postMessage.
- * Rewriting these into a right-panel tab (deny + openUrlInNewEmbeddedTab) breaks
- * Magic Link / Polymarket and similar OAuth flows — the page loads blank or never
- * returns control to the opener.
+ * Auth / wallet login hosts. These are unreliable inside Electron WebContentsView
+ * (blank Magic pages, broken opener/postMessage). Industry default: open in the
+ * system browser via shell.openExternal and keep the embedded view on the host site.
  */
 export function isAuthPopupUrl(raw: string): boolean {
   const u = (raw || '').trim();
@@ -91,29 +96,65 @@ export function isAuthPopupUrl(raw: string): boolean {
     || pathname.includes('/auth/connect');
 }
 
-function authPopupWindowOptions(): BrowserWindowConstructorOptions {
-  const parent = getMainWindow();
-  const width = 480;
-  const height = 720;
-  let x: number | undefined;
-  let y: number | undefined;
-  if (parent && !parent.isDestroyed()) {
-    const b = parent.getBounds();
-    x = Math.round(b.x + (b.width - width) / 2);
-    y = Math.round(b.y + (b.height - height) / 2);
+/** Origins that leave stale sessions in the embedded partition and auto-reopen Magic. */
+const AUTH_STORAGE_ORIGINS = [
+  'https://auth.magic.link',
+  'https://magic.link',
+  'https://api.magic.link',
+];
+
+async function purgeStaleEmbeddedAuthSession(): Promise<void> {
+  const ses = ensureEmbeddedBrowserSession();
+  for (const origin of AUTH_STORAGE_ORIGINS) {
+    try {
+      await ses.clearStorageData({
+        origin,
+        storages: [
+          'cookies',
+          'localstorage',
+          'indexdb',
+          'websql',
+          'serviceworkers',
+          'cachestorage',
+        ],
+      });
+    } catch { /* ignore */ }
   }
+  try {
+    const cookies = await ses.cookies.get({});
+    for (const c of cookies) {
+      const domain = (c.domain || '').replace(/^\./, '').toLowerCase();
+      if (domain !== 'magic.link' && !domain.endsWith('.magic.link')) continue;
+      const url = `http${c.secure ? 's' : ''}://${domain}${c.path || '/'}`;
+      try { await ses.cookies.remove(url, c.name); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+let authPartitionPurged = false;
+let lastExternalAuthOpenAt = 0;
+const EXTERNAL_AUTH_DEBOUNCE_MS = 2_500;
+
+/** Open Magic/OAuth in the OS browser; never load it inside the embedded view. */
+function openAuthInSystemBrowser(rawUrl: string): void {
+  const url = (rawUrl || '').trim();
+  if (!url || !/^https?:/i.test(url)) return;
+  const now = Date.now();
+  if (now - lastExternalAuthOpenAt < EXTERNAL_AUTH_DEBOUNCE_MS) return;
+  lastExternalAuthOpenAt = now;
+  if (!authPartitionPurged) {
+    authPartitionPurged = true;
+    void purgeStaleEmbeddedAuthSession();
+  }
+  void shell.openExternal(url);
+}
+
+/** Hidden guest used only to observe about:blank → auth navigations, then hand off. */
+function blankBootstrapWindowOptions(): BrowserWindowConstructorOptions {
   return {
-    parent: parent ?? undefined,
-    modal: false,
-    show: true,
-    width,
-    height,
-    minWidth: 360,
-    minHeight: 480,
-    x,
-    y,
-    autoHideMenuBar: true,
-    title: 'Sign in',
+    show: false,
+    width: 420,
+    height: 640,
     webPreferences: {
       partition: PARTITION,
       contextIsolation: true,
@@ -244,6 +285,10 @@ function flushPendingUrl(slot: BrowserSlot): void {
   ensureWorkingViewport(slot);
   const pending = normalizeEmbeddedBrowserUrl(slot.pendingUrl);
   slot.pendingUrl = undefined;
+  if (isAuthPopupUrl(pending)) {
+    openAuthInSystemBrowser(pending);
+    return;
+  }
   if (applyDirectoryNavigation(slot, pending)) return;
   void slot.view.webContents.loadURL(pending).catch(() => {});
 }
@@ -329,6 +374,10 @@ function openUrlInNewEmbeddedTab(rawUrl: string): void {
   if (!target) return;
   // Deny non-navigable schemes (javascript:, etc.)
   if (!/^(https?:|file:|about:)/i.test(target)) return;
+  if (isAuthPopupUrl(target)) {
+    openAuthInSystemBrowser(target);
+    return;
+  }
   const newId = `rb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   const created = createEmbeddedBrowser(newId, target);
   if (created.ok && created.pageId !== null && created.pageId !== undefined) {
@@ -391,21 +440,54 @@ export function createEmbeddedBrowser(id: string, url?: string): { ok: boolean; 
     });
 
     // target=_blank / window.open:
-    // - Auth / wallet login → real popup (same partition) so opener + postMessage work.
+    // - Auth / Magic / OAuth → system browser (never embed; avoids blank auth pages).
+    // - about:blank → brief hidden guest; if it navigates to auth, hand off externally.
     // - Ordinary links → new right-panel tab.
-    // - about:blank (common OAuth bootstrap) → real popup; do NOT steal navigation
-    //   into a tab (that blanked Magic / Polymarket login).
     view.webContents.setWindowOpenHandler(({ url: openUrl }) => {
       const next = (openUrl || '').trim();
-      if (!next || next === 'about:blank' || isAuthPopupUrl(next)) {
+      if (isAuthPopupUrl(next)) {
+        openAuthInSystemBrowser(next);
+        return { action: 'deny' };
+      }
+      if (!next || next === 'about:blank') {
         return {
           action: 'allow',
-          overrideBrowserWindowOptions: authPopupWindowOptions(),
+          overrideBrowserWindowOptions: blankBootstrapWindowOptions(),
         };
       }
       openUrlInNewEmbeddedTab(next);
       return { action: 'deny' };
     });
+    view.webContents.on('did-create-window', (childWindow) => {
+      const child = childWindow.webContents;
+      const handOffAuth = (navUrl: string) => {
+        const next = (navUrl || '').trim();
+        if (!isAuthPopupUrl(next)) return false;
+        openAuthInSystemBrowser(next);
+        try { childWindow.close(); } catch { /* ignore */ }
+        return true;
+      };
+      child.on('will-navigate', (e, navUrl) => {
+        if (handOffAuth(navUrl)) e.preventDefault();
+      });
+      child.on('did-navigate', (_e, navUrl) => { handOffAuth(navUrl); });
+      setTimeout(() => {
+        try {
+          if (!child.isDestroyed() && (!child.getURL() || child.getURL() === 'about:blank')) {
+            childWindow.close();
+          }
+        } catch { /* ignore */ }
+      }, 15_000);
+    });
+
+    // Same-tab navigation / redirect to Magic/OAuth → system browser; stay on host.
+    const handOffMainFrameAuth = (e: { preventDefault: () => void }, navUrl: string) => {
+      if (!isAuthPopupUrl(navUrl)) return;
+      e.preventDefault();
+      openAuthInSystemBrowser(navUrl);
+    };
+    view.webContents.on('will-navigate', (e, navUrl) => handOffMainFrameAuth(e, navUrl));
+    view.webContents.on('will-redirect', (e, navUrl) => handOffMainFrameAuth(e, navUrl));
 
     view.webContents.on('page-title-updated', (_e, title) => {
       emitPageEvent({ type: 'navigated', pageId, browserId: id, url: view.webContents.getURL(), title });
@@ -662,6 +744,10 @@ export function navigateEmbeddedBrowser(id: string, url: string): { ok: boolean;
     ensureWorkingViewport(slot);
     slot.pendingUrl = undefined;
     const target = normalizeEmbeddedBrowserUrl(url);
+    if (isAuthPopupUrl(target)) {
+      openAuthInSystemBrowser(target);
+      return { ok: true };
+    }
     if (applyDirectoryNavigation(slot, target)) return { ok: true };
     void slot.view.webContents.loadURL(target);
     return { ok: true };
