@@ -232,22 +232,32 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [layoutLeftCollapsed]);
 
   const keyboardPane = layout?.keyboardPane ?? 'content';
+  /**
+   * L2 can be entered via L from L1 when a team context exists.
+   * Independent of Cmd+B collapse — focus may stay on L1/L2 while rails are hidden.
+   */
+  const l2AvailableRef = useRef(false);
+  const prevKeyboardPaneRef = useRef(keyboardPane);
 
-  // Entering L1 from L0: ensure roster sidebars are visible.
+  // Only auto-expand sidebars when *entering* L1/L2 (e.g. L from L0) — never fight Cmd+B.
   useEffect(() => {
     if (previewMode || isMobile || !isActive) return;
-    if (keyboardPane !== 'l1') return;
+    const prev = prevKeyboardPaneRef.current;
+    prevKeyboardPaneRef.current = keyboardPane;
+    const entered = (keyboardPane === 'l1' || keyboardPane === 'l2') && prev !== keyboardPane;
+    if (!entered) return;
     if (sidebarsCollapsed) {
       setSidebarsCollapsed(false);
       layout?.setLeftCollapsed(false);
     }
   }, [keyboardPane, previewMode, isMobile, isActive, sidebarsCollapsed, layout]);
 
-  // Content → L1 via H (L1 → L0 is handled inside ChatTeamSidebar).
+  // Content → L2 (if open) or L1 via H. Further left moves are handled in L2/L1 components.
   useEffect(() => {
     if (previewMode || isMobile || !isActive) return;
     const onKey = (e: KeyboardEvent) => {
-      if (layout?.keyboardPane === 'l0' || layout?.keyboardPane === 'l1') return;
+      const pane = layout?.keyboardPane ?? 'content';
+      if (pane === 'l0' || pane === 'l1' || pane === 'l2') return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.target instanceof HTMLElement) {
         const tag = e.target.tagName;
@@ -261,7 +271,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         setSidebarsCollapsedPersisted(false);
         layout?.setLeftCollapsed(false);
       }
-      layout?.setKeyboardPane('l1');
+      layout?.setKeyboardPane(l2AvailableRef.current ? 'l2' : 'l1');
     };
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
@@ -3509,7 +3519,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setMentionSelectedIndex(0);
     const newCursor = atIdx + mention.length + 1;
     requestAnimationFrame(() => {
-      textareaRef.current?.setSelectionRange(newCursor, newCursor);
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(newCursor, newCursor);
     });
   };
 
@@ -3596,6 +3609,46 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // ── Derived ───────────────────────────────────────────────────────────────────
   const currentAgent = agents.find(a => a.id === selectedAgent);
+  const l2TeamId = activeTeamId ?? (chatMode === 'direct' ? currentAgent?.teamId : undefined);
+  /** Team context exists so L from L1 may enter L2 (even if Cmd+B currently hides rails). */
+  const l2Navigable = !!(
+    !isMobile && !rightPanelFullscreen && l2TeamId
+    && teams.some(t => t.id === l2TeamId)
+  );
+  /** L2 panel is actually on screen (not collapsed by Cmd+B). */
+  const l2Visible = !!(
+    l2Navigable && !sidebarsCollapsed
+    && ((showTeamDetailPanel && !l2SpaceTight) || l2Floating)
+  );
+  l2AvailableRef.current = l2Navigable;
+
+  // Leave L2 focus only when the user closes L2 or loses team context — not on Cmd+B collapse.
+  useEffect(() => {
+    if (keyboardPane !== 'l2') return;
+    if (!l2Navigable) {
+      layout?.setKeyboardPane('l1');
+      return;
+    }
+    if (!sidebarsCollapsed && !showTeamDetailPanel && !l2Floating) {
+      layout?.setKeyboardPane('l1');
+    }
+  }, [keyboardPane, l2Navigable, sidebarsCollapsed, showTeamDetailPanel, l2Floating, layout]);
+
+  // When *entering* L2 (L from L1), open the team detail panel. Do not undo Cmd+B.
+  const prevPaneForL2Ref = useRef(keyboardPane);
+  useEffect(() => {
+    if (previewMode || isMobile || !isActive) return;
+    const prev = prevPaneForL2Ref.current;
+    prevPaneForL2Ref.current = keyboardPane;
+    if (keyboardPane !== 'l2' || prev === 'l2') return;
+    if (!l2TeamId) {
+      layout?.setKeyboardPane('l1');
+      return;
+    }
+    if (l2SpaceTight) setL2Floating(true);
+    else setShowTeamDetailPanel(true);
+  }, [keyboardPane, previewMode, isMobile, isActive, l2TeamId, l2SpaceTight, layout]);
+
   const currentUserName = authUser?.name ?? t('page.fallbackYou');
   const lastMsg = visibleMessages[visibleMessages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
@@ -3829,6 +3882,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         onCollapse={() => setSidebarsCollapsedPersisted(true)}
         initialLoading={initialLoading}
         focused={!isMobile && !sidebarsCollapsed && keyboardPane === 'l1'}
+        l2Available={l2Navigable}
       />}
 
       {/* ── L2: Mobile team detail view ── */}
@@ -3932,6 +3986,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             chatMode={chatMode}
             selectedAgent={selectedAgent}
             activeChannel={activeChannel}
+            activeDmUserId={activeDmUserId}
             teams={teams}
             onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); setShowMemberPanel(false); }}
             onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); }}
@@ -3943,12 +3998,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             unreadByAgent={unreadByAgent}
             width={teamDetailPanel.width}
             onResizeStart={teamDetailPanel.onResizeStart}
+            focused={keyboardPane === 'l2' && l2Visible}
           />
         );
       })()}
       {/* Floating mode: when space is tight, show as overlay */}
       {!rightPanelFullscreen && l2Floating && !isMobile && !sidebarsCollapsed && (() => {
-        const l2TeamId = activeTeamId ?? (chatMode === 'direct' ? currentAgent?.teamId : undefined);
         if (!l2TeamId) return null;
         const panelTeam = teams.find(t => t.id === l2TeamId);
         if (!panelTeam) return null;
@@ -3966,6 +4021,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 chatMode={chatMode}
                 selectedAgent={selectedAgent}
                 activeChannel={activeChannel}
+                activeDmUserId={activeDmUserId}
                 teams={teams}
                 onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); setShowMemberPanel(false); setL2Floating(false); }}
                 onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); setL2Floating(false); }}
@@ -3976,6 +4032,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 onRefreshTeams={refreshTeams}
                 unreadByAgent={unreadByAgent}
                 width={teamDetailPanel.width}
+                focused={keyboardPane === 'l2' && l2Visible}
               />
             </div>
           </div>
@@ -4950,7 +5007,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         )}
 
         {/* Input (only in chat tab) */}
-        <div className={`${isMobile ? 'px-3 py-2' : 'px-5 py-3'} relative shrink-0 ${isEmptyChat ? '' : chatRightReserve}`} onDrop={handleDrop} onDragOver={handleDragOver}>
+        <div data-keep-edit-focus className={`${isMobile ? 'px-3 py-2' : 'px-5 py-3'} relative shrink-0 ${isEmptyChat ? '' : chatRightReserve}`} onDrop={handleDrop} onDragOver={handleDragOver}>
           <div className={`bg-surface-primary border border-border-default shadow-lg shadow-black/10 ${
             isMobile
               ? `${compactComposer ? 'rounded-2xl p-2' : 'rounded-2xl p-3'}`
@@ -5098,6 +5155,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       return;
                     }
                     if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
+                  }
+                  // Escape leaves the composer so JK/HL on the current keyboard pane work again.
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.currentTarget.blur();
+                    return;
                   }
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
                 }}

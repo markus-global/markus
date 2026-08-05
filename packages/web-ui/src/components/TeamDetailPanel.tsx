@@ -1,10 +1,19 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api.ts';
 import type { AgentInfo, TeamInfo, HumanUserInfo, AuthUser } from '../api.ts';
 import { Avatar } from './Avatar.tsx';
+import { useLayout } from '../contexts/LayoutContext.tsx';
+import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import { PAGE } from '../routes.ts';
+import { usePageActive } from '../hooks/usePageActive.ts';
 
 type ChatMode = 'channel' | 'direct' | 'dm';
+
+type L2NavItem =
+  | { kind: 'channel'; id: string; channelKey: string }
+  | { kind: 'agent'; id: string; agentId: string }
+  | { kind: 'dm'; id: string; userId: string };
 
 interface TeamDetailPanelProps {
   team: TeamInfo;
@@ -15,6 +24,7 @@ interface TeamDetailPanelProps {
   chatMode: ChatMode;
   selectedAgent: string;
   activeChannel: string;
+  activeDmUserId?: string;
   teams: TeamInfo[];
   onSelectAgent: (agentId: string) => void;
   onSelectChannel: (channelKey: string) => void;
@@ -27,18 +37,23 @@ interface TeamDetailPanelProps {
   unreadByAgent?: Map<string, number>;
   width?: number;
   onResizeStart?: (e: React.MouseEvent) => void;
+  /** Keyboard focus is on this L2 pane. */
+  focused?: boolean;
 }
 
 export function TeamDetailPanel({
   team, agents, humans, authUser, groupChat,
-  chatMode, selectedAgent, activeChannel,
+  chatMode, selectedAgent, activeChannel, activeDmUserId,
   teams,
   onSelectAgent, onSelectChannel, onSelectDm, onBack, onViewProfile,
   onRefreshAgents, onRefreshTeams,
   unreadByAgent,
   width, onResizeStart,
+  focused,
 }: TeamDetailPanelProps) {
   const { t } = useTranslation(['team', 'common']);
+  const layout = useLayout();
+  const isPageActive = usePageActive(PAGE.TEAM);
   const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
 
   const teamAgents = useMemo(
@@ -54,6 +69,87 @@ export function TeamDetailPanel({
   }, [team.members, humans]);
 
   const isGcActive = groupChat && chatMode === 'channel' && activeChannel === groupChat.channelKey;
+
+  const l2NavItems = useMemo((): L2NavItem[] => {
+    const items: L2NavItem[] = [];
+    if (groupChat) {
+      items.push({ kind: 'channel', id: `channel:${groupChat.channelKey}`, channelKey: groupChat.channelKey });
+    }
+    for (const a of teamAgents) {
+      items.push({ kind: 'agent', id: `agent:${a.id}`, agentId: a.id });
+    }
+    for (const h of teamHumans) {
+      items.push({ kind: 'dm', id: `dm:${h.id}`, userId: h.id });
+    }
+    return items;
+  }, [groupChat, teamAgents, teamHumans]);
+  const l2NavItemsRef = useRef(l2NavItems);
+  l2NavItemsRef.current = l2NavItems;
+
+  const activateL2Item = useCallback((item: L2NavItem) => {
+    if (item.kind === 'channel') onSelectChannel(item.channelKey);
+    else if (item.kind === 'agent') onSelectAgent(item.agentId);
+    else onSelectDm(item.userId);
+    requestAnimationFrame(() => {
+      document.querySelector(`[data-l2-nav-id="${item.id}"]`)?.scrollIntoView({ block: 'nearest' });
+    });
+  }, [onSelectChannel, onSelectAgent, onSelectDm]);
+
+  // L2 keyboard: j/k move members, H → L1, L → content
+  useEffect(() => {
+    if (!isPageActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      const pane = layout?.keyboardPane ?? 'content';
+      if (pane !== 'l2') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isEditableTarget(e.target)) return;
+
+      const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+
+      if (bare === 'h' || bare === 'ArrowLeft') {
+        e.preventDefault();
+        e.stopPropagation();
+        layout?.setKeyboardPane('l1');
+        return;
+      }
+      // L2 is the deepest Team pane — ignore L so JK focus is never lost.
+      if (bare === 'l' || bare === 'ArrowRight') {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
+      const move = bare === 'j' || bare === 'ArrowDown' ? 1
+        : bare === 'k' || bare === 'ArrowUp' ? -1
+        : 0;
+      if (!move) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const items = l2NavItemsRef.current;
+      if (items.length === 0) return;
+      let cur = -1;
+      if (chatMode === 'channel') {
+        cur = items.findIndex(it => it.kind === 'channel' && it.channelKey === activeChannel);
+      } else if (chatMode === 'direct') {
+        cur = items.findIndex(it => it.kind === 'agent' && it.agentId === selectedAgent);
+      } else if (chatMode === 'dm' && activeDmUserId) {
+        cur = items.findIndex(it => it.kind === 'dm' && it.userId === activeDmUserId);
+      }
+      if (cur < 0) cur = move > 0 ? -1 : 0;
+      const nextIdx = Math.max(0, Math.min(items.length - 1, cur + move));
+      activateL2Item(items[nextIdx]!);
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [
+    isPageActive, layout, chatMode, activeChannel, selectedAgent, activeDmUserId, activateL2Item,
+  ]);
+
+  const l2SelectedClass = (isSelected: boolean) =>
+    isSelected
+      ? (focused ? 'bg-brand-500/25 ring-1 ring-inset ring-brand-500/40' : 'bg-surface-overlay')
+      : 'hover:bg-surface-overlay/60';
 
   // ── Agent context menu ──
   const [agentMenu, setAgentMenu] = useState<{ agentId: string; x: number; y: number } | null>(null);
@@ -108,7 +204,8 @@ export function TeamDetailPanel({
   return (
     <>
       <div
-        className="bg-surface-primary flex flex-col shrink-0"
+        data-keyboard-pane="l2"
+        className={`bg-surface-primary flex flex-col shrink-0 ${focused ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}
         style={width != null ? { width } : { width: 260 }}
       >
         {/* Header */}
@@ -140,9 +237,10 @@ export function TeamDetailPanel({
                 {t('chat.groupChat', { defaultValue: 'Group Chat' })}
               </p>
               <button
+                data-l2-nav-id={`channel:${groupChat.channelKey}`}
                 onClick={() => onSelectChannel(groupChat.channelKey)}
                 className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors text-fg-primary ${
-                  isGcActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
+                  l2SelectedClass(!!isGcActive)
                 }`}
               >
                 <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 bg-surface-overlay text-fg-primary">
@@ -177,6 +275,7 @@ export function TeamDetailPanel({
                 return (
                   <button
                     key={a.id}
+                    data-l2-nav-id={`agent:${a.id}`}
                     onClick={() => onSelectAgent(a.id)}
                     onContextMenu={e => {
                       if (!isAdmin) return;
@@ -189,7 +288,7 @@ export function TeamDetailPanel({
                     className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors ${
                       isStopped ? 'opacity-50 text-fg-tertiary' : 'text-fg-primary'
                     } ${
-                      isActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/60'
+                      l2SelectedClass(isActive)
                     }`}
                   >
                     <Avatar
@@ -231,11 +330,15 @@ export function TeamDetailPanel({
               </p>
               {teamHumans.map(h => {
                 const isSelf = h.id === authUser?.id;
+                const isDmActive = chatMode === 'dm' && activeDmUserId === h.id;
                 return (
                   <button
                     key={h.id}
+                    data-l2-nav-id={`dm:${h.id}`}
                     onClick={() => onSelectDm(h.id)}
-                    className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary hover:bg-white/[0.08]`}
+                    className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs mb-0.5 transition-colors text-fg-primary ${
+                      l2SelectedClass(isDmActive)
+                    }`}
                   >
                     <Avatar
                       name={h.name}

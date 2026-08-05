@@ -190,9 +190,10 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
         layout?.setKeyboardPane('l0');
         return;
       }
+      // L1 is deepest — L only re-asserts L1 focus (never leaves the JK pane).
       if (bare === 'l' || bare === 'ArrowRight') {
         e.preventDefault();
-        layout?.setKeyboardPane('l1');
+        if (layout?.keyboardPane !== 'l1') layout?.setKeyboardPane('l1');
         return;
       }
 
@@ -289,7 +290,7 @@ export function StorePage({ authUser }: { authUser?: AuthUser }) {
 
   return (
     <div className="flex-1 overflow-hidden flex flex-row">
-      <nav className={`w-36 shrink-0 bg-surface-secondary rounded-xl m-1 mr-0 flex flex-col py-4 px-2 gap-1 ${keyboardPane === 'l1' ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}>
+      <nav data-keyboard-pane="l1" className={`w-36 shrink-0 bg-surface-secondary rounded-xl m-1 mr-0 flex flex-col py-4 px-2 gap-1 ${keyboardPane === 'l1' ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}>
         <div className="px-3 pb-3 mb-1">
           <h2 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('title')}</h2>
         </div>

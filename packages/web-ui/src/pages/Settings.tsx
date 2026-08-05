@@ -963,7 +963,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     <div className="flex-1 flex overflow-hidden">
       {/* Settings Sidebar — on macOS Electron this is the window edge (main app
           sidebar is hidden), so the header must clear traffic lights. */}
-      <aside className={`hidden md:flex flex-col w-56 shrink-0 border-r border-border-default bg-surface-secondary overflow-y-auto ${l1Focused ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}>
+      <aside data-keyboard-pane="l1" className={`hidden md:flex flex-col w-56 shrink-0 border-r border-border-default bg-surface-secondary overflow-y-auto ${l1Focused ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}>
         <div data-electron-drag className="electron-mac-top-safe px-3 pt-4 pb-2">
           <button
             data-no-drag

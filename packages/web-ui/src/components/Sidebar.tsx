@@ -31,7 +31,7 @@ export function Sidebar({
   const { t } = useTranslation(['nav', 'common']);
 
   return (
-    <aside className="markus-app-sidebar h-dvh bg-surface-secondary flex flex-col shrink-0 overflow-hidden">
+    <aside data-keyboard-pane="l0" className="markus-app-sidebar h-dvh bg-surface-secondary flex flex-col shrink-0 overflow-hidden">
       {/* Drag region includes traffic-light clearance (padding is on this node, not aside). */}
       <div
         data-electron-drag

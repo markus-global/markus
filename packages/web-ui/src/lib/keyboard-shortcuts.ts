@@ -32,8 +32,9 @@ export const KEYBOARD_SHORTCUTS: ShortcutDef[] = [
   { id: 'nav-jk-settings', group: 'navigation', keys: ['J / K'], label: 'Settings L1: switch settings tabs', labelKey: 'shortcuts.navJkSettings', page: 'any', bare: true },
   { id: 'nav-hl-work', group: 'navigation', keys: ['H / L'], label: 'Tasks: item list ↔ project L1 ↔ app rail', labelKey: 'shortcuts.navHlWork', page: 'work', bare: true },
   { id: 'nav-jk-work', group: 'navigation', keys: ['J / K'], label: 'Tasks: move project / item selection', labelKey: 'shortcuts.navJkWork', page: 'work', bare: true },
-  { id: 'nav-hl-team', group: 'navigation', keys: ['H / L'], label: 'Team: chat ↔ roster L1 ↔ app rail', labelKey: 'shortcuts.navHlTeam', page: 'team', bare: true },
+  { id: 'nav-hl-team', group: 'navigation', keys: ['H / L'], label: 'Team: L0 ↔ L1 ↔ L2 (L ignored on deepest pane)', labelKey: 'shortcuts.navHlTeam', page: 'team', bare: true },
   { id: 'nav-jk-team', group: 'navigation', keys: ['J / K'], label: 'Team L1: move roster selection', labelKey: 'shortcuts.navJkTeam', page: 'team', bare: true },
+  { id: 'nav-jk-team-l2', group: 'navigation', keys: ['J / K'], label: 'Team L2: move team member selection', labelKey: 'shortcuts.navJkTeamL2', page: 'team', bare: true },
   { id: 'nav-jk-deliverables', group: 'navigation', keys: ['J / K'], label: 'Output L1: move deliverable selection', labelKey: 'shortcuts.navJkDeliverables', page: 'deliverables', bare: true },
   { id: 'nav-jk-store', group: 'navigation', keys: ['J / K'], label: 'Store L1: switch store tabs', labelKey: 'shortcuts.navJkStore', page: 'store', bare: true },
 

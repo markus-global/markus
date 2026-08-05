@@ -14,8 +14,8 @@ export type RightPanelPayload =
 
 export type RightPanelMode = 'browser' | 'terminal';
 
-/** Keyboard focus zone for H/L pane navigation across L0 app rail and page L1. */
-export type KeyboardPane = 'l0' | 'l1' | 'content';
+/** Keyboard focus zone for H/L pane navigation: L0 app rail ↔ L1 ↔ L2 (Team) ↔ content. */
+export type KeyboardPane = 'l0' | 'l1' | 'l2' | 'content';
 
 export interface RightPanelTab {
   id: string;
@@ -236,8 +236,8 @@ export interface LayoutContextValue {
   toggleLeftCollapsed: () => void;
 
   /**
-   * Keyboard focus zone: L0 app rail ↔ page L1 ↔ page content.
-   * H moves left (content→l1→l0); L moves right (l0→l1→content).
+   * Keyboard focus zone: L0 app rail ↔ page L1 ↔ L2 (when present) ↔ content.
+   * H moves left; L moves right.
    */
   keyboardPane: KeyboardPane;
   setKeyboardPane: (pane: KeyboardPane) => void;
@@ -316,6 +316,48 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
 
   const setKeyboardPane = useCallback((pane: KeyboardPane) => setKeyboardPaneState(pane), []);
   const setL0FocusPageId = useCallback((pageId: string | null) => setL0FocusPageIdState(pageId), []);
+
+  // Pointer: (1) blur text fields when clicking outside so JK/HL resume without Escape;
+  // (2) claim a keyboard pane via [data-keyboard-pane]. Clicks outside pane regions do
+  // NOT clear the pane. Mark composer chrome with [data-keep-edit-focus] to keep typing.
+  useEffect(() => {
+    const isTextField = (el: Element | null): el is HTMLElement => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      return el.isContentEditable;
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (!(e.target instanceof Element)) return;
+
+      const active = document.activeElement;
+      if (isTextField(active)) {
+        const insideField = active === e.target || active.contains(e.target);
+        const keepEdit = !!e.target.closest('[data-keep-edit-focus]');
+        const otherField = isTextField(e.target)
+          || !!e.target.closest('input, textarea, select, [contenteditable="true"]');
+        // Never steal focus from an embedded terminal.
+        const intoXterm = !!e.target.closest('.xterm');
+        if (!insideField && !keepEdit && !otherField && !intoXterm) {
+          active.blur();
+        }
+      }
+
+      const hit = e.target.closest('[data-keyboard-pane]');
+      if (!hit) return;
+      const pane = hit.getAttribute('data-keyboard-pane');
+      if (pane !== 'l0' && pane !== 'l1' && pane !== 'l2' && pane !== 'content') return;
+      setKeyboardPaneState(pane);
+      if (pane === 'l0') {
+        const pageEl = e.target.closest('[data-l0-page-id]');
+        const pageId = pageEl?.getAttribute('data-l0-page-id');
+        if (pageId) setL0FocusPageIdState(pageId);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, []);
 
   const lastBrowserTabsRef = useRef<RightPanelTab[]>(initialPanel.browserTabs);
   const lastBrowserActiveRef = useRef<string | null>(initialPanel.browserActiveId);
