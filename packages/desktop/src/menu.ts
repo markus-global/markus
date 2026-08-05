@@ -95,6 +95,13 @@ function sendRendererShortcut(type: 'close-tab' | 'new-tab'): void {
   win.webContents.send('app:shortcut', { type });
 }
 
+function handleReload(ignoreCache = false): void {
+  // Lazy import avoids circular deps with embedded-browser ↔ window.
+  void import('./embedded-browser.js').then((m) => {
+    m.handleReloadShortcut({ ignoreCache });
+  });
+}
+
 export function setupMenu(backendUrl: string): void {
   const lang = getLocale();
   const t = i18n[lang] ?? i18n['en'];
@@ -172,8 +179,17 @@ export function setupMenu(backendUrl: string): void {
     {
       label: t['view'],
       submenu: [
-        { role: 'reload', label: t['reload'] },
-        { role: 'forceReload', label: t['forceReload'] },
+        // Visible embedded browser → reload that tab; otherwise reload Markus.
+        {
+          label: t['reload'],
+          accelerator: 'CmdOrCtrl+R',
+          click: () => handleReload(false),
+        },
+        {
+          label: t['forceReload'],
+          accelerator: 'CmdOrCtrl+Shift+R',
+          click: () => handleReload(true),
+        },
         { role: 'toggleDevTools', label: t['devTools'] },
         { type: 'separator' },
         { role: 'resetZoom', label: t['resetZoom'] },
