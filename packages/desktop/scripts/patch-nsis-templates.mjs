@@ -192,6 +192,58 @@ patchFirstMatch(
 // Markus: always extract straight into $INSTDIR. No CopyFiles, no dialog.
 
 const extractUsing7zaDirect = `!macro extractUsing7za FILE
+  ; Markus patch: safe auto-clean + direct extract into $INSTDIR.
+  ; Never CopyFiles, never MessageBox $(appCannotBeClosed).
+  ;
+  ; CRITICAL: do NOT Rename $INSTDIR while it is the current OutPath.
+  ; On Windows the process CWD follows the rename, so Nsis7z can extract
+  ; into $INSTDIR.__markus_old — and the subsequent RMDir then deletes
+  ; the freshly extracted app (Markus.exe disappears; install "succeeds"
+  ; with only leftovers + Uninstall). Leave INSTDIR before wiping it.
+  DetailPrint "Markus: safe auto-clean INSTDIR + direct 7z extract"
+  SetOutPath "$PLUGINSDIR"
+
+  nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
+  Pop $0
+  Sleep 800
+
+  ; Clean leftovers from the broken rc.4 rename approach
+  RMDir /r "$INSTDIR.__markus_old"
+  nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C if exist "$INSTDIR.__markus_old" rmdir /s /q "$INSTDIR.__markus_old" >nul 2>&1'
+  Pop $0
+
+  IfFileExists "$INSTDIR" 0 markus_extract_fresh
+    DetailPrint "Removing previous install (automatic — no user action needed)"
+    RMDir /r "$INSTDIR"
+    nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C if exist "$INSTDIR" rmdir /s /q "$INSTDIR" >nul 2>&1'
+    Pop $0
+    Sleep 300
+  markus_extract_fresh:
+
+  ClearErrors
+  CreateDirectory "$INSTDIR"
+  SetOutPath "$INSTDIR"
+  DetailPrint "Extracting application files into $INSTDIR"
+  Nsis7z::Extract "\${FILE}"
+
+  IfFileExists "$INSTDIR\\\${APP_EXECUTABLE_FILENAME}" markus_extract_ok 0
+    DetailPrint "Missing \${APP_EXECUTABLE_FILENAME} after extract — retrying once"
+    Sleep 500
+    nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1'
+    Pop $0
+    SetOutPath "$INSTDIR"
+    Nsis7z::Extract "\${FILE}"
+  IfFileExists "$INSTDIR\\\${APP_EXECUTABLE_FILENAME}" markus_extract_ok 0
+    DetailPrint "FATAL: \${APP_EXECUTABLE_FILENAME} still missing after extract"
+    MessageBox MB_OK|MB_ICONSTOP "Markus failed to install: \${APP_EXECUTABLE_FILENAME} was not written to:$\\r$\\n$INSTDIR$\\r$\\n$\\r$\\nPlease run the installer again. If it keeps failing, temporarily pause antivirus for that folder."
+    SetErrorLevel 2
+    Abort
+  markus_extract_ok:
+  DetailPrint "Verified \${APP_EXECUTABLE_FILENAME} present"
+!macroend`;
+
+// rc.4: rename-aside approach (unsafe — CWD follows rename)
+const extractUsing7zaRc4 = `!macro extractUsing7za FILE
   ; Markus patch: automatic cleanup + direct extract into $INSTDIR.
   ; Never CopyFiles, never MessageBox $(appCannotBeClosed), never ask the
   ; user to manually delete a broken install folder.
@@ -224,7 +276,7 @@ const extractUsing7zaDirect = `!macro extractUsing7za FILE
   markus_extract_done:
 !macroend`;
 
-// rc.3: direct extract but no automatic INSTDIR swap/cleanup
+// rc.3: direct extract but no automatic INSTDIR cleanup
 const extractUsing7zaRc3 = `!macro extractUsing7za FILE
   ; Markus patch: direct extract into $INSTDIR. Never CopyFiles, never
   ; MessageBox $(appCannotBeClosed).
@@ -327,10 +379,10 @@ const extractUsing7zaRc2 = `!macro extractUsing7za FILE
 
 patchFirstMatch(
   extractAppPackage,
-  [extractUsing7zaStock, extractUsing7zaRc2, extractUsing7zaRc3],
+  [extractUsing7zaStock, extractUsing7zaRc2, extractUsing7zaRc3, extractUsing7zaRc4],
   extractUsing7zaDirect,
   'extractAppPackage.nsh',
-  'auto-clean INSTDIR + direct 7z extract',
+  'safe auto-clean INSTDIR + direct 7z extract',
 );
 
 // ── Sanity checks (live symbols only; comments may mention these names) ───
@@ -357,11 +409,14 @@ if (/MessageBox MB_RETRYCANCEL\|MB_ICONEXCLAMATION "\$\(appCannotBeClosed\)"/.te
 if (/CopyFiles \/SILENT/.test(extractSrc)) {
   throw new Error('[patch-nsis] extractAppPackage.nsh must not use atomic CopyFiles');
 }
-if (!/auto-clean INSTDIR \+ direct 7z extract/.test(extractSrc)) {
-  throw new Error('[patch-nsis] extractAppPackage.nsh missing auto-clean direct-extract path');
+if (!/safe auto-clean INSTDIR \+ direct 7z extract/.test(extractSrc)) {
+  throw new Error('[patch-nsis] extractAppPackage.nsh missing safe auto-clean direct-extract path');
 }
-if (!/INSTDIR\.__markus_old/.test(extractSrc)) {
-  throw new Error('[patch-nsis] extractAppPackage.nsh must move aside previous INSTDIR automatically');
+if (/Rename "\$INSTDIR" "\$INSTDIR\.__markus_old"/.test(extractSrc)) {
+  throw new Error('[patch-nsis] extractAppPackage.nsh must not Rename INSTDIR (CWD-follow bug)');
+}
+if (!extractSrc.includes('Verified ${APP_EXECUTABLE_FILENAME} present')) {
+  throw new Error('[patch-nsis] extractAppPackage.nsh must verify APP_EXECUTABLE_FILENAME after extract');
 }
 
 // Neutralize leftover MessageBox inside unused stock _CHECK_APP_RUNNING

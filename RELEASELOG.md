@@ -1,5 +1,11 @@
 # Release Log
 
+## v0.9.3-rc.5
+
+### Bug Fixes
+
+- **Windows 安装丢 Markus.exe（rc.4 回归）** — 根因是解压前 `Rename $INSTDIR` 时进程 CWD 跟随改名，文件解压进 `__markus_old` 后被 `RMDir` 删掉。改为先 `SetOutPath $PLUGINSDIR` 再删除旧目录并直接解压，解压后强制校验 `Markus.exe`
+
 ## v0.9.3-rc.4
 
 ### Bug Fixes
