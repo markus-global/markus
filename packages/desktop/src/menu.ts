@@ -238,7 +238,7 @@ export function setupMenu(backendUrl: string): void {
         { type: 'separator' },
         ...(IS_MAS ? [{
           label: t['upgradeToFull'],
-          click: () => shell.openExternal('https://markus.global/download'),
+          click: () => shell.openExternal('https://markus.global/#download'),
         }] : [{
           label: t['checkForUpdates'],
           click: async () => {

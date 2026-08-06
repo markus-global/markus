@@ -854,7 +854,7 @@ export function App() {
               {t('update.available', { latest: updateInfo.latestVersion, current: updateInfo.currentVersion })}
             </span>
             <span className="flex items-center gap-3 shrink-0">
-              <a href="https://markus.global/download" target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-brand-400 hover:text-brand-300 transition-colors">{t('update.download')}</a>
+              <a href="https://markus.global/#download" target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-brand-400 hover:text-brand-300 transition-colors">{t('update.download')}</a>
               <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-fg-tertiary hover:text-fg-secondary text-xs shrink-0">{t('dismiss')}</button>
             </span>
           </div>

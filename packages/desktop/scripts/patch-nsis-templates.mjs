@@ -118,7 +118,21 @@ patchFirstMatch(
 // Stock MessageBox jumps to OneMoreAttempt; fall-through does NOT count as a
 // label reference in makensis. Removing only the MessageBox → warning 6012.
 
+// CRITICAL: must clear $R0 to 0. handleUninstallResult Quits when $R0 != 0
+// unless customUnInstallCheck is defined. Returning with a stale non-zero $R0
+// after "continue" either aborts the upgrade or (with a weak check macro)
+// continues over a half-deleted tree while still looking failed.
 const uninstallContinue = `    \${if} $R5 > 5
+      ; Markus patch: continue with overwrite install instead of blocking.
+      DetailPrint "Previous uninstaller failed after retries; continuing overwrite install"
+      StrCpy $R0 0
+      ClearErrors
+      Return
+    \${endIf}
+`;
+
+// Already-patched variant that forgot StrCpy $R0 0 (rc.13–0.9.2).
+const uninstallContinueBroken = `    \${if} $R5 > 5
       ; Markus patch: continue with overwrite install instead of blocking.
       DetailPrint "Previous uninstaller failed after retries; continuing overwrite install"
       ClearErrors
@@ -145,11 +159,13 @@ patchFirstMatch(
     \${endIf}
 
   OneMoreAttempt:`,
+    // Applied continue patch without clearing $R0
+    uninstallContinueBroken,
   ],
   `${uninstallContinue}
 `,
   'installUtil.nsh',
-  'UninstallLoop continue + drop OneMoreAttempt',
+  'UninstallLoop continue + clear $R0 + drop OneMoreAttempt',
 );
 
 // ── Sanity checks (live symbols only; comments may mention these names) ───
@@ -164,6 +180,9 @@ if (/^\s*OneMoreAttempt:\s*$/m.test(utilSrc) || /IDRETRY OneMoreAttempt/.test(ut
 }
 if (/MessageBox MB_RETRYCANCEL\|MB_ICONEXCLAMATION "\$\(appCannotBeClosed\)"/.test(utilSrc)) {
   throw new Error('[patch-nsis] installUtil.nsh still has appCannotBeClosed MessageBox');
+}
+if (!/StrCpy \$R0 0/.test(utilSrc)) {
+  throw new Error('[patch-nsis] installUtil.nsh continue path must clear $R0 (StrCpy $R0 0)');
 }
 
 console.log('[patch-nsis] done');
