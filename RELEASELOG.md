@@ -1,5 +1,12 @@
 # Release Log
 
+## v0.9.3-rc.0
+
+### Bug Fixes
+
+- **Windows 升级安装** — 跳过会半删安装目录的旧卸载器；`--keep-shortcuts` 时不再误删桌面/开始菜单快捷方式；卸载失败 continue 时清零 `$R0`；缺 `Markus.exe` 直接 Abort；启动时若快捷方式缺失则自动修复
+- **升级下载链接** — 客户端更新提示 / 菜单 / CLI / MAS 文案改为 `https://markus.global/#download`（首页下载区），避免落到 Hub SPA browse
+
 ## v0.9.2
 
 ### Bug Fixes
