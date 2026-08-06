@@ -15,6 +15,10 @@ files:
   - "!dist/**/*.map"
   - node_modules/node-pty/**/*
   - node_modules/node-addon-api/**/*
+  # Windows x64 builds must not ship arm64 ConPTY helpers (wrong arch + extra
+  # OpenConsole.exe copies that complicate upgrades / file locks).
+  - "!**/node-pty/prebuilds/win32-arm64/**"
+  - "!**/node-pty/third_party/conpty/**/win10-arm64/**"
 asar: true
 asarUnpack:
   - dist/preload.js
@@ -24,6 +28,8 @@ asarUnpack:
   - dist/markus-browser-extension.zip
   - dist/data/**
   - node_modules/node-pty/**/*
+  - "!**/node-pty/prebuilds/win32-arm64/**"
+  - "!**/node-pty/third_party/conpty/**/win10-arm64/**"
 compression: maximum
 
 mac:

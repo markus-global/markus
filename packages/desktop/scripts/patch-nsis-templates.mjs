@@ -183,15 +183,39 @@ patchFirstMatch(
   'UninstallLoop continue + clear $R0 + drop OneMoreAttempt',
 );
 
-// ── 3) extractAppPackage.nsh — THE dialog users still see on upgrades ─────
-// Stock CopyFiles into $INSTDIR can fail (AV, indexer, leftover OpenConsole,
-// half-deleted tree) and then shows the SAME $(appCannotBeClosed) string as
-// the process check — even when Markus.exe is not running. After a few
-// retries, force non-atomic 7z extract and never MessageBox/Quit.
+// ── 3) extractAppPackage.nsh — kill the atomic CopyFiles path entirely ───
+// Stock flow: 7z → $PLUGINSDIR\7z-out → CopyFiles → $INSTDIR. When CopyFiles
+// fails (AV, indexer, leftover OpenConsole, half-deleted tree) it shows the
+// SAME $(appCannotBeClosed) dialog as the process check — even when Markus
+// is not running. Cancel → Quit → incomplete install → no shortcuts.
+//
+// Markus: always extract straight into $INSTDIR. No CopyFiles, no dialog.
 
-// Replace the whole retry/MessageBox/force/Abort block so AbortExtract7za
-// is removed (unused label → makensis 6012 warning-as-error).
-const extractStock = `  LoopExtract7za:
+const extractUsing7zaDirect = `!macro extractUsing7za FILE
+  ; Markus patch: direct extract into $INSTDIR. Never CopyFiles, never
+  ; MessageBox $(appCannotBeClosed).
+  DetailPrint "Markus: direct 7z extract into $INSTDIR"
+  nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
+  Pop $0
+  Sleep 500
+  ClearErrors
+  SetOutPath "$INSTDIR"
+  Nsis7z::Extract "\${FILE}"
+!macroend`;
+
+const extractUsing7zaStock = `!macro extractUsing7za FILE
+  Push $OUTDIR
+  CreateDirectory "$PLUGINSDIR\\7z-out"
+  ClearErrors
+  SetOutPath "$PLUGINSDIR\\7z-out"
+  Nsis7z::Extract "\${FILE}"
+  Pop $R0
+  SetOutPath $R0
+
+  # Retry counter
+  StrCpy $R1 0
+
+  LoopExtract7za:
     IntOp $R1 $R1 + 1
 
     # Attempt to copy files in atomic way
@@ -227,7 +251,20 @@ const extractStock = `  LoopExtract7za:
   DoneExtract7za:
 !macroend`;
 
-const extractForce = `  LoopExtract7za:
+// Intermediate (rc.2): kept CopyFiles loop but removed MessageBox.
+const extractUsing7zaRc2 = `!macro extractUsing7za FILE
+  Push $OUTDIR
+  CreateDirectory "$PLUGINSDIR\\7z-out"
+  ClearErrors
+  SetOutPath "$PLUGINSDIR\\7z-out"
+  Nsis7z::Extract "\${FILE}"
+  Pop $R0
+  SetOutPath $R0
+
+  # Retry counter
+  StrCpy $R1 0
+
+  LoopExtract7za:
     IntOp $R1 $R1 + 1
 
     # Attempt to copy files in atomic way
@@ -256,10 +293,10 @@ const extractForce = `  LoopExtract7za:
 
 patchFirstMatch(
   extractAppPackage,
-  [extractStock],
-  extractForce,
+  [extractUsing7zaStock, extractUsing7zaRc2],
+  extractUsing7zaDirect,
   'extractAppPackage.nsh',
-  'force extract without appCannotBeClosed dialog',
+  'direct 7z extract (no CopyFiles / no dialog)',
 );
 
 // ── Sanity checks (live symbols only; comments may mention these names) ───
@@ -282,6 +319,12 @@ if (!/StrCpy \$R0 0/.test(utilSrc)) {
 const extractSrc = readFileSync(extractAppPackage, 'utf8');
 if (/MessageBox MB_RETRYCANCEL\|MB_ICONEXCLAMATION "\$\(appCannotBeClosed\)"/.test(extractSrc)) {
   throw new Error('[patch-nsis] extractAppPackage.nsh still has appCannotBeClosed MessageBox');
+}
+if (/CopyFiles \/SILENT/.test(extractSrc)) {
+  throw new Error('[patch-nsis] extractAppPackage.nsh must not use atomic CopyFiles');
+}
+if (!/direct 7z extract into \$INSTDIR/.test(extractSrc)) {
+  throw new Error('[patch-nsis] extractAppPackage.nsh missing direct-extract path');
 }
 
 // Neutralize leftover MessageBox inside unused stock _CHECK_APP_RUNNING

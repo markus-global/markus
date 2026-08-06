@@ -1,5 +1,11 @@
 # Release Log
 
+## v0.9.3-rc.3
+
+### Bug Fixes
+
+- **Windows 安装「无法关闭」彻底拆除** — `rc.1` 弹窗来自解压阶段 stock `CopyFiles`（不是 Markus 进程检测）。改为 **直接 7z 解压到 `$INSTDIR`**，删除 CopyFiles/重试/误导弹窗整条路径；并排除 win32-arm64 的 node-pty ConPTY 文件
+
 ## v0.9.3-rc.2
 
 ### Bug Fixes
