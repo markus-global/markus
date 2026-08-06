@@ -1,5 +1,12 @@
 # Release Log
 
+## v0.9.3
+
+### Bug Fixes
+
+- **Windows 安装/升级** — 唯一安装路径：跳过会半删目录的旧卸载器；离开 INSTDIR 后杀进程、清空目录、直接 7z 解压并校验 `Markus.exe`；始终重建快捷方式；跳过已有 Authenticode 的 helper 二次签名；启动时自动修复缺失 `.lnk`
+- **升级下载链接** — 客户端更新提示 / 菜单 / CLI / MAS 文案改为 `https://markus.global/#download`（首页下载区）
+
 ## v0.9.3-rc.7
 
 ### Bug Fixes
