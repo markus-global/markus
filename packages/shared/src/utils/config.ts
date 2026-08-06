@@ -190,7 +190,7 @@ const DEFAULT_CONFIG: MarkusConfig = {
   org: { id: 'default', name: 'My Organization' },
   llm: {
     defaultProvider: 'anthropic',
-    defaultModel: 'claude-opus-4-6',
+    defaultModel: 'claude-opus-5',
     providers: {},
   },
   server: { apiPort: 8056, webPort: 8057 },
