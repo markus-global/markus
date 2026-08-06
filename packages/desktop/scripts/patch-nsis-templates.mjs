@@ -2,14 +2,16 @@
 /**
  * Patch electron-builder NSIS templates before packaging.
  *
- * Why: nsis.include custom macros have not been reliably overriding stock
- * CHECK_APP_RUNNING / uninstallOldVersion dialogs in our published builds
- * (rc.11–rc.12 still showed $(appCannotBeClosed)). Patching the templates
- * that makensis always compiles guarantees the dialog cannot appear.
+ * Design (keep this simple — do not re-introduce layered RC history):
+ *
+ *   1. Never block on "app running" / "cannot be closed" dialogs.
+ *   2. Never run the fragile stock CopyFiles extract path.
+ *   3. Upgrade = kill helpers → wipe INSTDIR → extract → verify Markus.exe.
+ *
+ * Strategy: replace whole `!macro NAME ... !macroend` blocks by name (regex),
+ * so the script is idempotent and does not depend on exact prior patch text.
  *
  * CRITICAL: makensis treats unused-symbol warnings as errors (6001/6010/6012).
- * When removing a MessageBox/Call, also remove the labels, Vars, and includes
- * that only existed for that path.
  */
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -29,28 +31,45 @@ function resolveTemplatesDir() {
   return join(dirname(pkgJson), 'templates', 'nsis');
 }
 
-/** Replace the first matching candidate (supports re-entrant / intermediate patches). */
-function patchFirstMatch(filePath, candidates, to, label, name) {
+/** Replace `!macro name ... !macroend` (non-greedy, first match). */
+function replaceMacro(filePath, macroName, newMacroSource, label) {
   if (!existsSync(filePath)) {
     throw new Error(`NSIS template not found: ${filePath}`);
   }
   const src = readFileSync(filePath, 'utf8');
-  const marker = to.trim().slice(0, 48);
-  if (marker && src.includes(marker) && !candidates.some((c) => src.includes(c))) {
+  const re = new RegExp(
+    String.raw`!macro\s+${macroName}\b[\s\S]*?!macroend`,
+    'm',
+  );
+  if (!re.test(src)) {
+    // Already at desired end-state?
+    if (src.includes(newMacroSource.trim().slice(0, 60))) {
+      console.log(`[patch-nsis] ${label}: ${macroName} already applied`);
+      return;
+    }
+    throw new Error(`[patch-nsis] ${label}: !macro ${macroName} not found`);
+  }
+  const next = src.replace(re, newMacroSource.trim());
+  writeFileSync(filePath, next);
+  console.log(`[patch-nsis] ${label}: replaced !macro ${macroName}`);
+}
+
+/** Replace a unique exact snippet (for non-macro blocks like UninstallLoop). */
+function replaceSnippet(filePath, fromCandidates, to, label, name) {
+  if (!existsSync(filePath)) {
+    throw new Error(`NSIS template not found: ${filePath}`);
+  }
+  const src = readFileSync(filePath, 'utf8');
+  if (src.includes(to.trim())) {
     console.log(`[patch-nsis] ${label}: ${name} already applied`);
     return;
   }
-  for (const from of candidates) {
+  for (const from of fromCandidates) {
     if (src.includes(from)) {
       writeFileSync(filePath, src.replace(from, to));
       console.log(`[patch-nsis] ${label}: patched ${name}`);
       return;
     }
-  }
-  // Already at desired end state?
-  if (marker && src.includes(marker)) {
-    console.log(`[patch-nsis] ${label}: ${name} already applied`);
-    return;
   }
   throw new Error(`[patch-nsis] ${label}: pattern not found for ${name}`);
 }
@@ -62,10 +81,8 @@ const allowOnlyOne = join(templatesDir, 'include', 'allowOnlyOneInstallerInstanc
 const installUtil = join(templatesDir, 'include', 'installUtil.nsh');
 const extractAppPackage = join(templatesDir, 'include', 'extractAppPackage.nsh');
 
-// ── 1) allowOnlyOneInstallerInstance.nsh ─────────────────────────────────
-
-// Drop getProcessInfo.nsh + Var pid (unused after CHECK_APP_RUNNING rewrite).
-patchFirstMatch(
+// ── 1) Drop unused getProcessInfo include / Var pid ───────────────────────
+replaceSnippet(
   allowOnlyOne,
   [
     `!ifmacrondef customCheckAppRunning
@@ -77,6 +94,9 @@ patchFirstMatch(
 !ifmacrondef customCheckAppRunning
   Var pid
 !endif`,
+    `; Markus patch: omit getProcessInfo.nsh and Var pid.
+; Unused un._GetProcessInfo / pid → makensis warning-as-error (6010 / 6001).
+`,
   ],
   `; Markus patch: omit getProcessInfo.nsh and Var pid.
 ; Unused un._GetProcessInfo / pid → makensis warning-as-error (6010 / 6001).
@@ -85,77 +105,52 @@ patchFirstMatch(
   'omit getProcessInfo + pid',
 );
 
-// Never MessageBox/Quit on "app running" — best-effort taskkill only.
-const checkAppRunningNew = `!macro CHECK_APP_RUNNING
-  ; Markus patch: never block install/uninstall on process detection.
-  ; Stock PowerShell Path.StartsWith($INSTDIR) false-positives and shows
-  ; $(appCannotBeClosed). Only best-effort kill; always continue.
-  ; Also kill node-pty helpers that can lock INSTDIR during upgrades.
+// ── 2) CHECK_APP_RUNNING: never dialog, only taskkill ─────────────────────
+replaceMacro(
+  allowOnlyOne,
+  'CHECK_APP_RUNNING',
+  `!macro CHECK_APP_RUNNING
+  ; Markus: never MessageBox/Quit. Best-effort kill only.
   DetailPrint "Best-effort stop of \${APP_EXECUTABLE_FILENAME} + helpers (never blocks)..."
   nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
   Pop $0
   Sleep 600
-!macroend`;
-
-const checkAppRunningOldPatch = `!macro CHECK_APP_RUNNING
-  ; Markus patch: never block install/uninstall on process detection.
-  ; Stock PowerShell Path.StartsWith($INSTDIR) false-positives and shows
-  ; $(appCannotBeClosed). Only best-effort kill; always continue.
-  DetailPrint "Best-effort stop of \${APP_EXECUTABLE_FILENAME} (never blocks)..."
-  nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1'
-  Pop $0
-  Sleep 600
-!macroend`;
-
-patchFirstMatch(
-  allowOnlyOne,
-  [
-    `!macro CHECK_APP_RUNNING
-  Var /GLOBAL CmdPath
-  Var /GLOBAL PowerShellPath
-  StrCpy $CmdPath "$SYSDIR\\cmd.exe"
-  StrCpy $PowerShellPath "$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe"
-  !ifmacrodef customCheckAppRunning
-    !insertmacro customCheckAppRunning
-  !else
-    !insertmacro IS_POWERSHELL_AVAILABLE
-    !insertmacro _CHECK_APP_RUNNING
-  !endif
 !macroend`,
-    checkAppRunningOldPatch,
-  ],
-  checkAppRunningNew,
   'allowOnlyOneInstallerInstance.nsh',
-  'CHECK_APP_RUNNING',
 );
 
-// ── 2) installUtil.nsh — UninstallLoop must also drop OneMoreAttempt label ─
-// Stock MessageBox jumps to OneMoreAttempt; fall-through does NOT count as a
-// label reference in makensis. Removing only the MessageBox → warning 6012.
+// Neutralize MessageBox inside unused stock _CHECK_APP_RUNNING (not inserted,
+// but keep templates free of $(appCannotBeClosed) MessageBox lines).
+replaceSnippet(
+  allowOnlyOne,
+  [
+    `        \${if} $R1 > 1
+          MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY loop
+          Quit
+        \${else}
+          Goto loop
+        \${endIf}`,
+    `        \${if} $R1 > 1
+          ; Markus patch: unused _CHECK_APP_RUNNING must not MessageBox either.
+          DetailPrint "app still running after kills; continuing (no dialog)"
+          Goto not_running
+        \${else}
+          Goto loop
+        \${endIf}`,
+  ],
+  `        \${if} $R1 > 1
+          ; Markus: unused _CHECK_APP_RUNNING — never dialog.
+          DetailPrint "app still running after kills; continuing (no dialog)"
+          Goto not_running
+        \${else}
+          Goto loop
+        \${endIf}`,
+  'allowOnlyOneInstallerInstance.nsh',
+  'neutralize _CHECK_APP_RUNNING dialog',
+);
 
-// CRITICAL: must clear $R0 to 0. handleUninstallResult Quits when $R0 != 0
-// unless customUnInstallCheck is defined. Returning with a stale non-zero $R0
-// after "continue" either aborts the upgrade or (with a weak check macro)
-// continues over a half-deleted tree while still looking failed.
-const uninstallContinue = `    \${if} $R5 > 5
-      ; Markus patch: continue with overwrite install instead of blocking.
-      DetailPrint "Previous uninstaller failed after retries; continuing overwrite install"
-      StrCpy $R0 0
-      ClearErrors
-      Return
-    \${endIf}
-`;
-
-// Already-patched variant that forgot StrCpy $R0 0 (rc.13–0.9.2).
-const uninstallContinueBroken = `    \${if} $R5 > 5
-      ; Markus patch: continue with overwrite install instead of blocking.
-      DetailPrint "Previous uninstaller failed after retries; continuing overwrite install"
-      ClearErrors
-      Return
-    \${endIf}
-`;
-
-patchFirstMatch(
+// ── 3) UninstallLoop: never dialog; clear $R0 and continue overwrite ──────
+replaceSnippet(
   installUtil,
   [
     // Stock
@@ -165,7 +160,7 @@ patchFirstMatch(
     \${endIf}
 
   OneMoreAttempt:`,
-    // Intermediate: MessageBox patched but label left behind (rc.13–rc.16)
+    // Prior Markus patches (with/without $R0 clear, with/without label)
     `    \${if} $R5 > 5
       ; Markus patch: continue with overwrite install instead of blocking.
       DetailPrint "Previous uninstaller failed after retries; continuing overwrite install"
@@ -174,46 +169,64 @@ patchFirstMatch(
     \${endIf}
 
   OneMoreAttempt:`,
-    // Applied continue patch without clearing $R0
-    uninstallContinueBroken,
+    `    \${if} $R5 > 5
+      ; Markus patch: continue with overwrite install instead of blocking.
+      DetailPrint "Previous uninstaller failed after retries; continuing overwrite install"
+      ClearErrors
+      Return
+    \${endIf}
+`,
+    `    \${if} $R5 > 5
+      ; Markus patch: continue with overwrite install instead of blocking.
+      DetailPrint "Previous uninstaller failed after retries; continuing overwrite install"
+      StrCpy $R0 0
+      ClearErrors
+      Return
+    \${endIf}
+`,
   ],
-  `${uninstallContinue}
+  `    \${if} $R5 > 5
+      ; Markus: old uninstall failed — continue overwrite (never dialog).
+      DetailPrint "Previous uninstaller failed after retries; continuing overwrite install"
+      StrCpy $R0 0
+      ClearErrors
+      Return
+    \${endIf}
 `,
   'installUtil.nsh',
-  'UninstallLoop continue + clear $R0 + drop OneMoreAttempt',
+  'UninstallLoop continue',
 );
 
-// ── 3) extractAppPackage.nsh — kill the atomic CopyFiles path entirely ───
-// Stock flow: 7z → $PLUGINSDIR\7z-out → CopyFiles → $INSTDIR. When CopyFiles
-// fails (AV, indexer, leftover OpenConsole, half-deleted tree) it shows the
-// SAME $(appCannotBeClosed) dialog as the process check — even when Markus
-// is not running. Cancel → Quit → incomplete install → no shortcuts.
+// ── 4) extractUsing7za: the one true install path ─────────────────────────
 //
-// Markus: always extract straight into $INSTDIR. No CopyFiles, no dialog.
-
-const extractUsing7zaDirect = `!macro extractUsing7za FILE
-  ; Markus patch: safe auto-clean + direct extract into $INSTDIR.
-  ; Never CopyFiles, never MessageBox $(appCannotBeClosed).
-  ;
-  ; CRITICAL: do NOT Rename $INSTDIR while it is the current OutPath.
-  ; On Windows the process CWD follows the rename, so Nsis7z can extract
-  ; into $INSTDIR.__markus_old — and the subsequent RMDir then deletes
-  ; the freshly extracted app (Markus.exe disappears; install "succeeds"
-  ; with only leftovers + Uninstall). Leave INSTDIR before wiping it.
-  DetailPrint "Markus: safe auto-clean INSTDIR + direct 7z extract"
+//   SetOutPath $PLUGINSDIR   ← leave INSTDIR before wiping (CWD-safe)
+//   taskkill helpers
+//   RMDir /r $INSTDIR        ← automatic cleanup, no user action
+//   CreateDirectory $INSTDIR
+//   SetOutPath $INSTDIR
+//   Nsis7z::Extract
+//   verify Markus.exe or Abort
+//
+replaceMacro(
+  extractAppPackage,
+  'extractUsing7za',
+  `!macro extractUsing7za FILE
+  ; Markus install path (do not complicate this):
+  ; leave INSTDIR → kill helpers → wipe INSTDIR → extract → verify exe.
+  DetailPrint "Markus: wipe INSTDIR + direct 7z extract + verify exe"
   SetOutPath "$PLUGINSDIR"
 
   nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
   Pop $0
   Sleep 800
 
-  ; Clean leftovers from the broken rc.4 rename approach
+  ; Leftovers from the broken rc.4 Rename approach
   RMDir /r "$INSTDIR.__markus_old"
   nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C if exist "$INSTDIR.__markus_old" rmdir /s /q "$INSTDIR.__markus_old" >nul 2>&1'
   Pop $0
 
   IfFileExists "$INSTDIR" 0 markus_extract_fresh
-    DetailPrint "Removing previous install (automatic — no user action needed)"
+    DetailPrint "Removing previous install (automatic)"
     RMDir /r "$INSTDIR"
     nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C if exist "$INSTDIR" rmdir /s /q "$INSTDIR" >nul 2>&1'
     Pop $0
@@ -223,235 +236,61 @@ const extractUsing7zaDirect = `!macro extractUsing7za FILE
   ClearErrors
   CreateDirectory "$INSTDIR"
   SetOutPath "$INSTDIR"
-  DetailPrint "Extracting application files into $INSTDIR"
+  DetailPrint "Extracting into $INSTDIR"
   Nsis7z::Extract "\${FILE}"
 
   IfFileExists "$INSTDIR\\\${APP_EXECUTABLE_FILENAME}" markus_extract_ok 0
-    DetailPrint "Missing \${APP_EXECUTABLE_FILENAME} after extract — retrying once"
+    DetailPrint "Missing \${APP_EXECUTABLE_FILENAME} — retry extract once"
     Sleep 500
     nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1'
     Pop $0
     SetOutPath "$INSTDIR"
     Nsis7z::Extract "\${FILE}"
   IfFileExists "$INSTDIR\\\${APP_EXECUTABLE_FILENAME}" markus_extract_ok 0
-    DetailPrint "FATAL: \${APP_EXECUTABLE_FILENAME} still missing after extract"
-    MessageBox MB_OK|MB_ICONSTOP "Markus failed to install: \${APP_EXECUTABLE_FILENAME} was not written to:$\\r$\\n$INSTDIR$\\r$\\n$\\r$\\nPlease run the installer again. If it keeps failing, temporarily pause antivirus for that folder."
+    DetailPrint "FATAL: \${APP_EXECUTABLE_FILENAME} missing after extract"
+    MessageBox MB_OK|MB_ICONSTOP "Markus failed to install: \${APP_EXECUTABLE_FILENAME} was not written to:$\\r$\\n$INSTDIR$\\r$\\n$\\r$\\nPlease run the installer again."
     SetErrorLevel 2
     Abort
   markus_extract_ok:
   DetailPrint "Verified \${APP_EXECUTABLE_FILENAME} present"
-!macroend`;
-
-// rc.4: rename-aside approach (unsafe — CWD follows rename)
-const extractUsing7zaRc4 = `!macro extractUsing7za FILE
-  ; Markus patch: automatic cleanup + direct extract into $INSTDIR.
-  ; Never CopyFiles, never MessageBox $(appCannotBeClosed), never ask the
-  ; user to manually delete a broken install folder.
-  DetailPrint "Markus: auto-clean INSTDIR + direct 7z extract"
-  nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
-  Pop $0
-  Sleep 800
-
-  ; Leftover from a previous interrupted upgrade
-  RMDir /r "$INSTDIR.__markus_old"
-
-  IfFileExists "$INSTDIR\\*.*" 0 markus_extract_fresh
-    DetailPrint "Moving previous install aside (automatic — no user action needed)"
-    ClearErrors
-    Rename "$INSTDIR" "$INSTDIR.__markus_old"
-    IfErrors 0 markus_extract_fresh
-      DetailPrint "Rename failed; removing previous files in place"
-      RMDir /r "$INSTDIR"
-  markus_extract_fresh:
-  ClearErrors
-  CreateDirectory "$INSTDIR"
-  SetOutPath "$INSTDIR"
-  Nsis7z::Extract "\${FILE}"
-
-  ; Best-effort delete of the aside tree after files are replaced
-  IfFileExists "$INSTDIR.__markus_old" 0 markus_extract_done
-    RMDir /r "$INSTDIR.__markus_old"
-    nsExec::ExecToStack '"$SYSDIR\\cmd.exe" /C if exist "$INSTDIR.__markus_old" rmdir /s /q "$INSTDIR.__markus_old" >nul 2>&1'
-    Pop $0
-  markus_extract_done:
-!macroend`;
-
-// rc.3: direct extract but no automatic INSTDIR cleanup
-const extractUsing7zaRc3 = `!macro extractUsing7za FILE
-  ; Markus patch: direct extract into $INSTDIR. Never CopyFiles, never
-  ; MessageBox $(appCannotBeClosed).
-  DetailPrint "Markus: direct 7z extract into $INSTDIR"
-  nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
-  Pop $0
-  Sleep 500
-  ClearErrors
-  SetOutPath "$INSTDIR"
-  Nsis7z::Extract "\${FILE}"
-!macroend`;
-
-const extractUsing7zaStock = `!macro extractUsing7za FILE
-  Push $OUTDIR
-  CreateDirectory "$PLUGINSDIR\\7z-out"
-  ClearErrors
-  SetOutPath "$PLUGINSDIR\\7z-out"
-  Nsis7z::Extract "\${FILE}"
-  Pop $R0
-  SetOutPath $R0
-
-  # Retry counter
-  StrCpy $R1 0
-
-  LoopExtract7za:
-    IntOp $R1 $R1 + 1
-
-    # Attempt to copy files in atomic way
-    CopyFiles /SILENT "$PLUGINSDIR\\7z-out\\*" $OUTDIR
-    IfErrors 0 DoneExtract7za
-
-    DetailPrint \`Can't modify "\${PRODUCT_NAME}"'s files.\`
-    \${if} $R1 < 5
-      # Try copying a few times before asking for a user action.
-      Goto RetryExtract7za
-    \${else}
-      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDRETRY IDCANCEL AbortExtract7za
-    \${endIf}
-
-    # As an absolutely last resort after a few automatic attempts and user
-    # intervention - we will just overwrite everything with \`Nsis7z::Extract\`
-    # even though it is not atomic and will ignore errors.
-
-    # Clear the temporary folder first to make sure we don't use twice as
-    # much disk space.
-    RMDir /r "$PLUGINSDIR\\7z-out"
-
-    Nsis7z::Extract "\${FILE}"
-    Goto DoneExtract7za
-
-  AbortExtract7za:
-    Quit
-
-  RetryExtract7za:
-    Sleep 1000
-    Goto LoopExtract7za
-
-  DoneExtract7za:
-!macroend`;
-
-// Intermediate (rc.2): kept CopyFiles loop but removed MessageBox.
-const extractUsing7zaRc2 = `!macro extractUsing7za FILE
-  Push $OUTDIR
-  CreateDirectory "$PLUGINSDIR\\7z-out"
-  ClearErrors
-  SetOutPath "$PLUGINSDIR\\7z-out"
-  Nsis7z::Extract "\${FILE}"
-  Pop $R0
-  SetOutPath $R0
-
-  # Retry counter
-  StrCpy $R1 0
-
-  LoopExtract7za:
-    IntOp $R1 $R1 + 1
-
-    # Attempt to copy files in atomic way
-    CopyFiles /SILENT "$PLUGINSDIR\\7z-out\\*" $OUTDIR
-    IfErrors 0 DoneExtract7za
-
-    DetailPrint \`Can't modify "\${PRODUCT_NAME}"'s files.\`
-    \${if} $R1 < 5
-      # Retry a few times, then force-extract (never ask the user).
-      Sleep 1000
-      Goto LoopExtract7za
-    \${endIf}
-
-    ; Markus patch: never show $(appCannotBeClosed) during extract.
-    ; AV / indexer / leftover OpenConsole can lock INSTDIR even when Markus
-    ; itself is not running. Force non-atomic 7z extract into $OUTDIR.
-    DetailPrint "CopyFiles into INSTDIR failed; forcing direct 7z extract (no dialog)"
-    nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
-    Pop $0
-    Sleep 500
-    RMDir /r "$PLUGINSDIR\\7z-out"
-    Nsis7z::Extract "\${FILE}"
-
-  DoneExtract7za:
-!macroend`;
-
-patchFirstMatch(
-  extractAppPackage,
-  [extractUsing7zaStock, extractUsing7zaRc2, extractUsing7zaRc3, extractUsing7zaRc4],
-  extractUsing7zaDirect,
+!macroend`,
   'extractAppPackage.nsh',
-  'safe auto-clean INSTDIR + direct 7z extract',
 );
 
-// ── Sanity checks (live symbols only; comments may mention these names) ───
+// ── Sanity: final templates must match the contract ───────────────────────
 const allowSrc = readFileSync(allowOnlyOne, 'utf8');
-if (/!include\s+"getProcessInfo\.nsh"/.test(allowSrc) || /^\s*Var pid\s*$/m.test(allowSrc)) {
-  throw new Error('[patch-nsis] allowOnlyOneInstallerInstance.nsh still has getProcessInfo include or Var pid');
-}
-
 const utilSrc = readFileSync(installUtil, 'utf8');
-if (/^\s*OneMoreAttempt:\s*$/m.test(utilSrc) || /IDRETRY OneMoreAttempt/.test(utilSrc)) {
-  throw new Error('[patch-nsis] installUtil.nsh still references OneMoreAttempt');
+const extractSrc = readFileSync(extractAppPackage, 'utf8');
+
+if (/!include\s+"getProcessInfo\.nsh"/.test(allowSrc) || /^\s*Var pid\s*$/m.test(allowSrc)) {
+  throw new Error('[patch-nsis] allowOnlyOne still has getProcessInfo / Var pid');
 }
-if (/MessageBox MB_RETRYCANCEL\|MB_ICONEXCLAMATION "\$\(appCannotBeClosed\)"/.test(utilSrc)) {
-  throw new Error('[patch-nsis] installUtil.nsh still has appCannotBeClosed MessageBox');
+if (/^\s*MessageBox[^\n]*\$\(appCannotBeClosed\)/m.test(allowSrc)) {
+  throw new Error('[patch-nsis] allowOnlyOne still MessageBox appCannotBeClosed');
+}
+if (/^\s*MessageBox[^\n]*\$\(appCannotBeClosed\)/m.test(utilSrc)) {
+  throw new Error('[patch-nsis] installUtil still MessageBox appCannotBeClosed');
+}
+if (/^\s*OneMoreAttempt:\s*$/m.test(utilSrc)) {
+  throw new Error('[patch-nsis] installUtil still has OneMoreAttempt label');
 }
 if (!/StrCpy \$R0 0/.test(utilSrc)) {
-  throw new Error('[patch-nsis] installUtil.nsh continue path must clear $R0 (StrCpy $R0 0)');
-}
-
-const extractSrc = readFileSync(extractAppPackage, 'utf8');
-if (/MessageBox MB_RETRYCANCEL\|MB_ICONEXCLAMATION "\$\(appCannotBeClosed\)"/.test(extractSrc)) {
-  throw new Error('[patch-nsis] extractAppPackage.nsh still has appCannotBeClosed MessageBox');
+  throw new Error('[patch-nsis] installUtil continue path must clear $R0');
 }
 if (/CopyFiles \/SILENT/.test(extractSrc)) {
-  throw new Error('[patch-nsis] extractAppPackage.nsh must not use atomic CopyFiles');
+  throw new Error('[patch-nsis] extractAppPackage must not use CopyFiles');
 }
-if (!/safe auto-clean INSTDIR \+ direct 7z extract/.test(extractSrc)) {
-  throw new Error('[patch-nsis] extractAppPackage.nsh missing safe auto-clean direct-extract path');
+if (/Rename "\$INSTDIR"/.test(extractSrc)) {
+  throw new Error('[patch-nsis] extractAppPackage must not Rename INSTDIR');
 }
-if (/Rename "\$INSTDIR" "\$INSTDIR\.__markus_old"/.test(extractSrc)) {
-  throw new Error('[patch-nsis] extractAppPackage.nsh must not Rename INSTDIR (CWD-follow bug)');
+if (/^\s*MessageBox[^\n]*\$\(appCannotBeClosed\)/m.test(extractSrc)) {
+  throw new Error('[patch-nsis] extractAppPackage still MessageBox appCannotBeClosed');
+}
+if (!extractSrc.includes('SetOutPath "$PLUGINSDIR"')) {
+  throw new Error('[patch-nsis] extract must leave INSTDIR before wipe');
 }
 if (!extractSrc.includes('Verified ${APP_EXECUTABLE_FILENAME} present')) {
-  throw new Error('[patch-nsis] extractAppPackage.nsh must verify APP_EXECUTABLE_FILENAME after extract');
+  throw new Error('[patch-nsis] extract must verify APP_EXECUTABLE_FILENAME');
 }
 
-// Neutralize leftover MessageBox inside unused stock _CHECK_APP_RUNNING
-// (never inserted after our CHECK_APP_RUNNING rewrite, but keep templates clean).
-patchFirstMatch(
-  allowOnlyOne,
-  [
-    `        \${if} $R1 > 1
-          MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY loop
-          Quit
-        \${else}
-          Goto loop
-        \${endIf}`,
-  ],
-  `        \${if} $R1 > 1
-          ; Markus patch: unused _CHECK_APP_RUNNING must not MessageBox either.
-          DetailPrint "app still running after kills; continuing (no dialog)"
-          Goto not_running
-        \${else}
-          Goto loop
-        \${endIf}`,
-  'allowOnlyOneInstallerInstance.nsh',
-  'neutralize _CHECK_APP_RUNNING appCannotBeClosed',
-);
-
-// Absolute: no MessageBox with that string in the templates we ship.
-for (const rel of [
-  'include/allowOnlyOneInstallerInstance.nsh',
-  'include/installUtil.nsh',
-  'include/extractAppPackage.nsh',
-]) {
-  const src = readFileSync(join(templatesDir, rel), 'utf8');
-  if (/^\s*MessageBox[^\n]*\$\(appCannotBeClosed\)/m.test(src)) {
-    throw new Error(`[patch-nsis] ${rel} still MessageBox $(appCannotBeClosed)`);
-  }
-}
-
-console.log('[patch-nsis] done');
+console.log('[patch-nsis] done — contract OK');

@@ -83,15 +83,12 @@ nsis:
   # No elevate helper binary — avoids extra processes that confuse "app running" checks
   # and is unnecessary when allowElevation is false.
   packElevateHelper: false
-  # Stock "always" still skips desktop recreation when $keepShortcuts=true on
-  # assisted upgrades. markus-installer.nsh force-creates .lnk and skips the
-  # broken previous-uninstaller path (see build/markus-installer.nsh).
+  # Stock keepShortcuts can still skip recreation on upgrades; markus-installer.nsh
+  # always recreates Desktop/Start Menu .lnk after a verified extract.
   createDesktopShortcut: always
   createStartMenuShortcut: true
   shortcutName: Markus
-  # Must NOT be named installer.nsh — that basename is reserved by electron-builder's
-  # stock include (installApplicationFiles).
-  # customInit / customCheckAppRunning / customUnInstallCheck: see markus-installer.nsh.
+  # Must NOT be named installer.nsh (reserved by electron-builder).
   # (menuCategory must stay unset — YAML false becomes MENU_FILENAME=false.)
   include: markus-installer.nsh
 

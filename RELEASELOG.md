@@ -1,5 +1,11 @@
 # Release Log
 
+## v0.9.3-rc.6
+
+### Bug Fixes
+
+- **Windows 安装路径彻底收敛** — 删除层层 RC 字符串补丁史；`patch-nsis-templates.mjs` 改为按宏名正则替换（可幂等）。唯一安装路径：离开 INSTDIR → 杀进程 → 清空目录 → 直接 7z 解压 → 校验 `Markus.exe` → 写快捷方式。禁止 Rename/CopyFiles/「无法关闭」弹窗
+
 ## v0.9.3-rc.5
 
 ### Bug Fixes
