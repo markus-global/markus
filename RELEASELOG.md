@@ -1,5 +1,11 @@
 # Release Log
 
+## v0.9.3-rc.7
+
+### Bug Fixes
+
+- **重新发版** — rc.6 的 npm 包已发布成功，但 Publish 流水线因「不可覆盖已发布版本」失败，导致 Windows/mac/linux 桌面构建被跳过；同内容重打 tag 以产出安装包
+
 ## v0.9.3-rc.6
 
 ### Bug Fixes
