@@ -1,5 +1,11 @@
 # Release Log
 
+## v0.9.3-rc.1
+
+### Bug Fixes
+
+- **Windows 签名** — 跳过已有 Authenticode 的第三方 exe（node-pty `OpenConsole.exe`），避免 ssign「file already has a signature」导致 Windows 构建失败
+
 ## v0.9.3-rc.0
 
 ### Bug Fixes
