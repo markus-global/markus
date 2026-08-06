@@ -192,6 +192,40 @@ patchFirstMatch(
 // Markus: always extract straight into $INSTDIR. No CopyFiles, no dialog.
 
 const extractUsing7zaDirect = `!macro extractUsing7za FILE
+  ; Markus patch: automatic cleanup + direct extract into $INSTDIR.
+  ; Never CopyFiles, never MessageBox $(appCannotBeClosed), never ask the
+  ; user to manually delete a broken install folder.
+  DetailPrint "Markus: auto-clean INSTDIR + direct 7z extract"
+  nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
+  Pop $0
+  Sleep 800
+
+  ; Leftover from a previous interrupted upgrade
+  RMDir /r "$INSTDIR.__markus_old"
+
+  IfFileExists "$INSTDIR\\*.*" 0 markus_extract_fresh
+    DetailPrint "Moving previous install aside (automatic — no user action needed)"
+    ClearErrors
+    Rename "$INSTDIR" "$INSTDIR.__markus_old"
+    IfErrors 0 markus_extract_fresh
+      DetailPrint "Rename failed; removing previous files in place"
+      RMDir /r "$INSTDIR"
+  markus_extract_fresh:
+  ClearErrors
+  CreateDirectory "$INSTDIR"
+  SetOutPath "$INSTDIR"
+  Nsis7z::Extract "\${FILE}"
+
+  ; Best-effort delete of the aside tree after files are replaced
+  IfFileExists "$INSTDIR.__markus_old" 0 markus_extract_done
+    RMDir /r "$INSTDIR.__markus_old"
+    nsExec::ExecToStack '"$SYSDIR\\cmd.exe" /C if exist "$INSTDIR.__markus_old" rmdir /s /q "$INSTDIR.__markus_old" >nul 2>&1'
+    Pop $0
+  markus_extract_done:
+!macroend`;
+
+// rc.3: direct extract but no automatic INSTDIR swap/cleanup
+const extractUsing7zaRc3 = `!macro extractUsing7za FILE
   ; Markus patch: direct extract into $INSTDIR. Never CopyFiles, never
   ; MessageBox $(appCannotBeClosed).
   DetailPrint "Markus: direct 7z extract into $INSTDIR"
@@ -293,10 +327,10 @@ const extractUsing7zaRc2 = `!macro extractUsing7za FILE
 
 patchFirstMatch(
   extractAppPackage,
-  [extractUsing7zaStock, extractUsing7zaRc2],
+  [extractUsing7zaStock, extractUsing7zaRc2, extractUsing7zaRc3],
   extractUsing7zaDirect,
   'extractAppPackage.nsh',
-  'direct 7z extract (no CopyFiles / no dialog)',
+  'auto-clean INSTDIR + direct 7z extract',
 );
 
 // ── Sanity checks (live symbols only; comments may mention these names) ───
@@ -323,8 +357,11 @@ if (/MessageBox MB_RETRYCANCEL\|MB_ICONEXCLAMATION "\$\(appCannotBeClosed\)"/.te
 if (/CopyFiles \/SILENT/.test(extractSrc)) {
   throw new Error('[patch-nsis] extractAppPackage.nsh must not use atomic CopyFiles');
 }
-if (!/direct 7z extract into \$INSTDIR/.test(extractSrc)) {
-  throw new Error('[patch-nsis] extractAppPackage.nsh missing direct-extract path');
+if (!/auto-clean INSTDIR \+ direct 7z extract/.test(extractSrc)) {
+  throw new Error('[patch-nsis] extractAppPackage.nsh missing auto-clean direct-extract path');
+}
+if (!/INSTDIR\.__markus_old/.test(extractSrc)) {
+  throw new Error('[patch-nsis] extractAppPackage.nsh must move aside previous INSTDIR automatically');
 }
 
 // Neutralize leftover MessageBox inside unused stock _CHECK_APP_RUNNING

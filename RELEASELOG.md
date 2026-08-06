@@ -1,5 +1,11 @@
 # Release Log
 
+## v0.9.3-rc.4
+
+### Bug Fixes
+
+- **升级无需手动删目录** — 安装器解压前自动把旧 `$INSTDIR` 挪到 `__markus_old` 再装入新文件并清理；坏掉的旧安装不用用户手动删除
+
 ## v0.9.3-rc.3
 
 ### Bug Fixes

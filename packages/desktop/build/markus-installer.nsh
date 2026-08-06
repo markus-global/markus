@@ -105,7 +105,7 @@
   ; Refuse "success" if the main binary never landed (corrupt / aborted extract).
   IfFileExists "$INSTDIR\${APP_EXECUTABLE_FILENAME}" markus_exe_ok 0
     DetailPrint "FATAL: $INSTDIR\${APP_EXECUTABLE_FILENAME} missing after install"
-    MessageBox MB_OK|MB_ICONSTOP "Markus installation is incomplete: ${APP_EXECUTABLE_FILENAME} was not found in:$\r$\n$INSTDIR$\r$\n$\r$\nPlease close Markus, delete that folder if it still exists, and run the installer again."
+    MessageBox MB_OK|MB_ICONSTOP "Markus installation is incomplete: ${APP_EXECUTABLE_FILENAME} was not found in:$\r$\n$INSTDIR$\r$\n$\r$\nPlease run this installer again — it will automatically clean up and retry."
     SetErrorLevel 2
     Abort
   markus_exe_ok:
