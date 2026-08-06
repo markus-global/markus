@@ -1,5 +1,11 @@
 # Release Log
 
+## v0.9.3-rc.2
+
+### Bug Fixes
+
+- **Windows「无法关闭」误报** — 根因是解压时 `CopyFiles` 失败后 stock 用同一句 `$(appCannotBeClosed)` 弹窗（并非 Markus 仍在运行）。改为强制 7z 覆盖解压且不再弹窗；并清理 OpenConsole/winpty-agent 等会锁文件的 helper
+
 ## v0.9.3-rc.1
 
 ### Bug Fixes

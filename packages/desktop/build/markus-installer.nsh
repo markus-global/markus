@@ -19,13 +19,15 @@
 ; refuse to finish if Markus.exe is missing, and never delete shortcuts when
 ; --keep-shortcuts / --updated is set.
 ;
-; Process-detection MessageBoxes are also hard-patched by
+; Process-detection AND extract CopyFiles MessageBoxes (same misleading
+; $(appCannotBeClosed) string) are hard-patched by
 ; scripts/patch-nsis-templates.mjs.
 
 !macro markusKillInstallDirProcesses _DIR
   ${if} `${_DIR}` != ""
     DetailPrint "Stopping processes under ${_DIR}"
-    nsExec::ExecToStack '"$SYSDIR\cmd.exe" /C taskkill /F /T /IM "Markus.exe" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1'
+    ; Markus.exe + installer helper + node-pty ConPTY helpers that lock INSTDIR
+    nsExec::ExecToStack '"$SYSDIR\cmd.exe" /C taskkill /F /T /IM "Markus.exe" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
     Pop $R9
     nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$$p=''${_DIR}''; if (-not $$p) { exit 0 }; Get-CimInstance Win32_Process | Where-Object { $$_.Path -and $$_.Path.StartsWith($$p, ''CurrentCultureIgnoreCase'') } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; exit 0"'
     Pop $R9
@@ -39,9 +41,13 @@
   DetailPrint "Skipping previous uninstaller (overwrite upgrade)"
   DeleteRegValue HKCU "${UNINSTALL_REGISTRY_KEY}" UninstallString
   DeleteRegValue HKLM "${UNINSTALL_REGISTRY_KEY}" UninstallString
+  DeleteRegValue HKCU "${UNINSTALL_REGISTRY_KEY}" QuietUninstallString
+  DeleteRegValue HKLM "${UNINSTALL_REGISTRY_KEY}" QuietUninstallString
   !ifdef UNINSTALL_REGISTRY_KEY_2
     DeleteRegValue HKCU "${UNINSTALL_REGISTRY_KEY_2}" UninstallString
     DeleteRegValue HKLM "${UNINSTALL_REGISTRY_KEY_2}" UninstallString
+    DeleteRegValue HKCU "${UNINSTALL_REGISTRY_KEY_2}" QuietUninstallString
+    DeleteRegValue HKLM "${UNINSTALL_REGISTRY_KEY_2}" QuietUninstallString
   !endif
 !macroend
 

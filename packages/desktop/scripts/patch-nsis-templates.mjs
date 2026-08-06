@@ -60,6 +60,7 @@ console.log(`[patch-nsis] templates: ${templatesDir}`);
 
 const allowOnlyOne = join(templatesDir, 'include', 'allowOnlyOneInstallerInstance.nsh');
 const installUtil = join(templatesDir, 'include', 'installUtil.nsh');
+const extractAppPackage = join(templatesDir, 'include', 'extractAppPackage.nsh');
 
 // ── 1) allowOnlyOneInstallerInstance.nsh ─────────────────────────────────
 
@@ -85,6 +86,27 @@ patchFirstMatch(
 );
 
 // Never MessageBox/Quit on "app running" — best-effort taskkill only.
+const checkAppRunningNew = `!macro CHECK_APP_RUNNING
+  ; Markus patch: never block install/uninstall on process detection.
+  ; Stock PowerShell Path.StartsWith($INSTDIR) false-positives and shows
+  ; $(appCannotBeClosed). Only best-effort kill; always continue.
+  ; Also kill node-pty helpers that can lock INSTDIR during upgrades.
+  DetailPrint "Best-effort stop of \${APP_EXECUTABLE_FILENAME} + helpers (never blocks)..."
+  nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
+  Pop $0
+  Sleep 600
+!macroend`;
+
+const checkAppRunningOldPatch = `!macro CHECK_APP_RUNNING
+  ; Markus patch: never block install/uninstall on process detection.
+  ; Stock PowerShell Path.StartsWith($INSTDIR) false-positives and shows
+  ; $(appCannotBeClosed). Only best-effort kill; always continue.
+  DetailPrint "Best-effort stop of \${APP_EXECUTABLE_FILENAME} (never blocks)..."
+  nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1'
+  Pop $0
+  Sleep 600
+!macroend`;
+
 patchFirstMatch(
   allowOnlyOne,
   [
@@ -100,16 +122,9 @@ patchFirstMatch(
     !insertmacro _CHECK_APP_RUNNING
   !endif
 !macroend`,
+    checkAppRunningOldPatch,
   ],
-  `!macro CHECK_APP_RUNNING
-  ; Markus patch: never block install/uninstall on process detection.
-  ; Stock PowerShell Path.StartsWith($INSTDIR) false-positives and shows
-  ; $(appCannotBeClosed). Only best-effort kill; always continue.
-  DetailPrint "Best-effort stop of \${APP_EXECUTABLE_FILENAME} (never blocks)..."
-  nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1'
-  Pop $0
-  Sleep 600
-!macroend`,
+  checkAppRunningNew,
   'allowOnlyOneInstallerInstance.nsh',
   'CHECK_APP_RUNNING',
 );
@@ -168,6 +183,85 @@ patchFirstMatch(
   'UninstallLoop continue + clear $R0 + drop OneMoreAttempt',
 );
 
+// ── 3) extractAppPackage.nsh — THE dialog users still see on upgrades ─────
+// Stock CopyFiles into $INSTDIR can fail (AV, indexer, leftover OpenConsole,
+// half-deleted tree) and then shows the SAME $(appCannotBeClosed) string as
+// the process check — even when Markus.exe is not running. After a few
+// retries, force non-atomic 7z extract and never MessageBox/Quit.
+
+// Replace the whole retry/MessageBox/force/Abort block so AbortExtract7za
+// is removed (unused label → makensis 6012 warning-as-error).
+const extractStock = `  LoopExtract7za:
+    IntOp $R1 $R1 + 1
+
+    # Attempt to copy files in atomic way
+    CopyFiles /SILENT "$PLUGINSDIR\\7z-out\\*" $OUTDIR
+    IfErrors 0 DoneExtract7za
+
+    DetailPrint \`Can't modify "\${PRODUCT_NAME}"'s files.\`
+    \${if} $R1 < 5
+      # Try copying a few times before asking for a user action.
+      Goto RetryExtract7za
+    \${else}
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDRETRY IDCANCEL AbortExtract7za
+    \${endIf}
+
+    # As an absolutely last resort after a few automatic attempts and user
+    # intervention - we will just overwrite everything with \`Nsis7z::Extract\`
+    # even though it is not atomic and will ignore errors.
+
+    # Clear the temporary folder first to make sure we don't use twice as
+    # much disk space.
+    RMDir /r "$PLUGINSDIR\\7z-out"
+
+    Nsis7z::Extract "\${FILE}"
+    Goto DoneExtract7za
+
+  AbortExtract7za:
+    Quit
+
+  RetryExtract7za:
+    Sleep 1000
+    Goto LoopExtract7za
+
+  DoneExtract7za:
+!macroend`;
+
+const extractForce = `  LoopExtract7za:
+    IntOp $R1 $R1 + 1
+
+    # Attempt to copy files in atomic way
+    CopyFiles /SILENT "$PLUGINSDIR\\7z-out\\*" $OUTDIR
+    IfErrors 0 DoneExtract7za
+
+    DetailPrint \`Can't modify "\${PRODUCT_NAME}"'s files.\`
+    \${if} $R1 < 5
+      # Retry a few times, then force-extract (never ask the user).
+      Sleep 1000
+      Goto LoopExtract7za
+    \${endIf}
+
+    ; Markus patch: never show $(appCannotBeClosed) during extract.
+    ; AV / indexer / leftover OpenConsole can lock INSTDIR even when Markus
+    ; itself is not running. Force non-atomic 7z extract into $OUTDIR.
+    DetailPrint "CopyFiles into INSTDIR failed; forcing direct 7z extract (no dialog)"
+    nsExec::ExecToLog '"$SYSDIR\\cmd.exe" /C taskkill /F /T /IM "\${APP_EXECUTABLE_FILENAME}" >nul 2>&1 & taskkill /F /T /IM "elevate.exe" >nul 2>&1 & taskkill /F /T /IM "OpenConsole.exe" >nul 2>&1 & taskkill /F /T /IM "winpty-agent.exe" >nul 2>&1'
+    Pop $0
+    Sleep 500
+    RMDir /r "$PLUGINSDIR\\7z-out"
+    Nsis7z::Extract "\${FILE}"
+
+  DoneExtract7za:
+!macroend`;
+
+patchFirstMatch(
+  extractAppPackage,
+  [extractStock],
+  extractForce,
+  'extractAppPackage.nsh',
+  'force extract without appCannotBeClosed dialog',
+);
+
 // ── Sanity checks (live symbols only; comments may mention these names) ───
 const allowSrc = readFileSync(allowOnlyOne, 'utf8');
 if (/!include\s+"getProcessInfo\.nsh"/.test(allowSrc) || /^\s*Var pid\s*$/m.test(allowSrc)) {
@@ -183,6 +277,46 @@ if (/MessageBox MB_RETRYCANCEL\|MB_ICONEXCLAMATION "\$\(appCannotBeClosed\)"/.te
 }
 if (!/StrCpy \$R0 0/.test(utilSrc)) {
   throw new Error('[patch-nsis] installUtil.nsh continue path must clear $R0 (StrCpy $R0 0)');
+}
+
+const extractSrc = readFileSync(extractAppPackage, 'utf8');
+if (/MessageBox MB_RETRYCANCEL\|MB_ICONEXCLAMATION "\$\(appCannotBeClosed\)"/.test(extractSrc)) {
+  throw new Error('[patch-nsis] extractAppPackage.nsh still has appCannotBeClosed MessageBox');
+}
+
+// Neutralize leftover MessageBox inside unused stock _CHECK_APP_RUNNING
+// (never inserted after our CHECK_APP_RUNNING rewrite, but keep templates clean).
+patchFirstMatch(
+  allowOnlyOne,
+  [
+    `        \${if} $R1 > 1
+          MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY loop
+          Quit
+        \${else}
+          Goto loop
+        \${endIf}`,
+  ],
+  `        \${if} $R1 > 1
+          ; Markus patch: unused _CHECK_APP_RUNNING must not MessageBox either.
+          DetailPrint "app still running after kills; continuing (no dialog)"
+          Goto not_running
+        \${else}
+          Goto loop
+        \${endIf}`,
+  'allowOnlyOneInstallerInstance.nsh',
+  'neutralize _CHECK_APP_RUNNING appCannotBeClosed',
+);
+
+// Absolute: no MessageBox with that string in the templates we ship.
+for (const rel of [
+  'include/allowOnlyOneInstallerInstance.nsh',
+  'include/installUtil.nsh',
+  'include/extractAppPackage.nsh',
+]) {
+  const src = readFileSync(join(templatesDir, rel), 'utf8');
+  if (/^\s*MessageBox[^\n]*\$\(appCannotBeClosed\)/m.test(src)) {
+    throw new Error(`[patch-nsis] ${rel} still MessageBox $(appCannotBeClosed)`);
+  }
 }
 
 console.log('[patch-nsis] done');
