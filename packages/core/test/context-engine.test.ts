@@ -65,7 +65,7 @@ describe('buildSystemPrompt', () => {
     expect(result.text).toContain('## Policies');
     expect(result.text).toContain('Safety');
     expect(result.text).toContain('## Tool Usage Rules');
-    expect(result.text).toContain('spawn_subagent');
+    expect(result.text).toContain('Built-in tools over CLI');
     expect(result.segments.length).toBeGreaterThan(0);
   });
 
