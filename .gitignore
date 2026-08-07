@@ -32,3 +32,6 @@ docs/api-test/
 
 # Paper — independent repo (paper/.git)
 paper/
+
+# Locally downloaded Windows installers
+Markus-Setup-*.exe

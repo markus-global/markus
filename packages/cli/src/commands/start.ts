@@ -1920,7 +1920,7 @@ async function startServerCore(
   checkForUpdate().then(info => {
     if (info.updateAvailable) {
       console.log(`\n  \x1b[33m⬆ New version available: v${info.latestVersion} (current: v${info.currentVersion})\x1b[0m`);
-      console.log(`    Visit \x1b[1mhttps://markus.global/download\x1b[0m to download the latest version\n`);
+      console.log(`    Visit \x1b[1mhttps://markus.global/#download\x1b[0m to download the latest version\n`);
     }
   }).catch(() => {});
 

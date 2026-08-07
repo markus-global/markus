@@ -37,5 +37,5 @@ export function isToolRestrictedInMAS(toolName: string): boolean {
 export function getMASToolBlockedMessage(toolName: string): string {
   return `This action (${toolName}) requires the full version of Markus. ` +
     `The App Store version cannot execute shell commands or access arbitrary files due to macOS sandbox restrictions. ` +
-    `Download the full version at https://markus.global/download for unrestricted access.`;
+    `Download the full version at https://markus.global/#download for unrestricted access.`;
 }

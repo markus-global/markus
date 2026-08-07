@@ -1,5 +1,61 @@
 # Release Log
 
+## v0.9.3
+
+### Bug Fixes
+
+- **Windows 安装/升级** — 唯一安装路径：跳过会半删目录的旧卸载器；离开 INSTDIR 后杀进程、清空目录、直接 7z 解压并校验 `Markus.exe`；始终重建快捷方式；跳过已有 Authenticode 的 helper 二次签名；启动时自动修复缺失 `.lnk`
+- **升级下载链接** — 客户端更新提示 / 菜单 / CLI / MAS 文案改为 `https://markus.global/#download`（首页下载区）
+
+## v0.9.3-rc.7
+
+### Bug Fixes
+
+- **重新发版** — rc.6 的 npm 包已发布成功，但 Publish 流水线因「不可覆盖已发布版本」失败，导致 Windows/mac/linux 桌面构建被跳过；同内容重打 tag 以产出安装包
+
+## v0.9.3-rc.6
+
+### Bug Fixes
+
+- **Windows 安装路径彻底收敛** — 删除层层 RC 字符串补丁史；`patch-nsis-templates.mjs` 改为按宏名正则替换（可幂等）。唯一安装路径：离开 INSTDIR → 杀进程 → 清空目录 → 直接 7z 解压 → 校验 `Markus.exe` → 写快捷方式。禁止 Rename/CopyFiles/「无法关闭」弹窗
+
+## v0.9.3-rc.5
+
+### Bug Fixes
+
+- **Windows 安装丢 Markus.exe（rc.4 回归）** — 根因是解压前 `Rename $INSTDIR` 时进程 CWD 跟随改名，文件解压进 `__markus_old` 后被 `RMDir` 删掉。改为先 `SetOutPath $PLUGINSDIR` 再删除旧目录并直接解压，解压后强制校验 `Markus.exe`
+
+## v0.9.3-rc.4
+
+### Bug Fixes
+
+- **升级无需手动删目录** — 安装器解压前自动把旧 `$INSTDIR` 挪到 `__markus_old` 再装入新文件并清理；坏掉的旧安装不用用户手动删除
+
+## v0.9.3-rc.3
+
+### Bug Fixes
+
+- **Windows 安装「无法关闭」彻底拆除** — `rc.1` 弹窗来自解压阶段 stock `CopyFiles`（不是 Markus 进程检测）。改为 **直接 7z 解压到 `$INSTDIR`**，删除 CopyFiles/重试/误导弹窗整条路径；并排除 win32-arm64 的 node-pty ConPTY 文件
+
+## v0.9.3-rc.2
+
+### Bug Fixes
+
+- **Windows「无法关闭」误报** — 根因是解压时 `CopyFiles` 失败后 stock 用同一句 `$(appCannotBeClosed)` 弹窗（并非 Markus 仍在运行）。改为强制 7z 覆盖解压且不再弹窗；并清理 OpenConsole/winpty-agent 等会锁文件的 helper
+
+## v0.9.3-rc.1
+
+### Bug Fixes
+
+- **Windows 签名** — 跳过已有 Authenticode 的第三方 exe（node-pty `OpenConsole.exe`），避免 ssign「file already has a signature」导致 Windows 构建失败
+
+## v0.9.3-rc.0
+
+### Bug Fixes
+
+- **Windows 升级安装** — 跳过会半删安装目录的旧卸载器；`--keep-shortcuts` 时不再误删桌面/开始菜单快捷方式；卸载失败 continue 时清零 `$R0`；缺 `Markus.exe` 直接 Abort；启动时若快捷方式缺失则自动修复
+- **升级下载链接** — 客户端更新提示 / 菜单 / CLI / MAS 文案改为 `https://markus.global/#download`（首页下载区），避免落到 Hub SPA browse
+
 ## v0.9.2
 
 ### Bug Fixes
