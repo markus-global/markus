@@ -327,6 +327,32 @@ const STREAM_TIMEOUT_MS = 180_000;
 const STREAM_HARD_TIMEOUT_MS = 15 * 60_000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 500;
+/** Cap Retry-After waits so a single turn cannot sleep for minutes. */
+const MAX_RETRY_AFTER_MS = 60_000;
+
+/**
+ * Parse OpenRouter / RFC7231 `Retry-After` (seconds or HTTP-date) to ms.
+ * @see https://openrouter.ai/docs/api_reference/limits
+ */
+export function parseRetryAfterMs(res: Response): number | null {
+  const raw = res.headers.get('retry-after');
+  if (!raw) return null;
+  const asSec = Number(raw);
+  if (Number.isFinite(asSec) && asSec >= 0) {
+    return Math.min(asSec * 1000, MAX_RETRY_AFTER_MS);
+  }
+  const asDate = Date.parse(raw);
+  if (Number.isFinite(asDate)) {
+    return Math.min(Math.max(0, asDate - Date.now()), MAX_RETRY_AFTER_MS);
+  }
+  return null;
+}
+
+function retryDelayMs(res: Response | undefined, attempt: number): number {
+  const fromHeader = res ? parseRetryAfterMs(res) : null;
+  if (fromHeader !== null) return fromHeader;
+  return RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+}
 
 const CREDIT_MUTE_KEY = 'markus:credit-notif-muted';
 let _lastCreditNotifTs = 0;
@@ -402,7 +428,9 @@ export class MarkusProvider implements MultiModalProviderInterface {
     this.baseUrl = config?.baseUrl ?? DEFAULT_OR_BASE_URL;
     this.maxTokens = config?.maxTokens;
     this.chatTimeoutMs = config?.timeoutMs ?? CHAT_TIMEOUT_MS;
-    this.streamTimeoutMs = config?.timeoutMs ?? STREAM_TIMEOUT_MS;
+    // Stream idle is independent of chat timeoutMs — never inherit a lower chat
+    // timeout (e.g. 90s) or long reasoning / sparse SSE gaps abort mid-reply.
+    this.streamTimeoutMs = config?.streamTimeoutMs ?? STREAM_TIMEOUT_MS;
     this.modelsUrl = config?.modelsUrl ?? process.env['MARKUS_MODELS_URL'] ?? '';
     this.hubUrl = config?.hubUrl ?? process.env['MARKUS_HUB_URL'] ?? '';
     this.hubToken = config?.hubToken ?? process.env['MARKUS_HUB_TOKEN'] ?? '';
@@ -421,10 +449,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
     if (config.modelsUrl !== undefined) this.modelsUrl = config.modelsUrl;
     if (config.hubUrl !== undefined) this.hubUrl = config.hubUrl;
     if (config.hubToken !== undefined) this.hubToken = config.hubToken;
-    if (config.timeoutMs) {
-      this.chatTimeoutMs = config.timeoutMs;
-      this.streamTimeoutMs = config.timeoutMs;
-    }
+    if (config.timeoutMs) this.chatTimeoutMs = config.timeoutMs;
+    if (config.streamTimeoutMs) this.streamTimeoutMs = config.streamTimeoutMs;
   }
 
   /** Whether OpenRouter credentials are available. */
@@ -988,6 +1014,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    /** Mid-stream OR rate limit (HTTP 200 + finish_reason=error / chunk.error). */
+    let midStreamRateLimited = false;
 
     try {
       while (true) {
@@ -998,6 +1026,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
+        let stopStream = false;
 
         for (const line of lines) {
           const trimmed = line.trim();
@@ -1008,6 +1037,23 @@ export class MarkusProvider implements MultiModalProviderInterface {
             const chunk = JSON.parse(trimmed.slice(6)) as Record<string, unknown>;
             const choice = (chunk.choices as Array<Record<string, unknown>> | undefined)?.[0];
             const delta = choice?.delta as Record<string, unknown> | undefined;
+            const streamErr = (chunk.error ?? null) as Record<string, unknown> | null;
+            const finishRaw = choice?.finish_reason !== null ? String(choice?.finish_reason ?? '') : '';
+
+            // OpenRouter: rate limit after stream starts arrives as SSE with
+            // finish_reason "error" (status already 200), not HTTP 429.
+            // https://openrouter.ai/docs/api_reference/limits#mid-stream-rate-limits
+            if (streamErr || finishRaw === 'error') {
+              const code = Number(streamErr?.code ?? 0);
+              const errMsg = String(streamErr?.message ?? 'Rate limit exceeded');
+              const isRateLimit = code === 429 || /rate.?limit/i.test(errMsg);
+              if (isRateLimit) {
+                midStreamRateLimited = true;
+                stopStream = true;
+                break;
+              }
+              throw new Error(`Markus stream error ${code || 'unknown'}: ${errMsg}`);
+            }
 
             const deltaReasoning = extractDeltaReasoning(delta);
             if (deltaReasoning) {
@@ -1056,19 +1102,56 @@ export class MarkusProvider implements MultiModalProviderInterface {
                 this.recordCostUsd(chunk.usage as Record<string, unknown>);
               }
             }
-          } catch { /* skip unparseable lines */ }
+          } catch (parseOrStreamErr) {
+            // Re-throw hard stream errors; ignore JSON parse noise.
+            if (parseOrStreamErr instanceof Error && parseOrStreamErr.message.startsWith('Markus stream error')) {
+              throw parseOrStreamErr;
+            }
+          }
+        }
+        if (stopStream) break;
+      }
+
+      if (midStreamRateLimited) {
+        const hasPartial = content.length > 0 || reasoningContent.length > 0 || toolCallsAcc.size > 0;
+        if (hasPartial) {
+          log.warn('OpenRouter mid-stream rate limit — returning partial for auto-continuation', {
+            contentChars: content.length,
+          });
+          toolCallsAcc.clear();
+          finishReason = 'max_tokens';
+        } else {
+          throw new Error('MARKUS_RATE_LIMITED: Rate limit exceeded (mid-stream)');
         }
       }
     } catch (err) {
       clearStreamTimeouts();
       const msg = err instanceof Error ? err.message : String(err);
-      if (idleTimedOut || hardTimedOut || /aborted/i.test(msg)) {
+      const hasPartial =
+        content.length > 0
+        || reasoningContent.length > 0
+        || toolCallsAcc.size > 0;
+      // Idle gap with partial output → treat like max_tokens so the agent loop
+      // auto-continues instead of ending the turn and forcing UI「继续」.
+      // Drop mid-flight tool_call JSON — executing a truncated call is unsafe.
+      if (idleTimedOut && hasPartial) {
+        log.warn('Markus stream idle timeout with partial content — returning for auto-continuation', {
+          idleMs: this.streamTimeoutMs,
+          contentChars: content.length,
+          droppedToolCalls: toolCallsAcc.size,
+        });
+        toolCallsAcc.clear();
+        finishReason = 'max_tokens';
+      } else if (idleTimedOut || hardTimedOut) {
         const kind = hardTimedOut ? 'hard' : 'idle';
         throw new Error(
           `Markus stream ${kind} timeout after ${hardTimedOut ? STREAM_HARD_TIMEOUT_MS : this.streamTimeoutMs}ms`,
         );
+      } else if (signal?.aborted || /aborted/i.test(msg)) {
+        throw err instanceof Error ? err : new Error(msg);
+      } else {
+        throw err;
       }
-      throw err;
     } finally {
       clearStreamTimeouts();
     }
@@ -1195,8 +1278,12 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
   /**
    * Fetch with exponential backoff retry.
-   * Does NOT retry on 4xx errors (billing/auth are not transient).
-   * Only retries on 5xx / network issues.
+   *
+   * OpenRouter guidance (https://openrouter.ai/docs/api_reference/limits):
+   * - 429 / 503 are transient — retry with exponential backoff; honor `Retry-After`
+   * - Other 4xx (auth/billing) are not retried
+   * - 5xx / network errors are retried (unless skipRetry — used after stream body
+   *   would already be in flight; 429/503 still retry because they fail before body)
    */
   private async fetchWithRetry(
     url: string,
@@ -1207,32 +1294,44 @@ export class MarkusProvider implements MultiModalProviderInterface {
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt < retries; attempt++) {
+      let res: Response | undefined;
       try {
-        const res = await fetch(url, init);
-
-        // 4xx errors are NOT transient — return immediately (no retry)
-        if (res.status >= 400 && res.status < 500) {
-          return res;
-        }
+        res = await fetch(url, init);
 
         if (res.ok) return res;
 
-        // 5xx: log status (without consuming body) and decide whether to retry
-        log.warn(`Markus proxy error ${res.status} (attempt ${attempt + 1}/${retries})`);
+        const retriableStatus = res.status === 429 || res.status === 503;
+        // Other 4xx (401/402/403/…) are permanent for this request.
+        if (res.status >= 400 && res.status < 500 && !retriableStatus) {
+          return res;
+        }
+
+        log.warn(`OpenRouter/Markus HTTP ${res.status} (attempt ${attempt + 1}/${retries})`, {
+          retryAfter: res.headers.get('retry-after'),
+          rateLimitRemaining: res.headers.get('x-ratelimit-remaining'),
+          rateLimitReset: res.headers.get('x-ratelimit-reset'),
+        });
         lastError = new Error(`Markus proxy error ${res.status}`);
 
-        if (skipRetry) return res;
+        // skipRetry: do not re-issue after a 5xx once a stream body may exist.
+        // 429/503 still retry — they reject before useful SSE starts.
+        if (skipRetry && !retriableStatus) return res;
 
-        // Consume body only for logging on retry path (won't be returned to caller)
+        if (attempt >= retries - 1) return res;
+
+        // Drain body before retry so the socket can close cleanly.
         const errText = await res.text().catch(() => '');
         if (errText) log.warn('Response body', { body: errText.slice(0, 200) });
+
+        const delay = retryDelayMs(res, attempt);
+        log.info(`Waiting ${delay}ms before retry (Retry-After / backoff)`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         log.warn(`Markus proxy network error (attempt ${attempt + 1}/${retries})`, { error: lastError.message });
-      }
-
-      if (attempt < retries - 1) {
-        const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+        if (skipRetry || attempt >= retries - 1) break;
+        const delay = retryDelayMs(undefined, attempt);
         await new Promise(r => setTimeout(r, delay));
       }
     }

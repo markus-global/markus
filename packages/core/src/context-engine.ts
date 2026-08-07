@@ -25,9 +25,17 @@ import {
   SYSTEM_HUMANS_MAX,
   ROLE_PROMPT_MAX_TOKENS,
   KNOWLEDGE_PROMPT_MAX_TOKENS,
+  KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE,
   KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX,
   STATE_PROMPT_MAX_LINES_REFLEX,
   SYSTEM_PROMPT_BUDGET_CONVERSE,
+  SYSTEM_ANNOUNCEMENTS_CHARS,
+  SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE,
+  SYSTEM_NORMS_CHARS,
+  SYSTEM_NORMS_CHARS_CONVERSE,
+  SYSTEM_WORKFLOWS_MAX_CONVERSE,
+  SYSTEM_WORKFLOW_DESC_CHARS_CONVERSE,
+  SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
@@ -229,12 +237,16 @@ export class ContextEngine {
     const promptProfile: PromptProfile = opts.promptProfile
       ?? packToPromptProfile(scenarioToPack(opts.scenario));
     const isReflex = promptProfile === 'reflex';
+    const isConverse = promptProfile === 'converse';
+    const isExecuteLike = promptProfile === 'execute' || promptProfile === 'govern';
 
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 1 — STABLE
     // Content that rarely changes for a given agent configuration.
     // Placing the most stable content first maximises prefix-cache hits
     // across requests (Anthropic, OpenAI, DeepSeek all cache by prefix).
+    // Profile gates decide what is included; section caps decide how large.
+    // Do NOT rely on post-assemble trim for normal sizing (Afford.S3).
     // ═══════════════════════════════════════════════════════════════════════
     const stable: string[] = [];
 
@@ -262,26 +274,36 @@ export class ContextEngine {
       stable.push('\n## Tool Usage Rules');
       stable.push('**File editing discipline**: You MUST use `file_write` and `file_edit` for all file creation and modification. NEVER use `shell_execute` with `cat`, `echo`, `printf`, `tee`, pipes (`|`), output redirection (`>`, `>>`), heredocs (`<<`), or `sed`/`awk` to write or modify files — these bypass file access controls. `shell_execute` is for running commands (build, test, git, etc.), not for writing files.');
       stable.push('**Large file writing**: NEVER write a document >200 lines in a single `file_write` call. Write section by section: `file_write` the first section, then `file_edit` to append each subsequent section.');
-      stable.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
+      // spawn_subagents is execute-pack only — do not advertise in converse/reflex L0
+      if (isExecuteLike) {
+        stable.push('**Subagent delegation**: For heavy subtasks needing many tool calls or lots of file reading, delegate to `spawn_subagent` to keep your context lean. Use `spawn_subagents` to run independent subtasks in parallel.');
+      }
       stable.push('**Built-in tools over CLI**: ALWAYS use built-in tools (`task_create`, `task_assign`, `package_install`, `agent_send_message`, `memory_save`, etc.) — NEVER run `markus` CLI commands via `shell_execute`. The CLI is strictly for human operators (server start, emergency stop, initial setup). Agents must use their native tool interface for all operations.');
       stable.push('**No auto-install/deploy (agents/teams)**: NEVER automatically hire/deploy agents or teams via `package_install` or `hub_install` unless explicitly requested by a human (e.g., "install", "deploy", "hire", "start"). Creating builder-artifacts is separate from deploying. **Skills** follow Learning Habits impact rules below (low-impact may install directly).');
 
       stable.push('');
       stable.push('\n## Search & Exploration Strategy');
-      stable.push('When you need to understand code or find information, use a layered approach — each layer is a fallback for the previous:');
-      stable.push('1. **Semantic search** (`memory_search`, `deliverable_search`): Start with conceptual queries to find relevant knowledge and existing outputs.');
-      stable.push('2. **Pattern search** (`grep_search`): Use for exact symbol names, error messages, configuration keys, or specific strings.');
-      stable.push('3. **File browsing** (`file_read`, `list_directory`): Navigate directory structure and read specific files when you know the likely location.');
-      stable.push('4. **External research** (`web_search`, `web_fetch`): Use for unfamiliar libraries, APIs, error codes, or best practices not found in the codebase.');
-
-      const hasBrowserSkill = opts.availableSkills?.some(s => s.name === 'chrome-devtools');
-      if (hasBrowserSkill) {
-        stable.push('5. **Browser tools** (`browser_navigate`, `browser_snapshot`, `browser_click`): when `web_search`/`web_fetch` fails (network error, JS-rendered page, rate-limiting), access the page interactively — handles JS rendering, auth flows, and complex navigation `web_fetch` cannot.');
+      if (isExecuteLike) {
+        stable.push('When you need to understand code or find information, use a layered approach — each layer is a fallback for the previous:');
+        stable.push('1. **Semantic search** (`memory_search`, `deliverable_search`): Start with conceptual queries to find relevant knowledge and existing outputs.');
+        stable.push('2. **Pattern search** (`grep_search`): Use for exact symbol names, error messages, configuration keys, or specific strings.');
+        stable.push('3. **File browsing** (`file_read`, `list_directory`): Navigate directory structure and read specific files when you know the likely location.');
+        stable.push('4. **External research** (`web_search`, `web_fetch`): Use for unfamiliar libraries, APIs, error codes, or best practices not found in the codebase.');
+        const hasBrowserSkill = opts.availableSkills?.some(s => s.name === 'chrome-devtools');
+        if (hasBrowserSkill) {
+          stable.push('5. **Browser tools** (`browser_navigate`, `browser_snapshot`, `browser_click`): when `web_search`/`web_fetch` fails (network error, JS-rendered page, rate-limiting), access the page interactively — handles JS rendering, auth flows, and complex navigation `web_fetch` cannot.');
+        } else {
+          stable.push('If `web_search`/`web_fetch` fails, try alternative queries or URLs, or `web_fetch` a search-engine URL directly (e.g. `https://www.google.com/search?q=YOUR_QUERY`). The `chrome-devtools` skill adds browser tools for JS-rendered/interactive sites.');
+        }
+        stable.push('Always check existing patterns in the codebase before introducing new conventions. When exploring unfamiliar code, start from entry points and trace data flow.');
       } else {
-        stable.push('If `web_search`/`web_fetch` fails, try alternative queries or URLs, or `web_fetch` a search-engine URL directly (e.g. `https://www.google.com/search?q=YOUR_QUERY`). The `chrome-devtools` skill adds browser tools for JS-rendered/interactive sites.');
+        // converse / reflex: one-paragraph pointer — full ladder loads in execute/govern
+        stable.push(
+          'Layered lookup: semantic (`memory_search` / `deliverable_search`) → exact (`grep_search`) → '
+          + 'files (`file_read` / `list_directory`) → web (`web_search` / `web_fetch`). '
+          + 'Prefer existing codebase patterns. Activate `chrome-devtools` via `discover_tools` when pages need a real browser.',
+        );
       }
-
-      stable.push('Always check existing patterns in the codebase before introducing new conventions. When exploring unfamiliar code, start from entry points and trace data flow.');
 
       // Learning Habits — keep ≤1600 chars (LEARNING-LOOP §8)
       stable.push('');
@@ -368,10 +390,20 @@ export class ContextEngine {
     if (orgCtx) semiStable.push(orgCtx);
 
     if (opts.teamAnnouncements?.trim()) {
-      semiStable.push('\n## Team Announcements\n' + opts.teamAnnouncements.trim());
+      const raw = opts.teamAnnouncements.trim();
+      const cap = isConverse ? SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE : SYSTEM_ANNOUNCEMENTS_CHARS;
+      const body = raw.length > cap
+        ? `${raw.slice(0, cap)}\n\n_[announcements truncated — read \`${opts.teamDataDir ?? 'team'}/ANNOUNCEMENT.md\` for full text]_`
+        : raw;
+      semiStable.push('\n## Team Announcements\n' + body);
     }
     if (opts.teamNorms?.trim()) {
-      semiStable.push('\n## Team Working Norms\n' + opts.teamNorms.trim());
+      const raw = opts.teamNorms.trim();
+      const cap = isConverse ? SYSTEM_NORMS_CHARS_CONVERSE : SYSTEM_NORMS_CHARS;
+      const body = raw.length > cap
+        ? `${raw.slice(0, cap)}\n\n_[norms truncated — read \`${opts.teamDataDir ?? 'team'}/NORMS.md\` for full text]_`
+        : raw;
+      semiStable.push('\n## Team Working Norms\n' + body);
     }
     if (opts.teamDataDir) {
       const lines = ['\n## Team Data Directory', `Path: \`${opts.teamDataDir}\``, 'Files:', '- `ANNOUNCEMENT.md` — team announcements', '- `NORMS.md` — team working norms'];
@@ -452,10 +484,12 @@ export class ContextEngine {
       semiStable.push(this.buildEnvironmentSection(opts.environment));
     }
 
-    // knowledge.md injection — omitted for reflex; capped otherwise (AGENT-RUNTIME §4 / §6)
+    // knowledge.md injection — omitted for reflex; tighter for converse (AGENT-RUNTIME §4 / §6)
     const knowledgeTokCap = isReflex
       ? KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX
-      : KNOWLEDGE_PROMPT_MAX_TOKENS;
+      : isConverse
+        ? KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE
+        : KNOWLEDGE_PROMPT_MAX_TOKENS;
     if (knowledgeTokCap > 0) {
       const longTermMem = opts.memory.getLongTermMemory();
       if (longTermMem) {
@@ -479,9 +513,13 @@ export class ContextEngine {
     const scenario = opts.scenario ?? 'chat';
     semiStable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager, channelKey: opts.channelKey }));
 
-    // L3 scenario-triggered policy blocks (kept out of L0 / heartbeat / casual chat)
-    const scenarioPolicies = this.buildScenarioPolicyBlocks(scenario);
-    if (scenarioPolicies) semiStable.push(scenarioPolicies);
+    // L3 checklists: execute/govern only (AGENT-RUNTIME §4). Converse (incl.
+    // comment_response) must not carry Error Recovery / Quality Gates — those
+    // previously blew the 8k converse budget and forced destructive trim.
+    if (isExecuteLike) {
+      const scenarioPolicies = this.buildScenarioPolicyBlocks(scenario);
+      if (scenarioPolicies) semiStable.push(scenarioPolicies);
+    }
 
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 3 — DYNAMIC
@@ -593,7 +631,8 @@ export class ContextEngine {
             dynamic.push(`_(${otherDone.length} other completed/closed tasks)_`);
           }
         }
-      } else {
+      } else if (isExecuteLike) {
+        // Empty board only for execute/govern — converse saves the stub tokens
         dynamic.push('\n## Task Board');
         dynamic.push('No tasks on the board.');
       }
@@ -610,15 +649,33 @@ export class ContextEngine {
       }
       if (wc.availableWorkflows.length > 0) {
         dynamic.push('\n## Available Workflows');
-        for (const w of wc.availableWorkflows) {
-          dynamic.push(`- **${w.name}** (${w.stepCount} steps): ${w.description}`);
+        const list = isConverse
+          ? wc.availableWorkflows.slice(0, SYSTEM_WORKFLOWS_MAX_CONVERSE)
+          : wc.availableWorkflows;
+        for (const w of list) {
+          const desc = isConverse
+            ? w.description.slice(0, SYSTEM_WORKFLOW_DESC_CHARS_CONVERSE)
+            : w.description;
+          dynamic.push(`- **${w.name}** (${w.stepCount} steps): ${desc}`);
+        }
+        if (isConverse && wc.availableWorkflows.length > SYSTEM_WORKFLOWS_MAX_CONVERSE) {
+          dynamic.push(
+            `_(${wc.availableWorkflows.length - SYSTEM_WORKFLOWS_MAX_CONVERSE} more — use \`workflow_list\`)_`,
+          );
         }
         dynamic.push('Use `workflow_list` for details or `workflow_run` to start a workflow.');
       }
     }
 
     if (opts.dynamicContext) {
-      dynamic.push(opts.dynamicContext);
+      const raw = opts.dynamicContext;
+      if (isConverse && raw.length > SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE) {
+        dynamic.push(
+          `${raw.slice(0, SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE)}\n\n_[dynamic context truncated]_`,
+        );
+      } else {
+        dynamic.push(raw);
+      }
     }
 
     const alreadyShownIds = new Set<string>();
@@ -774,7 +831,7 @@ export class ContextEngine {
       );
     }
 
-    // Afford.S3: converse system hard budget — drop low-priority sections first.
+    // Afford.S3 failsafe only — normal sizing is profile gates + injection caps above.
     if (promptProfile === 'converse') {
       this.trimConverseSystemBudget(stable, semiStable, dynamic, SYSTEM_PROMPT_BUDGET_CONVERSE);
     }
@@ -798,9 +855,30 @@ export class ContextEngine {
   }
 
   /**
-   * Drop lower-priority converse sections until system ≤ budgetTokens.
-   * Uses the real token counter (not chars/4) so packing matches afford checks.
-   * Order: team norms/announcements → Search Strategy → roster → other dynamics.
+   * Tier-3 tail entries that MUST survive converse budget trim.
+   * Date/locale are small (~50–150 tok) but critical for time-aware replies;
+   * last-resort `dynamic.pop()` previously deleted them first because they
+   * sit at the end of the dynamic array (PROMPT-ENGINEERING §2 Tier 3).
+   */
+  private isProtectedDynamicTail(entry: string): boolean {
+    return (
+      entry.includes('Current date and time:')
+      || entry.startsWith('User locale:')
+      || entry.startsWith('User language:')
+    );
+  }
+
+  /** Keep Interaction Mode so the agent knows which scenario it is in. */
+  private isProtectedSemiStableTail(entry: string): boolean {
+    return entry.includes('## Current Interaction Mode');
+  }
+
+  /**
+   * Failsafe only (Afford.S3): drop lower-priority converse sections until
+   * system ≤ budgetTokens. Normal packing MUST stay under budget via profile
+   * gates and injection caps — if this method runs, log a warning so upstream
+   * bloat can be fixed. Never drops Current date/time, user locale/language,
+   * or Interaction Mode.
    */
   private trimConverseSystemBudget(
     stable: string[],
@@ -812,7 +890,14 @@ export class ContextEngine {
       [stable.join('\n'), semiStable.join('\n'), dynamic.join('\n')].join('\n'),
       this.tokenCounter,
     );
-    if (totalTokens() <= budgetTokens) return;
+    const before = totalTokens();
+    if (before <= budgetTokens) return;
+
+    log.warn('Converse system over budget after assemble — failsafe trim engaged', {
+      systemTokens: before,
+      budgetTokens,
+      hint: 'Fix upstream injection caps / profile gates; trim must stay rare',
+    });
 
     const dropHeadingBlock = (arr: string[], heading: string): boolean => {
       const start = arr.findIndex((s) => s.includes(heading));
@@ -829,65 +914,92 @@ export class ContextEngine {
       return true;
     };
 
-    // 1) Team norms / announcements
-    dropHeadingBlock(semiStable, '## Team Announcements');
-    if (totalTokens() <= budgetTokens) return;
-    dropHeadingBlock(semiStable, '## Team Working Norms');
-    if (totalTokens() <= budgetTokens) return;
-
-    // 2) Long Search Strategy
-    dropHeadingBlock(stable, '## Search & Exploration Strategy');
-    if (totalTokens() <= budgetTokens) return;
-
-    // 3) Roster / colleague detail in identity + dynamic
-    dropHeadingBlock(semiStable, '### Colleagues');
-    dropHeadingBlock(semiStable, '### Your Team');
-    dropHeadingBlock(dynamic, '### Colleagues');
-    dropHeadingBlock(dynamic, '## Colleague Status');
-    if (totalTokens() <= budgetTokens) return;
-
-    // 4) Other Tier-3 dynamics (project / mailbox / workflow / channel)
-    const dynamicDropOrder = [
-      '## Channel Context',
-      '## Active Workflows',
-      '## Mailbox',
-      '## Current Project',
-      '## Shared Deliverables',
-      '## Task Board',
-    ];
-    for (const h of dynamicDropOrder) {
-      if (totalTokens() <= budgetTokens) return;
-      dropHeadingBlock(dynamic, h);
+    // Peel protected Tier-3 suffix so last-resort pops cannot delete it.
+    // Reserve its tokens from the working budget, then re-append after trim.
+    const protectedDynamic: string[] = [];
+    while (dynamic.length > 0 && this.isProtectedDynamicTail(dynamic[dynamic.length - 1]!)) {
+      protectedDynamic.unshift(dynamic.pop()!);
     }
+    const protectedTok = protectedDynamic.length
+      ? estimateTokens(protectedDynamic.join('\n'), this.tokenCounter)
+      : 0;
+    const workingBudget = Math.max(1_000, budgetTokens - protectedTok);
 
-    // Last resort: hard-slice the joined semiStable/dynamic tails
-    while (totalTokens() > budgetTokens && dynamic.length > 0) {
-      dynamic.pop();
-    }
-    while (totalTokens() > budgetTokens && semiStable.length > 1) {
-      semiStable.pop();
-    }
-    if (totalTokens() > budgetTokens) {
-      // Binary-shrink stable text to fit remaining budget
-      const joined = stable.join('\n');
-      let lo = 0;
-      let hi = joined.length;
-      let best = '';
-      while (lo <= hi) {
-        const mid = Math.floor((lo + hi) / 2);
-        const candidate =
-          `${joined.slice(0, mid)}\n\n_[system trimmed to ${budgetTokens} tok converse budget]_`;
-        const other = [semiStable.join('\n'), dynamic.join('\n')].join('\n');
-        const tok = estimateTokens(`${candidate}\n${other}`, this.tokenCounter);
-        if (tok <= budgetTokens) {
-          best = candidate;
-          lo = mid + 1;
-        } else {
-          hi = mid - 1;
-        }
+    try {
+      // 1) Team norms / announcements
+      dropHeadingBlock(semiStable, '## Team Announcements');
+      if (totalTokens() <= workingBudget) return;
+      dropHeadingBlock(semiStable, '## Team Working Norms');
+      if (totalTokens() <= workingBudget) return;
+
+      // 2) Long Search Strategy
+      dropHeadingBlock(stable, '## Search & Exploration Strategy');
+      if (totalTokens() <= workingBudget) return;
+
+      // 3) Roster / colleague detail in identity + dynamic
+      dropHeadingBlock(semiStable, '### Colleagues');
+      dropHeadingBlock(semiStable, '### Your Team');
+      dropHeadingBlock(dynamic, '### Colleagues');
+      dropHeadingBlock(dynamic, '## Colleague Status');
+      if (totalTokens() <= workingBudget) return;
+
+      // 4) Other Tier-3 dynamics (project / mailbox / workflow / channel)
+      const dynamicDropOrder = [
+        '## Channel Context',
+        '## Channel History',
+        '## Available Workflows',
+        '## Active Workflows',
+        '## Mailbox',
+        '## Current Project',
+        '## Shared Deliverables',
+        '## Task Board',
+        '## Team Status',
+      ];
+      for (const h of dynamicDropOrder) {
+        if (totalTokens() <= workingBudget) return;
+        dropHeadingBlock(dynamic, h);
       }
-      stable.length = 0;
-      stable.push(best || `${joined.slice(0, Math.max(0, budgetTokens * 2))}\n\n_[system trimmed]_`);
+
+      // Last resort: hard-slice unprotected dynamic / semiStable tails
+      while (totalTokens() > workingBudget && dynamic.length > 0) {
+        dynamic.pop();
+      }
+      while (totalTokens() > workingBudget && semiStable.length > 1) {
+        const last = semiStable[semiStable.length - 1]!;
+        if (this.isProtectedSemiStableTail(last)) {
+          // Pop an earlier unprotected entry instead of Interaction Mode
+          let idx = semiStable.length - 2;
+          while (idx >= 1 && this.isProtectedSemiStableTail(semiStable[idx]!)) idx--;
+          if (idx < 1) break;
+          semiStable.splice(idx, 1);
+          continue;
+        }
+        semiStable.pop();
+      }
+      if (totalTokens() > workingBudget) {
+        // Binary-shrink stable text to fit remaining budget
+        const joined = stable.join('\n');
+        let lo = 0;
+        let hi = joined.length;
+        let best = '';
+        while (lo <= hi) {
+          const mid = Math.floor((lo + hi) / 2);
+          const candidate =
+            `${joined.slice(0, mid)}\n\n_[system trimmed to ${budgetTokens} tok converse budget]_`;
+          const other = [semiStable.join('\n'), dynamic.join('\n')].join('\n');
+          const tok = estimateTokens(`${candidate}\n${other}`, this.tokenCounter);
+          if (tok <= workingBudget) {
+            best = candidate;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        stable.length = 0;
+        stable.push(best || `${joined.slice(0, Math.max(0, workingBudget * 2))}\n\n_[system trimmed]_`);
+      }
+    } finally {
+      dynamic.push(...protectedDynamic);
     }
   }
 
@@ -1008,12 +1120,13 @@ export class ContextEngine {
   }
 
   /**
-   * L3 scenario-triggered policy blocks — long checklists that chat/heartbeat
-   * must not carry. Loaded for task execution, review, and related modes.
+   * L3 scenario-triggered policy blocks — long checklists that converse/reflex
+   * must not carry. Caller gates on execute/govern profile; this further
+   * restricts to task/review/deliberation scenarios.
    */
   private buildScenarioPolicyBlocks(scenario: AgentScenario): string | undefined {
     const needsExecutionPolicies = scenario === 'task_execution' || scenario === 'review'
-      || scenario === 'deliberation' || scenario === 'comment_response';
+      || scenario === 'deliberation';
     if (!needsExecutionPolicies) return undefined;
 
     const lines: string[] = [];

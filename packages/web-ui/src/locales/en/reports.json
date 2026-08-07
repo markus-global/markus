@@ -27,7 +27,7 @@
     "windowQuota": "5h window: {{amount}} CU (upgradable)",
     "windowUsageLabel": "5h window usage",
     "windowQuotaNone": "5h window: not enforced",
-    "rateLimit": "Rate limit: 600 req/min (all plans)"
+    "rateLimit": "No Markus request-frequency cap; upstream model providers may still rate-limit"
   },
   "agents": {
     "title": "Agent Rankings",

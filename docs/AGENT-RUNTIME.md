@@ -121,13 +121,20 @@ Test IDs: `A-pack-converse-no-spawn`, `A-pack-execute-has-code`, `A-tooldef-stic
 | `TOOL_DEF_BUDGET_EXECUTE` | 10_000 | Max tool schema tokens |
 | `TOOL_DEF_BUDGET_GOVERN` | 8_000 | Max tool schema tokens |
 | `ROLE_PROMPT_MAX_TOKENS` | 2_500 | ROLE truncation |
-| `KNOWLEDGE_PROMPT_MAX_TOKENS` | 1_500 | knowledge.md injection (`converse`/`execute`/`govern`) |
+| `KNOWLEDGE_PROMPT_MAX_TOKENS` | 1_500 | knowledge.md injection (`execute`/`govern`) |
+| `KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE` | 1_000 | knowledge.md injection (`converse`) |
 | `KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX` | 0 | reflex: no full knowledge dump |
 | `STATE_PROMPT_MAX_LINES_REFLEX` | 5 | state.md lines in reflex |
 | `STATE_TTL_DAYS` | 7 | state.md entry expiry |
 | `COLD_CONVERSE_FIXED_MAX` | 12_000 | Acceptance: system+tools |
 | `COLD_REFLEX_FIXED_MAX` | 8_000 | Acceptance: system+tools |
-| `SYSTEM_PROMPT_BUDGET_CONVERSE` | 8_000 | Hard cap on converse systemTokens after assemble |
+| `SYSTEM_PROMPT_BUDGET_CONVERSE` | 8_000 | Hard cap on converse systemTokens (assemble-time; trim = failsafe) |
+| `SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE` | 400 | Team announcements body cap (converse) |
+| `SYSTEM_NORMS_CHARS_CONVERSE` | 400 | Team norms body cap (converse) |
+| `SYSTEM_ANNOUNCEMENTS_CHARS` | 2_000 | Team announcements body cap (execute/govern) |
+| `SYSTEM_NORMS_CHARS` | 2_000 | Team norms body cap (execute/govern) |
+| `SYSTEM_WORKFLOWS_MAX_CONVERSE` | 3 | Available-workflow lines in converse |
+| `SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE` | 800 | Caller `dynamicContext` blob cap (converse) |
 | `DEFERRED_CATALOG_MAX_CHARS` | 1_500 | Tier-3 rediscovery catalog hard cap |
 | `DEEP_SLEEP_IDLE_HEARTBEATS` | 3 | Consecutive idle before skip LLM |
 | `SUBTASK_SOFT_CAP` | 8 | Warn at/above this count |
@@ -143,25 +150,32 @@ Constants live in `@markus/shared` `limits.ts`.
 | Section | reflex | converse | execute/govern |
 |---------|--------|----------|----------------|
 | ROLE (capped) | yes | yes | yes |
-| L0 tool/security rules | yes (short) | yes | yes |
+| L0 tool/security rules | yes (short Search) | yes (short Search; no spawn ads) | yes (full Search + spawn) |
 | Identity (roster) | manager + ≤3 active | capped (existing max) | capped |
-| knowledge.md | no | capped | capped |
+| knowledge.md | no | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE`) | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS`) |
 | state.md | ≤5 lines | short/optional | short/optional |
 | Skill L0 catalog | yes | yes | yes |
 | Skill full bodies | discover only | discover only | discover only |
-| L3 checklists (quality/git/error recovery) | no | no | yes |
+| L3 checklists (quality/git/error recovery) | no | **no** (incl. `comment_response`) | yes |
+| Team announcements / norms | capped | capped (400 chars) | capped (2000 chars) |
+| Available workflows | as needed | ≤3 short lines | full list |
 | Channel history / shared deliverables | no | optional short | as needed |
-| Task board detail | counts + top blocked/failed | existing caps | existing caps |
+| Task board detail | counts + top blocked/failed | only when non-empty | existing caps (empty stub ok) |
+| Date / locale / Interaction Mode | yes | **always** (never trimmed) | yes |
 
 MUST: `buildSystemPrompt` MUST accept `promptProfile` derived from scenario pack.
 
-MUST (§Afford.S3): After assemble, when `promptProfile=converse`, `systemTokens` MUST be
-≤ `SYSTEM_PROMPT_BUDGET_CONVERSE` (8000). Over budget: drop lower-priority dynamic
-sections in order — team norms/announcements → long Search Strategy → roster detail →
-other Tier-3 dynamics — until under budget. ROLE/knowledge caps still apply first.
+MUST: Converse packing is **assemble-time**: profile gates + injection caps MUST keep
+`systemTokens ≤ SYSTEM_PROMPT_BUDGET_CONVERSE` under normal conditions. Do **not** rely
+on post-assemble surgery as the primary sizing mechanism.
+
+MUST (§Afford.S3 failsafe): If converse still exceeds 8000 after assemble, drop
+lower-priority sections (announcements → norms → Search → roster → other Tier-3)
+until under budget, log a warning, and **MUST NOT** drop `Current date and time`,
+user locale/language, or `## Current Interaction Mode`.
 
 Test IDs: `A-profile-reflex-omits`, `A-profile-role-cap`, `A-knowledge-cap`,
-`S-converse-system-budget`.
+`A-profile-converse-no-l3`, `S-converse-system-budget`, `S-converse-keeps-date`.
 
 ---
 

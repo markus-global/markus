@@ -27,7 +27,7 @@
     "windowQuota": "5小时窗口：{{amount}} 积分（可升级）",
     "windowUsageLabel": "5小时窗口用量",
     "windowQuotaNone": "5小时窗口：未启用",
-    "rateLimit": "频率限制：600 次/分钟（所有计划统一）"
+    "rateLimit": "无 Markus 侧请求次数上限；上游模型供应商仍可能限流"
   },
   "agents": {
     "title": "智能体排名",

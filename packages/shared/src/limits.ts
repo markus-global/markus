@@ -606,8 +606,14 @@ export const TOOL_DEF_BUDGET_GOVERN = 8_000;
 
 /** ROLE.md truncation before system-prompt injection. */
 export const ROLE_PROMPT_MAX_TOKENS = 2_500;
-/** knowledge.md injection cap for converse/execute/govern. */
+/** knowledge.md injection cap for execute/govern (and default). */
 export const KNOWLEDGE_PROMPT_MAX_TOKENS = 1_500;
+/**
+ * knowledge.md injection cap for converse (chat / a2a / comments).
+ * Tighter than execute so Tier-3 essentials (date, locale, mode) fit
+ * within SYSTEM_PROMPT_BUDGET_CONVERSE without post-assemble surgery.
+ */
+export const KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE = 1_000;
 /** knowledge.md injection for reflex (0 = omit full dump). */
 export const KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX = 0;
 /** Max state.md lines injected in reflex profile. */
@@ -620,8 +626,27 @@ export const COLD_CONVERSE_FIXED_MAX = 12_000;
 /** Cold-start acceptance: reflex system+toolDefs. */
 export const COLD_REFLEX_FIXED_MAX = 8_000;
 
-/** Hard cap on converse systemTokens after assemble (Afford.S3). */
+/**
+ * Hard cap on converse systemTokens after assemble (Afford.S3).
+ * Primary control is upstream: profile-gated sections + injection caps.
+ * Post-assemble trim is a failsafe only and must never drop date/locale/mode.
+ */
 export const SYSTEM_PROMPT_BUDGET_CONVERSE = 8_000;
+
+/** Team announcements body cap for converse (chars). Full file remains on disk. */
+export const SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE = 400;
+/** Team norms body cap for converse (chars). */
+export const SYSTEM_NORMS_CHARS_CONVERSE = 400;
+/** Team announcements body cap for execute/govern (chars). */
+export const SYSTEM_ANNOUNCEMENTS_CHARS = 2_000;
+/** Team norms body cap for execute/govern (chars). */
+export const SYSTEM_NORMS_CHARS = 2_000;
+/** Max available-workflow lines listed in converse system prompt. */
+export const SYSTEM_WORKFLOWS_MAX_CONVERSE = 3;
+/** Max chars per workflow description in converse. */
+export const SYSTEM_WORKFLOW_DESC_CHARS_CONVERSE = 80;
+/** Max chars for caller-supplied `dynamicContext` blob in converse. */
+export const SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE = 800;
 /** Tier-3 rediscovery catalog hard cap in chars (Afford.S2). */
 export const DEFERRED_CATALOG_MAX_CHARS = 1_500;
 /** Safety tokens subtracted from OR reservation afford when clamping max_tokens. */

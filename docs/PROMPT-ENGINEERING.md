@@ -197,17 +197,23 @@ MUST: `buildSystemPrompt()` MUST accept `promptProfile: 'reflex' | 'converse' | 
 | Section | reflex | converse | execute/govern |
 |---------|--------|----------|----------------|
 | ROLE | capped (`ROLE_PROMPT_MAX_TOKENS`) | capped | capped |
-| knowledge.md as `## Your Knowledge` | omitted | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS`) | capped |
+| knowledge.md as `## Your Knowledge` | omitted | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE`) | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS`) |
 | state.md | ≤ `STATE_PROMPT_MAX_LINES_REFLEX` lines | optional short | optional short |
-| L3 quality/git/error-recovery | omitted | omitted | included |
+| L3 quality/git/error-recovery | omitted | omitted (incl. comments) | included |
+| Search Strategy | short | short | full ladder |
+| Team announcements / norms | capped | 400 chars | 2000 chars |
 | Channel history / shared deliverables | omitted | optional short | as needed |
 | Full roster | manager + ≤3 active | existing caps | existing caps |
+| Date / locale / Interaction Mode | yes | always retained | yes |
 
 MUST: ROLE text MUST be truncated to `ROLE_PROMPT_MAX_TOKENS` before injection.
 MUST: knowledge injection MUST exclude observations buffer.
 MUST NOT: Inject full `state.md` history into reflex.
+MUST: Converse size is controlled at **assemble time** (profile gates + caps), not by
+deleting Tier-3 essentials after the fact.
 
-Test IDs: `A-profile-reflex-omits`, `A-profile-role-cap`, `A-knowledge-cap`.
+Test IDs: `A-profile-reflex-omits`, `A-profile-role-cap`, `A-knowledge-cap`,
+`A-profile-converse-no-l3`.
 
 ### 2.4 Spec: Afford fail-closed packing
 
@@ -223,13 +229,16 @@ MUST (§Afford.S1): `handleMessageStream` MUST use the same `ensureAffordablePro
 gate as `handleMessage` before any provider call.
 
 MUST (§Afford.S3): `promptProfile=converse` → `systemTokens ≤ SYSTEM_PROMPT_BUDGET_CONVERSE`
-(8000) after section trim.
+(8000). Primary control is assemble-time caps/gates. Post-assemble trim is a **failsafe
+only**: if it runs, log a warning; MUST NOT drop `Current date and time`, user
+locale/language, or `## Current Interaction Mode`.
 
 MUST (§Afford.S4): Provider MUST clamp `max_tokens` to remaining afford (proactive when
 `lastPromptAffordTokens` known; reactive on reservation 402).
 
 Test IDs: `A-afford-downgrade`, `A-afford-heartbeat-fail`, `S-stream-afford-reject`,
-`S-stream-afford-downgrade`, `S-converse-system-budget`, `S-max-tokens-clamp-remaining`.
+`S-stream-afford-downgrade`, `S-converse-system-budget`, `S-converse-keeps-date`,
+`S-max-tokens-clamp-remaining`.
 
 Cold-start acceptance: converse fixed ≤ 12_000; reflex fixed ≤ 8_000
 (`A-budget-contract-converse`, `A-budget-contract-reflex`).
