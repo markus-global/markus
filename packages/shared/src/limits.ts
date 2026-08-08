@@ -279,6 +279,15 @@ export const ARCHIVE_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1000;
  *  aligned — do not load a larger window than we inject. */
 export const CHANNEL_CONTEXT_MESSAGES = 15;
 
+/** Max characters per channel history message in the system prompt digest. */
+export const CHANNEL_CONTEXT_MSG_CHARS = 1_500;
+
+/** Max characters for CONTEXT.md / org context injection (progressive digest). */
+export const SYSTEM_CONTEXT_MD_CHARS = 2_000;
+
+/** Max characters for each team project description in identity. */
+export const SYSTEM_TEAM_PROJECT_DESC_CHARS = 200;
+
 // ─── Mailbox Item TTL ────────────────────────────────────────────────────────
 
 /** Maximum age (ms) for queued mailbox items before they are dropped on restart.
@@ -598,16 +607,24 @@ export const PROMPT_AFFORD_OUTPUT_RESERVE = 4_096;
 /** Max tool-definition tokens for reflex pack (heartbeat / dream / flush). */
 export const TOOL_DEF_BUDGET_REFLEX = 3_000;
 /** Max tool-definition tokens for converse pack (chat / a2a / comments). */
-export const TOOL_DEF_BUDGET_CONVERSE = 6_000;
+export const TOOL_DEF_BUDGET_CONVERSE = 8_000;
 /** Max tool-definition tokens for execute pack (task_execution). */
 export const TOOL_DEF_BUDGET_EXECUTE = 10_000;
 /** Max tool-definition tokens for govern pack (review / deliberation). */
 export const TOOL_DEF_BUDGET_GOVERN = 8_000;
 
-/** ROLE.md truncation before system-prompt injection. */
-export const ROLE_PROMPT_MAX_TOKENS = 2_500;
-/** knowledge.md injection cap for converse/execute/govern. */
+/**
+ * Soft size metric for ROLE.md (observe/warn only). ROLE is never truncated —
+ * oversized ROLE is an authoring issue (move long-tail refs into skills).
+ */
+export const ROLE_PROMPT_MAX_TOKENS = 6_000;
+/** knowledge.md injection cap for execute/govern (and default). */
 export const KNOWLEDGE_PROMPT_MAX_TOKENS = 1_500;
+/**
+ * knowledge.md progressive-disclosure cap for converse: short digest in prompt;
+ * full text remains on disk via memory_search / file_read.
+ */
+export const KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE = 1_200;
 /** knowledge.md injection for reflex (0 = omit full dump). */
 export const KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX = 0;
 /** Max state.md lines injected in reflex profile. */
@@ -616,12 +633,31 @@ export const STATE_PROMPT_MAX_LINES_REFLEX = 5;
 export const STATE_TTL_DAYS = 7;
 
 /** Cold-start acceptance: converse system+toolDefs. */
-export const COLD_CONVERSE_FIXED_MAX = 12_000;
+export const COLD_CONVERSE_FIXED_MAX = 28_000;
 /** Cold-start acceptance: reflex system+toolDefs. */
 export const COLD_REFLEX_FIXED_MAX = 8_000;
 
-/** Hard cap on converse systemTokens after assemble (Afford.S3). */
-export const SYSTEM_PROMPT_BUDGET_CONVERSE = 8_000;
+/**
+ * Soft size metric for converse systemTokens (Afford.S3 observe/warn only).
+ * MUST NOT drive truncation of ROLE, L0, Interaction Mode, or date/locale.
+ * Real size control = progressive disclosure at assemble + provider afford.
+ */
+export const SYSTEM_PROMPT_BUDGET_CONVERSE = 16_000;
+
+/** Team announcements body cap for converse (chars). Full file remains on disk. */
+export const SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE = 400;
+/** Team norms body cap for converse (chars). */
+export const SYSTEM_NORMS_CHARS_CONVERSE = 400;
+/** Team announcements body cap for execute/govern (chars). */
+export const SYSTEM_ANNOUNCEMENTS_CHARS = 2_000;
+/** Team norms body cap for execute/govern (chars). */
+export const SYSTEM_NORMS_CHARS = 2_000;
+/** Max available-workflow lines listed in converse system prompt. */
+export const SYSTEM_WORKFLOWS_MAX_CONVERSE = 3;
+/** Max chars per workflow description in converse. */
+export const SYSTEM_WORKFLOW_DESC_CHARS_CONVERSE = 80;
+/** Max chars for caller-supplied `dynamicContext` blob in converse. */
+export const SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE = 800;
 /** Tier-3 rediscovery catalog hard cap in chars (Afford.S2). */
 export const DEFERRED_CATALOG_MAX_CHARS = 1_500;
 /** Safety tokens subtracted from OR reservation afford when clamping max_tokens. */

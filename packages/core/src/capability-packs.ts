@@ -34,7 +34,6 @@ export const REFLEX_MANAGER_EXTRA_TOOLS = ['team_status'] as const;
 
 /** Forbidden in default converse selection (discover only). */
 export const CONVERSE_FORBIDDEN_DEFAULT = new Set([
-  'spawn_subagents',
   'deliverable_create',
 ]);
 
@@ -45,6 +44,91 @@ export const TOOL_DEF_PROTECTED = new Set([
   'request_user_input',
   'request_user_approval',
 ]);
+
+/**
+ * Core Markus tools that should survive budget pressure before MCP/skill tools.
+ * Prefer deferring chrome-devtools__* / feishu_* over shell_execute / file_read.
+ */
+export const TOOL_DEF_CORE_KEEP = new Set([
+  ...TOOL_DEF_PROTECTED,
+  'shell_execute',
+  'file_read',
+  'file_write',
+  'file_edit',
+  'grep_search',
+  'glob_find',
+  'list_directory',
+  'apply_patch',
+  'web_search',
+  'web_fetch',
+  'task_create',
+  'task_list',
+  'task_update',
+  'task_get',
+  'task_comment',
+  'memory_save',
+  'memory_search',
+  'spawn_subagent',
+  'agent_send_message',
+  'agent_list_colleagues',
+  'deliverable_search',
+  'requirement_comment',
+]);
+
+/** MCP / skill-namespaced tools — evict these before core Markus tools. */
+export function isSkillOrMcpToolName(name: string): boolean {
+  return name.includes('__')
+    || name.startsWith('feishu_')
+    || name.startsWith('chrome-devtools')
+    || name.startsWith('chrome_');
+}
+
+/**
+ * Tools that require a **work-entity session** (task / requirement / workflow /
+ * review), not free-floating Team Chat.
+ *
+ * Allowed packs/scenarios: execute, govern, and entity-bound converse
+ * (`comment_response`, `requirement_action`, `workflow_action`).
+ * Must NOT sticky into plain `chat` / `a2a` / `group_chat` / reflex — that
+ * caused "No active task" when `task_submit_review` leaked without ALS.
+ */
+export const EXECUTE_SESSION_ONLY_TOOLS = new Set([
+  'task_submit_review',
+  'task_note',
+  'task_assign',
+  'subtask_create',
+  'subtask_complete',
+  'subtask_cancel',
+  'subtask_list',
+]);
+
+/** @deprecated Alias — prefer {@link isWorkContextBoundTool}. */
+export function isExecuteSessionOnlyTool(name: string): boolean {
+  return isWorkContextBoundTool(name);
+}
+
+export function isWorkContextBoundTool(name: string): boolean {
+  return EXECUTE_SESSION_ONLY_TOOLS.has(name);
+}
+
+/** Scenarios bound to a concrete task/requirement/workflow entity. */
+export function isEntityBoundScenario(scenario?: string): boolean {
+  return scenario === 'task_execution'
+    || scenario === 'review'
+    || scenario === 'comment_response'
+    || scenario === 'requirement_action'
+    || scenario === 'workflow_action'
+    || scenario === 'deliberation';
+}
+
+/** Whether work-context-bound tools may appear LIVE for this pack/scenario. */
+export function allowsWorkContextBoundTools(
+  pack: CapabilityPack,
+  scenario?: string,
+): boolean {
+  if (pack === 'execute' || pack === 'govern') return true;
+  return isEntityBoundScenario(scenario);
+}
 
 export function scenarioToPack(scenario: string | undefined): CapabilityPack {
   switch (scenario) {
@@ -124,31 +208,47 @@ export function estimateToolDefTokens(tools: ToolDefLike[]): number {
 }
 
 /**
- * Evict largest non-protected tools until under budget.
- * Returns remaining tools + catalog of evicted names for discover.
+ * Evict tools until under budget.
+ * Order: skill/MCP tools first (largest among them), then other non-core,
+ * then non-protected core as last resort. Never evict `protectedNames`.
  */
 export function evictToolsToBudget(
   tools: ToolDefLike[],
   budget: number,
   protectedNames: Set<string> = TOOL_DEF_PROTECTED,
+  coreKeep: Set<string> = TOOL_DEF_CORE_KEEP,
 ): { tools: ToolDefLike[]; evicted: Array<{ name: string; description: string }> } {
   const current = [...tools];
   const evicted: Array<{ name: string; description: string }> = [];
 
   const sizeOf = (t: ToolDefLike) => JSON.stringify(t).length;
 
-  while (estimateToolDefTokens(current) > budget && current.length > 0) {
+  const pickVictim = (predicate: (t: ToolDefLike) => boolean): number => {
     let victimIdx = -1;
     let victimSize = -1;
     for (let i = 0; i < current.length; i++) {
       const t = current[i]!;
       if (protectedNames.has(t.name)) continue;
-      // Prefer evicting non-core (not in reflex core) large schemas
+      if (!predicate(t)) continue;
       const sz = sizeOf(t);
       if (sz > victimSize) {
         victimSize = sz;
         victimIdx = i;
       }
+    }
+    return victimIdx;
+  };
+
+  while (estimateToolDefTokens(current) > budget && current.length > 0) {
+    // 1) Skill/MCP namespaces first — these flooded converse and deferred shell/file
+    let victimIdx = pickVictim((t) => isSkillOrMcpToolName(t.name));
+    // 2) Other non-core
+    if (victimIdx < 0) {
+      victimIdx = pickVictim((t) => !coreKeep.has(t.name));
+    }
+    // 3) Last resort: largest non-protected (may include core)
+    if (victimIdx < 0) {
+      victimIdx = pickVictim(() => true);
     }
     if (victimIdx < 0) break; // only protected left
     const [victim] = current.splice(victimIdx, 1);
@@ -175,7 +275,7 @@ export function formatEvictedToolCatalog(
   if (!evicted.length) return '';
   const header = [
     '\n## Deferred Tools (schemas omitted for budget)',
-    'Call `discover_tools({ name: ["tool-name"] })` to load a schema before use.',
+    'Core platform tools (shell/files/tasks/memory) stay LIVE above. These entries are optional extras — call `discover_tools({ name: ["tool-or-skill"] })` only when you need one.',
   ].join('\n');
   const lines: string[] = [];
   let used = header.length;

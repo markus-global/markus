@@ -1,5 +1,70 @@
 # Release Log
 
+## v0.9.6
+
+### Bug Fixes
+
+- **Prompt 分层与协作契约** — Conversation-first 聊天场景、player-coach Manager 文案、knowledge `##`→`###` 归一化、Team Status `stopped` 提示、Learning Habits 截断；补充 “How Your Prompt Is Composed”
+- **任务会话工具作用域** — 执行/评审等 work-context 工具不得 sticky 进自由聊天；`task_submit_review` 不再看板猜唯一 in_progress，须 ALS/`activeTasks` 或显式 `task_id`
+- **Human chat 期间 defer heartbeat** — 避免对话中被心跳抢上下文
+- **DELETE JSON body 预读** — 带 body 的 DELETE 在 route 入口预读并缓存，避免先 `await handle*Routes` 时 body 事件丢失
+- **macOS arm64 DMG** — electron-builder 改用 **APFS**（修复 macOS 26 runner 上 HFS+ 打包损坏）；Publish 增加 `hdiutil verify` + 挂载/架构冒烟
+
+## v0.9.6-rc.4
+
+### Bug Fixes
+
+- **macOS DMG CI cleanup** — 冒烟挂载成功后 `trap` 里 `rm -rf` 只读卷会在 `set -e` 下把 job 打成失败；改为先 detach 卷目录再清理，且 cleanup 永不非零退出
+
+## v0.9.6-rc.3
+
+> DMG 本体与架构校验已通过；Publish 在 EXIT trap cleanup 误失败。请用 **v0.9.6-rc.4**。
+
+### Bug Fixes
+
+- **macOS DMG CI 冒烟** — 挂载校验改用 `-mountroot`（卷名含空格时 `awk $NF` 会截断路径）；每个 matrix job 只打一个 arch，避免 arm64 job 顺带打出 x64 DMG
+
+## v0.9.6-rc.2
+
+> arm64 DMG 已改为 APFS 且 `hdiutil verify` 通过，但 Publish 冒烟挂载脚本因路径解析失败；请用 **v0.9.6-rc.3**。
+
+### Bug Fixes
+
+- **macOS arm64 DMG 损坏** — electron-builder DMG 改用 **APFS**（避开 macOS 26 Tahoe runner 上 HFS+ 打包损坏）；Publish 流水线对产物跑 `hdiutil verify` + 挂载冒烟 + 架构校验，坏包直接 fail
+
+## v0.9.6-rc.1
+
+### Bug Fixes
+
+- **DELETE JSON body 预读** — 带 body 的 DELETE 在 route 入口预读并缓存，避免先 `await handle*Routes` 时测试/客户端 body 事件丢失
+- **CI 测试** — converse 不再断言空 Task Board stub；`api-server` mock 支持晚注册的 body listener，并等待响应真正结束
+
+## v0.9.6-rc.0
+
+> npm `next` 曾短暂发布；桌面/CI 未完整通过。请用 **v0.9.6-rc.1**。
+
+### Bug Fixes
+
+- **Prompt 分层与协作契约** — Conversation-first 聊天场景、player-coach Manager 文案、knowledge `##`→`###` 归一化、Team Status `stopped` 提示、Learning Habits 截断；补充 “How Your Prompt Is Composed”
+- **任务会话工具作用域** — 执行/评审等 work-context 工具不得 sticky 进自由聊天；`task_submit_review` 不再看板猜唯一 in_progress，须 ALS/`activeTasks` 或显式 `task_id`
+- **Human chat 期间 defer heartbeat** — 避免对话中被心跳抢上下文
+
+## v0.9.5
+
+> npm `latest` 曾误发此版本（桌面构建已取消）。请优先使用本 RC / 后续正式版；稳定桌面包以 GitHub Release 为准。
+
+### Bug Fixes
+
+- **Prompt 分层与协作契约** — Conversation-first 聊天场景、player-coach Manager 文案、knowledge `##`→`###` 归一化、Team Status `stopped` 提示、Learning Habits 截断；补充 “How Your Prompt Is Composed”
+- **任务会话工具作用域** — 执行/评审等 work-context 工具不得 sticky 进自由聊天；`task_submit_review` 不再看板猜唯一 in_progress，须 ALS/`activeTasks` 或显式 `task_id`
+- **Human chat 期间 defer heartbeat** — 避免对话中被心跳抢上下文
+
+## v0.9.4
+
+### Bug Fixes
+
+- **Prompt truncate** — 修复提示词截断导致协作规则与能力说明丢失的问题
+
 ## v0.9.3
 
 ### Bug Fixes

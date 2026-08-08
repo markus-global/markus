@@ -256,9 +256,8 @@ export class EnhancedRoleLoader {
     const name = this.extractTitle(roleContent) || nameOrPath;
     const category = this.inferCategory(nameOrPath);
 
-    // Append shared instructions (SHARED.md in the roles root) to every role's prompt
-    const sharedContent = this.loadSharedInstructions();
-    const systemPrompt = sharedContent ? `${roleContent}\n\n${sharedContent}` : roleContent;
+    // ROLE.md only — SHARED.md is progressive (file_read), not always-on.
+    const systemPrompt = roleContent;
 
     const role: EnhancedRoleTemplate = {
       id: generateId('role'),
@@ -279,8 +278,7 @@ export class EnhancedRoleLoader {
 
   private createMarkusRoleFromContent(content: string, name: string): EnhancedRoleTemplate {
     const category = this.inferCategory(name);
-    const sharedContent = this.loadSharedInstructions();
-    const systemPrompt = sharedContent ? `${content}\n\n${sharedContent}` : content;
+    const systemPrompt = content;
 
     return {
       id: generateId('role'),
@@ -341,14 +339,6 @@ export class EnhancedRoleLoader {
       policies: read('POLICIES.md'),
       context: read('CONTEXT.md'),
     };
-  }
-
-  private loadSharedInstructions(): string | undefined {
-    for (const dir of this.templateDirs) {
-      const p = join(dir, 'SHARED.md');
-      if (existsSync(p)) return readFileSync(p, 'utf-8');
-    }
-    return undefined;
   }
 
   private extractTitle(md: string): string {

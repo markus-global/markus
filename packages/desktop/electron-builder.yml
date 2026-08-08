@@ -34,9 +34,10 @@ compression: maximum
 
 mac:
   category: public.app-category.developer-tools
+  # Arch is selected by CLI (`--arm64` / `--x64`). Do not list both here —
+  # that made each CI matrix job build arm64+x64 and upload duplicate DMGs.
   target:
-    - target: dmg
-      arch: [arm64, x64]
+    - dmg
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
@@ -45,6 +46,10 @@ mac:
   icon: build/icon.icns
 
 dmg:
+  # APFS avoids HFS+ create/mount corruption on macOS 26 Tahoe runners
+  # (GitHub macos-latest). HFS+ produced INVALID arm64 DMGs that Finder
+  # refuses to open (hdiutil: "映像数据已损坏").
+  filesystem: APFS
   sign: false
   contents:
     - x: 130

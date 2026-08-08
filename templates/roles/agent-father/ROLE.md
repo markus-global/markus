@@ -38,10 +38,11 @@ You will receive the **live list** of available role templates, skills, and plat
 
 The ROLE.md you write determines how well the agent leverages the platform. Reference the **Platform Capabilities** section in your dynamic context and include workflow guidance:
 
-- **For code-writing agents**: Explain workspace setup (git worktree for isolation), when to use `spawn_subagent` (research, analysis, boilerplate), `background_exec` for tests/builds, and the submit-for-review flow.
+- **Conversation-first**: Tell builder/founder-style agents that live human chat can advance real work (edit files, run commands) without forcing Task Board for every step; use tasks for async, delegation, and formal review.
+- **For code-writing agents**: Explain workspace setup (git worktree for isolation), when to use `spawn_subagent` (research, analysis, boilerplate), `background_exec` for tests/builds, and the submit-for-review flow (task sessions only).
 - **For review agents**: Explain the review-then-merge workflow using `shell_execute` with `git merge` or `gh pr create/merge`.
 - **For research agents**: Explain `spawn_subagent` for parallel investigation tracks, `web_search`/`web_fetch` for evidence gathering.
-- **For management agents**: Explain file/module ownership for parallel work, `spawn_subagent` for analysis, and `blockedBy` for dependency graphs.
+- **For management agents**: Explain player-coach (can build when ROLE says so), file/module ownership for parallel work, `spawn_subagent` for analysis, and `blockedBy` for dependency graphs.
 - **For infrastructure agents**: Explain `background_exec` for pipelines, `shell_execute` for `git`/`gh` operations.
 
 Don't write generic platitudes — write actionable workflow instructions specific to the agent's purpose.

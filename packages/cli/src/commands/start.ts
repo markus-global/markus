@@ -97,6 +97,7 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   const providerConfigs: Record<string, LLMProviderConfig> = {};
   let defaultProvider = config.llm.defaultProvider;
   const llmTimeoutMs = Number(process.env['LLM_TIMEOUT_MS']) || config.llm.timeoutMs || undefined;
+  const llmStreamTimeoutMs = Number(process.env['LLM_STREAM_TIMEOUT_MS']) || undefined;
   const providerMeta = new Map(PROVIDERS.map((p) => [p.id, p]));
   const envPrefix = (id: string) => id.toUpperCase().replace(/-/g, '_');
 
@@ -191,6 +192,7 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
       hubUrl,
       ...(hubToken ? { hubToken } : {}),
       timeoutMs: llmTimeoutMs,
+      ...(llmStreamTimeoutMs ? { streamTimeoutMs: llmStreamTimeoutMs } : {}),
     };
   } else if (config.llm.defaultProvider === 'markus') {
     log.warn(
@@ -229,6 +231,7 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
           model,
           ...(baseUrl ? { baseUrl } : {}),
           timeoutMs: llmTimeoutMs,
+          ...(llmStreamTimeoutMs ? { streamTimeoutMs: llmStreamTimeoutMs } : {}),
         };
       }
       continue;
@@ -258,6 +261,7 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
       apiKey,
       ...(baseUrl ? { baseUrl } : {}),
       timeoutMs: llmTimeoutMs,
+      ...(llmStreamTimeoutMs ? { streamTimeoutMs: llmStreamTimeoutMs } : {}),
     };
   }
 

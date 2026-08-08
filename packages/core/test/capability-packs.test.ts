@@ -30,8 +30,8 @@ describe('capability packs (AGENT-RUNTIME §2)', () => {
     expect(getReflexAllowlist(true).has('team_status')).toBe(true);
   });
 
-  it('A-pack-converse-no-spawn: converse forbids spawn_subagents and deliverable_create by default', () => {
-    expect(CONVERSE_FORBIDDEN_DEFAULT.has('spawn_subagents')).toBe(true);
+  it('A-pack-converse-no-deliverable: converse forbids deliverable_create but allows spawn_subagents', () => {
+    expect(CONVERSE_FORBIDDEN_DEFAULT.has('spawn_subagents')).toBe(false);
     expect(CONVERSE_FORBIDDEN_DEFAULT.has('deliverable_create')).toBe(true);
     expect(scenarioToPack('chat')).toBe('converse');
   });
@@ -108,6 +108,40 @@ describe('toolDef eviction (AGENT-RUNTIME §5)', () => {
       expect(estimateToolDefTokens(capped)).toBeLessThanOrEqual(TOOL_DEF_BUDGET_CONVERSE);
       tools = capped;
     }
+  });
+
+  it('S-tooldef-evict-mcp-before-core: feishu/chrome defer before shell/file', () => {
+    const bigSchema = {
+      type: 'object',
+      properties: Object.fromEntries(
+        Array.from({ length: 30 }, (_, i) => [`field_${i}`, { type: 'string', description: 'x'.repeat(80) }]),
+      ),
+    };
+    const small = { type: 'object', properties: {} };
+    const tools = [
+      { name: 'discover_tools', description: 'discover', inputSchema: small },
+      { name: 'notify_user', description: 'notify', inputSchema: small },
+      { name: 'shell_execute', description: 'run shell', inputSchema: bigSchema },
+      { name: 'file_read', description: 'read files', inputSchema: bigSchema },
+      { name: 'task_create', description: 'create task', inputSchema: bigSchema },
+      ...Array.from({ length: 20 }, (_, i) => ({
+        name: `feishu_calendar_${i}`,
+        description: `Feishu calendar tool ${i}`,
+        inputSchema: bigSchema,
+      })),
+      ...Array.from({ length: 10 }, (_, i) => ({
+        name: `chrome-devtools__nav_${i}`,
+        description: `Chrome nav ${i}`,
+        inputSchema: bigSchema,
+      })),
+    ];
+    expect(estimateToolDefTokens(tools)).toBeGreaterThan(TOOL_DEF_BUDGET_CONVERSE);
+    const { tools: kept, evicted } = evictToolsToBudget(tools, TOOL_DEF_BUDGET_CONVERSE);
+    expect(estimateToolDefTokens(kept)).toBeLessThanOrEqual(TOOL_DEF_BUDGET_CONVERSE);
+    expect(kept.some((t) => t.name === 'shell_execute')).toBe(true);
+    expect(kept.some((t) => t.name === 'file_read')).toBe(true);
+    expect(kept.some((t) => t.name === 'task_create')).toBe(true);
+    expect(evicted.some((e) => e.name.startsWith('feishu_') || e.name.includes('__'))).toBe(true);
   });
 
   it('S-reflex-eviction-not-all-protected: reflex can drop large allowlist tools under budget', () => {

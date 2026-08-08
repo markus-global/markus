@@ -9,7 +9,8 @@ import { estimateToolDefTokens, packToolDefBudget, getReflexAllowlist } from '..
 describe('prompt budget contracts (AGENT-RUNTIME §9)', () => {
   it('A-budget-contract-converse: converse tool budget << cold max', () => {
     expect(packToolDefBudget('converse')).toBeLessThan(COLD_CONVERSE_FIXED_MAX);
-    expect(packToolDefBudget('converse') + 2_500).toBeLessThanOrEqual(COLD_CONVERSE_FIXED_MAX);
+    // ROLE soft ceiling + converse system budget must fit cold-start acceptance
+    expect(packToolDefBudget('converse') + 16_000).toBeLessThanOrEqual(COLD_CONVERSE_FIXED_MAX);
   });
 
   it('A-budget-contract-reflex: reflex core fits under cold reflex max', () => {

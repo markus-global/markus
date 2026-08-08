@@ -62,8 +62,8 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     this.baseUrl = config?.baseUrl ?? 'https://api.openai.com';
     this.maxTokens = config?.maxTokens ?? DEFAULT_REQUEST_MAX_TOKENS;
     this.chatTimeoutMs = config?.timeoutMs ?? 90_000;
-    // Idle gap between chunks (reset on data). Absolute hard cap is separate in chatStream.
-    this.streamTimeoutMs = config?.timeoutMs ?? 180_000;
+    // Idle gap between chunks (reset on data). Independent of chat timeoutMs.
+    this.streamTimeoutMs = config?.streamTimeoutMs ?? 180_000;
     this.tokenResolver = tokenResolver;
   }
 
@@ -72,10 +72,8 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     if (config.apiKey) this.apiKey = config.apiKey;
     if (config.baseUrl) this.baseUrl = config.baseUrl;
     if (config.maxTokens) this.maxTokens = config.maxTokens;
-    if (config.timeoutMs) {
-      this.chatTimeoutMs = config.timeoutMs;
-      this.streamTimeoutMs = config.timeoutMs;
-    }
+    if (config.timeoutMs) this.chatTimeoutMs = config.timeoutMs;
+    if (config.streamTimeoutMs) this.streamTimeoutMs = config.streamTimeoutMs;
   }
 
   setTokenResolver(resolver: TokenResolver): void {
@@ -246,11 +244,22 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     const endpoint = /\/v\d+$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
     const controller = new AbortController();
     const STREAM_HARD_TIMEOUT_MS = 15 * 60_000;
-    let idleTimeout = setTimeout(() => controller.abort(), this.streamTimeoutMs);
-    const hardTimeout = setTimeout(() => controller.abort(), STREAM_HARD_TIMEOUT_MS);
+    let idleTimedOut = false;
+    let hardTimedOut = false;
+    let idleTimeout = setTimeout(() => {
+      idleTimedOut = true;
+      controller.abort();
+    }, this.streamTimeoutMs);
+    const hardTimeout = setTimeout(() => {
+      hardTimedOut = true;
+      controller.abort();
+    }, STREAM_HARD_TIMEOUT_MS);
     const bumpIdleTimeout = () => {
       clearTimeout(idleTimeout);
-      idleTimeout = setTimeout(() => controller.abort(), this.streamTimeoutMs);
+      idleTimeout = setTimeout(() => {
+        idleTimedOut = true;
+        controller.abort();
+      }, this.streamTimeoutMs);
     };
     const clearStreamTimeouts = () => {
       clearTimeout(idleTimeout);
@@ -372,6 +381,20 @@ export class OpenAIProvider implements MultiModalProviderInterface {
         } catch { /* skip unparseable lines */ }
       }
     }
+    } catch (err) {
+      clearStreamTimeouts();
+      const hasPartial = content.length > 0 || reasoningContent.length > 0 || toolCalls.size > 0;
+      if (idleTimedOut && hasPartial) {
+        toolCalls.clear();
+        finishReason = 'max_tokens';
+      } else if (idleTimedOut || hardTimedOut) {
+        const kind = hardTimedOut ? 'hard' : 'idle';
+        throw new Error(
+          `OpenAI stream ${kind} timeout after ${hardTimedOut ? STREAM_HARD_TIMEOUT_MS : this.streamTimeoutMs}ms`,
+        );
+      } else {
+        throw err;
+      }
     } finally {
       clearStreamTimeouts();
     }

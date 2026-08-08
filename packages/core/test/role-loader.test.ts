@@ -83,15 +83,16 @@ describe('RoleLoader', () => {
     expect(role.defaultPolicies[0].rules).toContain('No prod access');
   });
 
-  it('appends SHARED.md to system prompt', () => {
-    writeFileSync(join(TEST_DIR, 'SHARED.md'), 'Shared team instructions.');
+  it('A-role-no-shared-append: ROLE.md only (SHARED is progressive)', () => {
+    writeFileSync(join(TEST_DIR, 'SHARED.md'), 'Shared team instructions UNIQUE_SHARED_MARKER.');
     createRoleDir('custom-role', {
       'ROLE.md': '# Custom\nA custom role.',
     });
 
     const role = loader.loadRole('custom-role');
     expect(role.systemPrompt).toContain('A custom role.');
-    expect(role.systemPrompt).toContain('Shared team instructions.');
+    expect(role.systemPrompt).not.toContain('UNIQUE_SHARED_MARKER');
+    expect(role.systemPrompt).not.toContain('Shared team instructions');
   });
 
   it('throws when role not found', () => {

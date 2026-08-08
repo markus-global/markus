@@ -68,7 +68,7 @@ Test IDs: `B-approve-install`, `B-reject-feedback`, `B-stats-reject-feedback`.
 | Pack | Scenarios | ToolDef budget (tokens) | Prompt profile |
 |------|-----------|-------------------------|----------------|
 | `reflex` | `heartbeat`, `memory_consolidation` (Dream), `memory_flush`, `distillation` | 3_000 | `reflex` |
-| `converse` | `chat`, `a2a`, `group_chat`, `comment_response`, `requirement_action` | 6_000 | `converse` |
+| `converse` | `chat`, `a2a`, `group_chat`, `comment_response`, `requirement_action` | 8_000 | `converse` |
 | `execute` | `task_execution` | 10_000 | `execute` |
 | `govern` | `review`, `deliberation` | 8_000 | `govern` |
 
@@ -117,17 +117,24 @@ Test IDs: `A-pack-converse-no-spawn`, `A-pack-execute-has-code`, `A-tooldef-stic
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `TOOL_DEF_BUDGET_REFLEX` | 3_000 | Max tool schema tokens |
-| `TOOL_DEF_BUDGET_CONVERSE` | 6_000 | Max tool schema tokens |
+| `TOOL_DEF_BUDGET_CONVERSE` | 8_000 | Max tool schema tokens |
 | `TOOL_DEF_BUDGET_EXECUTE` | 10_000 | Max tool schema tokens |
 | `TOOL_DEF_BUDGET_GOVERN` | 8_000 | Max tool schema tokens |
-| `ROLE_PROMPT_MAX_TOKENS` | 2_500 | ROLE truncation |
-| `KNOWLEDGE_PROMPT_MAX_TOKENS` | 1_500 | knowledge.md injection (`converse`/`execute`/`govern`) |
+| `ROLE_PROMPT_MAX_TOKENS` | 6_000 | ROLE soft size metric (warn only; never truncate) |
+| `KNOWLEDGE_PROMPT_MAX_TOKENS` | 1_500 | knowledge.md injection (`execute`/`govern`) |
+| `KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE` | 1_200 | knowledge.md injection (`converse`) |
 | `KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX` | 0 | reflex: no full knowledge dump |
 | `STATE_PROMPT_MAX_LINES_REFLEX` | 5 | state.md lines in reflex |
 | `STATE_TTL_DAYS` | 7 | state.md entry expiry |
-| `COLD_CONVERSE_FIXED_MAX` | 12_000 | Acceptance: system+tools |
+| `COLD_CONVERSE_FIXED_MAX` | 28_000 | Acceptance: system+tools |
 | `COLD_REFLEX_FIXED_MAX` | 8_000 | Acceptance: system+tools |
-| `SYSTEM_PROMPT_BUDGET_CONVERSE` | 8_000 | Hard cap on converse systemTokens after assemble |
+| `SYSTEM_PROMPT_BUDGET_CONVERSE` | 16_000 | Soft size metric for converse system (observe/warn; never truncate ROLE/L0) |
+| `SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE` | 400 | Team announcements body cap (converse) |
+| `SYSTEM_NORMS_CHARS_CONVERSE` | 400 | Team norms body cap (converse) |
+| `SYSTEM_ANNOUNCEMENTS_CHARS` | 2_000 | Team announcements body cap (execute/govern) |
+| `SYSTEM_NORMS_CHARS` | 2_000 | Team norms body cap (execute/govern) |
+| `SYSTEM_WORKFLOWS_MAX_CONVERSE` | 3 | Available-workflow lines in converse |
+| `SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE` | 800 | Caller `dynamicContext` blob cap (converse) |
 | `DEFERRED_CATALOG_MAX_CHARS` | 1_500 | Tier-3 rediscovery catalog hard cap |
 | `DEEP_SLEEP_IDLE_HEARTBEATS` | 3 | Consecutive idle before skip LLM |
 | `SUBTASK_SOFT_CAP` | 8 | Warn at/above this count |
@@ -142,34 +149,68 @@ Constants live in `@markus/shared` `limits.ts`.
 
 | Section | reflex | converse | execute/govern |
 |---------|--------|----------|----------------|
-| ROLE (capped) | yes | yes | yes |
-| L0 tool/security rules | yes (short) | yes | yes |
+| ROLE (full; soft warn metric) | yes | yes | yes |
+| L0 + Collaboration Rules | yes (complete, concise) | yes (complete, concise) | yes (complete, concise) |
 | Identity (roster) | manager + ≤3 active | capped (existing max) | capped |
-| knowledge.md | no | capped | capped |
+| knowledge.md | no | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE`) | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS`) |
 | state.md | ≤5 lines | short/optional | short/optional |
 | Skill L0 catalog | yes | yes | yes |
 | Skill full bodies | discover only | discover only | discover only |
-| L3 checklists (quality/git/error recovery) | no | no | yes |
+| L3 checklists (quality/git/error recovery) | no | **no** (incl. `comment_response`) | yes |
+| Team announcements / norms | capped | capped (400 chars) | capped (2000 chars) |
+| Available workflows | as needed | ≤3 short lines | full list |
 | Channel history / shared deliverables | no | optional short | as needed |
-| Task board detail | counts + top blocked/failed | existing caps | existing caps |
+| Task board detail | counts + top blocked/failed | only when non-empty | existing caps (empty stub ok) |
+| Date / locale / Interaction Mode | yes | **always** (never trimmed) | yes |
 
 MUST: `buildSystemPrompt` MUST accept `promptProfile` derived from scenario pack.
 
-MUST (§Afford.S3): After assemble, when `promptProfile=converse`, `systemTokens` MUST be
-≤ `SYSTEM_PROMPT_BUDGET_CONVERSE` (8000). Over budget: drop lower-priority dynamic
-sections in order — team norms/announcements → long Search Strategy → roster detail →
-other Tier-3 dynamics — until under budget. ROLE/knowledge caps still apply first.
+MUST: Size control is **progressive disclosure**, not truncation of always-on text:
+- Always-on (never truncated): ROLE.md (persona only — **not** SHARED.md), L0 capability
+  rules, **`## Markus Collaboration Rules`** (distilled from SHARED), Interaction Mode,
+  date/locale.
+- Collaboration Rules MUST encode **Conversation-first + Task-when-needed**: chat may
+  pair-build; tasks for async/delegation/formal review; STOP only after `task_create`
+  for that work. Managers are player-coach (ROLE may build; Position routes when useful).
+- Progressive at assemble: knowledge digest (demote `##`→`###`, deprioritize stale
+  fault/transcript sections), announcements/norms, workflows, CONTEXT.md
+  (full content on disk / via tools). SHARED.md long-form is **depth handbook** via
+  `file_read` — hard rules are already in L0; do not append SHARED into ROLE.
+- Progressive at tool layer: Markus core schemas LIVE; skill/MCP schemas only after
+  `discover_tools` (boot MUST register without activate; sticky/recent MUST NOT
+  re-activate skill/MCP). Activated skill/MCP MAY LRU-defer under toolDef budget;
+  CORE_KEEP + HITL + discover never defer.
+- Heartbeat MUST skip/defer LLM turns while `human_chat` is focused or queued.
+- Team Status SHOULD label stopped agents as `stopped` (not scary `offline`); when
+  all listed teammates are stopped, hint `agent_start` and that Owner chat work may continue.
+- Work-context-bound tools (`task_submit_review`, subtasks, `task_note`, …) MUST appear
+  LIVE only in **entity-bound sessions**: `execute` / `govern`, or converse scenarios
+  `comment_response` / `requirement_action` / `workflow_action`. MUST NOT sticky into
+  free `chat` / `a2a` / `group_chat` / reflex. `task_submit_review` resolves `task_id`
+  from ALS/`activeTasks` when present; otherwise the agent MUST pass `task_id`
+  (no board guessing).
 
-Test IDs: `A-profile-reflex-omits`, `A-profile-role-cap`, `A-knowledge-cap`,
-`S-converse-system-budget`.
+MUST (§Afford.S3): `SYSTEM_PROMPT_BUDGET_CONVERSE` is an observe/warn metric only.
+MUST NOT: Runtime-truncate ROLE, L0, or Collaboration Rules to fit that metric.
+Provider afford guard handles hard limits (downgrade/reject).
+
+Test IDs: `A-profile-reflex-omits`, `A-profile-role-full`, `A-collab-rules-always-on`,
+`A-role-no-shared-append`, `A-knowledge-cap`, `A-profile-converse-no-l3`,
+`S-converse-keeps-essentials`, `S-converse-keeps-date`, `S-tool-mcp-progressive`.
 
 ---
 
 ## §5 ToolDef budget eviction (Hermes Tool Search style)
 
-MUST: When estimated tool-definition tokens exceed the pack budget, the runtime MUST keep:
-pack core tools + `discover_tools` + HITL (`notify_user`, `request_user_input`, `request_user_approval`),
-then evict largest / least-recently-used extras until under budget.
+MUST: Skill/MCP tool schemas (`feishu_*`, `*__*`, `chrome-devtools*`) MUST NOT enter
+the LIVE tool list except via explicit `discover_tools` activation.
+MUST: Markus core tools (`TOOL_DEF_CORE_KEEP`: shell/file/task/memory/…) +
+`discover_tools` + HITL MUST stay LIVE for converse/execute/govern.
+MUST: When estimated tool-definition tokens still exceed the pack budget, evict
+optional extras / activated skill-MCP (LRU) only — never CORE_KEEP or HITL/discover.
+Prefer catalog (Tier 3 / inactive namespace list) over schema dump.
+
+Test IDs: `S-tool-mcp-progressive`, `S-tooldef-evict-mcp-before-core`, `S-activated-mcp-lru`.
 
 MUST (§Afford.S2): Evicted tool rediscovery catalog MUST be injected into **system Tier 3**
 as a short name-only (or name + ≤40 chars) list, total ≤ `DEFERRED_CATALOG_MAX_CHARS`.
@@ -177,7 +218,16 @@ as a short name-only (or name + ≤40 chars) list, total ≤ `DEFERRED_CATALOG_M
 MUST NOT: Append the eviction catalog to `discover_tools.description` (that re-inflates
 `toolDefTokens` and defeats the budget).
 
-Test IDs: `A-tooldef-budget`, `A-tooldef-sticky-capped`, `S-catalog-not-in-tooldef`.
+MUST: After `discover_tools` activates tool names, the runtime MUST rebuild the LLM
+`tools` schema list before the next provider call (stream / chat / task / session
+continuations). Core + HITL stay immune; skill/MCP activations may later LRU-defer.
+MUST NOT: Reuse a stale pre-discover `llmTools` array across tool-loop iterations —
+that makes activation a no-op and causes discover_tools death spirals.
+MUST: Consecutive `discover_tools` calls (any args) ≥ 5 MUST be treated as a
+critical loop and break the tool loop.
+
+Test IDs: `A-tooldef-budget`, `A-tooldef-sticky-capped`, `S-catalog-not-in-tooldef`,
+`S-discover-activated-protected`, `S-discover-tools-spin`.
 
 ### §5.1 max_tokens reservation clamp (§Afford.S4)
 
@@ -243,7 +293,7 @@ Test IDs: `C-review-notes`, `C-task-context-inject`, `C-deliv-version`, `C-subta
 
 | Metric | Target | Verify |
 |--------|--------|--------|
-| Cold converse fixed | ≤ 12_000 (median ≤ 10_000) | `A-budget-contract-converse` + live |
+| Cold converse fixed | ≤ 28_000 | `A-budget-contract-converse` + live |
 | Cold reflex fixed | ≤ 8_000 | `A-budget-contract-reflex` + live |
 | Deep sleep quiet period | 0 LLM calls | `A-deep-sleep-skip` + live |
 | Afford over fixed | 0 provider calls | `A-afford-downgrade` |

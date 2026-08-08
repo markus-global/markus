@@ -143,12 +143,12 @@ Each Agent consists of:
 | Component | Description |
 |-----------|-------------|
 | `ROLE.md` | Role definition and system prompt |
-| `SHARED.md` | Shared behavior norms for all Agents (governance, knowledge, delivery, etc.) |
+| `SHARED.md` | Depth handbook (not injected into ROLE); hard rules live in L0 Collaboration Rules |
 | `SKILLS.md` | Skill list (tool permissions) |
 | `HEARTBEAT.md` | Scheduled proactive tasks (e.g. daily issue checks) |
 | `POLICIES.md` | Behavior rules and boundaries |
 | `NOTEBOOK.md` | Persistent cognitive workspace (situational state, CPP output) |
-| `MEMORY.md` | Unified long-term knowledge + observation buffer (Agent-maintained) |
+| `knowledge.md` / `state.md` | Long-term knowledge + TTL state (legacy `MEMORY.md` migrates once) |
 | `CONTEXT.md` | Organization context (shared knowledge base) |
 
 The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagent` / `spawn_subagents`) for delegated subtasks. Subagent limits (parallelism, retry policy, preview truncation) are centralized in `packages/shared/src/limits.ts` rather than hardcoded. The parent agent has a **configurable tool-use iteration limit** (`AgentOptions.maxToolIterations`, system settings; default 200, range 1–10000) on chat-style harnesses — task execution and subagent loops remain uncapped by default.

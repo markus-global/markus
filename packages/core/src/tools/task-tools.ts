@@ -977,8 +977,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           {
             name: 'task_submit_review',
             description: [
-              'Submit your completed work for review. You MUST call this when your task is done — execution is NOT considered complete without it.',
-              'The system auto-fills task_id, reviewer, and branch from your current execution context.',
+              'Submit your completed work for review. You MUST call this when your task execution is done — the round is NOT complete without it.',
+              'Prefer calling from a task session: task_id is auto-filled from the execution context (ALS).',
+              'Outside a task session you MUST pass task_id explicitly (the system does not guess from the board).',
               'Provide a summary and list all deliverables (files or directories) you produced.',
             ].join(' '),
             inputSchema: {
@@ -986,7 +987,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               properties: {
                 task_id: {
                   type: 'string',
-                  description: 'The task ID to submit (tsk_-prefixed). Optional if you are executing within an active task context (system auto-fills). REQUIRED if you are working outside a task execution context (e.g. standalone session).',
+                  description: 'Task ID (tsk_-prefixed). Optional inside an active task_execution session (auto-filled). REQUIRED outside that session — do not omit and expect the system to pick a board task.',
                 },
                 summary: {
                   type: 'string',

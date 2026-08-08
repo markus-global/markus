@@ -6,6 +6,7 @@ import {
   resolveMarkusRoute,
   stripMarkusNamespace,
   normalizeMarkusHubOrigin,
+  parseRetryAfterMs,
 } from '../src/llm/markus-provider.js';
 import {
   defaultVoiceForModel,
@@ -445,14 +446,113 @@ describe('MarkusProvider CU tracking', () => {
     ).rejects.toThrow(/MARKUS_UPSTREAM_ERROR:/);
   });
 
-  it('throws MARKUS_RATE_LIMITED on 429', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      mockResponse({ error: { message: 'rate limited' } }, 429),
-    );
+  it('throws MARKUS_RATE_LIMITED on 429 after retries exhausted', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ error: { message: 'rate limited' } }, 429, { 'retry-after': '0' }))
+      .mockResolvedValueOnce(mockResponse({ error: { message: 'rate limited' } }, 429, { 'retry-after': '0' }))
+      .mockResolvedValueOnce(mockResponse({ error: { message: 'rate limited' } }, 429, { 'retry-after': '0' }));
     await expect(
       provider.chat({ messages: [{ role: 'user', content: 'hi' }] }),
     ).rejects.toThrow('MARKUS_RATE_LIMITED:');
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
+
+  it('retries 429 honoring Retry-After then succeeds', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ error: { message: 'rate limited' } }, 429, { 'retry-after': '0' }))
+      .mockResolvedValueOnce(mockResponse(chatCompletionBody('ok after retry')));
+    const res = await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.content).toBe('ok after retry');
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('parseRetryAfterMs reads seconds and caps long waits', () => {
+    const res = mockResponse({}, 429, { 'retry-after': '120' });
+    expect(parseRetryAfterMs(res)).toBe(60_000);
+    expect(parseRetryAfterMs(mockResponse({}, 429, { 'retry-after': '2' }))).toBe(2_000);
+    expect(parseRetryAfterMs(mockResponse({}, 429))).toBeNull();
+  });
+
+  it('mid-stream rate limit with partial content continues as max_tokens', async () => {
+    const sseBody = [
+      'data: {"choices":[{"delta":{"content":"Hello "},"finish_reason":null}]}\n',
+      'data: {"error":{"code":429,"message":"Rate limit exceeded"},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}\n',
+      'data: [DONE]\n',
+    ].join('');
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseBody));
+        controller.close();
+      },
+    });
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: stream,
+      text: async () => sseBody,
+    } as Response);
+
+    const response = await provider.chatStream(
+      { messages: [{ role: 'user', content: 'hi' }] },
+      () => {},
+    );
+    expect(response.content).toContain('Hello');
+    expect(response.finishReason).toBe('max_tokens');
+  });
+
+  it('does not lower stream idle timeout when configure(timeoutMs) is set', () => {
+    const p = new MarkusProvider({
+      provider: 'markus',
+      model: 'test',
+      apiKey: 'sk-or-test',
+    });
+    p.configure({ provider: 'markus', model: 'test', timeoutMs: 30_000 });
+    // Private fields — probe via a hanging stream + short idle would be heavy;
+    // assert via casting the runtime shape used by chatStream.
+    expect((p as unknown as { streamTimeoutMs: number }).streamTimeoutMs).toBe(180_000);
+    expect((p as unknown as { chatTimeoutMs: number }).chatTimeoutMs).toBe(30_000);
+  });
+
+  it('returns max_tokens on idle timeout when partial content already streamed', async () => {
+    const encoder = new TextEncoder();
+    // Mock body is not tied to fetch AbortSignal; error it shortly after the
+    // idle timer so reader.read() rejects with idleTimedOut already set.
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          'data: {"choices":[{"delta":{"content":"Hello partial"},"finish_reason":null}]}\n\n',
+        ));
+        setTimeout(() => {
+          try {
+            controller.error(new DOMException('The operation was aborted.', 'AbortError'));
+          } catch { /* already closed */ }
+        }, 120);
+      },
+    });
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: stream,
+      text: async () => '',
+    } as Response);
+
+    const p = new MarkusProvider({
+      provider: 'markus',
+      model: 'test',
+      apiKey: 'sk-or-test',
+      streamTimeoutMs: 80,
+    });
+
+    const response = await p.chatStream(
+      { messages: [{ role: 'user', content: 'hi' }] },
+      () => {},
+    );
+    expect(response.content).toContain('Hello partial');
+    expect(response.finishReason).toBe('max_tokens');
+  }, 5_000);
 
   it('records usage.cost from streaming chunks', async () => {
     const sseBody = [

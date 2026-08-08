@@ -2,10 +2,14 @@ import { createLogger, type LLMTool } from '@markus/shared';
 import type { SkillManifest } from './skills/types.js';
 import {
   type CapabilityPack,
+  allowsWorkContextBoundTools,
   CONVERSE_FORBIDDEN_DEFAULT,
   evictToolsToBudget,
   getReflexAllowlist,
+  isSkillOrMcpToolName,
+  isWorkContextBoundTool,
   packToolDefBudget,
+  TOOL_DEF_CORE_KEEP,
   TOOL_DEF_PROTECTED,
 } from './capability-packs.js';
 
@@ -138,6 +142,8 @@ export class ToolSelector {
   private baseToolNames: Set<string>;
   /** Side channel: tools evicted in the last selectTools (inject into system Tier 3). */
   private lastDeferredCatalog: DeferredCatalogEntry[] = [];
+  /** Activated skill/MCP names deferred under budget (caller should prune sticky set). */
+  private lastEvictedActivated: string[] = [];
 
   constructor(customGroups?: ToolGroup[]) {
     this.groups = customGroups ?? TOOL_GROUPS;
@@ -149,6 +155,13 @@ export class ToolSelector {
     const catalog = this.lastDeferredCatalog;
     this.lastDeferredCatalog = [];
     return catalog;
+  }
+
+  /** Consume activated names that were LRU-deferred (clears after read). */
+  consumeEvictedActivated(): string[] {
+    const names = this.lastEvictedActivated;
+    this.lastEvictedActivated = [];
+    return names;
   }
 
   selectTools(opts: {
@@ -165,9 +178,20 @@ export class ToolSelector {
     skillCatalog?: SkillManifest[];
     /** Scenario capability pack (AGENT-RUNTIME §2). Default converse. */
     pack?: CapabilityPack;
+    /** AgentScenario name — used with pack to allow work-context-bound tools. */
+    scenario?: string;
+    /**
+     * Tools activated via discover_tools this session — must stay in the schema
+     * (never evicted). Without this, activation is a no-op after budget eviction
+     * and the model spins on discover_tools forever.
+     */
+    activatedToolNames?: Iterable<string>;
   }): LLMTool[] {
     const pack: CapabilityPack = opts.pack
       ?? (opts.isTaskExecution ? 'execute' : opts.isReview ? 'govern' : 'converse');
+    const scenario = opts.scenario
+      ?? (opts.isTaskExecution ? 'task_execution' : opts.isReview ? 'review' : undefined);
+    const allowWorkCtx = allowsWorkContextBoundTools(pack, scenario);
     const selected = new Set<string>();
 
     if (pack === 'reflex') {
@@ -178,7 +202,14 @@ export class ToolSelector {
       for (const name of this.baseToolNames) {
         if (opts.allTools.has(name)) selected.add(name);
       }
+      // Always-on Markus core (shell/file/task/…) — progressive disclosure applies
+      // to skill/MCP schemas, not to these. Never leave them deferred behind Feishu.
+      for (const name of TOOL_DEF_CORE_KEEP) {
+        if (opts.allTools.has(name)) selected.add(name);
+      }
     }
+
+    const activated = new Set(opts.activatedToolNames ?? []);
 
     // Manager/secretary package unions — not in reflex (discover only).
     if (pack !== 'reflex' && opts.isManager) {
@@ -249,15 +280,31 @@ export class ToolSelector {
         }
       }
 
+      // Sticky recent: Markus tools only. Skill/MCP schemas enter LIVE solely via
+      // discover_tools activation — never by sticky/recent alone.
+      // Work-context-bound tools (submit/subtask/note) sticky only in entity
+      // sessions (execute / review / comment / requirement / workflow) — not chat.
       if (opts.recentToolNames) {
         for (const name of opts.recentToolNames) {
-          if (opts.allTools.has(name)) selected.add(name);
+          if (!opts.allTools.has(name)) continue;
+          if (isSkillOrMcpToolName(name) && !activated.has(name)) continue;
+          if (isWorkContextBoundTool(name) && !allowWorkCtx) continue;
+          selected.add(name);
         }
+      }
+      for (const name of activated) {
+        if (!opts.allTools.has(name)) continue;
+        if (isWorkContextBoundTool(name) && !allowWorkCtx) continue;
+        selected.add(name);
       }
     }
 
     const result: LLMTool[] = [];
     for (const name of selected) {
+      // Defense in depth: skill/MCP never LIVE unless explicitly activated
+      if (isSkillOrMcpToolName(name) && !activated.has(name)) continue;
+      // Defense in depth: work-context tools stay out of free chat / reflex
+      if (isWorkContextBoundTool(name) && !allowWorkCtx) continue;
       const tool = opts.allTools.get(name);
       if (tool) {
         result.push({
@@ -538,22 +585,33 @@ export class ToolSelector {
     }
 
     const budget = packToolDefBudget(pack);
-    // Only HITL/discover are eviction-immune. Reflex allowlist already filtered
-    // the working set; marking every allowlisted tool protected made tiktoken
-    // estimates permanently exceed TOOL_DEF_BUDGET_REFLEX (afford downgrade bug).
-    const protectedNames = new Set(TOOL_DEF_PROTECTED);
-    const { tools: capped, evicted } = evictToolsToBudget(result, budget, protectedNames);
+    // HITL/discover + Markus core are eviction-immune.
+    // Activated skill/MCP are LIVE but LRU-evictable under budget (progressive disclosure).
+    const protectedNames = new Set<string>([...TOOL_DEF_PROTECTED, ...TOOL_DEF_CORE_KEEP]);
+    for (const name of activated) {
+      if (!isSkillOrMcpToolName(name)) protectedNames.add(name);
+    }
+    const { tools: capped, evicted } = evictToolsToBudget(
+      result,
+      budget,
+      protectedNames,
+      TOOL_DEF_CORE_KEEP,
+    );
     // Afford.S2: catalog goes to system Tier 3 via consumeDeferredCatalog — NOT tool schema.
     this.lastDeferredCatalog = evicted.map((e) => ({
       name: e.name,
       description: (e.description || '').slice(0, 40),
     }));
+    this.lastEvictedActivated = evicted
+      .map((e) => e.name)
+      .filter((n) => activated.has(n) && isSkillOrMcpToolName(n));
     if (evicted.length) {
       log.info('Tool defs capped to pack budget', {
         pack,
         budget,
         kept: capped.length,
         evicted: evicted.map((e) => e.name),
+        evictedActivated: this.lastEvictedActivated,
       });
     }
 
@@ -593,15 +651,39 @@ export class ToolSelector {
       }
     }
 
+    // Progressive disclosure: aggregate skill/MCP namespaces; list lone tools briefly.
     const unloaded: string[] = [];
-    for (const [name, tool] of allTools) {
-      if (!alreadySelected.has(name)) {
-        unloaded.push(`${name}: ${tool.description.slice(0, 120)}`);
-      }
+    for (const [name] of allTools) {
+      if (!alreadySelected.has(name)) unloaded.push(name);
     }
     if (unloaded.length > 0) {
-      parts.push(`\nInactive tools (${unloaded.length}):`);
-      parts.push(unloaded.join('\n'));
+      const groups = new Map<string, string[]>();
+      const singles: string[] = [];
+      for (const name of unloaded) {
+        if (name.includes('__')) {
+          const ns = name.split('__')[0] + '__*';
+          const list = groups.get(ns) ?? [];
+          list.push(name);
+          groups.set(ns, list);
+        } else if (name.startsWith('feishu_')) {
+          const list = groups.get('feishu_*') ?? [];
+          list.push(name);
+          groups.set('feishu_*', list);
+        } else if (name.startsWith('chrome-devtools') || name.startsWith('chrome_')) {
+          const list = groups.get('chrome-devtools*') ?? [];
+          list.push(name);
+          groups.set('chrome-devtools*', list);
+        } else {
+          singles.push(name);
+        }
+      }
+      parts.push('\nOptional extras (not LIVE yet — core shell/file/task tools do not need this):');
+      for (const [ns, names] of groups) {
+        parts.push(`  ${ns} (${names.length}) e.g. ${names.slice(0, 2).join(', ')}`);
+      }
+      if (singles.length > 0) {
+        parts.push(`  other: ${singles.slice(0, 15).join(', ')}${singles.length > 15 ? ` … +${singles.length - 15}` : ''}`);
+      }
     }
 
     parts.push('\nUsage: pass skill/tool names in "name" to activate them. Works in all modes.');
