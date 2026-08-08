@@ -161,17 +161,31 @@ describe('ContextEngine task board and mailbox', () => {
     expect(result.text).toContain('completed/closed tasks');
   });
 
-  it('shows empty task board when no tasks assigned', async () => {
+  it('omits empty task board stub in converse; shows it for execute', async () => {
     const memory = new MemoryStore(tempDir);
     const engine = makeEngine();
-    const result = await engine.buildSystemPrompt({
+
+    const chat = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'Agent',
       role: MOCK_ROLE,
       memory,
       assignedTasks: [],
+      scenario: 'chat',
     });
-    expect(result.text).toContain('No tasks on the board');
+    expect(chat.text).not.toContain('No tasks on the board');
+    expect(chat.text).not.toContain('## Task Board');
+
+    const execute = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'Agent',
+      role: MOCK_ROLE,
+      memory,
+      assignedTasks: [],
+      scenario: 'task_execution',
+    });
+    expect(execute.text).toContain('## Task Board');
+    expect(execute.text).toContain('No tasks on the board');
   });
 
   it('renders rich mailbox section with focus, queue, decisions, and merged content', async () => {

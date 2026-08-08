@@ -1,6 +1,17 @@
 # Release Log
 
+## v0.9.6-rc.0
+
+### Bug Fixes
+
+- **Prompt 分层与协作契约** — Conversation-first 聊天场景、player-coach Manager 文案、knowledge `##`→`###` 归一化、Team Status `stopped` 提示、Learning Habits 截断；补充 “How Your Prompt Is Composed”
+- **任务会话工具作用域** — 执行/评审等 work-context 工具不得 sticky 进自由聊天；`task_submit_review` 不再看板猜唯一 in_progress，须 ALS/`activeTasks` 或显式 `task_id`
+- **Human chat 期间 defer heartbeat** — 避免对话中被心跳抢上下文
+- **CI 测试** — converse 不再断言空 Task Board stub；`api-server` request helper 等待响应真正结束，避免假 200
+
 ## v0.9.5
+
+> npm `latest` 曾误发此版本（桌面构建已取消）。请优先使用本 RC / 后续正式版；稳定桌面包以 GitHub Release 为准。
 
 ### Bug Fixes
 

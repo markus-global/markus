@@ -180,8 +180,13 @@ async function request(
   const res = new MockServerResponse();
   server.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   req._simulate();
-  for (let i = 0; i < 20 && !res.ended; i++) {
+  // Default statusCode is 200 before the handler writes — wait until the
+  // response actually ends so CI under load doesn't read a false 200 + empty body.
+  for (let i = 0; i < 200 && !res.ended; i++) {
     await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  if (!res.ended) {
+    throw new Error(`Request ${method} ${path} did not finish (status still ${res.statusCode})`);
   }
   let json: Record<string, unknown> = {};
   try {
