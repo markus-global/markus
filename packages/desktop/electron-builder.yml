@@ -34,9 +34,10 @@ compression: maximum
 
 mac:
   category: public.app-category.developer-tools
+  # Arch is selected by CLI (`--arm64` / `--x64`). Do not list both here —
+  # that made each CI matrix job build arm64+x64 and upload duplicate DMGs.
   target:
-    - target: dmg
-      arch: [arm64, x64]
+    - dmg
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist

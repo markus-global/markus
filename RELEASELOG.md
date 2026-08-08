@@ -1,6 +1,14 @@
 # Release Log
 
+## v0.9.6-rc.3
+
+### Bug Fixes
+
+- **macOS DMG CI 冒烟** — 挂载校验改用 `-mountroot`（卷名含空格时 `awk $NF` 会截断路径）；每个 matrix job 只打一个 arch，避免 arm64 job 顺带打出 x64 DMG
+
 ## v0.9.6-rc.2
+
+> arm64 DMG 已改为 APFS 且 `hdiutil verify` 通过，但 Publish 冒烟挂载脚本因路径解析失败；请用 **v0.9.6-rc.3**。
 
 ### Bug Fixes
 
