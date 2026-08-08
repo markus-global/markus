@@ -1,5 +1,15 @@
 # Release Log
 
+## v0.9.6
+
+### Bug Fixes
+
+- **Prompt 分层与协作契约** — Conversation-first 聊天场景、player-coach Manager 文案、knowledge `##`→`###` 归一化、Team Status `stopped` 提示、Learning Habits 截断；补充 “How Your Prompt Is Composed”
+- **任务会话工具作用域** — 执行/评审等 work-context 工具不得 sticky 进自由聊天；`task_submit_review` 不再看板猜唯一 in_progress，须 ALS/`activeTasks` 或显式 `task_id`
+- **Human chat 期间 defer heartbeat** — 避免对话中被心跳抢上下文
+- **DELETE JSON body 预读** — 带 body 的 DELETE 在 route 入口预读并缓存，避免先 `await handle*Routes` 时 body 事件丢失
+- **macOS arm64 DMG** — electron-builder 改用 **APFS**（修复 macOS 26 runner 上 HFS+ 打包损坏）；Publish 增加 `hdiutil verify` + 挂载/架构冒烟
+
 ## v0.9.6-rc.4
 
 ### Bug Fixes
