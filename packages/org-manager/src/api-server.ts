@@ -2514,11 +2514,15 @@ export class APIServer {
     path: string,
     url: URL
   ): Promise<void> {
-    // BUG-003: Pre-read and validate body for POST/PUT/PATCH at route level.
+    // BUG-003: Pre-read and validate body for POST/PUT/PATCH/DELETE at route level.
     // This ensures body validation happens before any route-specific logic,
     // so invalid bodies (null/array) are caught even for routes without readBody.
+    // Also avoids losing the body when later `await handle*Routes(...)` yields
+    // before a route-local readBody attaches listeners (common in tests).
     // Skip for multipart/form-data (image uploads handle body parsing themselves).
-    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+    // Skip DELETE with no/empty body (many DELETE routes are body-less).
+    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH'
+      || (req.method === 'DELETE' && Number(req.headers['content-length'] ?? 0) > 0)) {
       const ct = String(req.headers['content-type'] ?? '').toLowerCase();
       if (!ct.includes('multipart/form-data')) {
         await this.readBody(req);
@@ -12478,9 +12482,10 @@ EXPLANATION_END`;
     }
 
     return new Promise((resolve, reject) => {
-      // BUG-005: Validate Content-Type for POST/PUT/PATCH requests
+      // BUG-005: Validate Content-Type for JSON body methods
       const method = req.method ?? '';
-      if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+      if (method === 'POST' || method === 'PUT' || method === 'PATCH'
+        || (method === 'DELETE' && Number(req.headers['content-length'] ?? 0) > 0)) {
         const contentType = req.headers['content-type'];
         if (!contentType || !contentType.toLowerCase().includes('application/json')) {
           const err = new Error('CONTENT_TYPE_ERROR: Content-Type must be application/json');

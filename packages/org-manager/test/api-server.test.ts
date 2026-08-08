@@ -91,6 +91,7 @@ class MockIncomingMessage extends EventEmitter {
   method: string;
   url: string;
   headers: Record<string, string>;
+  private simulated = false;
 
   constructor(
     method: string,
@@ -109,8 +110,22 @@ class MockIncomingMessage extends EventEmitter {
   }
 
   _simulate(): void {
+    this.simulated = true;
     if (this.body) this.emit('data', Buffer.from(this.body));
     this.emit('end');
+  }
+
+  // Replay body for listeners attached after _simulate (route may await
+  // handle*Routes before the target handler calls readBody).
+  on(event: string | symbol, listener: (...args: unknown[]) => void): this {
+    super.on(event, listener);
+    if (this.simulated && (event === 'data' || event === 'end')) {
+      queueMicrotask(() => {
+        if (event === 'data' && this.body) listener(Buffer.from(this.body));
+        if (event === 'end') listener();
+      });
+    }
+    return this;
   }
 
   setTimeout(_ms: number, _cb?: () => void): this { return this; }
@@ -182,8 +197,9 @@ async function request(
   req._simulate();
   // Default statusCode is 200 before the handler writes — wait until the
   // response actually ends so CI under load doesn't read a false 200 + empty body.
-  for (let i = 0; i < 200 && !res.ended; i++) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
+  const deadline = Date.now() + 5000;
+  while (!res.ended && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
   if (!res.ended) {
     throw new Error(`Request ${method} ${path} did not finish (status still ${res.statusCode})`);
