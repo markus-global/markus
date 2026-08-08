@@ -217,10 +217,21 @@ jobs:
           echo "→ hdiutil verify $dmg"
           hdiutil verify "$dmg"
 
-          # Volume names contain spaces (e.g. "Markus 0.9.6-rc.2-arm64"); do not
+          # Volume names contain spaces (e.g. "Markus 0.9.6-rc.3-arm64"); do not
           # parse hdiutil tabular output with awk $NF. Use a private mountroot.
           mountroot="$(mktemp -d /tmp/markus-dmg-XXXXXX)"
-          cleanup() { hdiutil detach "$mountroot" -force >/dev/null 2>&1 || true; rm -rf "$mountroot"; }
+          cleanup() {
+            # Detach the volume dir (not the mountroot), then remove the empty root.
+            # Under set -e, a failed rm on a still-mounted RO volume must not fail the job.
+            if [ -d "$mountroot" ]; then
+              while IFS= read -r vol; do
+                hdiutil detach "$vol" -force >/dev/null 2>&1 || true
+              done < <(find "$mountroot" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)
+              hdiutil detach "$mountroot" -force >/dev/null 2>&1 || true
+              rm -rf "$mountroot" 2>/dev/null || true
+            fi
+            return 0
+          }
           trap cleanup EXIT
           echo "→ hdiutil attach (smoke) $dmg → $mountroot"
           hdiutil attach "$dmg" -nobrowse -readonly -mountroot "$mountroot"
@@ -237,6 +248,8 @@ jobs:
             arm64) echo "$arch_out" | grep -q arm64 ;;
             x64)   echo "$arch_out" | grep -q x86_64 ;;
           esac
+          cleanup
+          trap - EXIT
 
       - name: Cleanup Apple keychain
         if: always() && matrix.platform == 'darwin' && env.DESKTOP_KEYCHAIN != ''
