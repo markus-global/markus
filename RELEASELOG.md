@@ -1,6 +1,14 @@
 # Release Log
 
+## v0.9.6-rc.4
+
+### Bug Fixes
+
+- **macOS DMG CI cleanup** — 冒烟挂载成功后 `trap` 里 `rm -rf` 只读卷会在 `set -e` 下把 job 打成失败；改为先 detach 卷目录再清理，且 cleanup 永不非零退出
+
 ## v0.9.6-rc.3
+
+> DMG 本体与架构校验已通过；Publish 在 EXIT trap cleanup 误失败。请用 **v0.9.6-rc.4**。
 
 ### Bug Fixes
 
