@@ -196,24 +196,56 @@ MUST: `buildSystemPrompt()` MUST accept `promptProfile: 'reflex' | 'converse' | 
 
 | Section | reflex | converse | execute/govern |
 |---------|--------|----------|----------------|
-| ROLE | capped (`ROLE_PROMPT_MAX_TOKENS`) | capped | capped |
+| ROLE | full (soft warn metric) | full | full |
+| Collaboration Rules (L0) | yes | yes | yes |
 | knowledge.md as `## Your Knowledge` | omitted | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE`) | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS`) |
 | state.md | ≤ `STATE_PROMPT_MAX_LINES_REFLEX` lines | optional short | optional short |
 | L3 quality/git/error-recovery | omitted | omitted (incl. comments) | included |
-| Search Strategy | short | short | full ladder |
+| Search Strategy | complete, concise | complete, concise | complete, concise |
 | Team announcements / norms | capped | 400 chars | 2000 chars |
 | Channel history / shared deliverables | omitted | optional short | as needed |
 | Full roster | manager + ≤3 active | existing caps | existing caps |
 | Date / locale / Interaction Mode | yes | always retained | yes |
 
-MUST: ROLE text MUST be truncated to `ROLE_PROMPT_MAX_TOKENS` before injection.
-MUST: knowledge injection MUST exclude observations buffer.
+MUST: ROLE.md is always injected in full (persona only). `ROLE_PROMPT_MAX_TOKENS` is warn-only.
+MUST NOT: Append `SHARED.md` into ROLE. Distill collaboration hard rules into L0
+`## Markus Collaboration Rules`; SHARED.md is a depth handbook via `file_read`.
+Long-tail API/reference content belongs in skills, not ROLE/SHARED always-on.
+MUST: knowledge injection MUST exclude observations buffer; converse uses a short
+digest cap (full text via `memory_search` / files). Knowledge body headings `##`
+MUST be demoted to `###` under `## Your Knowledge` so they do not collide with
+system sections; stale fault/transcript sections are deprioritized when truncating.
 MUST NOT: Inject full `state.md` history into reflex.
-MUST: Converse size is controlled at **assemble time** (profile gates + caps), not by
-deleting Tier-3 essentials after the fact.
+MUST: Converse size is controlled by progressive disclosure + afford guard, **not**
+by post-assemble truncation of ROLE/L0/Collaboration Rules/mode/date.
+MUST NOT: Emit `_[ROLE truncated]_` / `_[system trimmed]_` markers.
 
-Test IDs: `A-profile-reflex-omits`, `A-profile-role-cap`, `A-knowledge-cap`,
-`A-profile-converse-no-l3`.
+#### Conversation-first vs Task-when-needed (L0 + chat scenario)
+
+MUST: Human chat defaults to **conversation-first** — agents MAY advance real work
+(edit files, run commands, multi-step debugging) in the live conversation without
+forcing `task_create`.
+MUST: Task workflow is for async work, delegation, multi-agent parallel delivery,
+formal review/audit trail, or when the human explicitly asks for a task.
+MUST: **STOP** means only: after `task_create` for a piece of work, do not continue
+**that task** in chat. Work never placed on a task may continue conversationally.
+MUST: Requirements gate applies to **tasks** (`gate all tasks`), not to conversational chat work.
+MUST: Conflict priority:
+`Owner explicit instruction > conversation-first default > Protocol (once a task exists) > ROLE persona > Position (manager)`.
+MUST: Managers are **player-coach** — Position does not forbid hands-on building when ROLE is a builder/founder.
+
+MUST: L0 includes **How Your Prompt Is Composed** — ROLE.md is persona; L0 is always-on
+platform rules; SHARED/skills are on demand. ROLE line count ≠ full constraints.
+
+MUST (`task_submit_review`): Auto-fill `task_id` from execution ALS/`activeTasks` when
+present; otherwise `task_id` is required. MUST NOT guess from the TaskService board.
+Work-context-bound tools MUST NOT sticky into free chat — but MUST remain available in
+entity-bound sessions (task_execution, review, comment_response, requirement_action,
+workflow_action) (`S-execute-only-no-sticky-converse`).
+
+Test IDs: `A-profile-reflex-omits`, `A-profile-role-full`, `A-collab-rules-always-on`,
+`A-conversation-first-chat`, `A-knowledge-heading-demote`, `A-role-no-shared-append`,
+`A-knowledge-cap`, `A-profile-converse-no-l3`, `S-execute-only-no-sticky-converse`.
 
 ### 2.4 Spec: Afford fail-closed packing
 
@@ -228,10 +260,9 @@ MUST NOT: Only shrink `messageBudget` while shipping an over-afford fixed prefix
 MUST (§Afford.S1): `handleMessageStream` MUST use the same `ensureAffordablePromptPack`
 gate as `handleMessage` before any provider call.
 
-MUST (§Afford.S3): `promptProfile=converse` → `systemTokens ≤ SYSTEM_PROMPT_BUDGET_CONVERSE`
-(8000). Primary control is assemble-time caps/gates. Post-assemble trim is a **failsafe
-only**: if it runs, log a warning; MUST NOT drop `Current date and time`, user
-locale/language, or `## Current Interaction Mode`.
+MUST (§Afford.S3): `SYSTEM_PROMPT_BUDGET_CONVERSE` is a soft observe/warn metric for
+converse system size. MUST NOT truncate ROLE/L0/mode/date to meet it. Hard limits
+are enforced by the provider afford guard (downgrade/reject).
 
 MUST (§Afford.S4): Provider MUST clamp `max_tokens` to remaining afford (proactive when
 `lastPromptAffordTokens` known; reactive on reservation 402).
@@ -240,7 +271,7 @@ Test IDs: `A-afford-downgrade`, `A-afford-heartbeat-fail`, `S-stream-afford-reje
 `S-stream-afford-downgrade`, `S-converse-system-budget`, `S-converse-keeps-date`,
 `S-max-tokens-clamp-remaining`.
 
-Cold-start acceptance: converse fixed ≤ 12_000; reflex fixed ≤ 8_000
+Cold-start acceptance: converse fixed ≤ 28_000; reflex fixed ≤ 8_000
 (`A-budget-contract-converse`, `A-budget-contract-reflex`).
 
 #### Identity Section (§7)
@@ -252,7 +283,7 @@ Contains:
 - Manager info (for workers)
 - Colleague list capped at `SYSTEM_COLLEAGUES_MAX` (10); remainder via `team_list` / `agent_list_colleagues`
 - Other teams capped at `SYSTEM_OTHER_TEAMS_MAX`; humans at `SYSTEM_HUMANS_MAX`
-- **Manager Responsibilities** (for managers): Routing, Coordination, Reporting, Cross-team, Escalation, Hiring
+- **Manager Responsibilities** (for managers): player-coach — own Owner pair-work when ROLE fits; delegate for specialty/parallel/async; Reporting; Cross-team (peer managers); Escalation; Hiring
 
 #### Skills (Hermes L0–L1 progressive disclosure)
 Skill **full bodies are not injected at spawn** (including former `alwaysOn` builtins and
@@ -565,7 +596,11 @@ The heartbeat user prompt is assembled inline; the system prompt still comes fro
 
 **Notebook Guidelines** (in mailbox checklists / system prompt when queue context is present): use `update_notebook` to save priorities, context, decisions, and blockers; `clear_notebook` when context becomes irrelevant. Do not store raw message content — use `memory_save` for durable observations.
 
-Tool whitelist includes: `task_list`, `task_update`, `task_get`, `task_note`, `task_create`, `file_read`, `agent_send_message`, `requirement_propose`, `requirement_list`, `memory_save`, `memory_search`, `memory_update`, `update_notebook`, `update_working_memory` (alias), `goal_create`, `goal_update`, `goal_status`, `discover_tools`, `notify_user`, `request_user_approval`, `recall_activity`, `schedule_wakeup`, `cancel_wakeup`, `set_heartbeat_interval`, `package_list`, `package_install`. Managers additionally get: `task_board_health`, `task_cleanup_duplicates`, `task_assign`, `team_status`, `deliverable_create`, `deliverable_search`. Secretary (with building skills) additionally gets: `hub_search`, `hub_install`.
+Tool whitelist = **reflex allowlist** (`REFLEX_CORE_TOOLS` + manager `team_status`):
+`task_list`, `task_get`, `memory_save`, `memory_search`, `notify_user`, `request_user_input`,
+`schedule_wakeup`, `cancel_wakeup`, `set_heartbeat_interval`, `discover_tools`, `check_mailbox`,
+`file_read`, `agent_send_message`, `update_notebook`. MUST NOT imply `task_create` /
+`requirement_propose` / `package_install` / `goal_*` in heartbeat (see Interaction Mode).
 
 **Heartbeat cadence & configurability**: the periodic heartbeat is a coarse safety-net (`DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h) behind the event-driven `schedule_wakeup` mechanism — it is NOT the primary timing mechanism. The interval is configurable at three levels: (a) the user via `PATCH /api/agents/:id/config` (`heartbeatIntervalMs`) or the Agent Profile → Heartbeat tab; (b) the agent itself via the `set_heartbeat_interval` tool (clamped to `MIN_HEARTBEAT_INTERVAL_MS`–`MAX_HEARTBEAT_INTERVAL_MS`, i.e. 5min–24h). Both apply **live** via `Agent.setHeartbeatInterval()` (restarts the scheduler) and persist (agent-driven changes flow through the `agent:heartbeat-interval-changed` event → `agentRepo.updateConfig`). A one-time SQLite migration (gated by `PRAGMA user_version`) bumps agents still on the legacy 30-min default to the 6h safety-net without clobbering any interval a user or agent set deliberately.
 

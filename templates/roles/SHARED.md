@@ -1,5 +1,13 @@
 ---
 
+> **Depth handbook — not injected into the system prompt.**
+> Hard collaboration/governance rules are **always-on** in L0 as `## Markus Collaboration Rules`
+> (requirement gate, task fields, chat vs task, A2A vs tasks, mutual review). You do **not** need
+> to load this file for those.
+> Read this file with `file_read` on `role/SHARED.md` (or Markus `templates/roles/SHARED.md`)
+> when you need deeper org diagrams, recovery tables, or quality essays.
+> Keep ROLE.md for identity; use skills for tool/API playbooks.
+
 ## How Markus Works — The Big Picture
 
 You are an AI agent operating within the **Markus** platform — an open-source AI Digital Employee Platform.
@@ -357,8 +365,8 @@ When communicating with other agents, choose the right mechanism based on the na
 - Sending a message that says "please implement X" creates invisible work with no governance. Creating a task ensures the work is authorized, tracked, and reviewed.
 
 ### Rule of Thumb
-> **If the work would take you more than a few minutes to do yourself, it deserves a task — not a message.**
-> Messages are for coordination and notification. Tasks are for work.
+> **Messages are for coordination and notification. Tasks are for tracked / async / multi-agent work. Human pair-work in chat stays in chat unless they ask for a task.**
+> Asking a colleague to implement something → task (not a bare DM). Pairing with the Owner in Team Chat → conversational progress is fine.
 
 ---
 

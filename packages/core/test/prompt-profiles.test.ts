@@ -1,8 +1,6 @@
-import { ContextEngine } from '../src/context-engine.js';
+import { ContextEngine, prepareKnowledgeForPrompt } from '../src/context-engine.js';
 import type { IMemoryStore } from '../src/memory/types.js';
 import {
-  ROLE_PROMPT_MAX_TOKENS,
-  SYSTEM_PROMPT_BUDGET_CONVERSE,
   SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE,
 } from '@markus/shared';
 import { getDefaultTokenCounter } from '../src/token-counter.js';
@@ -27,20 +25,144 @@ const baseRole = {
 };
 
 describe('prompt profiles (AGENT-RUNTIME §4)', () => {
-  it('A-profile-role-cap: truncates long ROLE', async () => {
+  it('A-collab-rules-always-on: Collaboration Rules present; no SHARED dump', async () => {
     const engine = new ContextEngine();
     const { text } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'T',
-      role: baseRole as never,
+      role: { ...baseRole, systemPrompt: 'Short CTO role.' } as never,
       memory: mockMemory(),
       scenario: 'chat',
       promptProfile: 'converse',
     });
-    const roleCapChars = ROLE_PROMPT_MAX_TOKENS * 4;
-    expect(text).toContain('ROLE truncated');
-    // Truncated body should not retain the full repeated prompt
-    expect(text.indexOf('ROLE truncated')).toBeLessThan(roleCapChars + 200);
+    expect(text).toContain('## Markus Collaboration Rules');
+    expect(text).toContain('requirement_id');
+    expect(text).toContain('STOP');
+    expect(text).toContain('task_submit_review');
+    expect(text).toContain('Platform Handbook (on demand)');
+    expect(text).toContain('Conversation vs task');
+    expect(text).toContain('Conversation-first');
+    expect(text).toContain('Requirements gate all tasks');
+    expect(text).toMatch(/already created a task|After you create a task/i);
+    expect(text).toContain('## How Your Prompt Is Composed');
+    expect(text).toContain('ROLE.md');
+    expect(text).toContain('does not guess from the board');
+    expect(text).not.toContain('if it would take more than a few minutes, it deserves a task');
+    expect(text).not.toContain('How Markus Works — The Big Picture');
+    expect(text).not.toContain('Organization (Org)');
+  });
+
+  it('A-conversation-first-chat: chat mode allows pair work; STOP only after task_create', async () => {
+    const engine = new ContextEngine();
+    const { text } = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'T',
+      role: { ...baseRole, systemPrompt: 'Short founder role.' } as never,
+      memory: mockMemory(),
+      scenario: 'chat',
+      promptProfile: 'converse',
+      identity: {
+        self: {
+          id: 'agt_1',
+          name: 'CTO',
+          role: '技术联合创始人',
+          agentRole: 'manager',
+          skills: ['git'],
+        },
+        organization: { id: 'org_1', name: 'Org' },
+        colleagues: [
+          { id: 'agt_2', name: 'Dev', role: 'Developer', type: 'agent', status: 'offline' },
+          { id: 'agt_3', name: 'Writer', role: 'Writer', type: 'agent', status: 'offline' },
+        ],
+        humans: [{ id: 'u1', name: 'Owner', role: 'owner' }],
+      } as never,
+    });
+    expect(text).toContain('Conversation-first (default)');
+    expect(text).toContain('player-coach');
+    expect(text).toContain('Own the work when pairing');
+    expect(text).toContain('After you create a task for some work, STOP');
+    expect(text).not.toContain('tiny clarifications');
+    expect(text).toContain('## Team Status');
+    expect(text).toContain('stopped');
+    expect(text).toContain('agent_start');
+    expect(text).not.toContain('Dev: offline');
+  });
+
+  it('A-knowledge-heading-demote: knowledge ## becomes ### under Your Knowledge', async () => {
+    const prepared = prepareKnowledgeForPrompt(
+      '## DeepSeek API 故障模式\nstale noise\n\n## Useful Facts\nkeep me\n',
+      10_000,
+    );
+    expect(prepared.text).toContain('### Useful Facts');
+    expect(prepared.text).toContain('### DeepSeek API 故障模式');
+    expect(prepared.text).not.toMatch(/^## Useful Facts/m);
+    // Non-stale section should appear before stale when truncating aggressively
+    const tight = prepareKnowledgeForPrompt(
+      '## DeepSeek API 故障模式\n' + 'x'.repeat(400) + '\n\n## Useful Facts\nkeep me\n',
+      80,
+    );
+    expect(tight.text).toContain('Useful Facts');
+    expect(tight.truncated).toBe(true);
+  });
+
+  it('A-heartbeat-no-task-create-prompt: heartbeat mode omits create/propose tools', async () => {
+    const engine = new ContextEngine();
+    const { text } = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'T',
+      role: { ...baseRole, systemPrompt: 'Short.' } as never,
+      memory: mockMemory(),
+      scenario: 'heartbeat',
+      promptProfile: 'reflex',
+    });
+    expect(text).toContain('heartbeat mode');
+    expect(text).toMatch(/Do \*\*not\*\* call `task_create`/);
+    expect(text).not.toContain('You MAY create tasks via `task_create`');
+    expect(text).not.toContain('## Self-Evolution');
+  });
+
+  it('S-skill-body-not-dyn-capped: activated skills survive converse dynamic cap', async () => {
+    const engine = new ContextEngine();
+    const skillBody = `UNIQUE_SKILL_BODY_${'x'.repeat(2_000)}`;
+    const { text } = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'T',
+      role: { ...baseRole, systemPrompt: 'Short role.' } as never,
+      memory: mockMemory(),
+      scenario: 'chat',
+      promptProfile: 'converse',
+      dynamicContext: 'DYNAMIC_PAD '.repeat(500),
+      activatedSkills: `\n## Activated Skills\n<skill name="demo">\n${skillBody}\n</skill>`,
+    });
+    expect(text).toContain('UNIQUE_SKILL_BODY_');
+    expect(text).toContain(skillBody.slice(-20));
+    expect(text).toContain('## Activated Skills');
+    expect(text).toContain('dynamic context truncated');
+  });
+
+  it('A-profile-role-full: never truncates ROLE (important always-on)', async () => {
+    const engine = new ContextEngine();
+    const marker = 'UNIQUE_ROLE_TAIL_MARKER_9f3a';
+    const longRole = [
+      '## Identity\n',
+      'You are a tester. '.repeat(800),
+      '\n## Deep Domain Dump\n',
+      'API field docs. '.repeat(800),
+      `\n## Tail\n${marker}\n`,
+    ].join('');
+    const { text } = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'T',
+      role: { ...baseRole, systemPrompt: longRole } as never,
+      memory: mockMemory(),
+      scenario: 'chat',
+      promptProfile: 'converse',
+    });
+    expect(text).toContain(marker);
+    expect(text).toContain('## Identity');
+    expect(text).not.toContain('ROLE truncated');
+    expect(text).not.toContain('ROLE.md continues beyond');
+    expect(text).not.toContain('_[system trimmed');
   });
 
   it('A-profile-reflex-omits: no channel history / no full knowledge', async () => {
@@ -111,7 +233,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     expect(text).toContain('Semantic search');
   });
 
-  it('S-converse-assemble-caps: announcements/workflows truncated at inject (no trim needed)', async () => {
+  it('S-converse-assemble-caps: progressive caps on announcements/workflows (not ROLE/L0)', async () => {
     const engine = new ContextEngine();
     const blob = 'ANNOUNCEMENT LINE PAD '.repeat(4_000);
     const { text } = await engine.buildSystemPrompt({
@@ -136,10 +258,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       },
     });
 
-    const tokens = getDefaultTokenCounter().countTokens(text);
-    expect(tokens).toBeLessThanOrEqual(SYSTEM_PROMPT_BUDGET_CONVERSE);
-
-    // Upstream caps visible (short ROLE → failsafe trim should not strip these)
+    // Progressive disclosure caps (full files remain on disk)
     expect(text).toContain('announcements truncated');
     expect(text).toContain('norms truncated');
     expect(text).toContain('dynamic context truncated');
@@ -147,15 +266,17 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       Math.ceil(SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE / 'ANNOUNCEMENT LINE PAD '.length) + 2,
     );
     expect(text).toContain('more — use `workflow_list`');
-    expect(text).not.toContain('Subagent delegation');
+    expect(text).toContain('Subagent delegation');
+    expect(text).toContain('## Search & Exploration Strategy');
     expect(text).not.toContain('## Error Recovery');
+    expect(text).not.toContain('_[system trimmed');
 
     expect(text).toMatch(/Current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(Asia\/Shanghai/);
     expect(text).toContain('## Current Interaction Mode');
     expect(text).toContain('User locale:');
   });
 
-  it('S-converse-system-budget: heavy ROLE still ≤8000 with date retained', async () => {
+  it('S-converse-keeps-essentials: date/mode/L0 survive heavy progressive sections', async () => {
     const engine = new ContextEngine();
     const { text } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
@@ -169,14 +290,16 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       dynamicContext: 'DYNAMIC PAD '.repeat(3_000),
       viewerContext: { locale: 'zh-CN', timezone: 'Asia/Shanghai' },
     });
-    expect(getDefaultTokenCounter().countTokens(text)).toBeLessThanOrEqual(SYSTEM_PROMPT_BUDGET_CONVERSE);
     expect(text).toMatch(/Current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(Asia\/Shanghai/);
     expect(text).toContain('## Current Interaction Mode');
+    expect(text).toContain('## Search & Exploration Strategy');
+    expect(text).toContain('## Learning Habits');
+    expect(text).not.toContain('_[system trimmed');
+    expect(text).not.toContain('ROLE truncated');
   });
 
-  it('S-converse-keeps-date: date survives even if failsafe trim must run', async () => {
+  it('S-converse-keeps-date: date/mode never surgically removed', async () => {
     const engine = new ContextEngine();
-    // Pathological: huge ROLE + huge dynamic still must keep date/mode
     const { text } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'T',
@@ -191,6 +314,8 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     });
     expect(text).toMatch(/Current date and time: \d{4}-\d{2}-\d{2}/);
     expect(text).toContain('## Current Interaction Mode');
-    expect(getDefaultTokenCounter().countTokens(text)).toBeLessThanOrEqual(SYSTEM_PROMPT_BUDGET_CONVERSE);
+    expect(text).not.toContain('_[system trimmed');
+    // Token counter imported for regression visibility in heavy assemble
+    expect(getDefaultTokenCounter().countTokens(text)).toBeGreaterThan(1000);
   });
 });

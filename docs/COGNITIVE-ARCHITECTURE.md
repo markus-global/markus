@@ -1,8 +1,10 @@
 # Cognitive Architecture: Unified Agent Cognition
 
-This document describes the unified cognitive architecture that governs how Markus agents perceive stimuli, prepare context, deliberate, act, and learn. It replaces the previous model — mechanical prompt assembly plus volatile in-memory working memory — with a **continuous cognitive cycle** backed by persistent stores (`NOTEBOOK.md`, `MEMORY.md`) and an optional **Cognitive Preparation Pipeline (CPP)** for deliberate context preparation.
+This document describes the unified cognitive architecture that governs how Markus agents perceive stimuli, prepare context, deliberate, act, and learn. It replaces the previous model — mechanical prompt assembly plus volatile in-memory working memory — with a **continuous cognitive cycle** backed by persistent stores (`NOTEBOOK.md`, `knowledge.md` / `state.md`) and an optional **Cognitive Preparation Pipeline (CPP)** for deliberate context preparation.
 
-> **Implementation status**: Core cycle, Notebook, unified MEMORY.md, Attention Controller, Goal/Loop heartbeat integration, A2A DM channels, and `PendingCallbackRegistry` are implemented. CPP (Phases 1–3, depth D0–D3) lives in `packages/core/src/cognitive.ts`. CPP is opt-in via `agent.cognitive.enabled` in `markus.json` (default `false` until explicitly enabled). D2+ retrieval requires a `RetrievalBackend` adapter.
+> **Memory SSOT**: Prefer [`MEMORY-SYSTEM.md`](./MEMORY-SYSTEM.md) — durable knowledge is `knowledge.md`, short TTL state is `state.md`; legacy `MEMORY.md` migrates once. Below, historical “MEMORY.md” references mean that dual-store model.
+>
+> **Implementation status**: Core cycle, Notebook, knowledge/state memory, Attention Controller, Goal/Loop heartbeat integration, A2A DM channels, and `PendingCallbackRegistry` are implemented. CPP (Phases 1–3, depth D0–D3) lives in `packages/core/src/cognitive.ts`. CPP is opt-in via `agent.cognitive.enabled` in `markus.json` (default `false` until explicitly enabled). D2+ retrieval requires a `RetrievalBackend` adapter.
 
 ---
 

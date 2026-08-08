@@ -579,6 +579,15 @@ export class Agent {
 
     this._heartbeatUnsub = this.eventBus.on('heartbeat:trigger', ctx => {
       const { triggeredAt } = ctx as { agentId: string; triggeredAt: string };
+      // Do not enqueue a heartbeat LLM turn while the human is in a live chat —
+      // patrol can wait; conversational progress must not be interrupted.
+      if (this.shouldDeferHeartbeatForHumanChat()) {
+        log.info('Heartbeat trigger deferred — human chat is focused or queued', {
+          agentId: this.id,
+          triggeredAt,
+        });
+        return;
+      }
       this.mailbox.enqueue('heartbeat', {
         summary: 'Scheduled heartbeat check-in',
         content: `Heartbeat triggered at ${triggeredAt}`,
@@ -1274,11 +1283,12 @@ export class Agent {
       const selectCtx = this.buildSessionAwareToolSelectContext(sessionId, reply, {
         forceMultimodalSeed: true,
       });
-      const llmTools = this.buildToolDefinitions({
+      const markerToolSelectOpts = {
         userMessage: selectCtx.userMessage,
-        isReview: false,
+        isReview: false as const,
         extraRecentToolNames: selectCtx.sessionToolNames,
-      });
+      };
+      let llmTools = this.buildToolDefinitions(markerToolSelectOpts);
       const multimodalToolNames = ['generate_image', 'text_to_speech', 'speech_to_text', 'generate_video'];
       log.info('ensureCompletionMarker tool selection', {
         agentId: this.id,
@@ -1363,6 +1373,7 @@ export class Agent {
               });
             }
           }
+          llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, markerToolSelectOpts);
         }
 
         prepared = await prepare();
@@ -1827,6 +1838,7 @@ export class Agent {
 
   /**
    * Reload the agent's role from its ROLE.md file on disk.
+   * Same composition as RoleLoader: ROLE.md only (SHARED.md is progressive via file_read).
    * Used after overwriting ROLE.md with a custom system prompt (e.g., from Agent Father).
    */
   reloadRole(): void {
@@ -1838,6 +1850,7 @@ export class Agent {
       this.role = {
         ...this.role,
         name,
+        // Never re-append SHARED.md — always-on platform rules are L0 + on-demand handbook.
         systemPrompt: content,
       };
       log.info(`Role reloaded from disk for agent ${this.config.name}`);
@@ -2793,11 +2806,20 @@ export class Agent {
     };
   }
 
-  private getDynamicContext(): string | undefined {
-    const parts = [...this.dynamicContextProviders.values()].map(p => p()).filter(Boolean);
+  /** Activated skill bodies — injected as their own uncapped system section. */
+  private getActivatedSkillContext(): string | undefined {
+    if (this.activatedSkillInstructions.size === 0) return undefined;
+    const parts: string[] = ['\n## Activated Skills'];
+    parts.push('Loaded via `discover_tools`. Follow these instructions while the skill is active.');
     for (const [name, instructions] of this.activatedSkillInstructions) {
       parts.push(`<skill name="${name}">\n${instructions}\n</skill>`);
     }
+    return parts.join('\n');
+  }
+
+  /** Notebook + other dynamic providers (NOT skill bodies — those are uncapped). */
+  private getDynamicContext(): string | undefined {
+    const parts = [...this.dynamicContextProviders.values()].map(p => p()).filter(Boolean);
     if (this.workingMemory.size > 0) {
       const wmLines = ['## Notebook'];
       wmLines.push('Your cognitive workspace (max 4 agent entries). Persists across sessions. Update via `update_notebook`. System entries are auto-managed. Choose keys wisely — oldest entry is evicted when full.');
@@ -3552,6 +3574,7 @@ export class Agent {
         builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      activatedSkills: this.getActivatedSkillContext(),
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
@@ -3562,14 +3585,15 @@ export class Agent {
     });
 
     const toolSelectCtx = this.buildSessionAwareToolSelectContext(sessionId, effectiveMessage);
-    let llmTools = this.buildToolDefinitions({
+    const toolSelectOpts = {
       userMessage: toolSelectCtx.userMessage,
       isReview: scenario === 'review',
       isChat: scenario === 'chat',
       isTaskExecution: scenario === 'task_execution',
       extraRecentToolNames: toolSelectCtx.sessionToolNames,
       scenario,
-    });
+    };
+    let llmTools = this.buildToolDefinitions(toolSelectOpts);
     ({ text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
       systemPrompt,
       systemCacheSegments,
@@ -3623,44 +3647,7 @@ export class Agent {
       sessionMessages,
       sessionId,
       scenario,
-      rebuildReflex: async () => {
-        const built = await this.contextEngine.buildSystemPrompt({
-          agentId: this.id,
-          agentName: this.config.name,
-          role: this.role,
-          orgContext: this.orgContext,
-          contextMdPath: this.contextMdPath,
-          memory: this.memory,
-          currentQuery: effectiveMessage,
-          identity: this.identityContext,
-          senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
-          viewerContext: this.runtimeViewerContext,
-          environment: this.environmentProfile,
-          scenario: 'heartbeat',
-          promptProfile: 'reflex',
-          agentWorkspace: this.pathPolicy ? {
-            primaryWorkspace: this.pathPolicy.primaryWorkspace,
-            sharedWorkspace: this.pathPolicy.sharedWorkspace,
-            builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
-          } : undefined,
-          agentDataDir: this.dataDir,
-          availableSkills: this.availableSkillCatalog,
-          mailboxContext: this.getMailboxContext(),
-          notebookWriter: this.getNotebookWriter(),
-          ...this.getTeamContextParams(),
-        });
-        const tools = this.buildToolDefinitions({
-          userMessage: toolSelectCtx.userMessage,
-          scenario: 'heartbeat',
-          pack: 'reflex',
-          ignoreSticky: true,
-        });
-        return {
-          systemPrompt: built.text,
-          systemCacheSegments: built.segments,
-          llmTools: tools,
-        };
-      },
+      rebuildReflex: () => this.buildReflexAffordPack(effectiveMessage),
     }));
 
     const messages = prepared.messages;
@@ -3884,6 +3871,12 @@ export class Agent {
           if (typeof chatYield.item.metadata?.responsePromise?.resolve === 'function') {
             chatYield.item.metadata.responsePromise.resolve('[merged]');
           }
+        }
+
+        llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, toolSelectOpts);
+        if (options?.allowedTools) {
+          const allowed = options.allowedTools;
+          llmTools = llmTools.filter((t) => allowed.has(t.name));
         }
 
         const updatedSessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
@@ -4269,6 +4262,7 @@ export class Agent {
         builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      activatedSkills: this.getActivatedSkillContext(),
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
@@ -4279,7 +4273,8 @@ export class Agent {
     });
 
     this.activeScenario = 'chat';
-    let llmTools = this.buildToolDefinitions({ userMessage: effectiveMessage, isChat: true });
+    const streamToolSelectOpts = { userMessage: effectiveMessage, isChat: true as const, scenario: 'chat' as const };
+    let llmTools = this.buildToolDefinitions(streamToolSelectOpts);
     ({ text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
       systemPrompt,
       systemCacheSegments,
@@ -4312,44 +4307,7 @@ export class Agent {
       sessionMessages,
       sessionId: this.currentSessionId,
       scenario: 'chat',
-      rebuildReflex: async () => {
-        const built = await this.contextEngine.buildSystemPrompt({
-          agentId: this.id,
-          agentName: this.config.name,
-          role: this.role,
-          orgContext: this.orgContext,
-          contextMdPath: this.contextMdPath,
-          memory: this.memory,
-          currentQuery: effectiveMessage,
-          identity: this.identityContext,
-          senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
-          viewerContext: this.runtimeViewerContext,
-          environment: this.environmentProfile,
-          scenario: 'heartbeat',
-          promptProfile: 'reflex',
-          agentWorkspace: this.pathPolicy ? {
-            primaryWorkspace: this.pathPolicy.primaryWorkspace,
-            sharedWorkspace: this.pathPolicy.sharedWorkspace,
-            builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
-          } : undefined,
-          agentDataDir: this.dataDir,
-          availableSkills: this.availableSkillCatalog,
-          mailboxContext: this.getMailboxContext(),
-          notebookWriter: this.getNotebookWriter(),
-          ...this.getTeamContextParams(),
-        });
-        const tools = this.buildToolDefinitions({
-          userMessage: effectiveMessage,
-          scenario: 'heartbeat',
-          pack: 'reflex',
-          ignoreSticky: true,
-        });
-        return {
-          systemPrompt: built.text,
-          systemCacheSegments: built.segments,
-          llmTools: tools,
-        };
-      },
+      rebuildReflex: () => this.buildReflexAffordPack(effectiveMessage),
     }));
     const messages = preparedStream.messages;
     this.recordContextUsage(this.currentSessionId, preparedStream.usage.usagePercent);
@@ -4634,6 +4592,8 @@ export class Agent {
           // human's answer mid-way.
           this.attentionController.restoreInterruptSignal(streamYield.item);
         }
+
+        llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, streamToolSelectOpts);
 
         const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
         const preparedCont = await this.contextEngine.prepareMessages({
@@ -5042,7 +5002,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
 
-    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -5063,6 +5023,7 @@ export class Agent {
         builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      activatedSkills: this.getActivatedSkillContext(),
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
@@ -5072,7 +5033,8 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
 
-    const llmTools = this.buildToolDefinitions({ userMessage: taskPrompt, isTaskExecution: true });
+    const taskToolSelectOpts = { userMessage: taskPrompt, isTaskExecution: true as const, scenario: 'task_execution' as const };
+    let llmTools = this.buildToolDefinitions(taskToolSelectOpts);
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     let textBuffer = '';
     let thinkingBuffer = '';
@@ -5111,16 +5073,20 @@ export class Agent {
       // A2: flush important memory to disk before context fills (turn-level preflight).
       await this.maybeMemoryFlushPreflight(sessionId);
 
-      const preparedTask = await this.contextEngine.prepareMessages({
+      let preparedTask;
+      ({
+        prepared: preparedTask,
+        llmTools,
         systemPrompt,
-        sessionMessages: this.memory.getRecentMessages(sessionId, 200),
-        memory: this.memory,
-        sessionId,
-        agentId: this.id,
-        ...this.getPrepareBudgetOpts(),
-        toolDefinitions: llmTools,
         systemCacheSegments,
-      });
+      } = await this.prepareWithAffordGuard({
+        systemPrompt,
+        systemCacheSegments,
+        llmTools,
+        sessionId,
+        scenario: 'task_execution',
+        currentQuery: taskPrompt,
+      }));
       const messages = preparedTask.messages;
       this.recordContextUsage(sessionId, preparedTask.usage.usagePercent);
       if (preparedTask.usage.compressed) this.metricsCollector.recordCompression(); // C2
@@ -5340,6 +5306,8 @@ export class Agent {
           });
           log.debug('Injected mid-execution reflection nudge', { taskId, iteration: taskToolIterations });
         }
+
+        llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, taskToolSelectOpts);
 
         const preparedTaskCont = await this.contextEngine.prepareMessages({
           systemPrompt,
@@ -5587,7 +5555,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', userMessage);
 
-    const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -5607,6 +5575,7 @@ export class Agent {
         builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
       } : undefined,
       dynamicContext: this.getDynamicContext(),
+      activatedSkills: this.getActivatedSkillContext(),
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
@@ -5616,7 +5585,8 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
 
-    const llmTools = this.buildToolDefinitions({ userMessage });
+    const risToolSelectOpts = { userMessage };
+    let llmTools = this.buildToolDefinitions(risToolSelectOpts);
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     let textBuffer = '';
     let thinkingBuffer = '';
@@ -5645,16 +5615,20 @@ export class Agent {
     };
 
     try {
-      const prepared = await this.contextEngine.prepareMessages({
+      let prepared;
+      ({
+        prepared,
+        llmTools,
         systemPrompt,
-        sessionMessages: this.memory.getRecentMessages(sessionId, 200),
-        memory: this.memory,
-        sessionId,
-        agentId: this.id,
-        ...this.getPrepareBudgetOpts(),
-        toolDefinitions: llmTools,
         systemCacheSegments,
-      });
+      } = await this.prepareWithAffordGuard({
+        systemPrompt,
+        systemCacheSegments,
+        llmTools,
+        sessionId,
+        scenario: 'chat',
+        currentQuery: userMessage,
+      }));
       const messages = prepared.messages;
 
       let risLlmStart = Date.now();
@@ -5753,6 +5727,8 @@ export class Agent {
             risYield.item.metadata.responsePromise.resolve('[merged]');
           }
         }
+
+        llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, risToolSelectOpts);
 
         const preparedCont = await this.contextEngine.prepareMessages({
           systemPrompt,
@@ -6050,12 +6026,21 @@ export class Agent {
   }
 
   /**
-   * Mark tool names as permanently activated so they appear in every LLM call.
-   * Used by skill MCP integration to ensure skill-provided tools are always visible.
+   * Mark tool names as activated for LIVE schemas (typically after discover_tools).
+   * Skill/MCP activations may be LRU-evicted under pack toolDef budget; core tools stay.
    */
   activateTools(names: string[]): void {
     for (const name of names) {
+      // Re-insert to refresh LRU order (most recently activated last).
+      this.activatedExtraTools.delete(name);
       this.activatedExtraTools.add(name);
+    }
+  }
+
+  /** Drop activated extras that were deferred to stay under toolDef budget. */
+  private pruneEvictedActivatedTools(names: string[]): void {
+    for (const name of names) {
+      this.activatedExtraTools.delete(name);
     }
   }
 
@@ -6141,8 +6126,98 @@ export class Agent {
     };
   }
 
+  /** Slim reflex pack used when afford guard must downgrade fixed prefix. */
+  private async buildReflexAffordPack(currentQuery: string): Promise<{
+    systemPrompt: string;
+    systemCacheSegments: SystemPromptSegment[];
+    llmTools: LLMTool[];
+  }> {
+    const built = await this.contextEngine.buildSystemPrompt({
+      agentId: this.id,
+      agentName: this.config.name,
+      role: this.role,
+      orgContext: this.orgContext,
+      contextMdPath: this.contextMdPath,
+      memory: this.memory,
+      currentQuery,
+      identity: this.identityContext,
+      viewerContext: this.runtimeViewerContext,
+      environment: this.environmentProfile,
+      scenario: 'heartbeat',
+      promptProfile: 'reflex',
+      agentWorkspace: this.pathPolicy ? {
+        primaryWorkspace: this.pathPolicy.primaryWorkspace,
+        sharedWorkspace: this.pathPolicy.sharedWorkspace,
+        builderArtifactsDir: this.pathPolicy.builderArtifactsDir,
+      } : undefined,
+      agentDataDir: this.dataDir,
+      availableSkills: this.availableSkillCatalog,
+      mailboxContext: this.getMailboxContext(),
+      notebookWriter: this.getNotebookWriter(),
+      ...this.getTeamContextParams(),
+    });
+    const tools = this.buildToolDefinitions({
+      userMessage: currentQuery,
+      scenario: 'heartbeat',
+      pack: 'reflex',
+      ignoreSticky: true,
+    });
+    return {
+      systemPrompt: built.text,
+      systemCacheSegments: built.segments,
+      llmTools: tools,
+    };
+  }
+
   /**
-   * Afford.S1: shared afford gate for handleMessage + handleMessageStream.
+   * Catalog + prepareMessages + Afford.S1 for any scenario (chat/task/review/session).
+   */
+  private async prepareWithAffordGuard(opts: {
+    systemPrompt: string;
+    systemCacheSegments: SystemPromptSegment[];
+    llmTools: LLMTool[];
+    sessionId: string;
+    scenario: string;
+    currentQuery: string;
+    sessionMessageLimit?: number;
+  }): Promise<{
+    prepared: Awaited<ReturnType<ContextEngine['prepareMessages']>>;
+    llmTools: LLMTool[];
+    systemPrompt: string;
+    systemCacheSegments: SystemPromptSegment[];
+  }> {
+    const { text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
+      opts.systemPrompt,
+      opts.systemCacheSegments,
+    );
+    const sessionMessages = this.memory.getRecentMessages(
+      opts.sessionId,
+      opts.sessionMessageLimit ?? 200,
+    );
+    const prepared = await this.contextEngine.prepareMessages({
+      systemPrompt,
+      sessionMessages,
+      memory: this.memory,
+      sessionId: opts.sessionId,
+      agentId: this.id,
+      ...this.getPrepareBudgetOpts(),
+      toolDefinitions: opts.llmTools,
+      systemCacheSegments,
+    });
+    return this.applyAffordGuard({
+      prepared,
+      llmTools: opts.llmTools,
+      systemPrompt,
+      systemCacheSegments,
+      sessionMessages,
+      sessionId: opts.sessionId,
+      scenario: opts.scenario,
+      rebuildReflex: () => this.buildReflexAffordPack(opts.currentQuery),
+    });
+  }
+
+  /**
+   * Afford.S1: shared afford gate for all prepareMessages entry points.
    * Downgrades once to reflex (rebuild system + tools); rejects with prompt_pack_rejected.
    */
   private async applyAffordGuard(opts: {
@@ -6271,9 +6346,46 @@ export class Agent {
       isChat: context?.isChat,
       skillCatalog: this.skillRegistry?.list(),
       pack,
+      scenario: context?.scenario,
+      // discover_tools activations — skill/MCP may LRU-defer under toolDef budget
+      activatedToolNames: context?.ignoreSticky ? undefined : this.activatedExtraTools,
     });
+    this.pruneEvictedActivatedTools(this.toolSelector.consumeEvictedActivated());
 
     return tools;
+  }
+
+  /**
+   * After discover_tools activates tool names, rebuild the LLM tool schema list.
+   * Stream/tool loops previously reused the initial `llmTools` array forever —
+   * activation succeeded in memory but never appeared in the next provider call,
+   * causing discover_tools → think → discover_tools death spirals.
+   */
+  private refreshToolsAfterDiscover(
+    current: LLMTool[],
+    toolCalls: Array<{ name: string }> | undefined,
+    selectOpts: {
+      userMessage?: string;
+      isTaskExecution?: boolean;
+      isReview?: boolean;
+      isChat?: boolean;
+      extraRecentToolNames?: string[];
+      pack?: CapabilityPack;
+      scenario?: string;
+      ignoreSticky?: boolean;
+    },
+  ): LLMTool[] {
+    if (!toolCalls?.some((tc) => tc.name === 'discover_tools')) return current;
+    if (this.activatedExtraTools.size === 0) return current;
+    const next = this.buildToolDefinitions(selectOpts);
+    log.info('Refreshed LLM tool schemas after discover_tools', {
+      agentId: this.id,
+      before: current.length,
+      after: next.length,
+      activated: [...this.activatedExtraTools],
+      newlyPresent: [...this.activatedExtraTools].filter((n) => next.some((t) => t.name === n)),
+    });
+    return next;
   }
 
   /**
@@ -7036,11 +7148,38 @@ export class Agent {
     } catch { return false; }
   }
 
+  /** True when a human chat is focused or waiting — heartbeat should not steal the LLM. */
+  private shouldDeferHeartbeatForHumanChat(): boolean {
+    const focus = this.attentionController.getCurrentFocus();
+    if (focus?.sourceType === 'human_chat') return true;
+    try {
+      return this.mailbox.getQueuedItems().some(
+        i => i.sourceType === 'human_chat' && (i.status === 'queued' || i.status === 'processing'),
+      );
+    } catch {
+      return false;
+    }
+  }
+
   private async handleHeartbeat(ctx: {
     agentId: string;
     triggeredAt: string;
   }): Promise<string | void> {
     log.info('Processing heartbeat check-in');
+
+    if (this.shouldDeferHeartbeatForHumanChat()) {
+      log.info('Heartbeat: skipping LLM (human chat focused/queued)', { agentId: this.id });
+      const skipActivityId = this.startActivity('heartbeat', 'Heartbeat check-in (deferred for human chat)', {});
+      this.emitActivityLog(
+        skipActivityId,
+        'text',
+        'Human chat is active or queued — skipping heartbeat LLM. Will patrol on the next trigger when chat is idle.',
+      );
+      this.endActivity(skipActivityId, { success: true });
+      this.state.lastHeartbeat = new Date().toISOString();
+      this.metricsCollector.recordHeartbeat(true, true);
+      return;
+    }
 
     // Deep sleep / idle skip — AGENT-RUNTIME deep sleep Spec.
     const queuedNonHeartbeat = this.mailbox.getQueuedItems().filter(
@@ -7114,18 +7253,18 @@ export class Agent {
     const currentHour = now.getHours();
     const todayDate = now.toISOString().slice(0, 10);
 
-    // --- Failed task recovery section (all agents) ---
+    // --- Failed task recovery section (all agents) — reflex tools only ---
     const failedTaskRecoverySection = [
       '',
       '## Failed Task Recovery',
-      'Retry your OWN `failed` tasks via `task_update(status:"in_progress", note:"...")` — this auto-restarts execution with prior context preserved. Only retry tasks where you are the assignee.',
+      'Use `task_list` / `task_get` to spot YOUR `failed` tasks. In heartbeat you cannot mutate status — `notify_user` if a human must unblock, or `schedule_wakeup` to follow up in a work session.',
     ].join('\n');
 
-    // --- Requirement monitoring section (all agents) ---
+    // --- Requirement monitoring section (all agents) — reflex tools only ---
     const requirementMonitoringSection = [
       '',
       '## Requirement Monitoring',
-      'Review requirements you proposed (`requirement_list` with `mine_only: true`): nudge the user on long-pending ones, break approved-but-empty ones into tasks, and close them once their tasks are done. Use `requirement_comment` for updates and `task_comment` @mentions to coordinate.',
+      'If your checklist mentions pending requirements, note them and `notify_user` for long-pending approvals. Do not create tasks or propose requirements in heartbeat — defer to chat/task modes.',
     ].join('\n');
 
     // --- Manager daily report logic ---
@@ -7147,21 +7286,11 @@ export class Agent {
           ? `**Today's activity log (${todayDate})**:\n\`\`\`\n${todayLog.slice(0, HEARTBEAT_DAILY_LOG_CHARS)}\n\`\`\``
           : `**Today's activity log**: No activity recorded for ${todayDate}.`,
         '',
-        '**Report format** — create a deliverable via `deliverable_create`:',
+        '**Report delivery (reflex)**: Prefer `notify_user` with a concise daily summary body.',
+        'If you need `deliverable_create`, first `discover_tools({ name: ["deliverable_create"] })` then create:',
         `- **title**: "Daily Report — ${todayDate}"`,
-        '- **type**: "file"',
-        '- **format**: Choose based on content complexity:',
-        '  - Use **"markdown"** (file extension `.md`) for simple, text-heavy reports with few metrics',
-        '  - Use **"html"** (file extension `.html`) when the report includes dashboards, tables with many columns, charts, color-coded status indicators, or interactive elements that help readers quickly grasp team status',
-        '- **Content must be concise, clear, and accurate**:',
-        '  1. **My work today**: What you personally accomplished (tasks reviewed, approved/rejected, decisions made)',
-        '  2. **My team progress**: What each member of YOUR team accomplished today (use `team_status` to check). Focus on your own team only.',
-        '  3. **Cross-team interactions**: Any coordination with other teams (if applicable)',
-        '  4. **Blockers & risks**: Anything stalled or at risk within your team',
-        '  5. **Plan for tomorrow**: Top priorities for the next day',
-        '- Keep it under 500 words. No filler. Every sentence must carry information.',
-        '- IMPORTANT: Only report on YOUR team. Do NOT report on agents from other teams.',
-        '- If no meaningful activity happened today, say so honestly — do not fabricate work.',
+        '- Keep it under 500 words. Use `team_status` for your team only. No filler.',
+        '- If no meaningful activity happened today, say so honestly.',
         '- The system will automatically mark the report as created after this heartbeat.',
         '',
       ].join('\n');
@@ -7226,11 +7355,7 @@ export class Agent {
             `You have ${goals.length} active goal(s). Assess progress and take action:`,
             ...lines,
             '',
-            'For each goal:',
-            '1. Check linked tasks — are they progressing?',
-            '2. Create follow-up tasks if needed',
-            '3. If criteria are met, update the requirement status to "completed"',
-            '4. If stuck, escalate or adjust approach',
+            'For each goal: check linked tasks via `task_list`/`task_get`. If stuck or criteria met, `notify_user` — do not create tasks or mutate requirements in heartbeat.',
           ].join('\n');
         }
       } catch { /* ignore */ }
@@ -7251,10 +7376,10 @@ export class Agent {
       selfEvolutionSection,
       '',
       '## Patrol Reminder',
-      'This is a lightweight patrol, not a work session. The periodic heartbeat is only a coarse safety-net — your interaction-mode and async-timing rules in the system prompt already cover how to reach humans (`notify_user` / `request_user_input`) and agents (`agent_send_message`), and when to use `schedule_wakeup`.',
-      '- **Do**: triage tasks and pending reviews, retry failed tasks, unblock stuck ones, follow up on completed dependencies, save insights, and `task_create` / `requirement_propose` for anything that needs doing.',
-      '- **Don\'t**: write code, refactor, or run deep analysis here — create a task instead. For complex work or a decision, escalate via `notify_user` / `request_user_input`.',
-      '- Prefer `schedule_wakeup` for precise follow-ups; use `set_heartbeat_interval` if the patrol cadence itself is wrong.',
+      'This is a lightweight patrol (reflex pack), not a work session.',
+      '- **Do**: `task_list`/`task_get` triage, `memory_save` one-line insights, `notify_user` / `request_user_input` when humans must act, `schedule_wakeup` for precise follow-ups.',
+      '- **Don\'t**: `task_create`, `requirement_propose`, write code, refactor, or deep analysis. Escalate or wake into a chat/task session instead.',
+      '- Use `set_heartbeat_interval` only if the patrol cadence itself is wrong.',
       '',
       '## Finishing Up',
       '- Compare against your last heartbeat summary above. Skip unchanged items.',

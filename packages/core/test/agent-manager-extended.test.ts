@@ -152,6 +152,64 @@ describe('AgentManager extended coverage', () => {
     await execPromise;
   });
 
+  it('task_submit_review without ALS fails unless task_id is explicit', { timeout: 30000 }, async () => {
+    const taskService = makeTaskService({
+      getTask: vi.fn((id: string) => ({
+        id,
+        title: 'Board task',
+        status: 'in_progress',
+        assignedAgentId: undefined as string | undefined,
+        reviewerId: 'agt_reviewer',
+        subtasks: [],
+      })),
+      queryTasks: vi.fn(() => ({
+        tasks: [{ id: 'board_task', status: 'in_progress' }],
+        total: 1,
+      })),
+    });
+    const manager = createManager();
+    manager.setTaskService(taskService);
+
+    const agent = await manager.createAgent({
+      name: 'Worker',
+      roleName: 'custom',
+      orgId: 'org_no_guess',
+      tools: [],
+    });
+
+    expect(agent.getActiveTasks()).toHaveLength(0);
+    const missing = JSON.parse(await agent.getTools().get('task_submit_review')!.execute({
+      summary: 'No context',
+      deliverables: [{ type: 'file', reference: 'out.txt', summary: 'Done' }],
+    }));
+    expect(missing.status).toBe('error');
+    expect(String(missing.error)).toMatch(/No active task|task_id/i);
+    expect(taskService.queryTasks).not.toHaveBeenCalled();
+
+    // Patch assignee after create so validation matches this agent
+    (taskService.getTask as ReturnType<typeof vi.fn>).mockImplementation((id: string) => ({
+      id,
+      title: 'Board task',
+      status: 'in_progress',
+      assignedAgentId: agent.id,
+      reviewerId: 'agt_reviewer',
+      subtasks: [],
+    }));
+
+    const ok = JSON.parse(await agent.getTools().get('task_submit_review')!.execute({
+      task_id: 'board_task',
+      summary: 'Explicit id outside session',
+      deliverables: [{ type: 'file', reference: 'out.txt', summary: 'Done' }],
+    }));
+    expect(ok.status).toBe('success');
+    expect(taskService.submitForReview).toHaveBeenCalledWith(
+      'board_task',
+      expect.any(Array),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it('returns error when no in_progress task exists for submit review', { timeout: 30000 }, async () => {
     const taskService = makeTaskService({
       getTask: vi.fn(() => ({

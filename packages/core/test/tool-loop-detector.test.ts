@@ -126,4 +126,26 @@ describe('ToolLoopDetector', () => {
 
     expect(d.getHistory().length).toBe(5);
   });
+
+  it('S-discover-tools-spin: consecutive discover_tools (any args) is critical at 5', () => {
+    const d = new ToolLoopDetector();
+    for (let i = 0; i < 5; i++) {
+      d.record('discover_tools', { name: [`tool_${i}`] }, JSON.stringify({ status: 'ok', activated: [`tool_${i}`] }));
+    }
+    const result = d.check();
+    expect(result.detected).toBe(true);
+    expect(result.pattern).toBe('discoverToolsSpin');
+    expect(result.severity).toBe('critical');
+  });
+
+  it('S-discover-tools-spin: warns at 3 consecutive discover_tools', () => {
+    const d = new ToolLoopDetector();
+    for (let i = 0; i < 3; i++) {
+      d.record('discover_tools', { name: [`x_${i}`] }, '{"status":"ok"}');
+    }
+    const result = d.check();
+    expect(result.detected).toBe(true);
+    expect(result.pattern).toBe('discoverToolsSpin');
+    expect(result.severity).toBe('warning');
+  });
 });

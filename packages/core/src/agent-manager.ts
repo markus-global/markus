@@ -64,11 +64,10 @@ import { homedir } from 'node:os';
 const log = createLogger('agent-manager');
 
 /**
- * Resolve the task ID for submitForReview.
- * Prefers the agent's getCurrentTaskId() — which reads from the per-task
- * AsyncLocalStorage context when available, making it safe for concurrent
- * task executions. Falls back to the first active task whose status is
- * still 'in_progress'.
+ * Resolve the task ID for submitForReview from **execution context only**:
+ * ALS `getCurrentTaskId()` then `activeTasks` with status `in_progress`.
+ * Does NOT guess from the TaskService board — outside a task session the
+ * caller must pass `task_id` explicitly.
  */
 function resolveCurrentTaskId(
   agentObj: Agent | undefined,
@@ -76,15 +75,16 @@ function resolveCurrentTaskId(
   agentId: string,
 ): string {
   const activeTasks = agentObj?.getActiveTasks?.() ?? [];
-  if (activeTasks.length === 0) throw new Error('No active task — cannot submit for review.');
 
   const currentId = agentObj?.getCurrentTaskId?.();
-  if (currentId && activeTasks.some(t => t.taskId === currentId)) {
+  if (currentId && (activeTasks.length === 0 || activeTasks.some(t => t.taskId === currentId))) {
     const currentTask = ts.getTask(currentId);
     if (currentTask?.status === 'in_progress') return currentId;
-    log.warn('Agent currentTaskId is no longer in_progress, searching activeTasks for a valid candidate', {
-      agentId, currentTaskId: currentId, actualStatus: currentTask?.status,
-    });
+    if (currentId && activeTasks.some(t => t.taskId === currentId)) {
+      log.warn('Agent currentTaskId is no longer in_progress, searching activeTasks for a valid candidate', {
+        agentId, currentTaskId: currentId, actualStatus: currentTask?.status,
+      });
+    }
   }
 
   for (const t of activeTasks) {
@@ -92,7 +92,7 @@ function resolveCurrentTaskId(
     if (task?.status === 'in_progress') return t.taskId;
   }
 
-  // Last resort: clean up stale entries and throw
+  // Clean up stale local activeTasks entries
   for (const t of activeTasks) {
     const task = ts.getTask(t.taskId);
     if (task && ['completed', 'failed', 'cancelled', 'archived'].includes(task.status)) {
@@ -100,7 +100,38 @@ function resolveCurrentTaskId(
       agentObj?.removeActiveTask(t.taskId);
     }
   }
-  throw new Error(`No in_progress task found for agent ${agentId} — cannot submit for review. Active task IDs: [${activeTasks.map(t => t.taskId).join(', ')}]`);
+
+  if (activeTasks.length === 0) {
+    throw new Error(
+      'No active task execution context — cannot submit for review. Call `task_submit_review` from a task session (auto-fills task_id), or pass `task_id` explicitly.',
+    );
+  }
+  throw new Error(
+    `No in_progress task in execution context for agent ${agentId}. Active task IDs: [${activeTasks.map(t => t.taskId).join(', ')}]. Pass task_id explicitly if you are outside a task execution session.`,
+  );
+}
+
+/** Validate an explicit task_id for submitForReview (no board guessing). */
+function assertSubmittableTask(
+  ts: { getTask(id: string): { status: string; assignedAgentId?: string } | undefined },
+  taskId: string,
+  agentId: string,
+): { id: string; status: string; assignedAgentId?: string; reviewerId?: string } {
+  const task = ts.getTask(taskId) as
+    | { id?: string; status: string; assignedAgentId?: string; reviewerId?: string }
+    | undefined;
+  if (!task) throw new Error(`Task not found: ${taskId}`);
+  if (task.assignedAgentId && task.assignedAgentId !== agentId) {
+    throw new Error(
+      `Cannot submit task ${taskId}: assigned to ${task.assignedAgentId}, not ${agentId}.`,
+    );
+  }
+  if (task.status !== 'in_progress') {
+    throw new Error(
+      `Cannot submit task ${taskId}: status is "${task.status}", expected "in_progress".`,
+    );
+  }
+  return { id: task.id ?? taskId, status: task.status, assignedAgentId: task.assignedAgentId, reviewerId: task.reviewerId };
 }
 
 /** Minimal interface that AgentManager needs from TaskService */
@@ -782,7 +813,10 @@ export class AgentManager {
     return { ...config, args };
   }
 
-  /** Native Feishu tools that cover gaps in lark-mcp (local image upload/send). */
+  /**
+   * Native Feishu tools that cover gaps in lark-mcp (local image upload/send).
+   * Register only — LIVE schemas require discover_tools (progressive disclosure).
+   */
   private registerFeishuTools(agent: Agent): void {
     if (!this.feishuToolsConfig) return;
     try {
@@ -792,8 +826,10 @@ export class AgentManager {
         agent.registerTool(tool);
         names.push(tool.name);
       }
-      agent.activateTools(names);
-      log.info('Native Feishu tools registered', { toolCount: tools.length, tools: names });
+      log.info('Native Feishu tools registered (inactive until discover_tools)', {
+        toolCount: tools.length,
+        tools: names,
+      });
     } catch (error) {
       log.warn('Failed to register native Feishu tools', { error: String(error) });
     }
@@ -1205,9 +1241,9 @@ export class AgentManager {
                 agent.registerTool(tool);
                 toolNames.push(tool.name);
               }
-              agent.activateTools(toolNames);
-              log.info(`Skill ${skillName} MCP server ${serverName} connected for agent ${id}`, {
-                toolCount: mcpTools.length, isolation,
+              // Register only — activate via discover_tools when the agent needs them.
+              log.info(`Skill ${skillName} MCP server ${serverName} registered for agent ${id}`, {
+                toolCount: mcpTools.length, isolation, live: false,
               });
             } catch (error) {
               log.warn(`Failed to connect skill ${skillName} MCP server ${serverName} for agent ${id}`, {
@@ -1494,10 +1530,11 @@ export class AgentManager {
           return task?.subtasks ?? [];
         },
         submitForReview: async (summary, inputDeliverables, knownIssues, explicitTaskId) => {
-          const taskId = explicitTaskId || resolveCurrentTaskId(this.agents.get(id), ts, id);
-          const task = ts.getTask(taskId);
-          if (!task) throw new Error(`Task not found: ${taskId}`);
-          const reviewerId = (task as Record<string, unknown>).reviewerId as string | undefined;
+          const taskId = explicitTaskId?.trim()
+            ? assertSubmittableTask(ts, explicitTaskId.trim(), id).id
+            : resolveCurrentTaskId(this.agents.get(id), ts, id);
+          const task = assertSubmittableTask(ts, taskId, id);
+          const reviewerId = task.reviewerId;
           const _validTypes = new Set(['file', 'directory']);
           const completionSummary = `${summary}${knownIssues ? `\n\nKnown issues: ${knownIssues}` : ''}`;
           const deliverables: Array<{ type: string; reference: string; summary: string }> = [];
@@ -2026,13 +2063,10 @@ export class AgentManager {
                 try {
                   const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
                   const mcpTools = await this.registerChromeDevtoolsLazy(id, serverName, serverConfig);
-                  const toolNames: string[] = [];
                   for (const tool of mcpTools) {
                     agent.registerTool(tool);
-                    toolNames.push(tool.name);
                   }
-                  agent.activateTools(toolNames);
-                  log.info(`Skill ${skillName} chrome-devtools registered lazily for agent ${id}`);
+                  log.info(`Skill ${skillName} chrome-devtools registered lazily for agent ${id} (inactive until discover_tools)`);
                 } catch (error) {
                   log.warn(`Failed to register chrome-devtools lazily for agent ${id}`, { error: String(error) });
                 }
@@ -2056,14 +2090,11 @@ export class AgentManager {
                   await this.mcpManager.connectServer(serverName, serverConfig);
                   mcpTools = this.mcpManager.getToolHandlers(serverName);
                 }
-                const toolNames: string[] = [];
                 for (const tool of mcpTools) {
                   agent.registerTool(tool);
-                  toolNames.push(tool.name);
                 }
-                agent.activateTools(toolNames);
                 log.info(`Skill ${skillName} MCP server ${serverName} restored for agent ${id}`, {
-                  toolCount: mcpTools.length, isolation,
+                  toolCount: mcpTools.length, isolation, live: false,
                 });
               } catch (error) {
                 log.warn(`Failed to restore skill ${skillName} MCP server ${serverName} for agent ${id}`, {
@@ -2086,14 +2117,11 @@ export class AgentManager {
             const serverConfig = this.enrichChromeDevtoolsConfig(serverName, rawServerConfig);
             await this.mcpManager.connectServer(serverName, serverConfig);
             const mcpTools = this.mcpManager.getToolHandlers(serverName);
-            const toolNames: string[] = [];
             for (const tool of mcpTools) {
               agent.registerTool(tool);
-              toolNames.push(tool.name);
             }
-            agent.activateTools(toolNames);
-            log.info(`Global MCP server ${serverName} connected for booted agent ${id}`, {
-              toolCount: mcpTools.length,
+            log.info(`Global MCP server ${serverName} registered for booted agent ${id}`, {
+              toolCount: mcpTools.length, live: false,
             });
           } catch (error) {
             log.warn(`Failed to connect global MCP server ${serverName} for booted agent ${id}`, {
@@ -2345,10 +2373,11 @@ export class AgentManager {
           return task?.subtasks ?? [];
         },
         submitForReview: async (summary, inputDeliverables, knownIssues, explicitTaskId) => {
-          const taskId = explicitTaskId || resolveCurrentTaskId(this.agents.get(id), ts, id);
-          const task = ts.getTask(taskId);
-          if (!task) throw new Error(`Task not found: ${taskId}`);
-          const reviewerId = (task as Record<string, unknown>).reviewerId as string | undefined;
+          const taskId = explicitTaskId?.trim()
+            ? assertSubmittableTask(ts, explicitTaskId.trim(), id).id
+            : resolveCurrentTaskId(this.agents.get(id), ts, id);
+          const task = assertSubmittableTask(ts, taskId, id);
+          const reviewerId = task.reviewerId;
           const _validTypes = new Set(['file', 'directory']);
           const completionSummary = `${summary}${knownIssues ? `\n\nKnown issues: ${knownIssues}` : ''}`;
           const deliverables: Array<{ type: string; reference: string; summary: string }> = [];

@@ -29,7 +29,7 @@ MUST: Each scenario maps to exactly one pack: `reflex` | `converse` | `execute` 
 | Pack | Scenarios | `toolDefTokens` budget |
 |------|-----------|------------------------|
 | `reflex` | heartbeat, memory_consolidation, memory_flush, dream | 3_000 |
-| `converse` | chat, a2a, group_chat, comment_response, requirement_action | 6_000 |
+| `converse` | chat, a2a, group_chat, comment_response, requirement_action | 8_000 |
 | `execute` | task_execution | 10_000 |
 | `govern` | review, deliberation | 8_000 |
 
@@ -45,9 +45,13 @@ Test IDs: `A-pack-reflex-tools`, `A-pack-converse-no-spawn`, `A-pack-execute-has
 
 ### 1.0.1 Spec: ToolDef budget eviction
 
+MUST: Boot/create/restore MUST **register** skill/MCP/Feishu tools without `activateTools`.
+LIVE schemas enter only via `discover_tools`. Sticky `recentToolNames` MUST NOT re-activate
+skill/MCP namespaces.
+
 MUST: After selection, if estimated tool-definition tokens exceed the pack budget, keep
-pack core + `discover_tools` + HITL tools, then evict largest / least-recent extras until
-under budget.
+`TOOL_DEF_CORE_KEEP` + `discover_tools` + HITL, then evict skill/MCP (LRU among activated)
+and other extras until under budget.
 
 MUST (§Afford.S2): Evicted names MUST appear in a compact **system Tier 3** catalog
 (name-only or name + ≤40 chars, total ≤ `DEFERRED_CATALOG_MAX_CHARS` ≈ 1500 chars)
@@ -56,7 +60,8 @@ for rediscovery via `discover_tools`.
 MUST NOT: Append the eviction catalog into `discover_tools.description` (inflates
 `toolDefTokens` and defeats the pack budget).
 
-MUST: `recentToolNames` / activated extras remain session-sticky but MUST NOT break the budget.
+MUST: Activated skill bodies inject as `## Activated Skills` (not under the converse
+`dynamicContext` 800-char cap).
 
 Test IDs: `A-tooldef-budget`, `A-tooldef-sticky-capped`, `S-catalog-not-in-tooldef`.
 

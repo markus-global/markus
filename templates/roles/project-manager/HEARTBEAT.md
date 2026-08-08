@@ -8,7 +8,9 @@
 
 ## Proactive Monitoring
 
+- **Team pulse**: If `team_status` is available, note stopped/busy teammates; wake someone with `agent_start` only when work is blocked on them.
 - Scan task board for blockers across team members — filter `task_list` by status `blocked` and check blocker duration.
+- **Pending review backlog**: `task_list(status=review)` — clear reviews you own so assignees are not stuck.
 - Check task progress vs timelines — compare completion rates against project milestones and deadlines.
 - Identify overdue tasks or tasks stuck in the same status for more than 24 hours without progress notes.
 - Review unassigned tasks and tasks missing reviewers or dependencies.

@@ -90,6 +90,13 @@ export class ToolLoopDetector {
       return { detected: false, severity: 'none', pattern: '', message: '' };
     }
 
+    // discover_tools is a meta-tool: consecutive calls (any args) burn tokens
+    // with no user-visible progress. Fail closed earlier than generic tools.
+    {
+      const result = this.detectDiscoverToolsSpin();
+      if (result.detected) return result;
+    }
+
     if (this.config.detectors.genericRepeat) {
       const result = this.detectGenericRepeat();
       if (result.detected) return result;
@@ -106,6 +113,30 @@ export class ToolLoopDetector {
     }
 
     return { detected: false, severity: 'none', pattern: '', message: '' };
+  }
+
+  /**
+   * Consecutive discover_tools calls (regardless of args) → critical at 5.
+   * Different name activations still count: the bug class is "schema never
+   * refreshes so the model keeps discovering forever".
+   */
+  private detectDiscoverToolsSpin(): LoopDetectionResult {
+    let streak = 0;
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i]!.name === 'discover_tools') streak++;
+      else break;
+    }
+    if (streak >= 5) {
+      const msg = `Critical: "discover_tools" called ${streak} times consecutively — tool schemas are not becoming usable; stop and use already-available tools or ask the user`;
+      log.warn(msg);
+      return { detected: true, severity: 'critical', pattern: 'discoverToolsSpin', message: msg };
+    }
+    if (streak >= 3) {
+      const msg = `Warning: "discover_tools" called ${streak} times consecutively`;
+      log.warn(msg);
+      return { detected: true, severity: 'warning', pattern: 'discoverToolsSpin', message: msg };
+    }
+    return noDetection();
   }
 
   /**

@@ -5252,13 +5252,8 @@ EXPLANATION_END`;
         const skillName = (body['skillName'] as string) ?? '';
         if (skillName && !agent.config.skills.includes(skillName)) {
           agent.config.skills.push(skillName);
-          // Inject skill instructions into the running agent so it can use them immediately
-          if (this.skillRegistry) {
-            const skill = this.skillRegistry.get(skillName);
-            if (skill?.manifest.instructions) {
-              agent.injectSkillInstructions(skillName, skill.manifest.instructions);
-            }
-          }
+          // Catalog only — skill body + MCP schemas load via discover_tools
+          // (progressive disclosure). Do not injectSkillInstructions here.
           // When a building skill is added, register builder dynamic context so the
           // agent can see available skills/roles, just like the seeded builder agents.
           if (['agent-building', 'team-building', 'skill-building'].includes(skillName)) {

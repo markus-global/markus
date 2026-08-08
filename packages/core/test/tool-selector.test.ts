@@ -33,9 +33,40 @@ describe('ToolSelector', () => {
     expect(names).toContain('memory_search');
     expect(names).toContain('discover_tools');
     expect(names).toContain('notify_user');
-    // A-pack-converse-no-spawn
+    // spawn_subagent is in base tools for converse; spawn_subagents is keyword-activated
+    expect(names).toContain('spawn_subagent');
+    expect(names).toContain('shell_execute');
+    expect(names).toContain('file_read');
     expect(names).not.toContain('spawn_subagents');
     expect(names).not.toContain('deliverable_create');
+  });
+
+  it('S-tool-mcp-progressive: skill/MCP LIVE only after discover activation', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap([
+      ...ALL_BUILTIN,
+      'feishu_calendar_list',
+      'chrome-devtools__navigate',
+    ]);
+    const sticky = selector.selectTools({
+      allTools,
+      userMessage: 'hello',
+      pack: 'converse',
+      recentToolNames: ['feishu_calendar_list', 'chrome-devtools__navigate', 'shell_execute'],
+    }).map((t) => t.name);
+    expect(sticky).toContain('shell_execute');
+    expect(sticky).toContain('file_read');
+    expect(sticky).not.toContain('feishu_calendar_list');
+    expect(sticky).not.toContain('chrome-devtools__navigate');
+
+    const activated = selector.selectTools({
+      allTools,
+      userMessage: 'hello',
+      pack: 'converse',
+      activatedToolNames: ['feishu_calendar_list'],
+    }).map((t) => t.name);
+    expect(activated).toContain('feishu_calendar_list');
+    expect(activated).toContain('shell_execute');
   });
 
   it('A-pack-reflex-tools: reflex pack excludes package/goal/spawn', () => {
@@ -199,7 +230,7 @@ describe('ToolSelector', () => {
 
   it('builds discover_tools with skill catalog and inactive tools', () => {
     const selector = new ToolSelector();
-    const allTools = makeToolMap(['agent_send_message', 'shell_execute']);
+    const allTools = makeToolMap(['agent_send_message', 'shell_execute', 'feishu_calendar_list']);
     const selected = selector.selectTools({
       allTools,
       userMessage: 'hi',
@@ -211,11 +242,14 @@ describe('ToolSelector', () => {
         } as never,
       ],
     });
+    const names = selected.map((t) => t.name);
+    expect(names).toContain('shell_execute'); // core LIVE, not progressive
+    expect(names).not.toContain('feishu_calendar_list');
     const discover = selected.find((t) => t.name === 'discover_tools');
     expect(discover).toBeDefined();
     expect(discover!.description).toContain('test-skill');
-    expect(discover!.description).toContain('Inactive tools');
-    expect(discover!.description).toContain('shell_execute');
+    expect(discover!.description).toContain('Optional extras');
+    expect(discover!.description).toContain('feishu_calendar_list');
   });
 
   it('B2: keeps core tools + discover for empty / synthetic / short inputs (keyword-independent)', () => {
@@ -237,6 +271,53 @@ describe('ToolSelector', () => {
     const names = selector.selectTools({ allTools, userMessage: undefined as unknown as string }).map(t => t.name);
     expect(names).toContain('agent_send_message');
     expect(names).toContain('discover_tools');
+  });
+
+  it('S-execute-only-no-sticky-converse: task_submit_review does not sticky into free chat', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap([...ALL_BUILTIN, 'task_submit_review', 'subtask_create', 'task_note']);
+    const chat = selector.selectTools({
+      allTools,
+      userMessage: 'continue',
+      pack: 'converse',
+      scenario: 'chat',
+      recentToolNames: ['task_submit_review', 'subtask_create', 'task_note', 'shell_execute'],
+    }).map(t => t.name);
+    expect(chat).toContain('shell_execute');
+    expect(chat).not.toContain('task_submit_review');
+    expect(chat).not.toContain('subtask_create');
+    expect(chat).not.toContain('task_note');
+
+    const execute = selector.selectTools({
+      allTools,
+      userMessage: 'finish the task',
+      pack: 'execute',
+      scenario: 'task_execution',
+      isTaskExecution: true,
+      recentToolNames: ['task_submit_review'],
+    }).map(t => t.name);
+    expect(execute).toContain('task_submit_review');
+
+    // Review / comment / requirement sessions are entity-bound — work-context tools OK
+    const review = selector.selectTools({
+      allTools,
+      userMessage: 'review this',
+      pack: 'govern',
+      scenario: 'review',
+      isReview: true,
+      recentToolNames: ['task_note'],
+    }).map(t => t.name);
+    expect(review).toContain('task_note');
+
+    const comment = selector.selectTools({
+      allTools,
+      userMessage: 'reply to comment',
+      pack: 'converse',
+      scenario: 'comment_response',
+      recentToolNames: ['task_note', 'task_submit_review'],
+    }).map(t => t.name);
+    expect(comment).toContain('task_note');
+    expect(comment).toContain('task_submit_review');
   });
 
   it('B2: recentToolNames preserves a niche tool across a keyword-less continuation (multimodal case)', () => {
@@ -263,5 +344,67 @@ describe('ToolSelector', () => {
       userMessage: '请在终端执行命令',
     });
     expect(selected.map((t) => t.name)).toContain('shell_execute');
+  });
+
+  it('S-discover-activated-protected: core activated tools survive budget eviction', () => {
+    const selector = new ToolSelector();
+    // Inflate schemas so converse budget must evict something.
+    const map = new Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }>();
+    for (const name of ALL_BUILTIN) {
+      map.set(name, {
+        name,
+        description: `Description for ${name} ${'PAD '.repeat(2_000)}`,
+        inputSchema: {
+          type: 'object',
+          properties: Object.fromEntries(
+            Array.from({ length: 40 }, (_, i) => [`field_${i}`, { type: 'string', description: 'x'.repeat(80) }]),
+          ),
+        },
+      });
+    }
+    const withActivated = selector.selectTools({
+      allTools: map,
+      userMessage: 'hello',
+      pack: 'converse',
+      recentToolNames: ['shell_execute', 'file_read'],
+      activatedToolNames: ['shell_execute', 'file_read'],
+    }).map((t) => t.name);
+
+    expect(withActivated).toContain('shell_execute');
+    expect(withActivated).toContain('file_read');
+    expect(withActivated).toContain('discover_tools');
+  });
+
+  it('S-activated-mcp-lru: activated MCP can defer; core stays LIVE', () => {
+    const selector = new ToolSelector();
+    const bigSchema = {
+      type: 'object',
+      properties: Object.fromEntries(
+        Array.from({ length: 40 }, (_, i) => [`field_${i}`, { type: 'string', description: 'x'.repeat(100) }]),
+      ),
+    };
+    const map = new Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }>();
+    for (const name of ALL_BUILTIN) {
+      map.set(name, { name, description: `d ${name}`, inputSchema: { type: 'object', properties: {} } });
+    }
+    const activatedMcp: string[] = [];
+    for (let i = 0; i < 25; i++) {
+      const name = `feishu_tool_${i}`;
+      activatedMcp.push(name);
+      map.set(name, { name, description: `feishu ${i}`, inputSchema: bigSchema });
+    }
+    const selected = selector.selectTools({
+      allTools: map,
+      userMessage: 'hello',
+      pack: 'converse',
+      activatedToolNames: activatedMcp,
+    });
+    const names = selected.map((t) => t.name);
+    expect(names).toContain('shell_execute');
+    expect(names).toContain('file_read');
+    expect(names).toContain('discover_tools');
+    const deferred = selector.consumeDeferredCatalog();
+    const evictedActivated = selector.consumeEvictedActivated();
+    expect(deferred.some((d) => d.name.startsWith('feishu_')) || evictedActivated.some((n) => n.startsWith('feishu_'))).toBe(true);
   });
 });

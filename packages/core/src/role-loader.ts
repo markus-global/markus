@@ -64,9 +64,9 @@ export class RoleLoader {
     const name = this.extractTitle(roleContent) || roleNameOrPath;
     const category = this.inferCategory(roleNameOrPath);
 
-    // Append shared instructions (SHARED.md in the roles root) to every role's prompt
-    const sharedContent = this.loadSharedInstructions();
-    const systemPrompt = sharedContent ? `${roleContent}\n\n${sharedContent}` : roleContent;
+    // ROLE.md only — SHARED.md is progressive (file_read), not always-on.
+    // Platform rules live in ContextEngine L0; see docs/AGENT-RUNTIME.md.
+    const systemPrompt = roleContent;
 
     return {
       id: generateId('role'),
@@ -79,14 +79,6 @@ export class RoleLoader {
       defaultPolicies: files.policies ? this.parsePolicies(files.policies) : [],
       builtIn: true,
     };
-  }
-
-  private loadSharedInstructions(): string | undefined {
-    for (const dir of this.templateDirs) {
-      const p = join(dir, 'SHARED.md');
-      if (existsSync(p)) return readFileSync(p, 'utf-8');
-    }
-    return undefined;
   }
 
   private resolveRoleFiles(nameOrPath: string): RoleFiles {
