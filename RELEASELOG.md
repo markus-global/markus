@@ -1,5 +1,11 @@
 # Release Log
 
+## v0.9.6-rc.2
+
+### Bug Fixes
+
+- **macOS arm64 DMG 损坏** — electron-builder DMG 改用 **APFS**（避开 macOS 26 Tahoe runner 上 HFS+ 打包损坏）；Publish 流水线对产物跑 `hdiutil verify` + 挂载冒烟 + 架构校验，坏包直接 fail
+
 ## v0.9.6-rc.1
 
 ### Bug Fixes

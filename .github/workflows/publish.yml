@@ -198,6 +198,31 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      - name: Verify macOS DMG integrity
+        if: matrix.platform == 'darwin'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(packages/desktop/dist-electron/*.dmg)
+          if [ "${#dmgs[@]}" -eq 0 ]; then
+            echo "::error::No DMG produced under packages/desktop/dist-electron/"
+            exit 1
+          fi
+          for dmg in "${dmgs[@]}"; do
+            echo "→ hdiutil verify $dmg"
+            hdiutil verify "$dmg"
+            echo "→ hdiutil attach (smoke) $dmg"
+            mountpoint="$(hdiutil attach "$dmg" -nobrowse -readonly | awk 'END{print $NF}')"
+            test -d "$mountpoint/Markus.app"
+            arch_out="$(lipo -archs "$mountpoint/Markus.app/Contents/MacOS/Markus")"
+            echo "   app arch: $arch_out"
+            case "${{ matrix.arch }}" in
+              arm64) echo "$arch_out" | grep -q arm64 ;;
+              x64)   echo "$arch_out" | grep -q x86_64 ;;
+            esac
+            hdiutil detach "$mountpoint"
+          done
+
       - name: Cleanup Apple keychain
         if: always() && matrix.platform == 'darwin' && env.DESKTOP_KEYCHAIN != ''
         run: security delete-keychain "$DESKTOP_KEYCHAIN" 2>/dev/null || true

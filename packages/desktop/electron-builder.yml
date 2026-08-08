@@ -45,6 +45,10 @@ mac:
   icon: build/icon.icns
 
 dmg:
+  # APFS avoids HFS+ create/mount corruption on macOS 26 Tahoe runners
+  # (GitHub macos-latest). HFS+ produced INVALID arm64 DMGs that Finder
+  # refuses to open (hdiutil: "映像数据已损坏").
+  filesystem: APFS
   sign: false
   contents:
     - x: 130
