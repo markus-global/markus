@@ -961,7 +961,9 @@ export async function handleSkillsRoutes(
 
         const ext = filename.split('.').pop()?.toLowerCase() ?? '';
         const mimeTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
-        res.writeHead(200, { 'Content-Type': mimeTypes[ext] ?? 'application/octet-stream', 'Cache-Control': 'public, max-age=3600' });
+        // No browser cache — images can change between preview and publish (e.g. compression).
+        // stale cached originals would cause Hub to receive wrong versions.
+        res.writeHead(200, { 'Content-Type': mimeTypes[ext] ?? 'application/octet-stream', 'Cache-Control': 'no-cache' });
         res.end(readFileSync(filePath));
         return true;
       }

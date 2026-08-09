@@ -419,10 +419,11 @@ function TabbedFiles({ files: rawFiles, onSave, noHeader, readOnly }: { files: [
 // ---------------------------------------------------------------------------
 // ImageGallery: inline image management
 // ---------------------------------------------------------------------------
-function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove, readOnly }: {
+function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove, readOnly, cacheBust }: {
   images: string[]; artifactType: string; artifactName: string;
   onUpload: (file: File) => void; onRemove: (filename: string) => void;
   readOnly?: boolean;
+  cacheBust?: number;
 }) {
   const { t } = useTranslation(['builder']);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -447,7 +448,7 @@ function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove, 
           const filename = img.split('/').pop() ?? img;
           return (
             <div key={img} className="relative group shrink-0 rounded-lg border border-border-default overflow-hidden bg-surface-elevated">
-              <img src={`/api/builder/artifacts/${artifactType}s/${encodeURIComponent(artifactName)}/images/${encodeURIComponent(filename)}`} alt={filename} className="h-32 w-auto object-cover" />
+              <img src={`/api/builder/artifacts/${artifactType}s/${encodeURIComponent(artifactName)}/images/${encodeURIComponent(filename)}${cacheBust != null ? `?v=${cacheBust}` : ''}`} alt={filename} className="h-32 w-auto object-cover" />
               {!readOnly && <button onClick={() => onRemove(filename)} className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-red-600/80 text-white flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">&times;</button>}
             </div>
           );
@@ -697,6 +698,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
   const [showVisibility, setShowVisibility] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [notice, setNotice] = useState<{ title: string; message: string; variant?: 'primary' | 'danger' } | null>(null);
+  const [imageCacheBust, setImageCacheBust] = useState(0); // bumped on upload/remove to bust browser img cache
 
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
@@ -886,7 +888,8 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       if (icon && !icon.startsWith('http') && /\.(png|jpe?g|gif|webp|svg)$/i.test(icon)) {
         const iconFilename = icon.split('/').pop() ?? icon;
         try {
-          const iconResp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(workingName)}/images/${encodeURIComponent(iconFilename)}`);
+          // cache: 'no-store' prevents stale (pre-compression) cached images from being sent to Hub
+          const iconResp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(workingName)}/images/${encodeURIComponent(iconFilename)}`, { cache: 'no-store' });
           if (iconResp.ok) {
             const blob = await iconResp.blob();
             const file = new File([blob], iconFilename, { type: blob.type });
@@ -903,7 +906,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
         const imgPath = screenshots[i]!;
         const filename = imgPath.split('/').pop() ?? imgPath;
         try {
-          const imgResp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(workingName)}/images/${encodeURIComponent(filename)}`);
+          const imgResp = await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(workingName)}/images/${encodeURIComponent(filename)}`, { cache: 'no-store' });
           if (imgResp.ok) {
             const blob = await imgResp.blob();
             const file = new File([blob], filename, { type: blob.type });
@@ -973,6 +976,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(folderName)}/images`, { method: 'POST', body: formData, credentials: 'include' });
       await load();
       setContentDirty(true);
+      setImageCacheBust(v => v + 1);
     } catch (err) { console.error('Image upload failed:', err); }
   };
 
@@ -981,6 +985,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       await fetch(`/api/builder/artifacts/${type}s/${encodeURIComponent(folderName)}/images/${encodeURIComponent(filename)}`, { method: 'DELETE', credentials: 'include' });
       await load();
       setContentDirty(true);
+      setImageCacheBust(v => v + 1);
     } catch (err) { console.error('Image remove failed:', err); }
   };
 
@@ -1170,7 +1175,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
                 <div onClick={() => !readOnly && setShowIconPicker(!showIconPicker)}
                   className={`w-16 h-16 rounded-xl ${style.bg} flex items-center justify-center text-3xl shrink-0 ${readOnly ? '' : 'cursor-pointer hover:ring-2'} ${style.ring} transition-all overflow-hidden`}>
                   {editIcon && editIcon.startsWith('images/')
-                    ? <img src={`/api/builder/artifacts/${type}s/${encodeURIComponent(folderName)}/images/${encodeURIComponent(editIcon.replace('images/', ''))}`} alt="" className="w-full h-full object-cover" />
+                    ? <img src={`/api/builder/artifacts/${type}s/${encodeURIComponent(folderName)}/images/${encodeURIComponent(editIcon.replace('images/', ''))}?v=${imageCacheBust}`} alt="" className="w-full h-full object-cover" />
                     : editIcon && (editIcon.startsWith('http') || editIcon.startsWith('/'))
                       ? <img src={editIcon} alt="" className="w-full h-full object-cover" />
                       : (() => {
@@ -1266,7 +1271,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
 
             {/* Image gallery */}
             <div className="mb-8">
-              <ImageGallery images={imageFiles} artifactType={type} artifactName={name} onUpload={handleImageUpload} onRemove={handleImageRemove} readOnly={readOnly} />
+              <ImageGallery images={imageFiles} artifactType={type} artifactName={name} onUpload={handleImageUpload} onRemove={handleImageRemove} readOnly={readOnly} cacheBust={imageCacheBust} />
             </div>
 
             {/* Extra content slot (for readOnly built-in template details) */}
