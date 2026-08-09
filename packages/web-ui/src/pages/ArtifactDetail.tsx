@@ -2,14 +2,19 @@ import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } fro
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import remarkBreaks from 'remark-breaks';
+import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
+import 'katex/dist/katex.min.css';
 import { api, hubApi, kebab, toPackageSlug, type AuthUser, type HubVisibility, type HubModerationStatus, type HubOrg } from '../api.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { isElectron, openExternal } from '../hooks/useElectron.ts';
 import { assetGlyphPath, ASSET_TYPE_META, normalizeAssetType } from '../lib/assetIdentity.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { PAGE, hashPath } from '../routes.ts';
+import { rehypeSlugifyHeadings } from '../components/markdown-links.ts';
+import { useMarkdownComponents } from '../components/MarkdownComponents.tsx';
 
 interface ArtifactDetailProps {
   type: string;
@@ -237,6 +242,17 @@ function InlineTags({ tags, onChange, readOnly }: { tags: string[]; onChange: (t
 // RenderedMarkdown
 // ---------------------------------------------------------------------------
 function RenderedMarkdown({ content }: { content: string }) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const remarkPlugins: any[] = [remarkGfm, remarkMath, remarkBreaks];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rehypePlugins: any[] = [
+    rehypeSlugifyHeadings,
+    [rehypeKatex, { strict: 'ignore' }],
+    [rehypeHighlight, { detect: true, ignoreMissing: true }],
+  ];
+
+  const components = useMarkdownComponents({});
+
   return (
     <div className="prose prose-invert prose-sm max-w-none
       prose-headings:text-fg-primary prose-headings:font-semibold
@@ -248,7 +264,7 @@ function RenderedMarkdown({ content }: { content: string }) {
       prose-li:text-fg-secondary
       prose-hr:border-border-default
       prose-blockquote:border-brand-500/40 prose-blockquote:text-fg-secondary">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}>{content}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>{content}</ReactMarkdown>
     </div>
   );
 }
