@@ -21,6 +21,8 @@ Most skills are instruction-based. Use MCP-based skills when the capability requ
 ├── skill.json       # Manifest (auto-created from your JSON output)
 ├── SKILL.md         # Instruction document (you write via file_write)
 ├── README.md        # Human-readable documentation (optional)
+├── images/          # Skill icon images (optional)
+│   └── icon.png     # Skill icon — used in UI after install
 └── ...              # Any other files: scripts, MCP servers, configs, templates, etc.
 ```
 
@@ -60,6 +62,7 @@ This JSON contains ONLY metadata — **no file content**.
   "version": "1.0.0",
   "description": "When and why an agent should use this skill",
   "author": "Your Name",
+  "icon": "images/icon.png",
   "category": "custom",
   "tags": ["tag1", "tag2"],
   "skill": {
@@ -77,6 +80,7 @@ This JSON contains ONLY metadata — **no file content**.
   "version": "1.0.0",
   "description": "Connect to My API for data retrieval and actions",
   "author": "Your Name",
+  "icon": "images/icon.png",
   "category": "custom",
   "tags": ["api", "connector"],
   "skill": {
@@ -119,6 +123,63 @@ After the JSON is saved, write each file individually using `file_write`. The ba
 3. **README.md** (optional) — Human-readable documentation for browsing or sharing.
 
 4. **Any other files** — Helper scripts, templates, config files, data files, etc.
+
+5. **images/icon.png** (optional) — Skill icon for UI display (see [Image Assets](#image-assets)).
+
+## Image Assets
+
+Skill icons are **abstract representations** of the skill's capability — like an app icon or tool symbol. They should be clean, recognizable, and work well at small sizes.
+
+| Image | Location | Style | Purpose |
+|:------|:---------|:------|:--------|
+| **Skill icon** | `images/icon.png` | Abstract icon / symbol | Skill card in UI, published to Hub as `icon` |
+
+**Do NOT use portraits for skill icons.** Skills are tools, not team members. Portraits belong on agents.
+
+### Image Generation
+
+Prompt style guide for `generate_image`:
+```
+Good prompt (do this):
+  "Clean icon design for a git changelog tool, stylized git branch merging into a document,
+   flat vector style, teal and white palette, square format, modern minimal"
+  "Minimalist icon for a GitHub automation skill, octagon cat silhouette combined with
+   gear, flat design, purple gradients, square format"
+  "Abstract icon representing web scraping capability, spider-web pattern with a magnifying
+   glass, geometric style, blue and orange accents, square format"
+
+Bad prompt (don't do this):
+  "Developer sitting at a computer" ✗ — portraits are for agents, not skills
+  "Abstract colorful splash without meaning" ✗ — too vague, no clear concept
+  "Screenshot of a terminal window" ✗ — not an icon
+```
+
+Key rules:
+- **Style**: flat vector / geometric / minimal — NOT photographic, NOT portraits
+- **Subject**: abstract concept representing the skill's capability
+- **Format**: square, clean background, recognizable at small sizes (64×64)
+- **Match skill function**: git → branching, browser → window/globe, API → connector/plug
+
+### Image Size & Compression
+
+| Property | Value |
+|:---------|:------|
+| **Final resolution** | 512×512 (square) |
+| **File format** | PNG (recommended for icons — crisp lines, transparency) |
+| **Max file size** | ≤30KB |
+| **Compression method** | Python Pillow (`pip3 install Pillow`) resize + save |
+
+Compression procedure:
+```python
+python3 -c "
+from PIL import Image
+img = Image.open('source.png')
+img = img.resize((512, 512), Image.LANCZOS)
+img.save('icon.png', 'PNG', optimize=True)
+"
+```
+
+**Always** place images under an `images/` subdirectory — NOT at the artifact root.
 
 **Example file_write calls:**
 

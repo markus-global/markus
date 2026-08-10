@@ -517,6 +517,7 @@ export class OrganizationService {
         orgId: team.orgId,
         name: team.name,
         description: team.description,
+        avatarUrl: team.avatarUrl,
         managerId: team.managerId,
         managerType: team.managerType,
         managerName,

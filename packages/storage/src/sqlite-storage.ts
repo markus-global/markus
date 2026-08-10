@@ -714,6 +714,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'users', column: 'invite_token', sql: "ALTER TABLE users ADD COLUMN invite_token TEXT" },
     { table: 'users', column: 'invite_expires_at', sql: "ALTER TABLE users ADD COLUMN invite_expires_at TEXT" },
     { table: 'agents', column: 'avatar_url', sql: "ALTER TABLE agents ADD COLUMN avatar_url TEXT" },
+    { table: 'teams', column: 'avatar_url', sql: "ALTER TABLE teams ADD COLUMN avatar_url TEXT" },
     { table: 'channel_messages', column: 'reply_to_id', sql: "ALTER TABLE channel_messages ADD COLUMN reply_to_id TEXT" },
     { table: 'approvals', column: 'approver_user_ids', sql: "ALTER TABLE approvals ADD COLUMN approver_user_ids TEXT" },
     { table: 'requirements', column: 'rejected_by', sql: 'ALTER TABLE requirements ADD COLUMN rejected_by TEXT' },
@@ -2931,6 +2932,10 @@ export class SqliteTeamRepo {
     this.db.prepare('DELETE FROM teams WHERE id = ?').run(id);
   }
 
+  updateAvatarUrl(id: string, avatarUrl: string | null) {
+    this.db.prepare('UPDATE teams SET avatar_url = ? WHERE id = ?').run(avatarUrl, id);
+  }
+
   private _map(r: Record<string, unknown>) {
     return {
       id: r['id'],
@@ -2939,6 +2944,7 @@ export class SqliteTeamRepo {
       description: r['description'],
       managerId: r['manager_id'],
       managerType: r['manager_type'],
+      avatarUrl: r['avatar_url'] as string | null,
       createdAt: toDate(r['created_at'] as string),
     };
   }

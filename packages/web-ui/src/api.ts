@@ -796,6 +796,7 @@ export interface TeamInfo {
   orgId: string;
   name: string;
   description?: string;
+  avatarUrl?: string | null;  // teams icon from builder-artifacts or Hub
   managerId?: string;
   managerType?: 'human' | 'agent';
   managerName?: string;

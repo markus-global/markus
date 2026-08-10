@@ -467,10 +467,11 @@ function ImageGallery({ images, artifactType, artifactName, onUpload, onRemove, 
 // ---------------------------------------------------------------------------
 // TeamTabs: Overview tab + one tab per member, each with nested file tabs
 // ---------------------------------------------------------------------------
-function TeamTabs({ members, teamTopFiles, files, onFileSave, readOnly }: {
+function TeamTabs({ members, teamTopFiles, files, artifactName, onFileSave, readOnly }: {
   members: Array<{ name: string; role: string; roleName?: string; count: number; skills?: string[] }>;
   teamTopFiles: [string, string][];
   files: Record<string, string>;
+  artifactName: string;
   onFileSave: (filename: string, content: string) => void;
   readOnly?: boolean;
 }) {
@@ -493,10 +494,21 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave, readOnly }: {
     const map = new Map<number, string>();
     const usedDirs = new Set<string>();
 
+    // Pass 0: explicit slug in manifest → direct match (most reliable)
+    for (let i = 0; i < members.length; i++) {
+      const m = members[i]! as any;
+      const explicitSlug: string | undefined = m.slug;
+      if (explicitSlug && memberDirs.includes(explicitSlug) && !usedDirs.has(explicitSlug)) {
+        map.set(i, explicitSlug);
+        usedDirs.add(explicitSlug);
+      }
+    }
+
     // Pass 1: exact slug match on member name
     for (let i = 0; i < members.length; i++) {
+      if (map.has(i)) continue;
       const slug = kebab(members[i]!.name);
-      if (memberDirs.includes(slug) && !usedDirs.has(slug)) {
+      if (slug && memberDirs.includes(slug) && !usedDirs.has(slug)) {
         map.set(i, slug);
         usedDirs.add(slug);
       }
@@ -580,7 +592,26 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave, readOnly }: {
               className={`px-4 py-2.5 text-xs font-medium whitespace-nowrap border-b-2 transition-colors flex items-center gap-1.5 ${colorClass} ${isActive ? 'bg-surface-secondary/50' : 'hover:bg-surface-elevated/50'}`}>
               {i === 0 && <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>}
               {i > 0 && (
-                <span className={`w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center shrink-0 ${isManager ? 'bg-amber-500/20 text-amber-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                (() => {
+                  const memberIdx = i - 1;
+                  const memberDir = memberDirMap.get(memberIdx);
+                  const avatarSrc = memberDir
+                    ? `/api/builder/artifacts/teams/${encodeURIComponent(artifactName)}/members/${encodeURIComponent(memberDir)}/images/avatar.jpg`
+                    : null;
+                  return avatarSrc ? (
+                    <img
+                      src={avatarSrc}
+                      alt={tab.label}
+                      className={`w-5 h-5 rounded-full object-cover shrink-0 ring-1 ${isManager ? 'ring-amber-500/40' : 'ring-blue-500/40'}`}
+                      onError={(e) => {
+                        // Fallback to first-letter circle if image fails to load
+                        (e.target as HTMLImageElement).style.display = 'none';
+                        (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                      }}
+                    />
+                  ) : null;
+                })(),
+                <span className={`w-5 h-5 rounded-full text-[9px] font-bold flex items-center justify-center shrink-0 ${isManager ? 'bg-amber-500/20 text-amber-400' : 'bg-blue-500/20 text-blue-400'} ${(() => { const memberIdx = i - 1; const memberDir = memberDirMap.get(memberIdx); return memberDir ? 'hidden' : ''; })()}`}>
                   {(tab.label[0] ?? '?').toUpperCase()}
                 </span>
               )}
@@ -606,7 +637,22 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave, readOnly }: {
                   return (
                     <button key={i} onClick={() => setActiveTab(i + 1)}
                       className="text-left rounded-lg border border-border-default bg-surface-elevated/30 px-4 py-3 flex gap-3 items-center hover:border-gray-600 transition-colors cursor-pointer">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${isManager ? 'bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/30' : 'bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30'}`}>
+                      {(() => {
+                        const memberDir = memberDirMap.get(i);
+                        const avatarSrc = memberDir
+                          ? `/api/builder/artifacts/teams/${encodeURIComponent(artifactName)}/members/${encodeURIComponent(memberDir)}/images/avatar.jpg`
+                          : null;
+                        return avatarSrc ? (
+                          <img src={avatarSrc} alt={m.name}
+                            className={`w-8 h-8 rounded-full object-cover shrink-0 ring-1 ${isManager ? 'ring-amber-500/30' : 'ring-blue-500/30'}`}
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                              (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                            }}
+                          />
+                        ) : null;
+                      })()}
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${isManager ? 'bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/30' : 'bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30'} ${(() => { const memberDir = memberDirMap.get(i); return memberDir ? 'hidden' : ''; })()}`}>
                         {(m.name[0] ?? '?').toUpperCase()}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -633,7 +679,22 @@ function TeamTabs({ members, teamTopFiles, files, onFileSave, readOnly }: {
           /* Member detail: profile header + file tabs */
           <div className="space-y-4">
             <div className="flex items-center gap-4">
-              <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold shrink-0 ${activeMember.role === 'manager' ? 'bg-amber-500/15 text-amber-400 ring-2 ring-amber-500/30' : 'bg-blue-500/15 text-blue-400 ring-2 ring-blue-500/30'}`}>
+              {(() => {
+                const memberDir = memberDirMap.get(activeMemberIdx);
+                const avatarSrc = memberDir
+                  ? `/api/builder/artifacts/teams/${encodeURIComponent(artifactName)}/members/${encodeURIComponent(memberDir)}/images/avatar.jpg`
+                  : null;
+                return avatarSrc ? (
+                  <img src={avatarSrc} alt={activeMember.name}
+                    className={`w-12 h-12 rounded-full object-cover shrink-0 ring-2 ${activeMember.role === 'manager' ? 'ring-amber-500/30' : 'ring-blue-500/30'}`}
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).style.display = 'none';
+                      (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                    }}
+                  />
+                ) : null;
+              })()}
+              <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold shrink-0 ${activeMember.role === 'manager' ? 'bg-amber-500/15 text-amber-400 ring-2 ring-amber-500/30' : 'bg-blue-500/15 text-blue-400 ring-2 ring-blue-500/30'} ${(() => { const memberDir = memberDirMap.get(activeMemberIdx); return memberDir ? 'hidden' : ''; })()}`}>
                 {(activeMember.name[0] ?? '?').toUpperCase()}
               </div>
               <div className="flex-1 min-w-0">
@@ -1280,7 +1341,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
             {/* Type-specific sections */}
             {type === 'team' && manifest.team && (
               <div className="mb-8">
-                <TeamTabs members={manifest.team.members} teamTopFiles={teamTopFiles} files={files} onFileSave={handleFileSave} readOnly={readOnly} />
+                <TeamTabs members={manifest.team.members} teamTopFiles={teamTopFiles} files={files} artifactName={folderName} onFileSave={handleFileSave} readOnly={readOnly} />
               </div>
             )}
 

@@ -21,6 +21,8 @@ This skill teaches you how to create Markus team packages — self-contained dir
 ├── README.md                    # Public-facing team overview for Hub/Builder (REQUIRED)
 ├── ANNOUNCEMENT.md              # Team announcement (you write via file_write)
 ├── NORMS.md                     # Working norms (you write via file_write)
+├── images/                      # Team-level images (icon, etc.)
+│   └── icon.png                 # Team icon — used as avatar after install
 ├── workflows/                   # Workflow templates (optional)
 │   └── {workflow-name}.yaml     # YAML workflow DAG definition
 └── members/
@@ -28,12 +30,14 @@ This skill teaches you how to create Markus team packages — self-contained dir
     │   ├── ROLE.md              # Identity and system prompt (REQUIRED)
     │   ├── HEARTBEAT.md         # Periodic self-check checklist (RECOMMENDED)
     │   ├── POLICIES.md          # Constraints and guardrails (optional)
-    │   └── CONTEXT.md           # Domain context and references (optional)
+    │   ├── CONTEXT.md           # Domain context and references (optional)
+    │   └── images/              # Member avatar images (e.g. avatar.jpg)
     └── {worker-slug}/
         ├── ROLE.md              # Identity and system prompt (REQUIRED)
         ├── HEARTBEAT.md         # Periodic self-check checklist (RECOMMENDED)
         ├── POLICIES.md          # Constraints and guardrails (optional)
-        └── CONTEXT.md           # Domain context and references (optional)
+        ├── CONTEXT.md           # Domain context and references (optional)
+        └── images/              # Member avatar images (e.g. avatar.jpg)
 ```
 
 **Do NOT write artifacts to `~/.markus/shared/`, your agent `workspace/`, or any other location.** Only `~/.markus/builder-artifacts/teams/` is recognized by `package_list` / `package_install`. The `agents/`, `teams/`, and `skills/` subdirs are created automatically at startup — still write files yourself with `file_write`.
@@ -66,6 +70,7 @@ If the user only gives a Chinese title, **you invent an English kebab slug** tha
 | `members/{name}/HEARTBEAT.md` | `~/.markus/agents/{agentId}/role/HEARTBEAT.md` | Periodic self-check checklist (every ~30 min) |
 | `members/{name}/POLICIES.md` | `~/.markus/agents/{agentId}/role/POLICIES.md` | Additional agent constraints |
 | `members/{name}/CONTEXT.md` | `~/.markus/agents/{agentId}/role/CONTEXT.md` | Domain context and references |
+| `members/{name}/images/` | `~/.markus/agents/{agentId}/role/images/` | Member avatar images (copied on install; first image used as agent avatar) |
 | `workflows/*.yaml` | `~/.markus/teams/{teamId}/workflows/*.yaml` | Workflow templates (runnable as task DAGs) |
 
 ## Creation Workflow
@@ -94,6 +99,7 @@ This JSON contains ONLY metadata and structure — **no file content**.
   "version": "1.0.0",
   "description": "Team purpose and goals",
   "author": "",
+  "icon": "images/icon.png",
   "category": "development | devops | management | productivity | general",
   "tags": ["tag1", "tag2"],
   "team": {
@@ -121,6 +127,13 @@ This JSON contains ONLY metadata and structure — **no file content**.
   }
 }
 ```
+
+> ⚠️ **CRITICAL — manifest field rules:**
+> - `members` MUST be nested under `team`, NOT at the root level.
+> - `role` MUST be exactly `"manager"` or `"worker"` — no descriptions, no other values. The UI uses this to color-code tabs and determine sidebar counts.
+> - `count` is REQUIRED for every member (typically `1`).
+> - `category` MUST be one of: `development`, `devops`, `management`, `productivity`, `general`.
+> - The root level should NOT contain `members` or `skills` directly — put `skills` under `dependencies.skills`.
 
 After `team.json` is written, proceed to write the remaining files with `file_write`.
 
@@ -165,6 +178,97 @@ After the JSON is saved, write each file individually using `file_write`. The ba
 6. **POLICIES.md** (optional) — For members that need specific constraints.
 
 7. **CONTEXT.md** (optional) — Additional domain context, references, or knowledge specific to a member.
+
+## Image Assets
+
+Teams use **two kinds of images**, stored in separate locations:
+
+| Image | Location | Style | Purpose |
+|:------|:---------|:------|:--------|
+| **Team icon** | `images/icon.png` | Abstract logo / icon | Team card in UI, published to Hub as `icon` |
+| **Member avatar** | `members/{slug}/images/avatar.jpg` | Realistic digital portrait | Agent card in UI (same as agent-building) |
+
+### Team Icon
+
+A team icon should represent the team's **identity as a whole** — like a department logo or squad badge. Use abstract, geometric, or emblematic styles. **Do NOT use portraits for the team icon** (portraits belong on individual member agents).
+
+Prompt style guide for `generate_image`:
+```
+Good prompt (do this):
+  "Clean vector-style icon for a research team, geometric shapes forming a magnifying glass
+   over interconnected nodes, modern flat design, blue and indigo palette, square format"
+  "Minimalist tech squad badge, circuit board pattern forming a shield, clean lines,
+   dark blue and cyan accents, flat vector illustration, square format"
+
+Bad prompt (don't do this):
+  "A group of people sitting around a conference table" ✗ — this is a scene, not an icon
+  "Smiling project manager portrait" ✗ — portraits are for members, not the team
+  "Abstract colorful blob" ✗ — too vague, no recognizable meaning
+```
+
+Key rules:
+- **Style**: vector / flat design / geometric / emblematic — NOT photographic
+- **Subject**: abstract concept (shield, gear, nodes, stars, etc.) — NOT people
+- **Format**: square, clean background, recognizable at small sizes (64×64)
+- **Match team purpose**: research → magnifying glass / beaker, dev → code brackets / gear, ops → shield / cog
+
+### Member Avatars
+
+Member avatars follow the **same rules as agent-building** — they are **digital employee portraits**. Each member gets a realistic headshot that matches their role.
+
+Prompt style guide:
+```
+Good prompt (do this):
+  "Professional headshot of a friendly male research director in business casual attire,
+   warm blue tones, clean background, realistic digital portrait"
+  "Creative female content strategist with glasses, warm orange tones, looking thoughtful,
+   realistic digital portrait, professional yet approachable"
+
+Bad prompt (don't do this):
+  "Abstract icon of a roadmap with sticky notes" ✗ — not a person
+  "A laptop with writing bubbles floating above it" ✗ — not a person
+```
+
+Key rules (same as agent-building):
+- **Subject is always a person** — realistic digital portrait
+- **Match the role's personality** — manager = organized/strategic, creator = creative/warm
+- **Color palette** aligns with the role (blue = analytical, orange = creative, green = growth)
+- **Background**: clean, professional, non-distracting
+- **Style**: `"realistic digital portrait", "professional headshot", "digital art style"`
+
+### Image Size & Compression
+
+Same specs as agent-building:
+
+| Property | Value |
+|:---------|:------|
+| **Final resolution** | 512×512 (square) |
+| **File format** | JPEG (members) / PNG (team icon — for transparency) |
+| **Max file size** | ≤50KB |
+| **Compression method** | Python Pillow (`pip3 install Pillow`) resize + save |
+
+Compression procedure:
+```python
+# Using Python Pillow
+python3 -c "
+from PIL import Image
+img = Image.open('source.jpg')
+img = img.resize((512, 512), Image.LANCZOS)
+img.save('avatar.jpg', 'JPEG', quality=85)
+"
+```
+
+For team icons (PNG):
+```python
+python3 -c "
+from PIL import Image
+img = Image.open('source.png')
+img = img.resize((512, 512), Image.LANCZOS)
+img.save('icon.png', 'PNG', optimize=True)
+"
+```
+
+**Always** place images under an `images/` subdirectory — NOT at the artifact root.
 
 **Example file_write calls:**
 
@@ -251,12 +355,14 @@ For the full YAML format reference, DAG patterns, scheduling, and more examples,
 - **`tags`**: Descriptive tags
 
 ### `team.members[]` — Member Specifications (REQUIRED)
-- **`name`**: Display name (the slug for file paths is derived from this)
+- **`name`**: Display name — Chinese / any language is fine (e.g., "Agent 创建者")
+- **`slug`** *(recommended)*: Explicit kebab-case slug matching the `members/{slug}/` directory name (e.g., `"agent-creator"`). **CRITICAL when `name` contains non-ASCII characters** — the auto-derived slug from `kebab(name)` strips Chinese/Unicode, causing directory mismatch and broken avatars.
+- **`roleName`** *(recommended)*: English version of the display name (e.g., `"Agent Creator"`). Used as a fallback for directory matching when `slug` is not set. `kebab("Agent Creator")` → `"agent-creator"` matches the directory correctly.
 - **`role`**: `"manager"` or `"worker"`
 - **`count`**: Number of instances (default 1)
 - **`skills`**: Skill IDs from the dynamic context. **Actively assign skills — don't leave empty!**
 
-**Note**: The `roleName` field is **not needed** for team members. Each member's identity is fully defined by their `ROLE.md` file under `members/{slug}/`. Do NOT include `roleName` unless you specifically want to inherit defaults from a built-in role template (rare).
+> ⚠️ **CRITICAL — Avatar Mapping**: The UI maps each manifest member to its on-disk `members/{slug}/` directory using slug matching. If the member name is in Chinese (e.g., "Agent 创建者"), `kebab()` strips all Unicode → produces `"agent"` which does NOT match `"agent-creator"`. **Always set `slug` (preferred) or `roleName` (fallback)** for members whose display names contain non-ASCII characters. Without this, member avatars, file tabs, and role colors will be mapped to the wrong members or not shown at all.
 
 ### `team.workflow` — Workflow Configuration (recommended)
 - **`phases`**: Array of phase names defining the team's workflow (e.g., `["plan", "implement", "review", "validate"]`)

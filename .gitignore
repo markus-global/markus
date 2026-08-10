@@ -35,3 +35,4 @@ paper/
 
 # Locally downloaded Windows installers
 Markus-Setup-*.exe
+*.dmg

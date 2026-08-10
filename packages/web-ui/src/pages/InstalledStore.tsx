@@ -223,6 +223,10 @@ export function InstalledStore() {
               const tags = (art.meta.tags as string[]) ?? [];
               const category = art.meta.category as string || '';
               const icon = art.meta.icon as string | undefined;
+              // Resolve relative icon paths (e.g. "images/avatar.jpg") to full API URL for img src
+              const resolvedIcon = icon && /\.(png|jpe?g|gif|webp|svg)$/i.test(icon) && !icon.startsWith('http') && !icon.startsWith('data:') && !icon.startsWith('/')
+                ? `/api/builder/artifacts/${art.type}s/${encodeURIComponent(art.name)}/${icon}`
+                : icon;
               const skillUpdate = art.type === 'skill' ? updates[art.name] : undefined;
 
               return (
@@ -232,7 +236,7 @@ export function InstalledStore() {
                   name={displayName}
                   description={description}
                   seed={art.name}
-                  icon={icon}
+                  icon={resolvedIcon}
                   author={null}
                   authorLabel={author || undefined}
                   version={skillUpdate ? skillUpdate.installedVersion : version}

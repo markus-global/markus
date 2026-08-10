@@ -31,7 +31,7 @@ const log = createLogger('builder-service');
 function resolveAvatarUrl(
   manifest: MarkusPackageManifest,
   artifactName: string,
-  artifactType: 'agent' | 'team',
+  artifactType: 'agent' | 'team' | 'skill',
 ): string | null {
   const icon = manifest.icon?.trim();
   if (!icon) return null;
@@ -42,7 +42,7 @@ function resolveAvatarUrl(
   // Local image file path (images/icon.png, icon.svg, etc.)
   if (/\.(png|jpe?g|gif|webp|svg)$/i.test(icon)) {
     const filename = icon.split('/').pop() ?? icon;
-    const typeDir = artifactType === 'agent' ? 'agents' : 'teams';
+    const typeDir = artifactType === 'agent' ? 'agents' : artifactType === 'team' ? 'teams' : 'skills';
     return `/api/builder/artifacts/${typeDir}/${encodeURIComponent(artifactName)}/images/${encodeURIComponent(filename)}`;
   }
 
@@ -311,6 +311,19 @@ export class BuilderService {
     const norms = existsSync(normsPath) ? readFileSync(normsPath, 'utf-8') : '';
     this.orgService.ensureTeamDataDir(team.id, announcements, norms);
 
+    // Apply team-level avatar from manifest icon
+    const teamAvatarUrl = resolveAvatarUrl(manifest, artifactName, 'team');
+    if (teamAvatarUrl) {
+      try {
+        const storage = this.orgService.getStorage();
+        if (storage?.teamRepo?.updateAvatarUrl) {
+          storage.teamRepo.updateAvatarUrl(team.id, teamAvatarUrl);
+        }
+      } catch (err) {
+        log.warn('Failed to set team avatar', { teamId: team.id, error: String(err) });
+      }
+    }
+
     const members = manifest.team?.members ?? [];
     const createdAgents: Array<{ id: string; name: string; role: string }> = [];
     const usedMemberDirs = new Set<string>();
@@ -345,6 +358,30 @@ export class BuilderService {
             const srcFile = join(memberFilesDir, fname);
             if (statSync(srcFile).isFile()) {
               copyFileSync(srcFile, join(agentRoleDir, fname));
+            }
+          }
+          // Also copy member images/ directory if it exists (e.g. avatar.jpg)
+          const memberImagesDir = join(memberFilesDir, 'images');
+          if (existsSync(memberImagesDir) && statSync(memberImagesDir).isDirectory()) {
+            const agentImagesDir = join(agentRoleDir, 'images');
+            cpSync(memberImagesDir, agentImagesDir, { recursive: true });
+            // Set agent avatar from the first image found in member's images/
+            try {
+              const imageFiles = readdirSync(agentImagesDir).filter(f => /\.(png|jpe?g|gif|webp|svg)$/i.test(f));
+              if (imageFiles.length > 0) {
+                const ext = (imageFiles[0]!.split('.').pop() ?? 'png').replace('jpeg', 'jpg');
+                const avatarDir = join(homedir(), '.markus', 'avatars');
+                mkdirSync(avatarDir, { recursive: true });
+                const avatarFilename = `agent_${agent.id}.${ext}`;
+                copyFileSync(join(agentImagesDir, imageFiles[0]!), join(avatarDir, avatarFilename));
+                const avatarUrl = `/api/avatars/${avatarFilename}`;
+                const storage = this.orgService.getStorage();
+                if (storage?.agentRepo?.updateAvatarUrl) {
+                  storage.agentRepo.updateAvatarUrl(agent.id, avatarUrl);
+                }
+              }
+            } catch (imgErr) {
+              log.warn('Failed to set member agent avatar', { agentId: agent.id, error: String(imgErr) });
             }
           }
         }
@@ -493,6 +530,19 @@ export class BuilderService {
         const instructions = existsSync(instrPath)
           ? readFileSync(instrPath, 'utf-8').replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim()
           : undefined;
+
+        // Resolve skill icon from manifest
+        let skillIcon: { path?: string; url?: string } | null = null;
+        const iconUrl = resolveAvatarUrl(manifest, artifactName, 'skill');
+        if (iconUrl) {
+          if (iconUrl.startsWith('http://') || iconUrl.startsWith('https://')) {
+            skillIcon = { url: iconUrl };
+          } else {
+            const localFile = iconUrl.split('/').pop();
+            skillIcon = { path: localFile ? `images/${localFile}` : undefined, url: iconUrl };
+          }
+        }
+
         this.skillRegistry.register({
           manifest: {
             name: manifest.name,
@@ -506,6 +556,7 @@ export class BuilderService {
             mcpServers: manifest.skill?.mcpServers,
             sourcePath: skillDir,
             source: 'builder',
+            icon: skillIcon,
           },
         });
       } catch (regErr) {

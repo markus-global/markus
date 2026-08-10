@@ -34,6 +34,8 @@ export interface SkillManifest {
   builtIn?: boolean;
   /** If true, full instructions are auto-injected into every agent (not just listed as available) */
   alwaysOn?: boolean;
+  /** Icon for UI display — path relative to sourcePath or absolute URL */
+  icon?: { path?: string; url?: string } | null;
 }
 
 export type SkillCategory =
