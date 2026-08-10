@@ -1154,6 +1154,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (previewMode && previewData?.chatMode === 'channel') return;
     if (agents.length === 0) return;
     if (selectedAgent && agents.some(a => a.id === selectedAgent)) return;
+
+    // Post-removal navigation: go to team group chat instead of Secretary
+    const navAfterRemove = localStorage.getItem('markus_nav_after_remove');
+    if (navAfterRemove) {
+      localStorage.removeItem('markus_nav_after_remove');
+      if (navAfterRemove.startsWith('channel:')) {
+        setChatMode('channel');
+        setActiveChannel(navAfterRemove.slice(8));
+        setMainTab('chat');
+        return;
+      }
+    }
+
     const secretary = agents.find(a => !a.teamId && a.role?.toLowerCase() === 'secretary')
       ?? agents.find(a => a.role?.toLowerCase() === 'secretary')
       ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));

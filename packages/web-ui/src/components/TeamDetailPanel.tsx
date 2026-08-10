@@ -7,6 +7,7 @@ import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { PAGE } from '../routes.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
+import { ConfirmModal } from './ConfirmModal.tsx';
 
 type ChatMode = 'channel' | 'direct' | 'dm';
 
@@ -155,6 +156,19 @@ export function TeamDetailPanel({
   const [agentMenu, setAgentMenu] = useState<{ agentId: string; x: number; y: number } | null>(null);
   const [moveToOpen, setMoveToOpen] = useState(false);
   const [moveToQuery, setMoveToQuery] = useState('');
+
+  // Confirm dialog
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string; message: string; confirmLabel?: string;
+    checkboxes?: { id: string; label: string; defaultChecked?: boolean }[];
+    onConfirm: (checked?: Record<string, boolean>) => void;
+  } | null>(null);
+  const askConfirm = (
+    title: string, message: string, onConfirm: (checked?: Record<string, boolean>) => void,
+    confirmLabel?: string, checkboxes?: { id: string; label: string; defaultChecked?: boolean }[],
+  ) => {
+    setPendingConfirm({ title, message, onConfirm, confirmLabel, checkboxes });
+  };
 
   const clampMenuPos = useCallback((e: React.MouseEvent, menuW = 176, menuH = 220) => {
     const vw = window.innerWidth;
@@ -487,7 +501,23 @@ export function TeamDetailPanel({
               );
             })()}
             <div className="border-t border-border-default/50 my-1" />
-            <button onClick={async () => { await api.agents.remove(a.id); onRefreshAgents(); setAgentMenu(null); }}
+            <button onClick={() => {
+              askConfirm(
+                `${t('common:remove')} "${a.name}"?`,
+                t('modals.removeAgent.message'),
+                async (checked) => {
+                  const purgeFiles = checked?.['purgeFiles'] ?? false;
+                  if (groupChat?.channelKey) {
+                    localStorage.setItem('markus_nav_after_remove', 'channel:' + groupChat.channelKey);
+                  }
+                  await api.agents.remove(a.id, { purgeFiles });
+                  onRefreshAgents();
+                  setAgentMenu(null);
+                },
+                t('common:remove'),
+                [{ id: 'purgeFiles', label: t('modals.removeAgent.purgeFiles'), defaultChecked: false }],
+              );
+            }}
               className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
               {t('contextMenu.removeFromOrg')}
@@ -495,6 +525,16 @@ export function TeamDetailPanel({
           </div>
         );
       })()}
+      {pendingConfirm && (
+        <ConfirmModal
+          title={pendingConfirm.title}
+          message={pendingConfirm.message}
+          confirmLabel={pendingConfirm.confirmLabel}
+          checkboxes={pendingConfirm.checkboxes}
+          onConfirm={(checked) => { pendingConfirm.onConfirm(checked); setPendingConfirm(null); }}
+          onCancel={() => setPendingConfirm(null)}
+        />
+      )}
     </>
   );
 }
