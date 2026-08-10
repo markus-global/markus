@@ -347,6 +347,12 @@ export class ContextEngine {
       stable.push('**Subagent delegation**: Use `spawn_subagent`/`spawn_subagents` for heavy subtasks or parallel independent work to keep your context lean.');
       stable.push('**Built-in tools over CLI**: ALWAYS use built-in tools (`task_create`, `task_assign`, `package_install`, `agent_send_message`, `memory_save`, etc.) — NEVER run `markus` CLI commands via `shell_execute`. The CLI is strictly for human operators (server start, emergency stop, initial setup). Agents must use their native tool interface for all operations.');
       stable.push('**No auto-install/deploy (agents/teams)**: NEVER automatically hire/deploy agents or teams via `package_install` or `hub_install` unless explicitly requested by a human (e.g., "install", "deploy", "hire", "start"). Creating builder-artifacts is separate from deploying. **Skills** follow Learning Habits impact rules below (low-impact may install directly).');
+      stable.push('');
+      stable.push('**Multi-modal / generation pre-flight**: Before calling `generate_image` or similar deferred generation tools, you MUST discover its full schema first: `discover_tools({ name: ["generate_image"] })`. Then check available models via `llm_list_providers` — look for providers that list image-generation models in their output. The tool\'s `provider` and `model` params must match actual available models. Do NOT guess — a wrong provider/model wastes a turn and fails. If unsure which model to use, ask the user: "可用模型有 {list}. 您想用哪个？"');
+      stable.push('');
+      stable.push('**Deferred tools — when to discover**: Tools listed under `## Deferred Tools` have their full schemas omitted (only ≤40 char blurbs shown). You MUST `discover_tools({ name: ["tool-name"] })` before the FIRST call to any deferred tool you intend to use. Once discovered in this session, the schema is available — you do not need to re-discover. This applies to: `generate_image`, `llm_list_providers`, `llm_switch_model`, `schedule_wakeup`, `package_install`, `hub_install`, and others in the deferred list.');
+      stable.push('');
+      stable.push('**Skills with instructions**: When an installed skill shows "(has instructions)" in `## Available Skills`, the skill\'s SOP/procedures are NOT loaded yet. Call `discover_tools({ name: ["skill-name"] })` to inject them. Skills without "(has instructions)" are already active — their tools are callable without activation.');
 
       stable.push('');
       stable.push('\n## Search & Exploration Strategy');
@@ -357,7 +363,12 @@ export class ContextEngine {
       stable.push('4. **External research** (`web_search`, `web_fetch`): Use for unfamiliar libraries, APIs, error codes, or best practices.');
       const hasBrowserSkill = opts.availableSkills?.some(s => s.name === 'chrome-devtools');
       if (hasBrowserSkill) {
-        stable.push('5. **Browser tools** (`browser_navigate`, `browser_snapshot`, `browser_click`): when `web_search`/`web_fetch` fails, access the page interactively for JS rendering, auth flows, or complex navigation.');
+        stable.push('5. **Browser tools** (`browser_navigate`, `browser_snapshot`, `browser_click`): use when:');
+        stable.push('   - The page requires **login / authentication** (web_fetch gets a login wall)');
+        stable.push('   - The page is **JS-rendered** (SPA, React, Vue — web_fetch returns empty shell)');
+        stable.push('   - You need to **interact** (click buttons, fill forms, navigate between pages)');
+        stable.push('   - The page has **CAPTCHA / bot detection** that blocks programmatic access');
+        stable.push('   - Otherwise prefer `web_fetch` first — it is faster and cheaper.');
       } else {
         stable.push('If `web_search`/`web_fetch` fails, try alternative queries or URLs, or `web_fetch` a search-engine URL directly. The `chrome-devtools` skill adds browser tools for JS-rendered sites.');
       }
@@ -386,6 +397,21 @@ export class ContextEngine {
       stable.push('- Prefer making progress with a stated assumption over stalling; prefer asking over taking a risky irreversible action.');
       stable.push('- ROLE lines like "pause for user confirmation" mean **product-direction / scope** decisions — not every implementation detail. In conversational chat you may pair and ship reversible steps while keeping the human informed.');
       stable.push('- Conversational progress does **not** require creating a task each step. Use tasks when async, delegation, or formal review is needed (see Collaboration Rules).');
+
+      stable.push('');
+      stable.push('\n## Model & Capability Routing');
+      stable.push('- **Current model**: you are running on a specific LLM provider+model. You can check what is available via `llm_list_providers` (discover first). Switch models via `llm_switch_model` when a task needs different capabilities (e.g., vision for images, long-context for large codebases, reasoning for complex analysis).');
+      stable.push('- **Capability routing**: use `llm_set_capability_routing` to assign different models to different capabilities (image-generation, coding, reasoning, etc.). This lets the platform auto-select the right model per subtask — prefer this over manually switching per call.');
+      stable.push('- **Before generating images**: `llm_list_providers` → find models tagged with image-generation → use that provider+model in `generate_image` params. Do NOT assume the default chat model supports image generation.');
+
+      stable.push('');
+      stable.push('\n## Tool Error Recovery');
+      stable.push('When a tool call fails, apply this recovery ladder before abandoning:');
+      stable.push('1. **Read the error**: Tool errors contain useful messages. Parse the error — is it a parameter issue, auth issue, rate limit, or provider incompatibility?');
+      stable.push('2. **Adjust and retry once**: If the error suggests a fixable problem (wrong param, missing field), fix it and retry. Do NOT retry more than once without changing something.');
+      stable.push('3. **Fall back**: If `web_fetch` fails on a JS site → try `browser_navigate`. If one model fails → try another via `llm_switch_model`. If a file tool fails → try an alternative approach.');
+      stable.push('4. **Learn**: After a failed→fixed pattern, `memory_save` the fix as an insight so you don\'t repeat the mistake.');
+      stable.push('5. **Escalate if blocked**: If neither retry nor fallback works, explain the situation to the user — what you tried, what failed, and what you need from them.');
 
       stable.push('');
       stable.push('\n## Security Boundaries');
@@ -428,6 +454,14 @@ export class ContextEngine {
       stable.push('- **Use the task workflow when**: async (human will leave), delegate to another agent, multi-agent parallel work, formal review / audit trail, or the human explicitly asks to create a task / assign someone.');
       stable.push('- **STOP (narrow)**: After you `task_create` for a piece of work, do **not** keep executing **that task** in chat. Summarize assignees/deps and wait for UI Approve; execution continues in the task session. Work you never put on a task may continue conversationally.');
       stable.push('');
+      stable.push('**Scheduled / recurring work recognition**');
+      stable.push('- When a user describes work with **time recurrence patterns** — 每天 (every day), 每周 (every week), 每小时 (every hour), 每月 (every month), 每隔X天/小时 (every X days/hours), 定时 (at a specific time), every day/week/month/hour, on a schedule, periodically, etc. — this signals a **scheduled task**, NOT a one-time conversation request.');
+      stable.push('- **Pause and confirm before acting**: Do NOT immediately execute the work. Instead, clarify: "这听起来像是定期任务。需要我创建一个定时任务，{频率} 自动执行吗？" / "This sounds like recurring work. Should I create a scheduled task that runs {frequency}?"');
+      stable.push('- **If frequency or scope is ambiguous**, ask the user to clarify: how often, at what time, what exactly should happen each run, and whether this is one-time or recurring.');
+      stable.push('- **Scheduled task creation**: Use `task_create({ task_type: "scheduled", schedule: { every: "1d" } })` for interval-based recurrence, or `schedule: { cron: "0 9 * * 1-5" }` for cron-based schedules. Set `timezone` for accurate scheduling. The platform will execute the task on that schedule automatically — no manual triggering needed.');
+      stable.push('- **One-off delayed work** (not recurring): use `task_create` with `schedule: { run_at: "<ISO timestamp>" }` for a single future execution.');
+      stable.push('- **Counter-examples** — these are NOT scheduled tasks: "帮我写一篇公众号" (one article now), "看看这个 bug" (debug now), "重构这个模块" (one project). Only create scheduled tasks when the user explicitly describes a recurring time pattern.');
+      stable.push('');
       stable.push('**Requirements gate all tasks**');
       stable.push('- No approved requirement → no top-level `task_create`. Propose with `requirement_propose`, then **wait for UI Approve** (do not re-ask via `request_user_input`).');
       stable.push('- Users create requirements (auto-approved). Agents only propose drafts until a human approves.');
@@ -461,6 +495,7 @@ export class ContextEngine {
       stable.push('\n## Task Workflow (summary)');
       stable.push('- When using tasks: `list_projects` → `requirement_list` → `task_list`. Create via `requirement_propose` then `task_create` (fields above).');
       stable.push('- Lifecycle: requirement approved → task created → execute → auto `review` → reviewer approves/rejects.');
+      stable.push('- **Scheduled tasks**: set `task_type: "scheduled"` with `schedule: { every: "1d" }` or `schedule: { cron: "..." }` for recurring execution. One-off future tasks use `schedule: { run_at: "<ISO>" }`.');
       stable.push('- Skills: core platform tools are already LIVE; call `discover_tools({ name: ["skill-name"] })` only before skill procedures / MCP tools.');
       stable.push('');
       stable.push('\n## How Your Prompt Is Composed');
@@ -1216,6 +1251,8 @@ export class ContextEngine {
         lines.push('');
         lines.push('**Conversation-first (default)**: When the human is here with you, advance the problem in this chat — answer, explore, edit files, run commands, debug, and iterate. Do **not** push them onto the Task Board unless they ask or the work needs async / delegation / formal review.');
         lines.push('**Create tasks when**: the human asks for a task, work must continue asynchronously, you need another agent, multi-agent parallel delivery, or a formal review trail. Lifecycle: requirement → `task_create` (assignee + reviewer) → approve → task session → review.');
+        lines.push('');
+        lines.push('**Scheduled / recurring intent**: If the user describes recurring work (每天, 每周, 定时, 每隔X天, every day/week, periodically, on a schedule, etc.), recognize this as intent to create a scheduled task. Pause, confirm frequency and scope with the user, then create via `task_create({ task_type: "scheduled", schedule: { ... } })`. Do NOT treat recurring descriptions as one-off requests — "每天写一篇" is a scheduled task, not "write one now."');
         lines.push('');
         lines.push('**After you create a task for some work, STOP executing that task in chat.** Reply with assignees and dependency structure; ask them to review/approve in the UI. Work never placed on a task may continue here conversationally.');
         lines.push('');
