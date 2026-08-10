@@ -757,7 +757,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
               const iconSrc = isImgIcon
                 ? (artIcon!.startsWith('http') || artIcon!.startsWith('/'))
                   ? artIcon!
-                  : `/api/builder/artifacts/${art.type}s/${encodeURIComponent(art.name)}/images/${encodeURIComponent(artIcon!.split('/').pop() ?? '')}`
+                  : `/api/builder/artifacts/${art.type}s/${encodeURIComponent(art.name)}/images/${encodeURIComponent(artIcon!.split('/').pop() ?? '')}?v=${art.updatedAt ?? ''}`
                 : artIcon;
 
               return (

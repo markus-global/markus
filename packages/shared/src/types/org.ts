@@ -33,6 +33,7 @@ export interface Team {
   managerId?: string;
   managerType?: 'human' | 'agent';
   humanMemberIds?: string[];
+  avatarUrl?: string | null;
 }
 
 export interface TeamMemberInfo {
@@ -51,6 +52,7 @@ export interface TeamInfo {
   orgId: string;
   name: string;
   description?: string;
+  avatarUrl?: string | null;
   managerId?: string;
   managerType?: 'human' | 'agent';
   managerName?: string;

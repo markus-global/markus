@@ -530,13 +530,20 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     );
   };
 
-  const handleRemoveFromOrg = (id: string, name: string, type: 'agent' | 'human') => {
+  const handleRemoveFromOrg = (id: string, name: string, type: 'agent' | 'human', teamId?: string) => {
     askConfirm(
       `${t('common:remove')} "${name}"?`,
       type === 'agent'
         ? t('modals.removeAgent.message')
         : t('modals.removeHuman.message'),
       async (checked) => {
+        // If removing a team member, navigate to the team group chat after removal
+        if (type === 'agent' && teamId) {
+          const teamGc = groupChats.find(gc => gc.type === 'team' && gc.teamId === teamId);
+          if (teamGc?.channelKey) {
+            localStorage.setItem('markus_nav_after_remove', 'channel:' + teamGc.channelKey);
+          }
+        }
         if (type === 'agent') {
           const purgeFiles = checked?.['purgeFiles'] ?? false;
           await api.agents.remove(id, { purgeFiles });
@@ -797,7 +804,18 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
             }`}
           >
             <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 relative ${allStopped ? 'bg-surface-overlay/60 text-fg-tertiary' : 'bg-surface-overlay text-fg-primary'}`}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+              {team?.avatarUrl ? (
+                <img
+                  src={team.avatarUrl}
+                  alt={label}
+                  className="w-full h-full rounded-full object-cover"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                    (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                  }}
+                />
+              ) : null}
+              <svg className={`w-3 h-3 ${team?.avatarUrl ? 'hidden' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
               {totalAgents > 0 && <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-surface-primary ${teamStatusDot}`} />}
             </div>
             <div className="flex-1 min-w-0 text-left">
@@ -1609,7 +1627,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
             {!orgSecretary && !isSelf && (
               <>
                 <div className="border-t border-border-default/50 my-1" />
-                <button onClick={() => { handleRemoveFromOrg(a.id, a.name, 'agent'); setAgentMenu(null); }}
+                <button onClick={() => { handleRemoveFromOrg(a.id, a.name, 'agent', agentMenu.teamId); setAgentMenu(null); }}
                   className="w-full text-left px-3 py-2 text-xs hover:bg-surface-overlay text-red-500 flex items-center gap-2">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                   {t('contextMenu.removeFromOrg')}

@@ -961,7 +961,29 @@ export async function handleSkillsRoutes(
 
         const ext = filename.split('.').pop()?.toLowerCase() ?? '';
         const mimeTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
-        res.writeHead(200, { 'Content-Type': mimeTypes[ext] ?? 'application/octet-stream', 'Cache-Control': 'public, max-age=3600' });
+        // No browser cache — images can change between preview and publish (e.g. compression).
+        // stale cached originals would cause Hub to receive wrong versions.
+        res.writeHead(200, { 'Content-Type': mimeTypes[ext] ?? 'application/octet-stream', 'Cache-Control': 'no-cache' });
+        res.end(readFileSync(filePath));
+        return true;
+      }
+    }
+
+    // GET /api/builder/artifacts/:type/:name/members/:member/images/:filename — serve member avatar
+    {
+      const memberImgMatch = path.match(/^\/api\/builder\/artifacts\/(agents?|teams?|skills?)\/([^/]+)\/members\/([^/]+)\/images\/([^/]+)$/);
+      if (memberImgMatch && req.method === 'GET') {
+        const rawType = memberImgMatch[1]!;
+        const name = decodeURIComponent(memberImgMatch[2]!);
+        const member = decodeURIComponent(memberImgMatch[3]!);
+        const filename = decodeURIComponent(memberImgMatch[4]!);
+        const typeDir = rawType.endsWith('s') ? rawType : rawType + 's';
+        const filePath = join(homedir(), '.markus', 'builder-artifacts', typeDir, name, 'members', member, 'images', filename);
+        if (!existsSync(filePath)) { server.json(res, 404, { error: 'Image not found' }); return true; }
+
+        const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+        const mimeTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
+        res.writeHead(200, { 'Content-Type': mimeTypes[ext] ?? 'application/octet-stream', 'Cache-Control': 'no-cache' });
         res.end(readFileSync(filePath));
         return true;
       }
