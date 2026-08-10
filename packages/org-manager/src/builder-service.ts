@@ -21,6 +21,35 @@ import type { TaskService } from './task-service.js';
 
 const log = createLogger('builder-service');
 
+/**
+ * Resolve the manifest icon field to an absolute avatar URL that can be
+ * stored on the agent row.  Handles three cases:
+ *   1. Remote URL (https://…)  → pass through as-is
+ *   2. Local image path (images/*.png, etc.) → construct /api/builder/artifacts/… URL
+ *   3. Emoji / named-icon string → null (UI can fall back to glyph)
+ */
+function resolveAvatarUrl(
+  manifest: MarkusPackageManifest,
+  artifactName: string,
+  artifactType: 'agent' | 'team',
+): string | null {
+  const icon = manifest.icon?.trim();
+  if (!icon) return null;
+
+  // Remote URL — use directly (Hub CDN, etc.)
+  if (icon.startsWith('http://') || icon.startsWith('https://')) return icon;
+
+  // Local image file path (images/icon.png, icon.svg, etc.)
+  if (/\.(png|jpe?g|gif|webp|svg)$/i.test(icon)) {
+    const filename = icon.split('/').pop() ?? icon;
+    const typeDir = artifactType === 'agent' ? 'agents' : 'teams';
+    return `/api/builder/artifacts/${typeDir}/${encodeURIComponent(artifactName)}/images/${encodeURIComponent(filename)}`;
+  }
+
+  // Emoji or named icon — skip (UI renders glyph fallback)
+  return null;
+}
+
 export interface ArtifactInfo {
   type: string;
   name: string;
@@ -233,6 +262,20 @@ export class BuilderService {
       JSON.stringify({ customRole: true, source: 'builder-artifact', artifact: artifactName, artifactType: 'agent' }),
     );
     agent.reloadRole();
+
+    // Apply package avatar/image if present in manifest
+    const avatarUrl = resolveAvatarUrl(manifest, artifactName, 'agent');
+    if (avatarUrl) {
+      try {
+        const storage = this.orgService.getStorage();
+        if (storage?.agentRepo?.updateAvatarUrl) {
+          storage.agentRepo.updateAvatarUrl(agent.id, avatarUrl);
+        }
+      } catch (err) {
+        log.warn('Failed to set agent avatar', { agentId: agent.id, error: String(err) });
+      }
+    }
+
     await agentManager.startAgent(agent.id);
 
     return {

@@ -925,6 +925,26 @@ export class APIServer {
             const mf = JSON.parse(readFileSync(mfPath, 'utf-8')) as Record<string, unknown>;
             if (version) mf.version = version;
             mf.source = { type: 'hub', hubItemId: itemId };
+
+            // Download remote Hub icon to local images/ so it survives offline
+            const mfIcon = typeof mf.icon === 'string' ? mf.icon.trim() : '';
+            if (mfIcon && (mfIcon.startsWith('http://') || mfIcon.startsWith('https://'))) {
+              try {
+                const ext = mfIcon.match(/\.(png|jpe?g|gif|webp|svg)(\?.*)?$/i)?.[1] ?? 'png';
+                const imagesDir = join(artDir, 'images');
+                mkdirSync(imagesDir, { recursive: true });
+                const iconRes = await fetch(mfIcon);
+                if (iconRes.ok) {
+                  const iconBuf = Buffer.from(await iconRes.arrayBuffer());
+                  const iconFilename = `icon.${ext}`;
+                  writeFileSync(join(imagesDir, iconFilename), iconBuf);
+                  mf.icon = `images/${iconFilename}`;
+                }
+              } catch (iconErr) {
+                log.warn('Failed to download Hub icon, keeping remote URL', { icon: mfIcon, error: String(iconErr) });
+              }
+            }
+
             writeFileSync(mfPath, JSON.stringify(mf, null, 2), 'utf-8');
           } catch { /* skip if manifest invalid */ }
         }
