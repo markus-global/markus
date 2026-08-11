@@ -26,6 +26,8 @@ export interface MultiModalToolsContext {
   listProviderNames?: () => string[];
   /** True when the provider exists but its Settings switch is OFF. */
   isProviderDisabled?: (name: string) => boolean;
+  /** Hub credentials for upload_reference tool. */
+  resolveHubCredentials?: () => { baseUrl: string; token: string } | undefined;
 }
 
 async function fetchBinary(source: string, label: string): Promise<Buffer> {
@@ -313,12 +315,58 @@ function missingRequiredStringError(
 export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHandler[] {
   return [
     {
+      name: 'upload_reference',
+      description:
+        'Upload a local image file to Markus Hub and get a temporary public URL (10-minute expiry). ' +
+        'Use this BEFORE calling generate_image or generate_video when you need to use a local file as a reference image. ' +
+        'The returned URL can be passed directly to input_references or frame_images.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the local image file to upload' },
+        },
+        required: ['path'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const filePath = typeof args.path === 'string' ? args.path.trim() : '';
+        if (!filePath) return toolErr('upload_reference requires a "path" parameter (absolute file path).');
+
+        const creds = ctx.resolveHubCredentials?.();
+        if (!creds) return toolErr('Hub connection not configured. Cannot upload reference files.');
+
+        try {
+          const buf = readFileSync(filePath);
+          const filename = filePath.split('/').pop() ?? 'image.png';
+
+          const res = await fetch(`${creds.baseUrl}/api/internal/upload-temp`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${creds.token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ data: buf.toString('base64'), filename }),
+            signal: AbortSignal.timeout(30_000),
+          });
+
+          if (!res.ok) {
+            const errText = await res.text().catch(() => '');
+            return toolErr(`Upload failed: HTTP ${res.status} — ${errText.slice(0, 200)}`);
+          }
+
+          const result = await res.json() as { url: string; key: string; expiresIn: number };
+          return toolOk({ url: result.url, expiresIn: String(result.expiresIn), key: result.key });
+        } catch (err) {
+          return toolErr(`Failed to upload "${filePath}": ${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    },
+    {
       name: 'generate_image',
       description:
         'Generate images. Required: prompt. Recommended: pass provider+model for this call ' +
         '(e.g. provider: "markus", model: "openai/gpt-image-1" or provider: "openai", model: "gpt-image-1") — ' +
         'no need to call llm_set_capability_routing first. ' +
-        'For image-to-image: pass input_references with HTTPS or base64 data URLs.',
+        'For image-to-image with a LOCAL file: use upload_reference first, then pass its returned URL as input_references.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -575,6 +623,7 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         'Generate a video from text, with optional reference images/audio/video. Required: prompt. ' +
         'Recommended: pass provider+model (e.g. provider: "markus", model: "x-ai/grok-imagine-video-1.5"). ' +
         'To use references: pass input_references (style guidance) or frame_images (exact first/last frame). ' +
+        'For LOCAL files: use upload_reference first, then pass its returned URL. ' +
         'No need to call llm_set_capability_routing first.',
       inputSchema: {
         type: 'object',

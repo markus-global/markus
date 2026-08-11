@@ -1490,6 +1490,16 @@ export class LLMRouter {
     return this.providers.get(name);
   }
 
+  /** Hub credentials from the markus provider. Used by upload_reference tool. */
+  getHubCredentials(): { baseUrl: string; token: string } | undefined {
+    const markus = this.providers.get('markus') as MarkusProvider | undefined;
+    if (!markus) return undefined;
+    const baseUrl = markus.resolveHubBase();
+    const token = markus.resolveHubToken();
+    if (!baseUrl || !token) return undefined;
+    return { baseUrl, token };
+  }
+
   /**
    * OpenRouter prompt-token afford ceiling from a prior 402, used to pack
    * context below key credit limits (not the model window).

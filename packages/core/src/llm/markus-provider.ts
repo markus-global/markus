@@ -660,7 +660,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     this.hubRemainingHint = Math.max(0, Math.floor(remaining));
   }
 
-  private resolveHubBase(): string {
+  public resolveHubBase(): string {
     const explicit = (this.hubUrl || process.env['MARKUS_HUB_URL'] || '').replace(/\/+$/, '');
     const raw = explicit || (() => {
       if (!this.modelsUrl) return '';
@@ -673,7 +673,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     return normalizeMarkusHubOrigin(raw);
   }
 
-  private resolveHubToken(): string {
+  public resolveHubToken(): string {
     if (this.hubToken) return this.hubToken;
     const env = process.env['MARKUS_HUB_TOKEN'] || '';
     if (env) return env;
@@ -1649,7 +1649,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
     if (options?.seed !== undefined && options.seed !== null) body['seed'] = options.seed;
     if (options?.inputReferences && options.inputReferences.length > 0) {
       body['input_references'] = options.inputReferences.map(ref => {
-        const item: Record<string, unknown> = { url: ref.url };
+        const item: Record<string, unknown> = {
+          type: 'image_url',
+          image_url: { url: ref.url },
+        };
         if (ref.weight !== undefined) item['weight'] = ref.weight;
         return item;
       });

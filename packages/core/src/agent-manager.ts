@@ -1437,6 +1437,7 @@ export class AgentManager {
       },
       listProviderNames: () => this.llmRouter.listRegisteredProviderNames(),
       isProviderDisabled: (name) => this.llmRouter.isProviderDisabled(name),
+      resolveHubCredentials: () => this.llmRouter.getHubCredentials(),
     })) {
       agent.registerTool(tool);
     }
@@ -2307,6 +2308,7 @@ export class AgentManager {
       },
       listProviderNames: () => this.llmRouter.listRegisteredProviderNames(),
       isProviderDisabled: (name) => this.llmRouter.isProviderDisabled(name),
+      resolveHubCredentials: () => this.llmRouter.getHubCredentials(),
     })) {
       agent.registerTool(tool);
     }
