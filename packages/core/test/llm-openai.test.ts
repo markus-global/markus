@@ -232,3 +232,149 @@ describe('OpenAIProvider', () => {
     expect(authHeader).toBe('Bearer oauth-token-xyz');
   });
 });
+
+describe('OpenAIProvider (openrouter mode)', () => {
+  function openRouterProvider(): OpenAIProvider {
+    return new OpenAIProvider({
+      provider: 'openrouter',
+      model: 'openai/gpt-4o',
+      apiKey: 'sk-or-test-key',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+  }
+
+  function captureBody() {
+    const captured = { body: {} as Record<string, unknown> };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      captured.body = JSON.parse(init.body as string) as Record<string, unknown>;
+      const encoder = new TextEncoder();
+      const sseBody = new ReadableStream({
+        pull(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n'));
+          controller.close();
+        },
+      });
+      return Promise.resolve({
+        ok: true,
+        body: sseBody,
+        json: () => Promise.resolve({
+          choices: [{ message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 3, completion_tokens: 2 },
+        }),
+      });
+    }));
+    return captured;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('hits the openrouter base URL with /v1 already present', async () => {
+    const provider = openRouterProvider();
+    let url = '';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((u: string) => {
+      url = u;
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          choices: [{ message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+      });
+    }));
+    await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(url).toBe('https://openrouter.ai/api/v1/chat/completions');
+  });
+
+  it('adds usage include + stream_options to non-streaming body', async () => {
+    const provider = openRouterProvider();
+    const caught = captureBody();
+    await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(caught.body['usage']).toEqual({ include: true });
+    expect(caught.body['stream_options']).toBeUndefined();
+  });
+
+  it('adds stream_options include_usage to streaming body', async () => {
+    const provider = openRouterProvider();
+    const caught = captureBody();
+    await provider.chatStream({ messages: [{ role: 'user', content: 'hi' }] }, () => {});
+    expect(caught.body['usage']).toEqual({ include: true });
+    expect(caught.body['stream_options']).toEqual({ include_usage: true });
+  });
+
+  it('adds reasoning enabled for reasoning-capable models', async () => {
+    const provider = openRouterProvider();
+    const caught = captureBody();
+    await provider.chat({
+      messages: [{ role: 'user', content: 'think' }],
+      model: 'deepseek/deepseek-r1',
+    });
+    expect(caught.body['reasoning']).toEqual({ enabled: true, effort: 'high' });
+  });
+
+  it('does NOT add reasoning for non-reasoning models', async () => {
+    const provider = openRouterProvider();
+    const caught = captureBody();
+    await provider.chat({
+      messages: [{ role: 'user', content: 'hi' }],
+      model: 'openai/gpt-4o',
+    });
+    expect(caught.body['reasoning']).toBeUndefined();
+  });
+
+  it('parses reasoning_details arrays from non-streaming responses', async () => {
+    const provider = openRouterProvider();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { role: 'assistant', content: 'hi', reasoning_details: [{ type: 'text', text: 'thinking...' }, { summary: 'more' }] }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 2 },
+      }),
+    }));
+    const res = await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.reasoningContent).toBe('thinking...more');
+  });
+
+  it('emits thinking_delta for streamed reasoning_content', async () => {
+    const provider = openRouterProvider();
+    const encoder = new TextEncoder();
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"r1"},"finish_reason":null}]}\n'));
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n'));
+        controller.close();
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, body }));
+    const thoughts: string[] = [];
+    const res = await provider.chatStream(
+      { messages: [{ role: 'user', content: 'hi' }] },
+      (e) => { if (e.type === 'thinking_delta') thoughts.push(e.thinking); },
+    );
+    expect(thoughts).toEqual(['r1']);
+    expect(res.content).toBe('done');
+    expect(res.reasoningContent).toBe('r1');
+  });
+
+  it('records usage.cost into the response when present', async () => {
+    const provider = openRouterProvider();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        choices: [{ message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, cost: 0.00042 },
+      }),
+    }));
+    const res = await provider.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    expect((res as unknown as { usage?: { cost?: number } }).usage?.cost).toBe(0.00042);
+  });
+
+  it('getCapabilities enables media modalities for openrouter', () => {
+    const p = openRouterProvider();
+    const caps = p.getCapabilities();
+    expect(caps.imageGeneration).toBe(true);
+    expect(caps.tts).toBe(true);
+    expect(caps.stt).toBe(true);
+  });
+});

@@ -39,6 +39,14 @@ import {
   type VideoGenOptions,
   type VideoResult,
 } from './provider.js';
+import {
+  buildOpenAICompatEndpoint,
+  convertMessagesOpenAI,
+  convertToolsOpenAI,
+  parseOpenAICompatResponse,
+  createSSEAccumulator,
+  isOpenRouterReasoningModel,
+} from './provider-helpers.js';
 
 /** Re-export for callers/tests that import helpers from this module. */
 export {
@@ -110,111 +118,14 @@ function recoverTextToolCalls(content: string): {
   return { toolCalls, cleanedContent };
 }
 
-/**
- * OpenRouter returns reasoning in several shapes:
- * - `reasoning` / `reasoning_content` / `thinking` (string)
- * - `reasoning_details` (array of { type, text|summary, ... })
- */
-function extractReasoningText(value: unknown): string {
-  if (typeof value === 'string' && value.length > 0) return value;
-  if (!Array.isArray(value)) return '';
-  const parts: string[] = [];
-  for (const item of value) {
-    if (typeof item === 'string' && item) {
-      parts.push(item);
-      continue;
-    }
-    if (!item || typeof item !== 'object') continue;
-    const obj = item as Record<string, unknown>;
-    if (typeof obj.text === 'string' && obj.text) parts.push(obj.text);
-    else if (typeof obj.summary === 'string' && obj.summary) parts.push(obj.summary);
-    else if (typeof obj.content === 'string' && obj.content) parts.push(obj.content);
-  }
-  return parts.join('');
-}
-
-function extractDeltaReasoning(delta: Record<string, unknown> | undefined): string {
-  if (!delta) return '';
-  return (
-    extractReasoningText(delta.reasoning_content) ||
-    extractReasoningText(delta.reasoning) ||
-    extractReasoningText(delta.thinking) ||
-    extractReasoningText(delta.reasoning_details)
-  );
-}
-
 /** Models that should request visible reasoning tokens via OpenRouter. */
 function shouldEnableOpenRouterReasoning(modelId: string): boolean {
+  if (isOpenRouterReasoningModel(modelId)) return true;
   const id = stripMarkusNamespace(modelId).toLowerCase();
-  // DeepSeek V4 thinking is opt-in on OpenRouter; without `reasoning`, traces are omitted.
-  if (/deepseek-v4|deepseek-r1|(^|\/)(o1|o3|o4)([-/.]|$)|gpt-5|reasoner|thinking/.test(id)) {
-    return true;
-  }
   const cached = cachedModelList?.find(
     (m) => stripMarkusNamespace(m.id).toLowerCase() === id,
   );
   return !!cached?.supports_reasoning;
-}
-
-function convertMessagesForOpenRouter(
-  messages: LLMMessage[],
-  opts?: { backfillReasoning?: boolean },
-): Array<Record<string, unknown>> {
-  // DeepSeek thinking models expect reasoning_content on assistant turns (incl. tool calls).
-  const backfillReasoning = !!opts?.backfillReasoning || messages.some((m) => !!m.reasoningContent);
-  return messages.map((m) => {
-    if (m.role === 'tool') {
-      return {
-        role: 'tool',
-        content: getTextContent(m.content),
-        tool_call_id: m.toolCallId ?? '',
-      };
-    }
-    if (m.toolCalls?.length) {
-      const msg: Record<string, unknown> = {
-        role: 'assistant',
-        content: getTextContent(m.content) || null,
-        tool_calls: m.toolCalls.map((tc) => ({
-          id: tc.id,
-          type: 'function',
-          function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
-        })),
-      };
-      if (m.reasoningContent || backfillReasoning) {
-        msg.reasoning_content = m.reasoningContent ?? '';
-      }
-      return msg;
-    }
-    if (m.role === 'assistant' && (m.reasoningContent || backfillReasoning)) {
-      return {
-        role: 'assistant',
-        content: getTextContent(m.content),
-        reasoning_content: m.reasoningContent ?? '',
-      };
-    }
-    return {
-      role: m.role,
-      content: m.content,
-    };
-  });
-}
-
-function convertToolsForOpenRouter(tools: LLMTool[]): Array<Record<string, unknown>> {
-  const seen = new Set<string>();
-  const out: Array<Record<string, unknown>> = [];
-  for (const t of tools) {
-    if (seen.has(t.name)) continue;
-    seen.add(t.name);
-    out.push({
-      type: 'function',
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    });
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -995,16 +906,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
     bumpIdleTimeout();
     const streamCuCost = 0;
-
-    let content = '';
-    let reasoningContent = '';
-    let finishReason: LLMResponse['finishReason'] = 'end_turn';
-    let promptTokens = 0;
-    let completionTokens = 0;
-    // Accumulate streamed tool calls by index. Without this, a streamed
-    // tool_use turn arrives with finish_reason=tool_calls but zero parsed
-    // calls — the agent then can't act and just stops after its text.
-    const toolCallsAcc = new Map<number, { id: string; name: string; args: string }>();
+    const sse = createSSEAccumulator();
+    const state = sse.state;
 
     const reader = res.body?.getReader();
     if (!reader) {
@@ -1036,7 +939,6 @@ export class MarkusProvider implements MultiModalProviderInterface {
           try {
             const chunk = JSON.parse(trimmed.slice(6)) as Record<string, unknown>;
             const choice = (chunk.choices as Array<Record<string, unknown>> | undefined)?.[0];
-            const delta = choice?.delta as Record<string, unknown> | undefined;
             const streamErr = (chunk.error ?? null) as Record<string, unknown> | null;
             const finishRaw = choice?.finish_reason !== null ? String(choice?.finish_reason ?? '') : '';
 
@@ -1055,53 +957,18 @@ export class MarkusProvider implements MultiModalProviderInterface {
               throw new Error(`Markus stream error ${code || 'unknown'}: ${errMsg}`);
             }
 
-            const deltaReasoning = extractDeltaReasoning(delta);
-            if (deltaReasoning) {
-              reasoningContent += deltaReasoning;
-              onEvent({ type: 'thinking_delta', thinking: deltaReasoning });
-            }
-
-            if (delta?.content) {
-              content += String(delta.content);
-              onEvent({ type: 'text_delta', text: String(delta.content) });
-            }
-
-            if (Array.isArray(delta?.tool_calls)) {
-              for (const tc of delta.tool_calls as Array<Record<string, unknown>>) {
-                const idx = typeof tc.index === 'number' ? tc.index : 0;
-                if (!toolCallsAcc.has(idx)) toolCallsAcc.set(idx, { id: '', name: '', args: '' });
-                const existing = toolCallsAcc.get(idx)!;
-                if (tc.id) existing.id = String(tc.id);
-                const fn = tc.function as Record<string, unknown> | undefined;
-                if (fn?.name) {
-                  existing.name = String(fn.name);
-                  onEvent({ type: 'tool_call_start', toolCall: { id: existing.id, name: existing.name } });
+            sse.feed(chunk, {
+              onThinking: (thinking) => onEvent({ type: 'thinking_delta', thinking }),
+              onText: (text) => onEvent({ type: 'text_delta', text }),
+              onToolStart: (toolCall) => onEvent({ type: 'tool_call_start', toolCall }),
+              onToolDelta: (toolCall, text) => onEvent({ type: 'tool_call_delta', toolCall, text }),
+              onUsage: (usage, raw) => {
+                if (usage.inputTokens > 0) this.lastPromptTokensEstimate = usage.inputTokens;
+                if (target.route === 'openrouter') {
+                  this.recordCostUsd(raw);
                 }
-                if (fn?.arguments) {
-                  existing.args += String(fn.arguments);
-                  onEvent({ type: 'tool_call_delta', toolCall: { id: existing.id }, text: String(fn.arguments) });
-                }
-              }
-            }
-
-            if (choice?.finish_reason) {
-              const finishMap: Record<string, LLMResponse['finishReason']> = {
-                stop: 'end_turn',
-                tool_calls: 'tool_use',
-                length: 'max_tokens',
-              };
-              finishReason = finishMap[String(choice.finish_reason)] ?? 'end_turn';
-            }
-
-            if (chunk.usage) {
-              const u = chunk.usage as Record<string, number>;
-              promptTokens = u.prompt_tokens ?? 0;
-              completionTokens = u.completion_tokens ?? 0;
-              if (promptTokens > 0) this.lastPromptTokensEstimate = promptTokens;
-              if (target.route === 'openrouter') {
-                this.recordCostUsd(chunk.usage as Record<string, unknown>);
-              }
-            }
+              },
+            });
           } catch (parseOrStreamErr) {
             // Re-throw hard stream errors; ignore JSON parse noise.
             if (parseOrStreamErr instanceof Error && parseOrStreamErr.message.startsWith('Markus stream error')) {
@@ -1113,13 +980,13 @@ export class MarkusProvider implements MultiModalProviderInterface {
       }
 
       if (midStreamRateLimited) {
-        const hasPartial = content.length > 0 || reasoningContent.length > 0 || toolCallsAcc.size > 0;
+        const hasPartial = state.content.length > 0 || state.reasoningContent.length > 0 || state.toolCalls.size > 0;
         if (hasPartial) {
           log.warn('OpenRouter mid-stream rate limit — returning partial for auto-continuation', {
-            contentChars: content.length,
+            contentChars: state.content.length,
           });
-          toolCallsAcc.clear();
-          finishReason = 'max_tokens';
+          state.toolCalls.clear();
+          state.finishReason = 'max_tokens';
         } else {
           throw new Error('MARKUS_RATE_LIMITED: Rate limit exceeded (mid-stream)');
         }
@@ -1128,20 +995,20 @@ export class MarkusProvider implements MultiModalProviderInterface {
       clearStreamTimeouts();
       const msg = err instanceof Error ? err.message : String(err);
       const hasPartial =
-        content.length > 0
-        || reasoningContent.length > 0
-        || toolCallsAcc.size > 0;
+        state.content.length > 0
+        || state.reasoningContent.length > 0
+        || state.toolCalls.size > 0;
       // Idle gap with partial output → treat like max_tokens so the agent loop
       // auto-continues instead of ending the turn and forcing UI「继续」.
       // Drop mid-flight tool_call JSON — executing a truncated call is unsafe.
       if (idleTimedOut && hasPartial) {
         log.warn('Markus stream idle timeout with partial content — returning for auto-continuation', {
           idleMs: this.streamTimeoutMs,
-          contentChars: content.length,
-          droppedToolCalls: toolCallsAcc.size,
+          contentChars: state.content.length,
+          droppedToolCalls: state.toolCalls.size,
         });
-        toolCallsAcc.clear();
-        finishReason = 'max_tokens';
+        state.toolCalls.clear();
+        state.finishReason = 'max_tokens';
       } else if (idleTimedOut || hardTimedOut) {
         const kind = hardTimedOut ? 'hard' : 'idle';
         throw new Error(
@@ -1156,18 +1023,15 @@ export class MarkusProvider implements MultiModalProviderInterface {
       clearStreamTimeouts();
     }
 
-    const resultToolCalls = [...toolCallsAcc.values()]
-      .filter(tc => tc.name)
-      .map(tc => {
-        onEvent({ type: 'tool_call_end', toolCall: { id: tc.id, name: tc.name } });
-        let args: Record<string, unknown> = {};
-        try { args = tc.args ? JSON.parse(tc.args) as Record<string, unknown> : {}; } catch { /* malformed partial JSON — pass empty args */ }
-        return { id: tc.id, name: tc.name, arguments: args };
-      });
+    const resultToolCalls = sse.finalizeToolCalls().map((tc) => {
+      onEvent({ type: 'tool_call_end', toolCall: { id: tc.id, name: tc.name } });
+      return tc;
+    });
 
     // Recover tool calls the model streamed as plain text instead of via the
     // structured tool_calls field (see recoverTextToolCalls).
     let recoveredToolCalls = resultToolCalls;
+    let content = state.content;
     if (!recoveredToolCalls.length) {
       const recovered = recoverTextToolCalls(content);
       if (recovered.toolCalls.length) {
@@ -1180,20 +1044,22 @@ export class MarkusProvider implements MultiModalProviderInterface {
       }
     }
 
+    const finishReason = state.finishReason;
     // Upstream sometimes reports finish_reason=stop even when it emitted tool
     // calls; normalize so the agent treats it as a tool turn.
-    if (recoveredToolCalls.length && finishReason !== 'tool_use') finishReason = 'tool_use';
+    if (recoveredToolCalls.length && finishReason !== 'tool_use') state.finishReason = 'tool_use';
 
-    const usage = { inputTokens: promptTokens, outputTokens: completionTokens };
-    onEvent({ type: 'message_end', usage, finishReason });
+    const usage: LLMResponse['usage'] = { inputTokens: state.promptTokens, outputTokens: state.completionTokens };
+    if (state.cachedTokens > 0) usage.cacheReadTokens = state.cachedTokens;
+    onEvent({ type: 'message_end', usage, finishReason: state.finishReason });
 
-    const streamResult: LLMResponse = { content, usage, finishReason };
+    const streamResult: LLMResponse = { content, usage, finishReason: state.finishReason };
     if (recoveredToolCalls.length) streamResult.toolCalls = recoveredToolCalls;
-    if (reasoningContent) streamResult.reasoningContent = reasoningContent;
+    if (state.reasoningContent) streamResult.reasoningContent = state.reasoningContent;
     if (streamCuCost > 0) streamResult.cuCost = streamCuCost;
     streamResult.creditWarning = this.checkLowCredit();
 
-    this.cuCache.add(promptTokens, completionTokens);
+    this.cuCache.add(state.promptTokens, state.completionTokens);
     this.clearPromptAffordHint('stream_success');
     return streamResult;
   }
@@ -1238,7 +1104,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     const enableReasoning = route === 'openrouter' && shouldEnableOpenRouterReasoning(outgoingModel);
     const body: Record<string, unknown> = {
       model: outgoingModel,
-      messages: convertMessagesForOpenRouter(request.messages, {
+      messages: convertMessagesOpenAI(request.messages, {
         // When thinking is on, DeepSeek requires reasoning_content on every assistant turn.
         backfillReasoning: enableReasoning && /deepseek/i.test(outgoingModel),
       }),
@@ -1261,7 +1127,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     }
     if (maxTokens && maxTokens > 0) body['max_tokens'] = maxTokens;
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
-    if (request.tools?.length) body['tools'] = convertToolsForOpenRouter(request.tools);
+    if (request.tools?.length) body['tools'] = convertToolsOpenAI(request.tools);
     if (request.stopSequences?.length) body['stop'] = request.stopSequences;
     // OpenRouter: ask for usage.cost for near-real-time spend display.
     if (route === 'openrouter') {
@@ -1344,64 +1210,21 @@ export class MarkusProvider implements MultiModalProviderInterface {
    * The proxy returns standard OpenAI-compatible JSON.
    */
   private parseResponse(data: Record<string, unknown>): LLMResponse {
-    const choices = data.choices as Array<Record<string, unknown>> | undefined;
-    if (!choices?.length) {
-      throw new Error('No response choices from Markus proxy');
-    }
-
-    const choice = choices[0];
-    const message = choice.message as Record<string, unknown> | undefined;
-    let content = typeof message?.content === 'string' ? message.content : '';
-
-    const toolCallsData = message?.tool_calls as Array<Record<string, unknown>> | undefined;
-    let toolCalls = toolCallsData?.map((tc: Record<string, unknown>) => ({
-      id: String(tc.id ?? ''),
-      name: String((tc.function as Record<string, unknown>)?.name ?? ''),
-      arguments: JSON.parse(String((tc.function as Record<string, unknown>)?.arguments ?? '{}')) as Record<string, unknown>,
-    }));
-
-    const usage = data.usage as Record<string, number> | undefined;
-    const finishMap: Record<string, LLMResponse['finishReason']> = {
-      stop: 'end_turn',
-      tool_calls: 'tool_use',
-      length: 'max_tokens',
-    };
-    let finishReason = finishMap[String(choice.finish_reason ?? 'stop')] ?? 'end_turn';
-
-    // Recover tool calls the model emitted as text (see recoverTextToolCalls).
-    if (!toolCalls?.length) {
-      const recovered = recoverTextToolCalls(content);
-      if (recovered.toolCalls.length) {
-        log.warn('Recovered text-emitted tool calls from content', {
-          count: recovered.toolCalls.length,
-          names: recovered.toolCalls.map(t => t.name),
-        });
-        toolCalls = recovered.toolCalls;
-        content = recovered.cleanedContent;
-        finishReason = 'tool_use';
-      }
-    }
-
-    const reasoningContent =
-      extractReasoningText(message?.reasoning_content) ||
-      extractReasoningText(message?.reasoning) ||
-      extractReasoningText(message?.thinking) ||
-      extractReasoningText(message?.reasoning_details);
-
-    if (usage?.prompt_tokens && usage.prompt_tokens > 0) {
-      this.lastPromptTokensEstimate = usage.prompt_tokens;
-    }
-
-    const result: LLMResponse = {
-      content,
-      toolCalls: toolCalls?.length ? toolCalls : undefined,
-      usage: {
-        inputTokens: usage?.prompt_tokens ?? 0,
-        outputTokens: usage?.completion_tokens ?? 0,
+    const result = parseOpenAICompatResponse(data, {
+      recoverTextToolCalls: (content) => {
+        const recovered = recoverTextToolCalls(content);
+        if (recovered.toolCalls.length) {
+          log.warn('Recovered text-emitted tool calls from content', {
+            count: recovered.toolCalls.length,
+            names: recovered.toolCalls.map(t => t.name),
+          });
+        }
+        return recovered;
       },
-      finishReason,
-    };
-    if (reasoningContent) result.reasoningContent = reasoningContent;
+    });
+    if (result.usage.inputTokens > 0) {
+      this.lastPromptTokensEstimate = result.usage.inputTokens;
+    }
     return result;
   }
 
@@ -1578,8 +1401,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
   /** OpenAI-compatible path under the OpenRouter base URL. */
   private openaiCompatUrl(suffix: string): string {
-    const base = this.effectiveOpenRouterBase();
-    return /\/v\d+$/.test(base) ? `${base}/${suffix}` : `${base}/v1/${suffix}`;
+    return buildOpenAICompatEndpoint(this.effectiveOpenRouterBase(), `/${suffix}`);
   }
 
   private bearerOpenRouter(): string {
