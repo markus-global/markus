@@ -3709,7 +3709,7 @@ export class SqliteDeliverableRepo {
         artifact_type, artifact_data, access_count, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     `).run(
-      data.id, data.type, data.title, data.summary, data.reference ?? '',
+      data.id, data.type, data.title ?? '', data.summary ?? '', data.reference ?? '',
       data.format ?? null,
       toJson(data.tags ?? []), data.status ?? 'active',
       data.taskId ?? null, data.agentId ?? null, data.projectId ?? null,

@@ -454,6 +454,14 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 const type = rawType === 'directory' || rawType === 'dir' || rawType === 'folder'
                   ? 'directory'
                   : 'file';
+                const title = (typeof args['title'] === 'string' && args['title']?.trim()) || '';
+                if (!title) {
+                  return JSON.stringify({ status: 'error', error: 'title is required and must be a non-empty string' });
+                }
+                const summary = (typeof args['summary'] === 'string' && args['summary']?.trim()) || '';
+                if (!summary) {
+                  return JSON.stringify({ status: 'error', error: 'summary is required and must be a non-empty string' });
+                }
                 const reference = (
                   (typeof args['reference'] === 'string' && args['reference'])
                   || (typeof args['file_path'] === 'string' && args['file_path'])
@@ -477,8 +485,8 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   : (typeof tagsRaw === 'string' ? tagsRaw : undefined);
                 const result = await ctx.deliverableCreate!({
                   type,
-                  title: args['title'] as string,
-                  summary: args['summary'] as string,
+                  title,
+                  summary,
                   reference,
                   format: args['format'] as string | undefined,
                   tags,

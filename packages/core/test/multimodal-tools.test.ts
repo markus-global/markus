@@ -33,6 +33,7 @@ describe('createMultiModalTools', () => {
   it('returns expected tool handlers', () => {
     const tools = createMultiModalTools(createContext({}));
     expect(tools.map(t => t.name)).toEqual([
+      'upload_reference',
       'generate_image',
       'text_to_speech',
       'speech_to_text',
@@ -46,12 +47,13 @@ describe('createMultiModalTools', () => {
   });
 
   describe('generate_image', () => {
+    const img = (tools: ReturnType<typeof createMultiModalTools>) => tools.find(t => t.name === 'generate_image')!;
     it('rejects empty args with a model-clear missing-prompt error (not upstream Zod)', async () => {
       const generateImage = vi.fn();
       const tools = createMultiModalTools(createContext({
         image_generation: [{ provider: createMockProvider({ generateImage }), name: 'markus', model: 'openai/gpt-image-1' }],
       }));
-      const result = JSON.parse(await tools[0].execute({}));
+      const result = JSON.parse(await img(tools).execute({}));
       expect(result.status).toBe('error');
       expect(result.error).toContain('Missing required argument "prompt"');
       expect(result.error).toContain('empty arguments {}');
@@ -66,14 +68,14 @@ describe('createMultiModalTools', () => {
       const tools = createMultiModalTools(createContext({
         image_generation: [{ provider: createMockProvider({ generateImage }), name: 'markus', model: 'openai/gpt-image-1' }],
       }));
-      const result = JSON.parse(await tools[0].execute({ description: 'a cat' }));
+      const result = JSON.parse(await img(tools).execute({ description: 'a cat' }));
       expect(result.status).toBe('success');
       expect(generateImage).toHaveBeenCalledWith('a cat', expect.any(Object));
     });
 
     it('returns error when no candidates available', async () => {
       const tools = createMultiModalTools(createContext({ image_generation: [] }));
-      const result = JSON.parse(await tools[0].execute({ prompt: 'a cat' }));
+      const result = JSON.parse(await img(tools).execute({ prompt: 'a cat' }));
       expect(result.status).toBe('error');
       expect(result.error).toContain('No image generation provider configured');
     });
@@ -82,7 +84,7 @@ describe('createMultiModalTools', () => {
       const tools = createMultiModalTools(createContext({
         image_generation: [{ provider: createMockProvider(), name: 'no-image', model: 'x' }],
       }));
-      const result = JSON.parse(await tools[0].execute({ prompt: 'a cat' }));
+      const result = JSON.parse(await img(tools).execute({ prompt: 'a cat' }));
       expect(result.status).toBe('error');
       expect(result.error).toContain('No image generation provider configured');
     });
@@ -101,7 +103,7 @@ describe('createMultiModalTools', () => {
       const tools = createMultiModalTools(createContext({
         image_generation: [{ provider, name: 'openai', model: 'dall-e-3' }],
       }));
-      const result = JSON.parse(await tools[0].execute({ prompt: 'sunset', size: '1024x1024' }));
+      const result = JSON.parse(await img(tools).execute({ prompt: 'sunset', size: '1024x1024' }));
       expect(result.status).toBe('success');
       expect(result.success).toBe(true);
       expect(result.provider).toBe('openai');
@@ -122,7 +124,7 @@ describe('createMultiModalTools', () => {
       const tools = createMultiModalTools(createContext({
         image_generation: [{ provider, name: 'markus', model: 'openai/gpt-image-1' }],
       }));
-      const result = JSON.parse(await tools[0].execute({ prompt: 'dot' }));
+      const result = JSON.parse(await img(tools).execute({ prompt: 'dot' }));
       expect(result.success).toBe(true);
       expect(result.images[0].filePath).toMatch(/img-\d+-0\.png$/);
       expect(result.images[0].base64).toBeUndefined();
@@ -144,7 +146,7 @@ describe('createMultiModalTools', () => {
           { provider: okProvider, name: 'second', model: 'ok-model' },
         ],
       }));
-      const result = JSON.parse(await tools[0].execute({ prompt: 'mountain' }));
+      const result = JSON.parse(await img(tools).execute({ prompt: 'mountain' }));
       expect(result.success).toBe(true);
       expect(result.provider).toBe('second');
     });
@@ -156,7 +158,7 @@ describe('createMultiModalTools', () => {
       const tools = createMultiModalTools(createContext({
         image_generation: [{ provider, name: 'broken', model: 'x' }],
       }));
-      const result = JSON.parse(await tools[0].execute({ prompt: 'fail' }));
+      const result = JSON.parse(await img(tools).execute({ prompt: 'fail' }));
       expect(result.error).toContain('API down');
       expect(result.error).toMatch(/Image generation failed/);
     });
@@ -176,7 +178,7 @@ describe('createMultiModalTools', () => {
           },
         ),
       );
-      const result = JSON.parse(await tools[0].execute({
+      const result = JSON.parse(await img(tools).execute({
         prompt: 'a cat',
         provider: 'openai',
         model: 'gpt-image-1',
@@ -196,7 +198,7 @@ describe('createMultiModalTools', () => {
           },
         ),
       );
-      const result = JSON.parse(await tools[0].execute({
+      const result = JSON.parse(await img(tools).execute({
         prompt: 'a cat',
         provider: 'not-a-real-provider',
         model: 'x',
@@ -219,7 +221,7 @@ describe('createMultiModalTools', () => {
           },
         ),
       );
-      const result = JSON.parse(await tools[0].execute({
+      const result = JSON.parse(await img(tools).execute({
         prompt: 'a cat',
         provider: 'openai',
         model: 'gpt-image-1',
