@@ -5,6 +5,17 @@ import { Avatar } from './Avatar.tsx';
 
 export type MentionEntityType = 'agent' | 'project' | 'requirement' | 'task' | 'deliverable' | 'workflow';
 
+// ---- slash commands ----
+export type SlashCommandType = 'system' | 'skill';
+
+export interface SlashCommand {
+  id: string;
+  name: string;
+  description: string;
+  type: SlashCommandType;
+  icon: string;
+}
+
 export interface ContextChip {
   id: string;
   label: string;
@@ -72,6 +83,10 @@ export interface ChatInputProps {
   compact?: boolean;
   /** Called when mention chips change (add/remove) */
   onMentionChipsChange?: (chips: MentionChip[]) => void;
+  /** Available slash commands (system + skill) */
+  slashCommands?: SlashCommand[];
+  /** Called when a system slash command is selected (e.g. /clear) */
+  onSystemCommand?: (commandId: string) => void;
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -114,6 +129,8 @@ export function ChatInput({
   className = '',
   compact = false,
   onMentionChipsChange,
+  slashCommands,
+  onSystemCommand,
 }: ChatInputProps) {
   const { t } = useTranslation(['team', 'common']);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -126,6 +143,11 @@ export function ChatInput({
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
   const [dropdownPos, setDropdownPos] = useState<{ left: number; bottom: number } | null>(null);
   const [mentionChips, setMentionChips] = useState<MentionChip[]>([]);
+
+  // ---- slash command state ----
+  const [slashDropdown, setSlashDropdown] = useState(false);
+  const [slashFilter, setSlashFilter] = useState('');
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
 
   const filteredMentions = (mentionItems ?? []).filter(a => a.name.toLowerCase().includes(mentionFilter));
 
@@ -145,11 +167,31 @@ export function ChatInput({
     return groups;
   })();
 
+  // ---- slash command filtering & grouping ----
+  const slashCmds = slashCommands ?? [];
+  const filteredSlashCmds = !slashFilter
+    ? slashCmds
+    : slashCmds.filter(c => c.name.toLowerCase().includes(slashFilter));
+
+  const groupedSlashCmds = (() => {
+    if (filteredSlashCmds.length === 0) return [];
+    const byType = new Map<SlashCommandType, SlashCommand[]>();
+    for (const c of filteredSlashCmds) {
+      const t = c.type;
+      if (!byType.has(t)) byType.set(t, []);
+      byType.get(t)!.push(c);
+    }
+    return [
+      ...(byType.has('system') ? [{ type: 'system' as const, items: byType.get('system')! }] : []),
+      ...(byType.has('skill') ? [{ type: 'skill' as const, items: byType.get('skill')! }] : []),
+    ];
+  })();
+
   useEffect(() => {
-    if (!mentionDropdown || !containerRef.current) { setDropdownPos(null); return; }
+    if ((!mentionDropdown && !slashDropdown) || !containerRef.current) { setDropdownPos(null); return; }
     const rect = containerRef.current.getBoundingClientRect();
     setDropdownPos({ left: rect.left + 16, bottom: window.innerHeight - rect.top + 4 });
-  }, [mentionDropdown]);
+  }, [mentionDropdown, slashDropdown]);
 
   const adjustTextareaHeight = useCallback(() => {
     const el = textareaRef.current;
@@ -164,26 +206,50 @@ export function ChatInput({
 
   const handleInputChange = useCallback((val: string) => {
     onChange(val);
-    if (!mentionItems?.length) { setMentionDropdown(false); return; }
 
-    const cursorPos = textareaRef.current?.selectionStart ?? val.length;
-    const textBeforeCursor = val.slice(0, cursorPos);
-    const atIdx = textBeforeCursor.lastIndexOf('@');
-    if (atIdx >= 0) {
-      const charBefore = atIdx === 0 ? '' : textBeforeCursor[atIdx - 1]!;
-      const isValidPosition = atIdx === 0 || /[\s\n,，。！？!?;；:：、（）()\[\]【】]/.test(charBefore);
-      if (isValidPosition) {
-        const fragment = textBeforeCursor.slice(atIdx + 1);
-        if (!fragment.includes(' ') && !fragment.includes('\n')) {
-          setMentionDropdown(true);
-          setMentionFilter(fragment.toLowerCase());
-          setMentionSelectedIndex(0);
-          return;
+    // ---- @ mention detection ----
+    if (mentionItems?.length) {
+      const cursorPos = textareaRef.current?.selectionStart ?? val.length;
+      const textBeforeCursor = val.slice(0, cursorPos);
+      const atIdx = textBeforeCursor.lastIndexOf('@');
+      if (atIdx >= 0) {
+        const charBefore = atIdx === 0 ? '' : textBeforeCursor[atIdx - 1]!;
+        const isValidPosition = atIdx === 0 || /[\s\n,，。！？!?;；:：、（）()\[\]【】]/.test(charBefore);
+        if (isValidPosition) {
+          const fragment = textBeforeCursor.slice(atIdx + 1);
+          if (!fragment.includes(' ') && !fragment.includes('\n')) {
+            setMentionDropdown(true);
+            setMentionFilter(fragment.toLowerCase());
+            setMentionSelectedIndex(0);
+            setSlashDropdown(false);
+            return;
+          }
         }
       }
     }
     setMentionDropdown(false);
-  }, [onChange, mentionItems]);
+
+    // ---- / slash command detection ----
+    if (slashCmds.length > 0) {
+      const cursorPos = textareaRef.current?.selectionStart ?? val.length;
+      const textBeforeCursor = val.slice(0, cursorPos);
+      const slashIdx = textBeforeCursor.lastIndexOf('/');
+      if (slashIdx >= 0) {
+        const charBefore = slashIdx === 0 ? '' : textBeforeCursor[slashIdx - 1]!;
+        const isValidPosition = slashIdx === 0 || /[\s\n,，。！？!?;；:：、（）()\[\]【】]/.test(charBefore);
+        if (isValidPosition) {
+          const fragment = textBeforeCursor.slice(slashIdx + 1);
+          if (!fragment.includes(' ') && !fragment.includes('\n')) {
+            setSlashDropdown(true);
+            setSlashFilter(fragment.toLowerCase());
+            setSlashSelectedIndex(0);
+            return;
+          }
+        }
+      }
+    }
+    setSlashDropdown(false);
+  }, [onChange, mentionItems, slashCmds]);
 
   const insertMention = useCallback((item: MentionItem) => {
     const cursorPos = textareaRef.current?.selectionStart ?? value.length;
@@ -212,6 +278,39 @@ export function ChatInput({
     });
   }, [value, onChange, mentionChips, onMentionChipsChange]);
 
+  const insertSlashCommand = useCallback((cmd: SlashCommand) => {
+    const cursorPos = textareaRef.current?.selectionStart ?? value.length;
+    const before = value.slice(0, cursorPos);
+    const slashIdx = before.lastIndexOf('/');
+    const after = value.slice(cursorPos);
+
+    // System commands: trigger callback instead of inserting text
+    if (cmd.type === 'system' && onSystemCommand) {
+      onSystemCommand(cmd.id);
+      setSlashDropdown(false);
+      setSlashSelectedIndex(0);
+      // Remove the '/' from the input
+      const newVal = value.slice(0, slashIdx) + after;
+      onChange(newVal);
+      requestAnimationFrame(() => {
+        textareaRef.current?.setSelectionRange(slashIdx, slashIdx);
+        textareaRef.current?.focus();
+      });
+      return;
+    }
+
+    // Skill commands: insert the command name as text
+    const newVal = value.slice(0, slashIdx) + '/' + cmd.name + ' ' + after;
+    onChange(newVal);
+    setSlashDropdown(false);
+    setSlashSelectedIndex(0);
+    const newPos = slashIdx + cmd.name.length + 2;
+    requestAnimationFrame(() => {
+      textareaRef.current?.setSelectionRange(newPos, newPos);
+      textareaRef.current?.focus();
+    });
+  }, [value, onChange, onSystemCommand]);
+
   const handleSend = useCallback(() => {
     onSend();
     setMentionChips([]);
@@ -219,6 +318,7 @@ export function ChatInput({
   }, [onSend, onMentionChipsChange]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // ---- @ mention dropdown keys ----
     if (mentionDropdown && filteredMentions.length > 0) {
       const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
       const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
@@ -229,8 +329,21 @@ export function ChatInput({
       if (isSelect) { e.preventDefault(); const item = filteredMentions[mentionSelectedIndex]; if (item) insertMention(item); return; }
       if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
     }
+
+    // ---- / slash command dropdown keys ----
+    if (slashDropdown && filteredSlashCmds.length > 0) {
+      const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
+      const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
+      const isSelect = e.key === 'Enter' || e.key === 'Tab';
+      const isClose = e.key === 'Escape';
+      if (isUp) { e.preventDefault(); setSlashSelectedIndex(prev => (prev - 1 + filteredSlashCmds.length) % filteredSlashCmds.length); return; }
+      if (isDown) { e.preventDefault(); setSlashSelectedIndex(prev => (prev + 1) % filteredSlashCmds.length); return; }
+      if (isSelect) { e.preventDefault(); const cmd = filteredSlashCmds[slashSelectedIndex]; if (cmd) insertSlashCommand(cmd); return; }
+      if (isClose) { e.preventDefault(); setSlashDropdown(false); return; }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
-  }, [mentionDropdown, filteredMentions, mentionSelectedIndex, insertMention, handleSend]);
+  }, [mentionDropdown, filteredMentions, mentionSelectedIndex, insertMention, slashDropdown, filteredSlashCmds, slashSelectedIndex, insertSlashCommand, handleSend]);
 
   const files = pendingFiles ?? [];
 
@@ -280,6 +393,45 @@ export function ChatInput({
     document.body,
   );
 
+  const slashDropdownEl = slashDropdown && filteredSlashCmds.length > 0 && dropdownPos && createPortal(
+    <div
+      className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden max-h-64 overflow-y-auto min-w-[240px]"
+      style={{ left: dropdownPos.left, bottom: dropdownPos.bottom, zIndex: 9999 }}
+    >
+      {(() => {
+        let flatIdx = 0;
+        const GROUP_LABEL: Record<SlashCommandType, string> = { system: t('page.slashCmd.system'), skill: t('page.slashCmd.skill') };
+        return groupedSlashCmds.map(group => (
+          <div key={group.type}>
+            <div className="px-3 py-1 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default bg-surface-secondary/50 flex items-center gap-1.5 sticky top-0">
+              <span>{group.type === 'system' ? '⚡' : '🔧'}</span>
+              <span>{GROUP_LABEL[group.type] ?? group.type}</span>
+            </div>
+            {group.items.map(cmd => {
+              const curIdx = flatIdx++;
+              return (
+                <button
+                  key={cmd.id}
+                  ref={el => { if (curIdx === slashSelectedIndex && el) el.scrollIntoView({ block: 'nearest' }); }}
+                  onMouseDown={e => { e.preventDefault(); insertSlashCommand(cmd); }}
+                  onMouseEnter={() => setSlashSelectedIndex(curIdx)}
+                  className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 transition-colors ${
+                    curIdx === slashSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
+                  }`}
+                >
+                  <span className="text-xs w-5 h-5 flex items-center justify-center shrink-0">{cmd.icon}</span>
+                  <span className="flex-1 min-w-0 truncate font-mono text-[13px]">/{cmd.name}</span>
+                  <span className="text-[10px] text-fg-tertiary ml-auto shrink-0 max-w-[120px] truncate">{cmd.description}</span>
+                </button>
+              );
+            })}
+          </div>
+        ));
+      })()}
+    </div>,
+    document.body,
+  );
+
   return (
     <div
       ref={containerRef}
@@ -288,6 +440,7 @@ export function ChatInput({
       onDragOver={onDragOver}
     >
       {mentionDropdownEl}
+      {slashDropdownEl}
 
       {/* Context chips & mention chips */}
       {((contextChips && contextChips.length > 0) || mentionChips.length > 0) && (

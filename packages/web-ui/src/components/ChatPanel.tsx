@@ -10,7 +10,7 @@ import {
   AgentMessageBody, MessageActions, RememberModal, friendlyAgentError,
 } from '../pages/ChatComponents.tsx';
 import { Avatar } from './Avatar.tsx';
-import { ChatInput, type ContextChip, type MentionItem, type MentionChip } from './ChatInput.tsx';
+import { ChatInput, type ContextChip, type MentionItem, type MentionChip, type SlashCommand } from './ChatInput.tsx';
 import {
   type MsgSegment, type ChatMsg,
   dbMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt, storedSegmentsToMsgSegments,
@@ -55,6 +55,14 @@ export function ChatPanel({
   const [input, setInput] = useState('');
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [currentMentionChips, setCurrentMentionChips] = useState<MentionChip[]>([]);
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
+
+  // ---- system commands ----
+  const SYSTEM_COMMANDS: SlashCommand[] = [
+    { id: 'clear', name: 'clear', description: t('page.slashCmd.clearDesc'), type: 'system', icon: '🗑️' },
+    { id: 'help', name: 'help', description: t('page.slashCmd.helpDesc'), type: 'system', icon: '❓' },
+    { id: 'compress', name: 'compress', description: t('page.slashCmd.compressDesc'), type: 'system', icon: '📦' },
+  ];
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -109,6 +117,52 @@ export function ChatPanel({
     void load();
     return () => { cancelled = true; };
   }, [agentId, initialSessionId]);
+
+  // Load installed skills for slash commands
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { skills } = await api.skills.list();
+        if (cancelled) return;
+        const skillCmds: SlashCommand[] = skills.map(s => ({
+          id: `skill:${s.name}`,
+          name: s.name,
+          description: s.description ?? s.name,
+          type: 'skill' as const,
+          icon: '🔧',
+        }));
+        setSlashCommands([...SYSTEM_COMMANDS, ...skillCmds]);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // System command handler
+  const handleSystemCommand = useCallback((commandId: string) => {
+    switch (commandId) {
+      case 'clear': {
+        setMessages([]);
+        setSessionId(null);
+        break;
+      }
+      case 'help': {
+        const helpMsg: ChatMsg = {
+          id: `sys_${Date.now()}`,
+          sender: 'agent',
+          text: t('page.slashCmd.helpText'),
+          time: new Date().toLocaleTimeString(),
+          rawCreatedAt: new Date().toISOString(),
+        };
+        setMessages(prev => [...prev, helpMsg]);
+        break;
+      }
+      case 'compress':
+        setInput(t('page.slashCmd.compressText'));
+        break;
+    }
+  }, [setMessages, setInput, t]);
 
   // Scroll to bottom on initial load
   const prevLoadingRef = useRef(true);
@@ -757,6 +811,8 @@ export function ChatPanel({
           contextChips={contextChips}
           mentionItems={mentionItems}
           onMentionChipsChange={setCurrentMentionChips}
+          slashCommands={slashCommands}
+          onSystemCommand={handleSystemCommand}
           compact
           className="shadow-none border-0"
         />
