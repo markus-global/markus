@@ -143,30 +143,33 @@ function formatVideoToolResult(result: VideoResult): {
   };
 }
 
-function getProviderSchema(ctx: MultiModalToolsContext, capabilityType: ModelCapabilityType, toolName: keyof MultiModalToolSchemas): { description: string; inputSchema: Record<string, unknown> } | undefined {
+function getProviderSchema(
+  ctx: MultiModalToolsContext,
+  capabilityType: ModelCapabilityType,
+  toolName: keyof MultiModalToolSchemas,
+  base: { description: string; inputSchema: Record<string, unknown> },
+): { description: string; inputSchema: Record<string, unknown> } {
   const candidates = ctx.resolveCandidates(capabilityType);
   for (const { provider } of candidates) {
     const schemas = (provider as MultiModalProviderInterface).getToolSchemas?.();
     if (schemas?.[toolName]) {
       const schema = schemas[toolName]!;
-      const props = (schema.inputSchema.properties ?? {}) as Record<string, unknown>;
-      if (!props.provider || !props.model) {
-        return {
-          description: schema.description,
-          inputSchema: {
-            ...schema.inputSchema,
-            properties: {
-              ...props,
-              provider: { type: 'string', description: 'Override which provider to use (e.g. "openai", "minimax"). If omitted, uses the configured routing default.' },
-              ...(!props.model ? { model: { type: 'string', description: 'Override which model to use. If omitted, uses the configured routing default.' } } : {}),
-            },
+      const baseProps = (base.inputSchema.properties ?? {}) as Record<string, unknown>;
+      const providerProps = (schema.inputSchema.properties ?? {}) as Record<string, unknown>;
+      return {
+        description: schema.description,
+        inputSchema: {
+          ...base.inputSchema,
+          ...schema.inputSchema,
+          properties: {
+            ...baseProps,
+            ...providerProps,
           },
-        };
-      }
-      return schema;
+        },
+      };
     }
   }
-  return undefined;
+  return base;
 }
 
 type ModalityMethod = 'generateImage' | 'generateSpeech' | 'transcribeSpeech' | 'generateVideo';
@@ -326,10 +329,10 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         required: ['prompt'],
       },
       getDescription() {
-        return getProviderSchema(ctx, 'image_generation', 'generate_image')?.description ?? this.description;
+        return getProviderSchema(ctx, 'image_generation', 'generate_image', this).description;
       },
       getInputSchema() {
-        return getProviderSchema(ctx, 'image_generation', 'generate_image')?.inputSchema ?? this.inputSchema;
+        return getProviderSchema(ctx, 'image_generation', 'generate_image', this).inputSchema;
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         const prompt = readRequiredString(args, 'prompt', ['description', 'text', 'image_prompt']);
@@ -427,10 +430,10 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         required: ['text'],
       },
       getDescription() {
-        return getProviderSchema(ctx, 'audio_tts', 'text_to_speech')?.description ?? this.description;
+        return getProviderSchema(ctx, 'audio_tts', 'text_to_speech', this).description;
       },
       getInputSchema() {
-        return getProviderSchema(ctx, 'audio_tts', 'text_to_speech')?.inputSchema ?? this.inputSchema;
+        return getProviderSchema(ctx, 'audio_tts', 'text_to_speech', this).inputSchema;
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         const text = readRequiredString(args, 'text', ['prompt', 'content', 'input']);
@@ -514,10 +517,10 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         required: ['audio_url'],
       },
       getDescription() {
-        return getProviderSchema(ctx, 'audio_stt', 'speech_to_text')?.description ?? this.description;
+        return getProviderSchema(ctx, 'audio_stt', 'speech_to_text', this).description;
       },
       getInputSchema() {
-        return getProviderSchema(ctx, 'audio_stt', 'speech_to_text')?.inputSchema ?? this.inputSchema;
+        return getProviderSchema(ctx, 'audio_stt', 'speech_to_text', this).inputSchema;
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         const audioUrl = readRequiredString(args, 'audio_url', ['url', 'file_path', 'path', 'file']);
@@ -621,10 +624,10 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         required: ['prompt'],
       },
       getDescription() {
-        return getProviderSchema(ctx, 'video_generation', 'generate_video')?.description ?? this.description;
+        return getProviderSchema(ctx, 'video_generation', 'generate_video', this).description;
       },
       getInputSchema() {
-        return getProviderSchema(ctx, 'video_generation', 'generate_video')?.inputSchema ?? this.inputSchema;
+        return getProviderSchema(ctx, 'video_generation', 'generate_video', this).inputSchema;
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         const prompt = readRequiredString(args, 'prompt', ['description', 'text']);

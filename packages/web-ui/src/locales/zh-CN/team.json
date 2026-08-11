@@ -325,6 +325,7 @@
     "toggleSidebar": "展开侧边栏",
     "newMessages": "{{count}} 条新消息",
     "mentionAgent": "提及智能体",
+    "slashSkill": "技能",
     "mentionType": {
       "agent": "智能体",
       "project": "项目",

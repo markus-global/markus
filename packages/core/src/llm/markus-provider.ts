@@ -1520,7 +1520,9 @@ export class MarkusProvider implements MultiModalProviderInterface {
       },
       generate_video: {
         description:
-          'Generate a short video. Pass provider+model on this call (e.g. provider: "markus", model: "x-ai/grok-imagine-video-1.5") — no need to reconfigure routing first. May take 30s–several minutes.',
+          'Generate a short video from text, with optional reference images/audio/video. ' +
+          'Pass provider+model on this call (e.g. provider: "markus", model: "x-ai/grok-imagine-video-1.5") — no need to reconfigure routing first. ' +
+          'To use references: pass input_references (style guidance) or frame_images (exact first/last frame). May take 30s–several minutes.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1529,6 +1531,44 @@ export class MarkusProvider implements MultiModalProviderInterface {
             model: { type: 'string', description: 'Video model for THIS call (e.g. "x-ai/grok-imagine-video-1.5"). Preferred over capability routing.' },
             duration: { type: 'number', description: 'Duration in seconds when the model supports it' },
             size: { type: 'string', description: 'Resolution ("720p"|"1080p"), pixels ("1280x720"), or aspect ratio ("16:9")' },
+            input_references: {
+              type: 'array',
+              description:
+                'Reference assets for style/content guidance. Each item needs a "url" (publicly accessible) ' +
+                'and "type" ("image", "audio", or "video"). ' +
+                'Use publicly accessible, directly-downloadable URLs (no auth walls).',
+              items: {
+                type: 'object',
+                properties: {
+                  url: { type: 'string', description: 'Publicly accessible URL of the reference asset' },
+                  type: { type: 'string', enum: ['image', 'audio', 'video'], description: 'Asset type' },
+                  weight: { type: 'number', description: 'Optional weight 0-1 for this reference relative to others' },
+                },
+                required: ['url', 'type'],
+              },
+            },
+            frame_images: {
+              type: 'array',
+              description:
+                'Images for first/last frame (image-to-video). Takes precedence over input_references. ' +
+                'Each item needs "url" and "frame_type" ("first_frame" or "last_frame"). Max 2 items.',
+              items: {
+                type: 'object',
+                properties: {
+                  url: { type: 'string', description: 'Publicly accessible image URL' },
+                  frame_type: { type: 'string', enum: ['first_frame', 'last_frame'] },
+                },
+                required: ['url', 'frame_type'],
+              },
+            },
+            generate_audio: {
+              type: 'boolean',
+              description: 'Whether to generate audio alongside the video. Defaults to provider default.',
+            },
+            seed: {
+              type: 'number',
+              description: 'Seed for deterministic generation (not guaranteed by all providers).',
+            },
           },
           required: ['prompt'],
         },

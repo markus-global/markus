@@ -325,6 +325,7 @@
     "toggleSidebar": "Toggle sidebar",
     "newMessages": "{{count}} new message(s)",
     "mentionAgent": "Mention an agent",
+    "slashSkill": "Skills",
     "mentionType": {
       "agent": "Agent",
       "project": "Project",

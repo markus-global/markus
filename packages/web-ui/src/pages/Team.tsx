@@ -782,6 +782,27 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [mentionDropdown, setMentionDropdown] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
+  // Slash commands
+  const [slashDropdown, setSlashDropdown] = useState(false);
+  const [slashFilter, setSlashFilter] = useState('');
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
+  const [slashCommands, setSlashCommands] = useState<Array<{ name: string; description: string }>>([]);
+  const slashCommandsLoadedRef = useRef(false);
+  const loadSlashCommands = useCallback(() => {
+    if (slashCommandsLoadedRef.current) return;
+    slashCommandsLoadedRef.current = true;
+    (async () => {
+      try {
+        const { skills } = await api.skills.list();
+        setSlashCommands(skills.map(s => ({ name: s.name, description: s.description ?? s.name })));
+      } catch { /* ignore */ }
+    })();
+  }, []);
+  // Eager-load skills so slash commands are available immediately
+  useEffect(() => { loadSlashCommands(); }, [loadSlashCommands]);
+  const filteredSlashCmds = !slashFilter
+    ? slashCommands
+    : slashCommands.filter(c => c.name.toLowerCase().includes(slashFilter.toLowerCase()));
 
   type EntityMentionItem = { id: string; name: string; entityType: 'workflow' | 'project' | 'requirement' | 'task' | 'deliverable'; role?: string };
   const [entityMentionItems, setEntityMentionItems] = useState<EntityMentionItem[]>([]);
@@ -3516,7 +3537,45 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       }
     }
     setMentionDropdown(false);
+
+    // ---- / slash command detection ----
+    if (slashCommands.length > 0) {
+      const slashIdx = textBeforeCursor.lastIndexOf('/');
+      if (slashIdx >= 0) {
+        const charBeforeSlash = slashIdx === 0 ? '' : textBeforeCursor[slashIdx - 1]!;
+        const isValidSlashPos = slashIdx === 0 || /[\s\n,，。！？!?;；:：、（）()\[\]【】]/.test(charBeforeSlash);
+        if (isValidSlashPos) {
+          const slashFragment = textBeforeCursor.slice(slashIdx + 1);
+          if (!slashFragment.includes(' ') && !slashFragment.includes('\n')) {
+            loadSlashCommands();
+            setSlashDropdown(true);
+            setSlashFilter(slashFragment.toLowerCase());
+            setSlashSelectedIndex(0);
+            return;
+          }
+        }
+      }
+    }
+    setSlashDropdown(false);
   };
+
+  const insertSlashCommand = useCallback((cmd: { name: string; description: string }) => {
+    const cursorPos = textareaRef.current?.selectionStart ?? input.length;
+    const before = input.slice(0, cursorPos);
+    const slashIdx = before.lastIndexOf('/');
+    const after = input.slice(cursorPos);
+    const newVal = input.slice(0, slashIdx) + '/' + cmd.name + ' ' + after;
+    setInput(newVal);
+    setSlashDropdown(false);
+    setSlashSelectedIndex(0);
+    const newPos = slashIdx + cmd.name.length + 2;
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(newPos, newPos);
+    });
+  }, [input]);
 
   const insertMention = (name: string, entityType?: string, entityId?: string) => {
     const cursorPos = textareaRef.current?.selectionStart ?? input.length;
@@ -5062,6 +5121,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               ))}
             </div>
           )}
+          {slashDropdown && filteredSlashCmds.length > 0 && (
+            <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-64 max-w-xs w-72 overflow-y-auto">
+              <div className="px-3 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
+                {t('page.slashSkill')}
+              </div>
+              {filteredSlashCmds.map((cmd, i) => (
+                <button
+                  key={cmd.name}
+                  ref={el => { if (i === slashSelectedIndex && el) el.scrollIntoView({ block: 'nearest' }); }}
+                  onClick={() => insertSlashCommand(cmd)}
+                  onMouseEnter={() => setSlashSelectedIndex(i)}
+                  className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 transition-colors ${
+                    i === slashSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
+                  }`}
+                >
+                  <span className="text-xs w-5 h-5 flex items-center justify-center shrink-0">🔧</span>
+                  <span className="flex-1 min-w-0 truncate font-mono text-[13px]">/{cmd.name}</span>
+                  <span className="text-[10px] text-fg-tertiary ml-auto shrink-0 max-w-[100px] truncate">{cmd.description}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {chatContext.length > 0 && (
             <div className="flex items-center gap-1.5 mb-2 flex-wrap">
               {chatContext.map(chip => (
@@ -5168,6 +5249,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       return;
                     }
                     if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
+                  }
+                  if (slashDropdown && filteredSlashCmds.length > 0) {
+                    const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
+                    const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
+                    const isSelect = e.key === 'Enter' || e.key === 'Tab';
+                    const isClose = e.key === 'Escape';
+                    if (isUp) { e.preventDefault(); setSlashSelectedIndex(prev => (prev - 1 + filteredSlashCmds.length) % filteredSlashCmds.length); return; }
+                    if (isDown) { e.preventDefault(); setSlashSelectedIndex(prev => (prev + 1) % filteredSlashCmds.length); return; }
+                    if (isSelect) { e.preventDefault(); const cmd = filteredSlashCmds[slashSelectedIndex]; if (cmd) insertSlashCommand(cmd); return; }
+                    if (isClose) { e.preventDefault(); setSlashDropdown(false); return; }
                   }
                   // Escape leaves the composer so JK/HL on the current keyboard pane work again.
                   if (e.key === 'Escape') {
