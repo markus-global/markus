@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import type { AgentToolHandler } from '../agent.js';
-import type { ImageResult, MultiModalProviderInterface, MultiModalToolSchemas, VideoResult } from '../llm/provider.js';
+import type { ImageResult, MultiModalProviderInterface, MultiModalToolSchemas, VideoResult, VideoReference, VideoFrameImage, TTSOptions } from '../llm/provider.js';
 import { createLogger, type ModelCapabilityType } from '@markus/shared';
 import { toolErr, toolOk } from './result.js';
 
@@ -314,7 +314,8 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
       description:
         'Generate images. Required: prompt. Recommended: pass provider+model for this call ' +
         '(e.g. provider: "markus", model: "openai/gpt-image-1" or provider: "openai", model: "gpt-image-1") — ' +
-        'no need to call llm_set_capability_routing first.',
+        'no need to call llm_set_capability_routing first. ' +
+        'For image-to-image: pass input_references with HTTPS or base64 data URLs.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -358,6 +359,9 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
           seed: args.seed as number | undefined,
           output_dir: args.output_dir as string | undefined,
           output_format: args.output_format as string | undefined,
+          inputReferences: args.input_references as { url: string; weight?: number }[] | undefined,
+          outputCompression: args.output_compression as number | undefined,
+          background: args.background as 'auto' | 'transparent' | 'opaque' | undefined,
         };
         let lastError: unknown;
         for (let i = 0; i < candidates.length; i++) {
@@ -447,7 +451,11 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
               `(e.g. provider: "markus", model: "deepgram/aura-2"), or set capability routing. ${ROUTING_HINT}`,
           );
         }
-        const opts = { voice: args.voice as string | undefined, speed: args.speed as number | undefined };
+        const opts: TTSOptions = {
+          voice: args.voice as string | undefined,
+          speed: args.speed as number | undefined,
+          responseFormat: (args.response_format as string) as TTSOptions['responseFormat'],
+        };
         let lastError: unknown;
         let lastModel: string | undefined;
         for (const { provider, model, name } of candidates) {
@@ -561,14 +569,54 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
     {
       name: 'generate_video',
       description:
-        'Generate a video. Required: prompt. Recommended: pass provider+model for this call ' +
-        '(e.g. provider: "markus", model: "x-ai/grok-imagine-video-1.5") — no need to call llm_set_capability_routing first.',
+        'Generate a video from text, with optional reference images/audio/video. Required: prompt. ' +
+        'Recommended: pass provider+model (e.g. provider: "markus", model: "x-ai/grok-imagine-video-1.5"). ' +
+        'To use references: pass input_references (style guidance) or frame_images (exact first/last frame). ' +
+        'No need to call llm_set_capability_routing first.',
       inputSchema: {
         type: 'object',
         properties: {
           prompt: { type: 'string', description: 'Detailed description of the video to generate (REQUIRED)' },
           provider: PROVIDER_PARAM,
           model: MODEL_PARAM,
+          input_references: {
+            type: 'array',
+            description:
+              'Reference assets for style/content guidance. Each item needs a "url" (publicly accessible) ' +
+              'and "type" ("image", "audio", or "video"). Audio/video refs only work with BytePlus Seedance gen 2+. ' +
+              'Use publicly accessible, directly-downloadable URLs (no auth walls).',
+            items: {
+              type: 'object',
+              properties: {
+                url: { type: 'string', description: 'Publicly accessible URL of the reference asset' },
+                type: { type: 'string', enum: ['image', 'audio', 'video'], description: 'Asset type' },
+                weight: { type: 'number', description: 'Optional weight 0-1 for this reference relative to others' },
+              },
+              required: ['url', 'type'],
+            },
+          },
+          frame_images: {
+            type: 'array',
+            description:
+              'Images for first/last frame (image-to-video). Takes precedence over input_references. ' +
+              'Each item needs "url" and "frame_type" ("first_frame" or "last_frame"). Max 2 items.',
+            items: {
+              type: 'object',
+              properties: {
+                url: { type: 'string', description: 'Publicly accessible image URL' },
+                frame_type: { type: 'string', enum: ['first_frame', 'last_frame'] },
+              },
+              required: ['url', 'frame_type'],
+            },
+          },
+          generate_audio: {
+            type: 'boolean',
+            description: 'Whether to generate audio alongside the video. Defaults to provider default.',
+          },
+          seed: {
+            type: 'number',
+            description: 'Seed for deterministic generation (not guaranteed by all providers).',
+          },
         },
         required: ['prompt'],
       },
@@ -600,6 +648,10 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         const opts = {
           duration: args.duration as number | undefined,
           size: (args.size ?? args.resolution) as string | undefined,
+          inputReferences: args.input_references as VideoReference[] | undefined,
+          frameImages: args.frame_images as VideoFrameImage[] | undefined,
+          generateAudio: args.generate_audio as boolean | undefined,
+          seed: args.seed as number | undefined,
         };
         let lastError: unknown;
         for (let i = 0; i < candidates.length; i++) {

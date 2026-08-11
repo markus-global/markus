@@ -34,6 +34,15 @@ export interface ImageGenOptions {
   seed?: number;
   output_dir?: string;
   output_format?: string;
+  /** Reference images for image-to-image generation (up to 16).
+   *  Each entry needs a "url" (HTTPS URL or base64 data URL). */
+  inputReferences?: { url: string; weight?: number }[];
+  /** Compression level 0-100 for webp/jpeg output. Ignored for png. */
+  outputCompression?: number;
+  /** Background treatment: "transparent" requires png or webp output_format. */
+  background?: 'auto' | 'transparent' | 'opaque';
+  /** Aspect ratio (e.g. "16:9", "1:1"). Providers clamp to their supported subset. */
+  aspectRatio?: string;
 }
 
 export interface ImageResult {
@@ -238,11 +247,44 @@ export interface STTOptions {
   responseFormat?: 'json' | 'text' | 'srt' | 'vtt';
 }
 
+/** Reference asset types for video generation guidance. */
+export type VideoReferenceType = 'image' | 'audio' | 'video';
+
+export interface VideoReference {
+  /** Publicly accessible URL of the reference asset. */
+  url: string;
+  /** Type of reference asset (image, audio, video).
+   *  Audio/video refs are only honored by providers that support them
+   *  (e.g. BytePlus Seedance gen 2+); other providers silently ignore them. */
+  type: VideoReferenceType;
+  /** Optional weight (0–1) for this reference relative to others. */
+  weight?: number;
+}
+
+/** First or last frame image for image-to-video generation. */
+export interface VideoFrameImage {
+  /** Publicly accessible image URL. */
+  url: string;
+  /** Whether this image anchors the first or last frame. */
+  frame_type: 'first_frame' | 'last_frame';
+}
+
 export interface VideoGenOptions {
   model?: string;
   duration?: number;
   size?: string;
   fps?: number;
+  /** Reference assets (images, audio, video) for style/content guidance.
+   *  All providers support image references; audio/video refs require
+   *  BytePlus Seedance gen 2+. Prefer stable, directly-downloadable URLs. */
+  inputReferences?: VideoReference[];
+  /** First and/or last frame images for image-to-video generation.
+   *  Takes precedence over inputReferences when both are provided. */
+  frameImages?: VideoFrameImage[];
+  /** Whether to generate audio alongside the video. Default provider-dependent. */
+  generateAudio?: boolean;
+  /** Seed for deterministic generation (not guaranteed by all providers). */
+  seed?: number;
 }
 
 export interface VideoResult {

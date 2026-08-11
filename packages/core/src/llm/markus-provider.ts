@@ -1444,8 +1444,9 @@ export class MarkusProvider implements MultiModalProviderInterface {
     return {
       generate_image: {
         description:
-          'Generate images. Pass provider+model on this call (e.g. provider: "markus", model: "openai/gpt-image-1") — no need to reconfigure routing first. ' +
-          'Result is saved locally — use the returned filePath/markdown (never invent data-URI/base64).',
+          'Generate images from text, with optional reference images. Pass provider+model on this call (e.g. provider: "markus", model: "openai/gpt-image-1") — no need to reconfigure routing first. ' +
+          'Result is saved locally — use the returned filePath/markdown (never invent data-URI/base64). ' +
+          'For image-to-image: pass input_references with HTTPS or base64 data URLs.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1455,7 +1456,22 @@ export class MarkusProvider implements MultiModalProviderInterface {
             size: { type: 'string', description: 'Size shorthand: pixels ("1024x1024"), resolution tier ("1K"|"2K"|"4K"), or aspect ratio ("16:9")' },
             quality: { type: 'string', enum: ['auto', 'low', 'medium', 'high'], description: 'Rendering quality when the model supports it' },
             n: { type: 'number', description: 'Number of images (1–10, default 1)' },
-            output_format: { type: 'string', enum: ['png', 'jpeg', 'webp', 'svg'], description: 'Encoding of returned image bytes' },
+            seed: { type: 'number', description: 'Seed for deterministic generation (not guaranteed by all providers)' },
+            output_format: { type: 'string', enum: ['png', 'jpeg', 'webp', 'svg'], description: 'Encoding of returned image bytes. Use png/webp for transparent backgrounds.' },
+            output_compression: { type: 'number', description: 'Compression level 0-100 for webp/jpeg. Ignored for png.' },
+            background: { type: 'string', enum: ['auto', 'transparent', 'opaque'], description: 'Background treatment. transparent requires png/webp.' },
+            input_references: {
+              type: 'array',
+              description: 'Reference images for image-to-image generation (up to 16). Provide HTTPS URLs or base64 data URLs.',
+              items: {
+                type: 'object',
+                properties: {
+                  url: { type: 'string', description: 'HTTPS URL or base64 data URL of the reference image' },
+                  weight: { type: 'number', description: 'Optional weight 0-1 for this reference' },
+                },
+                required: ['url'],
+              },
+            },
           },
           required: ['prompt'],
         },
@@ -1483,6 +1499,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
                 'Voice id for the chosen model (strongly recommended). Deepgram: aura-2-thalia-en; OpenAI: alloy/nova; MiniMax: "Chinese (Mandarin)_Gentle_Youth".',
             },
             speed: { type: 'number', description: 'Playback speed when supported (e.g. OpenAI TTS)' },
+            response_format: { type: 'string', enum: ['mp3', 'pcm', 'opus', 'aac', 'flac', 'wav'], description: 'Audio encoding format. Default provider-dependent.' },
           },
           required: ['text'],
         },
@@ -1587,7 +1604,16 @@ export class MarkusProvider implements MultiModalProviderInterface {
     Object.assign(body, mapOpenRouterImageSize(options?.size));
     if (options?.quality) body['quality'] = options.quality;
     if (options?.output_format) body['output_format'] = options.output_format;
+    if (options?.outputCompression !== undefined) body['output_compression'] = options.outputCompression;
+    if (options?.background) body['background'] = options.background;
     if (options?.seed !== undefined && options.seed !== null) body['seed'] = options.seed;
+    if (options?.inputReferences && options.inputReferences.length > 0) {
+      body['input_references'] = options.inputReferences.map(ref => {
+        const item: Record<string, unknown> = { url: ref.url };
+        if (ref.weight !== undefined) item['weight'] = ref.weight;
+        return item;
+      });
+    }
 
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -1783,6 +1809,18 @@ export class MarkusProvider implements MultiModalProviderInterface {
       else if (/^\d+:\d+$/.test(size)) body['aspect_ratio'] = size;
       else body['resolution'] = size;
     }
+    if (options?.inputReferences && options.inputReferences.length > 0) {
+      body['input_references'] = options.inputReferences.map(ref => {
+        const item: Record<string, unknown> = { url: ref.url, type: ref.type };
+        if (ref.weight !== undefined) item['weight'] = ref.weight;
+        return item;
+      });
+    }
+    if (options?.frameImages && options.frameImages.length > 0) {
+      body['frame_images'] = options.frameImages.map(f => ({ url: f.url, frame_type: f.frame_type }));
+    }
+    if (options?.generateAudio !== undefined) body['generate_audio'] = options.generateAudio;
+    if (options?.seed !== undefined) body['seed'] = options.seed;
 
     const createRes = await fetch(endpoint, {
       method: 'POST',
