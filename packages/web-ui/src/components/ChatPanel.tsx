@@ -57,13 +57,6 @@ export function ChatPanel({
   const [currentMentionChips, setCurrentMentionChips] = useState<MentionChip[]>([]);
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
 
-  // ---- system commands ----
-  const SYSTEM_COMMANDS: SlashCommand[] = [
-    { id: 'clear', name: 'clear', description: t('page.slashCmd.clearDesc'), type: 'system', icon: '🗑️' },
-    { id: 'help', name: 'help', description: t('page.slashCmd.helpDesc'), type: 'system', icon: '❓' },
-    { id: 'compress', name: 'compress', description: t('page.slashCmd.compressDesc'), type: 'system', icon: '📦' },
-  ];
-
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -132,37 +125,12 @@ export function ChatPanel({
           type: 'skill' as const,
           icon: '🔧',
         }));
-        setSlashCommands([...SYSTEM_COMMANDS, ...skillCmds]);
+        setSlashCommands(skillCmds);
       } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // System command handler
-  const handleSystemCommand = useCallback((commandId: string) => {
-    switch (commandId) {
-      case 'clear': {
-        setMessages([]);
-        setSessionId(null);
-        break;
-      }
-      case 'help': {
-        const helpMsg: ChatMsg = {
-          id: `sys_${Date.now()}`,
-          sender: 'agent',
-          text: t('page.slashCmd.helpText'),
-          time: new Date().toLocaleTimeString(),
-          rawCreatedAt: new Date().toISOString(),
-        };
-        setMessages(prev => [...prev, helpMsg]);
-        break;
-      }
-      case 'compress':
-        setInput(t('page.slashCmd.compressText'));
-        break;
-    }
-  }, [setMessages, setInput, t]);
 
   // Scroll to bottom on initial load
   const prevLoadingRef = useRef(true);
@@ -812,7 +780,6 @@ export function ChatPanel({
           mentionItems={mentionItems}
           onMentionChipsChange={setCurrentMentionChips}
           slashCommands={slashCommands}
-          onSystemCommand={handleSystemCommand}
           compact
           className="shadow-none border-0"
         />

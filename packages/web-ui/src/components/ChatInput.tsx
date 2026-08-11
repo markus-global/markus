@@ -83,10 +83,8 @@ export interface ChatInputProps {
   compact?: boolean;
   /** Called when mention chips change (add/remove) */
   onMentionChipsChange?: (chips: MentionChip[]) => void;
-  /** Available slash commands (system + skill) */
+  /** Available slash commands (skills) */
   slashCommands?: SlashCommand[];
-  /** Called when a system slash command is selected (e.g. /clear) */
-  onSystemCommand?: (commandId: string) => void;
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -130,7 +128,6 @@ export function ChatInput({
   compact = false,
   onMentionChipsChange,
   slashCommands,
-  onSystemCommand,
 }: ChatInputProps) {
   const { t } = useTranslation(['team', 'common']);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -167,25 +164,11 @@ export function ChatInput({
     return groups;
   })();
 
-  // ---- slash command filtering & grouping ----
+  // ---- slash command filtering (flat list, skills only) ----
   const slashCmds = slashCommands ?? [];
   const filteredSlashCmds = !slashFilter
     ? slashCmds
     : slashCmds.filter(c => c.name.toLowerCase().includes(slashFilter));
-
-  const groupedSlashCmds = (() => {
-    if (filteredSlashCmds.length === 0) return [];
-    const byType = new Map<SlashCommandType, SlashCommand[]>();
-    for (const c of filteredSlashCmds) {
-      const t = c.type;
-      if (!byType.has(t)) byType.set(t, []);
-      byType.get(t)!.push(c);
-    }
-    return [
-      ...(byType.has('system') ? [{ type: 'system' as const, items: byType.get('system')! }] : []),
-      ...(byType.has('skill') ? [{ type: 'skill' as const, items: byType.get('skill')! }] : []),
-    ];
-  })();
 
   useEffect(() => {
     if ((!mentionDropdown && !slashDropdown) || !containerRef.current) { setDropdownPos(null); return; }
@@ -284,22 +267,7 @@ export function ChatInput({
     const slashIdx = before.lastIndexOf('/');
     const after = value.slice(cursorPos);
 
-    // System commands: trigger callback instead of inserting text
-    if (cmd.type === 'system' && onSystemCommand) {
-      onSystemCommand(cmd.id);
-      setSlashDropdown(false);
-      setSlashSelectedIndex(0);
-      // Remove the '/' from the input
-      const newVal = value.slice(0, slashIdx) + after;
-      onChange(newVal);
-      requestAnimationFrame(() => {
-        textareaRef.current?.setSelectionRange(slashIdx, slashIdx);
-        textareaRef.current?.focus();
-      });
-      return;
-    }
-
-    // Skill commands: insert the command name as text
+    // Insert the command name as text: /skill-name
     const newVal = value.slice(0, slashIdx) + '/' + cmd.name + ' ' + after;
     onChange(newVal);
     setSlashDropdown(false);
@@ -309,7 +277,7 @@ export function ChatInput({
       textareaRef.current?.setSelectionRange(newPos, newPos);
       textareaRef.current?.focus();
     });
-  }, [value, onChange, onSystemCommand]);
+  }, [value, onChange]);
 
   const handleSend = useCallback(() => {
     onSend();
@@ -399,33 +367,20 @@ export function ChatInput({
       style={{ left: dropdownPos.left, bottom: dropdownPos.bottom, zIndex: 9999 }}
     >
       {(() => {
-        let flatIdx = 0;
-        const GROUP_LABEL: Record<SlashCommandType, string> = { system: t('page.slashCmd.system'), skill: t('page.slashCmd.skill') };
-        return groupedSlashCmds.map(group => (
-          <div key={group.type}>
-            <div className="px-3 py-1 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default bg-surface-secondary/50 flex items-center gap-1.5 sticky top-0">
-              <span>{group.type === 'system' ? '⚡' : '🔧'}</span>
-              <span>{GROUP_LABEL[group.type] ?? group.type}</span>
-            </div>
-            {group.items.map(cmd => {
-              const curIdx = flatIdx++;
-              return (
-                <button
-                  key={cmd.id}
-                  ref={el => { if (curIdx === slashSelectedIndex && el) el.scrollIntoView({ block: 'nearest' }); }}
-                  onMouseDown={e => { e.preventDefault(); insertSlashCommand(cmd); }}
-                  onMouseEnter={() => setSlashSelectedIndex(curIdx)}
-                  className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 transition-colors ${
-                    curIdx === slashSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
-                  }`}
-                >
-                  <span className="text-xs w-5 h-5 flex items-center justify-center shrink-0">{cmd.icon}</span>
-                  <span className="flex-1 min-w-0 truncate font-mono text-[13px]">/{cmd.name}</span>
-                  <span className="text-[10px] text-fg-tertiary ml-auto shrink-0 max-w-[120px] truncate">{cmd.description}</span>
-                </button>
-              );
-            })}
-          </div>
+        return filteredSlashCmds.map((cmd, i) => (
+          <button
+            key={cmd.id}
+            ref={el => { if (i === slashSelectedIndex && el) el.scrollIntoView({ block: 'nearest' }); }}
+            onMouseDown={e => { e.preventDefault(); insertSlashCommand(cmd); }}
+            onMouseEnter={() => setSlashSelectedIndex(i)}
+            className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 transition-colors ${
+              i === slashSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
+            }`}
+          >
+            <span className="text-xs w-5 h-5 flex items-center justify-center shrink-0">🔧</span>
+            <span className="flex-1 min-w-0 truncate font-mono text-[13px]">/{cmd.name}</span>
+            <span className="text-[10px] text-fg-tertiary ml-auto shrink-0 max-w-[120px] truncate">{cmd.description}</span>
+          </button>
         ));
       })()}
     </div>,

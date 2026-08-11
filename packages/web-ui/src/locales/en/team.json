@@ -334,13 +334,7 @@
       "workflow": "Workflow"
     },
     "slashCmd": {
-      "system": "System Commands",
-      "skill": "Skills",
-      "clearDesc": "Clear conversation",
-      "helpDesc": "Show help",
-      "compressDesc": "Compress context",
-      "helpText": "Available commands:\n/clear — Clear conversation\n/help — Show help\n/compress — Compress context\n/skill-name — Use a specific skill\n\nYou can also use @ to reference agents, projects, tasks, etc.",
-      "compressText": "Please summarize the current conversation, compress the context, and retain the key information."
+      "skill": "Skills"
     },
     "addMoreFiles": "Add more files",
     "attachFilesTitle": "Attach files (images, PDF, Word, Excel, PowerPoint...)",

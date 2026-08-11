@@ -334,13 +334,7 @@
       "workflow": "工作流"
     },
     "slashCmd": {
-      "system": "系统命令",
-      "skill": "技能",
-      "clearDesc": "清空对话",
-      "helpDesc": "显示帮助",
-      "compressDesc": "精简上下文",
-      "helpText": "可用的命令：\n/clear — 清空对话\n/help — 显示帮助\n/compress — 精简上下文\n/skill-name — 使用指定技能\n\n你也可以用 @ 引用智能体、项目、任务等。",
-      "compressText": "请对当前对话进行总结，压缩上下文，保留关键信息。"
+      "skill": "技能"
     },
     "addMoreFiles": "添加更多文件",
     "attachFilesTitle": "附加文件（图片、PDF、Word、Excel、PowerPoint…）",
