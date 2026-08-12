@@ -5,6 +5,8 @@ import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from '../components/ContentRenderer.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
+import { DeliverableShareModal } from '../components/DeliverableShareModal.tsx';
+import type { DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import { ChatPanel } from '../components/ChatPanel.tsx';
 import { type ContextChip } from '../components/ChatInput.tsx';
 import { navBus } from '../navBus.ts';
@@ -32,6 +34,11 @@ const ALL_TYPES = ['file', 'directory'] as const;
 
 function isUrl(s: string): boolean {
   return /^https?:\/\//i.test(s);
+}
+
+/** 分享状态（未分享返回 null）。 */
+function shareStatusOf(d: { shareStatus?: string | null } | null): string | null {
+  return d?.shareStatus ?? null;
 }
 
 function relativeTime(dateStr: string, t: (key: string, opts?: Record<string, unknown>) => string): string {
@@ -128,6 +135,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [showCopyPath, setShowCopyPath] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState<DeliverableInfo | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   const [sharedDir, setSharedDir] = useState('');
   const [missingFileIds, setMissingFileIds] = useState<Set<string>>(new Set());
 
@@ -422,6 +430,18 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setActionLoading('');
   };
 
+  // 分享到 Hub 结果回调：把分享字段写回 selected（撑状态徽标/列表标识即时刷新），再刷新列表。
+  const onShareResult = useCallback((r: DeliverableShareRecord) => {
+    setSelected(prev => prev ? {
+      ...prev,
+      hubShareId: r.id ?? prev.hubShareId ?? null,
+      shareStatus: r.status ?? prev.shareStatus ?? null,
+      shareUrl: r.url ?? prev.shareUrl ?? null,
+      shareVisibility: r.visibility ?? prev.shareVisibility ?? null,
+    } : prev);
+    refresh();
+  }, [refresh]);
+
   const handleOpenInBuilder = () => {
     navBus.navigate(PAGE.BUILDER);
   };
@@ -626,6 +646,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const handleSelectItem = (item: DeliverableInfo) => {
     const doSwitch = () => {
       setSelected(item);
+      setShareOpen(false);
       setContextChips([]);
       setEditMode(false);
       setEditDirty(false);
@@ -992,6 +1013,27 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                         <span className={`text-[10px] px-1 py-0.5 rounded font-medium uppercase shrink-0 ${TYPE_META[item.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{TYPE_META[item.type]?.icon ?? item.type.charAt(0)}</span>
                       )}
                       <span className="text-sm font-medium text-fg-primary truncate flex-1">{item.title}</span>
+                      {shareStatusOf(item) === 'published' && (
+                        <svg className="shrink-0 text-green-500" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label={t('share.published', { defaultValue: '已发布到 Hub' })}>
+                          <title>{t('share.published', { defaultValue: '已发布到 Hub' })}</title>
+                          <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                        </svg>
+                      )}
+                      {shareStatusOf(item) === 'pending_review' && (
+                        <svg className="shrink-0 text-amber-500 animate-pulse" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label={t('share.pendingReview', { defaultValue: 'Hub 审核中' })}>
+                          <title>{t('share.pendingReview', { defaultValue: 'Hub 审核中' })}</title>
+                          <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                        </svg>
+                      )}
+                      {shareStatusOf(item) === 'rejected' && (
+                        <svg className="shrink-0 text-red-500" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label={t('share.rejected', { defaultValue: 'Hub 已拒绝' })}>
+                          <title>{t('share.rejected', { defaultValue: 'Hub 已拒绝' })}</title>
+                          <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                        </svg>
+                      )}
                       {missingFileIds.has(item.id) && (
                         <span className="shrink-0 text-amber-500" title={t('detail.fileMissing')}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1098,16 +1140,48 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
                 {!previewMode && (
-                <button
-                  onClick={() => setConfirmRemove(selected)}
-                  disabled={!!actionLoading}
-                  className="p-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50 shrink-0"
-                  title={t('common:remove')}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                  </svg>
-                </button>
+                <div className="flex items-center gap-1 shrink-0">
+                  {/* 分享到 Hub */}
+                  <button
+                    onClick={() => setShareOpen(true)}
+                    title={t('share.title', { defaultValue: '分享到 Markus Hub' })}
+                    aria-label={t('share.title', { defaultValue: '分享到 Markus Hub' })}
+                    className={`relative p-1.5 rounded-lg transition-colors ${
+                      shareStatusOf(selected) === 'published'
+                        ? 'text-green-500 hover:text-green-400 hover:bg-green-500/10'
+                        : shareStatusOf(selected) === 'pending_review'
+                          ? 'text-amber-500 hover:text-amber-400 hover:bg-amber-500/10'
+                          : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                    }`}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                    </svg>
+                    {shareStatusOf(selected) === 'published' || shareStatusOf(selected) === 'pending_review' || shareStatusOf(selected) === 'rejected' ? (
+                      <span
+                        className={`absolute top-0.5 right-0.5 w-2 h-2 rounded-full border border-surface-primary ${
+                          shareStatusOf(selected) === 'published'
+                            ? 'bg-green-500'
+                            : shareStatusOf(selected) === 'pending_review'
+                              ? 'bg-amber-500 animate-pulse'
+                              : 'bg-red-500'
+                        }`}
+                        aria-hidden
+                      />
+                    ) : null}
+                  </button>
+                  <button
+                    onClick={() => setConfirmRemove(selected)}
+                    disabled={!!actionLoading}
+                    className="p-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50 shrink-0"
+                    title={t('common:remove')}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                </div>
                 )}
               </div>
 
@@ -1122,6 +1196,23 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 {selected.tags.length > 0 && selected.tags.map(tag => (
                   <span key={tag} className="px-2 py-0.5 text-xs bg-surface-elevated text-fg-secondary rounded">{tag}</span>
                 ))}
+                {shareStatusOf(selected) === 'published' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-500/15 text-green-600" title={selected.shareUrl ?? undefined}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" /></svg>
+                    {t('share.published', { defaultValue: '已发布' })}
+                  </span>
+                )}
+                {shareStatusOf(selected) === 'pending_review' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-500/15 text-amber-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                    {t('share.pendingReview', { defaultValue: '审核中' })}
+                  </span>
+                )}
+                {shareStatusOf(selected) === 'rejected' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/15 text-red-500">
+                    {t('share.rejected', { defaultValue: '已拒绝' })}
+                  </span>
+                )}
               </div>
 
               {/* Association links inline */}
@@ -1432,6 +1523,15 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             {t('contextMenu.addToConversation')}
           </button>
         </div>
+      )}
+
+      {/* 分享产出物到 Hub */}
+      {shareOpen && selected && (
+        <DeliverableShareModal
+          item={selected}
+          onClose={() => setShareOpen(false)}
+          onShared={onShareResult}
+        />
       )}
 
       {/* Remove Confirmation */}
