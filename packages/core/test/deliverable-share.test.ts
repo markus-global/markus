@@ -58,7 +58,12 @@ function makeService(
     proxyBaseUrl?: string;
   } = {},
 ): { svc: DeliverableShareService; fetchMock: MockFetchCtx; written: DeliverableShareWriteBack[]; deps: DeliverableShareDeps } {
-  const fetchMock = opts.fetchMock ?? makeFetchMock(201, { id: 'dlv_share_1', status: 'pending_review', visibility: 'public' });
+  // 默认 fetch 响应对齐 Hub 真实契约（publish 平铺返回 shareId/shareUrl/slug）
+  const fetchMock = opts.fetchMock ?? makeFetchMock(201, {
+    ok: true, alreadyShared: false, shareId: 'dlv_share_1',
+    slug: 'industry-report-ai-2026', status: 'pending_review',
+    shareUrl: 'https://hub.example/deliverable/industry-report-ai-2026',
+  });
   const written: DeliverableShareWriteBack[] = [];
   const deps: DeliverableShareDeps = {
     getHubAuth: () => (opts.auth === undefined ? { hubUrl: 'https://hub.example', token: 'tok' } : opts.auth),
@@ -117,7 +122,8 @@ describe('DeliverableShareService — publish', () => {
     expect((call.init.headers as Record<string, string>)['Content-Type']).toContain('application/json');
 
     const body = JSON.parse(call.init.body as string) as Record<string, unknown>;
-    expect(body['localId']).toBe('dlv_1');
+    expect(body['localDeliverableId']).toBe('dlv_1');
+    expect(body['localId']).toBeUndefined();
     expect(body['visibility']).toBe('public');
     expect(body['content']).toContain('# 调研报告');
     expect(body['producerAgent']).toEqual({ id: 'agt_agent1', name: '首席研究员', source: 'hub_asset' });
@@ -128,6 +134,7 @@ describe('DeliverableShareService — publish', () => {
       id: 'dlv_1',
       hubShareId: 'dlv_share_1',
       shareStatus: 'pending_review',
+      shareUrl: 'https://hub.example/deliverable/industry-report-ai-2026',
       shareVisibility: 'public',
     });
   });
@@ -157,16 +164,19 @@ describe('DeliverableShareService — publish', () => {
 });
 
 describe('DeliverableShareService — pollStatus', () => {
-  it('GETs status via proxy with localId and writes back published result', async () => {
+  it('GETs status via proxy with localId and parses {share:publicDto} to build url from slug', async () => {
     const fetchMock = makeFetchMock(200, {
-      id: 'dlv_share_1',
-      status: 'published',
-      visibility: 'public',
-      url: 'https://hub.example/deliverable/industry-report-ai-2026',
+      share: {
+        id: 'dlv_share_1', slug: 'industry-report-ai-2026',
+        status: 'published', visibility: 'public',
+        // publicDto 无 url 字段（Hub 真实契约），由 slug + hubUrl 兜底
+      },
     });
     const { svc, written } = makeService({ fetchMock });
     const rec = await svc.pollStatus('dlv_1');
     expect(rec.status).toBe('published');
+    expect(rec.id).toBe('dlv_share_1');
+    expect(rec.url).toBe('https://hub.example/deliverable/industry-report-ai-2026');
     expect(fetchMock.calls[0].url).toBe('http://localhost:8787/api/hub/deliverables/status?localId=dlv_1');
     expect(written[0]).toMatchObject({
       id: 'dlv_1',

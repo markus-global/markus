@@ -64,6 +64,30 @@ describe('normalizeShareRecord', () => {
     expect(r2.id).toBe('n2');
     expect(r2.visibility).toBe('public');
   });
+  it('reads Hub publish response fields shareId/shareUrl (real contract)', () => {
+    const r = normalizeShareRecord({
+      ok: true, alreadyShared: false, shareId: 'dlv_share_1',
+      slug: 'industry-report-ai-2026', status: 'pending_review',
+      shareUrl: 'https://hub.example/deliverable/industry-report-ai-2026',
+    });
+    expect(r.id).toBe('dlv_share_1');
+    expect(r.slug).toBe('industry-report-ai-2026');
+    expect(r.status).toBe('pending_review');
+    expect(r.url).toBe('https://hub.example/deliverable/industry-report-ai-2026');
+  });
+  it('builds url from slug + hubOrigin when Hub status omits url (real contract)', () => {
+    const r = normalizeShareRecord(
+      { share: { id: 'dlv_share_1', slug: 'industry-report-ai-2026', status: 'published', visibility: 'public' } },
+      'https://hub.example/',
+    );
+    expect(r.id).toBe('dlv_share_1');
+    expect(r.status).toBe('published');
+    expect(r.url).toBe('https://hub.example/deliverable/industry-report-ai-2026');
+  });
+  it('keeps url null when no url and no hubOrigin/slug', () => {
+    const r = normalizeShareRecord({ share: { id: 'n1', status: 'published' } });
+    expect(r.url).toBeNull();
+  });
   it('returns defaults for empty/malformed input', () => {
     const r = normalizeShareRecord(null);
     expect(r.id).toBe('');
@@ -83,21 +107,41 @@ describe('DeliverableShareService — auth', () => {
 });
 
 describe('DeliverableShareService — publish', () => {
-  it('posts to /api/hub/deliverables/publish with Bearer token and full payload', async () => {
-    const { fn, calls } = mockFetch(() => ({ status: 200, body: { id: 'dlv_share_1', status: 'pending_review', visibility: 'public' } }));
-    const s = new DeliverableShareService({ getHubToken: () => 'hub-token', fetch: fn });
+  it('posts to /api/hub/deliverables/publish with Bearer token and full payload (Hub contract: localDeliverableId)', async () => {
+    const { fn, calls } = mockFetch(() => ({
+      status: 201,
+      body: {
+        ok: true, alreadyShared: false, shareId: 'dlv_share_1',
+        slug: 'industry-report-ai-2026', status: 'pending_review',
+        shareUrl: 'https://hub.example/deliverable/industry-report-ai-2026',
+      },
+    }));
+    const s = new DeliverableShareService({ getHubToken: () => 'hub-token', hubUrl: 'https://hub.example', fetch: fn });
     const record = await s.publish(baseInput);
     expect(record.id).toBe('dlv_share_1');
     expect(record.status).toBe('pending_review');
+    expect(record.url).toBe('https://hub.example/deliverable/industry-report-ai-2026');
     expect(calls).toHaveLength(1);
     const [url, init] = [calls[0].url, calls[0].init];
     expect(url).toBe('/api/hub/deliverables/publish');
     expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer hub-token');
     const body = JSON.parse(String(init.body));
-    expect(body.localId).toBe('dlv_local_1');
+    expect(body.localDeliverableId).toBe('dlv_local_1');
+    expect(body.localId).toBeUndefined();
     expect(body.visibility).toBe('public');
     expect(body.producerAgent).toEqual({ id: 'agt_1', name: 'agt_1', source: 'local' });
     expect(body.filename).toBe('report.md');
+  });
+
+  it('returns alreadyShared record without re-publishing', async () => {
+    const { fn } = mockFetch(() => ({
+      status: 200,
+      body: { ok: true, alreadyShared: true, shareId: 'dlv_share_1', slug: 'industry-report-ai-2026', status: 'published', shareUrl: 'https://hub.example/deliverable/industry-report-ai-2026' },
+    }));
+    const s = new DeliverableShareService({ getHubToken: () => 'tok', hubUrl: 'https://hub.example', fetch: fn });
+    const r = await s.publish(baseInput);
+    expect(r.id).toBe('dlv_share_1');
+    expect(r.status).toBe('published');
   });
 
   it('throws NotLoggedIntoHubError when not logged in', async () => {
@@ -127,12 +171,16 @@ describe('DeliverableShareService — publish', () => {
 });
 
 describe('DeliverableShareService — pollStatus', () => {
-  it('GETs status with localId query', async () => {
-    const { fn, calls } = mockFetch(() => ({ status: 200, body: { id: 'dlv_share_1', status: 'published', url: 'https://hub/deliverable/x' } }));
-    const s = new DeliverableShareService({ getHubToken: () => 'tok', fetch: fn });
+  it('GETs status with localId query and builds url from slug (Hub real contract)', async () => {
+    const { fn, calls } = mockFetch(() => ({
+      status: 200,
+      body: { share: { id: 'dlv_share_1', slug: 'industry-report-ai-2026', status: 'published', visibility: 'public' } },
+    }));
+    const s = new DeliverableShareService({ getHubToken: () => 'tok', hubUrl: 'https://hub.example', fetch: fn });
     const r = await s.pollStatus('dlv_local_1');
     expect(r.status).toBe('published');
-    expect(r.url).toBe('https://hub/deliverable/x');
+    expect(r.id).toBe('dlv_share_1');
+    expect(r.url).toBe('https://hub.example/deliverable/industry-report-ai-2026');
     expect(calls[0].url).toBe('/api/hub/deliverables/status?localId=dlv_local_1');
   });
 });

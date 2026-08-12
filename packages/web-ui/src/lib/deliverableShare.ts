@@ -107,23 +107,43 @@ export function base64ByteLength(b64: string): number {
 export interface DeliverableShareDeps {
   /** 返回当前 Hub token；未登录返回 null（强制 Hub 账号，未登录禁止分享）。 */
   getHubToken: () => string | null;
+  /** Hub 站点来源（用于由 slug 构造公开分享链接 {hubUrl}/deliverable/{slug}）。 */
+  hubUrl?: string;
   /** HTTP 传输（默认 globalThis.fetch；测试注入 mock）。 */
   fetch?: typeof fetch;
   /** Hub 代理基础路径（默认相对 /api/hub/...，浏览器可用）。 */
   proxyBasePath?: string;
 }
 
-/** 从 Hub 响应体防御性提取分享记录（兼容嵌套 share/deliverable 结构）。 */
-export function normalizeShareRecord(data: unknown): DeliverableShareRecord {
+/**
+ * 从 Hub 响应体防御性提取分享记录。
+ * 对齐 Hub 真实契约（见 QA 联调 tsk_84bc6db0ebf59752061dc3e5）：
+ *  - publish 平铺返回 `{ shareId, shareUrl, slug, status }`
+ *  - status 返回 `{ share: publicDto }`，publicDto 含 `id`/`slug` 但无 `url`
+ * 兼容读 id/url（flat 或嵌套 share/deliverable）作为兜底。
+ * @param hubOrigin Hub 站点来源，用于 status 场景由 slug 兜底构造公开链接。
+ */
+export function normalizeShareRecord(data: unknown, hubOrigin?: string): DeliverableShareRecord {
   const raw = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
   const nested = (raw['share'] ?? raw['deliverable'] ?? {}) as Record<string, unknown>;
   const pick = (k: string): unknown => raw[k] ?? nested[k];
+  const id = pick('id') ?? pick('shareId') ?? '';
+  const slugRaw = pick('slug');
+  const slug = slugRaw !== undefined && slugRaw !== null ? String(slugRaw) : undefined;
+  const urlRaw = pick('url') ?? pick('shareUrl');
+  let url: string | null = null;
+  if (urlRaw !== undefined && urlRaw !== null) {
+    url = String(urlRaw);
+  } else if (slug && hubOrigin) {
+    // status 场景：Hub 不返回 url，由 slug + 站点来源兜底构造
+    url = `${hubOrigin.replace(/\/+$/, '')}/deliverable/${encodeURIComponent(slug)}`;
+  }
   return {
-    id: String(pick('id') ?? ''),
-    slug: pick('slug') !== undefined ? String(pick('slug')) : undefined,
+    id: String(id),
+    slug,
     visibility: (pick('visibility') as ShareVisibility) ?? 'public',
     status: (pick('status') as ShareStatus) ?? 'pending_review',
-    url: pick('url') !== undefined && pick('url') !== null ? String(pick('url')) : null,
+    url,
     reason: pick('reason') !== undefined && pick('reason') !== null ? String(pick('reason')) : null,
   };
 }
@@ -143,8 +163,10 @@ export interface DeliverableShareWriteBack {
 export class DeliverableShareService {
   private basePath: string;
   private fetchImpl: typeof fetch;
+  private hubOrigin: string | undefined;
   constructor(deps: DeliverableShareDeps) {
     this.getHubToken = deps.getHubToken;
+    this.hubOrigin = deps.hubUrl;
     this.basePath = (deps.proxyBasePath ?? '/api/hub').replace(/\/+$/, '');
     this.fetchImpl = deps.fetch ?? (globalThis.fetch ? globalThis.fetch.bind(globalThis) : (() => { throw new Error('fetch unavailable'); }) as unknown as typeof fetch);
   }
@@ -201,7 +223,7 @@ export class DeliverableShareService {
     }
 
     const payload: Record<string, unknown> = {
-      localId: input.localId,
+      localDeliverableId: input.localId,
       visibility: input.visibility,
       title: input.title,
       summary: input.summary,
@@ -221,7 +243,7 @@ export class DeliverableShareService {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    return normalizeShareRecord(data);
+    return normalizeShareRecord(data, this.hubOrigin);
   }
 
   /** 轮询审核状态。@throws NotLoggedIntoHubError / HubApiError */
@@ -231,7 +253,7 @@ export class DeliverableShareService {
       `/deliverables/status?localId=${encodeURIComponent(localId)}`,
       { method: 'GET' },
     );
-    return normalizeShareRecord(data);
+    return normalizeShareRecord(data, this.hubOrigin);
   }
 
   /** 取消分享（public/link → revoked）。@throws NotLoggedIntoHubError / HubApiError */
@@ -241,16 +263,17 @@ export class DeliverableShareService {
       method: 'POST',
       body: JSON.stringify({ localId }),
     });
-    const record = normalizeShareRecord(data);
+    const record = normalizeShareRecord(data, this.hubOrigin);
     // revoke 语义：本地回填为 revoked。
     return { ...record, status: 'revoked', url: null };
   }
 }
 
 /** 便捷工厂：传入 web-ui 的 Hub token 访问器创建服务实例。 */
-export function createDeliverableShareService(getHubToken: () => string | null): DeliverableShareService {
+export function createDeliverableShareService(getHubToken: () => string | null, hubUrl?: string): DeliverableShareService {
   return new DeliverableShareService({
     getHubToken,
+    hubUrl,
     proxyBasePath: '/api/hub',
   });
 }

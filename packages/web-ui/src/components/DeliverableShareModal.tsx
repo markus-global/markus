@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getHubToken, ensureHubAuth } from '../api.ts';
+import { getHubToken, ensureHubAuth, hubApi } from '../api.ts';
 import type { DeliverableInfo } from '../api.ts';
 import {
   DeliverableShareService,
@@ -26,7 +26,7 @@ type UiStatus = 'form' | 'busy' | 'pending_review' | 'published' | 'rejected' | 
 export function DeliverableShareModal({ item, onClose, onShared, service }: DeliverableShareModalProps) {
   const { t } = useTranslation(['deliverables', 'common']);
   const share = useMemo(
-    () => service ?? createDeliverableShareService(getHubToken),
+    () => service ?? createDeliverableShareService(getHubToken, hubApi.getUrl()),
     [service],
   );
 

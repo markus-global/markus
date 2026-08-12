@@ -133,17 +133,35 @@ export function base64ByteLength(b64: string): number {
   return Math.floor((clean.length * 3) / 4) - padding;
 }
 
-/** 从 Hub 响应体防御性提取分享记录（兼容嵌套 share/deliverable 结构）。 */
-function normalizeShareRecord(data: unknown): DeliverableShareRecord {
+/**
+ * 从 Hub 响应体防御性提取分享记录（兼容嵌套 share/deliverable 结构）。
+ * 对齐 Hub 真实契约（见 QA 联调 tsk_84bc6db0ebf59752061dc3e5）：
+ *  - publish 平铺返回 `{ shareId, shareUrl, slug, status }`（无 id/url）
+ *  - status 返回 `{ share: publicDto }`，publicDto 含 `id`/`slug` 但无 `url`
+ * 兼容读 id/url（flat 或嵌套）作为兜底。
+ * @param hubOrigin Hub 站点来源，用于 status 场景由 slug 兜底构造公开链接。
+ */
+function normalizeShareRecord(data: unknown, hubOrigin?: string): DeliverableShareRecord {
   const raw = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
   const nested = (raw['share'] ?? raw['deliverable'] ?? {}) as Record<string, unknown>;
   const pick = (k: string): unknown => raw[k] ?? nested[k];
+  const id = pick('id') ?? pick('shareId') ?? '';
+  const slugRaw = pick('slug');
+  const slug = slugRaw !== undefined && slugRaw !== null ? String(slugRaw) : undefined;
+  const urlRaw = pick('url') ?? pick('shareUrl');
+  let url: string | null = null;
+  if (urlRaw !== undefined && urlRaw !== null) {
+    url = String(urlRaw);
+  } else if (slug && hubOrigin) {
+    // status 场景：Hub 不返回 url，由 slug + 站点来源兜底构造公开链接
+    url = `${hubOrigin.replace(/\/+$/, '')}/deliverable/${encodeURIComponent(slug)}`;
+  }
   return {
-    id: String(pick('id') ?? ''),
-    slug: pick('slug') !== undefined ? String(pick('slug')) : undefined,
+    id: String(id),
+    slug,
     visibility: (pick('visibility') as ShareVisibility) ?? 'public',
     status: (pick('status') as ShareStatus) ?? 'pending_review',
-    url: pick('url') !== undefined && pick('url') !== null ? String(pick('url')) : null,
+    url,
     reason: pick('reason') !== undefined && pick('reason') !== null ? String(pick('reason')) : null,
   };
 }
@@ -221,7 +239,7 @@ export class DeliverableShareService {
     }
 
     const payload: Record<string, unknown> = {
-      localId: input.localId,
+      localDeliverableId: input.localId,
       visibility: input.visibility,
       title: input.title,
       summary: input.summary,
@@ -238,7 +256,7 @@ export class DeliverableShareService {
     if (input.fileBase64) payload['fileBase64'] = input.fileBase64;
 
     log.info('Sharing deliverable to Hub', {
-      localId: input.localId,
+      localDeliverableId: input.localId,
       visibility: input.visibility,
       hubUrl: auth.hubUrl,
     });
@@ -252,7 +270,7 @@ export class DeliverableShareService {
       body: JSON.stringify(payload),
     });
 
-    const record = normalizeShareRecord(data);
+    const record = normalizeShareRecord(data, auth.hubUrl);
     await this.writeBackFromRecord(record, input.localId);
     return record;
   }
@@ -273,7 +291,7 @@ export class DeliverableShareService {
       },
     );
 
-    const record = normalizeShareRecord(data);
+    const record = normalizeShareRecord(data, auth.hubUrl);
     await this.writeBackFromRecord(record, localId);
     return record;
   }
@@ -295,7 +313,7 @@ export class DeliverableShareService {
       body: JSON.stringify({ localId }),
     });
 
-    const record = normalizeShareRecord(data);
+    const record = normalizeShareRecord(data, auth.hubUrl);
     // revoke 语义：无论 Hub 返回什么，本地回填为 revoked（若已有 hubShareId）。
     await this.writeBack({
       id: localId,
