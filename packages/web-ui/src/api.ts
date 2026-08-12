@@ -335,6 +335,11 @@ export interface DeliverableInfo {
   accessCount: number;
   createdAt: string;
   updatedAt: string;
+  // 分享到 Hub 的字段（可空，向后兼容；见 DeliverableShare 设计文档）
+  hubShareId?: string | null;
+  shareStatus?: string | null;
+  shareUrl?: string | null;
+  shareVisibility?: string | null;
 }
 
 export interface ReportMetricsInfo {
