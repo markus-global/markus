@@ -4668,6 +4668,11 @@ export class APIServer {
           tags: body['tags'] as string[] | undefined,
           status: body['status'] as any,
           type: body['type'] as any,
+          hubShareId: body['hubShareId'] as string | null | undefined,
+          shareStatus: body['shareStatus'] as string | null | undefined,
+          shareUrl: body['shareUrl'] as string | null | undefined,
+          shareVisibility: body['shareVisibility'] as string | null | undefined,
+          shareReason: body['shareReason'] as string | null | undefined,
         });
         if (!d) { this.json(res, 404, { error: 'Deliverable not found' }); return; }
         this.json(res, 200, { deliverable: d });

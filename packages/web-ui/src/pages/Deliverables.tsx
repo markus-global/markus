@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo, type TeamInfo, type AuthUser } from '../api.ts';
+import { api, wsClient, getHubToken, hubApi, type DeliverableInfo, type ProjectInfo, type AgentInfo, type TeamInfo, type AuthUser } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from '../components/ContentRenderer.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { DeliverableShareModal } from '../components/DeliverableShareModal.tsx';
-import type { DeliverableShareRecord } from '../lib/deliverableShare.ts';
+import { createDeliverableShareService, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import { ChatPanel } from '../components/ChatPanel.tsx';
 import { type ContextChip } from '../components/ChatInput.tsx';
 import { navBus } from '../navBus.ts';
@@ -219,6 +219,20 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const fetchLimit = groupBy === 'date' ? DATE_PAGE_SIZE : ALL_ITEMS_LIMIT;
 
+  /** 静默刷新：不触发 setLoading / 不滚动到顶（避免 L1 侧边栏闪烁）。用于元数据类变更（如分享状态）。 */
+  const silentRefresh = useCallback(async () => {
+    try {
+      const { results, total } = await api.deliverables.search({ ...searchParams, offset: 0, limit: fetchLimit });
+      setItems(prev => prev.map(it => results.find(r => r.id === it.id) ?? it));
+      setTotalCount(total);
+      setSelected(prev => {
+        if (!prev) return null;
+        const fresh = results.find(r => r.id === prev.id);
+        return fresh ? { ...prev, ...fresh } : prev;
+      });
+    } catch { /* 静默失败，保持现有状态 */ }
+  }, [searchParams, fetchLimit]);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     listRef.current?.scrollTo({ top: 0, behavior: 'instant' });
@@ -267,12 +281,20 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     if (!isActive) return;
     const unsub1 = wsClient.on('deliverable:created', () => refresh());
     const unsub2 = wsClient.on('deliverable:updated', (event) => {
-      refresh();
+      silentRefresh();
       const updatedId = event.payload?.deliverableId as string | undefined;
       if (updatedId && selectedRef.current?.id === updatedId) {
         api.deliverables.get(updatedId).then(r => {
           if (r.deliverable) {
-            setSelected(r.deliverable);
+            setSelected(prev => ({
+              ...(prev ?? r.deliverable),
+              ...r.deliverable,
+              hubShareId: (prev?.hubShareId ?? r.deliverable.hubShareId) ?? null,
+              shareStatus: (prev?.shareStatus ?? r.deliverable.shareStatus) ?? null,
+              shareUrl: (prev?.shareUrl ?? r.deliverable.shareUrl) ?? null,
+              shareVisibility: (prev?.shareVisibility ?? r.deliverable.shareVisibility) ?? null,
+              shareReason: (prev?.shareReason ?? r.deliverable.shareReason) ?? null,
+            }));
             loadPreview(r.deliverable);
           }
         }).catch(() => {});
@@ -280,7 +302,64 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     });
     const unsub3 = wsClient.on('deliverable:removed', () => refresh());
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, [refresh, isActive, previewMode]);
+  }, [silentRefresh, isActive, previewMode]);
+
+  // 页面级 Hub 分享状态同步：不依赖分享弹窗常驻，页面可见期间周期性从 Hub 拉取
+  // 当前用户的全部分享状态，把 moderationStatus（pending/published/rejected）映射回
+  // 本地 items + selected，并回写本地 DB。这样管理员在 Hub 批准/拒绝后，客户端在不
+  // 重新打开弹窗的情况下也能自动更新按钮/徽标（对齐资产 ArtifactDetail 的加载即同步模式）。
+  const shareSyncService = useMemo(
+    () => createDeliverableShareService(getHubToken, hubApi.getUrl()),
+    [],
+  );
+  useEffect(() => {
+    if (previewMode) return;
+    if (!isActive) return;
+    if (!getHubToken()) return; // 未登录 Hub 不轮询
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const records = await shareSyncService.listMine();
+        if (cancelled) return;
+        // 按 hubShareId 或本地 id 映射到列表项
+        const byShareId = new Map<string, DeliverableShareRecord>();
+        const byLocalId = new Map<string, DeliverableShareRecord>();
+        for (const r of records) {
+          if (r.id) byShareId.set(r.id, r);
+        }
+        const patches = new Map<string, { hubShareId: string | null; shareStatus: string | null; shareUrl: string | null; shareVisibility: string | null; shareReason?: string | null }>();
+        setItems(prev => prev.map(it => {
+          const rec = (it.hubShareId && byShareId.get(it.hubShareId)) || byLocalId.get(it.id);
+          if (!rec) return it;
+          const patch = {
+            hubShareId: it.hubShareId ?? rec.id ?? null,
+            shareStatus: rec.status ?? null,
+            shareUrl: rec.url ?? null,
+            shareVisibility: it.shareVisibility ?? rec.visibility ?? null,
+            ...(rec.reason != null ? { shareReason: rec.reason } : {}),
+          };
+          patches.set(it.id, patch);
+          return { ...it, ...patch };
+        }));
+        // 更新 selected（若其状态变化）
+        setSelected(prev => {
+          if (!prev) return prev;
+          const patch = patches.get(prev.id);
+          if (!patch) return prev;
+          return { ...prev, ...patch };
+        });
+        // 回写本地 DB 持久化（静默，不触发列表 loading）
+        for (const [id, patch] of patches) {
+          void api.deliverables.update(id, patch).catch(() => {});
+        }
+      } catch {
+        /* Hub 未就绪/网络失败：静默，下轮重试 */
+      }
+    };
+    run();
+    const timer = setInterval(run, 30000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [shareSyncService, isActive, previewMode]);
 
   // Handle deep navigation to a specific deliverable
   const pendingOpenRef = useRef<string | null>(null);
@@ -430,17 +509,31 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setActionLoading('');
   };
 
-  // 分享到 Hub 结果回调：把分享字段写回 selected（撑状态徽标/列表标识即时刷新），再刷新列表。
+  // 分享到 Hub 结果回调：把分享字段写回 selected + 列表项（撑状态徽标/列表标识即时刷新）。
+  // 同时回写本地 DB（PUT），避免 ws deliverable:updated / refresh 用无分享字段的后端对象覆盖按钮状态。
+  // 分享操作的对象就是当前 selected（弹窗对 selected 操作），故本地 id 取 selected.id。
   const onShareResult = useCallback((r: DeliverableShareRecord) => {
-    setSelected(prev => prev ? {
-      ...prev,
-      hubShareId: r.id ?? prev.hubShareId ?? null,
-      shareStatus: r.status ?? prev.shareStatus ?? null,
-      shareUrl: r.url ?? prev.shareUrl ?? null,
-      shareVisibility: r.visibility ?? prev.shareVisibility ?? null,
-    } : prev);
-    refresh();
-  }, [refresh]);
+    const selectedNow = selectedRef.current;
+    const id = selectedNow?.id;
+    if (!id) return;
+    const patch = {
+      hubShareId: r.id ?? null,
+      shareStatus: r.status ?? null,
+      shareUrl: r.url ?? null,
+      shareVisibility: r.visibility ?? null,
+      ...(r.reason != null || r.status === 'rejected' ? { shareReason: r.reason ?? selectedNow?.shareReason ?? null } : {}),
+    };
+    const filled = { ...patch, shareStatus: patch.shareStatus ?? selectedNow?.shareStatus ?? null };
+    // 更新 selected：分享字段即时生效（按钮变色、徽标出现）
+    setSelected(prev => (prev && prev.id === id) ? { ...prev, ...filled } : prev);
+    // 同步更新列表项对应项，不触发整表 setLoading 刷新（避免 L1 侧边栏闪烁）
+    setItems(prev => prev.map(it => it.id === id ? { ...it, ...filled } : it));
+    // 静默回写本地 DB；失败不影响 UI（分享状态已在 Hub）——再静默拉取对齐后端
+    void (async () => {
+      try { await api.deliverables.update(id, patch); } catch { /* 静默 */ }
+      silentRefresh();
+    })();
+  }, [silentRefresh]);
 
   const handleOpenInBuilder = () => {
     navBus.navigate(PAGE.BUILDER);
@@ -1197,10 +1290,12 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                   <span key={tag} className="px-2 py-0.5 text-xs bg-surface-elevated text-fg-secondary rounded">{tag}</span>
                 ))}
                 {shareStatusOf(selected) === 'published' && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-500/15 text-green-600" title={selected.shareUrl ?? undefined}>
+                  <a href={selected.shareUrl ?? undefined} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-500/15 text-green-600 hover:bg-green-500/25 hover:underline"
+                    title={selected.shareUrl ?? undefined}>
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" /></svg>
                     {t('share.published', { defaultValue: '已发布' })}
-                  </span>
+                  </a>
                 )}
                 {shareStatusOf(selected) === 'pending_review' && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-500/15 text-amber-500">
@@ -1209,8 +1304,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                   </span>
                 )}
                 {shareStatusOf(selected) === 'rejected' && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/15 text-red-500">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/15 text-red-500"
+                    title={selected.shareReason ?? undefined}>
                     {t('share.rejected', { defaultValue: '已拒绝' })}
+                    {selected.shareReason ? <span className="text-red-400/90 font-normal">— {selected.shareReason}</span> : null}
                   </span>
                 )}
               </div>

@@ -109,6 +109,8 @@ export interface DeliverableRow {
   shareUrl: string | null;
   /** public | link（无 private；none=未分享） */
   shareVisibility: string | null;
+  /** 拒绝原因（Hub 拒绝时回填；客户端「已拒绝」徽标展示） */
+  shareReason?: string | null;
 }
 
 export interface ChannelMsgMetadata {

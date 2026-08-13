@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getHubToken, ensureHubAuth, hubApi } from '../api.ts';
+import { getHubToken, ensureHubAuth, hubApi, api } from '../api.ts';
 import type { DeliverableInfo } from '../api.ts';
 import {
   DeliverableShareService,
@@ -18,6 +18,43 @@ export interface DeliverableShareModalProps {
   onShared?: (record: DeliverableShareRecord) => void;
   /** 注入服务实例（便于单测）；缺省使用真实 Hub token 服务。 */
   service?: DeliverableShareService;
+}
+
+/**
+ * 读取产出物文件内容，供分享时传给 Hub（Hub 强制要求 fileBase64 或 content 之一）。
+ * 复用现有 /api/files/preview —— 文本类直接返回 content 字符串；图片/音视频/二进制
+ * 返回 path/streamUrl，由前端抓取字节转 base64。
+ * @returns 文本产出物返回 {content}；二进制类返回 {fileBase64}；读不到返回 {}。
+ */
+async function readDeliverableContent(reference: string, type: string): Promise<{ content?: string; fileBase64?: string }> {
+  if (!reference || type === 'directory' || reference.startsWith('http://') || reference.startsWith('https://')) {
+    return {};
+  }
+  try {
+    const resp = await api.files.preview(reference);
+    // 文本类：直接取 content 字符串（利于 Hub 搜索/SEO）
+    if ((resp.type === 'text' || resp.type === 'markdown' || resp.type === 'html' || resp.type === 'json' || resp.type === 'csv')
+        && typeof resp.content === 'string') {
+      return { content: resp.content };
+    }
+    // 图片/音视频/二进制：抓取原始字节转 base64
+    if (resp.type === 'image' || resp.type === 'audio' || resp.type === 'video' || resp.type === 'binary') {
+      const src = resp.streamUrl || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(reference));
+      const blob = await fetch(src).then(r => r.blob());
+      const buf = await blob.arrayBuffer();
+      // 构造 base64（分块避免大文件栈溢出）
+      const bytes = new Uint8Array(buf);
+      let binary = '';
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+      }
+      return { fileBase64: btoa(binary) };
+    }
+    return {};
+  } catch {
+    return {};
+  }
 }
 
 /** 0=初始/未分享 1=填写中 2=提交中 3=审核中 4=已发布 5=已拒绝/需重提 6=已撤销 */
@@ -119,6 +156,20 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
     setUi('busy');
     try {
       const filename = item.reference.replace(/[/\\]/g, '/').split('/').pop() || 'deliverable';
+      // 读取产出物实际文件内容（Hub 强制要求 fileBase64 或 content 之一）
+      const { content, fileBase64 } = await readDeliverableContent(item.reference, item.type);
+      // 溯源：用 agent 的可读名（displayName/name）而非 agent ID，作为 producerAgent.name
+      const agentId = item.agentId ?? '';
+      let producerName = agentId;
+      if (agentId) {
+        try {
+          const { agents } = await api.agents.list();
+          const ag = agents.find((a: { id: string }) => a.id === agentId);
+          if (ag) producerName = ag.name || agentId;
+        } catch {
+          /* 取不到名字则回退 agentId */
+        }
+      }
       const r = await share.publish({
         localId: item.id,
         title: title.trim() || item.title,
@@ -127,11 +178,16 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
         visibility,
         filename,
         format: item.format || 'markdown',
-        producerAgent: { id: item.agentId ?? '', name: item.agentId ?? '', source: 'local' },
+        content,
+        fileBase64,
+        producerAgent: { id: agentId, name: producerName, source: 'local' },
       });
       sync(r);
       if (r.status === 'rejected') {
         setError(typeof r.reason === 'string' && r.reason ? r.reason : '分享被拒绝');
+      } else {
+        // 发布成功：关闭弹窗，宿主侧通过 onShared 回显状态徽标（审核中/已发布）
+        onClose();
       }
     } catch (err) {
       setUi('form');
@@ -412,6 +468,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
                   )}
 
                   <button
+                    type="button"
                     onClick={() => void doPublish()}
                     disabled={ui === 'busy' || !title.trim()}
                     className="w-full px-3 py-2.5 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-500 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"

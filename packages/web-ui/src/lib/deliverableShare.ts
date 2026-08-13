@@ -138,13 +138,14 @@ export function normalizeShareRecord(data: unknown, hubOrigin?: string): Deliver
     // status 场景：Hub 不返回 url，由 slug + 站点来源兜底构造
     url = `${hubOrigin.replace(/\/+$/, '')}/deliverable/${encodeURIComponent(slug)}`;
   }
+  const reasonRaw = pick('reason') ?? pick('rejectNote');
   return {
     id: String(id),
     slug,
     visibility: (pick('visibility') as ShareVisibility) ?? 'public',
     status: (pick('status') as ShareStatus) ?? 'pending_review',
     url,
-    reason: pick('reason') !== undefined && pick('reason') !== null ? String(pick('reason')) : null,
+    reason: reasonRaw !== undefined && reasonRaw !== null ? String(reasonRaw) : null,
   };
 }
 
@@ -254,6 +255,15 @@ export class DeliverableShareService {
       { method: 'GET' },
     );
     return normalizeShareRecord(data, this.hubOrigin);
+  }
+
+  /** 拉取当前用户（owner）的全部产出物分享及审核状态。对应 Hub GET /api/deliverables/mine。 */
+  async listMine(): Promise<DeliverableShareRecord[]> {
+    this.assertHubLoggedIn();
+    const { data } = await this.doFetch('/deliverables/mine', { method: 'GET' });
+    const raw = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+    const shares = Array.isArray(raw['shares']) ? (raw['shares'] as unknown[]) : [];
+    return shares.map(s => normalizeShareRecord(s, this.hubOrigin));
   }
 
   /** 取消分享（public/link → revoked）。@throws NotLoggedIntoHubError / HubApiError */
