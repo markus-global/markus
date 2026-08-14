@@ -25,7 +25,7 @@ const baseRole = {
 };
 
 describe('prompt profiles (AGENT-RUNTIME §4)', () => {
-  it('A-collab-rules-always-on: Collaboration Rules present; no SHARED dump', async () => {
+  it('A-collab-rules-always-on: Collaboration Rules present; no HANDBOOK dump', async () => {
     const engine = new ContextEngine();
     const { text } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
@@ -40,6 +40,8 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     expect(text).toContain('STOP');
     expect(text).toContain('task_submit_review');
     expect(text).toContain('Platform Handbook (on demand)');
+    expect(text).toMatch(/file_read` the handbook at this absolute path/);
+    expect(text).toContain('templates/roles/HANDBOOK.md');
     expect(text).toContain('Conversation vs task');
     expect(text).toContain('Conversation-first');
     expect(text).toContain('Requirements gate all tasks');
@@ -317,5 +319,26 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     expect(text).not.toContain('_[system trimmed');
     // Token counter imported for regression visibility in heavy assemble
     expect(getDefaultTokenCounter().countTokens(text)).toBeGreaterThan(1000);
+  });
+
+  it('A-handbook-injected-absolute-path: handbookPath is injected verbatim; no full text dump', async () => {
+    const engine = new ContextEngine();
+    const absPath = '/opt/markus/templates/roles/HANDBOOK.md';
+    const { text } = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'T',
+      role: { ...baseRole, systemPrompt: 'Short role.' } as never,
+      memory: mockMemory(),
+      scenario: 'chat',
+      promptProfile: 'converse',
+      handbookPath: absPath,
+    });
+    // The absolute path is injected so the agent reads it WITHOUT searching.
+    expect(text).toContain('Platform Handbook (on demand)');
+    expect(text).toContain(absPath);
+    expect(text).toContain('AGENT HANDBOOK');
+    // Handbook is NEVER dumped into the prompt (no auto-injection / context bloat).
+    expect(text).not.toContain('How Markus Works — The Big Picture');
+    expect(text).not.toContain('## Agent Work Principles');
   });
 });

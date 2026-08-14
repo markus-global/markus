@@ -233,6 +233,8 @@ export interface AgentOptions {
   skillRegistry?: SkillRegistry;
   /** Cognitive Preparation Pipeline config (default: disabled) */
   cognitive?: CognitiveConfig;
+  /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected into the prompt so the agent reads it without searching. */
+  handbookPath?: string;
 }
 
 export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'group_chat' | 'comment_response' | 'memory_consolidation' | 'distillation' | 'review' | 'requirement_action' | 'workflow_action' | 'deliberation';
@@ -359,6 +361,7 @@ export class Agent {
   private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
   private contextMdPath?: string;
+  private handbookPath?: string;
   private teamDataDir?: string;
   private identityContext?: IdentityContext;
   private environmentProfile?: EnvironmentProfile;
@@ -474,6 +477,7 @@ export class Agent {
     this.llmRouter = options.llmRouter;
     this.orgContext = options.orgContext;
     this.contextMdPath = options.contextMdPath;
+    this.handbookPath = options.handbookPath;
 
     this.state = {
       agentId: this.id,
@@ -1838,7 +1842,7 @@ export class Agent {
 
   /**
    * Reload the agent's role from its ROLE.md file on disk.
-   * Same composition as RoleLoader: ROLE.md only (SHARED.md is progressive via file_read).
+   * Same composition as RoleLoader: ROLE.md only (HANDBOOK.md is progressive via file_read).
    * Used after overwriting ROLE.md with a custom system prompt (e.g., from Agent Father).
    */
   reloadRole(): void {
@@ -1850,7 +1854,7 @@ export class Agent {
       this.role = {
         ...this.role,
         name,
-        // Never re-append SHARED.md — always-on platform rules are L0 + on-demand handbook.
+        // Never re-append HANDBOOK.md — always-on platform rules are L0 + on-demand handbook.
         systemPrompt: content,
       };
       log.info(`Role reloaded from disk for agent ${this.config.name}`);
@@ -3115,6 +3119,7 @@ export class Agent {
         role: this.role,
         orgContext: this.orgContext,
         contextMdPath: this.contextMdPath,
+        handbookPath: this.handbookPath,
         memory: this.memory,
         scenario: 'chat',
         viewerContext: this.runtimeViewerContext,
@@ -3556,6 +3561,7 @@ export class Agent {
       role: this.role,
       orgContext: this.orgContext,
       contextMdPath: this.contextMdPath,
+      handbookPath: this.handbookPath,
       memory: this.memory,
       currentQuery: effectiveMessage,
       identity: this.identityContext,
@@ -4247,6 +4253,7 @@ export class Agent {
       role: this.role,
       orgContext: this.orgContext,
       contextMdPath: this.contextMdPath,
+      handbookPath: this.handbookPath,
       memory: this.memory,
       currentQuery: effectiveMessage,
       identity: this.identityContext,
@@ -5008,6 +5015,7 @@ export class Agent {
       role: this.role,
       orgContext: this.orgContext,
       contextMdPath: this.contextMdPath,
+      handbookPath: this.handbookPath,
       memory: this.memory,
       currentQuery: taskPrompt,
       identity: this.identityContext,
@@ -5561,6 +5569,7 @@ export class Agent {
       role: this.role,
       orgContext: this.orgContext,
       contextMdPath: this.contextMdPath,
+      handbookPath: this.handbookPath,
       memory: this.memory,
       currentQuery: userMessage,
       identity: this.identityContext,
@@ -6138,6 +6147,7 @@ export class Agent {
       role: this.role,
       orgContext: this.orgContext,
       contextMdPath: this.contextMdPath,
+      handbookPath: this.handbookPath,
       memory: this.memory,
       currentQuery,
       identity: this.identityContext,

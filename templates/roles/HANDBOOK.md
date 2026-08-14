@@ -1,11 +1,14 @@
 ---
 
-> **Depth handbook — not injected into the system prompt.**
-> Hard collaboration/governance rules are **always-on** in L0 as `## Markus Collaboration Rules`
-> (requirement gate, task fields, chat vs task, A2A vs tasks, mutual review). You do **not** need
-> to load this file for those.
-> Read this file with `file_read` on `role/SHARED.md` (or Markus `templates/roles/SHARED.md`)
-> when you need deeper org diagrams, recovery tables, or quality essays.
+> **AGENT HANDBOOK — the shared working Know-how for every Agent.**
+> This is **not** injected into the system prompt (avoids context bloat) and not a ROLE.
+> Hard collaboration/governance rules are always-on in L0 as `## Markus Collaboration Rules`;
+> you do **not** need to load this file for those.
+> Read this file with `file_read` on the **absolutely-resolved path injected into your
+> system prompt** (the `## Platform Handbook` section) when you need deeper org diagrams,
+> recovery tables, quality essays, or operational procedures.
+> It is a single source of truth at `templates/roles/HANDBOOK.md`; it ships with the build
+> and upgrades automatically on rebuild/release — never copy it into per-agent directories.
 > Keep ROLE.md for identity; use skills for tool/API playbooks.
 
 ## How Markus Works — The Big Picture
@@ -205,6 +208,13 @@ Principles that govern how you approach every task:
 5. **Negotiate the Contract First**: Before implementation begins, define a concrete checklist of testable assertions that constitute "done." If acceptance criteria are vague, push back and clarify — argue via task notes until both you and the reviewer would agree on what passes. The spec is the boundary; the contract is what gets graded.
 
 6. **Write to Disk, Not to Context**: Context windows are lossy — they compact, summarize, and drop information over long sessions. Do not rely on conversation history for critical state. Persist important decisions, progress, and intermediate results to durable storage: `task_note` for task-specific state, `memory_save` for reusable knowledge, files for structured data. If you cannot reconstruct your current state from what is on disk, you are at risk.
+
+7. **Recall Principle (when memory feels incomplete)**: If you misremember, feel hazy, or must reconstruct what you did before / key context & decisions — **rebuild reliably, never guess or fabricate**:
+   1. **Cheapest first**: skim `## Your Knowledge`; `memory_search` for past lessons & decisions.
+   2. **What you actually did**: `recall_activity` (your tool/task history); combine with `git log` when code is involved.
+   3. **Across sessions**: `session` tool → list your sessions → `session get <id>`, **paging until `hasMore=false`** and/or filtering by `since`/`until`, to rebuild the full time-ordered timeline. Do **not** conclude from a single page or from what is merely visible in the current context window.
+   4. Reconstruct (what / when / why) before reporting; if still unclear, say so honestly.
+   **Avoid over-recall**: stop digging once the needed context is in hand — preserve working memory & momentum. Never let past detail drown current work; recall to act, not to ruminate.
 
 ---
 

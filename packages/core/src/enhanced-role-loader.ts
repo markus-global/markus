@@ -256,7 +256,7 @@ export class EnhancedRoleLoader {
     const name = this.extractTitle(roleContent) || nameOrPath;
     const category = this.inferCategory(nameOrPath);
 
-    // ROLE.md only — SHARED.md is progressive (file_read), not always-on.
+    // ROLE.md only — HANDBOOK.md is progressive (file_read), not always-on.
     const systemPrompt = roleContent;
 
     const role: EnhancedRoleTemplate = {

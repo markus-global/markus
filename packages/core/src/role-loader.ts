@@ -64,7 +64,7 @@ export class RoleLoader {
     const name = this.extractTitle(roleContent) || roleNameOrPath;
     const category = this.inferCategory(roleNameOrPath);
 
-    // ROLE.md only — SHARED.md is progressive (file_read), not always-on.
+    // ROLE.md only — HANDBOOK.md is progressive (file_read), not always-on.
     // Platform rules live in ContextEngine L0; see docs/AGENT-RUNTIME.md.
     const systemPrompt = roleContent;
 

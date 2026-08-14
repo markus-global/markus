@@ -48,6 +48,13 @@ import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capab
 
 const log = createLogger('context-engine');
 
+/**
+ * Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md) used when a caller
+ * does not inject `handbookPath`. Callers (AgentManager) resolve the true runtime path
+ * via `roleLoader.resolveTemplateDir()` + '/HANDBOOK.md' so agents never need to search.
+ */
+const DEFAULT_HANDBOOK_PATH = 'templates/roles/HANDBOOK.md';
+
 /** Section titles that are usually stale noise in knowledge.md digests. */
 const KNOWLEDGE_STALE_SECTION_RE =
   /compact_\d+|deepseek\s*(api|json)|组织深度静默|静默期验证|故障模式|json\s*解析错误|timeout\s*diagnos/i;
@@ -294,6 +301,8 @@ export class ContextEngine {
     channelContext?: Array<{ role: string; content: string }>;
     /** Prompt profile (AGENT-RUNTIME §4). Defaults from scenario pack. */
     promptProfile?: PromptProfile;
+    /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected so agents do NOT need to search for it. If omitted, a source-dir path is used as fallback. */
+    handbookPath?: string;
   }): Promise<SystemPromptResult> {
     const isDream = opts.scenario === 'memory_consolidation';
     const promptProfile: PromptProfile = opts.promptProfile
@@ -377,17 +386,17 @@ export class ContextEngine {
       // Learning Habits — keep ≤1600 chars (LEARNING-LOOP §8)
       stable.push('');
       stable.push('\n## Learning Habits');
-      stable.push('Get smarter over time. Prefer the lightest store that changes future behavior.');
-      stable.push('**Look back** (MUST before non-trivial work): skim `## Your Knowledge`; `memory_search` / `recall_activity` when work resembles the past, a tool failed, or the user corrects you; `discover_tools` if a skill matches. Skip greetings / one-shots.');
-      stable.push('**Me vs others**: only helps *you* → memory. Helps *other agents* as an executable playbook/MCP flow → Skill (steps/tools/boundaries, not a diary).');
-      stable.push('**Encode** (MUST same turn after user correction, failed→fixed, or reusable multi-step):');
+      stable.push('Get smarter over time — prefer the lightest store that changes future behavior.');
+      stable.push('**Look back / Recall**: before non-trivial work skim `## Your Knowledge` + `memory_search`/`recall_activity`; `discover_tools` if a skill matches. If memory feels hazy, rebuild via `session` (page till hasMore=false) / `recall_activity` / `git log` — never guess; **stop once resolved**. Skip greetings / one-shots.');
+      stable.push('**Me vs others**: only helps *you* → memory; helps *other agents* as executable playbook/MCP → Skill (steps/tools, not a diary).');
+      stable.push('**Encode** (MUST same turn after user correction / failed→fixed / reusable multi-step):');
       stable.push('- One lesson → `memory_save` once `{ content, type:"insight", tags }` — never an array.');
       stable.push('- Your multi-step procedure → `memory_update`/`memory_update_longterm` on a `knowledge.md` section (`patch`/`append`; = `## Your Knowledge`).');
       stable.push('- Your always-on rule → ROLE.md (ask before identity/scope rewrite); patrol → HEARTBEAT.md.');
-      stable.push('- Shared executable workflow → `builder-artifacts/skills/` then `package_install`. Theme 3+ times + shareable → promote memory→skill.');
-      stable.push('**Verify**: trust tool JSON (`status` + `store:"knowledge.md"`). On error retry — never claim success. Observations not auto-injected; `memory_search` next time.');
-      stable.push('**Skill install impact**: low (narrow, no MCP/network/secrets) → `package_install({ type:"skill", name, impact:"low" })`; high (broad/MCP/org) → `request_user_input` then impact:"high". Omitted = high. Agents/teams always HITL.');
-      stable.push('No transcript/compact_* dumps in `knowledge.md`; keep only ROLE-relevant insights/procedures. Heartbeat: ≤1-line `memory_save`. Legacy `MEMORY.md` is not the write target.');
+      stable.push('- Shared executable workflow → `builder-artifacts/skills/` + `package_install`. Theme 3+ times + shareable → promote memory→skill.');
+      stable.push('**Verify**: trust tool JSON (`status` + `store:"knowledge.md"`); on error retry. Not auto-injected; `memory_search` next time.');
+      stable.push('**Skill install impact**: low (narrow, no MCP/network/secrets) → `package_install({type:"skill",name,impact:"low"})`; high/broad/org → ask human, impact:"high". Agents/teams always HITL.');
+      stable.push('No transcript/compact_* dumps in `knowledge.md` — only ROLE-relevant insights/procedures. Heartbeat: ≤1-line `memory_save`. `MEMORY.md` not the target.');
 
       stable.push('');
       stable.push('\n## Autonomy & Escalation');
@@ -437,7 +446,7 @@ export class ContextEngine {
       stable.push('- **Exceptions**: code identifiers, file paths, API names, model IDs, and quoted third-party English source text may stay as-is.');
       stable.push('- If the user explicitly asks for another language for a specific artifact, follow that request.');
 
-      // Collaboration contract — distilled from SHARED.md (always-on; never rely on file_read)
+      // Collaboration contract — distilled from HANDBOOK.md (always-on; never rely on file_read)
       stable.push('');
       stable.push('\n## Markus Collaboration Rules');
       stable.push('Hard protocol for **tasks, multi-agent handoffs, and formal review**. Conversational pair-work with a human in chat is first-class and is NOT a breach.');
@@ -501,12 +510,12 @@ export class ContextEngine {
       stable.push('\n## How Your Prompt Is Composed');
       stable.push('- **ROLE.md** (persona): identity, working style, domain expertise — what makes *you* you.');
       stable.push('- **L0 platform rules** (this block and siblings: Collaboration, Tool Usage, Autonomy, Learning Habits…): always-on Markus hard rules for every agent.');
-      stable.push('- **On demand**: `role/SHARED.md` / handbook depth via `file_read`; skill procedures / MCP via `discover_tools`.');
+      stable.push('- **On demand**: AGENT HANDBOOK (`## Platform Handbook` below, absolute path) via `file_read`; skill procedures / MCP via `discover_tools`.');
       stable.push('- Therefore ROLE line count ≠ your full constraints. Platform rules apply even when ROLE does not restate them.');
       stable.push('');
       stable.push('\n## Platform Handbook (on demand)');
-      stable.push('The rules above are **always-on**. Long-form detail (org diagrams, recovery tables, quality essays) lives in `role/SHARED.md` (or Markus `templates/roles/SHARED.md`).');
-      stable.push('When you need depth, `file_read` that path. Keep ROLE.md for identity; use skills for tool/API playbooks.');
+      stable.push('The rules above are **always-on**. Long-form detail (org diagrams, recovery tables, quality essays, operational procedures) lives in the **AGENT HANDBOOK** — a single source of truth shipped with the build, NOT injected into the prompt, NOT copied per-agent (upgrades automatically on rebuild/release).');
+      stable.push(`When you need depth, \`file_read\` the handbook at this absolute path (no searching needed): \`${opts.handbookPath ?? DEFAULT_HANDBOOK_PATH}\``);
     }
 
     // NOTE: Scenario section was deliberately moved OUT of Tier 1 into Tier 2.
