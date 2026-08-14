@@ -193,6 +193,22 @@ SHOULD before non-trivial work:
 
 MUST NOT require look-back for greetings / one-shot factual lookups / pure acks.
 
+**Recall when memory is incomplete** (you misremember, key context/decisions are
+hazy, or you must reconstruct what you did before) — reconstruct reliably, never
+guess or fabricate:
+
+1. **Cheapest first**: skim `## Your Knowledge`; `memory_search` for past lessons/decisions.
+2. **What you actually did**: `recall_activity` (your tool/task history); `git log` when code is involved.
+3. **Across sessions**: `session` tool → list your sessions → `session get <id>`,
+   paging until `hasMore=false` and/or filtering by `since`/`until`, to rebuild the
+   full time-ordered timeline. MUST NOT conclude from a single page or from what is
+   merely visible in the current context window.
+4. Reconstruct (what / when / why) before reporting; if still unclear, say so honestly.
+
+**Avoid over-recall**: stop digging once the needed context is in hand — preserve
+working memory and momentum. Never let past detail drown current work; recall to
+act, not to ruminate.
+
 ### §8.2 Encode where
 
 After complex, corrected, failed-then-fixed, or reusable work, SHOULD encode using the

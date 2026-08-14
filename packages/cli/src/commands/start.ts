@@ -1561,6 +1561,11 @@ async function startServerCore(
     });
   }
 
+  // Wire session query tool to chat sessions (agents can inspect their own conversation history)
+  if (storage?.chatSessionRepo) {
+    agentManager.setSessionRepo(storage.chatSessionRepo);
+  }
+
   // Wire mailbox + decision persistence to SQLite
   if (storage?.mailboxRepo && storage?.decisionRepo) {
     const mbRepo = storage.mailboxRepo;

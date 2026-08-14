@@ -2247,6 +2247,114 @@ export class SqliteChatSessionRepo {
   }
 
   /**
+   * 分页 + 时间范围过滤列出某 agent 的 session。
+   * 时间过滤基于 last_message_at（ISO 字符串）；按 last_message_at DESC（最新在前）。
+   */
+  listSessionsPaginated(agentId: string, opts: {
+    since?: string;
+    until?: string;
+    userId?: string;
+    page?: number;
+    pageSize?: number;
+  }): {
+    sessions: ReturnType<SqliteChatSessionRepo['_mapSession']>[];
+    total: number;
+    page: number;
+    pageSize: number;
+    hasMore: boolean;
+  } {
+    const page = Math.max(1, Math.trunc(opts.page ?? 1) || 1);
+    const pageSize = Math.min(Math.max(1, Math.trunc(opts.pageSize ?? 20) || 20), 50);
+
+    const where: string[] = ['agent_id = ?'];
+    const vals: SqlParams = [agentId];
+    if (opts.userId) { where.push('user_id = ?'); vals.push(opts.userId); }
+    if (opts.since) { where.push('last_message_at >= ?'); vals.push(opts.since); }
+    if (opts.until) { where.push('last_message_at <= ?'); vals.push(opts.until); }
+    const whereSql = where.join(' AND ');
+
+    const countRow = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM chat_sessions WHERE ${whereSql}`)
+      .get(...vals) as { cnt: number };
+    const total = countRow.cnt;
+
+    const offset = (page - 1) * pageSize;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM chat_sessions WHERE ${whereSql} ORDER BY is_main DESC, last_message_at DESC LIMIT ? OFFSET ?`
+      )
+      .all(...vals, pageSize, offset) as Record<string, unknown>[];
+
+    const sessions = rows.map(r => this._mapSession(r));
+    return {
+      sessions,
+      total,
+      page,
+      pageSize,
+      hasMore: offset + sessions.length < total,
+    };
+  }
+
+  /**
+   * 分页 + 时间范围过滤取某 session 的消息（正序，旧→新），带 total。
+   */
+  listMessagesPaginated(sessionId: string, opts: {
+    since?: string;
+    until?: string;
+    page?: number;
+    pageSize?: number;
+  }): {
+    messages: ReturnType<SqliteChatSessionRepo['_mapMsg']>[];
+    total: number;
+    page: number;
+    pageSize: number;
+    hasMore: boolean;
+  } {
+    const page = Math.max(1, Math.trunc(opts.page ?? 1) || 1);
+    const pageSize = Math.min(Math.max(1, Math.trunc(opts.pageSize ?? 50) || 50), 100);
+
+    const where: string[] = ['session_id = ?'];
+    const vals: SqlParams = [sessionId];
+    if (opts.since) { where.push('created_at >= ?'); vals.push(opts.since); }
+    if (opts.until) { where.push('created_at <= ?'); vals.push(opts.until); }
+    const whereSql = where.join(' AND ');
+
+    const countRow = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM chat_messages WHERE ${whereSql}`)
+      .get(...vals) as { cnt: number };
+    const total = countRow.cnt;
+
+    const offset = (page - 1) * pageSize;
+    // 正序：先取整段 asc，再按 offset 切片
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM chat_messages WHERE ${whereSql} ORDER BY created_at ASC`
+      )
+      .all(...vals) as Record<string, unknown>[];
+    const pageRows = rows.slice(offset, offset + pageSize);
+
+    return {
+      messages: pageRows.map(r => this._mapMsg(r)),
+      total,
+      page,
+      pageSize,
+      hasMore: offset + pageRows.length < total,
+    };
+  }
+
+  /**
+   * 统计某 session 中某 agent 发出的消息数（用于"参与"权限判定）。
+   */
+  countMessagesByAgent(sessionId: string, agentId: string): number {
+    const r = this.db
+      .prepare(
+        'SELECT COUNT(*) as cnt FROM chat_messages WHERE session_id = ? AND agent_id = ?'
+      )
+      .get(sessionId, agentId) as { cnt: number };
+    return r.cnt;
+  }
+
+  /**
    * Remove only the last assistant message from a session (for resume).
    * Returns the deleted message's content and metadata so the caller can
    * reconstruct a trimmed version for the LLM context.
