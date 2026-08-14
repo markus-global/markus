@@ -676,6 +676,21 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         searchInputRef.current?.focus();
         return;
       }
+      // Cmd/Ctrl + B：开/关左侧栏（L1 list）；Cmd/Ctrl + L：开/关右侧聊天栏。
+      // （位于 isEditableTarget 守卫之后，编辑目标/输入框内不会触发）
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        setSidebarCollapsed(prev => !prev);
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        setChatPanelOpen(prev => {
+          if (!prev && !selected?.agentId) return prev; // 无可聊天 agent 时不打开
+          return !prev;
+        });
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
       const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;

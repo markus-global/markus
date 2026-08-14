@@ -10,7 +10,8 @@ import {
   AgentMessageBody, MessageActions, RememberModal, friendlyAgentError,
 } from '../pages/ChatComponents.tsx';
 import { Avatar } from './Avatar.tsx';
-import { ChatInput, type ContextChip, type MentionItem, type MentionChip, type SlashCommand } from './ChatInput.tsx';
+import { ChatInput, type ContextChip, type MentionItem, type MentionChip, type SlashCommand, type PendingFile } from './ChatInput.tsx';
+import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from './ChatModelMenu.tsx';
 import {
   type MsgSegment, type ChatMsg,
   dbMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt, storedSegmentsToMsgSegments,
@@ -18,6 +19,7 @@ import {
   formatSmartTime, getDateKey, formatDateLabel,
 } from '../pages/ChatHelpers.ts';
 import type { ActivityStep } from './ActivityIndicator.tsx';
+import { createAgentChatStore, type AgentChatStore } from '../hooks/agentChatStore.ts';
 
 export interface ChatPanelProps {
   agentId: string;
@@ -30,6 +32,69 @@ export interface ChatPanelProps {
   extraMentionItems?: MentionItem[];
   width?: number;
   className?: string;
+}
+
+/** 附着文件限制 —— 与 Team 页 composer 保持一致。 */
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILES = 5;
+const SUPPORTED_DOC_TYPES = new Set([
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-excel',
+  'application/msword',
+  'text/csv',
+  'text/html',
+  'application/json',
+  'application/xml',
+  'text/xml',
+  'application/epub+zip',
+]);
+
+/**
+ * 单 agent 主会话缓冲区：所有聊天状态按 agentId 隔离存放，避免 L1 切换时
+ * 多 agent 并行流式输出互相污染（对齐 Team.tsx 的隔离+重连思路，但只落在
+ * ChatPanel，不搬 Team 逻辑）。
+ */
+interface AgentBuffer {
+  messages: ChatMsg[];
+  sessionId: string | null;
+  sending: boolean;
+  input: string;
+  mentionChips: MentionChip[];
+  activities: ActivityStep[];
+  files: PendingFile[];
+  loaded: boolean;
+  modelOverride: ChatModelSelection | null;
+}
+
+function makeBlankBuffer(initialSessionId?: string | null): AgentBuffer {
+  return {
+    messages: [],
+    sessionId: initialSessionId ?? null,
+    sending: false,
+    input: '',
+    mentionChips: [],
+    activities: [],
+    files: [],
+    loaded: false,
+    modelOverride: null,
+  };
+}
+
+function isImageFile(f: { name: string; dataUrl: string }) {
+  return f.dataUrl.startsWith('data:image/');
+}
+
+function getFileIcon(name: string, dataUrl: string) {
+  if (isImageFile({ name, dataUrl })) return null;
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  const iconMap: Record<string, string> = {
+    pdf: '📄', docx: '📝', doc: '📝', xlsx: '📊', xls: '📊',
+    pptx: '📎', csv: '📊', json: '🔧', xml: '🔧', html: '🌐', epub: '📚',
+  };
+  return iconMap[ext] ?? '📁';
 }
 
 export function ChatPanel({
@@ -48,6 +113,18 @@ export function ChatPanel({
   const agentName = agent?.name ?? t('page.fallbackAgent');
   const userName = authUser?.name ?? t('page.fallbackYou');
 
+  // ── 按 agent 隔离的状态容器 ──────────────────────────────────────────────
+  const storeRef = useRef<AgentChatStore<AgentBuffer>>(
+    createAgentChatStore<AgentBuffer>(() => makeBlankBuffer(initialSessionId)),
+  );
+  const activeAgentIdRef = useRef(agentId);
+  activeAgentIdRef.current = agentId;
+  /** send() 的实时流 AbortController，按 agent 隔离。 */
+  const sendAbortRefs = useRef<Map<string, AbortController>>(new Map());
+  /** reattachStream 的 AbortController，按 agent 隔离。 */
+  const reattachAbortRefs = useRef<Map<string, AbortController>>(new Map());
+
+  // ── 当前可见 agent 的渲染层镜像 ────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(initialSessionId ?? null);
   const [loading, setLoading] = useState(true);
@@ -55,14 +132,13 @@ export function ChatPanel({
   const [input, setInput] = useState('');
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const [currentMentionChips, setCurrentMentionChips] = useState<MentionChip[]>([]);
-  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [sessionModelOverride, setSessionModelOverride] = useState<ChatModelSelection | null>(null);
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const userAtBottomRef = useRef(true);
-  const sessionIdRef = useRef(sessionId);
-  sessionIdRef.current = sessionId;
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const dateLabels = useMemo(() => ({
     today: t('page.dateToday'),
@@ -79,39 +155,258 @@ export function ChatPanel({
     messagesEndRef.current?.scrollIntoView({ behavior });
   }, []);
 
-  // Load the agent's main session and messages
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setMessages([]);
+  /** 把某 agent 的 store 状态同步到渲染层（仅当它是当前可见 agent）。 */
+  const syncToDisplay = useCallback((aid: string) => {
+    const st = storeRef.current.get(aid);
+    if (!st || aid !== activeAgentIdRef.current) return;
+    setMessages(st.messages);
+    setSessionId(st.sessionId);
+    setSending(st.sending);
+    setInput(st.input);
+    setCurrentMentionChips(st.mentionChips);
+    setActivities(st.activities);
+    setPendingFiles(st.files);
+    setSessionModelOverride(st.modelOverride);
+  }, []);
 
+  /** 更新某 agent 的一个字段；命中当前可见 agent 时同步渲染层。 */
+  const updateAgent = useCallback(<K extends keyof AgentBuffer>(
+    aid: string,
+    field: K,
+    updater: AgentBuffer[K] | ((prev: AgentBuffer[K]) => AgentBuffer[K]),
+  ) => {
+    storeRef.current.updateField(aid, field, updater);
+    syncToDisplay(aid);
+  }, [syncToDisplay]);
+
+  // 流式解析回调：写回目标 agent 的 store，背景 agent 也能继续消费。
+  const appendTextChunk = useCallback((
+    aid: string, agentMsgId: string, insideThinkRef: { current: boolean }, chunk: string,
+  ) => {
+    updateAgent(aid, 'messages', prev => {
+      const u = [...prev];
+      const idx = u.findIndex(m => m.id === agentMsgId);
+      if (idx < 0) return prev;
+      const segs = u[idx]!.segments ?? [];
+      const last = segs[segs.length - 1];
+      const prevThinking = last?.type === 'text' ? (last as { thinking?: string }).thinking ?? '' : '';
+
+      let thinking = '';
+      let content = '';
+      let remaining = chunk;
+
+      while (remaining.length > 0) {
+        if (insideThinkRef.current) {
+          const closeIdx = remaining.indexOf(' response');
+          if (closeIdx >= 0) { thinking += remaining.slice(0, closeIdx); remaining = remaining.slice(closeIdx + ' response'.length); insideThinkRef.current = false; }
+          else { thinking += remaining; remaining = ''; }
+        } else {
+          const openIdx = remaining.indexOf(' thinking');
+          if (openIdx >= 0) { content += remaining.slice(0, openIdx); remaining = remaining.slice(openIdx + ' thinking'.length); insideThinkRef.current = true; }
+          else { content += remaining; remaining = ''; }
+        }
+      }
+
+      const mergedThinking = (prevThinking + thinking) || undefined;
+      const newSegs: MsgSegment[] = last?.type === 'text'
+        ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: mergedThinking, createdAt: last.createdAt }]
+        : [...segs, { type: 'text', content, thinking: mergedThinking, createdAt: new Date().toISOString() }];
+      u[idx] = { ...u[idx]!, text: u[idx]!.text + content, segments: newSegs };
+      return u;
+    });
+  }, [updateAgent]);
+
+  const handleCommitEvent = useCallback((aid: string, agentMsgId: string, event: StreamCommitEvent) => {
+    if (event.type === 'session_start' && event.sessionId) {
+      updateAgent(aid, 'sessionId', event.sessionId);
+      return;
+    }
+    updateAgent(aid, 'messages', prev => {
+      const u = [...prev];
+      const idx = u.findIndex(m => m.id === agentMsgId);
+      if (idx < 0) return prev;
+      const committed = [...(u[idx]!.committedSegments ?? [])];
+      if (event.type === 'thinking_commit') {
+        committed.push({ type: 'text', content: '', thinking: event.content, createdAt: event.createdAt });
+      } else {
+        committed.push({ type: 'text', content: event.content, createdAt: event.createdAt });
+      }
+      u[idx] = { ...u[idx]!, committedSegments: committed };
+      return u;
+    });
+  }, [updateAgent]);
+
+  const handleToolEvent = useCallback((aid: string, agentMsgId: string, event: AgentToolEvent) => {
+    if (event.phase === 'heartbeat') return;
+    if (event.phase === 'start') {
+      updateAgent(aid, 'activities', prev => [...prev, { ...event, phase: 'start', ts: Date.now() }]);
+      updateAgent(aid, 'messages', prev => {
+        const u = [...prev];
+        const idx = u.findIndex(m => m.id === agentMsgId);
+        if (idx < 0) return prev;
+        const segs = [...(u[idx]!.segments ?? [])];
+        const toolKey = `${event.tool}_${Date.now()}`;
+        const now = new Date().toISOString();
+        let updated = false;
+        if (event.arguments) {
+          for (let i = segs.length - 1; i >= 0; i--) {
+            const s = segs[i]!;
+            if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
+              segs[i] = { ...s, args: event.arguments };
+              updated = true;
+              break;
+            }
+          }
+        }
+        if (!updated) {
+          segs.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
+        }
+        const committed = [...(u[idx]!.committedSegments ?? [])];
+        if (event.arguments !== undefined) {
+          committed.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
+        }
+        u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
+        return u;
+      });
+    } else if (event.phase === 'output') {
+      updateAgent(aid, 'messages', prev => {
+        const u = [...prev];
+        const idx = u.findIndex(m => m.id === agentMsgId);
+        if (idx < 0) return prev;
+        const segs = [...(u[idx]!.segments ?? [])];
+        for (let i = segs.length - 1; i >= 0; i--) {
+          const s = segs[i]!;
+          if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
+            segs[i] = { ...s, liveOutput: appendLiveOutput(s.liveOutput, event.output ?? '') };
+            break;
+          }
+        }
+        u[idx] = { ...u[idx]!, segments: segs };
+        return u;
+      });
+    } else if (event.phase === 'subagent_progress' && event.subagentEvent) {
+      updateAgent(aid, 'messages', prev => {
+        const u = [...prev];
+        const idx = u.findIndex(m => m.id === agentMsgId);
+        if (idx < 0) return prev;
+        const appendLog = (list: MsgSegment[]): MsgSegment[] => {
+          const next = [...list];
+          for (let i = next.length - 1; i >= 0; i--) {
+            const s = next[i]!;
+            if (s.type === 'tool' && (s.tool === 'spawn_subagent' || s.tool === 'spawn_subagents') && s.status === 'running') {
+              next[i] = { ...s, subagentLogs: appendSubagentLog(s.subagentLogs, event.subagentEvent!) };
+              break;
+            }
+          }
+          return next;
+        };
+        u[idx] = {
+          ...u[idx]!,
+          segments: appendLog(u[idx]!.segments ?? []),
+          committedSegments: appendLog(u[idx]!.committedSegments ?? []),
+        };
+        return u;
+      });
+    } else if (event.phase === 'end') {
+      updateAgent(aid, 'activities', prev => [...prev, { ...event, phase: 'end', ts: Date.now() }]);
+      updateAgent(aid, 'messages', prev => {
+        const u = [...prev];
+        const idx = u.findIndex(m => m.id === agentMsgId);
+        if (idx < 0) return prev;
+        const now = new Date().toISOString();
+        const segs = [...(u[idx]!.segments ?? [])];
+        let endedSubagentLogs: Extract<MsgSegment, { type: 'tool' }>['subagentLogs'];
+        for (let i = segs.length - 1; i >= 0; i--) {
+          const s = segs[i]!;
+          if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
+            endedSubagentLogs = s.subagentLogs;
+            segs[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined, createdAt: now };
+            break;
+          }
+        }
+        const committed = [...(u[idx]!.committedSegments ?? [])];
+        for (let i = committed.length - 1; i >= 0; i--) {
+          const s = committed[i]!;
+          if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
+            committed[i] = {
+              ...s,
+              status: event.success === false ? 'error' : 'done',
+              args: event.arguments,
+              result: event.result,
+              error: event.error,
+              durationMs: event.durationMs,
+              liveOutput: undefined,
+              createdAt: now,
+              subagentLogs: endedSubagentLogs ?? s.subagentLogs,
+            };
+            break;
+          }
+        }
+        u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
+        return u;
+      });
+    }
+  }, [updateAgent]);
+
+  // ── 加载（或恢复）当前 agent 的主会话 ──────────────────────────────────
+  useEffect(() => {
+    activeAgentIdRef.current = agentId;
+    // 离开旧 agent：中止其 reattach（send 流保持后台续跑，不中断）
+    reattachAbortRefs.current.forEach((ctrl, aid) => {
+      if (aid !== agentId) { ctrl.abort(); reattachAbortRefs.current.delete(aid); }
+    });
+
+    const aid = agentId;
+    if (storeRef.current.has(aid)) {
+      setLoading(false);
+      syncToDisplay(aid);
+      const st = storeRef.current.get(aid)!;
+      // 切回有进行中输出的 agent：若没有本地实时流则 reattach 续接
+      if (st.sending && st.sessionId) {
+        const liveSend = sendAbortRefs.current.get(aid);
+        if (!liveSend || liveSend.signal.aborted) {
+          void tryReattach(aid, st.sessionId);
+        }
+      }
+      return;
+    }
+
+    // 首次进入该 agent：建空白缓冲 + 拉取主会话
+    storeRef.current.getOrCreate(aid);
+    setLoading(true);
+    syncToDisplay(aid);
+    let cancelled = false;
     const load = async () => {
       try {
         let sid = initialSessionId ?? null;
         if (!sid) {
-          const { sessions } = await api.sessions.listByAgent(agentId, 10);
+          const { sessions } = await api.sessions.listByAgent(aid, 10);
           const main = sessions.find(s => s.isMain);
           sid = main?.id ?? sessions[0]?.id ?? null;
         }
         if (cancelled) return;
-        setSessionId(sid);
-
+        storeRef.current.updateField(aid, 'sessionId', sid);
         if (sid) {
           const result = await api.sessions.getMessages(sid, 50);
           if (cancelled) return;
           const msgs = result.messages.map(dbMsgToChat).filter(m =>
             m.sender !== 'agent' || m.text || (m.segments && m.segments.length > 0)
           );
-          setMessages(msgs);
+          storeRef.current.updateField(aid, 'messages', msgs);
+          storeRef.current.updateField(aid, 'loaded', true);
         }
-      } catch { /* ignore */ }
-      if (!cancelled) setLoading(false);
+        if (activeAgentIdRef.current === aid) { setLoading(false); syncToDisplay(aid); }
+      } catch {
+        if (activeAgentIdRef.current === aid) setLoading(false);
+      }
     };
     void load();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, initialSessionId]);
 
-  // Load installed skills for slash commands
+  // 加载已安装技能用于 slash 命令
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -132,7 +427,82 @@ export function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Scroll to bottom on initial load
+  // ── reattach：切回有进行中输出的 agent 时续接 ──────────────────────────
+  const tryReattach = useCallback(async (aid: string, sessionId: string) => {
+    if (!aid || !sessionId) return;
+    // 本地实时 send 仍持有该 SSE，无需重复 attach
+    const liveSend = sendAbortRefs.current.get(aid);
+    if (liveSend && !liveSend.signal.aborted) {
+      updateAgent(aid, 'sending', true);
+      return;
+    }
+    let abortCtrl: AbortController | null = null;
+    try {
+      const status = await api.sessions.streamStatus(aid, sessionId);
+      if (status.status !== 'streaming') {
+        updateAgent(aid, 'sending', false);
+        return;
+      }
+      const msgs = storeRef.current.get(aid)?.messages ?? [];
+      const last = [...msgs].reverse().find(m => m.sender === 'agent');
+      let agentMsgId = last?.id;
+      if (!last) {
+        agentMsgId = `reattach_${Date.now()}`;
+        updateAgent(aid, 'messages', prev => [
+          ...prev,
+          { id: agentMsgId!, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), segments: [] },
+        ]);
+      }
+      const insideThinkRef = { current: false };
+      abortCtrl = new AbortController();
+      reattachAbortRefs.current.get(aid)?.abort();
+      reattachAbortRefs.current.set(aid, abortCtrl);
+      updateAgent(aid, 'sending', true);
+
+      const result = await api.sessions.reattachStream(
+        aid, sessionId,
+        {
+          onChunk: (chunk) => appendTextChunk(aid, agentMsgId!, insideThinkRef, chunk),
+          onActivity: (event) => handleToolEvent(aid, agentMsgId!, event),
+          onCommit: (event) => handleCommitEvent(aid, agentMsgId!, event),
+          onSnapshot: (snap) => {
+            const cur = storeRef.current.get(aid)?.messages ?? [];
+            const target = cur.find(m => m.id === agentMsgId);
+            const segs = storedSegmentsToMsgSegments(snap.segments, target?.segments);
+            updateAgent(aid, 'messages', prev => prev.map(m =>
+              m.id === agentMsgId
+                ? { ...m, text: snap.content || m.text, segments: segs, committedSegments: segs }
+                : m,
+            ));
+          },
+        },
+        abortCtrl.signal,
+        0,
+      );
+
+      if (result.attached) {
+        if (result.segments?.length) {
+          updateAgent(aid, 'messages', prev => prev.map(m => {
+            if (m.id !== agentMsgId) return m;
+            const finalSegs = storedSegmentsToMsgSegments(result.segments!, m.segments);
+            return { ...m, text: result.content || m.text, segments: finalSegs, committedSegments: finalSegs };
+          }));
+        } else if (result.content) {
+          updateAgent(aid, 'messages', prev => prev.map(m =>
+            m.id === agentMsgId ? { ...m, text: result.content || m.text } : m,
+          ));
+        }
+      }
+      updateAgent(aid, 'sending', false);
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      updateAgent(aid, 'sending', false);
+    } finally {
+      reattachAbortRefs.current.delete(aid);
+    }
+  }, [appendTextChunk, handleToolEvent, handleCommitEvent, updateAgent]);
+
+  // ── 滚动 ────────────────────────────────────────────────────────────────
   const prevLoadingRef = useRef(true);
   useEffect(() => {
     if (prevLoadingRef.current && !loading && messages.length > 0) {
@@ -143,16 +513,25 @@ export function ChatPanel({
     prevLoadingRef.current = loading;
   }, [loading, messages.length, scrollToBottom]);
 
-  // Scroll to bottom when new messages arrive (not initial load)
   useEffect(() => {
     if (!loading && userAtBottomRef.current) {
       requestAnimationFrame(() => scrollToBottom());
     }
   }, [messages, scrollToBottom, loading]);
 
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const handleScroll = useCallback(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    userAtBottomRef.current = atBottom;
+    setShowScrollBtn(!atBottom);
+  }, []);
+
   // WS: listen for proactive messages from this agent (incl. Feishu user turns)
   useEffect(() => {
     const unsub = wsClient.on('chat:proactive_message', (event) => {
+      const aid = activeAgentIdRef.current;
       const p = event.payload;
       const msgAgentId = (p['agentId'] as string) ?? '';
       if (msgAgentId !== agentId) return;
@@ -163,7 +542,8 @@ export function ChatPanel({
       const messageId = (p['messageId'] as string) ?? '';
       if (!message || (message === '[cancelled]') || (message === '[Stream cancelled]')) return;
 
-      if (msgSessionId && sessionIdRef.current && msgSessionId !== sessionIdRef.current) return;
+      const curSession = storeRef.current.get(aid)?.sessionId ?? null;
+      if (msgSessionId && curSession && msgSessionId !== curSession) return;
 
       const meta = (p['metadata'] as Record<string, unknown>) ?? {};
       const isUserTurn = meta.role === 'user';
@@ -195,7 +575,7 @@ export function ChatPanel({
               ...(isNotify ? { isNotification: true, notifyPriority: (meta.priority as string) ?? parsedPriority } : {}),
             }),
       };
-      setMessages(prev => {
+      updateAgent(aid, 'messages', prev => {
         if (prev.some(m => m.id === newMsg.id)) return prev;
         let base = prev;
         if (!isUserTurn && fallbackUserText) {
@@ -217,38 +597,41 @@ export function ChatPanel({
       });
     });
     return unsub;
-  }, [agentId, agentName, authUser?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId, agentName, authUser?.id, updateAgent]);
 
-  const [showScrollBtn, setShowScrollBtn] = useState(false);
-
-  // Track scroll position
-  const handleScroll = useCallback(() => {
-    const el = chatScrollRef.current;
-    if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    userAtBottomRef.current = atBottom;
-    setShowScrollBtn(!atBottom);
-  }, []);
-
+  // stop 仅中止当前可见 agent 的流（send + reattach 都停）
   const stopSending = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setSending(false);
-    setActivities([]);
-    void api.agents.cancelProcessing(agentId).catch(() => {});
-  }, [agentId]);
+    const aid = activeAgentIdRef.current;
+    sendAbortRefs.current.get(aid)?.abort();
+    sendAbortRefs.current.delete(aid);
+    reattachAbortRefs.current.get(aid)?.abort();
+    reattachAbortRefs.current.delete(aid);
+    updateAgent(aid, 'sending', false);
+    updateAgent(aid, 'activities', []);
+    void api.agents.cancelProcessing(aid).catch(() => {});
+  }, [updateAgent]);
 
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [rememberTarget, setRememberTarget] = useState<ChatMsg | null>(null);
   const [rememberBusy, setRememberBusy] = useState(false);
 
   const send = useCallback(async (overrideText?: string, sessionIdOverride?: string | null) => {
+    const aid = activeAgentIdRef.current;
+    const store = storeRef.current;
+    const st = store.get(aid);
+    const stateInput = st?.input ?? input;
+    const stateChips = st?.mentionChips ?? currentMentionChips;
+    const stateFiles = st?.files ?? pendingFiles;
+    const stateSession = st?.sessionId ?? sessionId;
+    const stateModel = st?.modelOverride ?? sessionModelOverride;
+
     let text = overrideText?.trim() ?? '';
     if (!text) {
       const parts: string[] = [];
 
-      if (currentMentionChips.length > 0) {
-        parts.push(currentMentionChips.map(c => `@[${c.name}](${c.entityType}:${c.entityId})`).join(' '));
+      if (stateChips.length > 0) {
+        parts.push(stateChips.map(c => `@[${c.name}](${c.entityType}:${c.entityId})`).join(' '));
       }
 
       if (contextChips?.length) {
@@ -257,220 +640,61 @@ export function ChatPanel({
         }
       }
 
-      if (input.trim()) parts.push(input.trim());
+      if (stateInput.trim()) parts.push(stateInput.trim());
       text = parts.join('\n\n');
     }
-    if (!text) return;
+    if (!text && stateFiles.length === 0) return;
 
     if (!overrideText) {
-      setInput('');
-      setCurrentMentionChips([]);
+      updateAgent(aid, 'input', '');
+      updateAgent(aid, 'mentionChips', []);
+      updateAgent(aid, 'files', []);
     }
     userAtBottomRef.current = true;
-    setSending(true);
-    setActivities([]);
+    updateAgent(aid, 'sending', true);
+    updateAgent(aid, 'activities', []);
 
-    const streamSessionId = sessionIdOverride !== undefined ? sessionIdOverride : sessionId;
+    const streamSessionId = sessionIdOverride !== undefined ? sessionIdOverride : stateSession;
     const agentMsgId = `a_${Date.now()}`;
     const agentCreatedAt = new Date().toISOString();
     const userMsg: ChatMsg = { id: `u_${Date.now()}`, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt };
 
-    setMessages(prev => [
+    updateAgent(aid, 'messages', prev => [
       ...prev,
       userMsg,
       { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [] },
     ]);
 
-    let insideThink = false;
-
-    const appendTextChunk = (chunk: string) => {
-      setMessages(prev => {
-        const u = [...prev];
-        const idx = u.findIndex(m => m.id === agentMsgId);
-        if (idx < 0) return prev;
-        const segs = u[idx]!.segments ?? [];
-        const last = segs[segs.length - 1];
-        const prevThinking = last?.type === 'text' ? (last as { thinking?: string }).thinking ?? '' : '';
-
-        let thinking = '';
-        let content = '';
-        let remaining = chunk;
-
-        while (remaining.length > 0) {
-          if (insideThink) {
-            const closeIdx = remaining.indexOf('</think>');
-            if (closeIdx >= 0) { thinking += remaining.slice(0, closeIdx); remaining = remaining.slice(closeIdx + '</think>'.length); insideThink = false; }
-            else { thinking += remaining; remaining = ''; }
-          } else {
-            const openIdx = remaining.indexOf('<think>');
-            if (openIdx >= 0) { content += remaining.slice(0, openIdx); remaining = remaining.slice(openIdx + '<think>'.length); insideThink = true; }
-            else { content += remaining; remaining = ''; }
-          }
-        }
-
-        const mergedThinking = (prevThinking + thinking) || undefined;
-        const newSegs: MsgSegment[] = last?.type === 'text'
-          ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: mergedThinking, createdAt: last.createdAt }]
-          : [...segs, { type: 'text', content, thinking: mergedThinking, createdAt: new Date().toISOString() }];
-        u[idx] = { ...u[idx]!, text: u[idx]!.text + content, segments: newSegs };
-        return u;
-      });
-    };
-
-    const handleCommitEvent = (event: StreamCommitEvent) => {
-      if (event.type === 'session_start' && event.sessionId) {
-        setSessionId(event.sessionId);
-        return;
-      }
-      setMessages(prev => {
-        const u = [...prev];
-        const idx = u.findIndex(m => m.id === agentMsgId);
-        if (idx < 0) return prev;
-        const committed = [...(u[idx]!.committedSegments ?? [])];
-        if (event.type === 'thinking_commit') {
-          committed.push({ type: 'text', content: '', thinking: event.content, createdAt: event.createdAt });
-        } else {
-          committed.push({ type: 'text', content: event.content, createdAt: event.createdAt });
-        }
-        u[idx] = { ...u[idx]!, committedSegments: committed };
-        return u;
-      });
-    };
-
-    const handleToolEvent = (event: AgentToolEvent) => {
-      if (event.phase === 'heartbeat') return;
-      if (event.phase === 'start') {
-        setActivities(prev => [...prev, { ...event, phase: 'start', ts: Date.now() }]);
-        setMessages(prev => {
-          const u = [...prev];
-          const idx = u.findIndex(m => m.id === agentMsgId);
-          if (idx < 0) return prev;
-          const segs = [...(u[idx]!.segments ?? [])];
-          const toolKey = `${event.tool}_${Date.now()}`;
-          const now = new Date().toISOString();
-          let updated = false;
-          if (event.arguments) {
-            for (let i = segs.length - 1; i >= 0; i--) {
-              const s = segs[i]!;
-              if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-                segs[i] = { ...s, args: event.arguments };
-                updated = true;
-                break;
-              }
-            }
-          }
-          if (!updated) {
-            segs.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
-          }
-          const committed = [...(u[idx]!.committedSegments ?? [])];
-          if (event.arguments !== undefined) {
-            committed.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
-          }
-          u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
-          return u;
-        });
-      } else if (event.phase === 'output') {
-        setMessages(prev => {
-          const u = [...prev];
-          const idx = u.findIndex(m => m.id === agentMsgId);
-          if (idx < 0) return prev;
-          const segs = [...(u[idx]!.segments ?? [])];
-          for (let i = segs.length - 1; i >= 0; i--) {
-            const s = segs[i]!;
-            if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-              segs[i] = { ...s, liveOutput: appendLiveOutput(s.liveOutput, event.output ?? '') };
-              break;
-            }
-          }
-          u[idx] = { ...u[idx]!, segments: segs };
-          return u;
-        });
-      } else if (event.phase === 'subagent_progress' && event.subagentEvent) {
-        setMessages(prev => {
-          const u = [...prev];
-          const idx = u.findIndex(m => m.id === agentMsgId);
-          if (idx < 0) return prev;
-          const appendLog = (list: MsgSegment[]): MsgSegment[] => {
-            const next = [...list];
-            for (let i = next.length - 1; i >= 0; i--) {
-              const s = next[i]!;
-              if (s.type === 'tool' && (s.tool === 'spawn_subagent' || s.tool === 'spawn_subagents') && s.status === 'running') {
-                next[i] = { ...s, subagentLogs: appendSubagentLog(s.subagentLogs, event.subagentEvent!) };
-                break;
-              }
-            }
-            return next;
-          };
-          u[idx] = {
-            ...u[idx]!,
-            segments: appendLog(u[idx]!.segments ?? []),
-            committedSegments: appendLog(u[idx]!.committedSegments ?? []),
-          };
-          return u;
-        });
-      } else if (event.phase === 'end') {
-        setActivities(prev => [...prev, { ...event, phase: 'end', ts: Date.now() }]);
-        setMessages(prev => {
-          const u = [...prev];
-          const idx = u.findIndex(m => m.id === agentMsgId);
-          if (idx < 0) return prev;
-          const now = new Date().toISOString();
-          const segs = [...(u[idx]!.segments ?? [])];
-          let endedSubagentLogs: Extract<MsgSegment, { type: 'tool' }>['subagentLogs'];
-          for (let i = segs.length - 1; i >= 0; i--) {
-            const s = segs[i]!;
-            if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-              endedSubagentLogs = s.subagentLogs;
-              segs[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined, createdAt: now };
-              break;
-            }
-          }
-          const committed = [...(u[idx]!.committedSegments ?? [])];
-          for (let i = committed.length - 1; i >= 0; i--) {
-            const s = committed[i]!;
-            if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-              committed[i] = {
-                ...s,
-                status: event.success === false ? 'error' : 'done',
-                args: event.arguments,
-                result: event.result,
-                error: event.error,
-                durationMs: event.durationMs,
-                liveOutput: undefined,
-                createdAt: now,
-                subagentLogs: endedSubagentLogs ?? s.subagentLogs,
-              };
-              break;
-            }
-          }
-          u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
-          return u;
-        });
-      }
-    };
+    const insideThinkRef = { current: false };
 
     const abortCtrl = new AbortController();
-    abortRef.current = abortCtrl;
+    sendAbortRefs.current.set(aid, abortCtrl);
+
+    const imagesToSend = stateFiles.length > 0 ? stateFiles.map(f => f.dataUrl) : undefined;
+    const fileNamesToSend = stateFiles.length > 0 ? stateFiles.map(f => f.name) : undefined;
 
     try {
       const streamResult = await api.agents.messageStream(
-        agentId, text,
-        appendTextChunk,
-        handleToolEvent,
+        aid, text,
+        (chunk) => appendTextChunk(aid, agentMsgId, insideThinkRef, chunk),
+        (event) => handleToolEvent(aid, agentMsgId, event),
         abortCtrl.signal,
-        undefined,
+        imagesToSend,
         streamSessionId,
         undefined,
         undefined,
-        handleCommitEvent,
+        (event) => handleCommitEvent(aid, agentMsgId, event),
+        fileNamesToSend,
+        undefined,
+        stateModel,
       );
 
       if (streamResult.merged) {
-        setMessages(prev => prev.filter(m => m.id !== agentMsgId));
+        updateAgent(aid, 'messages', prev => prev.filter(m => m.id !== agentMsgId));
       }
 
       if (!streamResult.merged && streamResult.segments?.length) {
-        setMessages(prev => {
+        updateAgent(aid, 'messages', prev => {
           const u = [...prev];
           const idx = u.findIndex(m => m.id === agentMsgId);
           if (idx < 0) return prev;
@@ -485,7 +709,7 @@ export function ChatPanel({
       }
 
       if (!streamResult.merged && !streamResult.segments?.length) {
-        setMessages(prev => {
+        updateAgent(aid, 'messages', prev => {
           const u = [...prev];
           const idx = u.findIndex(m => m.id === agentMsgId);
           if (idx < 0) return prev;
@@ -501,15 +725,15 @@ export function ChatPanel({
       }
 
       if (streamResult.sessionId) {
-        setSessionId(streamResult.sessionId);
+        updateAgent(aid, 'sessionId', streamResult.sessionId);
       }
     } catch (e) {
       const errSessionId = (e as Error & { sessionId?: string })?.sessionId;
-      if (errSessionId) setSessionId(errSessionId);
+      if (errSessionId) updateAgent(aid, 'sessionId', errSessionId);
 
       const errText = friendlyAgentError(e, t);
       if (errText) {
-        setMessages(prev => {
+        updateAgent(aid, 'messages', prev => {
           const u = [...prev];
           const idx = u.findIndex(m => m.id === agentMsgId);
           if (idx >= 0) {
@@ -519,7 +743,7 @@ export function ChatPanel({
           return u;
         });
       } else {
-        setMessages(prev => {
+        updateAgent(aid, 'messages', prev => {
           const u = [...prev];
           const idx = u.findIndex(m => m.id === agentMsgId);
           if (idx >= 0) {
@@ -536,7 +760,7 @@ export function ChatPanel({
     }
 
     // Mark running tools as stopped
-    setMessages(prev => {
+    updateAgent(aid, 'messages', prev => {
       const u = [...prev];
       const idx = u.findIndex(m => m.id === agentMsgId);
       if (idx >= 0) {
@@ -548,10 +772,19 @@ export function ChatPanel({
       return u;
     });
 
-    setSending(false);
-    setActivities([]);
-    abortRef.current = null;
-  }, [input, agentId, sessionId, t, currentMentionChips, contextChips]);
+    updateAgent(aid, 'sending', false);
+    updateAgent(aid, 'activities', []);
+    sendAbortRefs.current.delete(aid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input, sessionId, currentMentionChips, pendingFiles, sessionModelOverride, contextChips, t, appendTextChunk, handleToolEvent, handleCommitEvent, updateAgent]);
+
+  const handleInputChange = useCallback((v: string) => {
+    updateAgent(activeAgentIdRef.current, 'input', v);
+  }, [updateAgent]);
+
+  const handleMentionChipsChange = useCallback((chips: MentionChip[]) => {
+    updateAgent(activeAgentIdRef.current, 'mentionChips', chips);
+  }, [updateAgent]);
 
   const handleCopy = useCallback((msg: ChatMsg) => {
     void navigator.clipboard.writeText(msg.text || '').then(() => {
@@ -561,11 +794,13 @@ export function ChatPanel({
   }, []);
 
   const handleRememberConfirm = async (userNote: string) => {
-    if (!rememberTarget || !sessionId) return;
+    const aid = activeAgentIdRef.current;
+    const curSession = storeRef.current.get(aid)?.sessionId ?? null;
+    if (!rememberTarget || !curSession) return;
     setRememberBusy(true);
     try {
-      const result = await api.agents.evolveFromMessage(agentId, {
-        parentSessionId: sessionId,
+      const result = await api.agents.evolveFromMessage(aid, {
+        parentSessionId: curSession,
         sourceMessageId: rememberTarget.id.startsWith('a_') || rememberTarget.id.startsWith('u_')
           ? undefined
           : rememberTarget.id,
@@ -573,8 +808,8 @@ export function ChatPanel({
         userNote: userNote.trim() || undefined,
       });
       setRememberTarget(null);
-      setSessionId(result.sessionId);
-      setMessages([]);
+      updateAgent(aid, 'sessionId', result.sessionId);
+      updateAgent(aid, 'messages', []);
       await send(result.seedPrompt, result.sessionId);
     } catch (err) {
       console.error('evolve-from-message failed', err);
@@ -582,6 +817,65 @@ export function ChatPanel({
       setRememberBusy(false);
     }
   };
+
+  // 附件处理（与 Team composer 一致）
+  const isFileSupported = useCallback((f: File) => {
+    return f.type.startsWith('image/') || SUPPORTED_DOC_TYPES.has(f.type);
+  }, []);
+
+  const addFiles = useCallback((files: FileList | File[]) => {
+    const aid = activeAgentIdRef.current;
+    const fileArr = Array.from(files).filter(isFileSupported);
+    if (fileArr.length === 0) return;
+    for (const file of fileArr) {
+      if (file.size > MAX_FILE_SIZE) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        updateAgent(aid, 'files', prev => {
+          if (prev.length >= MAX_FILES) return prev;
+          if (prev.some(f => f.dataUrl === dataUrl)) return prev;
+          return [...prev, { id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, dataUrl, name: file.name }];
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  }, [isFileSupported, updateAgent]);
+
+  const removeFile = useCallback((id: string) => {
+    updateAgent(activeAgentIdRef.current, 'files', prev => prev.filter(f => f.id !== id));
+  }, [updateAgent]);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const files = e.clipboardData?.files;
+    if (files && files.length > 0) {
+      const supported = Array.from(files).filter(isFileSupported);
+      if (supported.length > 0) {
+        e.preventDefault();
+        addFiles(supported);
+      }
+    }
+  }, [addFiles, isFileSupported]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      addFiles(Array.from(files).filter(isFileSupported));
+    }
+  }, [addFiles, isFileSupported]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+  }, []);
+
+  // 模型切换：记忆到当前 agent 缓冲 + 持久化到会话 override（可应用全局）
+  const handleModelSelect = useCallback((sel: ChatModelSelection, applyToGlobal: boolean) => {
+    const aid = activeAgentIdRef.current;
+    const curSession = storeRef.current.get(aid)?.sessionId ?? null;
+    updateAgent(aid, 'modelOverride', sel);
+    void applyChatModelSelection(curSession, sel, applyToGlobal).catch(() => { /* ignore */ });
+  }, [updateAgent]);
 
   const lastMsg = messages[messages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
@@ -643,8 +937,13 @@ export function ChatPanel({
           className="rounded-md"
         />
         <span className="text-sm font-medium text-fg-primary truncate flex-1">{agentName}</span>
+        <ChatModelMenu
+          value={sessionModelOverride}
+          disabled={!agentId}
+          onSelect={handleModelSelect}
+        />
         {onClose && (
-          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary transition-colors p-1">
+          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary transition-colors p-1" aria-label={t('common:close', { defaultValue: 'Close' })}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
             </svg>
@@ -675,8 +974,6 @@ export function ChatPanel({
             const prevMsg = idx > 0 ? messages[idx - 1] : null;
             const curDate = getDateKey(msg.rawCreatedAt);
             const prevDate = prevMsg ? getDateKey(prevMsg.rawCreatedAt) : '';
-            // Both sides need a date — missing rawCreatedAt on optimistic bubbles used to
-            // insert a spurious "Today" divider between every user/agent pair.
             const showDateSep = Boolean(curDate && prevDate && curDate !== prevDate);
             const isLastMsg = idx === messages.length - 1;
             const isStreamingMsg = isLastPending && isLastMsg;
@@ -766,11 +1063,11 @@ export function ChatPanel({
         </div>
       )}
 
-      {/* Input */}
-      <div className="px-3 py-2 shrink-0 border-t border-border-default">
+      {/* Input — 附件/拖拽/粘贴/模型切换，视觉交互与 Team 对齐，非 compact */}
+      <div className="px-3 py-2 shrink-0 border-t border-border-default" onDrop={handleDrop} onDragOver={handleDragOver}>
         <ChatInput
           value={input}
-          onChange={setInput}
+          onChange={handleInputChange}
           onSend={() => { void send(); }}
           disabled={!agentId}
           placeholder={t('page.placeholder.direct')}
@@ -778,12 +1075,29 @@ export function ChatPanel({
           onStop={stopSending}
           contextChips={contextChips}
           mentionItems={mentionItems}
-          onMentionChipsChange={setCurrentMentionChips}
+          onMentionChipsChange={handleMentionChipsChange}
           slashCommands={slashCommands}
-          compact
+          pendingFiles={pendingFiles}
+          onAttach={() => fileInputRef.current?.click()}
+          onPaste={handlePaste}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onRemoveFile={removeFile}
+          fileInputRef={fileInputRef}
+          visionWarning={pendingFiles.length > 0 && pendingFiles.some(f => isImageFile(f)) && agent?.modelSupportsVision === false}
+          maxFiles={MAX_FILES}
           className="shadow-none border-0"
+        />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,.pdf,.docx,.xlsx,.pptx,.xls,.doc,.csv,.json,.xml,.html,.epub"
+          multiple
+          className="hidden"
+          onChange={e => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }}
         />
       </div>
     </div>
   );
 }
+
