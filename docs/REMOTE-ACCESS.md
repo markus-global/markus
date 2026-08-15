@@ -274,7 +274,7 @@ If you need external AI agents to connect to your Markus instance:
 ## FAQ
 
 **Q: Can I run Markus on a cloud VPS directly?**
-A: Yes. Deploy with Docker (`deploy/docker-compose.yml`), then put nginx or Caddy in front for HTTPS. No tunnel needed since the VPS already has a public IP.
+A: Yes. Install with the official one-liner (`curl -fsSL https://markus.global/install.sh | bash`) or the desktop/CLI packages, then put nginx or Caddy in front for HTTPS. No tunnel needed since the VPS already has a public IP.
 
 **Q: Which option works best in China?**
 A: FRP with a domestic cloud VPS (Alibaba Cloud / Tencent Cloud). Cloudflare and Tailscale may have connectivity issues behind the GFW.
