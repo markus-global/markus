@@ -1468,6 +1468,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   }, [mainTab, sending, scrollChatToBottom]);
 
+  // 右侧栏（chatRightReserve）开/关导致聊天区宽度变化：若用户本就在底部，
+  // 重新贴底，避免因宽度变化导致内容上下跳动。
+  const prevChatRightReserveRef = useRef(chatRightReserve);
+  useEffect(() => {
+    if (prevChatRightReserveRef.current === chatRightReserve) return;
+    prevChatRightReserveRef.current = chatRightReserve;
+    if (mainTab !== 'chat') return;
+    if (visibleMessages.length === 0 || sending || loadingChat) return;
+    if (!userAtBottomRef.current || userPinnedAwayRef.current) return;
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    const raf = requestAnimationFrame(() => scrollChatToBottom('instant'));
+    for (const delay of [60, 160, 320]) {
+      timers.push(setTimeout(() => scrollChatToBottom('instant'), delay));
+    }
+    return () => { cancelAnimationFrame(raf); for (const t of timers) clearTimeout(t); };
+  }, [chatRightReserve, mainTab, visibleMessages.length, sending, loadingChat, scrollChatToBottom]);
+
   // Load channel messages from DB → store in buffer + update display
   const loadChannelMessages = useCallback(async (channel: string, bufferKey?: string) => {
     const key = bufferKey ?? `ch:${channel}`;
@@ -4729,7 +4746,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               <span className="text-xs text-fg-tertiary">{t('page.loadingEarlierMessages')}</span>
             </div>
           )}
-          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto ${isMobile ? 'p-2.5' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
+          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'p-2.5' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
           {visibleMessages.length > 0 && (
           <div style={{ height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
@@ -4927,12 +4944,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           <div ref={messagesEnd} />
         </div>
 
-          {/* Scroll to bottom — same horizontal box as the input (max-w-3xl + right reserve) */}
+          {/* Scroll to bottom — normal flow row above the input, never floats over it */}
           {showScrollBtn && mainTab === 'chat' && (
             <div
-              className={`absolute ${isMobile ? 'bottom-4' : 'bottom-28'} inset-x-0 z-10 pointer-events-none ${
-                isMobile ? 'px-3' : `px-5 ${chatRightReserve}`
-              }`}
+              className={`flex justify-center ${isMobile ? 'px-3' : `px-5 ${chatRightReserve}`} shrink-0 ${isMobile ? 'pb-1 pt-0' : 'pb-1'}`}
             >
               <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex justify-center`}>
                 <button

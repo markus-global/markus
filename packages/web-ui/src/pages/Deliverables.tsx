@@ -648,6 +648,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   }, [selected?.id, grouped, expandGroup]);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+  /** L1 侧边栏容器 ref（打开时聚焦，支持 J/K 键盘导航）。 */
+  const l1Ref = useRef<HTMLDivElement>(null);
+  /** 右侧聊天栏输入框 ref（打开时聚焦，可直接输入）。 */
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
 
   // Entering L1 from L0: expand only on pane *entry* — never fight Cmd+B.
   const prevDeliverablesKeyboardPaneRef = useRef(keyboardPane);
@@ -656,7 +660,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     const prev = prevDeliverablesKeyboardPaneRef.current;
     prevDeliverablesKeyboardPaneRef.current = keyboardPane;
     if (keyboardPane !== 'l1' || prev === 'l1') return;
-    if (sidebarCollapsed) setSidebarCollapsed(false);
+    if (sidebarCollapsed) {
+      // 用户通过键盘导航进入 L1，视为手动操作：优先于 auto-collapse，不再自动折叠。
+      sidebarManualRef.current = true;
+      setSidebarCollapsed(false);
+    }
   }, [keyboardPane, previewMode, isMobile, isActive, sidebarCollapsed]);
 
   useEffect(() => {
@@ -683,7 +691,17 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         // （位于 isEditableTarget 守卫之后，编辑目标/输入框内不会触发）
         if (e.key.toLowerCase() === 'b') {
           e.preventDefault();
-          setSidebarCollapsed(prev => !prev);
+          setSidebarCollapsed(prev => {
+            const next = !prev;
+            // 用户手动打开 L1：标记 manual，auto-collapse 不再覆盖（手动优先）。
+            if (next) {
+              sidebarManualRef.current = true;
+              // 打开后焦点落到 L1 容器，且键盘区切到 L1，J/K 立即可用。
+              layout?.setKeyboardPane('l1');
+              requestAnimationFrame(() => l1Ref.current?.focus());
+            }
+            return next;
+          });
           return;
         }
         if (e.key.toLowerCase() === 'l') {
@@ -734,7 +752,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
       if (!move) return;
       e.preventDefault();
       layout?.setKeyboardPane('l1');
-      if (sidebarCollapsed) setSidebarCollapsed(false);
+      if (sidebarCollapsed) {
+        sidebarManualRef.current = true;
+        setSidebarCollapsed(false);
+      }
       const list = flatItems;
       if (list.length === 0) return;
       const curIdx = selected ? list.findIndex(i => i.id === selected.id) : -1;
@@ -867,6 +888,22 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     }
   }, [chatPanelOpen, isMobile, sidebarCollapsed, listPanel.width]);
 
+  // 焦点跟随：打开右侧栏 → 聚焦聊天输入框；关闭右侧栏 → 回到 L1（保持键盘导航）。
+  // 覆盖 Cmd+L、FAB、addToConversation 等所有打开/关闭路径。
+  const prevChatPanelOpenRef = useRef(chatPanelOpen);
+  useEffect(() => {
+    const wasOpen = prevChatPanelOpenRef.current;
+    prevChatPanelOpenRef.current = chatPanelOpen;
+    if (wasOpen === chatPanelOpen) return;
+    requestAnimationFrame(() => {
+      if (chatPanelOpen) {
+        if (selected?.agentId) chatInputRef.current?.focus();
+      } else if (!sidebarCollapsed) {
+        l1Ref.current?.focus();
+      }
+    });
+  }, [chatPanelOpen, selected?.agentId, sidebarCollapsed]);
+
   // Selection toolbar handler (Phase 4)
   const detailContentRef = useRef<HTMLDivElement>(null);
 
@@ -937,7 +974,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* Left sidebar — always mounted on mobile to preserve scroll position */}
-      <div data-keyboard-pane="l1" className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0 ${!isMobile && keyboardPane === 'l1' ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}
+      <div
+        ref={l1Ref}
+        tabIndex={-1}
+        data-keyboard-pane="l1"
+        className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0 outline-none ${!isMobile && keyboardPane === 'l1' ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}
         style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : sidebarCollapsed ? { display: 'none' } : { width: listPanel.width }}>
         <div data-electron-drag className="p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
@@ -1629,6 +1670,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               ...contextChips,
             ]}
             width={400}
+            textareaRef={chatInputRef}
           />
         )}
       </div>

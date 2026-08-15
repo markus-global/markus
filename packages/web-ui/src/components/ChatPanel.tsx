@@ -32,6 +32,8 @@ export interface ChatPanelProps {
   extraMentionItems?: MentionItem[];
   width?: number;
   className?: string;
+  /** 外部 textarea ref（供父级在打开右侧栏时自动聚焦输入框）。 */
+  textareaRef?: React.Ref<HTMLTextAreaElement | null>;
 }
 
 /** 附着文件限制 —— 与 Team 页 composer 保持一致。 */
@@ -107,6 +109,7 @@ export function ChatPanel({
   extraMentionItems,
   width,
   className = '',
+  textareaRef: externalTextareaRef,
 }: ChatPanelProps) {
   const { t } = useTranslation(['team', 'common']);
   const agent = agents.find(a => a.id === agentId);
@@ -954,7 +957,7 @@ export function ChatPanel({
       {/* Messages */}
       <div
         ref={chatScrollRef}
-        className="flex-1 overflow-y-auto px-3 py-3 space-y-3"
+        className="flex-1 overflow-y-auto scrollbar-thin px-3 py-3 space-y-3"
         onScroll={handleScroll}
       >
         {loading ? (
@@ -1087,6 +1090,7 @@ export function ChatPanel({
           visionWarning={pendingFiles.length > 0 && pendingFiles.some(f => isImageFile(f)) && agent?.modelSupportsVision === false}
           maxFiles={MAX_FILES}
           className="shadow-none border-0"
+          textareaRef={externalTextareaRef}
         />
         <input
           ref={fileInputRef}

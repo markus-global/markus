@@ -77,6 +77,8 @@ export interface ChatInputProps {
   replyTo?: { id: string; sender: string; text: string } | null;
   onClearReply?: () => void;
   fileInputRef?: React.RefObject<HTMLInputElement | null>;
+  /** 可选：外部 textarea ref（供父组件聚焦输入框，如打开右侧栏时自动聚焦）。 */
+  textareaRef?: React.Ref<HTMLTextAreaElement | null>;
   visionWarning?: boolean;
   maxFiles?: number;
   className?: string;
@@ -122,6 +124,7 @@ export function ChatInput({
   replyTo,
   onClearReply,
   fileInputRef: externalFileInputRef,
+  textareaRef: externalTextareaRef,
   visionWarning,
   maxFiles = 5,
   className = '',
@@ -502,7 +505,13 @@ export function ChatInput({
           </button>
         )}
         <textarea
-          ref={textareaRef}
+          ref={(el) => {
+            textareaRef.current = el;
+            if (externalTextareaRef) {
+              if (typeof externalTextareaRef === 'function') externalTextareaRef(el);
+              else externalTextareaRef.current = el;
+            }
+          }}
           value={value}
           onChange={e => handleInputChange(e.target.value)}
           onKeyDown={handleKeyDown}
