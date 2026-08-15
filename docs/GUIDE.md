@@ -6,7 +6,6 @@
 
 - [Prerequisites](#prerequisites)
 - [Local Development Setup](#local-development-setup)
-- [Docker Compose Deployment](#docker-compose-deployment)
 - [Environment Variables](#environment-variables)
 - [First Login](#first-login)
 - [Web UI Usage](#web-ui-usage)
@@ -75,17 +74,6 @@ Default ports:
 - API Server: `http://localhost:8056`
 
 > **Note:** The frontend Vite dev server is a separate process and must be started independently. `node packages/cli/dist/index.js start` runs only the backend API, not the frontend.
-
----
-
-## Docker Compose Deployment
-
-```bash
-cd deploy
-docker compose up -d
-```
-
-This starts the Markus services automatically.
 
 ---
 
