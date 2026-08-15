@@ -10,6 +10,12 @@ import {
   DeliverableShareError,
   type ShareVisibility,
 } from '../lib/deliverableShare.ts';
+import {
+  parseLocalMediaRefs,
+  replaceMediaRefs,
+  buildReplacementsFromUploads,
+  type LocalMediaRef,
+} from '../lib/mediaRefs.ts';
 
 export interface DeliverableShareModalProps {
   item: DeliverableInfo;
@@ -21,21 +27,103 @@ export interface DeliverableShareModalProps {
 }
 
 /**
+ * 抓取本地文件字节（经 Org Manager /api/files/stream）并转为 base64。
+ * 供分享管线解析出的本地媒体引用批量上传到 Hub 使用。
+ */
+async function fetchLocalFileAsBase64(localPath: string): Promise<{ base64: string; filename: string } | null> {
+  try {
+    const src = api.files.streamUrl(localPath);
+    const blob = await fetch(src).then(r => (r.ok ? r.blob() : null));
+    if (!blob) return null;
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+    }
+    const name = localPath.split('/').pop() || 'media';
+    return { base64: btoa(binary), filename: name };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把一组本地媒体引用上传到 Hub，返回 raw 片段 → 公网 URL 的映射。
+ * 走批量接口 /api/hub/deliverables/media（JSON base64，一次请求完成全部上传）。
+ * 失败项跳过（保持原路径），避免单个坏图阻塞整个分享。
+ * @param refs 解析出的本地媒体引用（raw 片段 + 归一化本地路径）。
+ * @param hubUrl Hub 站点来源（把 /uploads/xxx 相对路径补成绝对 URL，保证渲染不破图）。
+ */
+async function uploadMediaRefsToHub(
+  refs: LocalMediaRef[],
+  hubUrl: string,
+): Promise<Map<string, string>> {
+  const replacements = new Map<string, string>();
+  if (refs.length === 0) return replacements;
+
+  // 1) 读取每个本地媒体文件 → base64（key=localPath 唯一标识，避免同名文件映射错乱）
+  const payload: Array<{ key: string; filename: string; base64: string }> = [];
+  for (const ref of refs) {
+    const file = await fetchLocalFileAsBase64(ref.localPath);
+    if (!file) continue;
+    payload.push({ key: ref.localPath, filename: file.filename, base64: file.base64 });
+  }
+  if (payload.length === 0) return replacements;
+
+  // 2) 批量上传到 Hub
+  const { files, errors } = await hubApi.uploadMediaBatch(payload);
+  if (errors.length > 0) {
+    console.warn('[deliverable-share] media upload errors:', errors);
+  }
+
+  // 3) 建立 raw 片段 → 绝对 URL 映射（按 key=localPath 匹配）
+  return buildReplacementsFromUploads(refs, files, hubUrl);
+}
+
+/**
  * 读取产出物文件内容，供分享时传给 Hub（Hub 强制要求 fileBase64 或 content 之一）。
  * 复用现有 /api/files/preview —— 文本类直接返回 content 字符串；图片/音视频/二进制
  * 返回 path/streamUrl，由前端抓取字节转 base64。
+ *
+ * 对 markdown / html 文本类交付物，额外执行「本地媒体引用 → Hub 上传 → 路径替换」管线：
+ *   1. 解析内容中的本地图片/音视频引用（绝对路径、file://、本地 API 形式、相对路径）
+ *   2. 逐个上传到 Hub（复用资产上传能力 /api/hub/upload）拿到公网 URL
+ *   3. 把原始路径替换为公网 URL，返回替换后的 content
+ * 这样分享到 Hub 后，交付物中引用的图片在网站上也能正常显示。
+ *
  * @returns 文本产出物返回 {content}；二进制类返回 {fileBase64}；读不到返回 {}。
  */
-async function readDeliverableContent(reference: string, type: string): Promise<{ content?: string; fileBase64?: string }> {
+async function readDeliverableContent(
+  reference: string,
+  type: string,
+  hubUrl: string,
+): Promise<{ content?: string; fileBase64?: string; uploadedMedia?: number }> {
   if (!reference || type === 'directory' || reference.startsWith('http://') || reference.startsWith('https://')) {
     return {};
   }
   try {
     const resp = await api.files.preview(reference);
-    // 文本类：直接取 content 字符串（利于 Hub 搜索/SEO）
+    // 文本类：直接取 content 字符串（利于 Hub 搜索/SEO），并处理本地媒体引用
     if ((resp.type === 'text' || resp.type === 'markdown' || resp.type === 'html' || resp.type === 'json' || resp.type === 'csv')
         && typeof resp.content === 'string') {
-      return { content: resp.content };
+      const isTextLike = resp.type === 'markdown' || resp.type === 'html';
+      if (!isTextLike) {
+        return { content: resp.content };
+      }
+      // markdown/html：解析本地媒体引用并上传替换。baseDir=交付物所在目录，支持相对路径引用
+      const dir = reference.replace(/[/\\]/g, '/').split('/').slice(0, -1).join('/');
+      const { refs } = parseLocalMediaRefs(resp.content, dir);
+      if (refs.length === 0) {
+        return { content: resp.content };
+      }
+      const replacements = await uploadMediaRefsToHub(refs, hubUrl);
+      if (replacements.size === 0) {
+        return { content: resp.content };
+      }
+      const content = replaceMediaRefs(resp.content, replacements);
+      return { content, uploadedMedia: replacements.size };
     }
     // 图片/音视频/二进制：抓取原始字节转 base64
     if (resp.type === 'image' || resp.type === 'audio' || resp.type === 'video' || resp.type === 'binary') {
@@ -156,8 +244,14 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
     setUi('busy');
     try {
       const filename = item.reference.replace(/[/\\]/g, '/').split('/').pop() || 'deliverable';
-      // 读取产出物实际文件内容（Hub 强制要求 fileBase64 或 content 之一）
-      const { content, fileBase64 } = await readDeliverableContent(item.reference, item.type);
+      // 读取产出物实际文件内容（Hub 强制要求 fileBase64 或 content 之一）；
+      // markdown/html 时会自动把引用的本地图片上传到 Hub 并替换为公网 URL。
+      const hubOrigin = hubApi.getUrl();
+      const { content, fileBase64, uploadedMedia } = await readDeliverableContent(item.reference, item.type, hubOrigin);
+      if (uploadedMedia) {
+        // 提示用户：分享内容中的本地媒体已自动上传（非阻塞，仅日志记录）
+        console.info(`[deliverable-share] uploaded ${uploadedMedia} local media reference(s) to Hub`);
+      }
       // 溯源：用 agent 的可读名（displayName/name）而非 agent ID，作为 producerAgent.name
       const agentId = item.agentId ?? '';
       let producerName = agentId;

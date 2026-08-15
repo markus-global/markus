@@ -2978,6 +2978,24 @@ export const hubApi = {
       return await res.json() as { url: string; thumbnailUrl: string };
     } catch { return null; }
   },
+  uploadMediaBatch: async (files: Array<{ key?: string; filename: string; base64: string }>): Promise<{ files: Array<{ key?: string; filename: string; url: string }>; errors: Array<{ key?: string; filename: string; error: string }> }> => {
+    await ensureHubAuth();
+    try {
+      const res = await fetch(`/api/hub/deliverables/media`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getHubToken()}`,
+        },
+        body: JSON.stringify({ files }),
+      });
+      if (!res.ok) return { files: [], errors: [{ filename: 'batch', error: `HTTP ${res.status}` }] };
+      return await res.json() as { files: Array<{ filename: string; url: string }>; errors: Array<{ filename: string; error: string }> };
+    } catch (err) {
+      return { files: [], errors: [{ filename: 'batch', error: String(err) }] };
+    }
+  },
   publishViaProxy: async (payload: { itemType: string; name: string; slug?: string; description: string; category?: string; tags?: string[]; icon?: string; version?: string; config?: unknown; files?: Record<string, string>; readme?: string; thumbnailUrl?: string; images?: Array<{ url: string; alt: string; order: number }>; priceCents?: number; donationsEnabled?: boolean; visibility?: HubVisibility; orgId?: string }) => {
     await ensureHubAuth();
     try {

@@ -732,14 +732,16 @@ describe('MarkusProvider CU tracking', () => {
     expect(stats.lastCuCost).toBe(0);
   });
 
-  it('fetchModels returns empty fallback when modelsUrl is unset (no Worker /v1/models)', async () => {
+  it('fetchModels returns fallback when modelsUrl is unset (no Worker /v1/models)', async () => {
     clearMarkusModelListCache();
     const alone = new MarkusProvider({
       apiKey: 'sk-or-test',
       baseUrl: 'https://openrouter.ai/api/v1',
+      modelsUrl: '',
       model: 'deepseek/deepseek-chat',
     });
     const result = await alone.fetchModels();
+    // modelsUrl 为空：不请求远端，返回缓存（此时无）或内置兜底模型（空列表）
     expect(fetch).not.toHaveBeenCalled();
     expect(result).toEqual([]);
   });
@@ -803,14 +805,22 @@ describe('MarkusProvider CU tracking', () => {
   });
 
   it('fails when OR key missing (no Worker fallback)', async () => {
+    // 屏蔽 env 回退 key（本机 CI 可能配置了 OPENROUTER_API_KEY），确保走「无 key」路径
+    vi.stubEnv('MARKUS_OPENROUTER_KEY', '');
+    vi.stubEnv('OPENROUTER_API_KEY', '');
+    // chat() 先做配额预检（assertCreditsAvailable 可能 fetch），给 mock 默认响应避免 res.ok 报错
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ ok: true, cuRemaining: 100, cuLimit: 1000 }));
     const noKey = new MarkusProvider({
       baseUrl: 'https://openrouter.ai/api/v1',
+      modelsUrl: '',
       model: 'deepseek/deepseek-chat',
     });
     await expect(
       noKey.chat({ messages: [{ role: 'user', content: 'hi' }], model: 'deepseek/deepseek-chat' }),
     ).rejects.toThrow(/apiKey|OpenRouter|reconnect/i);
-    expect(fetch).not.toHaveBeenCalled();
+    // 断言最终不发起真正的 chat/completions 请求（resolveRequestTarget 先抛错）
+    expect(vi.mocked(fetch).mock.calls.filter(c => String(c[0]).includes('chat/completions'))).toHaveLength(0);
+    vi.unstubAllEnvs();
   });
 
   it('maps OpenRouter 403 key-limit without claiming CU_EXCEEDED when Hub budget unknown', async () => {
