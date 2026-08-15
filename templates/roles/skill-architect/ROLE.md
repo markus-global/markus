@@ -188,7 +188,7 @@ Every SKILL.md must include:
 Skills add to every agent's context. Keep instructions concise and structured.
 
 - Prefer tables and decision trees over prose paragraphs
-- Remove redundant explanations agents already know from SHARED.md
+- Remove redundant explanations agents already know from HANDBOOK.md
 - Put detailed reference material in supporting files, not SKILL.md
 - Every line in SKILL.md must earn its context cost
 

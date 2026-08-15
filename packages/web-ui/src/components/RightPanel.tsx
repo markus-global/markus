@@ -9,6 +9,8 @@ import { CodeFileEditor, confirmDiscardDirty, languageFromPath } from './CodeFil
 import { FilePreviewEditor } from './FilePreviewEditor.tsx';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
+import { DeliverableShareModal } from './DeliverableShareModal.tsx';
+import type { DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import type { RightPanelMode, RightPanelPayload, RightPanelTab } from '../contexts/LayoutContext.tsx';
 
 type TabOwner = { agentId: string; agentName: string };
@@ -128,6 +130,8 @@ export function RightPanel({
   const { t } = useTranslation(['deliverables', 'agent', 'common']);
   const [preview, setPreview] = useState<PreviewState>({ mode: 'loading' });
   const [copied, setCopied] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareRecord, setShareRecord] = useState<DeliverableShareRecord | null>(null);
   const [selectionToolbar, setSelectionToolbar] = useState<SelectionToolbar | null>(null);
   const [tabOwners, setTabOwners] = useState<Record<number, TabOwner>>({});
   const [termOwners, setTermOwners] = useState<Record<string, TabOwner>>({});
@@ -253,6 +257,7 @@ export function RightPanel({
     let cancelled = false;
     setSelectionToolbar(null);
     setEditorDirty(false);
+    setShareRecord(null);
 
     // URL / terminal tabs switch instantly — do not flash a shared "loading" skeleton.
     if (payload.kind === 'url') {
@@ -523,6 +528,30 @@ export function RightPanel({
   const canRevealInFileBrowser = !!reference && !isUrl(reference)
     && (payload.kind === 'file' || payload.kind === 'deliverable');
 
+  // 分享到 Hub：仅产出物「文件」（reference 指向存在的本地文件）可用；URL / 目录 / builder 产物不可。
+  const canShare = payload.kind === 'deliverable'
+    && payload.deliverable.type === 'file'
+    && !!reference
+    && !isUrl(reference)
+    && !payload.deliverable.artifactType;
+
+  // 供分享弹窗回显的产出物（用本地分享状态覆盖初始字段，随分享/轮询/revoke 更新）。
+  const shareItem = payload.kind === 'deliverable'
+    ? {
+        ...payload.deliverable,
+        hubShareId: shareRecord?.id ?? payload.deliverable.hubShareId ?? null,
+        shareStatus: shareRecord?.status ?? payload.deliverable.shareStatus ?? null,
+        shareUrl: shareRecord?.url ?? payload.deliverable.shareUrl ?? null,
+        shareVisibility: shareRecord?.visibility ?? payload.deliverable.shareVisibility ?? null,
+      }
+    : null;
+
+  const onShareResult = useCallback((r: DeliverableShareRecord) => {
+    setShareRecord(r);
+  }, []);
+
+  const shareStatus = shareItem?.shareStatus ?? null;
+
   return (
     <>
       {/* Resize handle (drag left edge) — hidden in fullscreen */}
@@ -709,6 +738,38 @@ export function RightPanel({
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                 </svg>
+              </button>
+            )}
+            {canShare && (
+              <button
+                type="button"
+                onClick={() => setShareOpen(true)}
+                title={t('deliverables:share.title', { defaultValue: '分享到 Markus Hub' })}
+                aria-label={t('deliverables:share.title', { defaultValue: '分享到 Markus Hub' })}
+                className={`relative w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+                  shareStatus === 'published'
+                    ? 'text-green-500 hover:text-green-400'
+                    : shareStatus === 'pending_review'
+                      ? 'text-amber-500 hover:text-amber-400'
+                      : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                }`}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                  <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                </svg>
+                {(shareStatus === 'published' || shareStatus === 'pending_review' || shareStatus === 'rejected') && (
+                  <span
+                    className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full border border-surface-primary ${
+                      shareStatus === 'published'
+                        ? 'bg-green-500'
+                        : shareStatus === 'pending_review'
+                          ? 'bg-amber-500'
+                          : 'bg-red-500'
+                    }`}
+                    aria-hidden
+                  />
+                )}
               </button>
             )}
             {canOpenExternally && (
@@ -977,6 +1038,15 @@ export function RightPanel({
             {t('deliverables:contextMenu.addToConversation', { defaultValue: 'Add to conversation' })}
           </button>
         </div>
+      )}
+
+      {/* 分享产出物到 Hub */}
+      {shareOpen && shareItem && (
+        <DeliverableShareModal
+          item={shareItem}
+          onClose={() => setShareOpen(false)}
+          onShared={onShareResult}
+        />
       )}
     </>
   );

@@ -5,6 +5,17 @@ import { Avatar } from './Avatar.tsx';
 
 export type MentionEntityType = 'agent' | 'project' | 'requirement' | 'task' | 'deliverable' | 'workflow';
 
+// ---- slash commands ----
+export type SlashCommandType = 'system' | 'skill';
+
+export interface SlashCommand {
+  id: string;
+  name: string;
+  description: string;
+  type: SlashCommandType;
+  icon: string;
+}
+
 export interface ContextChip {
   id: string;
   label: string;
@@ -66,12 +77,16 @@ export interface ChatInputProps {
   replyTo?: { id: string; sender: string; text: string } | null;
   onClearReply?: () => void;
   fileInputRef?: React.RefObject<HTMLInputElement | null>;
+  /** 可选：外部 textarea ref（供父组件聚焦输入框，如打开右侧栏时自动聚焦）。 */
+  textareaRef?: React.Ref<HTMLTextAreaElement | null>;
   visionWarning?: boolean;
   maxFiles?: number;
   className?: string;
   compact?: boolean;
   /** Called when mention chips change (add/remove) */
   onMentionChipsChange?: (chips: MentionChip[]) => void;
+  /** Available slash commands (skills) */
+  slashCommands?: SlashCommand[];
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -109,11 +124,13 @@ export function ChatInput({
   replyTo,
   onClearReply,
   fileInputRef: externalFileInputRef,
+  textareaRef: externalTextareaRef,
   visionWarning,
   maxFiles = 5,
   className = '',
   compact = false,
   onMentionChipsChange,
+  slashCommands,
 }: ChatInputProps) {
   const { t } = useTranslation(['team', 'common']);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -126,6 +143,11 @@ export function ChatInput({
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
   const [dropdownPos, setDropdownPos] = useState<{ left: number; bottom: number } | null>(null);
   const [mentionChips, setMentionChips] = useState<MentionChip[]>([]);
+
+  // ---- slash command state ----
+  const [slashDropdown, setSlashDropdown] = useState(false);
+  const [slashFilter, setSlashFilter] = useState('');
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
 
   const filteredMentions = (mentionItems ?? []).filter(a => a.name.toLowerCase().includes(mentionFilter));
 
@@ -145,11 +167,17 @@ export function ChatInput({
     return groups;
   })();
 
+  // ---- slash command filtering (flat list, skills only) ----
+  const slashCmds = slashCommands ?? [];
+  const filteredSlashCmds = !slashFilter
+    ? slashCmds
+    : slashCmds.filter(c => c.name.toLowerCase().includes(slashFilter));
+
   useEffect(() => {
-    if (!mentionDropdown || !containerRef.current) { setDropdownPos(null); return; }
+    if ((!mentionDropdown && !slashDropdown) || !containerRef.current) { setDropdownPos(null); return; }
     const rect = containerRef.current.getBoundingClientRect();
     setDropdownPos({ left: rect.left + 16, bottom: window.innerHeight - rect.top + 4 });
-  }, [mentionDropdown]);
+  }, [mentionDropdown, slashDropdown]);
 
   const adjustTextareaHeight = useCallback(() => {
     const el = textareaRef.current;
@@ -164,26 +192,50 @@ export function ChatInput({
 
   const handleInputChange = useCallback((val: string) => {
     onChange(val);
-    if (!mentionItems?.length) { setMentionDropdown(false); return; }
 
-    const cursorPos = textareaRef.current?.selectionStart ?? val.length;
-    const textBeforeCursor = val.slice(0, cursorPos);
-    const atIdx = textBeforeCursor.lastIndexOf('@');
-    if (atIdx >= 0) {
-      const charBefore = atIdx === 0 ? '' : textBeforeCursor[atIdx - 1]!;
-      const isValidPosition = atIdx === 0 || /[\s\n,，。！？!?;；:：、（）()\[\]【】]/.test(charBefore);
-      if (isValidPosition) {
-        const fragment = textBeforeCursor.slice(atIdx + 1);
-        if (!fragment.includes(' ') && !fragment.includes('\n')) {
-          setMentionDropdown(true);
-          setMentionFilter(fragment.toLowerCase());
-          setMentionSelectedIndex(0);
-          return;
+    // ---- @ mention detection ----
+    if (mentionItems?.length) {
+      const cursorPos = textareaRef.current?.selectionStart ?? val.length;
+      const textBeforeCursor = val.slice(0, cursorPos);
+      const atIdx = textBeforeCursor.lastIndexOf('@');
+      if (atIdx >= 0) {
+        const charBefore = atIdx === 0 ? '' : textBeforeCursor[atIdx - 1]!;
+        const isValidPosition = atIdx === 0 || /[\s\n,，。！？!?;；:：、（）()\[\]【】]/.test(charBefore);
+        if (isValidPosition) {
+          const fragment = textBeforeCursor.slice(atIdx + 1);
+          if (!fragment.includes(' ') && !fragment.includes('\n')) {
+            setMentionDropdown(true);
+            setMentionFilter(fragment.toLowerCase());
+            setMentionSelectedIndex(0);
+            setSlashDropdown(false);
+            return;
+          }
         }
       }
     }
     setMentionDropdown(false);
-  }, [onChange, mentionItems]);
+
+    // ---- / slash command detection ----
+    if (slashCmds.length > 0) {
+      const cursorPos = textareaRef.current?.selectionStart ?? val.length;
+      const textBeforeCursor = val.slice(0, cursorPos);
+      const slashIdx = textBeforeCursor.lastIndexOf('/');
+      if (slashIdx >= 0) {
+        const charBefore = slashIdx === 0 ? '' : textBeforeCursor[slashIdx - 1]!;
+        const isValidPosition = slashIdx === 0 || /[\s\n,，。！？!?;；:：、（）()\[\]【】]/.test(charBefore);
+        if (isValidPosition) {
+          const fragment = textBeforeCursor.slice(slashIdx + 1);
+          if (!fragment.includes(' ') && !fragment.includes('\n')) {
+            setSlashDropdown(true);
+            setSlashFilter(fragment.toLowerCase());
+            setSlashSelectedIndex(0);
+            return;
+          }
+        }
+      }
+    }
+    setSlashDropdown(false);
+  }, [onChange, mentionItems, slashCmds]);
 
   const insertMention = useCallback((item: MentionItem) => {
     const cursorPos = textareaRef.current?.selectionStart ?? value.length;
@@ -212,6 +264,24 @@ export function ChatInput({
     });
   }, [value, onChange, mentionChips, onMentionChipsChange]);
 
+  const insertSlashCommand = useCallback((cmd: SlashCommand) => {
+    const cursorPos = textareaRef.current?.selectionStart ?? value.length;
+    const before = value.slice(0, cursorPos);
+    const slashIdx = before.lastIndexOf('/');
+    const after = value.slice(cursorPos);
+
+    // Insert the command name as text: /skill-name
+    const newVal = value.slice(0, slashIdx) + '/' + cmd.name + ' ' + after;
+    onChange(newVal);
+    setSlashDropdown(false);
+    setSlashSelectedIndex(0);
+    const newPos = slashIdx + cmd.name.length + 2;
+    requestAnimationFrame(() => {
+      textareaRef.current?.setSelectionRange(newPos, newPos);
+      textareaRef.current?.focus();
+    });
+  }, [value, onChange]);
+
   const handleSend = useCallback(() => {
     onSend();
     setMentionChips([]);
@@ -219,6 +289,7 @@ export function ChatInput({
   }, [onSend, onMentionChipsChange]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // ---- @ mention dropdown keys ----
     if (mentionDropdown && filteredMentions.length > 0) {
       const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
       const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
@@ -229,8 +300,21 @@ export function ChatInput({
       if (isSelect) { e.preventDefault(); const item = filteredMentions[mentionSelectedIndex]; if (item) insertMention(item); return; }
       if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
     }
+
+    // ---- / slash command dropdown keys ----
+    if (slashDropdown && filteredSlashCmds.length > 0) {
+      const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
+      const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
+      const isSelect = e.key === 'Enter' || e.key === 'Tab';
+      const isClose = e.key === 'Escape';
+      if (isUp) { e.preventDefault(); setSlashSelectedIndex(prev => (prev - 1 + filteredSlashCmds.length) % filteredSlashCmds.length); return; }
+      if (isDown) { e.preventDefault(); setSlashSelectedIndex(prev => (prev + 1) % filteredSlashCmds.length); return; }
+      if (isSelect) { e.preventDefault(); const cmd = filteredSlashCmds[slashSelectedIndex]; if (cmd) insertSlashCommand(cmd); return; }
+      if (isClose) { e.preventDefault(); setSlashDropdown(false); return; }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
-  }, [mentionDropdown, filteredMentions, mentionSelectedIndex, insertMention, handleSend]);
+  }, [mentionDropdown, filteredMentions, mentionSelectedIndex, insertMention, slashDropdown, filteredSlashCmds, slashSelectedIndex, insertSlashCommand, handleSend]);
 
   const files = pendingFiles ?? [];
 
@@ -280,6 +364,32 @@ export function ChatInput({
     document.body,
   );
 
+  const slashDropdownEl = slashDropdown && filteredSlashCmds.length > 0 && dropdownPos && createPortal(
+    <div
+      className="fixed bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden max-h-64 overflow-y-auto min-w-[240px]"
+      style={{ left: dropdownPos.left, bottom: dropdownPos.bottom, zIndex: 9999 }}
+    >
+      {(() => {
+        return filteredSlashCmds.map((cmd, i) => (
+          <button
+            key={cmd.id}
+            ref={el => { if (i === slashSelectedIndex && el) el.scrollIntoView({ block: 'nearest' }); }}
+            onMouseDown={e => { e.preventDefault(); insertSlashCommand(cmd); }}
+            onMouseEnter={() => setSlashSelectedIndex(i)}
+            className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 transition-colors ${
+              i === slashSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
+            }`}
+          >
+            <span className="text-xs w-5 h-5 flex items-center justify-center shrink-0">🔧</span>
+            <span className="flex-1 min-w-0 truncate font-mono text-[13px]">/{cmd.name}</span>
+            <span className="text-[10px] text-fg-tertiary ml-auto shrink-0 max-w-[120px] truncate">{cmd.description}</span>
+          </button>
+        ));
+      })()}
+    </div>,
+    document.body,
+  );
+
   return (
     <div
       ref={containerRef}
@@ -288,6 +398,7 @@ export function ChatInput({
       onDragOver={onDragOver}
     >
       {mentionDropdownEl}
+      {slashDropdownEl}
 
       {/* Context chips & mention chips */}
       {((contextChips && contextChips.length > 0) || mentionChips.length > 0) && (
@@ -394,7 +505,13 @@ export function ChatInput({
           </button>
         )}
         <textarea
-          ref={textareaRef}
+          ref={(el) => {
+            textareaRef.current = el;
+            if (externalTextareaRef) {
+              if (typeof externalTextareaRef === 'function') externalTextareaRef(el);
+              else externalTextareaRef.current = el;
+            }
+          }}
           value={value}
           onChange={e => handleInputChange(e.target.value)}
           onKeyDown={handleKeyDown}

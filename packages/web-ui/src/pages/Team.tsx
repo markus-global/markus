@@ -350,6 +350,30 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
 
+  // Parse a JSON array of context chips carried over navigation (e.g. from the
+  // Deliverables page), turning each into a pending chat-context tag above the
+  // input — same behaviour as right-panel "Add to conversation".
+  const applyNavChatChips = useCallback((raw: string | null | undefined) => {
+    if (!raw) return;
+    try {
+      const chips = JSON.parse(raw) as Array<{ label?: string; content?: string }>;
+      if (!Array.isArray(chips) || chips.length === 0) return;
+      const valid = chips.filter((c): c is { label: string; content: string } =>
+        !!c && typeof c.content === 'string' && c.content.trim().length > 0);
+      if (valid.length === 0) return;
+      const withIds = valid.map(c => ({
+        id: `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        label: c.label?.trim() || 'Context',
+        content: c.content,
+      }));
+      setChatContext(prev => [...prev, ...withIds]);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      });
+    } catch { /* malformed JSON → ignore silently */ }
+  }, []);
+
   // L2: Team detail panel (hidden by default, toggled via header button)
   const [showTeamDetailPanel, setShowTeamDetailPanel] = useState<boolean>(() => {
     if (previewMode) return true;
@@ -782,6 +806,27 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [mentionDropdown, setMentionDropdown] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
+  // Slash commands
+  const [slashDropdown, setSlashDropdown] = useState(false);
+  const [slashFilter, setSlashFilter] = useState('');
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
+  const [slashCommands, setSlashCommands] = useState<Array<{ name: string; description: string }>>([]);
+  const slashCommandsLoadedRef = useRef(false);
+  const loadSlashCommands = useCallback(() => {
+    if (slashCommandsLoadedRef.current) return;
+    slashCommandsLoadedRef.current = true;
+    (async () => {
+      try {
+        const { skills } = await api.skills.list();
+        setSlashCommands(skills.map(s => ({ name: s.name, description: s.description ?? s.name })));
+      } catch { /* ignore */ }
+    })();
+  }, []);
+  // Eager-load skills so slash commands are available immediately
+  useEffect(() => { loadSlashCommands(); }, [loadSlashCommands]);
+  const filteredSlashCmds = !slashFilter
+    ? slashCommands
+    : slashCommands.filter(c => c.name.toLowerCase().includes(slashFilter.toLowerCase()));
 
   type EntityMentionItem = { id: string; name: string; entityType: 'workflow' | 'project' | 'requirement' | 'task' | 'deliverable'; role?: string };
   const [entityMentionItems, setEntityMentionItems] = useState<EntityMentionItem[]>([]);
@@ -1023,6 +1068,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           setMainTab('chat');
           if (isMobile) enterMobileDetail();
         }
+        // 从交付物页跳转：右侧栏打开指定交付物预览。
+        if (detail.params?.openDeliverable) {
+          const did = detail.params.openDeliverable;
+          localStorage.removeItem('markus_nav_openDeliverable');
+          if (isMobile) {
+            navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: did });
+          } else if (openRightPanel) {
+            void api.deliverables.get(did).then(res => {
+              if (res.deliverable) openRightPanel({ kind: 'deliverable', deliverable: res.deliverable });
+            }).catch(() => { /* ignore missing deliverable */ });
+          }
+        }
         if (detail.params?.prefillMessage) {
           const msg = detail.params.prefillMessage;
           localStorage.removeItem('markus_nav_prefillMessage');
@@ -1040,6 +1097,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               }
             }, 100);
           }
+        }
+        if (detail.params?.chatChips) {
+          const chipsRaw = detail.params.chatChips;
+          localStorage.removeItem('markus_nav_chatChips');
+          setMainTab('chat');
+          applyNavChatChips(chipsRaw);
         }
         if (detail.params?.dm) {
           setChatMode('dm');
@@ -1107,6 +1170,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         const el = textareaRef.current;
         if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
       }, 150);
+    }
+    const navChatChips = localStorage.getItem('markus_nav_chatChips');
+    if (navChatChips) {
+      localStorage.removeItem('markus_nav_chatChips');
+      setMainTab('chat');
+      applyNavChatChips(navChatChips);
+    }
+    // 交付物页跳转：右侧栏打开指定交付物预览（挂载前 navBus 已写入 localStorage）。
+    const navOpenDeliverable = localStorage.getItem('markus_nav_openDeliverable');
+    if (navOpenDeliverable) {
+      localStorage.removeItem('markus_nav_openDeliverable');
+      if (isMobile) {
+        navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: navOpenDeliverable });
+      } else if (openRightPanel) {
+        void api.deliverables.get(navOpenDeliverable).then(res => {
+          if (res.deliverable) openRightPanel({ kind: 'deliverable', deliverable: res.deliverable });
+        }).catch(() => { /* ignore missing deliverable */ });
+      }
     }
     const selectAgent = localStorage.getItem('markus_nav_selectAgent');
     if (selectAgent) {
@@ -1446,6 +1527,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       return () => { cancelAnimationFrame(raf); for (const t of timers) clearTimeout(t); };
     }
   }, [mainTab, sending, scrollChatToBottom]);
+
+  // 右侧栏（chatRightReserve）开/关导致聊天区宽度变化：若用户本就在底部，
+  // 重新贴底，避免因宽度变化导致内容上下跳动。
+  const prevChatRightReserveRef = useRef(chatRightReserve);
+  useEffect(() => {
+    if (prevChatRightReserveRef.current === chatRightReserve) return;
+    prevChatRightReserveRef.current = chatRightReserve;
+    if (mainTab !== 'chat') return;
+    if (visibleMessages.length === 0 || sending || loadingChat) return;
+    if (!userAtBottomRef.current || userPinnedAwayRef.current) return;
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    const raf = requestAnimationFrame(() => scrollChatToBottom('instant'));
+    for (const delay of [60, 160, 320]) {
+      timers.push(setTimeout(() => scrollChatToBottom('instant'), delay));
+    }
+    return () => { cancelAnimationFrame(raf); for (const t of timers) clearTimeout(t); };
+  }, [chatRightReserve, mainTab, visibleMessages.length, sending, loadingChat, scrollChatToBottom]);
 
   // Load channel messages from DB → store in buffer + update display
   const loadChannelMessages = useCallback(async (channel: string, bufferKey?: string) => {
@@ -2294,6 +2392,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         if (prev.some(m => m.id === newMsg.id)) return prev;
 
         // Feishu assistant event may carry the inbound user text as a safety net.
+        // Insert chronologically (never append) so the user bubble stays BEFORE
+        // the agent reply even when the fallback arrives after the reply.
         let base = prev;
         if (!isUserTurn && fallbackUserText) {
           const hasUser = base.some(m =>
@@ -2301,12 +2401,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             || (m.sender === 'user' && m.text === fallbackUserText),
           );
           if (!hasUser) {
-            base = [...base, {
+            base = insertChatMsgByCreatedAt(base, {
               id: fallbackUserId || `feishu_user_${newMsg.id}`,
               sender: 'user' as const,
               text: fallbackUserText,
               time: new Date().toLocaleTimeString(),
-            }];
+              // Bubble clock mirrors the agent reply's start time so a fallback
+              // user turn is never placed after the in-flight response.
+              rawCreatedAt: newMsg.rawCreatedAt,
+            });
           }
         }
 
@@ -3516,26 +3619,64 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       }
     }
     setMentionDropdown(false);
+
+    // ---- / slash command detection ----
+    if (slashCommands.length > 0) {
+      const slashIdx = textBeforeCursor.lastIndexOf('/');
+      if (slashIdx >= 0) {
+        const charBeforeSlash = slashIdx === 0 ? '' : textBeforeCursor[slashIdx - 1]!;
+        const isValidSlashPos = slashIdx === 0 || /[\s\n,，。！？!?;；:：、（）()\[\]【】]/.test(charBeforeSlash);
+        if (isValidSlashPos) {
+          const slashFragment = textBeforeCursor.slice(slashIdx + 1);
+          if (!slashFragment.includes(' ') && !slashFragment.includes('\n')) {
+            loadSlashCommands();
+            setSlashDropdown(true);
+            setSlashFilter(slashFragment.toLowerCase());
+            setSlashSelectedIndex(0);
+            return;
+          }
+        }
+      }
+    }
+    setSlashDropdown(false);
   };
+
+  const insertSlashCommand = useCallback((cmd: { name: string; description: string }) => {
+    const cursorPos = textareaRef.current?.selectionStart ?? input.length;
+    const before = input.slice(0, cursorPos);
+    const slashIdx = before.lastIndexOf('/');
+    const after = input.slice(cursorPos);
+    const newVal = input.slice(0, slashIdx) + '/' + cmd.name + ' ' + after;
+    setInput(newVal);
+    setSlashDropdown(false);
+    setSlashSelectedIndex(0);
+    const newPos = slashIdx + cmd.name.length + 2;
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(newPos, newPos);
+    });
+  }, [input]);
 
   const insertMention = (name: string, entityType?: string, entityId?: string) => {
     const cursorPos = textareaRef.current?.selectionStart ?? input.length;
     const before = input.slice(0, cursorPos);
     const atIdx = before.lastIndexOf('@');
     const after = input.slice(cursorPos);
-    const mention = entityType && entityId
-      ? `@[${name}](${entityType}:${entityId})`
-      : name.includes(' ') ? `@[${name}]` : `@${name}`;
-    const newVal = input.slice(0, atIdx) + mention + ' ' + after;
+    // 移除输入框中已输入的 @ + 过滤片段，改为在输入框上方生成标签（与右侧栏“添加到对话”一致）
+    const newVal = input.slice(0, atIdx) + after;
     setInput(newVal);
     setMentionDropdown(false);
     setMentionSelectedIndex(0);
-    const newCursor = atIdx + mention.length + 1;
+    const content = entityType && entityId
+      ? `@[${name}](${entityType}:${entityId})`
+      : name.includes(' ') ? `@[${name}]` : `@${name}`;
+    const icon = entityType ? (ENTITY_TYPE_ICON[entityType] ?? '📄') : '🤖';
+    addChatContext({ label: `${icon} ${name}`, content: `${content} ` });
     requestAnimationFrame(() => {
       const el = textareaRef.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(newCursor, newCursor);
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
     });
   };
 
@@ -4670,7 +4811,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               <span className="text-xs text-fg-tertiary">{t('page.loadingEarlierMessages')}</span>
             </div>
           )}
-          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto ${isMobile ? 'p-2.5' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
+          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'p-2.5' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
           {visibleMessages.length > 0 && (
           <div style={{ height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
@@ -4868,12 +5009,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           <div ref={messagesEnd} />
         </div>
 
-          {/* Scroll to bottom — same horizontal box as the input (max-w-3xl + right reserve) */}
+          {/* Scroll to bottom — normal flow row above the input, never floats over it */}
           {showScrollBtn && mainTab === 'chat' && (
             <div
-              className={`absolute ${isMobile ? 'bottom-4' : 'bottom-28'} inset-x-0 z-10 pointer-events-none ${
-                isMobile ? 'px-3' : `px-5 ${chatRightReserve}`
-              }`}
+              className={`flex justify-center ${isMobile ? 'px-3' : `px-5 ${chatRightReserve}`} shrink-0 ${isMobile ? 'pb-1 pt-0' : 'pb-1'}`}
             >
               <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex justify-center`}>
                 <button
@@ -5062,6 +5201,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               ))}
             </div>
           )}
+          {slashDropdown && filteredSlashCmds.length > 0 && (
+            <div className="absolute bottom-full left-4 mb-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl overflow-hidden z-10 max-h-64 max-w-xs w-72 overflow-y-auto">
+              <div className="px-3 py-1.5 text-[10px] text-fg-tertiary font-medium uppercase tracking-wider border-b border-border-default">
+                {t('page.slashSkill')}
+              </div>
+              {filteredSlashCmds.map((cmd, i) => (
+                <button
+                  key={cmd.name}
+                  ref={el => { if (i === slashSelectedIndex && el) el.scrollIntoView({ block: 'nearest' }); }}
+                  onClick={() => insertSlashCommand(cmd)}
+                  onMouseEnter={() => setSlashSelectedIndex(i)}
+                  className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 transition-colors ${
+                    i === slashSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
+                  }`}
+                >
+                  <span className="text-xs w-5 h-5 flex items-center justify-center shrink-0">🔧</span>
+                  <span className="flex-1 min-w-0 truncate font-mono text-[13px]">/{cmd.name}</span>
+                  <span className="text-[10px] text-fg-tertiary ml-auto shrink-0 max-w-[100px] truncate">{cmd.description}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {chatContext.length > 0 && (
             <div className="flex items-center gap-1.5 mb-2 flex-wrap">
               {chatContext.map(chip => (
@@ -5168,6 +5329,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       return;
                     }
                     if (isClose) { e.preventDefault(); setMentionDropdown(false); return; }
+                  }
+                  if (slashDropdown && filteredSlashCmds.length > 0) {
+                    const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
+                    const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
+                    const isSelect = e.key === 'Enter' || e.key === 'Tab';
+                    const isClose = e.key === 'Escape';
+                    if (isUp) { e.preventDefault(); setSlashSelectedIndex(prev => (prev - 1 + filteredSlashCmds.length) % filteredSlashCmds.length); return; }
+                    if (isDown) { e.preventDefault(); setSlashSelectedIndex(prev => (prev + 1) % filteredSlashCmds.length); return; }
+                    if (isSelect) { e.preventDefault(); const cmd = filteredSlashCmds[slashSelectedIndex]; if (cmd) insertSlashCommand(cmd); return; }
+                    if (isClose) { e.preventDefault(); setSlashDropdown(false); return; }
                   }
                   // Escape leaves the composer so JK/HL on the current keyboard pane work again.
                   if (e.key === 'Escape') {

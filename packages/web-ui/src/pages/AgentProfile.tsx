@@ -16,6 +16,7 @@ import { friendlyAgentError } from './ChatComponents.tsx';
 import { DeliverableDetailModal, DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
 import { getToolMeta } from '../components/execution-utils.ts';
 import { NamedIcon } from '../lib/namedIcons.tsx';
+import { useLayout } from '../contexts/LayoutContext.tsx';
 
 const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 
@@ -2632,9 +2633,19 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
 
 function DeliverablesTab({ agentId }: { agentId: string }) {
   const { t } = useTranslation(['agent', 'common']);
+  const layout = useLayout();
   const [items, setItems] = useState<DeliverableInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<DeliverableInfo | null>(null);
+
+  /** 点击产出 → 直接在 Team Chat 右侧栏打开交付物预览（不再弹窗）。 */
+  const openInRightPanel = useCallback((item: DeliverableInfo) => {
+    if (layout?.openRightPanel) {
+      layout.openRightPanel({ kind: 'deliverable', deliverable: item });
+    } else {
+      setSelected(item); // fallback：无右侧栏宿主时退回弹窗
+    }
+  }, [layout]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -2689,7 +2700,7 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
           return (
             <button
               key={item.id}
-              onClick={() => setSelected(item)}
+              onClick={() => openInRightPanel(item)}
               className="w-full text-left rounded-xl border border-border-default bg-surface-elevated/30 overflow-hidden transition-colors hover:border-brand-500/40 hover:bg-surface-elevated/50 px-4 py-3 flex items-start gap-3"
             >
               <span className={`inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm shrink-0 ${typeMeta.color}`}>

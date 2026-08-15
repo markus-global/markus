@@ -208,9 +208,9 @@ MUST: `buildSystemPrompt()` MUST accept `promptProfile: 'reflex' | 'converse' | 
 | Date / locale / Interaction Mode | yes | always retained | yes |
 
 MUST: ROLE.md is always injected in full (persona only). `ROLE_PROMPT_MAX_TOKENS` is warn-only.
-MUST NOT: Append `SHARED.md` into ROLE. Distill collaboration hard rules into L0
-`## Markus Collaboration Rules`; SHARED.md is a depth handbook via `file_read`.
-Long-tail API/reference content belongs in skills, not ROLE/SHARED always-on.
+MUST NOT: Append `HANDBOOK.md` into ROLE. Distill collaboration hard rules into L0
+`## Markus Collaboration Rules`; HANDBOOK.md is a depth handbook via `file_read`.
+Long-tail API/reference content belongs in skills, not ROLE/HANDBOOK always-on.
 MUST: knowledge injection MUST exclude observations buffer; converse uses a short
 digest cap (full text via `memory_search` / files). Knowledge body headings `##`
 MUST be demoted to `###` under `## Your Knowledge` so they do not collide with
@@ -235,7 +235,7 @@ MUST: Conflict priority:
 MUST: Managers are **player-coach** — Position does not forbid hands-on building when ROLE is a builder/founder.
 
 MUST: L0 includes **How Your Prompt Is Composed** — ROLE.md is persona; L0 is always-on
-platform rules; SHARED/skills are on demand. ROLE line count ≠ full constraints.
+platform rules; HANDBOOK/skills are on demand. ROLE line count ≠ full constraints.
 
 MUST (`task_submit_review`): Auto-fill `task_id` from execution ALS/`activeTasks` when
 present; otherwise `task_id` is required. MUST NOT guess from the TaskService board.

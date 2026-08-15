@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, type DeliverableInfo, type ProjectInfo, type AgentInfo, type TeamInfo, type AuthUser } from '../api.ts';
+import { api, wsClient, getHubToken, hubApi, type DeliverableInfo, type ProjectInfo, type AgentInfo, type TeamInfo, type AuthUser } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from '../components/ContentRenderer.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
-import { ChatPanel } from '../components/ChatPanel.tsx';
-import { type ContextChip } from '../components/ChatInput.tsx';
+import { DeliverableShareModal } from '../components/DeliverableShareModal.tsx';
+import { createDeliverableShareService, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -32,6 +32,11 @@ const ALL_TYPES = ['file', 'directory'] as const;
 
 function isUrl(s: string): boolean {
   return /^https?:\/\//i.test(s);
+}
+
+/** 分享状态（未分享返回 null）。 */
+function shareStatusOf(d: { shareStatus?: string | null } | null): string | null {
+  return d?.shareStatus ?? null;
 }
 
 function relativeTime(dateStr: string, t: (key: string, opts?: Record<string, unknown>) => string): string {
@@ -128,6 +133,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [showCopyPath, setShowCopyPath] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState<DeliverableInfo | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   const [sharedDir, setSharedDir] = useState('');
   const [missingFileIds, setMissingFileIds] = useState<Set<string>>(new Set());
 
@@ -135,10 +141,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const layout = useLayout();
   const keyboardPane = layout?.keyboardPane ?? 'content';
-
-  // Chat panel (Phase 3)
-  const [chatPanelOpen, setChatPanelOpen] = useState(false);
-  const [contextChips, setContextChips] = useState<ContextChip[]>([]);
 
   // Selection toolbar (Phase 4)
   const [selectionToolbar, setSelectionToolbar] = useState<{ x: number; y: number; text: string; htmlMeta?: { xpath: string; cssSelector: string } } | null>(null);
@@ -211,6 +213,20 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const fetchLimit = groupBy === 'date' ? DATE_PAGE_SIZE : ALL_ITEMS_LIMIT;
 
+  /** 静默刷新：不触发 setLoading / 不滚动到顶（避免 L1 侧边栏闪烁）。用于元数据类变更（如分享状态）。 */
+  const silentRefresh = useCallback(async () => {
+    try {
+      const { results, total } = await api.deliverables.search({ ...searchParams, offset: 0, limit: fetchLimit });
+      setItems(prev => prev.map(it => results.find(r => r.id === it.id) ?? it));
+      setTotalCount(total);
+      setSelected(prev => {
+        if (!prev) return null;
+        const fresh = results.find(r => r.id === prev.id);
+        return fresh ? { ...prev, ...fresh } : prev;
+      });
+    } catch { /* 静默失败，保持现有状态 */ }
+  }, [searchParams, fetchLimit]);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     listRef.current?.scrollTo({ top: 0, behavior: 'instant' });
@@ -259,12 +275,20 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     if (!isActive) return;
     const unsub1 = wsClient.on('deliverable:created', () => refresh());
     const unsub2 = wsClient.on('deliverable:updated', (event) => {
-      refresh();
+      silentRefresh();
       const updatedId = event.payload?.deliverableId as string | undefined;
       if (updatedId && selectedRef.current?.id === updatedId) {
         api.deliverables.get(updatedId).then(r => {
           if (r.deliverable) {
-            setSelected(r.deliverable);
+            setSelected(prev => ({
+              ...(prev ?? r.deliverable),
+              ...r.deliverable,
+              hubShareId: (prev?.hubShareId ?? r.deliverable.hubShareId) ?? null,
+              shareStatus: (prev?.shareStatus ?? r.deliverable.shareStatus) ?? null,
+              shareUrl: (prev?.shareUrl ?? r.deliverable.shareUrl) ?? null,
+              shareVisibility: (prev?.shareVisibility ?? r.deliverable.shareVisibility) ?? null,
+              shareReason: (prev?.shareReason ?? r.deliverable.shareReason) ?? null,
+            }));
             loadPreview(r.deliverable);
           }
         }).catch(() => {});
@@ -272,7 +296,64 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     });
     const unsub3 = wsClient.on('deliverable:removed', () => refresh());
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, [refresh, isActive, previewMode]);
+  }, [silentRefresh, isActive, previewMode]);
+
+  // 页面级 Hub 分享状态同步：不依赖分享弹窗常驻，页面可见期间周期性从 Hub 拉取
+  // 当前用户的全部分享状态，把 moderationStatus（pending/published/rejected）映射回
+  // 本地 items + selected，并回写本地 DB。这样管理员在 Hub 批准/拒绝后，客户端在不
+  // 重新打开弹窗的情况下也能自动更新按钮/徽标（对齐资产 ArtifactDetail 的加载即同步模式）。
+  const shareSyncService = useMemo(
+    () => createDeliverableShareService(getHubToken, hubApi.getUrl()),
+    [],
+  );
+  useEffect(() => {
+    if (previewMode) return;
+    if (!isActive) return;
+    if (!getHubToken()) return; // 未登录 Hub 不轮询
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const records = await shareSyncService.listMine();
+        if (cancelled) return;
+        // 按 hubShareId 或本地 id 映射到列表项
+        const byShareId = new Map<string, DeliverableShareRecord>();
+        const byLocalId = new Map<string, DeliverableShareRecord>();
+        for (const r of records) {
+          if (r.id) byShareId.set(r.id, r);
+        }
+        const patches = new Map<string, { hubShareId: string | null; shareStatus: string | null; shareUrl: string | null; shareVisibility: string | null; shareReason?: string | null }>();
+        setItems(prev => prev.map(it => {
+          const rec = (it.hubShareId && byShareId.get(it.hubShareId)) || byLocalId.get(it.id);
+          if (!rec) return it;
+          const patch = {
+            hubShareId: it.hubShareId ?? rec.id ?? null,
+            shareStatus: rec.status ?? null,
+            shareUrl: rec.url ?? null,
+            shareVisibility: it.shareVisibility ?? rec.visibility ?? null,
+            ...(rec.reason != null ? { shareReason: rec.reason } : {}),
+          };
+          patches.set(it.id, patch);
+          return { ...it, ...patch };
+        }));
+        // 更新 selected（若其状态变化）
+        setSelected(prev => {
+          if (!prev) return prev;
+          const patch = patches.get(prev.id);
+          if (!patch) return prev;
+          return { ...prev, ...patch };
+        });
+        // 回写本地 DB 持久化（静默，不触发列表 loading）
+        for (const [id, patch] of patches) {
+          void api.deliverables.update(id, patch).catch(() => {});
+        }
+      } catch {
+        /* Hub 未就绪/网络失败：静默，下轮重试 */
+      }
+    };
+    run();
+    const timer = setInterval(run, 30000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [shareSyncService, isActive, previewMode]);
 
   // Handle deep navigation to a specific deliverable
   const pendingOpenRef = useRef<string | null>(null);
@@ -422,6 +503,32 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setActionLoading('');
   };
 
+  // 分享到 Hub 结果回调：把分享字段写回 selected + 列表项（撑状态徽标/列表标识即时刷新）。
+  // 同时回写本地 DB（PUT），避免 ws deliverable:updated / refresh 用无分享字段的后端对象覆盖按钮状态。
+  // 分享操作的对象就是当前 selected（弹窗对 selected 操作），故本地 id 取 selected.id。
+  const onShareResult = useCallback((r: DeliverableShareRecord) => {
+    const selectedNow = selectedRef.current;
+    const id = selectedNow?.id;
+    if (!id) return;
+    const patch = {
+      hubShareId: r.id ?? null,
+      shareStatus: r.status ?? null,
+      shareUrl: r.url ?? null,
+      shareVisibility: r.visibility ?? null,
+      ...(r.reason != null || r.status === 'rejected' ? { shareReason: r.reason ?? selectedNow?.shareReason ?? null } : {}),
+    };
+    const filled = { ...patch, shareStatus: patch.shareStatus ?? selectedNow?.shareStatus ?? null };
+    // 更新 selected：分享字段即时生效（按钮变色、徽标出现）
+    setSelected(prev => (prev && prev.id === id) ? { ...prev, ...filled } : prev);
+    // 同步更新列表项对应项，不触发整表 setLoading 刷新（避免 L1 侧边栏闪烁）
+    setItems(prev => prev.map(it => it.id === id ? { ...it, ...filled } : it));
+    // 静默回写本地 DB；失败不影响 UI（分享状态已在 Hub）——再静默拉取对齐后端
+    void (async () => {
+      try { await api.deliverables.update(id, patch); } catch { /* 静默 */ }
+      silentRefresh();
+    })();
+  }, [silentRefresh]);
+
   const handleOpenInBuilder = () => {
     navBus.navigate(PAGE.BUILDER);
   };
@@ -535,6 +642,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   }, [selected?.id, grouped, expandGroup]);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+  /** L1 侧边栏容器 ref（打开时聚焦，支持 J/K 键盘导航）。 */
+  const l1Ref = useRef<HTMLDivElement>(null);
+  /** 用户手动展开 L1 侧栏标记：auto-collapse 不覆盖手动操作。 */
+  const sidebarManualRef = useRef(false);
 
   // Entering L1 from L0: expand only on pane *entry* — never fight Cmd+B.
   const prevDeliverablesKeyboardPaneRef = useRef(keyboardPane);
@@ -543,12 +654,60 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     const prev = prevDeliverablesKeyboardPaneRef.current;
     prevDeliverablesKeyboardPaneRef.current = keyboardPane;
     if (keyboardPane !== 'l1' || prev === 'l1') return;
-    if (sidebarCollapsed) setSidebarCollapsed(false);
+    if (sidebarCollapsed) {
+      // 用户通过键盘导航进入 L1，视为手动操作：优先于 auto-collapse，不再自动折叠。
+      sidebarManualRef.current = true;
+      setSidebarCollapsed(false);
+    }
   }, [keyboardPane, previewMode, isMobile, isActive, sidebarCollapsed]);
 
   useEffect(() => {
     if (previewMode || isMobile || !isActive) return;
     const handler = (e: KeyboardEvent) => {
+      // Cmd/Ctrl 修饰键快捷键是全局命令，不受 keyboardPane 焦点区限制
+      // （否则刚进入页面焦点默认在 L0 时 Cmd+B / Cmd+L / Cmd+F 全部被吞掉）。
+      const isCmd = e.metaKey || e.ctrlKey;
+      if (isCmd) {
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+          if (e.key === 'Escape') {
+            (e.target as HTMLElement).blur();
+            e.preventDefault();
+          }
+          return;
+        }
+        if (isEditableTarget(e.target)) return;
+        if (e.key === 'f') {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+          return;
+        }
+        // Cmd/Ctrl + B：开/关左侧栏（L1 list）；Cmd/Ctrl + L：开/关右侧聊天栏。
+        // （位于 isEditableTarget 守卫之后，编辑目标/输入框内不会触发）
+        if (e.key.toLowerCase() === 'b') {
+          e.preventDefault();
+          setSidebarCollapsed(prev => {
+            const next = !prev;
+            // 用户手动打开 L1：标记 manual，auto-collapse 不再覆盖（手动优先）。
+            if (next) {
+              sidebarManualRef.current = true;
+              // 打开后焦点落到 L1 容器，且键盘区切到 L1，J/K 立即可用。
+              layout?.setKeyboardPane('l1');
+              requestAnimationFrame(() => l1Ref.current?.focus());
+            }
+            return next;
+          });
+          return;
+        }
+        if (e.key.toLowerCase() === 'l') {
+          e.preventDefault();
+          // Cmd/Ctrl+L：不再打开本页聊天栏 — 跳转到 Team Chat 并在右侧栏预览当前交付物。
+          openInTeamChat();
+          return;
+        }
+        if (e.altKey) return;
+        return;
+      }
+      // 以下裸字母 / 方向键导航受 keyboardPane 焦点区限制
       if (layout?.keyboardPane === 'l0') return;
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         if (e.key === 'Escape') {
@@ -558,11 +717,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         return;
       }
       if (isEditableTarget(e.target)) return;
-      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-        return;
-      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
       const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -590,7 +744,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
       if (!move) return;
       e.preventDefault();
       layout?.setKeyboardPane('l1');
-      if (sidebarCollapsed) setSidebarCollapsed(false);
+      if (sidebarCollapsed) {
+        sidebarManualRef.current = true;
+        setSidebarCollapsed(false);
+      }
       const list = flatItems;
       if (list.length === 0) return;
       const curIdx = selected ? list.findIndex(i => i.id === selected.id) : -1;
@@ -626,11 +783,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const handleSelectItem = (item: DeliverableInfo) => {
     const doSwitch = () => {
       setSelected(item);
-      setContextChips([]);
+      setShareOpen(false);
       setEditMode(false);
       setEditDirty(false);
       if (isMobile) {
-        setChatPanelOpen(false);
         setMobileShowDetail(true);
         history.pushState({ mobileDetail: PAGE.DELIVERABLES }, '', window.location.hash);
       }
@@ -705,53 +861,66 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     return () => window.removeEventListener('markus:navigate', handler as EventListener);
   }, [editDirty]);
 
-  // Auto-collapse sidebar when chat panel opens and content area is too narrow
-  const sidebarManualRef = useRef(false);
-  useEffect(() => {
-    if (!chatPanelOpen) {
-      sidebarManualRef.current = false;
-      return;
-    }
-    if (isMobile || sidebarManualRef.current) return;
-    const chatWidth = 400;
-    const sidebarWidth = sidebarCollapsed ? 0 : (listPanel.width ?? 384);
-    const appSidebarWidth = 160;
-    const availableForContent = window.innerWidth - appSidebarWidth - sidebarWidth - chatWidth;
-    if (availableForContent < 480 && !sidebarCollapsed) {
-      setSidebarCollapsed(true);
-    }
-  }, [chatPanelOpen, isMobile, sidebarCollapsed, listPanel.width]);
+  // 焦点跟随：Cmd+L 导航到 Team Chat → 由 Team 页聚焦输入框；本页不再有右侧聊天栏。
 
   // Selection toolbar handler (Phase 4)
   const detailContentRef = useRef<HTMLDivElement>(null);
 
-  const addToConversation = useCallback((text: string, htmlMeta?: { xpath: string; cssSelector: string }) => {
-    const label = text.length > 30 ? `${text.slice(0, 15)}…${text.slice(-12)}` : text;
-    const chipId = `sel_${Date.now()}`;
-    let content: string;
-    if (htmlMeta) {
-      const filePath = selected?.reference ?? '';
-      content = [
-        `[html-selection]`,
-        `Text: "${text}"`,
-        `CSS Selector: ${htmlMeta.cssSelector}`,
-        `XPath: ${htmlMeta.xpath}`,
-        filePath ? `File: ${filePath}` : '',
-      ].filter(Boolean).join('\n');
-    } else {
-      content = text;
+  /**
+   * 跳转到 Team Chat 页面：在右侧栏预览当前交付物，并把交付物（及可选选中文本）作为
+   * 输入框上方的「标签」(chat context chips) 携带过去 —— 与右侧栏「添加到对话」一致，
+   * 而不是预填输入框文本。
+   */
+  const openInTeamChat = useCallback((selectionText?: string, htmlMeta?: { xpath: string; cssSelector: string }) => {
+    const agentId = selected?.agentId ?? '';
+    const deliverableId = selected?.id ?? '';
+    const params: Record<string, string> = {};
+    if (deliverableId) params.openDeliverable = deliverableId;
+
+    // 交付物本身作为一个标签，让 agent 明确知道讨论的是哪个交付物。
+    const chips: Array<{ label: string; content: string }> = [];
+    if (deliverableId) {
+      const dTitle = selected?.title?.trim() || deliverableId;
+      const dLabel = dTitle.length > 40 ? `${dTitle.slice(0, 24)}…${dTitle.slice(-12)}` : dTitle;
+      chips.push({
+        label: `📄 ${dLabel}`,
+        content: [
+          `[deliverable]`,
+          `ID: ${deliverableId}`,
+          `Title: ${selected?.title ?? ''}`,
+          selected?.reference ? `Reference: ${selected.reference}` : '',
+          selected?.taskId ? `Task: ${selected.taskId}` : '',
+          selected?.projectId ? `Project: ${selected.projectId}` : '',
+        ].filter(Boolean).join('\n'),
+      });
     }
-    setContextChips(prev => [...prev, {
-      id: chipId,
-      label: htmlMeta ? `🌐 ${label}` : label,
-      type: 'selection',
-      content,
-      onRemove: () => setContextChips(p => p.filter(c => c.id !== chipId)),
-    }]);
-    if (!chatPanelOpen) setChatPanelOpen(true);
+    if (selectionText?.trim()) {
+      const short = selectionText.trim().length > 40
+        ? `${selectionText.trim().slice(0, 24)}…${selectionText.trim().slice(-12)}`
+        : selectionText.trim();
+      if (htmlMeta) {
+        const filePath = selected?.reference ?? '';
+        chips.push({
+          label: `🌐 ${short}`,
+          content: [
+            `[html-selection]`,
+            `Text: "${selectionText.trim()}"`,
+            `CSS Selector: ${htmlMeta.cssSelector}`,
+            `XPath: ${htmlMeta.xpath}`,
+            filePath ? `File: ${filePath}` : '',
+          ].filter(Boolean).join('\n'),
+        });
+      } else {
+        chips.push({ label: `📝 ${short}`, content: selectionText.trim() });
+      }
+    }
+    if (chips.length > 0) params.chatChips = JSON.stringify(chips);
+
+    if (agentId) params.agentId = agentId;
     setSelectionToolbar(null);
     window.getSelection()?.removeAllRanges();
-  }, [chatPanelOpen, selected?.reference]);
+    navBus.navigate(PAGE.TEAM, params);
+  }, [selected]);
 
   const handleHtmlSelection = useCallback((data: HtmlSelectionData) => {
     if (!data.text.trim()) return;
@@ -792,7 +961,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   return (
     <div className="flex-1 overflow-hidden flex">
       {/* Left sidebar — always mounted on mobile to preserve scroll position */}
-      <div data-keyboard-pane="l1" className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0 ${!isMobile && keyboardPane === 'l1' ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}
+      <div
+        ref={l1Ref}
+        tabIndex={-1}
+        data-keyboard-pane="l1"
+        className={`${isMobile ? 'flex-1 min-w-0' : 'shrink-0'} flex flex-col bg-surface-secondary rounded-xl m-1 mr-0 outline-none ${!isMobile && keyboardPane === 'l1' ? 'ring-1 ring-inset ring-brand-500/30' : ''}`}
         style={isMobile ? (mobileShowDetail ? { display: 'none' } : undefined) : sidebarCollapsed ? { display: 'none' } : { width: listPanel.width }}>
         <div data-electron-drag className="p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
@@ -992,6 +1165,27 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                         <span className={`text-[10px] px-1 py-0.5 rounded font-medium uppercase shrink-0 ${TYPE_META[item.type]?.color ?? 'bg-surface-overlay text-fg-secondary'}`}>{TYPE_META[item.type]?.icon ?? item.type.charAt(0)}</span>
                       )}
                       <span className="text-sm font-medium text-fg-primary truncate flex-1">{item.title}</span>
+                      {shareStatusOf(item) === 'published' && (
+                        <svg className="shrink-0 text-green-500" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label={t('share.published', { defaultValue: '已发布到 Hub' })}>
+                          <title>{t('share.published', { defaultValue: '已发布到 Hub' })}</title>
+                          <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                        </svg>
+                      )}
+                      {shareStatusOf(item) === 'pending_review' && (
+                        <svg className="shrink-0 text-amber-500 animate-pulse" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label={t('share.pendingReview', { defaultValue: 'Hub 审核中' })}>
+                          <title>{t('share.pendingReview', { defaultValue: 'Hub 审核中' })}</title>
+                          <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                        </svg>
+                      )}
+                      {shareStatusOf(item) === 'rejected' && (
+                        <svg className="shrink-0 text-red-500" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label={t('share.rejected', { defaultValue: 'Hub 已拒绝' })}>
+                          <title>{t('share.rejected', { defaultValue: 'Hub 已拒绝' })}</title>
+                          <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                        </svg>
+                      )}
                       {missingFileIds.has(item.id) && (
                         <span className="shrink-0 text-amber-500" title={t('detail.fileMissing')}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1098,16 +1292,48 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
                 {!previewMode && (
-                <button
-                  onClick={() => setConfirmRemove(selected)}
-                  disabled={!!actionLoading}
-                  className="p-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50 shrink-0"
-                  title={t('common:remove')}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                  </svg>
-                </button>
+                <div className="flex items-center gap-1 shrink-0">
+                  {/* 分享到 Hub */}
+                  <button
+                    onClick={() => setShareOpen(true)}
+                    title={t('share.title', { defaultValue: '分享到 Markus Hub' })}
+                    aria-label={t('share.title', { defaultValue: '分享到 Markus Hub' })}
+                    className={`relative p-1.5 rounded-lg transition-colors ${
+                      shareStatusOf(selected) === 'published'
+                        ? 'text-green-500 hover:text-green-400 hover:bg-green-500/10'
+                        : shareStatusOf(selected) === 'pending_review'
+                          ? 'text-amber-500 hover:text-amber-400 hover:bg-amber-500/10'
+                          : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                    }`}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+                      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                    </svg>
+                    {shareStatusOf(selected) === 'published' || shareStatusOf(selected) === 'pending_review' || shareStatusOf(selected) === 'rejected' ? (
+                      <span
+                        className={`absolute top-0.5 right-0.5 w-2 h-2 rounded-full border border-surface-primary ${
+                          shareStatusOf(selected) === 'published'
+                            ? 'bg-green-500'
+                            : shareStatusOf(selected) === 'pending_review'
+                              ? 'bg-amber-500 animate-pulse'
+                              : 'bg-red-500'
+                        }`}
+                        aria-hidden
+                      />
+                    ) : null}
+                  </button>
+                  <button
+                    onClick={() => setConfirmRemove(selected)}
+                    disabled={!!actionLoading}
+                    className="p-1.5 rounded-lg text-fg-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50 shrink-0"
+                    title={t('common:remove')}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                </div>
                 )}
               </div>
 
@@ -1122,6 +1348,27 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 {selected.tags.length > 0 && selected.tags.map(tag => (
                   <span key={tag} className="px-2 py-0.5 text-xs bg-surface-elevated text-fg-secondary rounded">{tag}</span>
                 ))}
+                {shareStatusOf(selected) === 'published' && (
+                  <a href={selected.shareUrl ?? undefined} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-500/15 text-green-600 hover:bg-green-500/25 hover:underline"
+                    title={selected.shareUrl ?? undefined}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><line x1="8.59" y1="13.51" x2="15.42" y2="17.49" /><line x1="15.41" y1="6.51" x2="8.59" y2="10.49" /></svg>
+                    {t('share.published', { defaultValue: '已发布' })}
+                  </a>
+                )}
+                {shareStatusOf(selected) === 'pending_review' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-500/15 text-amber-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                    {t('share.pendingReview', { defaultValue: '审核中' })}
+                  </span>
+                )}
+                {shareStatusOf(selected) === 'rejected' && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/15 text-red-500"
+                    title={selected.shareReason ?? undefined}>
+                    {t('share.rejected', { defaultValue: '已拒绝' })}
+                    {selected.shareReason ? <span className="text-red-400/90 font-normal">— {selected.shareReason}</span> : null}
+                  </span>
+                )}
               </div>
 
               {/* Association links inline */}
@@ -1379,38 +1626,18 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
       </div>
 
-        {/* Floating chat FAB — bottom-right of the detail panel (not the viewport) */}
-        {selected?.agentId && !chatPanelOpen && !isMobile && (
+        {/* Floating chat FAB — jump to Team Chat with this deliverable in the right panel */}
+        {selected?.agentId && !isMobile && (
           <button
             type="button"
-            onClick={() => setChatPanelOpen(true)}
+            onClick={() => openInTeamChat()}
             className="absolute bottom-6 right-6 z-20 w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-transform hover:scale-105 animate-fab-in"
-            title={t('chat.openChat')}
+            title={t('chat.openChat', { defaultValue: 'Open in Team Chat' })}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
           </button>
-        )}
-
-        {/* Chat panel (Phase 3b) */}
-        {chatPanelOpen && selected?.agentId && !isMobile && (
-          <ChatPanel
-            agentId={selected.agentId}
-            agents={agents}
-            authUser={_authUser}
-            onClose={() => { setChatPanelOpen(false); setContextChips([]); }}
-            contextChips={[
-              {
-                id: `deliverable_ctx_${selected.id}`,
-                label: `📦 ${selected.title}`,
-                type: 'deliverable',
-                content: `${t('chat.currentDeliverable')}: ${selected.title} (id: ${selected.id})`,
-              },
-              ...contextChips,
-            ]}
-            width={400}
-          />
         )}
       </div>
       )}
@@ -1423,7 +1650,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
           style={{ left: selectionToolbar.x, top: selectionToolbar.y - 8 }}
         >
           <button
-            onMouseDown={e => { e.preventDefault(); e.stopPropagation(); addToConversation(selectionToolbar.text, selectionToolbar.htmlMeta); }}
+            onMouseDown={e => { e.preventDefault(); e.stopPropagation(); openInTeamChat(selectionToolbar.text, selectionToolbar.htmlMeta); }}
             className="px-3 py-1.5 text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-1.5 whitespace-nowrap"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1432,6 +1659,15 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             {t('contextMenu.addToConversation')}
           </button>
         </div>
+      )}
+
+      {/* 分享产出物到 Hub */}
+      {shareOpen && selected && (
+        <DeliverableShareModal
+          item={selected}
+          onClose={() => setShareOpen(false)}
+          onShared={onShareResult}
+        />
       )}
 
       {/* Remove Confirmation */}

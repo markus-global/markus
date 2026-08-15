@@ -259,6 +259,19 @@ describe('AgentManager integration (real Agent)', () => {
     expect(agent.getTools().has('recall_activity')).toBe(true);
   });
 
+  it('setSessionRepo registers session tool on agents', async () => {
+    const manager = createManager();
+    manager.setSessionRepo({
+      listSessionsPaginated: () => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false }),
+      getSession: () => null,
+      listMessagesPaginated: () => ({ messages: [], total: 0, page: 1, pageSize: 50, hasMore: false }),
+      countMessagesByAgent: () => 0,
+    });
+
+    const agent = await manager.createAgent({ name: 'Session', roleName: 'custom', tools: [] });
+    expect(agent.getTools().has('session')).toBe(true);
+  });
+
   it('setSkillSearcher and setSkillInstaller wire into manager', async () => {
     const manager = createManager();
     manager.setSkillSearcher(vi.fn(async () => [{ name: 'skill-a', description: 'A', source: 'hub' }]));

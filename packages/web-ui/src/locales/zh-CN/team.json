@@ -325,6 +325,7 @@
     "toggleSidebar": "展开侧边栏",
     "newMessages": "{{count}} 条新消息",
     "mentionAgent": "提及智能体",
+    "slashSkill": "技能",
     "mentionType": {
       "agent": "智能体",
       "project": "项目",
@@ -332,6 +333,9 @@
       "task": "任务",
       "deliverable": "交付物",
       "workflow": "工作流"
+    },
+    "slashCmd": {
+      "skill": "技能"
     },
     "addMoreFiles": "添加更多文件",
     "attachFilesTitle": "附加文件（图片、PDF、Word、Excel、PowerPoint…）",

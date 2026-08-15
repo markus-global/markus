@@ -166,16 +166,20 @@ Constants live in `@markus/shared` `limits.ts`.
 MUST: `buildSystemPrompt` MUST accept `promptProfile` derived from scenario pack.
 
 MUST: Size control is **progressive disclosure**, not truncation of always-on text:
-- Always-on (never truncated): ROLE.md (persona only — **not** SHARED.md), L0 capability
-  rules, **`## Markus Collaboration Rules`** (distilled from SHARED), Interaction Mode,
+- Always-on (never truncated): ROLE.md (persona only — **not** HANDBOOK.md), L0 capability
+  rules, **`## Markus Collaboration Rules`** (distilled from HANDBOOK.md), Interaction Mode,
   date/locale.
 - Collaboration Rules MUST encode **Conversation-first + Task-when-needed**: chat may
   pair-build; tasks for async/delegation/formal review; STOP only after `task_create`
   for that work. Managers are player-coach (ROLE may build; Position routes when useful).
 - Progressive at assemble: knowledge digest (demote `##`→`###`, deprioritize stale
   fault/transcript sections), announcements/norms, workflows, CONTEXT.md
-  (full content on disk / via tools). SHARED.md long-form is **depth handbook** via
-  `file_read` — hard rules are already in L0; do not append SHARED into ROLE.
+  (full content on disk / via tools). HANDBOOK.md long-form is the **AGENT HANDBOOK** —
+  a single source of truth (`templates/roles/HANDBOOK.md`) that ships with the build and
+  upgrades on rebuild/release; it is **NOT injected** and **NOT copied per-agent**. The
+  `## Platform Handbook (on demand)` section injects the **resolved absolute path**
+  (via `AgentManager.resolveHandbookPath`), so agents `file_read` the handbook directly
+  without searching it.
 - Progressive at tool layer: Markus core schemas LIVE; skill/MCP schemas only after
   `discover_tools` (boot MUST register without activate; sticky/recent MUST NOT
   re-activate skill/MCP). Activated skill/MCP MAY LRU-defer under toolDef budget;

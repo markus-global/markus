@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import type { AgentToolHandler } from '../agent.js';
-import type { ImageResult, MultiModalProviderInterface, MultiModalToolSchemas, VideoResult } from '../llm/provider.js';
+import type { ImageResult, MultiModalProviderInterface, MultiModalToolSchemas, VideoResult, VideoReference, VideoFrameImage, TTSOptions } from '../llm/provider.js';
 import { createLogger, type ModelCapabilityType } from '@markus/shared';
 import { toolErr, toolOk } from './result.js';
 
@@ -26,6 +26,8 @@ export interface MultiModalToolsContext {
   listProviderNames?: () => string[];
   /** True when the provider exists but its Settings switch is OFF. */
   isProviderDisabled?: (name: string) => boolean;
+  /** Hub credentials for upload_reference tool. */
+  resolveHubCredentials?: () => { baseUrl: string; token: string } | undefined;
 }
 
 async function fetchBinary(source: string, label: string): Promise<Buffer> {
@@ -143,30 +145,33 @@ function formatVideoToolResult(result: VideoResult): {
   };
 }
 
-function getProviderSchema(ctx: MultiModalToolsContext, capabilityType: ModelCapabilityType, toolName: keyof MultiModalToolSchemas): { description: string; inputSchema: Record<string, unknown> } | undefined {
+function getProviderSchema(
+  ctx: MultiModalToolsContext,
+  capabilityType: ModelCapabilityType,
+  toolName: keyof MultiModalToolSchemas,
+  base: { description: string; inputSchema: Record<string, unknown> },
+): { description: string; inputSchema: Record<string, unknown> } {
   const candidates = ctx.resolveCandidates(capabilityType);
   for (const { provider } of candidates) {
     const schemas = (provider as MultiModalProviderInterface).getToolSchemas?.();
     if (schemas?.[toolName]) {
       const schema = schemas[toolName]!;
-      const props = (schema.inputSchema.properties ?? {}) as Record<string, unknown>;
-      if (!props.provider || !props.model) {
-        return {
-          description: schema.description,
-          inputSchema: {
-            ...schema.inputSchema,
-            properties: {
-              ...props,
-              provider: { type: 'string', description: 'Override which provider to use (e.g. "openai", "minimax"). If omitted, uses the configured routing default.' },
-              ...(!props.model ? { model: { type: 'string', description: 'Override which model to use. If omitted, uses the configured routing default.' } } : {}),
-            },
+      const baseProps = (base.inputSchema.properties ?? {}) as Record<string, unknown>;
+      const providerProps = (schema.inputSchema.properties ?? {}) as Record<string, unknown>;
+      return {
+        description: schema.description,
+        inputSchema: {
+          ...base.inputSchema,
+          ...schema.inputSchema,
+          properties: {
+            ...baseProps,
+            ...providerProps,
           },
-        };
-      }
-      return schema;
+        },
+      };
     }
   }
-  return undefined;
+  return base;
 }
 
 type ModalityMethod = 'generateImage' | 'generateSpeech' | 'transcribeSpeech' | 'generateVideo';
@@ -310,11 +315,58 @@ function missingRequiredStringError(
 export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHandler[] {
   return [
     {
+      name: 'upload_reference',
+      description:
+        'Upload a local image file to Markus Hub and get a temporary public URL (10-minute expiry). ' +
+        'Use this BEFORE calling generate_image or generate_video when you need to use a local file as a reference image. ' +
+        'The returned URL can be passed directly to input_references or frame_images.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the local image file to upload' },
+        },
+        required: ['path'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const filePath = typeof args.path === 'string' ? args.path.trim() : '';
+        if (!filePath) return toolErr('upload_reference requires a "path" parameter (absolute file path).');
+
+        const creds = ctx.resolveHubCredentials?.();
+        if (!creds) return toolErr('Hub connection not configured. Cannot upload reference files.');
+
+        try {
+          const buf = readFileSync(filePath);
+          const filename = filePath.split('/').pop() ?? 'image.png';
+
+          const res = await fetch(`${creds.baseUrl}/api/internal/upload-temp`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${creds.token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ data: buf.toString('base64'), filename }),
+            signal: AbortSignal.timeout(30_000),
+          });
+
+          if (!res.ok) {
+            const errText = await res.text().catch(() => '');
+            return toolErr(`Upload failed: HTTP ${res.status} — ${errText.slice(0, 200)}`);
+          }
+
+          const result = await res.json() as { url: string; key: string; expiresIn: number };
+          return toolOk({ url: result.url, expiresIn: String(result.expiresIn), key: result.key });
+        } catch (err) {
+          return toolErr(`Failed to upload "${filePath}": ${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    },
+    {
       name: 'generate_image',
       description:
         'Generate images. Required: prompt. Recommended: pass provider+model for this call ' +
         '(e.g. provider: "markus", model: "openai/gpt-image-1" or provider: "openai", model: "gpt-image-1") — ' +
-        'no need to call llm_set_capability_routing first.',
+        'no need to call llm_set_capability_routing first. ' +
+        'For image-to-image with a LOCAL file: use upload_reference first, then pass its returned URL as input_references.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -325,10 +377,10 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         required: ['prompt'],
       },
       getDescription() {
-        return getProviderSchema(ctx, 'image_generation', 'generate_image')?.description ?? this.description;
+        return getProviderSchema(ctx, 'image_generation', 'generate_image', this).description;
       },
       getInputSchema() {
-        return getProviderSchema(ctx, 'image_generation', 'generate_image')?.inputSchema ?? this.inputSchema;
+        return getProviderSchema(ctx, 'image_generation', 'generate_image', this).inputSchema;
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         const prompt = readRequiredString(args, 'prompt', ['description', 'text', 'image_prompt']);
@@ -358,6 +410,9 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
           seed: args.seed as number | undefined,
           output_dir: args.output_dir as string | undefined,
           output_format: args.output_format as string | undefined,
+          inputReferences: args.input_references as { url: string; weight?: number }[] | undefined,
+          outputCompression: args.output_compression as number | undefined,
+          background: args.background as 'auto' | 'transparent' | 'opaque' | undefined,
         };
         let lastError: unknown;
         for (let i = 0; i < candidates.length; i++) {
@@ -423,10 +478,10 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         required: ['text'],
       },
       getDescription() {
-        return getProviderSchema(ctx, 'audio_tts', 'text_to_speech')?.description ?? this.description;
+        return getProviderSchema(ctx, 'audio_tts', 'text_to_speech', this).description;
       },
       getInputSchema() {
-        return getProviderSchema(ctx, 'audio_tts', 'text_to_speech')?.inputSchema ?? this.inputSchema;
+        return getProviderSchema(ctx, 'audio_tts', 'text_to_speech', this).inputSchema;
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         const text = readRequiredString(args, 'text', ['prompt', 'content', 'input']);
@@ -447,7 +502,11 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
               `(e.g. provider: "markus", model: "deepgram/aura-2"), or set capability routing. ${ROUTING_HINT}`,
           );
         }
-        const opts = { voice: args.voice as string | undefined, speed: args.speed as number | undefined };
+        const opts: TTSOptions = {
+          voice: args.voice as string | undefined,
+          speed: args.speed as number | undefined,
+          responseFormat: (args.response_format as string) as TTSOptions['responseFormat'],
+        };
         let lastError: unknown;
         let lastModel: string | undefined;
         for (const { provider, model, name } of candidates) {
@@ -506,10 +565,10 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         required: ['audio_url'],
       },
       getDescription() {
-        return getProviderSchema(ctx, 'audio_stt', 'speech_to_text')?.description ?? this.description;
+        return getProviderSchema(ctx, 'audio_stt', 'speech_to_text', this).description;
       },
       getInputSchema() {
-        return getProviderSchema(ctx, 'audio_stt', 'speech_to_text')?.inputSchema ?? this.inputSchema;
+        return getProviderSchema(ctx, 'audio_stt', 'speech_to_text', this).inputSchema;
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         const audioUrl = readRequiredString(args, 'audio_url', ['url', 'file_path', 'path', 'file']);
@@ -561,22 +620,63 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
     {
       name: 'generate_video',
       description:
-        'Generate a video. Required: prompt. Recommended: pass provider+model for this call ' +
-        '(e.g. provider: "markus", model: "x-ai/grok-imagine-video-1.5") — no need to call llm_set_capability_routing first.',
+        'Generate a video from text, with optional reference images/audio/video. Required: prompt. ' +
+        'Recommended: pass provider+model (e.g. provider: "markus", model: "x-ai/grok-imagine-video-1.5"). ' +
+        'To use references: pass input_references (style guidance) or frame_images (exact first/last frame). ' +
+        'For LOCAL files: use upload_reference first, then pass its returned URL. ' +
+        'No need to call llm_set_capability_routing first.',
       inputSchema: {
         type: 'object',
         properties: {
           prompt: { type: 'string', description: 'Detailed description of the video to generate (REQUIRED)' },
           provider: PROVIDER_PARAM,
           model: MODEL_PARAM,
+          input_references: {
+            type: 'array',
+            description:
+              'Reference assets for style/content guidance. Each item needs a "url" (publicly accessible) ' +
+              'and "type" ("image", "audio", or "video"). Audio/video refs only work with BytePlus Seedance gen 2+. ' +
+              'Use publicly accessible, directly-downloadable URLs (no auth walls).',
+            items: {
+              type: 'object',
+              properties: {
+                url: { type: 'string', description: 'Publicly accessible URL of the reference asset' },
+                type: { type: 'string', enum: ['image', 'audio', 'video'], description: 'Asset type' },
+                weight: { type: 'number', description: 'Optional weight 0-1 for this reference relative to others' },
+              },
+              required: ['url', 'type'],
+            },
+          },
+          frame_images: {
+            type: 'array',
+            description:
+              'Images for first/last frame (image-to-video). Takes precedence over input_references. ' +
+              'Each item needs "url" and "frame_type" ("first_frame" or "last_frame"). Max 2 items.',
+            items: {
+              type: 'object',
+              properties: {
+                url: { type: 'string', description: 'Publicly accessible image URL' },
+                frame_type: { type: 'string', enum: ['first_frame', 'last_frame'] },
+              },
+              required: ['url', 'frame_type'],
+            },
+          },
+          generate_audio: {
+            type: 'boolean',
+            description: 'Whether to generate audio alongside the video. Defaults to provider default.',
+          },
+          seed: {
+            type: 'number',
+            description: 'Seed for deterministic generation (not guaranteed by all providers).',
+          },
         },
         required: ['prompt'],
       },
       getDescription() {
-        return getProviderSchema(ctx, 'video_generation', 'generate_video')?.description ?? this.description;
+        return getProviderSchema(ctx, 'video_generation', 'generate_video', this).description;
       },
       getInputSchema() {
-        return getProviderSchema(ctx, 'video_generation', 'generate_video')?.inputSchema ?? this.inputSchema;
+        return getProviderSchema(ctx, 'video_generation', 'generate_video', this).inputSchema;
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         const prompt = readRequiredString(args, 'prompt', ['description', 'text']);
@@ -600,6 +700,10 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         const opts = {
           duration: args.duration as number | undefined,
           size: (args.size ?? args.resolution) as string | undefined,
+          inputReferences: args.input_references as VideoReference[] | undefined,
+          frameImages: args.frame_images as VideoFrameImage[] | undefined,
+          generateAudio: args.generate_audio as boolean | undefined,
+          seed: args.seed as number | undefined,
         };
         let lastError: unknown;
         for (let i = 0; i < candidates.length; i++) {

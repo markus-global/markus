@@ -85,6 +85,17 @@ export interface Deliverable {
   version?: number;
   /** Short changelog entries for version bumps. */
   changelog?: string[];
+  // ─── 产出物分享到 Hub（可空，后端 DTO 必须带出以支撑前端分享状态回显） ────
+  /** 最近一次分享在 Hub 上的记录 id（dlv_share_…） */
+  hubShareId?: string | null;
+  /** none | pending_review | published | rejected | revoked */
+  shareStatus?: string | null;
+  /** 分享链接（published 后回填） */
+  shareUrl?: string | null;
+  /** public | link（无 private；none=未分享） */
+  shareVisibility?: string | null;
+  /** 拒绝原因（Hub 拒绝时回填；客户端在「已拒绝」徽标展示） */
+  shareReason?: string | null;
 }
 
 // ─── User Input Requests (request_user_input / HITL) ─────────────────────────

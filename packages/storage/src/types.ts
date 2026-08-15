@@ -100,6 +100,17 @@ export interface DeliverableRow {
   accessCount: number;
   createdAt: Date;
   updatedAt: Date;
+  // ─── 产出物分享到 Hub（可空，向后兼容；none=未分享） ────────────────────────
+  /** 最近一次分享在 Hub 上的记录 id（dlv_share_…） */
+  hubShareId: string | null;
+  /** none | pending_review | published | rejected | revoked */
+  shareStatus: string | null;
+  /** 分享链接（published 后回填） */
+  shareUrl: string | null;
+  /** public | link（无 private；none=未分享） */
+  shareVisibility: string | null;
+  /** 拒绝原因（Hub 拒绝时回填；客户端「已拒绝」徽标展示） */
+  shareReason?: string | null;
 }
 
 export interface ChannelMsgMetadata {

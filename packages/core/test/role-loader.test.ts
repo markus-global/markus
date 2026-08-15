@@ -83,15 +83,15 @@ describe('RoleLoader', () => {
     expect(role.defaultPolicies[0].rules).toContain('No prod access');
   });
 
-  it('A-role-no-shared-append: ROLE.md only (SHARED is progressive)', () => {
-    writeFileSync(join(TEST_DIR, 'SHARED.md'), 'Shared team instructions UNIQUE_SHARED_MARKER.');
+  it('A-role-no-shared-append: ROLE.md only (HANDBOOK is progressive, never injected)', () => {
+    writeFileSync(join(TEST_DIR, 'HANDBOOK.md'), 'Shared team instructions UNIQUE_HANDBOOK_MARKER.');
     createRoleDir('custom-role', {
       'ROLE.md': '# Custom\nA custom role.',
     });
 
     const role = loader.loadRole('custom-role');
     expect(role.systemPrompt).toContain('A custom role.');
-    expect(role.systemPrompt).not.toContain('UNIQUE_SHARED_MARKER');
+    expect(role.systemPrompt).not.toContain('UNIQUE_HANDBOOK_MARKER');
     expect(role.systemPrompt).not.toContain('Shared team instructions');
   });
 

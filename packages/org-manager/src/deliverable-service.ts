@@ -205,6 +205,11 @@ export class DeliverableService {
     artifactData: Deliverable['artifactData'];
     diffStats: Deliverable['diffStats'];
     testResults: Deliverable['testResults'];
+    hubShareId?: string | null;
+    shareStatus?: string | null;
+    shareUrl?: string | null;
+    shareVisibility?: string | null;
+    shareReason?: string | null;
   }>): Promise<Deliverable | undefined> {
     const d = this.cache.get(id);
     if (!d) return undefined;
@@ -226,6 +231,11 @@ export class DeliverableService {
     if (data.artifactData !== undefined && !arrEq(data.artifactData, d.artifactData)) changed.push('artifactData');
     if (data.diffStats !== undefined && !arrEq(data.diffStats, d.diffStats)) changed.push('diffStats');
     if (data.testResults !== undefined && !arrEq(data.testResults, d.testResults)) changed.push('testResults');
+    if (data.hubShareId !== undefined && data.hubShareId !== d.hubShareId) changed.push('hubShareId');
+    if (data.shareStatus !== undefined && data.shareStatus !== d.shareStatus) changed.push('shareStatus');
+    if (data.shareUrl !== undefined && data.shareUrl !== d.shareUrl) changed.push('shareUrl');
+    if (data.shareVisibility !== undefined && data.shareVisibility !== d.shareVisibility) changed.push('shareVisibility');
+    if (data.shareReason !== undefined && data.shareReason !== d.shareReason) changed.push('shareReason');
 
     if (changed.length === 0) {
       log.debug('Deliverable update skipped (no-op)', { id });
@@ -261,6 +271,11 @@ export class DeliverableService {
     if (data.artifactData !== undefined) d.artifactData = data.artifactData;
     if (data.diffStats !== undefined) d.diffStats = data.diffStats;
     if (data.testResults !== undefined) d.testResults = data.testResults;
+    if (data.hubShareId !== undefined) d.hubShareId = data.hubShareId;
+    if (data.shareStatus !== undefined) d.shareStatus = data.shareStatus;
+    if (data.shareUrl !== undefined) d.shareUrl = data.shareUrl;
+    if (data.shareVisibility !== undefined) d.shareVisibility = data.shareVisibility;
+    if (data.shareReason !== undefined) d.shareReason = data.shareReason;
     d.updatedAt = now;
 
     await this.repo?.update(id, { ...data, updatedAt: now });
@@ -462,6 +477,11 @@ export class DeliverableService {
     diffStats: unknown;
     testResults: unknown;
     accessCount: number;
+    hubShareId?: string | null;
+    shareStatus?: string | null;
+    shareUrl?: string | null;
+    shareVisibility?: string | null;
+    shareReason?: string | null;
     createdAt: Date | string;
     updatedAt: Date | string;
   }): Deliverable {
@@ -483,6 +503,11 @@ export class DeliverableService {
       diffStats: r.diffStats as Deliverable['diffStats'],
       testResults: r.testResults as Deliverable['testResults'],
       accessCount: r.accessCount,
+      hubShareId: r.hubShareId ?? undefined,
+      shareStatus: r.shareStatus ?? undefined,
+      shareUrl: r.shareUrl ?? undefined,
+      shareVisibility: r.shareVisibility ?? undefined,
+      shareReason: r.shareReason ?? undefined,
       createdAt: typeof r.createdAt === 'string' ? r.createdAt : r.createdAt.toISOString(),
       updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : r.updatedAt.toISOString(),
     };

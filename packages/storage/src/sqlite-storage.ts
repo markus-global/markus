@@ -289,6 +289,11 @@ CREATE TABLE IF NOT EXISTS deliverables (
   artifact_type TEXT,
   artifact_data TEXT,
   access_count INTEGER NOT NULL DEFAULT 0,
+  hub_share_id TEXT,
+  share_status TEXT,
+  share_url TEXT,
+  share_visibility TEXT,
+  share_reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -726,6 +731,11 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
     { table: 'agents', column: 'disabled', sql: 'ALTER TABLE agents ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
+    { table: 'deliverables', column: 'hub_share_id', sql: 'ALTER TABLE deliverables ADD COLUMN hub_share_id TEXT' },
+    { table: 'deliverables', column: 'share_status', sql: 'ALTER TABLE deliverables ADD COLUMN share_status TEXT' },
+    { table: 'deliverables', column: 'share_url', sql: 'ALTER TABLE deliverables ADD COLUMN share_url TEXT' },
+    { table: 'deliverables', column: 'share_visibility', sql: 'ALTER TABLE deliverables ADD COLUMN share_visibility TEXT' },
+    { table: 'deliverables', column: 'share_reason', sql: 'ALTER TABLE deliverables ADD COLUMN share_reason TEXT' },
     { table: 'task_comments', column: 'reply_to_id', sql: 'ALTER TABLE task_comments ADD COLUMN reply_to_id TEXT' },
     { table: 'requirement_comments', column: 'reply_to_id', sql: 'ALTER TABLE requirement_comments ADD COLUMN reply_to_id TEXT' },
     { table: 'tasks', column: 'completion_summary', sql: 'ALTER TABLE tasks ADD COLUMN completion_summary TEXT' },
@@ -2237,6 +2247,114 @@ export class SqliteChatSessionRepo {
   }
 
   /**
+   * 分页 + 时间范围过滤列出某 agent 的 session。
+   * 时间过滤基于 last_message_at（ISO 字符串）；按 last_message_at DESC（最新在前）。
+   */
+  listSessionsPaginated(agentId: string, opts: {
+    since?: string;
+    until?: string;
+    userId?: string;
+    page?: number;
+    pageSize?: number;
+  }): {
+    sessions: ReturnType<SqliteChatSessionRepo['_mapSession']>[];
+    total: number;
+    page: number;
+    pageSize: number;
+    hasMore: boolean;
+  } {
+    const page = Math.max(1, Math.trunc(opts.page ?? 1) || 1);
+    const pageSize = Math.min(Math.max(1, Math.trunc(opts.pageSize ?? 20) || 20), 50);
+
+    const where: string[] = ['agent_id = ?'];
+    const vals: SqlParams = [agentId];
+    if (opts.userId) { where.push('user_id = ?'); vals.push(opts.userId); }
+    if (opts.since) { where.push('last_message_at >= ?'); vals.push(opts.since); }
+    if (opts.until) { where.push('last_message_at <= ?'); vals.push(opts.until); }
+    const whereSql = where.join(' AND ');
+
+    const countRow = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM chat_sessions WHERE ${whereSql}`)
+      .get(...vals) as { cnt: number };
+    const total = countRow.cnt;
+
+    const offset = (page - 1) * pageSize;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM chat_sessions WHERE ${whereSql} ORDER BY is_main DESC, last_message_at DESC LIMIT ? OFFSET ?`
+      )
+      .all(...vals, pageSize, offset) as Record<string, unknown>[];
+
+    const sessions = rows.map(r => this._mapSession(r));
+    return {
+      sessions,
+      total,
+      page,
+      pageSize,
+      hasMore: offset + sessions.length < total,
+    };
+  }
+
+  /**
+   * 分页 + 时间范围过滤取某 session 的消息（正序，旧→新），带 total。
+   */
+  listMessagesPaginated(sessionId: string, opts: {
+    since?: string;
+    until?: string;
+    page?: number;
+    pageSize?: number;
+  }): {
+    messages: ReturnType<SqliteChatSessionRepo['_mapMsg']>[];
+    total: number;
+    page: number;
+    pageSize: number;
+    hasMore: boolean;
+  } {
+    const page = Math.max(1, Math.trunc(opts.page ?? 1) || 1);
+    const pageSize = Math.min(Math.max(1, Math.trunc(opts.pageSize ?? 50) || 50), 100);
+
+    const where: string[] = ['session_id = ?'];
+    const vals: SqlParams = [sessionId];
+    if (opts.since) { where.push('created_at >= ?'); vals.push(opts.since); }
+    if (opts.until) { where.push('created_at <= ?'); vals.push(opts.until); }
+    const whereSql = where.join(' AND ');
+
+    const countRow = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM chat_messages WHERE ${whereSql}`)
+      .get(...vals) as { cnt: number };
+    const total = countRow.cnt;
+
+    const offset = (page - 1) * pageSize;
+    // 正序：先取整段 asc，再按 offset 切片
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM chat_messages WHERE ${whereSql} ORDER BY created_at ASC`
+      )
+      .all(...vals) as Record<string, unknown>[];
+    const pageRows = rows.slice(offset, offset + pageSize);
+
+    return {
+      messages: pageRows.map(r => this._mapMsg(r)),
+      total,
+      page,
+      pageSize,
+      hasMore: offset + pageRows.length < total,
+    };
+  }
+
+  /**
+   * 统计某 session 中某 agent 发出的消息数（用于"参与"权限判定）。
+   */
+  countMessagesByAgent(sessionId: string, agentId: string): number {
+    const r = this.db
+      .prepare(
+        'SELECT COUNT(*) as cnt FROM chat_messages WHERE session_id = ? AND agent_id = ?'
+      )
+      .get(sessionId, agentId) as { cnt: number };
+    return r.cnt;
+  }
+
+  /**
    * Remove only the last assistant message from a session (for resume).
    * Returns the deleted message's content and metadata so the caller can
    * reconstruct a trimmed version for the LLM context.
@@ -3701,15 +3819,19 @@ export class SqliteDeliverableRepo {
     projectId?: string; requirementId?: string;
     diffStats?: Record<string, number>; testResults?: Record<string, number>;
     artifactType?: string; artifactData?: Record<string, unknown>;
+    hubShareId?: string | null; shareStatus?: string | null;
+    shareUrl?: string | null; shareVisibility?: string | null;
+    shareReason?: string | null;
   }) {
     const n = now();
     this.db.prepare(`
       INSERT INTO deliverables (id, type, title, summary, reference, format, tags, status,
         task_id, agent_id, project_id, requirement_id, diff_stats, test_results,
-        artifact_type, artifact_data, access_count, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        artifact_type, artifact_data, access_count, hub_share_id, share_status, share_url,
+        share_visibility, share_reason, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      data.id, data.type, data.title, data.summary, data.reference ?? '',
+      data.id, data.type, data.title ?? '', data.summary ?? '', data.reference ?? '',
       data.format ?? null,
       toJson(data.tags ?? []), data.status ?? 'active',
       data.taskId ?? null, data.agentId ?? null, data.projectId ?? null,
@@ -3718,6 +3840,11 @@ export class SqliteDeliverableRepo {
       data.testResults ? toJson(data.testResults) : null,
       data.artifactType ?? null,
       data.artifactData ? toJson(data.artifactData) : null,
+      data.hubShareId ?? null,
+      data.shareStatus ?? null,
+      data.shareUrl ?? null,
+      data.shareVisibility ?? null,
+      data.shareReason ?? null,
       n, n,
     );
     return this.findById(data.id);
@@ -3761,6 +3888,11 @@ export class SqliteDeliverableRepo {
     if (patch.artifactData !== undefined) { sets.push('artifact_data = ?'); vals.push(toJson(patch.artifactData)); }
     if (patch.diffStats !== undefined) { sets.push('diff_stats = ?'); vals.push(toJson(patch.diffStats)); }
     if (patch.testResults !== undefined) { sets.push('test_results = ?'); vals.push(toJson(patch.testResults)); }
+    if (patch.hubShareId !== undefined) { sets.push('hub_share_id = ?'); vals.push(patch.hubShareId as SQLInputValue); }
+    if (patch.shareStatus !== undefined) { sets.push('share_status = ?'); vals.push(patch.shareStatus as SQLInputValue); }
+    if (patch.shareUrl !== undefined) { sets.push('share_url = ?'); vals.push(patch.shareUrl as SQLInputValue); }
+    if (patch.shareVisibility !== undefined) { sets.push('share_visibility = ?'); vals.push(patch.shareVisibility as SQLInputValue); }
+    if (patch.shareReason !== undefined) { sets.push('share_reason = ?'); vals.push(patch.shareReason as SQLInputValue); }
     vals.push(id);
     this.db.prepare(`UPDATE deliverables SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
     return this.findById(id);
@@ -3811,6 +3943,11 @@ export class SqliteDeliverableRepo {
       artifactType: r['artifact_type'] as string | null,
       artifactData: r['artifact_data'] ? fromJson<Record<string, unknown>>(r['artifact_data'] as string) : null,
       accessCount: (r['access_count'] as number) ?? 0,
+      hubShareId: (r['hub_share_id'] as string) ?? null,
+      shareStatus: (r['share_status'] as string) ?? null,
+      shareUrl: (r['share_url'] as string) ?? null,
+      shareVisibility: (r['share_visibility'] as string) ?? null,
+      shareReason: (r['share_reason'] as string) ?? null,
       createdAt: r['created_at'] ? new Date(r['created_at'] as string) : new Date(),
       updatedAt: r['updated_at'] ? new Date(r['updated_at'] as string) : new Date(),
     };

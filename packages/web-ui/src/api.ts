@@ -335,6 +335,13 @@ export interface DeliverableInfo {
   accessCount: number;
   createdAt: string;
   updatedAt: string;
+  // 分享到 Hub 的字段（可空，向后兼容；见 DeliverableShare 设计文档）
+  hubShareId?: string | null;
+  shareStatus?: string | null;
+  shareUrl?: string | null;
+  shareVisibility?: string | null;
+  /** 拒绝原因（Hub 拒绝时回填；客户端「已拒绝」徽标展示） */
+  shareReason?: string | null;
 }
 
 export interface ReportMetricsInfo {
@@ -2390,7 +2397,9 @@ export const wsClient = new WSClient();
 
 // ── Markus Hub API Client ────────────────────────────────────────────────────
 
-let HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'https://markus.global';
+let HUB_URL = typeof window !== 'undefined'
+  ? (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'https://markus.global'
+  : 'https://markus.global';
 let _hubUrlReady: Promise<void> | null = null;
 
 // Fetch hub URL from server config (overrides default if available),

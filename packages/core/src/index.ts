@@ -309,4 +309,20 @@ export {
 } from './distillation.js';
 export { computeEvolutionMetrics, type EvolutionMetrics } from './evolution-metrics.js';
 export { formatTaskContextForPrompt, buildTaskContextPackage } from './task-context.js';
+export {
+  DeliverableShareService,
+  DeliverableShareError,
+  NotLoggedIntoHubError,
+  DeliverableTooLargeError,
+  HubApiError,
+  HUB_DELIVERABLE_MAX_BYTES,
+  base64ByteLength,
+  type DeliverableShareDeps,
+  type ShareDeliverableInput,
+  type DeliverableShareWriteBack,
+  type DeliverableShareRecord,
+  type ProducerAgentInfo,
+  type ShareVisibility,
+  type ShareStatus,
+} from './deliverable-share.js';
 export { matchAgentsForSkillFanout, applyFanoutDailyCap } from './skill-fanout.js';

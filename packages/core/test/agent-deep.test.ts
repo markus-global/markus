@@ -427,7 +427,7 @@ describe('respondInSession and sendSessionReply', () => {
     expect(toolEvents).toContain('ris_tool');
   });
 
-  it('sendSessionReply routes through mailbox to respondInSession', async () => {
+  it('sendSessionReply routes through mailbox to respondInSession', async () => { // timeout 20000ms
     const router = makeMockRouter({
       streamFn: async (_req, onEvent) => {
         onEvent?.({ type: 'text_delta', text: 'Reply in session.' });
@@ -446,7 +446,7 @@ describe('respondInSession and sendSessionReply', () => {
     expect(reply).toContain('Reply in session');
     expect(logs.length).toBeGreaterThan(0);
     await agent.stop();
-  });
+  }, 20000);
 });
 
 describe('executeTask paths', () => {

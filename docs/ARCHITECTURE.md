@@ -143,7 +143,7 @@ Each Agent consists of:
 | Component | Description |
 |-----------|-------------|
 | `ROLE.md` | Role definition and system prompt |
-| `SHARED.md` | Depth handbook (not injected into ROLE); hard rules live in L0 Collaboration Rules |
+| `HANDBOOK.md` | AGENT HANDBOOK — shared working Know-how for all agents (not injected into ROLE); hard rules live in L0 Collaboration Rules; single source at `templates/roles/HANDBOOK.md`, read on demand via injected absolute path |
 | `SKILLS.md` | Skill list (tool permissions) |
 | `HEARTBEAT.md` | Scheduled proactive tasks (e.g. daily issue checks) |
 | `POLICIES.md` | Behavior rules and boundaries |
@@ -377,7 +377,7 @@ rejected ── resubmit ──┘     any ──► cancelled
 Before each conversation, the ContextEngine dynamically builds the system prompt:
 
 1. Role definition (ROLE.md — Identity store)
-2. Shared behavior norms (SHARED.md: workflow, governance, knowledge sharing)
+2. Shared behavior norms (HANDBOOK.md: workflow, governance, knowledge sharing)
 3. Identity and org awareness (colleague list, manager, human members)
 4. **Current project context** (project name, repos, governance rules)
 5. **Current workspace** (agent workspace path, shared workspace, users/ and team/ directories)
@@ -762,7 +762,7 @@ Agents understand the workflow and governance rules through three layers:
 
 | Layer | File | Role |
 |-------|------|------|
-| **SHARED.md (static norms)** | `templates/roles/SHARED.md` | Shared behavior for all Agents: workflow map, task governance, workspace discipline, formal delivery, knowledge management, trust mechanism, Git commit norms, reports and feedback |
+| **HANDBOOK.md (static norms)** | `templates/roles/HANDBOOK.md` | Shared working Know-how for all Agents: workflow map, task governance, workspace discipline, formal delivery, knowledge management, trust mechanism, Git commit norms, reports and feedback. Single source of truth, shipped with the build, upgrades on rebuild/release — not copied per-agent |
 | **ContextEngine (dynamic injection)** | `packages/core/src/context-engine.ts` | Injected per interaction: current project context, workspace info, system announcements, human feedback, trust level, project knowledge highlights |
 | **Tools (mechanical enforcement)** | `packages/core/src/tools/` | Enforcement: `task_create` blocks until approved, `task_submit_review` replaces direct completion, file writes blocked to other agents' directories, git commit auto-injects metadata |
 

@@ -41,6 +41,7 @@ import { createSettingsTools } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
+import { createSessionTool, type SessionRepo } from './tools/session.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
@@ -57,7 +58,7 @@ import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { mkdirSync, readFileSync, existsSync, copyFileSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
@@ -416,6 +417,7 @@ export class AgentManager {
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
   private recallCallbacks?: RecallCallbacks;
+  private sessionRepo?: SessionRepo;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private _cognitiveConfig?: CognitiveConfig;
@@ -1191,6 +1193,7 @@ export class AgentManager {
       skillRegistry: this.skillRegistry,
       maxToolIterations: this._maxToolIterations,
       cognitive: this._cognitiveConfig,
+      handbookPath: this.resolveHandbookPath(roleName),
     };
 
     const agent = new Agent(agentOpts);
@@ -1419,6 +1422,10 @@ export class AgentManager {
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
     }
+    // Session tool — agents can query their own conversation sessions
+    if (this.sessionRepo) {
+      agent.registerTool(createSessionTool({ agentId: id, chatSessionRepo: this.sessionRepo }));
+    }
 
     // Settings tools — agents can list providers and switch models via chat
     for (const tool of createSettingsTools({
@@ -1437,6 +1444,7 @@ export class AgentManager {
       },
       listProviderNames: () => this.llmRouter.listRegisteredProviderNames(),
       isProviderDisabled: (name) => this.llmRouter.isProviderDisabled(name),
+      resolveHubCredentials: () => this.llmRouter.getHubCredentials(),
     })) {
       agent.registerTool(tool);
     }
@@ -2031,6 +2039,7 @@ export class AgentManager {
       skillRegistry: this.skillRegistry,
       maxToolIterations: this._maxToolIterations,
       cognitive: this._cognitiveConfig,
+      handbookPath: this.resolveHandbookPath(row.roleId ?? row.roleName),
     });
 
     // Progressive disclosure: catalog metadata only; full bodies via discover_tools
@@ -2291,6 +2300,9 @@ export class AgentManager {
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
     }
+    if (this.sessionRepo) {
+      agent.registerTool(createSessionTool({ agentId: id, chatSessionRepo: this.sessionRepo }));
+    }
 
     for (const tool of createSettingsTools({
       llmRouter: this.llmRouter,
@@ -2307,6 +2319,7 @@ export class AgentManager {
       },
       listProviderNames: () => this.llmRouter.listRegisteredProviderNames(),
       isProviderDisabled: (name) => this.llmRouter.isProviderDisabled(name),
+      resolveHubCredentials: () => this.llmRouter.getHubCredentials(),
     })) {
       agent.registerTool(tool);
     }
@@ -2992,6 +3005,14 @@ export class AgentManager {
     }
   }
 
+  /** Wire the session query tool to a chat session repo for all agents. */
+  setSessionRepo(repo: SessionRepo): void {
+    this.sessionRepo = repo;
+    for (const [id, agent] of this.agents) {
+      agent.registerTool(createSessionTool({ agentId: id, chatSessionRepo: repo }));
+    }
+  }
+
   listAgents(): Array<{
     id: string;
     name: string;
@@ -3041,6 +3062,21 @@ export class AgentManager {
 
   listAvailableRoles(): string[] {
     return this.roleLoader.listAvailableRoles();
+  }
+
+  /**
+   * Resolve the absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md) for a role.
+   * resolveTemplateDir(roleName) returns the ROLE subdir (…/templates/roles/secretary); the
+   * handbook is a sibling at the roles/ level (…/templates/roles/HANDBOOK.md), so we step up
+   * one directory. Returning a definite absolute path means the agent reads it WITHOUT searching.
+   * Returns undefined when the role is custom (no template dir), in which case ContextEngine
+   * falls back to a source-dir default.
+   */
+  private resolveHandbookPath(roleIdOrName: string | undefined): string | undefined {
+    const target = roleIdOrName && roleIdOrName !== 'custom'
+      ? this.roleLoader.resolveTemplateDir(roleIdOrName)
+      : undefined;
+    return target ? join(dirname(target), 'HANDBOOK.md') : undefined;
   }
 
   getEventBus(): EventBus {

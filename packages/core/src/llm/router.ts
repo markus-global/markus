@@ -10,6 +10,7 @@ import { CodexResponsesProvider } from './openai-codex.js';
 import { GoogleProvider } from './google.js';
 import { OllamaProvider } from './ollama.js';
 import { MarkusProvider, clearMarkusModelListCache } from './markus-provider.js';
+import { findCatalogEntry } from './router-catalog-match.js';
 import { isObsoleteMarkusModel } from './hub-recommended-routing.js';
 import { AuthProfileStore } from './auth-profiles.js';
 import { OAuthManager } from './oauth-manager.js';
@@ -529,12 +530,16 @@ export class LLMRouter {
         route: m.route === 'openrouter' ? m.route : undefined,
       };
     });
-    this.customModelCatalog.set('markus', defs);
 
     if (defs.length === 0) {
-      log.warn('Markus Hub catalog returned 0 models');
-      return 0;
+      // Never overwrite a previously loaded catalog with an empty one (Hub
+      // disconnect / transient empty response). Keep the last-good state so the
+      // runtime keeps working until the Hub is reachable again.
+      log.warn('Markus Hub catalog returned 0 models — keeping previously loaded catalog intact.');
+      return this.customModelCatalog.get('markus')?.length ?? 0;
     }
+
+    this.customModelCatalog.set('markus', defs);
 
     const ids = new Set(defs.map(d => d.id));
     const preferred = models.find(m => m.is_default)?.id ?? defs[0]!.id;
@@ -1490,6 +1495,16 @@ export class LLMRouter {
     return this.providers.get(name);
   }
 
+  /** Hub credentials from the markus provider. Used by upload_reference tool. */
+  getHubCredentials(): { baseUrl: string; token: string } | undefined {
+    const markus = this.providers.get('markus') as MarkusProvider | undefined;
+    if (!markus) return undefined;
+    const baseUrl = markus.resolveHubBase();
+    const token = markus.resolveHubToken();
+    if (!baseUrl || !token) return undefined;
+    return { baseUrl, token };
+  }
+
   /**
    * OpenRouter prompt-token afford ceiling from a prior 402, used to pack
    * context below key credit limits (not the model window).
@@ -1714,14 +1729,20 @@ export class LLMRouter {
     }
     const custom = this.customModelConfigs.get(name);
     if (custom?.contextWindow && custom.contextWindow > 0) return custom.contextWindow;
-    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === name)
-      ?? this.customModelCatalog.get(name)?.find(m => m.id === provider.model);
+    const catalogEntry = findCatalogEntry(name, provider.model, {
+      builtin: BUILTIN_MODEL_CATALOG,
+      hub: this.customModelCatalog.get(name),
+    });
     const ctx = catalogEntry?.contextWindow;
     // No silent default: a missing/zero context window silently poisons the
     // context budget (negative message budget → empty reply → agent "stops").
-    // Fail loud so the real cause (catalog not loaded / bad Hub data) surfaces.
+    // Fail loud with an actionable hint so the real cause surfaces.
     if (!ctx || ctx <= 0) {
-      throw new Error(`Missing context_window for provider "${name}" (model "${provider.model || '(unset)'}"). The model catalog must supply a real value — refresh the Hub catalog. No default is substituted.`);
+      throw new Error(
+        name === 'markus'
+          ? `Cannot resolve context_window for markus model "${provider.model || '(unset)'}": it is not in the loaded Hub catalog (catalog may be empty). Please check the Hub connection and refresh the model list, or reconfigure the model. No default is substituted.`
+          : `Cannot resolve context_window for provider "${name}" (model "${provider.model || '(unset)'}"): the model is unknown to the built-in catalog. Please configure the model or fix the model id. No default is substituted.`,
+      );
     }
     return ctx;
   }
@@ -1738,11 +1759,13 @@ export class LLMRouter {
     }
     const custom = this.customModelConfigs.get(name);
     if (custom?.maxOutputTokens && custom.maxOutputTokens > 0) return custom.maxOutputTokens;
-    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model || m.provider === name)
-      ?? this.customModelCatalog.get(name)?.find(m => m.id === provider.model);
+    const catalogEntry = findCatalogEntry(name, provider.model, {
+      builtin: BUILTIN_MODEL_CATALOG,
+      hub: this.customModelCatalog.get(name),
+    });
     const out = catalogEntry?.maxOutputTokens;
     if (!out || out <= 0) {
-      throw new Error(`Missing max_output_tokens for provider "${name}" (model "${provider.model || '(unset)'}"). The model catalog must supply a real value — refresh the Hub catalog. No default is substituted.`);
+      throw new Error(`Cannot resolve max_output_tokens for provider "${name}" (model "${provider.model || '(unset)'}"). The model catalog must supply a real value — refresh the Hub catalog / reconfigure the model. No default is substituted.`);
     }
     return out;
   }
@@ -1759,9 +1782,10 @@ export class LLMRouter {
     if (!provider) return undefined;
     const custom = this.customModelConfigs.get(name);
     if (custom?.cost) return custom.cost;
-    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model && m.provider === name)
-      ?? BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model)
-      ?? this.customModelCatalog.get(name)?.find(m => m.id === provider.model);
+    const catalogEntry = findCatalogEntry(name, provider.model, {
+      builtin: BUILTIN_MODEL_CATALOG,
+      hub: this.customModelCatalog.get(name),
+    });
     return catalogEntry?.cost;
   }
 
@@ -1769,9 +1793,10 @@ export class LLMRouter {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);
     if (!provider) return ['text'];
-    const catalogEntry = BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model && m.provider === name)
-      ?? BUILTIN_MODEL_CATALOG.find(m => m.id === provider.model)
-      ?? this.customModelCatalog.get(name)?.find(m => m.id === provider.model);
+    const catalogEntry = findCatalogEntry(name, provider.model, {
+      builtin: BUILTIN_MODEL_CATALOG,
+      hub: this.customModelCatalog.get(name),
+    });
     return catalogEntry?.inputTypes ?? ['text', 'image'];
   }
 

@@ -325,6 +325,7 @@
     "toggleSidebar": "Toggle sidebar",
     "newMessages": "{{count}} new message(s)",
     "mentionAgent": "Mention an agent",
+    "slashSkill": "Skills",
     "mentionType": {
       "agent": "Agent",
       "project": "Project",
@@ -332,6 +333,9 @@
       "task": "Task",
       "deliverable": "Deliverable",
       "workflow": "Workflow"
+    },
+    "slashCmd": {
+      "skill": "Skills"
     },
     "addMoreFiles": "Add more files",
     "attachFilesTitle": "Attach files (images, PDF, Word, Excel, PowerPoint...)",

@@ -1,4 +1,4 @@
-import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, type ProviderCapabilities, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
+import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type ProviderCapabilities } from '@markus/shared';
 import {
   DEFAULT_REQUEST_MAX_TOKENS,
   defaultVoiceForModel,
@@ -11,25 +11,16 @@ import {
   type AudioResult,
   type STTOptions,
 } from './provider.js';
-
-interface OpenAIMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null | Array<{type: string; text?: string; image_url?: {url: string}}>;
-  tool_calls?: OpenAIToolCall[];
-  tool_call_id?: string;
-  reasoning_content?: string;
-}
-
-interface OpenAIToolCall {
-  id: string;
-  type: 'function';
-  function: { name: string; arguments: string };
-}
-
-interface OpenAIToolDef {
-  type: 'function';
-  function: { name: string; description: string; parameters: Record<string, unknown> };
-}
+import {
+  buildOpenAICompatEndpoint,
+  convertMessagesOpenAI,
+  convertToolsOpenAI,
+  parseOpenAICompatResponse,
+  createSSEAccumulator,
+  isOpenRouterReasoningModel,
+  type OpenAIMessage,
+  type OpenAIToolDef,
+} from './provider-helpers.js';
 
 interface OpenAIResponse {
   choices: Array<{
@@ -82,8 +73,12 @@ export class OpenAIProvider implements MultiModalProviderInterface {
 
   /** Build a full endpoint URL by appending `path` to the base URL. */
   protected buildEndpoint(path: string): string {
-    const base = this.baseUrl.replace(/\/+$/, '');
-    return /\/v\d+$/.test(base) ? `${base}${path}` : `${base}/v1${path}`;
+    return buildOpenAICompatEndpoint(this.baseUrl, path);
+  }
+
+  /** True when this instance is configured as an OpenRouter client. */
+  protected get isOpenRouter(): boolean {
+    return this.name === 'openrouter' || this.baseUrl.includes('openrouter.ai');
   }
 
   protected async resolveAuthHeader(): Promise<string> {
@@ -107,8 +102,17 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     if (request.stopSequences?.length) body['stop'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
 
-    const base = this.baseUrl.replace(/\/+$/, '');
-    const endpoint = /\/v\d+$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const endpoint = this.buildEndpoint('/chat/completions');
+    // OpenRouter asks for usage.cost and explicit reasoning on capable models.
+    const isOpenRouter = this.isOpenRouter;
+    if (isOpenRouter) {
+      body['usage'] = { include: true };
+      const modelId = request.model ?? this.model;
+      if (isOpenRouterReasoningModel(modelId)) {
+        body['reasoning'] = { enabled: true, effort: 'high' };
+      }
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.chatTimeoutMs);
     try {
@@ -128,8 +132,12 @@ export class OpenAIProvider implements MultiModalProviderInterface {
         throw new Error(`OpenAI API error ${res.status}: ${errText}`);
       }
 
-      const data = (await res.json()) as OpenAIResponse;
-      return this.convertResponse(data);
+      const data = (await res.json()) as OpenAIResponse & { usage?: { cost?: number } };
+      const response = this.convertResponse(data as OpenAIResponse);
+      if (isOpenRouter && typeof data.usage?.cost === 'number') {
+        (response.usage as LLMResponse['usage'] & { cost?: number }).cost = data.usage.cost;
+      }
+      return response;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const cause = (err as NodeJS.ErrnoException).cause;
@@ -141,91 +149,15 @@ export class OpenAIProvider implements MultiModalProviderInterface {
   }
 
   private convertMessages(rawMessages: LLMMessage[], systemCacheSegments?: Array<{ content: string; cacheBreakpoint?: boolean }>): OpenAIMessage[] {
-    const messages = sanitizeLLMMessages(rawMessages);
-
-    // DeepSeek thinking models require reasoning_content on ALL assistant messages.
-    // Old session messages may lack this field; backfill with empty string to avoid 400 errors.
-    const backfillReasoning = this.name === 'deepseek';
-
-    // For OpenAI-compatible providers, split the system message into multiple
-    // system messages based on cache segments. OpenAI's implicit prefix caching
-    // matches messages by prefix — if messages[0] (Tier 1) stays identical
-    // across calls, that prefix stays cached even when later system messages
-    // (Tier 2/3) change.
-    const splitSystemIntoSegments = systemCacheSegments && systemCacheSegments.length >= 1;
-
-    return messages.flatMap((m): OpenAIMessage | OpenAIMessage[] => {
-      if (splitSystemIntoSegments && m.role === 'system') {
-        return systemCacheSegments
-          .filter(seg => seg.content.length > 0)
-          .map(seg => ({
-            role: 'system' as const,
-            content: seg.content,
-          }));
-      }
-
-      if (m.role === 'tool') {
-        return {
-          role: 'tool' as const,
-          content: sanitizeForLLM(getTextContent(m.content)),
-          tool_call_id: m.toolCallId ?? '',
-        };
-      }
-
-      if (m.toolCalls?.length) {
-        const msg: OpenAIMessage = {
-          role: 'assistant' as const,
-          content: getTextContent(m.content) || null,
-          tool_calls: m.toolCalls.map((tc) => ({
-            id: tc.id,
-            type: 'function' as const,
-            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
-          })),
-        };
-        if (m.reasoningContent || backfillReasoning) msg.reasoning_content = m.reasoningContent ?? '';
-        return msg;
-      }
-
-      if (m.role === 'assistant' && (m.reasoningContent || backfillReasoning)) {
-        const msg: OpenAIMessage = {
-          role: 'assistant' as const,
-          content: typeof m.content === 'string' ? m.content : getTextContent(m.content),
-          reasoning_content: m.reasoningContent ?? '',
-        };
-        return msg;
-      }
-
-      if (Array.isArray(m.content)) {
-        return {
-          role: m.role,
-          content: m.content.map((p: LLMContentPart) =>
-            p.type === 'image_url'
-              ? { type: 'image_url' as const, image_url: { url: p.image_url.url } }
-              : { type: 'text' as const, text: p.text }
-          ),
-        };
-      }
-
-      return { role: m.role, content: m.content };
+    return convertMessagesOpenAI(rawMessages, {
+      // DeepSeek thinking models require reasoning_content on ALL assistant messages.
+      backfillReasoning: this.name === 'deepseek',
+      systemCacheSegments,
     });
   }
 
   private convertTools(tools: LLMTool[]): OpenAIToolDef[] {
-    const seen = new Set<string>();
-    const unique: OpenAIToolDef[] = [];
-    for (const t of tools) {
-      if (seen.has(t.name)) continue;
-      seen.add(t.name);
-      unique.push({
-        type: 'function' as const,
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.inputSchema,
-        },
-      });
-    }
-    return unique;
+    return convertToolsOpenAI(tools);
   }
 
   async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, signal?: AbortSignal): Promise<LLMResponse> {
@@ -240,8 +172,18 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     if (request.stopSequences?.length) body['stop'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
 
-    const base = this.baseUrl.replace(/\/+$/, '');
-    const endpoint = /\/v\d+$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const isOpenRouter = this.isOpenRouter;
+    // OpenRouter: ask for usage.cost + streamed usage, and explicit reasoning.
+    const modelId = request.model ?? this.model;
+    if (isOpenRouter) {
+      body['usage'] = { include: true };
+      body['stream_options'] = { include_usage: true };
+      if (isOpenRouterReasoningModel(modelId)) {
+        body['reasoning'] = { enabled: true, effort: 'high' };
+      }
+    }
+
+    const endpoint = this.buildEndpoint('/chat/completions');
     const controller = new AbortController();
     const STREAM_HARD_TIMEOUT_MS = 15 * 60_000;
     let idleTimedOut = false;
@@ -293,13 +235,8 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     }
 
     bumpIdleTimeout();
-    let content = '';
-    let reasoningContent = '';
-    const toolCalls: Map<number, { id: string; name: string; args: string }> = new Map();
-    let finishReason: LLMResponse['finishReason'] = 'end_turn';
-    let promptTokens = 0;
-    let completionTokens = 0;
-    let cachedTokens = 0;
+    const sse = createSSEAccumulator();
+    let lastCostUsd: number | undefined;
 
     const reader = res.body?.getReader();
     if (!reader) {
@@ -326,67 +263,26 @@ export class OpenAIProvider implements MultiModalProviderInterface {
         if (!trimmed.startsWith('data: ')) continue;
 
         try {
-          const chunk = JSON.parse(trimmed.slice(6)) as {
-            choices?: Array<{
-              delta?: { content?: string; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>; reasoning_content?: string; reasoning_details?: string; thinking?: string };
-              finish_reason?: string;
-            }>;
-            usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
-          };
-
-          const choice = chunk.choices?.[0];
-
-          const deltaReasoning = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning_details ?? choice?.delta?.thinking;
-          if (deltaReasoning) {
-            reasoningContent += deltaReasoning;
-            onEvent({ type: 'thinking_delta', thinking: deltaReasoning });
-          }
-
-          if (choice?.delta?.content) {
-            content += choice.delta.content;
-            onEvent({ type: 'text_delta', text: choice.delta.content });
-          }
-
-          if (choice?.delta?.tool_calls) {
-            for (const tc of choice.delta.tool_calls) {
-              if (!toolCalls.has(tc.index)) {
-                toolCalls.set(tc.index, { id: tc.id ?? '', name: '', args: '' });
-              }
-              const existing = toolCalls.get(tc.index)!;
-              if (tc.id) existing.id = tc.id;
-              if (tc.function?.name) {
-                existing.name = tc.function.name;
-                onEvent({ type: 'tool_call_start', toolCall: { id: existing.id, name: existing.name } });
-              }
-              if (tc.function?.arguments) {
-                existing.args += tc.function.arguments;
-                onEvent({ type: 'tool_call_delta', toolCall: { id: existing.id }, text: tc.function.arguments });
-              }
-            }
-          }
-
-          if (choice?.finish_reason) {
-            const finishMap: Record<string, LLMResponse['finishReason']> = {
-              stop: 'end_turn', tool_calls: 'tool_use', length: 'max_tokens',
-            };
-            finishReason = finishMap[choice.finish_reason] ?? 'end_turn';
-          }
-
-          if (chunk.usage) {
-            promptTokens = chunk.usage.prompt_tokens ?? 0;
-            completionTokens = chunk.usage.completion_tokens ?? 0;
-            const ct = chunk.usage.prompt_tokens_details?.cached_tokens;
-            if (ct && ct > 0) cachedTokens = ct;
-          }
+          const chunk = JSON.parse(trimmed.slice(6)) as Record<string, unknown>;
+          sse.feed(chunk, {
+            onThinking: (thinking) => onEvent({ type: 'thinking_delta', thinking }),
+            onText: (text) => onEvent({ type: 'text_delta', text }),
+            onToolStart: (toolCall) => onEvent({ type: 'tool_call_start', toolCall }),
+            onToolDelta: (toolCall, text) => onEvent({ type: 'tool_call_delta', toolCall, text }),
+            onUsage: (_usage, raw) => {
+              if (isOpenRouter && typeof raw.cost === 'number') lastCostUsd = raw.cost;
+            },
+          });
         } catch { /* skip unparseable lines */ }
       }
     }
     } catch (err) {
       clearStreamTimeouts();
-      const hasPartial = content.length > 0 || reasoningContent.length > 0 || toolCalls.size > 0;
+      const state = sse.state;
+      const hasPartial = state.content.length > 0 || state.reasoningContent.length > 0 || state.toolCalls.size > 0;
       if (idleTimedOut && hasPartial) {
-        toolCalls.clear();
-        finishReason = 'max_tokens';
+        state.toolCalls.clear();
+        state.finishReason = 'max_tokens';
       } else if (idleTimedOut || hardTimedOut) {
         const kind = hardTimedOut ? 'hard' : 'idle';
         throw new Error(
@@ -399,65 +295,29 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       clearStreamTimeouts();
     }
 
-    const resultToolCalls = [...toolCalls.values()]
-      .filter((tc) => tc.name)
-      .map((tc) => {
-        onEvent({ type: 'tool_call_end', toolCall: { id: tc.id, name: tc.name } });
-        return {
-          id: tc.id,
-          name: tc.name,
-          arguments: tc.args ? (JSON.parse(tc.args) as Record<string, unknown>) : {},
-        };
-      });
+    const state = sse.state;
+    const resultToolCalls = sse.finalizeToolCalls().map((tc) => {
+      onEvent({ type: 'tool_call_end', toolCall: { id: tc.id, name: tc.name } });
+      return tc;
+    });
 
-    const usage: LLMResponse['usage'] = { inputTokens: promptTokens, outputTokens: completionTokens };
-    if (cachedTokens > 0) usage.cacheReadTokens = cachedTokens;
-    onEvent({ type: 'message_end', usage, finishReason });
+    const usage: LLMResponse['usage'] = { inputTokens: state.promptTokens, outputTokens: state.completionTokens };
+    if (state.cachedTokens > 0) usage.cacheReadTokens = state.cachedTokens;
+    if (lastCostUsd !== undefined) (usage as LLMResponse['usage'] & { cost?: number }).cost = lastCostUsd;
+    onEvent({ type: 'message_end', usage, finishReason: state.finishReason });
 
     const streamResult: LLMResponse = {
-      content,
+      content: state.content,
       toolCalls: resultToolCalls.length ? resultToolCalls : undefined,
       usage,
-      finishReason,
+      finishReason: state.finishReason,
     };
-    if (reasoningContent) streamResult.reasoningContent = reasoningContent;
+    if (state.reasoningContent) streamResult.reasoningContent = state.reasoningContent;
     return streamResult;
   }
 
   private convertResponse(data: OpenAIResponse): LLMResponse {
-    const choice = data.choices[0];
-    if (!choice) throw new Error('No response choice from OpenAI');
-
-    const msg = choice.message;
-    const toolCalls = msg.tool_calls?.map((tc) => ({
-      id: tc.id,
-      name: tc.function.name,
-      arguments: JSON.parse(tc.function.arguments) as Record<string, unknown>,
-    }));
-
-    const finishMap: Record<string, LLMResponse['finishReason']> = {
-      stop: 'end_turn',
-      tool_calls: 'tool_use',
-      length: 'max_tokens',
-    };
-
-    const usage: LLMResponse['usage'] = {
-      inputTokens: data.usage.prompt_tokens,
-      outputTokens: data.usage.completion_tokens,
-    };
-    const cached = data.usage.prompt_tokens_details?.cached_tokens;
-    if (cached && cached > 0) {
-      usage.cacheReadTokens = cached;
-    }
-
-    const result: LLMResponse = {
-      content: typeof msg.content === 'string' ? msg.content : '',
-      toolCalls: toolCalls?.length ? toolCalls : undefined,
-      usage,
-      finishReason: finishMap[choice.finish_reason] ?? 'end_turn',
-    };
-    if (msg.reasoning_content) result.reasoningContent = msg.reasoning_content;
-    return result;
+    return parseOpenAICompatResponse(data as unknown as Record<string, unknown>);
   }
 
   // ---------------------------------------------------------------------------
@@ -470,12 +330,14 @@ export class OpenAIProvider implements MultiModalProviderInterface {
 
   getCapabilities(): ProviderCapabilities {
     const isOpenAI = this.isNativeOpenAI;
+    const isOpenRouter = this.isOpenRouter;
+    const mediaCapable = isOpenAI || isOpenRouter;
     return {
       chat: true,
       vision: true,
-      imageGeneration: isOpenAI,
-      tts: isOpenAI,
-      stt: isOpenAI,
+      imageGeneration: mediaCapable,
+      tts: mediaCapable,
+      stt: mediaCapable,
       videoGeneration: false,
       embedding: isOpenAI,
       reasoning: true,
