@@ -1115,6 +1115,58 @@ describe('MarkusProvider multimodal (OpenRouter path)', () => {
       vi.useRealTimers();
     }
   });
+
+  it('generateVideo normalizes input_references/frame_images to OpenAI ref shape', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(mockResponse({
+          id: 'job-ref-1',
+          polling_url: 'https://openrouter.ai/api/v1/videos/job-ref-1',
+          status: 'queued',
+        }, 200))
+        .mockResolvedValueOnce(mockResponse({
+          id: 'job-ref-1',
+          status: 'completed',
+          unsigned_urls: ['https://content.test/ref-1.mp4'],
+        }, 200))
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          arrayBuffer: async () => new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]).buffer,
+          text: async () => '',
+          headers: new Headers({ 'content-type': 'video/mp4' }),
+        } as Response);
+
+      const promise = dualProvider().generateVideo('a dog on the moon', {
+        model: 'bytedance/seedance-2.5',
+        inputReferences: [
+          { url: 'https://example.com/ref.png', type: 'image', weight: 0.7 },
+        ],
+        frameImages: [
+          { url: 'https://example.com/first.png', frame_type: 'first_frame' },
+        ],
+      });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await promise;
+      expect(result.status).toBe('completed');
+
+      const createCall = vi.mocked(fetch).mock.calls[0]!;
+      expect(String(createCall[0])).toBe('https://openrouter.ai/api/v1/videos');
+      const body = JSON.parse(createCall[1]!.body as string);
+      // Regression: upstream (OpenRouter videos API) expects OpenAI-style refs
+      // { type: 'image_url', image_url: { url } }, NOT { url, type: 'image' }.
+      expect(body.input_references).toEqual([
+        { type: 'image_url', image_url: { url: 'https://example.com/ref.png' }, weight: 0.7 },
+      ]);
+      expect(body.frame_images).toEqual([
+        { type: 'image_url', image_url: { url: 'https://example.com/first.png' }, frame_type: 'first_frame' },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('soft-stop when remaining credits are 0', () => {
