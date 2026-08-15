@@ -1044,6 +1044,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           setMainTab('chat');
           if (isMobile) enterMobileDetail();
         }
+        // 从交付物页跳转：右侧栏打开指定交付物预览。
+        if (detail.params?.openDeliverable) {
+          const did = detail.params.openDeliverable;
+          localStorage.removeItem('markus_nav_openDeliverable');
+          if (isMobile) {
+            navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: did });
+          } else if (openRightPanel) {
+            void api.deliverables.get(did).then(res => {
+              if (res.deliverable) openRightPanel({ kind: 'deliverable', deliverable: res.deliverable });
+            }).catch(() => { /* ignore missing deliverable */ });
+          }
+        }
         if (detail.params?.prefillMessage) {
           const msg = detail.params.prefillMessage;
           localStorage.removeItem('markus_nav_prefillMessage');
@@ -1128,6 +1140,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         const el = textareaRef.current;
         if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
       }, 150);
+    }
+    // 交付物页跳转：右侧栏打开指定交付物预览（挂载前 navBus 已写入 localStorage）。
+    const navOpenDeliverable = localStorage.getItem('markus_nav_openDeliverable');
+    if (navOpenDeliverable) {
+      localStorage.removeItem('markus_nav_openDeliverable');
+      if (isMobile) {
+        navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: navOpenDeliverable });
+      } else if (openRightPanel) {
+        void api.deliverables.get(navOpenDeliverable).then(res => {
+          if (res.deliverable) openRightPanel({ kind: 'deliverable', deliverable: res.deliverable });
+        }).catch(() => { /* ignore missing deliverable */ });
+      }
     }
     const selectAgent = localStorage.getItem('markus_nav_selectAgent');
     if (selectAgent) {

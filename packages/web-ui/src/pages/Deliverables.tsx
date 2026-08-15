@@ -7,8 +7,6 @@ import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { DeliverableShareModal } from '../components/DeliverableShareModal.tsx';
 import { createDeliverableShareService, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
-import { ChatPanel } from '../components/ChatPanel.tsx';
-import { type ContextChip } from '../components/ChatInput.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -143,10 +141,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const layout = useLayout();
   const keyboardPane = layout?.keyboardPane ?? 'content';
-
-  // Chat panel (Phase 3)
-  const [chatPanelOpen, setChatPanelOpen] = useState(false);
-  const [contextChips, setContextChips] = useState<ContextChip[]>([]);
 
   // Selection toolbar (Phase 4)
   const [selectionToolbar, setSelectionToolbar] = useState<{ x: number; y: number; text: string; htmlMeta?: { xpath: string; cssSelector: string } } | null>(null);
@@ -650,8 +644,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const searchInputRef = useRef<HTMLInputElement>(null);
   /** L1 侧边栏容器 ref（打开时聚焦，支持 J/K 键盘导航）。 */
   const l1Ref = useRef<HTMLDivElement>(null);
-  /** 右侧聊天栏输入框 ref（打开时聚焦，可直接输入）。 */
-  const chatInputRef = useRef<HTMLTextAreaElement>(null);
+  /** 用户手动展开 L1 侧栏标记：auto-collapse 不覆盖手动操作。 */
+  const sidebarManualRef = useRef(false);
 
   // Entering L1 from L0: expand only on pane *entry* — never fight Cmd+B.
   const prevDeliverablesKeyboardPaneRef = useRef(keyboardPane);
@@ -706,10 +700,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         }
         if (e.key.toLowerCase() === 'l') {
           e.preventDefault();
-          setChatPanelOpen(prev => {
-            if (!prev && !selected?.agentId) return prev; // 无可聊天 agent 时不打开
-            return !prev;
-          });
+          // Cmd/Ctrl+L：不再打开本页聊天栏 — 跳转到 Team Chat 并在右侧栏预览当前交付物。
+          openInTeamChat();
           return;
         }
         if (e.altKey) return;
@@ -792,11 +784,9 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     const doSwitch = () => {
       setSelected(item);
       setShareOpen(false);
-      setContextChips([]);
       setEditMode(false);
       setEditDirty(false);
       if (isMobile) {
-        setChatPanelOpen(false);
         setMobileShowDetail(true);
         history.pushState({ mobileDetail: PAGE.DELIVERABLES }, '', window.location.hash);
       }
@@ -871,69 +861,41 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     return () => window.removeEventListener('markus:navigate', handler as EventListener);
   }, [editDirty]);
 
-  // Auto-collapse sidebar when chat panel opens and content area is too narrow
-  const sidebarManualRef = useRef(false);
-  useEffect(() => {
-    if (!chatPanelOpen) {
-      sidebarManualRef.current = false;
-      return;
-    }
-    if (isMobile || sidebarManualRef.current) return;
-    const chatWidth = 400;
-    const sidebarWidth = sidebarCollapsed ? 0 : (listPanel.width ?? 384);
-    const appSidebarWidth = 160;
-    const availableForContent = window.innerWidth - appSidebarWidth - sidebarWidth - chatWidth;
-    if (availableForContent < 480 && !sidebarCollapsed) {
-      setSidebarCollapsed(true);
-    }
-  }, [chatPanelOpen, isMobile, sidebarCollapsed, listPanel.width]);
-
-  // 焦点跟随：打开右侧栏 → 聚焦聊天输入框；关闭右侧栏 → 回到 L1（保持键盘导航）。
-  // 覆盖 Cmd+L、FAB、addToConversation 等所有打开/关闭路径。
-  const prevChatPanelOpenRef = useRef(chatPanelOpen);
-  useEffect(() => {
-    const wasOpen = prevChatPanelOpenRef.current;
-    prevChatPanelOpenRef.current = chatPanelOpen;
-    if (wasOpen === chatPanelOpen) return;
-    requestAnimationFrame(() => {
-      if (chatPanelOpen) {
-        if (selected?.agentId) chatInputRef.current?.focus();
-      } else if (!sidebarCollapsed) {
-        l1Ref.current?.focus();
-      }
-    });
-  }, [chatPanelOpen, selected?.agentId, sidebarCollapsed]);
+  // 焦点跟随：Cmd+L 导航到 Team Chat → 由 Team 页聚焦输入框；本页不再有右侧聊天栏。
 
   // Selection toolbar handler (Phase 4)
   const detailContentRef = useRef<HTMLDivElement>(null);
 
-  const addToConversation = useCallback((text: string, htmlMeta?: { xpath: string; cssSelector: string }) => {
-    const label = text.length > 30 ? `${text.slice(0, 15)}…${text.slice(-12)}` : text;
-    const chipId = `sel_${Date.now()}`;
-    let content: string;
-    if (htmlMeta) {
-      const filePath = selected?.reference ?? '';
-      content = [
-        `[html-selection]`,
-        `Text: "${text}"`,
-        `CSS Selector: ${htmlMeta.cssSelector}`,
-        `XPath: ${htmlMeta.xpath}`,
-        filePath ? `File: ${filePath}` : '',
-      ].filter(Boolean).join('\n');
-    } else {
-      content = text;
+  /**
+   * 跳转到 Team Chat 页面：在右侧栏预览当前交付物，并把（可选）选中文本作为输入上下文。
+   * 替代已被移除的交付物页右侧聊天栏（Phase 3 清理）。
+   */
+  const openInTeamChat = useCallback((selectionText?: string, htmlMeta?: { xpath: string; cssSelector: string }) => {
+    const agentId = selected?.agentId ?? '';
+    const deliverableId = selected?.id ?? '';
+    const params: Record<string, string> = {};
+    if (deliverableId) params.openDeliverable = deliverableId;
+    if (selectionText?.trim()) {
+      let content: string;
+      if (htmlMeta) {
+        const filePath = selected?.reference ?? '';
+        content = [
+          `[html-selection]`,
+          `Text: "${selectionText}"`,
+          `CSS Selector: ${htmlMeta.cssSelector}`,
+          `XPath: ${htmlMeta.xpath}`,
+          filePath ? `File: ${filePath}` : '',
+        ].filter(Boolean).join('\n');
+      } else {
+        content = selectionText;
+      }
+      params.prefillMessage = content;
     }
-    setContextChips(prev => [...prev, {
-      id: chipId,
-      label: htmlMeta ? `🌐 ${label}` : label,
-      type: 'selection',
-      content,
-      onRemove: () => setContextChips(p => p.filter(c => c.id !== chipId)),
-    }]);
-    if (!chatPanelOpen) setChatPanelOpen(true);
+    if (agentId) params.agentId = agentId;
     setSelectionToolbar(null);
     window.getSelection()?.removeAllRanges();
-  }, [chatPanelOpen, selected?.reference]);
+    navBus.navigate(PAGE.TEAM, params);
+  }, [selected]);
 
   const handleHtmlSelection = useCallback((data: HtmlSelectionData) => {
     if (!data.text.trim()) return;
@@ -1639,39 +1601,18 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
       </div>
 
-        {/* Floating chat FAB — bottom-right of the detail panel (not the viewport) */}
-        {selected?.agentId && !chatPanelOpen && !isMobile && (
+        {/* Floating chat FAB — jump to Team Chat with this deliverable in the right panel */}
+        {selected?.agentId && !isMobile && (
           <button
             type="button"
-            onClick={() => setChatPanelOpen(true)}
+            onClick={() => openInTeamChat()}
             className="absolute bottom-6 right-6 z-20 w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-transform hover:scale-105 animate-fab-in"
-            title={t('chat.openChat')}
+            title={t('chat.openChat', { defaultValue: 'Open in Team Chat' })}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
           </button>
-        )}
-
-        {/* Chat panel (Phase 3b) */}
-        {chatPanelOpen && selected?.agentId && !isMobile && (
-          <ChatPanel
-            agentId={selected.agentId}
-            agents={agents}
-            authUser={_authUser}
-            onClose={() => { setChatPanelOpen(false); setContextChips([]); }}
-            contextChips={[
-              {
-                id: `deliverable_ctx_${selected.id}`,
-                label: `📦 ${selected.title}`,
-                type: 'deliverable',
-                content: `${t('chat.currentDeliverable')}: ${selected.title} (id: ${selected.id})`,
-              },
-              ...contextChips,
-            ]}
-            width={400}
-            textareaRef={chatInputRef}
-          />
         )}
       </div>
       )}
@@ -1684,7 +1625,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
           style={{ left: selectionToolbar.x, top: selectionToolbar.y - 8 }}
         >
           <button
-            onMouseDown={e => { e.preventDefault(); e.stopPropagation(); addToConversation(selectionToolbar.text, selectionToolbar.htmlMeta); }}
+            onMouseDown={e => { e.preventDefault(); e.stopPropagation(); openInTeamChat(selectionToolbar.text, selectionToolbar.htmlMeta); }}
             className="px-3 py-1.5 text-xs text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary transition-colors flex items-center gap-1.5 whitespace-nowrap"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
