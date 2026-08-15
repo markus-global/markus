@@ -350,6 +350,30 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
 
+  // Parse a JSON array of context chips carried over navigation (e.g. from the
+  // Deliverables page), turning each into a pending chat-context tag above the
+  // input — same behaviour as right-panel "Add to conversation".
+  const applyNavChatChips = useCallback((raw: string | null | undefined) => {
+    if (!raw) return;
+    try {
+      const chips = JSON.parse(raw) as Array<{ label?: string; content?: string }>;
+      if (!Array.isArray(chips) || chips.length === 0) return;
+      const valid = chips.filter((c): c is { label: string; content: string } =>
+        !!c && typeof c.content === 'string' && c.content.trim().length > 0);
+      if (valid.length === 0) return;
+      const withIds = valid.map(c => ({
+        id: `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        label: c.label?.trim() || 'Context',
+        content: c.content,
+      }));
+      setChatContext(prev => [...prev, ...withIds]);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      });
+    } catch { /* malformed JSON → ignore silently */ }
+  }, []);
+
   // L2: Team detail panel (hidden by default, toggled via header button)
   const [showTeamDetailPanel, setShowTeamDetailPanel] = useState<boolean>(() => {
     if (previewMode) return true;
@@ -1074,6 +1098,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             }, 100);
           }
         }
+        if (detail.params?.chatChips) {
+          const chipsRaw = detail.params.chatChips;
+          localStorage.removeItem('markus_nav_chatChips');
+          setMainTab('chat');
+          applyNavChatChips(chipsRaw);
+        }
         if (detail.params?.dm) {
           setChatMode('dm');
           setActiveDmUserId(detail.params.dm);
@@ -1140,6 +1170,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         const el = textareaRef.current;
         if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
       }, 150);
+    }
+    const navChatChips = localStorage.getItem('markus_nav_chatChips');
+    if (navChatChips) {
+      localStorage.removeItem('markus_nav_chatChips');
+      setMainTab('chat');
+      applyNavChatChips(navChatChips);
     }
     // 交付物页跳转：右侧栏打开指定交付物预览（挂载前 navBus 已写入 localStorage）。
     const navOpenDeliverable = localStorage.getItem('markus_nav_openDeliverable');
@@ -3628,19 +3664,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const before = input.slice(0, cursorPos);
     const atIdx = before.lastIndexOf('@');
     const after = input.slice(cursorPos);
-    const mention = entityType && entityId
-      ? `@[${name}](${entityType}:${entityId})`
-      : name.includes(' ') ? `@[${name}]` : `@${name}`;
-    const newVal = input.slice(0, atIdx) + mention + ' ' + after;
+    // 移除输入框中已输入的 @ + 过滤片段，改为在输入框上方生成标签（与右侧栏“添加到对话”一致）
+    const newVal = input.slice(0, atIdx) + after;
     setInput(newVal);
     setMentionDropdown(false);
     setMentionSelectedIndex(0);
-    const newCursor = atIdx + mention.length + 1;
+    const content = entityType && entityId
+      ? `@[${name}](${entityType}:${entityId})`
+      : name.includes(' ') ? `@[${name}]` : `@${name}`;
+    const icon = entityType ? (ENTITY_TYPE_ICON[entityType] ?? '📄') : '🤖';
+    addChatContext({ label: `${icon} ${name}`, content: `${content} ` });
     requestAnimationFrame(() => {
       const el = textareaRef.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(newCursor, newCursor);
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
     });
   };
 

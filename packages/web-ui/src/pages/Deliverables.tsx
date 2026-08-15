@@ -867,30 +867,55 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const detailContentRef = useRef<HTMLDivElement>(null);
 
   /**
-   * 跳转到 Team Chat 页面：在右侧栏预览当前交付物，并把（可选）选中文本作为输入上下文。
-   * 替代已被移除的交付物页右侧聊天栏（Phase 3 清理）。
+   * 跳转到 Team Chat 页面：在右侧栏预览当前交付物，并把交付物（及可选选中文本）作为
+   * 输入框上方的「标签」(chat context chips) 携带过去 —— 与右侧栏「添加到对话」一致，
+   * 而不是预填输入框文本。
    */
   const openInTeamChat = useCallback((selectionText?: string, htmlMeta?: { xpath: string; cssSelector: string }) => {
     const agentId = selected?.agentId ?? '';
     const deliverableId = selected?.id ?? '';
     const params: Record<string, string> = {};
     if (deliverableId) params.openDeliverable = deliverableId;
+
+    // 交付物本身作为一个标签，让 agent 明确知道讨论的是哪个交付物。
+    const chips: Array<{ label: string; content: string }> = [];
+    if (deliverableId) {
+      const dTitle = selected?.title?.trim() || deliverableId;
+      const dLabel = dTitle.length > 40 ? `${dTitle.slice(0, 24)}…${dTitle.slice(-12)}` : dTitle;
+      chips.push({
+        label: `📄 ${dLabel}`,
+        content: [
+          `[deliverable]`,
+          `ID: ${deliverableId}`,
+          `Title: ${selected?.title ?? ''}`,
+          selected?.reference ? `Reference: ${selected.reference}` : '',
+          selected?.taskId ? `Task: ${selected.taskId}` : '',
+          selected?.projectId ? `Project: ${selected.projectId}` : '',
+        ].filter(Boolean).join('\n'),
+      });
+    }
     if (selectionText?.trim()) {
-      let content: string;
+      const short = selectionText.trim().length > 40
+        ? `${selectionText.trim().slice(0, 24)}…${selectionText.trim().slice(-12)}`
+        : selectionText.trim();
       if (htmlMeta) {
         const filePath = selected?.reference ?? '';
-        content = [
-          `[html-selection]`,
-          `Text: "${selectionText}"`,
-          `CSS Selector: ${htmlMeta.cssSelector}`,
-          `XPath: ${htmlMeta.xpath}`,
-          filePath ? `File: ${filePath}` : '',
-        ].filter(Boolean).join('\n');
+        chips.push({
+          label: `🌐 ${short}`,
+          content: [
+            `[html-selection]`,
+            `Text: "${selectionText.trim()}"`,
+            `CSS Selector: ${htmlMeta.cssSelector}`,
+            `XPath: ${htmlMeta.xpath}`,
+            filePath ? `File: ${filePath}` : '',
+          ].filter(Boolean).join('\n'),
+        });
       } else {
-        content = selectionText;
+        chips.push({ label: `📝 ${short}`, content: selectionText.trim() });
       }
-      params.prefillMessage = content;
     }
+    if (chips.length > 0) params.chatChips = JSON.stringify(chips);
+
     if (agentId) params.agentId = agentId;
     setSelectionToolbar(null);
     window.getSelection()?.removeAllRanges();
