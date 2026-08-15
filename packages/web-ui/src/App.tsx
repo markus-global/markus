@@ -380,6 +380,9 @@ export function App() {
         return;
       }
       if (key === 'b') {
+        // Deliverables 页由页面自身处理 Cmd+B（折叠 L1 列表，见 pages/Deliverables.tsx），
+        // 全局统一折叠会把 L0 + 页面 L1 一起折叠，导致双触发、行为错乱。
+        if (page === PAGE.DELIVERABLES) return;
         e.preventDefault();
         toggleLeftCollapsed();
       } else if (page === PAGE.TEAM && key === 'l') {

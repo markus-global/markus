@@ -662,6 +662,42 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   useEffect(() => {
     if (previewMode || isMobile || !isActive) return;
     const handler = (e: KeyboardEvent) => {
+      // Cmd/Ctrl 修饰键快捷键是全局命令，不受 keyboardPane 焦点区限制
+      // （否则刚进入页面焦点默认在 L0 时 Cmd+B / Cmd+L / Cmd+F 全部被吞掉）。
+      const isCmd = e.metaKey || e.ctrlKey;
+      if (isCmd) {
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+          if (e.key === 'Escape') {
+            (e.target as HTMLElement).blur();
+            e.preventDefault();
+          }
+          return;
+        }
+        if (isEditableTarget(e.target)) return;
+        if (e.key === 'f') {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+          return;
+        }
+        // Cmd/Ctrl + B：开/关左侧栏（L1 list）；Cmd/Ctrl + L：开/关右侧聊天栏。
+        // （位于 isEditableTarget 守卫之后，编辑目标/输入框内不会触发）
+        if (e.key.toLowerCase() === 'b') {
+          e.preventDefault();
+          setSidebarCollapsed(prev => !prev);
+          return;
+        }
+        if (e.key.toLowerCase() === 'l') {
+          e.preventDefault();
+          setChatPanelOpen(prev => {
+            if (!prev && !selected?.agentId) return prev; // 无可聊天 agent 时不打开
+            return !prev;
+          });
+          return;
+        }
+        if (e.altKey) return;
+        return;
+      }
+      // 以下裸字母 / 方向键导航受 keyboardPane 焦点区限制
       if (layout?.keyboardPane === 'l0') return;
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         if (e.key === 'Escape') {
@@ -671,26 +707,6 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         return;
       }
       if (isEditableTarget(e.target)) return;
-      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-        return;
-      }
-      // Cmd/Ctrl + B：开/关左侧栏（L1 list）；Cmd/Ctrl + L：开/关右侧聊天栏。
-      // （位于 isEditableTarget 守卫之后，编辑目标/输入框内不会触发）
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
-        e.preventDefault();
-        setSidebarCollapsed(prev => !prev);
-        return;
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'l') {
-        e.preventDefault();
-        setChatPanelOpen(prev => {
-          if (!prev && !selected?.agentId) return prev; // 无可聊天 agent 时不打开
-          return !prev;
-        });
-        return;
-      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
       const bare = e.key.length === 1 ? e.key.toLowerCase() : e.key;
