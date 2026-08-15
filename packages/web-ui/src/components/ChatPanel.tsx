@@ -200,12 +200,12 @@ export function ChatPanel({
 
       while (remaining.length > 0) {
         if (insideThinkRef.current) {
-          const closeIdx = remaining.indexOf(' response');
-          if (closeIdx >= 0) { thinking += remaining.slice(0, closeIdx); remaining = remaining.slice(closeIdx + ' response'.length); insideThinkRef.current = false; }
+          const closeIdx = remaining.indexOf('</thinking>');
+          if (closeIdx >= 0) { thinking += remaining.slice(0, closeIdx); remaining = remaining.slice(closeIdx + '</thinking>'.length); insideThinkRef.current = false; }
           else { thinking += remaining; remaining = ''; }
         } else {
-          const openIdx = remaining.indexOf(' thinking');
-          if (openIdx >= 0) { content += remaining.slice(0, openIdx); remaining = remaining.slice(openIdx + ' thinking'.length); insideThinkRef.current = true; }
+          const openIdx = remaining.indexOf('<thinking>');
+          if (openIdx >= 0) { content += remaining.slice(0, openIdx); remaining = remaining.slice(openIdx + '<thinking>'.length); insideThinkRef.current = true; }
           else { content += remaining; remaining = ''; }
         }
       }

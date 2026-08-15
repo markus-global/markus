@@ -2332,6 +2332,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         if (prev.some(m => m.id === newMsg.id)) return prev;
 
         // Feishu assistant event may carry the inbound user text as a safety net.
+        // Insert chronologically (never append) so the user bubble stays BEFORE
+        // the agent reply even when the fallback arrives after the reply.
         let base = prev;
         if (!isUserTurn && fallbackUserText) {
           const hasUser = base.some(m =>
@@ -2339,12 +2341,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             || (m.sender === 'user' && m.text === fallbackUserText),
           );
           if (!hasUser) {
-            base = [...base, {
+            base = insertChatMsgByCreatedAt(base, {
               id: fallbackUserId || `feishu_user_${newMsg.id}`,
               sender: 'user' as const,
               text: fallbackUserText,
               time: new Date().toLocaleTimeString(),
-            }];
+              // Bubble clock mirrors the agent reply's start time so a fallback
+              // user turn is never placed after the in-flight response.
+              rawCreatedAt: newMsg.rawCreatedAt,
+            });
           }
         }
 

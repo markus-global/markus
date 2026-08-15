@@ -2397,7 +2397,9 @@ export const wsClient = new WSClient();
 
 // ── Markus Hub API Client ────────────────────────────────────────────────────
 
-let HUB_URL = (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'https://markus.global';
+let HUB_URL = typeof window !== 'undefined'
+  ? (window as unknown as Record<string, string>).__MARKUS_HUB_URL__ ?? 'https://markus.global'
+  : 'https://markus.global';
 let _hubUrlReady: Promise<void> | null = null;
 
 // Fetch hub URL from server config (overrides default if available),

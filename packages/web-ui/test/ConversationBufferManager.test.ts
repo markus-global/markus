@@ -187,7 +187,7 @@ describe('ConversationBufferManager', () => {
       expect(r.displayChanged).toBe(false);
     });
 
-    it('uses cache data when cache is fresher', () => {
+    it('keeps DB rows and appends fresher cache-only rows', () => {
       const cachedMsgs = [
         msg({ id: 'c1', text: 'cached reply with more text' }),
         msg({ id: 'c2', text: 'extra message' }),
@@ -198,7 +198,12 @@ describe('ConversationBufferManager', () => {
       const dbMsgs = [msg({ id: 'db1', text: 'short' })];
       const r = mgr.applyLoadResult('agent1', 'sess1', dbMsgs);
       expect(r.displayChanged).toBe(true);
-      expect(r.newMessages).toEqual(cachedMsgs);
+      // DB rows are the ordering authority and must never be dropped; cache rows
+      // are appended as live-tail supplements.
+      const ids = r.newMessages!.map(m => m.id);
+      expect(ids).toContain('db1');
+      expect(ids).toContain('c1');
+      expect(ids).toContain('c2');
     });
   });
 

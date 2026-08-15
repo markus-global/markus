@@ -128,6 +128,7 @@ export class ConversationBufferManager {
     sessionId: string,
     msgs: ChatMsg[],
   ): BufferWriteResult {
+    const cache = this.sessionMsgCache.get(sessionId);
     const cacheIsFresher = this.isCacheFresher(sessionId, msgs);
     if (!cacheIsFresher) {
       this.sessionMsgCache.set(sessionId, msgs);
@@ -143,9 +144,11 @@ export class ConversationBufferManager {
       && (this.loadingSession === sessionId || activeSessionId === sessionId);
 
     if (isCurrentView && phase !== 'streaming') {
-      const displayMsgs = cacheIsFresher
-        ? this.sessionMsgCache.get(sessionId)!
-        : msgs;
+      // DB rows are the ordering authority (user bubbles are persisted before
+      // the assistant reply). A fresher cache may only add live-tail messages
+      // that the DB does not have yet — it must never hide DB user messages,
+      // which is what caused "user bubble after the agent reply" until refresh.
+      const displayMsgs = this.mergeDbWithCache(msgs, cacheIsFresher ? cache : undefined);
       this.msgBuffers.set(convKey, displayMsgs);
       this.loadingSession = sessionId;
       this.completeLoad(convKey);
@@ -153,6 +156,36 @@ export class ConversationBufferManager {
     }
 
     return { displayChanged: false };
+  }
+
+  /**
+   * Build the display list as: DB messages first (correct chronological order),
+   * then any cache-only rows (e.g. a streaming tail not yet flushed to DB) that
+   * are missing from DB, inserted by createdAt so late WS arrivals stay ordered.
+   * Duplicates by id are dropped; user rows present in DB are never reordered.
+   */
+  private mergeDbWithCache(dbMsgs: ChatMsg[], cache?: ChatMsg[]): ChatMsg[] {
+    if (!cache || cache.length === 0) return [...dbMsgs];
+    const byId = new Set<string>();
+    const out: ChatMsg[] = [];
+    for (const m of dbMsgs) {
+      byId.add(m.id);
+      out.push(m);
+    }
+    for (const cm of cache) {
+      if (byId.has(cm.id)) continue;
+      // Insert cache-only messages chronologically among DB messages.
+      const t = cm.rawCreatedAt ? Date.parse(cm.rawCreatedAt) : NaN;
+      let i = out.length;
+      while (i > 0 && out[i - 1]!.rawCreatedAt && Number.isFinite(t)) {
+        const pt = Date.parse(out[i - 1]!.rawCreatedAt!);
+        if (!Number.isFinite(pt) || pt <= t) break;
+        i--;
+      }
+      out.splice(i, 0, cm);
+      byId.add(cm.id);
+    }
+    return out;
   }
 
   // ── Activity buffer ──

@@ -412,11 +412,18 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
   const emitThinking = () => {
     const t = thinkBuf.trim();
     if (t) {
-      entries.push({
-        id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
-        seq: seq++, type: 'text', content: t, createdAt: currentSegTimestamp,
-        metadata: { isThinking: true },
-      });
+      const last = entries[entries.length - 1];
+      // Merge adjacent thinking into one block so repeated reasoning segments do
+      // not print multiple「思考中」headings — content stays chronological.
+      if (last && last.type === 'text' && last.metadata?.isThinking) {
+        last.content += (last.content ? '\n\n' : '') + t;
+      } else {
+        entries.push({
+          id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
+          seq: seq++, type: 'text', content: t, createdAt: currentSegTimestamp,
+          metadata: { isThinking: true },
+        });
+      }
     }
     thinkBuf = '';
   };
@@ -436,17 +443,21 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
   const CLOSE_TAG = '</think>';
 
   const processText = (content: string) => {
+    // Structured `seg.thinking` already carries reasoning — the inline tag scan
+    // below is ONLY a compatibility fallback for legacy content that still
+    // embeds markers. It strips the marker but never emits a second thinking
+    // row (prevents duplicate「思考中」headings when the body mentions
+    // "thinking"/"response" mid-sentence). Local state only — a stray unclosed
+    // marker must not swallow the next segment's text.
     let pos = 0;
+    let inLegacyThink = false;
     while (pos < content.length) {
-      if (insideThink) {
+      if (inLegacyThink) {
         const closeIdx = content.indexOf(CLOSE_TAG, pos);
         if (closeIdx === -1) {
-          thinkBuf += content.slice(pos);
           pos = content.length;
         } else {
-          thinkBuf += content.slice(pos, closeIdx);
-          insideThink = false;
-          emitThinking();
+          inLegacyThink = false;
           pos = closeIdx + CLOSE_TAG.length;
         }
       } else {
@@ -456,8 +467,7 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
           pos = content.length;
         } else {
           textBuf += content.slice(pos, openIdx);
-          emitText();
-          insideThink = true;
+          inLegacyThink = true;
           pos = openIdx + OPEN_TAG.length;
         }
       }
@@ -510,9 +520,10 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
 
   if (insideThink) {
     emitThinking();
-  } else {
-    emitText();
   }
+  // Always flush remaining plain text — even after a legacy unclosed marker,
+  // the tail must not be dropped (the marker branch never feeds thinkBuf).
+  emitText();
   return entries;
 }
 
