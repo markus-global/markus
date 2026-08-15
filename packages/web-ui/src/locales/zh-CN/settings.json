@@ -130,6 +130,7 @@
     "restoreRecommended": "恢复 Markus 推荐",
     "restoreWorking": "恢复中…",
     "restoreConfirm": "用 Markus 推荐覆盖当前模型路由，并将默认提供商切换为 Markus？您已自定义的能力映射将被覆盖。",
+    "loadingModels": "正在加载模型列表…",
     "tier": {
       "base": "基础",
       "pro": "专业",

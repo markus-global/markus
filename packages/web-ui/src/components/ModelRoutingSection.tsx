@@ -31,6 +31,7 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
   const [defaultModel, setDefaultModel] = useState<{ provider: string; model: string } | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [candidatesLoading, setCandidatesLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [fullModelList, setFullModelList] = useState<ModelOption[] | null>(null);
   const [suggestions, setSuggestions] = useState<Record<string, Suggestion | null>>({});
@@ -61,9 +62,12 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
 
   // Load full model catalog; refresh when providers change
   useEffect(() => {
+    let cancelled = false;
+    setCandidatesLoading(true);
     fetch('/api/models/routing-candidates', { credentials: 'include' })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((data: { providers: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> }> }) => {
+        if (cancelled) return;
         const models: ModelOption[] = [];
         for (const prov of data.providers) {
           for (const m of prov.models) {
@@ -81,7 +85,9 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
         }
         setFullModelList(models);
       })
-      .catch(() => setFullModelList(null));
+      .catch(() => { if (!cancelled) setFullModelList(null); })
+      .finally(() => { if (!cancelled) setCandidatesLoading(false); });
+    return () => { cancelled = true; };
   }, [providerKey]);
 
   // Load suggested assignments; refresh when providers change
@@ -191,6 +197,7 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
         setDefaultModel(data.routingDefaultModel ?? null);
       })
       .catch(() => { /* keep current form state */ });
+    setCandidatesLoading(true);
     fetch('/api/models/routing-candidates', { credentials: 'include' })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((data: { providers: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> }> }) => {
@@ -211,7 +218,8 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
         }
         setFullModelList(models);
       })
-      .catch(() => { /* ignore */ });
+      .catch(() => { /* ignore */ })
+      .finally(() => setCandidatesLoading(false));
   }, []);
 
   const restoreRecommended = useCallback(async () => {
@@ -246,6 +254,8 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
     }
   }, [restoreStatus, reloadRouting]);
 
+  const hasAnyOptions = allModels.length > 0;
+
   if (!loaded) {
     return (
       <div className="space-y-4">
@@ -264,6 +274,26 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
     return (
       <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-xs text-red-400">
         {t('modelRouting.loadError', { error: loadError })}
+      </div>
+    );
+  }
+
+  // Candidates (model list) are still in flight and neither the catalog nor the
+  // provider fallback has produced any options yet. Render an explicit loading
+  // state instead of an empty dropdown that later "fills in" — avoids the
+  // misleading "config is not ready" first-visit impression.
+  if (candidatesLoading && !hasAnyOptions) {
+    return (
+      <div className="space-y-4">
+        <div className="bg-surface-elevated rounded-xl p-5">
+          <div className="flex items-center gap-2 text-xs text-fg-secondary">
+            <svg className="w-4 h-4 animate-spin text-brand-500" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+            </svg>
+            <span>{t('modelRouting.loadingModels')}</span>
+          </div>
+        </div>
       </div>
     );
   }

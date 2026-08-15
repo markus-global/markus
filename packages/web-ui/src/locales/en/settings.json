@@ -130,6 +130,7 @@
     "restoreRecommended": "Restore Markus recommendations",
     "restoreWorking": "Restoring…",
     "restoreConfirm": "Replace your model routing with Markus recommendations and set Markus as the default provider? Your current capability assignments will be overwritten.",
+    "loadingModels": "Loading model list…",
     "tier": {
       "base": "Base",
       "pro": "Pro",
