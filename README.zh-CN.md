@@ -247,7 +247,7 @@ TypeScript monorepo，模块化包结构：
 - **Discord** — 英文/全球实时交流（建设中）
 - **微信群** — 中文用户交流群，获取帮助、内测资格与贡献指引（建设中）
 
-渠道规划、加入方式与运营规则见 [docs/COMMUNITY.md](docs/COMMUNITY.md)。所有渠道均遵循我们的 [行为准则](../CODE_OF_CONDUCT.md)。
+渠道规划、加入方式与运营规则见 [docs/COMMUNITY.md](docs/COMMUNITY.md)。所有渠道均遵循我们的 [行为准则](CODE_OF_CONDUCT.md)。
 
 ---
 

@@ -65,13 +65,13 @@ Markus 的目标是把「先用起来的人」转化为「留下来共建的人�
 
 ---
 
-## 3. 行为准则
+## 4. 行为准则
 
 社区所有渠道（GitHub、Discord、微信群、博客）均适用 [Code of Conduct](../CODE_OF_CONDUCT.md)（Contributor Covenant 2.1）。不当行为可向 `conduct@markus.global` 举报。
 
 ---
 
-## 4. 从用户到贡献者的转化路径
+## 5. 从用户到贡献者的转化路径
 
 | 阶段 | 用户动作 | 我们说 |
 |------|---------|--------|
@@ -85,7 +85,7 @@ Markus 的目标是把「先用起来的人」转化为「留下来共建的人�
 
 ---
 
-## 5. 维护责任
+## 6. 维护责任
 
 - **响应时限**：GitHub issues/discussions 48 小时内有人回应（自动 AI 助手 + 人工轮值）；Discord 工作时间 2-4h。
 - **举报处理**：`conduct@markus.global` 收件 → 维护团队 48h 内评估 → 按 CoC Enforcement Guidelines 处理。
@@ -93,7 +93,7 @@ Markus 的目标是把「先用起来的人」转化为「留下来共建的人�
 
 ---
 
-## 6. 里程碑
+## 7. 里程碑
 
 - [x] GitHub Discussions / Issues / Blog 上线
 - [ ] Discord 创建并接入（README 可点）

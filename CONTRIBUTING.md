@@ -125,8 +125,7 @@ packages/
 ├── a2a/             Agent-to-Agent communication protocol
 ├── gui/             GUI automation (VNC, screenshots, input control, visual analysis)
 ├── remote/          Remote access (Cloudflare Tunnel, Tailscale, FRP, ngrok)
-├── chrome-extension/# Browser automation extension
-└── shared/          Shared types, constants, utilities
+└── chrome-extension/  Browser automation extension
 
 docs/        # Architecture, API, user, and design documentation
 templates/   # Agent roles (ROLE.md), skills (SKILL.md), shared handbook
