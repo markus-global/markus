@@ -24,7 +24,7 @@
     <img src="https://img.shields.io/github/stars/markus-global/markus?style=flat" alt="GitHub Stars" />
   </a>
   <a href="https://github.com/markus-global/markus/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License" />
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License" />
   </a>
   <a href="https://github.com/markus-global/markus/issues">
     <img src="https://img.shields.io/github/issues/markus-global/markus" alt="Issues" />
@@ -254,8 +254,8 @@ pnpm lint         # ESLint
 
 Markus 采用双许可证：
 
-- **开源版**：[AGPL-3.0](LICENSE) — 自托管与社区贡献免费
-- **商业版**：[另行提供](LICENSE-COMMERCIAL.md) — 适用于 SaaS 部署与私有化修改
+- **开源版**：[Apache-2.0](LICENSE) — 可自由使用、修改、分发与自托管，包括商用
+- **商业版**：[另行提供](LICENSE-COMMERCIAL.md) — 适用于需要企业级支持、法律保障、OEM 嵌入与定制条款的团队
 
 市场上共享的 Agent 模板和技能可采用各自的许可证（通常为 MIT）。
 

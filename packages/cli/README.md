@@ -24,4 +24,4 @@ Full guides, architecture, and API reference live in the main repository: [githu
 
 ## License
 
-[AGPL-3.0](https://github.com/markus-global/markus/blob/main/LICENSE)
+[Apache-2.0](https://github.com/markus-global/markus/blob/main/LICENSE) — dual-licensed with [commercial options](https://github.com/markus-global/markus/blob/main/LICENSE-COMMERCIAL.md)

@@ -24,7 +24,7 @@
     <img src="https://img.shields.io/github/stars/markus-global/markus?style=flat" alt="GitHub Stars" />
   </a>
   <a href="https://github.com/markus-global/markus/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License" />
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License" />
   </a>
   <a href="https://github.com/markus-global/markus/issues">
     <img src="https://img.shields.io/github/issues/markus-global/markus" alt="Issues" />
@@ -256,8 +256,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
 Markus is dual-licensed:
 
-- **Open Source**: [AGPL-3.0](LICENSE) — free for self-hosting and community contributions
-- **Commercial**: [Available](LICENSE-COMMERCIAL.md) — for SaaS deployments and proprietary modifications
+- **Open Source**: [Apache-2.0](LICENSE) — free to use, modify, distribute, and self-host for any purpose, including commercial use
+- **Commercial**: [Available](LICENSE-COMMERCIAL.md) — for teams needing enterprise support, indemnification, OEM embedding, or custom terms
 
 Agent templates and skills shared through the marketplace may use their own licenses (typically MIT).
 
