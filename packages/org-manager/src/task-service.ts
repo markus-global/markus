@@ -1665,6 +1665,13 @@ export class TaskService {
         }
       }
 
+      // Dependency reconciliation: a task persisted as 'blocked' may have had its
+      // dependencies complete before a restart / crash, with the unblock event
+      // never delivered. Repair those states so a 'blocked' task whose blockers
+      // are all satisfied does not remain stuck forever (and cascade-cancel
+      // dependents of cancelled tasks, matching live cascadeCancelDependents).
+      this.reconcileBlockedTaskStatuses();
+
       log.info(`Loaded ${rows.length} tasks from DB for org ${orgId}`);
     } catch (err) {
       log.warn('Failed to load tasks from DB', { error: String(err) });
@@ -1792,14 +1799,24 @@ export class TaskService {
 
     const hasUnresolvedBlockers = request.blockedBy && request.blockedBy.length > 0 && !request.blockedBy.every(blockerId => {
       const blocker = this.tasks.get(blockerId);
-      return blocker && blocker.status === 'completed';
+      // Mirror of areBlockersSatisfied: completed/archived blockers are satisfied;
+      // cancelled dependents are handled by cascadeCancelDependents.
+      return blocker && (blocker.status === 'completed' || blocker.status === 'archived');
     });
 
-    // Human-created tasks start as 'pending' (human manually starts execution);
-    // auto-tier agent tasks start as 'in_progress' or 'blocked'.
+    // Human-created tasks ALWAYS start as 'pending' — the human explicitly starts
+    // execution (via the "start execution" button, which goes through
+    // approveTask) later. They must NOT start as 'blocked' even when dependencies
+    // are unresolved: doing so would (a) bypass the start/approval gate entirely,
+    // and (b) auto-start the task the moment its dependencies complete without
+    // the human ever starting it. Starting while deps are unresolved is handled
+    // by approveTask, which re-checks dependencies at approval time and lands in
+    // 'blocked' only when blockers are actually unresolved.
+    // Auto-tier agent tasks are already approved by policy, so they may start
+    // directly ('in_progress') or wait on unresolved blockers ('blocked').
     const initialStatus: TaskStatus =
       request.creatorRole === 'human'
-        ? (hasUnresolvedBlockers ? 'blocked' : 'pending')
+        ? 'pending'
         : approvalTier === 'auto'
           ? (hasUnresolvedBlockers ? 'blocked' : 'in_progress')
           : 'pending';
@@ -2907,6 +2924,26 @@ export class TaskService {
   }
 
   /**
+   * Repair stuck 'blocked' tasks after loading from DB (restart / crash recovery).
+   * A 'blocked' task whose blockers are all satisfied should be running; a
+   * 'blocked' task whose blocker was cancelled should be cascade-cancelled.
+   */
+  private reconcileBlockedTaskStatuses(): void {
+    for (const [, task] of this.tasks) {
+      if (task.status !== 'blocked' || !task.blockedBy?.length) continue;
+
+      if (this.areBlockersSatisfied(task)) {
+        log.info(`Reconciling stuck blocked task ${task.id} — dependencies satisfied, unblocking`);
+        this.updateTaskStatus(task.id, 'in_progress', undefined, true);
+      } else if (task.blockedBy.some(id => this.tasks.get(id)?.status === 'cancelled')) {
+        log.info(`Reconciling stuck blocked task ${task.id} — dependency was cancelled, cascade-cancelling`);
+        this.updateTaskStatus(task.id, 'cancelled', undefined, true);
+        this.cascadeCancelDependents(task);
+      }
+    }
+  }
+
+  /**
    * Cascade-cancel all blocked dependents of a cancelled task, recursively.
    */
   private cascadeCancelDependents(cancelledTask: Task): void {
@@ -2951,11 +2988,12 @@ export class TaskService {
 
   private areBlockersSatisfied(task: Task): boolean {
     if (!task.blockedBy?.length) return true;
-    // Only 'completed' unblocks — cancelled tasks should NOT satisfy blockers.
+    // Only 'completed' and 'archived' (a finished task that was later archived)
+    // unblock dependents. Cancelled tasks do NOT satisfy blockers —
     // cascadeCancelDependents handles cancelled propagation separately.
     return task.blockedBy.every(blockerId => {
       const blocker = this.tasks.get(blockerId);
-      return blocker && blocker.status === 'completed';
+      return blocker && (blocker.status === 'completed' || blocker.status === 'archived');
     });
   }
 

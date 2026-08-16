@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
@@ -253,6 +253,81 @@ function MultiSearchableSelect({ options, selected, onAdd, placeholder, noMatche
               onClick={() => { onAdd(o.value); setQuery(''); }}
               className="px-3 py-2 text-sm cursor-pointer hover:bg-brand-500/10 text-fg-primary"
             >{o.label}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── DependencySearchSelect: single-value filterable dropdown (search as you type) ── */
+function DependencySearchSelect({ options, onSelect, placeholder, noMatchesText, className, itemSuffix }: {
+  options: { value: string; label: string; status?: string }[];
+  onSelect: (v: string) => void;
+  placeholder?: string;
+  noMatchesText?: string;
+  className?: string;
+  itemSuffix?: (o: { value: string; label: string; status?: string }) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const pos = useDropdownPosition(triggerRef, open);
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node) &&
+          dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, []);
+
+  const filtered = query
+    ? options.filter(o => o.label.toLowerCase().includes(query.toLowerCase()))
+    : options;
+
+  return (
+    <div ref={ref} className={className ?? ''}>
+      <div
+        ref={triggerRef}
+        onClick={() => { setOpen(!open); setQuery(''); setTimeout(() => inputRef.current?.focus(), 0); }}
+        className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-[11px] text-fg-secondary focus-within:border-brand-500 outline-none flex items-center cursor-pointer"
+      >
+        {open ? (
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            className="w-full bg-transparent outline-none text-fg-primary text-[11px]"
+            placeholder={placeholder}
+            autoFocus
+          />
+        ) : (
+          <span className="text-fg-tertiary">{placeholder}</span>
+        )}
+        <svg className="w-3.5 h-3.5 ml-auto text-fg-tertiary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+      </div>
+      {open && pos && (
+        <div ref={dropdownRef} className="fixed z-[100] max-h-60 overflow-y-auto bg-surface-elevated border border-border-default rounded-lg shadow-lg"
+          style={pos.flipUp
+            ? { bottom: window.innerHeight - pos.top, left: pos.left, width: pos.width }
+            : { top: pos.top, left: pos.left, width: pos.width }}>
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-fg-tertiary">{noMatchesText ?? 'No matches'}</div>
+          ) : filtered.map(o => (
+            <div
+              key={o.value}
+              onClick={() => { onSelect(o.value); setOpen(false); setQuery(''); }}
+              className="px-3 py-2 text-xs cursor-pointer hover:bg-brand-500/10 text-fg-primary flex items-center justify-between gap-2"
+            >
+              <span className="truncate">{o.label}</span>
+              {itemSuffix?.(o)}
+            </div>
           ))}
         </div>
       )}
@@ -2113,22 +2188,24 @@ function TaskDetailPanel({
                   </div>
                 )}
                 {!isTerminal && (
-                  <select
-                    value=""
-                    onChange={async (e) => {
-                      const depId = e.target.value;
+                  <DependencySearchSelect
+                    options={allTasks
+                      .filter(t => t.id !== task.id && !(task.blockedBy ?? []).includes(t.id))
+                      .map(t => ({ value: t.id, label: t.title, status: t.status }))}
+                    placeholder={t('work:task.addDependency')}
+                    noMatchesText={t('work:task.noMatches')}
+                    itemSuffix={(o) => {
+                      if (o.status === 'completed' || o.status === 'archived') return <span className="text-[9px] text-green-600 shrink-0">✓</span>;
+                      if (o.status === 'cancelled') return <span className="text-[9px] text-fg-tertiary shrink-0">✕</span>;
+                      return null;
+                    }}
+                    onSelect={async (depId) => {
                       if (!depId) return;
                       const newBlockedBy = [...(task.blockedBy ?? []), depId];
                       await api.tasks.update(task.id, { blockedBy: newBlockedBy });
                       onRefresh();
                     }}
-                    className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-[11px] text-fg-secondary focus:border-brand-500 outline-none"
-                  >
-                    <option value="">{t('work:task.addDependency')}</option>
-                    {allTasks
-                      .filter(t => t.id !== task.id && !(task.blockedBy ?? []).includes(t.id))
-                      .map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
-                  </select>
+                  />
                 )}
               </div>
 

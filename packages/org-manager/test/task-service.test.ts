@@ -295,6 +295,9 @@ describe('TaskService', () => {
         blockedBy: [parent.id],
         creatorRole: 'human',
       }) as never);
+      // Human-created tasks start pending; approving with unresolved deps → blocked.
+      expect(child.status).toBe('pending');
+      expect(ts.approveTask(child.id, 'user-1').status).toBe('blocked');
 
       ts.cancelTask(parent.id, true, 'user-1', 'human');
       expect(ts.getTask(parent.id)!.status).toBe('cancelled');
@@ -304,10 +307,12 @@ describe('TaskService', () => {
     it('counts dependent blocked tasks', () => {
       const parent = ts.createTask(createDefaults({ creatorRole: 'human' }) as never);
       ts.approveTask(parent.id, 'user-1');
-      ts.createTask(createDefaults({
+      const child = ts.createTask(createDefaults({
         blockedBy: [parent.id],
         creatorRole: 'human',
       }) as never);
+      ts.approveTask(child.id, 'user-1'); // dep unresolved → blocked
+      expect(ts.getTask(child.id)!.status).toBe('blocked');
       expect(ts.getDependentTaskCount(parent.id)).toBe(1);
     });
 
@@ -404,10 +409,10 @@ describe('TaskService', () => {
         blockedBy: [dep.id],
         creatorRole: 'human',
       }) as never);
-      expect(blocked.status).toBe('blocked');
+      // Human-created tasks start pending; approving with unresolved deps → blocked.
+      expect(blocked.status).toBe('pending');
+      expect(ts.approveTask(blocked.id, 'user-1').status).toBe('blocked');
 
-      ts.updateTaskStatus(dep.id, 'review');
-      ts.updateTaskStatus(dep.id, 'completed');
       ts.updateTask(blocked.id, { blockedBy: [] });
       expect(ts.getTask(blocked.id)!.status).toBe('in_progress');
     });

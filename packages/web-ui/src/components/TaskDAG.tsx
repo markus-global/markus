@@ -539,10 +539,15 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     const topLevel = new Set(overviewNodes.filter(n => !dependedUpon.has(n.id)).map(n => n.id));
 
     if (!expandedNodeId || !topLevel.has(expandedNodeId)) {
-      const visibleNodes = overviewNodes.filter(n => topLevel.has(n.id));
-      const { nodes: layouted, direction: layoutDir } = layoutNodes(visibleNodes, []);
+      // Overview: show ALL filtered nodes (incl. pending / not-yet-approved tasks
+      // that depend on others) with their dependency edges, so the graph is a
+      // real dependency graph instead of only top-level cards. Users can still
+      // click a top-level node to expand/focus its transitive subgraph, and use
+      // the status-group filter bar to reduce clutter.
+      const visibleNodes = overviewNodes;
+      const { nodes: layouted, direction: layoutDir } = layoutNodes(visibleNodes, overviewEdges);
       const withDir: Node[] = layouted.map(n => ({ ...n, data: { ...n.data, direction: layoutDir } }));
-      return { initialNodes: withDir, initialEdges: [] as Edge[], topLevelIds: topLevel };
+      return { initialNodes: withDir, initialEdges: overviewEdges, topLevelIds: topLevel };
     }
 
     // Expanded: use ALL tasks/requirements regardless of status filter
