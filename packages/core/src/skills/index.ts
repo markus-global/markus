@@ -1,5 +1,22 @@
 export type { SkillManifest, SkillMcpServerConfig, SkillInstance, SkillRegistry, SkillCategory, SkillToolDef } from './types.js';
 export { InMemorySkillRegistry } from './registry.js';
+export {
+  detectSkillPackageFormat,
+  formatLabel,
+  importSkillPackage,
+  exportSkillPackage,
+  renderSkill,
+  parseSkillPackage,
+  mapAllowedToolsToPermissions,
+  json5ToJson,
+  SUPPORTED_EXTERNAL_FORMATS,
+  type ExternalSkillFormat,
+  type NormalizedSkill,
+  type SkillImportOptions,
+  type SkillImportResult,
+  type SkillExportOptions,
+  type SkillExportResult,
+} from './codec/index.js';
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';

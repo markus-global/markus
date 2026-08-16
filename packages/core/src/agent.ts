@@ -343,6 +343,7 @@ export class Agent {
   ) => Promise<AgentToolHandler[]>;
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
+  private skillImporter?: (request: { path: string; name?: string; targetDir?: string; force?: boolean; sourceUrl?: string }) => Promise<{ name: string; method: string; path: string }>;
   private userApprovalRequester?: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
@@ -2574,6 +2575,10 @@ export class Agent {
 
   setSkillInstaller(cb: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>): void {
     this.skillInstaller = cb;
+  }
+
+  setSkillImporter(cb: (request: { path: string; name?: string; targetDir?: string; force?: boolean; sourceUrl?: string }) => Promise<{ name: string; method: string; path: string }>): void {
+    this.skillImporter = cb;
   }
 
   setUserApprovalRequester(cb: (opts: {
@@ -6485,6 +6490,36 @@ export class Agent {
         });
       } catch (err) {
         return JSON.stringify({ status: 'error', message: `Install failed: ${String(err instanceof Error ? err.message : err)}` });
+      }
+    }
+
+    // Import a local external skill package directory/file into Markus
+    if (mode === 'import') {
+      const path = (args.path as string) ?? '';
+      if (!path) {
+        return JSON.stringify({ status: 'error', message: 'path is required for import mode (a local skill package directory or SKILL.md file).' });
+      }
+      if (!this.skillImporter) {
+        return JSON.stringify({ status: 'error', message: 'Skill import is not available.' });
+      }
+      try {
+        const result = await this.skillImporter({
+          path,
+          name: (args.name as string) ?? undefined,
+          targetDir: (args.targetDir as string) ?? undefined,
+          force: args.force as boolean | undefined,
+          sourceUrl: (args.sourceUrl as string) ?? undefined,
+        });
+        log.info('Skill imported via discover_tools', { agentId: this.id, skill: result.name, method: result.method });
+        return JSON.stringify({
+          status: 'ok',
+          imported: result.name,
+          method: result.method,
+          path: result.path,
+          message: `Skill "${result.name}" imported and normalized to Markus format. Use discover_tools({ name: ["${result.name}"] }) to activate it.`,
+        });
+      } catch (err) {
+        return JSON.stringify({ status: 'error', message: `Import failed: ${String(err instanceof Error ? err.message : err)}` });
       }
     }
 

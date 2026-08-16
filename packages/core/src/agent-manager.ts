@@ -373,6 +373,7 @@ export class AgentManager {
   private skillRegistry?: SkillRegistry;
   private skillSearcher?: (query: string) => Promise<Array<{ name: string; description: string; source: string; slug?: string; author?: string; githubRepo?: string; githubSkillPath?: string }>>;
   private skillInstaller?: (request: Record<string, unknown>) => Promise<{ installed: boolean; name: string; method: string }>;
+  private skillImporter?: (request: { path: string; name?: string; targetDir?: string; force?: boolean; sourceUrl?: string }) => Promise<{ name: string; method: string; path: string }>;
   private userApprovalRequester?: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
@@ -975,6 +976,10 @@ export class AgentManager {
     this.skillInstaller = cb;
   }
 
+  setSkillImporter(cb: (request: { path: string; name?: string; targetDir?: string; force?: boolean; sourceUrl?: string }) => Promise<{ name: string; method: string; path: string }>): void {
+    this.skillImporter = cb;
+  }
+
   setUserApprovalRequester(cb: (opts: {
     agentId: string; agentName: string; title: string; description: string;
     options?: Array<{ id: string; label: string; description?: string }>;
@@ -1305,6 +1310,7 @@ export class AgentManager {
     // Set skill search/install callbacks (injected by org-manager layer)
     if (this.skillSearcher) agent.setSkillSearcher(this.skillSearcher);
     if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
+    if (this.skillImporter) agent.setSkillImporter(this.skillImporter);
     if (this.userApprovalRequester) agent.setUserApprovalRequester(this.userApprovalRequester);
     if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
     if (this.runtimeViewerContext) agent.setRuntimeViewerContext(this.runtimeViewerContext);
@@ -2189,6 +2195,7 @@ export class AgentManager {
     // Set skill search/install callbacks (injected by org-manager layer)
     if (this.skillSearcher) agent.setSkillSearcher(this.skillSearcher);
     if (this.skillInstaller) agent.setSkillInstaller(this.skillInstaller);
+    if (this.skillImporter) agent.setSkillImporter(this.skillImporter);
     if (this.userApprovalRequester) agent.setUserApprovalRequester(this.userApprovalRequester);
     if (this.userNotifier) agent.setUserNotifier(this.userNotifier);
     if (this.runtimeViewerContext) agent.setRuntimeViewerContext(this.runtimeViewerContext);

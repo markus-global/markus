@@ -9,7 +9,7 @@ import {
   tokenizeSearchQuery,
   scoreKeywordHaystack,
 } from '@markus/shared';
-import { discoverSkillsInDir, type SkillRegistry } from '@markus/core';
+import { discoverSkillsInDir, importSkillPackage, exportSkillPackage, type SkillRegistry } from '@markus/core';
 
 const log = createLogger('skill-service');
 
@@ -220,6 +220,85 @@ export async function searchRegistries(query: string): Promise<SkillSearchResult
     }
   }
   return all.slice(0, 20);
+}
+
+export interface SkillImportFromDirOptions {
+  name?: string;
+  /** Target directory (defaults to ~/.markus/skills/<name>). */
+  targetDir?: string;
+  force?: boolean;
+  sourceUrl?: string;
+}
+
+export interface SkillImportFromDirResult {
+  format: string;
+  name: string;
+  version: string;
+  path: string;
+  method: string;
+  filesWritten: string[];
+  warnings: string[];
+}
+
+/**
+ * Import an external skill package directory into Markus (normalize to
+ * skill.json + SKILL.md), then refresh the runtime registry.
+ *
+ * Used by `discover_tools({ mode: "import", path })` and CLI `markus skill import`.
+ */
+export async function importSkillFromDirectory(
+  srcDir: string,
+  opts: SkillImportFromDirOptions = {},
+  skillRegistry?: SkillRegistry,
+): Promise<SkillImportFromDirResult> {
+  const result = importSkillPackage(srcDir, {
+    name: opts.name,
+    targetDir: opts.targetDir,
+    force: opts.force,
+    sourceUrl: opts.sourceUrl,
+  });
+
+  // Register / refresh runtime SkillRegistry so the skill is immediately usable.
+  if (skillRegistry) {
+    try {
+      const discovered = discoverSkillsInDir(result.path).find(
+        d => d.manifest.name === result.name || d.path === result.path,
+      );
+      if (discovered) {
+        discovered.manifest.sourcePath = discovered.path;
+        skillRegistry.register({ manifest: discovered.manifest });
+      }
+    } catch (regErr) {
+      log.warn('Failed to register imported skill into runtime registry', { error: String(regErr) });
+    }
+  }
+
+  return {
+    format: result.format,
+    name: result.name,
+    version: result.version,
+    path: result.path,
+    method: `import:${result.format}`,
+    filesWritten: result.filesWritten,
+    warnings: result.warnings,
+  };
+}
+
+/**
+ * Export a Markus skill directory to an external format.
+ * Returns the output path and written files.
+ */
+export function exportSkillToFormat(
+  sourceDir: string,
+  format: string,
+  opts: { outDir?: string; overwrite?: boolean } = {},
+): { format: string; name: string; path: string; filesWritten: string[] } {
+  const result = exportSkillPackage(
+    sourceDir,
+    format as Parameters<typeof exportSkillPackage>[1],
+    opts,
+  );
+  return { format: result.format, name: result.name, path: result.path, filesWritten: result.filesWritten };
 }
 
 // ── Install function ─────────────────────────────────────────────────────────
