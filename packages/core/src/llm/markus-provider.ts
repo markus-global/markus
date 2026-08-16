@@ -1269,7 +1269,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
         description:
           'Generate images from text, with optional reference images. Pass provider+model on this call (e.g. provider: "markus", model: "openai/gpt-image-1") — no need to reconfigure routing first. ' +
           'Result is saved locally — use the returned filePath/markdown (never invent data-URI/base64). ' +
-          'For image-to-image: pass input_references with HTTPS or base64 data URLs.',
+          'For image-to-image: pass input_references with HTTPS or base64 data URLs. ' +
+          'For a LOCAL image file: call upload_reference(path) FIRST to get a temporary public URL, then pass that URL here.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1285,11 +1286,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
             background: { type: 'string', enum: ['auto', 'transparent', 'opaque'], description: 'Background treatment. transparent requires png/webp.' },
             input_references: {
               type: 'array',
-              description: 'Reference images for image-to-image generation (up to 16). Provide HTTPS URLs or base64 data URLs.',
+              description: 'Reference images for image-to-image generation (up to 16). Provide HTTPS URLs or base64 data URLs. For a LOCAL file, call upload_reference(path) first to get a public URL.',
               items: {
                 type: 'object',
                 properties: {
-                  url: { type: 'string', description: 'HTTPS URL or base64 data URL of the reference image' },
+                  url: { type: 'string', description: 'HTTPS URL or base64 data URL of the reference image (for local files use upload_reference first)' },
                   weight: { type: 'number', description: 'Optional weight 0-1 for this reference' },
                 },
                 required: ['url'],
@@ -1345,7 +1346,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
         description:
           'Generate a short video from text, with optional reference images/audio/video. ' +
           'Pass provider+model on this call (e.g. provider: "markus", model: "x-ai/grok-imagine-video-1.5") — no need to reconfigure routing first. ' +
-          'To use references: pass input_references (style guidance) or frame_images (exact first/last frame). May take 30s–several minutes.',
+          'To use references: pass input_references (style guidance) or frame_images (exact first/last frame). May take 30s–several minutes. ' +
+          'For a LOCAL image/audio/video file: call upload_reference(path) FIRST to get a temporary public URL, then pass that URL as input_references/frame_images.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1356,14 +1358,13 @@ export class MarkusProvider implements MultiModalProviderInterface {
             size: { type: 'string', description: 'Resolution ("720p"|"1080p"), pixels ("1280x720"), or aspect ratio ("16:9")' },
             input_references: {
               type: 'array',
-              description:
-                'Reference assets for style/content guidance. Each item needs a "url" (publicly accessible) ' +
-                'and "type" ("image", "audio", or "video"). ' +
-                'Use publicly accessible, directly-downloadable URLs (no auth walls).',
+              description: 'Reference assets for style/content guidance. Provide PUBLIC (HTTPS) URLs — for local files call upload_reference(path) first. ' +
+                'Each item needs a "url" and "type" ("image", "audio", or "video"). ' +
+                'Use directly-downloadable URLs (no auth walls).',
               items: {
                 type: 'object',
                 properties: {
-                  url: { type: 'string', description: 'Publicly accessible URL of the reference asset' },
+                  url: { type: 'string', description: 'Publicly accessible URL of the reference asset (for local files use upload_reference first)' },
                   type: { type: 'string', enum: ['image', 'audio', 'video'], description: 'Asset type' },
                   weight: { type: 'number', description: 'Optional weight 0-1 for this reference relative to others' },
                 },
@@ -1374,11 +1375,12 @@ export class MarkusProvider implements MultiModalProviderInterface {
               type: 'array',
               description:
                 'Images for first/last frame (image-to-video). Takes precedence over input_references. ' +
-                'Each item needs "url" and "frame_type" ("first_frame" or "last_frame"). Max 2 items.',
+                'Each item needs "url" and "frame_type" ("first_frame" or "last_frame"). Max 2 items. ' +
+                'For a LOCAL image file: call upload_reference(path) first, then pass its URL here.',
               items: {
                 type: 'object',
                 properties: {
-                  url: { type: 'string', description: 'Publicly accessible image URL' },
+                  url: { type: 'string', description: 'Publicly accessible image URL (for local files use upload_reference first)' },
                   frame_type: { type: 'string', enum: ['first_frame', 'last_frame'] },
                 },
                 required: ['url', 'frame_type'],
@@ -1675,14 +1677,22 @@ export class MarkusProvider implements MultiModalProviderInterface {
       else body['resolution'] = size;
     }
     if (options?.inputReferences && options.inputReferences.length > 0) {
+      // OpenRouter videos API expects OpenAI-style refs: { type: 'image_url'|'audio_url'|'video_url', <type>: { url } }.
+      // Do NOT pass { url, type: 'image' } through verbatim — upstream rejects it (HTTP 400).
       body['input_references'] = options.inputReferences.map(ref => {
-        const item: Record<string, unknown> = { url: ref.url, type: ref.type };
+        const typeKey = `${ref.type}_url` as 'image_url' | 'audio_url' | 'video_url';
+        const item: Record<string, unknown> = { type: typeKey, [typeKey]: { url: ref.url } };
         if (ref.weight !== undefined) item['weight'] = ref.weight;
         return item;
       });
     }
     if (options?.frameImages && options.frameImages.length > 0) {
-      body['frame_images'] = options.frameImages.map(f => ({ url: f.url, frame_type: f.frame_type }));
+      // Same normalization applies to frame_images: each item needs type + image_url object.
+      body['frame_images'] = options.frameImages.map(f => ({
+        type: 'image_url',
+        image_url: { url: f.url },
+        frame_type: f.frame_type,
+      }));
     }
     if (options?.generateAudio !== undefined) body['generate_audio'] = options.generateAudio;
     if (options?.seed !== undefined) body['seed'] = options.seed;

@@ -83,6 +83,10 @@ const log = createLogger('api-server');
 
 export class APIServer {
   static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
+  /** Per-provider live key/model validation budget when a routing-candidates
+   *  cache miss is served. The total cold path is capped at this value so a
+   *  slow/unreachable provider cannot hold the settings page for ~15s. */
+  static readonly ROUTING_LIVE_VALIDATION_TIMEOUT_MS = 4_000;
   private server?: ReturnType<typeof createServer>;
   public ws: WSBroadcaster;
   public skillRegistry?: SkillRegistry;
@@ -119,6 +123,163 @@ export class APIServer {
   /** In-flight chat streams for refresh reattach. */
   public readonly activeStreams = new ActiveStreamRegistry();
   invalidateRoutingCache(): void { this.routingCandidatesCache = null; }
+
+  /**
+   * Build the model routing candidates payload.
+   *
+   * Order inside each provider entry is preserved from the original serial
+   * implementation: configured models → live-validated models → catalog extras,
+   * so the settings dropdown ordering does not change.
+   *
+   * Live key/model validation now runs in PARALLEL across providers (bounded by
+   * ROUTING_LIVE_VALIDATION_TIMEOUT_MS) instead of serially, so a cold cache
+   * miss no longer costs sum-of-latencies. The markus provider is skipped
+   * entirely: its model list comes from the Hub catalog
+   * (customModelCatalog refreshed by refreshHubCatalog) and is the single
+   * source of truth — a live OpenRouter /models round-trip would be redundant.
+   */
+  async buildRoutingCandidatesPayload(): Promise<{ providers: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> }> }> {
+    if (!this.llmRouter) {
+      return { providers: [] };
+    }
+    const settings = this.llmRouter.getEnhancedSettings();
+
+    interface Entry {
+      provider: string;
+      displayName: string;
+      models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }>;
+      seenIds: Set<string>;
+    }
+
+    const entries: Entry[] = [];
+
+    // Pass 1 — configured models (cheap, always available).
+    for (const [providerName, providerSettings] of Object.entries(settings.providers)) {
+      if (!providerSettings.enabled || !providerSettings.configured) continue;
+      const seenIds = new Set<string>();
+      const models: Entry['models'] = [];
+
+      for (const m of providerSettings.models ?? []) {
+        seenIds.add(m.id);
+        const enriched = enrichModelFromCatalog(m.id, m.tier, this.modelCatalog);
+        // Prefer builtin multimodal tags (imageGeneration/tts/…) — LiteLLM often
+        // returns [] / chat-only flags and must not wipe them (causes false "mismatch").
+        let caps = mergeModelCapabilities((m as any).capabilities, enriched.capabilities);
+        if (!caps?.length && (m as any).inputTypes?.includes('image')) {
+          caps = ['vision'];
+        }
+        models.push({
+          id: m.id,
+          name: m.name ?? m.id,
+          mode: enriched.mode,
+          tier: enriched.tier,
+          costTier: enriched.costTier,
+          capabilities: caps,
+        });
+      }
+
+      entries.push({
+        provider: providerName,
+        displayName: providerSettings.displayName ?? providerName,
+        models,
+        seenIds,
+      });
+    }
+
+    // Pass 2 — live-enrich every provider in parallel (bounded total budget).
+    // markus is excluded: the Hub catalog is its only source of truth.
+    const liveTasks: Array<Promise<void>> = [];
+    for (const entry of entries) {
+      const providerInstance = this.llmRouter?.getProvider(entry.provider);
+      const apiKey = (providerInstance as any)?.apiKey ?? '';
+      const providerBaseUrl = (providerInstance as any)?.baseUrl;
+      if (!apiKey || entry.provider === 'markus') continue;
+      liveTasks.push((async () => {
+        try {
+          const liveResult = await this.validateProviderKey(entry.provider, apiKey, providerBaseUrl);
+          if (liveResult.valid && Array.isArray(liveResult.models)) {
+            for (const lm of liveResult.models as Array<{ id?: string; name?: string }>) {
+              const rawId = String(lm.id ?? lm.name ?? '');
+              if (!rawId) continue;
+              const modelId = stripProviderPrefix(rawId);
+              if (entry.seenIds.has(modelId)) continue;
+              entry.seenIds.add(modelId);
+              entry.seenIds.add(rawId);
+              const enriched = enrichModelFromCatalog(modelId, undefined, this.modelCatalog);
+              entry.models.push({
+                id: modelId,
+                name: modelId,
+                mode: enriched.mode,
+                tier: enriched.tier,
+                costTier: enriched.costTier,
+                capabilities: enriched.capabilities,
+              });
+            }
+          }
+        } catch { /* non-critical: live fetch failure just means fewer results */ }
+      })());
+    }
+
+    await Promise.race([
+      Promise.allSettled(liveTasks),
+      new Promise<void>((resolve) => setTimeout(resolve, APIServer.ROUTING_LIVE_VALIDATION_TIMEOUT_MS)),
+    ]);
+
+    // Pass 3 — catalog extras (local, no network) keep dropdown ordering as before.
+    for (const entry of entries) {
+      if (!this.modelCatalog) continue;
+      for (const cm of this.modelCatalog.getModelsByProvider(entry.provider)) {
+        if (entry.seenIds.has(cm.id)) continue;
+        entry.seenIds.add(cm.id);
+        const enriched = enrichModelFromCatalog(cm.id, undefined, this.modelCatalog);
+        entry.models.push({
+          id: cm.id,
+          name: cm.id,
+          mode: enriched.mode,
+          tier: enriched.tier,
+          costTier: enriched.costTier,
+          capabilities: enriched.capabilities,
+        });
+      }
+    }
+
+    return {
+      providers: entries.map(e => ({
+        provider: e.provider,
+        displayName: e.displayName,
+        models: e.models,
+      })),
+    };
+  }
+
+  /**
+   * Warm the routing-candidates cache in the background so the first settings
+   * visit hits the cache instead of paying the cold build (live validation).
+   * Fire-and-forget: failures degrade to the normal lazy build on first request.
+   *
+   * Startup race: the Router kicks off refreshMarkusCatalog() fire-and-forget;
+   * if that has not populated the markus list yet, we must not snapshot an
+   * empty markus entry into a 5-minute cache — explicitly wait for the catalog
+   * (single source of truth) before caching.
+   */
+  async warmRoutingCandidates(): Promise<void> {
+    if (!this.llmRouter) return;
+    if (this.routingCandidatesCache && Date.now() < this.routingCandidatesCache.expireAt) return;
+    try {
+      const before = this.llmRouter.getEnhancedSettings();
+      const markusConfigured = before.providers?.['markus']?.configured === true;
+      const markusModels = before.providers?.['markus']?.models ?? [];
+      if (markusConfigured && markusModels.length === 0) {
+        await this.llmRouter.refreshMarkusCatalog().catch(() => 0);
+      }
+      const payload = await this.buildRoutingCandidatesPayload();
+      if (payload.providers.length === 0) return; // nothing configured yet — keep cold
+      this.routingCandidatesCache = { data: payload, expireAt: Date.now() + APIServer.ROUTING_CACHE_TTL_MS };
+      log.info('Warmed routing-candidates cache', { providers: payload.providers.length });
+    } catch (err) {
+      log.warn('Routing candidates warm-up failed; will build on first request', { error: String(err) });
+    }
+  }
 
   /**
    * Ensure Markus OpenRouter-only config: Hub catalog URL + OR baseUrl/apiKey.
@@ -2009,6 +2170,9 @@ export class APIServer {
       this.server.listen(this.port, '0.0.0.0', () => {
         log.info(`API server listening on 0.0.0.0:${this.port} (HTTP + WebSocket)`);
         resolve();
+        // Warm the routing-candidates cache in the background so the first visit
+        // to Settings → Model Routing hits the cache (no empty-then-filled UI).
+        void this.warmRoutingCandidates();
       });
       this.tryInitFeishuNotifier();
     });
@@ -7497,84 +7661,7 @@ EXPLANATION_END`;
         return;
       }
 
-      const settings = this.llmRouter.getEnhancedSettings();
-      const result: Array<{ provider: string; displayName: string; models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> }> = [];
-
-      for (const [providerName, providerSettings] of Object.entries(settings.providers)) {
-        if (!providerSettings.enabled || !providerSettings.configured) continue;
-        const seenIds = new Set<string>();
-        const models: Array<{ id: string; name: string; mode?: string; tier?: string; costTier?: string; capabilities?: string[] }> = [];
-
-        for (const m of providerSettings.models ?? []) {
-          seenIds.add(m.id);
-          const enriched = enrichModelFromCatalog(m.id, m.tier, this.modelCatalog);
-          // Prefer builtin multimodal tags (imageGeneration/tts/…) — LiteLLM often
-          // returns [] / chat-only flags and must not wipe them (causes false "mismatch").
-          let caps = mergeModelCapabilities((m as any).capabilities, enriched.capabilities);
-          if (!caps?.length && (m as any).inputTypes?.includes('image')) {
-            caps = ['vision'];
-          }
-          models.push({
-            id: m.id,
-            name: m.name ?? m.id,
-            mode: enriched.mode,
-            tier: enriched.tier,
-            costTier: enriched.costTier,
-            capabilities: caps,
-          });
-        }
-
-        try {
-          const providerInstance = this.llmRouter?.getProvider(providerName);
-          const apiKey = (providerInstance as any)?.apiKey ?? '';
-          const providerBaseUrl = (providerInstance as any)?.baseUrl;
-          if (apiKey) {
-            const liveResult = await this.validateProviderKey(providerName, apiKey, providerBaseUrl);
-            if (liveResult.valid && Array.isArray(liveResult.models)) {
-              for (const lm of liveResult.models as Array<{ id?: string; name?: string }>) {
-                const rawId = String(lm.id ?? lm.name ?? '');
-                if (!rawId) continue;
-                const modelId = stripProviderPrefix(rawId);
-                if (seenIds.has(modelId)) continue;
-                seenIds.add(modelId);
-                seenIds.add(rawId);
-                const enriched = enrichModelFromCatalog(modelId, undefined, this.modelCatalog);
-                models.push({
-                  id: modelId,
-                  name: modelId,
-                  mode: enriched.mode,
-                  tier: enriched.tier,
-                  costTier: enriched.costTier,
-                  capabilities: enriched.capabilities,
-                });
-              }
-            }
-          }
-        } catch { /* non-critical: live fetch failure just means fewer results */ }
-
-        if (this.modelCatalog) {
-          for (const cm of this.modelCatalog.getModelsByProvider(providerName)) {
-            if (seenIds.has(cm.id)) continue;
-            seenIds.add(cm.id);
-            const enriched = enrichModelFromCatalog(cm.id, undefined, this.modelCatalog);
-            models.push({
-              id: cm.id,
-              name: cm.id,
-              mode: enriched.mode,
-              tier: enriched.tier,
-              costTier: enriched.costTier,
-              capabilities: enriched.capabilities,
-            });
-          }
-        }
-
-        result.push({
-          provider: providerName,
-          displayName: providerSettings.displayName ?? providerName,
-          models,
-        });
-      }
-      const payload = { providers: result };
+      const payload = await this.buildRoutingCandidatesPayload();
       this.routingCandidatesCache = { data: payload, expireAt: Date.now() + APIServer.ROUTING_CACHE_TTL_MS };
       this.json(res, 200, payload);
       return;

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient } from '../api.ts';
+import { api, wsClient, getHubToken, hubApi } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { openExternal } from '../hooks/useElectron.ts';
@@ -10,7 +10,7 @@ import { FilePreviewEditor } from './FilePreviewEditor.tsx';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
 import { DeliverableShareModal } from './DeliverableShareModal.tsx';
-import type { DeliverableShareRecord } from '../lib/deliverableShare.ts';
+import { createDeliverableShareService, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import type { RightPanelMode, RightPanelPayload, RightPanelTab } from '../contexts/LayoutContext.tsx';
 
 type TabOwner = { agentId: string; agentName: string };
@@ -549,6 +549,58 @@ export function RightPanel({
   const onShareResult = useCallback((r: DeliverableShareRecord) => {
     setShareRecord(r);
   }, []);
+
+  // 右侧栏分享状态同步：与 Deliverables 页一致，周期性从 Hub 拉取当前用户的
+  // 全部产出物分享状态，把 moderationStatus（pending/published/rejected/revoked）
+  // 映射回右侧栏按钮/徽标（shareRecord → shareItem），并回写本地 DB。
+  // 这样管理员在 Hub 批准/拒绝后，右侧栏在不重新打开弹窗的情况下也能自动更新，
+  // 重开 tab / 重启应用后也能从 Hub 恢复正确状态（不再退回「未分享」）。
+  const shareSyncService = useMemo(
+    () => createDeliverableShareService(getHubToken, hubApi.getUrl()),
+    [],
+  );
+
+  const shareSyncDeliverableId = payload.kind === 'deliverable' ? payload.deliverable.id : null;
+
+  useEffect(() => {
+    if (!shareSyncDeliverableId) return;
+    if (!getHubToken()) return; // 未登录 Hub 不轮询
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const records = await shareSyncService.listMine();
+        if (cancelled) return;
+        // 按 hubShareId 或本地 id 匹配当前展示的产出物
+        const snapshot = payload.kind === 'deliverable' ? payload.deliverable : null;
+        if (!snapshot) return;
+        const match = (snapshot.hubShareId && records.find(r => r.id === snapshot.hubShareId))
+          || records.find(r => r.localId === snapshot.id);
+        if (!match) return;
+        setShareRecord(prev => (prev && prev.id === match.id && prev.status === match.status ? prev : match));
+        // 回写本地 DB（静默，仅当快照字段缺失/变化时写；失败下轮重试）
+        const patch = {
+          hubShareId: snapshot.hubShareId ?? match.id ?? null,
+          shareStatus: match.status ?? null,
+          shareUrl: match.url ?? null,
+          shareVisibility: snapshot.shareVisibility ?? match.visibility ?? null,
+        };
+        const changed = snapshot.shareStatus !== patch.shareStatus
+          || snapshot.hubShareId !== patch.hubShareId
+          || snapshot.shareUrl !== patch.shareUrl
+          || snapshot.shareVisibility !== patch.shareVisibility;
+        if (changed && snapshot.id) {
+          void api.deliverables.update(snapshot.id, patch).catch((err) => {
+            console.warn('[right-panel] Hub 分享状态本地持久化失败:', err);
+          });
+        }
+      } catch {
+        /* Hub 未就绪/网络失败：静默，下轮重试 */
+      }
+    };
+    run();
+    const timer = setInterval(run, 30000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [shareSyncService, shareSyncDeliverableId, payload]);
 
   const shareStatus = shareItem?.shareStatus ?? null;
 

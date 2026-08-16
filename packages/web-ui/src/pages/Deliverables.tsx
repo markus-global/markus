@@ -214,18 +214,34 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const fetchLimit = groupBy === 'date' ? DATE_PAGE_SIZE : ALL_ITEMS_LIMIT;
 
   /** 静默刷新：不触发 setLoading / 不滚动到顶（避免 L1 侧边栏闪烁）。用于元数据类变更（如分享状态）。 */
+  const mergeKeepShare = useCallback((prev: DeliverableInfo, fresh?: DeliverableInfo): DeliverableInfo => {
+    if (!fresh) return prev;
+    // 后端若未持久化分享字段（本地回写失败/尚未同步），保留前端已有值，避免“已分享”状态被清空
+    return {
+      ...fresh,
+      hubShareId: fresh.hubShareId != null ? fresh.hubShareId : prev.hubShareId ?? null,
+      shareStatus: fresh.shareStatus != null ? fresh.shareStatus : prev.shareStatus ?? null,
+      shareUrl: fresh.shareUrl != null ? fresh.shareUrl : prev.shareUrl ?? null,
+      shareVisibility: fresh.shareVisibility != null ? fresh.shareVisibility : prev.shareVisibility ?? null,
+      shareReason: fresh.shareReason != null ? fresh.shareReason : prev.shareReason,
+    };
+  }, []);
+
   const silentRefresh = useCallback(async () => {
     try {
       const { results, total } = await api.deliverables.search({ ...searchParams, offset: 0, limit: fetchLimit });
-      setItems(prev => prev.map(it => results.find(r => r.id === it.id) ?? it));
+      setItems(prev => prev.map(it => {
+        const fresh = results.find(r => r.id === it.id);
+        return fresh ? mergeKeepShare(it, fresh) : it;
+      }));
       setTotalCount(total);
       setSelected(prev => {
         if (!prev) return null;
         const fresh = results.find(r => r.id === prev.id);
-        return fresh ? { ...prev, ...fresh } : prev;
+        return fresh ? mergeKeepShare(prev, fresh) : prev;
       });
     } catch { /* 静默失败，保持现有状态 */ }
-  }, [searchParams, fetchLimit]);
+  }, [searchParams, fetchLimit, mergeKeepShare]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -320,6 +336,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         const byLocalId = new Map<string, DeliverableShareRecord>();
         for (const r of records) {
           if (r.id) byShareId.set(r.id, r);
+          if (r.localId) byLocalId.set(r.localId, r);
         }
         const patches = new Map<string, { hubShareId: string | null; shareStatus: string | null; shareUrl: string | null; shareVisibility: string | null; shareReason?: string | null }>();
         setItems(prev => prev.map(it => {
@@ -342,9 +359,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
           if (!patch) return prev;
           return { ...prev, ...patch };
         });
-        // 回写本地 DB 持久化（静默，不触发列表 loading）
+        // 回写本地 DB 持久化（静默，不触发列表 loading；失败仅告警，下轮轮询重试）
         for (const [id, patch] of patches) {
-          void api.deliverables.update(id, patch).catch(() => {});
+          void api.deliverables.update(id, patch).catch((err) => {
+            console.warn('[deliverables] Hub 分享状态本地持久化失败:', err);
+          });
         }
       } catch {
         /* Hub 未就绪/网络失败：静默，下轮重试 */
@@ -522,9 +541,14 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setSelected(prev => (prev && prev.id === id) ? { ...prev, ...filled } : prev);
     // 同步更新列表项对应项，不触发整表 setLoading 刷新（避免 L1 侧边栏闪烁）
     setItems(prev => prev.map(it => it.id === id ? { ...it, ...filled } : it));
-    // 静默回写本地 DB；失败不影响 UI（分享状态已在 Hub）——再静默拉取对齐后端
+    // 静默回写本地 DB；失败不影响 UI（分享状态已在 Hub）——再静默拉取对齐后端。
+    // 若回写失败，页面轮询（shareSyncService）会在 30s 内从 Hub 拉取并将状态写回本地 DB。
     void (async () => {
-      try { await api.deliverables.update(id, patch); } catch { /* 静默 */ }
+      try {
+        await api.deliverables.update(id, patch);
+      } catch (err) {
+        console.warn('[deliverables] 分享状态本地回写失败，将由 Hub 轮询补偿:', err);
+      }
       silentRefresh();
     })();
   }, [silentRefresh]);

@@ -55,6 +55,12 @@ describe('normalizeShareRecord', () => {
     expect(r.visibility).toBe('link');
     expect(r.url).toBe('https://hub/x');
   });
+  it('parses localDeliverableId for mapping back to local record', () => {
+    const r = normalizeShareRecord({ id: 'dlv_share_x', status: 'published', localDeliverableId: 'dlv_local_1' });
+    expect(r.localId).toBe('dlv_local_1');
+    const r2 = normalizeShareRecord({ share: { id: 'dlv_share_y', status: 'pending_review', localId: 'dlv_local_2' } });
+    expect(r2.localId).toBe('dlv_local_2');
+  });
   it('parses nested share/deliverable structures defensively', () => {
     const r = normalizeShareRecord({ share: { id: 'n1', status: 'rejected', reason: 'bad' } });
     expect(r.id).toBe('n1');
