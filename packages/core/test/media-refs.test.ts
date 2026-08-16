@@ -121,18 +121,18 @@ describe('parseLocalMediaRefs', () => {
 });
 
 describe('replaceMediaRefs', () => {
-  it('replaces all occurrences of a fragment', () => {
+  it('replaces all occurrences of a fragment keeping markdown syntax', () => {
     const out = replaceMediaRefs(
-      '![a](/x/1.png) and ![b](/x/1.png)',
-      new Map([['![a](/x/1.png)', '![a](https://hub.example/u/1.png)']]),
+      '![a](/x/1.png) and ![a](/x/1.png) again',
+      new Map([['![a](/x/1.png)', 'https://hub.example/u/1.png']]),
     );
-    expect(out).toBe('![a](https://hub.example/u/1.png) and ![b](/x/1.png)');
+    expect(out).toBe('![a](https://hub.example/u/1.png) and ![a](https://hub.example/u/1.png) again');
   });
 
-  it('replaces html attribute fragment', () => {
+  it('replaces html attribute fragment keeping tag structure', () => {
     const out = replaceMediaRefs(
       '<img src="/x/1.png" alt="x">',
-      new Map([['src="/x/1.png"', 'src="https://hub.example/u/1.png"']]),
+      new Map([['<img src="/x/1.png" alt="x">', 'https://hub.example/u/1.png']]),
     );
     expect(out).toBe('<img src="https://hub.example/u/1.png" alt="x">');
   });

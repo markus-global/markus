@@ -32,12 +32,20 @@ describe('mediaRefs (web-ui mirror)', () => {
     expect(refs[0]!.localPath).toBe('/Users/a/doc/img.png');
   });
 
-  it('replaces fragments with new URLs', () => {
+  it('replaces fragments keeping markdown syntax', () => {
     const out = replaceMediaRefs(
       '![a](/x/1.png) then ![a](/x/1.png)',
-      new Map([['![a](/x/1.png)', '![a](https://hub.example/u/1.png)']]),
+      new Map([['![a](/x/1.png)', 'https://hub.example/u/1.png']]),
     );
     expect(out).toBe('![a](https://hub.example/u/1.png) then ![a](https://hub.example/u/1.png)');
+  });
+
+  it('replaces html fragment keeping tag structure', () => {
+    const out = replaceMediaRefs(
+      '<img src="/x/1.png" alt="x">',
+      new Map([['<img src="/x/1.png" alt="x">', 'https://hub.example/u/1.png']]),
+    );
+    expect(out).toBe('<img src="https://hub.example/u/1.png" alt="x">');
   });
 
   it('rewrites markdown and html fragments', () => {

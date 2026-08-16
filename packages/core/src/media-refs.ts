@@ -183,8 +183,10 @@ export function parseLocalMediaRefs(content: string, baseDir?: string): MediaRef
 export function replaceMediaRefs(content: string, replacements: ReadonlyMap<string, string>): string {
   let out = content;
   for (const [raw, url] of replacements) {
+    // 重建完整片段（保留 markdown `![alt](...)` / HTML `src="..."` 结构），只替换其中的路径
+    const rewritten = rewriteFragment(raw, url);
     // 全文替换该片段的所有出现（同一图片可能被多处引用）
-    out = out.split(raw).join(url);
+    out = out.split(raw).join(rewritten);
   }
   return out;
 }
