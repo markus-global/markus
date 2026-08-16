@@ -50,6 +50,8 @@ export interface DeliverableShareRecord {
   status: ShareStatus | string;
   url?: string | null;
   reason?: string | null;
+  /** 来源本地产出物 id（Hub mine/status 返回 localDeliverableId 时回填；用于把 Hub 记录映射回本地交付物） */
+  localId?: string | null;
 }
 
 /** 单产出物文件大小上限（与 core 一致，50MB）。 */
@@ -139,6 +141,7 @@ export function normalizeShareRecord(data: unknown, hubOrigin?: string): Deliver
     url = `${hubOrigin.replace(/\/+$/, '')}/deliverable/${encodeURIComponent(slug)}`;
   }
   const reasonRaw = pick('reason') ?? pick('rejectNote');
+  const localIdRaw = pick('localDeliverableId') ?? pick('localId');
   return {
     id: String(id),
     slug,
@@ -146,6 +149,7 @@ export function normalizeShareRecord(data: unknown, hubOrigin?: string): Deliver
     status: (pick('status') as ShareStatus) ?? 'pending_review',
     url,
     reason: reasonRaw !== undefined && reasonRaw !== null ? String(reasonRaw) : null,
+    localId: localIdRaw !== undefined && localIdRaw !== null ? String(localIdRaw) : null,
   };
 }
 
