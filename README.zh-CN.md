@@ -33,7 +33,8 @@
   <a href="https://markus.global/blog">博客</a> ·
   <a href="docs/GUIDE.md">文档</a> ·
   <a href="https://github.com/markus-global/markus/discussions">讨论区</a> ·
-  <a href="CONTRIBUTING.md">参与贡献</a>
+  <a href="CONTRIBUTING.md">参与贡献</a> ·
+  <a href="docs/COMMUNITY.md">社区</a>
 </p>
 
 <p align="center">
@@ -236,6 +237,17 @@ TypeScript monorepo，模块化包结构：
 | [远程访问](docs/REMOTE-ACCESS.md) | Cloudflare Tunnel、Tailscale、FRP、ngrok 配置 |
 | [发布与分发](docs/RELEASE-AND-DISTRIBUTION.md) | 构建、打包、发布流水线 |
 | [博客](https://markus.global/blog) | 关于 Markus 与 AI Agent 的文章与教程 |
+
+---
+
+## 💬 社区
+
+- **GitHub Discussions** — 提问、Show & Tell、案例分享：<https://github.com/markus-global/markus/discussions>
+- **博客** — 教程与产品更新：<https://markus.global/blog>
+- **Discord** — 英文/全球实时交流（建设中）
+- **微信群** — 中文用户交流群，获取帮助、内测资格与贡献指引（建设中）
+
+渠道规划、加入方式与运营规则见 [docs/COMMUNITY.md](docs/COMMUNITY.md)。所有渠道均遵循我们的 [行为准则](../CODE_OF_CONDUCT.md)。
 
 ---
 

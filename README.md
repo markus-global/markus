@@ -33,7 +33,8 @@
   <a href="https://markus.global/blog">Blog</a> ·
   <a href="docs/GUIDE.md">Documentation</a> ·
   <a href="https://github.com/markus-global/markus/discussions">Discussions</a> ·
-  <a href="CONTRIBUTING.md">Contributing</a>
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="docs/COMMUNITY.md">Community</a>
 </p>
 
 <p align="center">
@@ -236,6 +237,17 @@ TypeScript monorepo with modular packages:
 | [Remote Access](docs/REMOTE-ACCESS.md) | Cloudflare Tunnel, Tailscale, FRP, ngrok setup |
 | [Release & Distribution](docs/RELEASE-AND-DISTRIBUTION.md) | Build, packaging, publishing pipeline |
 | [Blog](https://markus.global/blog) | Articles and tutorials on Markus and AI agents |
+
+---
+
+## 💬 Community
+
+- **GitHub Discussions** — questions, show & tell, and case studies: <https://github.com/markus-global/markus/discussions>
+- **Blog** — tutorials and product updates: <https://markus.global/blog>
+- **Discord** — real-time chat with users and contributors (English/global) — *coming soon*
+- **微信群** — 中文用户交流群，获取帮助、内测与贡献支持（建设中）
+
+Join details, channel map, and the contributor escalation path are in [docs/COMMUNITY.md](docs/COMMUNITY.md). All channels follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 
