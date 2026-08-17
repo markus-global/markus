@@ -1050,8 +1050,7 @@ export class OrganizationService {
     if (skillEntries.length > 0) {
       parts.push('## Available Skills (live from system)');
       parts.push('');
-      parts.push('**IMPORTANT**: Actively assign relevant skills to each agent. Do NOT default to empty `skills: []`.');
-      parts.push('Review this table and assign skills that match the agent\'s purpose:');
+      parts.push('These skills are available for **you** to use. Activate one by name via `discover_tools({ name: ["<skill-id>"] })` when you need its procedure — activation injects the skill\'s instructions into your context.');
       parts.push('');
       parts.push('| Skill ID | Description | Type |');
       parts.push('|----------|-------------|------|');
@@ -1059,7 +1058,7 @@ export class OrganizationService {
         parts.push(`| \`${s.name}\` | ${s.description.slice(0, 80)} | ${s.type} |`);
       }
       parts.push('');
-      parts.push('Only use skill IDs from this table. Assign at least one skill to each agent when a match exists.');
+      parts.push('Only use skill IDs from this table. Activate them on demand — do not attempt to assign skills to other agents; that is a human/manager configuration action, not an agent action.');
     }
 
     // Available role templates (for reference only — roleName is optional)
@@ -1094,7 +1093,7 @@ export class OrganizationService {
     parts.push('- **`shell_execute`** — Execute any shell command, including `git` (merge, diff, branch) and `gh` CLI (PRs, issues, releases) for Git/GitHub operations');
     parts.push('- **Workspace isolation** — Project-bound tasks get an isolated working directory (`task/<id>` branch). Agents work in isolation; the reviewer merges after approval.');
     parts.push('- **`web_search` / `web_fetch`** — Search the web and fetch page content for research, documentation lookup, and real-time information');
-    parts.push('- **Task dependencies** — Use `blockedBy` to express dependencies between tasks. Blocked tasks auto-start when dependencies complete.');
+    parts.push('- **Task dependencies** — Use `blocked_by` (array of task IDs) to express dependencies between tasks. Dependent tasks wait for their prerequisites, block the dependent task until all prerequisites complete, then auto-start.');
     parts.push('- **Deliverables** — Use `deliverable_create` to register outputs (files, conventions, architecture decisions) as trackable artifacts');
     parts.push('- **Memory** — Use `memory_save` / `memory_search` for persistent knowledge across sessions');
     parts.push('');
