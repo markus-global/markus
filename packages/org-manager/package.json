@@ -1,6 +1,7 @@
 {
   "name": "@markus/org-manager",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

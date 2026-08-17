@@ -1,6 +1,7 @@
 {
   "name": "@markus/desktop",
   "private": true,
+  "license": "Apache-2.0",
   "productName": "Markus",
   "author": {
     "name": "Markus Global",

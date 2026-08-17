@@ -5,12 +5,9 @@
 <h1 align="center">Markus</h1>
 
 <p align="center">
-  <strong>Build AI teams that actually deliver.</strong>
-</p>
-
-<p align="center">
-  Open-source AI workforce platform — role-based agents that plan, execute, review each other's work,<br />
-  and deliver finished results. Runs around the clock on your machine or a small cloud server.
+  <strong>The open-source AI workforce platform.</strong><br />
+  One AI agent is a smart intern who forgets everything and says “done” too early.<br />
+  Markus gives your agents memory, peers, reviews, and a 24/7 heartbeat — so work actually ships.
 </p>
 
 <p align="center">
@@ -24,7 +21,7 @@
     <img src="https://img.shields.io/github/stars/markus-global/markus?style=flat" alt="GitHub Stars" />
   </a>
   <a href="https://github.com/markus-global/markus/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="License" />
+    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License" />
   </a>
   <a href="https://github.com/markus-global/markus/issues">
     <img src="https://img.shields.io/github/issues/markus-global/markus" alt="Issues" />
@@ -36,7 +33,8 @@
   <a href="https://markus.global/blog">Blog</a> ·
   <a href="docs/GUIDE.md">Documentation</a> ·
   <a href="https://github.com/markus-global/markus/discussions">Discussions</a> ·
-  <a href="CONTRIBUTING.md">Contributing</a>
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="docs/COMMUNITY.md">Community</a>
 </p>
 
 <p align="center">
@@ -44,62 +42,56 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/markus-og.jpg" alt="Markus dashboard — manage your AI workforce from desktop or mobile" width="820" />
+  <img src="docs/images/dashboard-preview.gif" alt="Markus in action — AI agents planning, executing, reviewing, and delivering in one dashboard" width="840" />
 </p>
 
 ---
 
-## What is Markus?
+## The 60-Second Pitch
 
-**Markus is an open-source platform that runs complete AI teams** — not a wrapper around someone else's agents, and not just another framework.
+**Markus is the organizational layer your AI agents are missing.**
 
-Describe what you want done in plain language. Markus assembles the right roles (developer, reviewer, researcher, writer, analyst, ops), breaks the work into tasks, delegates to specialists, runs them in parallel, applies quality review, and ships the finished result.
+You know single-agent copilots: great at one task, useless as an organization. They forget your decisions between sessions, stall on a blocker with nobody to ask, and — worst of all — they call their own work “done.”
 
-It's the **organizational layer** that single-agent copilots are missing:
+Markus changes the operating model. You describe a goal in plain language; Markus assembles a team of role-based agents (researcher, developer, reviewer, writer, ops), breaks the work into tasks, runs specialists in parallel, and makes every delivery pass through peer review before it reaches you. Your team keeps working while you sleep.
 
-- **Full agent runtime built in** — every agent talks directly to LLM APIs and uses built-in tools: shell, file I/O, git, web search, code analysis, GUI & browser automation, and any MCP server. No proxying through external CLI tools.
-- **Zero config to start** — SQLite storage, bundled web UI, one command. Nothing extra to install, nothing to configure.
-- **Manage from anywhere** — a responsive dashboard for desktop and mobile, plus an Electron desktop app for macOS, Windows, and Linux. Deploy on any cloud server and run your AI company from your phone.
+- **A team, not a wrapper** — a complete agent runtime built in. Every worker talks to LLM APIs directly and uses built-in tools: shell, file I/O, git, web search, code analysis, GUI & browser automation, and any MCP server. No proxying through external CLIs.
+- **Zero config to start** — SQLite storage, bundled web UI, one command. From install to a running AI team in about **10 minutes**.
+- **Works 24/7** — heartbeat scheduling keeps agents moving, reviewing, and escalating without a human in the loop.
+- **Runs anywhere** — your laptop, a small cloud VM, or your datacenter. Desktop app for macOS / Windows / Linux, plus a responsive dashboard for your phone.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start — a working AI team in ~10 minutes
 
-Pick whichever path is easiest.
-
-**Desktop app** (macOS / Windows / Linux) — download from [Releases](https://github.com/markus-global/markus/releases/latest).
-
-**npm** (requires Node.js 22+):
+**1. Install** — pick whichever path is easiest:
 
 ```bash
+# Desktop app (macOS / Windows / Linux)
+#   → download from https://github.com/markus-global/markus/releases/latest
+
+# npm (Node.js 22+)
 npm install -g @markus-global/cli
-markus start
-```
 
-**Linux one-liner** (works without Node.js):
-
-```bash
+# Linux one-liner (works without Node.js)
 curl -fsSL https://markus.global/install.sh | bash
 ```
 
-**From source**:
+**2. Launch**
 
 ```bash
-git clone https://github.com/markus-global/markus.git && cd markus
-pnpm install && pnpm build && pnpm dev
+markus start
 ```
 
-Open **http://localhost:8056** — the onboarding wizard walks you through name, email, and password (initial login: `admin@markus.local` / `markus123`).
+**3. Open** [http://localhost:8056](http://localhost:8056) — the onboarding wizard sets up your account (initial login: `admin@markus.local` / `markus123`).
 
-That's it. SQLite database, bundled web UI, zero external dependencies.
+**4. Tell your Secretary what you need**
 
----
+> *“I need a research team: scan our competitors, write a competitive analysis, and draft a go-to-market strategy.”*
 
-## 🎬 See It in Action
+Markus assembles the team, breaks the goal into tasks, and starts executing — specialists in parallel, every delivery reviewed.
 
-![Markus dashboard live preview](docs/images/dashboard-preview.gif)
-
-Real-time task board, agent chat, deliverable review, and team status — on desktop and mobile.
+**That's it.** SQLite database, bundled web UI, zero external dependencies. From source: `git clone` → `pnpm install && pnpm build && pnpm dev`.
 
 ---
 
@@ -107,7 +99,7 @@ Real-time task board, agent chat, deliverable review, and team status — on des
 
 | Area | Example |
 |------|---------|
-| **Research & analysis** | Scan competitor products, compile a competitive analysis, and draft a go-to-market strategy |
+| **Research & analysis** | Scan competitor products, compile a competitive analysis, draft a go-to-market strategy |
 | **Software engineering** | Build a feature end-to-end — requirements, code, tests — with built-in peer review |
 | **Content & publishing** | Draft, edit, review, and schedule articles, reports, and social posts |
 | **Operations** | Daily briefings, issue triage, scheduled monitoring, blocker escalation |
@@ -118,52 +110,67 @@ The same team keeps working after you close the laptop — heartbeats keep agent
 
 ---
 
-## ✨ Key Features
-
-| | |
-|---|---|
-| **🤖 Autonomous Agent Runtime** &nbsp;&nbsp;&nbsp; | Each agent is a full LLM-powered worker with built-in tools — shell, file I/O, git, web search, code analysis, GUI & browser automation, and any MCP server. Works with **any LLM provider**: Anthropic, OpenAI, Google, DeepSeek, MiniMax, Ollama, OpenRouter, SiliconFlow, Moonshot — with automatic failover. |
-| **🧠 Persistent Memory** | Three-layer memory (procedural, semantic, episodic) that accumulates knowledge across sessions and consolidates it automatically — agents get smarter the longer you run them. |
-| **⏰ Proactive Heartbeat** | Agents don't wait for instructions. The heartbeat scheduler patrols open tasks, processes completions, and surfaces blockers — your team works while you sleep. |
-| **🤝 Team Collaboration & A2A** | Role-based organization: managers, workers, subagents, and structured agent-to-agent messaging. Humans join via DMs, group chats, and @mentions. |
-| **✅ Governance & Trust** | Progressive trust levels (probation → standard → trusted → senior), formal submit–review–merge delivery, emergency pause, and a full audit trail for every action. |
-| **💬 Multi-Channel Messaging** | Native bridges to Slack, Feishu, WhatsApp, and Telegram — agents meet your team where they already talk. |
-| **🛠 Skills Marketplace** | Browse and install agent templates, team configurations, and reusable skills from Markus Hub. Share what works with the community. |
-| **📱 Desktop + Mobile** | Electron desktop app for macOS / Windows / Linux, plus a responsive web dashboard. Review deliverables on the train, approve tasks from the couch. |
-| **🔒 Self-Hosted, Data Yours** | Runs entirely on your infrastructure with SQLite by default (PostgreSQL supported). Remote access via Cloudflare Tunnel, Tailscale, FRP, or ngrok. |
-
----
-
-## How It Works
-
-### 1. Describe what you need
-Tell the built-in Secretary agent your goal in plain language. It assembles the right team, breaks down requirements into tasks, and sets up the project.
-
-> *"I need a research team to scan competitor products, write a competitive analysis, and draft a go-to-market strategy."*
-
-### 2. Agents execute in parallel
-
-Agents delegate, spawn subagents, review each other's work, and escalate only when they should. Each agent works in an isolated workspace with its own context. Developers write code, researchers compile findings, writers produce drafts — all at the same time.
-
-### 3. Review and deliver
-
-You review the final deliverables, not the process. Every output passes through quality gates, and the full audit trail shows exactly what each agent did, when, and why.
-
----
-
-## Single Agent vs. Markus Team
+## Why a Team Beats a Copilot
 
 A single agent — Claude Code, Codex, ChatGPT, or any copilot — is great at executing one task at a time. But one employee doesn't make a company.
 
 | | Single AI agent | Markus AI team |
 |---|---|---|
 | **Scale** | One task at a time | Parallel work across specialist roles |
-| **Memory** | Context evaporates when the session ends | Persistent, consolidating long-term memory |
-| **Proactivity** | Waits for your prompt, every time | Works 24/7 via heartbeat, even while you sleep |
-| **Quality** | "Done" is self-reported | Peers review, catch mistakes, and gate delivery |
-| **Visibility** | 10 agents = 10 windows | One dashboard showing everyone's status |
+| **Memory** | Context evaporates when the session ends | Three-layer persistent memory, auto-consolidated between sessions |
+| **Initiative** | Waits for your prompt, every time | Heartbeat patrols tasks 24/7 — works while you sleep |
+| **Quality** | “Done” is self-reported | Peers review, catch mistakes, and gate every delivery |
+| **Visibility** | 10 agents = 10 windows | One dashboard, one audit trail |
+| **Accountability** | No guardrails | Progressive trust levels, submit–review–merge, emergency pause |
 
 You manage a workforce, not individual prompts.
+
+---
+
+## 🏛️ What Makes It an Organization, Not a Script
+
+- **🧠 Three-layer memory** — procedural (how to do things), semantic (what it knows), episodic (what happened). Knowledge accumulates across sessions and consolidates automatically — your team gets measurably smarter the longer it runs.
+- **⏰ Heartbeat-driven initiative** — agents don't wait to be prompted. The heartbeat scheduler patrols open tasks, processes async completions, and surfaces blockers — work keeps shipping after you close the laptop.
+- **🛡️ Progressive trust levels** — probation → standard → trusted → senior. Agents earn scope and authority as they demonstrate reliability.
+- **✅ Quality gates** — a formal submit → review → merge lifecycle. Nothing reaches you unreviewed; peers catch what self-reporting misses.
+- **📜 Full audit trail** — every action is logged: who, what, when, and why. Reproduce results or investigate incidents without guessing.
+
+---
+
+## 🔒 Security & Data Ownership
+
+- **Self-hosted, data yours** — runs entirely on your infrastructure. SQLite by default, PostgreSQL supported. No mandatory cloud, no data leaving your network unless you choose remote access.
+- **Isolated workspaces** — each agent works in its own sandboxed workspace on the project branch; no cross-talk between runs.
+- **Least privilege** — trust levels gate what agents can touch; imported skills map their declared permissions (`allowed-tools` → `requiredPermissions`) instead of running with blanket access.
+- **Audit & control** — full action log, emergency pause, and human approval gates for high-stakes steps.
+- **Bring your own keys** — connect any LLM provider; credentials live in your deployment, never in a third-party cloud.
+- **Optional remote access** — Cloudflare Tunnel, Tailscale, FRP, or ngrok if you want to manage your team from anywhere.
+
+---
+
+## 🌍 Not Another Closed Ecosystem
+
+Markus plays well with the AI ecosystem you already use — it doesn't ask you to start over.
+
+- **80,000+ community skills, plug and play** — `markus skill import <path>` auto-detects and normalizes skills from **skills.sh / Claude Code, SkillHub / ClawHub, OpenClaw, SOUL.md, AgentScope, and MCP servers** into native Markus skills. No rewriting, no lock-in.
+- **Export back** — `markus skill export <name> --format claude` renders your best skills into external standards so you can publish them back to skills.sh, SkillHub, OpenClaw, and beyond.
+- **Import from inside a conversation** — agents can load a local skill package via `discover_tools({ mode: "import" })` and use it immediately, no restart.
+- **Any MCP server** — standard MCP servers plug straight into the agent tool layer.
+- **Any LLM provider** — Anthropic, OpenAI, Google, DeepSeek, MiniMax, Ollama, OpenRouter, SiliconFlow, Moonshot — with automatic failover and per-task routing.
+
+> Full details: [Skill Ecosystem Adapter](docs/SKILL-ECOSYSTEM.md)
+
+---
+
+## 🏆 Real Teams on Markus
+
+### Case: we dogfood Markus to build Markus
+
+The Markus project itself runs on Markus. The skill-ecosystem adapter, the dual-license migration, and even this README went through the same pipeline we ship to you: requirements → tasks → parallel agents → peer review → merge, every step auditable. When the release train moves fast, discipline comes from the platform, not from memory.
+
+### Your story could be here
+
+Used Markus to ship a product, run a research sprint, or automate an operation? Tell us about it in [Discussions](https://github.com/markus-global/markus/discussions) — the best case studies get featured here and on our [blog](https://markus.global/blog). Quoted testimonials are always with permission.
 
 ---
 
@@ -182,7 +189,7 @@ You manage a workforce, not individual prompts.
                        │
 ┌──────────────────────┴──────────────────────────────────┐
 │                  Agent Runtime (Core)                   │
-│  Agent · LLM Router · Tools · Memory · Heartbeat · A2A  │
+│  Agent · LLM Router · Tools · Skills · Memory · A2A     │
 └──────────┬────────────────────────────┬─────────────────┘
            │                            │
 ┌──────────┴──────────┐    ┌────────────┴─────────────────┐
@@ -195,7 +202,7 @@ TypeScript monorepo with modular packages:
 
 | Package | Role |
 |---------|------|
-| **core** | Agent runtime — LLM routing, tools, memory, heartbeat, workspace isolation |
+| **core** | Agent runtime — LLM routing, tools, skills, memory, heartbeat, workspace isolation |
 | **org-manager** | REST API, WebSocket, governance, task lifecycle |
 | **web-ui** | React + Vite + Tailwind dashboard |
 | **desktop** | Electron desktop app (macOS / Windows / Linux) |
@@ -218,6 +225,7 @@ TypeScript monorepo with modular packages:
 | [Architecture](docs/ARCHITECTURE.md) | System design, agent runtime, memory, governance |
 | [Agent Runtime](docs/AGENT-RUNTIME.md) | Agent lifecycle, execution model, workspace isolation |
 | [Tool System](docs/TOOL-SYSTEM.md) | Built-in tools, MCP integration, tool contracts |
+| [Skill Ecosystem](docs/SKILL-ECOSYSTEM.md) | Import/export skills from skills.sh, SkillHub, OpenClaw, AgentScope, MCP |
 | [Memory System](docs/MEMORY-SYSTEM.md) | Three-layer memory architecture (Tulving) |
 | [Cognitive Architecture](docs/COGNITIVE-ARCHITECTURE.md) | Cognitive Preparation Pipeline (CPP) design |
 | [Mailbox System](docs/MAILBOX-SYSTEM.md) | Agent attention model, priority queue, triage |
@@ -229,6 +237,17 @@ TypeScript monorepo with modular packages:
 | [Remote Access](docs/REMOTE-ACCESS.md) | Cloudflare Tunnel, Tailscale, FRP, ngrok setup |
 | [Release & Distribution](docs/RELEASE-AND-DISTRIBUTION.md) | Build, packaging, publishing pipeline |
 | [Blog](https://markus.global/blog) | Articles and tutorials on Markus and AI agents |
+
+---
+
+## 💬 Community
+
+- **GitHub Discussions** — questions, show & tell, and case studies: <https://github.com/markus-global/markus/discussions>
+- **Blog** — tutorials and product updates: <https://markus.global/blog>
+- **Discord** — real-time chat with users and contributors (English/global) — *coming soon*
+- **微信群** — 中文用户交流群，获取帮助、内测与贡献支持（建设中）
+
+Join details, channel map, and the contributor escalation path are in [docs/COMMUNITY.md](docs/COMMUNITY.md). All channels follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 
@@ -256,10 +275,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
 Markus is dual-licensed:
 
-- **Open Source**: [AGPL-3.0](LICENSE) — free for self-hosting and community contributions
-- **Commercial**: [Available](LICENSE-COMMERCIAL.md) — for SaaS deployments and proprietary modifications
+- **Open Source**: [Apache-2.0](LICENSE) — free to use, modify, distribute, and self-host for any purpose, including commercial use
+- **Commercial**: [Available](LICENSE-COMMERCIAL.md) — for teams needing enterprise support, indemnification, OEM embedding, or custom terms
 
-Agent templates and skills shared through the marketplace may use their own licenses (typically MIT).
+Skills shared through the marketplace may use their own licenses (typically MIT).
 
 ---
 

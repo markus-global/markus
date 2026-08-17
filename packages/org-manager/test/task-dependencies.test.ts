@@ -335,4 +335,67 @@ describe('TaskService - Dependencies & Timeouts', () => {
       expect(health.duplicateGroups).toBe(1);
     });
   });
+
+  describe('approval × dependency state transitions (req: task依赖问题修复)', () => {
+    it('human-created tasks always start pending, even with unresolved blockers', () => {
+      const dep = createAndApprove({ title: 'Dep' }); // auto-tier → in_progress
+      const task = ts.createTask(createDefaults({
+        title: 'Human Task',
+        creatorRole: 'human',
+        blockedBy: [dep.id],
+      }) as any);
+
+      // Must NOT start as 'blocked' — that would bypass the start/approval gate.
+      expect(ts.getTask(task.id)!.status).toBe('pending');
+    });
+
+    it('approve re-checks dependencies at approval time: completed dep → in_progress', () => {
+      const dep = createAndApprove({ title: 'Dep' });
+      const a = ts.createTask(createDefaults({
+        title: 'A',
+        creatorRole: 'human',
+        blockedBy: [dep.id],
+      }) as any);
+      expect(ts.getTask(a.id)!.status).toBe('pending');
+
+      // Dependency completes BEFORE the human approves A.
+      ts.updateTaskStatus(dep.id, 'review');
+      ts.updateTaskStatus(dep.id, 'completed');
+
+      const approved = ts.approveTask(a.id, 'user-1');
+      expect(approved.status).toBe('in_progress');
+    });
+
+    it('approve lands in blocked when deps unresolved, then auto-unblocks when dep completes', () => {
+      const dep = createAndApprove({ title: 'Dep' }); // in_progress
+      const a = ts.createTask(createDefaults({
+        title: 'A',
+        creatorRole: 'human',
+        blockedBy: [dep.id],
+      }) as any);
+      expect(ts.getTask(a.id)!.status).toBe('pending');
+
+      const approved = ts.approveTask(a.id, 'user-1');
+      expect(approved.status).toBe('blocked');
+
+      ts.updateTaskStatus(dep.id, 'review');
+      ts.updateTaskStatus(dep.id, 'completed');
+      expect(ts.getTask(a.id)!.status).toBe('in_progress');
+    });
+
+    it('archived dependency satisfies blockers (task not stuck blocked)', () => {
+      const dep = createAndApprove({ title: 'Dep' });
+      ts.updateTaskStatus(dep.id, 'review');
+      ts.updateTaskStatus(dep.id, 'completed');
+      ts.updateTaskStatus(dep.id, 'archived');
+
+      // Creating a dependent on an archived (finished) task must not block it.
+      const a = ts.createTask(createDefaults({
+        title: 'A',
+        blockedBy: [dep.id],
+      }) as any);
+
+      expect(ts.getTask(a.id)!.status).toBe('in_progress');
+    });
+  });
 });

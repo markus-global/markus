@@ -53,6 +53,7 @@ import {
   initStorage,
   searchRegistries,
   installSkill,
+  importSkillFromDirectory,
   WorkflowService,
   WorkflowRunner,
   WorkflowScheduler,
@@ -925,6 +926,19 @@ async function startServerCore(
       githubSkillPath: request.githubSkillPath as string | undefined,
     }, skillRegistry);
     return { installed: result.installed, name: result.name, method: result.method };
+  });
+
+  // Wire local skill package import (discover_tools mode="import") — normalize
+  // external skill dirs (skills.sh / SkillHub / OpenClaw / SOUL / AgentScope / MCP)
+  // into Markus format and refresh the runtime registry.
+  agentManager.setSkillImporter(async (request) => {
+    const result = await importSkillFromDirectory(request.path, {
+      name: request.name,
+      targetDir: request.targetDir,
+      force: request.force,
+      sourceUrl: request.sourceUrl,
+    }, skillRegistry);
+    return { name: result.name, method: result.method, path: result.path };
   });
 
   // Wire user approval requester through HITL service
