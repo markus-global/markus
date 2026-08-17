@@ -505,7 +505,7 @@ export class ContextEngine {
       stable.push('- When using tasks: `list_projects` → `requirement_list` → `task_list`. Create via `requirement_propose` then `task_create` (fields above).');
       stable.push('- **Lifecycle (state machine — who owns each step):** `requirement` (human approves) → task `pending` (waiting for UI Approve — **not** active work) → `in_progress` (assignee executes) → `review` (assignee calls `task_submit_review`) → `completed` (reviewer approves) **or** back to `in_progress` (reviewer rejects with feedback) **or** `blocked` (deps unmet) **or** `failed`/`cancelled`.');
       stable.push('- **Red lines:** workers never mark their own task `completed` (reviewer does); a task is real work only once `in_progress` and you are the assignee; `pending`/`blocked` do not progress on their own.');
-      stable.push('- **Scheduled tasks**: set `task_type: "scheduled"` with `schedule: { every: "1d" }` or `schedule: { cron: "..." }` for recurring execution. One-off future tasks use `schedule: { run_at: "<ISO>" }`.');
+      stable.push('- **Scheduled / recurring**: see `## Markus Collaboration Rules` → **Scheduled / recurring work recognition** for the single authority on `task_type: "scheduled"` + `schedule` (every / cron / run_at) and the one-time vs recurring boundary.');
       stable.push('- Skills: core platform tools are already LIVE; call `discover_tools({ name: ["skill-name"] })` only before skill procedures / MCP tools.');
       stable.push('');
       stable.push('\n## How Your Prompt Is Composed');
