@@ -405,7 +405,7 @@ export class ContextEngine {
       stable.push('- **Irreversible, destructive, or scope-expanding** (deletes, force-push, spending, publishing, changing another team\'s work, anything hard to undo): `request_user_input` FIRST and wait for the decision. When in doubt about reversibility, treat it as irreversible.');
       stable.push('- Prefer making progress with a stated assumption over stalling; prefer asking over taking a risky irreversible action.');
       stable.push('- ROLE lines like "pause for user confirmation" mean **product-direction / scope** decisions — not every implementation detail. In conversational chat you may pair and ship reversible steps while keeping the human informed.');
-      stable.push('- Conversational progress does **not** require creating a task each step. Use tasks when async, delegation, or formal review is needed (see Collaboration Rules).');
+      stable.push('- Conversational progress does **not** require creating a task each step. For the full conversation-vs-task boundary, see `## Markus Collaboration Rules` → **Conversation vs task**.');
 
       stable.push('');
       stable.push('\n## Model & Capability Routing');
@@ -479,7 +479,7 @@ export class ContextEngine {
       stable.push('');
       stable.push('**Task creation (mandatory fields)**');
       stable.push('- Every `task_create` MUST include `requirement_id`, `project_id`, `assigned_agent_id`, and `reviewer_agent_id` (or `reviewer_id` as the tool accepts). Missing fields → rejected.');
-      stable.push('- Related tasks that depend on others MUST set `blocked_by`. Check `task_list` for the same requirement first — no duplicates.');
+      stable.push('- **Use `blocked_by` to express task dependencies — this is the backbone of task orchestration.** Independent tasks run **in parallel**; when task B depends on task A\'s output, set `blocked_by` on B to A\'s task_id and the system waits for A to finish before starting B. **If you omit it, B can start before A\'s output exists — wrong execution order.** Internalize dependency thinking: start by mapping which tasks are independent (parallel) vs. dependent (serial via `blocked_by`) before creating a batch, so orchestration is correct by construction.');
       stable.push('- After create, wait for built-in Approve on the card. Do **not** execute that task\'s work yourself in chat just because you created it.');
       stable.push('');
       stable.push('**A2A vs tasks**');
@@ -503,7 +503,8 @@ export class ContextEngine {
       // Shortest always-on workflow (full checklist is scenario-triggered L3)
       stable.push('\n## Task Workflow (summary)');
       stable.push('- When using tasks: `list_projects` → `requirement_list` → `task_list`. Create via `requirement_propose` then `task_create` (fields above).');
-      stable.push('- Lifecycle: requirement approved → task created → execute → auto `review` → reviewer approves/rejects.');
+      stable.push('- **Lifecycle (state machine — who owns each step):** `requirement` (human approves) → task `pending` (waiting for UI Approve — **not** active work) → `in_progress` (assignee executes) → `review` (assignee calls `task_submit_review`) → `completed` (reviewer approves) **or** back to `in_progress` (reviewer rejects with feedback) **or** `blocked` (deps unmet) **or** `failed`/`cancelled`.');
+      stable.push('- **Red lines:** workers never mark their own task `completed` (reviewer does); a task is real work only once `in_progress` and you are the assignee; `pending`/`blocked` do not progress on their own.');
       stable.push('- **Scheduled tasks**: set `task_type: "scheduled"` with `schedule: { every: "1d" }` or `schedule: { cron: "..." }` for recurring execution. One-off future tasks use `schedule: { run_at: "<ISO>" }`.');
       stable.push('- Skills: core platform tools are already LIVE; call `discover_tools({ name: ["skill-name"] })` only before skill procedures / MCP tools.');
       stable.push('');
