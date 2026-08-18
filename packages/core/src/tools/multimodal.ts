@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import type { AgentToolHandler } from '../agent.js';
 import type { ImageResult, MultiModalProviderInterface, MultiModalToolSchemas, VideoResult, VideoReference, VideoFrameImage, TTSOptions } from '../llm/provider.js';
-import { createLogger, type ModelCapabilityType } from '@markus/shared';
+import { createLogger, type ModelCapabilityType, type LLMRequest } from '@markus/shared';
 import { toolErr, toolOk } from './result.js';
 
 const log = createLogger('multimodal-tools');
@@ -73,6 +73,20 @@ function guessImageExt(url?: string, base64?: string): string {
   if (base64?.startsWith('R0lGOD')) return 'gif';
   if (base64?.startsWith('UklGR')) return 'webp';
   return 'png';
+}
+
+/** MIME type for a local file extension (used to encode local images into data: URLs for vision models). */
+const MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', avif: 'image/avif',
+};
+
+/** Read a local image file into a `data:` URL so it can be passed to a vision model over the wire. */
+function localImageToDataUrl(filePath: string): string {
+  const bytes = readFileSync(filePath);
+  const ext = (filePath.split('.').pop() ?? 'png').toLowerCase();
+  const mime = MIME_BY_EXT[ext] ?? 'image/png';
+  return `data:${mime};base64,${bytes.toString('base64')}`;
 }
 
 /**
@@ -314,6 +328,116 @@ function missingRequiredStringError(
 
 export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHandler[] {
   return [
+    {
+      name: 'describe_image',
+      description:
+        'Recognize / describe the content of one or more images using a vision-capable model. ' +
+        'Use this when you receive an image (or need to "see" a local image file / image URL) and want a text ' +
+        'understanding of its content — works even when your current chat model does not support vision. ' +
+        'Input images by absolute local path (e.g. a chat-attachment path) or http(s) URL. ' +
+        'Recommended: pass provider+model that supports vision (e.g. provider: "markus", model: "google/gemini-3.7-flash") — ' +
+        'no need to reconfigure capability routing.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          images: {
+            type: 'array',
+            description: 'Absolute local paths and/or http(s) URLs of the image(s) to analyze (REQUIRED). ' +
+              'Example: ["/Users/you/.markus/chat-attachments/dm_me/0_boy.png"]',
+            items: { type: 'string' },
+          },
+          prompt: {
+            type: 'string',
+            description:
+              'Optional instruction to the vision model describing how to analyze the image(s). ' +
+              'Examples: "Describe this image in detail", "Read the text in this screenshot", ' +
+              '"What brand logo is shown?". Default: describe the image content.',
+          },
+          provider: PROVIDER_PARAM,
+          model: MODEL_PARAM,
+        },
+        required: ['images'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const raw = args.images;
+        const specs = Array.isArray(raw)
+          ? raw.filter((v): v is string => typeof v === 'string' && !!v.trim())
+          : (typeof args.image === 'string' && args.image.trim())
+            ? [args.image.trim()]
+            : (typeof args.image_path === 'string' && args.image_path.trim())
+              ? [args.image_path.trim()]
+              : (typeof args.file === 'string' && args.file.trim())
+                ? [args.file.trim()]
+                : [];
+        if (specs.length === 0) {
+          return missingRequiredStringError(
+            'describe_image',
+            'images',
+            args,
+            { images: ['/Users/you/.markus/chat-attachments/dm_me/0_boy.png'], prompt: 'Describe this image in detail.', provider: 'markus', model: 'google/gemini-3.7-flash' },
+          );
+        }
+
+        const prompt = readRequiredString(args, 'prompt', ['question', 'instruction'])
+          ?? 'Describe the content of the image(s) in detail.';
+
+        const all = ctx.resolveCandidates('image_recognition')
+          .filter(c => typeof c.provider.chat === 'function');
+        const { candidates, error: pickErr } = resolveEffectiveCandidates(
+          all,
+          normalizeProviderArg(args.provider),
+          normalizeModelArg(args.model),
+          ctx,
+          'chat' as ModalityMethod, // reuse the override resolution; chat() is the common lever
+        );
+        if (pickErr) return toolErr(pickErr, { hint: ROUTING_HINT });
+        if (candidates.length === 0) {
+          return toolErr(
+            `No vision-capable model available for image recognition. ` +
+              `Pass provider+model that supports image input on this call ` +
+              `(e.g. provider: "markus", model: "google/gemini-3.7-flash"), or set capability routing for image_recognition. ${ROUTING_HINT}`,
+          );
+        }
+
+        const imageUrls = specs.map((s) =>
+          /^https?:\/\//i.test(s) ? s : localImageToDataUrl(s),
+        );
+
+        let lastError: unknown;
+        for (let i = 0; i < candidates.length; i++) {
+          const { provider, model, name } = candidates[i];
+          try {
+            const contentParts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+              { type: 'text', text: prompt },
+              ...imageUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+            ];
+            const request: LLMRequest = {
+              messages: [{ role: 'user', content: contentParts as never }],
+              model: model ?? provider.model,
+            };
+            const resp = await provider.chat(request);
+            log.info(`Image recognition via ${name}/${model ?? provider.model}: ${imageUrls.length} image(s)`);
+            return toolOk({
+              content: resp.content,
+              provider: name,
+              model: model ?? provider.model,
+              images: specs,
+              note: 'This is a text description from a vision model. Use file tools separately if you need OCR-level exact text extraction.',
+            });
+          } catch (err) {
+            lastError = err;
+            log.warn(`Image recognition via ${name} failed${i < candidates.length - 1 ? ', trying next provider' : ''}: ${err}`);
+          }
+        }
+        const tried = candidates.map(c => c.model ?? c.name).join(', ');
+        log.error(`Image recognition failed on all ${candidates.length} provider(s)`);
+        return toolErr(
+          `Image recognition failed (tried: ${tried}): ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+          { hint: ROUTING_HINT, tried_models: candidates.map(c => c.model).filter(Boolean) },
+        );
+      },
+    },
+
     {
       name: 'upload_reference',
       description:

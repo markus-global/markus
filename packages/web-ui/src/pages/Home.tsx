@@ -183,7 +183,19 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     if (previewMode || !isActive) return;
     refresh();
     const i = setInterval(refresh, 60_000);
-    const onDataChanged = () => refresh();
+    // `markus:data-changed` fires on many WS/UI events while agents are busy.
+    // Throttle the full 12-endpoint refresh so Overview doesn't hammer the
+    // embedded backend right when the user switches to Team (that contention
+    // made Home → Team transitions feel slow/frozen). The 60s interval (and
+    // entering the page) still guarantees fresh data.
+    const lastDataChangedRefreshRef = { at: 0 };
+    const DATA_CHANGED_MIN_INTERVAL_MS = 15_000;
+    const onDataChanged = () => {
+      const now = Date.now();
+      if (now - lastDataChangedRefreshRef.at < DATA_CHANGED_MIN_INTERVAL_MS) return;
+      lastDataChangedRefreshRef.at = now;
+      refresh();
+    };
     // While the claim modal is driving Hub login, skip a full Overview refresh —
     // it re-renders Home and used to re-trigger the modal's status load (flicker).
     const onHubAuth = () => {

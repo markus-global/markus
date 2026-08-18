@@ -246,6 +246,8 @@ interface HandleMessageOptions {
   channelKey?: string;
   images?: string[];
   fileNames?: string[];
+  /** Absolute local file paths of attached chat images (the agent's anchor). */
+  imagePaths?: string[];
   allowedTools?: Set<string>;
   scenario?: AgentScenario;
   maxToolIterations?: number;
@@ -875,6 +877,7 @@ export class Agent {
         channelKey: options?.channelKey,
         images: options?.images,
         fileNames: options?.fileNames,
+        imagePaths: options?.imagePaths,
         allowedTools: options?.allowedTools
           ? [...options.allowedTools]
           : undefined,
@@ -941,6 +944,7 @@ export class Agent {
     cancelToken?: { cancelled: boolean; userStopped?: boolean },
     images?: string[],
     fileNames?: string[],
+    imagePaths?: string[],
     options?: { isResume?: boolean; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
@@ -949,6 +953,7 @@ export class Agent {
       extra: {
         images,
         fileNames,
+        imagePaths,
         stream: true,
         onEvent,
         cancelToken,
@@ -1464,6 +1469,7 @@ export class Agent {
       if (ex.channelContext !== undefined) opts.channelContext = ex.channelContext as HandleMessageOptions['channelContext'];
       if (ex.images !== undefined) opts.images = ex.images as string[];
       if (ex.fileNames !== undefined) opts.fileNames = ex.fileNames as string[];
+      if (ex.imagePaths !== undefined) opts.imagePaths = ex.imagePaths as string[];
       if (ex.scenario !== undefined) opts.scenario = ex.scenario as AgentScenario;
       if (ex.toolEventCollector !== undefined) opts.toolEventCollector = ex.toolEventCollector as HandleMessageOptions['toolEventCollector'];
       if (ex.waitForReply !== undefined) opts.waitForReply = ex.waitForReply as boolean;
@@ -1502,6 +1508,7 @@ export class Agent {
                 ct,
                 extra.images as string[] | undefined,
                 extra.fileNames as string[] | undefined,
+                extra.imagePaths as string[] | undefined,
               );
               // Team Chat: do not burn an extra LLM round just to obtain <<HANDLE_COMPLETE>>.
               // Prompt discipline ends the turn; attention already completes chat without retry.
@@ -3543,7 +3550,7 @@ export class Agent {
       sessionId = options?.sessionId ?? `${scenario}_${this.id}_${Date.now()}`;
     }
     this.memory.getOrCreateSession(this.id, sessionId);
-    const userContent = await this.buildUserContent(userMessage, options?.images, options?.fileNames);
+    const userContent = await this.buildUserContent(userMessage, options?.images, options?.fileNames, options?.imagePaths);
     this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
 
     // Channel context is now injected in the system prompt (dynamic tier) rather
@@ -4193,6 +4200,7 @@ export class Agent {
     cancelToken?: { cancelled: boolean; userStopped?: boolean },
     images?: string[],
     fileNames?: string[],
+    imagePaths?: string[],
   ): Promise<string> {
     // Link the external cancel token to activeStreamToken so that
     // cancelActiveStream() (called via the cancel-processing API)
@@ -4247,7 +4255,7 @@ export class Agent {
     }
     this.memory.getOrCreateSession(this.id, this.currentSessionId);
 
-    const userContent = await this.buildUserContent(userMessage, images, fileNames);
+    const userContent = await this.buildUserContent(userMessage, images, fileNames, imagePaths);
     this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userContent });
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
@@ -6103,25 +6111,52 @@ export class Agent {
     };
   }
 
-  private async buildUserContent(text: string, images?: string[], fileNames?: string[]): Promise<string | LLMContentPart[]> {
-    if (!images?.length) return text;
+  private async buildUserContent(text: string, images?: string[], fileNames?: string[], imagePaths?: string[]): Promise<string | LLMContentPart[]> {
+    // Anchor the user's attached files by ABSOLUTE LOCAL PATH so the agent knows
+    // exactly which file(s) it received (images render as markdown inline-image
+    // syntax, other files as their full path). The agent can read/process them
+    // with file tools / OCR, or call upload_reference(path) for a temporary
+    // public URL when needed (vision / generation).
+    const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
+    const anchorText = imagePaths?.length
+      ? `\n\n[USER ATTACHED ${imagePaths.length} FILE(S) — local absolute paths (your anchor)]\n`
+        + imagePaths.map((p, i) => {
+          const label = fileNames?.[i] || p.split('/').pop() || `file_${i + 1}`;
+          return IMAGE_EXT.test(p) ? `  ${i + 1}. ![${label}](${p})` : `  ${i + 1}. ${label} — ${p}`;
+        }).join('\n')
+        + `\nRead/process these files directly with file tools. For IMAGE files, call the describe_image tool with the file's path to understand its visual content (works even if your chat model lacks vision). If you need a public URL (e.g. for image generation or an external vision model), call upload_reference with the file's path as its "path" parameter — do NOT fabricate a URL.`
+      : '';
+
+    if (!images?.length) return text + anchorText;
 
     const supportsVision = this.llmRouter.modelSupportsVision(this.getEffectiveProvider());
 
     if (supportsVision) {
-      const parts: LLMContentPart[] = [{ type: 'text', text }];
+      const parts: LLMContentPart[] = [{ type: 'text', text: text + anchorText }];
       for (const img of images) {
         parts.push({ type: 'image_url', image_url: { url: img } });
       }
       return parts;
     }
 
+    // Current chat model does NOT support vision. Do NOT push raw images to it
+    // (would 404 / degrade). Instead embed the local-path anchor + a clear
+    // pointer to the describe_image vision tool so the agent can "see" the image
+    // on its own (call describe_image, switch model, or ask the user).
     const { convertFilesToText } = await import('./file-converter.js');
-    const converted = await convertFilesToText(images, fileNames);
-    const attachmentText = converted
-      .map(d => `\n\n<attached_file name="${d.name}" type="${d.mimeType}">\n${d.text}\n</attached_file>`)
-      .join('');
-    return text + attachmentText;
+    let attachmentText = '';
+    try {
+      const converted = await convertFilesToText(images, fileNames);
+      attachmentText = converted
+        .map(d => `\n\n<attached_file name="${d.name}" type="${d.mimeType}">\n${d.text}\n</attached_file>`)
+        .join('');
+    } catch {
+      attachmentText = '';
+    }
+    return text
+      + anchorText
+      + attachmentText
+      + `\n\n[NOTE] Your current model does not support vision. To understand the IMAGE file(s) above, call the describe_image tool with their paths (e.g. describe_image with images: [...paths]). You may also switch to a vision-capable model via llm_switch_model, or ask the user which you prefer.`;
   }
 
   /** Afford.S2: inject short deferred-tool catalog into system Tier 3 (not tool schema). */

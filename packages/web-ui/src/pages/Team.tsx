@@ -2648,6 +2648,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           mentions: [], orgId: 'default',
           humanOnly: true, // never route to agents
           ...(imagesToSend?.length ? { images: imagesToSend } : {}),
+          ...(fileNamesToSend?.length ? { fileNames: fileNamesToSend } : {}),
         });
         if (result.userMessage) addRecentMsgId(result.userMessage.id);
         updateConvMsgs(sendKey, prev => {
@@ -2703,6 +2704,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           senderId: authUser?.id,
           orgId: 'default',
           replyToId: replyCtx?.id,
+          ...(imagesToSend?.length ? { images: imagesToSend } : {}),
+          ...(fileNamesToSend?.length ? { fileNames: fileNamesToSend } : {}),
         });
         if (result.userMessage) addRecentMsgId(result.userMessage.id);
         if (result.agentMessage) addRecentMsgId(result.agentMessage.id);
@@ -3577,6 +3580,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const newConversation = () => {
     setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
+    // A brand-new conversation must NOT inherit the previous session's model
+    // override: stale/disabled models caused the composer pill to "jump" from
+    // A to B whenever the catalog refreshed. Start from the global routing
+    // default — deterministic. The user can pick a model in this new chat.
+    setSessionModelOverride(null);
     const key = currentConvKeyRef.current;
     resetConv(key);
     setMessages([]);
@@ -4568,6 +4576,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   onClick={() => {
                     if (s.id === NEW_CHAT_PLACEHOLDER_ID) {
                       setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
+                      // Same as + 新对话: a new chat starts from the global
+                      // default, never from another session's model override.
+                      setSessionModelOverride(null);
                       const key = currentConvKeyRef.current;
                       resetConv(key);
                       setMessages([]);

@@ -314,6 +314,16 @@ export interface MultiModalToolSchemas {
   generate_video?: ToolParamSchema;
 }
 
+/** Input for describing/recognizing the content of one or more images via a vision-capable model. */
+export interface ImageRecognitionInput {
+  /** Absolute local path(s) and/or http(s) URL(s) of the image(s) to analyze. */
+  images: string[];
+  /** Optional instruction to the vision model (default: describe the image content). */
+  prompt?: string;
+  /** Override provider/model for this call. */
+  model?: string;
+}
+
 export interface MultiModalProviderInterface extends LLMProviderInterface {
   getCapabilities?(): ProviderCapabilities;
   getToolSchemas?(): MultiModalToolSchemas;

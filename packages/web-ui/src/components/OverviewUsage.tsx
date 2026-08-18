@@ -82,7 +82,15 @@ export function useOverviewUsageData(active: boolean, ops: OpsDashboard | null, 
     fetchUsage();
     fetchHubData();
     const i = setInterval(fetchUsage, 30_000);
+    // Same throttling as Home.refresh: `markus:data-changed` fires constantly
+    // while agents work; without this, Overview keeps fetching usage + hub plan
+    // on every event, saturating the backend and making page switches sluggish.
+    const lastEventRefreshAt = { at: 0 };
+    const DATA_CHANGED_MIN_INTERVAL_MS = 15_000;
     const onDataChanged = () => {
+      const now = Date.now();
+      if (now - lastEventRefreshAt.at < DATA_CHANGED_MIN_INTERVAL_MS) return;
+      lastEventRefreshAt.at = now;
       void fetchUsage();
       void fetchHubData();
     };

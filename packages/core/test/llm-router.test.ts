@@ -672,6 +672,106 @@ describe('LLMRouter model metadata', () => {
     expect(router.getModelInputTypes('missing')).toEqual(['text']);
   });
 
+  it('unknown model on a registered provider is conservatively text-only (no false vision)', () => {
+    const router = new LLMRouter('markus');
+    router.registerProvider('markus', mockProvider('markus', 'deepseek/deepseek-v4-flash-0731'));
+    // No catalog entry for this exact id → must NOT assume vision (upstream 404 bug).
+    expect(router.modelSupportsVision('markus')).toBe(false);
+    expect(router.getModelInputTypes('markus')).toEqual(['text']);
+  });
+
+  it('known vision model still reports vision support', () => {
+    const router = new LLMRouter('anthropic');
+    router.registerProvider('anthropic', mockProvider('anthropic', 'claude-sonnet-4-20250514'));
+    expect(router.modelSupportsVision('anthropic')).toBe(true);
+    expect(router.getModelInputTypes('anthropic')).toEqual(['text', 'image']);
+  });
+
+  it('chat strips image parts when the target model is text-only (never 404 upstream)', async () => {
+    const router = new LLMRouter('markus');
+    const chatMock = vi.fn(async (req: LLMRequest) => {
+      // Assert the provider never receives image_url parts.
+      const hasImage = req.messages.some(m =>
+        Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'),
+      );
+      expect(hasImage).toBe(false);
+      // And the strip note is present so the agent knows images were dropped.
+      const text = req.messages.map(m => Array.isArray(m.content)
+        ? m.content.filter(p => p.type === 'text').map(p => (p as any).text).join(' ')
+        : String(m.content)).join(' ');
+      expect(text).toContain('does NOT support image input');
+      return successResponse('ok');
+    });
+    router.registerProvider('markus', mockProvider('markus', 'deepseek/deepseek-v4-flash-0731', chatMock));
+    const resp = await router.chat({
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'look at this' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAA' } },
+        ],
+      }],
+    });
+    expect(resp.content).toBe('ok');
+  });
+
+  it('strips when provider DEFAULT is vision but request.model is text-only (the real 404 bug)', async () => {
+    const router = new LLMRouter('markus');
+    const chatMock = vi.fn(async (req: LLMRequest) => {
+      const hasImage = req.messages.some(m =>
+        Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'),
+      );
+      expect(hasImage).toBe(false);
+      return successResponse('ok');
+    });
+    // Provider default model IS vision-capable…
+    router.registerProvider('markus', mockProvider('markus', 'google/gemini-3-1-pro', chatMock));
+    // …but the actual request targets a text-only model via request.model.
+    const resp = await router.chat({
+      model: 'deepseek/deepseek-v4-flash-0731',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is in this image?' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAA' } },
+        ],
+      }],
+    });
+    expect(resp.content).toBe('ok');
+  });
+
+  it('does NOT strip when request.model is vision-capable even if provider default differs', async () => {
+    const router = new LLMRouter('markus');
+    const chatMock = vi.fn(async (req: LLMRequest) => {
+      const hasImage = req.messages.some(m =>
+        Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'),
+      );
+      // Vision model must receive the image parts — stripping here would break vision.
+      expect(hasImage).toBe(true);
+      return successResponse('ok');
+    });
+    // Provider default is a text-only model…
+    router.registerProvider('markus', mockProvider('markus', 'deepseek/deepseek-v4-flash-0731', chatMock));
+    // …but the request explicitly targets a vision-capable model registered in the hub catalog.
+    router.addCustomModel('markus', {
+      id: 'google/gemini-3-1-pro',
+      name: 'Gemini 3.1 Pro',
+      provider: 'markus',
+      inputTypes: ['text', 'image'],
+    } as any);
+    const resp = await router.chat({
+      model: 'google/gemini-3-1-pro',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is in this image?' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,AAA' } },
+        ],
+      }],
+    });
+    expect(resp.content).toBe('ok');
+  });
+
   it('setRoutingDefaultModel is used by selectForCapability fallback', () => {
     const router = new LLMRouter('anthropic');
     router.registerProvider('anthropic', mockProvider('anthropic', 'claude-sonnet-4-20250514'));
