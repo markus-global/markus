@@ -7615,6 +7615,11 @@ EXPLANATION_END`;
           this.persistHealedMarkusRouting();
         }
       } catch { /* non-fatal */ }
+      // Sync locally-available Ollama models so the pickers (Settings + chat
+      // model selector) show real local models, not just the static catalog.
+      try {
+        await this.llmRouter.refreshOllamaLocalModels?.();
+      } catch { /* non-fatal — keep last-good catalog */ }
       this.json(res, 200, this.llmRouter.getEnhancedSettings());
       return;
     }
@@ -8842,6 +8847,13 @@ EXPLANATION_END`;
           apiKey,
           baseUrl,
         });
+        // Populate the newly-added provider's real model list so the chat
+        // picker and Settings dropdown can select from it right away.
+        if (name === 'ollama') {
+          await this.llmRouter.refreshOllamaLocalModels?.(baseUrl);
+        } else {
+          await this.llmRouter.refreshProviderLiveModels?.(name, baseUrl, apiKey);
+        }
         if (enabled === false) {
           this.llmRouter.setProviderEnabled(name, false);
         }
@@ -8925,6 +8937,12 @@ EXPLANATION_END`;
         }
         if (typeof enabled === 'boolean') {
           this.llmRouter.setProviderEnabled(providerName, enabled);
+        }
+        // Re-sync live/local model list on update (e.g. baseUrl change for Ollama).
+        if (providerName === 'ollama') {
+          await this.llmRouter.refreshOllamaLocalModels?.(baseUrl ?? undefined);
+        } else {
+          await this.llmRouter.refreshProviderLiveModels?.(providerName, baseUrl ?? undefined, apiKey);
         }
         if (contextWindow || maxOutputTokens || cost) {
           this.llmRouter.updateProviderModelConfig(providerName, {

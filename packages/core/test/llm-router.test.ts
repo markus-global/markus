@@ -1160,3 +1160,102 @@ describe('LLMRouter OAuth integration', () => {
     })).toThrow('OAuth not initialized');
   });
 });
+
+describe('LLMRouter local/live model sync', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  function mockFetchOnce(json: unknown, ok = true, status = 200) {
+    globalThis.fetch = vi.fn(async () => ({
+      ok,
+      status,
+      json: async () => json,
+    } as Response)) as unknown as typeof fetch;
+  }
+
+  it('refreshOllamaLocalModels populates getProviderModels and enhanced settings', async () => {
+    const router = LLMRouter.createDefault({
+      ollama: { provider: 'ollama', model: 'llama3.1', baseUrl: 'http://localhost:11434' },
+    });
+    mockFetchOnce({
+      models: [
+        { name: 'qwen3.8:27b-mlx', details: { parameter_size: '27B', quantization_level: 'nvfp4' } },
+        { name: 'qwen3.6:latest', details: { parameter_size: '8B' } },
+      ],
+    });
+
+    const count = await router.refreshOllamaLocalModels();
+    expect(count).toBe(2);
+
+    const providerModels = router.getProviderModels('ollama');
+    expect(providerModels.map(m => m.id)).toEqual(['qwen3.8:27b-mlx', 'qwen3.6:latest']);
+    expect(providerModels[0]?.description).toContain('27B');
+
+    const enhanced = router.getEnhancedSettings().providers['ollama'];
+    expect(enhanced.models.map(m => m.id)).toEqual(['qwen3.8:27b-mlx', 'qwen3.6:latest']);
+    // Local list REPLACES static catalog — no builtin cloud-only ids.
+    expect(enhanced.models.some(m => m.id === 'llama3.1')).toBe(false);
+  });
+
+  it('returns no models before any local sync (no builtin ollama catalog)', () => {
+    const router = LLMRouter.createDefault({
+      ollama: { provider: 'ollama', model: 'llama3.1', baseUrl: 'http://localhost:11434' },
+    });
+    // Regression guard: builtin catalog has no ollama entries, so without the
+    // local sync the picker would show zero models (chat selector filters out
+    // providers with empty model lists — the "only markus" symptom).
+    expect(router.getProviderModels('ollama')).toHaveLength(0);
+  });
+
+  it('keeps last-good local models when Ollama probe fails', async () => {
+    const router = LLMRouter.createDefault({
+      ollama: { provider: 'ollama', model: 'qwen3.8:27b-mlx', baseUrl: 'http://localhost:11434' },
+    });
+    mockFetchOnce({ models: [{ name: 'qwen3.8:27b-mlx' }] });
+    expect(await router.refreshOllamaLocalModels()).toBe(1);
+    expect(router.getProviderModels('ollama').map(m => m.id)).toEqual(['qwen3.8:27b-mlx']);
+
+    // Probe now fails — previously synced catalog is preserved.
+    mockFetchOnce({ models: [] }, false, 500);
+    expect(await router.refreshOllamaLocalModels()).toBe(1);
+    expect(router.getProviderModels('ollama').map(m => m.id)).toEqual(['qwen3.8:27b-mlx']);
+  });
+
+  it('refreshProviderLiveModels fills models for providers with no builtin catalog', async () => {
+    const router = new LLMRouter('my-custom');
+    router.registerProviderFromConfig('my-custom', {
+      provider: 'my-custom' as any,
+      model: 'my-model',
+      apiKey: 'abc',
+      baseUrl: 'http://127.0.0.1:8080',
+    });
+    mockFetchOnce({ data: [{ id: 'my-model' }, { id: 'my-model-2' }] });
+
+    const count = await router.refreshProviderLiveModels('my-custom');
+    expect(count).toBe(2);
+    const models = router.getProviderModels('my-custom');
+    expect(models.map(m => m.id)).toEqual(['my-model', 'my-model-2']);
+  });
+
+  it('getEnhancedSettings exposes newly registered provider models for chat picker', async () => {
+    const router = new LLMRouter('my-custom');
+    router.registerProviderFromConfig('my-custom', {
+      provider: 'my-custom' as any,
+      model: 'my-model',
+      apiKey: 'abc',
+      baseUrl: 'http://127.0.0.1:8080',
+    });
+    mockFetchOnce({ data: [{ id: 'my-model' }, { id: 'my-model-2' }] });
+    await router.refreshProviderLiveModels('my-custom');
+
+    const enhanced = router.getEnhancedSettings();
+    const p = enhanced.providers['my-custom'];
+    expect(p.configured).toBe(true);
+    expect(p.enabled).toBe(true);
+    expect(p.models.map(m => m.id)).toEqual(['my-model', 'my-model-2']);
+  });
+});

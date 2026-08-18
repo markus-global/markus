@@ -482,6 +482,15 @@ export class LLMRouter {
         return hubModels.map(m => this.enrichModelFromCatalog(m));
       }
     }
+    // Ollama: prefer locally-discovered models (pulled images) over the static
+    // builtin catalog. If the local service hasn't been probed yet (catalog
+    // empty), fall back to the builtin catalog so the picker is never empty.
+    if (providerName === 'ollama') {
+      const localModels = this.customModelCatalog.get('ollama');
+      if (localModels && localModels.length > 0) {
+        return localModels.map(m => this.enrichModelFromCatalog(m));
+      }
+    }
 
     let builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === providerName);
     // For regional aliases, inherit the parent provider's catalog with provider field swapped
@@ -555,6 +564,109 @@ export class LLMRouter {
       log.info('Markus Hub catalog refreshed', { model: provider.model, count: defs.length });
     }
     return defs.length;
+  }
+
+  /**
+   * Probe a local Ollama server (/api/tags) and record the actually-pulled
+   * models into the provider's custom catalog. This makes local models appear
+   * in both the Settings panel and the chat model picker (which both read
+   * getEnhancedSettings / getProviderModels). On success the local list
+   * REPLACES the static catalog for Ollama (only real models are usable).
+   * On failure we keep any previously-cached local models (last-good), so a
+   * transient Ollama stop does not wipe the picker.
+   */
+  async refreshOllamaLocalModels(baseUrl?: string): Promise<number> {
+    const provider = this.providers.get('ollama');
+    const effectiveBase =
+      baseUrl
+      ?? (provider as any)?.baseUrl
+      ?? process.env['OLLAMA_BASE_URL']
+      ?? 'http://localhost:11434';
+    try {
+      const ctrl = new AbortController();
+      const tmr = setTimeout(() => ctrl.abort(), 5000);
+      const res = await fetch(`${String(effectiveBase).replace(/\/+$/, '')}/api/tags`, {
+        signal: ctrl.signal,
+      });
+      clearTimeout(tmr);
+      if (!res.ok) {
+        log.warn('Ollama /api/tags HTTP error', { baseUrl: effectiveBase, status: res.status });
+        return this.customModelCatalog.get('ollama')?.length ?? 0;
+      }
+      const data = await res.json() as {
+        models?: Array<{
+          name: string;
+          details?: { parameter_size?: string; family?: string; quantization_level?: string };
+        }>;
+      };
+      const models: ModelDefinition[] = (data.models ?? []).map(m => {
+        const d = m.details;
+        const tag = d?.parameter_size || d?.quantization_level;
+        return {
+          id: m.name,
+          name: m.name,
+          provider: 'ollama',
+          contextWindow: 0,
+          maxOutputTokens: 0,
+          cost: { input: 0, output: 0 },
+          inputTypes: ['text'],
+          description: tag ? tag : undefined,
+        };
+      });
+      this.customModelCatalog.set('ollama', models);
+      log.info(`Synced ${models.length} local Ollama models`, { baseUrl: effectiveBase });
+      return models.length;
+    } catch (err) {
+      log.warn('Ollama local model sync failed', { error: String(err), baseUrl: effectiveBase });
+      return this.customModelCatalog.get('ollama')?.length ?? 0;
+    }
+  }
+
+  /**
+   * Pull a live /v1/models list for an OpenAI-compatible provider into its
+   * custom catalog. Used for newly-added providers that have no builtin entry
+   * (and therefore would otherwise show zero models in pickers). If the
+   * provider already has a usable catalog (builtin/custom) we skip the call.
+   */
+  async refreshProviderLiveModels(providerName: string, baseUrl?: string, apiKey?: string): Promise<number> {
+    // Already has a usable model list — nothing to do.
+    if (this.getProviderModels(providerName).length > 0) return 0;
+    const provider = this.providers.get(providerName);
+    const effectiveBase =
+      baseUrl
+      ?? (provider as any)?.baseUrl;
+    if (!effectiveBase) return 0;
+    const effectiveKey = apiKey ?? (provider as any)?.apiKey;
+    try {
+      const headers: Record<string, string> = {};
+      if (effectiveKey) headers['Authorization'] = `Bearer ${effectiveKey}`;
+      const ctrl = new AbortController();
+      const tmr = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(`${String(effectiveBase).replace(/\/+$/, '')}/v1/models`, {
+        headers,
+        signal: ctrl.signal,
+      });
+      clearTimeout(tmr);
+      if (!res.ok) return 0;
+      const data = await res.json() as { data?: Array<{ id?: string }> };
+      const ids = (data.data ?? []).map(m => m.id).filter((x): x is string => !!x);
+      if (ids.length === 0) return 0;
+      const defs: ModelDefinition[] = ids.map(id => ({
+        id,
+        name: id,
+        provider: providerName,
+        contextWindow: 0,
+        maxOutputTokens: 0,
+        cost: { input: 0, output: 0 },
+        inputTypes: ['text'] as Array<'text' | 'image'>,
+      }));
+      this.customModelCatalog.set(providerName, defs);
+      log.info(`Synced ${defs.length} live models for provider ${providerName}`, { baseUrl: effectiveBase });
+      return defs.length;
+    } catch (err) {
+      log.warn(`Live model sync failed for provider ${providerName}`, { error: String(err), baseUrl: effectiveBase });
+      return 0;
+    }
   }
 
   /**
