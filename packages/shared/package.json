@@ -10,5 +10,5 @@
     "dev": "tsc -b --watch",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
-  "version": "0.9.6"
+  "version": "0.9.7-rc.0"
 }
