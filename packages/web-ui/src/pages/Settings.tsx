@@ -235,6 +235,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   // Track whether we already triggered auto-detect for first-run
   const autoDetectDone = useRef(false);
+  // Track whether the local Ollama provider panel already auto-detected (integrated into the Ollama provider)
+  const ollamaPanelAutoRef = useRef(false);
 
   // Agent settings
   const [agentMaxIter, setAgentMaxIter] = useState(200);
@@ -468,6 +470,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     }
   }, [llm, hasConfiguredProviders, detectEnvModels, detectOllama]);
 
+  // Auto-detect local Ollama when its provider panel is expanded — the detection
+  // is integrated directly into the Ollama provider card (no separate section).
+  useEffect(() => {
+    if (expandedProvider === 'ollama' && !ollamaDetect && !ollamaLoading && !ollamaPanelAutoRef.current) {
+      ollamaPanelAutoRef.current = true;
+      void detectOllama();
+    }
+  }, [expandedProvider, ollamaDetect, ollamaLoading, detectOllama]);
+
   const saveLLM = async () => {
     if (!selectedProvider || selectedProvider === llm?.defaultProvider) return;
     setSaving(true); setSaveMsg(null);
@@ -546,7 +557,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         const data = await res.json() as LLMSettings;
         setLlm(data);
         setOllamaMsg({ type: 'ok', text: t('ollama.configured', { model: ollamaSelectedModel }) });
-        setOllamaDetect(null);
       } else {
         const err = await res.json() as { error?: string };
         setOllamaMsg({ type: 'err', text: err.error || t('ollama.applyFailed') });
@@ -878,6 +888,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   // Provider connectivity test state
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
+  const [testModelFor, setTestModelFor] = useState<Record<string, string>>({});
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string; model?: string; usage?: Record<string, number>; requestUrl?: string; requestBody?: unknown }>>({});
 
   const testProvider = async (providerName: string) => {
@@ -886,6 +897,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     try {
       const res = await fetch(`/api/settings/llm/providers/${providerName}/test`, {
         method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ model: testModelFor[providerName] || undefined }),
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({})) as { error?: string };
@@ -899,6 +911,22 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     } finally {
       setTestingProvider(null);
     }
+  };
+
+  // Gather the models available to test for a provider: its configured/default
+  // model, the live/catalog list loaded when expanded, and (for ollama) the
+  // locally detected models. De-duplicated, ordering: default first.
+  const getTestableModels = (providerName: string): string[] => {
+    const set = new Set<string>();
+    const info = llm?.providers?.[providerName];
+    if (info?.model) set.add(info.model);
+    const catalog = providerCatalogModels[providerName];
+    if (catalog) for (const m of catalog) if (m.id) set.add(String(m.id));
+    if (info?.models) for (const m of info.models) if (m.id) set.add(m.id);
+    if (providerName === 'ollama' && ollamaDetect?.models) {
+      for (const m of ollamaDetect.models) if (m.name) set.add(m.name);
+    }
+    return [...set];
   };
 
 
@@ -1293,6 +1321,54 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
                 {expandedProvider === name && (
                   <div className="px-5 pb-4 border-t border-border-default pt-4 space-y-4">
+                    {name === 'ollama' && (
+                      <div className="bg-surface-elevated/40 rounded-lg p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-fg-secondary uppercase tracking-wider shrink-0">{t('ollama.title')}</span>
+                          <button onClick={() => void detectOllama()} disabled={ollamaLoading}
+                            className="px-3 py-1 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-tertiary text-xs rounded-md transition-colors flex items-center gap-1.5">
+                            <svg className={`w-3.5 h-3.5 ${ollamaLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                            {ollamaLoading ? t('common:detecting') : t('ollama.detect')}
+                          </button>
+                        </div>
+                        <p className="text-xs text-fg-tertiary">{t('ollama.description')}</p>
+                        {ollamaDetect?.found && ollamaDetect.models && ollamaDetect.models.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="text-xs text-green-600">{t('ollama.foundModels', { count: ollamaDetect.models.length, url: ollamaDetect.baseUrl })}</div>
+                            <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+                              {ollamaDetect.models.map(m => (
+                                <label key={m.name} className={`flex items-center rounded-lg px-3 py-2 cursor-pointer transition-colors ${ollamaSelectedModel === m.name ? 'bg-brand-500/15 border border-brand-500/40' : 'bg-surface-elevated/30 hover:bg-surface-elevated/50'}`}>
+                                  <div className="flex items-center gap-3">
+                                    <input type="radio" name="ollama-model-panel" value={m.name} checked={ollamaSelectedModel === m.name}
+                                      onChange={() => setOllamaSelectedModel(m.name)}
+                                      className="w-4 h-4 text-brand-500 focus:ring-brand-500" />
+                                    <div>
+                                      <div className="text-sm text-fg-primary font-medium">{m.name}</div>
+                                      <div className="text-xs text-fg-tertiary mt-0.5">
+                                        {m.parameterSize && <span>{m.parameterSize}</span>}
+                                        {m.family && <span className="ml-2">{m.family}</span>}
+                                        {m.quantization && <span className="ml-2">{m.quantization}</span>}
+                                        {m.size && <span className="ml-2">{formatBytes(m.size)}</span>}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </label>
+                              ))}
+                            </div>
+                            <button onClick={() => void applyOllama()} disabled={ollamaApplying || !ollamaSelectedModel}
+                              className={`px-4 py-2 text-sm rounded-lg transition-colors disabled:opacity-40 ${info.configured
+                                ? 'border border-brand-500/40 text-brand-500 hover:bg-brand-500/10'
+                                : 'bg-brand-600 hover:bg-brand-500 text-white'}`}>
+                              {ollamaApplying ? t('common:applying') : (info.configured ? t('ollama.switchModel') : t('ollama.useModel', { model: ollamaSelectedModel }))}
+                            </button>
+                            {ollamaMsg && <Msg type={ollamaMsg.type} text={ollamaMsg.text} />}
+                          </div>
+                        )}
+                        {ollamaDetect && !ollamaDetect.found && (
+                          <div className="text-xs text-fg-tertiary">{ollamaDetect.error || t('ollama.notRunning')}</div>
+                        )}
+                      </div>
+                    )}
                     {info.configured && (
                       <>
                         {/* Edit / Delete provider actions */}
@@ -1327,7 +1403,19 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                             </div>
                           </div>
                         ) : (
-                          <div className="flex gap-2">
+                          <>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-fg-tertiary uppercase tracking-wider shrink-0">{t('modelProviders.testModel')}</span>
+                            <select
+                              value={testModelFor[name] ?? ''}
+                              onChange={e => { e.stopPropagation(); setTestModelFor(prev => ({ ...prev, [name]: e.target.value })); }}
+                              className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:border-brand-500 outline-none max-w-[240px]"
+                            >
+                              <option value="">{t('modelProviders.testDefaultModel')}</option>
+                              {getTestableModels(name).map(m => <option key={m} value={m}>{m}</option>)}
+                            </select>
+                          </div>
+                          <div className="flex gap-2 mt-2">
                             <button onClick={e => { e.stopPropagation(); void testProvider(name); }}
                               disabled={testingProvider === name}
                               className="px-3 py-1.5 text-xs border border-green-500/30 text-green-500 hover:bg-green-500/10 rounded-lg transition-colors disabled:opacity-40 flex items-center gap-1.5">
@@ -1351,6 +1439,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                               </button>
                             )}
                           </div>
+                          </>
                         )}
 
                         {/* Test result detail */}
@@ -1688,53 +1777,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </div>
               )}
               {envMsg && <Msg type={envMsg.type} text={envMsg.text} />}
-            </div>
-
-            <div className="border-t border-border-default" />
-
-            {/* — Local Ollama — */}
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <h4 className="text-xs font-semibold text-fg-secondary uppercase tracking-wider">{t('ollama.title')}</h4>
-                <button onClick={() => void detectOllama()} disabled={ollamaLoading}
-                  className="px-3 py-1 border border-border-default hover:bg-surface-elevated disabled:opacity-40 text-fg-tertiary text-xs rounded-md transition-colors flex items-center gap-1.5">
-                  <svg className={`w-3.5 h-3.5 ${ollamaLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-                  {ollamaLoading ? t('common:detecting') : t('ollama.detect')}
-                </button>
-              </div>
-              {ollamaDetect?.found && ollamaDetect.models && ollamaDetect.models.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-xs text-green-600">{t('ollama.foundModels', { count: ollamaDetect.models.length, url: ollamaDetect.baseUrl })}</div>
-                  <div className="space-y-1">
-                    {ollamaDetect.models.map(m => (
-                      <label key={m.name} className={`flex items-center justify-between rounded-lg px-4 py-3 cursor-pointer transition-colors ${ollamaSelectedModel === m.name ? 'bg-brand-500/15 border border-brand-500/40' : 'bg-surface-elevated/30 hover:bg-surface-elevated/50'}`}>
-                        <div className="flex items-center gap-3">
-                          <input type="radio" name="ollama-model" value={m.name} checked={ollamaSelectedModel === m.name}
-                            onChange={() => setOllamaSelectedModel(m.name)}
-                            className="w-4 h-4 text-brand-500 focus:ring-brand-500" />
-                          <div>
-                            <div className="text-sm text-fg-primary font-medium">{m.name}</div>
-                            <div className="text-xs text-fg-tertiary mt-0.5">
-                              {m.parameterSize && <span>{m.parameterSize}</span>}
-                              {m.family && <span className="ml-2">{m.family}</span>}
-                              {m.quantization && <span className="ml-2">{m.quantization}</span>}
-                              {m.size && <span className="ml-2">{formatBytes(m.size)}</span>}
-                            </div>
-                          </div>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                  <button onClick={() => void applyOllama()} disabled={ollamaApplying || !ollamaSelectedModel}
-                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
-                    {ollamaApplying ? t('common:applying') : t('ollama.useModel', { model: ollamaSelectedModel })}
-                  </button>
-                </div>
-              )}
-              {ollamaDetect && !ollamaDetect.found && (
-                <div className="text-xs text-fg-tertiary">{ollamaDetect.error || t('ollama.notRunning')}</div>
-              )}
-              {ollamaMsg && <Msg type={ollamaMsg.type} text={ollamaMsg.text} />}
             </div>
 
           </div>

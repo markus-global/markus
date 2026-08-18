@@ -1,6 +1,6 @@
 import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelCapabilityType, type CostTier, type CapabilityRoutingConfig, type CapabilityModelAssignment, type ProviderCapabilities } from '@markus/shared';
 import { startSpan } from '../tracing.js';
-import type { LLMProviderInterface, MultiModalProviderInterface } from './provider.js';
+import { DEFAULT_REQUEST_MAX_TOKENS, type LLMProviderInterface, type MultiModalProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider, type TokenResolver } from './openai.js';
 import { MiniMaxProvider } from './minimax.js';
@@ -18,6 +18,29 @@ import type { ModelCatalogService } from './model-catalog.js';
 
 
 const log = createLogger('llm-router');
+
+// -- Local Ollama model probing ------------------------------------------------
+// `/api/tags` lists pulled models but NOT their context length, and a
+// contextWindow of 0 would trip the fail-loud `getModelContextWindow` guard
+// (agent budget planning aborts). So we probe each model's real context via
+// `/api/show` (model_info["*.context_length"]). This runs only on the settings
+// refresh / provider re-register path (not per chat turn) and local Ollama
+// responds in ms, so no caching is needed (and a module-level cache would leak
+// stale model lists between tests).
+const OLLAMA_DEFAULT_CONTEXT_WINDOW = 8192;
+const OLLAMA_DEFAULT_MAX_OUTPUT = 4096;
+
+/**
+ * Fallback values for provider/model pairs with no catalog entry. ANY real
+ * model must get a usable context budget — a private/BYOK/local/unknown model
+ * that is absent from the built-in or Hub catalog must still work. We return a
+ * sane default (never throw) and log a warning so the operator can configure a
+ * precise value. `DEFAULT_CONTEXT_WINDOW_FALLBACK` is kept comfortably larger
+ * than `DEFAULT_MAX_OUTPUT_FALLBACK` so the derived message budget never goes
+ * negative.
+ */
+const DEFAULT_CONTEXT_WINDOW_FALLBACK = 128_000;
+const DEFAULT_MAX_OUTPUT_FALLBACK = DEFAULT_REQUEST_MAX_TOKENS;
 
 const CAPABILITY_KEY_MAP: Partial<Record<ModelCapabilityType, keyof ProviderCapabilities>> = {
   image_generation: 'imageGeneration',
@@ -482,6 +505,15 @@ export class LLMRouter {
         return hubModels.map(m => this.enrichModelFromCatalog(m));
       }
     }
+    // Ollama: prefer locally-discovered models (pulled images) over the static
+    // builtin catalog. If the local service hasn't been probed yet (catalog
+    // empty), fall back to the builtin catalog so the picker is never empty.
+    if (providerName === 'ollama') {
+      const localModels = this.customModelCatalog.get('ollama');
+      if (localModels && localModels.length > 0) {
+        return localModels.map(m => this.enrichModelFromCatalog(m));
+      }
+    }
 
     let builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === providerName);
     // For regional aliases, inherit the parent provider's catalog with provider field swapped
@@ -555,6 +587,144 @@ export class LLMRouter {
       log.info('Markus Hub catalog refreshed', { model: provider.model, count: defs.length });
     }
     return defs.length;
+  }
+
+  /**
+   * Probe a local Ollama server (/api/tags) and record the actually-pulled
+   * models into the provider's custom catalog. This makes local models appear
+   * in both the Settings panel and the chat model picker (which both read
+   * getEnhancedSettings / getProviderModels). On success the local list
+   * REPLACES the static catalog for Ollama (only real models are usable).
+   * On failure we keep any previously-cached local models (last-good), so a
+   * transient Ollama stop does not wipe the picker.
+   */
+  async refreshOllamaLocalModels(baseUrl?: string): Promise<number> {
+    const provider = this.providers.get('ollama');
+    const effectiveBase =
+      baseUrl
+      ?? (provider as any)?.baseUrl
+      ?? process.env['OLLAMA_BASE_URL']
+      ?? 'http://localhost:11434';
+    const base = String(effectiveBase).replace(/\/+$/, '');
+    try {
+      const ctrl = new AbortController();
+      const tmr = setTimeout(() => ctrl.abort(), 5000);
+      const res = await fetch(`${base}/api/tags`, {
+        signal: ctrl.signal,
+      });
+      clearTimeout(tmr);
+      if (!res.ok) {
+        log.warn('Ollama /api/tags HTTP error', { baseUrl: base, status: res.status });
+        return this.customModelCatalog.get('ollama')?.length ?? 0;
+      }
+      const data = await res.json() as {
+        models?: Array<{
+          name: string;
+          details?: { parameter_size?: string; family?: string; quantization_level?: string };
+        }>;
+      };
+      const models: ModelDefinition[] = await Promise.all((data.models ?? []).map(async m => {
+        const d = m.details;
+        const tag = d?.parameter_size || d?.quantization_level;
+        const contextWindow = await this.probeOllamaContext(base, m.name);
+        return {
+          id: m.name,
+          name: m.name,
+          provider: 'ollama',
+          contextWindow,
+          maxOutputTokens: OLLAMA_DEFAULT_MAX_OUTPUT,
+          cost: { input: 0, output: 0 },
+          inputTypes: ['text'],
+          description: tag ? tag : undefined,
+        };
+      }));
+      this.customModelCatalog.set('ollama', models);
+      log.info(`Synced ${models.length} local Ollama models`, { baseUrl: base });
+      return models.length;
+    } catch (err) {
+      log.warn('Ollama local model sync failed', { error: String(err), baseUrl: base });
+      return this.customModelCatalog.get('ollama')?.length ?? 0;
+    }
+  }
+
+  /**
+   * Probe a local Ollama model's real context length via `/api/show`.
+   * Reads `model_info["*.context_length"]` (key name varies by model family,
+   * e.g. `llama.context_length`, `qwen3_5.context_length`) and returns the
+   * largest positive value found. Falls back to a sane default so a probe
+   * failure never blocks agent budget planning.
+   */
+  private async probeOllamaContext(base: string, modelId: string): Promise<number> {
+    try {
+      const ctrl = new AbortController();
+      const tmr = setTimeout(() => ctrl.abort(), 4000);
+      const res = await fetch(`${base}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelId }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(tmr);
+      if (!res.ok) return OLLAMA_DEFAULT_CONTEXT_WINDOW;
+      const data = await res.json() as { model_info?: Record<string, unknown> };
+      const vals = Object.entries(data.model_info ?? {})
+        .filter(([k]) => k.toLowerCase().includes('context_length'))
+        .map(([, v]) => Number(v))
+        .filter(n => Number.isFinite(n) && n > 0);
+      const ctx = vals.length ? Math.max(...vals) : 0;
+      if (ctx <= 0) return OLLAMA_DEFAULT_CONTEXT_WINDOW;
+      log.info(`Ollama local model ${modelId}: context_window=${ctx}`);
+      return ctx;
+    } catch {
+      return OLLAMA_DEFAULT_CONTEXT_WINDOW;
+    }
+  }
+
+  /**
+   * Pull a live /v1/models list for an OpenAI-compatible provider into its
+   * custom catalog. Used for newly-added providers that have no builtin entry
+   * (and therefore would otherwise show zero models in pickers). If the
+   * provider already has a usable catalog (builtin/custom) we skip the call.
+   */
+  async refreshProviderLiveModels(providerName: string, baseUrl?: string, apiKey?: string): Promise<number> {
+    // Already has a usable model list — nothing to do.
+    if (this.getProviderModels(providerName).length > 0) return 0;
+    const provider = this.providers.get(providerName);
+    const effectiveBase =
+      baseUrl
+      ?? (provider as any)?.baseUrl;
+    if (!effectiveBase) return 0;
+    const effectiveKey = apiKey ?? (provider as any)?.apiKey;
+    try {
+      const headers: Record<string, string> = {};
+      if (effectiveKey) headers['Authorization'] = `Bearer ${effectiveKey}`;
+      const ctrl = new AbortController();
+      const tmr = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(`${String(effectiveBase).replace(/\/+$/, '')}/v1/models`, {
+        headers,
+        signal: ctrl.signal,
+      });
+      clearTimeout(tmr);
+      if (!res.ok) return 0;
+      const data = await res.json() as { data?: Array<{ id?: string }> };
+      const ids = (data.data ?? []).map(m => m.id).filter((x): x is string => !!x);
+      if (ids.length === 0) return 0;
+      const defs: ModelDefinition[] = ids.map(id => ({
+        id,
+        name: id,
+        provider: providerName,
+        contextWindow: 0,
+        maxOutputTokens: 0,
+        cost: { input: 0, output: 0 },
+        inputTypes: ['text'] as Array<'text' | 'image'>,
+      }));
+      this.customModelCatalog.set(providerName, defs);
+      log.info(`Synced ${defs.length} live models for provider ${providerName}`, { baseUrl: effectiveBase });
+      return defs.length;
+    } catch (err) {
+      log.warn(`Live model sync failed for provider ${providerName}`, { error: String(err), baseUrl: effectiveBase });
+      return 0;
+    }
   }
 
   /**
@@ -1373,7 +1543,7 @@ export class LLMRouter {
    * Used by the test endpoint to verify a single provider's connectivity.
    * Also returns the baseUrl used for diagnostics.
    */
-  async chatDirect(request: LLMRequest, providerName: string): Promise<LLMResponse & { _providerBaseUrl?: string }> {
+  async chatDirect(request: LLMRequest, providerName: string, altModel?: string): Promise<LLMResponse & { _providerBaseUrl?: string; _model?: string }> {
     const provider = this.providers.get(providerName);
     if (!provider) {
       throw new Error(`Provider "${providerName}" not registered`);
@@ -1382,9 +1552,28 @@ export class LLMRouter {
       throw new Error(`Provider "${providerName}" is disabled`);
     }
     request = this.resolveMaxTokens(request, providerName);
-    const response = await provider.chat(request);
-    const baseUrl = (provider as any).baseUrl ?? (provider as any).config?.baseUrl;
-    return Object.assign(response, { _providerBaseUrl: baseUrl });
+    // Mirror tryStream's model-switch semantics: most providers put their
+    // configured model on the wire (ignoring request.model), so temporarily
+    // configure the target model and restore afterward. For Markus, the
+    // provider routes per request.model (Hub/OpenRouter slugs).
+    const originalModel = provider.model;
+    const useRequestModelOnly = providerName === 'markus' || provider instanceof MarkusProvider;
+    const activeModel = altModel ?? originalModel;
+    let switched = false;
+    if (!useRequestModelOnly && altModel && altModel !== originalModel) {
+      provider.configure({ provider: providerName as any, model: altModel });
+      switched = true;
+    }
+    const directRequest = (useRequestModelOnly && altModel) ? { ...request, model: altModel } : request;
+    try {
+      const response = await provider.chat(directRequest);
+      const baseUrl = (provider as any).baseUrl ?? (provider as any).config?.baseUrl;
+      return Object.assign(response, { _providerBaseUrl: baseUrl, _model: activeModel });
+    } finally {
+      if (switched) {
+        provider.configure({ provider: providerName as any, model: originalModel });
+      }
+    }
   }
 
   /**
@@ -1781,15 +1970,13 @@ export class LLMRouter {
       hub: this.customModelCatalog.get(name),
     });
     const ctx = catalogEntry?.contextWindow;
-    // No silent default: a missing/zero context window silently poisons the
-    // context budget (negative message budget → empty reply → agent "stops").
-    // Fail loud with an actionable hint so the real cause surfaces.
     if (!ctx || ctx <= 0) {
-      throw new Error(
-        name === 'markus'
-          ? `Cannot resolve context_window for markus model "${provider.model || '(unset)'}": it is not in the loaded Hub catalog (catalog may be empty). Please check the Hub connection and refresh the model list, or reconfigure the model. No default is substituted.`
-          : `Cannot resolve context_window for provider "${name}" (model "${provider.model || '(unset)'}"): the model is unknown to the built-in catalog. Please configure the model or fix the model id. No default is substituted.`,
-      );
+      // Any real model must be usable. A model absent from the built-in/Hub
+      // catalog (private BYOK, local Ollama, self-hosted endpoint) should NOT
+      // take the whole agent turn down — fall back to a sane window and warn so
+      // the operator can configure an exact value for accurate budgeting.
+      log.warn(`No context_window for provider "${name}" model "${provider.model || '(unset)'}" — using fallback ${DEFAULT_CONTEXT_WINDOW_FALLBACK}. Configure the model for accurate budgeting.`);
+      return DEFAULT_CONTEXT_WINDOW_FALLBACK;
     }
     return ctx;
   }
@@ -1812,7 +1999,11 @@ export class LLMRouter {
     });
     const out = catalogEntry?.maxOutputTokens;
     if (!out || out <= 0) {
-      throw new Error(`Cannot resolve max_output_tokens for provider "${name}" (model "${provider.model || '(unset)'}"). The model catalog must supply a real value — refresh the Hub catalog / reconfigure the model. No default is substituted.`);
+      // Mirror the context-window policy: a missing output cap is not fatal —
+      // many upstreams legitimately omit it. Fall back instead of throwing so
+      // unknown/private models keep working.
+      log.warn(`No max_output_tokens for provider "${name}" model "${provider.model || '(unset)'}" — using fallback ${DEFAULT_MAX_OUTPUT_FALLBACK}.`);
+      return DEFAULT_MAX_OUTPUT_FALLBACK;
     }
     return out;
   }

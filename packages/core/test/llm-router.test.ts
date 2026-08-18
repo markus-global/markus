@@ -538,6 +538,26 @@ describe('LLMRouter.chatDirect', () => {
     await expect(router.chatDirect({ messages: [{ role: 'user', content: 'ping' }] }, 'openai'))
       .rejects.toThrow('disabled');
   });
+
+  it('switches provider model for the call and restores afterward', async () => {
+    const router = new LLMRouter('openai');
+    const openai = mockProvider('openai', 'gpt-4o');
+    (openai as any).baseUrl = 'https://api.openai.com';
+    router.registerProvider('openai', openai);
+
+    const response = await router.chatDirect(
+      { messages: [{ role: 'user', content: 'ping' }] },
+      'openai',
+      'gpt-4.5',
+    );
+
+    expect(response._model).toBe('gpt-4.5');
+    // configure was called to switch to the requested model…
+    expect(openai.configure).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-4.5' }));
+    // …and restored to the original model afterward.
+    expect(openai.configure).toHaveBeenLastCalledWith(expect.objectContaining({ model: 'gpt-4o' }));
+    expect(openai.model).toBe('gpt-4o');
+  });
 });
 
 describe('LLMRouter.chatStream', () => {
@@ -781,11 +801,31 @@ describe('LLMRouter model metadata', () => {
     expect(selected.model).toBe('claude-sonnet-4-20250514');
   });
 
-  it('throws (no silent default) when resolving window/output for a missing provider', () => {
+  it('throws only when the provider itself is not registered', () => {
     const router = new LLMRouter('missing');
     expect(() => router.getActiveModelContextWindow()).toThrow(/not registered/);
     expect(() => router.getActiveModelMaxOutput()).toThrow(/not registered/);
     expect(router.getActiveModelName()).toBe('');
+  });
+
+  it('falls back to usable defaults (no throw) for models unknown to the catalog', () => {
+    const router = new LLMRouter('my-local');
+    router.registerProviderFromConfig('my-local', {
+      provider: 'my-local' as any,
+      model: 'private/unknown-model:42',
+      baseUrl: 'http://127.0.0.1:9999',
+    });
+    // Unknown/private models must resolve to positive fallback values...
+    expect(router.getModelContextWindow('my-local')).toBeGreaterThan(0);
+    expect(router.getModelMaxOutput('my-local')).toBeGreaterThan(0);
+    // ...including through the active-default paths, without throwing.
+    expect(router.getActiveModelContextWindow()).toBe(router.getModelContextWindow('my-local'));
+    expect(() => router.getActiveModelMaxOutput()).not.toThrow();
+    // Fallback window stays comfortably larger than fallback output so the
+    // derived message budget never goes negative.
+    expect(router.getModelContextWindow('my-local')).toBeGreaterThan(router.getModelMaxOutput('my-local'));
+    // Cost stays unknown rather than fabricating a price.
+    expect(router.getModelCost('my-local')).toBeUndefined();
   });
 });
 
@@ -1138,5 +1178,104 @@ describe('LLMRouter OAuth integration', () => {
       updatedAt: 0,
       oauth: { accessToken: 't', expiresAt: Date.now() + 1000 },
     })).toThrow('OAuth not initialized');
+  });
+});
+
+describe('LLMRouter local/live model sync', () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  function mockFetchOnce(json: unknown, ok = true, status = 200) {
+    globalThis.fetch = vi.fn(async () => ({
+      ok,
+      status,
+      json: async () => json,
+    } as Response)) as unknown as typeof fetch;
+  }
+
+  it('refreshOllamaLocalModels populates getProviderModels and enhanced settings', async () => {
+    const router = LLMRouter.createDefault({
+      ollama: { provider: 'ollama', model: 'llama3.1', baseUrl: 'http://localhost:11434' },
+    });
+    mockFetchOnce({
+      models: [
+        { name: 'qwen3.8:27b-mlx', details: { parameter_size: '27B', quantization_level: 'nvfp4' } },
+        { name: 'qwen3.6:latest', details: { parameter_size: '8B' } },
+      ],
+    });
+
+    const count = await router.refreshOllamaLocalModels();
+    expect(count).toBe(2);
+
+    const providerModels = router.getProviderModels('ollama');
+    expect(providerModels.map(m => m.id)).toEqual(['qwen3.8:27b-mlx', 'qwen3.6:latest']);
+    expect(providerModels[0]?.description).toContain('27B');
+
+    const enhanced = router.getEnhancedSettings().providers['ollama'];
+    expect(enhanced.models.map(m => m.id)).toEqual(['qwen3.8:27b-mlx', 'qwen3.6:latest']);
+    // Local list REPLACES static catalog — no builtin cloud-only ids.
+    expect(enhanced.models.some(m => m.id === 'llama3.1')).toBe(false);
+  });
+
+  it('returns no models before any local sync (no builtin ollama catalog)', () => {
+    const router = LLMRouter.createDefault({
+      ollama: { provider: 'ollama', model: 'llama3.1', baseUrl: 'http://localhost:11434' },
+    });
+    // Regression guard: builtin catalog has no ollama entries, so without the
+    // local sync the picker would show zero models (chat selector filters out
+    // providers with empty model lists — the "only markus" symptom).
+    expect(router.getProviderModels('ollama')).toHaveLength(0);
+  });
+
+  it('keeps last-good local models when Ollama probe fails', async () => {
+    const router = LLMRouter.createDefault({
+      ollama: { provider: 'ollama', model: 'qwen3.8:27b-mlx', baseUrl: 'http://localhost:11434' },
+    });
+    mockFetchOnce({ models: [{ name: 'qwen3.8:27b-mlx' }] });
+    expect(await router.refreshOllamaLocalModels()).toBe(1);
+    expect(router.getProviderModels('ollama').map(m => m.id)).toEqual(['qwen3.8:27b-mlx']);
+
+    // Probe now fails — previously synced catalog is preserved.
+    mockFetchOnce({ models: [] }, false, 500);
+    expect(await router.refreshOllamaLocalModels()).toBe(1);
+    expect(router.getProviderModels('ollama').map(m => m.id)).toEqual(['qwen3.8:27b-mlx']);
+  });
+
+  it('refreshProviderLiveModels fills models for providers with no builtin catalog', async () => {
+    const router = new LLMRouter('my-custom');
+    router.registerProviderFromConfig('my-custom', {
+      provider: 'my-custom' as any,
+      model: 'my-model',
+      apiKey: 'abc',
+      baseUrl: 'http://127.0.0.1:8080',
+    });
+    mockFetchOnce({ data: [{ id: 'my-model' }, { id: 'my-model-2' }] });
+
+    const count = await router.refreshProviderLiveModels('my-custom');
+    expect(count).toBe(2);
+    const models = router.getProviderModels('my-custom');
+    expect(models.map(m => m.id)).toEqual(['my-model', 'my-model-2']);
+  });
+
+  it('getEnhancedSettings exposes newly registered provider models for chat picker', async () => {
+    const router = new LLMRouter('my-custom');
+    router.registerProviderFromConfig('my-custom', {
+      provider: 'my-custom' as any,
+      model: 'my-model',
+      apiKey: 'abc',
+      baseUrl: 'http://127.0.0.1:8080',
+    });
+    mockFetchOnce({ data: [{ id: 'my-model' }, { id: 'my-model-2' }] });
+    await router.refreshProviderLiveModels('my-custom');
+
+    const enhanced = router.getEnhancedSettings();
+    const p = enhanced.providers['my-custom'];
+    expect(p.configured).toBe(true);
+    expect(p.enabled).toBe(true);
+    expect(p.models.map(m => m.id)).toEqual(['my-model', 'my-model-2']);
   });
 });

@@ -1551,6 +1551,11 @@ describe('APIServer route handlers', () => {
       expect(res.status).toBe(200);
     });
 
+    it('GET /api/models/live/ollama', async () => {
+      const res = await request(ctx.server, 'GET', '/api/models/live/ollama');
+      expect(res.status).toBe(200);
+    });
+
     it('GET /api/settings/integrations/feishu', async () => {
       const res = await request(ctx.server, 'GET', '/api/settings/integrations/feishu');
       expect(res.status).toBe(200);

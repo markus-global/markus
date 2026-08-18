@@ -47,7 +47,7 @@ export class OllamaProvider implements LLMProviderInterface {
     const messages = this.convertMessages(request.messages);
 
     const body: Record<string, unknown> = {
-      model: this.model,
+      model: request.model ?? this.model,
       messages,
       stream: false,
       options: {
@@ -89,7 +89,7 @@ export class OllamaProvider implements LLMProviderInterface {
     const messages = this.convertMessages(request.messages);
 
     const body: Record<string, unknown> = {
-      model: this.model,
+      model: request.model ?? this.model,
       messages,
       stream: true,
       options: {
