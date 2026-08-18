@@ -1,5 +1,15 @@
 # Release Log
 
+## v0.9.7-rc.1
+
+### Bug Fixes
+
+- **模型测试支持指定模型** — 设置页测试前可选择待测模型（此前固定用默认模型，无法验证目标模型）；测试接口回显实际被测模型
+- **Ollama 本地模型可发现、可使用** — 设置页 Ollama provider 卡片内集成本地检测（`/api/tags` 实时列出本地模型），可直接选用本地模型；此前 Ollama 只显示内置/云模型，本地模型既不出现也无法指定
+- **新 provider 进入模型选择器** — team chat 右下角与设置页的模型选择器现可列出新增 provider 与 Ollama 本地模型（此前仅 markus 可选）
+- **本地模型 context window 探测** — 通过 `/api/show` 读取本地模型真实上下文长度，避免使用错误的默认值
+- **context window / max output 缺失不再报错** — 未知模型回退到安全默认值（128k/32k）并告警，而非直接抛错中断（覆盖各种 provider、各种模型场景）
+
 ## v0.9.7-rc.0
 
 ### Features
