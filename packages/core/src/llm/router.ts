@@ -19,6 +19,17 @@ import type { ModelCatalogService } from './model-catalog.js';
 
 const log = createLogger('llm-router');
 
+// -- Local Ollama model probing ------------------------------------------------
+// `/api/tags` lists pulled models but NOT their context length, and a
+// contextWindow of 0 would trip the fail-loud `getModelContextWindow` guard
+// (agent budget planning aborts). So we probe each model's real context via
+// `/api/show` (model_info["*.context_length"]). This runs only on the settings
+// refresh / provider re-register path (not per chat turn) and local Ollama
+// responds in ms, so no caching is needed (and a module-level cache would leak
+// stale model lists between tests).
+const OLLAMA_DEFAULT_CONTEXT_WINDOW = 8192;
+const OLLAMA_DEFAULT_MAX_OUTPUT = 4096;
+
 const CAPABILITY_KEY_MAP: Partial<Record<ModelCapabilityType, keyof ProviderCapabilities>> = {
   image_generation: 'imageGeneration',
   image_recognition: 'vision',
@@ -582,15 +593,16 @@ export class LLMRouter {
       ?? (provider as any)?.baseUrl
       ?? process.env['OLLAMA_BASE_URL']
       ?? 'http://localhost:11434';
+    const base = String(effectiveBase).replace(/\/+$/, '');
     try {
       const ctrl = new AbortController();
       const tmr = setTimeout(() => ctrl.abort(), 5000);
-      const res = await fetch(`${String(effectiveBase).replace(/\/+$/, '')}/api/tags`, {
+      const res = await fetch(`${base}/api/tags`, {
         signal: ctrl.signal,
       });
       clearTimeout(tmr);
       if (!res.ok) {
-        log.warn('Ollama /api/tags HTTP error', { baseUrl: effectiveBase, status: res.status });
+        log.warn('Ollama /api/tags HTTP error', { baseUrl: base, status: res.status });
         return this.customModelCatalog.get('ollama')?.length ?? 0;
       }
       const data = await res.json() as {
@@ -599,26 +611,60 @@ export class LLMRouter {
           details?: { parameter_size?: string; family?: string; quantization_level?: string };
         }>;
       };
-      const models: ModelDefinition[] = (data.models ?? []).map(m => {
+      const models: ModelDefinition[] = await Promise.all((data.models ?? []).map(async m => {
         const d = m.details;
         const tag = d?.parameter_size || d?.quantization_level;
+        const contextWindow = await this.probeOllamaContext(base, m.name);
         return {
           id: m.name,
           name: m.name,
           provider: 'ollama',
-          contextWindow: 0,
-          maxOutputTokens: 0,
+          contextWindow,
+          maxOutputTokens: OLLAMA_DEFAULT_MAX_OUTPUT,
           cost: { input: 0, output: 0 },
           inputTypes: ['text'],
           description: tag ? tag : undefined,
         };
-      });
+      }));
       this.customModelCatalog.set('ollama', models);
-      log.info(`Synced ${models.length} local Ollama models`, { baseUrl: effectiveBase });
+      log.info(`Synced ${models.length} local Ollama models`, { baseUrl: base });
       return models.length;
     } catch (err) {
-      log.warn('Ollama local model sync failed', { error: String(err), baseUrl: effectiveBase });
+      log.warn('Ollama local model sync failed', { error: String(err), baseUrl: base });
       return this.customModelCatalog.get('ollama')?.length ?? 0;
+    }
+  }
+
+  /**
+   * Probe a local Ollama model's real context length via `/api/show`.
+   * Reads `model_info["*.context_length"]` (key name varies by model family,
+   * e.g. `llama.context_length`, `qwen3_5.context_length`) and returns the
+   * largest positive value found. Falls back to a sane default so a probe
+   * failure never blocks agent budget planning.
+   */
+  private async probeOllamaContext(base: string, modelId: string): Promise<number> {
+    try {
+      const ctrl = new AbortController();
+      const tmr = setTimeout(() => ctrl.abort(), 4000);
+      const res = await fetch(`${base}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelId }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(tmr);
+      if (!res.ok) return OLLAMA_DEFAULT_CONTEXT_WINDOW;
+      const data = await res.json() as { model_info?: Record<string, unknown> };
+      const vals = Object.entries(data.model_info ?? {})
+        .filter(([k]) => k.toLowerCase().includes('context_length'))
+        .map(([, v]) => Number(v))
+        .filter(n => Number.isFinite(n) && n > 0);
+      const ctx = vals.length ? Math.max(...vals) : 0;
+      if (ctx <= 0) return OLLAMA_DEFAULT_CONTEXT_WINDOW;
+      log.info(`Ollama local model ${modelId}: context_window=${ctx}`);
+      return ctx;
+    } catch {
+      return OLLAMA_DEFAULT_CONTEXT_WINDOW;
     }
   }
 
