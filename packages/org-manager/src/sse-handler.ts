@@ -27,6 +27,7 @@ export interface SSEMessageHandlerOptions {
   userText: string;
   images?: string[];
   fileNames?: string[];
+  imagePaths?: string[];
   senderId?: string;
   sessionId?: string;
   senderInfo?: { name: string; role: string; isFirstConversation?: boolean };
@@ -197,6 +198,7 @@ export class SSEHandler {
         this.cancelToken,
         this.options.images,
         this.options.fileNames,
+        this.options.imagePaths,
         {
           ...(this.options.isResume ? { isResume: true } : {}),
           ...(this.options.sessionRestore !== undefined ? { sessionRestore: this.options.sessionRestore } : {}),

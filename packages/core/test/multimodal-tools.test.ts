@@ -33,6 +33,7 @@ describe('createMultiModalTools', () => {
   it('returns expected tool handlers', () => {
     const tools = createMultiModalTools(createContext({}));
     expect(tools.map(t => t.name)).toEqual([
+      'describe_image',
       'upload_reference',
       'generate_image',
       'text_to_speech',
@@ -44,6 +45,51 @@ describe('createMultiModalTools', () => {
       expect(tool.inputSchema).toBeTruthy();
       expect(typeof tool.execute).toBe('function');
     }
+  });
+
+  describe('describe_image', () => {
+    const di = (tools: ReturnType<typeof createMultiModalTools>) => tools.find(t => t.name === 'describe_image')!;
+
+    it('rejects empty args with a clear error', async () => {
+      const tools = createMultiModalTools(createContext({ image_recognition: [] }));
+      const result = JSON.parse(await di(tools).execute({}));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('Missing required argument "images"');
+    });
+
+    it('successfully describes a local image via a vision chat provider', async () => {
+      const tmp = join(tmpdir(), `markus-multimodal-test-${Date.now()}`);
+      mkdirSync(tmp, { recursive: true });
+      const imgPath = join(tmp, 'test.png');
+      writeFileSync(imgPath, Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64',
+      ));
+
+      const chat = vi.fn().mockResolvedValue({ content: 'A tiny 1x1 PNG image.', toolCalls: undefined, usage: { inputTokens: 1, outputTokens: 1 }, finishReason: 'end_turn' });
+      const provider = createMockProvider({ chat, model: 'google/gemini-3.7-flash' });
+      const tools = createMultiModalTools(createContext({
+        image_recognition: [{ provider, name: 'markus', model: 'google/gemini-3.7-flash' }],
+      }));
+
+      const result = JSON.parse(await di(tools).execute({ images: [imgPath] }));
+      expect(result.status).toBe('success');
+      expect(result.content).toBe('A tiny 1x1 PNG image.');
+      expect(result.provider).toBe('markus');
+      expect(chat).toHaveBeenCalledTimes(1);
+      const req = chat.mock.calls[0][0];
+      expect(req.messages[0].role).toBe('user');
+      expect(req.messages[0].content).toHaveLength(2); // text + image_url
+      expect(req.messages[0].content[1].type).toBe('image_url');
+      expect(req.model).toBe('google/gemini-3.7-flash');
+    });
+
+    it('returns error when no vision-capable candidates', async () => {
+      const tools = createMultiModalTools(createContext({ image_recognition: [] }));
+      const result = JSON.parse(await di(tools).execute({ images: ['/nope/test.png'] }));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('No vision-capable model');
+    });
   });
 
   describe('generate_image', () => {

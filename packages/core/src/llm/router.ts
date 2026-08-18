@@ -1194,6 +1194,45 @@ export class LLMRouter {
    * Try a chat request on a specific provider, optionally with an alternate model.
    * Returns the response or throws on failure (after recording health).
    */
+  /**
+   * Strip image parts from a request destined for a model that cannot accept
+   * images. Guards against residual image_url parts in session history being
+   * re-sent every turn to a text-only model (which upstream rejects with 404
+   * "No endpoints found that support image input"). Keeps the model string so
+   * the agent is told the images were dropped and how to recover (describe_image).
+   */
+  private stripImagesForTextModel(
+    request: LLMRequest,
+    providerName: string,
+    model?: string,
+  ): { request: LLMRequest; stripped: boolean } {
+    // IMPORTANT: judge vision capability by the model ACTUALLY sent on the
+    // wire, not the provider's default model. MarkusProvider routes per
+    // request.model (Chat UI override / capability routing / auto-select), so
+    // provider.model can be a vision model while the real request targets a
+    // text-only model. Checking providerName alone re-introduces the upstream
+    // 404 ("No endpoints found that support image input").
+    const effectiveModel = model ?? (request.model as string | undefined);
+    const supportsVision = this.getModelInputTypes(providerName, effectiveModel).includes('image');
+    if (supportsVision) return { request, stripped: false };
+    const hadImage = request.messages.some(m =>
+      Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'),
+    );
+    if (!hadImage) return { request, stripped: false };
+    const note = `\n\n[SYSTEM] The active chat model (${effectiveModel ?? providerName}) does NOT support image input, so ${'imag'
+      + 'e'} attachment(s) were omitted from this request. Use the describe_image tool with each attachment's local path (listed in the [USER ATTACHED ...] anchor) to view it, or ask the user to switch to a vision-capable model. Do NOT fabricate image content.`;
+    const messages = request.messages.map(m => {
+      if (!Array.isArray(m.content)) return m;
+      const textParts = m.content.filter(p => p.type === 'text')
+        .map(p => (p as { type: 'text'; text: string }).text);
+      return { ...m, content: textParts.join('\n') + note };
+    });
+    log.warn(`Stripped image parts for text-only model ${effectiveModel ?? providerName}`, {
+      messageCount: messages.length,
+    });
+    return { request: { ...request, messages }, stripped: true };
+  }
+
   private async tryChat(providerName: string, request: LLMRequest, altModel?: string): Promise<{ response: LLMResponse; model: string }> {
     const provider = this.providers.get(providerName)!;
     const originalModel = provider.model;
@@ -1207,7 +1246,11 @@ export class LLMRouter {
     }
     await this.applyJitter(providerName);
     try {
-      const response = await provider.chat(chatRequest);
+      // Effective wire model: altModel wins, else the request's own model
+      // (MarkusProvider routes per request.model), else the provider default.
+      const effectiveWireModel = chatRequest.model ?? provider.model;
+      const { request: safeRequest } = this.stripImagesForTextModel(chatRequest, providerName, effectiveWireModel);
+      const response = await provider.chat(safeRequest);
       this.recordSuccess(providerName, activeModel);
       return { response, model: activeModel };
     } catch (error) {
@@ -1362,10 +1405,14 @@ export class LLMRouter {
     await this.applyJitter(providerName);
     try {
       let response: LLMResponse;
+      // Effective wire model: altModel wins, else the request's own model
+      // (MarkusProvider routes per request.model), else the provider default.
+      const effectiveWireModel = streamRequest.model ?? provider.model;
+      const { request: safeRequest } = this.stripImagesForTextModel(streamRequest, providerName, effectiveWireModel);
       if (provider.chatStream) {
-        response = await provider.chatStream(streamRequest, onEvent, signal);
+        response = await provider.chatStream(safeRequest, onEvent, signal);
       } else {
-        response = await provider.chat(streamRequest);
+        response = await provider.chat(safeRequest);
         if (response.content) onEvent({ type: 'text_delta', text: response.content });
         onEvent({ type: 'message_end', usage: response.usage, finishReason: response.finishReason });
       }
@@ -1789,19 +1836,39 @@ export class LLMRouter {
     return catalogEntry?.cost;
   }
 
-  getModelInputTypes(providerName?: string): Array<'text' | 'image'> {
+  /**
+   * Resolve the input types (text / image) for a provider+model pair.
+   *
+   * @param providerName provider to check
+   * @param modelId      OPTIONAL explicit model id. CRITICAL: when omitted the
+   *                     provider's DEFAULT model is used, which is NOT the model
+   *                     actually sent on the wire when a request carries
+   *                     `request.model` (Chat UI session override, capability
+   *                     routing, etc.). Callers that already know the effective
+   *                     model MUST pass it here, otherwise a vision-capable
+   *                     default model can mask a text-only routed model and the
+   *                     image parts sail through to an upstream 404.
+   */
+  getModelInputTypes(providerName?: string, modelId?: string): Array<'text' | 'image'> {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);
     if (!provider) return ['text'];
-    const catalogEntry = findCatalogEntry(name, provider.model, {
+    const catalogEntry = findCatalogEntry(name, modelId ?? provider.model, {
       builtin: BUILTIN_MODEL_CATALOG,
       hub: this.customModelCatalog.get(name),
     });
-    return catalogEntry?.inputTypes ?? ['text', 'image'];
+    if (catalogEntry?.inputTypes) return catalogEntry.inputTypes;
+    // No catalog entry for this model — be CONSERVATIVE and assume text-only.
+    // Previously this defaulted to ['text','image'], which made text-only models
+    // (e.g. deepseek-v4-flash) look vision-capable and caused upstream 404
+    // ("No endpoints found that support image input") when the agent pushed
+    // image_url parts to them. Text-only default is safe: vision-capable models
+    // are listed in the catalog with explicit inputTypes.
+    return ['text'];
   }
 
-  modelSupportsVision(providerName?: string): boolean {
-    return this.getModelInputTypes(providerName).includes('image');
+  modelSupportsVision(providerName?: string, modelId?: string): boolean {
+    return this.getModelInputTypes(providerName, modelId).includes('image');
   }
 
   isAutoSelectEnabled(): boolean {

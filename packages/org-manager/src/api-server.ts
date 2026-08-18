@@ -41,6 +41,7 @@ import {
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
+import { persistChatImages } from './chat-attachments.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
@@ -1623,7 +1624,7 @@ export class APIServer {
     channelContext: Array<{ role: string; content: string }>,
     agentManager: AgentManager,
     teamSize: number,
-    opts?: { mentionedNames?: string[]; replyToAgentName?: string; replyToText?: string; replyToMsgId?: string },
+    opts?: { mentionedNames?: string[]; replyToAgentName?: string; replyToText?: string; replyToMsgId?: string; images?: string[]; fileNames?: string[]; imagePaths?: string[] },
     chainCtx?: { roundId: string; depth: number; respondedAgents: Set<string>; allAgentIds: string[] },
   ): Promise<void> {
     try {
@@ -1725,6 +1726,9 @@ export class APIServer {
           channelContext,
           channelKey: channel,
           directMention: isDmReply ? true : thisAgentIsTarget,
+          images: opts?.images,
+          fileNames: opts?.fileNames,
+          imagePaths: opts?.imagePaths,
           toolEventCollector: toolEvents,
         }
       );
@@ -2485,6 +2489,7 @@ export class APIServer {
         handleStreamEvent,
         ownerUserId,
         { name: feishuSenderLabel, role: 'user' },
+        undefined,
         undefined,
         undefined,
         undefined,
@@ -3560,6 +3565,7 @@ export class APIServer {
       const body = await this.readBody(req);
       const text = (body['text'] as string) ?? '';
       const images = (body['images'] as string[] | undefined)?.filter(Boolean);
+      const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
       const resolvedIdentity = this.orgService.resolveHumanIdentity(authUser.userId);
       const senderId = authUser.userId;
       const senderName = resolvedIdentity?.name ?? (body['senderName'] as string) ?? 'You';
@@ -3572,6 +3578,12 @@ export class APIServer {
         this.json(res, 400, { error: 'Message text or images required' });
         return;
       }
+
+      // Persist user-attached images to local disk so the agent gets a real
+      // path anchor ("抓手") it can read/process. Public URLs are NOT built here
+      // — the agent calls upload_reference(path) itself when it needs one.
+      const persistedImages = persistChatImages(images, fileNames, channel);
+      const imagePaths = persistedImages.map(p => p.path);
 
       // Persist user message (notes/DM may be image-only — store in metadata)
       let userMsg: ChannelMsg | undefined;
@@ -3716,6 +3728,9 @@ export class APIServer {
           mentionedNames: mentions.length > 0 ? mentions : undefined,
           replyToAgentName,
           replyToText,
+          images,
+          fileNames,
+          imagePaths,
         };
 
         // Prepare chain context so agent replies can trigger agent-to-agent chains
@@ -3762,6 +3777,9 @@ export class APIServer {
         reply = await agent.sendMessage(text, senderId, senderInfo, {
           sourceType: 'human_chat',
           channelContext,
+          images,
+          fileNames,
+          imagePaths,
           toolEventCollector: toolEvents,
         });
       } catch (err) {
@@ -4143,6 +4161,10 @@ export class APIServer {
         }
 
         const userText = body['text'] as string;
+        // Persist user-attached files (any type incl. pasted images) to local
+        // disk under ~/.markus so the agent gets a real path anchor.
+        const persistedAttachments = persistChatImages(images, fileNames, agentId!);
+        const imagePaths = persistedAttachments.map(p => p.path);
         // Persist plain user text; inject reply context only into the LLM turn so
         // reload does not show the quoted agent message inside the user bubble.
         const agentText = replyTo
@@ -4194,6 +4216,7 @@ export class APIServer {
             userText: agentText,
             images,
             fileNames,
+            imagePaths,
             senderId,
             senderInfo,
             sessionId,
@@ -4218,7 +4241,7 @@ export class APIServer {
           const deferredRestoreNonStream = agent.isProcessing() ? sessionRestoreData : undefined;
           try {
             reply = await agent.sendMessage(agentText, senderId, senderInfo, {
-              images, fileNames, toolEventCollector: toolEvents,
+              images, fileNames, imagePaths, toolEventCollector: toolEvents,
               ...(deferredRestoreNonStream !== undefined ? { sessionRestore: deferredRestoreNonStream } : {}),
             });
           } catch (err) {
@@ -6075,9 +6098,12 @@ EXPLANATION_END`;
 
       const senderId = authUser.userId;
       const images = (body['images'] as string[] | undefined)?.filter(Boolean);
+      const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
       const senderInfo = this.orgService.resolveHumanIdentity(senderId);
       const agent = this.orgService.getAgentManager().getAgent(targetAgentId);
       this.ws.broadcastAgentUpdate(targetAgentId, 'working');
+      const persistedImages = persistChatImages(images, fileNames, targetAgentId);
+      const imagePaths = persistedImages.map(p => p.path);
 
       const stream = body['stream'] as boolean | undefined;
       if (stream) {
@@ -6088,6 +6114,8 @@ EXPLANATION_END`;
           agent,
           userText,
           images,
+          fileNames,
+          imagePaths,
           senderId,
           senderInfo,
           executionStreamRepo: this.storage?.executionStreamRepo,
@@ -6103,7 +6131,7 @@ EXPLANATION_END`;
         const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
         let reply: string;
         try {
-          reply = await agent.sendMessage(userText, senderId, senderInfo, { images, toolEventCollector: toolEvents });
+          reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, imagePaths, toolEventCollector: toolEvents });
         } catch (err) {
           throw err;
         }

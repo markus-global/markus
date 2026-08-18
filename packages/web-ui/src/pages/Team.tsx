@@ -2648,6 +2648,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           mentions: [], orgId: 'default',
           humanOnly: true, // never route to agents
           ...(imagesToSend?.length ? { images: imagesToSend } : {}),
+          ...(fileNamesToSend?.length ? { fileNames: fileNamesToSend } : {}),
         });
         if (result.userMessage) addRecentMsgId(result.userMessage.id);
         updateConvMsgs(sendKey, prev => {
@@ -2703,6 +2704,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           senderId: authUser?.id,
           orgId: 'default',
           replyToId: replyCtx?.id,
+          ...(imagesToSend?.length ? { images: imagesToSend } : {}),
+          ...(fileNamesToSend?.length ? { fileNames: fileNamesToSend } : {}),
         });
         if (result.userMessage) addRecentMsgId(result.userMessage.id);
         if (result.agentMessage) addRecentMsgId(result.agentMessage.id);
