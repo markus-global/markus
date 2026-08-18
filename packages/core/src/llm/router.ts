@@ -1,6 +1,6 @@
 import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelCapabilityType, type CostTier, type CapabilityRoutingConfig, type CapabilityModelAssignment, type ProviderCapabilities } from '@markus/shared';
 import { startSpan } from '../tracing.js';
-import type { LLMProviderInterface, MultiModalProviderInterface } from './provider.js';
+import { DEFAULT_REQUEST_MAX_TOKENS, type LLMProviderInterface, type MultiModalProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAIProvider, type TokenResolver } from './openai.js';
 import { MiniMaxProvider } from './minimax.js';
@@ -29,6 +29,18 @@ const log = createLogger('llm-router');
 // stale model lists between tests).
 const OLLAMA_DEFAULT_CONTEXT_WINDOW = 8192;
 const OLLAMA_DEFAULT_MAX_OUTPUT = 4096;
+
+/**
+ * Fallback values for provider/model pairs with no catalog entry. ANY real
+ * model must get a usable context budget — a private/BYOK/local/unknown model
+ * that is absent from the built-in or Hub catalog must still work. We return a
+ * sane default (never throw) and log a warning so the operator can configure a
+ * precise value. `DEFAULT_CONTEXT_WINDOW_FALLBACK` is kept comfortably larger
+ * than `DEFAULT_MAX_OUTPUT_FALLBACK` so the derived message budget never goes
+ * negative.
+ */
+const DEFAULT_CONTEXT_WINDOW_FALLBACK = 128_000;
+const DEFAULT_MAX_OUTPUT_FALLBACK = DEFAULT_REQUEST_MAX_TOKENS;
 
 const CAPABILITY_KEY_MAP: Partial<Record<ModelCapabilityType, keyof ProviderCapabilities>> = {
   image_generation: 'imageGeneration',
@@ -1958,15 +1970,13 @@ export class LLMRouter {
       hub: this.customModelCatalog.get(name),
     });
     const ctx = catalogEntry?.contextWindow;
-    // No silent default: a missing/zero context window silently poisons the
-    // context budget (negative message budget → empty reply → agent "stops").
-    // Fail loud with an actionable hint so the real cause surfaces.
     if (!ctx || ctx <= 0) {
-      throw new Error(
-        name === 'markus'
-          ? `Cannot resolve context_window for markus model "${provider.model || '(unset)'}": it is not in the loaded Hub catalog (catalog may be empty). Please check the Hub connection and refresh the model list, or reconfigure the model. No default is substituted.`
-          : `Cannot resolve context_window for provider "${name}" (model "${provider.model || '(unset)'}"): the model is unknown to the built-in catalog. Please configure the model or fix the model id. No default is substituted.`,
-      );
+      // Any real model must be usable. A model absent from the built-in/Hub
+      // catalog (private BYOK, local Ollama, self-hosted endpoint) should NOT
+      // take the whole agent turn down — fall back to a sane window and warn so
+      // the operator can configure an exact value for accurate budgeting.
+      log.warn(`No context_window for provider "${name}" model "${provider.model || '(unset)'}" — using fallback ${DEFAULT_CONTEXT_WINDOW_FALLBACK}. Configure the model for accurate budgeting.`);
+      return DEFAULT_CONTEXT_WINDOW_FALLBACK;
     }
     return ctx;
   }
@@ -1989,7 +1999,11 @@ export class LLMRouter {
     });
     const out = catalogEntry?.maxOutputTokens;
     if (!out || out <= 0) {
-      throw new Error(`Cannot resolve max_output_tokens for provider "${name}" (model "${provider.model || '(unset)'}"). The model catalog must supply a real value — refresh the Hub catalog / reconfigure the model. No default is substituted.`);
+      // Mirror the context-window policy: a missing output cap is not fatal —
+      // many upstreams legitimately omit it. Fall back instead of throwing so
+      // unknown/private models keep working.
+      log.warn(`No max_output_tokens for provider "${name}" model "${provider.model || '(unset)'}" — using fallback ${DEFAULT_MAX_OUTPUT_FALLBACK}.`);
+      return DEFAULT_MAX_OUTPUT_FALLBACK;
     }
     return out;
   }

@@ -801,11 +801,31 @@ describe('LLMRouter model metadata', () => {
     expect(selected.model).toBe('claude-sonnet-4-20250514');
   });
 
-  it('throws (no silent default) when resolving window/output for a missing provider', () => {
+  it('throws only when the provider itself is not registered', () => {
     const router = new LLMRouter('missing');
     expect(() => router.getActiveModelContextWindow()).toThrow(/not registered/);
     expect(() => router.getActiveModelMaxOutput()).toThrow(/not registered/);
     expect(router.getActiveModelName()).toBe('');
+  });
+
+  it('falls back to usable defaults (no throw) for models unknown to the catalog', () => {
+    const router = new LLMRouter('my-local');
+    router.registerProviderFromConfig('my-local', {
+      provider: 'my-local' as any,
+      model: 'private/unknown-model:42',
+      baseUrl: 'http://127.0.0.1:9999',
+    });
+    // Unknown/private models must resolve to positive fallback values...
+    expect(router.getModelContextWindow('my-local')).toBeGreaterThan(0);
+    expect(router.getModelMaxOutput('my-local')).toBeGreaterThan(0);
+    // ...including through the active-default paths, without throwing.
+    expect(router.getActiveModelContextWindow()).toBe(router.getModelContextWindow('my-local'));
+    expect(() => router.getActiveModelMaxOutput()).not.toThrow();
+    // Fallback window stays comfortably larger than fallback output so the
+    // derived message budget never goes negative.
+    expect(router.getModelContextWindow('my-local')).toBeGreaterThan(router.getModelMaxOutput('my-local'));
+    // Cost stays unknown rather than fabricating a price.
+    expect(router.getModelCost('my-local')).toBeUndefined();
   });
 });
 
