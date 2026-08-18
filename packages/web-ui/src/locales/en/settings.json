@@ -259,6 +259,8 @@
     "test": "Test",
     "testing": "Testing...",
     "testOk": "OK ({{ms}}ms)",
+    "testModel": "Test model",
+    "testDefaultModel": "(use default model)",
     "testFailed": "Failed",
     "testFailedCode": "Error {{code}}",
     "testSuccess": "Connected in {{ms}}ms — reply: {{reply}}",

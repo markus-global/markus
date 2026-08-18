@@ -259,6 +259,8 @@
     "test": "测试",
     "testing": "测试中…",
     "testOk": "正常（{{ms}}ms）",
+    "testModel": "测试用模型",
+    "testDefaultModel": "（使用默认模型）",
     "testFailed": "不可用",
     "testFailedCode": "错误 {{code}}",
     "testSuccess": "连接成功，耗时 {{ms}}ms — 回复：{{reply}}",

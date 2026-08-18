@@ -878,6 +878,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   // Provider connectivity test state
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
+  const [testModelFor, setTestModelFor] = useState<Record<string, string>>({});
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string; model?: string; usage?: Record<string, number>; requestUrl?: string; requestBody?: unknown }>>({});
 
   const testProvider = async (providerName: string) => {
@@ -886,6 +887,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     try {
       const res = await fetch(`/api/settings/llm/providers/${providerName}/test`, {
         method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ model: testModelFor[providerName] || undefined }),
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({})) as { error?: string };
@@ -899,6 +901,22 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     } finally {
       setTestingProvider(null);
     }
+  };
+
+  // Gather the models available to test for a provider: its configured/default
+  // model, the live/catalog list loaded when expanded, and (for ollama) the
+  // locally detected models. De-duplicated, ordering: default first.
+  const getTestableModels = (providerName: string): string[] => {
+    const set = new Set<string>();
+    const info = llm?.providers?.[providerName];
+    if (info?.model) set.add(info.model);
+    const catalog = providerCatalogModels[providerName];
+    if (catalog) for (const m of catalog) if (m.id) set.add(String(m.id));
+    if (info?.models) for (const m of info.models) if (m.id) set.add(m.id);
+    if (providerName === 'ollama' && ollamaDetect?.models) {
+      for (const m of ollamaDetect.models) if (m.name) set.add(m.name);
+    }
+    return [...set];
   };
 
 
@@ -1327,7 +1345,19 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                             </div>
                           </div>
                         ) : (
-                          <div className="flex gap-2">
+                          <>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-fg-tertiary uppercase tracking-wider shrink-0">{t('modelProviders.testModel')}</span>
+                            <select
+                              value={testModelFor[name] ?? ''}
+                              onChange={e => { e.stopPropagation(); setTestModelFor(prev => ({ ...prev, [name]: e.target.value })); }}
+                              className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:border-brand-500 outline-none max-w-[240px]"
+                            >
+                              <option value="">{t('modelProviders.testDefaultModel')}</option>
+                              {getTestableModels(name).map(m => <option key={m} value={m}>{m}</option>)}
+                            </select>
+                          </div>
+                          <div className="flex gap-2 mt-2">
                             <button onClick={e => { e.stopPropagation(); void testProvider(name); }}
                               disabled={testingProvider === name}
                               className="px-3 py-1.5 text-xs border border-green-500/30 text-green-500 hover:bg-green-500/10 rounded-lg transition-colors disabled:opacity-40 flex items-center gap-1.5">
@@ -1351,6 +1381,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                               </button>
                             )}
                           </div>
+                          </>
                         )}
 
                         {/* Test result detail */}

@@ -538,6 +538,26 @@ describe('LLMRouter.chatDirect', () => {
     await expect(router.chatDirect({ messages: [{ role: 'user', content: 'ping' }] }, 'openai'))
       .rejects.toThrow('disabled');
   });
+
+  it('switches provider model for the call and restores afterward', async () => {
+    const router = new LLMRouter('openai');
+    const openai = mockProvider('openai', 'gpt-4o');
+    (openai as any).baseUrl = 'https://api.openai.com';
+    router.registerProvider('openai', openai);
+
+    const response = await router.chatDirect(
+      { messages: [{ role: 'user', content: 'ping' }] },
+      'openai',
+      'gpt-4.5',
+    );
+
+    expect(response._model).toBe('gpt-4.5');
+    // configure was called to switch to the requested model…
+    expect(openai.configure).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-4.5' }));
+    // …and restored to the original model afterward.
+    expect(openai.configure).toHaveBeenLastCalledWith(expect.objectContaining({ model: 'gpt-4o' }));
+    expect(openai.model).toBe('gpt-4o');
+  });
 });
 
 describe('LLMRouter.chatStream', () => {

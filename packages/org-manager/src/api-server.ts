@@ -7518,6 +7518,45 @@ EXPLANATION_END`;
         return;
       }
 
+      // Ollama is a local endpoint — return the live model list from /api/tags
+      // (no API key / static catalog dependency).
+      if (providerName === 'ollama') {
+        const ollamaUrl = process.env['OLLAMA_BASE_URL'] || 'http://localhost:11434';
+        const providerInstance = this.llmRouter?.getProvider('ollama');
+        const configuredBaseUrl = (providerInstance as any)?.baseUrl;
+        const baseUrl = (configuredBaseUrl as string | undefined) ?? ollamaUrl;
+        try {
+          const ctrl = new AbortController();
+          const tmr = setTimeout(() => ctrl.abort(), 5000);
+          const ollamaRes = await fetch(`${String(baseUrl).replace(/\/+$/, '')}/api/tags`, { signal: ctrl.signal });
+          clearTimeout(tmr);
+          if (!ollamaRes.ok) {
+            this.json(res, 200, { provider: 'ollama', models: [], source: 'error', error: `Ollama returned HTTP ${ollamaRes.status}` });
+            return;
+          }
+          const data = await ollamaRes.json() as { models?: Array<{ name: string; size?: number; modified_at?: string; details?: { parameter_size?: string; family?: string; quantization_level?: string } }> };
+          const models = (data.models ?? []).map(m => ({
+            id: m.name,
+            provider: 'ollama',
+            mode: 'chat',
+            maxInputTokens: 0,
+            maxOutputTokens: 0,
+            inputCostPer1MTokens: 0,
+            outputCostPer1MTokens: 0,
+            capabilities: { vision: false, functionCalling: false, reasoning: false, promptCaching: false, webSearch: false, audioInput: false, audioOutput: false },
+            size: m.size,
+            modifiedAt: m.modified_at,
+            parameterSize: m.details?.parameter_size,
+            family: m.details?.family,
+            quantization: m.details?.quantization_level,
+          }));
+          this.json(res, 200, { provider: 'ollama', models, source: 'live', count: models.length });
+        } catch (err) {
+          this.json(res, 200, { provider: 'ollama', models: [], source: 'error', error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+
       try {
         // Get provider instance to access its API key
         const providerInstance = this.llmRouter?.getProvider(providerName);
@@ -9172,6 +9211,8 @@ EXPLANATION_END`;
         this.json(res, 404, { ok: false, error: `Provider "${providerName}" not found or not configured` });
         return;
       }
+      const body = await this.readBody(req);
+      const requestedModel = typeof body?.model === 'string' && body.model.trim() ? body.model.trim() : undefined;
       const requestBody = {
         messages: [{ role: 'user' as const, content: 'Reply with exactly one word: hello' }],
         // No maxTokens cap: a reasoning model spends the whole budget on hidden
@@ -9179,19 +9220,21 @@ EXPLANATION_END`;
         // false "empty response / misconfigured" result. Let the router fill in
         // the model's real limit; the model stops after the one-word reply.
         temperature: 0,
+        ...(requestedModel ? { model: requestedModel } : {}),
       };
       const baseUrl = (provider as any).baseUrl ?? (provider as any).config?.baseUrl ?? '';
       try {
         const startMs = Date.now();
-        const response = await this.llmRouter.chatDirect(requestBody, providerName);
+        const response = await this.llmRouter.chatDirect(requestBody, providerName, requestedModel);
         const durationMs = Date.now() - startMs;
         const reply = (response.content ?? '').trim();
         const requestUrl = response._providerBaseUrl ?? baseUrl;
+        const resultModel = response._model ?? requestedModel ?? provider.model;
         if (!reply) {
           this.json(res, 200, {
             ok: false,
             error: 'Model returned empty response — API key or model may be misconfigured',
-            model: provider.model,
+            model: resultModel,
             durationMs,
             requestUrl,
             requestBody,
@@ -9200,7 +9243,7 @@ EXPLANATION_END`;
           this.json(res, 200, {
             ok: true,
             durationMs,
-            model: provider.model,
+            model: resultModel,
             reply: reply.slice(0, 100),
             usage: response.usage,
             requestUrl,
@@ -9226,7 +9269,7 @@ EXPLANATION_END`;
           ok: false,
           error: errorMsg.slice(0, 500),
           errorCode,
-          model: provider.model,
+          model: requestedModel ?? provider.model,
           requestUrl: baseUrl,
           requestBody,
         });

@@ -1373,7 +1373,7 @@ export class LLMRouter {
    * Used by the test endpoint to verify a single provider's connectivity.
    * Also returns the baseUrl used for diagnostics.
    */
-  async chatDirect(request: LLMRequest, providerName: string): Promise<LLMResponse & { _providerBaseUrl?: string }> {
+  async chatDirect(request: LLMRequest, providerName: string, altModel?: string): Promise<LLMResponse & { _providerBaseUrl?: string; _model?: string }> {
     const provider = this.providers.get(providerName);
     if (!provider) {
       throw new Error(`Provider "${providerName}" not registered`);
@@ -1382,9 +1382,28 @@ export class LLMRouter {
       throw new Error(`Provider "${providerName}" is disabled`);
     }
     request = this.resolveMaxTokens(request, providerName);
-    const response = await provider.chat(request);
-    const baseUrl = (provider as any).baseUrl ?? (provider as any).config?.baseUrl;
-    return Object.assign(response, { _providerBaseUrl: baseUrl });
+    // Mirror tryStream's model-switch semantics: most providers put their
+    // configured model on the wire (ignoring request.model), so temporarily
+    // configure the target model and restore afterward. For Markus, the
+    // provider routes per request.model (Hub/OpenRouter slugs).
+    const originalModel = provider.model;
+    const useRequestModelOnly = providerName === 'markus' || provider instanceof MarkusProvider;
+    const activeModel = altModel ?? originalModel;
+    let switched = false;
+    if (!useRequestModelOnly && altModel && altModel !== originalModel) {
+      provider.configure({ provider: providerName as any, model: altModel });
+      switched = true;
+    }
+    const directRequest = (useRequestModelOnly && altModel) ? { ...request, model: altModel } : request;
+    try {
+      const response = await provider.chat(directRequest);
+      const baseUrl = (provider as any).baseUrl ?? (provider as any).config?.baseUrl;
+      return Object.assign(response, { _providerBaseUrl: baseUrl, _model: activeModel });
+    } finally {
+      if (switched) {
+        provider.configure({ provider: providerName as any, model: originalModel });
+      }
+    }
   }
 
   /**
