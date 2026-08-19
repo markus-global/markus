@@ -1,5 +1,47 @@
 # Release Log
 
+## v0.9.7-rc.1
+
+### Bug Fixes
+
+- **模型测试支持指定模型** — 设置页测试前可选择待测模型（此前固定用默认模型，无法验证目标模型）；测试接口回显实际被测模型
+- **Ollama 本地模型可发现、可使用** — 设置页 Ollama provider 卡片内集成本地检测（`/api/tags` 实时列出本地模型），可直接选用本地模型；此前 Ollama 只显示内置/云模型，本地模型既不出现也无法指定
+- **新 provider 进入模型选择器** — team chat 右下角与设置页的模型选择器现可列出新增 provider 与 Ollama 本地模型（此前仅 markus 可选）
+- **本地模型 context window 探测** — 通过 `/api/show` 读取本地模型真实上下文长度，避免使用错误的默认值
+- **context window / max output 缺失不再报错** — 未知模型回退到安全默认值（128k/32k）并告警，而非直接抛错中断（覆盖各种 provider、各种模型场景）
+
+## v0.9.7-rc.0
+
+### Features
+
+- **技能生态兼容适配器** — 外部技能 import/export（核心攻坚点），打通技能生态互操作
+- **交付物分享到 Hub** — 产出物页一键分享（按钮 + 状态徽标 + 列表标识）；分享时自动上传引用媒体并替换路径（markdown/html），保留媒体引用语法
+- **交付物页聊天对齐 Team Chat** — 输入对齐 + 按 agent 隔离主会话 + reattach 续接 + Cmd+B/L 快捷键
+- **Agent 会话历史 recall** — storage/core 新增 session query 工具
+- **OpenRouter 支持** — 统一 OpenAI 兼容 provider 核心，OpenAIProvider 补全 OpenRouter
+
+### Bug Fixes
+
+- **UI 卡顿与模型跳变** — 新建对话模型跳变 + 概览→团队切换卡顿
+- **Team chat 附件** — image/file attachments 持久化到 `~/.markus`，注入 path anchor，对齐 multimodal 工具
+- **流式 thinking 重复与消息错序** — 修复 web-ui 流式输出问题
+- **Deliverables 快捷键失效** — Cmd+B/L 被全局监听器抢占与 L0 焦点吞键
+- **Hub 分享状态不同步** — 右侧栏分享按钮状态轮询回写本地 DB；对齐 Hub 真实契约（share_reason 拒绝原因字段）
+- **Missing context_window** — 通过 normalized catalog matching 修复
+- **设置页模型路由首访「先空后填」** — 选项加载顺序修复
+
+### Refactor
+
+- **Prompt L0 收敛** — 去重/消歧/补强：blocked_by 心智模型 + 生命周期状态机 + 对话 vs 任务指针 + Manager 引擎收窄；scheduled 创建语法指针化；Available Skills 改 Agent 视角
+- **OpenAI 兼容 provider 统一** — 核心逻辑合并，OpenAIProvider 补全 OpenRouter
+- **HANDBOOK 化** — SHARED.md → HANDBOOK.md，绝对路径注入 prompt
+
+### License & Docs
+
+- **AGPL-3.0 → Apache-2.0** + 商业扩展双授权（LICENSE-COMMERCIAL.md）
+- **README 门面重写** — 60 秒惊艳 + 组织治理 + 生态兼容声明 + 案例区（中英双语）
+- **社区基建** — CONTRIBUTING 全面完善 + CoC + 开发指南 + 社区入口
+
 ## v0.9.6
 
 ### Bug Fixes

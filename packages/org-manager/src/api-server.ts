@@ -7518,6 +7518,56 @@ EXPLANATION_END`;
         return;
       }
 
+      // Ollama is a local endpoint — return the live model list from /api/tags
+      // (no API key / static catalog dependency).
+      if (providerName === 'ollama') {
+        const ollamaUrl = process.env['OLLAMA_BASE_URL'] || 'http://localhost:11434';
+        const providerInstance = this.llmRouter?.getProvider('ollama');
+        const configuredBaseUrl = (providerInstance as any)?.baseUrl;
+        const baseUrl = (configuredBaseUrl as string | undefined) ?? ollamaUrl;
+        try {
+          const ctrl = new AbortController();
+          const tmr = setTimeout(() => ctrl.abort(), 5000);
+          const ollamaRes = await fetch(`${String(baseUrl).replace(/\/+$/, '')}/api/tags`, { signal: ctrl.signal });
+          clearTimeout(tmr);
+          if (!ollamaRes.ok) {
+            this.json(res, 200, { provider: 'ollama', models: [], source: 'error', error: `Ollama returned HTTP ${ollamaRes.status}` });
+            return;
+          }
+          const data = await ollamaRes.json() as { models?: Array<{ name: string; size?: number; modified_at?: string; details?: { parameter_size?: string; family?: string; quantization_level?: string } }> };
+          const models = await Promise.all((data.models ?? []).map(async m => {
+            const caps = await this.probeOllamaCapabilities(String(baseUrl).replace(/\/+$/, ''), m.name);
+            return {
+              id: m.name,
+              provider: 'ollama',
+              mode: 'chat',
+              maxInputTokens: 0,
+              maxOutputTokens: 0,
+              inputCostPer1MTokens: 0,
+              outputCostPer1MTokens: 0,
+              capabilities: {
+                vision: caps.includes('vision'),
+                functionCalling: caps.includes('tools'),
+                reasoning: caps.includes('thinking'),
+                promptCaching: false,
+                webSearch: false,
+                audioInput: false,
+                audioOutput: false,
+              },
+              size: m.size,
+              modifiedAt: m.modified_at,
+              parameterSize: m.details?.parameter_size,
+              family: m.details?.family,
+              quantization: m.details?.quantization_level,
+            };
+          }));
+          this.json(res, 200, { provider: 'ollama', models, source: 'live', count: models.length });
+        } catch (err) {
+          this.json(res, 200, { provider: 'ollama', models: [], source: 'error', error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+
       try {
         // Get provider instance to access its API key
         const providerInstance = this.llmRouter?.getProvider(providerName);
@@ -7576,6 +7626,11 @@ EXPLANATION_END`;
           this.persistHealedMarkusRouting();
         }
       } catch { /* non-fatal */ }
+      // Sync locally-available Ollama models so the pickers (Settings + chat
+      // model selector) show real local models, not just the static catalog.
+      try {
+        await this.llmRouter.refreshOllamaLocalModels?.();
+      } catch { /* non-fatal — keep last-good catalog */ }
       this.json(res, 200, this.llmRouter.getEnhancedSettings());
       return;
     }
@@ -8803,6 +8858,13 @@ EXPLANATION_END`;
           apiKey,
           baseUrl,
         });
+        // Populate the newly-added provider's real model list so the chat
+        // picker and Settings dropdown can select from it right away.
+        if (name === 'ollama') {
+          await this.llmRouter.refreshOllamaLocalModels?.(baseUrl);
+        } else {
+          await this.llmRouter.refreshProviderLiveModels?.(name, baseUrl, apiKey);
+        }
         if (enabled === false) {
           this.llmRouter.setProviderEnabled(name, false);
         }
@@ -8886,6 +8948,12 @@ EXPLANATION_END`;
         }
         if (typeof enabled === 'boolean') {
           this.llmRouter.setProviderEnabled(providerName, enabled);
+        }
+        // Re-sync live/local model list on update (e.g. baseUrl change for Ollama).
+        if (providerName === 'ollama') {
+          await this.llmRouter.refreshOllamaLocalModels?.(baseUrl ?? undefined);
+        } else {
+          await this.llmRouter.refreshProviderLiveModels?.(providerName, baseUrl ?? undefined, apiKey);
         }
         if (contextWindow || maxOutputTokens || cost) {
           this.llmRouter.updateProviderModelConfig(providerName, {
@@ -9172,6 +9240,8 @@ EXPLANATION_END`;
         this.json(res, 404, { ok: false, error: `Provider "${providerName}" not found or not configured` });
         return;
       }
+      const body = await this.readBody(req);
+      const requestedModel = typeof body?.model === 'string' && body.model.trim() ? body.model.trim() : undefined;
       const requestBody = {
         messages: [{ role: 'user' as const, content: 'Reply with exactly one word: hello' }],
         // No maxTokens cap: a reasoning model spends the whole budget on hidden
@@ -9179,19 +9249,21 @@ EXPLANATION_END`;
         // false "empty response / misconfigured" result. Let the router fill in
         // the model's real limit; the model stops after the one-word reply.
         temperature: 0,
+        ...(requestedModel ? { model: requestedModel } : {}),
       };
       const baseUrl = (provider as any).baseUrl ?? (provider as any).config?.baseUrl ?? '';
       try {
         const startMs = Date.now();
-        const response = await this.llmRouter.chatDirect(requestBody, providerName);
+        const response = await this.llmRouter.chatDirect(requestBody, providerName, requestedModel);
         const durationMs = Date.now() - startMs;
         const reply = (response.content ?? '').trim();
         const requestUrl = response._providerBaseUrl ?? baseUrl;
+        const resultModel = response._model ?? requestedModel ?? provider.model;
         if (!reply) {
           this.json(res, 200, {
             ok: false,
             error: 'Model returned empty response — API key or model may be misconfigured',
-            model: provider.model,
+            model: resultModel,
             durationMs,
             requestUrl,
             requestBody,
@@ -9200,7 +9272,7 @@ EXPLANATION_END`;
           this.json(res, 200, {
             ok: true,
             durationMs,
-            model: provider.model,
+            model: resultModel,
             reply: reply.slice(0, 100),
             usage: response.usage,
             requestUrl,
@@ -9226,7 +9298,7 @@ EXPLANATION_END`;
           ok: false,
           error: errorMsg.slice(0, 500),
           errorCode,
-          model: provider.model,
+          model: requestedModel ?? provider.model,
           requestUrl: baseUrl,
           requestBody,
         });
@@ -12867,6 +12939,30 @@ EXPLANATION_END`;
     };
   }
 
+  /**
+   * Probe a local Ollama model's capabilities (`vision` / `tools` / `thinking`)
+   * via `/api/show`. Returns an empty array on any failure so callers can keep
+   * a conservative default without breaking model listing.
+   */
+  private async probeOllamaCapabilities(baseUrl: string, modelId: string): Promise<string[]> {
+    try {
+      const ctrl = new AbortController();
+      const tmr = setTimeout(() => ctrl.abort(), 4000);
+      const res = await fetch(`${String(baseUrl).replace(/\/+$/, '')}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelId }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(tmr);
+      if (!res.ok) return [];
+      const data = await res.json() as { capabilities?: unknown };
+      return Array.isArray(data.capabilities) ? data.capabilities as string[] : [];
+    } catch {
+      return [];
+    }
+  }
+
   private async validateProviderKey(provider: string, apiKey: string, baseUrl?: string): Promise<{ valid: boolean; error?: string; models: unknown[] }> {
     const PROVIDER_BASE_URLS: Record<string, string> = {
       anthropic: 'https://api.anthropic.com',
@@ -12962,7 +13058,9 @@ EXPLANATION_END`;
               maxOutputTokens: gm.outputTokenLimit || 8192,
               inputCostPer1MTokens: 0,
               outputCostPer1MTokens: 0,
-              capabilities: { vision: false, functionCalling: false, reasoning: false, promptCaching: false, webSearch: false, audioInput: false, audioOutput: false },
+              // Gemini `generateContent` models are multimodal (image-in capable)
+              // unless they are embedding-only, which are filtered out above.
+              capabilities: { vision: true, functionCalling: true, reasoning: false, promptCaching: false, webSearch: false, audioInput: false, audioOutput: false },
             });
           }
         }
@@ -13115,7 +13213,18 @@ EXPLANATION_END`;
           inputCostPer1M = parseFloat(pricing.prompt || '0') * 1_000_000;
           outputCostPer1M = parseFloat(pricing.completion || '0') * 1_000_000;
         }
-        return { contextLength, maxOutput, inputCostPer1M, outputCostPer1M };
+        // Multimodal capability hints from the live /v1/models response.
+        // OpenRouter: architecture.input_modalities. Others use capabilities[],
+        // capabilities.{vision}, input_modalities, or a bare `vision` flag.
+        const arch = (remoteModel.architecture ?? {}) as Record<string, unknown>;
+        const capsArr = Array.isArray(remoteModel.capabilities) ? remoteModel.capabilities as unknown[] : [];
+        const capsObj = (remoteModel.capabilities ?? {}) as Record<string, unknown>;
+        const modalities = (arch.input_modalities ?? remoteModel.input_modalities ?? []) as unknown[];
+        const flagTrue = (key: string) => capsObj[key] === true || capsArr.includes(key) || remoteModel[key] === true;
+        const vision = modalities.includes('image') || flagTrue('vision');
+        const reasoning = flagTrue('reasoning') || flagTrue('thinking');
+        const functionCalling = flagTrue('function_calling') || flagTrue('functionCalling') || flagTrue('tools');
+        return { contextLength, maxOutput, inputCostPer1M, outputCostPer1M, vision, reasoning, functionCalling };
       };
 
       // Compute a fallback context window from provider's known models
@@ -13156,7 +13265,7 @@ EXPLANATION_END`;
             maxOutputTokens: apiMeta.maxOutput || 8192,
             inputCostPer1MTokens: apiMeta.inputCostPer1M,
             outputCostPer1MTokens: apiMeta.outputCostPer1M,
-            capabilities: { vision: false, functionCalling: false, reasoning: false, promptCaching: false, webSearch: false, audioInput: false, audioOutput: false },
+            capabilities: { vision: apiMeta.vision, functionCalling: apiMeta.functionCalling, reasoning: apiMeta.reasoning, promptCaching: false, webSearch: false, audioInput: false, audioOutput: false },
           });
         }
       }

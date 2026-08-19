@@ -162,6 +162,27 @@ describe('OllamaProvider', () => {
     vi.unstubAllGlobals();
   });
 
+  it('should honour request.model over the configured model on the wire', async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    const mockFetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string);
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ message: { role: 'assistant', content: 'hi' }, done: true }),
+      });
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const response = await provider.chat({
+      messages: [{ role: 'user', content: 'Hi' }],
+      model: 'qwen2.5-coder:14b',
+    });
+
+    expect(capturedBody?.['model']).toBe('qwen2.5-coder:14b');
+    expect(response.content).toBe('hi');
+    vi.unstubAllGlobals();
+  });
+
   it('should handle tool calls', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
