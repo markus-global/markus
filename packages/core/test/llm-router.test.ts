@@ -1221,6 +1221,43 @@ describe('LLMRouter local/live model sync', () => {
     expect(enhanced.models.some(m => m.id === 'llama3.1')).toBe(false);
   });
 
+  it('maps ollama /api/show capabilities into vision/reasoning on local models', async () => {
+    const router = LLMRouter.createDefault({
+      ollama: { provider: 'ollama', model: 'qwen3.8:27b-mlx', baseUrl: 'http://localhost:11434' },
+    });
+    // Distinguish /api/tags (list) from /api/show (per-model capabilities probe).
+    globalThis.fetch = vi.fn(async (input: any) => {
+      const url = String(typeof input === 'string' ? input : (input as Request)?.url ?? '');
+      if (url.includes('/api/tags')) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ models: [{ name: 'qwen3.8:27b-mlx', details: { parameter_size: '27B' } }] }),
+        } as unknown as Response;
+      }
+      if (url.includes('/api/show')) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            capabilities: ['completion', 'vision', 'tools', 'thinking'], // reported by ollama for this model
+            model_info: { 'qwen3_5.context_length': 262144 },
+          }),
+        } as unknown as Response;
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const count = await router.refreshOllamaLocalModels();
+    expect(count).toBe(1);
+
+    const [m] = router.getProviderModels('ollama');
+    expect(m?.id).toBe('qwen3.8:27b-mlx');
+    // The core fix: a vision-capable local model gains 'image' input + vision capability,
+    // so the image_recognition picker (which reads inputTypes.includes('image')) can offer it.
+    expect(m?.inputTypes).toContain('image');
+    expect(m?.capabilities).toContain('vision');
+    expect(m?.reasoning).toBe(true);
+  });
+
   it('returns no models before any local sync (no builtin ollama catalog)', () => {
     const router = LLMRouter.createDefault({
       ollama: { provider: 'ollama', model: 'llama3.1', baseUrl: 'http://localhost:11434' },

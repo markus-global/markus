@@ -626,15 +626,20 @@ export class LLMRouter {
       const models: ModelDefinition[] = await Promise.all((data.models ?? []).map(async m => {
         const d = m.details;
         const tag = d?.parameter_size || d?.quantization_level;
-        const contextWindow = await this.probeOllamaContext(base, m.name);
+        const info = await this.probeOllamaModel(base, m.name);
+        const caps = info.capabilities;
+        const hasVision = caps.includes('vision');
+        const hasReasoning = caps.includes('thinking');
         return {
           id: m.name,
           name: m.name,
           provider: 'ollama',
-          contextWindow,
+          contextWindow: info.contextWindow,
           maxOutputTokens: OLLAMA_DEFAULT_MAX_OUTPUT,
           cost: { input: 0, output: 0 },
-          inputTypes: ['text'],
+          reasoning: hasReasoning || undefined,
+          inputTypes: hasVision ? ['text', 'image'] as Array<'text' | 'image'> : ['text' as const],
+          capabilities: caps.length > 0 ? caps : undefined,
           description: tag ? tag : undefined,
         };
       }));
@@ -648,13 +653,14 @@ export class LLMRouter {
   }
 
   /**
-   * Probe a local Ollama model's real context length via `/api/show`.
+   * Probe a local Ollama model's real context length and capabilities via `/api/show`.
    * Reads `model_info["*.context_length"]` (key name varies by model family,
-   * e.g. `llama.context_length`, `qwen3_5.context_length`) and returns the
-   * largest positive value found. Falls back to a sane default so a probe
-   * failure never blocks agent budget planning.
+   * e.g. `llama.context_length`, `qwen3_5.context_length`) for the context window,
+   * plus the top-level `capabilities` array (e.g. `['completion','vision','tools','thinking']`)
+   * for multimodal / function-calling / reasoning support. Falls back to a sane
+   * default so a probe failure never blocks agent budget planning.
    */
-  private async probeOllamaContext(base: string, modelId: string): Promise<number> {
+  private async probeOllamaModel(base: string, modelId: string): Promise<{ contextWindow: number; capabilities: string[] }> {
     try {
       const ctrl = new AbortController();
       const tmr = setTimeout(() => ctrl.abort(), 4000);
@@ -665,18 +671,21 @@ export class LLMRouter {
         signal: ctrl.signal,
       });
       clearTimeout(tmr);
-      if (!res.ok) return OLLAMA_DEFAULT_CONTEXT_WINDOW;
-      const data = await res.json() as { model_info?: Record<string, unknown> };
+      if (!res.ok) return { contextWindow: OLLAMA_DEFAULT_CONTEXT_WINDOW, capabilities: [] };
+      const data = await res.json() as { model_info?: Record<string, unknown>; capabilities?: string[] };
       const vals = Object.entries(data.model_info ?? {})
         .filter(([k]) => k.toLowerCase().includes('context_length'))
         .map(([, v]) => Number(v))
         .filter(n => Number.isFinite(n) && n > 0);
       const ctx = vals.length ? Math.max(...vals) : 0;
-      if (ctx <= 0) return OLLAMA_DEFAULT_CONTEXT_WINDOW;
-      log.info(`Ollama local model ${modelId}: context_window=${ctx}`);
-      return ctx;
+      const capabilities = Array.isArray(data.capabilities) ? data.capabilities : [];
+      if (ctx > 0) log.info(`Ollama local model ${modelId}: context_window=${ctx}, capabilities=${capabilities.join(',')}`);
+      return {
+        contextWindow: ctx > 0 ? ctx : OLLAMA_DEFAULT_CONTEXT_WINDOW,
+        capabilities,
+      };
     } catch {
-      return OLLAMA_DEFAULT_CONTEXT_WINDOW;
+      return { contextWindow: OLLAMA_DEFAULT_CONTEXT_WINDOW, capabilities: [] };
     }
   }
 
@@ -706,18 +715,34 @@ export class LLMRouter {
       });
       clearTimeout(tmr);
       if (!res.ok) return 0;
-      const data = await res.json() as { data?: Array<{ id?: string }> };
+      const data = await res.json() as { data?: Array<Record<string, unknown> & { id?: string }> };
       const ids = (data.data ?? []).map(m => m.id).filter((x): x is string => !!x);
       if (ids.length === 0) return 0;
-      const defs: ModelDefinition[] = ids.map(id => ({
-        id,
-        name: id,
-        provider: providerName,
-        contextWindow: 0,
-        maxOutputTokens: 0,
-        cost: { input: 0, output: 0 },
-        inputTypes: ['text'] as Array<'text' | 'image'>,
-      }));
+      // Some OpenAI-compatible gateways expose capability hints in /v1/models
+      // (OpenRouter: architecture.input_modalities; others: capabilities[] /
+      // capabilities.{vision} / input_modalities / a bare `vision` flag).
+      // Read them defensively so multimodal self-hosted/custom providers are pickable.
+      const defs: ModelDefinition[] = (data.data ?? []).map(m => {
+        const id = m.id ?? '';
+        const raw = m as Record<string, unknown>;
+        const capsArr = Array.isArray(raw.capabilities) ? raw.capabilities as unknown[] : [];
+        const capsObj = (raw.capabilities ?? {}) as Record<string, unknown>;
+        const arch = (raw.architecture ?? {}) as Record<string, unknown>;
+        const modalities = (arch.input_modalities ?? raw.input_modalities ?? []) as unknown[];
+        const flagTrue = (key: string) => capsObj[key] === true || capsArr.includes(key) || raw[key] === true;
+        const hasVision = modalities.includes('image') || flagTrue('vision');
+        const hasReasoning = flagTrue('reasoning') || flagTrue('thinking');
+        return {
+          id,
+          name: id,
+          provider: providerName,
+          contextWindow: 0,
+          maxOutputTokens: 0,
+          cost: { input: 0, output: 0 },
+          reasoning: hasReasoning || undefined,
+          inputTypes: hasVision ? ['text', 'image'] as Array<'text' | 'image'> : ['text'] as Array<'text' | 'image'>,
+        };
+      }).filter(m => m.id.length > 0);
       this.customModelCatalog.set(providerName, defs);
       log.info(`Synced ${defs.length} live models for provider ${providerName}`, { baseUrl: effectiveBase });
       return defs.length;
