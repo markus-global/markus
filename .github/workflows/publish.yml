@@ -68,8 +68,11 @@ jobs:
           # npm pack dry-run must include the zip
           cd packages/cli && npm pack --dry-run 2>&1 | grep -F 'markus-browser-extension.zip'
 
+      - name: Upgrade npm CLI (Trusted Publishing needs >= 11.5.1)
+        run: npm install -g npm@latest
+
       - name: Publish to npm (Trusted Publishing)
-        run: cd packages/cli && npm publish --access public --tag ${{ steps.meta.outputs.npm_tag }}
+        run: cd packages/cli && npm publish --access public --provenance --tag ${{ steps.meta.outputs.npm_tag }}
 
   build-server-binary:
     needs: publish-npm

@@ -3,6 +3,13 @@
   "description": "Markus — AI Digital Workforce Platform",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/markus-global/markus.git"
+  },
+  "publishConfig": {
+    "provenance": true
+  },
   "bin": {
     "markus": "dist/markus.mjs"
   },
