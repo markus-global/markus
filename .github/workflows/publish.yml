@@ -5,9 +5,13 @@ on:
     tags:
       - 'v*'
 
+# Trusted publishing (npm): id-token: write lets GitHub Actions mint an OIDC
+# token that npm CLI auto-exchanges for a short-lived publish token, so we no
+# longer rely on a long-lived NPM_TOKEN. See https://docs.npmjs.com/trusted-publishers
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 jobs:
   publish-npm:
@@ -64,10 +68,8 @@ jobs:
           # npm pack dry-run must include the zip
           cd packages/cli && npm pack --dry-run 2>&1 | grep -F 'markus-browser-extension.zip'
 
-      - name: Publish to npm
+      - name: Publish to npm (Trusted Publishing)
         run: cd packages/cli && npm publish --access public --tag ${{ steps.meta.outputs.npm_tag }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   build-server-binary:
     needs: publish-npm
