@@ -31,6 +31,8 @@
   "skip": "Skip",
   "dismiss": "Dismiss",
   "send": "Send",
+  "shiftEnterHint": "Shift+Enter for new line",
+  "creditBalance": "Credits",
   "open": "Open",
   "copy": "Copy",
   "copied": "Copied!",

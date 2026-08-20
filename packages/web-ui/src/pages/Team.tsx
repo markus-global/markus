@@ -5424,6 +5424,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
           </div>
           </div>
+          {/* Shift+Enter hint — only while the user is typing (any composer mode) */}
+          {(input.trim() || pendingImages.length > 0) && (
+            <div className="mt-0.5 flex justify-end px-1 pointer-events-none select-none">
+              <span className="text-[10px] text-fg-tertiary/80">{t('common:shiftEnterHint')}</span>
+            </div>
+          )}
         </div>
         </div>
       </div>

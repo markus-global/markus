@@ -89,6 +89,7 @@
     "addDescription": "Add a description…",
     "noDescription": "No description",
     "collapse": "Collapse",
+    "expand": "Expand",
     "subtasksProgress": "{{done}}/{{total}} done",
     "hideCompleted": "Hide completed",
     "showCompleted": "Show completed ({{count}})",

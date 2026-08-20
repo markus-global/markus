@@ -574,6 +574,12 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
           </button>
         </div>
       </div>
+      {/* Shift+Enter hint — only while the user is typing */}
+      {text.trim() && !sending && (
+        <div className="mt-0.5 -mb-0.5 flex justify-end px-2.5 pointer-events-none select-none">
+          <span className="text-[10px] text-fg-tertiary/80">{t('common:shiftEnterHint')}</span>
+        </div>
+      )}
       <p className="mt-1 text-center text-[10px] text-fg-tertiary/80 select-none">{t('aiDisclaimer')}</p>
     </div>
   );

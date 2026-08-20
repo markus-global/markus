@@ -201,6 +201,29 @@ body {
   background-color: theme(--color-gray-600);
 }
 
+/* ── Global thin scrollbars ──
+   Narrows every un-styled scrollbar (matches the overview sidebar).
+   Components that hide scrollbars still override via .scrollbar-hide
+   (its display:none wins over these element rules). */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: theme(--color-border-default);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: theme(--color-gray-600);
+}
+html {
+  scrollbar-width: thin;
+  scrollbar-color: theme(--color-border-default) transparent;
+}
+
 .scrollbar-hide {
   scrollbar-width: none;
 }
