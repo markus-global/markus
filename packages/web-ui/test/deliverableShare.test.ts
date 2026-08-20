@@ -7,6 +7,9 @@ import {
   base64ByteLength,
   normalizeShareRecord,
   HUB_DELIVERABLE_MAX_BYTES,
+  DELIVERABLE_SHARE_FORMATS,
+  effectiveShareFormat,
+  canShareDeliverableFormat,
   DeliverableShareRecord,
 } from '../src/lib/deliverableShare.ts';
 
@@ -44,6 +47,46 @@ describe('base64ByteLength', () => {
     expect(base64ByteLength('')).toBe(0);
     expect(base64ByteLength('AA==')).toBe(1);
     expect(base64ByteLength(' A A = = ')).toBe(1); // 忽略空白
+  });
+});
+
+// ── 分享格式白名单门禁 ─────────────────────────────────────────────────────
+// 客户端侧门控：分享参数实际值按 `item.format || 'markdown'` 兜底，只有命中
+// 白名单（markdown / html）才允许分享（与服务端 DELIVERABLE_SHARE_FORMATS 一致）。
+// 这些测试保障：即使 UI 入口漏放行，门禁函数本身也能拒绝非文本格式，且不会把
+// 未知/缺省格式错误地拦掉（缺省 → 'markdown'，应放行）。
+describe('DELIVERABLE_SHARE_FORMATS / effectiveShareFormat / canShareDeliverableFormat', () => {
+  it('白名单只允许 markdown 与 html', () => {
+    expect([...DELIVERABLE_SHARE_FORMATS].sort()).toEqual(['html', 'markdown']);
+  });
+
+  it('effectiveShareFormat 对缺省/空格式兜底为 markdown（与 doShare 一致）', () => {
+    expect(effectiveShareFormat(undefined)).toBe('markdown');
+    expect(effectiveShareFormat(null)).toBe('markdown');
+    expect(effectiveShareFormat('')).toBe('markdown');
+    expect(effectiveShareFormat('markdown')).toBe('markdown');
+    expect(effectiveShareFormat('html')).toBe('html');
+  });
+
+  it('放行 markdown 与 html', () => {
+    expect(canShareDeliverableFormat('markdown')).toBe(true);
+    expect(canShareDeliverableFormat('html')).toBe(true);
+    // 大写在白名单内（DELIVERABLE_SHARE_FORMATS.has 严格匹配，与服务端一致拒绝大写）
+    expect(canShareDeliverableFormat('Markdown')).toBe(false);
+  });
+
+  it('缺省/空格式放行（因兜底为 markdown）', () => {
+    expect(canShareDeliverableFormat(undefined)).toBe(true);
+    expect(canShareDeliverableFormat(null)).toBe(true);
+    expect(canShareDeliverableFormat('')).toBe(true);
+  });
+
+  it('拒绝非白名单文本与二进制格式（text/json/pdf/zip）', () => {
+    expect(canShareDeliverableFormat('text')).toBe(false);
+    expect(canShareDeliverableFormat('json')).toBe(false);
+    expect(canShareDeliverableFormat('pdf')).toBe(false);
+    expect(canShareDeliverableFormat('zip')).toBe(false);
+    expect(canShareDeliverableFormat('binary')).toBe(false);
   });
 });
 

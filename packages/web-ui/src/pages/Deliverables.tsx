@@ -6,7 +6,7 @@ import { ContentRenderer, resolveFormat, type HtmlSelectionData } from '../compo
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { DeliverableShareModal } from '../components/DeliverableShareModal.tsx';
-import { createDeliverableShareService, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
+import { createDeliverableShareService, canShareDeliverableFormat, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -1317,7 +1317,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
                 {!previewMode && (
                 <div className="flex items-center gap-1 shrink-0">
-                  {/* 分享到 Hub */}
+                  {/* 分享到 Hub：仅格式命中白名单（markdown / html）时提供入口，与服务端一致 */}
+                  {canShareDeliverableFormat(selected?.format) && (
                   <button
                     onClick={() => setShareOpen(true)}
                     title={t('share.title', { defaultValue: '分享到 Markus Hub' })}
@@ -1347,6 +1348,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                       />
                     ) : null}
                   </button>
+                  )}
                   <button
                     onClick={() => setConfirmRemove(selected)}
                     disabled={!!actionLoading}

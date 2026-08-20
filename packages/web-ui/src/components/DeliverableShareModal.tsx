@@ -8,6 +8,8 @@ import {
   DeliverableShareRecord,
   NotLoggedIntoHubError,
   DeliverableShareError,
+  DELIVERABLE_SHARE_FORMATS,
+  canShareDeliverableFormat,
   type ShareVisibility,
 } from '../lib/deliverableShare.ts';
 import {
@@ -240,6 +242,13 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
   }, [record, item.shareUrl]);
 
   const doPublish = useCallback(async () => {
+    // 客户端侧格式门禁：分享格式必须命中白名单（markdown / html），与 Hub 服务端一致。
+    // 这是最后一道防线——即使上游入口（RightPanel / Deliverables 分享按钮）漏放行了
+    // 非文本格式，这里也会拒绝提交，避免把 text/json/二进制等推给 Hub 得到 400。
+    if (!canShareDeliverableFormat(item.format)) {
+      setError(`分享仅支持 ${[...DELIVERABLE_SHARE_FORMATS].join(' / ')} 格式`);
+      return;
+    }
     setError(null);
     setUi('busy');
     try {

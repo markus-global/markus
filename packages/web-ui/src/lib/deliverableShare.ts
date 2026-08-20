@@ -57,6 +57,23 @@ export interface DeliverableShareRecord {
 /** 单产出物文件大小上限（与 core 一致，50MB）。 */
 export const HUB_DELIVERABLE_MAX_BYTES = 50 * 1024 * 1024;
 
+/**
+ * 可分享产出物格式白名单（与 Hub 服务端 DELIVERABLE_SHARE_FORMATS 保持一致）。
+ * 分享即发布，格式限文本类 markdown / html——天然规避 R2 跨域/CORS 导致的渲染降级，
+ * 也避免 text/json/二进制等格式在公开页无法正确展示。其余格式一律拒绝。
+ */
+export const DELIVERABLE_SHARE_FORMATS: ReadonlySet<string> = new Set(['markdown', 'html']);
+
+/** 分享请求实际使用的格式（与 doShare 中 `item.format || 'markdown'` 的兜底逻辑一致）。 */
+export function effectiveShareFormat(format?: string | null): string {
+  return format || 'markdown';
+}
+
+/** 该产出物格式是否允许分享到 Hub（客户端侧门控，与服务端白名单同源）。 */
+export function canShareDeliverableFormat(format?: string | null): boolean {
+  return DELIVERABLE_SHARE_FORMATS.has(effectiveShareFormat(format));
+}
+
 /** 分享服务错误基类。 */
 export class DeliverableShareError extends Error {
   constructor(message: string) {

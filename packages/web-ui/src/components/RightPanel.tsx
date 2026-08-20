@@ -10,7 +10,7 @@ import { FilePreviewEditor } from './FilePreviewEditor.tsx';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
 import { DeliverableShareModal } from './DeliverableShareModal.tsx';
-import { createDeliverableShareService, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
+import { createDeliverableShareService, canShareDeliverableFormat, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import type { RightPanelMode, RightPanelPayload, RightPanelTab } from '../contexts/LayoutContext.tsx';
 
 type TabOwner = { agentId: string; agentName: string };
@@ -529,11 +529,14 @@ export function RightPanel({
     && (payload.kind === 'file' || payload.kind === 'deliverable');
 
   // 分享到 Hub：仅产出物「文件」（reference 指向存在的本地文件）可用；URL / 目录 / builder 产物不可。
+  // 且格式必须命中分享白名单（markdown / html）——非文本格式分享即发布，公开页无法正确展示，
+  // 服务端也会 400 拒绝，所以客户端直接不提供入口。
   const canShare = payload.kind === 'deliverable'
     && payload.deliverable.type === 'file'
     && !!reference
     && !isUrl(reference)
-    && !payload.deliverable.artifactType;
+    && !payload.deliverable.artifactType
+    && canShareDeliverableFormat(payload.deliverable.format);
 
   // 供分享弹窗回显的产出物（用本地分享状态覆盖初始字段，随分享/轮询/revoke 更新）。
   const shareItem = payload.kind === 'deliverable'
