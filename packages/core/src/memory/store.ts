@@ -62,6 +62,27 @@ function sanitizeEntry(raw: Record<string, unknown> | MemoryEntry): MemoryEntry 
   };
 }
 
+/** Best-effort JSON stringify for embedding in an HTML comment (never throws). */
+function safeJson(value: unknown): string {
+  try {
+    const s = JSON.stringify(value);
+    return typeof s === 'string' ? s : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Parse a data-meta JSON payload embedded in an HTML comment (never throws). */
+function parseDataMeta(raw: string): Record<string, unknown> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ─── Notebook (NOTEBOOK.md) parse/serialize ─────────────────────────────────
 
 export type NotebookEntryManaged = 'agent' | 'system' | 'cpp';
@@ -541,13 +562,61 @@ export class MemoryStore implements IMemoryStore {
 
   // --- Context compaction (OpenClawd pattern) ---
 
+  /**
+   * MessageGroup atomicity (ContextOS design §4.2): a group is
+   * [assistant(tool_calls)] + the immediately-following [tool results].
+   * Compaction must NOT split a group — otherwise the LLM sees an assistant
+   * whose tool_calls lack results (or orphan tool results).
+   *
+   * Given the desired cutoff (first "kept" message), widen it to a safe
+   * boundary: if the cut would split an assistant's tool_calls from its
+   * results, extend the cut forward past the whole group (retain more, never
+   * break a pair). Structural boundaries (user / system / plain assistant)
+   * are always safe.
+   */
+  private computeSafeCutoff(messages: LLMMessage[], cutoff: number): number {
+    if (cutoff <= 0 || cutoff >= messages.length) return cutoff;
+    let idx = cutoff;
+    while (idx < messages.length) {
+      const m = messages[idx]!;
+      if (m.role === 'assistant' && m.toolCalls?.length) {
+        // This assistant's results follow; extend cut past the whole
+        // tool-result run so assistant+results stay together in retained.
+        const wanted = new Set(m.toolCalls.map((t) => t.id));
+        let j = idx + 1;
+        while (j < messages.length && messages[j]!.role === 'tool') {
+          j++;
+        }
+        // The tool run ends at j. Keep results contiguous with their assistant:
+        // extend idx to the group end.
+        if (j > idx + 1) {
+          idx = j;
+          break;
+        }
+        // No tool messages follow (bare assistant w/ toolCalls) — safe to cut here.
+        break;
+      }
+      // Plain assistant (no toolCalls) — safe boundary; stop widening.
+      if (m.role === 'system' || m.role === 'user' || (m.role === 'assistant' && !m.toolCalls?.length)) {
+        break;
+      }
+      // tool message: skip forward (it belongs to whatever group it's a result for)
+      idx++;
+    }
+    return idx;
+  }
+
   compactSession(sessionId: string, keepLast: number = 20): { summary: string; flushedCount: number } {
     const session = this.sessions.get(sessionId);
     if (!session || session.messages.length <= keepLast) {
       return { summary: '', flushedCount: 0 };
     }
 
-    const older = session.messages.slice(0, -keepLast);
+    // MessageGroup-atomic cut: never split an assistant(tool_calls) from its
+    // tool results. Widen the raw count-based cut to a safe group boundary.
+    const desiredCut = session.messages.length - keepLast;
+    const safeCut = this.computeSafeCutoff(session.messages, desiredCut);
+    const older = session.messages.slice(0, safeCut);
     const flushedCount = older.length;
 
     const summary = this.buildHeuristicSummary(older);
@@ -580,12 +649,15 @@ export class MemoryStore implements IMemoryStore {
       });
     }
 
-    const retained = session.messages.slice(-keepLast);
+    const retained = session.messages.slice(safeCut);
 
-    // Inject a summary message so the model retains awareness of compacted history
+    // Inject a summary message so the model retains awareness of compacted history.
+    // role 'user' keeps LLM API compatibility (no neutral role exists), but the
+    // [SYSTEM] prefix marks it as platform-injected, NOT human input — both
+    // context-engine's merge guard and the model itself treat it separately.
     const summaryMessage: LLMMessage = {
       role: 'user',
-      content: `[Conversation history summary — ${flushedCount} earlier messages were paged out to archive; recoverable via session_retrieve]\n${summary}\n[End of summary. The conversation continues below with the most recent messages.]`,
+      content: `[SYSTEM] [Conversation history summary — ${flushedCount} earlier messages were paged out to archive; recoverable via session_retrieve]\n${summary}\n[End of summary. The conversation continues below with the most recent messages.]`,
     };
     session.messages = [summaryMessage, ...retained];
     this.saveSessionToDisk(session);
@@ -894,13 +966,26 @@ export class MemoryStore implements IMemoryStore {
         // Parse metadata from HTML comments
         let type: MemoryEntry['type'] = 'note';
         let tags: string[] = [];
+        let restoredMeta: Record<string, unknown> | undefined;
         const contentLines: string[] = [];
         for (let i = 1; i < lines.length; i++) {
-          const metaMatch = lines[i].match(/^<!-- type: (\w+)(?:, tags: (.+))? -->$/);
+          const metaMatch = lines[i].match(/^<!-- type: (\w+)(?:, tags: (.+))?(?:, data-meta: (.+))? -->$/);
           if (metaMatch) {
             const typeVal = metaMatch[1];
             if (typeVal && VALID_TYPES.has(typeVal)) type = typeVal as MemoryEntry['type'];
             if (metaMatch[2]) tags = metaMatch[2].split(',').map(t => t.trim());
+            // Restore faithful metadata for conversation_fragment / curated slots
+            if (metaMatch[3]) {
+              const meta = parseDataMeta(metaMatch[3]);
+              if (meta) {
+                const metaTags = Array.isArray(meta.tags) ? meta.tags as string[] : tags;
+                const rest = { ...meta };
+                delete rest.tags;
+                if (Array.isArray(metaTags)) tags = metaTags;
+                restoredMeta = { ...(restoredMeta ?? {}), ...rest };
+                if (Array.isArray(metaTags)) restoredMeta.tags = metaTags;
+              }
+            }
             continue;
           }
           contentLines.push(lines[i]);
@@ -912,7 +997,9 @@ export class MemoryStore implements IMemoryStore {
           timestamp,
           type,
           content: contentLines.join('\n').trim(),
-          metadata: tags.length > 0 ? { tags } : undefined,
+          metadata: restoredMeta !== undefined
+            ? restoredMeta
+            : (tags.length > 0 ? { tags } : undefined),
         });
       }
       return entries;
@@ -1004,7 +1091,13 @@ export class MemoryStore implements IMemoryStore {
           ? (entry.metadata!.tags as string[]).join(', ')
           : '';
         obsLines.push(`### ${entry.id}`);
-        obsLines.push(`<!-- type: ${entry.type}${tags ? `, tags: ${tags}` : ''} -->`);
+        // Serialize metadata faithfully so conversation_fragment retro-traceability
+        // (sessionId/agentId/pagedOutCount/first/last) survives disk round-trips.
+        const meta = entry.metadata && typeof entry.metadata === 'object'
+          ? entry.metadata
+          : undefined;
+        const metaJson = meta ? safeJson(meta) : '';
+        obsLines.push(`<!-- type: ${entry.type}${tags ? `, tags: ${tags}` : ''}${metaJson ? `, data-meta: ${metaJson}` : ''} -->`);
         obsLines.push(entry.content);
         obsLines.push('');
       }

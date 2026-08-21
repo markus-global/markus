@@ -328,7 +328,7 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
     if (!n.sessionId) {
       return JSON.stringify({
         status: 'error',
-        message: 'Getting a session needs session_id. Example: { "operation": "get", "session_id": "cs-..." }. List first with { "operation": "list" }.',
+        message: 'Getting a session needs session_id. Example: { "operation": "get", "session_id": "sess_..." }. List first with { "operation": "list" }.',
       });
     }
     const session = repo.getSession(n.sessionId);
@@ -386,7 +386,7 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
     if (!n.sessionId) {
       return JSON.stringify({
         status: 'error',
-        message: 'Compacting needs session_id. Example: { "operation": "compact", "session_id": "cs-...", "keep_last": 40 }.',
+        message: 'Compacting needs session_id. Example: { "operation": "compact", "session_id": "sess_...", "keep_last": 40 }.',
       });
     }
     // 权限：只允许压缩自己拥有的 session（避免 agent 篡改他人上下文）。
@@ -427,7 +427,7 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
     if (!n.sessionId || !n.key || n.content === undefined) {
       return JSON.stringify({
         status: 'error',
-        message: 'Pinning needs session_id, key, content. Example: { "operation": "pin", "session_id": "cs-...", "key": "goal", "content": "..." }.',
+        message: 'Pinning needs session_id, key, content. Example: { "operation": "pin", "session_id": "sess_...", "key": "goal", "content": "..." }.',
       });
     }
     const own = checkOwnership(repo, n.sessionId, ctx.agentId);
@@ -572,18 +572,18 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
   return {
     name: 'session',
     description: [
-      'Manage your own conversation sessions (chat_sessions/chat_messages) and context.',
+      'Manage your own conversation sessions (MemoryStore sessions, ids like sess_* / task_* / a2a_* / hb_*) and context.',
       '',
       'Commands (pick one):',
       '• session_list — list your sessions. Args: since/until (ISO), page, page_size.',
       '  Example: { "operation": "list", "since": "2026-08-01", "page": 1, "page_size": 20 }',
       '• session_get — get one session + its messages. Args: session_id, since/until, page, page_size.',
-      '  Example: { "operation": "get", "session_id": "cs-...", "page_size": 50 }',
-      '• session_compact — collapse stale history into an anchor summary so future turns stop re-reading it. Optionally pass goal/done/next to anchor your position. Use when earlier tool results are obsolete or context feels bloated.',
+      '  Example: { "operation": "get", "session_id": "sess_...", "page_size": 50 }',
+      '• session_compact — collapse stale history into an anchor summary so future turns stop re-reading it. Atomic: an assistant tool-call and its tool results are NEVER split. Optionally pass goal/done/next to anchor your position. Use when earlier tool results are obsolete or context feels bloated.',
       '  Args: session_id (required), keep_last (5-200, default 40), goal/done/next (optional anchors).',
-      '  Example: { "operation": "compact", "session_id": "cs-...", "keep_last": 40 }',
-      '• session_pin — pin a fact into a durable slot that survives compaction (persisted per session, injected every turn). Best for your current goal / what is done / what is next.',
-      '  Args: session_id, key, content. Example: { "operation": "pin", "session_id": "cs-...", "key": "goal", "content": "..." }',
+      '  Example: { "operation": "compact", "session_id": "sess_...", "keep_last": 40 }',
+      '• session_pin — write a durable slot into the fixed [SLOTS] segment: persisted per session and injected every turn, NEVER compacted until you unpin it. Best for your current goal / what is done / what is next (use key=goal/done/next).',
+      '  Args: session_id, key, content. Example: { "operation": "pin", "session_id": "sess_...", "key": "goal", "content": "..." }',
       '• session_unpin — remove a pinned slot. Args: session_id, key.',
       '• session_retrieve — search archived (compacted) history fragments by keyword. Returns fragment_id(s). Args: session_id, query, max_results.',
       '• session_include — reinject an archived fragment (by fragment_id) back into context. Args: session_id, fragment_id.',
@@ -600,7 +600,7 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
           enum: ['list', 'get', 'compact', 'pin', 'unpin', 'include', 'retrieve', 'purge', 'status'],
           description: 'Which session operation to run. Default: list when no session_id, get when session_id present.',
         },
-        session_id: { type: 'string', description: 'The session id to operate on (cs-…).' },
+        session_id: { type: 'string', description: 'The session id to operate on (sess_* / task_* / a2a_* / hb_* — see session_list).' },
         since: { type: 'string', description: 'ISO timestamp — filter sessions/messages with timestamp >= since.' },
         until: { type: 'string', description: 'ISO timestamp — filter sessions/messages with timestamp <= until.' },
         page: { type: 'number', description: '1-based page number (default 1).' },

@@ -399,3 +399,105 @@ describe('session tool — Memory-backed repo (ContextOS split-brain regression)
     expect(after.fragmentCount).toBeGreaterThan(0);
   });
 });
+
+// =============================================================================
+// ContextOS 阶段二修复回归：原子组 / fragment metadata 往返 / [SYSTEM] 摘要前缀
+// =============================================================================
+
+describe('compact — MessageGroup atomicity (assistant tool-calls + results never split)', () => {
+  function buildTurnSequence(): MessageLike[] {
+    const msgs: MessageLike[] = [];
+    // 3 full tool turns at the head (will be compacted), then 2 plain user turns
+    for (let t = 0; t < 3; t++) {
+      msgs.push({ role: 'user', content: `u${t}` });
+      msgs.push({
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: `call_${t}`, name: 'file_read', arguments: {} }],
+      } as never);
+      msgs.push({ role: 'tool', content: `result_${t}`, toolCallId: `call_${t}` });
+    }
+    for (let t = 3; t < 6; t++) msgs.push({ role: 'user', content: `tail_${t}` });
+    return msgs;
+  }
+
+  it('compact 不会把 assistant(tool_calls) 与其 tool 结果拆开', () => {
+    const store = storeWithMessages([]);
+    const session = store.getLatestSession('agt-A')!;
+    for (const m of buildTurnSequence()) store.appendMessage(session.id, m as never);
+    const total = store.getSession(session.id)!.messages.length;
+    // keep_last small enough that the cut would naturally land in the middle of a group
+    store.compactSession(session.id, 1);
+    const remaining = store.getSession(session.id)!.messages;
+    // The [SYSTEM] summary anchor is prepended; afterwards retained must not contain
+    // any orphan tool result (tool without its assistant) nor a bare tool-call without result.
+    const toolResults = remaining.filter((m) => (m as any).role === 'tool');
+    const assistantCalls = remaining.filter((m) => (m as any).role === 'assistant' && (m as any).toolCalls?.length);
+    for (const tr of toolResults) {
+      const call = assistantCalls.find((a) => (a as any).toolCalls?.some((c: any) => c.id === (tr as any).toolCallId));
+      expect(call, `tool result ${(tr as any).toolCallId} must keep its assistant call`).toBeTruthy();
+    }
+    // Full archive preserved in fragment (raw data iron rule)
+    const frags = store.getEntries('conversation_fragment');
+    expect(frags.length).toBeGreaterThan(0);
+    expect(total).toBeGreaterThan(0);
+  });
+
+  it('compact 后保留区不存在孤儿 tool-call 或孤儿 tool-result', () => {
+    const store = storeWithMessages([]);
+    const session = store.getLatestSession('agt-A')!;
+    for (const m of buildTurnSequence()) store.appendMessage(session.id, m as never);
+    store.compactSession(session.id, 4); // cut lands near a group boundary
+    const remaining = store.getSession(session.id)!.messages;
+    const bodies = remaining.map((m) => (m as any).role + ':' + ((m as any).toolCallId ?? '')).join('|');
+    // assert symmetry: every tool result id appears as a tool call id, and vice versa
+    const toolResultIds = remaining.filter((m) => (m as any).role === 'tool').map((m) => (m as any).toolCallId);
+    const callIds = remaining
+      .filter((m) => (m as any).role === 'assistant' && (m as any).toolCalls)
+      .flatMap((m) => (m as any).toolCalls.map((c: any) => c.id));
+    for (const id of toolResultIds) expect(callIds).toContain(id);
+    for (const id of callIds) expect(toolResultIds).toContain(id);
+    expect(bodies).toBeTruthy();
+  });
+});
+
+describe('fragment — conversation_fragment metadata survives disk round-trip', () => {
+  it('compact 落盘的 fragment 带 sessionId；重建 store（重启）后仍可按 sessionId 检索/清理', () => {
+    const dir = tempDir();
+    const store = new MemoryStore(dir);
+    const session = store.createSession('agt-A');
+    for (let i = 0; i < 30; i++) {
+      store.appendMessage(session.id, { role: 'user', content: `meta turn ${i}` } as never);
+    }
+    store.compactSession(session.id, 5);
+    // Archive exists and metadata.sessionId was written (in-memory)
+    const frags = store.getEntries('conversation_fragment');
+    expect(frags.length).toBeGreaterThan(0);
+    expect(frags[0].metadata?.sessionId).toBe(session.id);
+
+    // Persist to knowledge.md then rebuild a FRESH store (simulates process restart).
+    // saveToDisk was already invoked via addEntry during compactSession.
+    const store2 = new MemoryStore(dir);
+    const frags2 = store2.getEntries('conversation_fragment');
+    expect(frags2.length).toBeGreaterThan(0);
+    // sessionId must survive the disk round-trip (was dropped before the fix)
+    expect(frags2[0].metadata?.sessionId).toBe(session.id);
+    // And purge-by-session must now work after restart (was a no-op before)
+    const purged = store2.purgeSessionFragments(session.id);
+    expect(purged).toBeGreaterThan(0);
+    expect(store2.getEntries('conversation_fragment')).toHaveLength(0);
+  });
+});
+
+describe('compact — summary anchor marked [SYSTEM] (not confusable with human input)', () => {
+  it('compact 注入的摘要以 [SYSTEM] 前缀开头', () => {
+    const store = storeWithMessages([]);
+    const session = store.getLatestSession('agt-A')!;
+    for (let i = 0; i < 30; i++) store.appendMessage(session.id, { role: 'user', content: `s ${i}` } as never);
+    store.compactSession(session.id, 3);
+    const remaining = store.getSession(session.id)!.messages;
+    const anchor = remaining.find((m) => String(m.content).includes('Conversation history summary'));
+    expect(anchor).toBeTruthy();
+    expect(String(anchor!.content)).toMatch(/^\[SYSTEM\]/);
+  });
+});

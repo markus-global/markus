@@ -2064,7 +2064,7 @@ export class ContextEngine {
           });
           const summaryMessage: LLMMessage = {
             role: 'user',
-            content: `[Conversation history summary — ${older.length} earlier messages were compacted by LLM]\n${summary}\n[End of summary. The conversation continues below.]`,
+            content: `[SYSTEM] [Conversation history summary — ${older.length} earlier messages were compacted by LLM]\n${summary}\n[End of summary. The conversation continues below.]`,
           };
           // No side-effects: prepareMessages must be pure (no writeDailyLog here)
           return [...protectedPrefix, summaryMessage, ...retained];
@@ -2081,7 +2081,7 @@ export class ContextEngine {
     if (heuristicSummary) {
       const summaryMessage: LLMMessage = {
         role: 'user',
-        content: `[Conversation history summary — ${heuristicOlder.length} earlier messages were compacted]\n${heuristicSummary}\n[End of summary.]`,
+        content: `[SYSTEM] [Conversation history summary — ${heuristicOlder.length} earlier messages were compacted]\n${heuristicSummary}\n[End of summary.]`,
       };
       return [...protectedPrefix, summaryMessage, ...heuristicRetained];
     }
