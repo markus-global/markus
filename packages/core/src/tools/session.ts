@@ -553,8 +553,8 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
       }
     }
     try {
-      const fragmentStats = ctx.fragmentStore?.sessionStats(n.sessionId);
-      const slots = ctx.slotStore?.getSlots(n.sessionId) ?? [];
+      const fragmentStats = ctx.fragmentStore?.sessionStats ? ctx.fragmentStore.sessionStats(n.sessionId) : undefined;
+      const slots = ctx.slotStore?.getSlots ? ctx.slotStore.getSlots(n.sessionId) : [];
       return JSON.stringify({
         status: 'ok',
         sessionId: n.sessionId,
@@ -575,20 +575,20 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
       'Manage your own conversation sessions (MemoryStore sessions, ids like sess_* / task_* / a2a_* / hb_*) and context.',
       '',
       'Commands (pick one):',
-      '• session_list — list your sessions. Args: since/until (ISO), page, page_size.',
+      '• session_list — list your sessions. Args: since/until (ISO), page, page_size. Returns { sessions: [{id, agentId, createdAt, lastMessageAt}], total, page, page_size, has_more }.',
       '  Example: { "operation": "list", "since": "2026-08-01", "page": 1, "page_size": 20 }',
-      '• session_get — get one session + its messages. Args: session_id, since/until, page, page_size.',
+      '• session_get — get one session + its messages. Args: session_id, since/until, page, page_size. Returns { status, sessionId, messages: [{role, content}], total, page }.',
       '  Example: { "operation": "get", "session_id": "sess_...", "page_size": 50 }',
-      '• session_compact — collapse stale history into an anchor summary so future turns stop re-reading it. Atomic: an assistant tool-call and its tool results are NEVER split. Optionally pass goal/done/next to anchor your position. Use when earlier tool results are obsolete or context feels bloated.',
+      '• session_compact — collapse stale history into an anchor summary so future turns stop re-reading it. Atomic: an assistant tool-call and its tool results are NEVER split. Optionally pass goal/done/next to anchor your position. Use when earlier tool results are obsolete or context feels bloated. Returns { status, flushedCount, remaining, summary } — summary is a [SYSTEM]-prefixed anchor injected into the session; the raw flushed messages are archived and recoverable via session_retrieve.',
       '  Args: session_id (required), keep_last (5-200, default 40), goal/done/next (optional anchors).',
       '  Example: { "operation": "compact", "session_id": "sess_...", "keep_last": 40 }',
-      '• session_pin — write a durable slot into the fixed [SLOTS] segment: persisted per session and injected every turn, NEVER compacted until you unpin it. Best for your current goal / what is done / what is next (use key=goal/done/next).',
+      '• session_pin — write a durable slot into the fixed [SLOTS] segment: persisted per session and injected every turn, NEVER compacted until you unpin it. Best for your current goal / what is done / what is next (use key=goal/done/next). Returns { status, pinned: {key: content} }.',
       '  Args: session_id, key, content. Example: { "operation": "pin", "session_id": "sess_...", "key": "goal", "content": "..." }',
-      '• session_unpin — remove a pinned slot. Args: session_id, key.',
-      '• session_retrieve — search archived (compacted) history fragments by keyword. Returns fragment_id(s). Args: session_id, query, max_results.',
+      '• session_unpin — remove a pinned slot. Args: session_id, key. Returns { status, unpinned: key }.',
+      '• session_retrieve — search archived (compacted) history fragments by keyword. Returns { status, hits: [{id: fragment_id, content}] } — note the field is "hits", each element carries the fragment id needed for session_include. Args: session_id, query, max_results.',
       '• session_include — reinject an archived fragment (by fragment_id) back into context. Args: session_id, fragment_id.',
       '• session_purge — permanently delete archived fragments for a session. Args: session_id.',
-      '• session_status — read-only snapshot: message count, pinned slot keys, archived fragment count. Args: session_id.',
+      '• session_status — read-only snapshot: message count, pinned slot keys, archived fragment count. Returns { status, sessionId, messageCount, fragmentCount, slots: [key...] }. Args: session_id.',
       '',
       'Permissions: you may list sessions you own; get/status sessions you own OR participated in; compact/pin/unpin/include/purge ONLY sessions you own.',
     ].join('\n'),
