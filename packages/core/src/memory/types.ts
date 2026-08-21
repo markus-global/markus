@@ -22,6 +22,8 @@ export interface ConversationSession {
   messages: LLMMessage[];
   startedAt: string;
   lastActivityAt: string;
+  /** ContextOS: agent-pinned slot anchors (fixed段 C), never compacted. */
+  slots?: Record<string, string>;
 }
 
 /**
@@ -63,6 +65,19 @@ export interface IMemoryStore {
   getRecentMessages(sessionId: string, limit: number): LLMMessage[];
   compactSession(sessionId: string, keepLast?: number): { summary: string; flushedCount: number };
   summarizeAndTruncate(sessionId: string, keepLast: number): LLMMessage[];
+
+  // -- ContextOS: session slots (agent-managed fixed段) + fragment archive --
+  getSlots?(sessionId: string): Array<{ key: string; text: string; updatedAt?: number }>;
+  setSlot?(sessionId: string, key: string, text: string): void;
+  removeSlot?(sessionId: string, key: string): void;
+  serializeSlots?(sessionId: string): string;
+  retrieveFragments?(
+    query: string,
+    maxResults?: number,
+  ): Array<{ id: string; content: string; metadata?: Record<string, unknown> }>;
+  includeFragment?(sessionId: string, fragmentId: string): { ok: boolean; message: string };
+  purgeSessionFragments?(sessionId: string): number;
+  sessionStats?(sessionId: string): { messageCount: number; slotKeys: string[]; fragmentCount: number };
 
   // -- Audit trail (write-only, not injected into prompts) --
   writeDailyLog(agentId: string, summary: string): void;

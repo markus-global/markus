@@ -41,7 +41,7 @@ import { createSettingsTools } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
-import { createSessionTool, type SessionRepo, type SessionCompactor } from './tools/session.js';
+import { createSessionTool, type SessionRepo, type SessionCompactor, type SessionSlotStore, type SessionFragmentStore } from './tools/session.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
@@ -1205,9 +1205,32 @@ export class AgentManager {
 
     // (0.9.7 context-root-fix) Agent-driven context compaction: agents may
     // actively collapse stale session history on demand via the session tool.
+    // ContextOS: also expose slot pinning + fragment archive management.
+    const mem = agent.getMemory();
     const compactor: SessionCompactor = {
       compactOnDemand: (sessionId: string, keepLast: number) =>
-        agent.getMemory().compactSession(sessionId, keepLast),
+        mem.compactSession(sessionId, keepLast),
+      compactWithAnchor: (sessionId, keepLast, anchor) => {
+        // Pin the structured anchor into the durable [SLOTS] segment so the
+        // agent keeps its position even after compaction, then compact.
+        if (mem.setSlot && anchor.goal) mem.setSlot(sessionId, 'goal', anchor.goal);
+        if (mem.setSlot && anchor.done) mem.setSlot(sessionId, 'done', anchor.done);
+        if (mem.setSlot && anchor.next) mem.setSlot(sessionId, 'next', anchor.next);
+        const res = mem.compactSession(sessionId, keepLast);
+        return { ...res, anchorKey: ['goal', 'done', 'next'].filter((k) => anchor[k as keyof typeof anchor]).join(',') || 'anchor' };
+      },
+    };
+    const slotStore: SessionSlotStore = {
+      getSlots: (sid) => mem.getSlots ? mem.getSlots(sid) : [],
+      setSlot: (sid, k, v) => { if (mem.setSlot) mem.setSlot(sid, k, v); },
+      removeSlot: (sid, k) => { if (mem.removeSlot) mem.removeSlot(sid, k); },
+      serialize: (sid) => mem.serializeSlots ? mem.serializeSlots(sid) : '',
+    };
+    const fragmentStore: SessionFragmentStore = {
+      retrieveFragments: (q, mx) => mem.retrieveFragments ? mem.retrieveFragments(q, mx) : [],
+      includeFragment: (sid, fid) => mem.includeFragment ? mem.includeFragment(sid, fid) : { ok: false, message: 'unavailable' },
+      purgeSessionFragments: (sid) => mem.purgeSessionFragments ? mem.purgeSessionFragments(sid) : 0,
+      sessionStats: (sid) => mem.sessionStats ? mem.sessionStats(sid) : { messageCount: 0, slotKeys: [], fragmentCount: 0 },
     };
 
     // Progressive disclosure: skill catalog is metadata-only (name + description).
@@ -1437,7 +1460,10 @@ export class AgentManager {
     }
     // Session tool — agents can query their own conversation sessions
     if (this.sessionRepo) {
-      agent.registerTool(createSessionTool({ agentId: id, chatSessionRepo: this.sessionRepo, compactor }));
+      agent.registerTool(createSessionTool({
+        agentId: id, chatSessionRepo: this.sessionRepo,
+        compactor, slotStore, fragmentStore,
+      }));
     }
 
     // Settings tools — agents can list providers and switch models via chat
@@ -2315,10 +2341,32 @@ export class AgentManager {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
     }
     if (this.sessionRepo) {
+      const mem2 = agent.getMemory();
       agent.registerTool(createSessionTool({
         agentId: id,
         chatSessionRepo: this.sessionRepo,
-        compactor: { compactOnDemand: (sid, keep) => agent.getMemory().compactSession(sid, keep) },
+        compactor: {
+          compactOnDemand: (sid, keep) => mem2.compactSession(sid, keep),
+          compactWithAnchor: (sid, keep, anchor) => {
+            if (mem2.setSlot && anchor.goal) mem2.setSlot(sid, 'goal', anchor.goal);
+            if (mem2.setSlot && anchor.done) mem2.setSlot(sid, 'done', anchor.done);
+            if (mem2.setSlot && anchor.next) mem2.setSlot(sid, 'next', anchor.next);
+            const res = mem2.compactSession(sid, keep);
+            return { ...res, anchorKey: ['goal', 'done', 'next'].filter((k) => anchor[k as keyof typeof anchor]).join(',') || 'anchor' };
+          },
+        },
+        slotStore: {
+          getSlots: (sid) => mem2.getSlots ? mem2.getSlots(sid) : [],
+          setSlot: (sid, k, v) => { if (mem2.setSlot) mem2.setSlot(sid, k, v); },
+          removeSlot: (sid, k) => { if (mem2.removeSlot) mem2.removeSlot(sid, k); },
+          serialize: (sid) => mem2.serializeSlots ? mem2.serializeSlots(sid) : '',
+        },
+        fragmentStore: {
+          retrieveFragments: (q, mx) => mem2.retrieveFragments ? mem2.retrieveFragments(q, mx) : [],
+          includeFragment: (sid, fid) => mem2.includeFragment ? mem2.includeFragment(sid, fid) : { ok: false, message: 'unavailable' },
+          purgeSessionFragments: (sid) => mem2.purgeSessionFragments ? mem2.purgeSessionFragments(sid) : 0,
+          sessionStats: (sid) => mem2.sessionStats ? mem2.sessionStats(sid) : { messageCount: 0, slotKeys: [], fragmentCount: 0 },
+        },
       }));
     }
 
@@ -3027,10 +3075,32 @@ export class AgentManager {
   setSessionRepo(repo: SessionRepo): void {
     this.sessionRepo = repo;
     for (const [id, agent] of this.agents) {
+      const mem = agent.getMemory();
       agent.registerTool(createSessionTool({
         agentId: id,
         chatSessionRepo: repo,
-        compactor: { compactOnDemand: (sid, keep) => agent.getMemory().compactSession(sid, keep) },
+        compactor: {
+          compactOnDemand: (sid, keep) => mem.compactSession(sid, keep),
+          compactWithAnchor: (sid, keep, anchor) => {
+            if (mem.setSlot && anchor.goal) mem.setSlot(sid, 'goal', anchor.goal);
+            if (mem.setSlot && anchor.done) mem.setSlot(sid, 'done', anchor.done);
+            if (mem.setSlot && anchor.next) mem.setSlot(sid, 'next', anchor.next);
+            const res = mem.compactSession(sid, keep);
+            return { ...res, anchorKey: ['goal', 'done', 'next'].filter((k) => anchor[k as keyof typeof anchor]).join(',') || 'anchor' };
+          },
+        },
+        slotStore: {
+          getSlots: (sid) => mem.getSlots ? mem.getSlots(sid) : [],
+          setSlot: (sid, k, v) => { if (mem.setSlot) mem.setSlot(sid, k, v); },
+          removeSlot: (sid, k) => { if (mem.removeSlot) mem.removeSlot(sid, k); },
+          serialize: (sid) => mem.serializeSlots ? mem.serializeSlots(sid) : '',
+        },
+        fragmentStore: {
+          retrieveFragments: (q, mx) => mem.retrieveFragments ? mem.retrieveFragments(q, mx) : [],
+          includeFragment: (sid, fid) => mem.includeFragment ? mem.includeFragment(sid, fid) : { ok: false, message: 'unavailable' },
+          purgeSessionFragments: (sid) => mem.purgeSessionFragments ? mem.purgeSessionFragments(sid) : 0,
+          sessionStats: (sid) => mem.sessionStats ? mem.sessionStats(sid) : { messageCount: 0, slotKeys: [], fragmentCount: 0 },
+        },
       }));
     }
   }

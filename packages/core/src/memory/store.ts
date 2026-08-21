@@ -22,9 +22,11 @@ import {
   SESSION_STORAGE_COMPACT_KEEP,
   SESSION_STORAGE_COMPACT_TRIGGER,
   SESSION_STORAGE_TOOL_SHRINK_CHARS,
+  CONTEXT_SLOT_MAX_CHARS,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
 import { ensureKnowledgeStateFiles, knowledgePath, readState, pruneExpiredState, writeState } from './taxonomy.js';
+import { buildSlotSegment, sanitizeSlotKey, type SlotEntry } from '../context-slot.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
 
@@ -679,6 +681,116 @@ export class MemoryStore implements IMemoryStore {
     keepLast: number = 40,
   ): { summary: string; flushedCount: number } {
     return this.compactSession(sessionId, keepLast);
+  }
+
+  // ─── ContextOS: session slots + fragment retrieval (agent-managed) ───────
+
+  getSlots(sessionId: string): SlotEntry[] {
+    const session = this.sessions.get(sessionId) ?? this.tryLoadSessionFromDisk(sessionId);
+    const slots = session?.slots ?? {};
+    return Object.entries(slots)
+      .map(([key, text]) => ({ key, text, updatedAt: Date.now() }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+  }
+
+  setSlot(sessionId: string, key: string, text: string): void {
+    let session = this.sessions.get(sessionId);
+    if (!session) session = this.tryLoadSessionFromDisk(sessionId);
+    if (!session) return; // unknown session — caller (session tool) validates ownership first
+    session.slots = session.slots ?? {};
+    session.slots[sanitizeSlotKey(key)] = text.slice(0, CONTEXT_SLOT_MAX_CHARS);
+    session.lastActivityAt = new Date().toISOString();
+    this.saveSessionToDisk(session);
+  }
+
+  removeSlot(sessionId: string, key: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session?.slots) return;
+    delete session.slots[key];
+    session.lastActivityAt = new Date().toISOString();
+    this.saveSessionToDisk(session);
+  }
+
+  /** Serialize this session's slots into the fixed [SLOTS] injection segment. */
+  serializeSlots(sessionId: string): string {
+    return buildSlotSegment(this.getSlots(sessionId));
+  }
+
+  /** Search archived conversation_fragment entries for this session. */
+  retrieveFragments(
+    query: string,
+    maxResults: number = 5,
+  ): Array<{ id: string; content: string; metadata?: Record<string, unknown> }> {
+    const q = query.trim().toLowerCase();
+    const hits = this.entries.filter(
+      (e) => e.type === 'conversation_fragment',
+    );
+    // score by keyword hits against content
+    const scored = hits
+      .map((e) => {
+        const hay = e.content.toLowerCase();
+        let score = 0;
+        if (q) {
+          const tokens = q.split(/\s+/).filter(Boolean);
+          score = tokens.filter((t) => hay.includes(t)).length;
+          if (tokens.some((t) => e.id.toLowerCase().includes(t))) score += 2;
+        } else {
+          score = 1;
+        }
+        return { e, score };
+      })
+      .filter((s) => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults);
+    return scored.map((s) => ({ id: s.e.id, content: s.e.content, metadata: s.e.metadata }));
+  }
+
+  /** Re-inject one archived fragment back into the live session as a user message. */
+  includeFragment(sessionId: string, fragmentId: string): { ok: boolean; message: string } {
+    const entry = this.entries.find((e) => e.id === fragmentId && e.type === 'conversation_fragment');
+    if (!entry) {
+      return { ok: false, message: `No archived fragment with id ${fragmentId}.` };
+    }
+    let session = this.sessions.get(sessionId);
+    if (!session) session = this.tryLoadSessionFromDisk(sessionId);
+    if (!session) {
+      return { ok: false, message: `No session with id ${sessionId}.` };
+    }
+    session.messages.push({
+      role: 'user',
+      content: `[RECALLED ARCHIVE fragment ${fragmentId} — reinjected into context at agent request]\n${entry.content}\n[End of recalled archive.]`,
+    });
+    session.lastActivityAt = new Date().toISOString();
+    this.saveSessionToDisk(session);
+    return { ok: true, message: `Reinjected fragment ${fragmentId} (${entry.content.length} chars) into the session.` };
+  }
+
+  /** Purge archived fragments for a session (used by session_purge). */
+  purgeSessionFragments(sessionId: string): number {
+    const before = this.entries.length;
+    this.entries = this.entries.filter(
+      (e) => !(e.type === 'conversation_fragment' && e.metadata?.sessionId === sessionId),
+    );
+    const removed = before - this.entries.length;
+    if (removed > 0) this.saveToDisk();
+    return removed;
+  }
+
+  /** Lightweight session stats for session_status. */
+  sessionStats(sessionId: string): {
+    messageCount: number;
+    slotKeys: string[];
+    fragmentCount: number;
+  } {
+    const session = this.sessions.get(sessionId);
+    const fragmentCount = this.entries.filter(
+      (e) => e.type === 'conversation_fragment' && e.metadata?.sessionId === sessionId,
+    ).length;
+    return {
+      messageCount: session?.messages.length ?? 0,
+      slotKeys: Object.keys(session?.slots ?? {}),
+      fragmentCount,
+    };
   }
 
   // --- Disk persistence ---

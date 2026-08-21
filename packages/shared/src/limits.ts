@@ -576,6 +576,14 @@ export const CONTEXT_ABSURD_MESSAGE_CHARS = 200_000;
  *  compact/summarize even if still under the hard window. */
 export const CONTEXT_PROACTIVE_COMPACT_RATIO = 0.55;
 
+/* ── ContextOS: agent-visible context water-level thresholds ────────── */
+/** Above this usage ratio the [CONTEXT] hint adds a WARN line ("compress now"). */
+export const CONTEXT_WARN_RATIO = 0.85;
+/** At/above this usage ratio the [CONTEXT] hint adds a CRIT line (system will hard-trim). */
+export const CONTEXT_CRIT_RATIO = 0.95;
+/** Max chars for a single pinned slot value (session_pin). */
+export const CONTEXT_SLOT_MAX_CHARS = 1200;
+
 /** Max chat messages loaded from DB into memory on session restore. */
 export const SESSION_RESTORE_MAX_MESSAGES = 80;
 

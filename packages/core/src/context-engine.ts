@@ -21,6 +21,8 @@ import {
   SYSTEM_TEAM_PROJECT_DESC_CHARS,
   CONTEXT_ABSURD_MESSAGE_CHARS,
   CONTEXT_PROACTIVE_COMPACT_RATIO,
+  CONTEXT_WARN_RATIO,
+  CONTEXT_CRIT_RATIO,
   PROMPT_AFFORD_OUTPUT_RESERVE,
   SYSTEM_COLLEAGUES_MAX,
   SYSTEM_OTHER_TEAMS_MAX,
@@ -154,6 +156,10 @@ export interface PreparedContext {
   messages: LLMMessage[];
   usage: ContextUsageStats;
   systemCacheSegments?: SystemPromptSegment[];
+  /** ContextOS: agent-visible context water-level hint, e.g. `[CONTEXT 68% used …]`. */
+  contextHint?: string;
+  /** ContextOS: fixed段 C — the agent-pinned [SLOTS] segment (never compacted). */
+  slotsSegment?: string;
 }
 
 export interface SystemPromptSegment {
@@ -1756,6 +1762,8 @@ export class ContextEngine {
       inputSchema: Record<string, unknown>;
     }>;
     systemCacheSegments?: SystemPromptSegment[];
+    /** ContextOS: fixed段 C — agent-pinned slots, injected verbatim and never compacted. */
+    slotsSegment?: string;
   }): Promise<PreparedContext> {
     // No silent defaults: a missing/zero context window is exactly what
     // silently drove the message budget negative and made the agent return
@@ -1774,13 +1782,17 @@ export class ContextEngine {
     const toolDefTokens = opts.toolDefinitions
       ? estimateTokens(JSON.stringify(opts.toolDefinitions), this.tokenCounter)
       : 0;
+    // ContextOS: pinned slots are part of the fixed segment — reserve budget for
+    // them and never let them enter the variable-segment compression path.
+    const slotsSegment = opts.slotsSegment ?? '';
+    const slotsTokens = slotsSegment ? estimateTokens(slotsSegment, this.tokenCounter) : 0;
     let safetyMargin = Math.ceil(Math.min(contextWindow * 0.08, 16_000));
-    let messageBudget = contextWindow - systemTokens - toolDefTokens - maxOutput - safetyMargin;
+    let messageBudget = contextWindow - systemTokens - toolDefTokens - slotsTokens - maxOutput - safetyMargin;
 
     // ── Defensive budget reclamation ────────────────────────────────────
     const MIN_MESSAGE_BUDGET = 1500;
     const MIN_OUTPUT_RESERVE = 2048;
-    const staticOverhead = systemTokens + toolDefTokens;
+    const staticOverhead = systemTokens + toolDefTokens + slotsTokens;
     if (messageBudget < MIN_MESSAGE_BUDGET) {
       safetyMargin = Math.min(safetyMargin, 4000);
       const roomForOutput = contextWindow - staticOverhead - safetyMargin - MIN_MESSAGE_BUDGET;
@@ -1844,8 +1856,8 @@ export class ContextEngine {
     const currentTurnStart = this.findCurrentTurnStart(messages);
     let totalTokens = this.sumTokens(messages);
 
-    const packingCeiling = systemTokens + toolDefTokens + messageBudget;
-    const preCompressionUsed = systemTokens + toolDefTokens + totalTokens;
+    const packingCeiling = systemTokens + toolDefTokens + slotsTokens + messageBudget;
+    const preCompressionUsed = systemTokens + toolDefTokens + slotsTokens + totalTokens;
     const effectiveBudget = Math.min(contextWindow - maxOutput, packingCeiling);
     const preCompressionPct = effectiveBudget > 0 ? (preCompressionUsed / effectiveBudget) * 100 : 0;
     const perMessageCap = Math.max(8_000, Math.floor(messageBudget / 4));
@@ -1913,9 +1925,22 @@ export class ContextEngine {
       });
     }
 
-    const totalUsed = systemTokens + toolDefTokens + totalTokens;
+    const totalUsed = systemTokens + toolDefTokens + slotsTokens + totalTokens;
     const available = Math.max(0, messageBudget - totalTokens);
     const usagePercent = effectiveBudget > 0 ? (totalUsed / effectiveBudget) * 100 : 0;
+
+    // ── ContextOS: build the agent-visible [CONTEXT] water-level hint ──
+    // Three segments: fixed (system + tools + slots) vs variable (history).
+    // Rendered as a compact one-liner + a WARN/CRIT escalation line.
+    const fixedTokens = systemTokens + toolDefTokens + slotsTokens;
+    const usedPct = Math.round((totalUsed / effectiveBudget) * 1000) / 10;
+    let hintLines = `[CONTEXT ${usedPct}% used — window ${Math.round(contextWindow / 1000)}k · fixed ${fixedTokens} (system ${systemTokens} + tools ${toolDefTokens}${slotsTokens ? ` + slots ${slotsTokens}` : ''}) · variable ${totalTokens} · output reserve ${maxOutput}]`;
+    if (usedPct >= CONTEXT_CRIT_RATIO * 100) {
+      hintLines += `\n[CONTEXT CRIT] at ${usedPct}%: system will hard-trim oldest turns. Run session_compact now, and session_pin a goal/done/next anchor to keep your position.`;
+    } else if (usedPct >= CONTEXT_WARN_RATIO * 100) {
+      hintLines += `\n[CONTEXT WARN] at ${usedPct}% → compress now (session_compact) or pin an anchor (session_pin).`;
+    }
+    const contextHint = hintLines;
 
     log.info('Context assembled', {
       contextWindow,
@@ -1942,7 +1967,17 @@ export class ContextEngine {
     }
 
     return {
-      messages: [{ role: 'system', content: opts.systemPrompt }, ...messages],
+      messages: [
+        {
+          role: 'system',
+          content: [
+            opts.systemPrompt,
+            slotsSegment ? `\n\n${slotsSegment}` : '',
+            `\n\n${contextHint}`,  // ContextOS: agent-visible water level, rebuilt every turn
+          ].join(''),
+        },
+        ...messages,
+      ],
       usage: {
         contextWindow,
         systemTokens,
@@ -1959,6 +1994,8 @@ export class ContextEngine {
         promptAffordTokens: promptAfford,
       },
       systemCacheSegments: opts.systemCacheSegments,
+      contextHint,
+      slotsSegment,
     };
   }
 
