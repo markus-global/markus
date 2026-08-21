@@ -135,6 +135,7 @@ const BASE_TOOL_NAMES = new Set([
   'memory_search',
   'deliverable_search',
   'spawn_subagent',
+  'session',
 ]);
 
 export class ToolSelector {

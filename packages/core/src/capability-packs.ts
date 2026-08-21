@@ -73,6 +73,7 @@ export const TOOL_DEF_CORE_KEEP = new Set([
   'agent_list_colleagues',
   'deliverable_search',
   'requirement_comment',
+  'session',
 ]);
 
 /** MCP / skill-namespaced tools — evict these before core Markus tools. */
