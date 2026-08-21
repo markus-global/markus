@@ -11,7 +11,7 @@ import type { LLMMessage } from '@markus/shared';
 export interface MemoryEntry {
   id: string;
   timestamp: string;
-  type: 'conversation' | 'fact' | 'task_result' | 'note' | 'insight';
+  type: 'conversation' | 'fact' | 'task_result' | 'note' | 'insight' | 'conversation_fragment';
   content: string;
   metadata?: Record<string, unknown>;
 }

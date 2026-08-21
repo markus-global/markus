@@ -30,7 +30,7 @@ export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js'
 
 const log = createLogger('memory-store');
 
-const VALID_TYPES = new Set<string>(['conversation', 'fact', 'task_result', 'note', 'insight']);
+const VALID_TYPES = new Set<string>(['conversation', 'fact', 'task_result', 'note', 'insight', 'conversation_fragment']);
 
 /** Prevent section bodies from introducing sibling ## headings that split the store. */
 export function sanitizeSectionBody(content: string): string {
@@ -550,20 +550,31 @@ export class MemoryStore implements IMemoryStore {
 
     const summary = this.buildHeuristicSummary(older);
 
-    // No writeDailyLog here — compaction must be side-effect-free
-
-    const facts = older
-      .filter((m) => m.role === 'assistant' && getTextContent(m.content).length > 50)
-      .map((m) => getTextContent(m.content).slice(0, 150))
-      .slice(0, 3);
-
-    if (facts.length > 0) {
+    // (ContextOS stage A) NEVER drop paged-out history — archive the full
+    // fragment before replacing it with the summary anchor. The agent can
+    // recover it verbatim via session_retrieve. This is the "preserve raw
+    // data" invariant: compaction == pagination, not deletion.
+    if (older.length > 0) {
       this.addEntry({
-        id: `compact_${Date.now()}`,
+        id: `frag_${Date.now()}_${session.id}`,
         timestamp: new Date().toISOString(),
-        type: 'conversation',
-        content: facts.join('\n'),
-        metadata: { sessionId, compactedMessages: flushedCount },
+        type: 'conversation_fragment',
+        content: older
+          .map((m) => {
+            const text = getTextContent(m.content);
+            const tcn = m.role === 'assistant' && m.toolCalls?.length
+              ? ` [tool-calls: ${m.toolCalls.map((t: { name?: string }) => t.name ?? '?').join(', ')}]`
+              : '';
+            return `[${m.role}${tcn}] ${text}`;
+          })
+          .join('\n'),
+        metadata: {
+          sessionId: session.id,
+          agentId: session.agentId,
+          pagedOutCount: older.length,
+          first: getTextContent(older[0]!.content).slice(0, 120),
+          last: getTextContent(older[older.length - 1]!.content).slice(0, 120),
+        },
       });
     }
 
@@ -572,7 +583,7 @@ export class MemoryStore implements IMemoryStore {
     // Inject a summary message so the model retains awareness of compacted history
     const summaryMessage: LLMMessage = {
       role: 'user',
-      content: `[Conversation history summary — ${flushedCount} earlier messages were compacted]\n${summary}\n[End of summary. The conversation continues below with the most recent messages.]`,
+      content: `[Conversation history summary — ${flushedCount} earlier messages were paged out to archive; recoverable via session_retrieve]\n${summary}\n[End of summary. The conversation continues below with the most recent messages.]`,
     };
     session.messages = [summaryMessage, ...retained];
     this.saveSessionToDisk(session);
@@ -584,27 +595,90 @@ export class MemoryStore implements IMemoryStore {
   /**
    * Build a heuristic summary by extracting key lines from messages.
    * Used as the default (non-LLM) summarization strategy.
+   *
+   * Anchor-aware (0.9.7 context-root-fix): instead of blindly truncating every
+   * message to a fixed head, we preserve the *navigation anchors* the agent
+   * needs to re-orient after compaction:
+   *  - the LAST user request/intent (full, short);
+   *  - every distinct tool call NAME + its result head/tail (so the agent knows
+   *    what work was already done and where the results live);
+   *  - the last assistant decision/answer head.
+   * This keeps the summary compact but high-density: it trades token count for
+   * re-orientation value, which is exactly what prevents the "re-read the same
+   * files / repeat the same actions" loop caused by lost anchors.
    */
   buildHeuristicSummary(messages: LLMMessage[]): string {
     const summaryParts: string[] = [];
+    let lastUserIntent = '';
+    const toolCallsSeen = new Set<string>();
+    let lastAssistant = '';
+
     for (const msg of messages) {
       if (msg.role === 'system') continue;
       const text = getTextContent(msg.content);
+      if (!text) continue;
+
       if (msg.role === 'user') {
-        summaryParts.push(`User: ${text.slice(0, 200)}`);
-      } else if (msg.role === 'assistant' && text) {
-        summaryParts.push(`Assistant: ${text.slice(0, 200)}`);
+        // Keep the latest user intent verbatim (short), older ones collapsed.
+        const line = text.replace(/\s+/g, ' ').trim();
+        lastUserIntent = line.slice(0, 300);
+      } else if (msg.role === 'assistant') {
+        // Keep the last assistant decision/answer head for context continuity.
+        lastAssistant = text.replace(/\s+/g, ' ').trim().slice(0, 200);
       } else if (msg.role === 'tool') {
-        summaryParts.push(`Tool result: ${text.slice(0, 100)}`);
+        // Tool results: dedupe by name, keep head + tail (anchors to outputs).
+        const toolName = this.extractToolName(text);
+        const head = text.slice(0, 120);
+        let tail = '';
+        if (text.length > 240) tail = text.slice(-80);
+        if (toolName && !toolCallsSeen.has(toolName)) {
+          toolCallsSeen.add(toolName);
+          summaryParts.push(
+            `Tool ${toolName}: ${head}${tail ? ` … ${tail}` : ''}`,
+          );
+        }
       }
     }
-    return summaryParts.join('\n').slice(0, 2000);
+
+    if (lastUserIntent) summaryParts.unshift(`Latest user intent: ${lastUserIntent}`);
+    if (lastAssistant) summaryParts.push(`Last assistant: ${lastAssistant}`);
+
+    // Cap at 3000 chars: denser than before (2000) but still bounded.
+    return summaryParts.join('\n').slice(0, 3000);
+  }
+
+  /** Best-effort extraction of a tool name from a tool-result blob. */
+  private extractToolName(text: string): string {
+    const m = text.match(/^(\[?\w[\w_-]*\]?|\w[\w._-]*)/);
+    if (!m) return 'tool';
+    const name = m[1].replace(/^\[|\]$/g, '').trim();
+    return name.length > 0 && name.length <= 48 ? name : 'tool';
   }
 
   summarizeAndTruncate(sessionId: string, keepLast: number): LLMMessage[] {
     this.compactSession(sessionId, keepLast);
     const session = this.sessions.get(sessionId);
     return session?.messages ?? [];
+  }
+
+  /**
+   * (0.9.7 context-root-fix) Agent-driven context compaction.
+   *
+   * Unlike {@link checkAndCompact} (passive threshold), this lets the agent
+   * actively collapse stale history on demand: when it decides earlier turns
+   * are useless (e.g. after a large file refactor the old tool blobs no longer
+   * matter), it swaps them for an anchor summary via an explicit tool call —
+   * instead of waiting for storage safety triggers, which fire too late.
+   *
+   * Backward compatible: keeps the same `[Conversation history summary …]`
+   * wrapper so downstream consumers (LLM, UI) treat it like any compaction.
+   * Returns the number of flushed messages.
+   */
+  compactSessionOnDemand(
+    sessionId: string,
+    keepLast: number = 40,
+  ): { summary: string; flushedCount: number } {
+    return this.compactSession(sessionId, keepLast);
   }
 
   // --- Disk persistence ---

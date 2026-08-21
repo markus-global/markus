@@ -547,10 +547,50 @@ describe('MemoryStore — Audit trail: daily-logs', () => {
       { role: 'assistant', content: 'A typed superset of JavaScript.' },
       { role: 'tool', content: 'search results here' },
     ]);
-    expect(summary).toContain('User:');
-    expect(summary).toContain('Assistant:');
-    expect(summary).toContain('Tool result:');
+    // Anchor-aware summary keeps the latest user intent + last assistant + tool anchors.
+    expect(summary).toContain('Latest user intent: What is TypeScript?');
+    expect(summary).toContain('Last assistant: A typed superset of JavaScript.');
+    expect(summary).toContain('Tool');
     expect(summary).not.toContain('ignored');
+  });
+
+  it('buildHeuristicSummary preserves tool-result head+tail anchors', () => {
+    const big = 'x'.repeat(500);
+    const summary = store.buildHeuristicSummary([
+      { role: 'user', content: 'refactor the parser' },
+      { role: 'tool', content: `file_write: ${big} SIGNATURE_TAIL` },
+    ]);
+    expect(summary).toContain('Latest user intent: refactor the parser');
+    expect(summary).toContain('SIGNATURE_TAIL'); // tail anchor preserved beyond head cap
+  });
+
+  it('compactSessionOnDemand collapses stale history to an anchor summary', () => {
+    const session = store.createSession('agent-1');
+    // Put the user intent early so it lands in the flushed (older) portion.
+    store.appendMessage(session.id, { role: 'user', content: 'final goal: ship the build' });
+    for (let i = 0; i < 60; i++) {
+      store.appendMessage(session.id, { role: i % 2 ? 'assistant' : 'tool', content: `step ${i} data` });
+    }
+    const res = store.compactSessionOnDemand(session.id, 10);
+    expect(res.flushedCount).toBeGreaterThan(0);
+    const remaining = store.getRecentMessages(session.id, 100);
+    expect(remaining.some(m => String(m.content).includes('Conversation history summary'))).toBe(true);
+    expect(res.summary).toContain('Latest user intent: final goal: ship the build');
+  });
+
+  it('compact archives paged-out history instead of dropping it (ContextOS stage A)', () => {
+    const session = store.createSession('agent-1');
+    store.appendMessage(session.id, { role: 'user', content: 'secret payload: keep me' });
+    for (let i = 0; i < 30; i++) {
+      store.appendMessage(session.id, { role: 'tool', content: `noise ${i}` });
+    }
+    store.compactSessionOnDemand(session.id, 5);
+    // The paged-out messages must survive in the external store as fragments.
+    const allFragments = store.getEntries().filter((e) => e.type === 'conversation_fragment');
+    const frag = allFragments.find((e) => (e.metadata as Record<string, unknown>)?.sessionId === session.id);
+    expect(frag).toBeDefined();
+    expect(frag!.content).toContain('secret payload: keep me');
+    expect(frag!.metadata).toMatchObject({ pagedOutCount: expect.any(Number) });
   });
 
   it('summarizeAndTruncate compacts and returns messages', () => {

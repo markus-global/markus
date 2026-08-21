@@ -138,3 +138,71 @@ describe('createSessionTool', () => {
     expect(res.status).toBe('error');
   });
 });
+
+// =============================================================================
+// session_compact — agent-driven context compaction (0.9.7 context-root-fix)
+// =============================================================================
+
+describe('session_compact', () => {
+  it('normalizeSessionArgs 识别 compact 操作', () => {
+    expect(normalizeSessionArgs({ operation: 'compact', session_id: 'cs-1', keep_last: 40 }))
+      .toMatchObject({ operation: 'compact', sessionId: 'cs-1', keepLast: 40 });
+  });
+
+  it('compact 需要 session_id', async () => {
+    const compactor = { compactOnDemand: vi.fn(() => ({ summary: 's', flushedCount: 0 })) };
+    const ctx = makeCtx({ compactor });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'compact' }));
+    expect(res.status).toBe('error');
+    expect(res.message).toContain('session_id');
+    expect(compactor.compactOnDemand).not.toHaveBeenCalled();
+  });
+
+  it('无注入 compactor 时返回清晰错误', async () => {
+    const res = JSON.parse(await createSessionTool(makeCtx()).execute({ operation: 'compact', session_id: 'cs-1' }));
+    expect(res.status).toBe('error');
+    expect(res.message).toContain('not available');
+  });
+
+  it('只允许压缩自己拥有的 session', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ agentId: 'agt-OTHER' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    const compactor = { compactOnDemand: vi.fn(() => ({ summary: 's', flushedCount: 0 })) };
+    const ctx = makeCtx({ chatSessionRepo: repo as never, compactor });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'compact', session_id: 'cs-other' }));
+    expect(res.status).toBe('forbidden');
+    expect(compactor.compactOnDemand).not.toHaveBeenCalled();
+  });
+
+  it('成功压缩返回 flushedCount + anchor summary', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ agentId: 'agt-A' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    const compactor = {
+      compactOnDemand: vi.fn(() => ({ summary: 'Latest user intent: build the tool\nTool file_write: wrote x', flushedCount: 12 })),
+    };
+    const ctx = makeCtx({ chatSessionRepo: repo as never, compactor });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'compact', session_id: 'cs-1', keep_last: 40 }));
+    expect(res.status).toBe('ok');
+    expect(res.flushedCount).toBe(12);
+    expect(res.summary).toContain('Latest user intent');
+    expect(compactor.compactOnDemand).toHaveBeenCalledWith('cs-1', 40);
+  });
+
+  it('keep_last 被钳制到 [5,200]', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ agentId: 'agt-A' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    const compactor = { compactOnDemand: vi.fn(() => ({ summary: '', flushedCount: 2 })) };
+    const ctx = makeCtx({ chatSessionRepo: repo as never, compactor });
+    await createSessionTool(ctx).execute({ operation: 'compact', session_id: 'cs-1', keep_last: 9999 });
+    expect(compactor.compactOnDemand).toHaveBeenCalledWith('cs-1', 200);
+  });
+});

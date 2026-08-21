@@ -41,7 +41,7 @@ import { createSettingsTools } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
-import { createSessionTool, type SessionRepo } from './tools/session.js';
+import { createSessionTool, type SessionRepo, type SessionCompactor } from './tools/session.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
@@ -1203,6 +1203,13 @@ export class AgentManager {
 
     const agent = new Agent(agentOpts);
 
+    // (0.9.7 context-root-fix) Agent-driven context compaction: agents may
+    // actively collapse stale session history on demand via the session tool.
+    const compactor: SessionCompactor = {
+      compactOnDemand: (sessionId: string, keepLast: number) =>
+        agent.getMemory().compactSession(sessionId, keepLast),
+    };
+
     // Progressive disclosure: skill catalog is metadata-only (name + description).
     // Full SKILL.md bodies enter context only after discover_tools activation.
     if (this.skillRegistry) {
@@ -1430,7 +1437,7 @@ export class AgentManager {
     }
     // Session tool — agents can query their own conversation sessions
     if (this.sessionRepo) {
-      agent.registerTool(createSessionTool({ agentId: id, chatSessionRepo: this.sessionRepo }));
+      agent.registerTool(createSessionTool({ agentId: id, chatSessionRepo: this.sessionRepo, compactor }));
     }
 
     // Settings tools — agents can list providers and switch models via chat
@@ -2308,7 +2315,11 @@ export class AgentManager {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
     }
     if (this.sessionRepo) {
-      agent.registerTool(createSessionTool({ agentId: id, chatSessionRepo: this.sessionRepo }));
+      agent.registerTool(createSessionTool({
+        agentId: id,
+        chatSessionRepo: this.sessionRepo,
+        compactor: { compactOnDemand: (sid, keep) => agent.getMemory().compactSession(sid, keep) },
+      }));
     }
 
     for (const tool of createSettingsTools({
@@ -3016,7 +3027,11 @@ export class AgentManager {
   setSessionRepo(repo: SessionRepo): void {
     this.sessionRepo = repo;
     for (const [id, agent] of this.agents) {
-      agent.registerTool(createSessionTool({ agentId: id, chatSessionRepo: repo }));
+      agent.registerTool(createSessionTool({
+        agentId: id,
+        chatSessionRepo: repo,
+        compactor: { compactOnDemand: (sid, keep) => agent.getMemory().compactSession(sid, keep) },
+      }));
     }
   }
 
