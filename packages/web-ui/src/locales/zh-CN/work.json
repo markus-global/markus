@@ -89,6 +89,7 @@
     "addDescription": "添加描述…",
     "noDescription": "暂无描述",
     "collapse": "收起",
+    "expand": "展开",
     "subtasksProgress": "{{done}}/{{total}} 已完成",
     "hideCompleted": "隐藏已完成",
     "showCompleted": "显示已完成（{{count}}）",

@@ -5759,6 +5759,26 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           </div>
         ) : (
         <div data-electron-drag className="flex items-center gap-3 px-6 h-14 shrink-0">
+          {/* Toggle projects sidebar (L1) */}
+          <button
+            data-no-drag
+            type="button"
+            onClick={() => {
+              const next = !l1Collapsed;
+              setL1CollapsedPersisted(next);
+              layout?.setLeftCollapsed(next);
+              setNavFocus('projects');
+            }}
+            className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors shrink-0 ${
+              l1Collapsed ? 'bg-brand-500/15 text-brand-500 hover:bg-brand-500/25' : 'text-fg-tertiary hover:bg-surface-elevated hover:text-fg-secondary'
+            }`}
+            title={l1Collapsed ? t('work:task.expand') : t('work:task.collapse')}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <line x1="9" y1="3" x2="9" y2="21" />
+            </svg>
+          </button>
           {/* Project title + settings */}
           {selectedProject ? (
             <div data-no-drag className="flex items-center gap-1 shrink-0 min-w-0">

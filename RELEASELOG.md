@@ -1,5 +1,22 @@
 # Release Log
 
+## v0.9.8
+
+### Features & Improvements
+
+- **分享格式白名单门禁** — 交付物分享只允许 markdown/html，提交前最后防线拦截非白名单格式（含服务端 / 客户端双源清单，测试 5 例覆盖缺省兜底/放行/拒绝非文本/拒绝大写）
+- **UI 优化** — 头像浮窗显示可用积分（配额+赠送+购买-已用）；全局滚动条统一为 5px 细样式；任务页左上角侧栏开关按钮；输入框打字时 Shift+Enter 换行提示（Enter 发送）；删除无人引用的废弃组件 ChatInput
+
+### Bug Fixes
+
+- **context window / max output 回退值过小** — 简化修复：宏旗舰模型（如 Claude 1M / GPT-5.x 1.1M）不再被低估约 8 倍；`refreshProviderLiveModels` 从 OpenAI 兼容网关 `/v1/models` 探测真实 `context_window/context_length/max_model_len/max_context_length` 及 `max_output_tokens`，不再硬编码 0 → 避免本地/网关模型因窗口误判导致的上下文打包异常
+
+### Stats
+
+- 3 commits, 16 files changed
+
+---
+
 ## v0.9.7-rc.1
 
 ### Bug Fixes

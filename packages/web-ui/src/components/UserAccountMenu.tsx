@@ -45,6 +45,7 @@ export function UserAccountMenu({
   // Optimistic from cache; live-validated below so a stale token doesn't show green.
   const [hubConnected, setHubConnected] = useState(() => hubApi.isAuthenticated());
   const [hubUser, setHubUser] = useState(() => getHubUser());
+  const [credits, setCredits] = useState<number | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -53,6 +54,7 @@ export function UserAccountMenu({
     setHubUser(getHubUser());
     if (!hubApi.isAuthenticated()) {
       setHubConnected(false);
+      setCredits(null);
       return;
     }
     if (!opts?.validate) {
@@ -78,6 +80,20 @@ export function UserAccountMenu({
       window.removeEventListener('focus', onFocus);
     };
   }, [refreshHub]);
+
+  // Live credit balance — fetch while the popover is open (cheap, no polling).
+  useEffect(() => {
+    if (!open || !hubApi.isAuthenticated()) return;
+    let cancelled = false;
+    hubApi.user.plan()
+      .then(p => {
+        if (cancelled) return;
+        const total = (p.monthlyQuotaCu ?? 0) + (p.bonusCu ?? 0) + (p.purchasedCu ?? 0);
+        setCredits(Math.max(0, total - (p.cuUsed ?? 0)));
+      })
+      .catch(() => { if (!cancelled) setCredits(null); });
+    return () => { cancelled = true; };
+  }, [open, hubConnected]);
 
   const reposition = useCallback(() => {
     if (!btnRef.current) return;
@@ -162,6 +178,14 @@ export function UserAccountMenu({
           <div className="text-sm font-medium text-fg-primary truncate">{displayName}</div>
           {displayEmail && (
             <div className="text-xs text-fg-tertiary mt-0.5 truncate">{displayEmail}</div>
+          )}
+          {credits !== null && (
+            <div className="text-xs text-fg-secondary mt-0.5 flex items-center gap-1">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                <polyline points="13 2 3 14 12 14 18 22 6 22 12 17" />
+              </svg>
+              <span className="truncate">{t('common:creditBalance')}: {credits.toLocaleString()}</span>
+            </div>
           )}
         </div>
         {onEditProfile && (
