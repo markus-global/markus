@@ -41,7 +41,7 @@ import { createSettingsTools } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
-import { createSessionTool, type SessionRepo, type SessionCompactor, type SessionSlotStore, type SessionFragmentStore } from './tools/session.js';
+import { createSessionTool, createMemorySessionRepo, type SessionRepo, type SessionCompactor, type SessionSlotStore, type SessionFragmentStore } from './tools/session.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
 import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
@@ -418,7 +418,6 @@ export class AgentManager {
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
   private recallCallbacks?: RecallCallbacks;
-  private sessionRepo?: SessionRepo;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private _cognitiveConfig?: CognitiveConfig;
@@ -1458,13 +1457,15 @@ export class AgentManager {
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
     }
-    // Session tool — agents can query their own conversation sessions
-    if (this.sessionRepo) {
-      agent.registerTool(createSessionTool({
-        agentId: id, chatSessionRepo: this.sessionRepo,
-        compactor, slotStore, fragmentStore,
-      }));
-    }
+    // Session tool — agents can query and manage their OWN conversation sessions.
+    // Uses the Memory-backed repo (the same session space the agent's context is
+    // built from) so list/get/compact/pin/status/fragments stay consistent.
+    // ContextOS fix: previously wired to the Sqlite `cs_*` repo here (split-brain
+    // with MemoryStore `sess_*`); memory is the single source of truth.
+    agent.registerTool(createSessionTool({
+      agentId: id, chatSessionRepo: createMemorySessionRepo(mem),
+      compactor, slotStore, fragmentStore,
+    }));
 
     // Settings tools — agents can list providers and switch models via chat
     for (const tool of createSettingsTools({
@@ -2340,11 +2341,13 @@ export class AgentManager {
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
     }
-    if (this.sessionRepo) {
+    // Memory-backed session repo — see createMemorySessionRepo doc for the
+    // split-brain fix (was: this.sessionRepo Sqlite cs_*).
+    {
       const mem2 = agent.getMemory();
       agent.registerTool(createSessionTool({
         agentId: id,
-        chatSessionRepo: this.sessionRepo,
+        chatSessionRepo: createMemorySessionRepo(mem2),
         compactor: {
           compactOnDemand: (sid, keep) => mem2.compactSession(sid, keep),
           compactWithAnchor: (sid, keep, anchor) => {
@@ -3071,14 +3074,21 @@ export class AgentManager {
     }
   }
 
-  /** Wire the session query tool to a chat session repo for all agents. */
-  setSessionRepo(repo: SessionRepo): void {
-    this.sessionRepo = repo;
+  /**
+   * Legacy wiring hook kept for API compatibility. The session tool is now
+   * ALWAYS Memory-backed (createSessionRepo) — the agent's context is built
+   * from MemoryStore sessions, so the tool must read/write that same space.
+   * Wiring it to the Sqlite `cs_*` repo (as before) split brain: ownership
+   * checks passed for cs_* ids but MemoryStore had no such sessions, so
+   * pin/compact silently persisted nothing. The external `repo` is ignored
+   * for tool wiring (kept for any external consumers of this hook).
+   */
+  setSessionRepo(_repo: SessionRepo): void {
     for (const [id, agent] of this.agents) {
       const mem = agent.getMemory();
       agent.registerTool(createSessionTool({
         agentId: id,
-        chatSessionRepo: repo,
+        chatSessionRepo: createMemorySessionRepo(mem),
         compactor: {
           compactOnDemand: (sid, keep) => mem.compactSession(sid, keep),
           compactWithAnchor: (sid, keep, anchor) => {

@@ -1,5 +1,6 @@
 import type { AgentToolHandler } from '../agent.js';
-import { createLogger } from '@markus/shared';
+import { createLogger, getTextContent } from '@markus/shared';
+import type { IMemoryStore } from '../memory/types.js';
 
 const log = createLogger('session-tools');
 
@@ -91,6 +92,100 @@ export interface SessionToolContext {
   slotStore?: SessionSlotStore;
   /** ContextOS 可选。提供后，agent 可用 retrieve/include/purge 管理已归档片段。 */
   fragmentStore?: SessionFragmentStore;
+}
+
+/**
+ * Memory-backed SessionRepo — adapts MemoryStore conversation sessions to the
+ * SessionRepo contract used by createSessionTool.
+ *
+ * WHY: the session tool must operate on the SAME session space the agent's
+ * context is actually built from (MemoryStore `sess_*` / `task_*` / `a2a_*`),
+ * NOT the Sqlite `cs_*` UI space. Mixing the two broke ContextOS:
+ *   - checkOwnership used Sqlite (cs_* always "exists" → permission passed)
+ *   - slot/compact/fragment operations used MemoryStore (no cs_* session →
+ *     silent no-op returning ok but persisting nothing)
+ * This adapter makes list/get/status/compact/pin/fragment ALL read/write the
+ * same MemoryStore session records the agent truly manages.
+ */
+export function createMemorySessionRepo(mem: IMemoryStore): SessionRepo {
+  return {
+    listSessionsPaginated(agentId: string, opts: {
+      since?: string; until?: string; userId?: string; page?: number; pageSize?: number;
+    }) {
+      let sessions = mem.listSessions(agentId)
+        .filter((s) => {
+          if (opts.since && s.lastActivityAt && s.lastActivityAt < opts.since) return false;
+          if (opts.until && s.lastActivityAt && s.lastActivityAt > opts.until) return false;
+          return true;
+        })
+        .sort((a, b) =>
+          (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? ''),
+        );
+      const page = Math.max(1, Math.trunc(Number(opts.page) || 1) || 1);
+      const pageSize = Math.min(Math.max(1, Math.trunc(Number(opts.pageSize) || 20) || 20), 50);
+      const total = sessions.length;
+      const slice = sessions.slice((page - 1) * pageSize, page * pageSize);
+      return {
+        sessions: slice.map((s) => ({
+          id: s.id,
+          agentId: s.agentId,
+          userId: null,
+          title: null,
+          isMain: false,
+          createdAt: s.startedAt,
+          lastMessageAt: s.lastActivityAt,
+        })),
+        total,
+        page,
+        pageSize,
+        hasMore: page * pageSize < total,
+      };
+    },
+    getSession(sessionId: string): SessionRow | null | undefined {
+      const s = mem.getSession(sessionId);
+      if (!s) return null;
+      return {
+        id: s.id,
+        agentId: s.agentId,
+        userId: null,
+        title: null,
+        isMain: false,
+        createdAt: s.startedAt,
+        lastMessageAt: s.lastActivityAt,
+      };
+    },
+    listMessagesPaginated(sessionId: string, opts: {
+      since?: string; until?: string; page?: number; pageSize?: number;
+    }) {
+      const s = mem.getSession(sessionId);
+      // LLMMessage has no createdAt — memory sessions store messages verbatim,
+      // so since/until time filtering is not applicable at message level.
+      const all = s?.messages ?? [];
+      const page = Math.max(1, Math.trunc(Number(opts.page) || 1) || 1);
+      const pageSize = Math.min(Math.max(1, Math.trunc(Number(opts.pageSize) || 50) || 50), 100);
+      const total = all.length;
+      const slice = all.slice((page - 1) * pageSize, page * pageSize);
+      return {
+        messages: slice.map((m) => ({
+          id: '',
+          sessionId,
+          agentId: s?.agentId,
+          role: m.role ?? null,
+          content: getTextContent(m.content),
+        })),
+        total,
+        page,
+        pageSize,
+        hasMore: page * pageSize < total,
+      };
+    },
+    countMessagesByAgent(sessionId: string, agentId: string): number {
+      const s = mem.getSession(sessionId);
+      if (!s) return 0;
+      // 会话归属该 agent 即视为"参与"（memory session 都是单主会话）
+      return s.agentId === agentId ? s.messages.length : 0;
+    },
+  };
 }
 
 const OP_ALIASES = new Set([

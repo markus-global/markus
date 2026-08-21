@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ContextEngine } from '../src/context-engine.js';
 import { MemoryStore } from '../src/memory/store.js';
-import { createSessionTool, normalizeSessionArgs } from '../src/tools/session.js';
+import { createSessionTool, createMemorySessionRepo, normalizeSessionArgs } from '../src/tools/session.js';
 import type { SessionToolContext } from '../src/tools/session.js';
 import { buildSlotSegment } from '../src/context-slot.js';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -316,5 +316,86 @@ describe('MemoryStore — slot + fragment integrity', () => {
     const hits = store.retrieveFragments('final 5', 5);
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0].content).toContain('final');
+  });
+});
+
+// =============================================================================
+// REGRESSION: session tool wired to Memory-backed repo (createMemorySessionRepo)
+// Guards against the split-brain bug where pin/compact wrote to MemoryStore
+// while checkOwnership/list/status read the Sqlite `cs_*` repo — tool returned
+// ok but persisted nothing (pin→status never consistent).
+// =============================================================================
+
+function memWiredTool(): { tool: ReturnType<typeof createSessionTool>; store: MemoryStore; sessionId: string } {
+  const dir = tempDir();
+  const store = new MemoryStore(dir);
+  const session = store.createSession('agt-A');
+  // seed some history so compact has something to page out
+  for (let i = 0; i < 20; i++) store.appendMessage(session.id, { role: 'user', content: `turn ${i}` } as never);
+  const mem = store;
+  const tool = createSessionTool({
+    agentId: 'agt-A',
+    chatSessionRepo: createMemorySessionRepo(mem),
+    compactor: {
+      compactOnDemand: (sid, keep) => mem.compactSession(sid, keep),
+      compactWithAnchor: (sid, keep, anchor) => {
+        if (mem.setSlot && anchor.goal) mem.setSlot(sid, 'goal', anchor.goal);
+        if (mem.setSlot && anchor.done) mem.setSlot(sid, 'done', anchor.done);
+        if (mem.setSlot && anchor.next) mem.setSlot(sid, 'next', anchor.next);
+        const res = mem.compactSession(sid, keep);
+        return { ...res, anchorKey: ['goal', 'done', 'next'].filter((k) => anchor[k as keyof typeof anchor]).join(',') || 'anchor' };
+      },
+    },
+    slotStore: {
+      getSlots: (sid) => mem.getSlots ? mem.getSlots(sid) : [],
+      setSlot: (sid, k, v) => { if (mem.setSlot) mem.setSlot(sid, k, v); },
+      removeSlot: (sid, k) => { if (mem.removeSlot) mem.removeSlot(sid, k); },
+      serialize: (sid) => mem.serializeSlots ? mem.serializeSlots(sid) : '',
+    },
+    fragmentStore: {
+      retrieveFragments: (q, mx) => mem.retrieveFragments ? mem.retrieveFragments(q, mx) : [],
+      includeFragment: (sid, fid) => mem.includeFragment ? mem.includeFragment(sid, fid) : { ok: false, message: 'unavailable' },
+      purgeSessionFragments: (sid) => mem.purgeSessionFragments ? mem.purgeSessionFragments(sid) : 0,
+      sessionStats: (sid) => mem.sessionStats ? mem.sessionStats(sid) : { messageCount: 0, slotKeys: [], fragmentCount: 0 },
+    },
+  });
+  return { tool, store, sessionId: session.id };
+}
+
+describe('session tool — Memory-backed repo (ContextOS split-brain regression)', () => {
+  it('清单基于 MemoryStore 会话（sess_* 而非 Sqlite cs_*）', async () => {
+    const { tool, sessionId } = memWiredTool();
+    const res = JSON.parse(await tool.execute({ operation: 'list' }));
+    expect(res.status).toBe('ok');
+    expect(res.sessions.length).toBeGreaterThan(0);
+    expect(res.sessions[0].id).toBe(sessionId); // created MemoryStore id, not cs_*
+    expect(res.sessions[0].agentId).toBe('agt-A');
+  });
+
+  it('pin → status 一致（跨工具读回同一 MemoryStore slot）', async () => {
+    const { tool, sessionId } = memWiredTool();
+    const pin = JSON.parse(await tool.execute({ operation: 'pin', session_id: sessionId, key: 'goal', content: 'land context-os' }));
+    expect(pin.status).toBe('ok');
+    const status = JSON.parse(await tool.execute({ operation: 'status', session_id: sessionId }));
+    expect(status.status).toBe('ok');
+    expect(status.slots).toContain('goal'); // was [] under split-brain
+  });
+
+  it('compact 对 MemoryStore 会话真实生效并落 conversation_fragment', async () => {
+    const { tool, store, sessionId } = memWiredTool();
+    const comp = JSON.parse(await tool.execute({ operation: 'compact', session_id: sessionId, keep_last: 5 }));
+    expect(comp.status).toBe('ok');
+    expect(comp.flushedCount).toBeGreaterThan(0); // was 0 — no-op under split-brain
+    const fragments = store.retrieveFragments('turn', 20);
+    expect(fragments.length).toBeGreaterThan(0);
+  });
+
+  it('status 反映 messageCount 且 700 compact 后 fragmentCount > 0', async () => {
+    const { tool, store, sessionId } = memWiredTool();
+    const before = JSON.parse(await tool.execute({ operation: 'status', session_id: sessionId }));
+    expect(before.messageCount).toBeGreaterThan(0);
+    await tool.execute({ operation: 'compact', session_id: sessionId, keep_last: 3 });
+    const after = JSON.parse(await tool.execute({ operation: 'status', session_id: sessionId }));
+    expect(after.fragmentCount).toBeGreaterThan(0);
   });
 });
