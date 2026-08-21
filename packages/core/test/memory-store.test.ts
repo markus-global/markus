@@ -474,9 +474,13 @@ describe('MemoryStore — Episodic: sessions', () => {
     expect(result.flushedCount).toBe(20);
     expect(result.summary).toBeTruthy();
 
+    // ContextOS: only the retained messages remain in the flow (exactly keepLast) —
+    // the summary lives in the fixed-segment source, NOT as an extra flow message.
     const remaining = store.getRecentMessages(session.id, 100);
-    expect(remaining.length).toBe(11); // 10 kept + 1 summary
-    expect(remaining[0].content).toContain('summary');
+    expect(remaining.length).toBe(10);
+    expect(remaining[0].content).toContain('message 20');
+    const seg = store.serializeSummary(session.id);
+    expect(seg).toMatch(/^\[CONTEXT SUMMARY\]/);
   });
 
   it('compactSession is no-op when below threshold', () => {
@@ -573,9 +577,14 @@ describe('MemoryStore — Audit trail: daily-logs', () => {
     }
     const res = store.compactSessionOnDemand(session.id, 10);
     expect(res.flushedCount).toBeGreaterThan(0);
+    // ContextOS: the summary now lives in the durable fixed-segment source
+    // (serializeSummary → [CONTEXT SUMMARY]), NOT as a fake message in the flow.
     const remaining = store.getRecentMessages(session.id, 100);
-    expect(remaining.some(m => String(m.content).includes('Conversation history summary'))).toBe(true);
+    expect(remaining.some(m => String(m.content).includes('Conversation history summary'))).toBe(false);
+    const seg = store.serializeSummary(session.id);
+    expect(seg).toContain('[CONTEXT SUMMARY]');
     expect(res.summary).toContain('Latest user intent: final goal: ship the build');
+    expect(seg).toContain('Latest user intent: final goal: ship the build');
   });
 
   it('compact archives paged-out history instead of dropping it (ContextOS stage A)', () => {
@@ -593,14 +602,17 @@ describe('MemoryStore — Audit trail: daily-logs', () => {
     expect(frag!.metadata).toMatchObject({ pagedOutCount: expect.any(Number) });
   });
 
-  it('summarizeAndTruncate compacts and returns messages', () => {
+  it('summarizeAndTruncate compacts and returns retained messages', () => {
     const session = store.createSession('agent-1');
     for (let i = 0; i < 25; i++) {
       store.appendMessage(session.id, { role: 'user', content: `msg ${i}` });
     }
     const messages = store.summarizeAndTruncate(session.id, 5);
     expect(messages.length).toBeGreaterThan(0);
-    expect(messages[0].content).toContain('summary');
+    // The retained messages are returned verbatim (no fake summary message in flow),
+    // and the summary anchor lives in the fixed-segment source instead.
+    expect(messages[0].content).toContain('msg 20');
+    expect(store.serializeSummary(session.id)).toMatch(/^\[CONTEXT SUMMARY\]/);
   });
 
   it('checkAndCompact does not drop turns at moderate message counts', () => {

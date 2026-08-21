@@ -489,15 +489,54 @@ describe('fragment — conversation_fragment metadata survives disk round-trip',
   });
 });
 
-describe('compact — summary anchor marked [SYSTEM] (not confusable with human input)', () => {
-  it('compact 注入的摘要以 [SYSTEM] 前缀开头', () => {
+describe('compact — summary anchor lives in [CONTEXT SUMMARY] fixed segment (not a fake user message)', () => {
+  it('compact 后摘要存入 session.summary，角色中立，不进入消息流', () => {
+    const store = storeWithMessages([]);
+    const session = store.getLatestSession('agt-A')!;
+    for (let i = 0; i < 30; i++) store.appendMessage(session.id, { role: 'user', content: `s ${i}` } as never);
+    const res = store.compactSession(session.id, 3);
+    const remaining = store.getSession(session.id)!.messages;
+    // Summary is NOT a message in the flow — no user/assistant summary message exists.
+    for (const m of remaining) {
+      expect(String(m.content)).not.toContain('Conversation history summary');
+    }
+    // Summary lives in the durable fixed-segment source.
+    const seg = store.serializeSummary(session.id);
+    expect(seg).toBeTruthy();
+    expect(seg).toMatch(/^\[CONTEXT SUMMARY\]/);
+    expect(res.summary.length).toBeGreaterThan(0);
+  });
+
+  it('empty/no-summary session → serializeSummary 返回空串', () => {
+    const store = storeWithMessages([]);
+    const session = store.getLatestSession('agt-A')!;
+    expect(store.serializeSummary(session.id)).toBe('');
+  });
+
+  it('context-engine 将 [CONTEXT SUMMARY] 注入固定 system 段且不污染消息流', async () => {
+    const engine = new ContextEngine();
     const store = storeWithMessages([]);
     const session = store.getLatestSession('agt-A')!;
     for (let i = 0; i < 30; i++) store.appendMessage(session.id, { role: 'user', content: `s ${i}` } as never);
     store.compactSession(session.id, 3);
-    const remaining = store.getSession(session.id)!.messages;
-    const anchor = remaining.find((m) => String(m.content).includes('Conversation history summary'));
-    expect(anchor).toBeTruthy();
-    expect(String(anchor!.content)).toMatch(/^\[SYSTEM\]/);
+    const prepared = await engine.prepareMessages({
+      systemPrompt: 'You are an agent.',
+      sessionMessages: store.getRecentMessages(session.id, 1000),
+      memory: store,
+      sessionId: session.id,
+      agentId: 'agt-A',
+      modelContextWindow: 100_000,
+      slotsSegment: store.serializeSlots(session.id),
+      summarySegment: store.serializeSummary(session.id),
+      toolDefinitions: [],
+    });
+    const sysMsg = prepared.messages[0] as { role: string; content: string };
+    expect(sysMsg.role).toBe('system');
+    expect(sysMsg.content).toContain('[CONTEXT SUMMARY]');
+    // Must NOT appear as any non-system message
+    for (const m of prepared.messages.slice(1)) {
+      const c = (m as { content?: unknown })?.content;
+      if (typeof c === 'string') expect(c).not.toContain('[CONTEXT SUMMARY]');
+    }
   });
 });

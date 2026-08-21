@@ -26,7 +26,7 @@ import {
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
 import { ensureKnowledgeStateFiles, knowledgePath, readState, pruneExpiredState, writeState } from './taxonomy.js';
-import { buildSlotSegment, sanitizeSlotKey, type SlotEntry } from '../context-slot.js';
+import { buildSlotSegment, buildSummarySegment, sanitizeSlotKey, type SlotEntry } from '../context-slot.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
 
@@ -651,15 +651,18 @@ export class MemoryStore implements IMemoryStore {
 
     const retained = session.messages.slice(safeCut);
 
-    // Inject a summary message so the model retains awareness of compacted history.
-    // role 'user' keeps LLM API compatibility (no neutral role exists), but the
-    // [SYSTEM] prefix marks it as platform-injected, NOT human input — both
-    // context-engine's merge guard and the model itself treat it separately.
-    const summaryMessage: LLMMessage = {
-      role: 'user',
-      content: `[SYSTEM] [Conversation history summary — ${flushedCount} earlier messages were paged out to archive; recoverable via session_retrieve]\n${summary}\n[End of summary. The conversation continues below with the most recent messages.]`,
-    };
-    session.messages = [summaryMessage, ...retained];
+    // ContextOS: the summary anchor lives in the durable `session.summary` and
+    // is injected into the [SYSTEM] fixed segment ([CONTEXT SUMMARY]) every
+    // turn — NOT injected as a `role:'user'` fake message. This keeps it:
+    //   - always present (agent knows what was paged out, every turn);
+    //   - never re-compacted (a message in the flow would re-enter the
+    //     variable-segment compression chain and be collapsed again);
+    //   - turn-neutral (a `role:'user'` message would pollute attribution and
+    //     could be mistaken for genuine human input).
+    // Raw history is still fully recoverable via the archived fragment below.
+    session.summary = summary;
+    session.summaryPagedOut = flushedCount;
+    session.messages = retained;
     this.saveSessionToDisk(session);
 
     log.info('Session compacted', { sessionId, flushedCount, remaining: session.messages.length });
@@ -786,6 +789,14 @@ export class MemoryStore implements IMemoryStore {
   /** Serialize this session's slots into the fixed [SLOTS] injection segment. */
   serializeSlots(sessionId: string): string {
     return buildSlotSegment(this.getSlots(sessionId));
+  }
+
+  /** Serialize this session's compaction summary into the fixed [CONTEXT SUMMARY]
+   *  segment (empty string when none). Semantically separate from [SLOTS]. */
+  serializeSummary(sessionId: string): string {
+    const session = this.sessions.get(sessionId) ?? this.tryLoadSessionFromDisk(sessionId);
+    if (!session?.summary) return '';
+    return buildSummarySegment(session.summary, session.summaryPagedOut);
   }
 
   /** Search archived conversation_fragment entries for this session. */

@@ -160,6 +160,8 @@ export interface PreparedContext {
   contextHint?: string;
   /** ContextOS: fixed段 C — the agent-pinned [SLOTS] segment (never compacted). */
   slotsSegment?: string;
+  /** ContextOS: fixed段 C — the durable compaction summary [CONTEXT SUMMARY] segment. */
+  summarySegment?: string;
 }
 
 export interface SystemPromptSegment {
@@ -1764,6 +1766,9 @@ export class ContextEngine {
     systemCacheSegments?: SystemPromptSegment[];
     /** ContextOS: fixed段 C — agent-pinned slots, injected verbatim and never compacted. */
     slotsSegment?: string;
+    /** ContextOS: fixed段 C — durable compaction summary anchor, injected verbatim
+     *  as its own [CONTEXT SUMMARY] block (semantically separate from slots). */
+    summarySegment?: string;
   }): Promise<PreparedContext> {
     // No silent defaults: a missing/zero context window is exactly what
     // silently drove the message budget negative and made the agent return
@@ -1786,13 +1791,16 @@ export class ContextEngine {
     // them and never let them enter the variable-segment compression path.
     const slotsSegment = opts.slotsSegment ?? '';
     const slotsTokens = slotsSegment ? estimateTokens(slotsSegment, this.tokenCounter) : 0;
+    // ContextOS: durable compaction summary is a separate fixed segment block.
+    const summarySegment = opts.summarySegment ?? '';
+    const summaryTokens = summarySegment ? estimateTokens(summarySegment, this.tokenCounter) : 0;
     let safetyMargin = Math.ceil(Math.min(contextWindow * 0.08, 16_000));
-    let messageBudget = contextWindow - systemTokens - toolDefTokens - slotsTokens - maxOutput - safetyMargin;
+    let messageBudget = contextWindow - systemTokens - toolDefTokens - slotsTokens - summaryTokens - maxOutput - safetyMargin;
 
     // ── Defensive budget reclamation ────────────────────────────────────
     const MIN_MESSAGE_BUDGET = 1500;
     const MIN_OUTPUT_RESERVE = 2048;
-    const staticOverhead = systemTokens + toolDefTokens + slotsTokens;
+    const staticOverhead = systemTokens + toolDefTokens + slotsTokens + summaryTokens;
     if (messageBudget < MIN_MESSAGE_BUDGET) {
       safetyMargin = Math.min(safetyMargin, 4000);
       const roomForOutput = contextWindow - staticOverhead - safetyMargin - MIN_MESSAGE_BUDGET;
@@ -1973,6 +1981,7 @@ export class ContextEngine {
           content: [
             opts.systemPrompt,
             slotsSegment ? `\n\n${slotsSegment}` : '',
+            summarySegment ? `\n\n${summarySegment}` : '',
             `\n\n${contextHint}`,  // ContextOS: agent-visible water level, rebuilt every turn
           ].join(''),
         },
@@ -1996,6 +2005,7 @@ export class ContextEngine {
       systemCacheSegments: opts.systemCacheSegments,
       contextHint,
       slotsSegment,
+      summarySegment,
     };
   }
 

@@ -24,6 +24,14 @@ export interface ConversationSession {
   lastActivityAt: string;
   /** ContextOS: agent-pinned slot anchors (fixed段 C), never compacted. */
   slots?: Record<string, string>;
+  /** ContextOS: durable compaction summary anchor — injected into the [SYSTEM]
+   *  fixed segment ([CONTEXT SUMMARY]) every turn, so the agent always knows how
+   *  much history was paged out. Stored OUT of messages: it is NOT a fake
+   *  `role:'user'` turn, is never re-compacted, and never pollutes turn
+   *  attribution. Populated by compactSession; cleared on unpin/all-purge. */
+  summary?: string;
+  /** Count of messages represented by `summary` (informational). */
+  summaryPagedOut?: number;
 }
 
 /**
@@ -71,6 +79,10 @@ export interface IMemoryStore {
   setSlot?(sessionId: string, key: string, text: string): void;
   removeSlot?(sessionId: string, key: string): void;
   serializeSlots?(sessionId: string): string;
+  /** ContextOS: serialize this session's compaction summary into the fixed
+   *  [CONTEXT SUMMARY] segment (empty string when there is none). Injected
+   *  alongside slots but semantically a SEPARATE block. */
+  serializeSummary?(sessionId: string): string;
   retrieveFragments?(
     query: string,
     maxResults?: number,

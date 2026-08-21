@@ -49,6 +49,27 @@ export function buildSlotSegment(entries: SlotEntry[], maxChars: number = SLOT_M
   return `[SLOTS] (agent-managed, not compacted)\n${lines.join('\n')}`;
 }
 
+/**
+ * 构建固定段中的「会话摘要锚点」块。
+ *
+ * ContextOS 让 compact 产生的摘要进入 [SYSTEM] 固定段（与 [SLOTS] 语义分区），
+ * 而非注入成一条 `role:'user'` 假消息——这样它：
+ *  - 每次请求都在场（agent 始终知道自己压缩过多少历史）；
+ *  - 永不进入可变段压缩链（不会把自己二次压缩掉）；
+ *  - 不污染 turn 归属（不会让模型以为这是用户真实输入）。
+ *
+ * @param summary  压缩摘要文本（可为空串，空则不渲染该块）
+ * @param pagedOut 被换出的消息条数（用于提示，可选）
+ */
+export function buildSummarySegment(summary: string, pagedOut?: number): string {
+  if (!summary) return '';
+  const header = pagedOut ? `${pagedOut} earlier messages paged out` : 'history paged out earlier';
+  return (
+    `[CONTEXT SUMMARY] (platform compaction anchor, not compacted, recoverable via session_retrieve — ${header})\n` +
+    summary.slice(0, CONTEXT_SLOT_MAX_CHARS)
+  );
+}
+
 /** 仅允许安全的槽位键字符，防止键内注入格式破坏。 */
 export function sanitizeSlotKey(key: string): string {
   return key.slice(0, 64).replace(/[\r\n:]/g, '_').trim();
