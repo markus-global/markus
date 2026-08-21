@@ -39,8 +39,8 @@ const OLLAMA_DEFAULT_MAX_OUTPUT = 4096;
  * than `DEFAULT_MAX_OUTPUT_FALLBACK` so the derived message budget never goes
  * negative.
  */
-const DEFAULT_CONTEXT_WINDOW_FALLBACK = 128_000;
-const DEFAULT_MAX_OUTPUT_FALLBACK = DEFAULT_REQUEST_MAX_TOKENS;
+const DEFAULT_CONTEXT_WINDOW_FALLBACK = 1_000_000;
+const DEFAULT_MAX_OUTPUT_FALLBACK = 131_072;
 
 const CAPABILITY_KEY_MAP: Partial<Record<ModelCapabilityType, keyof ProviderCapabilities>> = {
   image_generation: 'imageGeneration',
@@ -732,12 +732,33 @@ export class LLMRouter {
         const flagTrue = (key: string) => capsObj[key] === true || capsArr.includes(key) || raw[key] === true;
         const hasVision = modalities.includes('image') || flagTrue('vision');
         const hasReasoning = flagTrue('reasoning') || flagTrue('thinking');
+        // OpenAI-compatible gateways expose the real window under various keys:
+        // context_window / context_length / max_model_len / max_context_length.
+        // 128-char heuristic is fine — we only need >0 to avoid a bogus 0 that
+        // would send the budget planner down a fallback path and under-size a
+        // modern large-window model. If absent, keep 0 so the caller's fallback
+        // (now flagship-scale) still yields a usable budget instead of a 0.
+        const rawCtx = raw.context_window ?? raw.context_length
+          ?? raw.max_model_len ?? raw.max_context_length ?? raw.context;
+        const windowOrZero =
+          typeof rawCtx === 'number' && Number.isFinite(rawCtx) && rawCtx > 0
+            ? rawCtx
+            : typeof rawCtx === 'string'
+              ? (parseInt(String(rawCtx), 10) || 0)
+              : 0;
+        const maxOut = raw.max_output_tokens ?? raw.max_tokens ?? raw.max_tokens_out;
+        const maxOutVal =
+          typeof maxOut === 'number' && Number.isFinite(maxOut) && maxOut > 0
+            ? maxOut
+            : typeof maxOut === 'string'
+              ? (parseInt(String(maxOut), 10) || 0)
+              : 0;
         return {
           id,
           name: id,
           provider: providerName,
-          contextWindow: 0,
-          maxOutputTokens: 0,
+          contextWindow: windowOrZero,
+          maxOutputTokens: maxOutVal,
           cost: { input: 0, output: 0 },
           reasoning: hasReasoning || undefined,
           inputTypes: hasVision ? ['text', 'image'] as Array<'text' | 'image'> : ['text'] as Array<'text' | 'image'>,
