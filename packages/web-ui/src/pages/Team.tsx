@@ -830,35 +830,40 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   type EntityMentionItem = { id: string; name: string; entityType: 'workflow' | 'project' | 'requirement' | 'task' | 'deliverable'; role?: string };
   const [entityMentionItems, setEntityMentionItems] = useState<EntityMentionItem[]>([]);
-useEffect(() => {
-    if (previewMode) return;
-    let cancelled = false;
-    const load = async () => {
+  const entityMentionsLoadedRef = useRef(false);
+  // Load entities (projects / requirements / tasks / deliverables / workflows) for
+  // @mention. Kept in a useCallback so @-typing in the composer can refresh it on
+  // demand (handleInputChange → loadEntityMentions) without duplicating the fetch.
+  const loadEntityMentions = useCallback(async () => {
+    if (entityMentionsLoadedRef.current) return;
+    entityMentionsLoadedRef.current = true;
+    try {
       const items: EntityMentionItem[] = [];
-      try {
-        const [projRes, reqRes, taskRes, delRes, teamsRes] = await Promise.all([
-          api.projects.list().catch(() => ({ projects: [] as Array<{ id: string; name: string; status: string }> })),
-          api.requirements.list().catch(() => ({ requirements: [] as Array<{ id: string; title: string; priority: string }> })),
-          api.tasks.list({ pageSize: 100 }).catch(() => ({ tasks: [] as Array<{ id: string; title: string; status: string }> })),
-          api.deliverables.search({ limit: 100 }).catch(() => ({ results: [] as Array<{ id: string; title: string; type: string }> })),
-          api.teams.list().catch(() => ({ teams: [] as TeamInfo[], ungrouped: [] })),
-        ]);
-        for (const p of projRes.projects) items.push({ id: p.id, name: p.name, entityType: 'project', role: p.status });
-        for (const r of reqRes.requirements) items.push({ id: r.id, name: r.title, entityType: 'requirement', role: r.priority });
-        for (const tk of taskRes.tasks) items.push({ id: tk.id, name: tk.title, entityType: 'task', role: tk.status });
-        for (const d of delRes.results) items.push({ id: d.id, name: d.title, entityType: 'deliverable', role: d.type });
-        for (const team of teamsRes.teams) {
-          try {
-            const wfRes = await api.workflows.list(team.id);
-            for (const wf of wfRes.workflows) items.push({ id: wf.name, name: wf.displayName || wf.name, entityType: 'workflow', role: `v${wf.version}` });
-          } catch { /* skip */ }
-        }
-      } catch { /* ignore */ }
-if (!cancelled) setEntityMentionItems(items);
-    };
-    void load();
-    return () => { cancelled = true; };
-  }, [previewMode]);
+      const [projRes, reqRes, taskRes, delRes, teamsRes] = await Promise.all([
+        api.projects.list().catch(() => ({ projects: [] as Array<{ id: string; name: string; status: string }> })),
+        api.requirements.list().catch(() => ({ requirements: [] as Array<{ id: string; title: string; priority: string }> })),
+        api.tasks.list({ pageSize: 100 }).catch(() => ({ tasks: [] as Array<{ id: string; title: string; status: string }> })),
+        api.deliverables.search({ limit: 100 }).catch(() => ({ results: [] as Array<{ id: string; title: string; type: string }> })),
+        api.teams.list().catch(() => ({ teams: [] as TeamInfo[], ungrouped: [] })),
+      ]);
+      for (const p of projRes.projects) items.push({ id: p.id, name: p.name, entityType: 'project', role: p.status });
+      for (const r of reqRes.requirements) items.push({ id: r.id, name: r.title, entityType: 'requirement', role: r.priority });
+      for (const tk of taskRes.tasks) items.push({ id: tk.id, name: tk.title, entityType: 'task', role: tk.status });
+      for (const d of delRes.results) items.push({ id: d.id, name: d.title, entityType: 'deliverable', role: d.type });
+      for (const team of teamsRes.teams) {
+        try {
+          const wfRes = await api.workflows.list(team.id);
+          for (const wf of wfRes.workflows) items.push({ id: wf.name, name: wf.displayName || wf.name, entityType: 'workflow', role: `v${wf.version}` });
+        } catch { /* skip */ }
+      }
+      setEntityMentionItems(items);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    if (previewMode) return;
+    void loadEntityMentions();
+  }, [previewMode, loadEntityMentions]);
 
   const activeTeamId = chatMode === 'channel'
     ? groupChats.find(gc => gc.channelKey === activeChannel)?.teamId
