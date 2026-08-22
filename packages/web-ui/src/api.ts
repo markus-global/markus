@@ -2871,7 +2871,13 @@ async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getHubToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...init?.headers as Record<string, string> };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(`${BASE}/hub${path}`, {
+  // In landing/preview mode there is no local backend proxy for /api/hub/* —
+  // talk to the Hub origin directly (HUB_URL from window.__MARKUS_HUB_URL__).
+  const preview = !!(window as unknown as Record<string, boolean>).__MARKUS_PREVIEW__;
+  const url = preview
+    ? `${HUB_URL}/api${path}`
+    : `${BASE}/hub${path}`;
+  const res = await fetch(url, {
     ...init,
     headers,
     credentials: 'include',
