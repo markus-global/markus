@@ -29,6 +29,10 @@ export class StaleDetector {
   private config: StaleConfig;
   private scanInterval?: ReturnType<typeof setInterval>;
   private onStaleItems?: (items: StaleItem[]) => void;
+  /** Keys already notified (taskId:staleType). A key is held until the task is no longer stale,
+   *  so the same task is NOT re-notified on every scan — but will be notified again if it
+   *  becomes stale a second time after recovering. */
+  private notifiedKeys = new Set<string>();
 
   constructor(
     private taskService: TaskService,
@@ -59,18 +63,35 @@ export class StaleDetector {
     }
   }
 
+  private key(taskId: string, type: StaleItem['type']): string {
+    return `${taskId}:${type}`;
+  }
+
+  private pushIfNotNotified(
+    staleItems: StaleItem[],
+    currentKeys: Set<string>,
+    taskId: string,
+    type: StaleItem['type'],
+    item: Omit<StaleItem, 'type' | 'taskId'>
+  ): void {
+    const k = this.key(taskId, type);
+    currentKeys.add(k);
+    if (this.notifiedKeys.has(k)) return;
+    this.notifiedKeys.add(k);
+    staleItems.push({ type, taskId, ...item });
+  }
+
   async scan(): Promise<StaleItem[]> {
     const staleItems: StaleItem[] = [];
     const allTasks = this.taskService.listTasks({});
     const now = Date.now();
+    const currentKeys = new Set<string>();
 
     for (const task of allTasks) {
       const age = now - new Date(task.updatedAt).getTime();
 
       if (task.status === 'in_progress' && age > this.config.maxInProgressMs) {
-        staleItems.push({
-          type: 'stuck_task',
-          taskId: task.id,
+        this.pushIfNotNotified(staleItems, currentKeys, task.id, 'stuck_task', {
           ageMs: age,
           agentId: task.assignedAgentId,
           message: `Task "${task.title}" has been in_progress for ${Math.round(age / 3600000)}h`,
@@ -78,9 +99,7 @@ export class StaleDetector {
       }
 
       if (task.status === 'review' && age > this.config.maxReviewWaitMs) {
-        staleItems.push({
-          type: 'review_stale',
-          taskId: task.id,
+        this.pushIfNotNotified(staleItems, currentKeys, task.id, 'review_stale', {
           ageMs: age,
           agentId: task.reviewerId ?? task.assignedAgentId,
           message: `Task "${task.title}" has been in review for ${Math.round(age / 3600000)}h with no action`,
@@ -88,14 +107,18 @@ export class StaleDetector {
       }
 
       if (task.status === 'pending' && age > this.config.maxAssignedUnstartedMs) {
-        staleItems.push({
-          type: 'unstarted_task',
-          taskId: task.id,
+        this.pushIfNotNotified(staleItems, currentKeys, task.id, 'unstarted_task', {
           ageMs: age,
           agentId: task.assignedAgentId,
           message: `Task "${task.title}" awaiting approval for ${Math.round(age / 3600000)}h`,
         });
       }
+    }
+
+    // Release memory for tasks that are no longer stale, so they can be notified again
+    // if they become stale a second time (e.g. after recovery).
+    for (const k of [...this.notifiedKeys]) {
+      if (!currentKeys.has(k)) this.notifiedKeys.delete(k);
     }
 
     if (staleItems.length > 0) {
