@@ -2867,11 +2867,32 @@ export function ensureHubAuth(methodOrOpts?: string | EnsureHubAuthOpts): Promis
   return p;
 }
 
+// ─── Preview-mode hub cache ─────────────────────────────────────────────
+// In landing/preview mode we want the store demo to render instantly when the
+// user scrolls to it, not after a fetch starts. A long-lived cache (10 min) on
+// successful GETs means a single prefetch at page load is enough — any later
+// mount of StoreDiscovery (or other hub consumers) hits memory instantly.
+// This cache is ONLY used when __MARKUS_PREVIEW__ is set, so the real desktop /
+// web client keeps its existing no-cache (fresh fetch) behavior.
+const PREVIEW_CACHE_TTL_MS = 10 * 60 * 1000;
+const _previewCache = new Map<string, { data: unknown; ts: number }>();
+
 async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getHubToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...init?.headers as Record<string, string> };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(`${BASE}/hub${path}`, {
+  // In landing/preview mode there is no local backend proxy for /api/hub/* —
+  // talk to the Hub origin directly (HUB_URL from window.__MARKUS_HUB_URL__).
+  const preview = !!(window as unknown as Record<string, boolean>).__MARKUS_PREVIEW__;
+  const isGet = !init?.method || init.method === 'GET';
+  if (preview && isGet) {
+    const hit = _previewCache.get(path);
+    if (hit && Date.now() - hit.ts < PREVIEW_CACHE_TTL_MS) return hit.data as T;
+  }
+  const url = preview
+    ? `${HUB_URL}/api${path}`
+    : `${BASE}/hub${path}`;
+  const res = await fetch(url, {
     ...init,
     headers,
     credentials: 'include',
@@ -2890,6 +2911,10 @@ async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
     err.retryAfterSeconds = typeof data.retryAfterSeconds === 'number' ? data.retryAfterSeconds : undefined;
     err.status = res.status;
     throw err;
+  }
+  if (preview && isGet) {
+    // Only successful payloads are cached.
+    _previewCache.set(path, { data: data as unknown, ts: Date.now() });
   }
   return data as T;
 }
