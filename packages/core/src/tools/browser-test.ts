@@ -6,6 +6,7 @@
  * - Chaos: continuous randomized multi-agent stress test with per-op correctness verification
  */
 
+import { existsSync } from 'node:fs';
 import { createLogger } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import type { MarkusBrowserBridge } from './markus-browser-bridge.js';
@@ -223,8 +224,9 @@ export async function runQuickBrowserTest(
     });
     await step('Inspection', 'Agent B: take_screenshot', async () => {
       const r = await callTool(toolsB, 'take_screenshot');
-      if (!r || r.length < 100) {
-        throw new Error(`Screenshot too short (${r.length} chars): ${truncate(r, 120)}`);
+      const p = r.trim();
+      if (!/\.(png|jpe?g)$/i.test(p) || !existsSync(p)) {
+        throw new Error(`Screenshot did not return an existing image path (${r.length} chars): ${truncate(r, 120)}`);
       }
     });
     await step('Inspection', 'Agent C: evaluate_script (document.title)', async () => {
@@ -483,9 +485,10 @@ async function executeChaosOp(
     case 'take_screenshot': {
       const r = await callTool(tools, 'take_screenshot');
       if (r.includes('Error:')) return { target: currentTab?.url ?? '?', result: truncate(r, 100), passed: false, error: truncate(r) };
-      const ok = r.length > 100;
-      return { target: currentTab?.url ?? '?', result: `${r.length} chars`, passed: ok,
-        error: ok ? undefined : `Screenshot too short: ${r.length} chars` };
+      const p = r.trim();
+      const ok = /\.(png|jpe?g)$/i.test(p) && existsSync(p);
+      return { target: currentTab?.url ?? '?', result: ok ? p : `${r.length} chars`, passed: ok,
+        error: ok ? undefined : `Screenshot did not return an existing image path: ${truncate(r, 120)}` };
     }
 
     case 'eval_title': {
