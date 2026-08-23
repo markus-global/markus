@@ -64,6 +64,55 @@ describe('StaleDetector', () => {
       const items = await detector.scan();
       expect(items).toHaveLength(0);
     });
+
+    it('does not re-notify the same stale task on consecutive scans', async () => {
+      taskService.listTasks.mockReturnValue([createTask()]);
+      const first = await detector.scan();
+      expect(first).toHaveLength(1);
+      const second = await detector.scan();
+      expect(second).toHaveLength(0);
+    });
+
+    it('re-notifies a task only after it recovers and becomes stale again', async () => {
+      // First scan: stale → notified once
+      taskService.listTasks.mockReturnValue([createTask()]);
+      const first = await detector.scan();
+      expect(first).toHaveLength(1);
+
+      // Task recovers (fresh) → no notification, memory cleared
+      taskService.listTasks.mockReturnValue([createTask({
+        updatedAt: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
+      })]);
+      const recovered = await detector.scan();
+      expect(recovered).toHaveLength(0);
+
+      // Task becomes stale again (new stale episode) → notified again
+      taskService.listTasks.mockReturnValue([createTask({
+        updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+      })]);
+      const again = await detector.scan();
+      expect(again).toHaveLength(1);
+    });
+
+    it('notifies different stale types of the same task independently', async () => {
+      // in_progress stale
+      taskService.listTasks.mockReturnValue([createTask()]);
+      const first = await detector.scan();
+      expect(first.some(i => i.type === 'stuck_task')).toBe(true);
+
+      // now in review stale (different type, not yet notified)
+      taskService.listTasks.mockReturnValue([createTask({
+        status: 'review',
+        updatedAt: new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString(),
+        reviewerId: 'agent-reviewer',
+      })]);
+      const second = await detector.scan();
+      expect(second.some(i => i.type === 'review_stale')).toBe(true);
+
+      // repeat review scan → no duplicate
+      const third = await detector.scan();
+      expect(third).toHaveLength(0);
+    });
   });
 
   describe('start and stop', () => {

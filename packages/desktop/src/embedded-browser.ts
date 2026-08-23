@@ -8,7 +8,9 @@
  * Agent control: webContents.debugger speaks CDP — the same protocol used by
  * chrome-devtools-mcp / the Chrome extension bridge.
  */
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   WebContentsView,
@@ -22,6 +24,27 @@ import {
 import { getMainWindow } from './window.js';
 
 const PARTITION = 'persist:markus-embedded-browser';
+
+/** Directory for browser screenshot files (also served by /api/files/image). */
+function screenshotDir(): string {
+  const dir = join(homedir(), '.markus', 'generated', 'screenshots');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * Save a raw screenshot buffer to the screenshots dir, returning its absolute path.
+ * Throws when the buffer is empty so callers never produce 0-byte image files.
+ */
+export function saveEmbeddedBrowserScreenshot(buf: Buffer, format: 'png' | 'jpeg'): string {
+  if (!buf || buf.length === 0) {
+    throw new Error('Refusing to save an empty screenshot buffer (page not painted yet)');
+  }
+  const ext = format === 'jpeg' ? 'jpg' : 'png';
+  const filePath = join(screenshotDir(), `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
+  writeFileSync(filePath, buf);
+  return filePath;
+}
 
 /**
  * Spoof a normal Chrome UA. Default Electron UA contains "Electron/…", which
@@ -1222,18 +1245,57 @@ export async function executeInEmbeddedBrowser(
   }
 }
 
-/** Capture a PNG screenshot of the embedded page (base64). */
+/**
+ * Capture a PNG screenshot of the embedded page and save it to a local file.
+ * Returns the absolute file path so agents can pass it to vision tools
+ * (describe_image / upload_reference) without base64 round-trips.
+ *
+ * Retries when the page has not painted yet (capturePage returns an empty
+ * image right after open_page / navigation), then refuses to save 0-byte files.
+ */
 export async function captureEmbeddedBrowser(
   id: string,
-): Promise<{ ok: boolean; pngBase64?: string; error?: string }> {
+): Promise<{ ok: boolean; path?: string; error?: string }> {
   const slot = slots.get(id);
   if (!slot) return { ok: false, error: 'Browser not found' };
   try {
-    const image = await slot.view.webContents.capturePage();
-    return { ok: true, pngBase64: image.toPNG().toString('base64') };
+    // Wait for the current navigation to finish (did-stop-loading), so the
+    // compositor has actual content to rasterize. Bounded so we never hang.
+    await waitForEmbeddedBrowserLoad(slot, 15_000);
+
+    let image: Electron.NativeImage | undefined;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const shot = await slot.view.webContents.capturePage();
+      if (shot && !shot.isEmpty()) {
+        image = shot;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    if (!image) {
+      return { ok: false, error: 'Screenshot came back empty: page has not painted yet. Retry in a moment.' };
+    }
+    const filePath = saveEmbeddedBrowserScreenshot(image.toPNG(), 'png');
+    return { ok: true, path: filePath };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** Resolve once did-stop-loading fires (or immediately if not loading). */
+function waitForEmbeddedBrowserLoad(slot: BrowserSlot, timeoutMs: number): Promise<void> {
+  if (!slot.isLoading) return Promise.resolve();
+  return new Promise((resolve) => {
+    const wc = slot.view.webContents;
+    const timer = setTimeout(done, timeoutMs);
+    wc.once('did-stop-loading', done);
+    function done(): void {
+      clearTimeout(timer);
+      wc.removeListener('did-stop-loading', done);
+      resolve();
+    }
+  });
 }
 
 /** Send a raw CDP command via webContents.debugger (agent automation). */

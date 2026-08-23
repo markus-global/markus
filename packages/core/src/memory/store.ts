@@ -22,15 +22,17 @@ import {
   SESSION_STORAGE_COMPACT_KEEP,
   SESSION_STORAGE_COMPACT_TRIGGER,
   SESSION_STORAGE_TOOL_SHRINK_CHARS,
+  CONTEXT_SLOT_MAX_CHARS,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
 import { ensureKnowledgeStateFiles, knowledgePath, readState, pruneExpiredState, writeState } from './taxonomy.js';
+import { buildSlotSegment, buildSummarySegment, sanitizeSlotKey, type SlotEntry } from '../context-slot.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
 
 const log = createLogger('memory-store');
 
-const VALID_TYPES = new Set<string>(['conversation', 'fact', 'task_result', 'note', 'insight']);
+const VALID_TYPES = new Set<string>(['conversation', 'fact', 'task_result', 'note', 'insight', 'conversation_fragment']);
 
 /** Prevent section bodies from introducing sibling ## headings that split the store. */
 export function sanitizeSectionBody(content: string): string {
@@ -58,6 +60,27 @@ function sanitizeEntry(raw: Record<string, unknown> | MemoryEntry): MemoryEntry 
       ? r.metadata as Record<string, unknown>
       : undefined,
   };
+}
+
+/** Best-effort JSON stringify for embedding in an HTML comment (never throws). */
+function safeJson(value: unknown): string {
+  try {
+    const s = JSON.stringify(value);
+    return typeof s === 'string' ? s : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Parse a data-meta JSON payload embedded in an HTML comment (never throws). */
+function parseDataMeta(raw: string): Record<string, unknown> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ─── Notebook (NOTEBOOK.md) parse/serialize ─────────────────────────────────
@@ -539,42 +562,107 @@ export class MemoryStore implements IMemoryStore {
 
   // --- Context compaction (OpenClawd pattern) ---
 
+  /**
+   * MessageGroup atomicity (ContextOS design §4.2): a group is
+   * [assistant(tool_calls)] + the immediately-following [tool results].
+   * Compaction must NOT split a group — otherwise the LLM sees an assistant
+   * whose tool_calls lack results (or orphan tool results).
+   *
+   * Given the desired cutoff (first "kept" message), widen it to a safe
+   * boundary: if the cut would split an assistant's tool_calls from its
+   * results, extend the cut forward past the whole group (retain more, never
+   * break a pair). Structural boundaries (user / system / plain assistant)
+   * are always safe.
+   */
+  private computeSafeCutoff(messages: LLMMessage[], cutoff: number): number {
+    if (cutoff <= 0 || cutoff >= messages.length) return cutoff;
+    let idx = cutoff;
+    while (idx < messages.length) {
+      const m = messages[idx]!;
+      if (m.role === 'assistant' && m.toolCalls?.length) {
+        // This assistant's results follow; extend cut past the whole
+        // tool-result run so assistant+results stay together in retained.
+        const wanted = new Set(m.toolCalls.map((t) => t.id));
+        let j = idx + 1;
+        while (j < messages.length && messages[j]!.role === 'tool') {
+          j++;
+        }
+        // The tool run ends at j. Keep results contiguous with their assistant:
+        // extend idx to the group end.
+        if (j > idx + 1) {
+          idx = j;
+          break;
+        }
+        // No tool messages follow (bare assistant w/ toolCalls) — safe to cut here.
+        break;
+      }
+      // Plain assistant (no toolCalls) — safe boundary; stop widening.
+      if (m.role === 'system' || m.role === 'user' || (m.role === 'assistant' && !m.toolCalls?.length)) {
+        break;
+      }
+      // tool message: skip forward (it belongs to whatever group it's a result for)
+      idx++;
+    }
+    return idx;
+  }
+
   compactSession(sessionId: string, keepLast: number = 20): { summary: string; flushedCount: number } {
     const session = this.sessions.get(sessionId);
     if (!session || session.messages.length <= keepLast) {
       return { summary: '', flushedCount: 0 };
     }
 
-    const older = session.messages.slice(0, -keepLast);
+    // MessageGroup-atomic cut: never split an assistant(tool_calls) from its
+    // tool results. Widen the raw count-based cut to a safe group boundary.
+    const desiredCut = session.messages.length - keepLast;
+    const safeCut = this.computeSafeCutoff(session.messages, desiredCut);
+    const older = session.messages.slice(0, safeCut);
     const flushedCount = older.length;
 
     const summary = this.buildHeuristicSummary(older);
 
-    // No writeDailyLog here — compaction must be side-effect-free
-
-    const facts = older
-      .filter((m) => m.role === 'assistant' && getTextContent(m.content).length > 50)
-      .map((m) => getTextContent(m.content).slice(0, 150))
-      .slice(0, 3);
-
-    if (facts.length > 0) {
+    // (ContextOS stage A) NEVER drop paged-out history — archive the full
+    // fragment before replacing it with the summary anchor. The agent can
+    // recover it verbatim via session_retrieve. This is the "preserve raw
+    // data" invariant: compaction == pagination, not deletion.
+    if (older.length > 0) {
       this.addEntry({
-        id: `compact_${Date.now()}`,
+        id: `frag_${Date.now()}_${session.id}`,
         timestamp: new Date().toISOString(),
-        type: 'conversation',
-        content: facts.join('\n'),
-        metadata: { sessionId, compactedMessages: flushedCount },
+        type: 'conversation_fragment',
+        content: older
+          .map((m) => {
+            const text = getTextContent(m.content);
+            const tcn = m.role === 'assistant' && m.toolCalls?.length
+              ? ` [tool-calls: ${m.toolCalls.map((t: { name?: string }) => t.name ?? '?').join(', ')}]`
+              : '';
+            return `[${m.role}${tcn}] ${text}`;
+          })
+          .join('\n'),
+        metadata: {
+          sessionId: session.id,
+          agentId: session.agentId,
+          pagedOutCount: older.length,
+          first: getTextContent(older[0]!.content).slice(0, 120),
+          last: getTextContent(older[older.length - 1]!.content).slice(0, 120),
+        },
       });
     }
 
-    const retained = session.messages.slice(-keepLast);
+    const retained = session.messages.slice(safeCut);
 
-    // Inject a summary message so the model retains awareness of compacted history
-    const summaryMessage: LLMMessage = {
-      role: 'user',
-      content: `[Conversation history summary — ${flushedCount} earlier messages were compacted]\n${summary}\n[End of summary. The conversation continues below with the most recent messages.]`,
-    };
-    session.messages = [summaryMessage, ...retained];
+    // ContextOS: the summary anchor lives in the durable `session.summary` and
+    // is injected into the [SYSTEM] fixed segment ([CONTEXT SUMMARY]) every
+    // turn — NOT injected as a `role:'user'` fake message. This keeps it:
+    //   - always present (agent knows what was paged out, every turn);
+    //   - never re-compacted (a message in the flow would re-enter the
+    //     variable-segment compression chain and be collapsed again);
+    //   - turn-neutral (a `role:'user'` message would pollute attribution and
+    //     could be mistaken for genuine human input).
+    // Raw history is still fully recoverable via the archived fragment below.
+    session.summary = summary;
+    session.summaryPagedOut = flushedCount;
+    session.messages = retained;
     this.saveSessionToDisk(session);
 
     log.info('Session compacted', { sessionId, flushedCount, remaining: session.messages.length });
@@ -584,27 +672,208 @@ export class MemoryStore implements IMemoryStore {
   /**
    * Build a heuristic summary by extracting key lines from messages.
    * Used as the default (non-LLM) summarization strategy.
+   *
+   * Anchor-aware (0.9.7 context-root-fix): instead of blindly truncating every
+   * message to a fixed head, we preserve the *navigation anchors* the agent
+   * needs to re-orient after compaction:
+   *  - the LAST user request/intent (full, short);
+   *  - every distinct tool call NAME + its result head/tail (so the agent knows
+   *    what work was already done and where the results live);
+   *  - the last assistant decision/answer head.
+   * This keeps the summary compact but high-density: it trades token count for
+   * re-orientation value, which is exactly what prevents the "re-read the same
+   * files / repeat the same actions" loop caused by lost anchors.
    */
   buildHeuristicSummary(messages: LLMMessage[]): string {
     const summaryParts: string[] = [];
+    let lastUserIntent = '';
+    const toolCallsSeen = new Set<string>();
+    let lastAssistant = '';
+
     for (const msg of messages) {
       if (msg.role === 'system') continue;
       const text = getTextContent(msg.content);
+      if (!text) continue;
+
       if (msg.role === 'user') {
-        summaryParts.push(`User: ${text.slice(0, 200)}`);
-      } else if (msg.role === 'assistant' && text) {
-        summaryParts.push(`Assistant: ${text.slice(0, 200)}`);
+        // Keep the latest user intent verbatim (short), older ones collapsed.
+        const line = text.replace(/\s+/g, ' ').trim();
+        lastUserIntent = line.slice(0, 300);
+      } else if (msg.role === 'assistant') {
+        // Keep the last assistant decision/answer head for context continuity.
+        lastAssistant = text.replace(/\s+/g, ' ').trim().slice(0, 200);
       } else if (msg.role === 'tool') {
-        summaryParts.push(`Tool result: ${text.slice(0, 100)}`);
+        // Tool results: dedupe by name, keep head + tail (anchors to outputs).
+        const toolName = this.extractToolName(text);
+        const head = text.slice(0, 120);
+        let tail = '';
+        if (text.length > 240) tail = text.slice(-80);
+        if (toolName && !toolCallsSeen.has(toolName)) {
+          toolCallsSeen.add(toolName);
+          summaryParts.push(
+            `Tool ${toolName}: ${head}${tail ? ` … ${tail}` : ''}`,
+          );
+        }
       }
     }
-    return summaryParts.join('\n').slice(0, 2000);
+
+    if (lastUserIntent) summaryParts.unshift(`Latest user intent: ${lastUserIntent}`);
+    if (lastAssistant) summaryParts.push(`Last assistant: ${lastAssistant}`);
+
+    // Cap at 3000 chars: denser than before (2000) but still bounded.
+    return summaryParts.join('\n').slice(0, 3000);
+  }
+
+  /** Best-effort extraction of a tool name from a tool-result blob. */
+  private extractToolName(text: string): string {
+    const m = text.match(/^(\[?\w[\w_-]*\]?|\w[\w._-]*)/);
+    if (!m) return 'tool';
+    const name = m[1].replace(/^\[|\]$/g, '').trim();
+    return name.length > 0 && name.length <= 48 ? name : 'tool';
   }
 
   summarizeAndTruncate(sessionId: string, keepLast: number): LLMMessage[] {
     this.compactSession(sessionId, keepLast);
     const session = this.sessions.get(sessionId);
     return session?.messages ?? [];
+  }
+
+  /**
+   * (0.9.7 context-root-fix) Agent-driven context compaction.
+   *
+   * Unlike {@link checkAndCompact} (passive threshold), this lets the agent
+   * actively collapse stale history on demand: when it decides earlier turns
+   * are useless (e.g. after a large file refactor the old tool blobs no longer
+   * matter), it swaps them for an anchor summary via an explicit tool call —
+   * instead of waiting for storage safety triggers, which fire too late.
+   *
+   * Backward compatible: keeps the same `[Conversation history summary …]`
+   * wrapper so downstream consumers (LLM, UI) treat it like any compaction.
+   * Returns the number of flushed messages.
+   */
+  compactSessionOnDemand(
+    sessionId: string,
+    keepLast: number = 40,
+  ): { summary: string; flushedCount: number } {
+    return this.compactSession(sessionId, keepLast);
+  }
+
+  // ─── ContextOS: session slots + fragment retrieval (agent-managed) ───────
+
+  getSlots(sessionId: string): SlotEntry[] {
+    const session = this.sessions.get(sessionId) ?? this.tryLoadSessionFromDisk(sessionId);
+    const slots = session?.slots ?? {};
+    return Object.entries(slots)
+      .map(([key, text]) => ({ key, text, updatedAt: Date.now() }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+  }
+
+  setSlot(sessionId: string, key: string, text: string): void {
+    let session = this.sessions.get(sessionId);
+    if (!session) session = this.tryLoadSessionFromDisk(sessionId);
+    if (!session) return; // unknown session — caller (session tool) validates ownership first
+    session.slots = session.slots ?? {};
+    session.slots[sanitizeSlotKey(key)] = text.slice(0, CONTEXT_SLOT_MAX_CHARS);
+    session.lastActivityAt = new Date().toISOString();
+    this.saveSessionToDisk(session);
+  }
+
+  removeSlot(sessionId: string, key: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session?.slots) return;
+    delete session.slots[key];
+    session.lastActivityAt = new Date().toISOString();
+    this.saveSessionToDisk(session);
+  }
+
+  /** Serialize this session's slots into the fixed [SLOTS] injection segment. */
+  serializeSlots(sessionId: string): string {
+    return buildSlotSegment(this.getSlots(sessionId));
+  }
+
+  /** Serialize this session's compaction summary into the fixed [CONTEXT SUMMARY]
+   *  segment (empty string when none). Semantically separate from [SLOTS]. */
+  serializeSummary(sessionId: string): string {
+    const session = this.sessions.get(sessionId) ?? this.tryLoadSessionFromDisk(sessionId);
+    if (!session?.summary) return '';
+    return buildSummarySegment(session.summary, session.summaryPagedOut);
+  }
+
+  /** Search archived conversation_fragment entries for this session. */
+  retrieveFragments(
+    query: string,
+    maxResults: number = 5,
+  ): Array<{ id: string; content: string; metadata?: Record<string, unknown> }> {
+    const q = query.trim().toLowerCase();
+    const hits = this.entries.filter(
+      (e) => e.type === 'conversation_fragment',
+    );
+    // score by keyword hits against content
+    const scored = hits
+      .map((e) => {
+        const hay = e.content.toLowerCase();
+        let score = 0;
+        if (q) {
+          const tokens = q.split(/\s+/).filter(Boolean);
+          score = tokens.filter((t) => hay.includes(t)).length;
+          if (tokens.some((t) => e.id.toLowerCase().includes(t))) score += 2;
+        } else {
+          score = 1;
+        }
+        return { e, score };
+      })
+      .filter((s) => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults);
+    return scored.map((s) => ({ id: s.e.id, content: s.e.content, metadata: s.e.metadata }));
+  }
+
+  /** Re-inject one archived fragment back into the live session as a user message. */
+  includeFragment(sessionId: string, fragmentId: string): { ok: boolean; message: string } {
+    const entry = this.entries.find((e) => e.id === fragmentId && e.type === 'conversation_fragment');
+    if (!entry) {
+      return { ok: false, message: `No archived fragment with id ${fragmentId}.` };
+    }
+    let session = this.sessions.get(sessionId);
+    if (!session) session = this.tryLoadSessionFromDisk(sessionId);
+    if (!session) {
+      return { ok: false, message: `No session with id ${sessionId}.` };
+    }
+    session.messages.push({
+      role: 'user',
+      content: `[RECALLED ARCHIVE fragment ${fragmentId} — reinjected into context at agent request]\n${entry.content}\n[End of recalled archive.]`,
+    });
+    session.lastActivityAt = new Date().toISOString();
+    this.saveSessionToDisk(session);
+    return { ok: true, message: `Reinjected fragment ${fragmentId} (${entry.content.length} chars) into the session.` };
+  }
+
+  /** Purge archived fragments for a session (used by session_purge). */
+  purgeSessionFragments(sessionId: string): number {
+    const before = this.entries.length;
+    this.entries = this.entries.filter(
+      (e) => !(e.type === 'conversation_fragment' && e.metadata?.sessionId === sessionId),
+    );
+    const removed = before - this.entries.length;
+    if (removed > 0) this.saveToDisk();
+    return removed;
+  }
+
+  /** Lightweight session stats for session_status. */
+  sessionStats(sessionId: string): {
+    messageCount: number;
+    slotKeys: string[];
+    fragmentCount: number;
+  } {
+    const session = this.sessions.get(sessionId);
+    const fragmentCount = this.entries.filter(
+      (e) => e.type === 'conversation_fragment' && e.metadata?.sessionId === sessionId,
+    ).length;
+    return {
+      messageCount: session?.messages.length ?? 0,
+      slotKeys: Object.keys(session?.slots ?? {}),
+      fragmentCount,
+    };
   }
 
   // --- Disk persistence ---
@@ -708,13 +977,26 @@ export class MemoryStore implements IMemoryStore {
         // Parse metadata from HTML comments
         let type: MemoryEntry['type'] = 'note';
         let tags: string[] = [];
+        let restoredMeta: Record<string, unknown> | undefined;
         const contentLines: string[] = [];
         for (let i = 1; i < lines.length; i++) {
-          const metaMatch = lines[i].match(/^<!-- type: (\w+)(?:, tags: (.+))? -->$/);
+          const metaMatch = lines[i].match(/^<!-- type: (\w+)(?:, tags: (.+))?(?:, data-meta: (.+))? -->$/);
           if (metaMatch) {
             const typeVal = metaMatch[1];
             if (typeVal && VALID_TYPES.has(typeVal)) type = typeVal as MemoryEntry['type'];
             if (metaMatch[2]) tags = metaMatch[2].split(',').map(t => t.trim());
+            // Restore faithful metadata for conversation_fragment / curated slots
+            if (metaMatch[3]) {
+              const meta = parseDataMeta(metaMatch[3]);
+              if (meta) {
+                const metaTags = Array.isArray(meta.tags) ? meta.tags as string[] : tags;
+                const rest = { ...meta };
+                delete rest.tags;
+                if (Array.isArray(metaTags)) tags = metaTags;
+                restoredMeta = { ...(restoredMeta ?? {}), ...rest };
+                if (Array.isArray(metaTags)) restoredMeta.tags = metaTags;
+              }
+            }
             continue;
           }
           contentLines.push(lines[i]);
@@ -726,7 +1008,9 @@ export class MemoryStore implements IMemoryStore {
           timestamp,
           type,
           content: contentLines.join('\n').trim(),
-          metadata: tags.length > 0 ? { tags } : undefined,
+          metadata: restoredMeta !== undefined
+            ? restoredMeta
+            : (tags.length > 0 ? { tags } : undefined),
         });
       }
       return entries;
@@ -818,7 +1102,13 @@ export class MemoryStore implements IMemoryStore {
           ? (entry.metadata!.tags as string[]).join(', ')
           : '';
         obsLines.push(`### ${entry.id}`);
-        obsLines.push(`<!-- type: ${entry.type}${tags ? `, tags: ${tags}` : ''} -->`);
+        // Serialize metadata faithfully so conversation_fragment retro-traceability
+        // (sessionId/agentId/pagedOutCount/first/last) survives disk round-trips.
+        const meta = entry.metadata && typeof entry.metadata === 'object'
+          ? entry.metadata
+          : undefined;
+        const metaJson = meta ? safeJson(meta) : '';
+        obsLines.push(`<!-- type: ${entry.type}${tags ? `, tags: ${tags}` : ''}${metaJson ? `, data-meta: ${metaJson}` : ''} -->`);
         obsLines.push(entry.content);
         obsLines.push('');
       }

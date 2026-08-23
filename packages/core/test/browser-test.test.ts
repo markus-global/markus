@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { runQuickBrowserTest, runChaosBrowserTest } from '../src/tools/browser-test.js';
 import { BrowserSessionManager } from '../src/tools/browser-session.js';
@@ -13,6 +16,7 @@ class MockBrowserState {
   pages = new Map<number, MockPage>();
   nextId = 1;
   selectedId: number | null = null;
+  private screenshotPath: string | null = null;
 
   pageUrl(args: Record<string, unknown> = {}): string {
     const pid = typeof args._pageId === 'number' ? args._pageId : this.selectedId;
@@ -82,7 +86,14 @@ class MockBrowserState {
   }
 
   takeScreenshot(): string {
-    return 'data:image/png;base64,' + 'A'.repeat(200);
+    // Mimic the real backend: write a real file and return its path.
+    if (!this.screenshotPath) {
+      const dir = join(tmpdir(), 'markus-browser-test');
+      mkdirSync(dir, { recursive: true });
+      this.screenshotPath = join(dir, `mock-screenshot-${Date.now()}.png`);
+      writeFileSync(this.screenshotPath, Buffer.from([0x89, 0x50, 0x4e, 0x47])); // minimal PNG header
+    }
+    return this.screenshotPath;
   }
 
   navigatePage(args: Record<string, unknown>): string {

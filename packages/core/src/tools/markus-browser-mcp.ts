@@ -106,7 +106,7 @@ const TOOL_DESCRIPTORS: MCPToolDescriptor[] = [
   // Inspection tools
   {
     name: 'take_screenshot',
-    description: 'Take a screenshot of the selected page',
+    description: 'Take a screenshot of the selected page, save it to a local image file, and return the absolute file path. The saved file can be passed to vision tools (describe_image / upload_reference) or inspected directly — it is not a base64 string.',
     inputSchema: { type: 'object', properties: { format: { type: 'string', description: 'Image format (png or jpg)' }, quality: { type: 'number', description: 'Quality 0-100 for jpg' }, fullPage: { type: 'boolean', description: 'Capture full page' } } },
   },
   {

@@ -138,3 +138,139 @@ describe('createSessionTool', () => {
     expect(res.status).toBe('error');
   });
 });
+
+// =============================================================================
+// session_compact — agent-driven context compaction (0.9.7 context-root-fix)
+// =============================================================================
+
+describe('session_compact', () => {
+  it('normalizeSessionArgs 识别 compact 操作', () => {
+    expect(normalizeSessionArgs({ operation: 'compact', session_id: 'cs-1', keep_last: 40 }))
+      .toMatchObject({ operation: 'compact', sessionId: 'cs-1', keepLast: 40 });
+  });
+
+  it('compact 需要 session_id', async () => {
+    const compactor = { compactOnDemand: vi.fn(() => ({ summary: 's', flushedCount: 0 })) };
+    const ctx = makeCtx({ compactor });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'compact' }));
+    expect(res.status).toBe('error');
+    expect(res.message).toContain('session_id');
+    expect(compactor.compactOnDemand).not.toHaveBeenCalled();
+  });
+
+  it('无注入 compactor 时返回清晰错误', async () => {
+    const res = JSON.parse(await createSessionTool(makeCtx()).execute({ operation: 'compact', session_id: 'cs-1' }));
+    expect(res.status).toBe('error');
+    expect(res.message).toContain('not available');
+  });
+
+  it('只允许压缩自己拥有的 session', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ agentId: 'agt-OTHER' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    const compactor = { compactOnDemand: vi.fn(() => ({ summary: 's', flushedCount: 0 })) };
+    const ctx = makeCtx({ chatSessionRepo: repo as never, compactor });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'compact', session_id: 'cs-other' }));
+    expect(res.status).toBe('forbidden');
+    expect(compactor.compactOnDemand).not.toHaveBeenCalled();
+  });
+
+  it('成功压缩返回 flushedCount + anchor summary', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ agentId: 'agt-A' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    const compactor = {
+      compactOnDemand: vi.fn(() => ({ summary: 'Latest user intent: build the tool\nTool file_write: wrote x', flushedCount: 12 })),
+    };
+    const ctx = makeCtx({ chatSessionRepo: repo as never, compactor });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'compact', session_id: 'cs-1', keep_last: 40 }));
+    expect(res.status).toBe('ok');
+    expect(res.flushedCount).toBe(12);
+    expect(res.summary).toContain('Latest user intent');
+    expect(compactor.compactOnDemand).toHaveBeenCalledWith('cs-1', 40);
+  });
+
+  it('keep_last 被钳制到 [5,200]', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ agentId: 'agt-A' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    const compactor = { compactOnDemand: vi.fn(() => ({ summary: '', flushedCount: 2 })) };
+    const ctx = makeCtx({ chatSessionRepo: repo as never, compactor });
+    await createSessionTool(ctx).execute({ operation: 'compact', session_id: 'cs-1', keep_last: 9999 });
+    expect(compactor.compactOnDemand).toHaveBeenCalledWith('cs-1', 200);
+  });
+});
+
+describe('ContextOS output contract & robustness (phase-2 hardening)', () => {
+  it('status 在 fragmentStore 缺 sessionStats 时仍返回 ok（不抛 TypeError）', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ id: 'sess_1', agentId: 'agt-A' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      listMessagesPaginated: vi.fn(() => ({ messages: [], total: 0, page: 1, pageSize: 50, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    // fragmentStore 存在但没有 sessionStats（模拟不完整注入）
+    const fragmentStore = {
+      retrieveFragments: vi.fn(() => []),
+      includeFragment: vi.fn(() => ({ ok: false, message: 'unavailable' })),
+      purgeSessionFragments: vi.fn(() => 0),
+    } as never;
+    const ctx = makeCtx({ chatSessionRepo: repo as never, fragmentStore });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'status', session_id: 'sess_1' }));
+    expect(res.status).toBe('ok');
+    expect(Array.isArray(res.slots)).toBe(true);
+    expect(typeof res.messageCount).toBe('number');
+  });
+
+  it('工具描述声明了各操作返回结构（hits / flushedCount / slots 字段名）', () => {
+    const tool = createSessionTool(makeCtx());
+    const desc = tool.description ?? (tool as unknown as { descriptionForModel?: string }).descriptionForModel ?? JSON.stringify(tool);
+    const text = typeof desc === 'string' ? desc : desc.join('\n');
+    expect(text).toContain('Returns { status, hits');
+    expect(text).toContain('flushedCount');
+    expect(text).toContain('slots: [key');
+    expect(text).toContain('sess_');
+  });
+
+  it('retrieve 挂测场景：hits 字段名（而非 results）与文档一致', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ id: 'sess_1', agentId: 'agt-A' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      listMessagesPaginated: vi.fn(() => ({ messages: [], total: 0, page: 1, pageSize: 50, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    const fragmentStore = {
+      retrieveFragments: vi.fn(() => [{ id: 'frag_1', content: 'Archived tool result: found data' }]),
+      includeFragment: vi.fn(() => ({ ok: true, message: 'ok' })),
+      purgeSessionFragments: vi.fn(() => 0),
+    };
+    const ctx = makeCtx({ chatSessionRepo: repo as never, fragmentStore: fragmentStore as never });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'retrieve', session_id: 'sess_1', query: 'found data' }));
+    expect(res.status).toBe('ok');
+    expect(res.hits).toBeDefined();
+    expect(res.hits[0].id).toBe('frag_1');
+    expect(res.hits[0].content).toContain('found data');
+  });
+});
+
+describe('ContextOS purge contract (phase-2)', () => {
+  it('purge 返回 purgedFragments（而非 removed）字段', async () => {
+    const fragmentStore = {
+      retrieveFragments: vi.fn(() => []),
+      includeFragment: vi.fn(() => ({ ok: true, message: 'ok' })),
+      purgeSessionFragments: vi.fn(() => 3),
+      sessionStats: vi.fn(() => ({ messageCount: 1, slotKeys: [], fragmentCount: 0 })),
+    };
+    const ctx = makeCtx({ fragmentStore: fragmentStore as never });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'purge', session_id: 'sess_1' }));
+    expect(res.status).toBe('ok');
+    expect(res.purgedFragments).toBe(3);
+    expect(fragmentStore.purgeSessionFragments).toHaveBeenCalledWith('sess_1');
+  });
+});

@@ -3654,6 +3654,8 @@ export class Agent {
       ...this.getPrepareBudgetOpts(),
       toolDefinitions: llmTools,
       systemCacheSegments,
+      slotsSegment: this.memory.serializeSlots ? this.memory.serializeSlots(sessionId) : undefined,
+      summarySegment: this.memory.serializeSummary ? this.memory.serializeSummary(sessionId) : undefined,
     });
 
     // Afford fail-closed (Afford.S1): shared helper for stream + non-stream.

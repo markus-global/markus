@@ -18,6 +18,7 @@ import {
   listEmbeddedBrowserPages,
   navigateEmbeddedBrowser,
   resolveEmbeddedBrowserId,
+  saveEmbeddedBrowserScreenshot,
   selectEmbeddedBrowserPage,
 } from './embedded-browser.js';
 
@@ -284,8 +285,8 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       const format = ((args.format as string) || 'png').toLowerCase();
       if (format === 'png' || !args.fullPage) {
         const shot = await captureEmbeddedBrowser(id);
-        if (!shot.ok || !shot.pngBase64) throw new Error(shot.error || 'Screenshot failed');
-        return `data:image/png;base64,${shot.pngBase64}`;
+        if (!shot.ok || !shot.path) throw new Error(shot.error || 'Screenshot failed');
+        return shot.path;
       }
       const cdpParams: Record<string, unknown> = {
         format: format === 'jpg' || format === 'jpeg' ? 'jpeg' : 'png',
@@ -295,7 +296,9 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       const result = await cdp(id, 'Page.captureScreenshot', cdpParams) as { data?: string };
       if (!result?.data) throw new Error('Screenshot failed');
       const mime = cdpParams.format === 'jpeg' ? 'jpeg' : 'png';
-      return `data:image/${mime};base64,${result.data}`;
+      const buf = Buffer.from(result.data, 'base64');
+      if (buf.length === 0) throw new Error('Screenshot came back empty: page has not painted yet. Retry in a moment.');
+      return saveEmbeddedBrowserScreenshot(buf, mime);
     }
 
     case 'take_snapshot': {

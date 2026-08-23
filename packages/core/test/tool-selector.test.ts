@@ -18,7 +18,7 @@ const ALL_BUILTIN = [
   'deliverable_search', 'deliverable_create', 'spawn_subagent', 'spawn_subagents',
   'shell_execute', 'file_read', 'file_write', 'file_edit', 'grep_search', 'glob_find',
   'list_directory', 'apply_patch', 'web_fetch', 'web_search', 'generate_image',
-  'team_list', 'team_status', 'delegate_message', 'package_list',
+  'team_list', 'team_status', 'delegate_message', 'package_list', 'session',
 ];
 
 describe('ToolSelector', () => {
@@ -37,6 +37,7 @@ describe('ToolSelector', () => {
     expect(names).toContain('spawn_subagent');
     expect(names).toContain('shell_execute');
     expect(names).toContain('file_read');
+    expect(names).toContain('session');
     expect(names).not.toContain('spawn_subagents');
     expect(names).not.toContain('deliverable_create');
   });
