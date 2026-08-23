@@ -112,7 +112,7 @@ export function createMemorySessionRepo(mem: IMemoryStore): SessionRepo {
     listSessionsPaginated(agentId: string, opts: {
       since?: string; until?: string; userId?: string; page?: number; pageSize?: number;
     }) {
-      let sessions = mem.listSessions(agentId)
+      const sessions = mem.listSessions(agentId)
         .filter((s) => {
           if (opts.since && s.lastActivityAt && s.lastActivityAt < opts.since) return false;
           if (opts.until && s.lastActivityAt && s.lastActivityAt > opts.until) return false;
