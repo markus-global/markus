@@ -830,34 +830,40 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   type EntityMentionItem = { id: string; name: string; entityType: 'workflow' | 'project' | 'requirement' | 'task' | 'deliverable'; role?: string };
   const [entityMentionItems, setEntityMentionItems] = useState<EntityMentionItem[]>([]);
-  const entityMentionLoadedRef = useRef(false);
-  const loadEntityMentions = useCallback(() => {
-    if (entityMentionLoadedRef.current) return;
-    entityMentionLoadedRef.current = true;
-    (async () => {
+  const entityMentionsLoadedRef = useRef(false);
+  // Load entities (projects / requirements / tasks / deliverables / workflows) for
+  // @mention. Kept in a useCallback so @-typing in the composer can refresh it on
+  // demand (handleInputChange → loadEntityMentions) without duplicating the fetch.
+  const loadEntityMentions = useCallback(async () => {
+    if (entityMentionsLoadedRef.current) return;
+    entityMentionsLoadedRef.current = true;
+    try {
       const items: EntityMentionItem[] = [];
-      try {
-        const [projRes, reqRes, taskRes, delRes, teamsRes] = await Promise.all([
-          api.projects.list().catch(() => ({ projects: [] as Array<{ id: string; name: string; status: string }> })),
-          api.requirements.list().catch(() => ({ requirements: [] as Array<{ id: string; title: string; priority: string }> })),
-          api.tasks.list({ pageSize: 100 }).catch(() => ({ tasks: [] as Array<{ id: string; title: string; status: string }> })),
-          api.deliverables.search({ limit: 100 }).catch(() => ({ results: [] as Array<{ id: string; title: string; type: string }> })),
-          api.teams.list().catch(() => ({ teams: [] as TeamInfo[], ungrouped: [] })),
-        ]);
-        for (const p of projRes.projects) items.push({ id: p.id, name: p.name, entityType: 'project', role: p.status });
-        for (const r of reqRes.requirements) items.push({ id: r.id, name: r.title, entityType: 'requirement', role: r.priority });
-        for (const tk of taskRes.tasks) items.push({ id: tk.id, name: tk.title, entityType: 'task', role: tk.status });
-        for (const d of delRes.results) items.push({ id: d.id, name: d.title, entityType: 'deliverable', role: d.type });
-        for (const team of teamsRes.teams) {
-          try {
-            const wfRes = await api.workflows.list(team.id);
-            for (const wf of wfRes.workflows) items.push({ id: wf.name, name: wf.displayName || wf.name, entityType: 'workflow', role: `v${wf.version}` });
-          } catch { /* skip */ }
-        }
-      } catch { /* ignore */ }
+      const [projRes, reqRes, taskRes, delRes, teamsRes] = await Promise.all([
+        api.projects.list().catch(() => ({ projects: [] as Array<{ id: string; name: string; status: string }> })),
+        api.requirements.list().catch(() => ({ requirements: [] as Array<{ id: string; title: string; priority: string }> })),
+        api.tasks.list({ pageSize: 100 }).catch(() => ({ tasks: [] as Array<{ id: string; title: string; status: string }> })),
+        api.deliverables.search({ limit: 100 }).catch(() => ({ results: [] as Array<{ id: string; title: string; type: string }> })),
+        api.teams.list().catch(() => ({ teams: [] as TeamInfo[], ungrouped: [] })),
+      ]);
+      for (const p of projRes.projects) items.push({ id: p.id, name: p.name, entityType: 'project', role: p.status });
+      for (const r of reqRes.requirements) items.push({ id: r.id, name: r.title, entityType: 'requirement', role: r.priority });
+      for (const tk of taskRes.tasks) items.push({ id: tk.id, name: tk.title, entityType: 'task', role: tk.status });
+      for (const d of delRes.results) items.push({ id: d.id, name: d.title, entityType: 'deliverable', role: d.type });
+      for (const team of teamsRes.teams) {
+        try {
+          const wfRes = await api.workflows.list(team.id);
+          for (const wf of wfRes.workflows) items.push({ id: wf.name, name: wf.displayName || wf.name, entityType: 'workflow', role: `v${wf.version}` });
+        } catch { /* skip */ }
+      }
       setEntityMentionItems(items);
-    })();
+    } catch { /* ignore */ }
   }, []);
+
+  useEffect(() => {
+    if (previewMode) return;
+    void loadEntityMentions();
+  }, [previewMode, loadEntityMentions]);
 
   const activeTeamId = chatMode === 'channel'
     ? groupChats.find(gc => gc.channelKey === activeChannel)?.teamId
@@ -1000,7 +1006,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setHumans(previewData.humans ?? []);
     setTeams(previewData.teams ?? []);
     setGroupChats(previewData.groupChats ?? []);
-    if (previewData.channelMessages) {
+    if (previewData.channelMessages && !previewData.streamLastMessage) {
       const ch = previewData.activeChannel ?? 'custom:general';
       setMessages(previewData.channelMessages.filter(m => m.channel === ch).map(m => channelMsgToChat(m)));
     }
@@ -4825,8 +4831,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'p-2.5' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
 
           {visibleMessages.length > 0 && (
-          <div style={{ height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
-            {chatVirtualizer.getVirtualItems().map(virtualRow => {
+          <div style={previewMode ? undefined : { height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
+            {(previewMode ? (() => { const start = Math.max(0, visibleMessages.length - 6); return visibleMessages.slice(start).map((_, i) => ({ index: start + i, start: 0 })); })() : chatVirtualizer.getVirtualItems()).map(virtualRow => {
               const vIdx = virtualRow.index;
               const msg = visibleMessages[vIdx]!;
               const prevMsg = vIdx > 0 ? visibleMessages[vIdx - 1] : null;
@@ -4845,8 +4851,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <div
                   key={msg.id}
                   data-index={vIdx}
-                  ref={chatVirtualizer.measureElement}
-                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualRow.start}px)` }}
+                  ref={previewMode ? undefined : chatVirtualizer.measureElement}
+                  style={previewMode ? undefined : { position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualRow.start}px)` }}
                 >
                 <div className="pb-3">
                 {showDateSep && (

@@ -51,6 +51,16 @@ function ShowcaseContent({ children, lang }: ShowcaseProviderProps) {
 }
 
 export function ShowcaseProvider({ children, lang }: ShowcaseProviderProps) {
+  // Force the embedded web-ui demo to use the dark theme regardless of the
+  // host OS light/dark preference. The hub landing page itself is dark, so a
+  // light-mode OS would otherwise flip the in-page product demos to light and
+  // make them clash ("刺眼") against the dark page. `html.dark` only affects
+  // the `--color-*` tokens consumed by web-ui, not the hub's own CSS vars.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!root.classList.contains('dark')) root.classList.add('dark');
+  }, []);
+
   return (
     <ForceDesktopContext.Provider value={true}>
       <I18nextProvider i18n={i18n}>
