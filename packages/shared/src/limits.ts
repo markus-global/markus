@@ -573,12 +573,22 @@ export const SESSION_STORAGE_TOOL_SHRINK_CHARS = 100_000;
 export const CONTEXT_ABSURD_MESSAGE_CHARS = 200_000;
 
 /** When message history exceeds this fraction of the packing budget, run
- *  compact/summarize even if still under the hard window. */
-export const CONTEXT_PROACTIVE_COMPACT_RATIO = 0.55;
+ *  compact/summarize even if still under the hard window.
+ *
+ *  0.75 keeps the cached prefix stable for longer: compaction is the #1 cause
+ *  of prompt-cache misses (it rewrites the middle of the request). Delaying it
+ *  until the context is genuinely ~75% full reduces compaction frequency, so
+ *  most turns append (prefix-cache HIT) instead of rewriting the prefix.
+ *  NOTE: keep this below CONTEXT_WARN_RATIO so the agent-facing "compact now"
+ *  nudge always fires at/before the system auto-compacts. */
+export const CONTEXT_PROACTIVE_COMPACT_RATIO = 0.75;
 
 /* ── ContextOS: agent-visible context water-level thresholds ────────── */
-/** Above this usage ratio the [CONTEXT] hint adds a WARN line ("compress now"). */
-export const CONTEXT_WARN_RATIO = 0.85;
+/** Above this usage ratio the [CONTEXT] hint adds a WARN line ("compress now").
+ *  Sits just above CONTEXT_PROACTIVE_COMPACT_RATIO so the agent is nudged to do
+ *  a surgical, anchor-preserving session_compact at the same point the system
+ *  would otherwise auto-compact bluntly. */
+export const CONTEXT_WARN_RATIO = 0.80;
 /** At/above this usage ratio the [CONTEXT] hint adds a CRIT line (system will hard-trim). */
 export const CONTEXT_CRIT_RATIO = 0.95;
 /** Max chars for a single pinned slot value (session_pin). */
