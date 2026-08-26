@@ -33,12 +33,13 @@ describe('ToolSelector', () => {
     expect(names).toContain('memory_search');
     expect(names).toContain('discover_tools');
     expect(names).toContain('notify_user');
-    // spawn_subagent is in base tools for converse; spawn_subagents is keyword-activated
+    // Both subagent tools are core-keep: `spawn_subagent` for serial delegation,
+    // `spawn_subagents` for parallel fan-out (see spawn_subagents in CORE_KEEP).
     expect(names).toContain('spawn_subagent');
+    expect(names).toContain('spawn_subagents');
     expect(names).toContain('shell_execute');
     expect(names).toContain('file_read');
     expect(names).toContain('session');
-    expect(names).not.toContain('spawn_subagents');
     expect(names).not.toContain('deliverable_create');
   });
 
