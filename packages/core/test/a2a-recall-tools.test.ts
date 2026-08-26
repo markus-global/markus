@@ -266,3 +266,89 @@ describe('createRecallTool', () => {
     expect(JSON.parse(await tool.execute({ operation: 'bogus' })).status).toBe('error');
   });
 });
+
+describe('agent_send_message recipient liveness', () => {
+  function stoppedCtx(): A2AContext {
+    return makeA2AContext({
+      listColleagues: () => [
+        { id: 'agt_off', name: 'Offline', role: 'worker', status: 'stopped', teamId: 'team_a', teamName: 'Alpha' },
+      ],
+    });
+  }
+
+  it('reports recipient status and warns when recipient is stopped (no wake)', async () => {
+    const ctx = stoppedCtx();
+    const result = JSON.parse(await findA2ATool(ctx, 'agent_send_message').execute({
+      agent_id: 'agt_off',
+      message: 'hello',
+    }));
+    expect(result.status).toBe('dispatched');
+    expect(result.recipient).toMatchObject({ id: 'agt_off', status: 'stopped' });
+    expect(result.message).toContain('STOPPED');
+    expect(ctx.sendMessage).toHaveBeenCalled();
+  });
+
+  it('wake_recipient wakes a stopped recipient before dispatch', async () => {
+    const wakeAgent = vi.fn(async () => {});
+    const ctx = stoppedCtx();
+    ctx.wakeAgent = wakeAgent;
+    const result = JSON.parse(await findA2ATool(ctx, 'agent_send_message').execute({
+      agent_id: 'agt_off',
+      message: 'hello',
+      wake_recipient: true,
+    }));
+    expect(result.status).toBe('dispatched');
+    expect(result.recipient_woken).toBe(true);
+    expect(result.recipient).toMatchObject({ status: 'started' });
+    expect(wakeAgent).toHaveBeenCalledWith('agt_off');
+    expect(ctx.sendMessage).toHaveBeenCalled();
+  });
+
+  it('does not wake a running recipient even with wake_recipient', async () => {
+    const wakeAgent = vi.fn(async () => {});
+    const ctx = makeA2AContext();
+    ctx.wakeAgent = wakeAgent;
+    const result = JSON.parse(await findA2ATool(ctx, 'agent_send_message').execute({
+      agent_id: 'agt_peer',
+      message: 'hello',
+      wake_recipient: true,
+    }));
+    expect(result.status).toBe('dispatched');
+    expect(result.recipient).toMatchObject({ id: 'agt_peer', status: 'idle' });
+    expect(result.recipient_woken).toBeUndefined();
+    expect(wakeAgent).not.toHaveBeenCalled();
+  });
+
+  it('fails cleanly when wake_recipient cannot start the recipient', async () => {
+    const ctx = stoppedCtx();
+    ctx.wakeAgent = vi.fn(async () => { throw new Error('boom'); });
+    const result = JSON.parse(await findA2ATool(ctx, 'agent_send_message').execute({
+      agent_id: 'agt_off',
+      message: 'hello',
+      wake_recipient: true,
+    }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('could not be woken');
+    expect(ctx.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('warns when the recipient is not in the roster', async () => {
+    const ctx = makeA2AContext();
+    const result = JSON.parse(await findA2ATool(ctx, 'agent_send_message').execute({
+      agent_id: 'agt_ghost',
+      message: 'hello',
+    }));
+    expect(result.status).toBe('dispatched');
+    expect(result.recipient).toMatchObject({ id: 'agt_ghost', status: 'unknown' });
+    expect(result.message).toContain('WARNING');
+  });
+
+  it('exposes reply_in_session, legacy await_in_session alias, and wake_recipient in schema', () => {
+    const ctx = makeA2AContext();
+    const tool = findA2ATool(ctx, 'agent_send_message');
+    const props = (tool.inputSchema as { properties: Record<string, unknown> }).properties;
+    expect(props).toHaveProperty('reply_in_session');
+    expect(props).toHaveProperty('await_in_session');
+    expect(props).toHaveProperty('wake_recipient');
+  });
+});

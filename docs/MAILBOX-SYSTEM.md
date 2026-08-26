@@ -190,11 +190,11 @@ The review outcome is properly communicated through the status transition (`comp
 Typical sources:
 
 1. **`background_exec` completion** — When a background shell process finishes, the agent receives a `callback_result` with exit code, duration, and stdout/stderr tail.
-2. **In-session A2A await** — When an agent sends `agent_send_message` with `await_in_session: true`, an `a2a_reply` callback is registered (correlated by `conversation_id`). The peer's reply is routed back into the **origin session** instead of a separate a2a session.
+2. **In-session A2A reply** — When an agent sends `agent_send_message` with `reply_in_session: true` (deprecated alias: `await_in_session`), an `a2a_reply` callback is registered (correlated by `conversation_id`). The peer's reply is routed back into the **origin session** instead of a separate a2a session.
 
 **Two delivery forms.** A resolved callback is delivered one of two ways, selected by `deliveryMode`:
 
-- **`in_session`** → enqueues a `callback_result` bound to `originSessionId`, resuming the current conversation (used for `background_exec` completions and `await_in_session` A2A replies).
+- **`in_session`** → enqueues a `callback_result` bound to `originSessionId`, resuming the current conversation (used for `background_exec` completions and `reply_in_session` A2A replies).
 - **`mailbox`** → enqueues a `system_event`, a fresh attention cycle (used for `schedule_wakeup` firings and autonomous follow-ups).
 
 Payload shape (`payload.extra`):
@@ -214,7 +214,7 @@ Processing: `in_session` callbacks route to `handleMessage()` with the **origina
 Registration flow: when an agent starts an async operation the completion is registered as a `PendingCallback` in `PendingCallbackRegistry` and persisted to SQLite:
 
 - `background_exec` — the `background_exec` tool path calls `registerBackgroundSession()` (from `Agent.executeTool`, keyed by the returned bg session id, `originSessionId = active session`).
-- `agent_send_message` with `await_in_session` — registers an `a2a_reply` callback keyed by `conversation_id`.
+- `agent_send_message` with `reply_in_session` (alias `await_in_session`) — registers an `a2a_reply` callback keyed by `conversation_id`.
 - `schedule_wakeup` — registers a `wakeup` callback with a `wakeAt` timestamp (and optional `recurringMs`).
 
 On completion/firing the registry entry is resolved and delivered via the shared `Agent.deliverCallback()` helper according to its `deliveryMode`.
@@ -752,7 +752,7 @@ interface PendingCallback {
 
 1. **Register** — An async operation is registered as a `PendingCallback` and persisted via `SqlitePendingCallbackRepo`:
    - `background_exec` → `registerBackgroundSession()` (called from `Agent.executeTool` on the tool result).
-   - `agent_send_message` with `await_in_session` → an `a2a_reply` callback keyed by `conversation_id`.
+   - `agent_send_message` with `reply_in_session` (alias `await_in_session`) → an `a2a_reply` callback keyed by `conversation_id`.
    - `schedule_wakeup` → a `wakeup` callback with `wakeAt` (+ optional `recurringMs`).
 2. **Complete / fire** — On completion (`background_exec`, `a2a_reply`) or when a wakeup is due, the entry is resolved and delivered via the shared `Agent.deliverCallback()` helper: `in_session` → `callback_result` (bound to `originSessionId`); `mailbox` → `system_event`. Recurring wakeups re-arm.
 3. **Timeout** — Heartbeat calls `getTimedOut()` to find expired callbacks, then `expireTimedOut(id)` removes each from the registry. Timed-out operations are surfaced in the heartbeat prompt (§11.4) for agent investigation — they do not silently disappear. (Wakeups use an effectively infinite timeout and are never flagged.)

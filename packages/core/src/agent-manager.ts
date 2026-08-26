@@ -1349,6 +1349,7 @@ export class AgentManager {
     const a2aContext: A2AContext = {
       selfId: id,
       selfName: config.name,
+      wakeAgent: async (agentId: string) => { await this.startAgent(agentId); },
       listColleagues: () =>
         this.listAgents().map(a => {
           try {
@@ -2240,6 +2241,7 @@ export class AgentManager {
     const a2aCtx = {
       selfId: id,
       selfName: config.name,
+      wakeAgent: async (agentId: string) => { await this.startAgent(agentId); },
       listColleagues: () =>
         this.listAgents().map(a => {
           try {

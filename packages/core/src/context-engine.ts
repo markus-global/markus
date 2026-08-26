@@ -1253,7 +1253,7 @@ export class ContextEngine {
     lines.push('');
     lines.push('**Communicating**: `notify_user` to reach humans outside chat; `agent_send_message` for peer DMs (self-contained). Do not duplicate automatic task-status notifications via A2A.');
     lines.push('');
-    lines.push('**Async**: Prefer event-driven completion (`background_exec`, `schedule_wakeup`, `await_in_session`) — do not poll.');
+    lines.push('**Async**: Prefer event-driven completion (`background_exec`, `schedule_wakeup`, `reply_in_session`) — do not poll.');
 
     return lines.join('\n');
   }
@@ -1391,7 +1391,7 @@ export class ContextEngine {
           lines.push('**Communication channel**: All A2A messaging is **asynchronous**. The sender is NOT blocking for your reply. Humans do NOT see this conversation.');
           lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID and the same `conversation_id` (if present in the message as `[conversation:...]`). Preserving the `conversation_id` is what lets the sender correlate your reply — especially if they are awaiting it in their own conversation.');
           lines.push('- To reach a **human**, use `notify_user`.');
-          lines.push('- To reach a **different agent**, use `agent_send_message`. If you need their reply back in *this* thread, set `await_in_session: true`.');
+          lines.push('- To reach a **different agent**, use `agent_send_message`. If you need their reply back in *this* thread, set `reply_in_session: true` (it does NOT block — the reply re-wakes this thread with full context). If the recipient is stopped, pass `wake_recipient: true` to wake them first.');
           lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
           lines.push('');
           lines.push('**A2A etiquette**: Only act if:');

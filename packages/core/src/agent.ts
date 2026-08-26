@@ -1548,7 +1548,7 @@ export class Agent {
           const msgChannelKey = extra.channelKey as string | undefined;
           const channelSessionId = msgChannelKey ? `channel_${msgChannelKey}_${this.id}` : undefined;
           // In-session A2A delegation: if this message replies to a conversation the
-          // agent is awaiting inline (registered via agent_send_message await_in_session),
+          // agent is awaiting inline (registered via agent_send_message reply_in_session),
           // route the reply into the ORIGIN session so the delegating thread continues
           // where it left off, instead of a disconnected a2a_* session.
           let awaitOriginSessionId: string | undefined;
@@ -5979,7 +5979,7 @@ export class Agent {
    * After a tool executes, register any async callbacks implied by its result so
    * their eventual completion routes back to the agent:
    * - `background_exec` → a background-session callback (origin-session routing + heartbeat timeout surfacing).
-   * - `agent_send_message` with `await_in_session` → an `a2a_reply` callback so the
+   * - `agent_send_message` with `reply_in_session` → an `a2a_reply` callback so the
    *   recipient's reply resumes the ORIGIN session (in-session delegation).
    */
   private registerAsyncCallbacksFromToolResult(
@@ -6010,7 +6010,7 @@ export class Agent {
       return;
     }
 
-    if (toolName === 'agent_send_message' && args['await_in_session'] === true) {
+    if (toolName === 'agent_send_message' && (args['reply_in_session'] === true || args['await_in_session'] === true)) {
       try {
         const parsed = JSON.parse(result) as { status?: string; conversation_id?: string };
         if (parsed.status === 'dispatched' && parsed.conversation_id) {
