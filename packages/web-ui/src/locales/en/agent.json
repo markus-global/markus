@@ -86,6 +86,7 @@
     "files": "Files",
     "search": "Search",
     "runtime": "Runtime",
+    "terminal": "Terminal",
     "web": "Web",
     "multimodal": "Multimodal",
     "browser": "Browser",
