@@ -267,6 +267,12 @@ export class ContextEngine {
     scenario?: AgentScenario;
     /** When scenario is 'a2a', indicates whether the sender is blocking for a reply */
     a2aWaitForReply?: boolean;
+    /** Live per-colleague runtime status (agentId → AgentState['status']).
+     *  PREFERRED over identity.colleagues[].status, which is a snapshot taken at
+     *  agent creation and only refreshed on org-structure changes — it goes
+     *  stale as agents start/stop. Callers should compute this at prompt-build
+     *  time so the Team Status section reflects real-time liveness. */
+    liveColleagueStatuses?: Record<string, string>;
     /** Channel key for DM/group detection in scenario prompts */
     channelKey?: string;
     agentWorkspace?: {
@@ -903,27 +909,9 @@ export class ContextEngine {
       }
     }
 
-    // Colleague real-time status is in the dynamic tier (not identity/Tier 2)
-    // to prevent status changes from invalidating the semi-stable cache prefix.
-    if (!isDream && opts.identity?.colleagues.length) {
-      const shown = opts.identity.colleagues
-        .filter(c => c.status)
-        .slice(0, SYSTEM_COLLEAGUES_MAX);
-      const statusEntries = shown.map(c => {
-        // AgentState uses "offline" for intentionally stopped agents — label clearly.
-        const label = c.status === 'offline' ? 'stopped'
-          : c.status === 'working' ? 'busy'
-            : c.status;
-        return `${c.name}: ${label}`;
-      });
-      if (statusEntries.length > 0) {
-        const allStopped = shown.every(c => c.status === 'offline');
-        const hint = allStopped
-          ? '\n_All listed teammates are stopped — use `agent_start` to wake someone if you need them. You can still advance Owner chat work yourself; stopped teammates are not a reason to refuse conversational progress._'
-          : '';
-        dynamic.push(`\n## Team Status\n${statusEntries.join(' | ')}${hint}`);
-      }
-    }
+    // NOTE: Colleague real-time status lives at the VERY END of the dynamic
+    // tier (see `## Team Status` below) — as late as possible in the prompt so
+    // status changes never invalidate the cacheable stable prefix.
 
     // Channel context (group chat / DM history) is injected in the system prompt
     // rather than prepended into the conversation messages array. This preserves
@@ -1029,6 +1017,32 @@ export class ContextEngine {
         'tool fields (task/requirement/deliverable/goal titles & descriptions, comments, notifications). ' +
         'Do not default those fields to English merely because these instructions are in English.'
       );
+    }
+
+    // ─── Team Status: LAST volatile section of the entire system prompt ───
+    // Cache strategy (as late as possible): stable/semi-stable tiers carry
+    // cache breakpoints; the dynamic tier ends with per-turn data so a status
+    // change only invalidates from here to the prompt tail. Status values are
+    // read LIVE at build time via liveColleagueStatuses — the identity snapshot
+    // is only a fallback for callers that don't provide live statuses.
+    if (!isDream && opts.identity?.colleagues.length) {
+      const shown = opts.identity.colleagues.slice(0, SYSTEM_COLLEAGUES_MAX);
+      const statusEntries = shown.map(c => {
+        const raw = opts.liveColleagueStatuses?.[c.id] ?? c.status;
+        if (!raw) return null;
+        // AgentState uses "offline" for intentionally stopped agents — label clearly.
+        const label = raw === 'offline' ? 'stopped'
+          : raw === 'working' ? 'busy'
+            : raw;
+        return `${c.name}: ${label}`;
+      }).filter((e): e is string => e !== null);
+      if (statusEntries.length > 0) {
+        const allStopped = shown.every(c => (opts.liveColleagueStatuses?.[c.id] ?? c.status) === 'offline');
+        const hint = allStopped
+          ? '\n_All listed teammates are stopped — use `agent_start` to wake someone if you need them. You can still advance Owner chat work yourself; stopped teammates are not a reason to refuse conversational progress._'
+          : '';
+        dynamic.push(`\n## Team Status\n${statusEntries.join(' | ')}${hint}`);
+      }
     }
 
     // Soft metric only — never truncate ROLE/L0/mode/date. Size control is

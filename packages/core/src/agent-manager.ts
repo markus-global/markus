@@ -1688,6 +1688,16 @@ export class AgentManager {
         agent.registerTool(tool);
       }
 
+      // Live colleague liveness for Team Status (prompt tail) — read at
+      // prompt-build time; the identity snapshot only refreshes on org changes.
+      agent.setColleagueStatusProvider(() => {
+        const statuses: Record<string, string> = {};
+        for (const a of this.agents.values()) {
+          try { statuses[a.id] = a.getState().status; } catch { /* skip */ }
+        }
+        return statuses;
+      });
+
       // Wire tasks fetcher — show all org tasks so agents have full board visibility
       agent.setTasksFetcher(() => {
         try {
@@ -2568,6 +2578,15 @@ export class AgentManager {
         orgId,
       };
       for (const tool of createAgentTaskTools(taskCtx)) agent.registerTool(tool);
+      // Live colleague liveness for Team Status (prompt tail) — read at
+      // prompt-build time; the identity snapshot only refreshes on org changes.
+      agent.setColleagueStatusProvider(() => {
+        const statuses: Record<string, string> = {};
+        for (const a of this.agents.values()) {
+          try { statuses[a.id] = a.getState().status; } catch { /* skip */ }
+        }
+        return statuses;
+      });
       agent.setTasksFetcher(() => {
         try {
           return ts.listTasks({ orgId }).map(t => ({

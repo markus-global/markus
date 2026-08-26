@@ -367,6 +367,10 @@ export class Agent {
   private handbookPath?: string;
   private teamDataDir?: string;
   private identityContext?: IdentityContext;
+  /** Live colleague liveness provider — reads runtime state at prompt-build time.
+   *  identityContext.colleagues[].status is a creation-time snapshot that only
+   *  refreshes on org changes; this provider supplies real-time statuses. */
+  private colleagueStatusProvider?: () => Record<string, string>;
   private environmentProfile?: EnvironmentProfile;
   private auditCallback?: (event: {
     type: string;
@@ -3424,6 +3428,11 @@ export class Agent {
     this.goalFetcher = fetcher;
   }
 
+  /** Wire a live colleague-status provider (runtime liveness, not the identity snapshot). */
+  setColleagueStatusProvider(provider: () => Record<string, string>): void {
+    this.colleagueStatusProvider = provider;
+  }
+
   private workflowContextFetcher?: () => {
     activeRuns: Array<{ workflowName: string; runNumber: number; status: string; taskCount: number; startedAt: string }>;
     availableWorkflows: Array<{ name: string; description: string; stepCount: number }>;
@@ -3602,6 +3611,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: effectiveMessage,
       identity: this.identityContext,
+      liveColleagueStatuses: this.colleagueStatusProvider?.(),
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       viewerContext: this.runtimeViewerContext,
       assignedTasks: isLightweight ? undefined : this.tasksFetcher?.(),
@@ -4303,6 +4313,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: effectiveMessage,
       identity: this.identityContext,
+      liveColleagueStatuses: this.colleagueStatusProvider?.(),
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
@@ -5065,6 +5076,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: taskPrompt,
       identity: this.identityContext,
+      liveColleagueStatuses: this.colleagueStatusProvider?.(),
       viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
       deliverableContext: this.getDeliverableContext(taskPrompt),
@@ -5621,6 +5633,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: userMessage,
       identity: this.identityContext,
+      liveColleagueStatuses: this.colleagueStatusProvider?.(),
       viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
       deliverableContext: this.getDeliverableContext(userMessage),
@@ -6251,6 +6264,7 @@ export class Agent {
       memory: this.memory,
       currentQuery,
       identity: this.identityContext,
+      liveColleagueStatuses: this.colleagueStatusProvider?.(),
       viewerContext: this.runtimeViewerContext,
       environment: this.environmentProfile,
       scenario: 'heartbeat',

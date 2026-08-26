@@ -90,6 +90,51 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     expect(text).not.toContain('Dev: offline');
   });
 
+  it('A-team-status-live-and-late: live statuses override snapshot; Team Status is at prompt tail', async () => {
+    const engine = new ContextEngine();
+    const { text, segments } = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'T',
+      role: { ...baseRole, systemPrompt: 'Short founder role.' } as never,
+      memory: mockMemory(),
+      scenario: 'chat',
+      promptProfile: 'converse',
+      identity: {
+        self: {
+          id: 'agt_1',
+          name: 'CTO',
+          role: '技术联合创始人',
+          agentRole: 'manager',
+          skills: ['git'],
+        },
+        organization: { id: 'org_1', name: 'Org' },
+        // Stale creation-time snapshot: both teammates were offline then.
+        colleagues: [
+          { id: 'agt_2', name: 'Dev', role: 'Developer', type: 'agent', status: 'offline' },
+          { id: 'agt_3', name: 'Writer', role: 'Writer', type: 'agent', status: 'offline' },
+        ],
+        humans: [{ id: 'u1', name: 'Owner', role: 'owner' }],
+      } as never,
+      // Live runtime statuses read at build time: they have started since.
+      liveColleagueStatuses: { agt_2: 'idle', agt_3: 'working' },
+    });
+    // Live statuses win over the stale snapshot.
+    expect(text).toContain('Dev: idle');
+    expect(text).toContain('Writer: busy');
+    expect(text).not.toContain('All listed teammates are stopped');
+    // "As late as possible" cache contract: Team Status must render after the
+    // timestamp line (which itself sits near the very end of the system prompt),
+    // so a status flip never invalidates any earlier segment.
+    const tsIdx = text.indexOf('Current date and time:');
+    const teamIdx = text.indexOf('## Team Status');
+    expect(tsIdx).toBeGreaterThan(-1);
+    expect(teamIdx).toBeGreaterThan(tsIdx);
+    // Last dynamic segment carries no cache breakpoint; Team Status lives in it.
+    const lastSeg = segments[segments.length - 1]!;
+    expect(lastSeg.cacheBreakpoint).toBeUndefined();
+    expect(lastSeg.content).toContain('## Team Status');
+  });
+
   it('A-knowledge-heading-demote: knowledge ## becomes ### under Your Knowledge', async () => {
     const prepared = prepareKnowledgeForPrompt(
       '## DeepSeek API 故障模式\nstale noise\n\n## Useful Facts\nkeep me\n',
