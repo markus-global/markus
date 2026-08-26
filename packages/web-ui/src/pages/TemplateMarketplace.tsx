@@ -7,6 +7,7 @@ import { ArtifactDetail } from './ArtifactDetail.tsx';
 import { AssetCard } from '../components/AssetCard.tsx';
 import { Masonry } from '../components/Masonry.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { isElectron, openExternal } from '../hooks/useElectron.ts';
 
 interface LocalArtifactInfo {
   installed: boolean;
@@ -434,13 +435,31 @@ export async function purchaseAndInstall(
   if (!checkRes.checkoutUrl) throw new Error('No checkout URL');
 
   onStatus('checkout_opened');
-  const popup = window.open(checkRes.checkoutUrl, '_blank', 'noopener');
+  const electron = isElectron();
+  // In Electron we open the checkout in the *system browser* via the IPC bridge
+  // (shell.openExternal). There is no popup handle we can watch: `window.open`
+  // gets denied by the window-open handler and returns null, so instead we rely
+  // on a timeout and keep polling the backend until the purchase lands.
+  let matcher: Window | null = null;
+  if (electron) {
+    openExternal(checkRes.checkoutUrl);
+  } else {
+    matcher = window.open(checkRes.checkoutUrl, '_blank', 'noopener');
+  }
 
-  // Poll until purchased or popup closed
+  // Poll until purchased, popup closed (web), or timed out (system browser).
   return new Promise<'installed' | 'cancelled'>((resolve, reject) => {
+    const started = Date.now();
+    const timeoutMs = 5 * 60 * 1000; // 5 min grace for card checkout in system browser
     const interval = setInterval(async () => {
-      // Check if popup closed (only for same-origin popups, otherwise check periodically)
-      const popupClosed = popup ? popup.closed : false;
+      const elapsed = Date.now() - started;
+      if (elapsed > timeoutMs) {
+        clearInterval(interval);
+        resolve('cancelled');
+        return;
+      }
+      // System browser has no handle to watch — skip the popupClosed shortcut.
+      const popupClosed = !electron && matcher ? matcher.closed : false;
       try {
         const poll = await hubApi.purchases.checkout(item.id);
         if (poll.alreadyOwned) {

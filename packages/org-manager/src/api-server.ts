@@ -828,6 +828,20 @@ export class APIServer {
             //  persisted to channel and the other party is auto-triggered).
             for (const peerId of peerAgentIds) {
               try {
+                // Storm guard: a proactive agent_send_message on a hot channel
+                // starts a fresh depth-1 chain; the per-channel cooldown keeps
+                // rapid mutual sends from looping forever.
+                this.cleanStaleCooldowns();
+                const now = Date.now();
+                if (!this.a2aCooldowns.has(channelKey)) this.a2aCooldowns.set(channelKey, new Map());
+                const channelCooldowns = this.a2aCooldowns.get(channelKey)!;
+                const last = channelCooldowns.get(peerId) ?? 0;
+                if (now - last < APIServer.A2A_COOLDOWN_MS) {
+                  log.info('DM send suppressed by cooldown', { channelKey, peerId, msSince: now - last });
+                  continue;
+                }
+                channelCooldowns.set(peerId, now);
+
                 let dmChannelContext: Array<{ role: string; content: string }> = [];
                 if (this.storage) {
                   try {
@@ -1882,6 +1896,21 @@ export class APIServer {
         if (depth <= APIServer.DM_MAX_DEPTH) {
           const peerAgentId = chainCtx?.allAgentIds?.find(id => id !== agentId);
           if (peerAgentId) {
+            // Storm guard: don't re-trigger a peer on this channel too rapidly.
+            // Mutual proactive agent_send_message can reset depth to 1 on every
+            // hop, so alone it evades DM_MAX_DEPTH — the cooldown is what stops
+            // an unbounded ping-pong. Mirrors the group-chat cooldown layer.
+            this.cleanStaleCooldowns();
+            const now = Date.now();
+            if (!this.a2aCooldowns.has(channel)) this.a2aCooldowns.set(channel, new Map());
+            const channelCooldowns = this.a2aCooldowns.get(channel)!;
+            const last = channelCooldowns.get(peerAgentId) ?? 0;
+            if (now - last < APIServer.A2A_COOLDOWN_MS) {
+              log.info('DM chain suppressed by cooldown', { channel, peerAgentId, depth, msSince: now - last });
+              return;
+            }
+            channelCooldowns.set(peerAgentId, now);
+
             // Load fresh channel context including the just-persisted reply
             let freshContext: Array<{ role: string; content: string }> = [];
             if (this.storage) {

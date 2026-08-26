@@ -1,5 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
-import { createLogger, generateId } from '@markus/shared';
+import { createLogger } from '@markus/shared';
 import type { TaskDelegation, DelegationResult } from '@markus/a2a';
 
 const log = createLogger('a2a-tools');
@@ -55,7 +55,15 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
       async execute(args: Record<string, unknown>): Promise<string> {
         const targetId = args['agent_id'] as string;
         const message = args['message'] as string;
-        const conversationId = (args['conversation_id'] as string) || generateId('conv');
+        // Deterministic DM channel key for this (from,to) pair — used as the
+        // stable conversation identity when the caller doesn't supply one.
+        // This fixes "duplicate conversation" churn: previously every send
+        // without conversation_id generated a brand-new conv id, which broke
+        // multi-turn correlation and let A2A ping-pong loops evade the
+        // per-round depth/cooldown guards.
+        const sorted = [ctx.selfId, targetId].sort();
+        const channelKey = `dm:a2a:${sorted[0]}:${sorted[1]}`;
+        const conversationId = (args['conversation_id'] as string) || channelKey;
         const waitForReply = args['wait_for_reply'] as boolean | undefined;
 
         if (targetId === ctx.selfId) {
@@ -71,13 +79,11 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         ctx.sendMessage(targetId, taggedMessage, ctx.selfId, ctx.selfName, undefined, false).catch((err: unknown) => {
           log.warn(`A2A async message to ${targetId} failed in background`, { error: String(err) });
         });
-        const sorted = [ctx.selfId, targetId].sort();
-        const channelKey = `dm:a2a:${sorted[0]}:${sorted[1]}`;
         return JSON.stringify({
           status: 'dispatched',
           conversation_id: conversationId,
           channel_key: channelKey,
-          message: 'Message sent via DM channel. The agent will process it on their schedule. Use recall_context with the channel_key to review conversation history.',
+          message: 'Message sent via DM channel. The agent will process it on their schedule. Use recall_context with the channel_key or conversation_id to review conversation history.',
         });
       },
     },

@@ -5323,6 +5323,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   adjustTextareaHeight();
                 }}
                 onKeyDown={e => {
+                  // IME composition guard (中文/日文/韩文输入法):
+                  // While the input method is composing (e.g. pinyin), pressing
+                  // Enter commits the composition into the textarea, NOT send.
+                  const nat = e.nativeEvent;
+                  if (nat.isComposing === true || nat.keyCode === 229) return;
                   if (mentionDropdown && allMentionItems.length > 0) {
                     const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
                     const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
