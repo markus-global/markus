@@ -342,12 +342,12 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
             ? <span className="inline-flex items-center gap-1.5">
                 <span className="font-mono">{agent.effectiveModel.model}</span>
                 {agent.config?.llmConfig?.modelMode === 'custom' && agent.effectiveModel.source !== 'override'
-                  ? <span className="px-1.5 py-0.5 text-[10px] bg-brand-500/15 text-brand-500 rounded font-medium">{t('agent:profilePage.overview.badgeAgentModel')}</span>
+                  ? <span className="px-1.5 py-0.5 text-[10px] bg-brand-500/15 text-brand-500 rounded font-medium">{t('agent:profilePage.overview.labels.badgeAgentModel')}</span>
                   : agent.effectiveModel.source === 'override'
-                    ? <span className="px-1.5 py-0.5 text-[10px] bg-amber-500/15 text-amber-600 rounded font-medium">{t('agent:profilePage.overview.badgeSessionModel')}</span>
+                    ? <span className="px-1.5 py-0.5 text-[10px] bg-amber-500/15 text-amber-600 rounded font-medium">{t('agent:profilePage.overview.labels.badgeSessionModel')}</span>
                     : null}
               </span>
-            : <span className="text-fg-tertiary">{t('agent:profilePage.overview.followsGlobal')}</span>}
+            : <span className="text-fg-tertiary">{t('agent:profilePage.overview.labels.followsGlobal')}</span>}
         </KV>
         <KV label={t('agent:profilePage.overview.labels.created')}>{agent.config?.createdAt ? new Date(agent.config.createdAt).toLocaleDateString() : t('agent:profilePage.emDash')}</KV>
       </div>

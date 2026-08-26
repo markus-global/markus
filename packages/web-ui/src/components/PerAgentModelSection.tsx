@@ -118,8 +118,9 @@ export function PerAgentModelSection({ configuredProviders }: Props) {
     }
   };
 
-  // Group rows by team (order follows the teams list; agents without a team go
-  // into an "Ungrouped" bucket at the end, matching the Team chat roster).
+  // Group rows by team (teams follow the teams list order; agents without a
+  // team go into an "Ungrouped" bucket FIRST so loose agents stay visible,
+  // before falling back to any team ids missing from the teams list).
   const groups: Group[] = useMemo(() => {
     if (!rows) return [];
     const byTeam = new Map<string, Row[]>();
@@ -134,6 +135,7 @@ export function PerAgentModelSection({ configuredProviders }: Props) {
       }
     }
     const out: Group[] = [];
+    if (ungrouped.length) out.push({ key: 'ungrouped', label: t('perAgentModel.ungrouped', { defaultValue: 'Ungrouped' }), rows: ungrouped });
     for (const tm of teams) {
       const teamRows = byTeam.get(tm.id);
       if (teamRows?.length) out.push({ key: `team:${tm.id}`, label: tm.name, rows: teamRows });
@@ -144,7 +146,6 @@ export function PerAgentModelSection({ configuredProviders }: Props) {
         out.push({ key: `team:${teamId}`, label: teamId, rows: teamRows });
       }
     }
-    if (ungrouped.length) out.push({ key: 'ungrouped', label: t('perAgentModel.ungrouped', { defaultValue: 'Ungrouped' }), rows: ungrouped });
     return out;
   }, [rows, teams, t]);
 
