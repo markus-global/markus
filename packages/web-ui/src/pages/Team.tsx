@@ -41,7 +41,7 @@ import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
-  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages,
+  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
   appendLiveOutput, appendSubagentLog,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
@@ -1623,8 +1623,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
    * Must consume text + tool + commit events the same way as a live send().
    */
   const reattachCooldownRef = useRef<Map<string, number>>(new Map());
+  // Sessions the user explicitly stopped. A stopped turn must never be resumed
+  // by reattach — otherwise clicking "stop" can look like a no-op (the reply
+  // keeps streaming) and, because the in-flight bubble may already have been
+  // cleaned up, the re-stream can land in the *previous* turn's reply bubble.
+  const userStoppedSessionsRef = useRef<Set<string>>(new Set());
   const tryReattachActiveStream = useCallback(async (agentId: string, sessionId: string, convKey: string) => {
     if (!agentId || !sessionId || sessionId === NEW_CHAT_PLACEHOLDER_ID) return;
+    // A user-initiated stop is final for that turn — never reattach/resume it.
+    if (userStoppedSessionsRef.current.has(sessionId)) return;
     let abortCtrl: AbortController | null = null;
     try {
       // Live send() still owns this session's SSE — keep consuming there; a second
@@ -1646,7 +1653,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       const status = await api.sessions.streamStatus(agentId, sessionId);
       const msgs = msgBuffers.get(convKey) ?? [];
-      const last = [...msgs].reverse().find(m => m.sender === 'agent');
+      // Reattach must only ever continue the IN-FLIGHT bubble. Never reuse a
+      // previous turn's completed reply — that overwrote history when the empty
+      // in-flight bubble had already been removed (see pickStreamReattachTarget).
+      const last = pickStreamReattachTarget(msgs);
       // `active` stays true for ~90s after done/error so late refresh can drain
       // the terminal event — only attach when still streaming, or when the UI
       // bubble is still marked in-flight and needs the final `done`.
@@ -1706,7 +1716,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         updateConvMsgsRaf(convKey, prev => {
           const u = [...prev];
           const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent')?.j ?? -1;
+          // Fallback MUST require an in-flight bubble — never stream into a
+          // previous turn's completed reply (history-corruption bug).
+          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
           if (i < 0) return prev;
           const segs = u[i]!.segments ?? [];
           const lastSeg = segs[segs.length - 1];
@@ -1957,9 +1969,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         updateConvMsgs(convKey, prev => {
           const u = [...prev];
           const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent')?.j ?? -1;
+          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
           if (i < 0) return prev;
           const msg = u[i]!;
+          // Only a still-in-flight bubble may be finalized here — never a
+          // previous turn's completed reply.
+          if (!msg.isStreaming) return prev;
           const finalSegs = result.segments?.length
             ? storedSegmentsToMsgSegments(result.segments, msg.segments)
             : undefined;
@@ -2497,7 +2512,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     reattachAbortRef.current?.abort();
     reattachAbortRef.current = null;
 
-    // 3) Unblock the UI immediately
+    // 3) A user-initiated stop is final for the CURRENT turn. Remember the
+    // session so reattach/refresh never resumes it (the agent may still report
+    // "streaming" for a moment after cancel, which previously made the stop
+    // look like a no-op and let the reply stream into a removed bubble).
+    if (agentId && activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
+      userStoppedSessionsRef.current.add(activeSessionId);
+    }
+
+    // 4) Unblock the UI immediately
     const sendKey = currentConvKeyRef.current;
     resetSending(sendKey);
     actBuffers.delete(activeSessionId ?? sendKey);
@@ -2845,6 +2868,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           // Resolve the stream's session ID — replace placeholder with real ID
           const prevStreamSessionId = streamSessionId;
           streamSessionId = event.sessionId;
+          // A new stream started in this session — clear any earlier user-stop.
+          userStoppedSessionsRef.current.delete(event.sessionId);
           if (prevStreamSessionId && prevStreamSessionId !== event.sessionId) {
             clearStreamSession(sendKey, prevStreamSessionId);
           }
@@ -3024,6 +3049,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const effectiveSessionId = options?.sessionIdOverride
         ?? (activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId);
       const streamSessionAtStart = effectiveSessionId;
+      // A fresh user turn cancels any earlier stop — reattach may resume if the
+      // stream drops while THIS turn is still generating.
+      if (streamSessionAtStart) userStoppedSessionsRef.current.delete(streamSessionAtStart);
       // Add this session to the set of actively streaming sessions for this agent.
       if (streamSessionAtStart) {
         setStreamSession(sendKey, streamSessionAtStart);
