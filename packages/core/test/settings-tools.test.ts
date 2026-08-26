@@ -53,6 +53,7 @@ function createMockRouter(overrides: Partial<LLMRouter> = {}): LLMRouter {
     getActiveModelName: vi.fn(() => 'gpt-4o'),
     setProviderModel: vi.fn(),
     getDefaultProvider: vi.fn(() => 'openai'),
+    isProviderDisabled: vi.fn(() => false),
     setDefaultProvider: vi.fn(),
     registerProviderFromConfig: vi.fn(),
     getProvider: vi.fn(),
@@ -86,6 +87,10 @@ describe('createSettingsTools', () => {
       'llm_add_model',
       'llm_get_capability_routing',
       'llm_set_capability_routing',
+      'agent_model_get',
+      'agent_model_set_default',
+      'agent_model_reset_default',
+      'agent_model_test',
     ]);
   });
 
@@ -287,6 +292,73 @@ describe('createSettingsTools', () => {
       expect(result.routing_default_model).toBe('gpt-4o');
       expect(result.capability_types).toContain('image_generation');
       expect(result.capability_types).toContain('audio_stt');
+    });
+  });
+
+  describe('per-agent default model tools', () => {
+    const agentCtx = () => {
+      const config: { modelMode: 'default' | 'custom'; primary: string; defaultModel?: string } =
+        { modelMode: 'default', primary: 'openai' };
+      return {
+        agentId: 'agt_test',
+        getLlmConfig: () => config,
+        persistLlmConfig: async (patch: any) => {
+          Object.assign(config, patch);
+          return true;
+        },
+      };
+    };
+    // Reuse the shared mock router but with routingDefaultModel as an object
+    // (matching the real LLMRouter shape) for these tests.
+    const objRouter = () => {
+      const r = createMockRouter();
+      r.routingDefaultModel = { provider: 'openai', model: 'gpt-4o' } as any;
+      return r;
+    };
+
+    it('agent_model_get reports agent effective and global default', async () => {
+      const tools = createSettingsTools({ llmRouter: objRouter(), agent: agentCtx() });
+      const result = JSON.parse(await tools.find(t => t.name === 'agent_model_get')!.execute({}));
+      expect(result.agent_id).toBe('agt_test');
+      expect(result.agent_has_per_agent_default).toBe(false);
+      expect(result.agent_follows_global).toBe(true);
+      expect(result.effective.source).toBe('global_default');
+    });
+
+    it('agent_model_set_default updates per-agent config and reflects on get', async () => {
+      const ctx = agentCtx();
+      const tools = createSettingsTools({ llmRouter: objRouter(), agent: ctx });
+      const setRes = JSON.parse(await tools.find(t => t.name === 'agent_model_set_default')!.execute({ provider: 'openai', model: 'gpt-4o' }));
+      expect(setRes.status).toBe('success');
+      expect(setRes.model).toBe('gpt-4o');
+      const getRes = JSON.parse(await tools.find(t => t.name === 'agent_model_get')!.execute({}));
+      expect(getRes.agent_has_per_agent_default).toBe(true);
+      expect(getRes.effective.source).toBe('per_agent_default');
+      expect(getRes.effective.model).toBe('gpt-4o');
+    });
+
+    it('agent_model_set_default rejects disabled providers', async () => {
+      const router = objRouter();
+      router.isProviderDisabled = vi.fn((p: string) => p === 'anthropic') as any;
+      const tools = createSettingsTools({ llmRouter: router, agent: agentCtx() });
+      const result = JSON.parse(await tools.find(t => t.name === 'agent_model_set_default')!.execute({ provider: 'anthropic', model: 'claude-sonnet-4' }));
+      expect(result.status).toBe('error');
+      expect(String(result.error)).toContain('disabled');
+    });
+
+    it('agent_model_reset_default clears the override to follow global', async () => {
+      const ctx = agentCtx();
+      const tools = createSettingsTools({ llmRouter: objRouter(), agent: ctx });
+      const setTool = tools.find(t => t.name === 'agent_model_set_default')!;
+      const resetTool = tools.find(t => t.name === 'agent_model_reset_default')!;
+      const getTool = tools.find(t => t.name === 'agent_model_get')!;
+      await setTool.execute({ provider: 'openai', model: 'gpt-4o' });
+      const resetRes = JSON.parse(await resetTool.execute({}));
+      expect(resetRes.status).toBe('success');
+      expect(resetRes.cleared).toBe(true);
+      const getRes = JSON.parse(await getTool.execute({}));
+      expect(getRes.agent_has_per_agent_default).toBe(false);
+      expect(getRes.agent_follows_global).toBe(true);
     });
   });
 });

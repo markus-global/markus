@@ -1005,6 +1005,9 @@ describe('APIServer route handlers', () => {
       const res = await request(ctx.server, 'GET', `/api/agents/${AGENT_A}`);
       expect(res.status).toBe(200);
       expect(res.json.id).toBe(AGENT_A);
+      // Per-agent effective model info is exposed for the overview page.
+      expect(res.json.effectiveModel).toBeDefined();
+      expect(['override', 'custom', 'global']).toContain(res.json.effectiveModel.source);
     });
 
     it('GET /api/agents/:id 404 for unknown', async () => {

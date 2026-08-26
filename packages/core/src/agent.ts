@@ -640,6 +640,26 @@ export class Agent {
     return undefined;
   }
 
+  /**
+   * Resolve the LLM model id this agent should use for a call (independent of
+   * provider, which is resolved by getEffectiveProvider()).
+   * Priority: session/turn override > per-agent defaultModel > undefined
+   * (undefined lets the router pick the provider's active model / global
+   * routing default).
+   */
+  private getEffectiveModel(): string | undefined {
+    if (this.turnModelOverride?.model) {
+      return this.turnModelOverride.model;
+    }
+    if (
+      this.config.llmConfig.modelMode === 'custom'
+      && this.config.llmConfig.defaultModel
+    ) {
+      return this.config.llmConfig.defaultModel;
+    }
+    return undefined;
+  }
+
   /** Set a one-turn (or session-scoped) provider+model override from Chat UI. */
   setTurnModelOverride(override: { provider: string; model: string } | null): void {
     this.turnModelOverride = override ?? undefined;
@@ -1326,6 +1346,7 @@ export class Agent {
         {
           messages: prepared.messages,
           tools: llmTools.length > 0 ? llmTools : undefined,
+          ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
         },
         this.getEffectiveProvider(),
         { sessionId: this.currentSessionId },
@@ -1391,6 +1412,7 @@ export class Agent {
           {
             messages: prepared.messages,
             tools: llmTools.length > 0 ? llmTools : undefined,
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           },
           this.getEffectiveProvider(),
           { sessionId: this.currentSessionId },
@@ -2356,7 +2378,8 @@ export class Agent {
         // Reasoning models need headroom before emitting the summary, and the
         // prompt itself bounds the output ("under 1500 characters").
         temperature: 0.2,
-      });
+        ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
+      }, this.getEffectiveProvider(), { sessionId: this.currentSessionId });
 
       return response.content || '';
     };
@@ -3160,6 +3183,7 @@ export class Agent {
           metadata: this.getLLMMetadata(sessionId),
           compaction: useCompaction,
           systemCacheSegments,
+          ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
         }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
         'Browser close-tabs follow-up',
       );
@@ -3198,6 +3222,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Browser close-tabs follow-up continuation',
         );
@@ -3695,6 +3720,7 @@ export class Agent {
           metadata: this.getLLMMetadata(sessionId),
           compaction: useCompaction,
           systemCacheSegments,
+          ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
         }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
         'Chat LLM call',
       );
@@ -3920,6 +3946,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM continuation',
         );
@@ -3967,6 +3994,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM comment-reminder',
         );
@@ -4029,6 +4057,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
+              ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
             }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
             'Chat LLM comment-reminder-final',
           );
@@ -4069,6 +4098,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM requirement-action-reminder',
         );
@@ -4129,6 +4159,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
+              ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
             }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
             'Chat LLM requirement-action-reminder-final',
           );
@@ -4403,7 +4434,7 @@ export class Agent {
             metadata: this.getLLMMetadata(this.currentSessionId),
             compaction: useCompaction,
             systemCacheSegments,
-            ...(this.turnModelOverride?.model ? { model: this.turnModelOverride.model } : {}),
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           },
           wrappedOnEvent,
           this.getEffectiveProvider(),
@@ -4655,7 +4686,7 @@ export class Agent {
               metadata: this.getLLMMetadata(this.currentSessionId),
               compaction: useCompaction,
               systemCacheSegments,
-              ...(this.turnModelOverride?.model ? { model: this.turnModelOverride.model } : {}),
+              ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
             },
             wrappedOnEvent,
             this.getEffectiveProvider(),
@@ -5127,7 +5158,7 @@ export class Agent {
       let taskLlmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments, ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}) },
           handleStreamEvent,
           this.getEffectiveProvider(),
           abortController.signal,
@@ -5351,6 +5382,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
+              ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
             },
             handleStreamEvent,
             this.getEffectiveProvider(),
@@ -5419,6 +5451,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
+              ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
             },
             handleStreamEvent,
             this.getEffectiveProvider(),
@@ -5658,7 +5691,7 @@ export class Agent {
       let risLlmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments, ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}) },
           handleStreamEvent,
           this.getEffectiveProvider(),
           undefined,
@@ -5767,7 +5800,7 @@ export class Agent {
         risLlmStart = Date.now();
         response = await this.withNetworkRetry(
           () => this.llmRouter.chatStream(
-            { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
+            { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments, ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}) },
             handleStreamEvent,
             this.getEffectiveProvider(),
             undefined,
@@ -6083,6 +6116,31 @@ export class Agent {
 
   getModelSupportsVision(): boolean {
     return this.llmRouter.modelSupportsVision(this.getEffectiveProvider());
+  }
+
+  /**
+   * Resolve the agent's currently effective model+provider for display purposes
+   * (e.g. the Agent overview page). source is:
+   *  - 'override'  → a one-turn/session pick from the Chat UI
+   *  - 'custom'    → this agent's per-agent default (modelMode=custom)
+   *  - 'global'    → no agent-specific config; the router/global default applies
+   * provider/model may be undefined in the 'global' case (router resolves it).
+   */
+  getEffectiveModelInfo(): { provider?: string; model?: string; source: 'override' | 'custom' | 'global' } {
+    if (this.turnModelOverride?.model || this.turnModelOverride?.provider) {
+      return {
+        provider: this.turnModelOverride.provider,
+        model: this.turnModelOverride.model,
+        source: 'override',
+      };
+    }
+    const provider = this.getEffectiveProvider();
+    const model = this.getEffectiveModel();
+    return {
+      provider,
+      model,
+      source: provider || model ? 'custom' : 'global',
+    };
   }
 
   getEventBus(): EventBus {

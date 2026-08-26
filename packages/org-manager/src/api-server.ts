@@ -5855,6 +5855,7 @@ EXPLANATION_END`;
             teamId: agent.config.teamId,
             createdAt: agent.config.createdAt,
           },
+          effectiveModel: (agent as unknown as { getEffectiveModelInfo?: () => { provider?: string; model?: string; source: 'override' | 'custom' | 'global' } }).getEffectiveModelInfo?.() ?? { source: 'global' },
           tools: toolList,
           heartbeat: heartbeatSummary,
         });

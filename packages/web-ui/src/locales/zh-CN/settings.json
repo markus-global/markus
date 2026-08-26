@@ -137,6 +137,15 @@
       "max": "旗舰"
     }
   },
+  "perAgentModel": {
+    "section": "智能体默认模型",
+    "title": "智能体级默认模型",
+    "desc": "为每个智能体绑定专属的提供商+模型，或让它跟随全局默认。该配置与聊天输入框「应用到当前智能体」写入的是同一份。",
+    "noAgents": "暂无可用智能体。",
+    "followGlobal": "跟随全局",
+    "reset": "重置",
+    "ungrouped": "未分组"
+  },
   "modelPicker": {
     "loading": "正在加载模型…",
     "empty": "此提供商暂无可用模型。",

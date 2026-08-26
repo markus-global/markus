@@ -21,6 +21,15 @@ export interface LLMAssignment {
   modelMode: 'default' | 'custom';
   primary: string;
   fallback?: string;
+  /**
+   * Per-agent default model ID (used together with `primary` as the provider).
+   * When set (with modelMode === 'custom'), this agent resolves to
+   * { provider: primary, model: defaultModel } unless overridden by a
+   * session/turn override. Priority: session/turn override > per-agent
+   * defaultModel > global routing. Omit / reset to have the agent follow the
+   * global default.
+   */
+  defaultModel?: string;
   maxTokensPerRequest?: number;
   maxTokensPerDay?: number;
 }

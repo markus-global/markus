@@ -688,6 +688,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /** Session-scoped model pick from the composer menu (null = use global routing). */
   const [sessionModelOverride, setSessionModelOverride] = useState<ChatModelSelection | null>(null);
+  /** The currently selected agent's per-agent default model (from its config). */
+  const [agentBoundModel, setAgentBoundModel] = useState<ChatModelSelection | null>(null);
   const reattachAbortRef = useRef<AbortController | null>(null);
 
   /** Compact (1-line) composer vs taller empty-chat starter. Synced before render. */
@@ -900,6 +902,29 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   useEffect(() => { localStorage.setItem('markus_chat_mode', chatMode); }, [chatMode]);
   useEffect(() => { localStorage.setItem('markus_chat_agent', selectedAgent); }, [selectedAgent]);
   useEffect(() => { localStorage.setItem('markus_chat_channel', activeChannel); }, [activeChannel]);
+
+  // Keep the composer model reflecting the selected agent. When we switch agents,
+  // fetch that agent's per-agent default model so the input shows it right away
+  // (falls back to global when the agent has no bound model).
+  useEffect(() => {
+    let cancelled = false;
+    if (previewMode || !selectedAgent || chatMode !== 'direct') {
+      setAgentBoundModel(null);
+      return;
+    }
+    api.agents.get(selectedAgent)
+      .then(d => {
+        if (cancelled) return;
+        const lc = d.config?.llmConfig;
+        setAgentBoundModel(
+          lc?.modelMode === 'custom' && lc.primary && lc.defaultModel
+            ? { provider: lc.primary, model: lc.defaultModel }
+            : null,
+        );
+      })
+      .catch(() => { if (!cancelled) setAgentBoundModel(null); });
+    return () => { cancelled = true; };
+  }, [selectedAgent, chatMode, previewMode]);
 
   // ── Chat unread counts (unified single-source read cursor system) ────────────
   const { counts: chatUnreadCounts, sessionAgentMap, markRead: markChatRead, setActiveKey, clearActiveKey } = useUnreadCounts({ enabled: !previewMode });
@@ -5380,15 +5405,37 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             <div className={`flex items-center gap-1.5 shrink-0 ${composerExpanded ? 'justify-end' : ''}`}>
               {chatMode === 'direct' && (
                 <ChatModelMenu
-                  value={sessionModelOverride}
+                  value={sessionModelOverride ?? agentBoundModel}
+                  agentId={selectedAgent}
                   disabled={!selectedAgent || isAgentOffline}
-                  onSelect={(sel, applyGlobal) => {
+                  onSelect={(sel, scope) => {
+                    if (scope === 'agent') {
+                      // Per-agent pick: apply only to the current agent's model
+                      // config; keep status to reflect it. Session override is
+                      // cleared so the agent's default applies.
+                      setSessionModelOverride(null);
+                      setAgentBoundModel(sel);
+                      const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
+                      void applyChatModelSelection(sid, sel, scope, selectedAgent).catch(() => { /* ignore */ });
+                      if (sid) {
+                        setSessions(prev => prev.map(s =>
+                          s.id === sid
+                            ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: undefined } }
+                            : s,
+                        ));
+                      }
+                      return;
+                    }
+                    // Global pick: update global routing AND reset the current agent
+                    // to follow global — so the shown model equals both the global
+                    // default and the agent's actual model (no ambiguity).
                     setSessionModelOverride(sel);
-                    const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-                    void applyChatModelSelection(sid, sel, applyGlobal).catch(() => { /* ignore */ });
-                    if (sid) {
+                    setAgentBoundModel(null);
+                    const sid2 = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
+                    void applyChatModelSelection(sid2, sel, scope, selectedAgent).catch(() => { /* ignore */ });
+                    if (sid2) {
                       setSessions(prev => prev.map(s =>
-                        s.id === sid
+                        s.id === sid2
                           ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: sel } }
                           : s,
                       ));

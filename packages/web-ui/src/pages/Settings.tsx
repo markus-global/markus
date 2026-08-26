@@ -13,6 +13,7 @@ import { isElectron } from '../hooks/useElectron.ts';
 import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
 import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
+import { PerAgentModelSection } from '../components/PerAgentModelSection.tsx';
 import { PROVIDER_OPTIONS } from '../constants/providers.ts';
 import { FeishuIntegrationSection } from '../components/FeishuIntegrationSection.tsx';
 import { CodingToolsSettings } from './CodingToolsSettings.tsx';
@@ -1977,6 +1978,26 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               });
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
             }}
+          />
+        </Section>
+
+        {/* ───── Per-agent default model ───── */}
+        <Section title={t('perAgentModel.section', { defaultValue: 'Agent Default Models' })}>
+          <PerAgentModelSection
+            configuredProviders={(() => {
+              try {
+                return Object.entries(llm?.providers ?? {})
+                  .filter(([, p]) => p.configured && p.enabled)
+                  .map(([name, p]) => ({
+                    name,
+                    displayName: p.displayName,
+                    model: p.model,
+                    models: p.models?.map(m => ({ id: m.id, name: m.name })),
+                  }));
+              } catch {
+                return [];
+              }
+            })()}
           />
         </Section>
 

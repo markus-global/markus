@@ -388,6 +388,8 @@
     "title": "模型",
     "search": "搜索模型",
     "applyGlobal": "应用到全局",
+    "applyAgent": "应用到当前智能体",
+    "noAgent": "请选择智能体以应用智能体级模型",
     "empty": "没有已启用的 Provider / 模型"
   }
 }

@@ -209,6 +209,39 @@ describe('handleMessage flow', () => {
     expect(agent.getState().status).toBe('idle');
   });
 
+  it('passes the per-agent defaultModel to the LLM router', async () => {
+    const mockRouter = makeMockRouter(async () =>
+      makeResponse('Task complete.', 'end_turn'),
+    );
+    const agent = createTestAgent(mockRouter, {
+      config: { llmConfig: { modelMode: 'custom', primary: 'openai', defaultModel: 'gpt-4o' } },
+    });
+
+    await agent.handleMessage('Hello there');
+
+    const callArgs = (mockRouter.chat as ReturnType<typeof vi.fn>).mock.calls[0];
+    const options = callArgs[0] as { model?: string };
+    expect(options.model).toBe('gpt-4o');
+    // provider should also resolve to the per-agent primary
+    const provider = callArgs[1] as string | undefined;
+    expect(provider).toBe('openai');
+  });
+
+  it('omits a model override when the agent follows the global default', async () => {
+    const mockRouter = makeMockRouter(async () =>
+      makeResponse('Task complete.', 'end_turn'),
+    );
+    const agent = createTestAgent(mockRouter, {
+      config: { llmConfig: { modelMode: 'default' } },
+    });
+
+    await agent.handleMessage('Hello there');
+
+    const callArgs = (mockRouter.chat as ReturnType<typeof vi.fn>).mock.calls[0];
+    const options = callArgs[0] as Record<string, unknown>;
+    expect(options.model).toBeUndefined();
+  });
+
   it('executes a tool call and continues the loop', async () => {
     let callIndex = 0;
     const mockRouter = makeMockRouter(async () => {

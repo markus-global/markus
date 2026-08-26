@@ -13,21 +13,41 @@ interface ProviderModels {
   models: Array<{ id: string; name?: string }>;
 }
 
+/** Optional modifiers for a global-scope selection. */
+export interface GlobalScopeOptions {
+  /**
+   * When true (default), applying to global ALSO resets the current agent's
+   * per-agent binding back to "follow global" — so the composer's shown model
+   * equals both the global default and the agent's actual model (no ambiguity).
+   * Internal fallback repairs pass false to avoid wiping a user's per-agent setup.
+   */
+  resetCurrentAgent?: boolean;
+}
+
 interface ChatModelMenuProps {
   value: ChatModelSelection | null;
-  onSelect: (sel: ChatModelSelection, applyToGlobal: boolean) => void;
+  onSelect: (sel: ChatModelSelection, scope: 'global' | 'agent', opts?: GlobalScopeOptions) => void;
+  /** Agent to bind a per-agent model selection to (scope 'agent'). */
+  agentId?: string;
   disabled?: boolean;
 }
 
 /**
  * Compact model picker for the chat composer.
- * "Apply to global" defaults ON — switching the model updates global routing
- * unless the user turns the toggle off for a session-only override.
+ * Two mutually-exclusive scopes:
+ *   - 'agent'   (default ON) — switching updates ONLY the current agent's
+ *     default model; enabling it turns off 'global' automatically.
+ *   - 'global'  — switching the model updates global routing; when an agent is
+ *     selected, the current agent is ALSO reset to follow global, so the shown
+ *     model equals both the global default and the agent's actual model.
+ * The per-agent scope is the default: picking a model writes the current
+ * agent's per-agent default. Turning on 'agent' clears any session override so
+ * the per-agent model is what applies to this agent (no leftover session pick).
  */
-export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps) {
+export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelMenuProps) {
   const { t } = useTranslation('team');
   const [open, setOpen] = useState(false);
-  const [applyGlobal, setApplyGlobal] = useState(true);
+  const [scope, setScope] = useState<'global' | 'agent'>('agent');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [providers, setProviders] = useState<ProviderModels[]>([]);
@@ -137,7 +157,7 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
 
   useEffect(() => {
     if (!open) return;
-    setApplyGlobal(true);
+    setScope('agent');
     setQuery('');
     void loadModels();
   }, [open, loadModels]);
@@ -189,7 +209,7 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
           }
           return null;
         })();
-    if (fallback) onSelect(fallback, false);
+    if (fallback) onSelect(fallback, 'global', { resetCurrentAgent: false });
   }, [value, providers, globalDefault, selectionInCatalog, onSelect]);
 
   const effective = (value && selectionInCatalog(value)) ? value : globalDefault;
@@ -229,15 +249,36 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
               <button
                 type="button"
                 role="switch"
-                aria-checked={applyGlobal}
-                onClick={() => setApplyGlobal(v => !v)}
-                className={`relative w-9 h-5 rounded-full transition-colors ${applyGlobal ? 'bg-brand-600' : 'bg-fg-tertiary/30'}`}
+                aria-checked={scope === 'global'}
+                disabled={!agentId}
+                onClick={() => setScope('global')}
+                className={`relative w-9 h-5 rounded-full transition-colors ${scope === 'global' ? 'bg-brand-600' : 'bg-fg-tertiary/30 disabled:opacity-40'}`}
               >
                 <span
-                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${applyGlobal ? 'translate-x-4' : ''}`}
+                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${scope === 'global' ? 'translate-x-4' : ''}`}
                 />
               </button>
             </label>
+            <label className="flex items-center justify-between gap-2 px-0.5 text-xs text-fg-secondary cursor-pointer select-none">
+              <span>{t('chatModel.applyAgent', { defaultValue: 'Apply to current agent' })}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={scope === 'agent'}
+                disabled={!agentId}
+                onClick={() => setScope('agent')}
+                className={`relative w-9 h-5 rounded-full transition-colors ${scope === 'agent' ? 'bg-brand-600' : 'bg-fg-tertiary/30 disabled:opacity-40'}`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${scope === 'agent' ? 'translate-x-4' : ''}`}
+                />
+              </button>
+            </label>
+            {!agentId && (
+              <div className="px-0.5 text-[10px] text-fg-tertiary">
+                {t('chatModel.noAgent', { defaultValue: 'Select an agent to apply per-agent' })}
+              </div>
+            )}
           </div>
 
           <div className="flex-1 overflow-y-auto py-1">
@@ -261,8 +302,8 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
                       key={`${p.provider}:${m.id}`}
                       type="button"
                       onClick={() => {
-                        onSelect({ provider: p.provider, model: m.id }, applyGlobal);
-                        if (applyGlobal) {
+                        onSelect({ provider: p.provider, model: m.id }, scope);
+                        if (scope === 'global') {
                           setGlobalDefault({ provider: p.provider, model: m.id });
                         }
                         setOpen(false);
@@ -287,19 +328,55 @@ export function ChatModelMenu({ value, onSelect, disabled }: ChatModelMenuProps)
   );
 }
 
-/** Persist session override and optionally write global routing default. */
+/** Persist a model selection at the requested scope.
+ * - scope 'global': update global LLM routing (and optionally the session
+ *   override). When agentId is given, ALSO reset that agent's per-agent
+ *   binding to "follow global", so the composer's selected model matches the
+ *   agent's actual model and the global default — no ambiguity.
+ * - scope 'agent' : update ONLY the given agent's per-agent default model
+ *                   (llmConfig.modelMode='custom', primary=provider,
+ *                   defaultModel=model) and clear the session override so the
+ *                   per-agent model is what applies.
+ */
 export async function applyChatModelSelection(
   sessionId: string | null,
   sel: ChatModelSelection,
-  applyToGlobal: boolean,
+  scope: 'global' | 'agent',
+  agentId?: string,
+  opts?: GlobalScopeOptions,
 ): Promise<void> {
+  if (scope === 'agent') {
+    if (agentId) {
+      // Clear any session override so the agent's default actually applies on
+      // this session (per-agent > global; session override would win, which we
+      // don't want when the user picked "apply to current agent").
+      if (sessionId && !sessionId.startsWith('new_')) {
+        await api.sessions.setModelOverride(sessionId, null).catch(() => {});
+      }
+      await api.agents.updateConfig(agentId, {
+        llmConfig: {
+          modelMode: 'custom',
+          primary: sel.provider,
+          defaultModel: sel.model,
+        },
+      });
+    }
+    return;
+  }
+  // global scope
+  // If the user picks a global model while an agent is selected, also reset
+  // that agent to "follow global" — otherwise the composer shows the global
+  // pick but the agent still uses its own bound model (ambiguous).
+  if (agentId && opts?.resetCurrentAgent !== false) {
+    await api.agents.updateConfig(agentId, {
+      llmConfig: { modelMode: 'default', primary: '', defaultModel: undefined },
+    }).catch(() => { /* best-effort; per-agent cache refreshes on next agent switch */ });
+  }
   if (sessionId && !sessionId.startsWith('new_')) {
     await api.sessions.setModelOverride(sessionId, sel);
   }
-  if (applyToGlobal) {
-    await api.settings.updateRouting({
-      defaultProvider: sel.provider,
-      routingDefaultModel: { provider: sel.provider, model: sel.model },
-    });
-  }
+  await api.settings.updateRouting({
+    defaultProvider: sel.provider,
+    routingDefaultModel: { provider: sel.provider, model: sel.model },
+  });
 }

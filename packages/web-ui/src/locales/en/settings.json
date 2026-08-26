@@ -137,6 +137,15 @@
       "max": "Max"
     }
   },
+  "perAgentModel": {
+    "section": "Agent Default Models",
+    "title": "Per-agent default model",
+    "desc": "Bind a specific provider+model to an agent, or leave it following the global default. This is the same setting the composer \"Apply to current agent\" writes.",
+    "noAgents": "No agents available.",
+    "followGlobal": "Follow global",
+    "reset": "Reset",
+    "ungrouped": "Ungrouped"
+  },
   "modelPicker": {
     "loading": "Loading models...",
     "empty": "No models available for this provider.",

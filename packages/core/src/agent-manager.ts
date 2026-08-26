@@ -5,6 +5,7 @@ import {
   stripInternalBlocks,
   type AgentConfig,
   type AgentProfile,
+  type LLMAssignment,
   type AgentActivity,
   type IdentityContext,
   type HumanUser,
@@ -37,7 +38,7 @@ import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.
 import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
-import { createSettingsTools } from './tools/settings.js';
+import { createSettingsTools, type SettingsAgentContext } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
@@ -1471,6 +1472,7 @@ export class AgentManager {
     for (const tool of createSettingsTools({
       llmRouter: this.llmRouter,
       persistConfig: (updates) => { try { saveConfig(updates); } catch (err) { log.debug('Failed to persist config', { error: String(err) }); } },
+      agent: this.buildSettingsAgentContext(id),
     })) {
       agent.registerTool(tool);
     }
@@ -2034,6 +2036,7 @@ export class AgentManager {
         return {
           modelMode: (raw.modelMode as 'default' | 'custom') ?? 'default',
           primary: (raw.primary as string) ?? 'anthropic',
+          defaultModel: raw.defaultModel as string | undefined,
           fallback: raw.fallback as string | undefined,
           maxTokensPerRequest: raw.maxTokensPerRequest as number | undefined,
           maxTokensPerDay: raw.maxTokensPerDay as number | undefined,
@@ -2376,6 +2379,7 @@ export class AgentManager {
     for (const tool of createSettingsTools({
       llmRouter: this.llmRouter,
       persistConfig: (updates) => { try { saveConfig(updates); } catch (err) { log.debug('Failed to persist config', { error: String(err) }); } },
+      agent: this.buildSettingsAgentContext(id),
     })) {
       agent.registerTool(tool);
     }
@@ -3280,6 +3284,35 @@ export class AgentManager {
 
   setAgentConfigPersister(persister: (agentId: string, data: Record<string, unknown>) => Promise<void>): void {
     this.agentConfigPersister = persister;
+  }
+
+  /**
+   * Build the per-agent context passed to the settings tools so an agent can
+   * inspect and update its OWN default model. Mutates the live config (takes
+   * effect next call) and persists to DB via the injected persister when set.
+   */
+  private buildSettingsAgentContext(agentId: string): SettingsAgentContext {
+    return {
+      agentId,
+      getLlmConfig: () => this.getAgent(agentId)?.config.llmConfig,
+      persistLlmConfig: (patch: Partial<LLMAssignment>) => this.persistAgentLlmConfig(agentId, patch),
+    };
+  }
+
+  private async persistAgentLlmConfig(agentId: string, patch: Partial<LLMAssignment>): Promise<boolean> {
+    const target = this.getAgent(agentId);
+    if (!target) return false;
+    try {
+      // Mutate the nested object in place (readonly only bars reassigning `config`,
+      // exactly like Agent.setHeartbeatInterval mutates config fields).
+      target.config.llmConfig = { ...target.config.llmConfig, ...patch };
+      if (this.agentConfigPersister) {
+        try { await this.agentConfigPersister(agentId, { llmConfig: target.config.llmConfig }); } catch { /* best effort */ }
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   setHubClient(client: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> }): void {
