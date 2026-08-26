@@ -11,6 +11,10 @@ export interface A2AContext {
   sendMessage: (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => Promise<string>;
   /** Wake (start) a stopped agent — used by agent_send_message wake_recipient. */
   wakeAgent?: (agentId: string) => Promise<void>;
+  /** Runtime liveness — is the agent's runtime loop currently up (state.status !== 'offline')?
+   *  Authoritative for the stopped/running distinction: a stopped agent's roster
+   *  state may still read 'idle', so checking roster status alone is unreliable. */
+  isRunning?: (agentId: string) => boolean;
   delegateTask?: (targetId: string, delegation: TaskDelegation) => Promise<DelegationResult>;
   sendGroupMessage?: (channelKey: string, message: string, senderId: string, senderName: string, replyToId?: string) => Promise<string>;
   createGroupChat?: (name: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
@@ -88,9 +92,14 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
 
         // Recipient liveness check — a stopped agent has no schedule, so without
         // a wake the message would sit in their mailbox indefinitely (silent
-        // dead letter). Report status in the response; optionally wake on request.
+        // dead letter). Runtime liveness wins when provided (a stopped agent's
+        // roster state may still read 'idle'); fall back to roster status
+        // otherwise. Report status in the response; optionally wake on request.
         const recipient = ctx.listColleagues().find(a => a.id === targetId);
-        const recipientStopped = !!recipient && recipient.status === 'stopped';
+        const recipientAlive = ctx.isRunning
+          ? ctx.isRunning(targetId)
+          : !!recipient && recipient.status !== 'stopped' && recipient.status !== 'offline';
+        const recipientStopped = !!recipient && !recipientAlive;
         let recipientWoken = false;
         if (wakeRecipient && recipientStopped && ctx.wakeAgent) {
           try {
@@ -129,7 +138,10 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
           recipient: {
             id: recipient?.id ?? targetId,
             name: recipient?.name,
-            status: recipientWoken ? 'started' : (recipient?.status ?? 'unknown'),
+            // 'started' = we just woke it; the live roster state when it's up;
+            // 'stopped' = no wake, message queued in mailbox until woken;
+            // 'unknown' = recipient not in roster (cannot determine liveness).
+            status: recipientWoken ? 'started' : (!recipient ? 'unknown' : (recipientAlive ? (recipient.status || 'online') : 'stopped')),
           },
           ...(recipientWoken ? { recipient_woken: true } : {}),
           message: notice,

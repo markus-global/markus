@@ -1350,6 +1350,10 @@ export class AgentManager {
       selfId: id,
       selfName: config.name,
       wakeAgent: async (agentId: string) => { await this.startAgent(agentId); },
+      isRunning: (agentId: string) => {
+        const a = this.agents.get(agentId);
+        return !!a && a.getState().status !== 'offline';
+      },
       listColleagues: () =>
         this.listAgents().map(a => {
           try {
@@ -2242,6 +2246,10 @@ export class AgentManager {
       selfId: id,
       selfName: config.name,
       wakeAgent: async (agentId: string) => { await this.startAgent(agentId); },
+      isRunning: (agentId: string) => {
+        const a = this.agents.get(agentId);
+        return !!a && a.getState().status !== 'offline';
+      },
       listColleagues: () =>
         this.listAgents().map(a => {
           try {

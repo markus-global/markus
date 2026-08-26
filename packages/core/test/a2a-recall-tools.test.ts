@@ -343,6 +343,36 @@ describe('agent_send_message recipient liveness', () => {
     expect(result.message).toContain('WARNING');
   });
 
+  it('isRunning takes precedence over a misleading roster status (regression: stopped agent shows "idle")', async () => {
+    // Real-world bug: a stopped agent's roster state may still read 'idle',
+    // so roster status alone never fires the stopped warning.
+    const ctx = makeA2AContext({
+      listColleagues: () => [
+        { id: 'agt_off', name: 'Offline', role: 'worker', status: 'idle', teamId: 'team_a', teamName: 'Alpha' },
+      ],
+    });
+    ctx.isRunning = (id: string) => id !== 'agt_off'; // runtime loop is down
+    const result = JSON.parse(await findA2ATool(ctx, 'agent_send_message').execute({
+      agent_id: 'agt_off',
+      message: 'hello',
+    }));
+    expect(result.status).toBe('dispatched');
+    expect(result.recipient).toMatchObject({ id: 'agt_off', status: 'stopped' });
+    expect(result.message).toContain('STOPPED');
+  });
+
+  it('treats an agent as live when isRunning reports it running', async () => {
+    const ctx = makeA2AContext();
+    ctx.isRunning = () => true;
+    const result = JSON.parse(await findA2ATool(ctx, 'agent_send_message').execute({
+      agent_id: 'agt_peer',
+      message: 'hello',
+    }));
+    expect(result.status).toBe('dispatched');
+    expect(result.recipient).toMatchObject({ id: 'agt_peer', status: 'idle' });
+    expect(result.message).not.toContain('STOPPED');
+  });
+
   it('exposes reply_in_session, legacy await_in_session alias, and wake_recipient in schema', () => {
     const ctx = makeA2AContext();
     const tool = findA2ATool(ctx, 'agent_send_message');
