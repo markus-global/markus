@@ -722,6 +722,14 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                                 {AGENT_PHASE_LABEL_KEYS[phase] && (
                                   <span className="text-[10px] text-fg-tertiary shrink-0">{t(AGENT_PHASE_LABEL_KEYS[phase])}</span>
                                 )}
+                                {r?.dirty?.dirty && (() => {
+                                  const needsHuman = r.dirty.recovery === 'human-review';
+                                  return (
+                                    <span className={`inline-flex items-center px-1.5 py-px rounded text-[9px] font-medium shrink-0 ${needsHuman ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
+                                      {needsHuman ? t('liveActivity.dirtyNeedsHuman') : t('liveActivity.dirtyRecovered')}
+                                    </span>
+                                  );
+                                })()}
                               </div>
                               <div className="text-[10px] text-fg-tertiary truncate">{agentRuntimeSubtitle(a, t)}</div>
                             </div>

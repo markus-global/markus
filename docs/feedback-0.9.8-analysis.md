@@ -77,7 +77,7 @@
 |----|-----------|--------|------|
 | G. Token 成本与上下文 | 1,2,4,5,6,7,30 | 🔴 高 | 分支已做，仍要持续 |
 | S. 稳定性/容错 | 12,13,16,17,18,26,27,29,34,35 | 🔴 高 | 需深排查+加固 |
-| O. 可观测性/进展 | 22,31,32,33 | 🔴 高 | OB-1 已闭环主体，OB-2/OB-3 规划中 |
+| O. 可观测性/进展 | 22,31,32,33 | 🔴 高 | OB-1 闭环主体，OB-2 定位中，OB-3 已闭环 |
 | F. 依赖/并发治理 | 15,26,27,28,29,34 | 🟡 中 | 需治理 |
 | M. 模型管理 | 8,20,21,23,24 | 🟡 中 | 分支已落地大半 |
 | I. 上下文隔离 | 19 | 🟡 中 | 需设计 |
@@ -108,7 +108,7 @@
 | 29 | 🟢 | 默认重试 3 次（上层 `withNetworkRetry`，仅网络错误），指数退避上限 60s（markus-provider `MAX_RETRIES=3`）。SS-1 补齐 per-call 硬超时后，几乎不再长期空转；熔断冷却 + fallback 已覆盖「API 不稳定就不跑」。**待办**：将 `MAX_RETRIES` 与退避参数改为可配置（当前为常量），见 FD-2。 |
 | 19 | 🔴 | Agent 能看到所有项目，回复串项目。需项目级上下文隔离（绑定 agent 到项目）。 |
 | 20,21,23 | ✅ | `060a5c5b`：per-agent 默认模型 + agent 自检模型/模型列表工具 + Web UI。分支已实现。 |
-| 22 | 🟡 | 「无任务却在处理中」——**OB-1 已让残留脏状态可见**：idle + 残留 `currentActivity` 会被派生为 `thinking` 阶段并在概览展示（不再静默），但**自动化清理/兜底由 OB-3 负责**（任务已规划，待执行）。 |
+| 22 | ✅ | 「无任务却在处理中」——**已闭环（OB-1 可见 + OB-3 自动清理/兜底）**。OB-1 先让残留脏状态可见（idle + 残留 `currentActivity` 派生命为 `thinking` 不再静默）。**OB-3 落地自动化兜底**：新增 `packages/org-manager/src/agent-dirty.ts` —— 纯函数 `evaluateDirtyState` 判定「processing-like（status=working 或有 activity 痕迹）但①无任何存活任务(in_progress/review/blocked)②lastHeartbeat 过期③活动/标记超 `staleAfterMs`(默认5min)」的遗留脏态；对「心跳新鲜/有存活任务/刚启动」**剔除误杀**。恢复动作分级：`reconcile-idle`（清残留 activity→idle）/`trigger-heartbeat`（无活动无心跳时触发一次恢复心跳让 agent 自愈）/`human-review`（近期报错 degraded 或依赖存疑 → 明确提示+建议动作）。`AgentDirtyReconciler` 周期扫描（默认 30s，feature flag `enabled` 可整体关闭，幂等去重不误杀不刷屏）：脏态写 execution-stream 事件（谁/何时/为何可追溯）、按恢复动作兜底、human-review 告警。`GET /api/agents` 派生暴露 `runtime.dirty`（前端可提示「已自动兜底/需人工介入」）。安全边界：严格 O 域，只清 agent 运行态脏标记，**不改任务调度/依赖推进骨架**。 |
 | 24 | 🟡 | URL fallback 已做；需对「默认模型不可用自动路由」的兜底做验证与告警。 |
 | 25 | 🔴 | 知识库：明确不沿用传统 RAG（Jason 已言），需**设计新的企业知识库方案**。 |
 | 26,27,28 | 🔴 | 依赖治理：任务全停、依赖未完成无法拉起、双向依赖风险。需要死锁检测 + 依赖图健壮化。 |
@@ -147,7 +147,7 @@
 | S | SS-3 服务进程崩溃归因：崩溃日志/内存快照/启动看门狗自拉起（✅ 已闭环，见问题35） | SS-1 |
 | O | OB-1 任务运行轨迹可见：当前在跑什么、阻塞在依赖哪个、事件流 | — |
 | O | OB-2 卡顿/卡死定位：session 归属、运行状态、最后心跳 | OB-1 |
-| O | OB-3 无任务「处理中」脏状态自动清理/兜底 | OB-1 |
+| O | OB-3 无任务「处理中」脏状态自动清理/兜底（agent-dirty.ts + reconciler + api 暴露 runtime.dirty + 测试） | OB-1 | ✅ 已闭环 |
 | G | GC-1 收敛 context-os 到主分支并做缓存友好验证 | — |
 | G | GC-2 per-agent token 成本归因与可视化（Dashboard / CSV 导出） | GC-1 |
 | G | GC-3 建团队/群聊的「无谓 token 浪掷」治理（心跳/A2A/扇出） | GC-1 |

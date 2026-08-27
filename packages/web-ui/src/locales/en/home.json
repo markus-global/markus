@@ -126,7 +126,9 @@
   },
   "liveActivity": {
     "whosWorking": "Working Now",
-    "recentChanges": "Recent Changes"
+    "recentChanges": "Recent Changes",
+    "dirtyRecovered": "Auto-recovered",
+    "dirtyNeedsHuman": "Needs attention"
   },
   "agentFocus": {
     "title": "Agent Focus",

@@ -126,7 +126,9 @@
   },
   "liveActivity": {
     "whosWorking": "正在工作",
-    "recentChanges": "最近变更"
+    "recentChanges": "最近变更",
+    "dirtyRecovered": "已自动兜底恢复",
+    "dirtyNeedsHuman": "需人工介入"
   },
   "agentFocus": {
     "title": "智能体焦点",
