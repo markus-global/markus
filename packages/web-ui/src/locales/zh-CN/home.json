@@ -201,7 +201,6 @@
       "team": "团队",
       "tasks": "任务",
       "cuUsed": "积分消耗",
-      "cacheHitRate": "缓存命中",
       "tokens": "Tokens",
       "efficiency": "效率",
       "total": "合计（{{count}} 个智能体）",

@@ -201,7 +201,6 @@
       "team": "Team",
       "tasks": "Tasks",
       "cuUsed": "CU Used",
-      "cacheHitRate": "Cache Hit",
       "tokens": "Tokens",
       "efficiency": "Efficiency",
       "total": "Total ({{count}} agents)",
