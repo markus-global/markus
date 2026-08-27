@@ -34,6 +34,14 @@ export interface TaskOptions {
   onProgress?: (taskId: string, progress: number, currentStep?: string) => void;
   cancelToken?: { cancelled: boolean };
   metadata?: Record<string, any>;
+  /**
+   * Hard wall-clock timeout for this task's execute() in ms. If the task
+   * does not settle within this window, it is failed and its concurrent slot
+   * is freed so a single hung task (e.g. a stalled provider call) can never
+   * permanently block the whole scheduler queue. Defaults to
+   * TaskQueueOptions.defaultTimeoutMs.
+   */
+  timeoutMs?: number;
 }
 
 export interface QueuedTask extends TaskOptions {
@@ -60,6 +68,8 @@ export interface TaskQueueOptions {
   defaultPriority: TaskPriority;
   name?: string;
   autoStart?: boolean;
+  /** Default per-task timeout in ms when a task does not specify timeoutMs. */
+  defaultTimeoutMs?: number;
 }
 
 /**
@@ -200,8 +210,9 @@ export class TaskQueue {
         return;
       }
 
-      // 执行任务
-      const result = await task.execute();
+      // 执行任务（带超时：悬挂的 execute 不得永久占用并发槽）
+      const timeoutMs = task.timeoutMs ?? this.options.defaultTimeoutMs;
+      const result = await this.runWithTimeout(task, timeoutMs);
       
       // 更新状态
       task.status = TaskStatus.COMPLETED;
@@ -364,6 +375,32 @@ export class TaskQueue {
   async waitForAll(): Promise<void> {
     while (this.runningTasks.size > 0 || this.queue.length > 0) {
       await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  /**
+   * 执行任务并施加硬超时。若 execute 在 timeoutMs 内未 settle（挂起，例如
+   * 底层 provider 调用永久不返回），则触发取消令牌并抛超时错误，由调用方
+   * (executeTask 的 catch) 释放并发槽，防止单个悬挂任务堵死整个调度队列。
+   */
+  private async runWithTimeout(task: QueuedTask, timeoutMs?: number): Promise<any> {
+    if (!timeoutMs || timeoutMs <= 0) {
+      return task.execute();
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        task.execute(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            // 通知协作式取消（若 execute 内部检查 cancelToken）
+            if (task.cancelToken) task.cancelToken.cancelled = true;
+            reject(new Error(`Task ${task.id} timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 }

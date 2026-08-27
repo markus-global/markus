@@ -171,6 +171,64 @@ describe('AnthropicProvider', () => {
     expect(imageBlock?.source).toEqual({ type: 'base64', media_type: 'image/png', data: 'abc123' });
   });
 
+  it('chat fails fast with a timeout error when the provider hangs (never resolves)', async () => {
+    // Simulate a hung provider: the fetch promise never settles on its own, and
+    // like real fetch it rejects with AbortError once our signal aborts. The
+    // per-call hard timeout must reject with a descriptive error, not hang.
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        (init.signal as AbortSignal).addEventListener('abort', () => {
+          reject(new DOMException('This operation was aborted', 'AbortError'));
+        });
+      });
+    }));
+
+    provider.configure({ provider: 'anthropic', model: 'x', apiKey: 'k', timeoutMs: 50 });
+
+    await expect(provider.chat({ messages: [{ role: 'user', content: 'Hi' }] }))
+      .rejects.toThrow(/Anthropic chat timeout after 50ms/);
+  });
+
+  it('gracefully terminates a stream that stalls mid-response (idle timeout) by finalizing partial output as max_tokens', async () => {
+    // Stream emits one text chunk then never produces another byte -> the idle
+    // (per-chunk) timeout must abort, and with partial content the provider
+    // finalizes as max_tokens instead of throwing / hanging forever.
+    const encoder = new TextEncoder();
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      let ctrl: ReadableStreamDefaultController<Uint8Array> | undefined;
+      (init.signal as AbortSignal).addEventListener('abort', () => {
+        // Real fetch cancels the body stream on abort -> erroring the controller
+        // makes the pending reader.read() reject so the provider's catch runs.
+        try { ctrl?.error(new DOMException('Stream aborted', 'AbortError')); } catch { /* noop */ }
+      });
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          ctrl = c;
+          c.enqueue(encoder.encode('data: {"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":0}}}\n\n'));
+          c.enqueue(encoder.encode('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello "}}\n\n'));
+        },
+        pull() {
+          // stall: never enqueue more, never close -> reader.read() stays pending
+          // until the idle timeout abort errors the controller.
+        },
+        cancel() { /* noop */ },
+      });
+      return Promise.resolve({ ok: true, body: stream });
+    }));
+
+    provider.configure({ provider: 'anthropic', model: 'x', apiKey: 'k', streamTimeoutMs: 40 });
+
+    const onEvent = vi.fn();
+    const response = await provider.chatStream(
+      { messages: [{ role: 'user', content: 'Hi' }] },
+      onEvent,
+    );
+
+    // Partial output preserved, gracefully finalized instead of hanging/throw.
+    expect(response.content).toContain('Hello');
+    expect(response.finishReason).toBe('max_tokens');
+  });
+
   it('converts tool result messages to user role with tool_result blocks', async () => {
     let capturedBody: Record<string, unknown> | undefined;
     vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {

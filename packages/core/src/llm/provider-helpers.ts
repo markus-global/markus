@@ -404,7 +404,7 @@ export function createSSEAccumulator() {
   };
 }
 
-function safeParseJson(raw: string): Record<string, unknown> {
+export function safeParseJson(raw: string): Record<string, unknown> {
   try {
     return JSON.parse(raw) as Record<string, unknown>;
   } catch {
