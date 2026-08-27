@@ -330,6 +330,11 @@ export class Agent {
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
   private currentTaskId?: string;
+  /** Scheme A: per-turn volatile state (time, mailbox, status, memories…) rebuilt
+   *  by buildSystemPrompt each call and passed to prepareMessages so it can be
+   *  pinned at the TAIL of history instead of inside the system message. Keeping
+   *  the system message byte-identical across turns preserves the prefix cache. */
+  private volatileState?: string;
   private pathPolicy?: PathAccessPolicy;
   private skillRegistry?: SkillRegistry;
   private toolSelector: ToolSelector;
@@ -1343,6 +1348,7 @@ export class Agent {
         agentId: this.id,
         ...this.getPrepareBudgetOpts(),
         toolDefinitions: llmTools,
+        volatileState: this.volatileState,
       });
 
       let prepared = await prepare();
@@ -2985,6 +2991,8 @@ export class Agent {
       tokensUsed?: number;
       inputTokens?: number;
       outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
       cost?: number;
       cuCost?: number;
       provider?: string;
@@ -3152,7 +3160,7 @@ export class Agent {
       );
       if (browserTools.length === 0) return;
 
-      const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+      const { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
         agentId: this.id,
         agentName: this.config.name,
         role: this.role,
@@ -3176,6 +3184,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: browserTools,
           systemCacheSegments,
+          volatileState,
         });
 
       let iterations = 0;
@@ -3601,7 +3610,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
 
-    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments, volatile } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -3680,6 +3689,7 @@ export class Agent {
     await this.maybeMemoryFlushPreflight(sessionId);
 
     const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+    this.volatileState = volatile;
     let prepared = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
@@ -3691,6 +3701,7 @@ export class Agent {
       systemCacheSegments,
       slotsSegment: this.memory.serializeSlots ? this.memory.serializeSlots(sessionId) : undefined,
       summarySegment: this.memory.serializeSummary ? this.memory.serializeSummary(sessionId) : undefined,
+      volatileState: this.volatileState,
     });
 
     // Afford fail-closed (Afford.S1): shared helper for stream + non-stream.
@@ -3945,6 +3956,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         const updatedMessages = prepared2.messages;
 
@@ -3995,6 +4007,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
 
         response = await this.withNetworkRetry(
@@ -4059,6 +4072,7 @@ export class Agent {
             ...this.getPrepareBudgetOpts(),
             toolDefinitions: llmTools,
             systemCacheSegments,
+            volatileState: this.volatileState,
           });
           response = await this.withNetworkRetry(
             () => this.llmRouter.chat({
@@ -4099,6 +4113,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
 
         response = await this.withNetworkRetry(
@@ -4161,6 +4176,7 @@ export class Agent {
             ...this.getPrepareBudgetOpts(),
             toolDefinitions: llmTools,
             systemCacheSegments,
+            volatileState: this.volatileState,
           });
           response = await this.withNetworkRetry(
             () => this.llmRouter.chat({
@@ -4303,7 +4319,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
 
-    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -4348,6 +4364,7 @@ export class Agent {
     await this.maybeMemoryFlushPreflight(this.currentSessionId);
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
+    this.volatileState = volatileState;
     let preparedStream = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
@@ -4357,6 +4374,7 @@ export class Agent {
       ...this.getPrepareBudgetOpts(),
       toolDefinitions: llmTools,
       systemCacheSegments,
+      volatileState: this.volatileState,
     });
     ({
       prepared: preparedStream,
@@ -4669,6 +4687,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         const updatedMessages = preparedCont.messages;
 
@@ -5066,7 +5085,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
 
-    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -5098,6 +5117,7 @@ export class Agent {
       notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
+    this.volatileState = volatileState;
 
     const taskToolSelectOpts = { userMessage: taskPrompt, isTaskExecution: true as const, scenario: 'task_execution' as const };
     let llmTools = this.buildToolDefinitions(taskToolSelectOpts);
@@ -5384,6 +5404,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         taskLlmStart = Date.now();
         response = await this.withNetworkRetry(
@@ -5453,6 +5474,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         taskLlmStart = Date.now();
         response = await this.withNetworkRetry(
@@ -5623,7 +5645,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', userMessage);
 
-    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -5654,6 +5676,7 @@ export class Agent {
       notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
+    this.volatileState = volatileState;
 
     const risToolSelectOpts = { userMessage };
     let llmTools = this.buildToolDefinitions(risToolSelectOpts);
@@ -5809,6 +5832,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         risLlmStart = Date.now();
         response = await this.withNetworkRetry(
@@ -6327,6 +6351,7 @@ export class Agent {
       ...this.getPrepareBudgetOpts(),
       toolDefinitions: opts.llmTools,
       systemCacheSegments,
+      volatileState: this.volatileState,
     });
     return this.applyAffordGuard({
       prepared,
@@ -6403,6 +6428,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         log.info('Reflex afford downgrade rebuilt', {
           agentId: this.id,

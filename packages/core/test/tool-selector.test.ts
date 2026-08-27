@@ -409,4 +409,42 @@ describe('ToolSelector', () => {
     const evictedActivated = selector.consumeEvictedActivated();
     expect(deferred.some((d) => d.name.startsWith('feishu_')) || evictedActivated.some((n) => n.startsWith('feishu_'))).toBe(true);
   });
+
+  it('CACHE: identical tool set emits byte-identical schema regardless of activation order (stable registry order)', () => {
+    // Regression for slack cache hit rates: selectTools used to emit tools in the
+    // per-turn insertion order of the `selected` Set (keyword hits / session
+    // recentToolNames / discover activations all vary turn-to-turn), so the tool
+    // JSON prefix drifted across turns and broke implicit prefix-cache.
+    // Now the result is ordered by the allTools registry (Map) order, so the same
+    // selected set always serializes identically.
+    const selector = new ToolSelector();
+    // Registry order is fixed at construction (insertion order of the Map).
+    const allTools = makeToolMap([
+      'agent_send_message', 'task_create', 'task_list', 'memory_save', 'shell_execute',
+      'file_read', 'file_write', 'web_search', 'web_fetch', 'grep_search', 'glob_find',
+    ]);
+    const selFor = (msg: string, recent?: string[]) =>
+      selector.selectTools({ allTools, userMessage: msg, recentToolNames: recent, isManager: false })
+        .map(t => JSON.stringify({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+
+    // Turn A: keyword hits shell/code (so recent order is whatever) but ends up
+    // selecting the same set as turn B which hits browser keywords. To ALSO make
+    // the *set* identical we pass identical recent tools that drive the set.
+    const a = selFor('运行测试并读取文件', ['shell_execute', 'file_read', 'grep_search']);
+    const b = selFor('用浏览器查资料', ['shell_execute', 'file_read', 'grep_search']);
+    // Same selected set (core + same recents + keyword groups for each) may differ
+    // in SET if keywords add different groups — so compare the ORDER of the shared
+    // tools: every tool present in both must appear in the same relative order.
+    const namesA = a.map(x => JSON.parse(x).name);
+    const namesB = b.map(x => JSON.parse(x).name);
+    const common = namesA.filter(n => namesB.includes(n));
+    const orderA = namesA.filter(n => common.includes(n));
+    const orderB = namesB.filter(n => common.includes(n));
+    expect(orderA).toEqual(orderB);
+
+    // discover_tools description must NOT contain a live per-turn count.
+    const discover = selector.selectTools({ allTools, userMessage: 'x', isManager: true })
+      .find(t => t.name === 'discover_tools');
+    expect(discover!.description).not.toMatch(/You have \d+ tools active/);
+  });
 });

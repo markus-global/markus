@@ -1136,6 +1136,9 @@ export interface AgentUsageInfo {
   costToday: number;
   cuUsed?: number;
   cuUsedToday?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheHitRate?: number; // 0..1
   provider?: string;
 }
 

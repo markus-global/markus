@@ -1168,7 +1168,10 @@ describe('vision and channel key sessions', () => {
     });
 
     const chatCall = router.chat.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: unknown }> };
-    const userMsg = chatCall.messages.find(m => m.role === 'user');
+    // Scheme A prepends a synthetic [SYSTEM] live-context message (role 'user')
+    // before the current query, so pick the LAST user message for the actual query.
+    const userMsgs = chatCall.messages.filter(m => m.role === 'user');
+    const userMsg = userMsgs[userMsgs.length - 1]!;
     expect(Array.isArray(userMsg?.content)).toBe(true);
   });
 

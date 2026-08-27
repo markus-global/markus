@@ -15,7 +15,7 @@ working-memory models.
    `knowledge.md` holds permanent curated knowledge; `state.md` holds time-bounded snapshots
    (default TTL `STATE_TTL_DAYS = 7`). Observations buffer is never fully prompt-injected.
    Legacy `MEMORY.md` MUST migrate on first load.
-2. **Tulving mapping + notebook**: Persistent layers align with Tulving-style cognition — **Procedural** (ROLE.md), **Semantic** (`knowledge.md` + `state.md`), **Episodic** (sessions + activities). The **Notebook** replaces volatile in-memory working memory with a persistent scratchpad always injected into the system prompt.
+2. **Tulving mapping + notebook**: Persistent layers align with Tulving-style cognition — **Procedural** (ROLE.md), **Semantic** (`knowledge.md` + `state.md`), **Episodic** (sessions + activities). The **Notebook** replaces volatile in-memory working memory with a persistent scratchpad always injected (via the volatile `[Live context]` tail by Scheme A — not as a system-prompt segment).
 3. **SQLite for history**: Activity history lives in SQLite — indexed, searchable, and queryable via tools.
 4. **Context is currency**: Every byte in the LLM prompt competes for limited context window. Retrieval must maximize signal-to-noise.
 5. **Agent autonomy**: Agents decide what to remember (`memory_save`), what to distill (`memory_update`), and how to evolve (ROLE.md edits).
@@ -97,7 +97,7 @@ Persistent markdown replacing the former volatile in-memory working memory.
 
 **Relationship to other layers**:
 
-- More volatile than `knowledge.md` curated sections but always in prompt
+- More volatile than `knowledge.md` curated sections but always injected (volatile `[Live context]` tail)
 - Raw observations → `memory_save` → `knowledge.md` `## _observations`
 - Validated knowledge → `memory_update` → curated sections above `_observations`
 

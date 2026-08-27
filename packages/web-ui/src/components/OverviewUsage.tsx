@@ -28,6 +28,7 @@ export interface Contributor {
   tasksFailed: number;
   cuUsed: number;
   cuUsedToday: number;
+  cacheHitRate: number;
   totalTokens: number;
   tokensToday: number;
   requestCount: number;
@@ -126,6 +127,7 @@ export function useOverviewUsageData(active: boolean, ops: OpsDashboard | null, 
         tasksFailed: eff?.taskMetrics.failed ?? 0,
         cuUsed: cu,
         cuUsedToday: a.cuUsedToday ?? 0,
+        cacheHitRate: a.cacheHitRate ?? 0,
         totalTokens: tokens,
         tokensToday: a.tokensUsedToday,
         requestCount: a.requestCount,
@@ -346,6 +348,7 @@ export function ContributorRankings({ contributors }: { contributors: Contributo
               <SortTH label={t('usage.agents.tasks')} col="tasksCompleted" current={sortBy} desc={sortDesc} onSort={handleSort} />
               <SortTH label={t('usage.agents.tokens')} col="totalTokens" current={sortBy} desc={sortDesc} onSort={handleSort} />
               {hasAnyCu && <SortTH label={t('usage.agents.cuUsed')} col="cuUsed" current={sortBy} desc={sortDesc} onSort={handleSort} />}
+              <th className="px-3 sm:px-4 py-3 text-left font-medium hidden lg:table-cell">{t('usage.agents.cacheHitRate')}</th>
               <SortTH label={t('usage.agents.efficiency')} col="efficiency" current={sortBy} desc={sortDesc} onSort={handleSort} align="right" />
             </tr>
           </thead>
@@ -451,6 +454,15 @@ function ContributorRow({ contributor: c, rank, maxTokens, showCu }: {
           {c.cuUsed > 0 ? formatCu(c.cuUsed) : <span className="text-fg-tertiary">—</span>}
         </td>
       )}
+      <td className="px-3 sm:px-4 py-3 hidden lg:table-cell">
+        <span className={`text-sm font-medium tabular-nums ${
+          c.cacheHitRate >= 0.8 ? 'text-green-500'
+          : c.cacheHitRate >= 0.5 ? 'text-fg-secondary'
+          : c.cacheHitRate > 0 ? 'text-amber-500' : 'text-fg-tertiary'
+        }`}>
+          {c.cacheHitRate > 0 ? `${(c.cacheHitRate * 100).toFixed(0)}%` : '—'}
+        </span>
+      </td>
       <td className="px-3 sm:px-4 py-3 text-right">
         <span className={`text-sm font-medium tabular-nums ${
           c.tasksCompleted === 0 ? 'text-fg-tertiary'

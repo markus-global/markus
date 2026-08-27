@@ -19,9 +19,10 @@ import {
   type LLMMessage,
   MEMORY_MD_SECTION_MAX_CHARS,
   MEMORY_MD_TOTAL_MAX_CHARS,
+  MEMORY_ENTRY_MAX_CHARS,
+  KNOWLEDGE_MD_SELF_HEAL_BYTES,
   SESSION_STORAGE_COMPACT_KEEP,
   SESSION_STORAGE_COMPACT_TRIGGER,
-  SESSION_STORAGE_TOOL_SHRINK_CHARS,
   CONTEXT_SLOT_MAX_CHARS,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
@@ -49,13 +50,21 @@ function isValidEntry(raw: unknown): raw is Record<string, unknown> {
 /** Coerce fields to their expected types so downstream code never sees undefined. */
 function sanitizeEntry(raw: Record<string, unknown> | MemoryEntry): MemoryEntry {
   const r = raw as Record<string, unknown>;
+  let content = typeof r.content === 'string' ? r.content : '';
+  // Hard per-entry cap: a single runaway observation must never balloon the
+  // shared knowledge.md file (observed: one merged obs hit 50MB, dragging
+  // every subsequent getLongTermMemory() read + Tier2 prefix with it).
+  if (content.length > MEMORY_ENTRY_MAX_CHARS) {
+    content = content.slice(0, MEMORY_ENTRY_MAX_CHARS) +
+      `\n[... truncated from ${content.length} chars]`;
+  }
   return {
     id: String(r.id),
     timestamp: typeof r.timestamp === 'string' ? r.timestamp : new Date().toISOString(),
     type: (typeof r.type === 'string' && VALID_TYPES.has(r.type)
       ? r.type
       : 'note') as MemoryEntry['type'],
-    content: typeof r.content === 'string' ? r.content : '',
+    content,
     metadata: (typeof r.metadata === 'object' && r.metadata !== null)
       ? r.metadata as Record<string, unknown>
       : undefined,
@@ -879,32 +888,12 @@ export class MemoryStore implements IMemoryStore {
   // --- Disk persistence ---
 
   private checkAndCompact(session: ConversationSession): void {
-    // Keep full transcripts by default. Per-request packing uses the model
-    // window — we do not drop turns early to "save tokens".
-    // 1) Shrink only pathological old tool blobs.
-    // 2) Permanent summarize+truncate only at a very high message count (safety).
-    let shrunk = 0;
-    const keepRecentForShrink = Math.min(SESSION_STORAGE_COMPACT_KEEP, session.messages.length);
-    const recentBoundary = Math.max(0, session.messages.length - keepRecentForShrink);
-    for (let i = 0; i < recentBoundary; i++) {
-      const m = session.messages[i]!;
-      const text = getTextContent(m.content);
-      if (m.role === 'tool' && text.length > SESSION_STORAGE_TOOL_SHRINK_CHARS) {
-        const origLen = text.length;
-        const headSize = Math.min(4_000, Math.floor(origLen * 0.3));
-        const tailSize = Math.min(1_500, Math.floor(origLen * 0.1));
-        const head = text.slice(0, headSize);
-        const tail = text.slice(-tailSize);
-        m.content = `[Tool result compacted: ${origLen} chars → ${headSize + tailSize} char preview]\n${head}\n[... ${origLen - headSize - tailSize} chars omitted ...]\n${tail}`;
-        shrunk++;
-      }
-    }
-    if (shrunk > 0) {
-      log.info('Shrunk oversized tool results in session storage', {
-        sessionId: session.id, messageCount: session.messages.length, shrunkToolResults: shrunk,
-      });
-    }
-
+    // Cache-safety: do NOT rewrite already-archived history in place. In-place
+    // mutation of a middle tool message breaks the implicit prefix-cache (the
+    // whole replayed prefix) for every subsequent turn until it ages out.
+    // Per-request packing (`shrinkOversizedMessages`) already bounds each tool
+    // result transiently, so storage stays a byte-stable full transcript until
+    // the deliberate safety compact below (which archives with a summary).
     if (session.messages.length <= SESSION_STORAGE_COMPACT_TRIGGER) return;
 
     log.info('Auto-compacting session by safety count threshold', {
@@ -952,8 +941,57 @@ export class MemoryStore implements IMemoryStore {
       });
       this.saveToDisk();
     }
+
+    // ── Boot-time self-heal ──────────────────────────────────────────────
+    // Some agents inherited a knowledge.md ballooned to tens/hundreds of MB by
+    // an older nested-serialize feedback bug (a `data-meta` blob re-parsed as a
+    // tag, re-written, re-nested indefinitely). That not only wastes disk/read
+    // time every turn — the oversized Tier-2 "Your Knowledge" injection keeps
+    // changing its prefix, which silently destroys the DeepSeek/OpenAI
+    // implicit prefix-cache hit rate (measured: 19% instead of 60-80%).
+    // Because it is a boot-time concern shared by ALL agents, we self-heal
+    // right here: if the file is unexpectedly large or contains nested-meta
+    // corruption, re-serialize the in-memory (already-split/fixed) entries back
+    // through the single-data-meta JSON writer and cap each section size.
+    // This is idempotent and safe: entries were parsed with the fixed reader,
+    // so re-writing them produces a clean, compact file.
+    if (this.shouldSelfHeal()) {
+      log.warn('knowledge.md detected oversized/corrupt — rebuilding observations', {
+        store: this.getStoreFileName(),
+        fileBytes: statSync(this.longTermFile).size,
+        entryCount: this.entries.length,
+        maxEntryChars: this.entries.length
+          ? Math.max(...this.entries.map((e) => e.content.length))
+          : 0,
+      });
+      this.saveToDisk();
+    }
+
     if (this.entries.length > 0) {
       log.info(`Loaded ${this.entries.length} observation entries from ${this.getStoreFileName()}`);
+    }
+  }
+
+  /**
+   * Detect a knowledge.md that needs a boot-time rebuild: either unexpectedly
+   * large (nested-serialize bloat) or containing the tell-tale re-nested
+   * `data-meta` syntax inside a tag field (old corruption that even the fixed
+   * reader can only partially reconstruct). Cheap to compute at boot.
+   */
+  private shouldSelfHeal(): boolean {
+    try {
+      if (!existsSync(this.longTermFile)) return false;
+      const st = statSync(this.longTermFile);
+      if (st.size > KNOWLEDGE_MD_SELF_HEAL_BYTES) return true;
+      // Nested-meta marker: a corrupted obs line contains ", data-meta" inside
+      // the tags position, i.e. ", , data-meta" spreading. We just check that
+      // no loaded entry's tags look like a serialized blob.
+      return this.entries.some((e) =>
+        Array.isArray(e.metadata?.tags) &&
+        (e.metadata!.tags as string[]).some((t) => /data-meta|\\"/i.test(t)),
+      );
+    } catch {
+      return false;
     }
   }
 
@@ -980,23 +1018,37 @@ export class MemoryStore implements IMemoryStore {
         let restoredMeta: Record<string, unknown> | undefined;
         const contentLines: string[] = [];
         for (let i = 1; i < lines.length; i++) {
-          const metaMatch = lines[i].match(/^<!-- type: (\w+)(?:, tags: (.+))?(?:, data-meta: (.+))? -->$/);
+          // Parse metadata from HTML comment. Prefer a single `data-meta` JSON
+          // payload (new format). The legacy `, tags: a, b` form is tolerated via
+          // a NON-GREEDY tags capture that must NOT consume a trailing
+          // `, data-meta:` — otherwise a tag with a comma/JSON regenerates on
+          // every round-trip (the 50MB obs bomb). We first try to strip the
+          // enclosed `data-meta: <json> -->` tail so `(.+?)` can never eat it.
+          const metaMatch = lines[i].match(/^<!-- type: (\w+)(?:, tags: (.*?))?(?:, data-meta: (.+))? -->$/);
           if (metaMatch) {
             const typeVal = metaMatch[1];
             if (typeVal && VALID_TYPES.has(typeVal)) type = typeVal as MemoryEntry['type'];
-            if (metaMatch[2]) tags = metaMatch[2].split(',').map(t => t.trim());
-            // Restore faithful metadata for conversation_fragment / curated slots
-            if (metaMatch[3]) {
-              const meta = parseDataMeta(metaMatch[3]);
-              if (meta) {
-                const metaTags = Array.isArray(meta.tags) ? meta.tags as string[] : tags;
-                const rest = { ...meta };
-                delete rest.tags;
-                if (Array.isArray(metaTags)) tags = metaTags;
-                restoredMeta = { ...(restoredMeta ?? {}), ...rest };
-                if (Array.isArray(metaTags)) restoredMeta.tags = metaTags;
-              }
+            let parsedMeta: Record<string, unknown> | undefined;
+            if (metaMatch[3]) parsedMeta = parseDataMeta(metaMatch[3]);
+            const legacyTags = metaMatch[2] ? metaMatch[2].split(',').map(t => t.trim()).filter(Boolean) : [];
+            const metaTags = parsedMeta && Array.isArray(parsedMeta.tags)
+              ? parsedMeta.tags as string[]
+              : legacyTags;
+            // Faithful restored metadata (excluding tags, which are carried above).
+            if (parsedMeta) {
+              const rest = { ...parsedMeta };
+              delete rest.tags;
+              restoredMeta = { ...(restoredMeta ?? {}), ...rest };
             }
+            if (Array.isArray(metaTags)) {
+              tags = metaTags.map(String);
+              restoredMeta = { ...(restoredMeta ?? {}), tags };
+            } else if (parsedMeta) {
+              restoredMeta = { ...(restoredMeta ?? {}) };
+            }
+            // Safety: if tags somehow contain a re-nested data-meta blob (old
+            // corruption), drop tags entirely rather than re-nest on the next write.
+            if (tags.some((t) => /data-meta|\\"|\\:/i.test(t))) tags = [];
             continue;
           }
           contentLines.push(lines[i]);
@@ -1098,17 +1150,22 @@ export class MemoryStore implements IMemoryStore {
         .slice(-MemoryStore.MAX_MEMORY_ENTRIES);
       this.entries = entries;
       for (const entry of entries) {
-        const tags = Array.isArray(entry.metadata?.tags)
-          ? (entry.metadata!.tags as string[]).join(', ')
-          : '';
         obsLines.push(`### ${entry.id}`);
-        // Serialize metadata faithfully so conversation_fragment retro-traceability
-        // (sessionId/agentId/pagedOutCount/first/last) survives disk round-trips.
+        // Serialize metadata faithfully: conversation_fragment retro-traceability
+        // (sessionId/agentId/pagedOutCount/first/last) must survive disk round-trips.
+        // CRITICAL: emit a SINGLE `data-meta` JSON payload and store tags INSIDE it.
+        // Never emit a bare `, tags: a, b` field AND a separate data-meta that both
+        // carry the tags — the old dual format let a tag containing a comma/JSON blob
+        // be re-parsed by the greedy reader, re-serialized, re-nested indefinitely
+        // (observed: a single obs grew to 50MB from this feedback loop).
+        const tags = Array.isArray(entry.metadata?.tags)
+          ? (entry.metadata!.tags as string[])
+          : [];
         const meta = entry.metadata && typeof entry.metadata === 'object'
-          ? entry.metadata
-          : undefined;
+          ? { ...entry.metadata, tags }
+          : (tags.length > 0 ? { tags } : undefined);
         const metaJson = meta ? safeJson(meta) : '';
-        obsLines.push(`<!-- type: ${entry.type}${tags ? `, tags: ${tags}` : ''}${metaJson ? `, data-meta: ${metaJson}` : ''} -->`);
+        obsLines.push(`<!-- type: ${entry.type}${metaJson ? `, data-meta: ${metaJson}` : ''} -->`);
         obsLines.push(entry.content);
         obsLines.push('');
       }

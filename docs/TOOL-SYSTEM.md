@@ -53,9 +53,9 @@ MUST: After selection, if estimated tool-definition tokens exceed the pack budge
 `TOOL_DEF_CORE_KEEP` + `discover_tools` + HITL, then evict skill/MCP (LRU among activated)
 and other extras until under budget.
 
-MUST (§Afford.S2): Evicted names MUST appear in a compact **system Tier 3** catalog
-(name-only or name + ≤40 chars, total ≤ `DEFERRED_CATALOG_MAX_CHARS` ≈ 1500 chars)
-for rediscovery via `discover_tools`.
+MUST (§Afford.S2): Evicted names MUST appear in a compact catalog (in the volatile `[Live
+context]` tail, keyed for rediscovery via `discover_tools`; name-only or name + ≤40 chars, total ≤
+`DEFERRED_CATALOG_MAX_CHARS` ≈ 1500 chars).
 
 MUST NOT: Append the eviction catalog into `discover_tools.description` (inflates
 `toolDefTokens` and defeats the pack budget).

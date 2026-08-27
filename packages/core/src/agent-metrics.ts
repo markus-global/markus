@@ -272,8 +272,11 @@ export class AgentMetricsCollector {
     const markerFailureRate = c.nonChatTurns > 0 ? c.markerMissTurns / c.nonChatTurns : 0;
     // Cache-hit rate: cached reads over total prompt-side tokens (cached reads + writes +
     // fresh prompt tokens). 0 when nothing cacheable has been reported.
-    const cacheDenominator = c.cacheReadTokens + c.cacheWriteTokens + c.promptTokens;
-    const cacheHitRate = cacheDenominator > 0 ? c.cacheReadTokens / cacheDenominator : 0;
+    // Cache-hit rate: cached reads over total prompt-side tokens served.
+    // For OpenAI-compatible providers (OpenRouter / DeepSeek, and the Markus gateway)
+    // `promptTokens` (= inputTokens) already INCLUDES the cached portion, so the
+    // denominator is just promptTokens. Clamped to [0,1].
+    const cacheHitRate = c.promptTokens > 0 ? Math.min(1, c.cacheReadTokens / c.promptTokens) : 0;
     const perTurnCostUsd = c.turnsCompleted > 0 ? c.estimatedCost / c.turnsCompleted : 0;
     return {
       compressionCount: c.compressionCount,
@@ -291,6 +294,9 @@ export class AgentMetricsCollector {
     totalTokens: number;
     promptTokens: number;
     completionTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    cacheHitRate: number; // 0..1
     requestCount: number;
     toolCalls: number;
     tokensToday: number;
@@ -302,11 +308,16 @@ export class AgentMetricsCollector {
     cuUsedToday: number;
   } {
     const c = this.counters;
+    const promptTokens = c.promptTokens || Math.round(c.totalTokens * 0.7);
+    const cacheHitRate = promptTokens > 0 ? Math.min(1, c.cacheReadTokens / promptTokens) : 0;
 
     return {
       totalTokens: c.totalTokens,
-      promptTokens: c.promptTokens || Math.round(c.totalTokens * 0.7),
+      promptTokens,
       completionTokens: c.completionTokens || (c.totalTokens - Math.round(c.totalTokens * 0.7)),
+      cacheReadTokens: c.cacheReadTokens,
+      cacheWriteTokens: c.cacheWriteTokens,
+      cacheHitRate,
       requestCount: c.requestCount,
       toolCalls: c.toolCalls,
       tokensToday: c.tokensToday,

@@ -6753,6 +6753,9 @@ EXPLANATION_END`;
       let llmTokens = 0;
       let toolCalls = 0;
       let messages = 0;
+      let cacheReadTokens = 0;
+      let cacheWriteTokens = 0;
+      let cacheHitRate = 0;
 
       for (const a of allAgents) {
         try {
@@ -6761,6 +6764,9 @@ EXPLANATION_END`;
           llmTokens += stats.totalTokens;
           toolCalls += stats.toolCallsToday;
           messages += stats.requestsToday;
+          cacheReadTokens += stats.cacheReadTokens;
+          cacheWriteTokens += stats.cacheWriteTokens;
+          cacheHitRate += stats.cacheHitRate;
         } catch { /* agent not loaded */ }
       }
 
@@ -6771,6 +6777,9 @@ EXPLANATION_END`;
           llmTokens,
           toolCalls,
           messages,
+          cacheReadTokens,
+          cacheWriteTokens,
+          cacheHitRate: allAgents.length > 0 ? Math.round((cacheHitRate / allAgents.length) * 1000) / 1000 : 0,
           storageBytes: this.billingService?.getUsageSummary(orgId)?.storageBytes ?? 0,
         },
         plan,
@@ -6805,6 +6814,9 @@ EXPLANATION_END`;
             costToday: stats.costToday,
             cuUsed: stats.cuUsed,
             cuUsedToday: stats.cuUsedToday,
+            cacheReadTokens: stats.cacheReadTokens,
+            cacheWriteTokens: stats.cacheWriteTokens,
+            cacheHitRate: stats.cacheHitRate,
             provider,
           };
         } catch {
@@ -6824,6 +6836,9 @@ EXPLANATION_END`;
             costToday: 0,
             cuUsed: 0,
             cuUsedToday: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            cacheHitRate: 0,
             provider: 'unknown',
           };
         }

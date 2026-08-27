@@ -301,7 +301,15 @@ export class ToolSelector {
     }
 
     const result: LLMTool[] = [];
-    for (const name of selected) {
+    // Cache-friendly: emit selected tools in REGISTRY order (allTools is a Map
+    // that preserves registration order), NOT in the per-turn insertion order of
+    // the `selected` Set (= userMessage keyword hits, session recentToolNames,
+    // discover_tools activations). A deterministic, order-stable tool schema is
+    // what keeps the implicit prefix-cache (OpenAI/DeepSeek/OpenRouter) key
+    // stable across turns — identical tool sets produce byte-identical JSON even
+    // when the activation *order* differed between turns.
+    for (const name of opts.allTools.keys()) {
+      if (!selected.has(name)) continue;
       // Defense in depth: skill/MCP never LIVE unless explicitly activated
       if (isSkillOrMcpToolName(name) && !activated.has(name)) continue;
       // Defense in depth: work-context tools stay out of free chat / reflex
@@ -636,7 +644,10 @@ export class ToolSelector {
     skillCatalog?: SkillManifest[],
   ): LLMTool {
     const parts: string[] = [];
-    parts.push(`You have ${alreadySelected.size} tools active.`);
+    // Cache-friendly: avoid embedding a per-turn count ("N tools active") in the
+    // schema — N changes every turn, which would shift the discover_tools
+    // schema prefix and break implicit prefix-cache across turns.
+    parts.push('Discover and activate tools/skills by name (schemas for inactive ones are omitted here).');
 
     if (skillCatalog && skillCatalog.length > 0) {
       const maxSkills = 30;

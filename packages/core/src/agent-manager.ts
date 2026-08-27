@@ -3046,6 +3046,8 @@ export class AgentManager {
         tokensUsed?: number;
         inputTokens?: number;
         outputTokens?: number;
+        cacheReadTokens?: number;
+        cacheWriteTokens?: number;
         cost?: number;
         cuCost?: number;
         provider?: string;

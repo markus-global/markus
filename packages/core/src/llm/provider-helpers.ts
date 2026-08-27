@@ -197,13 +197,29 @@ export function convertToolsOpenAI(tools: LLMTool[]): OpenAIToolDef[] {
 // Usage normalization
 // ---------------------------------------------------------------------------
 
+/**
+ * Extract cache-read token count from an OpenAI-compatible usage payload.
+ * Supports the two common upstream shapes:
+ *  - OpenAI / OpenRouter: `usage.prompt_tokens_details.cached_tokens`
+ *  - DeepSeek:            `usage.prompt_cache_hit_tokens` (top-level sibling)
+ * Returns 0 when neither is present.
+ */
+export function extractCacheReadTokens(raw: Record<string, unknown> | undefined): number {
+  if (!raw) return 0;
+  const details = raw.prompt_tokens_details as Record<string, unknown> | undefined;
+  const openaiCached = typeof details?.cached_tokens === 'number' ? details.cached_tokens : 0;
+  const deepseekHit = typeof raw.prompt_cache_hit_tokens === 'number' ? raw.prompt_cache_hit_tokens : 0;
+  return Math.max(openaiCached, deepseekHit);
+}
+
 export function normalizeOpenAIUsage(raw: Record<string, number> | undefined): LLMResponse['usage'] {
   const usage: LLMResponse['usage'] = {
     inputTokens: raw?.prompt_tokens ?? 0,
     outputTokens: raw?.completion_tokens ?? 0,
   };
-  const cached = (raw?.prompt_tokens_details as Record<string, number> | undefined)?.cached_tokens;
-  if (cached && cached > 0) usage.cacheReadTokens = cached;
+  // raw is typed `number`-valued but may carry nested objects / sibling cache fields.
+  const cached = extractCacheReadTokens(raw as unknown as Record<string, unknown>);
+  if (cached > 0) usage.cacheReadTokens = cached;
   return usage;
 }
 
@@ -367,9 +383,8 @@ export function createSSEAccumulator() {
         const u = chunk.usage as Record<string, unknown>;
         state.promptTokens = typeof u.prompt_tokens === 'number' ? u.prompt_tokens : 0;
         state.completionTokens = typeof u.completion_tokens === 'number' ? u.completion_tokens : 0;
-        const details = u.prompt_tokens_details as Record<string, unknown> | undefined;
-        const cached = typeof details?.cached_tokens === 'number' ? details.cached_tokens : 0;
-        if (cached && cached > 0) state.cachedTokens = cached;
+        const cached = extractCacheReadTokens(u);
+        if (cached > 0) state.cachedTokens = cached;
         state.lastRawUsage = chunk.usage as Record<string, unknown>;
         handlers.onUsage?.(normalizeOpenAIUsage(u as Record<string, number>), chunk.usage as Record<string, unknown>);
       }

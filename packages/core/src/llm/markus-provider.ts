@@ -1107,6 +1107,13 @@ export class MarkusProvider implements MultiModalProviderInterface {
       messages: convertMessagesOpenAI(request.messages, {
         // When thinking is on, DeepSeek requires reasoning_content on every assistant turn.
         backfillReasoning: enableReasoning && /deepseek/i.test(outgoingModel),
+        // Cache-friendly: split the assembled system into the stable tiers
+        // (stable / semiStable / dynamic) just like the openai provider. Without
+        // this the per-turn dynamic tail (date, mailbox, [CONTEXT] hint) would
+        // ride the single system message and break the implicit prefix-cache key
+        // (OpenAI/DeepSeek/OpenRouter) every turn. Splitting keeps the stable
+        // prefix intact across turns.
+        systemCacheSegments: request.systemCacheSegments,
       }),
       stream,
     };

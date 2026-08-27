@@ -208,6 +208,24 @@ describe('normalizeOpenAIUsage', () => {
       .toEqual({ inputTokens: 1, outputTokens: 1 });
   });
 
+  it('reads DeepSeek top-level prompt_cache_hit_tokens', () => {
+    // DeepSeek reports cache hits as a top-level sibling (not prompt_tokens_details).
+    expect(normalizeOpenAIUsage({
+      prompt_tokens: 500,
+      completion_tokens: 60,
+      prompt_cache_hit_tokens: 300,
+    })).toEqual({ inputTokens: 500, outputTokens: 60, cacheReadTokens: 300 });
+  });
+
+  it('prefers the larger cache figure when both DeepSeek + OpenAI shapes present', () => {
+    expect(normalizeOpenAIUsage({
+      prompt_tokens: 500,
+      completion_tokens: 60,
+      prompt_cache_hit_tokens: 300,
+      prompt_tokens_details: { cached_tokens: 120 },
+    })).toEqual({ inputTokens: 500, outputTokens: 60, cacheReadTokens: 300 });
+  });
+
   it('returns zero usage for undefined input', () => {
     expect(normalizeOpenAIUsage(undefined)).toEqual({ inputTokens: 0, outputTokens: 0 });
   });

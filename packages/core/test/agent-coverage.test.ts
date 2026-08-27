@@ -926,8 +926,9 @@ describe('performDeliberation and cognitive pipeline', () => {
     agent.updateWorkingMemory('sprint_goal', 'Ship auth refactor by Friday');
     await agent.handleMessage('What is our sprint goal?');
     const chatReq = router.chat.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: string }> };
-    const systemMsg = chatReq.messages.find(m => m.role === 'system');
-    expect(String(systemMsg?.content)).toContain('sprint_goal');
+    // Scheme A: per-turn context (working memory) rides the volatile [SYSTEM]
+    // tail message, not the system message.
+    expect(chatReq.messages.some(m => String(m.content).includes('sprint_goal'))).toBe(true);
   });
 
   it('exposes mailbox context when queue has items during chat', async () => {
@@ -936,8 +937,8 @@ describe('performDeliberation and cognitive pipeline', () => {
     agent.enqueueToMailbox('a2a_message', { summary: 'Queued peer msg', content: 'Waiting in queue' });
     await agent.handleMessage('Process my request');
     const chatReq = router.chat.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: string }> };
-    const systemMsg = chatReq.messages.find(m => m.role === 'system');
-    expect(String(systemMsg?.content)).toMatch(/mailbox|queue|Queued/i);
+    const allContent = chatReq.messages.map(m => String(m.content)).join('\n');
+    expect(allContent).toMatch(/mailbox|queue|Queued/i);
   });
 
   it('getAgentStatusSummary and getRunningTasks reflect in-flight tasks', async () => {

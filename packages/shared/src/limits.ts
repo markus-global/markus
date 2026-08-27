@@ -205,6 +205,17 @@ export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
  *  keeps creating new sections.  15 000 chars ≈ 5 sections × 3 000. */
 export const MEMORY_MD_TOTAL_MAX_CHARS = 15_000;
 
+/** Hard cap on a single observation/top-level section body (chars).
+ *  Kills runaway knowledge.md ballooning from nested-serialize feedback
+ *  loops (observed: one split-block grew to 50MB). */
+export const MEMORY_ENTRY_MAX_CHARS = 4_000;
+
+/** knowledge.md file size (bytes) beyond which the store self-heals at boot by
+ *  re-serializing observations. ~1MB is far above any legitimate file given the
+ *  per-entry and total caps; catches bloated/corrupt files from the old
+ *  nested-serialize feedback bug. */
+export const KNOWLEDGE_MD_SELF_HEAL_BYTES = 2 * 1024 * 1024;
+
 /** @deprecated Lesson/best-practice taxonomy removed. Use unified knowledge. */
 export const SYSTEM_LESSON_ENTRIES_MAX = 10;
 /** @deprecated Lesson/best-practice taxonomy removed. Use unified knowledge. */

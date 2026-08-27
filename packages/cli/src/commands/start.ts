@@ -1444,6 +1444,8 @@ async function startServerCore(
         provider: event.provider,
         inputTokens: event.inputTokens,
         outputTokens: event.outputTokens,
+        cacheReadTokens: event.cacheReadTokens,
+        cacheWriteTokens: event.cacheWriteTokens,
       },
     });
     if (event.tokensUsed && event.type === 'llm_request') {

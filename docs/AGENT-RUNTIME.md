@@ -216,8 +216,9 @@ Prefer catalog (Tier 3 / inactive namespace list) over schema dump.
 
 Test IDs: `S-tool-mcp-progressive`, `S-tooldef-evict-mcp-before-core`, `S-activated-mcp-lru`.
 
-MUST (§Afford.S2): Evicted tool rediscovery catalog MUST be injected into **system Tier 3**
-as a short name-only (or name + ≤40 chars) list, total ≤ `DEFERRED_CATALOG_MAX_CHARS`.
+MUST (§Afford.S2): Evicted tool rediscovery catalog MUST be injected into the volatile
+`[Live context]` tail (never a system segment — byte-stable prefix must be preserved), as a
+short name-only (or name + ≤40 chars) list, total ≤ `DEFERRED_CATALOG_MAX_CHARS`.
 
 MUST NOT: Append the eviction catalog to `discover_tools.description` (that re-inflates
 `toolDefTokens` and defeats the budget).

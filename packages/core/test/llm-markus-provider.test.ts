@@ -1249,4 +1249,50 @@ describe('soft-stop when remaining credits are 0', () => {
     expect(res.content).toBe('ok');
     expect(fetch).toHaveBeenCalled();
   });
+
+  it('CACHE: splits system into stable tiers when systemCacheSegments provided (prefix-cache-friendly)', async () => {
+    // Regression for slack cache hit rates: markus-provider used to call
+    // convertMessagesOpenAI WITHOUT systemCacheSegments, so the assembled single
+    // system message (bearing the per-turn dynamic tail) rode the request and
+    // broke the implicit prefix-cache key every turn. Now it must split just like
+    // the openai provider — 3 system messages, dynamic in last position.
+    vi.mocked(fetch).mockResolvedValue(mockResponse(chatCompletionBody('ok'), 200, {
+      'x-cu-cost': '1', 'x-cu-remaining': '10', 'x-cu-limit': '100',
+    }));
+    const p = new MarkusProvider({
+      provider: 'markus', apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat',
+    });
+    await p.chat({
+      messages: [
+        { role: 'system', content: 'assembled' },
+        { role: 'user', content: 'hi' },
+      ],
+      model: 'deepseek/deepseek-chat',
+      systemCacheSegments: [
+        { content: 'STABLE', cacheBreakpoint: true },
+        { content: 'SEMI', cacheBreakpoint: true },
+        { content: 'DYNAMIC' },
+      ],
+    });
+    const last = vi.mocked(fetch).mock.calls.at(-1)!;
+    const sent = JSON.parse(last[1]!.body as string);
+    const sysMsgs = sent.messages.filter((m: { role: string }) => m.role === 'system');
+    expect(sysMsgs.map((m: { content: string }) => m.content)).toEqual(['STABLE', 'SEMI', 'DYNAMIC']);
+    expect(sent.messages[0].role).toBe('system');
+  });
+
+  it('CACHE: keeps original single-system behavior when no segments provided', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse(chatCompletionBody('ok'), 200, {
+      'x-cu-cost': '1', 'x-cu-remaining': '10', 'x-cu-limit': '100',
+    }));
+    const p = new MarkusProvider({
+      provider: 'markus', apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-chat',
+    });
+    await p.chat({ messages: [{ role: 'user', content: 'hi' }], model: 'deepseek/deepseek-chat' });
+    const last = vi.mocked(fetch).mock.calls.at(-1)!;
+    const sent = JSON.parse(last[1]!.body as string);
+    expect(sent.messages.filter((m: { role: string }) => m.role === 'system')).toHaveLength(0);
+  });
 });
