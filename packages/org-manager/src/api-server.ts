@@ -80,6 +80,7 @@ import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
+import { evaluateStall, DEFAULT_STALL_CONFIG } from './agent-stall.js';
 
 const log = createLogger('api-server');
 
@@ -3960,7 +3961,10 @@ export class APIServer {
           },
           taskLookup,
         );
-        return { ...a, runtime };
+        // OB-2: 在 runtime 之上派生出「疑似卡死」定位信息（stale-heartbeat 心跳停滞 /
+        // dead-dependency 依赖已死仍等待），让前端一眼看到阻塞点而非无限转圈。
+        const stall = evaluateStall({ runtime }, undefined, DEFAULT_STALL_CONFIG);
+        return { ...a, runtime: { ...runtime, stall } };
       });
       this.json(res, 200, { agents });
       return;

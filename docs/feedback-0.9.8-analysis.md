@@ -77,7 +77,7 @@
 |----|-----------|--------|------|
 | G. Token 成本与上下文 | 1,2,4,5,6,7,30 | 🔴 高 | 分支已做，仍要持续 |
 | S. 稳定性/容错 | 12,13,16,17,18,26,27,29,34,35 | 🔴 高 | 需深排查+加固 |
-| O. 可观测性/进展 | 22,31,32,33 | 🔴 高 | OB-1 已闭环主体，OB-2/OB-3 规划中 |
+| O. 可观测性/进展 | 22,31,32,33 | 🔴 高 | OB-1 运行轨迹 + OB-2 卡死定位已闭环（33）；OB-3 脏态自动兜底已闭环（22）|
 | F. 依赖/并发治理 | 15,26,27,28,29,34 | 🟡 中 | 需治理 |
 | M. 模型管理 | 8,20,21,23,24 | 🟡 中 | 分支已落地大半 |
 | I. 上下文隔离 | 19 | 🟡 中 | 需设计 |
@@ -114,8 +114,8 @@
 | 26,27,28 | 🔴 | 依赖治理：任务全停、依赖未完成无法拉起、双向依赖风险。需要死锁检测 + 依赖图健壮化。 |
 | 29 | 🟡 | 默认重试 3 次；「API 不稳定时就一直不跑」——需可配置重试/退避，避免长期空转。 |
 | 30 | 🟡 | context-os 已做压缩/缓存友好；「外挂第三方记忆缓存（mnemosy 风格）」作为后续候选方向评估。 |
-| 31,32,33 | 🟡 | **核心可观测性缺口 → OB-1 已闭环「运行轨迹可见」主体**：后端 `GET /api/agents` 为每个 agent 派生 `runtime`（phase：idle/thinking/running/waiting-dependency/degraded/blocked/error/offline；blockedBy 回填依赖任务标题+状态；activityLabel；lastHeartbeat；runningMinutes），commit `04c34ec7`；前端概览 Who's Working 把「思考中」展开为「在干 XX / 卡在依赖 XX · 已运行 N 分钟 · 最后活动 HH:mm · 最近错误」，commit `43fae7b1`。**剩余**：节点级事件/步骤流、日志出不来（流式日志归属）由 OB-2（会话/日志归属定位）接续。 |
-| 34 | 🟡 | 同类卡死 + 进展不可见的**可见性部分**已随 OB-1 改善（概览能看出卡在依赖 XX/已运行时长）；「跑了一整天不完成」的根因深挖仍属 S/F 域（SS-1/SS-3 已闭环，剩余依赖治理 FD、异常重试 FD-2）。 |
+| 31,32,33 | 🟢 | **OB-1 + OB-2 已闭环「运行轨迹可见 → 卡死定位」主体**：① **OB-1 运行轨迹可见**——后端 `GET /api/agents` 为每个 agent 派生 `runtime`（phase：idle/thinking/running/waiting-dependency/degraded/blocked/error/offline；blockedBy 回填依赖任务标题+状态；activityLabel；lastHeartbeat；runningMinutes），commit `04c34ec7`；前端概览 Who's Working 把「思考中」展开为「在干 XX / 卡在依赖 XX · 已运行 N 分钟 · 最后活动 HH:mm · 最近错误」，commit `43fae7b1`。② **OB-2 卡死定位**——新增 `agent-stall.ts` 纯函数：**stale-heartbeat**（running/thinking/waiting-dependency/blocked/degraded 但 lastActivity 停滞 ≥10 分钟 → 疑似卡死，给出 stuckOnTaskId/lastActivityAgoMin/建议）+ **dead-dependency**（waiting-dependency/blocked 但被依赖任务已 failed/cancelled/archived → 依赖已死仍无限等待，明确「卡在这」并给出被卡任务 id）；API 端在 `runtime.stall` 暴露，前端概览给「疑似卡死 / 依赖已死」醒目标记 + 明确定位文案（而非无限转圈）。**剩余**：节点级事件/步骤流展开（会话内细粒度日志查看）仍为后续候选。 |
+| 34 | 🟡 | 同类卡死的**可观测/定位部分已随 OB-1+OB-2 闭环**（概览能看出卡在依赖 XX/已运行时长；OB-2 进一步对心跳停滞/依赖已死给出「疑似卡死」明确定位）。「跑了一整天不完成」的根因深挖仍属 S/F 域（SS-1/SS-3 已闭环，剩余依赖治理 FD、异常重试 FD-2）。 |
 | 35 | 🟢 | **已闭环（SS-3 服务进程崩溃归因与自愈）**。落地于仓库 `packages/shared/src/utils/crash.ts` + `packages/cli/src/commands/supervise.ts`（本分支）：**崩溃归因**：`installCrashGuard` 在启动时安装 `uncaughtException`/`unhandledRejection`/OS 信号监听——异常退出时写 `~/.markus/logs/crash.log` + `last-crash.json`，记录退出码/信号/时序/内存峰值/RSS/系统内存/上下文，使退出「可归因」不再静默（uncaughtException 记录后硬退出，交给 supervisor 拉起）；`memoryWatermarkWatchdog` 每 5s 采样内存水位 + 每 30s 刷新 run-state 心跳，超限可告警，OOM 路径可留痕。**启动自愈**：`markus supervise`（CLI 看门狗）作为父进程拉起 `markus start`，检测到异常退出（code≠0/信号）即指数退避自动重启（默认上限 5 次），并带出上次崩溃上下文（根因/信号/内存/是否疑似 OOM）到新进程日志；`startServerCore`（CLI 与 Electron 共享宿主）启动时先 `detectUncleanShutdown`，若上次是异常退出就在启动日志明确告警（含 RSS>60% 系统内存则标「高度疑似 OOM」），明确 clean shutdown 标记区分正常停止 vs 崩溃。Electron 桌面壳通过 `backend.shutdown()` 走同一 clean-shutdown 标记。**边界测试**：`crash.e2e.test.ts` 用真实子进程验证 uncaughtException 留痕、kill-style 硬杀被识别、干净退出不被误判。**遗留**：看门狗需用户显式 `markus supervise` 启动（桌面壳内置 supervisor 与 launchd/PM2 托管未做，见下）。 |
 
 ---

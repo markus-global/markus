@@ -722,6 +722,11 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                                 {AGENT_PHASE_LABEL_KEYS[phase] && (
                                   <span className="text-[10px] text-fg-tertiary shrink-0">{t(AGENT_PHASE_LABEL_KEYS[phase])}</span>
                                 )}
+                                {r?.stall?.stalled && (
+                                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                                    {r.stall.stallKind === 'dead-dependency' ? t('agentFocus.stallDeadBadge') : t('agentFocus.stallStaleBadge')}
+                                  </span>
+                                )}
                               </div>
                               <div className="text-[10px] text-fg-tertiary truncate">{agentRuntimeSubtitle(a, t)}</div>
                             </div>
@@ -1224,7 +1229,15 @@ function agentRuntimeSubtitle(a: AgentInfo, t: TFunction): string {
   const r = a.runtime;
   const parts: string[] = [];
   if (r) {
-    if (r.blockedBy && r.blockedBy.length > 0) {
+    // OB-2：疑似卡死 —— 优先给出明确「卡在这」提示，而非笼统进度。
+    if (r.stall?.stalled) {
+      if (r.stall.stallKind === 'dead-dependency') {
+        parts.push(t('agentFocus.stallDeadDep', { title: r.stall.stuckOnTitle ?? r.stall.stuckOnTaskId ?? '' }));
+      } else {
+        const ago = r.stall.lastActivityAgoMin;
+        parts.push(t('agentFocus.stallStale', { minutes: typeof ago === 'number' ? ago : 0 }));
+      }
+    } else if (r.blockedBy && r.blockedBy.length > 0) {
       parts.push(t('agentFocus.blockedBy', { title: r.blockedBy[0].title }));
     } else if (r.activityLabel) {
       parts.push(localizeActivityLabel(r.activityLabel, t) ?? r.activityLabel);

@@ -142,7 +142,11 @@
     "phaseError": "运行出错",
     "blockedBy": "卡在依赖「{{title}}」",
     "runningFor": "已运行 {{n}} 分钟",
-    "lastActivity": "最后活动 {{time}}"
+    "lastActivity": "最后活动 {{time}}",
+    "stallStaleBadge": "疑似卡死",
+    "stallDeadBadge": "依赖已死",
+    "stallStale": "疑似卡死：心跳/活动已停滞 {{minutes}} 分钟",
+    "stallDeadDep": "卡死：依赖「{{title}}」已死仍等待"
   },
   "teamOverview": {
     "title": "团队",

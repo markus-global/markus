@@ -142,7 +142,11 @@
     "phaseError": "Error",
     "blockedBy": "Stuck on dependency \"{{title}}\"",
     "runningFor": "Running for {{n}} min",
-    "lastActivity": "Last activity {{time}}"
+    "lastActivity": "Last activity {{time}}",
+    "stallStaleBadge": "stuck",
+    "stallDeadBadge": "dead dep",
+    "stallStale": "Stalled: no heartbeat/progress for {{minutes}} min",
+    "stallDeadDep": "Stuck: dependency \"{{title}}\" is dead but still awaited"
   },
   "teamOverview": {
     "title": "Teams",

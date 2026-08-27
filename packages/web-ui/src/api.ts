@@ -643,6 +643,32 @@ export interface AgentRuntimeInfo {
   tokensUsedToday: number;
   lastError?: string;
   lastErrorAt?: string;
+  /** OB-2：疑似卡死定位（stale-heartbeat / dead-dependency） */
+  stall?: AgentRuntimeStall;
+}
+
+export interface AgentRuntimeStall {
+  /** 是否疑似卡死 */
+  stalled: boolean;
+  /** 未卡死时的原因说明 */
+  reason?: string;
+  /** 命中判据：心跳停滞 / 依赖已死仍等待 */
+  stallKind?: 'stale-heartbeat' | 'dead-dependency';
+  /** 卡住的任务/依赖 id */
+  stuckOnTaskId?: string;
+  /** 卡住的定位标题 */
+  stuckOnTitle?: string;
+  /** 当前（被卡）任务 id */
+  currentTaskId?: string;
+  /** 最后活动时间（ISO） */
+  lastActivityAt?: string;
+  /** 最后活动距今分钟数 */
+  lastActivityAgoMin?: number;
+  /** 最近一次错误概要 */
+  lastError?: string;
+  /** 给前端/人工的可读定位 + 建议动作 */
+  stuckReason?: string;
+  suggestions?: string[];
 }
 
 export interface AgentActivityLogEntry {
