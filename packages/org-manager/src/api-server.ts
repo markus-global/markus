@@ -81,6 +81,8 @@ import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
 import { evaluateStall, DEFAULT_STALL_CONFIG } from './agent-stall.js';
+import { evaluateDirtyState } from './agent-dirty.js';
+import { AgentDirtyReconciler, type AgentLiveView } from './agent-dirty-reconciler.js';
 
 const log = createLogger('api-server');
 
@@ -100,6 +102,7 @@ export class APIServer {
   public licenseService?: LicenseService;
   private telemetryService?: TelemetryService;
   public storage?: StorageBridge;
+  private _dirtyReconciler?: AgentDirtyReconciler;
   public llmRouter?: LLMRouter;
   public markusConfigPath?: string;
   private hubUrl = 'https://markus.global';
@@ -2210,6 +2213,7 @@ export class APIServer {
         void this.warmRoutingCandidates();
       });
       this.tryInitFeishuNotifier();
+      this.tryInitDirtyReconciler();
     });
   }
 
@@ -2308,6 +2312,78 @@ export class APIServer {
    * thinking → tool calls → final response progressively.
    * Uses the Secretary's main session for context continuity (same as Web UI DM).
    */
+  /**
+   * 启动 OB-3 脏态兜底 reconciler（守卫启动）。依赖（storage/taskService/orgService）
+   * 就绪时才启动；否则静默跳过（下次可通过重建 server 或首次触发重试）。安全默认：
+   * recover 只触发一次恢复心跳（让健康的 agent 自愈），不对 core 状态机做破坏性改动。
+   */
+  private tryInitDirtyReconciler(): void {
+    if (this._dirtyReconciler) return;
+    if (!this.storage || !this.taskService || !this.orgService) {
+      log.info('Dirty reconciler deferred — deps not ready');
+      return;
+    }
+    try {
+      const agentManager = this.orgService.getAgentManager();
+      const eventBus = agentManager.getEventBus();
+      const reconciler = new AgentDirtyReconciler({
+        getTask: (id: string) => this.taskService!.getTask(id) as never,
+        appendExecution: (entry) => {
+          // O 域可观测：把「谁/何时/为何被兜底」写入执行流，供 /api/execution-logs 与前端追溯。
+          const repo = this.storage?.executionStreamRepo;
+          if (!repo) return;
+          (repo.append as (d: Record<string, unknown>) => unknown)({
+            sourceType: entry.sourceType,
+            sourceId: entry.sourceId,
+            agentId: entry.agentId,
+            seq: Date.now(),
+            type: entry.type,
+            content: entry.content,
+            metadata: entry.metadata ?? {},
+          });
+        },
+        recover: (v) => {
+          // 兜底：触发一次恢复心跳，让健康的 agent 自行核对任务并回到 idle（非破坏性）。
+          log.info('Dirty reconciler recovering agent', { agentId: v.agentId, recovery: v.recovery, reason: v.reason });
+          eventBus.emit('heartbeat:trigger', {
+            agentId: v.agentId,
+            triggeredAt: new Date().toISOString(),
+            source: 'dirty-state-reconciler',
+          });
+          this.ws?.broadcast?.({
+            type: 'agent:dirty-recovered',
+            payload: { agentId: v.agentId, recovery: v.recovery, reason: v.reason },
+            timestamp: new Date().toISOString(),
+          });
+        },
+        onNeedsHuman: (v) => {
+          log.warn('Dirty agent needs human review', { agentId: v.agentId, reason: v.reason, suggestions: v.suggestions });
+          this.ws?.broadcast?.({
+            type: 'agent:dirty-human-review',
+            payload: { agentId: v.agentId, reason: v.reason, suggestions: v.suggestions },
+            timestamp: new Date().toISOString(),
+          });
+        },
+      });
+      this._dirtyReconciler = reconciler;
+      // 30s 轮询一次；scan 内部已按 feature flag + 去重组装，非脏态无副作用。
+      reconciler.start(() => {
+        const agents = agentManager.listAgents() as unknown as AgentLiveView[];
+        return agents.map((a) => ({
+          agentId: String((a as any).id ?? a.agentId),
+          status: String((a as any).status ?? a.status),
+          currentActivity: (a as any).currentActivity,
+          activeTaskIds: (a as any).activeTaskIds,
+          lastHeartbeat: (a as any).lastHeartbeat,
+          lastErrorAt: (a as any).lastErrorAt,
+        }));
+      }, 30_000);
+      log.info('Agent dirty reconciler started');
+    } catch (err) {
+      log.warn('Failed to init dirty reconciler', { error: String(err) });
+    }
+  }
+
   private async handleFeishuUserMessage(payload: Record<string, unknown>): Promise<void> {
     const chatId = payload['chatId'] as string | undefined;
     const senderId = payload['senderId'] as string | undefined;
@@ -3964,7 +4040,21 @@ export class APIServer {
         // OB-2: 在 runtime 之上派生出「疑似卡死」定位信息（stale-heartbeat 心跳停滞 /
         // dead-dependency 依赖已死仍等待），让前端一眼看到阻塞点而非无限转圈。
         const stall = evaluateStall({ runtime }, undefined, DEFAULT_STALL_CONFIG);
-        return { ...a, runtime: { ...runtime, stall } };
+        // OB-3: 派生「无任务却标记 processing」的脏态判定 —— 纯派生，只读 agent live state，
+        // 不回写状态；供前端给出「脏态 / 已自动兜底 / 需人工介入」提示。真实兜底由
+        // 周期 reconciler（start 时守卫启动）执行，此处仅为可观测展示。
+        const dirty = evaluateDirtyState(
+          {
+            agentId: listItem.id,
+            status: listItem.status,
+            currentActivity: listItem.currentActivity,
+            activeTaskIds: (a as any).activeTaskIds,
+            lastHeartbeat: (a as any).lastHeartbeat,
+            lastErrorAt: listItem.lastErrorAt,
+          },
+          taskLookup,
+        );
+        return { ...a, runtime: { ...runtime, stall, dirty } };
       });
       this.json(res, 200, { agents });
       return;

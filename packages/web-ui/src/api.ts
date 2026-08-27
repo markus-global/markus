@@ -643,8 +643,10 @@ export interface AgentRuntimeInfo {
   tokensUsedToday: number;
   lastError?: string;
   lastErrorAt?: string;
-  /** OB-2：疑似卡死定位（stale-heartbeat / dead-dependency） */
+  /** OB-2：疑似卡死定位（stall-heartbeat / dead-dependency） */
   stall?: AgentRuntimeStall;
+  /** OB-3：无真实任务却标记 processing 的遗留脏态判定（纯派生，供概览提示）。 */
+  dirty?: { dirty: true; agentId: string; reason: string; criterion: 'no-live-task' | 'stale-activity' | 'no-heartbeat'; recovery: 'reconcile-idle' | 'trigger-heartbeat' | 'human-review'; suggestions: string[] } | { dirty: false; reason: string };
 }
 
 export interface AgentRuntimeStall {
