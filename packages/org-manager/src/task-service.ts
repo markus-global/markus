@@ -158,6 +158,53 @@ export class TaskService {
     this.userNameLookup = fn;
   }
 
+  /**
+   * Whether the task's assigned agent runtime loop is currently up.
+   * A stopped/offline agent has no active attention loop to consume mailbox
+   * items — dispatching a task to it would leave the task stranded in
+   * `in_progress` forever. Scheduled triggers and retries should gate on this.
+   */
+  isAssignedAgentOnline(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task || !task.assignedAgentId || !this.agentManager) return false;
+    try {
+      const agent = this.agentManager.getAgent(task.assignedAgentId);
+      if (!agent) return false;
+      return agent.getState().status !== 'offline';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Reclaim a scheduled task that is stuck in `in_progress` because its assigned
+   * agent went offline after the round was fired but before it was consumed
+   * (mailbox sits unconsumed, task never advances to review/completed).
+   *
+   * Recovery goes through a legal FSM path: mark the round `failed` (nothing was
+   * produced), so `resetTaskForRerun` (whose resettable statuses include
+   * `failed`) naturally flips it back to `in_progress` on the next schedule tick
+   * once the agent is back online.
+   *
+   * Returns true if the task was reclaimed (transitioned to failed).
+   */
+  reclaimStuckScheduledTask(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task || task.taskType !== 'scheduled') return false;
+    if (task.status !== 'in_progress') return false;
+    if (!task.assignedAgentId || this.isAssignedAgentOnline(taskId)) return false;
+
+    task.notes = [...(task.notes ?? []),
+      `[${formatLocalTimestamp(new Date())}] 自动回收：本轮由调度器触发但执行智能体 ${task.assignedAgentId} 离线未消费，标记 failed 等待下轮补跑。`];
+    if (this.taskRepo) {
+      this.taskRepo.update(task.id, { notes: task.notes })
+        .catch(err => log.warn('Failed to persist reclaim note', { taskId, error: String(err) }));
+    }
+    this.updateTaskStatus(taskId, 'failed', undefined, true, true, 'system', 'Scheduled round reclaimed (agent offline, never consumed)');
+    log.warn('Reclaimed stuck scheduled task (agent offline, round dropped)', { taskId, title: task.title, agentId: task.assignedAgentId });
+    return true;
+  }
+
   setAgentManager(am: AgentManager): void {
     this.agentManager = am;
   }

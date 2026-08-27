@@ -22,6 +22,9 @@ export class ScheduledTaskRunner {
   private staggerTimers: ReturnType<typeof setTimeout>[] = [];
   private running = false;
   private startedAt = 0;
+  /** Track last offline-warn time per taskId so we don't spam logs every poll while an agent is down. */
+  private lastOfflineWarnAt = new Map<string, number>();
+  private static readonly OFFLINE_WARN_THROTTLE_MS = 5 * 60_000;
 
   constructor(
     private taskService: TaskService,
@@ -78,6 +81,18 @@ export class ScheduledTaskRunner {
         continue;
       }
 
+      // Recovery: a scheduled task stuck in `in_progress` whose assigned agent is
+      // offline will never advance on its own (mailbox unconsumed). Reclaim it so
+      // `resetTaskForRerun` re-fires it on the next tick once the agent returns.
+      if (task.status === 'in_progress' && !this.taskService.isAssignedAgentOnline(task.id)) {
+        try {
+          this.taskService.reclaimStuckScheduledTask(task.id);
+        } catch (e) {
+          log.warn('Failed to reclaim stuck scheduled task', { taskId: task.id, error: String(e) });
+        }
+        continue;
+      }
+
       const nextRun = config.nextRunAt ? new Date(config.nextRunAt).getTime() : 0;
       if (nextRun > now) continue;
 
@@ -121,6 +136,28 @@ export class ScheduledTaskRunner {
 
   private async fireScheduledTask(task: Task): Promise<void> {
     log.info('Firing scheduled task', { taskId: task.id, title: task.title });
+
+    // Guard: never dispatch to an offline/stopped agent. A stopped agent has no
+    // attention loop to consume the mailbox, so dispatching would leave the task
+    // stranded in `in_progress` forever (logs show a stale "submitted for review"
+    // from a previous round while the current round never actually runs). Skip
+    // this tick; the next poll (or the agent coming back online) picks it up.
+    // nextRunAt is NOT advanced, so this round is retried every poll until the
+    // agent is online again — that is the intended "catch up missed round" semantics.
+    if (!this.taskService.isAssignedAgentOnline(task.id)) {
+      const now = Date.now();
+      const lastWarn = this.lastOfflineWarnAt.get(task.id) ?? 0;
+      if (now - lastWarn > ScheduledTaskRunner.OFFLINE_WARN_THROTTLE_MS) {
+        this.lastOfflineWarnAt.set(task.id, now);
+        log.warn(
+          'Skipping scheduled task fire — assigned agent offline (will retry on agent online)',
+          { taskId: task.id, title: task.title, agentId: task.assignedAgentId },
+        );
+      }
+      return;
+    }
+    // Agent is online — clear any throttled warn state so the next outage re-logs.
+    this.lastOfflineWarnAt.delete(task.id);
 
     await this.taskService.advanceScheduleConfig(task.id);
 
