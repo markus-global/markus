@@ -116,7 +116,7 @@
 | 30 | 🟡 | context-os 已做压缩/缓存友好；「外挂第三方记忆缓存（mnemosy 风格）」作为后续候选方向评估。 |
 | 31,32,33 | 🔴 | **核心可观测性缺口**：看不到卡在哪、日志出不来、session 在哪。需可视化与运行轨迹。 |
 | 34 | 🔴 | 同类卡死 + 进展不可见，归并到 33。 |
-| 35 | 🔴 | 服务进程直接退出（疑 OOM）——**需深排查**：打崩溃日志、内存水位、看门狗重启。 |
+| 35 | 🟢 | **已闭环（SS-3 服务进程崩溃归因与自愈）**。落地于仓库 `packages/shared/src/utils/crash.ts` + `packages/cli/src/commands/supervise.ts`（本分支）：**崩溃归因**：`installCrashGuard` 在启动时安装 `uncaughtException`/`unhandledRejection`/OS 信号监听——异常退出时写 `~/.markus/logs/crash.log` + `last-crash.json`，记录退出码/信号/时序/内存峰值/RSS/系统内存/上下文，使退出「可归因」不再静默（uncaughtException 记录后硬退出，交给 supervisor 拉起）；`memoryWatermarkWatchdog` 每 5s 采样内存水位 + 每 30s 刷新 run-state 心跳，超限可告警，OOM 路径可留痕。**启动自愈**：`markus supervise`（CLI 看门狗）作为父进程拉起 `markus start`，检测到异常退出（code≠0/信号）即指数退避自动重启（默认上限 5 次），并带出上次崩溃上下文（根因/信号/内存/是否疑似 OOM）到新进程日志；`startServerCore`（CLI 与 Electron 共享宿主）启动时先 `detectUncleanShutdown`，若上次是异常退出就在启动日志明确告警（含 RSS>60% 系统内存则标「高度疑似 OOM」），明确 clean shutdown 标记区分正常停止 vs 崩溃。Electron 桌面壳通过 `backend.shutdown()` 走同一 clean-shutdown 标记。**边界测试**：`crash.e2e.test.ts` 用真实子进程验证 uncaughtException 留痕、kill-style 硬杀被识别、干净退出不被误判。**遗留**：看门狗需用户显式 `markus supervise` 启动（桌面壳内置 supervisor 与 launchd/PM2 托管未做，见下）。 |
 
 ---
 
@@ -144,7 +144,7 @@
 |----|-------------|------|
 | S | SS-1 模型供应商异常容错（后端重试/退避/熔断，不吞事件队列） | — |
 | S | SS-2 前端流式/轮询死循环防护 + 连接恢复 | — |
-| S | SS-3 服务进程崩溃归因：崩溃日志/内存快照/启动看门狗自拉起 | SS-1 |
+| S | SS-3 服务进程崩溃归因：崩溃日志/内存快照/启动看门狗自拉起（✅ 已闭环，见问题35） | SS-1 |
 | O | OB-1 任务运行轨迹可见：当前在跑什么、阻塞在依赖哪个、事件流 | — |
 | O | OB-2 卡顿/卡死定位：session 归属、运行状态、最后心跳 | OB-1 |
 | O | OB-3 无任务「处理中」脏状态自动清理/兜底 | OB-1 |

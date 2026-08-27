@@ -20,6 +20,7 @@ export * from './types/plan.js';
 export * from './plan-config.js';
 export * from './utils/config.js';
 export * from './utils/logger.js';
+export * from './utils/crash.js';
 export * from './utils/id.js';
 export * from './utils/text.js';
 export * from './utils/platform.js';
