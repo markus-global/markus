@@ -1,5 +1,7 @@
 const BASE = '/api';
 
+import { createStreamWatchdog } from './lib/streamResilience.ts';
+
 export interface SubagentProgressEvent {
   eventType: 'started' | 'tool_start' | 'tool_end' | 'thinking' | 'iteration' | 'completed' | 'error';
   content: string;
@@ -1240,6 +1242,7 @@ export const api = {
         let fullContent = '';
         let resultSessionId: string | undefined;
         let resultSegments: StoredSegment[] | undefined;
+        let watchdog: ReturnType<typeof createStreamWatchdog> | null = null;
         try {
           const res = await fetch(`${BASE}/agents/${id}/message`, {
             method: 'POST',
@@ -1265,8 +1268,19 @@ export const api = {
           if (!reader) { reject(new Error('No reader')); return; }
           const decoder = new TextDecoder();
           let buffer = '';
+          // 空转看门狗：若连接真正死亡（服务端每 15s 发 heartbeat，此处 60s 无任何数据），
+          // 取消 reader 并优雅降级返回，避免「永久思考中」。见 lib/streamResilience.ts。
+          if (signal) {
+            watchdog = createStreamWatchdog({
+              signal,
+              onStall: () => {
+                reader.cancel().catch(() => {});
+              },
+            });
+          }
           while (true) {
             const { done, value } = await reader.read();
+            watchdog?.bump();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
@@ -1309,6 +1323,7 @@ export const api = {
                     emptyReply,
                   });
                   reader.cancel().catch(() => {});
+                  watchdog?.stop();
                   return;
                 } else if (event.type === 'error') {
                   const errEvent = event as { type: string; message?: string; error?: string; sessionId?: string };
@@ -1317,6 +1332,7 @@ export const api = {
                   (err as Error & { sessionId?: string }).sessionId = errEvent.sessionId;
                   reject(err);
                   reader.cancel().catch(() => {});
+                  watchdog?.stop();
                   return;
                 } else if (event.type === 'thinking_commit' && event.thinking) {
                   onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
@@ -1337,8 +1353,10 @@ export const api = {
               } catch { /* skip */ }
             }
           }
+          watchdog?.stop();
           resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments });
         } catch (err) {
+          watchdog?.stop();
           if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments }); }
           else { reject(err); }
         }
@@ -1895,6 +1913,7 @@ export const api = {
         let fullContent = '';
         let resultSessionId: string | undefined = sessionId;
         let resultSegments: StoredSegment[] | undefined;
+        let watchdog: ReturnType<typeof createStreamWatchdog> | null = null;
         try {
           const res = await fetch(
             `${BASE}/agents/${agentId}/sessions/${sessionId}/stream?afterSeq=${afterSeq}`,
@@ -1915,8 +1934,19 @@ export const api = {
           }
           const decoder = new TextDecoder();
           let buffer = '';
+          // 空转看门狗：重连时若连接再次死亡（无任何数据 60s），取消 reader，
+          // 结束本次 attach（调用方据此清掉「思考中」），避免永久挂起。见 lib/streamResilience.ts。
+          if (signal) {
+            watchdog = createStreamWatchdog({
+              signal,
+              onStall: () => {
+                reader.cancel().catch(() => {});
+              },
+            });
+          }
           while (true) {
             const { done, value } = await reader.read();
+            watchdog?.bump();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
@@ -1946,10 +1976,12 @@ export const api = {
                   if (doneSegments) resultSegments = doneSegments;
                   resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true });
                   reader.cancel().catch(() => {});
+                  watchdog?.stop();
                   return;
                 } else if (type === 'error') {
                   reject(new Error((event.message as string) ?? (event.error as string) ?? 'Stream error'));
                   reader.cancel().catch(() => {});
+                  watchdog?.stop();
                   return;
                 } else if (type === 'thinking_commit' && typeof event.thinking === 'string') {
                   handlers.onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event.createdAt as string) ?? new Date().toISOString() });
@@ -1982,8 +2014,10 @@ export const api = {
             }
           }
           // Stream ended without a terminal done/error (e.g. server closed early).
+          watchdog?.stop();
           resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true });
         } catch (err) {
+          watchdog?.stop();
           // Abort is not a successful attach — caller must not finalize the turn.
           reject(err);
         }

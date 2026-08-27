@@ -23,6 +23,7 @@ import { isVirtualScrollAdjustSuppressed } from '../components/execution-utils.t
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { parseMentionNames, renderMentionText } from '../components/CommentInput.tsx';
+import { exponentialBackoffDelay } from '../lib/streamResilience.ts';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
 import { RightPanel } from '../components/RightPanel.tsx';
@@ -3326,9 +3327,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         (s.type === 'text' && (s as { content: string }).content) || s.type === 'tool'
       ));
       if (agentMsg && !hasVisibleContent && chatMode === 'direct' && pollSessionId && !abortCtrl.signal.aborted) {
-        const pollForReply = async (retries: number, delayMs: number) => {
+        // 指数退避 + 抖动 + 重试上限：SSE 断连后从 DB 恢复回复，避免紧密死循环轮询，
+        // 也避免所有客户端同时狂轮。见 lib/streamResilience.ts。
+        const pollForReply = async (retries: number, baseDelayMs: number) => {
           for (let i = 0; i < retries; i++) {
-            await new Promise(r => setTimeout(r, delayMs));
+            const delay = exponentialBackoffDelay(i, { baseMs: baseDelayMs, maxMs: 8000, maxAttempts: retries });
+            await new Promise(r => setTimeout(r, delay));
             try {
               const result = await api.sessions.getMessages(pollSessionId, 2);
               const assistantMsg = result.messages.find(m => m.role === 'assistant');
@@ -3353,7 +3357,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         };
         // Await polling so `sending` stays true (and the streaming animation
         // remains visible) while we recover the reply from the DB.
-        await pollForReply(5, 3000);
+        await pollForReply(5, 2000);
       }
 
       // Only clean up if this invocation is still the active sender.
