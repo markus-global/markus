@@ -41,7 +41,7 @@ describe('GET /api/agents → runtime（OB-1 运行轨迹可见）', () => {
     return { depTaskId: dep.id, blockedTaskId: blocked.id };
   }
 
-  it('每个 agent 都带 runtime 派生字段（idle / running / waiting-dependency）', async () => {
+  it('每个 agent 都带 runtime 派生字段（idle / running / blocked）', async () => {
     const { depTaskId, blockedTaskId } = seedBlockedScenario();
 
     // AGENT_A：working + 干一个被依赖阻塞的任务 → waiting-dependency 且能定位到「前置数据迁移」
@@ -86,8 +86,8 @@ describe('GET /api/agents → runtime（OB-1 运行轨迹可见）', () => {
     const agentA = agents.find(a => a.id === AGENT_A)!;
     const agentB = agents.find(a => a.id === AGENT_B)!;
 
-    // ── AGENT_A：waiting-dependency + 阻塞点可定位（标题/状态） ──
-    expect(agentA.runtime.phase).toBe('waiting-dependency');
+    // ── AGENT_A：当前任务自身被标 blocked、阻塞点可定位（标题/状态）→ phase=blocked ──
+    expect(agentA.runtime.phase).toBe('blocked');
     expect(agentA.runtime.activityLabel).toContain('迁移');
     expect(agentA.runtime.currentTaskId).toBe(blockedTaskId);
     expect(agentA.runtime.blockingTaskIds).toEqual([depTaskId]);

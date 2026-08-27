@@ -64,7 +64,7 @@ describe('buildAgentRuntimeInfo — 运行阶段派生（OB-1）', () => {
     });
   });
 
-  it('blocked：currentTaskId 指向被阻塞任务 + 依赖未完成 → 卡在依赖 XX，可定位', () => {
+  it('blocked：当前任务自身 status=blocked + 依赖未完成 → phase=blocked（卡死在依赖上）', () => {
     const r = buildAgentRuntimeInfo(
       { agentId: 'a1', status: 'working', currentTaskId: 'tB', currentActivity: { type: 'task', label: 'B', taskId: 'tB', startedAt: '2026-08-27T10:00:00.000Z', id: 'actB' } },
       (tid) => {
@@ -74,9 +74,38 @@ describe('buildAgentRuntimeInfo — 运行阶段派生（OB-1）', () => {
       },
       NOW,
     );
-    expect(r.phase).toBe('waiting-dependency');
+    expect(r.phase).toBe('blocked');
     expect(r.blockedBy[0].title).toBe('A 前置');
     expect(r.blockedBy[0].status).toBe('pending');
+  });
+
+  it('waiting-dependency：任务已就绪（自身非 blocked）但依赖未完成 → 等待依赖而非已阻塞', () => {
+    const r = buildAgentRuntimeInfo(
+      { agentId: 'a1', status: 'working', currentTaskId: 'tB', currentActivity: { type: 'task', label: 'B', taskId: 'tB', startedAt: '2026-08-27T10:00:00.000Z', id: 'actB' } },
+      (tid) => {
+        if (tid === 'tB') return { id: 'tB', title: 'B 服务', status: 'in_progress', blockedBy: ['tA'] };
+        if (tid === 'tA') return { id: 'tA', title: 'A 前置', status: 'pending' };
+        return undefined;
+      },
+      NOW,
+    );
+    expect(r.phase).toBe('waiting-dependency');
+    expect(r.blockedBy[0].title).toBe('A 前置');
+  });
+
+  it('lastErrorAt 有值即透传，且在 degraded 派生时保持 error 信息', () => {
+    const r = buildAgentRuntimeInfo(
+      {
+        agentId: 'a1', status: 'working', activeTaskIds: ['t1'],
+        currentActivity: { type: 'task', label: 'X', taskId: 't1', startedAt: '2026-08-27T11:30:00.000Z', id: 'act' },
+        lastError: 'API 超时', lastErrorAt: '2026-08-27T11:58:00.000Z',
+      },
+      () => undefined,
+      NOW,
+    );
+    expect(r.phase).toBe('degraded');
+    expect(r.lastError).toBe('API 超时');
+    expect(r.lastErrorAt).toBe('2026-08-27T11:58:00.000Z');
   });
 
   it('degraded：working + 近期 lastError → phase=degraded（仍可读进度，但提示留意）', () => {

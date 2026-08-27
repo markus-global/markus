@@ -108,11 +108,15 @@ export function buildAgentRuntimeInfo(
         ? [input.currentTaskId]
         : [];
 
-  // 把当前挂起任务的 blockedBy 回填为「标题 + 状态」，实现「卡在依赖 XX」。
+  // 把当前挂起任务的 blockedBy 回填为「标题 + 状态」，做成「卡在依赖 XX」。
   const blockedBy: AgentBlockedByInfo[] = [];
   const seenBlocked = new Set<string>();
+  // 当前挂起任务自身是否被标记为 blocked —— 决定 phase=blocked（真·阻塞）还是
+  // waiting-dependency（任务就绪但依赖未完成）。
+  let currentTaskSelfBlocked = false;
   for (const tid of activeTaskIds) {
     const task = lookupTask(tid);
+    if (task?.status === 'blocked') currentTaskSelfBlocked = true;
     for (const depId of task?.blockedBy ?? []) {
       if (seenBlocked.has(depId)) continue;
       seenBlocked.add(depId);
@@ -132,9 +136,11 @@ export function buildAgentRuntimeInfo(
   } else if (status === 'error') {
     phase = 'error';
   } else if (status === 'working') {
-    if (blockedBy.length > 0) phase = 'waiting-dependency';
-    else if (input.currentActivity || activeTaskIds.length > 0) phase = 'running';
-    else phase = 'thinking'; // 已在劳作但活动未落盘 —— 归为 thinking 而非笼统 working
+    if (blockedBy.length > 0) {
+      // 当前任务自身被标 blocked → 卡死在依赖上；否则仅等待依赖完成。
+      phase = currentTaskSelfBlocked ? 'blocked' : 'waiting-dependency';
+    } else if (input.currentActivity || activeTaskIds.length > 0) phase = 'running';
+    else phase = 'thinking'; // 已在劳作但活动未落库 —— 温和而 non-笼统 working
   } else if (status === 'idle') {
     // idle 但仍有 currentActivity：活动未能清理（脏状态的一种），仍展示进度而非静默。
     phase = input.currentActivity ? 'thinking' : 'idle';
@@ -175,5 +181,6 @@ export function buildAgentRuntimeInfo(
     lastActivityAt,
     tokensUsedToday: input.tokensUsedToday ?? 0,
     lastError: input.lastError,
+    lastErrorAt: input.lastErrorAt,
   };
 }
