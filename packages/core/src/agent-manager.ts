@@ -3258,6 +3258,9 @@ export class AgentManager {
     lastErrorAt?: string;
     currentTaskId?: string;
     currentActivity?: AgentActivity;
+    activeTaskIds?: string[];
+    lastHeartbeat?: string;
+    tokensUsedToday?: number;
     mailboxDepth?: number;
     attentionState?: string;
     modelSupportsVision?: boolean;
@@ -3284,6 +3287,9 @@ export class AgentManager {
         lastErrorAt: state.lastErrorAt,
         currentTaskId: state.currentTaskId,
         currentActivity: state.currentActivity,
+        activeTaskIds: state.activeTaskIds,
+        lastHeartbeat: state.lastHeartbeat,
+        tokensUsedToday: state.tokensUsedToday,
         mailboxDepth,
         attentionState,
         modelSupportsVision: a.getModelSupportsVision(),

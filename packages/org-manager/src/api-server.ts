@@ -79,6 +79,7 @@ import { handleTasksRoutes } from './routes/tasks.js';
 import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
+import { buildAgentRuntimeInfo } from './agent-runtime.js';
 
 const log = createLogger('api-server');
 
@@ -3930,10 +3931,38 @@ export class APIServer {
         agents = agents.map(a =>
           disconnectedIds.has(a.id as string) ? { ...a, status: 'offline' } : a
         );
-        this.json(res, 200, { agents });
-      } else {
-        this.json(res, 200, { agents });
       }
+      // OB-1: 把「笼统的思考中」展开为可读运行阶段 —— idle/thinking/running/
+      // waiting-dependency/degraded/blocked/error/offline + 阻塞依赖标题 + 最近活动。
+      // 纯派生（buildAgentRuntimeInfo），不回写共享 AgentStatus，不影响旧 UI 对
+      // status 字段的既有判断。
+      const taskLookup = (tid: string) => this.taskService.getTask(tid);
+      agents = agents.map(a => {
+        const listItem = a as unknown as {
+          id: string;
+          status: string;
+          currentTaskId?: string;
+          currentActivity?: import('@markus/shared').AgentActivity;
+          lastError?: string;
+          lastErrorAt?: string;
+        };
+        const runtime = buildAgentRuntimeInfo(
+          {
+            agentId: listItem.id,
+            status: listItem.status,
+            currentTaskId: listItem.currentTaskId,
+            currentActivity: listItem.currentActivity,
+            lastHeartbeat: (a as any).lastHeartbeat,
+            lastError: listItem.lastError,
+            lastErrorAt: listItem.lastErrorAt,
+            tokensUsedToday: (a as any).tokensUsedToday,
+            activeTaskIds: (a as any).activeTaskIds,
+          },
+          taskLookup,
+        );
+        return { ...a, runtime };
+      });
+      this.json(res, 200, { agents });
       return;
     }
 
