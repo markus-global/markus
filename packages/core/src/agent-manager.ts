@@ -362,6 +362,8 @@ export class AgentManager {
   private remoteDebuggingPort = 0;
   private autoClickAllowDialog = false;
   private chromeAutoClickRunning = false;
+  /** Selected browser backend: 'embedded' (built-in Electron) or 'system-chrome' (Chrome extension). */
+  private browserMode: 'embedded' | 'system-chrome' = 'embedded';
   private browserBridge: MarkusBrowserBridge;
   /** Desktop-only: Electron WebContentsView CDP backend (preferred over npx when set). */
   private embeddedBrowserHost: EmbeddedBrowserHost | null = null;
@@ -699,6 +701,10 @@ export class AgentManager {
     this.autoClickAllowDialog = enabled;
   }
 
+  setBrowserMode(mode: 'embedded' | 'system-chrome'): void {
+    this.browserMode = mode;
+  }
+
   /**
    * Wire the Electron embedded-browser CDP host (desktop only).
    * When available, browser tools prefer this over npx chrome-devtools-mcp
@@ -786,7 +792,85 @@ export class AgentManager {
   }
 
   async runQuickBrowserTest(): Promise<BrowserTestResult> {
-    return runQuickBrowserTest(this.browserBridge, this.browserSessionManager);
+    // 'system-chrome' mode: the full quick test targets the Chrome extension bridge.
+    // Default 'embedded' mode: run a lightweight check against the built-in browser.
+    if (this.browserMode === 'system-chrome') {
+      return runQuickBrowserTest(this.browserBridge, this.browserSessionManager);
+    }
+    return this.runEmbeddedBrowserQuickTest();
+  }
+
+  /**
+   * Lightweight connectivity check for the embedded (built-in) browser backend.
+   * Creates a throwaway about:blank page, evaluates a script, then closes it.
+   * Returns the same BrowserTestResult shape the Settings UI already consumes.
+   */
+  private async runEmbeddedBrowserQuickTest(): Promise<BrowserTestResult> {
+    const t0 = Date.now();
+    const steps: BrowserTestResult['steps'] = [];
+    const host = this.embeddedBrowserHost;
+
+    const fail = (summary: string): BrowserTestResult => ({
+      connected: false,
+      steps,
+      totalDurationMs: Date.now() - t0,
+      passed: 0,
+      failed: 0,
+      summary,
+    });
+
+    if (!host || !host.available()) {
+      return fail('Embedded browser not available (desktop host not injected or browser window closed)');
+    }
+
+    let created = 0;
+
+    const step = async (group: string, name: string, fn: () => Promise<void>): Promise<void> => {
+      const st = Date.now();
+      try {
+        await fn();
+        steps.push({ name, group, passed: true, durationMs: Date.now() - st });
+      } catch (err) {
+        steps.push({
+          name,
+          group,
+          passed: false,
+          durationMs: Date.now() - st,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+
+    await step('Setup', 'new_page (about:blank)', async () => {
+      const r = await host!.callTool('new_page', { url: 'about:blank' });
+      if (r.error) throw new Error(`Failed to create embedded page: ${r.error}`);
+      const m = /(\d+):.*\[selected\]/.exec(r.content);
+      if (!m) throw new Error(`Could not parse created pageId: ${String(r.content).slice(0, 80)}`);
+      created = parseInt(m[1], 10);
+    });
+
+    await step('Verify', 'evaluate_script (document.title)', async () => {
+      const r = await host!.callTool('evaluate_script', { expression: 'document.title' });
+      if (r.error) throw new Error(r.error);
+    });
+
+    if (created > 0) {
+      await step('Cleanup', 'close_page', async () => {
+        const r = await host!.callTool('close_page', { pageId: created });
+        if (r.error) throw new Error(r.error);
+      });
+    }
+
+    const passed = steps.filter((s) => s.passed).length;
+    const failed = steps.length - passed;
+    return {
+      connected: failed === 0 && created > 0,
+      steps,
+      totalDurationMs: Date.now() - t0,
+      passed,
+      failed,
+      summary: failed === 0 ? 'Embedded browser OK' : `Embedded browser check failed (${failed}/${steps.length} steps)`,
+    };
   }
 
   runChaosBrowserTest(opts: {
@@ -878,13 +962,23 @@ export class AgentManager {
       description: `[MCP:${serverName}] ${tool.description}`,
       inputSchema: tool.inputSchema,
       execute: async (args: Record<string, unknown>) => {
-        if (this.browserBridge.connected) {
-          const result = await this.browserBridge.callTool(tool.name, args);
+        if (this.browserMode === 'system-chrome') {
+          // System Chrome mode: extension only — no embedded fallback.
+          if (this.browserBridge.connected) {
+            const result = await this.browserBridge.callTool(tool.name, args);
+            if (result.error) return `Error: ${result.error}`;
+            return result.content;
+          }
+          return `Browser backend unavailable: browser.mode is set to "system-chrome" but the Chrome extension is not connected. Open Settings → Browser Automation → switch to "内置浏览器", or install & connect the Chrome extension (tool: ${tool.name}).`;
+        }
+        // Default 'embedded' mode: prefer built-in browser, then extension, then npx.
+        if (this.embeddedBrowserHost?.available()) {
+          const result = await this.embeddedBrowserHost.callTool(tool.name, args);
           if (result.error) return `Error: ${result.error}`;
           return result.content;
         }
-        if (this.embeddedBrowserHost?.available()) {
-          const result = await this.embeddedBrowserHost.callTool(tool.name, args);
+        if (this.browserBridge.connected) {
+          const result = await this.browserBridge.callTool(tool.name, args);
           if (result.error) return `Error: ${result.error}`;
           return result.content;
         }

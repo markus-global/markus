@@ -430,6 +430,9 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.browser?.autoClickAllowDialog) {
     agentManager.setBrowserAutoClickAllowDialog(true);
   }
+  if (config.browser?.mode === 'embedded' || config.browser?.mode === 'system-chrome') {
+    agentManager.setBrowserMode(config.browser.mode);
+  }
   agentManager.startBrowserBridge(config.browser?.extensionBridgePort);
 
   taskService.setAgentManager(agentManager);

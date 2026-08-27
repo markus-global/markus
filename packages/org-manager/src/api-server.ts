@@ -8041,6 +8041,7 @@ EXPLANATION_END`;
       const browser = currentConfig.browser ?? {};
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
+        mode: browser.mode ?? 'embedded',
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
@@ -8056,6 +8057,7 @@ EXPLANATION_END`;
       if (!auth) return;
       const body = await this.readBody(req);
       const updates: Record<string, unknown> = {};
+      if (body['mode'] === 'embedded' || body['mode'] === 'system-chrome') updates.mode = body['mode'];
       if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
       if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
       if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
@@ -8063,6 +8065,9 @@ EXPLANATION_END`;
       try {
         saveConfig({ browser: updates } as any, this.markusConfigPath);
         const am = this.orgService.getAgentManager();
+        if (updates.mode === 'embedded' || updates.mode === 'system-chrome') {
+          am.setBrowserMode(updates.mode);
+        }
         if (typeof updates.bringToFront === 'boolean') {
           am.setBrowserBringToFront(updates.bringToFront);
         }
@@ -8094,6 +8099,7 @@ EXPLANATION_END`;
       const browser = currentConfig.browser ?? {};
       const am2 = this.orgService.getAgentManager();
       this.json(res, 200, {
+        mode: browser.mode ?? 'embedded',
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
