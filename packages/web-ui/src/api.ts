@@ -614,6 +614,37 @@ export interface AgentActivityInfo {
   startedAt: string;
 }
 
+/** OB-1：后端 /api/agents 在每个 agent 上派生的可读运行阶段（不改变 status 原始语义）。 */
+export type AgentRuntimePhase =
+  | 'idle'
+  | 'thinking'
+  | 'running'
+  | 'waiting-dependency'
+  | 'degraded'
+  | 'blocked'
+  | 'error'
+  | 'offline';
+
+export interface AgentRuntimeInfo {
+  agentId: string;
+  phase: AgentRuntimePhase;
+  status: string;
+  activityType?: string;
+  activityLabel?: string;
+  currentTaskId?: string;
+  activeTaskIds: string[];
+  blockingTaskIds: string[];
+  /** 阻塞依赖明细：taskId + 标题 + 状态 —— 用于「卡在依赖 XX」一眼定位 */
+  blockedBy: Array<{ taskId: string; title: string; status: string }>;
+  startedAt?: string;
+  runningMinutes?: number;
+  lastHeartbeat?: string;
+  lastActivityAt?: string;
+  tokensUsedToday: number;
+  lastError?: string;
+  lastErrorAt?: string;
+}
+
 export interface AgentActivityLogEntry {
   seq: number;
   type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'llm_request' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
@@ -753,6 +784,8 @@ export interface AgentInfo {
   lastErrorAt?: string;
   currentTaskId?: string;
   currentActivity?: AgentActivityInfo;
+  /** OB-1：后端派生的可读运行阶段（phase/activityLabel/blockedBy/lastHeartbeat/…） */
+  runtime?: AgentRuntimeInfo;
   mailboxDepth?: number;
   attentionState?: string;
   modelSupportsVision?: boolean;

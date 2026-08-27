@@ -133,7 +133,16 @@
     "totalQueued": "{{count}} total queued",
     "working": "Working...",
     "heartbeatCheckIn": "Heartbeat check-in",
-    "heartbeatSkip": "Heartbeat skipped (idle)"
+    "heartbeatSkip": "Heartbeat skipped (idle)",
+    "phaseThinking": "Thinking…",
+    "phaseRunning": "Processing…",
+    "phaseWaitingDep": "Waiting on dependency…",
+    "phaseBlocked": "Blocked",
+    "phaseDegraded": "Degraded",
+    "phaseError": "Error",
+    "blockedBy": "Stuck on dependency \"{{title}}\"",
+    "runningFor": "Running for {{n}} min",
+    "lastActivity": "Last activity {{time}}"
   },
   "teamOverview": {
     "title": "Teams",

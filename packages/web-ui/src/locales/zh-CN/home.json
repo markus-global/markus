@@ -133,7 +133,16 @@
     "totalQueued": "共 {{count}} 项排队",
     "working": "工作中...",
     "heartbeatCheckIn": "心跳巡检",
-    "heartbeatSkip": "心跳已跳过（空闲）"
+    "heartbeatSkip": "心跳已跳过（空闲）",
+    "phaseThinking": "思考中…",
+    "phaseRunning": "处理中…",
+    "phaseWaitingDep": "等待依赖…",
+    "phaseBlocked": "已阻塞",
+    "phaseDegraded": "降级运行",
+    "phaseError": "运行出错",
+    "blockedBy": "卡在依赖「{{title}}」",
+    "runningFor": "已运行 {{n}} 分钟",
+    "lastActivity": "最后活动 {{time}}"
   },
   "teamOverview": {
     "title": "团队",

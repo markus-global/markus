@@ -41,6 +41,28 @@ const ACTIVITY_LABEL_KEYS: Record<string, string> = {
   'Heartbeat check-in (idle skip)': 'agentFocus.heartbeatSkip',
 };
 
+/** OB-1：agent runtime phase → 圆点颜色（Home 概览进度展开） */
+const AGENT_PHASE_DOT: Record<string, string> = {
+  thinking: 'bg-amber-400 animate-pulse',
+  running: 'bg-blue-400 animate-pulse',
+  'waiting-dependency': 'bg-orange-400 animate-pulse',
+  blocked: 'bg-red-400 animate-pulse',
+  degraded: 'bg-amber-500 animate-pulse',
+  error: 'bg-red-500 animate-pulse',
+  idle: 'bg-green-400',
+  offline: 'bg-gray-400',
+};
+
+/** OB-1：agent runtime phase → i18n 文案键 */
+const AGENT_PHASE_LABEL_KEYS: Record<string, string> = {
+  thinking: 'agentFocus.phaseThinking',
+  running: 'agentFocus.phaseRunning',
+  'waiting-dependency': 'agentFocus.phaseWaitingDep',
+  blocked: 'agentFocus.phaseBlocked',
+  degraded: 'agentFocus.phaseDegraded',
+  error: 'agentFocus.phaseError',
+};
+
 // ═════════════════════════════════════════════════════════════════════════════
 
 export interface HomePreviewData {
@@ -224,7 +246,14 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   }
   const completed = rootStatusCounts['completed'] ?? 0;
   const totalRootTasks = Object.values(rootStatusCounts).reduce((s, c) => s + c, 0);
-  const workingAgents = agents.filter(a => a.status === 'working').length;
+  // OB-1: 「正在工作」人数按后端 runtime.phase（非 idle/offline）统计，老后端回退到 status。
+  const workingAgentsCount = agents.filter(a => {
+    const phase = a.runtime?.phase;
+    if (phase) return phase !== 'idle' && phase !== 'offline';
+    return a.status === 'working';
+  }).length;
+  // 兼容旧引用：概览「正在工作」数量统一用 runtime 派生口径
+  const workingAgents = workingAgentsCount;
   const activeProjects = projects.filter(p => p.status === 'active').length;
   const completionRate = totalRootTasks > 0 ? Math.round((completed / totalRootTasks) * 100) : 0;
   const sortedStatusEntries = STATUS_ORDER.filter(s => (rootStatusCounts[s] ?? 0) > 0).map(s => ({ status: s, count: rootStatusCounts[s]! }));
@@ -243,7 +272,11 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     });
   }, [teams, agents]);
 
-  const workingAgentsList = agents.filter(a => a.status === 'working');
+  const workingAgentsList = agents.filter(a => {
+    const phase = a.runtime?.phase;
+    if (phase) return phase !== 'idle' && phase !== 'offline';
+    return a.status === 'working';
+  });
 
   // Own-provider users don't need Markus Cloud AI quota/trends on Overview.
   const showMarkusUsage = !(llmConfigured === true && !markusConfigured);
@@ -674,16 +707,27 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                         <h4 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('liveActivity.whosWorking')}</h4>
                       </div>
                       <div className="space-y-1">
-                        {workingAgentsList.map(a => (
+                        {workingAgentsList.map(a => {
+                          const r = a.runtime;
+                          const phase = r?.phase ?? (a.status === 'idle' ? 'idle' : a.status === 'offline' ? 'offline' : 'running');
+                          const dotClass = AGENT_PHASE_DOT[phase] ?? 'bg-blue-400 animate-pulse';
+                          return (
                           <div key={a.id} className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
                             onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id })}>
                             <Avatar name={a.name} avatarUrl={(a as any).avatarUrl} size={24} bgClass="bg-brand-600/30 text-brand-300" />
                             <div className="flex-1 min-w-0">
-                              <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>
-                              <div className="text-[10px] text-fg-tertiary truncate">{localizeActivityLabel(a.currentActivity?.label, t) ?? t('agentFocus.working')}</div>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`} />
+                                <span className="text-xs font-medium text-fg-primary truncate">{a.name}</span>
+                                {AGENT_PHASE_LABEL_KEYS[phase] && (
+                                  <span className="text-[10px] text-fg-tertiary shrink-0">{t(AGENT_PHASE_LABEL_KEYS[phase])}</span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-fg-tertiary truncate">{agentRuntimeSubtitle(a, t)}</div>
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -1161,6 +1205,42 @@ function formatRelativeTime(dateStr: string, t: TFunction): string {
 function localizeActivityLabel(label: string | undefined, t: TFunction): string | null {
   if (!label) return null;
   return ACTIVITY_LABEL_KEYS[label] ? t(ACTIVITY_LABEL_KEYS[label]) : label;
+}
+
+/** 把 ISO 时间格式化为本地 HH:mm（供「最后活动 HH:mm」使用）。 */
+function formatClockTime(iso: string | undefined, fallback = ''): string {
+  if (!iso) return fallback;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return fallback;
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/**
+ * OB-1：把 agent 的 runtime 展开为一行可读进度 ——
+ *  卡在依赖「XX」→ 或「在干 XX」→ · 已运行 X 分钟 → · 最后活动 HH:mm → · 最近错误
+ * 老后端（无 runtime）回退到 currentActivity.label。
+ */
+function agentRuntimeSubtitle(a: AgentInfo, t: TFunction): string {
+  const r = a.runtime;
+  const parts: string[] = [];
+  if (r) {
+    if (r.blockedBy && r.blockedBy.length > 0) {
+      parts.push(t('agentFocus.blockedBy', { title: r.blockedBy[0].title }));
+    } else if (r.activityLabel) {
+      parts.push(localizeActivityLabel(r.activityLabel, t) ?? r.activityLabel);
+    } else if (r.activityType === 'heartbeat') {
+      parts.push(t('agentFocus.heartbeatCheckIn'));
+    }
+    if (typeof r.runningMinutes === 'number' && r.runningMinutes >= 1) {
+      parts.push(t('agentFocus.runningFor', { n: r.runningMinutes }));
+    }
+    if (r.lastActivityAt || r.lastHeartbeat) {
+      parts.push(t('agentFocus.lastActivity', { time: formatClockTime(r.lastActivityAt ?? r.lastHeartbeat) }));
+    }
+    if (r.lastError) parts.push(r.lastError);
+    return parts.join(' · ');
+  }
+  return localizeActivityLabel(a.currentActivity?.label, t) ?? t('agentFocus.working');
 }
 
 function formatTokenCount(n: number): string {
