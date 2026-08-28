@@ -236,33 +236,43 @@ const CHAT_TIMEOUT_MS = 90_000;
 const STREAM_TIMEOUT_MS = 180_000;
 /** Absolute wall-clock cap for one stream request (prevents runaway hangs). */
 const STREAM_HARD_TIMEOUT_MS = 15 * 60_000;
-const MAX_RETRIES = 3;
-const RETRY_BASE_DELAY_MS = 500;
-/** Cap Retry-After waits so a single turn cannot sleep for minutes. */
-const MAX_RETRY_AFTER_MS = 60_000;
+export const DEFAULT_MAX_RETRIES = 3;
+export const DEFAULT_RETRY_BASE_DELAY_MS = 500;
+export const DEFAULT_MAX_RETRY_AFTER_MS = 60_000;
+
+/** Clamp an integer to [min, max]; returns fallback when value is not finite. */
+function clampInt(value: number | undefined, min: number, max: number, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
 
 /**
  * Parse OpenRouter / RFC7231 `Retry-After` (seconds or HTTP-date) to ms.
  * @see https://openrouter.ai/docs/api_reference/limits
  */
-export function parseRetryAfterMs(res: Response): number | null {
+export function parseRetryAfterMs(res: Response, maxRetryAfterMs = DEFAULT_MAX_RETRY_AFTER_MS): number | null {
   const raw = res.headers.get('retry-after');
   if (!raw) return null;
   const asSec = Number(raw);
   if (Number.isFinite(asSec) && asSec >= 0) {
-    return Math.min(asSec * 1000, MAX_RETRY_AFTER_MS);
+    return Math.min(asSec * 1000, maxRetryAfterMs);
   }
   const asDate = Date.parse(raw);
   if (Number.isFinite(asDate)) {
-    return Math.min(Math.max(0, asDate - Date.now()), MAX_RETRY_AFTER_MS);
+    return Math.min(Math.max(0, asDate - Date.now()), maxRetryAfterMs);
   }
   return null;
 }
 
-function retryDelayMs(res: Response | undefined, attempt: number): number {
-  const fromHeader = res ? parseRetryAfterMs(res) : null;
+function retryDelayMs(
+  res: Response | undefined,
+  attempt: number,
+  baseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS,
+  maxRetryAfterMs = DEFAULT_MAX_RETRY_AFTER_MS,
+): number {
+  const fromHeader = res ? parseRetryAfterMs(res, maxRetryAfterMs) : null;
   if (fromHeader !== null) return fromHeader;
-  return RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+  return baseDelayMs * Math.pow(2, attempt);
 }
 
 const CREDIT_MUTE_KEY = 'markus:credit-notif-muted';
@@ -332,6 +342,9 @@ export class MarkusProvider implements MultiModalProviderInterface {
   private hubUrl = '';
   private hubToken = '';
   private lastCuSyncAt = 0;
+  private maxRetries = DEFAULT_MAX_RETRIES;
+  private retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS;
+  private maxRetryAfterMs = DEFAULT_MAX_RETRY_AFTER_MS;
 
   constructor(config?: LLMProviderConfig) {
     this.model = config?.model ?? DEFAULT_MODEL;
@@ -342,12 +355,23 @@ export class MarkusProvider implements MultiModalProviderInterface {
     // Stream idle is independent of chat timeoutMs — never inherit a lower chat
     // timeout (e.g. 90s) or long reasoning / sparse SSE gaps abort mid-reply.
     this.streamTimeoutMs = config?.streamTimeoutMs ?? STREAM_TIMEOUT_MS;
+    this.applyRetryConfig(config);
     this.modelsUrl = config?.modelsUrl ?? process.env['MARKUS_MODELS_URL'] ?? '';
     this.hubUrl = config?.hubUrl ?? process.env['MARKUS_HUB_URL'] ?? '';
     this.hubToken = config?.hubToken ?? process.env['MARKUS_HUB_TOKEN'] ?? '';
     if (this.baseUrl && looksLikeWorkerBase(this.baseUrl)) {
       this.baseUrl = DEFAULT_OR_BASE_URL;
     }
+  }
+
+  /** Retry knobs: explicit config wins, then env vars, then defaults. */
+  private applyRetryConfig(config?: LLMProviderConfig): void {
+    const envRetries = Number(process.env['MARKUS_MAX_RETRIES']);
+    const envBase = Number(process.env['MARKUS_RETRY_BASE_DELAY_MS']);
+    const envCap = Number(process.env['MARKUS_MAX_RETRY_AFTER_MS']);
+    this.maxRetries = clampInt(config?.maxRetries ?? envRetries, 0, 10, DEFAULT_MAX_RETRIES);
+    this.retryBaseDelayMs = clampInt(config?.retryBaseDelayMs ?? envBase, 0, 60_000, DEFAULT_RETRY_BASE_DELAY_MS);
+    this.maxRetryAfterMs = clampInt(config?.maxRetryAfterMs ?? envCap, 0, 300_000, DEFAULT_MAX_RETRY_AFTER_MS);
   }
 
   configure(config: LLMProviderConfig): void {
@@ -362,6 +386,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
     if (config.hubToken !== undefined) this.hubToken = config.hubToken;
     if (config.timeoutMs) this.chatTimeoutMs = config.timeoutMs;
     if (config.streamTimeoutMs) this.streamTimeoutMs = config.streamTimeoutMs;
+    // Retry knobs follow the same precedence on re-configure (env re-read too).
+    this.applyRetryConfig(config);
   }
 
   /** Whether OpenRouter credentials are available. */
@@ -1162,7 +1188,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     url: string,
     init: RequestInit,
     skipRetry = false,
-    retries = MAX_RETRIES,
+    retries = this.maxRetries,
   ): Promise<Response> {
     let lastError: Error | undefined;
 
@@ -1196,7 +1222,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
         const errText = await res.text().catch(() => '');
         if (errText) log.warn('Response body', { body: errText.slice(0, 200) });
 
-        const delay = retryDelayMs(res, attempt);
+        const delay = retryDelayMs(res, attempt, this.retryBaseDelayMs, this.maxRetryAfterMs);
         log.info(`Waiting ${delay}ms before retry (Retry-After / backoff)`);
         await new Promise(r => setTimeout(r, delay));
         continue;
@@ -1204,7 +1230,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
         lastError = err instanceof Error ? err : new Error(String(err));
         log.warn(`Markus proxy network error (attempt ${attempt + 1}/${retries})`, { error: lastError.message });
         if (skipRetry || attempt >= retries - 1) break;
-        const delay = retryDelayMs(undefined, attempt);
+        const delay = retryDelayMs(undefined, attempt, this.retryBaseDelayMs, this.maxRetryAfterMs);
         await new Promise(r => setTimeout(r, delay));
       }
     }
