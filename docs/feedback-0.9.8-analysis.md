@@ -97,22 +97,22 @@
 | 5 | 🔴 | 建团队 700 万 token 的「行为性浪掷」需优化——agent 数量/心跳/A2A 频率治理，减少无谓的 prompt 全量重发。 |
 | 6,7 | 🔴 | 同上，成本归因与用量治理（Per-agent Dashboard）。 |
 | 8 | 🟡 | 按难度选模型方向已打开（`060a5c5b` per-agent 默认模型），但「按任务难度自动路由」仍需做。 |
-| 9 | 🔴 | 付费技能 UI 点不开 → 需排查购买/计费入口链路（前后端）。 |
+| 9 | ✅ | **付费技能 UI——已修复（ef42eda7）**：Electron 里 `window.open` 被拒返回 null，导致购买流程无反应——改为经 `app:open-external` 桥接在系统浏览器打开结账，Web 路径不变；后端轮询 + 5min 超时兜底。 |
 | 10 | 🟡 | A2A 是设计使然；需给用户「谁被谁叫起来、为什么」的可见性（属于可观测域）。 |
-| 11 | 🔴 | macOS 输入法回车 vs 发送键冲突——用户已在本机自改，等 PR 合并。 |
-| 12,13 | 🟡 | agent 同一时间单线程劳作已做；但「任务做完不回主会话」的唤醒/恢复链仍需查（见 S 域）。 |
+| 11 | ✅ | **macOS 输入法回车冲突——已修复（ef42eda7）**：Team 主输入框加 IME guard（`isComposing / keyCode 229`），拼音组字期间回车只提交文字不发送；另有 `Enter/Escape` 各处回车语义校验。 |
+| 12,13 | ✅ | **唤醒/恢复链——已修复（ef42eda7 + a5349b42 + f9c145ac）**：A2A 用稳定 conversation_id（原每次 generateId 导致会话churn）；recipient liveness 用运行时状态而非 roster；DM 触发加 per-channel cooldown 防互发风暴；`restoreSessionFromHistory` 挂满各入口（Feishu/main session），任务/消息回主会话可恢复上下文。 |
 | 14 | 🟡 | 非缺陷，靠「开发规范/指令」引导；建议出模板与文档。 |
-| 15 | 🟡 | `d3cd8fb6` 做 stale-task 通知去重；但「重复产出→任务排队」的源头仍需根治（调度幂等）。 |
+| 15 | ✅ | **重复消息/调度幂等——已闭环**：`d3cd8fb6` 通知去重；`ef42eda7` A2A storm guards（稳定 conversation_id + per-channel cooldown 防互发风暴）；`2bae3ef0` phantom retry loop 修复（tasksSubmittedForReview cleanup + blocked 状态守卫，均在分支内有）。 |
 | 16,17,18 | 🟢 | **前端 + 后端均已闭环（SS-1 后端 + SS-2 前端）**。**后端侧（SS-1）**：anthropic 非流式补 per-call 硬超时；流式 idle 逐 chunk 重置 + 硬顶 15min + 断流优雅收尾；错误 fail-loud → router 熔断（冷却 + 429 短熔断）→ 多 provider fallback；TaskQueue per-task 硬超时释放调度槽。**前端侧（SS-2）**：① SSE 读循环加 **空转看门狗**（`lib/streamResilience.ts` 的 `createStreamWatchdog`）——服务端对消息流每 15s 发 heartbeat（org-manager/sse-handler.ts），故「60s 完全无任何数据」只可能是连接真死（半开 TCP/服务退出/网络中断），此时取消 reader 优雅降级返回，把卡死的「思考中」抢救出来；`messageStream` 与 `reattachStream` 均已接入，`done`/`error`/`stop`/`catch` 全路径清理计时器。② **DB 兜底轮询改指数退避+抖动+上限**（`exponentialBackoffDelay`，Team.tsx `pollForReply`：5 次、base 2s、max 8s），SSE 断连后从 DB 恢复回复而非常紧密狂轮。③ **WS/EventSource 重连已有指数退避+抖动+上限**（WSClient，base 1s → max 30s），页签切回/隐藏恢复时 `tryReattachActiveStream` 自动续流，且保留流（`reattachCooldownRef` 1.5s 防抖 + `userStoppedSessions` 防复活）。④ 连接自恢复已有：服务重启后用 `streamStatus`+`reattachStream` 重挂、WS `since` 增量恢复。**遗留（非本任务）**：google/ollama 流仍为单一定时器（非逐 tick 重置）待后续统一；fallback 告警见 MD-3。 |
 | 24 | 🟡 | URL fallback 已做；SS-1 补充电路熔断冷却与多 provider fallback 验证——单一默认模型不可用时，电路熔断跳转到可用 provider，避免无限重试空转。仍建议对 fallback 行为加告警（见 MD-3）。 |
-| 29 | 🟢 | 默认重试 3 次（上层 `withNetworkRetry`，仅网络错误），指数退避上限 60s（markus-provider `MAX_RETRIES=3`）。SS-1 补齐 per-call 硬超时后，几乎不再长期空转；熔断冷却 + fallback 已覆盖「API 不稳定就不跑」。**待办**：将 `MAX_RETRIES` 与退避参数改为可配置（当前为常量），见 FD-2。 |
+| 29 | ✅ | **重试策略已闭环（FD-2，c0f5b5e8）**：默认重试 3 次（上层 `withNetworkRetry`，仅网络错误），指数退避上限 60s；SS-1 补齐 per-call 硬超时 + 熔断冷却 + fallback，几乎不再长期空转。**FD-2 落地**：`MAX_RETRIES`/`RETRY_BASE_DELAY_MS`/`MAX_RETRY_AFTER_MS` 由常量改为可配置——`LLMProviderConfig`（maxRetries/retryBaseDelayMs/maxRetryAfterMs）优先 → env（MARKUS_MAX_RETRIES 等）→ 默认；非法值 clamp 回退，不会把重试归零。 |
 | 19 | 🔴 | Agent 能看到所有项目，回复串项目。需项目级上下文隔离（绑定 agent 到项目）。 |
 | 20,21,23 | ✅ | `060a5c5b`：per-agent 默认模型 + agent 自检模型/模型列表工具 + Web UI。分支已实现。 |
 | 22 | ✅ | 「无任务却在处理中」——**已闭环（OB-1 可见 + OB-3 自动清理/兜底）**。OB-1 先让残留脏状态可见（idle + 残留 `currentActivity` 派生命为 `thinking` 不再静默）。**OB-3 落地自动化兜底**：新增 `packages/org-manager/src/agent-dirty.ts` —— 纯函数 `evaluateDirtyState` 判定「processing-like（status=working 或有 activity 痕迹）但①无任何存活任务(in_progress/review/blocked)②lastHeartbeat 过期③活动/标记超 `staleAfterMs`(默认5min)」的遗留脏态；对「心跳新鲜/有存活任务/刚启动」**剔除误杀**。恢复动作分级：`reconcile-idle`（清残留 activity→idle）/`trigger-heartbeat`（无活动无心跳时触发一次恢复心跳让 agent 自愈）/`human-review`（近期报错 degraded 或依赖存疑 → 明确提示+建议动作）。`AgentDirtyReconciler` 周期扫描（默认 30s，feature flag `enabled` 可整体关闭，幂等去重不误杀不刷屏）：脏态写 execution-stream 事件（谁/何时/为何可追溯）、按恢复动作兜底、human-review 告警。`GET /api/agents` 派生暴露 `runtime.dirty`（前端可提示「已自动兜底/需人工介入」）。安全边界：严格 O 域，只清 agent 运行态脏标记，**不改任务调度/依赖推进骨架**。 |
 | 24 | 🟡 | URL fallback 已做；需对「默认模型不可用自动路由」的兜底做验证与告警。 |
 | 25 | 🔴 | 知识库：明确不沿用传统 RAG（Jason 已言），需**设计新的企业知识库方案**。 |
-| 26,27,28 | 🔴 | 依赖治理：任务全停、依赖未完成无法拉起、双向依赖风险。需要死锁检测 + 依赖图健壮化。 |
-| 29 | 🟡 | 默认重试 3 次；「API 不稳定时就一直不跑」——需可配置重试/退避，避免长期空转。 |
+| 26,27,28 | ✅ | **依赖治理——已修复（d93720f1）**：blocker `failed` → blocked 任务级联失败（不再永久卡死）；create/update 双侧补 blocker 存在性 + 环检测；状态机允许 `blocked→failed`；`reconcileBlockedTaskStatuses` 重启恢复同步。31 个依赖治理用例全绿。 |
+| 29 | ✅ | 重试可配置已完成（FD-2，c0f5b5e8）：config/env 覆盖 + 非法值回退；「API 不稳定就一直不跑」已由熔断冷却 + fallback + 可配重试覆盖。 |
 | 30 | 🟡 | context-os 已做压缩/缓存友好；「外挂第三方记忆缓存（mnemosy 风格）」作为后续候选方向评估。 |
 | 31,32,33 | 🟢 | **OB-1 + OB-2 已闭环「运行轨迹可见 → 卡死定位」主体**：① **OB-1 运行轨迹可见**——后端 `GET /api/agents` 为每个 agent 派生 `runtime`（phase：idle/thinking/running/waiting-dependency/degraded/blocked/error/offline；blockedBy 回填依赖任务标题+状态；activityLabel；lastHeartbeat；runningMinutes），commit `04c34ec7`；前端概览 Who's Working 把「思考中」展开为「在干 XX / 卡在依赖 XX · 已运行 N 分钟 · 最后活动 HH:mm · 最近错误」，commit `43fae7b1`。② **OB-2 卡死定位**——新增 `agent-stall.ts` 纯函数：**stale-heartbeat**（running/thinking/waiting-dependency/blocked/degraded 但 lastActivity 停滞 ≥10 分钟 → 疑似卡死，给出 stuckOnTaskId/lastActivityAgoMin/建议）+ **dead-dependency**（waiting-dependency/blocked 但被依赖任务已 failed/cancelled/archived → 依赖已死仍无限等待，明确「卡在这」并给出被卡任务 id）；API 端在 `runtime.stall` 暴露，前端概览给「疑似卡死 / 依赖已死」醒目标记 + 明确定位文案（而非无限转圈）。**剩余**：节点级事件/步骤流展开（会话内细粒度日志查看）仍为后续候选。 |
 | 34 | 🟡 | 同类卡死的**可观测/定位部分已随 OB-1+OB-2 闭环**（概览能看出卡在依赖 XX/已运行时长；OB-2 进一步对心跳停滞/依赖已死给出「疑似卡死」明确定位）。「跑了一整天不完成」的根因深挖仍属 S/F 域（SS-1/SS-3 已闭环，剩余依赖治理 FD、异常重试 FD-2）。 |
@@ -153,7 +153,7 @@
 | G | GC-3 建团队/群聊的「无谓 token 浪掷」治理（心跳/A2A/扇出） | GC-1 |
 | G | GC-4 外挂记忆缓存方案评估（对 mnemosy 类做调研/选型） | GC-1 |
 | F | FD-1 DAG 死锁/双向依赖检测 + 依赖图健全性校验 | — |
-| F | FD-2 异常不阻断：重试可配、退避、失败看板 | FD-1 |
+| F | FD-2 异常不阻断：重试可配、退避、失败看板（✅ 重试可配已闭环 c0f5b5e8；失败看板并入 OB 域） | FD-1 |
 | F | FD-3 同 agent 多任务并发策略 +「拆多个 agent」引导/自动并行 | FD-1 |
 | M | MD-1 per-agent 模型 + 自检工具（分支已做，收敛+UI） | — |
 | M | MD-2 按任务难度自动选模型 | MD-1 |
