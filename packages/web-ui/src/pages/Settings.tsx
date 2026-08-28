@@ -892,7 +892,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   // Provider connectivity test state
   const [testingProvider, setTestingProvider] = useState<string | null>(null);
   const [testModelFor, setTestModelFor] = useState<Record<string, string>>({});
-  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string; model?: string; usage?: Record<string, number>; requestUrl?: string; requestBody?: unknown }>>({});
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string; errorCode?: number; code?: string; durationMs?: number; reply?: string; model?: string; usage?: Record<string, number>; requestUrl?: string; requestBody?: unknown }>>({});
 
   const testProvider = async (providerName: string) => {
     setTestingProvider(providerName);
@@ -903,17 +903,25 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         body: JSON.stringify({ model: testModelFor[providerName] || undefined }),
       });
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({})) as { error?: string };
-        setTestResults(prev => ({ ...prev, [providerName]: { ok: false, error: errData.error ?? `HTTP ${res.status}`, errorCode: res.status } }));
+        const errData = await res.json().catch(() => ({})) as { error?: string; code?: string };
+        setTestResults(prev => ({ ...prev, [providerName]: { ok: false, error: errData.error ?? `HTTP ${res.status}`, errorCode: res.status, code: errData.code } }));
         return;
       }
-      const data = await res.json() as { ok: boolean; error?: string; errorCode?: number; durationMs?: number; reply?: string; model?: string; usage?: Record<string, number>; requestUrl?: string; requestBody?: unknown };
+      const data = await res.json() as { ok: boolean; error?: string; errorCode?: number; code?: string; durationMs?: number; reply?: string; model?: string; usage?: Record<string, number>; requestUrl?: string; requestBody?: unknown };
       setTestResults(prev => ({ ...prev, [providerName]: data }));
     } catch {
       setTestResults(prev => ({ ...prev, [providerName]: { ok: false, error: t('common:networkError') } }));
     } finally {
       setTestingProvider(null);
     }
+  };
+
+  // Localize a provider-test failure: prefer structured error code → i18n,
+  // fall back to the raw backend message.
+  const providerTestErrorText = (r: { ok: boolean; error?: string; errorCode?: number; code?: string }): string => {
+    if (r.code === 'PROVIDER_DISABLED') return t('modelProviders.testDisabled');
+    if (r.code === 'PROVIDER_NOT_FOUND') return t('modelProviders.testNotFound');
+    return r.error ?? (r.errorCode ? t('modelProviders.testFailedCode', { code: r.errorCode }) : t('modelProviders.testFailed'));
   };
 
   // Gather the models available to test for a provider: its configured/default
@@ -1296,7 +1304,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                           <span className="text-[10px] bg-red-500/15 text-red-500 px-1.5 py-0.5 rounded" title={testResults[name].error}>
                             {testResults[name].errorCode
                               ? t('modelProviders.testFailedCode', { code: testResults[name].errorCode })
-                              : t('modelProviders.testFailed')}
+                              : testResults[name].code === 'PROVIDER_DISABLED'
+                                ? t('modelProviders.testDisabled')
+                                : t('modelProviders.testFailed')}
                           </span>
                         )}
                       </div>
@@ -1453,7 +1463,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                             <summary className={`px-3 py-2 cursor-pointer select-none ${testResults[name].ok ? 'text-green-600' : 'text-red-500'}`}>
                               {testResults[name].ok
                                 ? t('modelProviders.testSuccess', { ms: testResults[name].durationMs, reply: testResults[name].reply })
-                                : testResults[name].error}
+                                : providerTestErrorText(testResults[name])}
                             </summary>
                             <div className="px-3 pb-2 pt-1 space-y-1 text-[11px] text-fg-muted border-t border-current/10">
                               {name !== 'markus' && testResults[name].requestUrl && (

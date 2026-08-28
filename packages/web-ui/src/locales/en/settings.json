@@ -272,6 +272,8 @@
     "testDefaultModel": "(use default model)",
     "testFailed": "Failed",
     "testFailedCode": "Error {{code}}",
+    "testDisabled": "This provider is disabled. Enable it in Settings before testing.",
+    "testNotFound": "Provider not found or not configured — cannot test.",
     "testSuccess": "Connected in {{ms}}ms — reply: {{reply}}",
     "testDetail": {
       "requestUrl": "Request URL",

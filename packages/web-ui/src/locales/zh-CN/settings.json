@@ -272,6 +272,8 @@
     "testDefaultModel": "（使用默认模型）",
     "testFailed": "不可用",
     "testFailedCode": "错误 {{code}}",
+    "testDisabled": "该提供商已禁用，请先在设置中启用后再测试",
+    "testNotFound": "该提供商未找到或未配置，无法测试",
     "testSuccess": "连接成功，耗时 {{ms}}ms — 回复：{{reply}}",
     "testDetail": {
       "requestUrl": "请求地址",

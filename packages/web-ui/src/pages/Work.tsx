@@ -1916,10 +1916,26 @@ function TaskDetailPanel({
     } finally { setActionInFlight(false); }
   };
 
+  // Localize / humanize a task-action error from the backend. Prefer the
+  // structured error code when present; fall back to the message with the
+  // "Server error" guard retained.
+  const taskActionErrorMessage = (err: unknown): string => {
+    if (err instanceof ApiError) {
+      if (err.code === 'TASK_BLOCKED') {
+        const depTitles: string[] = (err as { data?: { dependencyTitles?: string[] } }).data?.dependencyTitles ?? [];
+        if (depTitles.length) return t('work:task.errorBlockedDeps', { deps: depTitles.join('、') });
+        return t('work:task.errorBlocked');
+      }
+      if (err.code === 'TASK_NOT_BLOCKED') return t('work:task.errorNotBlocked');
+      if (err.code === 'TASK_NOT_RETRYABLE') return t('work:task.errorNotRetryable');
+    }
+    return String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', '');
+  };
+
   const resumeTask = async () => {
     if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.resume(task.id); onRefresh(); } catch (err) {
-      setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
+      setRunError(taskActionErrorMessage(err));
     } finally { setActionInFlight(false); }
   };
 
@@ -1952,14 +1968,14 @@ function TaskDetailPanel({
   const retryFresh = async () => {
     if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.retry(task.id); onRefresh(); } catch (err) {
-      setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
+      setRunError(taskActionErrorMessage(err));
     } finally { setActionInFlight(false); }
   };
 
   const runScheduledNow = async () => {
     if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.runNow(task.id); onRefresh(); } catch (err) {
-      setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
+      setRunError(taskActionErrorMessage(err));
       onRefresh();
     } finally { setActionInFlight(false); }
   };

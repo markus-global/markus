@@ -124,6 +124,18 @@ export interface TaskEvent {
 
 export type TaskWebhook = (event: TaskEvent) => void | Promise<void>;
 
+/** Structured task error carrying a machine-readable code for the UI to i18n. */
+export class TaskServiceError extends Error {
+  code: string;
+  data?: Record<string, unknown>;
+  constructor(code: string, message: string, data?: Record<string, unknown>) {
+    super(message);
+    this.name = 'TaskServiceError';
+    this.code = code;
+    this.data = data;
+  }
+}
+
 export class TaskService {
   private tasks = new Map<string, Task>();
   private agentManager?: AgentManager;
@@ -2087,7 +2099,24 @@ export class TaskService {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
     if (task.status !== 'blocked') {
-      throw new Error(`Cannot resume task in ${task.status} status`);
+      throw new TaskServiceError('TASK_NOT_BLOCKED', `Cannot resume task in ${task.status} status`, { status: task.status });
+    }
+    // Re-check dependencies before resuming — if a blocker (or a newly added
+    // upstream dependency) is still unfinished, the task genuinely can't run yet.
+    if (task.blockedBy?.length && !this.areBlockersSatisfied(task)) {
+      const unresolved = (task.blockedBy ?? []).filter(blockerId => {
+        const blocker = this.tasks.get(blockerId);
+        return !blocker || (blocker.status !== 'completed' && blocker.status !== 'archived');
+      });
+      const names = unresolved.map(blockerId => {
+        const b = this.tasks.get(blockerId);
+        return b ? `"${b.title}"` : blockerId;
+      });
+      throw new TaskServiceError(
+        'TASK_BLOCKED',
+        `Task is blocked by unfinished dependencies: ${names.join(', ')}. Complete these dependencies first.`,
+        { dependencies: unresolved, dependencyTitles: unresolved.map(d => this.tasks.get(d)?.title).filter(Boolean) },
+      );
     }
     return this.updateTaskStatus(id, 'in_progress', updatedBy, false, false, updatedByType);
   }
@@ -4113,7 +4142,24 @@ export class TaskService {
     const task = this.tasks.get(taskIdStr);
     if (!task) throw new Error(`Task not found: ${taskIdStr}`);
     if (!['in_progress', 'failed', 'blocked', 'review'].includes(task.status)) {
-      throw new Error(`Cannot retry task in ${task.status} status`);
+      throw new TaskServiceError('TASK_NOT_RETRYABLE', `Cannot retry task in ${task.status} status`, { status: task.status });
+    }
+    // A retry must not bypass unfinished dependencies — the task would start
+    // without the outputs it needs. Surface a friendly, localizable error.
+    if (task.blockedBy?.length && !this.areBlockersSatisfied(task)) {
+      const unresolved = (task.blockedBy ?? []).filter(blockerId => {
+        const blocker = this.tasks.get(blockerId);
+        return !blocker || (blocker.status !== 'completed' && blocker.status !== 'archived');
+      });
+      const names = unresolved.map(blockerId => {
+        const b = this.tasks.get(blockerId);
+        return b ? `"${b.title}"` : blockerId;
+      });
+      throw new TaskServiceError(
+        'TASK_BLOCKED',
+        `Task is blocked by unfinished dependencies: ${names.join(', ')}. Complete these dependencies first.`,
+        { dependencies: unresolved, dependencyTitles: unresolved.map(d => this.tasks.get(d)?.title).filter(Boolean) },
+      );
     }
 
     // Cancel any running execution before transitioning

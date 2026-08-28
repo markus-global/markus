@@ -9411,7 +9411,16 @@ EXPLANATION_END`;
       const providerName = path.split('/')[5]!;
       const provider = this.llmRouter.getProvider(providerName);
       if (!provider) {
-        this.json(res, 404, { ok: false, error: `Provider "${providerName}" not found or not configured` });
+        this.json(res, 404, { ok: false, error: `Provider "${providerName}" not found or not configured`, code: 'PROVIDER_NOT_FOUND' });
+        return;
+      }
+      if (this.llmRouter.isProviderDisabled(providerName)) {
+        this.json(res, 200, {
+          ok: false,
+          error: `Provider "${providerName}" is disabled`,
+          code: 'PROVIDER_DISABLED',
+          provider: providerName,
+        });
         return;
       }
       const body = await this.readBody(req);
