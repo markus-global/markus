@@ -397,5 +397,79 @@ describe('TaskService - Dependencies & Timeouts', () => {
 
       expect(ts.getTask(a.id)!.status).toBe('in_progress');
     });
+
+    it('fails a blocked dependent when its blocker fails (no deadlock)', () => {
+      const dep = createAndApprove({ title: 'Dep' });
+      const a = ts.createTask(createDefaults({
+        title: 'A',
+        creatorRole: 'human',
+        blockedBy: [dep.id],
+      }) as any);
+      ts.approveTask(a.id, 'user-1');
+      expect(ts.getTask(a.id)!.status).toBe('blocked');
+
+      // Blocker reaches terminal 'failed' → dependent must not wait forever.
+      ts.updateTaskStatus(dep.id, 'failed');
+      expect(ts.getTask(a.id)!.status).toBe('failed');
+      const note = ts.getTask(a.id)!.notes?.join(' ') ?? '';
+      expect(note).toContain('Auto-failed');
+    });
+
+    it('cascade-fails a chain of blocked dependents on failed blocker', () => {
+      const dep = createAndApprove({ title: 'Dep' });
+      const a = ts.createTask(createDefaults({
+        title: 'A',
+        creatorRole: 'human',
+        blockedBy: [dep.id],
+      }) as any);
+      ts.approveTask(a.id, 'user-1');
+      const b = ts.createTask(createDefaults({
+        title: 'B',
+        creatorRole: 'human',
+        blockedBy: [a.id],
+      }) as any);
+      ts.approveTask(b.id, 'user-1');
+      expect(ts.getTask(b.id)!.status).toBe('blocked');
+
+      ts.updateTaskStatus(dep.id, 'failed');
+
+      expect(ts.getTask(a.id)!.status).toBe('failed');
+      expect(ts.getTask(b.id)!.status).toBe('failed');
+    });
+
+    it('rejects creation when blockedBy references an unknown task', () => {
+      expect(() => ts.createTask(createDefaults({
+        title: 'A',
+        blockedBy: ['no-such-task'],
+      }) as any)).toThrow(/unknown task/);
+    });
+
+    it('allows creation with multiple existing acyclic blockers', () => {
+      const a = createAndApprove({ title: 'A' });
+      const b = createAndApprove({ title: 'B' });
+      const c = ts.createTask(createDefaults({
+        title: 'C',
+        creatorRole: 'human',
+        blockedBy: [a.id, b.id],
+      }) as any);
+      ts.approveTask(c.id, 'user-1');
+      expect(ts.getTask(c.id)!.status).toBe('blocked');
+    });
+
+    it('rejects updating a task into a blockedBy cycle', () => {
+      // Build chain: B blockedBy A.
+      const a = createAndApprove({ title: 'A' });
+      const b = ts.createTask(createDefaults({
+        title: 'B',
+        creatorRole: 'human',
+        blockedBy: [a.id],
+      }) as any);
+      ts.approveTask(b.id, 'user-1');
+      expect(ts.getTask(b.id)!.status).toBe('blocked');
+
+      // Updating A to depend on B would create A → B → A (deadlock).
+      expect(() => ts.updateTask(a.id, { blockedBy: [b.id] })).toThrow(/Circular dependency/);
+      expect(ts.getTask(a.id)!.blockedBy ?? []).not.toContain(b.id);
+    });
   });
 });

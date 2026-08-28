@@ -1844,6 +1844,26 @@ export class TaskService {
       (request.creatorRole as 'worker' | 'manager') ?? 'worker',
     );
 
+    // ── Validate blockedBy references and detect cycles at creation time ──
+    // Mirrors the updateTask guard: a task must never reference blockers that
+    // don't exist (perma-blocked forever) or create a dependency cycle.
+    if (request.blockedBy?.length) {
+      for (const blockerId of request.blockedBy) {
+        if (!this.tasks.has(blockerId)) {
+          throw new Error(
+            `Task creation failed: blockedBy references unknown task: ${blockerId}`
+          );
+        }
+      }
+      const cycle = this.detectDependencyCycle(request.blockedBy);
+      if (cycle) {
+        throw new Error(
+          `Circular dependency detected: ${cycle.join(' → ')}. ` +
+          `Cannot create task — this would create a deadlock.`
+        );
+      }
+    }
+
     const hasUnresolvedBlockers = request.blockedBy && request.blockedBy.length > 0 && !request.blockedBy.every(blockerId => {
       const blocker = this.tasks.get(blockerId);
       // Mirror of areBlockersSatisfied: completed/archived blockers are satisfied;
@@ -2845,6 +2865,11 @@ export class TaskService {
 
     if (data.blockedBy !== undefined) {
       if (data.blockedBy.length > 0) {
+        for (const blockerId of data.blockedBy) {
+          if (!this.tasks.has(blockerId)) {
+            throw new Error(`Cannot set blocked_by — references unknown task: ${blockerId}`);
+          }
+        }
         const cycle = this.detectBlockedByCycle(id, data.blockedBy);
         if (cycle) {
           throw new Error(
@@ -2956,9 +2981,19 @@ export class TaskService {
 
   /**
    * When a task reaches a terminal state (completed / failed / cancelled),
-   * check blocked dependents and unblock any whose blockers are all resolved.
+   * check blocked dependents:
+   *   - blockers resolved (completed/archived)         → unblock → in_progress
+   *   - blocker failed (dead dependency, non-retryable) → cascade-fail the
+   *     dependent with an explanatory note, so it never waits forever on a
+   *     dependency that will not succeed (feedback #27/#28: "全部停了不会自己跑").
+   *   - blocker cancelled                             → handled by cascadeCancelDependents.
    */
   private checkDependentTasks(finishedTask: Task): void {
+    if (finishedTask.status === 'failed') {
+      this.cascadeFailDependents(finishedTask);
+      return;
+    }
+
     for (const [, task] of this.tasks) {
       if (task.status !== 'blocked' || !task.blockedBy?.length) continue;
       if (!task.blockedBy.includes(finishedTask.id)) continue;
@@ -2967,6 +3002,31 @@ export class TaskService {
         log.info(`Unblocking task ${task.id} (dependency ${finishedTask.id} resolved)`);
         this.updateTaskStatus(task.id, 'in_progress', undefined, true);
       }
+    }
+  }
+
+  /**
+   * Cascade-fail all blocked dependents of a failed task, recursively.
+   * A dependent waiting on a failed blocker can never satisfy its dependency,
+   * so leaving it 'blocked' would deadlock it forever. Mirror of
+   * cascadeCancelDependents for the failed terminal state.
+   */
+  private cascadeFailDependents(failedTask: Task): void {
+    for (const [, task] of this.tasks) {
+      if (task.status !== 'blocked' || !task.blockedBy?.length) continue;
+      if (!task.blockedBy.includes(failedTask.id)) continue;
+
+      log.info(`Cascade-failing task ${task.id} (dependency ${failedTask.id} failed)`);
+      task.notes = [
+        ...(task.notes ?? []),
+        `Auto-failed: dependency "${failedTask.title}" (${failedTask.id}) failed, task can never satisfy its blocker`,
+      ];
+      if (this.taskRepo) {
+        this.taskRepo.update(task.id, { notes: task.notes })
+          .catch(err => log.warn('Failed to persist cascade-fail notes', { error: String(err) }));
+      }
+      this.updateTaskStatus(task.id, 'failed', undefined, true);
+      this.cascadeFailDependents(task);
     }
   }
 
@@ -2982,6 +3042,16 @@ export class TaskService {
       if (this.areBlockersSatisfied(task)) {
         log.info(`Reconciling stuck blocked task ${task.id} — dependencies satisfied, unblocking`);
         this.updateTaskStatus(task.id, 'in_progress', undefined, true);
+      } else if (task.blockedBy.some(id => this.tasks.get(id)?.status === 'failed')) {
+        // A blocked task whose blocker has failed can never satisfy its
+        // dependency. Fail it explicitly at load-time instead of leaving it
+        // deadlocked forever (feedback #27/#28). cascadeFailDependents
+        // recurses, so we only need to seed it from the first failed blocker.
+        const firstFailed = task.blockedBy
+          .map(id => this.tasks.get(id))
+          .find(b => b?.status === 'failed');
+        log.info(`Reconciling stuck blocked task ${task.id} — dependency was failed, cascade-failing`);
+        this.cascadeFailDependents(this.tasks.get(firstFailed!.id)!);
       } else if (task.blockedBy.some(id => this.tasks.get(id)?.status === 'cancelled')) {
         log.info(`Reconciling stuck blocked task ${task.id} — dependency was cancelled, cascade-cancelling`);
         this.updateTaskStatus(task.id, 'cancelled', undefined, true);
@@ -3014,17 +3084,33 @@ export class TaskService {
    * Returns the cycle path if found, or null if no cycle exists.
    */
   private detectBlockedByCycle(taskId: string, proposedBlockers: string[]): string[] | null {
-    for (const blockerId of proposedBlockers) {
+    return this.detectDependencyCycle(proposedBlockers, taskId);
+  }
+
+  /**
+   * BFS cycle detection over the existing blocked_by graph, starting from
+   * `entries`. If `originTaskId` is provided, a path that returns to it is a
+   * cycle. Without an origin (creation-time validation), we only need to know
+   * whether any of the referenced blockers already form a cycle among
+   * themselves — but since a cycle requires a back-edge to a node that is
+   * already on the path, scanning from every entry with full visited tracking
+   * detects any cycle reachable from them.
+   */
+  private detectDependencyCycle(entries: string[], originTaskId?: string): string[] | null {
+    for (const entry of entries) {
       const visited = new Set<string>();
-      const queue: { id: string; path: string[] }[] = [{ id: blockerId, path: [taskId, blockerId] }];
+      const queue: { id: string; path: string[] }[] = [{ id: entry, path: [entry] }];
       while (queue.length > 0) {
         const { id: current, path } = queue.shift()!;
-        if (current === taskId) return path;
+        if (originTaskId && current === originTaskId) return path;
         if (visited.has(current)) continue;
         visited.add(current);
         const blockerTask = this.tasks.get(current);
         if (blockerTask?.blockedBy) {
           for (const nextId of blockerTask.blockedBy) {
+            // Creation-time guard: a referenced blocker that points back to
+            // itself (self-loop) is also a deadlock.
+            if (!originTaskId && nextId === entry) return [...path, nextId];
             queue.push({ id: nextId, path: [...path, nextId] });
           }
         }

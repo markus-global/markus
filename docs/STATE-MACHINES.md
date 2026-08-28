@@ -65,6 +65,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 | `in_progress` | `cancelled` | User cancels | `cancelTask()` |
 | `blocked` | `in_progress` | User resumes, or all blockers satisfied | `resumeTask` / `checkDependentTasks()` |
 | `blocked` | `cancelled` | User cancels / cascade cancel | `cancelTask()` |
+| `blocked` | `failed` | Blocker failed → cascade fail (dead dependency) | `cascadeFailDependents()` |
 | `review` | `completed` | Reviewer approves | `acceptTask()` |
 | `review` | `in_progress` | Reviewer requests revision (new round) | `requestRevision()` |
 | `review` | `cancelled` | User cancels | `cancelTask()` |
