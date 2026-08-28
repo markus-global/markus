@@ -16,7 +16,7 @@ import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
 import { PerAgentModelSection } from '../components/PerAgentModelSection.tsx';
 import { PROVIDER_OPTIONS } from '../constants/providers.ts';
 import { FeishuIntegrationSection } from '../components/FeishuIntegrationSection.tsx';
-import { CodingToolsSettings } from './CodingToolsSettings.tsx';
+// import { CodingToolsSettings } from './CodingToolsSettings.tsx'; // TEMP-HIDDEN (2026-08)
 import { WebSearchSettings } from './WebSearchSettings.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
@@ -67,7 +67,7 @@ const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'providers', labelKey: 'nav.providers', adminOnly: true },
   { id: 'execution', labelKey: 'nav.execution', adminOnly: true },
   { id: 'browser', labelKey: 'nav.browser', adminOnly: true },
-  { id: 'coding-tools', labelKey: 'nav.codingTools', adminOnly: true },
+  // { id: 'coding-tools', labelKey: 'nav.codingTools', adminOnly: true },
   { id: 'search', labelKey: 'nav.search', adminOnly: true },
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
@@ -76,7 +76,7 @@ const SETTINGS_TABS: SettingsTabDef[] = [
 const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] }> = [
   { labelKey: 'nav.group.general', tabs: ['appearance', 'storage'] },
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
-  { labelKey: 'nav.group.tools', tabs: ['browser', 'coding-tools', 'search'] },
+  { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
   { labelKey: 'nav.group.connections', tabs: ['integrations'] },
   { labelKey: 'nav.group.account', tabs: ['account'] },
 ];
@@ -2692,7 +2692,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           </section>
         </>}
 
+        {/* TEMPORARILY HIDDEN — coding tools integration disabled (2026-08). Re-enable to show config page.
         {resolvedTab === 'coding-tools' && <CodingToolsSettings />}
+        */}
 
         </>
         )}

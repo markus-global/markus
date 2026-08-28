@@ -673,7 +673,15 @@ export class AgentManager {
   }
 
   private async registerCodingTools(agent: Agent): Promise<void> {
-    if (!this._codingToolsEnabled) return;
+    // ── TEMPORARY DISABLING (2026-08) ─────────────────────────────────────────
+    // 编程工具（Claude Code / Codex / Cursor）集成被判定为过度工程，暂从 agent
+    // 工具面移除，避免出现在 agent 上下文中。agent 如需写代码，自行直接用
+    // 文件/终端工具即可。要恢复时，删除下面两行 return 即可（连同下面的
+    // !_codingToolsEnabled 检查一起恢复）。
+    void agent;
+    return;
+    // ── /TEMPORARY DISABLING ──────────────────────────────────────────────────
+    // if (!this._codingToolsEnabled) return;
 
     const { createCodingTools } = await import('./coding-tools/index.js');
     const codingTools = createCodingTools({
