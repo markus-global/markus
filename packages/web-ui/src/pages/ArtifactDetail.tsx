@@ -14,6 +14,7 @@ import { assetGlyphPath, ASSET_TYPE_META, normalizeAssetType } from '../lib/asse
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { PAGE, hashPath } from '../routes.ts';
 import { rehypeSlugifyHeadings } from '../components/markdown-links.ts';
+import { transformOutsideCode, autolinkBareUrls } from '../components/markdown-utils.ts';
 import { useMarkdownComponents } from '../components/MarkdownComponents.tsx';
 
 interface ArtifactDetailProps {
@@ -253,6 +254,11 @@ function RenderedMarkdown({ content }: { content: string }) {
 
   const components = useMarkdownComponents({});
 
+  const processed = useMemo(
+    () => transformOutsideCode(content, autolinkBareUrls),
+    [content],
+  );
+
   return (
     <div className="prose prose-invert prose-sm max-w-none
       prose-headings:text-fg-primary prose-headings:font-semibold
@@ -264,7 +270,7 @@ function RenderedMarkdown({ content }: { content: string }) {
       prose-li:text-fg-secondary
       prose-hr:border-border-default
       prose-blockquote:border-brand-500/40 prose-blockquote:text-fg-secondary">
-      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>{content}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>{processed}</ReactMarkdown>
     </div>
   );
 }
