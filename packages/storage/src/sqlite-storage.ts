@@ -806,6 +806,11 @@ export function openSqlite(dbPath: string): DatabaseSync {
     _db.exec(`PRAGMA user_version = ${HEARTBEAT_MIGRATION_VERSION}`);
   }
 
+  // One-time purge of leaked text-emitted tool markup from historical rows.
+  // DeepSeek(compat) models once streamed `<invoke name=...>` as plaintext into
+  // chat/log rows; strip the markup so stale history stops showing it in the UI.
+  purgeLeakedToolMarkup(_db);
+
   log.info('SQLite database opened', { path: dbPath });
   return _db;
 }
@@ -815,6 +820,76 @@ export function closeSqlite(): void {
     _db.close();
     _db = null;
   }
+}
+
+/**
+ * One-time purge of leaked text-emitted tool markup from historical rows.
+ *
+ * DeepSeek(compat) providers once streamed `anthropic`-style `<invoke name=...>`
+ * tool calls as *plaintext* directly into assistant replies. Older rows in
+ * chat_messages / channel_messages / task_logs / execution_stream_logs may
+ * still carry that markup, which then shows up verbatim in the UI. This strips
+ * the known leak patterns (plus DSML / MiniMax fence noise) in place.
+ *
+ * Runs on every startup; it is idempotent (rows without the markup are left
+ * untouched) and cheap because it only selects rows that contain a marker.
+ */
+export function purgeLeakedToolMarkup(db: DatabaseSync): void {
+  // 与 provider-helpers 的 stripToolNoise 保持一致：明文工具标签一律剥离为空白，
+  // 而不是替换成仍含 "invoke" 字样的占位符——那对用户依然是泄漏。
+  const PATTERNS: Array<[RegExp, string]> = [
+    [/<[^<>]*?invoke\s+name="[^"]*"[^<>]*>[\s\S]*?<\/[^<>]*?invoke>/gi, ' '],
+    [/<[^<>]*?tool_calls>[\s\S]*?<\/[^<>]*?tool_calls>/gi, ' '],
+    [/<[^<>]*?parameter\s+name="[^"]*"[^<>]*>[\s\S]*?<\/[^<>]*?parameter>/gi, ' '],
+    // 未闭合的开启标签（模型在流式输出中途被截断时可能只有 `<invoke name="...">`）
+    [/<[^<>]*?invoke\s+name="[^"]*"[^<>]*>/gi, ' '],
+    [/<[^<>]*?parameter\s+name="[^"]*"[^<>]*>/gi, ' '],
+    [/[｜|]{1,2}\s*DSML\s*[｜|]{0,2}/gi, ' '],
+    [/<\](?:minimax|miniMax|MiniMax)\[>/gi, ' '],
+  ];
+  const strip = (input: string): string => {
+    let out = input;
+    for (const [re, replacement] of PATTERNS) out = out.replace(re, replacement);
+    return out === input ? input : out.trim();
+  };
+
+  const TARGETS: Array<{ table: string; column: string }> = [
+    { table: 'chat_messages', column: 'content' },
+    { table: 'channel_messages', column: 'content' },
+    { table: 'task_logs', column: 'content' },
+    { table: 'execution_stream_logs', column: 'content' },
+    { table: 'agent_activities', column: 'content' },
+  ];
+
+  let total = 0;
+  for (const { table, column } of TARGETS) {
+    try {
+      // Check the table + column actually exist (older DBs / schema variants).
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === column)) continue;
+      const rows = db
+        .prepare(`SELECT id, ${column} AS val FROM ${table} WHERE ${column} LIKE '%<invoke%' OR ${column} LIKE '%<parameter%' OR ${column} LIKE '%<tool_calls%' OR ${column} LIKE '%DSML%' OR ${column} LIKE '%minimax%'`)
+        .all() as Array<{ id: string; val: string | null }>;
+      const upd = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE id = ?`);
+      let changed = 0;
+      for (const row of rows) {
+        if (row.val == null) continue;
+        const cleaned = strip(String(row.val));
+        // `parameter` LIkE is broad; only update when a real leak was removed.
+        if (cleaned !== String(row.val)) {
+          upd.run(cleaned, row.id);
+          changed++;
+        }
+      }
+      if (changed > 0) {
+        log.info('Purged leaked tool markup', { table, column, changed });
+        total += changed;
+      }
+    } catch (err) {
+      log.warn('Leak purge skipped for table', { table, column, error: String(err) });
+    }
+  }
+  if (total > 0) log.info('Leaked tool-markup purge complete', { total });
 }
 
 /**

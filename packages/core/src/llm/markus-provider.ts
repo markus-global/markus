@@ -47,6 +47,8 @@ import {
   createSSEAccumulator,
   isOpenRouterReasoningModel,
   recoverTextToolCalls,
+  createSafeTextEmitter,
+  stripToolNoise,
 } from './provider-helpers.js';
 
 /** Re-export for callers/tests that import helpers from this module. */
@@ -881,6 +883,13 @@ export class MarkusProvider implements MultiModalProviderInterface {
     const sse = createSSEAccumulator();
     const state = sse.state;
 
+    // Stream-side leak guard: never push raw `<invoke>` plaintext deltas to the
+    // UI. Hold suspected tool-tag starts and only emit confirmed-safe text live;
+    // flush the remainder (tool markup swallowed) before message_end.
+    const safeText = createSafeTextEmitter((text) => onEvent({ type: 'text_delta', text }));
+    const safeThinking = (thinking: string) =>
+      onEvent({ type: 'thinking_delta', thinking: stripToolNoise(thinking) });
+
     const reader = res.body?.getReader();
     if (!reader) {
       clearStreamTimeouts();
@@ -930,8 +939,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
             }
 
             sse.feed(chunk, {
-              onThinking: (thinking) => onEvent({ type: 'thinking_delta', thinking }),
-              onText: (text) => onEvent({ type: 'text_delta', text }),
+              onThinking: (thinking) => safeThinking(thinking),
+              onText: (text) => safeText.emit(text),
               onToolStart: (toolCall) => onEvent({ type: 'tool_call_start', toolCall }),
               onToolDelta: (toolCall, text) => onEvent({ type: 'tool_call_delta', toolCall, text }),
               onUsage: (usage, raw) => {
@@ -1025,6 +1034,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
     const usage: LLMResponse['usage'] = { inputTokens: state.promptTokens, outputTokens: state.completionTokens };
     if (state.cachedTokens > 0) usage.cacheReadTokens = state.cachedTokens;
+    // Flush any held-safe text (tool markup swallowed) before the turn ends.
+    safeText.flush();
     onEvent({ type: 'message_end', usage, finishReason: state.finishReason });
 
     const streamResult: LLMResponse = { content, usage, finishReason: state.finishReason };

@@ -534,14 +534,18 @@ export class AgentManager {
         // knowledge tool from degrading into an arbitrary file-read primitive.
         if (projectId && this.projectService) {
           const roots = this.projectService.getProject(projectId)?.knowledgeBasePaths ?? [];
-          if (roots.length > 0) {
-            const resolvedRef = resolve(reference);
-            const withinRoot = roots.some((root) => {
-              const resolvedRoot = resolve(root);
-              return resolvedRef === resolvedRoot || resolvedRef.startsWith(resolvedRoot + sep);
-            });
-            if (!withinRoot) return null;
+          // A project with NO bound knowledge roots has nothing to read — the
+          // unbound case must not silently open arbitrary files.
+          if (roots.length === 0) {
+            log.warn('knowledge_read rejected: project has no knowledge base paths', { projectId });
+            return null;
           }
+          const resolvedRef = resolve(reference);
+          const withinRoot = roots.some((root) => {
+            const resolvedRoot = resolve(root);
+            return resolvedRef === resolvedRoot || resolvedRef.startsWith(resolvedRoot + sep);
+          });
+          if (!withinRoot) return null;
         }
         // A missing file is not readable — report null so the tool returns an
         // error instead of a misleading success with empty content.

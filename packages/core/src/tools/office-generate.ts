@@ -247,12 +247,22 @@ async function generateDocx(outputPath: string, content: OfficeContentSpec): Pro
     if (!existsSync(content.imagePath)) {
       throw new OfficeGenerateError(`图片不存在：${content.imagePath}`);
     }
+    const ext = extname(content.imagePath).toLowerCase();
+    // docx ImageRun requires an explicit media type; derive it from the file
+    // extension so jpg/gif/bmp don't get mislabeled as png (corrupts the docx).
+    const type =
+      ext === '.jpg' || ext === '.jpeg' ? 'jpg'
+      : ext === '.gif' ? 'gif'
+      : ext === '.bmp' ? 'bmp'
+      : ext === '.png' ? 'png'
+      : ext === '.webp' ? 'png' // webp unsupported by docx ImageRun → png fallback (may fail loudly)
+      : 'png';
     const img = readFileSync(content.imagePath);
     children.push(
       new Paragraph({
         children: [
           new ImageRun({
-            type: 'png',
+            type: type as 'png' | 'jpg' | 'gif' | 'bmp',
             data: img,
             transformation: { width: 240, height: 180 },
           }),
@@ -448,15 +458,19 @@ async function generatePdf(
   const margin = 56;
   const maxWidth = page.getWidth() - margin * 2;
   let y = page.getHeight() - margin;
+  // Multi-page support: `page` must track the CURRENT page. flush() adds a new
+  // page and switches the drawing target — otherwise long documents overflow
+  // page 1 and every later page renders blank (content drawn at negative y).
+  let currentPage = page;
 
   if (content.title) {
     if (font.widthOfTextAtSize(content.title, 24) > maxWidth) {
       for (const line of wrapText(content.title, font, 24, maxWidth)) {
-        page.drawText(line, { x: margin, y, size: 24, font, color: rgb(0.12, 0.16, 0.24) });
+        currentPage.drawText(line, { x: margin, y, size: 24, font, color: rgb(0.12, 0.16, 0.24) });
         y -= 32;
       }
     } else {
-      page.drawText(content.title, { x: margin, y, size: 24, font, color: rgb(0.12, 0.16, 0.24) });
+      currentPage.drawText(content.title, { x: margin, y, size: 24, font, color: rgb(0.12, 0.16, 0.24) });
       y -= 36;
     }
   }
@@ -465,15 +479,15 @@ async function generatePdf(
   const lineGap = bodySize + 6;
   const flush = () => {
     if (y < margin + 24) {
-      const next = pdfDoc.addPage([595.28, 841.89]);
-      y = next.getHeight() - margin;
+      currentPage = pdfDoc.addPage([595.28, 841.89]);
+      y = currentPage.getHeight() - margin;
     }
   };
 
   for (const p of paragraphs) {
     for (const line of wrapText(p, font, bodySize, maxWidth)) {
       flush();
-      page.drawText(line, { x: margin, y, size: bodySize, font, color: rgb(0.15, 0.15, 0.15) });
+      currentPage.drawText(line, { x: margin, y, size: bodySize, font, color: rgb(0.15, 0.15, 0.15) });
       y -= lineGap;
     }
     if (paragraphs.length > 1) y -= 4;
@@ -482,7 +496,7 @@ async function generatePdf(
   for (const b of content.bullets ?? []) {
     for (const line of wrapText(`• ${b}`, font, bodySize, maxWidth)) {
       flush();
-      page.drawText(line, { x: margin, y, size: bodySize, font, color: rgb(0.15, 0.15, 0.15) });
+      currentPage.drawText(line, { x: margin, y, size: bodySize, font, color: rgb(0.15, 0.15, 0.15) });
       y -= lineGap;
     }
   }

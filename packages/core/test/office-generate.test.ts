@@ -217,6 +217,45 @@ describe('pdf 生成（pdf-lib, MIT）', () => {
   it('错误路径：空内容抛出 OfficeGenerateError', async () => {
     await expect(generateOfficeFile('pdf', out('empty.pdf'), {})).rejects.toBeInstanceOf(OfficeGenerateError);
   });
+
+  it('多页长文：每一页都实际绘制了文本，不出现空白页（回归：page 变量未切换）', async () => {
+    const paragraphs: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      paragraphs.push(`Paragraph ${i}: the quick brown fox jumps over the lazy dog, lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore. `.repeat(4));
+    }
+    const path = out('long-multipage.pdf');
+    await generateOfficeFile('pdf', path, { title: 'Long Document', paragraphs });
+    const doc = await PDFDocument.load(readFileSync(path));
+    expect(doc.getPageCount()).toBeGreaterThan(1);
+
+    for (let i = 0; i < doc.getPageCount(); i++) {
+      const page = doc.getPage(i);
+      const contentsNode = page.node.Contents() as { asArray?: () => unknown[] } | undefined;
+      const refs = Array.isArray(contentsNode) ? contentsNode : contentsNode?.asArray?.() ?? [];
+      let textOps = 0;
+      for (const ref of refs) {
+        const stream = doc.context.lookup(ref as never) as { getContents?: () => Uint8Array; getContentsString?: () => string } | undefined;
+        if (!stream) continue;
+        let str = '';
+        // pdf-lib 页面内容流是 FlateDecode 压缩字节（getContentsString 返回乱码），
+        // 先尝试解压 getContents()，失败再退回字符串。
+        if (stream.getContents) {
+          const raw = stream.getContents();
+          try {
+            str = inflateSync(new Uint8Array(raw)).toString('latin1');
+          } catch {
+            str = String.fromCharCode(...Array.from(raw));
+          }
+        } else if (stream.getContentsString) {
+          str = stream.getContentsString();
+        }
+        const m = str.match(/(Tj|TJ|')/g);
+        textOps += m ? m.length : 0;
+      }
+      // 修复前 bug：第 2+ 页全部空白（内容绘到页 1 负坐标被裁剪）
+      expect(textOps).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe('非法格式与统一入口', () => {

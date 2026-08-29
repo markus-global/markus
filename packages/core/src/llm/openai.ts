@@ -19,6 +19,8 @@ import {
   createSSEAccumulator,
   isOpenRouterReasoningModel,
   recoverTextToolCalls,
+  createSafeTextEmitter,
+  stripToolNoise,
   type OpenAIMessage,
   type OpenAIToolDef,
 } from './provider-helpers.js';
@@ -237,6 +239,13 @@ export class OpenAIProvider implements MultiModalProviderInterface {
 
     bumpIdleTimeout();
     const sse = createSSEAccumulator();
+
+    // Stream-side leak guard: never push raw `<invoke>` plaintext deltas to the
+    // UI. Hold suspected tool-tag starts and only emit confirmed-safe text live;
+    // flush the remainder (tool markup swallowed) before message_end.
+    const safeText = createSafeTextEmitter((text) => onEvent({ type: 'text_delta', text }));
+    const safeThinking = (thinking: string) =>
+      onEvent({ type: 'thinking_delta', thinking: stripToolNoise(thinking) });
     let lastCostUsd: number | undefined;
 
     const reader = res.body?.getReader();
@@ -266,8 +275,8 @@ export class OpenAIProvider implements MultiModalProviderInterface {
         try {
           const chunk = JSON.parse(trimmed.slice(6)) as Record<string, unknown>;
           sse.feed(chunk, {
-            onThinking: (thinking) => onEvent({ type: 'thinking_delta', thinking }),
-            onText: (text) => onEvent({ type: 'text_delta', text }),
+            onThinking: (thinking) => safeThinking(thinking),
+            onText: (text) => safeText.emit(text),
             onToolStart: (toolCall) => onEvent({ type: 'tool_call_start', toolCall }),
             onToolDelta: (toolCall, text) => onEvent({ type: 'tool_call_delta', toolCall, text }),
             onUsage: (_usage, raw) => {
@@ -324,6 +333,8 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     const usage: LLMResponse['usage'] = { inputTokens: state.promptTokens, outputTokens: state.completionTokens };
     if (state.cachedTokens > 0) usage.cacheReadTokens = state.cachedTokens;
     if (lastCostUsd !== undefined) (usage as LLMResponse['usage'] & { cost?: number }).cost = lastCostUsd;
+    // Flush any held-safe text (tool markup swallowed) before the turn ends.
+    safeText.flush();
     onEvent({ type: 'message_end', usage, finishReason: state.finishReason });
 
     const streamResult: LLMResponse = {

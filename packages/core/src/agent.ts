@@ -55,6 +55,7 @@ import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
 import { HeartbeatScheduler } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
+import { stripToolNoise } from './llm/provider-helpers.js';
 import { MemoryStore, loadNotebook, saveNotebook, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
@@ -4437,11 +4438,14 @@ export class Agent {
     });
     const wrappedOnEvent = (event: LLMStreamEvent & { agentEvent?: string }) => {
       if (event.type === 'thinking_delta' && event.thinking) {
-        thinkingBuffer += event.thinking;
+        const cleanThinking = stripToolNoise(event.thinking);
+        thinkingBuffer += cleanThinking;
+        if (cleanThinking !== event.thinking) event = { ...event, thinking: cleanThinking };
       }
       if (event.type === 'text_delta' && event.text) {
-        streamMarkerDelta.emit(event.text);
-        streamedText += event.text;
+        const cleanText = stripToolNoise(event.text);
+        streamMarkerDelta.emit(cleanText);
+        streamedText += cleanText;
         if (!degeneratedAbort && repetitionGuard.push(event.text)) {
           degeneratedAbort = true;
           log.warn('Aborting stream: degenerate repetition detected', {
@@ -5144,11 +5148,12 @@ export class Agent {
     };
     const handleStreamEvent = (event: { type: string; text?: string; thinking?: string }) => {
       if (event.type === 'thinking_delta' && event.thinking) {
-        thinkingBuffer += event.thinking;
+        thinkingBuffer += stripToolNoise(event.thinking);
       }
       if (event.type === 'text_delta' && event.text) {
-        textBuffer += event.text;
-        emitDelta(event.text);
+        const cleanText = stripToolNoise(event.text);
+        textBuffer += cleanText;
+        emitDelta(cleanText);
       }
     };
 
@@ -5701,11 +5706,12 @@ export class Agent {
     };
     const handleStreamEvent = (event: { type: string; text?: string; thinking?: string }) => {
       if (event.type === 'thinking_delta' && event.thinking) {
-        thinkingBuffer += event.thinking;
+        thinkingBuffer += stripToolNoise(event.thinking);
       }
       if (event.type === 'text_delta' && event.text) {
-        textBuffer += event.text;
-        emitDelta(event.text);
+        const cleanText = stripToolNoise(event.text);
+        textBuffer += cleanText;
+        emitDelta(cleanText);
       }
     };
 

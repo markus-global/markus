@@ -177,6 +177,92 @@ export function stripTextToolMarkup(content: string | null | undefined): string 
   return recoverTextToolCalls(content).cleanedContent;
 }
 
+/**
+ * 无条件剥离模型输出的工具标签噪声（不参与工具调用恢复）。
+ *
+ * 与 recoverTextToolCalls 不同，这里不要求出现完整的 `<invoke name=...>`：
+ * 只要文本里混有 DeepSeek 的 `||DSML||` 围栏、MiniMax 的 `<]minimax[>` 围栏、
+ * 或孤立的 `<invoke>`/`<parameter>`/`<tool_calls>` 标签片段，都直接剥掉。
+ * 用于流式 thinking_delta / 存量历史清洗等「只求干净、不求恢复」的场景。
+ */
+export function stripToolNoise(content: string | null | undefined): string {
+  if (!content) return '';
+  let out = String(content);
+  const before = out;
+  out = out
+    .replace(/<[^<>]*?invoke\s+name="[^"]*"[^<>]*>[\s\S]*?<\/[^<>]*?invoke>/gi, ' ')
+    .replace(/<[^<>]*?tool_calls>[\s\S]*?<\/[^<>]*?tool_calls>/gi, ' ')
+    .replace(/<[^<>]*?parameter\s+name="[^"]*"[^<>]*>[\s\S]*?<\/[^<>]*?parameter>/gi, ' ')
+    // 未闭合的开启标签（模型在流式输出中途被截断时可能只有 `<invoke name="...">`）
+    .replace(/<[^<>]*?invoke\s+name="[^"]*"[^<>]*>/gi, ' ')
+    .replace(/<[^<>]*?parameter\s+name="[^"]*"[^<>]*>/gi, ' ')
+    .replace(new RegExp('[｜|]{1,2}\\s*DSML\\s*[｜|]{0,2}', 'gi'), ' ')
+    .replace(new RegExp('<\\](?:minimax|miniMax|MiniMax)\\[>', 'gi'), ' ');
+  return out === before ? content : out.trim();
+}
+
+/**
+ * 流式文本增量「安全发射器」。
+ *
+ * 背景：DeepSeek 等模型会把工具调用以明文 `<invoke name="...">` 形式混在正文里
+ * 流式输出。如果每个 chunk 原样直接推给 UI（text_delta），用户会实时看到明文标签，
+ * 即使流结束后 content 被 recover 清理，屏幕上已经显示过了——这正是「还会漏出来、
+ * 显示出来」的根本原因。
+ *
+ * 方案：缓冲 + 延迟发射。
+ *  - 一旦检测到「疑似工具标签起始」（`<` 后跟 invoke/parameter/tool_calls/DSML/
+ *    minimax 前缀，容忍跨 chunk 半截字），就从该位置开始 hold 住，只把前面的安全
+ *    文本实时发出去；
+ *  - 流结束时 flush()：对缓冲做一次完整恢复+剥离，把非工具正文补发、工具标签吞掉。
+ *
+ * 权衡：工具调用之后紧跟的正文本会延迟到 flush（比明文泄漏好得多）；普通正文（无
+ * 疑似标签）逐 chunk 实时发射，无感知差异。
+ */
+export function createSafeTextEmitter(rawEmit: (text: string) => void): {
+  emit(chunk: string): void;
+  flush(): void;
+} {
+  // 疑似工具标签起始：`<` + 可选字符 + 关键字前缀（容忍 `<inv` 这类被切开的前缀）。
+  // 关键字必须紧跟在 < 后（允许 [^<>]*? 噪声），避免误吞普通英文单词。
+  const TOOL_TAG_START_RE = /<[^<>]*?(?:invoke|inv|parameter|param|tool_calls|tool_|dsml|minimax)/i;
+  let pending = '';
+
+  // 所有最终发出的文本统一过 stripToolNoise：不含 invoke 关键词的围栏噪声
+  // （DSML / minimax）在 emit 阶段就被剥掉，而不只是 flush 时。
+  const emitSafe = (text: string): void => {
+    const cleaned = stripToolNoise(text);
+    if (cleaned) rawEmit(cleaned);
+  };
+
+  const emit = (chunk: string): void => {
+    if (!chunk) return;
+    pending += chunk;
+
+    const m = TOOL_TAG_START_RE.exec(pending);
+    if (!m) {
+      if (pending) {
+        emitSafe(pending);
+        pending = '';
+      }
+      return;
+    }
+    const safe = pending.slice(0, m.index);
+    if (safe) emitSafe(safe);
+    pending = pending.slice(m.index);
+  };
+
+  const flush = (): void => {
+    if (!pending) return;
+    const { cleanedContent } = recoverTextToolCalls(pending);
+    // 兜底：未闭合/孤立标签残渣也剥掉，避免 `<invoke name="...` 半截泄漏。
+    const finalText = stripToolNoise(cleanedContent || pending);
+    pending = '';
+    if (finalText) emitSafe(finalText);
+  };
+
+  return { emit, flush };
+}
+
 // ---------------------------------------------------------------------------
 // Message / tool conversion
 // ---------------------------------------------------------------------------
@@ -344,12 +430,17 @@ export function parseOpenAICompatResponse(
   const usage = normalizeOpenAIUsage(data.usage as Record<string, number> | undefined);
   let finishReason = FINISH_REASON_MAP[String(choice.finish_reason ?? 'stop')] ?? 'end_turn';
 
-  if (!toolCalls?.length && opts?.recoverTextToolCalls) {
+  // Mixed-output hygiene: even when structured tool_calls exist, the body may
+  // still carry plaintext `<invoke>` markup (text-emitted tool calls). Always
+  // strip it; only *adopt* recovered calls when the model gave none structured.
+  if (opts?.recoverTextToolCalls) {
     const recovered = opts.recoverTextToolCalls(content);
     if (recovered.toolCalls.length) {
-      toolCalls = recovered.toolCalls;
       content = recovered.cleanedContent;
-      finishReason = 'tool_use';
+      if (!toolCalls?.length) {
+        toolCalls = recovered.toolCalls;
+        finishReason = 'tool_use';
+      }
     }
   }
 
@@ -358,6 +449,11 @@ export function parseOpenAICompatResponse(
     extractReasoningText(message?.reasoning) ||
     extractReasoningText(message?.thinking) ||
     extractReasoningText(message?.reasoning_details);
+
+  // A response that carries tool calls (structured OR recovered from text) must
+  // be treated as a tool turn — otherwise the agent loop drops the calls and
+  // treats the text as a plain reply. Mirrors the normalization done for streams.
+  if (toolCalls?.length && finishReason !== 'tool_use') finishReason = 'tool_use';
 
   const result: LLMResponse = {
     content,

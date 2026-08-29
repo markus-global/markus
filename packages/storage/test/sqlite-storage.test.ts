@@ -18,6 +18,7 @@ import {
   SqliteMarketplaceSkillRepo,
   SqliteMarketplaceRatingRepo,
   SqliteAgentKnowledgeRepo,
+  purgeLeakedToolMarkup,
 } from '../src/sqlite-storage.js';
 
 let tempDir: string;
@@ -309,5 +310,52 @@ describe('SQLite Storage Backend', () => {
       expect(userRating).toBeDefined();
       expect(userRating!.rating).toBe(5);
     });
+  });
+});
+
+describe('purgeLeakedToolMarkup 存量清洗', () => {
+  beforeEach(() => {
+    // 清洗测试直接插入脏数据，绕过 FK 关系验证
+    db.exec('PRAGMA foreign_keys = OFF');
+  });
+
+  it('剥离 chat_messages / task_logs 里泄漏的明文工具标签', () => {
+    const dirty = '之前残留 <invoke name="memory_save"><parameter name="content">x</parameter></invoke> 之后';
+    db.prepare('INSERT INTO chat_messages (id, session_id, agent_id, role, content, created_at) VALUES (?,?,?,?,?,?)')
+      .run('cm_purge_1', 'sess_1', 'agt_1', 'assistant', dirty, new Date().toISOString());
+    db.prepare('INSERT INTO task_logs (id, task_id, agent_id, seq, type, content, created_at) VALUES (?,?,?,?,?,?,?)')
+      .run('tl_purge_1', 'tsk_1', 'agt_1', 1, 'agent', dirty, new Date().toISOString());
+
+    purgeLeakedToolMarkup(db);
+
+    const cm = db.prepare('SELECT content FROM chat_messages WHERE id = ?').get('cm_purge_1') as { content: string };
+    const tl = db.prepare('SELECT content FROM task_logs WHERE id = ?').get('tl_purge_1') as { content: string };
+    expect(cm.content).not.toContain('invoke');
+    expect(cm.content).not.toContain('parameter');
+    expect(cm.content).toContain('之前残留');
+    expect(cm.content).toContain('之后');
+    expect(tl.content).not.toContain('invoke');
+  });
+
+  it('未闭合标签残渣也被剥离', () => {
+    db.prepare('INSERT INTO chat_messages (id, session_id, agent_id, role, content, created_at) VALUES (?,?,?,?,?,?)')
+      .run('cm_purge_2', 'sess_1', 'agt_1', 'assistant', '半截 <invoke name="run">', new Date().toISOString());
+
+    purgeLeakedToolMarkup(db);
+
+    const cm = db.prepare('SELECT content FROM chat_messages WHERE id = ?').get('cm_purge_2') as { content: string };
+    expect(cm.content).not.toContain('invoke');
+    expect(cm.content).toContain('半截');
+  });
+
+  it('无噪声行不受影响，未发生误改', () => {
+    const clean = '普通消息 <parameter> 不是标签的文本';
+    db.prepare('INSERT INTO chat_messages (id, session_id, agent_id, role, content, created_at) VALUES (?,?,?,?,?,?)')
+      .run('cm_purge_3', 'sess_1', 'agt_1', 'assistant', clean, new Date().toISOString());
+
+    purgeLeakedToolMarkup(db);
+
+    const cm = db.prepare('SELECT content FROM chat_messages WHERE id = ?').get('cm_purge_3') as { content: string };
+    expect(cm.content).toBe(clean);
   });
 });
