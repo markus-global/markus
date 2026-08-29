@@ -1,6 +1,9 @@
 import { vi } from 'vitest';
 import { execFile } from 'node:child_process';
-import { convertFilesToText, resetMarkitdownCache } from '../src/file-converter.js';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { convertFilesToText, extractTextFromFile, resetMarkitdownCache } from '../src/file-converter.js';
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
@@ -106,5 +109,40 @@ describe('convertFilesToText', () => {
 
     const results = await convertFilesToText([makeDataUrl('image/jpeg', 'jpg')]);
     expect(results[0].name).toBe('file_0.jpg');
+  });
+});
+
+describe('extractTextFromFile', () => {
+  beforeEach(() => {
+    resetMarkitdownCache();
+    mockedExecFile.mockReset();
+    mockedExecFile.mockImplementation((_cmd, _args, _opts, callback) => {
+      (callback as (err: Error | null) => void)(new Error('not found'));
+    });
+  });
+
+  it('reads text-like files directly as UTF-8', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'extract-text-'));
+    const file = join(dir, 'notes.md');
+    writeFileSync(file, '# Heading\n\nbody text');
+    try {
+      const text = await extractTextFromFile(file);
+      expect(text).toContain('# Heading');
+      expect(text).toContain('body text');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns empty string for office file when markitdown is unavailable', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'extract-office-'));
+    const file = join(dir, 'report.docx');
+    writeFileSync(file, 'binary-not-real');
+    try {
+      const text = await extractTextFromFile(file);
+      expect(text).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
