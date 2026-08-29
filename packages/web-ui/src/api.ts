@@ -251,6 +251,8 @@ export interface ProjectInfo {
   repositories?: Array<{ url: string; defaultBranch: string; localPath?: string }>;
   teamIds: string[];
   governancePolicy?: GovernancePolicyInfo;
+  /** 知识库绑定根目录（JSON 数组），见项目级知识库需求 */
+  knowledgeBasePaths?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -326,6 +328,12 @@ export interface DeliverableInfo {
   format?: string;
   tags: string[];
   status: 'active' | 'verified' | 'outdated';
+  /** 'agent'（Agent 产出物，默认）| 'knowledge'（知识库文档） */
+  source?: 'agent' | 'knowledge';
+  /** 归属知识库根路径（source='knowledge' 时有效） */
+  knowledgeRoot?: string | null;
+  /** 扫描抽取的文本内容，供全文搜索 */
+  content?: string | null;
   taskId?: string;
   agentId?: string;
   projectId?: string;

@@ -4937,9 +4937,10 @@ export class APIServer {
       const type = url.searchParams.get('type') as any ?? undefined;
       const status = url.searchParams.get('status') as any ?? undefined;
       const artifactType = url.searchParams.get('artifactType') as any ?? undefined;
+      const source = url.searchParams.get('source') as any ?? undefined;
       const offset = url.searchParams.get('offset') ? Number(url.searchParams.get('offset')) : undefined;
       const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
-      const { results, total } = this.deliverableService.search({ query: q, projectId, agentId, taskId, type, status, artifactType, offset, limit });
+      const { results, total } = this.deliverableService.search({ query: q, projectId, agentId, taskId, type, status, artifactType, source, offset, limit });
       this.json(res, 200, { results, total });
       return;
     }
@@ -4969,6 +4970,9 @@ export class APIServer {
           agentId: body['agentId'] as string,
           projectId: body['projectId'] as string,
           requirementId: body['requirementId'] as string,
+          source: body['source'] as any,
+          knowledgeRoot: body['knowledgeRoot'] as string | undefined,
+          content: body['content'] as string | undefined,
         });
         this.json(res, 201, { deliverable: d });
       } catch (err) {
@@ -5007,6 +5011,9 @@ export class APIServer {
           tags: body['tags'] as string[] | undefined,
           status: body['status'] as any,
           type: body['type'] as any,
+          source: body['source'] as any,
+          knowledgeRoot: body['knowledgeRoot'] as string | undefined,
+          content: body['content'] as string | undefined,
           hubShareId: body['hubShareId'] as string | null | undefined,
           shareStatus: body['shareStatus'] as string | null | undefined,
           shareUrl: body['shareUrl'] as string | null | undefined,
@@ -11897,6 +11904,7 @@ EXPLANATION_END`;
         repositories: body['repositories'] as any,
         teamIds: body['teamIds'] as any,
         governancePolicy: body['governancePolicy'] as any,
+        knowledgeBasePaths: body['knowledgeBasePaths'] as string[] | undefined,
         createdBy: authUser?.userId,
       });
       this.auditService?.record({

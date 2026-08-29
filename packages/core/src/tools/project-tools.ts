@@ -12,6 +12,9 @@ export interface DeliverableServiceBridge {
     agentId?: string;
     projectId?: string;
     requirementId?: string;
+    source?: 'agent' | 'knowledge';
+    knowledgeRoot?: string;
+    content?: string;
   }): Promise<{ id: string; type: string; title: string; status: string }>;
   search(opts: {
     query?: string;
@@ -20,6 +23,7 @@ export interface DeliverableServiceBridge {
     taskId?: string;
     type?: string;
     status?: string;
+    source?: 'agent' | 'knowledge';
     offset?: number;
     limit?: number;
   }): { results: Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; agentId?: string; projectId?: string; taskId?: string; updatedAt?: string }>; total: number };
@@ -81,6 +85,7 @@ export interface ProjectToolsContext {
     repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
     teamIds: string[];
     governancePolicy?: { enabled: boolean; defaultTier: string };
+    knowledgeBasePaths?: string[];
   } | null>;
   getProjectStats?: (projectId: string) => Promise<{
     totalTasks: number;
@@ -101,12 +106,16 @@ export interface ProjectToolsContext {
     format?: string;
     tags?: string;
     projectId?: string;
+    source?: 'agent' | 'knowledge';
+    knowledgeRoot?: string;
+    content?: string;
   }) => Promise<{ id: string; type: string; title: string; status: string }>;
   deliverableSearch?: (opts: {
     query?: string;
     projectId?: string;
     agentId?: string;
     type?: string;
+    source?: 'agent' | 'knowledge';
     limit?: number;
   }) => Promise<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[] }>>;
   deliverableList?: (opts: {
@@ -114,6 +123,7 @@ export interface ProjectToolsContext {
     agentId?: string;
     type?: string;
     status?: string;
+    source?: 'agent' | 'knowledge';
     limit?: number;
   }) => Promise<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; updatedAt?: string }>>;
   deliverableUpdate?: (id: string, data: {
@@ -445,12 +455,28 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   type: 'string',
                   description: 'Comma-separated tags for discoverability (array of strings is also accepted).',
                 },
+                source: {
+                  type: 'string',
+                  enum: ['agent', 'knowledge'],
+                  description: "来源：'agent'（Agent 产出物，默认）| 'knowledge'（知识库文档，知识库同步流程使用，可选）",
+                },
+                knowledge_root: {
+                  type: 'string',
+                  description: '归属知识库根路径（source="knowledge" 时由知识库同步填写，可选）',
+                },
+                content: {
+                  type: 'string',
+                  description: '扫描抽取的文本内容，供全文搜索（source="knowledge" 时由知识库同步填写，可选）',
+                },
               },
               required: ['type', 'title', 'summary'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
                 const rawType = String(args['type'] ?? 'file').trim().toLowerCase();
+                const source = args['source'] === 'knowledge' ? 'knowledge' : 'agent';
+                const knowledgeRoot = (args['knowledge_root'] ?? args['knowledgeRoot']) as string | undefined;
+                const content = (args['content']) as string | undefined;
                 const type = rawType === 'directory' || rawType === 'dir' || rawType === 'folder'
                   ? 'directory'
                   : 'file';
@@ -491,6 +517,9 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   format: args['format'] as string | undefined,
                   tags,
                   projectId,
+                  source,
+                  knowledgeRoot,
+                  content,
                 });
                 const resp: Record<string, unknown> = {
                   status: 'success',
@@ -529,6 +558,11 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   enum: ['file', 'directory'],
                   description: 'Filter by deliverable type (optional)',
                 },
+                source: {
+                  type: 'string',
+                  enum: ['agent', 'knowledge'],
+                  description: "Filter by source: 'agent' (Agent 产出物, 默认) | 'knowledge' (知识库文档, optional)",
+                },
                 limit: { type: 'number', description: 'Max results (default: 20)' },
               },
               required: ['query'],
@@ -540,6 +574,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   projectId: (args['project_id'] ?? args['projectId']) as string | undefined,
                   agentId: (args['agent_id'] ?? args['agentId']) as string | undefined,
                   type: args['type'] as string | undefined,
+                  source: args['source'] as 'agent' | 'knowledge' | undefined,
                   limit: args['limit'] as number | undefined,
                 });
                 return JSON.stringify({
@@ -580,6 +615,11 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   enum: ['active', 'verified', 'outdated'],
                   description: 'Filter by status (default: active)',
                 },
+                source: {
+                  type: 'string',
+                  enum: ['agent', 'knowledge'],
+                  description: "Filter by source: 'agent' (Agent 产出物, 默认) | 'knowledge' (知识库文档, optional)",
+                },
                 limit: { type: 'number', description: 'Max results (default: 50)' },
               },
             },
@@ -590,6 +630,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   agentId: (args['agent_id'] ?? args['agentId']) as string | undefined,
                   type: args['type'] as string | undefined,
                   status: args['status'] as string | undefined,
+                  source: args['source'] as 'agent' | 'knowledge' | undefined,
                   limit: args['limit'] as number | undefined,
                 });
                 return JSON.stringify({

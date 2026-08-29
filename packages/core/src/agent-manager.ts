@@ -490,6 +490,9 @@ export class AgentManager {
           agentId,
           // Prefer per-call project_id from the tool; fall back to callback-scoped project.
           projectId: opts.projectId ?? projectId,
+          source: opts.source,
+          knowledgeRoot: opts.knowledgeRoot,
+          content: opts.content,
         });
       },
       deliverableSearch: async (opts) => {
@@ -498,6 +501,7 @@ export class AgentManager {
           projectId: opts.projectId,
           agentId: opts.agentId,
           type: opts.type,
+          source: opts.source,
           limit: opts.limit,
         }).results;
       },
@@ -507,6 +511,7 @@ export class AgentManager {
           agentId: opts.agentId,
           type: opts.type,
           status: opts.status,
+          source: opts.source,
           limit: opts.limit,
         }).results;
       },

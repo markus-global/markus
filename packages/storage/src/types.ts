@@ -89,6 +89,12 @@ export interface DeliverableRow {
   format: string | null;
   tags: string[];
   status: string;
+  /** 'agent'（Agent 产出物，默认）| 'knowledge'（知识库文档） */
+  source: string;
+  /** 归属知识库根路径（source='knowledge' 时有效） */
+  knowledgeRoot: string | null;
+  /** 扫描抽取的文本内容，供全文搜索（source='knowledge' 时填充） */
+  content: string | null;
   taskId: string | null;
   agentId: string | null;
   projectId: string | null;

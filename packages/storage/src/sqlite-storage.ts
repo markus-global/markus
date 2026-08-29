@@ -246,6 +246,7 @@ CREATE TABLE IF NOT EXISTS projects (
   archive_policy TEXT,
   report_schedule TEXT,
   onboarding_config TEXT,
+  knowledge_base_paths TEXT DEFAULT '[]',
   created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -280,6 +281,9 @@ CREATE TABLE IF NOT EXISTS deliverables (
   format TEXT,
   tags TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'agent',
+  knowledge_root TEXT,
+  content TEXT,
   task_id TEXT,
   agent_id TEXT,
   project_id TEXT,
@@ -748,6 +752,11 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'pending_callbacks', column: 'correlation_id', sql: 'ALTER TABLE pending_callbacks ADD COLUMN correlation_id TEXT' },
     { table: 'pending_callbacks', column: 'wake_at', sql: 'ALTER TABLE pending_callbacks ADD COLUMN wake_at INTEGER' },
     { table: 'pending_callbacks', column: 'recurring_ms', sql: 'ALTER TABLE pending_callbacks ADD COLUMN recurring_ms INTEGER' },
+    // ─── 知识库（V2 数据模型，见 docs/knowledge-base-office-plan.md）────────────
+    { table: 'projects', column: 'knowledge_base_paths', sql: "ALTER TABLE projects ADD COLUMN knowledge_base_paths TEXT DEFAULT '[]'" },
+    { table: 'deliverables', column: 'source', sql: "ALTER TABLE deliverables ADD COLUMN source TEXT NOT NULL DEFAULT 'agent'" },
+    { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },
+    { table: 'deliverables', column: 'content', sql: 'ALTER TABLE deliverables ADD COLUMN content TEXT' },
   ];
   for (const m of migrations) {
     const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -760,6 +769,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
   // Indexes that depend on migrated columns (must run AFTER column migrations)
   _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
   _db.exec('CREATE INDEX IF NOT EXISTS idx_pending_callbacks_wake ON pending_callbacks(wake_at)');
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_source ON deliverables(source)');
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_knowledge_root ON deliverables(knowledge_root)');
 
   migrateToExecutionStreamLogs(_db);
 
@@ -1529,13 +1540,14 @@ export class SqliteProjectRepo {
     archivePolicy?: unknown;
     reportSchedule?: unknown;
     onboardingConfig?: unknown;
+    knowledgeBasePaths?: string[];
     createdBy?: string;
   }) {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO projects (id, org_id, name, description, status, repositories, team_ids, governance_policy, archive_policy, report_schedule, onboarding_config, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO projects (id, org_id, name, description, status, repositories, team_ids, governance_policy, archive_policy, report_schedule, onboarding_config, knowledge_base_paths, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id, data.orgId, data.name, data.description ?? '',
@@ -1543,6 +1555,7 @@ export class SqliteProjectRepo {
         toJson(data.repositories ?? []), toJson(data.teamIds ?? []),
         toJson(data.governancePolicy), toJson(data.archivePolicy),
         toJson(data.reportSchedule), toJson(data.onboardingConfig),
+        toJson(data.knowledgeBasePaths ?? []),
         data.createdBy ?? null,
         ts, ts
       );
@@ -1558,13 +1571,14 @@ export class SqliteProjectRepo {
     const sets: string[] = [];
     const vals: SqlParams = [];
     const stringFields = ['name', 'description', 'status'] as const;
-    const jsonFields = ['repositories', 'team_ids', 'governance_policy', 'archive_policy', 'report_schedule', 'onboarding_config'] as const;
+    const jsonFields = ['repositories', 'team_ids', 'governance_policy', 'archive_policy', 'report_schedule', 'onboarding_config', 'knowledge_base_paths'] as const;
     const fieldMap: Record<string, string> = {
       name: 'name', description: 'description', status: 'status',
       repositories: 'repositories',
       teamIds: 'team_ids', governancePolicy: 'governance_policy',
       archivePolicy: 'archive_policy', reportSchedule: 'report_schedule',
       onboardingConfig: 'onboarding_config',
+      knowledgeBasePaths: 'knowledge_base_paths',
     };
     for (const [key, col] of Object.entries(fieldMap)) {
       if (data[key] !== undefined) {
@@ -1604,6 +1618,7 @@ export class SqliteProjectRepo {
       archivePolicy: fromJson(r['archive_policy'] as string),
       reportSchedule: fromJson(r['report_schedule'] as string),
       onboardingConfig: fromJson(r['onboarding_config'] as string),
+      knowledgeBasePaths: fromJson<string[]>(r['knowledge_base_paths'] as string) ?? [],
       createdBy: r['created_by'] as string | null,
       createdAt: r['created_at'] as string,
       updatedAt: r['updated_at'] as string,
@@ -3819,6 +3834,7 @@ export class SqliteDeliverableRepo {
     projectId?: string; requirementId?: string;
     diffStats?: Record<string, number>; testResults?: Record<string, number>;
     artifactType?: string; artifactData?: Record<string, unknown>;
+    source?: string; knowledgeRoot?: string; content?: string;
     hubShareId?: string | null; shareStatus?: string | null;
     shareUrl?: string | null; shareVisibility?: string | null;
     shareReason?: string | null;
@@ -3826,14 +3842,16 @@ export class SqliteDeliverableRepo {
     const n = now();
     this.db.prepare(`
       INSERT INTO deliverables (id, type, title, summary, reference, format, tags, status,
+        source, knowledge_root, content,
         task_id, agent_id, project_id, requirement_id, diff_stats, test_results,
         artifact_type, artifact_data, access_count, hub_share_id, share_status, share_url,
         share_visibility, share_reason, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.id, data.type, data.title ?? '', data.summary ?? '', data.reference ?? '',
       data.format ?? null,
       toJson(data.tags ?? []), data.status ?? 'active',
+      data.source ?? 'agent', data.knowledgeRoot ?? null, data.content ?? null,
       data.taskId ?? null, data.agentId ?? null, data.projectId ?? null,
       data.requirementId ?? null,
       data.diffStats ? toJson(data.diffStats) : null,
@@ -3855,15 +3873,16 @@ export class SqliteDeliverableRepo {
     return r ? this.mapRow(r) : null;
   }
 
-  async search(opts: { query?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; limit?: number }) {
+  async search(opts: { query?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; source?: string; limit?: number }) {
     const where: string[] = [];
     const params: SqlParams = [];
-    if (opts.query) { where.push("(title LIKE ? OR summary LIKE ? OR tags LIKE ?)"); const q = `%${opts.query}%`; params.push(q, q, q); }
+    if (opts.query) { where.push("(title LIKE ? OR summary LIKE ? OR tags LIKE ? OR content LIKE ?)"); const q = `%${opts.query}%`; params.push(q, q, q, q); }
     if (opts.projectId) { where.push('project_id = ?'); params.push(opts.projectId); }
     if (opts.agentId) { where.push('agent_id = ?'); params.push(opts.agentId); }
     if (opts.taskId) { where.push('task_id = ?'); params.push(opts.taskId); }
     if (opts.type) { where.push('type = ?'); params.push(opts.type); }
     if (opts.status) { where.push('status = ?'); params.push(opts.status); }
+    if (opts.source) { where.push('source = ?'); params.push(opts.source); }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const limit = opts.limit ?? 100;
     const rows = this.db.prepare(`SELECT * FROM deliverables ${clause} ORDER BY updated_at DESC LIMIT ?`).all(...params, limit) as Record<string, unknown>[];
@@ -3880,6 +3899,9 @@ export class SqliteDeliverableRepo {
     if (patch.tags !== undefined) { sets.push('tags = ?'); vals.push(toJson(patch.tags)); }
     if (patch.reference !== undefined) { sets.push('reference = ?'); vals.push(patch.reference as SQLInputValue); }
     if (patch.format !== undefined) { sets.push('format = ?'); vals.push(patch.format as SQLInputValue); }
+    if (patch.source !== undefined) { sets.push('source = ?'); vals.push(patch.source as SQLInputValue); }
+    if (patch.knowledgeRoot !== undefined) { sets.push('knowledge_root = ?'); vals.push(patch.knowledgeRoot as SQLInputValue); }
+    if (patch.content !== undefined) { sets.push('content = ?'); vals.push(patch.content as SQLInputValue); }
     if (patch.type !== undefined) { sets.push('type = ?'); vals.push(patch.type as SQLInputValue); }
     if (patch.taskId !== undefined) { sets.push('task_id = ?'); vals.push(patch.taskId as SQLInputValue); }
     if (patch.agentId !== undefined) { sets.push('agent_id = ?'); vals.push(patch.agentId as SQLInputValue); }
@@ -3934,6 +3956,9 @@ export class SqliteDeliverableRepo {
       format: (r['format'] as string) ?? null,
       tags: fromJson<string[]>(r['tags'] as string) ?? [],
       status: r['status'] as string,
+      source: (r['source'] as string) ?? 'agent',
+      knowledgeRoot: (r['knowledge_root'] as string) ?? null,
+      content: (r['content'] as string) ?? null,
       taskId: r['task_id'] as string | null,
       agentId: r['agent_id'] as string | null,
       projectId: r['project_id'] as string | null,

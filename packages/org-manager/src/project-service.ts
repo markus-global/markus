@@ -44,6 +44,7 @@ export class ProjectService {
             archivePolicy: r.archivePolicy as ArchivePolicy | undefined,
             reportSchedule: r.reportSchedule as ReportSchedule | undefined,
             onboardingConfig: r.onboardingConfig as ProjectOnboardingConfig | undefined,
+            knowledgeBasePaths: (r.knowledgeBasePaths as string[]) ?? [],
             createdBy: r.createdBy ?? undefined,
             createdAt: typeof r.createdAt === 'string' ? r.createdAt : new Date(r.createdAt).toISOString(),
             updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : new Date(r.updatedAt).toISOString(),
@@ -69,6 +70,7 @@ export class ProjectService {
     archivePolicy?: ArchivePolicy;
     reportSchedule?: ReportSchedule;
     onboardingConfig?: ProjectOnboardingConfig;
+    knowledgeBasePaths?: string[];
     createdBy?: string;
   }): Project {
     const now = new Date().toISOString();
@@ -84,6 +86,7 @@ export class ProjectService {
       archivePolicy: opts.archivePolicy,
       reportSchedule: opts.reportSchedule,
       onboardingConfig: opts.onboardingConfig,
+      knowledgeBasePaths: opts.knowledgeBasePaths ?? [],
       createdBy: opts.createdBy,
       createdAt: now,
       updatedAt: now,
@@ -96,6 +99,7 @@ export class ProjectService {
       teamIds: project.teamIds, governancePolicy: project.governancePolicy,
       archivePolicy: project.archivePolicy, reportSchedule: project.reportSchedule,
       onboardingConfig: project.onboardingConfig,
+      knowledgeBasePaths: project.knowledgeBasePaths,
       createdBy: opts.createdBy,
     }).catch(err => log.warn('Failed to persist project', { error: String(err) }));
     log.info('Project created', { id: project.id, name: project.name });
