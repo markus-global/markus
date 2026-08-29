@@ -1,8 +1,31 @@
 # Markus「项目级知识库 + Office 产出物生成与预览」调研与规划（V2）
 
-> 状态：调研规划（阶段一）｜日期：2026-08-29｜作者：CTO
+> 状态：阶段二开发完成（T1–T7 收口，待老板验收）｜日期：2026-08-29｜作者：CTO
 > 范围：两个需求合并为一个产品方向——让「项目」成为知识载体（知识库），让 Agent 能生成、团队能预览各类 Office 产出物。
 > **V2 架构定调（老板拍板）**：知识库**统一用交付物（Deliverable）机制管理**，不另起一套独立知识库系统。知识库文档 = `source='knowledge'` 的交付物；Agent 产出物 = `source='agent'`（默认）。搜索/更新/预览/Agent 工具全部复用交付物同一套逻辑，只扩展标签与筛选。
+
+---
+
+## 阶段二完成状态（2026-08-29 收口）
+
+| 任务 | 内容 | 提交 | 状态 |
+|---|---|---|---|
+| T1 | 数据模型扩展（projects.knowledge_base_paths / deliverables.source+knowledge_root+content + 迁移） | 5f7226d0 | ✅ |
+| T2 | 后端知识库同步 + preview 扩展 office + 搜索 source/content | 22ff6560, b275d8fa | ✅ |
+| T3 | 前端 L1 编辑按钮 + 项目详情知识库区块 + 产出物来源筛选 | 3c493ce6 | ✅ |
+| T4 | Agent 知识库工具（knowledge_search/read/list 封装 deliverable_*） | f88c8f25 | ✅ |
+| T5 | 前端统一 Office 预览组件（pdf.js/docx-preview/SheetJS） | 36881d80 | ✅ |
+| T6 | Agent Office 生成工具（docx/xlsx/pptx/pdf，全 MIT） | d1117fff | ✅ |
+| T7 | 联调整合 + 测试 + 文档收口（宿主级 e2e + 前缀校验 + 边界用例） | 98bdeeb2 | ✅ |
+
+**T7 联调整合关键交付**：
+- 宿主级 e2e（9 例，`packages/core/test/knowledge-tools-e2e.test.ts`）：真实 Agent（AgentManager + createAgent）在运行时通过工具面自主调用 knowledge_search/list/read，核验 source=knowledge 强制、updatedAt 对齐、中文文件名、知识库根内/外读取、缺失文件报错、空结果。
+- knowledge_read 桥接层前缀校验（T4 评审建议①）：传递 project_id 时仅允许读取项目绑定 `knowledge_base_paths` 内文件，杜绝任意文件读原语（为未来沙箱/多租户留位）。
+- knowledge_search 结果补 updatedAt（建议②，与 knowledge_list 对齐）；错误信息统一包装（建议③）。
+- extractTextFromFile 优雅降级：文本类不可读（权限/IO）返回空串而非抛错，避免单文件问题中断整次同步；>500KB 截断。
+- 边界用例：空目录、删除同步（outdated）、超大文件、中文文件名、权限错误、隐藏文件/node_modules 忽略。
+
+**验证汇总**：core 相关套件 239 全绿；org-manager 171 全绿；tsc --noEmit（core/web-ui）0 错误；vite build 通过（docx-preview/xlsx/pdf 独立惰性 chunk，不膨胀主包）。所有 commit 落在主仓库 `feat/knowledge-base-and-office-preview`，未污染 markus-hub/vendor/markus 子模块。
 
 ---
 
