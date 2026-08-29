@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api, wsClient, getHubToken, hubApi, type DeliverableInfo, type ProjectInfo, type AgentInfo, type TeamInfo, type AuthUser } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from '../components/ContentRenderer.tsx';
+import { OfficePreviewer } from '../components/OfficePreviewer.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { DeliverableShareModal } from '../components/DeliverableShareModal.tsx';
@@ -132,6 +133,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [previewFormat, setPreviewFormat] = useState<string>('markdown');
   const [previewImage, setPreviewImage] = useState<{ src: string; name: string } | null>(null);
   const [previewMedia, setPreviewMedia] = useState<{ kind: 'audio' | 'video'; src: string; name: string } | null>(null);
+  const [previewOffice, setPreviewOffice] = useState<{ format: string; streamUrl: string; name: string; size?: number; reference?: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showCopyPath, setShowCopyPath] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
@@ -591,6 +593,16 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         const src = resp.streamUrl
           || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));
         setPreviewMedia({ kind: resp.type, src, name: resp.name });
+      } else if (resp.type === 'office') {
+        const src = resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));
+        setPreviewOffice({
+          format: resp.format || String(resp.extension || '').replace(/^\./, '') || 'pdf',
+          streamUrl: src,
+          name: resp.name,
+          size: resp.size,
+          reference: resp.path || d.reference,
+        });
       } else if (resp.type === 'binary') {
         setShowCopyPath(true);
       } else if (typeof resp.content === 'string') {
@@ -612,6 +624,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setPreviewFormat('markdown');
     setPreviewImage(null);
     setPreviewMedia(null);
+    setPreviewOffice(null);
     setShowCopyPath(false);
     if (selected) loadPreview(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1634,6 +1647,14 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                     <div className="flex flex-col items-center gap-2">
                       <img src={previewImage.src} alt={previewImage.name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
                       <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
+                    </div>
+                  ) : previewOffice ? (
+                    <div className="h-[55vh]">
+                      <OfficePreviewer
+                        data={previewOffice}
+                        reference={previewOffice.reference}
+                        onFallback={previewOffice.reference ? () => { api.files.reveal(previewOffice.reference!).catch(() => {}); } : undefined}
+                      />
                     </div>
                   ) : previewMedia ? (
                     <div className="flex flex-col gap-3 py-4">

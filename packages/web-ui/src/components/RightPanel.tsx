@@ -7,6 +7,7 @@ import { openExternal } from '../hooks/useElectron.ts';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from './ContentRenderer.tsx';
 import { CodeFileEditor, confirmDiscardDirty, languageFromPath } from './CodeFileEditor.tsx';
 import { FilePreviewEditor } from './FilePreviewEditor.tsx';
+import { OfficePreviewer } from './OfficePreviewer.tsx';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
 import { DeliverableShareModal } from './DeliverableShareModal.tsx';
@@ -65,6 +66,7 @@ type PreviewState =
   | { mode: 'video'; src: string; name: string; mimeType: string; size?: number }
   | { mode: 'binary'; name: string; reference: string; size?: number; extension?: string }
   | { mode: 'artifact'; summary: string }
+  | { mode: 'office'; format: string; streamUrl: string; name: string; size?: number; reference?: string }
   | { mode: 'url'; url: string; browserId?: string }
   | { mode: 'terminal'; terminalId: string; title?: string; cwd?: string }
   | { mode: 'unpreviewable'; reference: string; isDirectory: boolean };
@@ -325,6 +327,19 @@ export function RightPanel({
           reference: resp.path || reference,
           size: resp.size,
           extension: resp.extension,
+        });
+        return;
+      }
+      if (resp.type === 'office') {
+        const src = resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(reference));
+        setPreview({
+          mode: 'office',
+          format: resp.format || String(resp.extension || '').replace(/^\./, '') || 'pdf',
+          streamUrl: src,
+          name: resp.name || title,
+          size: resp.size,
+          reference: resp.path || reference,
         });
         return;
       }
@@ -887,7 +902,7 @@ export function RightPanel({
         <div
           key={contentKey}
           className={`flex-1 min-w-0 min-h-0 ${
-            preview.mode === 'url' || preview.mode === 'terminal'
+            preview.mode === 'url' || preview.mode === 'terminal' || preview.mode === 'office'
               || (preview.mode === 'content' && ['code', 'json', 'text', 'markdown', 'html'].includes(preview.format))
               ? 'overflow-hidden p-2 flex flex-col'
               : 'overflow-auto p-4'
@@ -959,6 +974,21 @@ export function RightPanel({
                   </button>
                 </div>
               )}
+            </div>
+          )}
+
+          {preview.mode === 'office' && (
+            <div ref={contentRef} className="flex-1 min-h-0 min-w-0 w-full">
+              <OfficePreviewer
+                data={{
+                  format: preview.format,
+                  streamUrl: preview.streamUrl,
+                  name: preview.name,
+                  size: preview.size,
+                }}
+                reference={preview.reference}
+                onFallback={preview.reference ? () => { void api.files.reveal(preview.reference!); } : undefined}
+              />
             </div>
           )}
 
