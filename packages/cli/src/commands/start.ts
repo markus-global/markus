@@ -52,6 +52,7 @@ import {
   KnowledgeService,
   FileKnowledgeStore,
   DeliverableService,
+  KnowledgeSyncService,
   ReportService,
   TrustService,
   ArchiveService,
@@ -733,6 +734,7 @@ async function startServerCore(
   const knowledgeService = new KnowledgeService(knowledgeStore);
   const deliverableService = new DeliverableService(storage?.deliverableRepo);
   await deliverableService.load();
+  const knowledgeSyncService = new KnowledgeSyncService(deliverableService);
 
   // One-time migrations
   await taskService.migrateBranchToCompletionSummary();
@@ -769,6 +771,7 @@ async function startServerCore(
   apiServer.setReportService(reportService);
   apiServer.setKnowledgeService(knowledgeService);
   apiServer.setDeliverableService(deliverableService);
+  apiServer.setKnowledgeSyncService(knowledgeSyncService);
   apiServer.setRequirementService(requirementService);
   taskService.setDeliverableService(deliverableService);
   orgService.setDeliverableService(deliverableService);

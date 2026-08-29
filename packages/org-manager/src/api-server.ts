@@ -54,6 +54,7 @@ import type { StorageBridge } from './storage-bridge.js';
 import type { ProjectService } from './project-service.js';
 import type { ReportService } from './report-service.js';
 import type { KnowledgeService } from './knowledge-service.js';
+import type { KnowledgeSyncService } from './knowledge-sync-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { RequirementService } from './requirement-service.js';
 import type { WorkflowService } from './workflow-service.js';
@@ -11377,6 +11378,19 @@ EXPLANATION_END`;
           });
           return;
         }
+        // Office preview (docx/xlsx/pdf/pptx) — return type:'office' so the
+        // frontend can render inline (docx-preview / SheetJS / pdf.js). Old
+        // formats (.doc/.xls/.ppt) also map here; frontend falls back to
+        // download / system-open when no inline renderer is available.
+        const officeExts = new Set(['.pdf', '.docx', '.doc', '.xls', '.xlsx', '.ppt', '.pptx']);
+        if (officeExts.has(ext)) {
+          this.json(res, 200, {
+            type: 'office', name, path: resolved, size: stat.size,
+            extension: ext, format: ext.replace('.', ''),
+            streamUrl: `/api/files/stream?path=${encodeURIComponent(resolved)}`,
+          });
+          return;
+        }
         if (binaryExts.has(ext)) {
           this.json(res, 200, {
             type: 'binary', name, path: resolved, size: stat.size,
@@ -11958,6 +11972,36 @@ EXPLANATION_END`;
       return;
     }
 
+    // POST /api/projects/:id/knowledge/sync — scan knowledge base dirs and
+    // upsert source='knowledge' deliverables for the project.
+    if (path.match(/^\/api\/projects\/[^/]+\/knowledge\/sync$/) && req.method === 'POST') {
+      if (!this.projectService || !this.knowledgeSyncService) {
+        this.json(res, 503, { error: 'Knowledge sync service not available' });
+        return;
+      }
+      const projectId = path.split('/')[3]!;
+      const project = this.projectService.getProject(projectId);
+      if (!project) {
+        this.json(res, 404, { error: 'Project not found' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const roots = (body['knowledgeRoots'] as string[] | undefined) ?? project.knowledgeBasePaths;
+      if (!roots || roots.length === 0) {
+        this.json(res, 400, { error: 'No knowledge base paths bound to this project' });
+        return;
+      }
+      try {
+        const result = await this.knowledgeSyncService.sync(projectId, roots, {
+          ownerId: body['ownerId'] as string | undefined,
+        });
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 500, { error: `Knowledge sync failed: ${String(err)}` });
+      }
+      return;
+    }
+
     // ── Governance: Task Review ───────────────────────────────────────────
 
     if (path.match(/^\/api\/tasks\/[^/]+\/accept$/) && req.method === 'POST') {
@@ -12492,6 +12536,7 @@ EXPLANATION_END`;
 
       // ── Projects ─────────────────────────────────────────────────────────
       exact('/api/projects', 'GET', 'POST'),
+      regex(/^\/api\/projects\/[^/]+\/knowledge\/sync$/, 'POST'),
       regex(/^\/api\/projects\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
 
       // ── Notifications ────────────────────────────────────────────────────
@@ -12757,9 +12802,13 @@ EXPLANATION_END`;
   private knowledgeService?: KnowledgeService;
   deliverableService?: DeliverableService;
   requirementService?: RequirementService;
+  private knowledgeSyncService?: KnowledgeSyncService;
 
   setProjectService(svc: ProjectService): void {
     this.projectService = svc;
+  }
+  setKnowledgeSyncService(svc: KnowledgeSyncService): void {
+    this.knowledgeSyncService = svc;
   }
   setReportService(svc: ReportService): void {
     this.reportService = svc;

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
-import { writeFile, unlink, mkdtemp } from 'node:fs/promises';
+import { writeFile, unlink, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, extname } from 'node:path';
 import { createLogger } from '@markus/shared';
 
 const log = createLogger('file-converter');
@@ -131,4 +131,42 @@ export async function convertFilesToText(
 /** Reset cached markitdown availability (for testing) */
 export function resetMarkitdownCache(): void {
   markitdownAvailable = null;
+}
+
+/** Extensions readable directly as UTF-8 text (no markitdown needed). */
+const TEXT_EXTS = new Set([
+  '.md', '.markdown', '.txt', '.text', '.html', '.htm', '.json', '.csv', '.tsv',
+  '.xml', '.yaml', '.yml', '.js', '.ts', '.tsx', '.jsx', '.css', '.log', '.ini',
+  '.conf', '.toml', '.py', '.sh', '.sql',
+]);
+
+/**
+ * Extract searchable text from a file on disk.
+ *
+ * Strategy:
+ *  - Text-like extensions → read directly as UTF-8.
+ *  - Binary / Office (docx/xlsx/pptx/pdf) → markitdown CLI when available;
+ *    otherwise returns a descriptive placeholder (filename-only index).
+ *
+ * Used by knowledge-base sync to populate deliverable `content` for full-text search.
+ */
+export async function extractTextFromFile(filePath: string): Promise<string> {
+  const ext = extname(filePath).toLowerCase();
+  if (TEXT_EXTS.has(ext)) {
+    const raw = await readFile(filePath, 'utf-8');
+    // Hard cap to avoid indexing absurdly large files.
+    return raw.slice(0, 500_000);
+  }
+
+  const hasMarkitdown = await checkMarkitdown();
+  if (!hasMarkitdown) {
+    return ''; // filename-only index; caller still creates the deliverable
+  }
+  try {
+    const markdown = await convertWithMarkitdown(filePath);
+    return markdown.trim().slice(0, 500_000);
+  } catch (err) {
+    log.warn('Text extraction via markitdown failed', { filePath, error: String(err) });
+    return '';
+  }
 }
