@@ -5695,6 +5695,11 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           }}
           onEditProject={(id) => {
             selectProject(id);
+            // 编辑按钮 = 打开项目详情面板（selectProject 在 rightDetailMode==='closed' 时保持关闭，
+            // 此处强制切到 project 面板，绕过该守卫）
+            setSelectedTask(null);
+            setSelectedReq(null);
+            setRightDetailMode('project');
             setNavFocus('projects');
           }}
           onCreateProject={() => setShowCreateProject(true)}
