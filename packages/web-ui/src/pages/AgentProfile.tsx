@@ -226,6 +226,8 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
   const [agentStorage, setAgentStorage] = useState<StorageAgentItem | null>(null);
   const [agentDataDir, setAgentDataDir] = useState('');
   const [activeTasks, setActiveTasks] = useState<TaskInfo[]>([]);
+  // 排队消息数（mailbox 待处理）——用于 working 但无执行中任务时说明「在哪忙」
+  const [queuedCount, setQueuedCount] = useState(0);
 
   useEffect(() => {
     api.usage.agents().then(d => {
@@ -243,7 +245,11 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
         setActiveTasks(d.tasks.filter(t => agent.state.activeTaskIds?.includes(t.id)));
       }).catch(() => {});
     }
-  }, [agent.id, agent.state.activeTaskIds]);
+    // 忙碌但无执行中任务时，显示 mailbox 排队情况（深度分拣/处理消息中）
+    api.agents.getMailbox(agent.id, { limit: 1 }).then(mb => {
+      setQueuedCount(mb.queued?.length ?? 0);
+    }).catch(() => {});
+  }, [agent.id, agent.state.activeTaskIds, agent.state.status]);
 
   const toggleAgent = () => {
     if (agent.state.status === 'offline') api.agents.start(agent.id).then(onUpdate);
@@ -385,9 +391,18 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
           </div>
         )}
 
-        {agent.state.status === 'working' && activeN > 0 && (
+        {agent.state.status === 'working' && (activeN > 0 || queuedCount > 0 || agent.runtime?.activityLabel) && (
           <div className="bg-brand-500/10 border border-brand-500/20 rounded-lg p-2.5">
-            <div className="space-y-1">
+            <div className="space-y-1.5">
+              {agent.runtime?.activityLabel && (
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
+                  <span className="text-fg-secondary truncate flex-1">{agent.runtime.activityLabel}</span>
+                  {agent.runtime.activityType && (
+                    <span className="text-fg-tertiary capitalize shrink-0">{agent.runtime.activityType}</span>
+                  )}
+                </div>
+              )}
               {activeTasks.map(task => (
                 <div key={task.id} className="flex items-center gap-2 text-[11px]">
                   <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
@@ -395,6 +410,12 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
                   <span className="text-fg-tertiary capitalize shrink-0">{taskStatusLabel(task.status, t)}</span>
                 </div>
               ))}
+              {queuedCount > 0 && (
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                  <span className="text-fg-secondary flex-1">{t('agent:profilePage.overview.mailboxQueued', { count: queuedCount })}</span>
+                </div>
+              )}
             </div>
           </div>
         )}

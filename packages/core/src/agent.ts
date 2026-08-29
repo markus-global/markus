@@ -2786,6 +2786,8 @@ export class Agent {
       '## Your Mailbox',
       itemsSection,
       '',
+      '**Scope**: This mode handles MESSAGES (user chat, agent messages, comments, mentions, review requests). Formal task-execution items are NOT in this list — they are already queued for normal execution with full tools (including task_submit_review) and will NOT be processed here. Do NOT create or complete tasks from this mode; use `complete_deliberation` to route.',
+      '',
       '**CRITICAL accounting**: When you call `complete_deliberation`, EVERY item above MUST appear in exactly ONE of `process_item_id`/`process_item_ids`, `defer_item_ids`, `drop_item_ids`, or `inline_completed_ids`. Items not listed stay queued and trigger another cycle — wasting tokens. LIST stale/informational items in `drop_item_ids` (do NOT just say "drop" in reasoning). Batch items sharing a taskId/requirementId/channel via `process_item_ids` + `batch_context`. Use `memory_updates` to persist decisions across cycles.',
       '',
       'When ready, call `complete_deliberation`.',

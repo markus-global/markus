@@ -445,7 +445,18 @@ export class AttentionController {
             let deliberationAttempted = false;
             if (this.mailbox.depth > 0 && !isUserMessage && this.needsLLMTriage(item) && this.delegate?.performDeliberation) {
               deliberationAttempted = true;
-              const allItems = [item, ...this.mailbox.getQueuedItems()];
+              // 深度分拣只处理「消息」（用户/A2A/评论/提醒），绝不处理「正式任务执行」。
+              // triggerExecution 任务消息自带完整执行/评审工具链，若让它们在分拣中被 LLM
+              // 看到，agent 会试图在缺失 task_submit_review 等工具的白名单里完成任务，导致
+              // 「做了却无法提交评审」。因此这里把它们排除在分拣视界外——它们继续按队列
+              // 优先级独立排队，由后续正常出队路径 executeTask() 执行。
+              const allItems = [item, ...this.mailbox.getQueuedItems()].filter(
+                i => !i.payload.extra?.triggerExecution,
+              );
+              if (allItems.length === 0) {
+                // 队列里只剩正式任务执行消息：没有可分拣的消息，跳过 deliberation 直接出队执行。
+                deliberationAttempted = false;
+              }
               this.isDeliberating = true;
               this.deliberationAbortSignal = false;
               try {
@@ -1163,7 +1174,15 @@ export class AttentionController {
   private needsLLMTriage(headItem: MailboxItem): boolean {
     if (headItem.sourceType === 'human_chat') return false;
 
+    // 正式任务执行消息（triggerExecution）绝不参与深度分拣：
+    // 它们需要在带完整工具（含 task_submit_review）的正常出队路径 executeTask() 执行。
+    // 深度分拣的工具面是白名单（无 task_submit_review/shell/file），若让 LLM 在分拣中
+    // 看到任务消息，会诱使它试图在缺失评审工具的环境里完成任务 → 「做了却无法提交评审」，
+    // 或把任务延迟至少一轮。因此只要队列中存在 triggerExecution，就跳过 deliberation，
+    // 直接按优先级队列正常出队执行。
+    if (headItem.payload.extra?.triggerExecution) return false;
     const queued = this.mailbox.getQueuedItems();
+    if (queued.some(i => i.payload.extra?.triggerExecution)) return false;
     if (queued.length === 0) return false;
 
     if (queued.length >= TRIAGE_BACKLOG_THRESHOLD) return true;

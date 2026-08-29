@@ -207,6 +207,7 @@
       "currentlyWorking": "正在工作",
       "activeTasksCount_one": "{{count}} 个进行中任务",
       "activeTasksCount_other": "{{count}} 个进行中任务",
+      "mailboxQueued": "mailbox 有 {{count}} 条消息排队中",
       "startAgent": "▶ 启动",
       "stopAgent": "⏹ 停止",
       "openClaw": "OpenClaw"

@@ -1130,6 +1130,26 @@ export interface AgentDetail {
     lastError?: string;
     lastErrorAt?: string;
   };
+  /** OB-1：后端派生的可读运行阶段（phase/activityLabel/blockedBy/…） */
+  runtime?: {
+    phase: AgentRuntimePhase;
+    status: string;
+    activityType?: string;
+    activityLabel?: string;
+    currentTaskId?: string;
+    activeTaskIds: string[];
+    blockingTaskIds: string[];
+    blockedBy: Array<{ taskId: string; title: string; status: string }>;
+    startedAt?: string;
+    runningMinutes?: number;
+    lastHeartbeat?: string;
+    lastActivityAt?: string;
+    tokensUsedToday: number;
+    lastError?: string;
+    lastErrorAt?: string;
+    stall?: boolean;
+    dirty?: boolean;
+  };
 }
 
 export interface TeamTemplateInfo {

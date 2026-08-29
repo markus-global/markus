@@ -707,6 +707,38 @@ describe('triage and deliberation scheduling', () => {
     controller.stop();
   });
 
+  it('skips deliberation when queue contains formal task execution messages (tasks + messages all go through normal queue)', async () => {
+    const { controller, mailbox, delegate } = makeController({
+      performDeliberation: vi.fn().mockResolvedValue(null),
+      processMailboxItem: vi.fn().mockResolvedValue(`ok ${COMPLETION_MARKER}`),
+    });
+
+    // Two formal task executions + one normal A2A message → backlog would normally trigger deliberation
+    mailbox.enqueue('task_status_update', {
+      summary: 'Task: execute T2',
+      content: 'do the work',
+      taskId: 'tsk_1',
+      extra: { triggerExecution: true },
+    }, { priority: 1 as MailboxPriority });
+    mailbox.enqueue('task_status_update', {
+      summary: 'Task: execute T3',
+      content: 'do the work',
+      taskId: 'tsk_2',
+      extra: { triggerExecution: true },
+    }, { priority: 1 as MailboxPriority });
+    mailbox.enqueue('a2a_message', { summary: 'msg A', content: 'A body' });
+
+    controller.start();
+    await vi.waitFor(() => {
+      // Formal tasks must be processed via the normal mailbox path (never deliberation)
+      expect(delegate.processMailboxItem).toHaveBeenCalled();
+    }, { timeout: 3000 });
+    // Give deliberation a chance to (wrongly) fire if it existed — it must not.
+    await new Promise(r => setTimeout(r, 100));
+    expect(delegate.performDeliberation).not.toHaveBeenCalled();
+    controller.stop();
+  });
+
 });
 
 describe('evaluateInterrupt via delegate wiring', () => {

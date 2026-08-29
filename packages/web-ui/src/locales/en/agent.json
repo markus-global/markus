@@ -207,6 +207,7 @@
       "currentlyWorking": "Currently Working",
       "activeTasksCount_one": "{{count}} active task",
       "activeTasksCount_other": "{{count}} active tasks",
+      "mailboxQueued": "{{count}} message(s) queued in mailbox",
       "startAgent": "▶ Start",
       "stopAgent": "⏹ Stop",
       "openClaw": "OpenClaw"
