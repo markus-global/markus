@@ -721,6 +721,34 @@ describe('MarkusProvider CU tracking', () => {
     expect(events.some(e => e.type === 'tool_call_end')).toBe(true);
   });
 
+  it('strips leaked plaintext invoke markup even when structured tool calls also exist (mixed output)', async () => {
+    const sseBody = [
+      JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'deliverable_search', arguments: '{"query":"email"}' } }] }, finish_reason: null }] }),
+      JSON.stringify({ choices: [{ delta: { content: '<invoke name="deliverable_search"><parameter name="query">email</parameter></invoke>' }, finish_reason: null }] }),
+      JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+      JSON.stringify({ choices: [{ delta: {}, finish_reason: null }] }),
+    ].map(l => `data: ${l}\n`).join('') + 'data: [DONE]\n';
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) { controller.enqueue(encoder.encode(sseBody)); controller.close(); },
+    });
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: stream,
+      text: async () => sseBody,
+    } as Response);
+    const response = await provider.chatStream(
+      { messages: [{ role: 'user', content: 'check email' }] },
+      () => {},
+    );
+    expect(response.toolCalls).toHaveLength(1);
+    expect(response.toolCalls![0].name).toBe('deliverable_search');
+    expect(response.content).not.toContain('invoke');
+    expect(response.content).not.toContain('parameter name');
+  });
+
   it('recovers text-emitted tool calls from non-streaming content (deepseek DSML markup)', async () => {
     // Real-world shape: the model wrote the tool call as text (Anthropic-style
     // <invoke> markup wrapped in DeepSeek token noise) instead of tool_calls.

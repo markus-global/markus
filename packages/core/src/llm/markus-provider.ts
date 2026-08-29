@@ -46,6 +46,7 @@ import {
   parseOpenAICompatResponse,
   createSSEAccumulator,
   isOpenRouterReasoningModel,
+  recoverTextToolCalls,
 } from './provider-helpers.js';
 
 /** Re-export for callers/tests that import helpers from this module. */
@@ -62,61 +63,6 @@ export {
 // normalizeMarkusHubOrigin exported above with resolveMarkusRoute
 
 const log = createLogger('markus-provider');
-
-// ---------------------------------------------------------------------------
-// Text-emitted tool-call recovery
-// ---------------------------------------------------------------------------
-
-/**
- * Some models (notably `deepseek-v4-flash` via OpenAI-compatible proxies) emit
- * tool calls as *plain text* using an Anthropic-style `<invoke name="...">`
- * markup instead of the structured `tool_calls` field. When that happens the
- * upstream returns no `tool_calls`, `finish_reason` is `stop`, and the raw
- * markup leaks into the visible reply (see the `｜DSML｜` token noise some
- * DeepSeek builds wrap the tags with).
- *
- * This recovers those text-emitted calls into structured tool calls and strips
- * the markup from the content, so the agent loop can execute them normally. The
- * tag matchers use `[^<>]*?` around the tag name so they tolerate arbitrary
- * token noise between `<`/`>` and `invoke`/`parameter` (e.g. `<｜DSML｜｜invoke`).
- */
-function coerceToolParam(raw: string, nonString: boolean): unknown {
-  if (!nonString) return raw;
-  try { return JSON.parse(raw) as unknown; } catch { return raw; }
-}
-
-function recoverTextToolCalls(content: string): {
-  toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
-  cleanedContent: string;
-} {
-  if (!content || !/invoke\s+name=/i.test(content)) {
-    return { toolCalls: [], cleanedContent: content };
-  }
-  const invokeRe = /<[^<>]*?invoke\s+name="([^"]+)"[^<>]*>([\s\S]*?)<\/[^<>]*?invoke>/gi;
-  const paramRe = /<[^<>]*?parameter\s+name="([^"]+)"([^<>]*)>([\s\S]*?)<\/[^<>]*?parameter>/gi;
-  const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
-  let m: RegExpExecArray | null;
-  while ((m = invokeRe.exec(content)) !== null) {
-    const name = m[1];
-    const inner = m[2] ?? '';
-    const args: Record<string, unknown> = {};
-    let pm: RegExpExecArray | null;
-    while ((pm = paramRe.exec(inner)) !== null) {
-      const pName = pm[1];
-      const attrs = pm[2] ?? '';
-      const raw = (pm[3] ?? '').trim();
-      args[pName] = coerceToolParam(raw, /string="false"/i.test(attrs));
-    }
-    toolCalls.push({ id: `text_tc_${toolCalls.length}_${Date.now().toString(36)}`, name, arguments: args });
-  }
-  if (!toolCalls.length) return { toolCalls: [], cleanedContent: content };
-  const cleanedContent = content
-    .replace(/<[^<>]*?tool_calls>[\s\S]*?<\/[^<>]*?tool_calls>/gi, '')
-    .replace(invokeRe, '')
-    .replace(/[｜|]{1,2}\s*DSML\s*[｜|]{0,2}/gi, '')
-    .trim();
-  return { toolCalls, cleanedContent };
-}
 
 /** Models that should request visible reasoning tokens via OpenRouter. */
 function shouldEnableOpenRouterReasoning(modelId: string): boolean {
@@ -1055,18 +1001,20 @@ export class MarkusProvider implements MultiModalProviderInterface {
     });
 
     // Recover tool calls the model streamed as plain text instead of via the
-    // structured tool_calls field (see recoverTextToolCalls).
+    // structured tool_calls field. Even when structured tool calls exist, a
+    // mixed output can still carry plaintext `<invoke>` markup in the body —
+    // always strip the markup; only adopt recovered calls when none structured.
     let recoveredToolCalls = resultToolCalls;
     let content = state.content;
-    if (!recoveredToolCalls.length) {
-      const recovered = recoverTextToolCalls(content);
-      if (recovered.toolCalls.length) {
+    const recovered = recoverTextToolCalls(content);
+    if (recovered.toolCalls.length) {
+      content = recovered.cleanedContent;
+      if (!resultToolCalls.length) {
         log.warn('Recovered text-emitted tool calls from streamed content', {
           count: recovered.toolCalls.length,
           names: recovered.toolCalls.map(t => t.name),
         });
         recoveredToolCalls = recovered.toolCalls;
-        content = recovered.cleanedContent;
       }
     }
 

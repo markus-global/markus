@@ -10,6 +10,8 @@ import {
   parseOpenAICompatResponse,
   normalizeOpenAIUsage,
   createSSEAccumulator,
+  recoverTextToolCalls,
+  stripTextToolMarkup,
 } from '../src/llm/provider-helpers.js';
 
 describe('buildOpenAICompatEndpoint', () => {
@@ -385,5 +387,58 @@ describe('createSSEAccumulator', () => {
     }, {});
     const calls = acc.finalizeToolCalls();
     expect(calls).toEqual([{ id: 'a', name: 'real', arguments: {} }]);
+  });
+});
+
+describe('recoverTextToolCalls edge shapes', () => {
+  it('cleans MiniMax fence noise around leaked markup', () => {
+    const clean = recoverTextToolCalls('ok\n<]minimax[><invoke name="list_projects"></invoke>');
+    expect(clean.toolCalls).toHaveLength(1);
+    expect(clean.toolCalls[0].name).toBe('list_projects');
+    expect(clean.cleanedContent).not.toContain('invoke');
+    expect(clean.cleanedContent).toContain('ok');
+  });
+
+  it('leaves plain content untouched', () => {
+    const { toolCalls, cleanedContent } = recoverTextToolCalls('Just a normal reply.');
+    expect(toolCalls).toHaveLength(0);
+    expect(cleanedContent).toBe('Just a normal reply.');
+  });
+});
+
+describe('stripTextToolMarkup', () => {
+  it('strips leaked invoke markup from historical content, keeping prose', () => {
+    const dirty = 'Polymarket 标签页已选中。\n\n<invoke name="chrome-devtools__evaluate_script"><parameter name="expression">document.body.innerText</parameter></invoke>\n\n首页已捕获。';
+    const clean = stripTextToolMarkup(dirty);
+    expect(clean).not.toContain('invoke');
+    expect(clean).not.toContain('chrome-devtools__evaluate_script');
+    expect(clean).toContain('Polymarket 标签页已选中');
+    expect(clean).toContain('首页已捕获。');
+  });
+
+  it('returns input unchanged when no markup', () => {
+    expect(stripTextToolMarkup('hello world')).toBe('hello world');
+    expect(stripTextToolMarkup(null)).toBe('');
+  });
+});
+
+describe('convertMessagesOpenAI de-infection of history', () => {
+  it('strips leaked invoke markup from historical user/assistant/tool messages', () => {
+    const dirty = '之前残留: <invoke name="memory_save"><parameter name="content">x</parameter></invoke>';
+    const out = convertMessagesOpenAI([
+      { role: 'user', content: dirty },
+      { role: 'assistant', content: dirty },
+      { role: 'tool', content: dirty, toolCallId: 'tc_1' },
+    ]);
+    for (const msg of out) {
+      expect(String(msg.content)).not.toContain('invoke');
+    }
+    expect(String(out[0].content)).toContain('之前残留');
+  });
+
+  it('leaves system messages untouched', () => {
+    const sys = 'System instructions w/o markup';
+    const out = convertMessagesOpenAI([{ role: 'system', content: sys }]);
+    expect(String(out[0].content)).toBe(sys);
   });
 });

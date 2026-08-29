@@ -18,6 +18,7 @@ import {
   parseOpenAICompatResponse,
   createSSEAccumulator,
   isOpenRouterReasoningModel,
+  recoverTextToolCalls,
   type OpenAIMessage,
   type OpenAIToolDef,
 } from './provider-helpers.js';
@@ -301,14 +302,33 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       return tc;
     });
 
+    // Recover tool calls the model streamed as plain text instead of via the
+    // structured tool_calls field. Even when structured tool calls exist, a
+    // mixed output can still carry plaintext `<invoke>` markup in the body —
+    // always strip the markup; only adopt recovered calls when none structured.
+    let streamToolCalls = resultToolCalls;
+    let streamContent = state.content;
+    const recovered = recoverTextToolCalls(streamContent);
+    if (recovered.toolCalls.length) {
+      streamContent = recovered.cleanedContent;
+      if (!resultToolCalls.length) {
+        this.logLeakRecovered(recovered.toolCalls.length);
+        streamToolCalls = recovered.toolCalls;
+      }
+    }
+
+    // Upstream sometimes reports finish_reason=stop even when it emitted tool
+    // calls; normalize so the agent treats it as a tool turn.
+    if (streamToolCalls.length && state.finishReason !== 'tool_use') state.finishReason = 'tool_use';
+
     const usage: LLMResponse['usage'] = { inputTokens: state.promptTokens, outputTokens: state.completionTokens };
     if (state.cachedTokens > 0) usage.cacheReadTokens = state.cachedTokens;
     if (lastCostUsd !== undefined) (usage as LLMResponse['usage'] & { cost?: number }).cost = lastCostUsd;
     onEvent({ type: 'message_end', usage, finishReason: state.finishReason });
 
     const streamResult: LLMResponse = {
-      content: state.content,
-      toolCalls: resultToolCalls.length ? resultToolCalls : undefined,
+      content: streamContent,
+      toolCalls: streamToolCalls.length ? streamToolCalls : undefined,
       usage,
       finishReason: state.finishReason,
     };
@@ -317,7 +337,24 @@ export class OpenAIProvider implements MultiModalProviderInterface {
   }
 
   private convertResponse(data: OpenAIResponse): LLMResponse {
-    return parseOpenAICompatResponse(data as unknown as Record<string, unknown>);
+    return parseOpenAICompatResponse(data as unknown as Record<string, unknown>, {
+      recoverTextToolCalls: (content) => {
+        const recovered = recoverTextToolCalls(content);
+        if (recovered.toolCalls.length) {
+          this.logLeakRecovered(recovered.toolCalls.length);
+        }
+        return recovered;
+      },
+    });
+  }
+
+  private logLeakRecovered(count: number): void {
+    // Keep provider file side-effect free; minimal warn to stderr via console.
+    // (No createLogger import here to avoid coupling — providers log loud enough.)
+    if (count > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(`[openai] Recovered ${count} text-emitted tool call(s) from content`);
+    }
   }
 
   // ---------------------------------------------------------------------------

@@ -105,6 +105,79 @@ export function isOpenRouterReasoningModel(modelId: string | undefined | null): 
 }
 
 // ---------------------------------------------------------------------------
+// Text-emitted tool-call recovery (shared by MarkusProvider + OpenAIProvider)
+// ---------------------------------------------------------------------------
+
+/**
+ * Some models (notably `deepseek-v4-flash` via OpenAI-compatible proxies) emit
+ * tool calls as *plain text* using an Anthropic-style `<invoke name="...">`
+ * markup instead of the structured `tool_calls` field. When that happens the
+ * upstream returns no `tool_calls`, `finish_reason` is `stop`, and the raw
+ * markup leaks into the visible reply (see the `DSML` token noise some
+ * DeepSeek builds wrap the tags with).
+ *
+ * This recovers those text-emitted calls into structured tool calls and strips
+ * the markup from the content, so the agent loop can execute them normally. The
+ * tag matchers use `[^<>]*?` around the tag name so they tolerate arbitrary
+ * token noise between `<`/`>` and `invoke`/`parameter` (e.g. `<DSML|invoke`,
+ * MiniMax `<]minimax[>` fence noise).
+ */
+function coerceToolParam(raw: string, nonString: boolean): unknown {
+  if (!nonString) return raw;
+  try { return JSON.parse(raw) as unknown; } catch { return raw; }
+}
+
+export interface RecoveredToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export function recoverTextToolCalls(content: string): {
+  toolCalls: RecoveredToolCall[];
+  cleanedContent: string;
+} {
+  if (!content || !/invoke\s+name=/i.test(content)) {
+    return { toolCalls: [], cleanedContent: content };
+  }
+  const invokeRe = /<[^<>]*?invoke\s+name="([^"]+)"[^<>]*>([\s\S]*?)<\/[^<>]*?invoke>/gi;
+  const paramRe = /<[^<>]*?parameter\s+name="([^"]+)"([^<>]*)>([\s\S]*?)<\/[^<>]*?parameter>/gi;
+  const toolCalls: RecoveredToolCall[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = invokeRe.exec(content)) !== null) {
+    const name = m[1];
+    const inner = m[2] ?? '';
+    const args: Record<string, unknown> = {};
+    let pm: RegExpExecArray | null;
+    while ((pm = paramRe.exec(inner)) !== null) {
+      const pName = pm[1];
+      const attrs = pm[2] ?? '';
+      const raw = (pm[3] ?? '').trim();
+      args[pName] = coerceToolParam(raw, /string="false"/i.test(attrs));
+    }
+    toolCalls.push({ id: `text_tc_${toolCalls.length}_${Date.now().toString(36)}`, name, arguments: args });
+  }
+  if (!toolCalls.length) return { toolCalls: [], cleanedContent: content };
+  const cleanedContent = content
+    .replace(/<[^<>]*?tool_calls>[\s\S]*?<\/[^<>]*?tool_calls>/gi, '')
+    .replace(invokeRe, '')
+    .replace(/[｜|]{1,2}\s*DSML\s*[｜|]{0,2}/gi, '')
+    .replace(/<\]minimax\[>/gi, '')
+    .trim();
+  return { toolCalls, cleanedContent };
+}
+
+/**
+ * Strip leaked text-emitted tool markup from a message body (no call recovery).
+ * Used to clean *history* before it is sent back to the model, so previously
+ * leaked `<invoke>` plaintext stops re-infecting the loop.
+ */
+export function stripTextToolMarkup(content: string | null | undefined): string {
+  if (!content || !/invoke\s+name=/i.test(content)) return content ?? '';
+  return recoverTextToolCalls(content).cleanedContent;
+}
+
+// ---------------------------------------------------------------------------
 // Message / tool conversion
 // ---------------------------------------------------------------------------
 
@@ -123,6 +196,16 @@ export function convertMessagesOpenAI(
   const backfillReasoning = !!opts?.backfillReasoning || clean.some((m) => !!m.reasoningContent);
   const splitSystemIntoSegments = !!opts?.systemCacheSegments && opts.systemCacheSegments.length >= 1;
 
+  // De-infect history: strip leaked `<invoke>` plaintext from previous turns so
+  // it never reaches the model again (fixes the permanent re-feed loop).
+  for (const m of clean) {
+    if (m.role === 'system') continue;
+    if (typeof m.content === 'string') {
+      const cleaned = stripTextToolMarkup(m.content);
+      if (cleaned !== m.content) m.content = cleaned;
+    }
+  }
+
   return clean.flatMap((m): OpenAIMessage | OpenAIMessage[] => {
     if (splitSystemIntoSegments && m.role === 'system') {
       return (opts!.systemCacheSegments!)
@@ -133,7 +216,7 @@ export function convertMessagesOpenAI(
     if (m.role === 'tool') {
       return {
         role: 'tool' as const,
-        content: sanitizeForLLM(getTextContent(m.content)),
+        content: sanitizeForLLM(stripTextToolMarkup(getTextContent(m.content))),
         tool_call_id: m.toolCallId ?? '',
       };
     }
