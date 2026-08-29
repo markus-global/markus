@@ -11,8 +11,22 @@
     "group": "Group:",
     "clearAll": "Clear all",
     "filtersLabel": "Filters",
-    "refreshing": "Refreshing..."
+    "refreshing": "Refreshing...",
+    "source": "Source",
+    "allSources": "All sources",
+    "sourceAgent": "Agent",
+    "sourceKnowledge": "Knowledge base",
+    "bindKnowledgeBase": "Bind knowledge base"
   },
+  "bindKnowledgeBase": "Bind knowledge base directory",
+  "bindKnowledgeBaseHint": "Pick a project and bind its knowledge-base root directory. After binding, run \"Re-sync\" from the project detail — files inside will be scanned, indexed and previewed as knowledge deliverables.",
+  "bindProject": "Project",
+  "bindProjectSelect": "Select project…",
+  "bindPath": "Knowledge base directory",
+  "bindPathPlaceholder": "Absolute path, e.g. ~/docs/knowledge",
+  "bindCurrentPaths": "Bound:",
+  "bindSave": "Bind",
+  "bindSaving": "Saving…",
   "groupBy": {
     "date": "Date",
     "project": "Project",

@@ -11,6 +11,7 @@ import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
 import { ProjectSidebar } from '../components/ProjectSidebar.tsx';
+import { ProjectKnowledgePanel } from '../components/ProjectKnowledgePanel.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -3018,6 +3019,9 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
         )}
       </div>
 
+      {/* Knowledge base (V2: source='knowledge' deliverables bound to this project) */}
+      <ProjectKnowledgePanel project={project} onUpdateProject={onUpdateProject} />
+
       {/* Danger zone */}
       <div className="border border-red-500/20 rounded-xl p-4">
         <h4 className="text-xs font-semibold text-red-500/80 mb-2">{t('work:project.dangerZone')}</h4>
@@ -5686,6 +5690,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             setNavFocus('projects');
           }}
           onSelectProject={(id) => {
+            selectProject(id);
+            setNavFocus('projects');
+          }}
+          onEditProject={(id) => {
             selectProject(id);
             setNavFocus('projects');
           }}

@@ -102,6 +102,9 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterArtifact, setFilterArtifact] = useState('');
+  const [filterSource, setFilterSource] = useState<'agent' | 'knowledge' | ''>('');
+  const [filterProject, setFilterProject] = useState('');
+  const [bindOpen, setBindOpen] = useState(false);
   const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'team'>('date');
   const [selected, setSelected] = useState<DeliverableInfo | null>(() => {
     if (previewData?.initialSelectedId && previewData.items) {
@@ -207,9 +210,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const searchParams = useMemo(() => ({
     q: debouncedQuery || undefined,
+    projectId: filterProject || undefined,
     type: filterType || undefined,
     artifactType: filterArtifact || undefined,
-  }), [debouncedQuery, filterType, filterArtifact]);
+    source: filterSource || undefined,
+  }), [debouncedQuery, filterType, filterArtifact, filterProject, filterSource]);
 
   const fetchLimit = groupBy === 'date' ? DATE_PAGE_SIZE : ALL_ITEMS_LIMIT;
 
@@ -398,6 +403,18 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     // tool's accessUrl). The page id is the first hash segment; the second is the id.
     const hashParts = window.location.hash.slice(1).split('/');
     const hashId = resolvePageId(hashParts[0]) === PAGE.DELIVERABLES ? hashParts[1] : undefined;
+    // Navigation params from a previous page (e.g. project detail「在产出物中查看」):
+    // projectId + source filter, and openDeliverable deep-link.
+    const navProjectId = localStorage.getItem('markus_nav_projectId');
+    const navSource = localStorage.getItem('markus_nav_source');
+    if (navProjectId) {
+      localStorage.removeItem('markus_nav_projectId');
+      setFilterProject(navProjectId);
+    }
+    if (navSource === 'knowledge' || navSource === 'agent') {
+      localStorage.removeItem('markus_nav_source');
+      setFilterSource(navSource);
+    }
     const navId = localStorage.getItem('markus_nav_openDeliverable') || hashId;
     if (navId) {
       localStorage.removeItem('markus_nav_openDeliverable');
@@ -409,9 +426,12 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     }
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      if (detail?.params?.openDeliverable) {
+      const p = detail?.params as Record<string, string> | undefined;
+      if (p?.projectId) setFilterProject(p.projectId);
+      if (p?.source === 'knowledge' || p?.source === 'agent') setFilterSource(p.source);
+      if (p?.openDeliverable) {
         localStorage.removeItem('markus_nav_openDeliverable');
-        openDeliverableById(detail.params.openDeliverable);
+        openDeliverableById(p.openDeliverable);
       }
     };
     window.addEventListener('markus:navigate', handler);
@@ -630,11 +650,13 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setGroupOverrides(new Set());
   }, []);
 
-  const hasActiveFilters = !!(filterType || filterArtifact || debouncedQuery);
+  const hasActiveFilters = !!(filterType || filterArtifact || filterSource || filterProject || debouncedQuery);
 
   const clearAllFilters = useCallback(() => {
     setFilterType('');
     setFilterArtifact('');
+    setFilterSource('');
+    setFilterProject('');
     setSearchQuery('');
     setDebouncedQuery('');
   }, []);
@@ -1055,6 +1077,22 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
           )}
           {/* Filter rows — always visible on desktop, collapsible on mobile */}
           <div className={isMobile && !mobileFiltersOpen ? 'hidden' : 'space-y-3'}>
+          {/* Source filter (agent / knowledge) + bind knowledge base entry */}
+          <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide filter-pills-fade">
+            <span className="text-[10px] text-fg-tertiary shrink-0">{t('filters.source')}</span>
+            <FilterPill label={t('filters.allSources')} value="" current={filterSource} onClick={() => setFilterSource('')} />
+            <FilterPill label={t('filters.sourceAgent')} value="agent" current={filterSource} onClick={v => setFilterSource((v || '') as 'agent' | 'knowledge' | '')} />
+            <FilterPill label={t('filters.sourceKnowledge')} value="knowledge" current={filterSource} onClick={v => setFilterSource((v || '') as 'agent' | 'knowledge' | '')} />
+            <button
+              type="button"
+              onClick={() => setBindOpen(true)}
+              className="ml-auto shrink-0 flex items-center gap-1 px-2 py-1 rounded text-[10px] text-fg-tertiary hover:text-brand-500 hover:bg-surface-elevated transition-colors"
+              title={t('filters.bindKnowledgeBase')}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+              {t('filters.bindKnowledgeBase')}
+            </button>
+          </div>
           {/* Type filter (includes artifact types) */}
           <div className="flex gap-1 overflow-x-auto scrollbar-hide filter-pills-fade">
             <FilterPill label={t('filters.allTypes')} value="" current={filterType || filterArtifact || ''} onClick={() => { setFilterType(''); setFilterArtifact(''); }} />
@@ -1108,6 +1146,22 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
                   {ARTIFACT_META[filterArtifact]?.icon} {t(`artifactTypes.${filterArtifact}`)}
                   <button onClick={() => setFilterArtifact('')} className="hover:text-brand-400">
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </span>
+              )}
+              {filterSource && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
+                  {filterSource === 'knowledge' ? t('filters.sourceKnowledge') : t('filters.sourceAgent')}
+                  <button onClick={() => setFilterSource('')} className="hover:text-brand-400">
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </span>
+              )}
+              {filterProject && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
+                  {resolveProjectName(filterProject) ?? filterProject}
+                  <button onClick={() => setFilterProject('')} className="hover:text-brand-400">
                     <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                   </button>
                 </span>
@@ -1697,6 +1751,18 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
       )}
 
       {/* Remove Confirmation */}
+      {bindOpen && (
+        <KnowledgeBindModal
+          projects={projects}
+          onClose={() => setBindOpen(false)}
+          onBound={() => {
+            setBindOpen(false);
+            setFilterSource('knowledge');
+            refresh();
+          }}
+        />
+      )}
+
       {confirmRemove && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setConfirmRemove(null)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -1749,6 +1815,81 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         </div>
       )}
 
+    </div>
+  );
+}
+
+function KnowledgeBindModal({ projects, onClose, onBound }: { projects: ProjectInfo[]; onClose: () => void; onBound: () => void }) {
+  const { t } = useTranslation('deliverables');
+  const [projectId, setProjectId] = useState('');
+  const [path, setPath] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const selectedProject = projects.find(p => p.id === projectId);
+
+  const submit = async () => {
+    if (!projectId || !path.trim() || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const paths = [...new Set([...(selectedProject?.knowledgeBasePaths ?? []), path.trim()])];
+      await api.projects.update(projectId, { knowledgeBasePaths: paths });
+      onBound();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => { if (!busy) onClose(); }}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="text-sm font-medium text-fg-primary mb-1">{t('bindKnowledgeBase')}</div>
+        <p className="text-xs text-fg-secondary mb-4">{t('bindKnowledgeBaseHint')}</p>
+
+        <label className="block text-[10px] text-fg-tertiary mb-1">{t('bindProject')}</label>
+        <select
+          value={projectId}
+          onChange={e => setProjectId(e.target.value)}
+          className="w-full mb-3 px-2.5 py-2 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary"
+        >
+          <option value="">{t('bindProjectSelect')}</option>
+          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+
+        <label className="block text-[10px] text-fg-tertiary mb-1">{t('bindPath')}</label>
+        <input
+          value={path}
+          onChange={e => setPath(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') void submit(); }}
+          placeholder={t('bindPathPlaceholder')}
+          className="w-full mb-2 px-2.5 py-2 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary"
+        />
+
+        {selectedProject && (selectedProject.knowledgeBasePaths ?? []).length > 0 && (
+          <div className="mb-3 space-y-1">
+            <div className="text-[10px] text-fg-tertiary">{t('bindCurrentPaths')}</div>
+            {(selectedProject.knowledgeBasePaths ?? []).map((p, i) => (
+              <div key={`${p}-${i}`} className="text-[11px] text-fg-secondary font-mono truncate" title={p}>• {p}</div>
+            ))}
+          </div>
+        )}
+
+        {error && <div className="mb-3 px-2.5 py-1.5 text-[11px] rounded-md bg-red-500/15 text-red-500">{error}</div>}
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onClose} disabled={busy} className="px-3 py-1.5 text-xs text-fg-tertiary hover:text-fg-secondary rounded-lg transition-colors">{t('common:cancel', { defaultValue: 'Cancel' })}</button>
+          <button
+            onClick={() => void submit()}
+            disabled={busy || !projectId || !path.trim()}
+            className="px-3 py-1.5 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {busy ? t('bindSaving', { defaultValue: 'Saving…' }) : t('bindSave', { defaultValue: 'Bind directory' })}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

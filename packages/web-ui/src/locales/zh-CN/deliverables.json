@@ -11,8 +11,22 @@
     "group": "分组：",
     "clearAll": "清除全部",
     "filtersLabel": "筛选",
-    "refreshing": "刷新中..."
+    "refreshing": "刷新中...",
+    "source": "来源",
+    "allSources": "全部来源",
+    "sourceAgent": "Agent 产出",
+    "sourceKnowledge": "知识库",
+    "bindKnowledgeBase": "绑定知识库目录"
   },
+  "bindKnowledgeBase": "绑定知识库目录",
+  "bindKnowledgeBaseHint": "选择一个项目并绑定其知识库根目录。绑定后可在项目详情中执行「重新同步」，目录内文件将作为知识库产出物被扫描、索引与预览。",
+  "bindProject": "项目",
+  "bindProjectSelect": "选择项目…",
+  "bindPath": "知识库目录",
+  "bindPathPlaceholder": "输入绝对路径，如 ~/docs/knowledge",
+  "bindCurrentPaths": "已绑定：",
+  "bindSave": "绑定",
+  "bindSaving": "保存中…",
   "groupBy": {
     "date": "日期",
     "project": "项目",

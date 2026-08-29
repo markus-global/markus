@@ -1562,6 +1562,7 @@ export const api = {
         size?: number;
         streamUrl?: string;
         extension?: string;
+        format?: string;
       }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
     streamUrl: (filePath: string) =>
       `${BASE}/files/stream?path=${encodeURIComponent(filePath)}`,
@@ -2195,6 +2196,8 @@ export const api = {
       request<{ project: ProjectInfo }>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) =>
       request<{ deleted: boolean }>(`/projects/${id}`, { method: 'DELETE' }),
+    syncKnowledge: (id: string, knowledgeRoots?: string[]) =>
+      request<{ projectId: string; roots: string[]; scanned: number; registered: number; updated: number; outdated: number; errors: string[] }>(`/projects/${id}/knowledge/sync`, { method: 'POST', body: JSON.stringify({ knowledgeRoots }) }),
 
   },
 
@@ -2219,7 +2222,7 @@ export const api = {
 
   // ─── Deliverables (unified) ──────────────────────────────────────────
   deliverables: {
-    search: (opts?: { q?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; artifactType?: string; offset?: number; limit?: number }) => {
+    search: (opts?: { q?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; artifactType?: string; source?: 'agent' | 'knowledge'; offset?: number; limit?: number }) => {
       const params = new URLSearchParams();
       if (opts?.q) params.set('q', opts.q);
       if (opts?.projectId) params.set('projectId', opts.projectId);
@@ -2228,6 +2231,7 @@ export const api = {
       if (opts?.type) params.set('type', opts.type);
       if (opts?.status) params.set('status', opts.status);
       if (opts?.artifactType) params.set('artifactType', opts.artifactType);
+      if (opts?.source) params.set('source', opts.source);
       if (opts?.offset) params.set('offset', String(opts.offset));
       if (opts?.limit) params.set('limit', String(opts.limit));
       return request<{ results: DeliverableInfo[]; total: number }>(`/deliverables?${params}`);
