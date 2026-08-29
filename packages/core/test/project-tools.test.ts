@@ -344,12 +344,25 @@ describe('knowledge_search', () => {
     expect(ctx.deliverableSearch).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'proj_002', source: 'knowledge' }));
   });
 
+  it('exposes updatedAt in results (aligned with knowledge_list)', async () => {
+    const ctx = createMockContext({
+      deliverableSearch: vi.fn(async () => [
+        { id: 'dlv_001', type: 'file', title: 'API Doc', summary: 'API reference', reference: '/docs/api.md', status: 'active', tags: ['api'], updatedAt: '2026-08-29T08:00:00.000Z' },
+      ]),
+    });
+    const tool = findTool(ctx, 'knowledge_search');
+    const result = JSON.parse(await tool.execute({ query: 'api' }));
+    expect(result.status).toBe('success');
+    expect(result.results[0].updatedAt).toBe('2026-08-29T08:00:00.000Z');
+  });
+
   it('returns error when deliverableSearch throws', async () => {
     const ctx = createMockContext({ deliverableSearch: vi.fn(async () => { throw new Error('boom'); }) });
     const tool = findTool(ctx, 'knowledge_search');
     const result = JSON.parse(await tool.execute({ query: 'x' }));
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/boom/);
+    expect(result.error).toMatch(/Knowledge search failed/);
   });
 });
 
@@ -387,6 +400,25 @@ describe('knowledge_read', () => {
     const result = JSON.parse(await tool.execute({ reference: '/kb/a.md' }));
     expect(result.status).toBe('success');
     expect(ctx.deliverableRead).toHaveBeenCalledWith({ reference: '/kb/a.md' });
+  });
+
+  it('forwards project_id to the bridge for scoped reads', async () => {
+    const ctx = createMockContext({
+      deliverableRead: vi.fn(async ({ reference }) => ({ content: 'scoped', reference })),
+    });
+    const tool = findTool(ctx, 'knowledge_read');
+    const result = JSON.parse(await tool.execute({ path: '/kb/guide.md', project_id: 'proj_001' }));
+    expect(result.status).toBe('success');
+    expect(ctx.deliverableRead).toHaveBeenCalledWith({ reference: '/kb/guide.md', projectId: 'proj_001' });
+  });
+
+  it('accepts camelCase projectId alias for the bridge', async () => {
+    const ctx = createMockContext({
+      deliverableRead: vi.fn(async ({ reference }) => ({ content: 'x', reference })),
+    });
+    const tool = findTool(ctx, 'knowledge_read');
+    await tool.execute({ path: '/kb/a.md', projectId: 'proj_002' });
+    expect(ctx.deliverableRead).toHaveBeenCalledWith({ reference: '/kb/a.md', projectId: 'proj_002' });
   });
 
   it('requires a path', async () => {

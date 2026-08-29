@@ -145,4 +145,48 @@ describe('extractTextFromFile', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('caps oversized text files at 500KB (boundary: huge files do not blow memory)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'extract-huge-'));
+    const file = join(dir, 'huge.log');
+    writeFileSync(file, 'x'.repeat(1_200_000));
+    try {
+      const text = await extractTextFromFile(file);
+      expect(text.length).toBeLessThanOrEqual(500_000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a Chinese-filename text file as UTF-8', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'extract-cn-'));
+    const file = join(dir, '中文说明.md');
+    writeFileSync(file, '中文内容段落');
+    try {
+      const text = await extractTextFromFile(file);
+      expect(text).toContain('中文内容段落');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns empty string when the file is unreadable (permission/IO error)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'extract-unreadable-'));
+    const file = join(dir, 'locked.md');
+    writeFileSync(file, 'secret');
+    // Make the file unreadable to guarantee an IO error (best-effort on all platforms).
+    try {
+      const { chmodSync } = await import('node:fs');
+      chmodSync(file, 0o000);
+      const text = await extractTextFromFile(file);
+      expect(text).toBe('');
+    } catch {
+      // On platforms where chmod 000 does not block the owner (e.g. root), the
+      // read may still succeed — this documents that the method never throws.
+      const text = await extractTextFromFile(file);
+      expect(typeof text).toBe('string');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

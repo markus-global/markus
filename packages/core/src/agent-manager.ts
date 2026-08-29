@@ -61,7 +61,7 @@ import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve, sep } from 'node:path';
 import { mkdirSync, readFileSync, existsSync, copyFileSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
@@ -526,8 +526,26 @@ export class AgentManager {
           tags,
         });
       },
-      deliverableRead: async ({ reference }) => {
+      deliverableRead: async ({ reference, projectId }) => {
         if (!reference) return null;
+        // Knowledge-read prefix guard (T4 review suggestion ①): when the caller
+        // scopes the read to a project, only allow files inside the project's
+        // bound knowledge directories (knowledge_base_paths). This keeps the
+        // knowledge tool from degrading into an arbitrary file-read primitive.
+        if (projectId && this.projectService) {
+          const roots = this.projectService.getProject(projectId)?.knowledgeBasePaths ?? [];
+          if (roots.length > 0) {
+            const resolvedRef = resolve(reference);
+            const withinRoot = roots.some((root) => {
+              const resolvedRoot = resolve(root);
+              return resolvedRef === resolvedRoot || resolvedRef.startsWith(resolvedRoot + sep);
+            });
+            if (!withinRoot) return null;
+          }
+        }
+        // A missing file is not readable — report null so the tool returns an
+        // error instead of a misleading success with empty content.
+        if (!existsSync(reference)) return null;
         try {
           const content = await extractTextFromFile(reference);
           return { content, reference };

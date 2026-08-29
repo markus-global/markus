@@ -95,4 +95,35 @@ describe('KnowledgeSyncService', () => {
     expect(result.scanned).toBe(1);
     expect(result.registered).toBe(1);
   });
+
+  it('handles an empty directory (boundary)', async () => {
+    const empty = join(tmp, 'empty');
+    mkdirSync(empty, { recursive: true });
+    const result = await service.sync('proj-1', [empty]);
+    expect(result.scanned).toBe(0);
+    expect(result.registered).toBe(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('indexes Chinese filenames (boundary: non-ASCII names)', async () => {
+    mkdirSync(join(root, '项目文档'), { recursive: true });
+    writeFileSync(join(root, '项目文档', '中文说明.md'), '中文内容');
+    const result = await service.sync('proj-1', [root]);
+    // readme.md + data.json + docs/notes.txt + 项目文档/中文说明.md
+    expect(result.scanned).toBe(4);
+    expect(result.registered).toBe(4);
+    const { results } = ds.search({ projectId: 'proj-1', source: 'knowledge' });
+    const cn = results.find(d => d.reference.includes('中文说明.md'));
+    expect(cn).toBeDefined();
+    expect(cn!.title).toContain('中文说明');
+    expect(cn!.content).toContain('TEXT:中文说明.md');
+  });
+
+  it('ignores hidden files and common vendor directories (boundary)', async () => {
+    const result = await service.sync('proj-1', [root]);
+    // .hidden.md and node_modules/dep.md must be skipped.
+    const { results } = ds.search({ projectId: 'proj-1', source: 'knowledge' });
+    expect(results.some(d => d.reference.includes('.hidden'))).toBe(false);
+    expect(results.some(d => d.reference.includes('node_modules'))).toBe(false);
+  });
 });

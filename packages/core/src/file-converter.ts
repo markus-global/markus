@@ -153,9 +153,16 @@ const TEXT_EXTS = new Set([
 export async function extractTextFromFile(filePath: string): Promise<string> {
   const ext = extname(filePath).toLowerCase();
   if (TEXT_EXTS.has(ext)) {
-    const raw = await readFile(filePath, 'utf-8');
-    // Hard cap to avoid indexing absurdly large files.
-    return raw.slice(0, 500_000);
+    // Graceful degradation: an unreadable/missing text file (permission, IO,
+    // vanished between scan and read) must not abort a whole knowledge sync.
+    // Return '' so the caller still indexes the filename.
+    try {
+      const raw = await readFile(filePath, 'utf-8');
+      // Hard cap to avoid indexing absurdly large files.
+      return raw.slice(0, 500_000);
+    } catch {
+      return '';
+    }
   }
 
   const hasMarkitdown = await checkMarkitdown();

@@ -60,6 +60,7 @@ export interface ProjectServiceBridge {
     repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
     teamIds: string[];
     governancePolicy?: { enabled: boolean; defaultTier: string };
+    knowledgeBasePaths?: string[];
   } | undefined;
   createProject?(opts: {
     orgId: string;
@@ -117,7 +118,7 @@ export interface ProjectToolsContext {
     type?: string;
     source?: 'agent' | 'knowledge';
     limit?: number;
-  }) => Promise<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[] }>>;
+  }) => Promise<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; updatedAt?: string }>>;
   deliverableList?: (opts: {
     projectId?: string;
     agentId?: string;
@@ -133,8 +134,10 @@ export interface ProjectToolsContext {
     status?: string;
     tags?: string;
   }) => Promise<{ id: string; status: string } | undefined>;
-  /** Read a knowledge-base document's text content (by file path/reference). */
-  deliverableRead?: (opts: { reference: string }) => Promise<{ content: string; reference: string } | null>;
+  /** Read a knowledge-base document's text content (by file path/reference).
+   *  projectId is forwarded when the caller scopes the read to a project; the
+   *  bridge may use it to enforce knowledge_base_paths prefix checks. */
+  deliverableRead?: (opts: { reference: string; projectId?: string }) => Promise<{ content: string; reference: string } | null>;
 }
 
 export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[] {
@@ -752,10 +755,11 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                     id: d.id, type: d.type, title: d.title,
                     summary: d.summary, reference: d.reference,
                     status: d.status, tags: d.tags,
+                    updatedAt: d.updatedAt,
                   })),
                 });
               } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
+                return JSON.stringify({ status: 'error', error: `Knowledge search failed: ${String(error)}` });
               }
             },
           } as AgentToolHandler,
@@ -795,7 +799,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   })),
                 });
               } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
+                return JSON.stringify({ status: 'error', error: `Knowledge list failed: ${String(error)}` });
               }
             },
           } as AgentToolHandler,
@@ -809,12 +813,14 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
             description:
               'Read the text content of a knowledge-base document by its file path (reference). ' +
               'Use the "reference" from knowledge_search / knowledge_list results. ' +
+              'When project_id is provided, the read is scoped to that project\'s bound knowledge directories. ' +
               'Thin wrapper that returns the extracted plain-text content for context.',
             inputSchema: {
               type: 'object',
               properties: {
                 path: { type: 'string', description: 'Absolute file path (reference) of the knowledge document' },
                 reference: { type: 'string', description: 'Alias for "path" — use whichever is available' },
+                project_id: { type: 'string', description: 'Project ID (recommended) — scopes the read to the project\'s bound knowledge directories' },
               },
             },
             async execute(args: Record<string, unknown>): Promise<string> {
@@ -822,9 +828,15 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
               if (!reference) {
                 return JSON.stringify({ status: 'error', error: 'path (or reference) is required' });
               }
+              const projectId = (args['project_id'] ?? args['projectId']) as string | undefined;
               try {
-                const result = await ctx.deliverableRead!({ reference });
-                if (!result) return JSON.stringify({ status: 'error', error: `Document not readable: ${reference}` });
+                const result = await ctx.deliverableRead!({ reference, ...(projectId ? { projectId } : {}) });
+                if (!result) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: `Document not readable: ${reference}${projectId ? ' (可能不在该项目绑定的知识库目录内)' : ''}`,
+                  });
+                }
                 return JSON.stringify({
                   status: 'success',
                   source: 'knowledge',
@@ -832,7 +844,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   content: result.content,
                 });
               } catch (error) {
-                return JSON.stringify({ status: 'error', error: String(error) });
+                return JSON.stringify({ status: 'error', error: `Knowledge read failed: ${String(error)}` });
               }
             },
           } as AgentToolHandler,
