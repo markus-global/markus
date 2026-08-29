@@ -102,6 +102,13 @@ const TOOL_GROUPS: ToolGroup[] = [
     toolNames: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
   },
   {
+    name: 'office',
+    keywords: ['office', 'word', 'docx', 'excel', 'xlsx', 'spreadsheet', 'powerpoint', 'pptx', 'pdf',
+      'generate document', 'generate report', 'create word', 'create excel', 'create powerpoint',
+      '办公', '文档', '表格', '演示', '幻灯片', '报告', '生成文档', '生成报告', '生成表格', '生成演示', '生成PDF'],
+    toolNames: ['office_generate'],
+  },
+  {
     name: 'packages',
     keywords: ['builder', 'artifact', 'deploy', 'skill', 'package', 'hub', 'hire', 'install agent', 'install team',
       '部署', '工件', '技能包', '招聘', '安装', 'builder-artifacts'],

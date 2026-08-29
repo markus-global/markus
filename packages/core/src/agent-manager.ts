@@ -36,6 +36,7 @@ import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
+import { createOfficeGenerateTool } from './tools/office-generate.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
 import { createSettingsTools, type SettingsAgentContext } from './tools/settings.js';
@@ -1841,6 +1842,7 @@ export class AgentManager {
       const ps = this.projectService;
       const ts = this.taskService;
       const rs = this.requirementService;
+      const dvCallbacks = this.buildDeliverableCallbacks(id);
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
@@ -1880,9 +1882,21 @@ export class AgentManager {
           }
           return stats;
         } : undefined,
-        ...this.buildDeliverableCallbacks(id),
+        ...dvCallbacks,
       })) {
         agent.registerTool(tool);
+      }
+
+      // Office 产出物生成工具（T6）：docx/xlsx/pptx/pdf，
+      // 成功后自动经既有 deliverableCreate 桥接登记为 source='agent' 交付物。
+      if (dvCallbacks.deliverableCreate) {
+        agent.registerTool(
+          createOfficeGenerateTool({
+            agentId: id,
+            webUiBaseUrl: this.webUiBaseUrl,
+            deliverableCreate: dvCallbacks.deliverableCreate,
+          }),
+        );
       }
     }
 
@@ -2726,6 +2740,7 @@ export class AgentManager {
       const ps2 = this.projectService;
       const ts2 = this.taskService;
       const rs2 = this.requirementService;
+      const dvCallbacks2 = this.buildDeliverableCallbacks(id);
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
@@ -2765,9 +2780,19 @@ export class AgentManager {
           }
           return stats;
         } : undefined,
-        ...this.buildDeliverableCallbacks(id),
+        ...dvCallbacks2,
       })) {
         agent.registerTool(tool);
+      }
+
+      if (dvCallbacks2.deliverableCreate) {
+        agent.registerTool(
+          createOfficeGenerateTool({
+            agentId: id,
+            webUiBaseUrl: this.webUiBaseUrl,
+            deliverableCreate: dvCallbacks2.deliverableCreate,
+          }),
+        );
       }
     }
 

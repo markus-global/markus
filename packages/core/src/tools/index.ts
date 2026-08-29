@@ -26,6 +26,7 @@ export { createMailboxTools, type MailboxToolContext } from './mailbox-tools.js'
 export { createWorkflowTools, type WorkflowToolsContext } from './workflow-tools.js';
 export { createMultiModalTools, type MultiModalToolsContext } from './multimodal.js';
 export { createFeishuTools, type FeishuToolsConfig } from './feishu.js';
+export { createOfficeGenerateTool, generateOfficeFile, findCjkFontPath, OFFICE_FORMATS, OfficeGenerateError, type OfficeFormat, type OfficeContentSpec, type OfficeGenerateToolContext, type OfficeGenerateResult } from './office-generate.js';
 export { toolOk, toolErr, isToolErrorResult } from './result.js';
 export {
   parseOpenRightPanelArgs,
