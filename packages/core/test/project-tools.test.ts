@@ -323,6 +323,98 @@ describe('deliverable_update', () => {
   });
 });
 
+describe('knowledge_search', () => {
+  it('forwards project_id and forces source="knowledge"', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'knowledge_search');
+    const result = JSON.parse(await tool.execute({ query: 'onboarding', project_id: 'proj_001' }));
+    expect(result.status).toBe('success');
+    expect(result.source).toBe('knowledge');
+    expect(ctx.deliverableSearch).toHaveBeenCalledWith(expect.objectContaining({
+      query: 'onboarding',
+      projectId: 'proj_001',
+      source: 'knowledge',
+    }));
+  });
+
+  it('accepts camelCase projectId alias', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'knowledge_search');
+    await tool.execute({ query: 'kb', projectId: 'proj_002' });
+    expect(ctx.deliverableSearch).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'proj_002', source: 'knowledge' }));
+  });
+
+  it('returns error when deliverableSearch throws', async () => {
+    const ctx = createMockContext({ deliverableSearch: vi.fn(async () => { throw new Error('boom'); }) });
+    const tool = findTool(ctx, 'knowledge_search');
+    const result = JSON.parse(await tool.execute({ query: 'x' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/boom/);
+  });
+});
+
+describe('knowledge_list', () => {
+  it('forces source="knowledge" and forwards project filter', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'knowledge_list');
+    const result = JSON.parse(await tool.execute({ project_id: 'proj_001' }));
+    expect(result.status).toBe('success');
+    expect(result.source).toBe('knowledge');
+    expect(ctx.deliverableList).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'proj_001',
+      source: 'knowledge',
+    }));
+  });
+});
+
+describe('knowledge_read', () => {
+  it('reads document content via deliverableRead bridge', async () => {
+    const ctx = createMockContext({
+      deliverableRead: vi.fn(async ({ reference }) => ({ content: '# Title\n\nKB body', reference })),
+    });
+    const tool = findTool(ctx, 'knowledge_read');
+    const result = JSON.parse(await tool.execute({ path: '/kb/guide.md' }));
+    expect(result.status).toBe('success');
+    expect(result.content).toBe('# Title\n\nKB body');
+    expect(ctx.deliverableRead).toHaveBeenCalledWith({ reference: '/kb/guide.md' });
+  });
+
+  it('accepts reference alias', async () => {
+    const ctx = createMockContext({
+      deliverableRead: vi.fn(async ({ reference }) => ({ content: 'x', reference })),
+    });
+    const tool = findTool(ctx, 'knowledge_read');
+    const result = JSON.parse(await tool.execute({ reference: '/kb/a.md' }));
+    expect(result.status).toBe('success');
+    expect(ctx.deliverableRead).toHaveBeenCalledWith({ reference: '/kb/a.md' });
+  });
+
+  it('requires a path', async () => {
+    const ctx = createMockContext({
+      deliverableRead: vi.fn(async ({ reference }) => ({ content: 'x', reference })),
+    });
+    const tool = findTool(ctx, 'knowledge_read');
+    const result = JSON.parse(await tool.execute({}));
+    expect(result.status).toBe('error');
+    expect(ctx.deliverableRead).not.toHaveBeenCalled();
+  });
+
+  it('returns error when document is not readable', async () => {
+    const ctx = createMockContext({
+      deliverableRead: vi.fn(async () => null),
+    });
+    const tool = findTool(ctx, 'knowledge_read');
+    const result = JSON.parse(await tool.execute({ path: '/missing.md' }));
+    expect(result.status).toBe('error');
+  });
+
+  it('not registered when bridge is absent', () => {
+    const ctx = createMockContext();
+    // deliverableRead not provided by default mock → tool absent
+    expect(() => findTool(ctx, 'knowledge_read')).toThrow();
+  });
+});
+
 describe('update_project extended', () => {
   it('requires approval for name change', async () => {
     const approval = vi.fn(async () => ({ approved: true }));

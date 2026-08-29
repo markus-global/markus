@@ -36,6 +36,7 @@ import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
+import { extractTextFromFile } from './file-converter.js';
 import { createOfficeGenerateTool } from './tools/office-generate.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
@@ -472,7 +473,7 @@ export class AgentManager {
 
   private buildDeliverableCallbacks(agentId: string, projectId?: string): Pick<
     ProjectToolsContext,
-    'deliverableCreate' | 'deliverableSearch' | 'deliverableList' | 'deliverableUpdate'
+    'deliverableCreate' | 'deliverableSearch' | 'deliverableList' | 'deliverableUpdate' | 'deliverableRead'
   > {
     if (!this.deliverableService) return {};
     const ds = this.deliverableService;
@@ -524,6 +525,15 @@ export class AgentManager {
           status: data.status,
           tags,
         });
+      },
+      deliverableRead: async ({ reference }) => {
+        if (!reference) return null;
+        try {
+          const content = await extractTextFromFile(reference);
+          return { content, reference };
+        } catch {
+          return null;
+        }
       },
     };
   }

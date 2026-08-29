@@ -133,6 +133,8 @@ export interface ProjectToolsContext {
     status?: string;
     tags?: string;
   }) => Promise<{ id: string; status: string } | undefined>;
+  /** Read a knowledge-base document's text content (by file path/reference). */
+  deliverableRead?: (opts: { reference: string }) => Promise<{ content: string; reference: string } | null>;
 }
 
 export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[] {
@@ -706,6 +708,129 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   resp.accessUrl = `${ctx.webUiBaseUrl}/#output/${result.id}`;
                 }
                 return JSON.stringify(resp);
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    // ── Knowledge-base tools (T4): thin wrappers over deliverable_* that
+    // default source='knowledge' and support project filtering. No new infra.
+    ...(ctx.deliverableSearch
+      ? [
+          {
+            name: 'knowledge_search',
+            description:
+              'Search the project knowledge base (documents synced from bound knowledge directories). ' +
+              'Thin wrapper over deliverable_search with source forced to "knowledge". ' +
+              'Use when the user asks about project docs, knowledge base, or synced documents.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: { type: 'string', description: 'Search keywords or question (matched against title, summary and full text)' },
+                project_id: { type: 'string', description: 'Filter by project ID (recommended for scoped knowledge bases)' },
+                limit: { type: 'number', description: 'Max results (default: 20)' },
+              },
+              required: ['query'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const results = await ctx.deliverableSearch!({
+                  query: args['query'] as string,
+                  projectId: (args['project_id'] ?? args['projectId']) as string | undefined,
+                  // Knowledge-base documents only — never Agent deliverables.
+                  source: 'knowledge',
+                  limit: args['limit'] as number | undefined,
+                });
+                return JSON.stringify({
+                  status: 'success',
+                  source: 'knowledge',
+                  count: results.length,
+                  results: results.map(d => ({
+                    id: d.id, type: d.type, title: d.title,
+                    summary: d.summary, reference: d.reference,
+                    status: d.status, tags: d.tags,
+                  })),
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.deliverableList
+      ? [
+          {
+            name: 'knowledge_list',
+            description:
+              'List knowledge-base documents (source="knowledge") with optional project filter. ' +
+              'Thin wrapper over deliverable_list with source forced to "knowledge".',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                project_id: { type: 'string', description: 'Filter by project ID' },
+                limit: { type: 'number', description: 'Max results (default: 50)' },
+              },
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const results = await ctx.deliverableList!({
+                  projectId: (args['project_id'] ?? args['projectId']) as string | undefined,
+                  source: 'knowledge',
+                  limit: args['limit'] as number | undefined,
+                });
+                return JSON.stringify({
+                  status: 'success',
+                  source: 'knowledge',
+                  count: results.length,
+                  results: results.map(d => ({
+                    id: d.id, type: d.type, title: d.title,
+                    summary: d.summary, reference: d.reference,
+                    status: d.status, tags: d.tags,
+                    updatedAt: d.updatedAt,
+                  })),
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.deliverableRead
+      ? [
+          {
+            name: 'knowledge_read',
+            description:
+              'Read the text content of a knowledge-base document by its file path (reference). ' +
+              'Use the "reference" from knowledge_search / knowledge_list results. ' +
+              'Thin wrapper that returns the extracted plain-text content for context.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: 'Absolute file path (reference) of the knowledge document' },
+                reference: { type: 'string', description: 'Alias for "path" — use whichever is available' },
+              },
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              const reference = (args['path'] ?? args['reference'] ?? '') as string;
+              if (!reference) {
+                return JSON.stringify({ status: 'error', error: 'path (or reference) is required' });
+              }
+              try {
+                const result = await ctx.deliverableRead!({ reference });
+                if (!result) return JSON.stringify({ status: 'error', error: `Document not readable: ${reference}` });
+                return JSON.stringify({
+                  status: 'success',
+                  source: 'knowledge',
+                  reference: result.reference,
+                  content: result.content,
+                });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
               }

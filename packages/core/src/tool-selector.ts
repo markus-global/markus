@@ -98,8 +98,10 @@ const TOOL_GROUPS: ToolGroup[] = [
     name: 'deliverables',
     keywords: ['deliverable', 'deliverables', 'output', 'artifact', 'convention', 'architecture decision',
       'gotcha', 'troubleshooting', 'best practice', 'lesson', 'pattern', 'report', 'document',
+      'knowledge base', 'knowledge', 'kb', 'synced document',
       '产出物', '产出', '交付物', '知识', '知识库', '贡献', '约定', '架构决策', '最佳实践', '经验'],
-    toolNames: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
+    toolNames: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update',
+      'knowledge_search', 'knowledge_list', 'knowledge_read'],
   },
   {
     name: 'office',
@@ -278,7 +280,11 @@ export class ToolSelector {
     if (pack !== 'reflex') {
       const contextLower = (opts.userMessage ?? '').toLowerCase();
       for (const group of this.groups) {
-        if (group.toolNames.some(n => selected.has(n))) continue;
+        // Only skip keyword activation when the WHOLE group is already in — a
+        // partially-present group must still be able to add the rest (e.g.
+        // deliverable_search is base-always-on, so a keyword hit must still
+        // surface knowledge_search/list/read).
+        if (group.toolNames.length > 0 && group.toolNames.every(n => selected.has(n))) continue;
         const matched = group.keywords.some(kw => contextLower.includes(kw));
         if (matched) {
           for (const name of group.toolNames) {

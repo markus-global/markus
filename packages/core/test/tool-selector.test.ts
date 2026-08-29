@@ -447,4 +447,37 @@ describe('ToolSelector', () => {
       .find(t => t.name === 'discover_tools');
     expect(discover!.description).not.toMatch(/You have \d+ tools active/);
   });
+
+  it('T4: knowledge_* tools surface when the user asks about the knowledge base', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap([
+      ...ALL_BUILTIN,
+      'deliverable_list', 'deliverable_update',
+      'knowledge_search', 'knowledge_list', 'knowledge_read',
+    ]);
+    const selected = selector.selectTools({
+      allTools,
+      userMessage: '查一下项目知识库里关于 API 的文档',
+      pack: 'converse',
+    }).map((t) => t.name);
+
+    // 中文关键词「知识库」命中 deliverables 组 → 知识工具对 Agent 可见可调
+    expect(selected).toContain('knowledge_search');
+    expect(selected).toContain('knowledge_list');
+    expect(selected).toContain('knowledge_read');
+  });
+
+  it('T4: English "knowledge base" keyword also surfaces knowledge tools', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap([
+      ...ALL_BUILTIN,
+      'knowledge_search', 'knowledge_list', 'knowledge_read',
+    ]);
+    const selected = selector.selectTools({
+      allTools,
+      userMessage: 'Search the knowledge base for onboarding docs',
+      pack: 'converse',
+    }).map((t) => t.name);
+    expect(selected).toContain('knowledge_search');
+  });
 });
