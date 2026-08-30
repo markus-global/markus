@@ -1874,8 +1874,8 @@ function KnowledgeBindModal({ projects, onClose, onBound }: { projects: ProjectI
       const trimmed = path.trim();
       const paths = [...new Set([...(selectedProject?.knowledgeBasePaths ?? []), trimmed])];
       await api.projects.update(projectId, { knowledgeBasePaths: paths });
-      // 绑定成功后立即扫描该目录，产出物页面立即可见
-      await api.projects.syncKnowledge(projectId, [trimmed]);
+      // 绑定后同步所有已绑路径（而非仅新路径），避免覆盖旧目录的文件
+      await api.projects.syncKnowledge(projectId);
       onBound();
     } catch (err) {
       setError(String(err));

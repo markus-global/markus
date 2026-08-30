@@ -59,6 +59,7 @@
     "kbDocsHeading": "Knowledge Documents",
     "kbLoadingDocs": "Loading…",
     "kbNoDocs": "No documents yet. Bind a directory and it syncs automatically.",
+    "kbRemoveConfirm": "Remove knowledge base directory \\\"{{path}}\\\"? Syncing after removal will clean up its registered files.",
     "dangerZone": "Danger Zone",
     "dangerZoneDeleteHint": "Deleting a project is permanent and cannot be undone. Tasks and requirements will be unlinked.",
     "deleteProjectConfirmTitle": "Delete this project?",

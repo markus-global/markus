@@ -22,6 +22,7 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [docs, setDocs] = useState<DeliverableInfo[]>([]);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [confirmRemovePath, setConfirmRemovePath] = useState<string | null>(null);
 
   const loadDocs = useCallback(async () => {
     if (!project.id) return;
@@ -45,16 +46,21 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
       const next = [...new Set([...paths, p])];
       await onUpdateProject({ knowledgeBasePaths: next });
       setDraftPath('');
-      // 绑定成功后立即扫描新增目录，产出物页面即可看到知识库文件
-      await runSync([p]);
+      // 绑定后同步所有已绑路径（而非仅新路径），避免覆盖旧目录的文件
+      await runSync();
     } catch (err) {
       setNotice({ type: 'error', text: `${t('work:project.kbPathsSaveFailed')}: ${String(err)}` });
     }
   };
 
-  const handleRemovePath = async (path: string) => {
-    await onUpdateProject({ knowledgeBasePaths: paths.filter(x => x !== path) });
-    setNotice({ type: 'success', text: t('work:project.kbPathsSaved') });
+  const handleConfirmRemovePath = async () => {
+    const target = confirmRemovePath;
+    if (!target || syncing) return;
+    setConfirmRemovePath(null);
+    const next = paths.filter(x => x !== target);
+    await onUpdateProject({ knowledgeBasePaths: next });
+    // 删除路径后重新同步（仅保留剩余路径的文件）
+    await runSync(next);
   };
 
   // Native directory picker (desktop only) — fills the path field so users
@@ -129,6 +135,26 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
         </div>
       </div>
 
+      {/* Confirm remove dialog */}
+      {confirmRemovePath && (
+        <div className="mb-3 px-3 py-2 bg-surface-overlay border border-border-default rounded-lg">
+          <p className="text-xs text-fg-secondary mb-2">{t('work:project.kbRemoveConfirm', { path: confirmRemovePath })}</p>
+          <div className="flex gap-2 justify-end">
+            <button
+              type="button"
+              onClick={() => setConfirmRemovePath(null)}
+              className="px-2.5 py-1 text-xs rounded-md bg-surface-secondary text-fg-secondary hover:text-fg-primary border border-border-default transition-colors"
+            >{t('common:cancel')}</button>
+            <button
+              type="button"
+              onClick={() => void handleConfirmRemovePath()}
+              disabled={syncing}
+              className="px-2.5 py-1 text-xs rounded-md bg-red-600 text-white hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >{syncing ? t('work:project.kbSyncing') : t('common:confirm')}</button>
+          </div>
+        </div>
+      )}
+
       {/* Bound paths */}
       <div className="space-y-1.5 mb-3">
         {paths.length === 0 && (
@@ -142,7 +168,7 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
             <span className="text-xs text-fg-secondary flex-1 min-w-0 truncate font-mono" title={p}>{p}</span>
             <button
               type="button"
-              onClick={() => handleRemovePath(p)}
+              onClick={() => setConfirmRemovePath(p)}
               className="text-fg-tertiary hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
               title={t('work:project.removeRepo')}
             >
