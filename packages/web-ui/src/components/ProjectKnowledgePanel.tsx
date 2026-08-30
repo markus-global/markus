@@ -57,6 +57,19 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
     setNotice({ type: 'success', text: t('work:project.kbPathsSaved') });
   };
 
+  // Native directory picker (desktop only) — fills the path field so users
+  // never have to type/guess absolute paths; binding still happens on「绑定」.
+  const canPickDir = typeof window !== 'undefined' && !!window.markusDesktop?.selectDirectory;
+
+  const handleBrowse = async () => {
+    try {
+      const dir = await window.markusDesktop?.selectDirectory?.(t('work:project.kbBrowseTitle'));
+      if (dir) setDraftPath(dir);
+    } catch (err) {
+      setNotice({ type: 'error', text: `${t('work:project.kbBrowseFailed')}: ${String(err)}` });
+    }
+  };
+
   const runSync = async (roots?: string[]) => {
     if (syncing) return;
     setSyncing(true);
@@ -143,8 +156,19 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
             onChange={e => setDraftPath(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') void handleAddPath(); }}
             placeholder={t('work:project.kbPathPlaceholder')}
-            className="flex-1 px-2.5 py-1.5 text-xs bg-surface-primary border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary"
+            className="flex-1 min-w-0 px-2.5 py-1.5 text-xs bg-surface-primary border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary font-mono"
           />
+          {canPickDir && (
+            <button
+              type="button"
+              onClick={() => void handleBrowse()}
+              disabled={syncing}
+              title={t('work:project.kbBrowse')}
+              className="shrink-0 px-2.5 py-1.5 text-xs bg-surface-overlay text-fg-secondary hover:text-fg-primary rounded-md disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {t('work:project.kbBrowse')}
+            </button>
+          )}
           <button
             type="button"
             onClick={handleAddPath}

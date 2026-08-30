@@ -1,4 +1,4 @@
-import { ipcMain, app, shell, Notification, BrowserWindow } from 'electron';
+import { ipcMain, app, shell, Notification, BrowserWindow, dialog } from 'electron';
 import {
   consumePendingDeepLinkAuth,
   peekPendingDeepLinkAuth,
@@ -47,6 +47,19 @@ export function setupIpcHandlers(): void {
   ipcMain.handle('app:open-external', async (_event, url: string) => {
     await shell.openExternal(url);
     return { ok: true };
+  });
+
+  // Native directory picker (system dialog) — returns selected path or null on cancel.
+  ipcMain.handle('dialog:open-directory', async (event, title?: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
+    const opts = {
+      title: title || '选择目录',
+      properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
+    };
+    const result = win
+      ? await dialog.showOpenDialog(win, opts)
+      : await dialog.showOpenDialog(opts);
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
   });
 
   ipcMain.handle('app:focus-window', (event) => {

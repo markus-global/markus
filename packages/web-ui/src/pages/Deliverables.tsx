@@ -1849,6 +1849,17 @@ function KnowledgeBindModal({ projects, onClose, onBound }: { projects: ProjectI
 
   const selectedProject = projects.find(p => p.id === projectId);
 
+  const canPickDir = typeof window !== 'undefined' && !!window.markusDesktop?.selectDirectory;
+
+  const handleBrowse = async () => {
+    try {
+      const dir = await window.markusDesktop?.selectDirectory?.(t('bindBrowseTitle', { defaultValue: 'Select knowledge base directory' }));
+      if (dir) setPath(dir);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
   const submit = async () => {
     if (!projectId || !path.trim() || busy) return;
     setBusy(true);
@@ -1884,13 +1895,26 @@ function KnowledgeBindModal({ projects, onClose, onBound }: { projects: ProjectI
         </select>
 
         <label className="block text-[10px] text-fg-tertiary mb-1">{t('bindPath')}</label>
-        <input
-          value={path}
-          onChange={e => setPath(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') void submit(); }}
-          placeholder={t('bindPathPlaceholder')}
-          className="w-full mb-2 px-2.5 py-2 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary"
-        />
+        <div className="flex gap-2 mb-2">
+          <input
+            value={path}
+            onChange={e => setPath(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') void submit(); }}
+            placeholder={t('bindPathPlaceholder')}
+            className="flex-1 min-w-0 px-2.5 py-2 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary font-mono"
+          />
+          {canPickDir && (
+            <button
+              type="button"
+              onClick={() => void handleBrowse()}
+              disabled={busy}
+              title={t('bindBrowse', { defaultValue: 'Browse…' })}
+              className="shrink-0 px-3 py-2 text-xs bg-surface-overlay text-fg-secondary hover:text-fg-primary rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {t('bindBrowse', { defaultValue: 'Browse…' })}
+            </button>
+          )}
+        </div>
 
         {selectedProject && (selectedProject.knowledgeBasePaths ?? []).length > 0 && (
           <div className="mb-3 space-y-1">
