@@ -269,10 +269,41 @@ function polyfillMapMethods(): void {
 }
 polyfillMapMethods();
 
+// ── pdf.js Worker 包装 ────────────────────────────────────────────────────────
+// Electron 35 (Chromium 134) 不支持 Map.getOrInsertComputed / getOrInsert /
+// Promise.try / Iterator.prototype.join；主线程 polyfill 已在模块作用域执行，
+// 但 pdf.js 的 Worker 是独立 ESM 上下文，需要注入 wrapper。
+// 方案：仿照 pdfjs 自己的跨域方案 —— 创建 Blob wrapper，先 polyfill 再动态 import
+// 真实 worker 模块。参见 npm:pdfjs-dist#_createCDNWrapper。
 let pdfWorkerSrc: string | null = null;
 function getPdfWorkerSrc(): string {
   if (!pdfWorkerSrc) {
-    pdfWorkerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
+    const originalUrl = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
+    const wrapper = `
+Map.prototype.getOrInsertComputed ??= function(key, cb) {
+  if (this.has(key)) return this.get(key);
+  const v = cb(key);
+  this.set(key, v);
+  return v;
+};
+Map.prototype.getOrInsert ??= function(key, value) {
+  if (this.has(key)) return this.get(key);
+  this.set(key, value);
+  return value;
+};
+Promise.try ??= function(fn) { return new Promise(function(res) { res(fn()); }); };
+var ip = typeof Iterator !== 'undefined' ? Iterator.prototype : null;
+if (ip && typeof ip.join !== 'function') {
+  ip.join = function(sep) {
+    sep = sep || ',';
+    var r = '', first = true;
+    for (var v of this) { if (!first) r += sep; r += String(v); first = false; }
+    return r;
+  };
+}
+await import("${originalUrl}");
+`;
+    pdfWorkerSrc = URL.createObjectURL(new Blob([wrapper], { type: 'text/javascript' }));
   }
   return pdfWorkerSrc;
 }
