@@ -736,3 +736,56 @@ describe('org context and callbacks', () => {
     expect(agent.getContextEngine()).toBeDefined();
   });
 });
+
+describe('Agent.reconcileToIdle — OB-3 残留脏态兜底清理', () => {
+  it('无残留且已 idle → 返回 false 无副作用（幂等）', async () => {
+    const agent = createTestAgent(makeMockRouter());
+    await agent.start();
+    expect(agent.reconcileToIdle()).toBe(false);
+    expect(agent.getState().status).toBe('idle');
+  });
+
+  it('idle + 残留 currentActivity → 清除活动并保持 idle，返回 true', async () => {
+    const agent = createTestAgent(makeMockRouter());
+    await agent.start();
+    // 注入遗留活动痕迹（模拟执行路径未清理的残留）
+    (agent as any).state.currentActivity = {
+      id: 'act-leftover',
+      type: 'task',
+      label: '残留任务',
+      startedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    };
+    const ok = agent.reconcileToIdle();
+    expect(ok).toBe(true);
+    const st = agent.getState();
+    expect(st.currentActivity).toBeUndefined();
+    expect(st.status).toBe('idle');
+  });
+
+  it('有活跃任务 → 拒绝清理（防误杀真实工作）', async () => {
+    const agent = createTestAgent(makeMockRouter());
+    await agent.start();
+    (agent as any).activeTasks.add('t-live');
+    (agent as any).state.currentActivity = {
+      id: 'act-live',
+      type: 'task',
+      label: '正在干的任务',
+      startedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    };
+    expect(agent.reconcileToIdle()).toBe(false);
+    expect(agent.getState().currentActivity).toBeDefined();
+  });
+
+  it('活动刚启动（<60s）→ 拒绝清理（竞态保护）', async () => {
+    const agent = createTestAgent(makeMockRouter());
+    await agent.start();
+    (agent as any).state.currentActivity = {
+      id: 'act-fresh',
+      type: 'task',
+      label: '刚启动',
+      startedAt: new Date(Date.now() - 5_000).toISOString(),
+    };
+    expect(agent.reconcileToIdle()).toBe(false);
+    expect(agent.getState().currentActivity).toBeDefined();
+  });
+});

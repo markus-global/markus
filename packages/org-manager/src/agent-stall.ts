@@ -7,8 +7,9 @@
  *
  * 判定（纯函数、时钟可注入、阈值可配置，防误杀正常 running）：
  *   1. stale-heartbeat — phase ∈ {running, thinking, waiting-dependency, blocked,
- *      degraded} 但 lastActivityAt（=max(lastHeartbeat, activity.startedAt, errorAt)）
- *      距今超过 stallAfterMs 且仍被标记干活中 → 疑似卡死（停在原地不动）。
+ *      degraded} 但 lastActivityAt（=lastProgressAt(工具/LLM事件) > lastHeartbeat >
+ *      activity.startedAt）距今超过 stallAfterMs 且仍被标记干活中 →
+ *      「长时间无活动」提示（可能长任务，也可能卡住）。
  *   2. dead-dependency — phase ∈ {waiting-dependency, blocked} 且 blockedBy 中任一
  *      被依赖任务已达终态失败（failed / cancelled / archived）→ 依赖已死仍无限等待，
  *      明确「卡在这」并给出被卡任务（currentTaskId）。
@@ -21,14 +22,15 @@ import type { AgentRuntimeInfo } from './agent-runtime.js';
 // ─── 配置 ───────────────────────────────────────────────────────────────────
 export interface StallConfig {
   /**
-   * 无「最近心跳 / 活动 / 错误」进展超过该时长，phase 仍为干活系（running/thinking/
-   * waiting-dependency/blocked/degraded）→ 判 stale-heartbeat。默认 10 分钟。
+   * 无「最近实质进展（工具/LLM 事件）/ 心跳 / 错误」超过该时长，phase 仍为干活系
+   * （running/thinking/waiting-dependency/blocked/degraded）→ 判 stale-heartbeat，
+   * 提示「长时间无活动」。默认 30 分钟（覆盖单次长 LLM 调用窗口，避免误杀）。
    */
   stallAfterMs: number;
 }
 
 export const DEFAULT_STALL_CONFIG: StallConfig = {
-  stallAfterMs: 10 * 60_000, // 10 分钟无任何活动进展视为疑似卡死
+  stallAfterMs: 30 * 60_000, // 30 分钟无任何活动进展（工具/LLM 事件）才提示长时间无活动
 };
 
 // ─── 判定结果 ────────────────────────────────────────────────────────────────
@@ -149,11 +151,11 @@ export function evaluateStall(
         stuckOnTitle: firstDefined(r.activityLabel, r.currentTaskId) ?? '(未知任务)',
         currentTaskId: r.currentTaskId,
         lastError: r.lastError,
-        stuckReason: `phase=${r.phase} 但无任何最近心跳/活动时间戳，疑似卡死无从定位`,
+        stuckReason: `phase=${r.phase} 但无任何最近进展时间戳，无法判断是否仍在行进`,
         suggestions: ['查看该 agent 的最近事件流，确认其是否还在行进', '若无进展，可人工停止该 agent 或重启其容器'],
       };
     }
-    // 距今超过阈值 → 卡死；仍在阈值内 → 不算（给了合理 Grace）
+    // 距今超过阈值 → 提示长时间无活动；仍在阈值内 → 正常（给了合理 Grace）
     const agoMin = info.agoMin ?? 0;
     if (nowMs - parseTs(info.at) >= cfg.stallAfterMs) {
       return {
@@ -165,10 +167,10 @@ export function evaluateStall(
         lastError: r.lastError,
         lastActivityAt: info.at,
         lastActivityAgoMin: agoMin,
-        stuckReason: `已超 ${Math.round(cfg.stallAfterMs / 60_000)} 分钟无新活动（最后活动于 ${agoMin} 分钟前），phase=${r.phase} 但仍被标记为处理中`,
+        stuckReason: `已超 ${Math.round(cfg.stallAfterMs / 60_000)} 分钟无任何进展事件（最后进展于 ${agoMin} 分钟前），phase=${r.phase} — 可能是超长任务，也可能卡住`,
         suggestions: [
-          '确认确认 LLM / 工具调用是否卡住（查看最近事件流与错误）',
-          '若网络/模型超时，可在 Agent 设置中重试或重置该任务',
+          '查看该 agent 的最近事件流：有持续工具/输出事件即为长任务，请耐心等待',
+          '若确认无任何进展（网络/模型超时），可在 Agent 设置中重试或重置该任务',
           '恢复正常后 agent 应返回 idle；持续异常建议人工介入',
         ],
       };

@@ -145,10 +145,10 @@
     "blockedBy": "卡在依赖「{{title}}」",
     "runningFor": "已运行 {{n}} 分钟",
     "lastActivity": "最后活动 {{time}}",
-    "stallStaleBadge": "疑似卡死",
-    "stallDeadBadge": "依赖已死",
-    "stallStale": "疑似卡死：心跳/活动已停滞 {{minutes}} 分钟",
-    "stallDeadDep": "卡死：依赖「{{title}}」已死仍等待"
+    "stallStaleBadge": "长时间无活动",
+    "stallDeadBadge": "依赖已失败",
+    "stallStale": "长时间无活动：已 {{minutes}} 分钟未见进展（可能是长任务，也可能卡住）",
+    "stallDeadDep": "阻塞：依赖「{{title}}」已失败但仍等待"
   },
   "teamOverview": {
     "title": "团队",

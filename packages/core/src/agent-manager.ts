@@ -3047,6 +3047,34 @@ export class AgentManager {
     this.disabledChangeHandler?.(agentId, true);
   }
 
+  /**
+   * OB-3 兜底转发：清除该 agent 无存活任务支撑的残留活动并回收至 idle（非破坏性）。
+   * @returns 是否实际清理/回收成功。
+   */
+  reconcileAgentToIdle(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent) return false;
+    try {
+      return agent.reconcileToIdle();
+    } catch (err) {
+      log.warn('reconcileAgentToIdle failed', { agentId, error: String(err) });
+      return false;
+    }
+  }
+
+  /** OB-3 兜底转发：触发一次心跳，让 agent 自行核对任务并自愈（私有 bus 上发事件）。 */
+  triggerAgentHeartbeat(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent) return false;
+    try {
+      agent.triggerHeartbeat();
+      return true;
+    } catch (err) {
+      log.warn('triggerAgentHeartbeat failed', { agentId, error: String(err) });
+      return false;
+    }
+  }
+
   async removeAgent(agentId: string, opts?: { purgeFiles?: boolean }): Promise<void> {
     const agent = this.agents.get(agentId);
     if (agent) {
@@ -3330,6 +3358,7 @@ export class AgentManager {
     currentActivity?: AgentActivity;
     activeTaskIds?: string[];
     lastHeartbeat?: string;
+    lastProgressAt?: string;
     tokensUsedToday?: number;
     mailboxDepth?: number;
     attentionState?: string;
@@ -3359,6 +3388,7 @@ export class AgentManager {
         currentActivity: state.currentActivity,
         activeTaskIds: state.activeTaskIds,
         lastHeartbeat: state.lastHeartbeat,
+        lastProgressAt: state.lastProgressAt,
         tokensUsedToday: state.tokensUsedToday,
         mailboxDepth,
         attentionState,

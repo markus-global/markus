@@ -6,18 +6,19 @@ import {
 } from '../src/agent-stall.js';
 
 /**
- * OB-2 卡死定位 · 单元测试
+ * OB-2 长时间无活动 / 阻塞定位 · 单元测试
  *
- * evaluateStall 消费 OB-1 派生的 AgentRuntimeInfo（phase / blockedBy / lastHeartbeat /
- * lastActivityAt / runningMinutes /…），判定「疑似卡死」并给出可定位原因。
+ * evaluateStall 消费 OB-1 派生的 AgentRuntimeInfo（phase / blockedBy / lastProgressAt /
+ * lastHeartbeat / lastActivityAt / runningMinutes /…），提示「长时间无活动」并给出定位。
  *
  * 判据（纯函数、时钟可注入、阈值可配置，防止误杀正常 running）：
  *   1. stale-heartbeat — phase ∈ {running, thinking, waiting-dependency, blocked,
- *      degraded} 但 lastActivityAt(latest of lastHeartbeat / activity.startedAt / errorAt)
- *      距今超过 stallAfterMs 且进程仍被标记为干活中 → 疑似卡死（停在原地不动）。
+ *      degraded} 但 lastActivityAt(latest of lastProgressAt / lastHeartbeat /
+ *      activity.startedAt) 距今超过 stallAfterMs 且进程仍被标记为干活中 →
+ *      「长时间无活动」提示（长任务 or 卡住）。
  *   2. dead-dependency — phase ∈ {waiting-dependency, blocked} 但 blockedBy 中任一被依赖
- *      任务已达终态失败（failed / cancelled / archived）→ 依赖已死仍无限等待，明确「卡在这」。
- *   3. 正常场景（心跳新鲜 / 依赖仍在跑 / idle / offline / 显式 error）→ 不判卡死。
+ *      任务已达终态失败（failed / cancelled / archived）→ 依赖已失败仍无限等待，明确「卡在这」。
+ *   3. 正常场景（进度心跳新鲜 / 低频心跳新鲜 / 依赖仍在跑 / idle / offline / 显式 error）→ 不判。
  */
 
 const NOW = Date.parse('2026-08-27T12:00:00.000Z');
@@ -28,6 +29,7 @@ interface RTInput {
   currentTaskId?: string;
   currentActivity?: { id: string; type: string; label: string; taskId?: string; startedAt: string };
   lastHeartbeat?: string;
+  lastProgressAt?: string;
   lastError?: string;
   lastErrorAt?: string;
   activeTaskIds?: string[];
@@ -42,6 +44,7 @@ function rt(input: RTInput) {
       currentTaskId: input.currentTaskId,
       currentActivity: input.currentActivity,
       lastHeartbeat: input.lastHeartbeat,
+      lastProgressAt: input.lastProgressAt,
       lastError: input.lastError,
       lastErrorAt: input.lastErrorAt,
       activeTaskIds: input.activeTaskIds,
@@ -52,7 +55,7 @@ function rt(input: RTInput) {
   );
 }
 
-describe('evaluateStall — 疑似卡死判定（OB-2）', () => {
+describe('evaluateStall — 长时间无活动 / 依赖失败判定（OB-2）', () => {
   it('running + 心跳新鲜（lastHeartbeat 5 分钟前）→ 不判卡死', () => {
     const ri = rt({
       status: 'working',
@@ -66,7 +69,23 @@ describe('evaluateStall — 疑似卡死判定（OB-2）', () => {
     expect(v.reason).toMatch(/fresh|alive|progress|recent/i);
   });
 
-  it('running 但 lastActivity 停滞 40 分钟 → stale-heartbeat 卡死', () => {
+  it('running + 进度心跳新鲜（lastProgressAt 5 分钟前）但低频心跳 5 小时前 → 不判卡死（长任务进行中）', () => {
+    const ri = rt({
+      status: 'working',
+      activeTaskIds: ['t1'],
+      lastHeartbeat: '2026-08-27T07:00:00.000Z', // 5 小时前（默认心跳间隔 6h，正常）
+      lastProgressAt: '2026-08-27T11:55:00.000Z', // 5 分钟前，持续有工具/LLM 事件
+      currentActivity: { id: 'a', type: 'task', label: '实现登录', taskId: 't1', startedAt: '2026-08-27T10:00:00.000Z' },
+      lookupTask: () => ({ id: 't1', title: '实现登录', status: 'in_progress' }),
+    });
+    const v = evaluateStall({ runtime: ri }, NOW, DEFAULT_STALL_CONFIG);
+    expect(v.stalled).toBe(false);
+    expect(v.reason).toMatch(/fresh|alive|progress|recent/i);
+    // 进度心跳优先于低频心跳派生 lastActivityAt
+    expect(ri.lastActivityAt).toBe('2026-08-27T11:55:00.000Z');
+  });
+
+  it('running 但所有活动时间停滞 40 分钟 → stale-heartbeat 长时间无活动', () => {
     const ri = rt({
       status: 'working',
       activeTaskIds: ['t1'],

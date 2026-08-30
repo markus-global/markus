@@ -92,6 +92,8 @@ export interface AgentState {
   /** Describes what the agent is currently doing (task, heartbeat, chat) */
   currentActivity?: AgentActivity;
   lastHeartbeat?: string;
+  /** 最近一次实质进展（工具调用 / LLM 请求等）时间 —— 区分「长任务进行中」与「疑似卡死」 */
+  lastProgressAt?: string;
   containerId?: string;
   memoryUsageMb?: number;
   tokensUsedToday: number;

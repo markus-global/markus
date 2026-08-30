@@ -3368,6 +3368,9 @@ export class Agent {
   }
 
   private emitActivityLog(activityId: string, type: AgentActivityLogEntry['type'], content: string, metadata?: Record<string, unknown>): void {
+    // 进度心跳：任何工具/LLM 事件都算「有实质进展」，用于区分长任务进行中与疑似卡死。
+    // 只写内存 state（listAgents 实时可见），不触发持久化，无 IO 开销。
+    this.state.lastProgressAt = new Date().toISOString();
     // Defensive: strip completion marker from all log content regardless of caller
     const cleanContent = (type === 'text' || type === 'status')
       ? stripCompletionMarker(content)
@@ -6166,6 +6169,45 @@ export class Agent {
     }
   }
 
+  /**
+   * OB-3 兜底：清除「无存活任务支撑的残留活动痕迹」并回收至 idle。
+   * - 仅当没有正在执行的任务时生效（scan 与 recover 之间有竞态保护）。
+   * - 只清当前活动标记（leftover marker），不走 endActivity 的统计与事件流回调
+   *   （活动已是遗留物，不应污染正常统计），但保留可观测日志与状态变更广播。
+   * - 幂等：无残留且已是 idle 时返回 false（无副作用）。
+   * @returns 是否实际清理/回收了状态。
+   */
+  reconcileToIdle(): boolean {
+    if (this.activeTasks.size > 0) return false;
+    const act = this.state.currentActivity;
+    if (!act && this.state.status === 'idle') return false;
+
+    if (act) {
+      const startedTs = Date.parse(act.startedAt);
+      // 竞态保护：活动刚启动（<60s）不清理，避免误杀刚开始的真实工作。
+      const fresh = !Number.isNaN(startedTs) && Date.now() - startedTs < 60_000;
+      if (fresh) return false;
+      log.info('Reconciling stale activity to idle', {
+        agentId: this.id,
+        activity: `${act.type}:${act.label ?? ''}`,
+        startedAt: act.startedAt,
+      });
+      this.activityLogs.delete(act.id);
+      this.activitySeqCounters.delete(act.id);
+      this.state.currentActivity = undefined;
+    }
+
+    if (this.state.status !== 'idle') this.setStatus('idle');
+    this.notifyStateChange();
+    this.eventBus.emit('agent:reconciled-idle', { agentId: this.id, clearedActivity: !!act });
+    log.info('Agent reconciled to idle', { agentId: this.id, clearedActivity: !!act });
+    return true;
+  }
+
+  /** 触发一次心跳（api-server 脏态兜底用）：在 agent 私有 bus 上发 heartbeat:trigger。 */
+  triggerHeartbeat(): void {
+    this.heartbeat?.trigger();
+  }
 
   getState(): AgentState {
     const state = { ...this.state };

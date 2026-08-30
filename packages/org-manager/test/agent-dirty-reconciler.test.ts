@@ -48,6 +48,18 @@ describe('AgentDirtyReconciler — 脏态周期兜底（OB-3）', () => {
     expect(recover).toHaveBeenCalledTimes(1);
   });
 
+  it('一次 recover 未恢复（仍脏）→ 重试窗口内去重，超窗后再次尝试', async () => {
+    const recover = vi.fn(); // 模拟恢复失败：不改变 agent 状态
+    const { reconciler } = make({ recover });
+    await reconciler.scan([STALE_AGENT], NOW);
+    // 1 分钟后仍脏 → 去重窗口内不重复
+    await reconciler.scan([STALE_AGENT], NOW + 60_000);
+    expect(recover).toHaveBeenCalledTimes(1);
+    // 6 分钟后仍脏 → 超出重试窗口，再次兜底（修复此前“一次失败永不重试”的卡死）
+    await reconciler.scan([STALE_AGENT], NOW + 6 * 60_000);
+    expect(recover).toHaveBeenCalledTimes(2);
+  });
+
   it('恢复后再变脏 → 重新兜底', async () => {
     const recover = vi.fn();
     const { reconciler } = make({ recover });

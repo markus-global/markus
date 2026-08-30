@@ -2326,7 +2326,6 @@ export class APIServer {
     }
     try {
       const agentManager = this.orgService.getAgentManager();
-      const eventBus = agentManager.getEventBus();
       const reconciler = new AgentDirtyReconciler({
         getTask: (id: string) => this.taskService!.getTask(id) as never,
         appendExecution: (entry) => {
@@ -2343,17 +2342,30 @@ export class APIServer {
             metadata: entry.metadata ?? {},
           });
         },
-        recover: (v) => {
-          // 兜底：触发一次恢复心跳，让健康的 agent 自行核对任务并回到 idle（非破坏性）。
-          log.info('Dirty reconciler recovering agent', { agentId: v.agentId, recovery: v.recovery, reason: v.reason });
-          eventBus.emit('heartbeat:trigger', {
+        recover: async (v) => {
+          // 兜底：按恢复类型真正执行 —— reconcile-idle 直接清残留活动并回收 idle；
+          // trigger-heartbeat 在 agent 私有 bus 上触发一次心跳让 agent 自愈。
+          // （此前统一 emit 到 manager bus 的 heartbeat:trigger 事件，agent 监听的是
+          //   各自私有 bus，事件从未到达目标 —— 导致脏 agent 永远无法恢复。）
+          let recovered = false;
+          try {
+            if (v.recovery === 'reconcile-idle') {
+              recovered = agentManager.reconcileAgentToIdle(v.agentId);
+            } else if (v.recovery === 'trigger-heartbeat') {
+              recovered = agentManager.triggerAgentHeartbeat(v.agentId);
+            }
+          } catch (err) {
+            log.warn('Dirty reconciler recover failed', { agentId: v.agentId, recovery: v.recovery, error: String(err) });
+          }
+          log.info('Dirty reconciler recovering agent', {
             agentId: v.agentId,
-            triggeredAt: new Date().toISOString(),
-            source: 'dirty-state-reconciler',
+            recovery: v.recovery,
+            recovered,
+            reason: v.reason,
           });
           this.ws?.broadcast?.({
             type: 'agent:dirty-recovered',
-            payload: { agentId: v.agentId, recovery: v.recovery, reason: v.reason },
+            payload: { agentId: v.agentId, recovery: v.recovery, recovered, reason: v.reason },
             timestamp: new Date().toISOString(),
           });
         },
@@ -4031,6 +4043,7 @@ export class APIServer {
             currentTaskId: listItem.currentTaskId,
             currentActivity: listItem.currentActivity,
             lastHeartbeat: (a as any).lastHeartbeat,
+            lastProgressAt: (a as any).lastProgressAt,
             lastError: listItem.lastError,
             lastErrorAt: listItem.lastErrorAt,
             tokensUsedToday: (a as any).tokensUsedToday,

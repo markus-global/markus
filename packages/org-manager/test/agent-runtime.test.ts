@@ -16,6 +16,23 @@ describe('buildAgentRuntimeInfo — 运行阶段派生（OB-1）', () => {
     expect(r.tokensUsedToday).toBe(5);
   });
 
+  it('idle 但残留 currentActivity（遗留脏态）→ phase 仍为 idle，不再显示为工作中', () => {
+    const r = buildAgentRuntimeInfo(
+      {
+        agentId: 'a1', status: 'idle', activeTaskIds: [],
+        currentActivity: { id: 'act-x', type: 'task', label: '残留活动', startedAt: '2026-08-27T10:00:00.000Z' },
+        lastHeartbeat: '2026-08-27T07:00:00.000Z',
+        tokensUsedToday: 0,
+      },
+      () => undefined,
+      NOW,
+    );
+    // 用户视角：agent 已 idle 就是 idle；残留痕迹由 OB-3 dirty 徽标单独提示
+    expect(r.phase).toBe('idle');
+    expect(r.activityLabel).toBe('残留活动'); // 仍透传标签供 dirty 徽标/审计定位
+    expect(r.lastActivityAt).toBe('2026-08-27T10:00:00.000Z');
+  });
+
   it('running：working + 有活动 → phase=running，含已运行分钟与最后活动', () => {
     const r = buildAgentRuntimeInfo(
       {

@@ -21,6 +21,9 @@ import {
 
 const log = createLogger('agent-dirty-reconciler');
 
+/** 同一脏态两次兜底尝试的最短间隔：失败后 5 分钟再试，给 agent 自愈时间又不会永久放弃。 */
+export const RETRY_AFTER_MS = 5 * 60_000;
+
 /** 扫描所需的最小 agent live-state 视图（对应 agentManager.listAgents() 的字段）。 */
 export interface AgentLiveView {
   agentId: string;
@@ -62,8 +65,8 @@ type DirtyVerdict = Extract<AgentDirtyVerdict, { dirty: true }>;
 export class AgentDirtyReconciler {
   private cfg: AgentDirtyConfig;
   private timer?: ReturnType<typeof setInterval>;
-  /** 已兜底过的脏 key（agentId:recovery）—— 在仍为脏期间不重复兜底/刷屏。 */
-  private handled = new Set<string>();
+  /** 已兜底过的脏 key（agentId:recovery）→ 最近一次尝试时间。 */
+  private attempted = new Map<string, number>();
 
   constructor(private opts: DirtyReconcilerOptions) {
     this.cfg = { ...DEFAULT_DIRTY_CONFIG, ...opts.cfg };
@@ -94,9 +97,12 @@ export class AgentDirtyReconciler {
 
       const key = `${a.agentId}:${v.recovery}`;
       seenKeys.add(key);
-      if (this.handled.has(key)) continue; // 已兜底仍未恢复 → 不重复触发（可指望前端残示残留提示）
 
-      this.handled.add(key);
+      // 去重但可重试：同一脏态在 RETRY 窗口内不重复触发；超窗后仍未恢复 → 允许再次尝试，
+      // 避免「一次 recover 失败 → 永久不再兜底」（此前 Set 去重导致脏 agent 永远卡死）。
+      const lastAt = this.attempted.get(key);
+      if (lastAt !== undefined && now - lastAt < RETRY_AFTER_MS) continue;
+      this.attempted.set(key, now);
 
       // 可观测：写一条执行流事件（谁/何时/为何/建议）。
       this.observe(a, v);
@@ -110,9 +116,9 @@ export class AgentDirtyReconciler {
       // recover 默认无动作（纯观察 + 事件）——安全默认。
     }
 
-    // 释放已恢复（不再脏）的 key，允许再次变脏时重新兜底。
-    for (const k of [...this.handled]) {
-      if (!seenKeys.has(k)) this.handled.delete(k);
+    // 释放已恢复（不再脏）的 key，允许再次变脏时立即重新兜底。
+    for (const k of [...this.attempted.keys()]) {
+      if (!seenKeys.has(k)) this.attempted.delete(k);
     }
     return done;
   }

@@ -54,7 +54,9 @@ export interface AgentRuntimeInfo {
   runningMinutes?: number;
   /** 最后心跳/最近活动时间（ISO，来自 state.lastHeartbeat） */
   lastHeartbeat?: string;
-  /** 以 lastHeartbeat 为准的「最后活动于 HH:mm」原始值，前端本地化展示 */
+  /** 最近一次实质进展时间（ISO，来自 state.lastProgressAt = 工具调用 / LLM 请求等事件） */
+  lastProgressAt?: string;
+  /** 「最后活动于 HH:mm」原始值，前端本地化展示 —— 优先 lastProgressAt */
   lastActivityAt?: string;
   tokensUsedToday: number;
   lastError?: string;
@@ -93,6 +95,7 @@ export function buildAgentRuntimeInfo(
     currentTaskId?: string;
     currentActivity?: AgentState['currentActivity'];
     lastHeartbeat?: string;
+    lastProgressAt?: string;
     tokensUsedToday?: number;
     lastError?: string;
     lastErrorAt?: string;
@@ -142,8 +145,10 @@ export function buildAgentRuntimeInfo(
     } else if (input.currentActivity || activeTaskIds.length > 0) phase = 'running';
     else phase = 'thinking'; // 已在劳作但活动未落库 —— 温和而 non-笼统 working
   } else if (status === 'idle') {
-    // idle 但仍有 currentActivity：活动未能清理（脏状态的一种），仍展示进度而非静默。
-    phase = input.currentActivity ? 'thinking' : 'idle';
+    // idle → 一律 idle。残留 currentActivity 是遗留脏态（OB-3 dirty 判定会标记），
+    // 不再把已 idle 的 agent 显示成 thinking/工作中 —— 概览页「正在工作」统计不能让
+    // 已空闲的 agent 永久占位。
+    phase = 'idle';
   } else {
     phase = 'idle';
   }
@@ -163,7 +168,13 @@ export function buildAgentRuntimeInfo(
       : undefined;
 
   const lastHeartbeat = firstDefined(input.lastHeartbeat) ?? undefined;
-  const lastActivityAt = firstDefined(lastHeartbeat, input.currentActivity?.startedAt) ?? undefined;
+  const lastProgressAt = firstDefined(input.lastProgressAt) ?? undefined;
+  // 最后活动 = 三个信号里最新的那个（进度心跳 / 低频心跳 / 活动开始），避免旧心跳盖过新活动。
+  const activityCandidates = [lastProgressAt, lastHeartbeat, input.currentActivity?.startedAt]
+    .filter((x): x is string => !!x && !Number.isNaN(Date.parse(x)));
+  const lastActivityAt = activityCandidates.length > 0
+    ? activityCandidates.reduce((a, b) => (Date.parse(a) > Date.parse(b) ? a : b))
+    : undefined;
 
   return {
     agentId: input.agentId,
@@ -178,6 +189,7 @@ export function buildAgentRuntimeInfo(
     startedAt,
     runningMinutes,
     lastHeartbeat,
+    lastProgressAt,
     lastActivityAt,
     tokensUsedToday: input.tokensUsedToday ?? 0,
     lastError: input.lastError,

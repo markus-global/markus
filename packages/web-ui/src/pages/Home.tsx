@@ -723,7 +723,14 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                                   <span className="text-[10px] text-fg-tertiary shrink-0">{t(AGENT_PHASE_LABEL_KEYS[phase])}</span>
                                 )}
                                 {r?.stall?.stalled && (
-                                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                                  <span
+                                    title={r.stall.stuckReason}
+                                    className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 ${
+                                      r.stall.stallKind === 'dead-dependency'
+                                        ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                        : 'bg-sky-500/15 text-sky-300 border border-sky-500/25'
+                                    }`}
+                                  >
                                     {r.stall.stallKind === 'dead-dependency' ? t('agentFocus.stallDeadBadge') : t('agentFocus.stallStaleBadge')}
                                   </span>
                                 )}
@@ -1247,6 +1254,8 @@ function agentRuntimeSubtitle(a: AgentInfo, t: TFunction): string {
       }
     } else if (r.blockedBy && r.blockedBy.length > 0) {
       parts.push(t('agentFocus.blockedBy', { title: r.blockedBy[0].title }));
+    } else if (r.phase === 'idle' || r.phase === 'offline') {
+      // 已 idle / offline：不展示残留活动标签（可能是待清理的遗留痕迹），让 phase 点与文案一致
     } else if (r.activityLabel) {
       parts.push(localizeActivityLabel(r.activityLabel, t) ?? r.activityLabel);
     } else if (r.activityType === 'heartbeat') {

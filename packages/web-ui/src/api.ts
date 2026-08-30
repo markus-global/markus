@@ -658,7 +658,7 @@ export interface AgentRuntimeInfo {
 }
 
 export interface AgentRuntimeStall {
-  /** 是否疑似卡死 */
+  /** 是否长时间无活动 / 依赖失败阻塞 */
   stalled: boolean;
   /** 未卡死时的原因说明 */
   reason?: string;

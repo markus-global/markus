@@ -145,10 +145,10 @@
     "blockedBy": "Stuck on dependency \"{{title}}\"",
     "runningFor": "Running for {{n}} min",
     "lastActivity": "Last activity {{time}}",
-    "stallStaleBadge": "stuck",
+    "stallStaleBadge": "no progress",
     "stallDeadBadge": "dead dep",
-    "stallStale": "Stalled: no heartbeat/progress for {{minutes}} min",
-    "stallDeadDep": "Stuck: dependency \"{{title}}\" is dead but still awaited"
+    "stallStale": "No progress for {{minutes}} min (may be a long task, may be stuck)",
+    "stallDeadDep": "Blocked: dependency \"{{title}}\" failed but still awaited"
   },
   "teamOverview": {
     "title": "Teams",

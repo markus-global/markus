@@ -45,6 +45,25 @@ describe('GET /api/agents → runtime.stall（OB-2 卡死定位）', () => {
     expect(b.runtime.stall.stalled).toBe(false);
   });
 
+  it('running + 低频心跳 5 小时前但进度心跳新鲜（lastProgressAt 2 分钟前）→ 不判卡死', async () => {
+    const now = Date.now();
+    (ctx.agentManager.listAgents as any).mockReturnValue([
+      {
+        id: AGENT_A, name: 'Agent A', role: 'Developer', agentRole: 'worker',
+        status: 'working', activeTaskIds: ['t-long'], currentTaskId: 't-long',
+        currentActivity: { id: 'a', type: 'task', label: '长任务', taskId: 't-long', startedAt: new Date(now - 60 * 60_000).toISOString() },
+        lastHeartbeat: new Date(now - 5 * 3600_000).toISOString(), // 5 小时前（默认心跳间隔 6h，正常）
+        lastProgressAt: new Date(now - 2 * 60_000).toISOString(), // 2 分钟前，持续有工具/LLM 事件
+        tokensUsedToday: 10,
+      },
+    ]);
+    const res = await request(ctx.server, 'GET', '/api/agents');
+    const a = (res.json.agents as Array<Record<string, any>>).find(x => x.id === AGENT_A)!;
+    expect(a.runtime.stall.stalled).toBe(false);
+    // 进度心跳优先于低频心跳派生最后活动时间
+    expect(a.runtime.lastActivityAt).toBe(new Date(now - 2 * 60_000).toISOString());
+  });
+
   it('running 心跳长时间停滞（>10min）→ stale-heartbeat，定位到当前任务', async () => {
     (ctx.agentManager.listAgents as any).mockReturnValue([
       {
