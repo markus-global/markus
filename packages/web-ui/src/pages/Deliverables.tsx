@@ -142,6 +142,9 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [sharedDir, setSharedDir] = useState('');
   const [missingFileIds, setMissingFileIds] = useState<Set<string>>(new Set());
 
+  // 是否有 Office 预览（PDF/DOCX/XLSX）—— 需要全高填充
+  const showOfficePreview = previewOffice && selected?.type === 'file';
+
   // Sidebar collapse (Phase 2)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const layout = useLayout();
@@ -1369,7 +1372,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             </div>
           </div>
         ) : (
-          <div className="p-6 space-y-4">
+          <div className={`p-6 space-y-4 ${showOfficePreview ? 'flex flex-col min-h-0 h-full' : ''}`}>
             {/* File missing warning */}
             {!previewMode && missingFileIds.has(selected.id) && (
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-600 text-xs">
@@ -1382,7 +1385,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             )}
 
             {/* Header: title + badges + actions — all info at the top */}
-            <div className="space-y-3">
+            <div className={`space-y-3 ${showOfficePreview ? 'shrink-0' : ''}`}>
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
                 {!previewMode && (
@@ -1608,7 +1611,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 </div>
               </div>
             ) : (
-              <div className="bg-surface-elevated rounded-xl overflow-hidden">
+              <div className={`bg-surface-elevated rounded-xl overflow-hidden ${showOfficePreview ? 'flex flex-col h-full' : ''}`}>
                 {/* Edit/Preview toolbar — shown when there is editable text content */}
                 {(previewContent || selected.summary) && !previewLoading && !previewImage && !showCopyPath && selected.reference && selected.type === 'file' && (previewFormat === 'markdown' || previewFormat === 'text' || previewFormat === 'html') && (
                   <div className="flex items-center gap-2 px-4 py-2 border-b border-border-subtle bg-surface-secondary/50">
@@ -1636,7 +1639,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                     )}
                   </div>
                 )}
-                <div className="p-5">
+                <div className={showOfficePreview ? 'flex-1 min-h-0 p-5' : 'p-5'}>
                   {previewLoading ? (
                     <div className="animate-pulse space-y-4">
                       <div className="h-4 bg-surface-overlay/60 rounded w-full" />
@@ -1652,7 +1655,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                       <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
                     </div>
                   ) : previewOffice ? (
-                    <div className="h-[55vh]">
+                    <div className={showOfficePreview ? 'flex-1 min-h-0 overflow-hidden' : 'h-[55vh]'}>
                       <OfficePreviewer
                         data={previewOffice}
                         reference={previewOffice.reference}
