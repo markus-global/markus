@@ -226,9 +226,22 @@ function formatBytes(n?: number): string {
 }
 
 // ── pdf.js renderer ─────────────────────────────────────────────────────────
-// Polyfill ES2025 Map methods that pdfjs-dist 6.x depends on but
+// Polyfill ES2025+ APIs that pdfjs-dist 6.x depends on but
 // Electron 35 (Chromium 134) doesn't ship yet.
-function polyfillMapMethods(): void {
+function polyfillES2025Apis(): void {
+  // Uint8Array.prototype.toHex (Chrome 140+, Electron 38+)
+  const u8p = Uint8Array.prototype as unknown as Record<string, unknown>;
+  if (typeof u8p.toHex !== 'function') {
+    u8p.toHex = function (this: Uint8Array): string {
+      let s = '', i = 0, n = this.length, b: number;
+      for (; i < n; ++i) {
+        b = this[i];
+        s += (b >>> 4).toString(16) + (b & 0x0f).toString(16);
+      }
+      return s;
+    };
+  }
+  // Map.prototype.getOrInsertComputed / getOrInsert (Chrome 136+)
   const mp = Map.prototype as unknown as Record<string, unknown>;
   if (typeof mp.getOrInsertComputed !== 'function') {
     mp.getOrInsertComputed = function (this: Map<unknown, unknown>, key: unknown, cb: (k: unknown) => unknown) {
@@ -267,11 +280,12 @@ function polyfillMapMethods(): void {
     };
   }
 }
-polyfillMapMethods();
+polyfillES2025Apis();
 
 // ── pdf.js Worker 包装 ────────────────────────────────────────────────────────
-// Electron 35 (Chromium 134) 不支持 Map.getOrInsertComputed / getOrInsert /
-// Promise.try / Iterator.prototype.join；主线程 polyfill 已在模块作用域执行，
+// Electron 35 (Chromium 134) 不支持 Uint8Array.prototype.toHex (Chrome 140+)、
+// Map.getOrInsertComputed / getOrInsert (Chrome 136+)、Promise.try、
+// Iterator.prototype.join；主线程 polyfill 已在模块作用域执行，
 // 但 pdf.js 的 Worker 是独立 ESM 上下文，需要注入 wrapper。
 // 方案：仿照 pdfjs 自己的跨域方案 —— 创建 Blob wrapper，先 polyfill 再动态 import
 // 真实 worker 模块。参见 npm:pdfjs-dist#_createCDNWrapper。
@@ -280,6 +294,16 @@ function getPdfWorkerSrc(): string {
   if (!pdfWorkerSrc) {
     const originalUrl = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
     const wrapper = `
+if (typeof Uint8Array.prototype.toHex !== 'function') {
+  Uint8Array.prototype.toHex = function() {
+    var s = '', i = 0, n = this.length, b;
+    for (; i < n; ++i) {
+      b = this[i];
+      s += (b >>> 4).toString(16) + (b & 0x0f).toString(16);
+    }
+    return s;
+  };
+}
 Map.prototype.getOrInsertComputed ??= function(key, cb) {
   if (this.has(key)) return this.get(key);
   const v = cb(key);
