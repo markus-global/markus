@@ -1093,6 +1093,34 @@ export class TaskService {
    * Returns immediately; execution runs concurrently via async.
    * @param _retryAttempt - internal retry counter, do not pass from outside
    */
+  /**
+   * 恢复「丢失执行」的任务。
+   *
+   * 当 mailbox 中的任务执行指令（triggerExecution）在 defer/resurface 后丢失了回调闭包
+   * （agent 发出 `agent:incomplete` reason=resurfaced-task-execution-lost-closures），
+   * 且该任务当前没有其他活跃执行时，重新 dispatch 一次执行（带完整闭包）。
+   *
+   * 防重入：若任务已有活跃执行（activeToken 未取消），跳过——避免与 preempt 自动重调度
+   * 双重执行。
+   */
+  async recoverLostTaskExecution(taskId: string): Promise<void> {
+    const current = this.tasks.get(taskId);
+    if (!current || current.status !== 'in_progress') return;
+    const activeToken = this.taskCancelTokens.get(taskId);
+    if (activeToken && !activeToken.cancelled) {
+      log.info('Skipping lost-task recovery: task already has an active execution', { taskId });
+      return;
+    }
+    this.addTaskNote(taskId,
+      '[System] 检测到任务执行指令丢失（mailbox defer/resurface 导致回调闭包丢失），系统已自动重新调度执行。',
+      'system'
+    );
+    log.warn('Re-dispatching lost task execution', { taskId });
+    await this.runTask(taskId).catch(err =>
+      log.warn('Failed to re-dispatch lost task execution', { taskId, error: String(err) })
+    );
+  }
+
   async runTask(taskId: string, _retryAttempt = 0, _retryReason?: 'error' | 'no_submit'): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);

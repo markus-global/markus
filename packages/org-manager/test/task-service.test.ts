@@ -777,6 +777,41 @@ describe('TaskService', () => {
       expect(agentManager.getAgent(AGENT_A).sendTaskExecution).not.toHaveBeenCalled();
     });
 
+    it('recoverLostTaskExecution re-dispatches in_progress task without active execution', async () => {
+      const task = ts.createTask(createDefaults({ creatorRole: 'human' }) as never);
+      ts.approveTask(task.id, 'user-1'); // → in_progress
+
+      await ts.recoverLostTaskExecution(task.id);
+
+      // runTask was invoked → agent received a fresh execution with live closures (onLog + cancelToken)
+      const calls = (agentManager.getAgent(AGENT_A).sendTaskExecution as ReturnType<typeof vi.fn>).mock.calls;
+      const dispatch = calls.find((c: unknown[]) => c[0] === task.id);
+      expect(dispatch).toBeDefined();
+      expect(typeof dispatch![2]).toBe('function');
+      expect(typeof dispatch![3]).toBe('object');
+      // system note recorded for visibility
+      expect(ts.getTask(task.id)!.notes?.some(n => n.includes('重新调度'))).toBe(true);
+    });
+
+    it('recoverLostTaskExecution skips when task already has an active execution', async () => {
+      const task = ts.createTask(createDefaults({ creatorRole: 'human' }) as never);
+      ts.approveTask(task.id, 'user-1');
+      // Simulate an active scenario: set a non-cancelled cancelToken via a running execution
+      await ts.runTask(task.id); // runTask sets taskCancelTokens with cancelled=false
+      (agentManager.getAgent(AGENT_A).sendTaskExecution as ReturnType<typeof vi.fn>).mockClear();
+
+      await ts.recoverLostTaskExecution(task.id);
+
+      // No second dispatch (would cause double execution)
+      expect(agentManager.getAgent(AGENT_A).sendTaskExecution).not.toHaveBeenCalled();
+    });
+
+    it('recoverLostTaskExecution no-ops for non-in_progress tasks', async () => {
+      const task = ts.createTask(createDefaults({ creatorRole: 'human' }) as never);
+      await ts.recoverLostTaskExecution(task.id); // still pending
+      expect(agentManager.getAgent(AGENT_A).sendTaskExecution).not.toHaveBeenCalled();
+    });
+
     it('loads previous logs and dependency context', async () => {
       const dep = ts.createTask(createDefaults({
         title: 'Dependency',

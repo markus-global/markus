@@ -526,6 +526,48 @@ describe('applyDeliberationResult edge cases', () => {
     // human_chat should still be in queue (protected from drop)
     // or already processed — either way, it should not be status 'dropped'
   });
+
+  it('never defers/drops strict state items even if deliberation result lists them', async () => {
+    const { controller, mailbox, delegate } = makeController({
+      processMailboxItem: vi.fn().mockResolvedValue(`ok ${COMPLETION_MARKER}`),
+      performDeliberation: vi.fn().mockImplementation(async (_head, allItems) => {
+        // Simulate a task execution arriving while deliberation is running,
+        // then a (misbehaving) deliberation result that tries to defer it.
+        mailbox.enqueue('task_status_update', {
+          summary: 'Task: execute T1',
+          content: 'do the work',
+          taskId: 'tsk_1',
+          extra: { triggerExecution: true },
+        }, { priority: 1 as MailboxPriority });
+        return {
+          processItemId: allItems[0].id,
+          inlineCompletedIds: [],
+          deferItemIds: ['tsk-exec-id'], // ghost id — strict item must reach normal path anyway
+          dropItemIds: [],
+          reasoning: 'try to defer task execution',
+        };
+      }),
+    });
+
+    mailbox.enqueue('a2a_message', { summary: 'msg-1', content: 'A body' });
+    mailbox.enqueue('a2a_message', { summary: 'msg-2', content: 'B body' });
+
+    controller.start();
+    await vi.waitFor(() => {
+      expect(delegate.performDeliberation).toHaveBeenCalled();
+    }, { timeout: 3000 });
+    await vi.waitFor(() => {
+      expect(delegate.processMailboxItem).toHaveBeenCalled();
+    }, { timeout: 3000 });
+    await new Promise(r => setTimeout(r, 200));
+    controller.stop();
+
+    // The task execution item must reach the NORMAL processing path — never
+    // deferred/dropped by deliberation. (If isProtected failed and the item
+    // had been deferred, it would never appear in processMailboxItem calls.)
+    const processed = (delegate.processMailboxItem as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0]);
+    expect(processed.some((i: MailboxItem) => i.payload?.taskId === 'tsk_1')).toBe(true);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -734,6 +776,53 @@ describe('triage and deliberation scheduling', () => {
       expect(delegate.processMailboxItem).toHaveBeenCalled();
     }, { timeout: 3000 });
     // Give deliberation a chance to (wrongly) fire if it existed — it must not.
+    await new Promise(r => setTimeout(r, 100));
+    expect(delegate.performDeliberation).not.toHaveBeenCalled();
+    controller.stop();
+  });
+
+  it('skips deliberation when queue contains review_request (strict state item)', async () => {
+    const { controller, mailbox, delegate } = makeController({
+      performDeliberation: vi.fn().mockResolvedValue(null),
+      processMailboxItem: vi.fn().mockResolvedValue(`ok ${COMPLETION_MARKER}`),
+    });
+
+    mailbox.enqueue('review_request', {
+      summary: 'Review: T9',
+      content: 'please review',
+      taskId: 'tsk_9',
+    });
+    mailbox.enqueue('a2a_message', { summary: 'msg A', content: 'A body' });
+
+    controller.start();
+    await vi.waitFor(() => {
+      expect(delegate.processMailboxItem).toHaveBeenCalled();
+    }, { timeout: 3000 });
+    await new Promise(r => setTimeout(r, 100));
+    // review_request is a strict state item → must never enter deliberation
+    expect(delegate.performDeliberation).not.toHaveBeenCalled();
+    controller.stop();
+  });
+
+  it('skips deliberation when queue contains requirement_update with actionRequired', async () => {
+    const { controller, mailbox, delegate } = makeController({
+      performDeliberation: vi.fn().mockResolvedValue(null),
+      processMailboxItem: vi.fn().mockResolvedValue(`ok ${COMPLETION_MARKER}`),
+    });
+
+    mailbox.enqueue('requirement_update', {
+      summary: 'Requirement action needed',
+      content: 'approve or adjust',
+      requirementId: 'req_1',
+      extra: { actionRequired: true },
+    });
+    mailbox.enqueue('a2a_message', { summary: 'msg A', content: 'A body' });
+    mailbox.enqueue('a2a_message', { summary: 'msg B', content: 'B body' });
+
+    controller.start();
+    await vi.waitFor(() => {
+      expect(delegate.processMailboxItem).toHaveBeenCalled();
+    }, { timeout: 3000 });
     await new Promise(r => setTimeout(r, 100));
     expect(delegate.performDeliberation).not.toHaveBeenCalled();
     controller.stop();

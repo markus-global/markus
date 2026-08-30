@@ -1609,6 +1609,12 @@ export class ContextEngine {
         lines.push('- Human messages and comments are ALWAYS highest priority.');
         lines.push('- Stale informational items (old heartbeats, status updates) should be dropped aggressively.');
         lines.push('- **Batch related items**: Multiple items for the same task/requirement → handle with ONE context lookup + ONE reply. Mark all as inline_completed.');
+        lines.push('');
+        lines.push('**⚠ 严格状态管理事件（任务执行 / 评审 / 需求·工作流收尾动作）保护**:');
+        lines.push('- `check_mailbox` 中标记为 `isStrictState: true` 的项是「正式任务执行/评审/收尾动作」，承载任务状态机与执行闭包。');
+        lines.push('- 你**只能**通过 `prioritize_mailbox_item` 调整它们的优先级顺序；**绝不** `defer_mailbox_item` / `drop_mailbox_item` / 将它们放入 `process_item_ids` 批处理 / `inline_completed_ids`。');
+        lines.push('- 它们会由正常出队路径**单独执行**（带完整 task 工具链），你在这里的分拣职责只是排序。');
+        lines.push('');
         lines.push('- When done, call `complete_deliberation` with your decision.');
         lines.push('');
         lines.push('**Communication channel**: Your text output is NOT visible to anyone. Only tool calls have effect.');

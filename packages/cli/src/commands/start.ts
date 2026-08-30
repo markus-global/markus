@@ -1109,6 +1109,21 @@ async function startServerCore(
         log.warn('Failed to persist activity log', { agentId, error: String(e) });
       }
     });
+    // 任务执行指令丢失（mailbox defer/resurface 后回调闭包丢失）→ 请求 TaskService
+    // 重新调度该任务，避免任务永远卡在 in_progress 且无人处理。
+    agentManager.getEventBus().on('agent:incomplete', (evt: unknown) => {
+      const event = evt as { agentId?: string; taskId?: string; reason?: string; type?: string };
+      if (!event?.taskId) return;
+      if (event.reason !== 'resurfaced-task-execution-lost-closures') return;
+      log.warn('agent:incomplete — lost task execution, recovering', {
+        taskId: event.taskId,
+        agentId: event.agentId,
+        reason: event.reason,
+      });
+      taskService.recoverLostTaskExecution(event.taskId).catch(err =>
+        log.warn('Failed to recover lost task execution', { taskId: event.taskId, error: String(err) })
+      );
+    });
     // Heartbeat interval changed (by an agent via set_heartbeat_interval, or any
     // in-process update): persist the new value so it survives restart.
     agentManager.getEventBus().on('agent:heartbeat-interval-changed', async (evt: unknown) => {

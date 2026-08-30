@@ -48,6 +48,7 @@ import {
   type UserInputQuestion,
   type UserInputAnswer,
   DEFERRED_CATALOG_MAX_CHARS,
+  isStrictStateItem,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -1600,13 +1601,30 @@ export class Agent {
         case 'task_status_update': {
           if (extra.triggerExecution && item.payload.taskId) {
             if (typeof extra.onLog !== 'function') {
-              // Resurfaced from persistence after preemption — closures (onLog,
+              // Resurfaced from persistence after preemption/defer — closures (onLog,
               // cancelToken, responsePromise) were lost during JSON serialization.
-              // Skip execution; TaskService's own re-queue mechanism will create
-              // a fresh execution with proper callbacks.
-              log.info('Skipping resurfaced task execution item (closures lost)', {
-                agentId: this.id, taskId: item.payload.taskId,
+              // ⚠ 绝不能静默跳过：如果 TaskService 没有重新 dispatch（例如任务在开始执行
+              // 前就被 defer，之后 resurface），任务会永远卡在 in_progress 且无人处理。
+              // 这里发出可见事件 agent:incomplete，org-manager 的 TaskService 订阅后
+              // 会检查该任务没有活跃执行并重新 runTask（带完整闭包）。item 本身按正常
+              // 完成处理，避免 attention 卡死；真正执行由 TaskService 重新发起。
+              log.warn('Resurfaced task execution item lost closures — requesting TaskService re-dispatch', {
+                agentId: this.id,
+                taskId: item.payload.taskId,
+                itemId: item.id,
               });
+              try {
+                this.eventBus.emit('agent:incomplete', {
+                  agentId: this.id,
+                  itemId: item.id,
+                  type: item.sourceType,
+                  taskId: item.payload.taskId,
+                  reason: 'resurfaced-task-execution-lost-closures',
+                  message: '任务执行指令在 defer/resurface 后丢失了回调闭包，任务可能卡在 in_progress。已请求 TaskService 重新调度执行。',
+                });
+              } catch (err) {
+                log.debug('Failed to emit agent:incomplete for lost task execution', { error: String(err) });
+              }
               resolveResponse('');
               return;
             }
@@ -2788,6 +2806,8 @@ export class Agent {
       itemsSection,
       '',
       '**Scope**: This mode handles MESSAGES (user chat, agent messages, comments, mentions, review requests). Formal task-execution items are NOT in this list — they are already queued for normal execution with full tools (including task_submit_review) and will NOT be processed here. Do NOT create or complete tasks from this mode; use `complete_deliberation` to route.',
+      '',
+      '**⚠ Strict state items protection**: If `check_mailbox` shows items with `isStrictState: true` (task execution / review / requirement-workflow action), you may ONLY reorder them via `prioritize_mailbox_item`. NEVER defer, drop, batch-process, or inline-complete them — they carry mandatory task state-machine closures and MUST execute through the normal single-item path.',
       '',
       '**CRITICAL accounting**: When you call `complete_deliberation`, EVERY item above MUST appear in exactly ONE of `process_item_id`/`process_item_ids`, `defer_item_ids`, `drop_item_ids`, or `inline_completed_ids`. Items not listed stay queued and trigger another cycle — wasting tokens. LIST stale/informational items in `drop_item_ids` (do NOT just say "drop" in reasoning). Batch items sharing a taskId/requirementId/channel via `process_item_ids` + `batch_context`. Use `memory_updates` to persist decisions across cycles.',
       '',
@@ -7045,14 +7065,39 @@ export class Agent {
       const dropIds = (toolCall.arguments.drop_item_ids as string[]) ?? [];
       const inlineIds = (toolCall.arguments.inline_completed_ids as string[]) ?? [];
 
+      const allQueued = this.mailbox.getQueuedItems();
+
+      // 严格状态事件（任务执行/评审/收尾动作）纵深防御：
+      // - 禁止进入 defer / drop / inline_completed（会破坏任务状态机或丢失执行闭包）
+      // - 禁止作为 batch 的一部分（process_item_ids.length > 1）批量执行（日志不落到 task 下）
+      // - 允许作为唯一 primary（会走正常 executeTask 单独执行路径）
+      const isStrictById = (id: string) => {
+        const it = allQueued.find(q => q.id === id);
+        return !!it && isStrictStateItem(it);
+      };
+      const forbiddenIds = [...deferIds, ...dropIds, ...inlineIds]
+        .filter(isStrictById);
+      const batchIds = processItemIds && processItemIds.length > 1 ? processItemIds : [];
+      forbiddenIds.push(...batchIds.filter(isStrictById));
+      if (forbiddenIds.length > 0) {
+        return JSON.stringify({
+          status: 'error',
+          message: `Rejected: ${forbiddenIds.length} strict state-management item(s) (task execution / review / requirement action) cannot be deferred/dropped/inline-completed/batched by deliberation. They MUST execute through the normal single-item path. Keep them unlisted (they are automatically excluded from the deliberation view).`,
+          forbidden_item_ids: forbiddenIds,
+        });
+      }
+
       // Strict completeness check: every queued item must be accounted for.
       // Incomplete results are always rejected — the agent must retry.
+      // NOTE: strict state items are intentionally EXCLUDED from the orphan check —
+      // they are filtered out of the deliberation view (the LLM never sees their IDs),
+      // so they can never be listed here. Requiring them would make deliberation
+      // impossible whenever a task execution is queued.
       const accountedFor = new Set([...effectiveProcessIds, ...deferIds, ...dropIds, ...inlineIds]);
-      const allQueued = this.mailbox.getQueuedItems();
       const currentItemId = this.processingMailboxItemId;
       if (currentItemId) accountedFor.add(currentItemId);
       const orphanIds = allQueued
-        .filter(i => !accountedFor.has(i.id) && i.sourceType !== 'human_chat')
+        .filter(i => !accountedFor.has(i.id) && i.sourceType !== 'human_chat' && !isStrictStateItem(i))
         .map(i => i.id);
 
       if (orphanIds.length > 0) {

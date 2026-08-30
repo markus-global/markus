@@ -22,6 +22,7 @@ import {
   WATCHDOG_INTERVAL_MS,
   WATCHDOG_DRIFT_THRESHOLD_MS,
   TRIAGE_BACKLOG_THRESHOLD,
+  isStrictStateItem,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import type { AgentMailbox } from './mailbox.js';
@@ -445,16 +446,18 @@ export class AttentionController {
             let deliberationAttempted = false;
             if (this.mailbox.depth > 0 && !isUserMessage && this.needsLLMTriage(item) && this.delegate?.performDeliberation) {
               deliberationAttempted = true;
-              // 深度分拣只处理「消息」（用户/A2A/评论/提醒），绝不处理「正式任务执行」。
-              // triggerExecution 任务消息自带完整执行/评审工具链，若让它们在分拣中被 LLM
-              // 看到，agent 会试图在缺失 task_submit_review 等工具的白名单里完成任务，导致
-              // 「做了却无法提交评审」。因此这里把它们排除在分拣视界外——它们继续按队列
-              // 优先级独立排队，由后续正常出队路径 executeTask() 执行。
+              // 深度分拣只处理「消息/评论/提醒」这类松散事件，绝不处理「严格状态管理事件」
+              // （正式任务执行 triggerExecution、评审请求 review_request、需求/工作流收尾动作）。
+              // 严格状态事件自带完整执行/评审工具链与 task 状态机绑定：若让它们在分拣中被 LLM
+              // 看到，agent 会试图在缺失 task_update/task_submit_review 的白名单里完成状态变更，
+              // 或把它们 defer/drop/合并 → 闭包丢失或上下文错乱 → 「做了却无法提交评审」、
+              // 甚至 task 永远卡在 in_progress。因此它们被排除在分拣视界外——按队列优先级
+              // 独立排队，由后续正常出队路径 executeTask()/review/requirement_action 单独执行。
               const allItems = [item, ...this.mailbox.getQueuedItems()].filter(
-                i => !i.payload.extra?.triggerExecution,
+                i => !isStrictStateItem(i),
               );
               if (allItems.length === 0) {
-                // 队列里只剩正式任务执行消息：没有可分拣的消息，跳过 deliberation 直接出队执行。
+                // 队列里只剩严格状态事件（或全被排除）：没有可分拣的消息，跳过 deliberation 直接出队执行。
                 deliberationAttempted = false;
               }
               this.isDeliberating = true;
@@ -914,6 +917,35 @@ export class AttentionController {
     }
 
     if (decisionType === 'defer') {
+      // 严格状态管理事件（正式任务执行/评审/收尾动作）绝不能 defer：
+      // 持久化会丢失 onLog 等闭包，resurface 后无法真正执行 → 任务卡死在 in_progress。
+      // 对这类新事件回退到启发式（高优先级任务执行通常 preempt 当前工作 → 立即单独执行）。
+      if (isStrictStateItem(newItem)) {
+        log.info('Refusing to defer strict state item — falling back to heuristic', {
+          agentId: this.agentId,
+          itemId: newItem.id,
+          type: newItem.sourceType,
+          taskId: newItem.payload.taskId,
+        });
+        decisionType = this.heuristicDecision(this.currentFocus!, newItem);
+        this.setState('focused');
+        const reasoning2 = this.formatDecisionReasoning(decisionType, this.currentFocus!, newItem);
+        const decision2 = this.recordDecision(decisionType, newItem, reasoning2);
+        this.delegate?.onDecisionMade(decision2);
+        if (decisionType === 'preempt') {
+          this.lastYieldDecision = 'preempt';
+          return { decision: 'preempt', item: newItem, reasoning: reasoning2 };
+        }
+        if (decisionType === 'cancel') {
+          this.lastYieldDecision = 'cancel';
+          return { decision: 'cancel', item: newItem, reasoning: reasoning2 };
+        }
+        if (decisionType === 'merge') {
+          const merged = this.mailbox.merge(newItem.id, this.currentFocus!.id);
+          return { decision: 'merge', item: merged ?? newItem, reasoning: reasoning2 };
+        }
+        return { decision: 'continue', reasoning: reasoning2 };
+      }
       this.mailbox.defer(newItem.id);
       return { decision: 'defer', item: newItem, reasoning };
     }
@@ -1174,15 +1206,14 @@ export class AttentionController {
   private needsLLMTriage(headItem: MailboxItem): boolean {
     if (headItem.sourceType === 'human_chat') return false;
 
-    // 正式任务执行消息（triggerExecution）绝不参与深度分拣：
-    // 它们需要在带完整工具（含 task_submit_review）的正常出队路径 executeTask() 执行。
-    // 深度分拣的工具面是白名单（无 task_submit_review/shell/file），若让 LLM 在分拣中
-    // 看到任务消息，会诱使它试图在缺失评审工具的环境里完成任务 → 「做了却无法提交评审」，
-    // 或把任务延迟至少一轮。因此只要队列中存在 triggerExecution，就跳过 deliberation，
-    // 直接按优先级队列正常出队执行。
-    if (headItem.payload.extra?.triggerExecution) return false;
+    // 严格状态管理事件（triggerExecution / review_request / requirement_update(actionRequired)
+    // / workflow_update(actionRequired)）绝不参与深度分拣：
+    // 它们需要在带完整工具（含 task_update / task_submit_review / file 等）的正常出队路径
+    // executeTask()/review/requirement_action 单独执行，且分拣白名单没有这些工具。
+    // 因此只要头部或队列中存在严格状态事件，就跳过 deliberation，按优先级队列正常出队执行。
+    if (isStrictStateItem(headItem)) return false;
     const queued = this.mailbox.getQueuedItems();
-    if (queued.some(i => i.payload.extra?.triggerExecution)) return false;
+    if (queued.some(i => isStrictStateItem(i))) return false;
     if (queued.length === 0) return false;
 
     if (queued.length >= TRIAGE_BACKLOG_THRESHOLD) return true;
@@ -1208,7 +1239,10 @@ export class AttentionController {
       const it = queueSnapshot.find(i => i.id === id);
       if (!it) return false;
       if (it.sourceType === 'human_chat') return true;
-      if (it.payload.extra?.triggerExecution) return true;
+      // 严格状态管理事件（正式任务执行/评审/收尾动作）在分拣结果中必须是受保护的：
+      // 不允许 inline 完成、defer、drop、或作为 batch item —— 它们只能留在队列中
+      // 由正常出队路径单独执行，否则状态机/闭包会丢失。
+      if (isStrictStateItem(it)) return true;
       if (it.payload.extra?.directMention) return true;
       return false;
     };
@@ -1332,6 +1366,7 @@ export class AttentionController {
         priority: i.priority,
         summary: i.payload.summary,
         queuedAt: i.queuedAt,
+        isStrictState: isStrictStateItem(i),
       })),
       deferredItems: [],
       recentDecisions: this.decisions.slice(-10),

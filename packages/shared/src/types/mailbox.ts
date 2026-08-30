@@ -103,6 +103,37 @@ export interface MailboxItem {
   retryCount?: number;
 }
 
+/**
+ * 严格状态管理事件（Strict State Items）判定。
+ *
+ * 这类 mailbox item 承载了「任务/需求/工作流」的正式状态流转，必须走独立、
+ * 完整的执行路径（executeTask / review / requirement_action / workflow_action），
+ * 绝不能：
+ *  - 被 defer / drop（持久化会丢失 onLog 等闭包 → resurface 后无法执行 → 任务卡死）
+ *  - 被合并（consolidate / merge，会把评审/收尾内容吞进 informational item 而丢失）
+ *  - 被 deliberation 批处理或 inline 完成（执行日志不会挂在 task 下，且状态变更不完整）
+ *
+ * 深度决策（deliberation）只允许对这类事件「排序 / 保持原样」，由正常出队路径单独处理。
+ */
+export function isStrictStateItem(item: {
+  sourceType: MailboxItemType;
+  payload: MailboxPayload;
+}): boolean {
+  if (item.payload.extra?.triggerExecution) return true;
+  if (item.sourceType === 'review_request') return true;
+  if (item.sourceType === 'requirement_update' && item.payload.extra?.actionRequired) return true;
+  if (item.sourceType === 'workflow_update' && item.payload.extra?.actionRequired) return true;
+  return false;
+}
+
+/** 是否为「正式任务执行」item（triggerExecution）。是 isStrictStateItem 的特例。 */
+export function isTaskExecutionItem(item: {
+  sourceType: MailboxItemType;
+  payload: MailboxPayload;
+}): boolean {
+  return item.payload.extra?.triggerExecution === true;
+}
+
 export interface MailboxPayload {
   summary: string;
   content: string;
@@ -239,6 +270,8 @@ export interface AgentMindState {
     priority: MailboxPriority;
     summary: string;
     queuedAt: string;
+    /** 严格状态管理事件（正式任务执行/评审/收尾动作）——不可 defer/drop/合并/批处理，必须单独执行。 */
+    isStrictState?: boolean;
   }>;
   deferredItems: Array<{
     id: string;

@@ -1281,6 +1281,23 @@ When `delegate.performDeliberation` is available (always in production), the att
 
 **Deliberation is atomic**: yield points are suppressed during deliberation (new mail sets the interrupt signal but is not evaluated until deliberation completes).
 
+**Strict state items are excluded from deliberation (critical safety)**:
+
+Items carrying formal task/requirement/workflow state transitions — collectively **strict state items** (predicate `isStrictStateItem` in `@markus/shared`):
+- `task_status_update` with `extra.triggerExecution`（正式任务执行）
+- `review_request`（评审请求）
+- `requirement_update` / `workflow_update` with `extra.actionRequired`（收尾动作）
+
+are **filtered out of the deliberation view entirely**:
+
+1. **They are invisible to the LLM during deliberation** — `performDeliberation` receives only non-strict items; the optionality prompt (`[DELIBERATION MODE]`) and tool docs instruct the agent that `isStrictState: true` items seen via `check_mailbox` may only be reordered, never deferred/dropped/batched/inline-completed.
+2. **They never trigger deliberation** — `needsLLMTriage` returns false when the head or any queued item is strict, so tasks/reviews are processed by the normal single-item execution path with the full tool set (including `task_update` / `task_submit_review` / shell / file).
+3. **Yield-point defer is refused** — if the interrupt evaluator returns `defer` for a strict item, it falls back to the heuristic (high-priority task execution → `preempt` → executed as its own item).
+4. **Mailbox tools refuse them** — `defer_mailbox_item` / `drop_mailbox_item` return an error for strict items (defense in depth), and `complete_deliberation` rejects results that list strict items in `defer/drop/inline/batch`. The orphan-completeness check **excludes** strict items (they are not part of the deliberation view).
+5. **Lost-closure recovery** — if a task execution item ever resurfaces from persistence **without its callback closures** (e.g. deferred before start, then resurfaced after restart), the agent no longer silently completes it: it emits an `agent:incomplete` event with `reason: resurfaced-task-execution-lost-closures`, and the org-manager `TaskService` subscribes to that event and calls `recoverLostTaskExecution(taskId)` — re-dispatches the task via `runTask` (with proper closures) if it is still `in_progress` and has no active execution. This prevents tasks from hanging in `in_progress` forever.
+
+Why this matters: task execution, review, and requirement/workflow finalization must run through their dedicated state machines (`executeTask(taskId, onLog)` with live `onLog`/`cancelToken`/`responsePromise` closures). If they were deferred/dropped/merged/batched by deliberation, the closures are lost with persistence, task logs never land under the task, and the task can remain `in_progress` with nobody working it.
+
 ### Tool Access During Deliberation
 
 Defined by `DELIBERATION_ALLOWED_TOOLS` in `@markus/shared`:
@@ -1310,7 +1327,9 @@ individual mailbox items using dedicated tools:
 | `clear_working_memory` | All scenarios | Clear stale awareness |
 
 **Safety**: `human_chat` items are protected — they cannot be deferred, dropped,
-or reprioritized by tool calls.
+or reprioritized by tool calls. **Strict state items**（正式任务执行 / 评审 / 需求·工作流收尾动作，
+见上文）也是受保护的：`defer_mailbox_item` / `drop_mailbox_item` 会返回错误，只能通过
+`prioritize_mailbox_item` 调整优先级，最终由正常出队路径单独执行。
 
 **Relationship to `complete_deliberation`**: The individual tools take immediate
 effect. `complete_deliberation` handles remaining items in bulk. They are additive.
