@@ -588,7 +588,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     try {
       const resp = await api.files.preview(d.reference);
       if (resp.type === 'image' && resp.mimeType) {
-        setPreviewImage({ src: `data:${resp.mimeType};base64,${resp.content}`, name: resp.name });
+        // 后端图片返回 streamUrl（不走 base64，防超大文件撑爆 inline 上限）
+        const src = resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));
+        setPreviewImage({ src, name: resp.name });
       } else if (resp.type === 'audio' || resp.type === 'video') {
         const src = resp.streamUrl
           || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));

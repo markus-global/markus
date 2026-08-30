@@ -226,6 +226,49 @@ function formatBytes(n?: number): string {
 }
 
 // ── pdf.js renderer ─────────────────────────────────────────────────────────
+// Polyfill ES2025 Map methods that pdfjs-dist 6.x depends on but
+// Electron 35 (Chromium 134) doesn't ship yet.
+function polyfillMapMethods(): void {
+  const mp = Map.prototype as unknown as Record<string, unknown>;
+  if (typeof mp.getOrInsertComputed !== 'function') {
+    mp.getOrInsertComputed = function (this: Map<unknown, unknown>, key: unknown, cb: (k: unknown) => unknown) {
+      if (this.has(key)) return this.get(key);
+      const v = cb(key);
+      this.set(key, v);
+      return v;
+    };
+  }
+  if (typeof mp.getOrInsert !== 'function') {
+    mp.getOrInsert = function (this: Map<unknown, unknown>, key: unknown, value: unknown) {
+      if (this.has(key)) return this.get(key);
+      this.set(key, value);
+      return value;
+    };
+  }
+  // Promise.try polyfill
+  const PP = Promise as unknown as Record<string, unknown>;
+  if (typeof PP.try !== 'function') {
+    PP.try = function (fn: () => unknown) {
+      return new Promise(resolve => resolve(fn()));
+    };
+  }
+  // Iterator.prototype.join polyfill
+  const ip = (typeof Iterator !== 'undefined' ? Iterator.prototype : null) as unknown as Record<string, unknown> | null;
+  if (ip && typeof ip.join !== 'function') {
+    ip.join = function (this: Iterable<string>, separator: string = ',') {
+      let r = '';
+      let first = true;
+      for (const v of this) {
+        if (!first) r += separator;
+        r += String(v);
+        first = false;
+      }
+      return r;
+    };
+  }
+}
+polyfillMapMethods();
+
 let pdfWorkerSrc: string | null = null;
 function getPdfWorkerSrc(): string {
   if (!pdfWorkerSrc) {
