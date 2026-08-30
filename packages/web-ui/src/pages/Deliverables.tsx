@@ -1639,7 +1639,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                     )}
                   </div>
                 )}
-                <div className={showOfficePreview ? 'flex-1 min-h-0 p-5' : 'p-5'}>
+                <div className={showOfficePreview ? 'flex-1 min-h-0 p-5 flex flex-col' : 'p-5'}>
                   {previewLoading ? (
                     <div className="animate-pulse space-y-4">
                       <div className="h-4 bg-surface-overlay/60 rounded w-full" />
@@ -1655,7 +1655,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                       <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
                     </div>
                   ) : previewOffice ? (
-                    <div className={showOfficePreview ? 'flex-1 min-h-0 overflow-hidden' : 'h-[55vh]'}>
+                    <div className={showOfficePreview ? 'flex-1 min-h-0' : 'h-[55vh]'}>
                       <OfficePreviewer
                         data={previewOffice}
                         reference={previewOffice.reference}
