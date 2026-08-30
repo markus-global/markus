@@ -40,11 +40,16 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
 
   const handleAddPath = async () => {
     const p = draftPath.trim();
-    if (!p) return;
-    const next = [...new Set([...paths, p])];
-    await onUpdateProject({ knowledgeBasePaths: next });
-    setDraftPath('');
-    setNotice({ type: 'success', text: t('work:project.kbPathsSaved') });
+    if (!p || syncing) return;
+    try {
+      const next = [...new Set([...paths, p])];
+      await onUpdateProject({ knowledgeBasePaths: next });
+      setDraftPath('');
+      // 绑定成功后立即扫描新增目录，产出物页面即可看到知识库文件
+      await runSync([p]);
+    } catch (err) {
+      setNotice({ type: 'error', text: `${t('work:project.kbPathsSaveFailed')}: ${String(err)}` });
+    }
   };
 
   const handleRemovePath = async (path: string) => {
@@ -52,12 +57,12 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
     setNotice({ type: 'success', text: t('work:project.kbPathsSaved') });
   };
 
-  const handleSync = async () => {
+  const runSync = async (roots?: string[]) => {
     if (syncing) return;
     setSyncing(true);
     setNotice(null);
     try {
-      const res = await api.projects.syncKnowledge(project.id, paths.length ? paths : undefined);
+      const res = await api.projects.syncKnowledge(project.id, roots && roots.length ? roots : undefined);
       setNotice({
         type: res.errors.length > 0 ? 'error' : 'success',
         text: t('work:project.kbSyncResult', {
@@ -74,6 +79,10 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
     } finally {
       setSyncing(false);
     }
+  };
+
+  const handleSync = async () => {
+    await runSync(paths.length ? paths : undefined);
   };
 
   const openInDeliverables = (deliverableId?: string) => {
@@ -139,10 +148,10 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
           <button
             type="button"
             onClick={handleAddPath}
-            disabled={!draftPath.trim()}
+            disabled={!draftPath.trim() || syncing}
             className="px-2.5 py-1.5 text-xs bg-surface-overlay text-fg-secondary hover:text-fg-primary rounded-md disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {t('work:project.kbAdd')}
+            {syncing ? t('work:project.kbSyncing') : t('work:project.kbAdd')}
           </button>
         </div>
       </div>

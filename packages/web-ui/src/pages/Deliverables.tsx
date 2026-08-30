@@ -1854,8 +1854,11 @@ function KnowledgeBindModal({ projects, onClose, onBound }: { projects: ProjectI
     setBusy(true);
     setError('');
     try {
-      const paths = [...new Set([...(selectedProject?.knowledgeBasePaths ?? []), path.trim()])];
+      const trimmed = path.trim();
+      const paths = [...new Set([...(selectedProject?.knowledgeBasePaths ?? []), trimmed])];
       await api.projects.update(projectId, { knowledgeBasePaths: paths });
+      // 绑定成功后立即扫描该目录，产出物页面立即可见
+      await api.projects.syncKnowledge(projectId, [trimmed]);
       onBound();
     } catch (err) {
       setError(String(err));
