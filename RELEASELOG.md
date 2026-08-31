@@ -1,5 +1,51 @@
 # Release Log
 
+## v0.9.9-rc.0
+
+### Features
+
+- **知识库（Knowledge Base）** — 绑定本地目录自动扫描同步；搜索范围扩展 `source / knowledge_root / content`；产出物页数据来源筛选；Agent 新增 `knowledge_search / knowledge_read / knowledge_list` 工具（T1-T7 全链路落地）
+- **Office 预览与生成** — 统一 Office 预览组件（pdf/docx/xlsx 内联 + 回退），修复 Electron 35 下 PDF 预览崩溃（pdfjs polyfill + Worker Blob wrapper）；Agent 新增 `office_generate` 工具（docx/xlsx/pptx/pdf）；知识库路径支持系统目录选择器（浏览…）
+- **per-agent 默认模型** — 每个 agent 可单独配置默认模型 + agent 自检工具 + 设置页按 agent 分组管理
+- **可观测性（OB-1/2/3）** — 概览页把「思考中」展开为可读运行阶段；agent 列表派生运行 phase + 阻塞依赖标题；疑似卡死定位（心跳停滞 / 依赖已死明确提示）；无任务「处理中」脏状态自动兜底
+- **稳定性加固（SS-1/2/3）** — provider 超时 / 熔断加固（单 provider 故障隔离）；前端流式 / 轮询死循环防护 + 断连自动重连；服务进程崩溃归因与自愈（崩溃日志 / 内存水位 / 启动看门狗自拉起）
+- **内置浏览器开关** — 动态路由 / 配置持久化 / 设置页 UI 重构
+- **LLM 重试 / 退避参数可配置化**（FD-2）— config/env 覆盖，Python 默认
+- **定时任务可靠性** — agent 离线时不投递 + 卡死 `in_progress` 自动回收
+- **UI 优化** — 依赖图中未完成需求强制显示其所有任务；工具分组修复（不再漏进「其他」）；任务操作 / 模型测试报错国际化 + 友好提示；概览页移除缓存命中率与 CU 指标；GFM autolink 吞掉 URL 后跟随的中文 / 全角字符修复
+
+### Onboarding 全面修复
+
+- 引导状态从浏览器 localStorage 升级为**服务端持久化**（`preferences.guideHidden`），三种登录方式全覆盖：Google / GitHub / Email（Hub 登录）、本地 init / 首登、会话恢复
+- **新用户**：全屏向导 + 概览引导清单接力显示——向导完成后清单接棒，引导不再丢失
+- **老用户**：登录 / 恢复会话即标记已引导，换浏览器、清缓存都不会再被打扰
+- 全屏向导与引导清单解耦：向导中途退出 / 清缓存后，清单仍照常显示
+
+### Bug Fixes
+
+- A2A recipient liveness 使用运行时状态而非花名册；`wake_recipient` / `reply_in_session` 支持
+- stop 后重连流写进上一轮气泡导致聊天错序
+- `spawn_subagents` 并发版默认工具集
+- DeepSeek 文本化工具调用泄漏 + 流式工具标签泄漏防护 + PDF/office/deliverable 边界修复
+- failed-blocker 级联失败防死锁 + create/update blocker 校验 + google/ollama 流逐 chunk 重置超时
+- 终端点击路径前校验文件存在，拼接错误 / 已删除路径不再打开预览
+- 知识库绑定后同步全部路径（而非仅新路径）；删除路径增加确认弹窗后重新同步
+- mailbox 严格状态项保护 + 丢失执行自愈，杜绝任务卡死 `in_progress`
+- profilePage 徽标 i18n key 路径修复；未分组 agent 在 per-agent 模型设置中优先归组
+
+### Refactor / Docs
+
+- 动态 context 移出 system 移至 volatile tail，提升 prompt-cache 命中率
+- context-os 压缩阈值延迟至 75% / WARN 对齐 80%
+- 临时隐藏编程工具集成（过度工程评估）
+- 反馈对照表归档交付物，删除三份临时文档
+
+### Stats
+
+- 63 commits, 152 files changed
+
+---
+
 ## v0.9.8
 
 ### Features & Improvements
