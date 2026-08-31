@@ -1,5 +1,6 @@
 import { createLogger } from '@markus/shared';
 import type { DeliverableService } from './deliverable-service.js';
+import type { Dirent } from 'node:fs';
 
 const log = createLogger('knowledge-sync');
 
@@ -55,9 +56,9 @@ export class KnowledgeSyncService {
     // ── Recursively walk a root collecting file paths ─────────────────────
     const walk = (dir: string, depth: number, out: string[]): void => {
       if (depth > maxDepth) return;
-      let entries: import('node:fs').Dirent[];
+      let entries: Dirent[];
       try {
-        entries = readdirSync(dir, { withFileTypes: true }) as unknown as import('node:fs').Dirent[];
+        entries = readdirSync(dir, { withFileTypes: true }) as unknown as Dirent[];
       } catch (err) {
         result.errors.push(`Cannot read dir ${dir}: ${String(err)}`);
         return;

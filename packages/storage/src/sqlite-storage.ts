@@ -873,7 +873,7 @@ export function purgeLeakedToolMarkup(db: DatabaseSync): void {
       const upd = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE id = ?`);
       let changed = 0;
       for (const row of rows) {
-        if (row.val == null) continue;
+        if (row.val === null) continue;
         const cleaned = strip(String(row.val));
         // `parameter` LIkE is broad; only update when a real leak was removed.
         if (cleaned !== String(row.val)) {

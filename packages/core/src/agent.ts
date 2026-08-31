@@ -3636,7 +3636,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
 
-    let { text: systemPrompt, segments: systemCacheSegments, volatile } = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments, volatile } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -4345,7 +4345,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
 
-    let { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -5114,7 +5114,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
 
-    let { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -5675,7 +5675,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', userMessage);
 
-    let { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
+    const { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
