@@ -23,7 +23,7 @@ export type TaskStatus = ItemStatus;
 export const TASK_TRANSITIONS: Readonly<Record<ItemStatus, ReadonlySet<ItemStatus>>> = {
   pending:     new Set<ItemStatus>(['in_progress', 'blocked', 'rejected', 'cancelled', 'completed']),
   in_progress: new Set<ItemStatus>(['review', 'blocked', 'failed', 'cancelled']),
-  blocked:     new Set<ItemStatus>(['in_progress', 'cancelled']),
+  blocked:     new Set<ItemStatus>(['in_progress', 'cancelled', 'failed']),
   review:      new Set<ItemStatus>(['completed', 'in_progress', 'cancelled']),
   completed:   new Set<ItemStatus>(['archived', 'in_progress']),
   failed:      new Set<ItemStatus>(['in_progress', 'archived']),

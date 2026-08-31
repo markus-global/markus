@@ -43,6 +43,12 @@ export interface LLMProviderConfig {
   timeoutMs?: number;
   /** Max idle gap between stream chunks in milliseconds (default: 180s). Independent of timeoutMs. */
   streamTimeoutMs?: number;
+  /** Max retries for transient HTTP/network failures (default: 3). */
+  maxRetries?: number;
+  /** Base exponential-backoff delay in ms for retries (default: 500). */
+  retryBaseDelayMs?: number;
+  /** Cap for Retry-After waits in ms, so a single turn cannot sleep for minutes (default: 60s). */
+  maxRetryAfterMs?: number;
   authType?: LLMAuthType;
   authProfileId?: string;
   /**

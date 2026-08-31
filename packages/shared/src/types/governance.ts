@@ -59,6 +59,7 @@ export interface TaskDeliverable {
 
 export type DeliverableType = 'file' | 'directory';
 export type DeliverableStatus = 'active' | 'verified' | 'outdated';
+export type DeliverableSource = 'agent' | 'knowledge';
 export type BuilderArtifactType = 'agent' | 'team' | 'skill';
 
 export interface Deliverable {
@@ -70,6 +71,12 @@ export interface Deliverable {
   format?: string;
   tags: string[];
   status: DeliverableStatus;
+  /** 'agent'（Agent 产出物，默认）| 'knowledge'（知识库文档），见 V2 规划 */
+  source?: DeliverableSource;
+  /** 归属知识库根路径（source='knowledge' 时有效） */
+  knowledgeRoot?: string | null;
+  /** 扫描抽取的文本内容，供全文搜索 */
+  content?: string | null;
   taskId?: string;
   agentId?: string;
   projectId?: string;

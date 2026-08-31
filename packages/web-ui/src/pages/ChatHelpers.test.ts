@@ -4,6 +4,7 @@ import {
   dbMsgToChat,
   insertChatMsgByCreatedAt,
   isRememberActionVisible,
+  pickStreamReattachTarget,
   stripEmbeddedReplyQuote,
   stripNotifyContext,
   type ChatMsg,
@@ -120,5 +121,59 @@ describe('dedupeAdjacentUserMessages', () => {
       { id: '3', sender: 'user', text: '继续', time: '16:30', rawCreatedAt: '2026-07-27T08:30:55.000Z' },
     ];
     expect(dedupeAdjacentUserMessages(msgs).map(m => m.id)).toEqual(['1', '2', '3']);
+  });
+});
+
+describe('pickStreamReattachTarget', () => {
+  const mk = (id: string, sender: 'user' | 'agent', text: string, extra: Partial<ChatMsg> = {}): ChatMsg =>
+    ({ id, sender, text, time: '12:00', ...extra });
+
+  it('returns the streaming agent bubble', () => {
+    const msgs = [
+      mk('u1', 'user', 'A'),
+      mk('a1', 'agent', 'B'),
+      mk('u2', 'user', 'C'),
+      mk('a2', 'agent', 'partial D', { isStreaming: true }),
+    ];
+    expect(pickStreamReattachTarget(msgs)?.id).toBe('a2');
+  });
+
+  it('returns an empty in-flight placeholder bubble', () => {
+    const msgs = [
+      mk('u1', 'user', 'A'),
+      mk('a1', 'agent', 'B'),
+      mk('u2', 'user', 'C'),
+      mk('a2', 'agent', '', { isStreaming: true }),
+    ];
+    expect(pickStreamReattachTarget(msgs)?.id).toBe('a2');
+  });
+
+  it('NEVER reuses a previous turn completed reply when the in-flight bubble is gone', () => {
+    // Regression: after user clicked stop on turn D (empty bubble removed),
+    // reattach used to pick the LAST agent message = previous reply B and
+    // streamed D into it — history became [A, D-streaming, C].
+    const msgs = [
+      mk('u1', 'user', 'A'),
+      mk('a1', 'agent', 'B (completed previous reply)'),
+      mk('u2', 'user', 'C'),
+    ];
+    expect(pickStreamReattachTarget(msgs)).toBeUndefined();
+  });
+
+  it('returns undefined when last agent message is a completed reply even if older agents are streaming', () => {
+    const msgs = [
+      mk('u1', 'user', 'A'),
+      mk('a0', 'agent', 'older still streaming?', { isStreaming: true }),
+      mk('a1', 'agent', 'B completed'),
+    ];
+    expect(pickStreamReattachTarget(msgs)).toBeUndefined();
+  });
+
+  it('treats error replies as completed (never reused as reattach target)', () => {
+    const msgs = [
+      mk('u1', 'user', 'A'),
+      mk('a1', 'agent', '⚠ error', { isError: true }),
+    ];
+    expect(pickStreamReattachTarget(msgs)).toBeUndefined();
   });
 });

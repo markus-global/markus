@@ -48,6 +48,7 @@ import {
   type UserInputQuestion,
   type UserInputAnswer,
   DEFERRED_CATALOG_MAX_CHARS,
+  isStrictStateItem,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -55,6 +56,7 @@ import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
 import { HeartbeatScheduler } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
+import { stripToolNoise } from './llm/provider-helpers.js';
 import { MemoryStore, loadNotebook, saveNotebook, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
@@ -330,6 +332,11 @@ export class Agent {
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
   private currentTaskId?: string;
+  /** Scheme A: per-turn volatile state (time, mailbox, status, memories…) rebuilt
+   *  by buildSystemPrompt each call and passed to prepareMessages so it can be
+   *  pinned at the TAIL of history instead of inside the system message. Keeping
+   *  the system message byte-identical across turns preserves the prefix cache. */
+  private volatileState?: string;
   private pathPolicy?: PathAccessPolicy;
   private skillRegistry?: SkillRegistry;
   private toolSelector: ToolSelector;
@@ -367,6 +374,10 @@ export class Agent {
   private handbookPath?: string;
   private teamDataDir?: string;
   private identityContext?: IdentityContext;
+  /** Live colleague liveness provider — reads runtime state at prompt-build time.
+   *  identityContext.colleagues[].status is a creation-time snapshot that only
+   *  refreshes on org changes; this provider supplies real-time statuses. */
+  private colleagueStatusProvider?: () => Record<string, string>;
   private environmentProfile?: EnvironmentProfile;
   private auditCallback?: (event: {
     type: string;
@@ -636,6 +647,26 @@ export class Agent {
     }
     if (this.config.llmConfig.modelMode === 'custom') {
       return this.config.llmConfig.primary;
+    }
+    return undefined;
+  }
+
+  /**
+   * Resolve the LLM model id this agent should use for a call (independent of
+   * provider, which is resolved by getEffectiveProvider()).
+   * Priority: session/turn override > per-agent defaultModel > undefined
+   * (undefined lets the router pick the provider's active model / global
+   * routing default).
+   */
+  private getEffectiveModel(): string | undefined {
+    if (this.turnModelOverride?.model) {
+      return this.turnModelOverride.model;
+    }
+    if (
+      this.config.llmConfig.modelMode === 'custom'
+      && this.config.llmConfig.defaultModel
+    ) {
+      return this.config.llmConfig.defaultModel;
     }
     return undefined;
   }
@@ -1319,6 +1350,7 @@ export class Agent {
         agentId: this.id,
         ...this.getPrepareBudgetOpts(),
         toolDefinitions: llmTools,
+        volatileState: this.volatileState,
       });
 
       let prepared = await prepare();
@@ -1326,6 +1358,7 @@ export class Agent {
         {
           messages: prepared.messages,
           tools: llmTools.length > 0 ? llmTools : undefined,
+          ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
         },
         this.getEffectiveProvider(),
         { sessionId: this.currentSessionId },
@@ -1391,6 +1424,7 @@ export class Agent {
           {
             messages: prepared.messages,
             tools: llmTools.length > 0 ? llmTools : undefined,
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           },
           this.getEffectiveProvider(),
           { sessionId: this.currentSessionId },
@@ -1526,7 +1560,7 @@ export class Agent {
           const msgChannelKey = extra.channelKey as string | undefined;
           const channelSessionId = msgChannelKey ? `channel_${msgChannelKey}_${this.id}` : undefined;
           // In-session A2A delegation: if this message replies to a conversation the
-          // agent is awaiting inline (registered via agent_send_message await_in_session),
+          // agent is awaiting inline (registered via agent_send_message reply_in_session),
           // route the reply into the ORIGIN session so the delegating thread continues
           // where it left off, instead of a disconnected a2a_* session.
           let awaitOriginSessionId: string | undefined;
@@ -1567,13 +1601,30 @@ export class Agent {
         case 'task_status_update': {
           if (extra.triggerExecution && item.payload.taskId) {
             if (typeof extra.onLog !== 'function') {
-              // Resurfaced from persistence after preemption — closures (onLog,
+              // Resurfaced from persistence after preemption/defer — closures (onLog,
               // cancelToken, responsePromise) were lost during JSON serialization.
-              // Skip execution; TaskService's own re-queue mechanism will create
-              // a fresh execution with proper callbacks.
-              log.info('Skipping resurfaced task execution item (closures lost)', {
-                agentId: this.id, taskId: item.payload.taskId,
+              // ⚠ 绝不能静默跳过：如果 TaskService 没有重新 dispatch（例如任务在开始执行
+              // 前就被 defer，之后 resurface），任务会永远卡在 in_progress 且无人处理。
+              // 这里发出可见事件 agent:incomplete，org-manager 的 TaskService 订阅后
+              // 会检查该任务没有活跃执行并重新 runTask（带完整闭包）。item 本身按正常
+              // 完成处理，避免 attention 卡死；真正执行由 TaskService 重新发起。
+              log.warn('Resurfaced task execution item lost closures — requesting TaskService re-dispatch', {
+                agentId: this.id,
+                taskId: item.payload.taskId,
+                itemId: item.id,
               });
+              try {
+                this.eventBus.emit('agent:incomplete', {
+                  agentId: this.id,
+                  itemId: item.id,
+                  type: item.sourceType,
+                  taskId: item.payload.taskId,
+                  reason: 'resurfaced-task-execution-lost-closures',
+                  message: '任务执行指令在 defer/resurface 后丢失了回调闭包，任务可能卡在 in_progress。已请求 TaskService 重新调度执行。',
+                });
+              } catch (err) {
+                log.debug('Failed to emit agent:incomplete for lost task execution', { error: String(err) });
+              }
               resolveResponse('');
               return;
             }
@@ -2356,7 +2407,8 @@ export class Agent {
         // Reasoning models need headroom before emitting the summary, and the
         // prompt itself bounds the output ("under 1500 characters").
         temperature: 0.2,
-      });
+        ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
+      }, this.getEffectiveProvider(), { sessionId: this.currentSessionId });
 
       return response.content || '';
     };
@@ -2753,6 +2805,10 @@ export class Agent {
       '## Your Mailbox',
       itemsSection,
       '',
+      '**Scope**: This mode handles MESSAGES (user chat, agent messages, comments, mentions, review requests). Formal task-execution items are NOT in this list — they are already queued for normal execution with full tools (including task_submit_review) and will NOT be processed here. Do NOT create or complete tasks from this mode; use `complete_deliberation` to route.',
+      '',
+      '**⚠ Strict state items protection**: If `check_mailbox` shows items with `isStrictState: true` (task execution / review / requirement-workflow action), you may ONLY reorder them via `prioritize_mailbox_item`. NEVER defer, drop, batch-process, or inline-complete them — they carry mandatory task state-machine closures and MUST execute through the normal single-item path.',
+      '',
       '**CRITICAL accounting**: When you call `complete_deliberation`, EVERY item above MUST appear in exactly ONE of `process_item_id`/`process_item_ids`, `defer_item_ids`, `drop_item_ids`, or `inline_completed_ids`. Items not listed stay queued and trigger another cycle — wasting tokens. LIST stale/informational items in `drop_item_ids` (do NOT just say "drop" in reasoning). Batch items sharing a taskId/requirementId/channel via `process_item_ids` + `batch_context`. Use `memory_updates` to persist decisions across cycles.',
       '',
       'When ready, call `complete_deliberation`.',
@@ -2958,6 +3014,8 @@ export class Agent {
       tokensUsed?: number;
       inputTokens?: number;
       outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
       cost?: number;
       cuCost?: number;
       provider?: string;
@@ -3125,7 +3183,7 @@ export class Agent {
       );
       if (browserTools.length === 0) return;
 
-      const { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+      const { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
         agentId: this.id,
         agentName: this.config.name,
         role: this.role,
@@ -3149,6 +3207,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: browserTools,
           systemCacheSegments,
+          volatileState,
         });
 
       let iterations = 0;
@@ -3160,6 +3219,7 @@ export class Agent {
           metadata: this.getLLMMetadata(sessionId),
           compaction: useCompaction,
           systemCacheSegments,
+          ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
         }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
         'Browser close-tabs follow-up',
       );
@@ -3198,6 +3258,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Browser close-tabs follow-up continuation',
         );
@@ -3307,6 +3368,9 @@ export class Agent {
   }
 
   private emitActivityLog(activityId: string, type: AgentActivityLogEntry['type'], content: string, metadata?: Record<string, unknown>): void {
+    // 进度心跳：任何工具/LLM 事件都算「有实质进展」，用于区分长任务进行中与疑似卡死。
+    // 只写内存 state（listAgents 实时可见），不触发持久化，无 IO 开销。
+    this.state.lastProgressAt = new Date().toISOString();
     // Defensive: strip completion marker from all log content regardless of caller
     const cleanContent = (type === 'text' || type === 'status')
       ? stripCompletionMarker(content)
@@ -3397,6 +3461,11 @@ export class Agent {
 
   setGoalFetcher(fetcher: () => Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: GoalConfig }>): void {
     this.goalFetcher = fetcher;
+  }
+
+  /** Wire a live colleague-status provider (runtime liveness, not the identity snapshot). */
+  setColleagueStatusProvider(provider: () => Record<string, string>): void {
+    this.colleagueStatusProvider = provider;
   }
 
   private workflowContextFetcher?: () => {
@@ -3567,7 +3636,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
 
-    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments, volatile } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -3577,6 +3646,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: effectiveMessage,
       identity: this.identityContext,
+      liveColleagueStatuses: this.colleagueStatusProvider?.(),
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       viewerContext: this.runtimeViewerContext,
       assignedTasks: isLightweight ? undefined : this.tasksFetcher?.(),
@@ -3645,6 +3715,7 @@ export class Agent {
     await this.maybeMemoryFlushPreflight(sessionId);
 
     const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+    this.volatileState = volatile;
     let prepared = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
@@ -3656,6 +3727,7 @@ export class Agent {
       systemCacheSegments,
       slotsSegment: this.memory.serializeSlots ? this.memory.serializeSlots(sessionId) : undefined,
       summarySegment: this.memory.serializeSummary ? this.memory.serializeSummary(sessionId) : undefined,
+      volatileState: this.volatileState,
     });
 
     // Afford fail-closed (Afford.S1): shared helper for stream + non-stream.
@@ -3695,6 +3767,7 @@ export class Agent {
           metadata: this.getLLMMetadata(sessionId),
           compaction: useCompaction,
           systemCacheSegments,
+          ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
         }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
         'Chat LLM call',
       );
@@ -3909,6 +3982,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         const updatedMessages = prepared2.messages;
 
@@ -3920,6 +3994,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM continuation',
         );
@@ -3958,6 +4033,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
 
         response = await this.withNetworkRetry(
@@ -3967,6 +4043,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM comment-reminder',
         );
@@ -4021,6 +4098,7 @@ export class Agent {
             ...this.getPrepareBudgetOpts(),
             toolDefinitions: llmTools,
             systemCacheSegments,
+            volatileState: this.volatileState,
           });
           response = await this.withNetworkRetry(
             () => this.llmRouter.chat({
@@ -4029,6 +4107,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
+              ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
             }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
             'Chat LLM comment-reminder-final',
           );
@@ -4060,6 +4139,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
 
         response = await this.withNetworkRetry(
@@ -4069,6 +4149,7 @@ export class Agent {
             metadata: this.getLLMMetadata(sessionId),
             compaction: useCompaction,
             systemCacheSegments,
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
           'Chat LLM requirement-action-reminder',
         );
@@ -4121,6 +4202,7 @@ export class Agent {
             ...this.getPrepareBudgetOpts(),
             toolDefinitions: llmTools,
             systemCacheSegments,
+            volatileState: this.volatileState,
           });
           response = await this.withNetworkRetry(
             () => this.llmRouter.chat({
@@ -4129,6 +4211,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
+              ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
             }, this.getEffectiveProvider(), { sessionId: sessionId ?? this.currentSessionId }),
             'Chat LLM requirement-action-reminder-final',
           );
@@ -4262,7 +4345,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
 
-    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -4272,6 +4355,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: effectiveMessage,
       identity: this.identityContext,
+      liveColleagueStatuses: this.colleagueStatusProvider?.(),
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
@@ -4306,6 +4390,7 @@ export class Agent {
     await this.maybeMemoryFlushPreflight(this.currentSessionId);
 
     const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
+    this.volatileState = volatileState;
     let preparedStream = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
@@ -4315,6 +4400,7 @@ export class Agent {
       ...this.getPrepareBudgetOpts(),
       toolDefinitions: llmTools,
       systemCacheSegments,
+      volatileState: this.volatileState,
     });
     ({
       prepared: preparedStream,
@@ -4375,11 +4461,14 @@ export class Agent {
     });
     const wrappedOnEvent = (event: LLMStreamEvent & { agentEvent?: string }) => {
       if (event.type === 'thinking_delta' && event.thinking) {
-        thinkingBuffer += event.thinking;
+        const cleanThinking = stripToolNoise(event.thinking);
+        thinkingBuffer += cleanThinking;
+        if (cleanThinking !== event.thinking) event = { ...event, thinking: cleanThinking };
       }
       if (event.type === 'text_delta' && event.text) {
-        streamMarkerDelta.emit(event.text);
-        streamedText += event.text;
+        const cleanText = stripToolNoise(event.text);
+        streamMarkerDelta.emit(cleanText);
+        streamedText += cleanText;
         if (!degeneratedAbort && repetitionGuard.push(event.text)) {
           degeneratedAbort = true;
           log.warn('Aborting stream: degenerate repetition detected', {
@@ -4403,7 +4492,7 @@ export class Agent {
             metadata: this.getLLMMetadata(this.currentSessionId),
             compaction: useCompaction,
             systemCacheSegments,
-            ...(this.turnModelOverride?.model ? { model: this.turnModelOverride.model } : {}),
+            ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
           },
           wrappedOnEvent,
           this.getEffectiveProvider(),
@@ -4627,6 +4716,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         const updatedMessages = preparedCont.messages;
 
@@ -4655,7 +4745,7 @@ export class Agent {
               metadata: this.getLLMMetadata(this.currentSessionId),
               compaction: useCompaction,
               systemCacheSegments,
-              ...(this.turnModelOverride?.model ? { model: this.turnModelOverride.model } : {}),
+              ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
             },
             wrappedOnEvent,
             this.getEffectiveProvider(),
@@ -5024,7 +5114,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
 
-    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -5034,6 +5124,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: taskPrompt,
       identity: this.identityContext,
+      liveColleagueStatuses: this.colleagueStatusProvider?.(),
       viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
       deliverableContext: this.getDeliverableContext(taskPrompt),
@@ -5055,6 +5146,7 @@ export class Agent {
       notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
+    this.volatileState = volatileState;
 
     const taskToolSelectOpts = { userMessage: taskPrompt, isTaskExecution: true as const, scenario: 'task_execution' as const };
     let llmTools = this.buildToolDefinitions(taskToolSelectOpts);
@@ -5079,11 +5171,12 @@ export class Agent {
     };
     const handleStreamEvent = (event: { type: string; text?: string; thinking?: string }) => {
       if (event.type === 'thinking_delta' && event.thinking) {
-        thinkingBuffer += event.thinking;
+        thinkingBuffer += stripToolNoise(event.thinking);
       }
       if (event.type === 'text_delta' && event.text) {
-        textBuffer += event.text;
-        emitDelta(event.text);
+        const cleanText = stripToolNoise(event.text);
+        textBuffer += cleanText;
+        emitDelta(cleanText);
       }
     };
 
@@ -5127,7 +5220,7 @@ export class Agent {
       let taskLlmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments, ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}) },
           handleStreamEvent,
           this.getEffectiveProvider(),
           abortController.signal,
@@ -5341,6 +5434,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         taskLlmStart = Date.now();
         response = await this.withNetworkRetry(
@@ -5351,6 +5445,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
+              ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
             },
             handleStreamEvent,
             this.getEffectiveProvider(),
@@ -5409,6 +5504,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         taskLlmStart = Date.now();
         response = await this.withNetworkRetry(
@@ -5419,6 +5515,7 @@ export class Agent {
               metadata: this.getLLMMetadata(sessionId),
               compaction: useCompaction,
               systemCacheSegments,
+              ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
             },
             handleStreamEvent,
             this.getEffectiveProvider(),
@@ -5578,7 +5675,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', userMessage);
 
-    let { text: systemPrompt, segments: systemCacheSegments } = await this.contextEngine.buildSystemPrompt({
+    let { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -5588,6 +5685,7 @@ export class Agent {
       memory: this.memory,
       currentQuery: userMessage,
       identity: this.identityContext,
+      liveColleagueStatuses: this.colleagueStatusProvider?.(),
       viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
       deliverableContext: this.getDeliverableContext(userMessage),
@@ -5608,6 +5706,7 @@ export class Agent {
       notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
+    this.volatileState = volatileState;
 
     const risToolSelectOpts = { userMessage };
     let llmTools = this.buildToolDefinitions(risToolSelectOpts);
@@ -5630,11 +5729,12 @@ export class Agent {
     };
     const handleStreamEvent = (event: { type: string; text?: string; thinking?: string }) => {
       if (event.type === 'thinking_delta' && event.thinking) {
-        thinkingBuffer += event.thinking;
+        thinkingBuffer += stripToolNoise(event.thinking);
       }
       if (event.type === 'text_delta' && event.text) {
-        textBuffer += event.text;
-        emitDelta(event.text);
+        const cleanText = stripToolNoise(event.text);
+        textBuffer += cleanText;
+        emitDelta(cleanText);
       }
     };
 
@@ -5658,7 +5758,7 @@ export class Agent {
       let risLlmStart = Date.now();
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chatStream(
-          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
+          { messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments, ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}) },
           handleStreamEvent,
           this.getEffectiveProvider(),
           undefined,
@@ -5763,11 +5863,12 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         risLlmStart = Date.now();
         response = await this.withNetworkRetry(
           () => this.llmRouter.chatStream(
-            { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments },
+            { messages: preparedCont.messages, tools: llmTools.length > 0 ? llmTools : undefined, metadata: this.getLLMMetadata(sessionId), compaction: useCompaction, systemCacheSegments, ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}) },
             handleStreamEvent,
             this.getEffectiveProvider(),
             undefined,
@@ -5946,7 +6047,7 @@ export class Agent {
    * After a tool executes, register any async callbacks implied by its result so
    * their eventual completion routes back to the agent:
    * - `background_exec` → a background-session callback (origin-session routing + heartbeat timeout surfacing).
-   * - `agent_send_message` with `await_in_session` → an `a2a_reply` callback so the
+   * - `agent_send_message` with `reply_in_session` → an `a2a_reply` callback so the
    *   recipient's reply resumes the ORIGIN session (in-session delegation).
    */
   private registerAsyncCallbacksFromToolResult(
@@ -5977,7 +6078,7 @@ export class Agent {
       return;
     }
 
-    if (toolName === 'agent_send_message' && args['await_in_session'] === true) {
+    if (toolName === 'agent_send_message' && (args['reply_in_session'] === true || args['await_in_session'] === true)) {
       try {
         const parsed = JSON.parse(result) as { status?: string; conversation_id?: string };
         if (parsed.status === 'dispatched' && parsed.conversation_id) {
@@ -6068,6 +6169,45 @@ export class Agent {
     }
   }
 
+  /**
+   * OB-3 兜底：清除「无存活任务支撑的残留活动痕迹」并回收至 idle。
+   * - 仅当没有正在执行的任务时生效（scan 与 recover 之间有竞态保护）。
+   * - 只清当前活动标记（leftover marker），不走 endActivity 的统计与事件流回调
+   *   （活动已是遗留物，不应污染正常统计），但保留可观测日志与状态变更广播。
+   * - 幂等：无残留且已是 idle 时返回 false（无副作用）。
+   * @returns 是否实际清理/回收了状态。
+   */
+  reconcileToIdle(): boolean {
+    if (this.activeTasks.size > 0) return false;
+    const act = this.state.currentActivity;
+    if (!act && this.state.status === 'idle') return false;
+
+    if (act) {
+      const startedTs = Date.parse(act.startedAt);
+      // 竞态保护：活动刚启动（<60s）不清理，避免误杀刚开始的真实工作。
+      const fresh = !Number.isNaN(startedTs) && Date.now() - startedTs < 60_000;
+      if (fresh) return false;
+      log.info('Reconciling stale activity to idle', {
+        agentId: this.id,
+        activity: `${act.type}:${act.label ?? ''}`,
+        startedAt: act.startedAt,
+      });
+      this.activityLogs.delete(act.id);
+      this.activitySeqCounters.delete(act.id);
+      this.state.currentActivity = undefined;
+    }
+
+    if (this.state.status !== 'idle') this.setStatus('idle');
+    this.notifyStateChange();
+    this.eventBus.emit('agent:reconciled-idle', { agentId: this.id, clearedActivity: !!act });
+    log.info('Agent reconciled to idle', { agentId: this.id, clearedActivity: !!act });
+    return true;
+  }
+
+  /** 触发一次心跳（api-server 脏态兜底用）：在 agent 私有 bus 上发 heartbeat:trigger。 */
+  triggerHeartbeat(): void {
+    this.heartbeat?.trigger();
+  }
 
   getState(): AgentState {
     const state = { ...this.state };
@@ -6083,6 +6223,31 @@ export class Agent {
 
   getModelSupportsVision(): boolean {
     return this.llmRouter.modelSupportsVision(this.getEffectiveProvider());
+  }
+
+  /**
+   * Resolve the agent's currently effective model+provider for display purposes
+   * (e.g. the Agent overview page). source is:
+   *  - 'override'  → a one-turn/session pick from the Chat UI
+   *  - 'custom'    → this agent's per-agent default (modelMode=custom)
+   *  - 'global'    → no agent-specific config; the router/global default applies
+   * provider/model may be undefined in the 'global' case (router resolves it).
+   */
+  getEffectiveModelInfo(): { provider?: string; model?: string; source: 'override' | 'custom' | 'global' } {
+    if (this.turnModelOverride?.model || this.turnModelOverride?.provider) {
+      return {
+        provider: this.turnModelOverride.provider,
+        model: this.turnModelOverride.model,
+        source: 'override',
+      };
+    }
+    const provider = this.getEffectiveProvider();
+    const model = this.getEffectiveModel();
+    return {
+      provider,
+      model,
+      source: provider || model ? 'custom' : 'global',
+    };
   }
 
   getEventBus(): EventBus {
@@ -6193,6 +6358,7 @@ export class Agent {
       memory: this.memory,
       currentQuery,
       identity: this.identityContext,
+      liveColleagueStatuses: this.colleagueStatusProvider?.(),
       viewerContext: this.runtimeViewerContext,
       environment: this.environmentProfile,
       scenario: 'heartbeat',
@@ -6255,6 +6421,7 @@ export class Agent {
       ...this.getPrepareBudgetOpts(),
       toolDefinitions: opts.llmTools,
       systemCacheSegments,
+      volatileState: this.volatileState,
     });
     return this.applyAffordGuard({
       prepared,
@@ -6331,6 +6498,7 @@ export class Agent {
           ...this.getPrepareBudgetOpts(),
           toolDefinitions: llmTools,
           systemCacheSegments,
+          volatileState: this.volatileState,
         });
         log.info('Reflex afford downgrade rebuilt', {
           agentId: this.id,
@@ -6939,14 +7107,39 @@ export class Agent {
       const dropIds = (toolCall.arguments.drop_item_ids as string[]) ?? [];
       const inlineIds = (toolCall.arguments.inline_completed_ids as string[]) ?? [];
 
+      const allQueued = this.mailbox.getQueuedItems();
+
+      // 严格状态事件（任务执行/评审/收尾动作）纵深防御：
+      // - 禁止进入 defer / drop / inline_completed（会破坏任务状态机或丢失执行闭包）
+      // - 禁止作为 batch 的一部分（process_item_ids.length > 1）批量执行（日志不落到 task 下）
+      // - 允许作为唯一 primary（会走正常 executeTask 单独执行路径）
+      const isStrictById = (id: string) => {
+        const it = allQueued.find(q => q.id === id);
+        return !!it && isStrictStateItem(it);
+      };
+      const forbiddenIds = [...deferIds, ...dropIds, ...inlineIds]
+        .filter(isStrictById);
+      const batchIds = processItemIds && processItemIds.length > 1 ? processItemIds : [];
+      forbiddenIds.push(...batchIds.filter(isStrictById));
+      if (forbiddenIds.length > 0) {
+        return JSON.stringify({
+          status: 'error',
+          message: `Rejected: ${forbiddenIds.length} strict state-management item(s) (task execution / review / requirement action) cannot be deferred/dropped/inline-completed/batched by deliberation. They MUST execute through the normal single-item path. Keep them unlisted (they are automatically excluded from the deliberation view).`,
+          forbidden_item_ids: forbiddenIds,
+        });
+      }
+
       // Strict completeness check: every queued item must be accounted for.
       // Incomplete results are always rejected — the agent must retry.
+      // NOTE: strict state items are intentionally EXCLUDED from the orphan check —
+      // they are filtered out of the deliberation view (the LLM never sees their IDs),
+      // so they can never be listed here. Requiring them would make deliberation
+      // impossible whenever a task execution is queued.
       const accountedFor = new Set([...effectiveProcessIds, ...deferIds, ...dropIds, ...inlineIds]);
-      const allQueued = this.mailbox.getQueuedItems();
       const currentItemId = this.processingMailboxItemId;
       if (currentItemId) accountedFor.add(currentItemId);
       const orphanIds = allQueued
-        .filter(i => !accountedFor.has(i.id) && i.sourceType !== 'human_chat')
+        .filter(i => !accountedFor.has(i.id) && i.sourceType !== 'human_chat' && !isStrictStateItem(i))
         .map(i => i.id);
 
       if (orphanIds.length > 0) {

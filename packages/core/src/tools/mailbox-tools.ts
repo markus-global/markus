@@ -148,6 +148,15 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
         if (!itemId || !reason) {
           return JSON.stringify({ status: 'error', error: 'item_id and reason are required' });
         }
+        // 严格状态管理事件（正式任务执行/评审/收尾动作）绝不能 defer：
+        // 持久化会丢失 onLog 等闭包，resurface 后无法真正执行 → 任务卡死在 in_progress。
+        const target = ctx.getMindState().queuedItems.find(i => i.id === itemId);
+        if (target?.isStrictState) {
+          return JSON.stringify({
+            status: 'error',
+            error: 'Item is a strict state-management item (task execution / review / requirement action). It MUST be executed by the normal single-item execution path and cannot be deferred.',
+          });
+        }
         const deferMs = deferMinutes ? deferMinutes * 60_000 : undefined;
         const ok = ctx.deferItem(itemId, reason, deferMs);
         if (!ok) {
@@ -173,6 +182,15 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
         const reason = args['reason'] as string;
         if (!itemId || !reason) {
           return JSON.stringify({ status: 'error', error: 'item_id and reason are required' });
+        }
+        // 严格状态管理事件（正式任务执行/评审/收尾动作）绝不能 drop：
+        // 丢弃会让 task 永远卡在 in_progress / review 且无执行日志，形成「处理中但无人处理」。
+        const target = ctx.getMindState().queuedItems.find(i => i.id === itemId);
+        if (target?.isStrictState) {
+          return JSON.stringify({
+            status: 'error',
+            error: 'Item is a strict state-management item (task execution / review / requirement action). It MUST be executed by the normal single-item execution path and cannot be dropped.',
+          });
         }
         const before = ctx.getMindState().queuedItems.some(i => i.id === itemId);
         const ok = ctx.dropItem(itemId, reason);

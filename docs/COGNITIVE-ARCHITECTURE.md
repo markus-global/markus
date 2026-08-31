@@ -202,8 +202,8 @@ could disagree with the agent's configured timezone.
   `Intl.DateTimeFormat`; `HeartbeatScheduler.isWithinActiveHours` delegates to them).
 
 > Prompt-cache note: heartbeat situational content (mailbox meta, notebook, timestamps) is
-> injected in Tier 3 (dynamic), never into the stable prefix — see the injection-point
-> ownership audit in [PROMPT-ENGINEERING.md §2.2](./PROMPT-ENGINEERING.md).
+> injected in the volatile `[Live context]` tail, never into the byte-stable system prefix — see
+> the injection-point ownership audit in [PROMPT-ENGINEERING.md §2.2](./PROMPT-ENGINEERING.md).
 
 ### Goal / Loop Mechanism
 

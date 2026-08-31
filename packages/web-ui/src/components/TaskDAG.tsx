@@ -533,7 +533,28 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       return gid && allowedGroupIds.has(gid);
     });
 
-    const { nodes: overviewNodes, edges: overviewEdges } = buildNodesAndEdges(filteredTasks, filteredReqs);
+    // Requirement-anchored tasks: for any VISIBLE requirement that is still in
+    // an active (incomplete) state, always show ALL of its tasks — regardless
+    // of the status-group filter (e.g. a completed subtask of an in_progress
+    // requirement must NOT disappear just because the "done" group is
+    // unchecked). This keeps the full dependency picture of an in-flight
+    // requirement intact for a better visualization experience.
+    const CLOSED_REQ_STATUSES = new Set(['completed', 'rejected', 'cancelled', 'archived']);
+    const anchorReqIds = new Set(
+      filteredReqs.filter(r => !CLOSED_REQ_STATUSES.has(r.status)).map(r => r.id),
+    );
+    const anchorTaskIds = new Set<string>();
+    for (const r of requirements) {
+      if (anchorReqIds.has(r.id)) {
+        for (const tid of r.taskIds) anchorTaskIds.add(tid);
+      }
+    }
+    const anchoredTasks = tasks.filter(
+      t => anchorTaskIds.has(t.id) && (showArchived || !isArchivedTask(t)),
+    );
+    const mergedTasks = [...new Map([...filteredTasks, ...anchoredTasks].map(t => [t.id, t])).values()];
+
+    const { nodes: overviewNodes, edges: overviewEdges } = buildNodesAndEdges(mergedTasks, filteredReqs);
     const dependedUpon = new Set<string>();
     for (const e of overviewEdges) dependedUpon.add(e.target);
     const topLevel = new Set(overviewNodes.filter(n => !dependedUpon.has(n.id)).map(n => n.id));

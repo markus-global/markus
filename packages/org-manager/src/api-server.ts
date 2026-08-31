@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -54,6 +54,7 @@ import type { StorageBridge } from './storage-bridge.js';
 import type { ProjectService } from './project-service.js';
 import type { ReportService } from './report-service.js';
 import type { KnowledgeService } from './knowledge-service.js';
+import type { KnowledgeSyncService } from './knowledge-sync-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { RequirementService } from './requirement-service.js';
 import type { WorkflowService } from './workflow-service.js';
@@ -79,6 +80,10 @@ import { handleTasksRoutes } from './routes/tasks.js';
 import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
+import { buildAgentRuntimeInfo } from './agent-runtime.js';
+import { evaluateStall, DEFAULT_STALL_CONFIG } from './agent-stall.js';
+import { evaluateDirtyState } from './agent-dirty.js';
+import { AgentDirtyReconciler, type AgentLiveView } from './agent-dirty-reconciler.js';
 
 const log = createLogger('api-server');
 
@@ -98,6 +103,7 @@ export class APIServer {
   public licenseService?: LicenseService;
   private telemetryService?: TelemetryService;
   public storage?: StorageBridge;
+  private _dirtyReconciler?: AgentDirtyReconciler;
   public llmRouter?: LLMRouter;
   public markusConfigPath?: string;
   private hubUrl = 'https://markus.global';
@@ -828,6 +834,20 @@ export class APIServer {
             //  persisted to channel and the other party is auto-triggered).
             for (const peerId of peerAgentIds) {
               try {
+                // Storm guard: a proactive agent_send_message on a hot channel
+                // starts a fresh depth-1 chain; the per-channel cooldown keeps
+                // rapid mutual sends from looping forever.
+                this.cleanStaleCooldowns();
+                const now = Date.now();
+                if (!this.a2aCooldowns.has(channelKey)) this.a2aCooldowns.set(channelKey, new Map());
+                const channelCooldowns = this.a2aCooldowns.get(channelKey)!;
+                const last = channelCooldowns.get(peerId) ?? 0;
+                if (now - last < APIServer.A2A_COOLDOWN_MS) {
+                  log.info('DM send suppressed by cooldown', { channelKey, peerId, msSince: now - last });
+                  continue;
+                }
+                channelCooldowns.set(peerId, now);
+
                 let dmChannelContext: Array<{ role: string; content: string }> = [];
                 if (this.storage) {
                   try {
@@ -1882,6 +1902,21 @@ export class APIServer {
         if (depth <= APIServer.DM_MAX_DEPTH) {
           const peerAgentId = chainCtx?.allAgentIds?.find(id => id !== agentId);
           if (peerAgentId) {
+            // Storm guard: don't re-trigger a peer on this channel too rapidly.
+            // Mutual proactive agent_send_message can reset depth to 1 on every
+            // hop, so alone it evades DM_MAX_DEPTH — the cooldown is what stops
+            // an unbounded ping-pong. Mirrors the group-chat cooldown layer.
+            this.cleanStaleCooldowns();
+            const now = Date.now();
+            if (!this.a2aCooldowns.has(channel)) this.a2aCooldowns.set(channel, new Map());
+            const channelCooldowns = this.a2aCooldowns.get(channel)!;
+            const last = channelCooldowns.get(peerAgentId) ?? 0;
+            if (now - last < APIServer.A2A_COOLDOWN_MS) {
+              log.info('DM chain suppressed by cooldown', { channel, peerAgentId, depth, msSince: now - last });
+              return;
+            }
+            channelCooldowns.set(peerAgentId, now);
+
             // Load fresh channel context including the just-persisted reply
             let freshContext: Array<{ role: string; content: string }> = [];
             if (this.storage) {
@@ -2179,6 +2214,7 @@ export class APIServer {
         void this.warmRoutingCandidates();
       });
       this.tryInitFeishuNotifier();
+      this.tryInitDirtyReconciler();
     });
   }
 
@@ -2277,6 +2313,90 @@ export class APIServer {
    * thinking → tool calls → final response progressively.
    * Uses the Secretary's main session for context continuity (same as Web UI DM).
    */
+  /**
+   * 启动 OB-3 脏态兜底 reconciler（守卫启动）。依赖（storage/taskService/orgService）
+   * 就绪时才启动；否则静默跳过（下次可通过重建 server 或首次触发重试）。安全默认：
+   * recover 只触发一次恢复心跳（让健康的 agent 自愈），不对 core 状态机做破坏性改动。
+   */
+  private tryInitDirtyReconciler(): void {
+    if (this._dirtyReconciler) return;
+    if (!this.storage || !this.taskService || !this.orgService) {
+      log.info('Dirty reconciler deferred — deps not ready');
+      return;
+    }
+    try {
+      const agentManager = this.orgService.getAgentManager();
+      const reconciler = new AgentDirtyReconciler({
+        getTask: (id: string) => this.taskService!.getTask(id) as never,
+        appendExecution: (entry) => {
+          // O 域可观测：把「谁/何时/为何被兜底」写入执行流，供 /api/execution-logs 与前端追溯。
+          const repo = this.storage?.executionStreamRepo;
+          if (!repo) return;
+          (repo.append as (d: Record<string, unknown>) => unknown)({
+            sourceType: entry.sourceType,
+            sourceId: entry.sourceId,
+            agentId: entry.agentId,
+            seq: Date.now(),
+            type: entry.type,
+            content: entry.content,
+            metadata: entry.metadata ?? {},
+          });
+        },
+        recover: async (v) => {
+          // 兜底：按恢复类型真正执行 —— reconcile-idle 直接清残留活动并回收 idle；
+          // trigger-heartbeat 在 agent 私有 bus 上触发一次心跳让 agent 自愈。
+          // （此前统一 emit 到 manager bus 的 heartbeat:trigger 事件，agent 监听的是
+          //   各自私有 bus，事件从未到达目标 —— 导致脏 agent 永远无法恢复。）
+          let recovered = false;
+          try {
+            if (v.recovery === 'reconcile-idle') {
+              recovered = agentManager.reconcileAgentToIdle(v.agentId);
+            } else if (v.recovery === 'trigger-heartbeat') {
+              recovered = agentManager.triggerAgentHeartbeat(v.agentId);
+            }
+          } catch (err) {
+            log.warn('Dirty reconciler recover failed', { agentId: v.agentId, recovery: v.recovery, error: String(err) });
+          }
+          log.info('Dirty reconciler recovering agent', {
+            agentId: v.agentId,
+            recovery: v.recovery,
+            recovered,
+            reason: v.reason,
+          });
+          this.ws?.broadcast?.({
+            type: 'agent:dirty-recovered',
+            payload: { agentId: v.agentId, recovery: v.recovery, recovered, reason: v.reason },
+            timestamp: new Date().toISOString(),
+          });
+        },
+        onNeedsHuman: (v) => {
+          log.warn('Dirty agent needs human review', { agentId: v.agentId, reason: v.reason, suggestions: v.suggestions });
+          this.ws?.broadcast?.({
+            type: 'agent:dirty-human-review',
+            payload: { agentId: v.agentId, reason: v.reason, suggestions: v.suggestions },
+            timestamp: new Date().toISOString(),
+          });
+        },
+      });
+      this._dirtyReconciler = reconciler;
+      // 30s 轮询一次；scan 内部已按 feature flag + 去重组装，非脏态无副作用。
+      reconciler.start(() => {
+        const agents = agentManager.listAgents() as unknown as AgentLiveView[];
+        return agents.map((a) => ({
+          agentId: String((a as any).id ?? a.agentId),
+          status: String((a as any).status ?? a.status),
+          currentActivity: (a as any).currentActivity,
+          activeTaskIds: (a as any).activeTaskIds,
+          lastHeartbeat: (a as any).lastHeartbeat,
+          lastErrorAt: (a as any).lastErrorAt,
+        }));
+      }, 30_000);
+      log.info('Agent dirty reconciler started');
+    } catch (err) {
+      log.warn('Failed to init dirty reconciler', { error: String(err) });
+    }
+  }
+
   private async handleFeishuUserMessage(payload: Record<string, unknown>): Promise<void> {
     const chatId = payload['chatId'] as string | undefined;
     const senderId = payload['senderId'] as string | undefined;
@@ -2870,6 +2990,7 @@ export class APIServer {
           role: userRow.role,
           orgId: userRow.orgId,
           avatarUrl: userRow.avatarUrl ?? undefined,
+          preferences: userRow.preferences ?? undefined,
         },
         needsOnboarding: isFirstLogin,
       });
@@ -3055,6 +3176,7 @@ export class APIServer {
           role: finalUser.role,
           orgId: finalUser.orgId,
           avatarUrl: finalUser.avatarUrl ?? undefined,
+          preferences: finalUser.preferences ?? undefined,
         },
         needsOnboarding: isFirstLogin,
         cloudAiReady,
@@ -3107,6 +3229,7 @@ export class APIServer {
       const prefs: Record<string, unknown> = {};
       if (typeof body['locale'] === 'string') prefs.locale = body['locale'];
       if (typeof body['timezone'] === 'string') prefs.timezone = body['timezone'];
+      if (typeof body['guideHidden'] === 'boolean') prefs.guideHidden = body['guideHidden'];
       if (Object.keys(prefs).length === 0) {
         this.json(res, 400, { error: 'No supported preference fields provided' });
         return;
@@ -3119,7 +3242,12 @@ export class APIServer {
           this.orgService.getAgentManager().setRuntimeViewerContext({ locale: identity.locale, timezone: identity.timezone });
         } catch { /* agent manager not ready */ }
       }
-      this.json(res, 200, { ok: true, preferences: identity ? { locale: identity.locale, timezone: identity.timezone } : prefs });
+      // 回传合并后的偏好（含本次写入的 guideHidden 等扩展字段），避免前端丢字段。
+      const savedPrefs = {
+        ...(identity ? { locale: identity.locale, timezone: identity.timezone } : {}),
+        ...prefs,
+      };
+      this.json(res, 200, { ok: true, preferences: savedPrefs });
       return;
     }
 
@@ -3901,10 +4029,56 @@ export class APIServer {
         agents = agents.map(a =>
           disconnectedIds.has(a.id as string) ? { ...a, status: 'offline' } : a
         );
-        this.json(res, 200, { agents });
-      } else {
-        this.json(res, 200, { agents });
       }
+      // OB-1: 把「笼统的思考中」展开为可读运行阶段 —— idle/thinking/running/
+      // waiting-dependency/degraded/blocked/error/offline + 阻塞依赖标题 + 最近活动。
+      // 纯派生（buildAgentRuntimeInfo），不回写共享 AgentStatus，不影响旧 UI 对
+      // status 字段的既有判断。
+      const taskLookup = (tid: string) => this.taskService.getTask(tid);
+      agents = agents.map(a => {
+        const listItem = a as unknown as {
+          id: string;
+          status: string;
+          currentTaskId?: string;
+          currentActivity?: AgentActivity;
+          lastError?: string;
+          lastErrorAt?: string;
+        };
+        const runtime = buildAgentRuntimeInfo(
+          {
+            agentId: listItem.id,
+            status: listItem.status,
+            currentTaskId: listItem.currentTaskId,
+            currentActivity: listItem.currentActivity,
+            lastHeartbeat: (a as any).lastHeartbeat,
+            lastProgressAt: (a as any).lastProgressAt,
+            lastError: listItem.lastError,
+            lastErrorAt: listItem.lastErrorAt,
+            tokensUsedToday: (a as any).tokensUsedToday,
+            activeTaskIds: (a as any).activeTaskIds,
+          },
+          taskLookup,
+        );
+        // OB-2: 在 runtime 之上派生出「疑似卡死」定位信息（stale-heartbeat 心跳停滞 /
+        // dead-dependency 依赖已死仍等待），让前端一眼看到阻塞点而非无限转圈。
+        const stall = evaluateStall({ runtime }, undefined, DEFAULT_STALL_CONFIG);
+        // OB-3: 派生「无任务却标记 processing」的脏态判定 —— 纯派生，只读 agent live state，
+        // 不回写状态；供前端给出「脏态 / 已自动兜底 / 需人工介入」提示。真实兜底由
+        // 周期 reconciler（start 时守卫启动）执行，此处仅为可观测展示。
+        const dirty = evaluateDirtyState(
+          {
+            agentId: listItem.id,
+            status: listItem.status,
+            currentActivity: listItem.currentActivity,
+            activeTaskIds: (a as any).activeTaskIds,
+            lastHeartbeat: (a as any).lastHeartbeat,
+            lastErrorAt: listItem.lastErrorAt,
+          },
+          taskLookup,
+        );
+        return { ...a, runtime: { ...runtime, stall, dirty } };
+      });
+      this.json(res, 200, { agents });
       return;
     }
 
@@ -4785,9 +4959,10 @@ export class APIServer {
       const type = url.searchParams.get('type') as any ?? undefined;
       const status = url.searchParams.get('status') as any ?? undefined;
       const artifactType = url.searchParams.get('artifactType') as any ?? undefined;
+      const source = url.searchParams.get('source') as any ?? undefined;
       const offset = url.searchParams.get('offset') ? Number(url.searchParams.get('offset')) : undefined;
       const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
-      const { results, total } = this.deliverableService.search({ query: q, projectId, agentId, taskId, type, status, artifactType, offset, limit });
+      const { results, total } = this.deliverableService.search({ query: q, projectId, agentId, taskId, type, status, artifactType, source, offset, limit });
       this.json(res, 200, { results, total });
       return;
     }
@@ -4817,6 +4992,9 @@ export class APIServer {
           agentId: body['agentId'] as string,
           projectId: body['projectId'] as string,
           requirementId: body['requirementId'] as string,
+          source: body['source'] as any,
+          knowledgeRoot: body['knowledgeRoot'] as string | undefined,
+          content: body['content'] as string | undefined,
         });
         this.json(res, 201, { deliverable: d });
       } catch (err) {
@@ -4855,6 +5033,9 @@ export class APIServer {
           tags: body['tags'] as string[] | undefined,
           status: body['status'] as any,
           type: body['type'] as any,
+          source: body['source'] as any,
+          knowledgeRoot: body['knowledgeRoot'] as string | undefined,
+          content: body['content'] as string | undefined,
           hubShareId: body['hubShareId'] as string | null | undefined,
           shareStatus: body['shareStatus'] as string | null | undefined,
           shareUrl: body['shareUrl'] as string | null | undefined,
@@ -5826,6 +6007,7 @@ EXPLANATION_END`;
             teamId: agent.config.teamId,
             createdAt: agent.config.createdAt,
           },
+          effectiveModel: (agent as unknown as { getEffectiveModelInfo?: () => { provider?: string; model?: string; source: 'override' | 'custom' | 'global' } }).getEffectiveModelInfo?.() ?? { source: 'global' },
           tools: toolList,
           heartbeat: heartbeatSummary,
         });
@@ -6723,6 +6905,9 @@ EXPLANATION_END`;
       let llmTokens = 0;
       let toolCalls = 0;
       let messages = 0;
+      let cacheReadTokens = 0;
+      let cacheWriteTokens = 0;
+      let cacheHitRate = 0;
 
       for (const a of allAgents) {
         try {
@@ -6731,6 +6916,9 @@ EXPLANATION_END`;
           llmTokens += stats.totalTokens;
           toolCalls += stats.toolCallsToday;
           messages += stats.requestsToday;
+          cacheReadTokens += stats.cacheReadTokens;
+          cacheWriteTokens += stats.cacheWriteTokens;
+          cacheHitRate += stats.cacheHitRate;
         } catch { /* agent not loaded */ }
       }
 
@@ -6741,6 +6929,9 @@ EXPLANATION_END`;
           llmTokens,
           toolCalls,
           messages,
+          cacheReadTokens,
+          cacheWriteTokens,
+          cacheHitRate: allAgents.length > 0 ? Math.round((cacheHitRate / allAgents.length) * 1000) / 1000 : 0,
           storageBytes: this.billingService?.getUsageSummary(orgId)?.storageBytes ?? 0,
         },
         plan,
@@ -6775,6 +6966,9 @@ EXPLANATION_END`;
             costToday: stats.costToday,
             cuUsed: stats.cuUsed,
             cuUsedToday: stats.cuUsedToday,
+            cacheReadTokens: stats.cacheReadTokens,
+            cacheWriteTokens: stats.cacheWriteTokens,
+            cacheHitRate: stats.cacheHitRate,
             provider,
           };
         } catch {
@@ -6794,6 +6988,9 @@ EXPLANATION_END`;
             costToday: 0,
             cuUsed: 0,
             cuUsedToday: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            cacheHitRate: 0,
             provider: 'unknown',
           };
         }
@@ -8011,6 +8208,7 @@ EXPLANATION_END`;
       const browser = currentConfig.browser ?? {};
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
+        mode: browser.mode ?? 'embedded',
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
@@ -8026,6 +8224,7 @@ EXPLANATION_END`;
       if (!auth) return;
       const body = await this.readBody(req);
       const updates: Record<string, unknown> = {};
+      if (body['mode'] === 'embedded' || body['mode'] === 'system-chrome') updates.mode = body['mode'];
       if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
       if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
       if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
@@ -8033,6 +8232,9 @@ EXPLANATION_END`;
       try {
         saveConfig({ browser: updates } as any, this.markusConfigPath);
         const am = this.orgService.getAgentManager();
+        if (updates.mode === 'embedded' || updates.mode === 'system-chrome') {
+          am.setBrowserMode(updates.mode);
+        }
         if (typeof updates.bringToFront === 'boolean') {
           am.setBrowserBringToFront(updates.bringToFront);
         }
@@ -8064,6 +8266,7 @@ EXPLANATION_END`;
       const browser = currentConfig.browser ?? {};
       const am2 = this.orgService.getAgentManager();
       this.json(res, 200, {
+        mode: browser.mode ?? 'embedded',
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
@@ -9237,7 +9440,16 @@ EXPLANATION_END`;
       const providerName = path.split('/')[5]!;
       const provider = this.llmRouter.getProvider(providerName);
       if (!provider) {
-        this.json(res, 404, { ok: false, error: `Provider "${providerName}" not found or not configured` });
+        this.json(res, 404, { ok: false, error: `Provider "${providerName}" not found or not configured`, code: 'PROVIDER_NOT_FOUND' });
+        return;
+      }
+      if (this.llmRouter.isProviderDisabled(providerName)) {
+        this.json(res, 200, {
+          ok: false,
+          error: `Provider "${providerName}" is disabled`,
+          code: 'PROVIDER_DISABLED',
+          provider: providerName,
+        });
         return;
       }
       const body = await this.readBody(req);
@@ -11187,6 +11399,19 @@ EXPLANATION_END`;
           });
           return;
         }
+        // Office preview (docx/xlsx/pdf/pptx) — return type:'office' so the
+        // frontend can render inline (docx-preview / SheetJS / pdf.js). Old
+        // formats (.doc/.xls/.ppt) also map here; frontend falls back to
+        // download / system-open when no inline renderer is available.
+        const officeExts = new Set(['.pdf', '.docx', '.doc', '.xls', '.xlsx', '.ppt', '.pptx']);
+        if (officeExts.has(ext)) {
+          this.json(res, 200, {
+            type: 'office', name, path: resolved, size: stat.size,
+            extension: ext, format: ext.replace('.', ''),
+            streamUrl: `/api/files/stream?path=${encodeURIComponent(resolved)}`,
+          });
+          return;
+        }
         if (binaryExts.has(ext)) {
           this.json(res, 200, {
             type: 'binary', name, path: resolved, size: stat.size,
@@ -11714,6 +11939,7 @@ EXPLANATION_END`;
         repositories: body['repositories'] as any,
         teamIds: body['teamIds'] as any,
         governancePolicy: body['governancePolicy'] as any,
+        knowledgeBasePaths: body['knowledgeBasePaths'] as string[] | undefined,
         createdBy: authUser?.userId,
       });
       this.auditService?.record({
@@ -11764,6 +11990,36 @@ EXPLANATION_END`;
       const projectId = path.split('/')[3]!;
       this.projectService.deleteProject(projectId);
       this.json(res, 200, { deleted: true });
+      return;
+    }
+
+    // POST /api/projects/:id/knowledge/sync — scan knowledge base dirs and
+    // upsert source='knowledge' deliverables for the project.
+    if (path.match(/^\/api\/projects\/[^/]+\/knowledge\/sync$/) && req.method === 'POST') {
+      if (!this.projectService || !this.knowledgeSyncService) {
+        this.json(res, 503, { error: 'Knowledge sync service not available' });
+        return;
+      }
+      const projectId = path.split('/')[3]!;
+      const project = this.projectService.getProject(projectId);
+      if (!project) {
+        this.json(res, 404, { error: 'Project not found' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const roots = (body['knowledgeRoots'] as string[] | undefined) ?? project.knowledgeBasePaths;
+      if (!roots || roots.length === 0) {
+        this.json(res, 400, { error: 'No knowledge base paths bound to this project' });
+        return;
+      }
+      try {
+        const result = await this.knowledgeSyncService.sync(projectId, roots, {
+          ownerId: body['ownerId'] as string | undefined,
+        });
+        this.json(res, 200, result);
+      } catch (err) {
+        this.json(res, 500, { error: `Knowledge sync failed: ${String(err)}` });
+      }
       return;
     }
 
@@ -12301,6 +12557,7 @@ EXPLANATION_END`;
 
       // ── Projects ─────────────────────────────────────────────────────────
       exact('/api/projects', 'GET', 'POST'),
+      regex(/^\/api\/projects\/[^/]+\/knowledge\/sync$/, 'POST'),
       regex(/^\/api\/projects\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
 
       // ── Notifications ────────────────────────────────────────────────────
@@ -12566,9 +12823,13 @@ EXPLANATION_END`;
   private knowledgeService?: KnowledgeService;
   deliverableService?: DeliverableService;
   requirementService?: RequirementService;
+  private knowledgeSyncService?: KnowledgeSyncService;
 
   setProjectService(svc: ProjectService): void {
     this.projectService = svc;
+  }
+  setKnowledgeSyncService(svc: KnowledgeSyncService): void {
+    this.knowledgeSyncService = svc;
   }
   setReportService(svc: ReportService): void {
     this.reportService = svc;

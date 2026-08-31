@@ -21,6 +21,15 @@ export interface LLMAssignment {
   modelMode: 'default' | 'custom';
   primary: string;
   fallback?: string;
+  /**
+   * Per-agent default model ID (used together with `primary` as the provider).
+   * When set (with modelMode === 'custom'), this agent resolves to
+   * { provider: primary, model: defaultModel } unless overridden by a
+   * session/turn override. Priority: session/turn override > per-agent
+   * defaultModel > global routing. Omit / reset to have the agent follow the
+   * global default.
+   */
+  defaultModel?: string;
   maxTokensPerRequest?: number;
   maxTokensPerDay?: number;
 }
@@ -83,6 +92,8 @@ export interface AgentState {
   /** Describes what the agent is currently doing (task, heartbeat, chat) */
   currentActivity?: AgentActivity;
   lastHeartbeat?: string;
+  /** 最近一次实质进展（工具调用 / LLM 请求等）时间 —— 区分「长任务进行中」与「疑似卡死」 */
+  lastProgressAt?: string;
   containerId?: string;
   memoryUsageMb?: number;
   tokensUsedToday: number;

@@ -398,6 +398,7 @@ export function createMockOrgService(agentManager = createMockAgentManager()): O
     removeTeamMember: vi.fn(async () => {}),
     removeMemberFromTeam: vi.fn(async () => {}),
     addMemberToTeam: vi.fn(async () => {}),
+    updateHumanPreferences: vi.fn((_userId: string, prefs: Record<string, unknown>) => prefs),
   } as unknown as OrganizationService;
 }
 
@@ -462,9 +463,16 @@ export function createTestServer(): TestContext {
     update: vi.fn(async (id: string, data: Record<string, unknown>) => ({ id, ...data })),
     remove: vi.fn(async () => {}), flagOutdated: vi.fn(async () => {}),
   } as never);
+  server.setKnowledgeSyncService({
+    sync: vi.fn(async () => ({
+      projectId: PROJECT_1, roots: ['/tmp/kb-root'], scanned: 2, registered: 2, updated: 0, outdated: 0, errors: [],
+    })),
+  } as never);
   server.setProjectService({
     listProjects: vi.fn(() => [{ id: PROJECT_1, name: 'Project One', orgId: 'default' }]),
-    getProject: vi.fn((id: string) => id === PROJECT_1 ? { id, name: 'Project One', orgId: 'default' } : null),
+    getProject: vi.fn((id: string) => id === PROJECT_1
+      ? { id, name: 'Project One', orgId: 'default', knowledgeBasePaths: ['/tmp/kb-root'] }
+      : null),
     createProject: vi.fn((data: Record<string, unknown>) => ({ id: 'proj-new', ...data })),
     updateProject: vi.fn((id: string, data: Record<string, unknown>) => ({ id, ...data })),
     deleteProject: vi.fn(() => true),

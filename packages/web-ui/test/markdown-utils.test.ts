@@ -5,6 +5,7 @@ import {
   preprocessMentions,
   preprocessEntityLinksInCode,
   preprocessEntityIds,
+  autolinkBareUrls,
   looksLikePlantUML,
   looksLikeMermaid,
   languageDisplayName,
@@ -189,6 +190,56 @@ describe('preprocessEntityIds', () => {
     expect(result).toContain('[agt_b56cd6208342f8502d7bdd4d](#entity:agt_b56cd6208342f8502d7bdd4d) made this image');
     expect(result).toContain('![x](/tmp/agents/agt_b56cd6208342f8502d7bdd4d/out.png)');
     expect(result).not.toContain('/agents/[agt_');
+  });
+});
+
+// ─── autolinkBareUrls ────────────────────────────────────────────────────────
+
+describe('autolinkBareUrls', () => {
+  it('wraps a bare URL followed by CJK so the CJK is NOT swallowed into the link', () => {
+    const input = '带着 Markus（https://markus.global/）去接企业';
+    const result = autolinkBareUrls(input);
+    expect(result).toContain('[https://markus.global/](https://markus.global/)');
+    expect(result).toContain('）去接企业');
+    expect(result).not.toContain('global/）'); // CJK must not be inside the URL
+  });
+
+  it('does not swallow trailing full-width punctuation or ideographs', () => {
+    const input = '请访问 https://example.com/abc，谢谢';
+    const result = autolinkBareUrls(input);
+    expect(result).toContain('[https://example.com/abc](https://example.com/abc)');
+    expect(result).toContain('，谢谢');
+  });
+
+  it('keeps trailing ASCII sentence punctuation outside the link', () => {
+    const input = 'See https://example.com/page. Next sentence.';
+    const result = autolinkBareUrls(input);
+    expect(result).toContain('[https://example.com/page](https://example.com/page). Next sentence.');
+  });
+
+  it('preserves a URL that already has a trailing ASCII period stripped', () => {
+    const input = 'Visit https://example.com/ now';
+    const result = autolinkBareUrls(input);
+    expect(result).toBe('Visit [https://example.com/](https://example.com/) now');
+  });
+
+  it('does not double-wrap an already-explicit markdown link', () => {
+    const input = '[Label](https://example.com) stays';
+    const result = autolinkBareUrls(input);
+    // The URL is inside a destination `](…)` → must be left untouched.
+    expect(result).toBe(input);
+  });
+
+  it('leaves plain prose without URLs unchanged', () => {
+    const input = '没有链接的普通文本';
+    expect(autolinkBareUrls(input)).toBe(input);
+  });
+
+  it('handles multiple URLs in one string', () => {
+    const input = 'a https://a.com/x 和 https://b.com/y 结尾';
+    const result = autolinkBareUrls(input);
+    expect(result).toContain('[https://a.com/x](https://a.com/x)');
+    expect(result).toContain('[https://b.com/y](https://b.com/y)');
   });
 });
 

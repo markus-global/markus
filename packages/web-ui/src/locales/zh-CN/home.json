@@ -126,14 +126,29 @@
   },
   "liveActivity": {
     "whosWorking": "正在工作",
-    "recentChanges": "最近变更"
+    "recentChanges": "最近变更",
+    "dirtyRecovered": "已自动兜底恢复",
+    "dirtyNeedsHuman": "需人工介入"
   },
   "agentFocus": {
     "title": "智能体焦点",
     "totalQueued": "共 {{count}} 项排队",
     "working": "工作中...",
     "heartbeatCheckIn": "心跳巡检",
-    "heartbeatSkip": "心跳已跳过（空闲）"
+    "heartbeatSkip": "心跳已跳过（空闲）",
+    "phaseThinking": "思考中…",
+    "phaseRunning": "处理中…",
+    "phaseWaitingDep": "等待依赖…",
+    "phaseBlocked": "已阻塞",
+    "phaseDegraded": "降级运行",
+    "phaseError": "运行出错",
+    "blockedBy": "卡在依赖「{{title}}」",
+    "runningFor": "已运行 {{n}} 分钟",
+    "lastActivity": "最后活动 {{time}}",
+    "stallStaleBadge": "长时间无活动",
+    "stallDeadBadge": "依赖已失败",
+    "stallStale": "长时间无活动：已 {{minutes}} 分钟未见进展（可能是长任务，也可能卡住）",
+    "stallDeadDep": "阻塞：依赖「{{title}}」已失败但仍等待"
   },
   "teamOverview": {
     "title": "团队",

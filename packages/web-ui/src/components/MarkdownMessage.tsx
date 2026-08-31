@@ -11,6 +11,7 @@ import { useLayout } from '../contexts/LayoutContext.tsx';
 import {
   transformOutsideCode, normalizeMathDelimiters,
   preprocessMentions, preprocessEntityLinksInCode, preprocessEntityIds,
+  autolinkBareUrls,
 } from './markdown-utils.ts';
 import {
   isLocalFilesystemPath,
@@ -230,6 +231,8 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
     t = transformOutsideCode(t, preprocessEntityLinksInCode);
     t = transformOutsideCode(t, preprocessEntityIds);
     t = transformOutsideCode(t, s => preprocessMentions(s, knownNames));
+    // Must run LAST: wrap bare URLs so GFM autolink doesn't swallow CJK.
+    t = transformOutsideCode(t, autolinkBareUrls);
     return t;
   }, [knownNames]);
 

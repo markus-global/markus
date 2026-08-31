@@ -23,6 +23,7 @@ import { isVirtualScrollAdjustSuppressed } from '../components/execution-utils.t
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { parseMentionNames, renderMentionText } from '../components/CommentInput.tsx';
+import { exponentialBackoffDelay } from '../lib/streamResilience.ts';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
 import { RightPanel } from '../components/RightPanel.tsx';
@@ -41,7 +42,7 @@ import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
-  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages,
+  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
   appendLiveOutput, appendSubagentLog,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
@@ -688,6 +689,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /** Session-scoped model pick from the composer menu (null = use global routing). */
   const [sessionModelOverride, setSessionModelOverride] = useState<ChatModelSelection | null>(null);
+  /** The currently selected agent's per-agent default model (from its config). */
+  const [agentBoundModel, setAgentBoundModel] = useState<ChatModelSelection | null>(null);
   const reattachAbortRef = useRef<AbortController | null>(null);
 
   /** Compact (1-line) composer vs taller empty-chat starter. Synced before render. */
@@ -900,6 +903,29 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   useEffect(() => { localStorage.setItem('markus_chat_mode', chatMode); }, [chatMode]);
   useEffect(() => { localStorage.setItem('markus_chat_agent', selectedAgent); }, [selectedAgent]);
   useEffect(() => { localStorage.setItem('markus_chat_channel', activeChannel); }, [activeChannel]);
+
+  // Keep the composer model reflecting the selected agent. When we switch agents,
+  // fetch that agent's per-agent default model so the input shows it right away
+  // (falls back to global when the agent has no bound model).
+  useEffect(() => {
+    let cancelled = false;
+    if (previewMode || !selectedAgent || chatMode !== 'direct') {
+      setAgentBoundModel(null);
+      return;
+    }
+    api.agents.get(selectedAgent)
+      .then(d => {
+        if (cancelled) return;
+        const lc = d.config?.llmConfig;
+        setAgentBoundModel(
+          lc?.modelMode === 'custom' && lc.primary && lc.defaultModel
+            ? { provider: lc.primary, model: lc.defaultModel }
+            : null,
+        );
+      })
+      .catch(() => { if (!cancelled) setAgentBoundModel(null); });
+    return () => { cancelled = true; };
+  }, [selectedAgent, chatMode, previewMode]);
 
   // ── Chat unread counts (unified single-source read cursor system) ────────────
   const { counts: chatUnreadCounts, sessionAgentMap, markRead: markChatRead, setActiveKey, clearActiveKey } = useUnreadCounts({ enabled: !previewMode });
@@ -1598,8 +1624,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
    * Must consume text + tool + commit events the same way as a live send().
    */
   const reattachCooldownRef = useRef<Map<string, number>>(new Map());
+  // Sessions the user explicitly stopped. A stopped turn must never be resumed
+  // by reattach — otherwise clicking "stop" can look like a no-op (the reply
+  // keeps streaming) and, because the in-flight bubble may already have been
+  // cleaned up, the re-stream can land in the *previous* turn's reply bubble.
+  const userStoppedSessionsRef = useRef<Set<string>>(new Set());
   const tryReattachActiveStream = useCallback(async (agentId: string, sessionId: string, convKey: string) => {
     if (!agentId || !sessionId || sessionId === NEW_CHAT_PLACEHOLDER_ID) return;
+    // A user-initiated stop is final for that turn — never reattach/resume it.
+    if (userStoppedSessionsRef.current.has(sessionId)) return;
     let abortCtrl: AbortController | null = null;
     try {
       // Live send() still owns this session's SSE — keep consuming there; a second
@@ -1621,7 +1654,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       const status = await api.sessions.streamStatus(agentId, sessionId);
       const msgs = msgBuffers.get(convKey) ?? [];
-      const last = [...msgs].reverse().find(m => m.sender === 'agent');
+      // Reattach must only ever continue the IN-FLIGHT bubble. Never reuse a
+      // previous turn's completed reply — that overwrote history when the empty
+      // in-flight bubble had already been removed (see pickStreamReattachTarget).
+      const last = pickStreamReattachTarget(msgs);
       // `active` stays true for ~90s after done/error so late refresh can drain
       // the terminal event — only attach when still streaming, or when the UI
       // bubble is still marked in-flight and needs the final `done`.
@@ -1681,7 +1717,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         updateConvMsgsRaf(convKey, prev => {
           const u = [...prev];
           const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent')?.j ?? -1;
+          // Fallback MUST require an in-flight bubble — never stream into a
+          // previous turn's completed reply (history-corruption bug).
+          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
           if (i < 0) return prev;
           const segs = u[i]!.segments ?? [];
           const lastSeg = segs[segs.length - 1];
@@ -1932,9 +1970,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         updateConvMsgs(convKey, prev => {
           const u = [...prev];
           const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent')?.j ?? -1;
+          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
           if (i < 0) return prev;
           const msg = u[i]!;
+          // Only a still-in-flight bubble may be finalized here — never a
+          // previous turn's completed reply.
+          if (!msg.isStreaming) return prev;
           const finalSegs = result.segments?.length
             ? storedSegmentsToMsgSegments(result.segments, msg.segments)
             : undefined;
@@ -2472,7 +2513,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     reattachAbortRef.current?.abort();
     reattachAbortRef.current = null;
 
-    // 3) Unblock the UI immediately
+    // 3) A user-initiated stop is final for the CURRENT turn. Remember the
+    // session so reattach/refresh never resumes it (the agent may still report
+    // "streaming" for a moment after cancel, which previously made the stop
+    // look like a no-op and let the reply stream into a removed bubble).
+    if (agentId && activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
+      userStoppedSessionsRef.current.add(activeSessionId);
+    }
+
+    // 4) Unblock the UI immediately
     const sendKey = currentConvKeyRef.current;
     resetSending(sendKey);
     actBuffers.delete(activeSessionId ?? sendKey);
@@ -2820,6 +2869,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           // Resolve the stream's session ID — replace placeholder with real ID
           const prevStreamSessionId = streamSessionId;
           streamSessionId = event.sessionId;
+          // A new stream started in this session — clear any earlier user-stop.
+          userStoppedSessionsRef.current.delete(event.sessionId);
           if (prevStreamSessionId && prevStreamSessionId !== event.sessionId) {
             clearStreamSession(sendKey, prevStreamSessionId);
           }
@@ -2999,6 +3050,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const effectiveSessionId = options?.sessionIdOverride
         ?? (activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId);
       const streamSessionAtStart = effectiveSessionId;
+      // A fresh user turn cancels any earlier stop — reattach may resume if the
+      // stream drops while THIS turn is still generating.
+      if (streamSessionAtStart) userStoppedSessionsRef.current.delete(streamSessionAtStart);
       // Add this session to the set of actively streaming sessions for this agent.
       if (streamSessionAtStart) {
         setStreamSession(sendKey, streamSessionAtStart);
@@ -3273,9 +3327,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         (s.type === 'text' && (s as { content: string }).content) || s.type === 'tool'
       ));
       if (agentMsg && !hasVisibleContent && chatMode === 'direct' && pollSessionId && !abortCtrl.signal.aborted) {
-        const pollForReply = async (retries: number, delayMs: number) => {
+        // 指数退避 + 抖动 + 重试上限：SSE 断连后从 DB 恢复回复，避免紧密死循环轮询，
+        // 也避免所有客户端同时狂轮。见 lib/streamResilience.ts。
+        const pollForReply = async (retries: number, baseDelayMs: number) => {
           for (let i = 0; i < retries; i++) {
-            await new Promise(r => setTimeout(r, delayMs));
+            const delay = exponentialBackoffDelay(i, { baseMs: baseDelayMs, maxMs: 8000, maxAttempts: retries });
+            await new Promise(r => setTimeout(r, delay));
             try {
               const result = await api.sessions.getMessages(pollSessionId, 2);
               const assistantMsg = result.messages.find(m => m.role === 'assistant');
@@ -3300,7 +3357,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         };
         // Await polling so `sending` stays true (and the streaming animation
         // remains visible) while we recover the reply from the DB.
-        await pollForReply(5, 3000);
+        await pollForReply(5, 2000);
       }
 
       // Only clean up if this invocation is still the active sender.
@@ -5323,6 +5380,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   adjustTextareaHeight();
                 }}
                 onKeyDown={e => {
+                  // IME composition guard (中文/日文/韩文输入法):
+                  // While the input method is composing (e.g. pinyin), pressing
+                  // Enter commits the composition into the textarea, NOT send.
+                  const nat = e.nativeEvent;
+                  if (nat.isComposing === true || nat.keyCode === 229) return;
                   if (mentionDropdown && allMentionItems.length > 0) {
                     const isUp = e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p');
                     const isDown = e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n');
@@ -5375,15 +5437,37 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             <div className={`flex items-center gap-1.5 shrink-0 ${composerExpanded ? 'justify-end' : ''}`}>
               {chatMode === 'direct' && (
                 <ChatModelMenu
-                  value={sessionModelOverride}
+                  value={sessionModelOverride ?? agentBoundModel}
+                  agentId={selectedAgent}
                   disabled={!selectedAgent || isAgentOffline}
-                  onSelect={(sel, applyGlobal) => {
+                  onSelect={(sel, scope) => {
+                    if (scope === 'agent') {
+                      // Per-agent pick: apply only to the current agent's model
+                      // config; keep status to reflect it. Session override is
+                      // cleared so the agent's default applies.
+                      setSessionModelOverride(null);
+                      setAgentBoundModel(sel);
+                      const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
+                      void applyChatModelSelection(sid, sel, scope, selectedAgent).catch(() => { /* ignore */ });
+                      if (sid) {
+                        setSessions(prev => prev.map(s =>
+                          s.id === sid
+                            ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: undefined } }
+                            : s,
+                        ));
+                      }
+                      return;
+                    }
+                    // Global pick: update global routing AND reset the current agent
+                    // to follow global — so the shown model equals both the global
+                    // default and the agent's actual model (no ambiguity).
                     setSessionModelOverride(sel);
-                    const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-                    void applyChatModelSelection(sid, sel, applyGlobal).catch(() => { /* ignore */ });
-                    if (sid) {
+                    setAgentBoundModel(null);
+                    const sid2 = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
+                    void applyChatModelSelection(sid2, sel, scope, selectedAgent).catch(() => { /* ignore */ });
+                    if (sid2) {
                       setSessions(prev => prev.map(s =>
-                        s.id === sid
+                        s.id === sid2
                           ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: sel } }
                           : s,
                       ));

@@ -105,6 +105,165 @@ export function isOpenRouterReasoningModel(modelId: string | undefined | null): 
 }
 
 // ---------------------------------------------------------------------------
+// Text-emitted tool-call recovery (shared by MarkusProvider + OpenAIProvider)
+// ---------------------------------------------------------------------------
+
+/**
+ * Some models (notably `deepseek-v4-flash` via OpenAI-compatible proxies) emit
+ * tool calls as *plain text* using an Anthropic-style `<invoke name="...">`
+ * markup instead of the structured `tool_calls` field. When that happens the
+ * upstream returns no `tool_calls`, `finish_reason` is `stop`, and the raw
+ * markup leaks into the visible reply (see the `DSML` token noise some
+ * DeepSeek builds wrap the tags with).
+ *
+ * This recovers those text-emitted calls into structured tool calls and strips
+ * the markup from the content, so the agent loop can execute them normally. The
+ * tag matchers use `[^<>]*?` around the tag name so they tolerate arbitrary
+ * token noise between `<`/`>` and `invoke`/`parameter` (e.g. `<DSML|invoke`,
+ * MiniMax `<]minimax[>` fence noise).
+ */
+function coerceToolParam(raw: string, nonString: boolean): unknown {
+  if (!nonString) return raw;
+  try { return JSON.parse(raw) as unknown; } catch { return raw; }
+}
+
+export interface RecoveredToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export function recoverTextToolCalls(content: string): {
+  toolCalls: RecoveredToolCall[];
+  cleanedContent: string;
+} {
+  if (!content || !/invoke\s+name=/i.test(content)) {
+    return { toolCalls: [], cleanedContent: content };
+  }
+  const invokeRe = /<[^<>]*?invoke\s+name="([^"]+)"[^<>]*>([\s\S]*?)<\/[^<>]*?invoke>/gi;
+  const paramRe = /<[^<>]*?parameter\s+name="([^"]+)"([^<>]*)>([\s\S]*?)<\/[^<>]*?parameter>/gi;
+  const toolCalls: RecoveredToolCall[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = invokeRe.exec(content)) !== null) {
+    const name = m[1];
+    const inner = m[2] ?? '';
+    const args: Record<string, unknown> = {};
+    let pm: RegExpExecArray | null;
+    while ((pm = paramRe.exec(inner)) !== null) {
+      const pName = pm[1];
+      const attrs = pm[2] ?? '';
+      const raw = (pm[3] ?? '').trim();
+      args[pName] = coerceToolParam(raw, /string="false"/i.test(attrs));
+    }
+    toolCalls.push({ id: `text_tc_${toolCalls.length}_${Date.now().toString(36)}`, name, arguments: args });
+  }
+  if (!toolCalls.length) return { toolCalls: [], cleanedContent: content };
+  const cleanedContent = content
+    .replace(/<[^<>]*?tool_calls>[\s\S]*?<\/[^<>]*?tool_calls>/gi, '')
+    .replace(invokeRe, '')
+    .replace(/[｜|]{1,2}\s*DSML\s*[｜|]{0,2}/gi, '')
+    .replace(/<\]minimax\[>/gi, '')
+    .trim();
+  return { toolCalls, cleanedContent };
+}
+
+/**
+ * Strip leaked text-emitted tool markup from a message body (no call recovery).
+ * Used to clean *history* before it is sent back to the model, so previously
+ * leaked `<invoke>` plaintext stops re-infecting the loop.
+ */
+export function stripTextToolMarkup(content: string | null | undefined): string {
+  if (!content || !/invoke\s+name=/i.test(content)) return content ?? '';
+  return recoverTextToolCalls(content).cleanedContent;
+}
+
+/**
+ * 无条件剥离模型输出的工具标签噪声（不参与工具调用恢复）。
+ *
+ * 与 recoverTextToolCalls 不同，这里不要求出现完整的 `<invoke name=...>`：
+ * 只要文本里混有 DeepSeek 的 `||DSML||` 围栏、MiniMax 的 `<]minimax[>` 围栏、
+ * 或孤立的 `<invoke>`/`<parameter>`/`<tool_calls>` 标签片段，都直接剥掉。
+ * 用于流式 thinking_delta / 存量历史清洗等「只求干净、不求恢复」的场景。
+ */
+export function stripToolNoise(content: string | null | undefined): string {
+  if (!content) return '';
+  let out = String(content);
+  const before = out;
+  out = out
+    .replace(/<[^<>]*?invoke\s+name="[^"]*"[^<>]*>[\s\S]*?<\/[^<>]*?invoke>/gi, ' ')
+    .replace(/<[^<>]*?tool_calls>[\s\S]*?<\/[^<>]*?tool_calls>/gi, ' ')
+    .replace(/<[^<>]*?parameter\s+name="[^"]*"[^<>]*>[\s\S]*?<\/[^<>]*?parameter>/gi, ' ')
+    // 未闭合的开启标签（模型在流式输出中途被截断时可能只有 `<invoke name="...">`）
+    .replace(/<[^<>]*?invoke\s+name="[^"]*"[^<>]*>/gi, ' ')
+    .replace(/<[^<>]*?parameter\s+name="[^"]*"[^<>]*>/gi, ' ')
+    .replace(new RegExp('[｜|]{1,2}\\s*DSML\\s*[｜|]{0,2}', 'gi'), ' ')
+    .replace(new RegExp('<\\](?:minimax|miniMax|MiniMax)\\[>', 'gi'), ' ');
+  return out === before ? content : out.trim();
+}
+
+/**
+ * 流式文本增量「安全发射器」。
+ *
+ * 背景：DeepSeek 等模型会把工具调用以明文 `<invoke name="...">` 形式混在正文里
+ * 流式输出。如果每个 chunk 原样直接推给 UI（text_delta），用户会实时看到明文标签，
+ * 即使流结束后 content 被 recover 清理，屏幕上已经显示过了——这正是「还会漏出来、
+ * 显示出来」的根本原因。
+ *
+ * 方案：缓冲 + 延迟发射。
+ *  - 一旦检测到「疑似工具标签起始」（`<` 后跟 invoke/parameter/tool_calls/DSML/
+ *    minimax 前缀，容忍跨 chunk 半截字），就从该位置开始 hold 住，只把前面的安全
+ *    文本实时发出去；
+ *  - 流结束时 flush()：对缓冲做一次完整恢复+剥离，把非工具正文补发、工具标签吞掉。
+ *
+ * 权衡：工具调用之后紧跟的正文本会延迟到 flush（比明文泄漏好得多）；普通正文（无
+ * 疑似标签）逐 chunk 实时发射，无感知差异。
+ */
+export function createSafeTextEmitter(rawEmit: (text: string) => void): {
+  emit(chunk: string): void;
+  flush(): void;
+} {
+  // 疑似工具标签起始：`<` + 可选字符 + 关键字前缀（容忍 `<inv` 这类被切开的前缀）。
+  // 关键字必须紧跟在 < 后（允许 [^<>]*? 噪声），避免误吞普通英文单词。
+  const TOOL_TAG_START_RE = /<[^<>]*?(?:invoke|inv|parameter|param|tool_calls|tool_|dsml|minimax)/i;
+  let pending = '';
+
+  // 所有最终发出的文本统一过 stripToolNoise：不含 invoke 关键词的围栏噪声
+  // （DSML / minimax）在 emit 阶段就被剥掉，而不只是 flush 时。
+  const emitSafe = (text: string): void => {
+    const cleaned = stripToolNoise(text);
+    if (cleaned) rawEmit(cleaned);
+  };
+
+  const emit = (chunk: string): void => {
+    if (!chunk) return;
+    pending += chunk;
+
+    const m = TOOL_TAG_START_RE.exec(pending);
+    if (!m) {
+      if (pending) {
+        emitSafe(pending);
+        pending = '';
+      }
+      return;
+    }
+    const safe = pending.slice(0, m.index);
+    if (safe) emitSafe(safe);
+    pending = pending.slice(m.index);
+  };
+
+  const flush = (): void => {
+    if (!pending) return;
+    const { cleanedContent } = recoverTextToolCalls(pending);
+    // 兜底：未闭合/孤立标签残渣也剥掉，避免 `<invoke name="...` 半截泄漏。
+    const finalText = stripToolNoise(cleanedContent || pending);
+    pending = '';
+    if (finalText) emitSafe(finalText);
+  };
+
+  return { emit, flush };
+}
+
+// ---------------------------------------------------------------------------
 // Message / tool conversion
 // ---------------------------------------------------------------------------
 
@@ -123,6 +282,16 @@ export function convertMessagesOpenAI(
   const backfillReasoning = !!opts?.backfillReasoning || clean.some((m) => !!m.reasoningContent);
   const splitSystemIntoSegments = !!opts?.systemCacheSegments && opts.systemCacheSegments.length >= 1;
 
+  // De-infect history: strip leaked `<invoke>` plaintext from previous turns so
+  // it never reaches the model again (fixes the permanent re-feed loop).
+  for (const m of clean) {
+    if (m.role === 'system') continue;
+    if (typeof m.content === 'string') {
+      const cleaned = stripTextToolMarkup(m.content);
+      if (cleaned !== m.content) m.content = cleaned;
+    }
+  }
+
   return clean.flatMap((m): OpenAIMessage | OpenAIMessage[] => {
     if (splitSystemIntoSegments && m.role === 'system') {
       return (opts!.systemCacheSegments!)
@@ -133,7 +302,7 @@ export function convertMessagesOpenAI(
     if (m.role === 'tool') {
       return {
         role: 'tool' as const,
-        content: sanitizeForLLM(getTextContent(m.content)),
+        content: sanitizeForLLM(stripTextToolMarkup(getTextContent(m.content))),
         tool_call_id: m.toolCallId ?? '',
       };
     }
@@ -197,13 +366,29 @@ export function convertToolsOpenAI(tools: LLMTool[]): OpenAIToolDef[] {
 // Usage normalization
 // ---------------------------------------------------------------------------
 
+/**
+ * Extract cache-read token count from an OpenAI-compatible usage payload.
+ * Supports the two common upstream shapes:
+ *  - OpenAI / OpenRouter: `usage.prompt_tokens_details.cached_tokens`
+ *  - DeepSeek:            `usage.prompt_cache_hit_tokens` (top-level sibling)
+ * Returns 0 when neither is present.
+ */
+export function extractCacheReadTokens(raw: Record<string, unknown> | undefined): number {
+  if (!raw) return 0;
+  const details = raw.prompt_tokens_details as Record<string, unknown> | undefined;
+  const openaiCached = typeof details?.cached_tokens === 'number' ? details.cached_tokens : 0;
+  const deepseekHit = typeof raw.prompt_cache_hit_tokens === 'number' ? raw.prompt_cache_hit_tokens : 0;
+  return Math.max(openaiCached, deepseekHit);
+}
+
 export function normalizeOpenAIUsage(raw: Record<string, number> | undefined): LLMResponse['usage'] {
   const usage: LLMResponse['usage'] = {
     inputTokens: raw?.prompt_tokens ?? 0,
     outputTokens: raw?.completion_tokens ?? 0,
   };
-  const cached = (raw?.prompt_tokens_details as Record<string, number> | undefined)?.cached_tokens;
-  if (cached && cached > 0) usage.cacheReadTokens = cached;
+  // raw is typed `number`-valued but may carry nested objects / sibling cache fields.
+  const cached = extractCacheReadTokens(raw as unknown as Record<string, unknown>);
+  if (cached > 0) usage.cacheReadTokens = cached;
   return usage;
 }
 
@@ -245,12 +430,17 @@ export function parseOpenAICompatResponse(
   const usage = normalizeOpenAIUsage(data.usage as Record<string, number> | undefined);
   let finishReason = FINISH_REASON_MAP[String(choice.finish_reason ?? 'stop')] ?? 'end_turn';
 
-  if (!toolCalls?.length && opts?.recoverTextToolCalls) {
+  // Mixed-output hygiene: even when structured tool_calls exist, the body may
+  // still carry plaintext `<invoke>` markup (text-emitted tool calls). Always
+  // strip it; only *adopt* recovered calls when the model gave none structured.
+  if (opts?.recoverTextToolCalls) {
     const recovered = opts.recoverTextToolCalls(content);
     if (recovered.toolCalls.length) {
-      toolCalls = recovered.toolCalls;
       content = recovered.cleanedContent;
-      finishReason = 'tool_use';
+      if (!toolCalls?.length) {
+        toolCalls = recovered.toolCalls;
+        finishReason = 'tool_use';
+      }
     }
   }
 
@@ -259,6 +449,11 @@ export function parseOpenAICompatResponse(
     extractReasoningText(message?.reasoning) ||
     extractReasoningText(message?.thinking) ||
     extractReasoningText(message?.reasoning_details);
+
+  // A response that carries tool calls (structured OR recovered from text) must
+  // be treated as a tool turn — otherwise the agent loop drops the calls and
+  // treats the text as a plain reply. Mirrors the normalization done for streams.
+  if (toolCalls?.length && finishReason !== 'tool_use') finishReason = 'tool_use';
 
   const result: LLMResponse = {
     content,
@@ -367,9 +562,8 @@ export function createSSEAccumulator() {
         const u = chunk.usage as Record<string, unknown>;
         state.promptTokens = typeof u.prompt_tokens === 'number' ? u.prompt_tokens : 0;
         state.completionTokens = typeof u.completion_tokens === 'number' ? u.completion_tokens : 0;
-        const details = u.prompt_tokens_details as Record<string, unknown> | undefined;
-        const cached = typeof details?.cached_tokens === 'number' ? details.cached_tokens : 0;
-        if (cached && cached > 0) state.cachedTokens = cached;
+        const cached = extractCacheReadTokens(u);
+        if (cached > 0) state.cachedTokens = cached;
         state.lastRawUsage = chunk.usage as Record<string, unknown>;
         handlers.onUsage?.(normalizeOpenAIUsage(u as Record<string, number>), chunk.usage as Record<string, unknown>);
       }
@@ -389,7 +583,7 @@ export function createSSEAccumulator() {
   };
 }
 
-function safeParseJson(raw: string): Record<string, unknown> {
+export function safeParseJson(raw: string): Record<string, unknown> {
   try {
     return JSON.parse(raw) as Record<string, unknown>;
   } catch {

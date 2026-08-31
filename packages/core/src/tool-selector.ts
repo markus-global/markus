@@ -98,8 +98,17 @@ const TOOL_GROUPS: ToolGroup[] = [
     name: 'deliverables',
     keywords: ['deliverable', 'deliverables', 'output', 'artifact', 'convention', 'architecture decision',
       'gotcha', 'troubleshooting', 'best practice', 'lesson', 'pattern', 'report', 'document',
+      'knowledge base', 'knowledge', 'kb', 'synced document',
       '产出物', '产出', '交付物', '知识', '知识库', '贡献', '约定', '架构决策', '最佳实践', '经验'],
-    toolNames: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update'],
+    toolNames: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update',
+      'knowledge_search', 'knowledge_list', 'knowledge_read'],
+  },
+  {
+    name: 'office',
+    keywords: ['office', 'word', 'docx', 'excel', 'xlsx', 'spreadsheet', 'powerpoint', 'pptx', 'pdf',
+      'generate document', 'generate report', 'create word', 'create excel', 'create powerpoint',
+      '办公', '文档', '表格', '演示', '幻灯片', '报告', '生成文档', '生成报告', '生成表格', '生成演示', '生成PDF'],
+    toolNames: ['office_generate'],
   },
   {
     name: 'packages',
@@ -271,7 +280,11 @@ export class ToolSelector {
     if (pack !== 'reflex') {
       const contextLower = (opts.userMessage ?? '').toLowerCase();
       for (const group of this.groups) {
-        if (group.toolNames.some(n => selected.has(n))) continue;
+        // Only skip keyword activation when the WHOLE group is already in — a
+        // partially-present group must still be able to add the rest (e.g.
+        // deliverable_search is base-always-on, so a keyword hit must still
+        // surface knowledge_search/list/read).
+        if (group.toolNames.length > 0 && group.toolNames.every(n => selected.has(n))) continue;
         const matched = group.keywords.some(kw => contextLower.includes(kw));
         if (matched) {
           for (const name of group.toolNames) {
@@ -301,7 +314,15 @@ export class ToolSelector {
     }
 
     const result: LLMTool[] = [];
-    for (const name of selected) {
+    // Cache-friendly: emit selected tools in REGISTRY order (allTools is a Map
+    // that preserves registration order), NOT in the per-turn insertion order of
+    // the `selected` Set (= userMessage keyword hits, session recentToolNames,
+    // discover_tools activations). A deterministic, order-stable tool schema is
+    // what keeps the implicit prefix-cache (OpenAI/DeepSeek/OpenRouter) key
+    // stable across turns — identical tool sets produce byte-identical JSON even
+    // when the activation *order* differed between turns.
+    for (const name of opts.allTools.keys()) {
+      if (!selected.has(name)) continue;
       // Defense in depth: skill/MCP never LIVE unless explicitly activated
       if (isSkillOrMcpToolName(name) && !activated.has(name)) continue;
       // Defense in depth: work-context tools stay out of free chat / reflex
@@ -636,7 +657,10 @@ export class ToolSelector {
     skillCatalog?: SkillManifest[],
   ): LLMTool {
     const parts: string[] = [];
-    parts.push(`You have ${alreadySelected.size} tools active.`);
+    // Cache-friendly: avoid embedding a per-turn count ("N tools active") in the
+    // schema — N changes every turn, which would shift the discover_tools
+    // schema prefix and break implicit prefix-cache across turns.
+    parts.push('Discover and activate tools/skills by name (schemas for inactive ones are omitted here).');
 
     if (skillCatalog && skillCatalog.length > 0) {
       const maxSkills = 30;

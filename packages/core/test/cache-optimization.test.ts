@@ -457,19 +457,52 @@ describe('ContextEngine — cache optimization', () => {
       }
     });
 
-    it('places dynamic meta only in the tail segment after the last breakpoint', async () => {
+    it('places dynamic meta in the volatile tail, outside the system segments', async () => {
       const result = await buildRichPrompt();
-      const lastBreakIdx = result.segments.map(s => !!s.cacheBreakpoint).lastIndexOf(true);
-      const tail = result.segments
-        .slice(lastBreakIdx + 1)
-        .map(s => s.content)
-        .join('\n');
 
-      // The dynamic tail exists and is not itself a cache breakpoint.
-      expect(result.segments[result.segments.length - 1]!.cacheBreakpoint).toBeFalsy();
-      for (const marker of DYNAMIC_MARKERS) {
-        expect(tail, `dynamic tail must contain "${marker}"`).toContain(marker);
+      // With Scheme A there is NO dynamic system segment: every system segment is
+      // a cache breakpoint (stable+semiStable) and none of them carries per-turn
+      // situational meta. The per-call meta instead rides result.volatile, which
+      // prepareMessages pins at the TAIL of history (so the system + history
+      // prefix stays byte-identical across turns).
+      for (const seg of result.segments) {
+        expect(seg.cacheBreakpoint).toBe(true);
+        for (const marker of DYNAMIC_MARKERS) {
+          expect(seg.content, `segment must not contain "${marker}"`).not.toContain(marker);
+        }
       }
+      for (const marker of DYNAMIC_MARKERS) {
+        expect(result.volatile, `volatile tail must contain "${marker}"`).toContain(marker);
+      }
+    });
+
+    it('cache key stability: identical system text across turns; only volatile changes', async () => {
+      const base = {
+        agentId: 'test-agent',
+        agentName: 'TestAgent',
+        role: makeRole(),
+        memory: makeMockMemory() as any,
+        scenario: 'a2a' as any,
+      };
+
+      // Two turns with DIFFERENT per-turn situational meta.
+      const turn1 = await engine.buildSystemPrompt({
+        ...base,
+        mailboxContext: { currentFocus: { type: 'human_chat', label: 'Turn A', elapsedMs: 0 }, queueDepth: 1, topQueued: [] },
+        channelContext: [{ role: 'user', content: 'hello turn A' }],
+      });
+      const turn2 = await engine.buildSystemPrompt({
+        ...base,
+        mailboxContext: { currentFocus: { type: 'a2a_message', label: 'Turn B', elapsedMs: 5000 }, queueDepth: 2, topQueued: [] },
+        channelContext: [{ role: 'user', content: 'hello turn B' }],
+      });
+
+      // The system text (stable+semiStable) is byte-identical across turns — the
+      // implicit prefix-cache key. Only the volatile tail carries the delta.
+      expect(turn1.text).toBe(turn2.text);
+      expect(turn1.volatile).not.toBe(turn2.volatile);
+      expect(turn1.volatile).toContain('Turn A');
+      expect(turn2.volatile).toContain('Turn B');
     });
 
     it('keeps identity/tools/knowledge in the stable prefix', async () => {

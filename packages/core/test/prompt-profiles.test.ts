@@ -56,7 +56,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
 
   it('A-conversation-first-chat: chat mode allows pair work; STOP only after task_create', async () => {
     const engine = new ContextEngine();
-    const { text } = await engine.buildSystemPrompt({
+    const { text, volatile } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'T',
       role: { ...baseRole, systemPrompt: 'Short founder role.' } as never,
@@ -84,10 +84,55 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     expect(text).toContain('Own the work when pairing');
     expect(text).toContain('After you create a task for some work, STOP');
     expect(text).not.toContain('tiny clarifications');
-    expect(text).toContain('## Team Status');
-    expect(text).toContain('stopped');
-    expect(text).toContain('agent_start');
+    expect(volatile).toContain('## Team Status');
+    expect(volatile).toContain('stopped');
+    expect(volatile).toContain('agent_start');
     expect(text).not.toContain('Dev: offline');
+  });
+
+  it('A-team-status-live-and-late: live statuses override snapshot; Team Status is at prompt tail', async () => {
+    const engine = new ContextEngine();
+    const { text, segments, volatile } = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'T',
+      role: { ...baseRole, systemPrompt: 'Short founder role.' } as never,
+      memory: mockMemory(),
+      scenario: 'chat',
+      promptProfile: 'converse',
+      identity: {
+        self: {
+          id: 'agt_1',
+          name: 'CTO',
+          role: '技术联合创始人',
+          agentRole: 'manager',
+          skills: ['git'],
+        },
+        organization: { id: 'org_1', name: 'Org' },
+        // Stale creation-time snapshot: both teammates were offline then.
+        colleagues: [
+          { id: 'agt_2', name: 'Dev', role: 'Developer', type: 'agent', status: 'offline' },
+          { id: 'agt_3', name: 'Writer', role: 'Writer', type: 'agent', status: 'offline' },
+        ],
+        humans: [{ id: 'u1', name: 'Owner', role: 'owner' }],
+      } as never,
+      // Live runtime statuses read at build time: they have started since.
+      liveColleagueStatuses: { agt_2: 'idle', agt_3: 'working' },
+    });
+    // Live statuses win over the stale snapshot.
+    expect(volatile).toContain('Dev: idle');
+    expect(volatile).toContain('Writer: busy');
+    expect(volatile).not.toContain('All listed teammates are stopped');
+    // Scheme A cache contract: Team Status rides the volatile tail (pinned at the
+    // end of history) AFTER the timestamp, so a status flip never invalidates the
+    // byte-stable system + history prefix.
+    const tsIdx = (volatile ?? '').indexOf('Current date and time:');
+    const teamIdx = (volatile ?? '').indexOf('## Team Status');
+    expect(tsIdx).toBeGreaterThan(-1);
+    expect(teamIdx).toBeGreaterThan(tsIdx);
+    // Every system segment is a cache breakpoint and none carries Team Status.
+    for (const seg of segments) expect(seg.cacheBreakpoint).toBe(true);
+    for (const seg of segments) expect(seg.content).not.toContain('## Team Status');
+    expect(volatile).toContain('## Team Status');
   });
 
   it('A-knowledge-heading-demote: knowledge ## becomes ### under Your Knowledge', async () => {
@@ -126,7 +171,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
   it('S-skill-body-not-dyn-capped: activated skills survive converse dynamic cap', async () => {
     const engine = new ContextEngine();
     const skillBody = `UNIQUE_SKILL_BODY_${'x'.repeat(2_000)}`;
-    const { text } = await engine.buildSystemPrompt({
+    const { text, volatile } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'T',
       role: { ...baseRole, systemPrompt: 'Short role.' } as never,
@@ -139,7 +184,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     expect(text).toContain('UNIQUE_SKILL_BODY_');
     expect(text).toContain(skillBody.slice(-20));
     expect(text).toContain('## Activated Skills');
-    expect(text).toContain('dynamic context truncated');
+    expect(volatile).toContain('dynamic context truncated');
   });
 
   it('A-profile-role-full: never truncates ROLE (important always-on)', async () => {
@@ -202,7 +247,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
 
   it('A-profile-converse-no-l3: comment_response omits Error Recovery / Quality Gates', async () => {
     const engine = new ContextEngine();
-    const { text } = await engine.buildSystemPrompt({
+    const { text, volatile } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'T',
       role: { ...baseRole, systemPrompt: 'Short role for comment.' } as never,
@@ -216,7 +261,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     expect(text).not.toContain('## Error Recovery');
     expect(text).not.toContain('## Quality Gates');
     expect(text).not.toContain('## Deliverable & Report Output Format');
-    expect(text).toMatch(/Current date and time: \d{4}-\d{2}-\d{2}/);
+    expect(volatile).toMatch(/Current date and time: \d{4}-\d{2}-\d{2}/);
   });
 
   it('A-profile-execute-has-l3: task_execution includes Error Recovery', async () => {
@@ -238,7 +283,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
   it('S-converse-assemble-caps: progressive caps on announcements/workflows (not ROLE/L0)', async () => {
     const engine = new ContextEngine();
     const blob = 'ANNOUNCEMENT LINE PAD '.repeat(4_000);
-    const { text } = await engine.buildSystemPrompt({
+    const { text, volatile } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'T',
       role: { ...baseRole, systemPrompt: 'Short secretary role.' } as never,
@@ -263,24 +308,24 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     // Progressive disclosure caps (full files remain on disk)
     expect(text).toContain('announcements truncated');
     expect(text).toContain('norms truncated');
-    expect(text).toContain('dynamic context truncated');
+    expect(volatile).toContain('dynamic context truncated');
     expect(text.split('ANNOUNCEMENT LINE PAD').length - 1).toBeLessThanOrEqual(
       Math.ceil(SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE / 'ANNOUNCEMENT LINE PAD '.length) + 2,
     );
-    expect(text).toContain('more — use `workflow_list`');
+    expect(volatile).toContain('more — use `workflow_list`');
     expect(text).toContain('Subagent delegation');
     expect(text).toContain('## Search & Exploration Strategy');
     expect(text).not.toContain('## Error Recovery');
     expect(text).not.toContain('_[system trimmed');
 
-    expect(text).toMatch(/Current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(Asia\/Shanghai/);
+    expect(volatile).toMatch(/Current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(Asia\/Shanghai/);
     expect(text).toContain('## Current Interaction Mode');
-    expect(text).toContain('User locale:');
+    expect(volatile).toContain('User locale:');
   });
 
   it('S-converse-keeps-essentials: date/mode/L0 survive heavy progressive sections', async () => {
     const engine = new ContextEngine();
-    const { text } = await engine.buildSystemPrompt({
+    const { text, volatile } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'T',
       role: { ...baseRole, systemPrompt: 'You are a secretary. '.repeat(800) } as never,
@@ -292,7 +337,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       dynamicContext: 'DYNAMIC PAD '.repeat(3_000),
       viewerContext: { locale: 'zh-CN', timezone: 'Asia/Shanghai' },
     });
-    expect(text).toMatch(/Current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(Asia\/Shanghai/);
+    expect(volatile).toMatch(/Current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(Asia\/Shanghai/);
     expect(text).toContain('## Current Interaction Mode');
     expect(text).toContain('## Search & Exploration Strategy');
     expect(text).toContain('## Learning Habits');
@@ -302,7 +347,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
 
   it('S-converse-keeps-date: date/mode never surgically removed', async () => {
     const engine = new ContextEngine();
-    const { text } = await engine.buildSystemPrompt({
+    const { text, volatile } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'T',
       role: { ...baseRole, systemPrompt: 'ROLEPAD '.repeat(5_000) } as never,
@@ -314,7 +359,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       dynamicContext: 'DYN '.repeat(10_000),
       viewerContext: { locale: 'zh-CN', timezone: 'Asia/Shanghai' },
     });
-    expect(text).toMatch(/Current date and time: \d{4}-\d{2}-\d{2}/);
+    expect(volatile).toMatch(/Current date and time: \d{4}-\d{2}-\d{2}/);
     expect(text).toContain('## Current Interaction Mode');
     expect(text).not.toContain('_[system trimmed');
     // Token counter imported for regression visibility in heavy assemble

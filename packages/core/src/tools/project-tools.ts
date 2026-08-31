@@ -12,6 +12,9 @@ export interface DeliverableServiceBridge {
     agentId?: string;
     projectId?: string;
     requirementId?: string;
+    source?: 'agent' | 'knowledge';
+    knowledgeRoot?: string;
+    content?: string;
   }): Promise<{ id: string; type: string; title: string; status: string }>;
   search(opts: {
     query?: string;
@@ -20,6 +23,7 @@ export interface DeliverableServiceBridge {
     taskId?: string;
     type?: string;
     status?: string;
+    source?: 'agent' | 'knowledge';
     offset?: number;
     limit?: number;
   }): { results: Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; agentId?: string; projectId?: string; taskId?: string; updatedAt?: string }>; total: number };
@@ -56,6 +60,7 @@ export interface ProjectServiceBridge {
     repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
     teamIds: string[];
     governancePolicy?: { enabled: boolean; defaultTier: string };
+    knowledgeBasePaths?: string[];
   } | undefined;
   createProject?(opts: {
     orgId: string;
@@ -81,6 +86,7 @@ export interface ProjectToolsContext {
     repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
     teamIds: string[];
     governancePolicy?: { enabled: boolean; defaultTier: string };
+    knowledgeBasePaths?: string[];
   } | null>;
   getProjectStats?: (projectId: string) => Promise<{
     totalTasks: number;
@@ -101,19 +107,24 @@ export interface ProjectToolsContext {
     format?: string;
     tags?: string;
     projectId?: string;
+    source?: 'agent' | 'knowledge';
+    knowledgeRoot?: string;
+    content?: string;
   }) => Promise<{ id: string; type: string; title: string; status: string }>;
   deliverableSearch?: (opts: {
     query?: string;
     projectId?: string;
     agentId?: string;
     type?: string;
+    source?: 'agent' | 'knowledge';
     limit?: number;
-  }) => Promise<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[] }>>;
+  }) => Promise<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; updatedAt?: string }>>;
   deliverableList?: (opts: {
     projectId?: string;
     agentId?: string;
     type?: string;
     status?: string;
+    source?: 'agent' | 'knowledge';
     limit?: number;
   }) => Promise<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string; tags: string[]; updatedAt?: string }>>;
   deliverableUpdate?: (id: string, data: {
@@ -123,6 +134,10 @@ export interface ProjectToolsContext {
     status?: string;
     tags?: string;
   }) => Promise<{ id: string; status: string } | undefined>;
+  /** Read a knowledge-base document's text content (by file path/reference).
+   *  projectId is forwarded when the caller scopes the read to a project; the
+   *  bridge may use it to enforce knowledge_base_paths prefix checks. */
+  deliverableRead?: (opts: { reference: string; projectId?: string }) => Promise<{ content: string; reference: string } | null>;
 }
 
 export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[] {
@@ -445,12 +460,28 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   type: 'string',
                   description: 'Comma-separated tags for discoverability (array of strings is also accepted).',
                 },
+                source: {
+                  type: 'string',
+                  enum: ['agent', 'knowledge'],
+                  description: "来源：'agent'（Agent 产出物，默认）| 'knowledge'（知识库文档，知识库同步流程使用，可选）",
+                },
+                knowledge_root: {
+                  type: 'string',
+                  description: '归属知识库根路径（source="knowledge" 时由知识库同步填写，可选）',
+                },
+                content: {
+                  type: 'string',
+                  description: '扫描抽取的文本内容，供全文搜索（source="knowledge" 时由知识库同步填写，可选）',
+                },
               },
               required: ['type', 'title', 'summary'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
                 const rawType = String(args['type'] ?? 'file').trim().toLowerCase();
+                const source = args['source'] === 'knowledge' ? 'knowledge' : 'agent';
+                const knowledgeRoot = (args['knowledge_root'] ?? args['knowledgeRoot']) as string | undefined;
+                const content = (args['content']) as string | undefined;
                 const type = rawType === 'directory' || rawType === 'dir' || rawType === 'folder'
                   ? 'directory'
                   : 'file';
@@ -491,6 +522,9 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   format: args['format'] as string | undefined,
                   tags,
                   projectId,
+                  source,
+                  knowledgeRoot,
+                  content,
                 });
                 const resp: Record<string, unknown> = {
                   status: 'success',
@@ -529,6 +563,11 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   enum: ['file', 'directory'],
                   description: 'Filter by deliverable type (optional)',
                 },
+                source: {
+                  type: 'string',
+                  enum: ['agent', 'knowledge'],
+                  description: "Filter by source: 'agent' (Agent 产出物, 默认) | 'knowledge' (知识库文档, optional)",
+                },
                 limit: { type: 'number', description: 'Max results (default: 20)' },
               },
               required: ['query'],
@@ -540,6 +579,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   projectId: (args['project_id'] ?? args['projectId']) as string | undefined,
                   agentId: (args['agent_id'] ?? args['agentId']) as string | undefined,
                   type: args['type'] as string | undefined,
+                  source: args['source'] as 'agent' | 'knowledge' | undefined,
                   limit: args['limit'] as number | undefined,
                 });
                 return JSON.stringify({
@@ -580,6 +620,11 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   enum: ['active', 'verified', 'outdated'],
                   description: 'Filter by status (default: active)',
                 },
+                source: {
+                  type: 'string',
+                  enum: ['agent', 'knowledge'],
+                  description: "Filter by source: 'agent' (Agent 产出物, 默认) | 'knowledge' (知识库文档, optional)",
+                },
                 limit: { type: 'number', description: 'Max results (default: 50)' },
               },
             },
@@ -590,6 +635,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   agentId: (args['agent_id'] ?? args['agentId']) as string | undefined,
                   type: args['type'] as string | undefined,
                   status: args['status'] as string | undefined,
+                  source: args['source'] as 'agent' | 'knowledge' | undefined,
                   limit: args['limit'] as number | undefined,
                 });
                 return JSON.stringify({
@@ -667,6 +713,138 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                 return JSON.stringify(resp);
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    // ── Knowledge-base tools (T4): thin wrappers over deliverable_* that
+    // default source='knowledge' and support project filtering. No new infra.
+    ...(ctx.deliverableSearch
+      ? [
+          {
+            name: 'knowledge_search',
+            description:
+              'Search the project knowledge base (documents synced from bound knowledge directories). ' +
+              'Thin wrapper over deliverable_search with source forced to "knowledge". ' +
+              'Use when the user asks about project docs, knowledge base, or synced documents.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                query: { type: 'string', description: 'Search keywords or question (matched against title, summary and full text)' },
+                project_id: { type: 'string', description: 'Filter by project ID (recommended for scoped knowledge bases)' },
+                limit: { type: 'number', description: 'Max results (default: 20)' },
+              },
+              required: ['query'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const results = await ctx.deliverableSearch!({
+                  query: args['query'] as string,
+                  projectId: (args['project_id'] ?? args['projectId']) as string | undefined,
+                  // Knowledge-base documents only — never Agent deliverables.
+                  source: 'knowledge',
+                  limit: args['limit'] as number | undefined,
+                });
+                return JSON.stringify({
+                  status: 'success',
+                  source: 'knowledge',
+                  count: results.length,
+                  results: results.map(d => ({
+                    id: d.id, type: d.type, title: d.title,
+                    summary: d.summary, reference: d.reference,
+                    status: d.status, tags: d.tags,
+                    updatedAt: d.updatedAt,
+                  })),
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: `Knowledge search failed: ${String(error)}` });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.deliverableList
+      ? [
+          {
+            name: 'knowledge_list',
+            description:
+              'List knowledge-base documents (source="knowledge") with optional project filter. ' +
+              'Thin wrapper over deliverable_list with source forced to "knowledge".',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                project_id: { type: 'string', description: 'Filter by project ID' },
+                limit: { type: 'number', description: 'Max results (default: 50)' },
+              },
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const results = await ctx.deliverableList!({
+                  projectId: (args['project_id'] ?? args['projectId']) as string | undefined,
+                  source: 'knowledge',
+                  limit: args['limit'] as number | undefined,
+                });
+                return JSON.stringify({
+                  status: 'success',
+                  source: 'knowledge',
+                  count: results.length,
+                  results: results.map(d => ({
+                    id: d.id, type: d.type, title: d.title,
+                    summary: d.summary, reference: d.reference,
+                    status: d.status, tags: d.tags,
+                    updatedAt: d.updatedAt,
+                  })),
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: `Knowledge list failed: ${String(error)}` });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.deliverableRead
+      ? [
+          {
+            name: 'knowledge_read',
+            description:
+              'Read the text content of a knowledge-base document by its file path (reference). ' +
+              'Use the "reference" from knowledge_search / knowledge_list results. ' +
+              'When project_id is provided, the read is scoped to that project\'s bound knowledge directories. ' +
+              'Thin wrapper that returns the extracted plain-text content for context.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: 'Absolute file path (reference) of the knowledge document' },
+                reference: { type: 'string', description: 'Alias for "path" — use whichever is available' },
+                project_id: { type: 'string', description: 'Project ID (recommended) — scopes the read to the project\'s bound knowledge directories' },
+              },
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              const reference = (args['path'] ?? args['reference'] ?? '') as string;
+              if (!reference) {
+                return JSON.stringify({ status: 'error', error: 'path (or reference) is required' });
+              }
+              const projectId = (args['project_id'] ?? args['projectId']) as string | undefined;
+              try {
+                const result = await ctx.deliverableRead!({ reference, ...(projectId ? { projectId } : {}) });
+                if (!result) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: `Document not readable: ${reference}${projectId ? ' (可能不在该项目绑定的知识库目录内)' : ''}`,
+                  });
+                }
+                return JSON.stringify({
+                  status: 'success',
+                  source: 'knowledge',
+                  reference: result.reference,
+                  content: result.content,
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: `Knowledge read failed: ${String(error)}` });
               }
             },
           } as AgentToolHandler,

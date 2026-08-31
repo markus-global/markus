@@ -95,7 +95,7 @@ describe('buildSystemPrompt', () => {
 
     expect(result.text).toContain('Acme Corp');
     expect(result.text).toContain('Platform');
-    expect(result.text).toContain('Fix bug');
+    expect(result.volatile).toContain('Fix bug');
   });
 
   it('includes mailbox context when provided', async () => {
@@ -114,8 +114,8 @@ describe('buildSystemPrompt', () => {
       },
     });
 
-    expect(result.text).toContain('mailbox');
-    expect(result.text.toLowerCase()).toMatch(/queue|focus|inbox/i);
+    expect(result.volatile).toContain('mailbox');
+    expect(result.volatile!.toLowerCase()).toMatch(/queue|focus|inbox/i);
   });
 
   it('reads CONTEXT.md from disk when path is provided', async () => {
@@ -177,7 +177,7 @@ describe('buildSystemPrompt', () => {
       currentQuery: 'deployment infrastructure',
     });
 
-    expect(result.text).toContain('Kubernetes');
+    expect(result.volatile).toContain('Kubernetes');
   });
 
   it('appends viewer language and timezone guidance after the timestamp', async () => {
@@ -192,14 +192,14 @@ describe('buildSystemPrompt', () => {
       senderIdentity: { id: 'usr_1', name: 'Li', role: 'owner', locale: 'zh-CN', timezone: 'Asia/Shanghai' },
     });
 
-    expect(result.text).toContain('Current date and time:');
-    expect(result.text).toContain('Asia/Shanghai');
-    expect(result.text).toContain('User locale:');
-    expect(result.text).toContain('Chinese');
+    expect(result.volatile).toContain('Current date and time:');
+    expect(result.volatile).toContain('Asia/Shanghai');
+    expect(result.volatile).toContain('User locale:');
+    expect(result.volatile).toContain('Chinese');
     expect(result.text).toContain('User Language (critical)');
-    expect(result.text).toMatch(/task\/requirement\/deliverable/);
-    // The locale block must come after the timestamp (Tier 3 tail, cache-safe).
-    expect(result.text.indexOf('User locale:')).toBeGreaterThan(result.text.indexOf('Current date and time:'));
+    expect(result.volatile).toMatch(/task\/requirement\/deliverable/);
+    // The locale block must come after the timestamp (both in the volatile tail).
+    expect(result.volatile!.indexOf('User locale:')).toBeGreaterThan(result.volatile!.indexOf('Current date and time:'));
   });
 
   it('falls back to viewerContext for autonomous runs without a sender', async () => {
@@ -214,10 +214,10 @@ describe('buildSystemPrompt', () => {
       viewerContext: { locale: 'ja-JP', timezone: 'Asia/Tokyo' },
     });
 
-    expect(result.text).toContain('Asia/Tokyo');
-    expect(result.text).toContain('User locale:');
-    expect(result.text).toContain('Japanese');
-    expect(result.text).toMatch(/user-visible field/);
+    expect(result.volatile).toContain('Asia/Tokyo');
+    expect(result.volatile).toContain('User locale:');
+    expect(result.volatile).toContain('Japanese');
+    expect(result.volatile).toMatch(/user-visible field/);
   });
 
   it('still instructs language matching when no locale is configured', async () => {
@@ -232,7 +232,7 @@ describe('buildSystemPrompt', () => {
     });
 
     expect(result.text).toContain('User Language (critical)');
-    expect(result.text).toContain('User language: Match the language of the user\'s recent messages');
+    expect(result.volatile).toContain('User language: Match the language of the user\'s recent messages');
   });
 });
 
@@ -307,7 +307,8 @@ describe('prepareMessages', () => {
     });
 
     // No count-based pre-summarization — 65 short turns fit a 64k window.
-    expect(prepared.messages.filter(m => m.role !== 'system').length).toBe(65);
+    // Scheme A pins one [SYSTEM] live-context tail message, so 66 (65 history + 1 live).
+    expect(prepared.messages.filter(m => m.role !== 'system').length).toBe(66);
     expect(summarizer).not.toHaveBeenCalled();
   });
 
@@ -440,9 +441,9 @@ describe('buildSystemPrompt extended scenarios', () => {
       isTeamManager: true,
     });
 
-    expect(result.text).toContain('Alpha');
-    expect(result.text).toContain('Release');
-    expect(result.text).toContain('Deploy freeze');
+    expect(result.volatile).toContain('Alpha');
+    expect(result.volatile).toContain('Release');
+    expect(result.volatile).toContain('Deploy freeze');
     expect(result.text).toContain('Sprint ends tomorrow');
   });
 
@@ -533,8 +534,8 @@ describe('buildSystemPrompt knowledge and deliverables', () => {
       dynamicContext: 'Sprint 12 in progress.',
     });
 
-    expect(result.text).toContain('test coverage');
-    expect(result.text).toContain('Sprint 12');
+    expect(result.volatile).toContain('test coverage');
+    expect(result.volatile).toContain('Sprint 12');
   });
 });
 
@@ -584,7 +585,7 @@ describe('context budget overhaul', () => {
       scenario: 'chat',
       dynamicContext: `<skill name="agent-building">\n${skillBody}\n</skill>`,
     });
-    expect(after.text).toContain(skillBody);
+    expect(after.volatile).toContain(skillBody);
   });
 
   it('loads full task workflow only in task_execution scenario', async () => {

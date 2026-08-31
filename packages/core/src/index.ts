@@ -341,3 +341,4 @@ export {
   type ShareStatus,
 } from './deliverable-share.js';
 export { matchAgentsForSkillFanout, applyFanoutDailyCap } from './skill-fanout.js';
+export { extractTextFromFile, convertFilesToText, resetMarkitdownCache, type ConvertedFile } from './file-converter.js';

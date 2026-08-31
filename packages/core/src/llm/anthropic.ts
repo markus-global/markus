@@ -1,5 +1,6 @@
 import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type LLMContentPart, getTextContent, sanitizeForLLM, sanitizeLLMMessages } from '@markus/shared';
 import { DEFAULT_REQUEST_MAX_TOKENS, type LLMProviderInterface } from './provider.js';
+import { safeParseJson } from './provider-helpers.js';
 
 interface AnthropicAPIMessage {
   role: 'user' | 'assistant';
@@ -43,12 +44,19 @@ export class AnthropicProvider implements LLMProviderInterface {
   private apiKey: string;
   private baseUrl: string;
   private maxTokens: number;
+  /** Hard overall timeout for a single non-streaming chat call (protects against a hung provider). */
+  private chatTimeoutMs: number;
+  /** Idle timeout between stream chunks (reset on each chunk, also covers first-byte TTFB). */
+  private streamTimeoutMs: number;
+  private static readonly STREAM_HARD_TIMEOUT_MS = 15 * 60_000;
 
   constructor(config?: LLMProviderConfig) {
     this.model = config?.model ?? 'claude-sonnet-4-20250514';
     this.apiKey = config?.apiKey ?? process.env['ANTHROPIC_API_KEY'] ?? '';
     this.baseUrl = config?.baseUrl ?? 'https://api.anthropic.com';
     this.maxTokens = config?.maxTokens ?? DEFAULT_REQUEST_MAX_TOKENS;
+    this.chatTimeoutMs = config?.timeoutMs ?? 90_000;
+    this.streamTimeoutMs = config?.streamTimeoutMs ?? 180_000;
   }
 
   configure(config: LLMProviderConfig): void {
@@ -56,6 +64,8 @@ export class AnthropicProvider implements LLMProviderInterface {
     if (config.apiKey) this.apiKey = config.apiKey;
     if (config.baseUrl) this.baseUrl = config.baseUrl;
     if (config.maxTokens) this.maxTokens = config.maxTokens;
+    if (config.timeoutMs) this.chatTimeoutMs = config.timeoutMs;
+    if (config.streamTimeoutMs) this.streamTimeoutMs = config.streamTimeoutMs;
   }
 
   async chat(request: LLMRequest): Promise<LLMResponse> {
@@ -88,11 +98,25 @@ export class AnthropicProvider implements LLMProviderInterface {
       headers['anthropic-beta'] = 'compact-2026-01-12';
     }
 
-    const res = await fetch(`${this.baseUrl}/v1/messages`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.chatTimeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeout);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (controller.signal.aborted) {
+        throw new Error(`Anthropic chat timeout after ${this.chatTimeoutMs}ms: ${msg}`);
+      }
+      throw new Error(`Anthropic chat request failed: ${msg}`);
+    }
+    clearTimeout(timeout);
 
     if (!res.ok) {
       const errText = await res.text();
@@ -134,20 +158,50 @@ export class AnthropicProvider implements LLMProviderInterface {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
+    let idleTimedOut = false;
+    let hardTimedOut = false;
+    let idleTimeout = setTimeout(() => {
+      idleTimedOut = true;
+      controller.abort();
+    }, this.streamTimeoutMs);
+    const hardTimeout = setTimeout(() => {
+      hardTimedOut = true;
+      controller.abort();
+    }, AnthropicProvider.STREAM_HARD_TIMEOUT_MS);
+    const bumpIdleTimeout = () => {
+      clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(() => {
+        idleTimedOut = true;
+        controller.abort();
+      }, this.streamTimeoutMs);
+    };
+    const clearStreamTimeouts = () => {
+      clearTimeout(idleTimeout);
+      clearTimeout(hardTimeout);
+    };
     if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
 
-    const res = await fetch(`${this.baseUrl}/v1/messages`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearStreamTimeouts();
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Anthropic stream request failed: ${msg}`);
+    }
 
     if (!res.ok) {
+      clearStreamTimeouts();
       const errText = await res.text();
       throw new Error(`Anthropic API error ${res.status}: ${errText}`);
     }
+
+    bumpIdleTimeout();
 
     let content = '';
     const toolCalls: Array<{ id: string; name: string; args: string }> = [];
@@ -164,9 +218,11 @@ export class AnthropicProvider implements LLMProviderInterface {
     const decoder = new TextDecoder();
     let buffer = '';
 
+    try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      bumpIdleTimeout();
       buffer += decoder.decode(value, { stream: true });
 
       const lines = buffer.split('\n');
@@ -228,8 +284,27 @@ export class AnthropicProvider implements LLMProviderInterface {
         } catch { /* skip unparseable */ }
       }
     }
-
-    clearTimeout(timeout);
+    } catch (err) {
+      if (idleTimedOut || hardTimedOut) {
+        // Graceful termination on stream stall: if we already emitted partial
+        // content/tools, finalize as max_tokens instead of throwing; otherwise
+        // fail loud with a descriptive timeout error so the caller can retry.
+        if (content.length > 0 || toolCalls.length > 0) {
+          toolCalls.length = 0;
+          finishReason = 'max_tokens';
+        } else {
+          const kind = hardTimedOut ? 'hard' : 'idle';
+          const errMsg = err instanceof Error ? err.message : String(err);
+          throw new Error(`Anthropic stream ${kind} timeout after ${hardTimedOut ? AnthropicProvider.STREAM_HARD_TIMEOUT_MS : this.streamTimeoutMs}ms: ${errMsg}`);
+        }
+      } else {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        clearStreamTimeouts();
+        throw new Error(`Anthropic stream interrupted: ${errMsg}`);
+      }
+    } finally {
+      clearStreamTimeouts();
+    }
 
     const usage = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
     onEvent({ type: 'message_end', usage, finishReason });
@@ -239,7 +314,7 @@ export class AnthropicProvider implements LLMProviderInterface {
       .map((tc) => ({
         id: tc.id,
         name: tc.name,
-        arguments: tc.args ? (JSON.parse(tc.args) as Record<string, unknown>) : {},
+        arguments: tc.args ? safeParseJson(tc.args) : {},
       }));
 
     return {

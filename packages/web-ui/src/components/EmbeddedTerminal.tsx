@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { resolvePathAgainstBase } from './markdown-links.ts';
 import { rememberTerminalId } from '../lib/known-terminals.ts';
+import { api } from '../api.ts';
 
 export type TerminalSelectionPayload = {
   text: string;
@@ -81,6 +82,27 @@ function resolveTerminalPath(raw: string, cwd?: string): string | null {
 
 function hasUsableSize(el: HTMLElement): boolean {
   return el.clientWidth >= 16 && el.clientHeight >= 16;
+}
+
+/**
+ * Open a Cmd/Ctrl+clicked terminal path only when it really exists.
+ * Prevents landing on a "cannot preview" empty page for typo'd paths or
+ * wrongly joined ones (stale cwd, `/packages/…` re-resolve misses). If the
+ * existence check itself fails (backend temporarily unreachable) we keep the
+ * old behavior and still attempt the open.
+ */
+async function openTerminalPathIfExists(
+  resolved: string,
+  onOpen: ((path: string) => void) | undefined,
+): Promise<void> {
+  try {
+    const check = await api.files.check([resolved]);
+    const info = check?.results?.[resolved];
+    if (!info?.exists || !info?.isFile) return; // 不存在 → 不打开
+    onOpen?.(resolved);
+  } catch {
+    onOpen?.(resolved);
+  }
 }
 
 /**
@@ -235,7 +257,8 @@ export function EmbeddedTerminal({
                 if (!isOpenModifier(event)) return;
                 const resolved = resolveTerminalPath(path, cwdRef.current);
                 if (!resolved) return;
-                onOpenPathRef.current?.(resolved);
+                // 先校验文件真实存在（路径拼接错误 / 已删除的文件不再打开）
+                void openTerminalPathIfExists(resolved, onOpenPathRef.current);
               },
             });
           }

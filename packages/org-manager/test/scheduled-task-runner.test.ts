@@ -8,6 +8,8 @@ describe('ScheduledTaskRunner', () => {
     resetTaskForRerun: ReturnType<typeof vi.fn>;
     getTask: ReturnType<typeof vi.fn>;
     runTask: ReturnType<typeof vi.fn>;
+    isAssignedAgentOnline: ReturnType<typeof vi.fn>;
+    reclaimStuckScheduledTask: ReturnType<typeof vi.fn>;
   };
   let runner: ScheduledTaskRunner;
 
@@ -21,6 +23,8 @@ describe('ScheduledTaskRunner', () => {
       resetTaskForRerun: vi.fn(async () => {}),
       getTask: vi.fn(() => null),
       runTask: vi.fn(async () => {}),
+      isAssignedAgentOnline: vi.fn(() => true),
+      reclaimStuckScheduledTask: vi.fn(() => false),
     };
     runner = new ScheduledTaskRunner(taskService as never, 60_000);
   });
@@ -85,6 +89,43 @@ describe('ScheduledTaskRunner', () => {
     runner.start();
     await vi.advanceTimersByTimeAsync(61_000);
     expect(taskService.resetTaskForRerun).toHaveBeenCalled();
+  });
+
+  it('does not fire a due task when its assigned agent is offline (skips round, no schedule advance)', async () => {
+    taskService.listScheduledTasks.mockReturnValue([
+      {
+        id: 'sched-offline', title: 'Daily', status: 'completed',
+        assignedAgentId: 'agt-down',
+        scheduleConfig: { nextRunAt: '2026-06-15T11:00:00.000Z', currentRuns: 0 },
+      },
+    ]);
+    taskService.isAssignedAgentOnline.mockReturnValue(false);
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(taskService.isAssignedAgentOnline).toHaveBeenCalledWith('sched-offline');
+    // Must NOT dispatch or advance the schedule while the agent is offline —
+    // otherwise the round would strand in in_progress with an unconsumed mailbox.
+    expect(taskService.advanceScheduleConfig).not.toHaveBeenCalled();
+    expect(taskService.resetTaskForRerun).not.toHaveBeenCalled();
+    expect(taskService.runTask).not.toHaveBeenCalled();
+  });
+
+  it('reclaims a scheduled task stuck in in_progress with an offline agent', async () => {
+    taskService.listScheduledTasks.mockReturnValue([
+      {
+        id: 'sched-stuck', title: 'Stuck', status: 'in_progress',
+        assignedAgentId: 'agt-down',
+        scheduleConfig: { nextRunAt: '2026-06-15T11:00:00.000Z' },
+      },
+    ]);
+    taskService.isAssignedAgentOnline.mockReturnValue(false);
+    taskService.reclaimStuckScheduledTask.mockReturnValue(true);
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(taskService.reclaimStuckScheduledTask).toHaveBeenCalledWith('sched-stuck');
+    expect(taskService.runTask).not.toHaveBeenCalled();
   });
 
   it('start/stop lifecycle', () => {

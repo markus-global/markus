@@ -18,6 +18,8 @@ interface MarkusDesktopAPI {
   getDefaultCwd?(): Promise<string>;
   openExternal(url: string): Promise<void>;
   openInBrowser(): Promise<void>;
+  /** Native directory picker — selected absolute path, or null when cancelled. */
+  selectDirectory?(title?: string): Promise<string | null>;
   showNotification(title: string, body: string): Promise<void>;
   checkForUpdates(): Promise<{ available: boolean; version?: string; error?: string }>;
   getLoginItemSettings(): Promise<{ openAtLogin: boolean }>;

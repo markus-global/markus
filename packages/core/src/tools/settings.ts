@@ -1,13 +1,28 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { LLMRouter } from '../llm/router.js';
-import { createLogger, type MarkusConfig, type ModelCapabilityType, type CapabilityModelAssignment } from '@markus/shared';
+import { createLogger, type MarkusConfig, type ModelCapabilityType, type CapabilityModelAssignment, type LLMAssignment } from '@markus/shared';
 
 const log = createLogger('settings-tools');
+
+/** Per-agent context injected when the settings tools are wired into an agent. */
+export interface SettingsAgentContext {
+  /** The id of the agent that is running this tool. */
+  agentId: string;
+  /** Live LLM assignment of the running agent (modelMode/primary/defaultModel...). */
+  getLlmConfig: () => LLMAssignment | undefined;
+  /**
+   * Apply a partial update to the running agent's llmConfig and persist it.
+   * Mutates the live object so the new model takes effect on the next turn.
+   */
+  persistLlmConfig: (patch: Partial<LLMAssignment>) => Promise<boolean> | boolean;
+}
 
 export interface SettingsToolsContext {
   llmRouter: LLMRouter;
   /** Persist config changes to markus.json */
   persistConfig?: (updates: Partial<MarkusConfig>) => void;
+  /** When present, enables per-agent default model read/set/reset tools. */
+  agent?: SettingsAgentContext;
 }
 
 export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler[] {
@@ -575,6 +590,193 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           });
         } catch (err) {
           return JSON.stringify({ status: 'error', error: String(err) });
+        }
+      },
+    },
+    // ─── Per-agent default model management (agent self-inspection) ───────────
+    // These tools only exist when a SettingsAgentContext (agentId + live config
+    // + persist callback) was injected at registration.
+    {
+      name: 'agent_model_get',
+      description:
+        'Inspect LLM configuration: what THIS agent is configured to use (its per-agent default model, if any) ' +
+        'and the GLOBAL model routing defaults that apply when the agent has no per-agent override. ' +
+        'Use BEFORE deciding whether to set/reset a per-agent model. ' +
+        'Priority when an agent makes a call: session/turn override > per-agent defaultModel > global routing. ' +
+        'For available provider+model ids, call llm_list_providers.',
+      inputSchema: { type: 'object', properties: {} },
+      async execute(): Promise<string> {
+        const me = ctx.agent;
+        const settings = ctx.llmRouter.getEnhancedSettings();
+        const globalDefault = ctx.llmRouter.routingDefaultModel ?? null;
+        const defaultProvider = settings?.defaultProvider ?? ctx.llmRouter.getDefaultProvider();
+
+        const lc = me?.getLlmConfig();
+        const hasPerAgent = !!me && lc?.modelMode === 'custom' && !!lc.defaultModel;
+        return JSON.stringify({
+          agent_id: me?.agentId ?? null,
+          // The agent's own LLM assignment from its persisted config.
+          agent_llm_config: lc ? {
+            model_mode: lc.modelMode,
+            provider: lc.modelMode === 'custom' ? lc.primary : undefined,
+            default_model: lc.modelMode === 'custom' ? lc.defaultModel ?? null : null,
+            fallback: lc.fallback ?? null,
+          } : null,
+          agent_has_per_agent_default: hasPerAgent,
+          agent_follows_global: !hasPerAgent,
+          // What this agent would actually use (provider + model) for a normal
+          // text call given its current config and the global default.
+          effective: hasPerAgent
+            ? { provider: lc!.primary, model: lc!.defaultModel, source: 'per_agent_default' }
+            : globalDefault
+              ? { provider: globalDefault.provider, model: globalDefault.model, source: 'global_default' }
+              : { provider: defaultProvider ?? undefined, model: undefined, source: 'provider_default' },
+          // Global picture (shared by all agents without their own default).
+          global: {
+            default_provider: defaultProvider,
+            routing_default_model: globalDefault,
+            capability_text_assignment: ctx.llmRouter.capabilityRouting.assignments?.text ?? null,
+          },
+          note: 'The agent effective model is the highest-priority of: session/turn override > per-agent default > global. To change per-agent model: agent_model_set_default {provider, model}. To reset to follow global: agent_model_reset_default.',
+        });
+      },
+    },
+    {
+      name: 'agent_model_set_default',
+      description:
+        'Set THIS agent\'s per-agent default model to a specific provider+model. ' +
+        'The change IMMEDIATELY updates this agent\'s config (applies on the next call) and is persisted. ' +
+        'Only affects this agent — the global default for other agents is untouched. ' +
+        'Call agent_model_get / llm_list_providers first to pick a valid model on a usable (configured+enabled) provider. ' +
+        'To revert to following the global default instead, call agent_model_reset_default.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          provider: {
+            type: 'string',
+            description: 'Provider name (e.g. "markus", "openrouter", "anthropic"). Use llm_list_providers to see usable providers.',
+          },
+          model: {
+            type: 'string',
+            description: 'Model ID on that provider (e.g. "anthropic/claude-opus-4-6"). Must belong to the provider.',
+          },
+        },
+        required: ['provider', 'model'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const me = ctx.agent;
+        if (!me) {
+          return JSON.stringify({ status: 'error', error: 'Per-agent model tools are not wired for this agent.' });
+        }
+        const provider = String(args['provider'] ?? '').trim();
+        const model = String(args['model'] ?? '').trim();
+        if (!provider || !model) {
+          return JSON.stringify({ status: 'error', error: 'Both provider and model are required.' });
+        }
+        if (ctx.llmRouter.isProviderDisabled(provider)) {
+          return JSON.stringify({
+            status: 'error',
+            error: `Provider "${provider}" is disabled. Enable it (or pick a usable provider) first.`,
+            hint: 'Call llm_list_providers to see usable providers.',
+          });
+        }
+        try {
+          const prev = me.getLlmConfig();
+          const persisted = await me.persistLlmConfig({
+            modelMode: 'custom',
+            primary: provider,
+            defaultModel: model,
+          });
+          return JSON.stringify({
+            status: 'success',
+            agent_id: me.agentId,
+            previous_provider: prev?.modelMode === 'custom' ? prev.primary : undefined,
+            previous_model: prev?.modelMode === 'custom' ? prev.defaultModel : undefined,
+            provider,
+            model,
+            persisted: !!persisted,
+            message: `This agent (${me.agentId}) will now use ${provider}/${model}.`,
+          });
+        } catch (err) {
+          return JSON.stringify({ status: 'error', error: String(err) });
+        }
+      },
+    },
+    {
+      name: 'agent_model_reset_default',
+      description:
+        'Clear THIS agent\'s per-agent default model so it follows the global default routing again. ' +
+        'The agent will use the global routing_default_model / provider default for its calls. Persists immediately.',
+      inputSchema: { type: 'object', properties: {} },
+      async execute(): Promise<string> {
+        const me = ctx.agent;
+        if (!me) {
+          return JSON.stringify({ status: 'error', error: 'agent model tools are not wired for this agent.' });
+        }
+        try {
+          const was = me.getLlmConfig();
+          const hadOverride = was?.modelMode === 'custom';
+          await me.persistLlmConfig({ modelMode: 'default', defaultModel: undefined, primary: '' });
+          const globalDefault = ctx.llmRouter.routingDefaultModel ?? null;
+          return JSON.stringify({
+            status: 'success',
+            agent_id: me.agentId,
+            cleared: hadOverride,
+            message: hadOverride
+              ? `Cleared ${was!.primary}/${was!.defaultModel}; this agent now follows the global default.`
+              : 'This agent had no per-agent override; it already follows the global default.',
+            global_default: globalDefault
+              ? { provider: globalDefault.provider, model: globalDefault.model }
+              : null,
+          });
+        } catch (err) {
+          return JSON.stringify({ status: 'error', error: String(err) });
+        }
+      },
+    },
+    {
+      name: 'agent_model_test',
+      description:
+        'Test connectivity for a given provider+model by sending a minimal request. ' +
+        'Returns success/failure. Use to verify a provider/model works before setting it as this agent\'s default.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          provider: {
+            type: 'string',
+            description: 'Provider name to test.',
+          },
+          model: {
+            type: 'string',
+            description: 'Model ID on that provider to test.',
+          },
+        },
+        required: ['provider', 'model'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const provider = String(args['provider'] ?? '').trim();
+        const model = String(args['model'] ?? '').trim();
+        if (!provider || !model) {
+          return JSON.stringify({ status: 'error', error: 'Both provider and model are required.' });
+        }
+        if (ctx.llmRouter.isProviderDisabled(provider)) {
+          return JSON.stringify({ status: 'error', error: `Provider "${provider}" is disabled.` });
+        }
+        try {
+          const res = await ctx.llmRouter.chatDirect(
+            { messages: [{ role: 'user', content: 'ping' }], model, maxTokens: 8 },
+            provider,
+            model,
+          );
+          const text = (res?.content ?? '').slice(0, 120) || 'ok';
+          return JSON.stringify({
+            status: 'success',
+            provider,
+            model,
+            response: text,
+          });
+        } catch (err) {
+          return JSON.stringify({ status: 'error', provider, model, error: String(err) });
         }
       },
     },

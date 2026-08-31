@@ -33,12 +33,13 @@ describe('ToolSelector', () => {
     expect(names).toContain('memory_search');
     expect(names).toContain('discover_tools');
     expect(names).toContain('notify_user');
-    // spawn_subagent is in base tools for converse; spawn_subagents is keyword-activated
+    // Both subagent tools are core-keep: `spawn_subagent` for serial delegation,
+    // `spawn_subagents` for parallel fan-out (see spawn_subagents in CORE_KEEP).
     expect(names).toContain('spawn_subagent');
+    expect(names).toContain('spawn_subagents');
     expect(names).toContain('shell_execute');
     expect(names).toContain('file_read');
     expect(names).toContain('session');
-    expect(names).not.toContain('spawn_subagents');
     expect(names).not.toContain('deliverable_create');
   });
 
@@ -407,5 +408,76 @@ describe('ToolSelector', () => {
     const deferred = selector.consumeDeferredCatalog();
     const evictedActivated = selector.consumeEvictedActivated();
     expect(deferred.some((d) => d.name.startsWith('feishu_')) || evictedActivated.some((n) => n.startsWith('feishu_'))).toBe(true);
+  });
+
+  it('CACHE: identical tool set emits byte-identical schema regardless of activation order (stable registry order)', () => {
+    // Regression for slack cache hit rates: selectTools used to emit tools in the
+    // per-turn insertion order of the `selected` Set (keyword hits / session
+    // recentToolNames / discover activations all vary turn-to-turn), so the tool
+    // JSON prefix drifted across turns and broke implicit prefix-cache.
+    // Now the result is ordered by the allTools registry (Map) order, so the same
+    // selected set always serializes identically.
+    const selector = new ToolSelector();
+    // Registry order is fixed at construction (insertion order of the Map).
+    const allTools = makeToolMap([
+      'agent_send_message', 'task_create', 'task_list', 'memory_save', 'shell_execute',
+      'file_read', 'file_write', 'web_search', 'web_fetch', 'grep_search', 'glob_find',
+    ]);
+    const selFor = (msg: string, recent?: string[]) =>
+      selector.selectTools({ allTools, userMessage: msg, recentToolNames: recent, isManager: false })
+        .map(t => JSON.stringify({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+
+    // Turn A: keyword hits shell/code (so recent order is whatever) but ends up
+    // selecting the same set as turn B which hits browser keywords. To ALSO make
+    // the *set* identical we pass identical recent tools that drive the set.
+    const a = selFor('运行测试并读取文件', ['shell_execute', 'file_read', 'grep_search']);
+    const b = selFor('用浏览器查资料', ['shell_execute', 'file_read', 'grep_search']);
+    // Same selected set (core + same recents + keyword groups for each) may differ
+    // in SET if keywords add different groups — so compare the ORDER of the shared
+    // tools: every tool present in both must appear in the same relative order.
+    const namesA = a.map(x => JSON.parse(x).name);
+    const namesB = b.map(x => JSON.parse(x).name);
+    const common = namesA.filter(n => namesB.includes(n));
+    const orderA = namesA.filter(n => common.includes(n));
+    const orderB = namesB.filter(n => common.includes(n));
+    expect(orderA).toEqual(orderB);
+
+    // discover_tools description must NOT contain a live per-turn count.
+    const discover = selector.selectTools({ allTools, userMessage: 'x', isManager: true })
+      .find(t => t.name === 'discover_tools');
+    expect(discover!.description).not.toMatch(/You have \d+ tools active/);
+  });
+
+  it('T4: knowledge_* tools surface when the user asks about the knowledge base', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap([
+      ...ALL_BUILTIN,
+      'deliverable_list', 'deliverable_update',
+      'knowledge_search', 'knowledge_list', 'knowledge_read',
+    ]);
+    const selected = selector.selectTools({
+      allTools,
+      userMessage: '查一下项目知识库里关于 API 的文档',
+      pack: 'converse',
+    }).map((t) => t.name);
+
+    // 中文关键词「知识库」命中 deliverables 组 → 知识工具对 Agent 可见可调
+    expect(selected).toContain('knowledge_search');
+    expect(selected).toContain('knowledge_list');
+    expect(selected).toContain('knowledge_read');
+  });
+
+  it('T4: English "knowledge base" keyword also surfaces knowledge tools', () => {
+    const selector = new ToolSelector();
+    const allTools = makeToolMap([
+      ...ALL_BUILTIN,
+      'knowledge_search', 'knowledge_list', 'knowledge_read',
+    ]);
+    const selected = selector.selectTools({
+      allTools,
+      userMessage: 'Search the knowledge base for onboarding docs',
+      pack: 'converse',
+    }).map((t) => t.name);
+    expect(selected).toContain('knowledge_search');
   });
 });

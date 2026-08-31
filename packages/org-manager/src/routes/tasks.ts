@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { APIServer } from '../api-server.js';
+import { TaskServiceError } from '../task-service.js';
 
 export async function handleTasksRoutes(
   server: APIServer,
@@ -631,7 +632,11 @@ export async function handleTasksRoutes(
         server.taskService.resumeTask(taskId, authUser.userId, 'human');
         server.json(res, 202, { status: 'running', taskId });
       } catch (err) {
-        server.json(res, 400, { error: String(err) });
+        if (err instanceof TaskServiceError) {
+          server.json(res, 400, { error: err.message, code: err.code, data: err.data });
+        } else {
+          server.json(res, 400, { error: String(err) });
+        }
       }
       return true;
     }
@@ -645,7 +650,11 @@ export async function handleTasksRoutes(
         const task = await server.taskService.retryTaskFresh(taskId);
         server.json(res, 202, { task });
       } catch (err) {
-        server.json(res, 400, { error: String(err) });
+        if (err instanceof TaskServiceError) {
+          server.json(res, 400, { error: err.message, code: err.code, data: err.data });
+        } else {
+          server.json(res, 400, { error: String(err) });
+        }
       }
       return true;
     }

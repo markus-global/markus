@@ -209,6 +209,39 @@ describe('handleMessage flow', () => {
     expect(agent.getState().status).toBe('idle');
   });
 
+  it('passes the per-agent defaultModel to the LLM router', async () => {
+    const mockRouter = makeMockRouter(async () =>
+      makeResponse('Task complete.', 'end_turn'),
+    );
+    const agent = createTestAgent(mockRouter, {
+      config: { llmConfig: { modelMode: 'custom', primary: 'openai', defaultModel: 'gpt-4o' } },
+    });
+
+    await agent.handleMessage('Hello there');
+
+    const callArgs = (mockRouter.chat as ReturnType<typeof vi.fn>).mock.calls[0];
+    const options = callArgs[0] as { model?: string };
+    expect(options.model).toBe('gpt-4o');
+    // provider should also resolve to the per-agent primary
+    const provider = callArgs[1] as string | undefined;
+    expect(provider).toBe('openai');
+  });
+
+  it('omits a model override when the agent follows the global default', async () => {
+    const mockRouter = makeMockRouter(async () =>
+      makeResponse('Task complete.', 'end_turn'),
+    );
+    const agent = createTestAgent(mockRouter, {
+      config: { llmConfig: { modelMode: 'default' } },
+    });
+
+    await agent.handleMessage('Hello there');
+
+    const callArgs = (mockRouter.chat as ReturnType<typeof vi.fn>).mock.calls[0];
+    const options = callArgs[0] as Record<string, unknown>;
+    expect(options.model).toBeUndefined();
+  });
+
   it('executes a tool call and continues the loop', async () => {
     let callIndex = 0;
     const mockRouter = makeMockRouter(async () => {
@@ -701,5 +734,58 @@ describe('org context and callbacks', () => {
   it('getContextEngine returns shared context engine instance', () => {
     const agent = createTestAgent(makeMockRouter());
     expect(agent.getContextEngine()).toBeDefined();
+  });
+});
+
+describe('Agent.reconcileToIdle — OB-3 残留脏态兜底清理', () => {
+  it('无残留且已 idle → 返回 false 无副作用（幂等）', async () => {
+    const agent = createTestAgent(makeMockRouter());
+    await agent.start();
+    expect(agent.reconcileToIdle()).toBe(false);
+    expect(agent.getState().status).toBe('idle');
+  });
+
+  it('idle + 残留 currentActivity → 清除活动并保持 idle，返回 true', async () => {
+    const agent = createTestAgent(makeMockRouter());
+    await agent.start();
+    // 注入遗留活动痕迹（模拟执行路径未清理的残留）
+    (agent as any).state.currentActivity = {
+      id: 'act-leftover',
+      type: 'task',
+      label: '残留任务',
+      startedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    };
+    const ok = agent.reconcileToIdle();
+    expect(ok).toBe(true);
+    const st = agent.getState();
+    expect(st.currentActivity).toBeUndefined();
+    expect(st.status).toBe('idle');
+  });
+
+  it('有活跃任务 → 拒绝清理（防误杀真实工作）', async () => {
+    const agent = createTestAgent(makeMockRouter());
+    await agent.start();
+    (agent as any).activeTasks.add('t-live');
+    (agent as any).state.currentActivity = {
+      id: 'act-live',
+      type: 'task',
+      label: '正在干的任务',
+      startedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    };
+    expect(agent.reconcileToIdle()).toBe(false);
+    expect(agent.getState().currentActivity).toBeDefined();
+  });
+
+  it('活动刚启动（<60s）→ 拒绝清理（竞态保护）', async () => {
+    const agent = createTestAgent(makeMockRouter());
+    await agent.start();
+    (agent as any).state.currentActivity = {
+      id: 'act-fresh',
+      type: 'task',
+      label: '刚启动',
+      startedAt: new Date(Date.now() - 5_000).toISOString(),
+    };
+    expect(agent.reconcileToIdle()).toBe(false);
+    expect(agent.getState().currentActivity).toBeDefined();
   });
 });

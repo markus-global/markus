@@ -33,6 +33,7 @@ vi.mock('node:fs', async (importOriginal) => {
       if (s.includes('workspace') || s.includes('agents/') || s.includes('/role')) return true;
       if (s.includes('templates/roles') || s.includes('templates/teams') || s.includes('templates/skills')) return true;
       if (s.includes('/preview-test.md') || s.includes('/preview-dir') || s.includes('user_anonymous.png')) return true;
+      if (s.includes('office-file')) return true;
       if (s.includes('/uploads/')) return true;
       if (s.includes('builder-artifacts')) return true;
       return false;
@@ -72,9 +73,17 @@ vi.mock('node:fs', async (importOriginal) => {
       if (s.includes('preview-dir') && !s.includes('nested')) {
         return { isFile: () => false, isDirectory: () => true, size: 0 } as ReturnType<typeof actual.statSync>;
       }
+      if (s.includes('office-file')) {
+        return {
+          isFile: () => true,
+          isDirectory: () => false,
+          size: 512,
+        } as ReturnType<typeof actual.statSync>;
+      }
       if (s.includes('.markus') || s.includes('agents/') || s.includes('/role') || s.includes('preview')) {
         return {
-          isFile: () => !s.includes('preview-dir') || s.includes('nested') || s.endsWith('.md') || s.endsWith('.png'),
+          isFile: () => !s.includes('preview-dir') || s.includes('nested') || s.endsWith('.md') || s.endsWith('.png')
+            || s.includes('office-file'),
           isDirectory: () => s.includes('preview-dir') && !s.includes('nested') && !s.endsWith('.md'),
           size: s.endsWith('.png') ? 100 : 512,
         } as ReturnType<typeof actual.statSync>;
@@ -403,10 +412,44 @@ describe('APIServer extended route coverage', () => {
       expect(res.status).toBe(404);
     });
 
+    it('GET /api/files/preview returns office type for docx/pdf/xlsx', async () => {
+      for (const ext of ['.docx', '.pdf', '.xlsx', '.pptx', '.doc']) {
+        const path = join(tmpdir(), `office-file${ext}`);
+        const res = await request(ctx.server, 'GET', `/api/files/preview?path=${encodeURIComponent(path)}`);
+        expect(res.status, `status for ${ext}`).toBe(200);
+        expect(res.json.type, `type for ${ext}`).toBe('office');
+        expect(res.json.format, `format for ${ext}`).toBe(ext.slice(1));
+        expect(res.json.streamUrl, `streamUrl for ${ext}`).toContain('/api/files/stream?path=');
+      }
+    });
+
     it('GET /api/files/image', async () => {
       const pngPath = join(tmpdir(), 'preview-test.png');
       const res = await request(ctx.server, 'GET', `/api/files/image?path=${encodeURIComponent(pngPath)}`);
       expect([200, 404, 400]).toContain(res.status);
+    });
+  });
+
+  describe('Knowledge base sync endpoint', () => {
+    it('POST /api/projects/:id/knowledge/sync returns scan result', async () => {
+      const res = await request(ctx.server, 'POST', '/api/projects/proj-1/knowledge/sync', {});
+      expect(res.status).toBe(200);
+      expect(res.json.scanned).toBe(2);
+      expect(res.json.registered).toBe(2);
+      expect(res.json.projectId).toBe('proj-1');
+    });
+
+    it('POST knowledge/sync accepts explicit knowledgeRoots override', async () => {
+      const res = await request(ctx.server, 'POST', '/api/projects/proj-1/knowledge/sync', {
+        knowledgeRoots: ['/tmp/custom-root'],
+      });
+      expect(res.status).toBe(200);
+      expect(res.json.scanned).toBe(2);
+    });
+
+    it('POST knowledge/sync 404 for missing project', async () => {
+      const res = await request(ctx.server, 'POST', '/api/projects/nope/knowledge/sync', {});
+      expect(res.status).toBe(404);
     });
   });
 

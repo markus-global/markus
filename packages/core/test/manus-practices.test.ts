@@ -36,15 +36,17 @@ describe('Manus Best Practices Integration', () => {
       const engine = new ContextEngine();
       const memory = new MemoryStore(tempDir);
 
-      const { text: prompt } = await engine.buildSystemPrompt({
+      const { text: prompt, volatile } = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'Test Agent',
         role: MOCK_ROLE,
         memory,
       });
 
-      // The timestamp should be at the very end, not in identity section
-      const lines = prompt.split('\n');
+      // Scheme A: the per-turn timestamp is NOT inside the system text — it rides
+      // the volatile tail (pinned at the end of history). The byte-stable system
+      // keeps hitting the implicit prefix-cache.
+      const lines = (volatile ?? '').split('\n');
       const lastLines = lines.slice(-3).join('\n');
       expect(lastLines).toContain('Current date and time:');
 
@@ -57,7 +59,7 @@ describe('Manus Best Practices Integration', () => {
       const engine = new ContextEngine();
       const memory = new MemoryStore(tempDir);
 
-      const { text: prompt } = await engine.buildSystemPrompt({
+      const { volatile: prompt } = await engine.buildSystemPrompt({
         agentId: 'agent-1',
         agentName: 'Test Agent',
         role: MOCK_ROLE,
@@ -65,7 +67,7 @@ describe('Manus Best Practices Integration', () => {
       });
 
       // Should use YYYY-MM-DD format, not full ISO timestamp
-      const dateMatch = prompt.match(/Current date and time: (.+)/);
+      const dateMatch = (prompt ?? '').match(/Current date and time: (.+)/);
       expect(dateMatch).toBeTruthy();
       expect(dateMatch![1]).toMatch(/^\d{4}-\d{2}-\d{2}/);
     });

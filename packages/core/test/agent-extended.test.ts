@@ -481,6 +481,36 @@ describe('agent_send_message await_in_session', () => {
     expect(cb?.deliveryMode).toBe('in_session');
     if (cb) pendingCallbackRegistry.resolve(cb.id);
   });
+
+  it('registers the same callback for the reply_in_session alias', async () => {
+    let turn = 0;
+    const router = makeMockRouter({
+      chatFn: async () => {
+        turn++;
+        if (turn === 1) {
+          return {
+            content: '', finishReason: 'tool_use',
+            toolCalls: [{ id: 'tc_b', name: 'agent_send_message', arguments: { agent_id: 'agt_peer', message: 'help?', reply_in_session: true } }],
+            usage: { inputTokens: 10, outputTokens: 5 },
+          };
+        }
+        return { content: 'Sent.', finishReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
+      },
+    });
+    const agent = createAgent(router);
+    agent.registerTool({
+      name: 'agent_send_message',
+      description: 'fake a2a send',
+      inputSchema: { type: 'object', properties: { agent_id: { type: 'string' }, message: { type: 'string' } }, required: ['agent_id', 'message'] },
+      execute: async () => JSON.stringify({ status: 'dispatched', conversation_id: 'conv_test_alias', channel_key: 'dm:a2a:x:y' }),
+    });
+    await agent.handleMessage('ask peer', undefined, undefined, { sessionId: 'chat_a2a_alias' });
+    const cb = pendingCallbackRegistry.getByAgentId(agent.id).find(c => c.type === 'a2a_reply');
+    expect(cb).toBeDefined();
+    expect(cb?.correlationId).toBe('conv_test_alias');
+    expect(cb?.originSessionId).toBe('chat_a2a_alias');
+    if (cb) pendingCallbackRegistry.resolve(cb.id);
+  });
 });
 
 describe('additional handleMessage scenarios', () => {
