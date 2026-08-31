@@ -12008,10 +12008,20 @@ EXPLANATION_END`;
       }
       const body = await this.readBody(req);
       const roots = (body['knowledgeRoots'] as string[] | undefined) ?? project.knowledgeBasePaths;
-      if (!roots || roots.length === 0) {
-        this.json(res, 400, { error: 'No knowledge base paths bound to this project' });
+      // 显式传 [] 表示清空该项目的所有知识库文件
+      if (roots === undefined || roots === null) {
+        if (!project.knowledgeBasePaths || project.knowledgeBasePaths.length === 0) {
+          this.json(res, 400, { error: 'No knowledge base paths bound to this project' });
+          return;
+        }
+        // 未传 knowledgeRoots → 使用项目已绑定路径
+        const result = await this.knowledgeSyncService.sync(projectId, project.knowledgeBasePaths, {
+          ownerId: body['ownerId'] as string | undefined,
+        });
+        this.json(res, 200, result);
         return;
       }
+      // roots === [] 也视为合法——清空文件
       try {
         const result = await this.knowledgeSyncService.sync(projectId, roots, {
           ownerId: body['ownerId'] as string | undefined,
