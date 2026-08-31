@@ -3636,7 +3636,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
 
-    const { text: systemPrompt, segments: systemCacheSegments, volatile } = await this.contextEngine.buildSystemPrompt({
+    const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -3671,6 +3671,8 @@ export class Agent {
       notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
+    const { volatile } = systemPromptBuild;
+    let { text: systemPrompt, segments: systemCacheSegments } = systemPromptBuild;
 
     const toolSelectCtx = this.buildSessionAwareToolSelectContext(sessionId, effectiveMessage);
     const toolSelectOpts = {
@@ -4345,7 +4347,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
 
-    const { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
+    const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -4377,6 +4379,8 @@ export class Agent {
       notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
+    const { volatile: volatileState } = systemPromptBuild;
+    let { text: systemPrompt, segments: systemCacheSegments } = systemPromptBuild;
 
     this.activeScenario = 'chat';
     const streamToolSelectOpts = { userMessage: effectiveMessage, isChat: true as const, scenario: 'chat' as const };
@@ -5114,7 +5118,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
 
-    const { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
+    const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -5146,6 +5150,8 @@ export class Agent {
       notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
+    const { volatile: volatileState } = systemPromptBuild;
+    let { text: systemPrompt, segments: systemCacheSegments } = systemPromptBuild;
     this.volatileState = volatileState;
 
     const taskToolSelectOpts = { userMessage: taskPrompt, isTaskExecution: true as const, scenario: 'task_execution' as const };
@@ -5675,7 +5681,7 @@ export class Agent {
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', userMessage);
 
-    const { text: systemPrompt, segments: systemCacheSegments, volatile: volatileState } = await this.contextEngine.buildSystemPrompt({
+    const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
       agentName: this.config.name,
       role: this.role,
@@ -5706,6 +5712,8 @@ export class Agent {
       notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
+    const { volatile: volatileState } = systemPromptBuild;
+    let { text: systemPrompt, segments: systemCacheSegments } = systemPromptBuild;
     this.volatileState = volatileState;
 
     const risToolSelectOpts = { userMessage };
