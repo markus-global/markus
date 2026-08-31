@@ -154,6 +154,7 @@ describe('pdf 生成（pdf-lib, MIT）', () => {
   });
 
   it('正常路径：中文内容自动嵌入系统 CJK 字体', async () => {
+    if (!findCjkFontPath()) return; // 系统无 CJK 字体（如 CI Linux runner）则跳过
     const path = out('中文报告.pdf');
     const { generateOfficeFile: gen } = await import('../src/tools/office-generate.js');
     const result = await gen('pdf', path, {

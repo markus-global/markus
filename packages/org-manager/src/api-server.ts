@@ -9443,7 +9443,7 @@ EXPLANATION_END`;
         this.json(res, 404, { ok: false, error: `Provider "${providerName}" not found or not configured`, code: 'PROVIDER_NOT_FOUND' });
         return;
       }
-      if (this.llmRouter.isProviderDisabled(providerName)) {
+      if (this.llmRouter.isProviderDisabled?.(providerName)) {
         this.json(res, 200, {
           ok: false,
           error: `Provider "${providerName}" is disabled`,
