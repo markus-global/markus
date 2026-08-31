@@ -17,6 +17,7 @@ import {
   isUserOnboarded,
   isChecklistDismissed,
   markChecklistDismissed,
+  markUserOnboarded,
 } from '../lib/onboarding.ts';
 
 const DONUT_COLORS: Record<string, string> = {
@@ -82,7 +83,7 @@ export interface HomePreviewData {
   usageInfo?: { llmTokens: number; storageBytes: number } | null;
 }
 
-export function HomePage({ authUser, previewMode, previewData }: { authUser?: { id: string; name: string; role: string; orgId: string }; previewMode?: boolean; previewData?: HomePreviewData } = {}) {
+export function HomePage({ authUser, previewMode, previewData }: { authUser?: { id: string; name: string; role: string; orgId: string; preferences?: { guideHidden?: boolean; [key: string]: unknown } }; previewMode?: boolean; previewData?: HomePreviewData } = {}) {
   const { t } = useTranslation(['home', 'common', 'team']);
   const isMobile = useIsMobile();
   const isActive = usePageActive(PAGE.HOME);
@@ -108,12 +109,16 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [showClaimModal, setShowClaimModal] = useState(false);
   const showClaimModalRef = useRef(false);
   showClaimModalRef.current = showClaimModal;
-  // Per-user onboarding state（lib/onboarding.ts）：
-  //  - userOnboarded：该用户是否已完成引导（决定整卡是否渲染）
+  // Per-user onboarding state（lib/onboarding.ts + 服务端 preferences.guideHidden）：
+  //  - guideHidden：该用户是否已「不需要引导」（本地缓存 或 服务端标记，任一为 true 即隐藏）
   //  - checklistDismissed：该用户是否主动关闭过清单（仅当必做 setup 完成后才生效）
   const uid = authUser?.id;
-  const userOnboarded = uid ? isUserOnboarded(uid) : true; // preview / 无登录态不显示引导
-  const [checklistDismissBump, setChecklistDismissBump] = useState(0);
+  const [guideHidden, setGuideHidden] = useState<boolean>(() => {
+    // preview / 无登录态不显示引导
+    if (!authUser?.id) return true;
+    return isUserOnboarded(authUser.id) || authUser.preferences?.guideHidden === true;
+  });
+  const [, setChecklistDismissBump] = useState(0);
   const checklistDismissed = uid ? isChecklistDismissed(uid) : false;
   const [secretaryHasChat, setSecretaryHasChat] = useState(false);
   const [checklistReady, setChecklistReady] = useState(false);
@@ -220,6 +225,97 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
       setChecklistReady(true);
     });
   }, [opsPeriod, uid]);
+
+  // 引导清单全部完成（或用户明确 dismiss 且必做 setup 已完成）→ 持久化「不再显示」。
+  // 写服务端 preferences.guideHidden，保证换浏览器/清缓存也永久隐藏；本地缓存兜底离线。
+  const finishGuide = useCallback(() => {
+    if (!uid) return;
+    markUserOnboarded(uid);
+    setGuideHidden(true);
+    api.auth.updatePreferences({ guideHidden: true }).catch(() => { /* 离线：本地 key 本会话仍隐藏 */ });
+  }, [uid]);
+
+  // ── Onboarding checklist 状态（组件主体计算，供渲染 + 完成检测复用）──
+  const navigateToSecretary = useCallback((prompt: string) => {
+    const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
+    navBus.navigate(PAGE.TEAM, {
+      ...(secretary ? { agentId: secretary.id } : {}),
+      prefillMessage: prompt,
+    });
+  }, [agents]);
+
+  // Claim credits whenever Hub session or Markus Cloud is present.
+  // Do not gate on localStorage alone — JWT may restore from disk after paint.
+  const hubConnected = !!getHubToken();
+  const showClaimStep = hubConnected || markusConfigured;
+  const llmReady = llmConfigured === true || markusConfigured;
+  const setupSteps = [
+    ...(showClaimStep
+      ? [{
+          id: 'claim',
+          done: freeCreditsClaimed,
+          isSetup: true,
+          label: t('checklist.setup.claim'),
+          desc: t('checklist.setup.claimDesc'),
+          action: t('checklist.setup.claimAction'),
+          onClick: () => { setShowClaimModal(true); },
+        }]
+      : []),
+    {
+      id: 'llm',
+      done: llmReady,
+      isSetup: true,
+      label: t('checklist.setup.llm'),
+      desc: showClaimStep ? t('checklist.setup.llmDescHub') : t('checklist.setup.llmDesc'),
+      action: t('checklist.setup.llmAction'),
+      onClick: () => { window.location.hash = '#settings/providers'; },
+    },
+    {
+      id: 'browser',
+      done: browserConnected === true,
+      isSetup: true,
+      optional: true,
+      label: t('checklist.setup.browser'),
+      desc: t('checklist.setup.browserDesc'),
+      action: t('checklist.setup.browserAction'),
+      onClick: () => { window.location.hash = '#settings/browser'; },
+    },
+  ] as Array<{ id: string; done: boolean; isSetup?: boolean; optional?: boolean; label: string; desc: string; action: string; onClick: () => void }>;
+
+  const exploreSteps = [
+    { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
+    // Per-user ownership: 存量组织里的老数据不应让新用户误以为已完成。
+    // uid 缺失（预览等）时回退到全局存在性。
+    { id: 'project', done: uid ? projects.some(p => p.createdBy === uid) : projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
+    { id: 'requirements', done: uid ? allRequirements.some(r => r.createdBy === uid) : allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
+    // TeamInfo 无 createdBy 归属字段，保持全局存在性判定。
+    { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary('帮我组建一个名为「科技前沿智库」的团队，成员包括4位科技领袖角色的智能体：埃隆·马斯克（关注太空、电动车、AI安全）、史蒂夫·乔布斯（关注产品设计与用户体验）、山姆·奥特曼（关注AGI与AI创业生态）、黄仁勋（关注GPU、AI算力与数据中心）。团队目标是从不同视角分析科技前沿趋势。') },
+  ] as Array<{ id: string; done: boolean; isSetup?: boolean; optional?: boolean; label: string; desc: string; action: string; onClick: () => void }>;
+
+  const allSteps = [...setupSteps, ...exploreSteps];
+  const doneCount = allSteps.filter(s => s.done).length;
+  const totalSteps = allSteps.length;
+  const allRequiredDone = setupSteps.filter(s => !s.optional).every(s => s.done) && exploreSteps.every(s => s.done);
+  const requiredSetupIncomplete = setupSteps.some(s => !s.optional && !s.done);
+
+  // 用户主动关闭清单：必做 setup 未完成时仅本地记录（防止过早丢掉「配置模型」引导）；
+  // 必做 setup 已完成则视为明确不再需要 → 服务端持久化，换浏览器/清缓存也不显示。
+  const handleChecklistDismiss = () => {
+    if (!uid) return;
+    markChecklistDismissed(uid);
+    if (!requiredSetupIncomplete) {
+      finishGuide();
+    } else {
+      setChecklistDismissBump(b => b + 1);
+    }
+  };
+
+  // 清单全部必做步骤完成 → 持久化「不再显示」（服务端，跨浏览器生效）。
+  useEffect(() => {
+    if (!checklistReady || guideHidden) return;
+    if (!allRequiredDone) return;
+    finishGuide();
+  }, [checklistReady, guideHidden, allRequiredDone, finishGuide]);
 
   useEffect(() => {
     if (previewMode || !isActive) return;
@@ -530,74 +626,10 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         )}
 
         {/* ── Onboarding Checklist ──
-             Only renders for users who have NOT completed onboarding (per-user state).
-             Existing / familiar users are marked onboarded (lib/onboarding.ts) and
-             never see this card. No loading placeholder: the card only renders once
-             it is ready and has real content, so it never flashes an empty box. */}
-        {checklistReady && !userOnboarded && (() => {
-          const navigateToSecretary = (prompt: string) => {
-            const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
-            navBus.navigate(PAGE.TEAM, {
-              ...(secretary ? { agentId: secretary.id } : {}),
-              prefillMessage: prompt,
-            });
-          };
-
-          // Claim credits whenever Hub session or Markus Cloud is present.
-          // Do not gate on localStorage alone — JWT may restore from disk after paint.
-          const hubConnected = !!getHubToken();
-          const showClaimStep = hubConnected || markusConfigured;
-          const llmReady = llmConfigured === true || markusConfigured;
-          const setupSteps = [
-            ...(showClaimStep
-              ? [{
-                  id: 'claim',
-                  done: freeCreditsClaimed,
-                  isSetup: true,
-                  label: t('checklist.setup.claim'),
-                  desc: t('checklist.setup.claimDesc'),
-                  action: t('checklist.setup.claimAction'),
-                  onClick: () => { setShowClaimModal(true); },
-                }]
-              : []),
-            {
-              id: 'llm',
-              done: llmReady,
-              isSetup: true,
-              label: t('checklist.setup.llm'),
-              desc: showClaimStep ? t('checklist.setup.llmDescHub') : t('checklist.setup.llmDesc'),
-              action: t('checklist.setup.llmAction'),
-              onClick: () => { window.location.hash = '#settings/providers'; },
-            },
-            {
-              id: 'browser',
-              done: browserConnected === true,
-              isSetup: true,
-              optional: true,
-              label: t('checklist.setup.browser'),
-              desc: t('checklist.setup.browserDesc'),
-              action: t('checklist.setup.browserAction'),
-              onClick: () => { window.location.hash = '#settings/browser'; },
-            },
-          ];
-
-          const exploreSteps = [
-            { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
-            // Per-user ownership: 存量组织里的老数据不应让新用户误以为已完成。
-            // uid 缺失（预览等）时回退到全局存在性。
-            { id: 'project', done: uid ? projects.some(p => p.createdBy === uid) : projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
-            { id: 'requirements', done: uid ? allRequirements.some(r => r.createdBy === uid) : allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
-            // TeamInfo 无 createdBy 归属字段，保持全局存在性判定。
-            { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary('帮我组建一个名为「科技前沿智库」的团队，成员包括4位科技领袖角色的智能体：埃隆·马斯克（关注太空、电动车、AI安全）、史蒂夫·乔布斯（关注产品设计与用户体验）、山姆·奥特曼（关注AGI与AI创业生态）、黄仁勋（关注GPU、AI算力与数据中心）。团队目标是从不同视角分析科技前沿趋势。') },
-          ];
-
-          const allSteps = [...setupSteps, ...exploreSteps];
-          const doneCount = allSteps.filter(s => s.done).length;
-          const totalSteps = allSteps.length;
-          const allRequiredDone = setupSteps.filter(s => !s.optional).every(s => s.done) && exploreSteps.every(s => s.done);
-          const requiredSetupIncomplete = setupSteps.some(s => !s.optional && !s.done);
-
-          if (allRequiredDone) return null;
+             Only renders for users who have NOT finished onboarding（guideHidden=false）
+             and still have required steps to complete. 完成/关闭后服务端持久化，
+             换浏览器、清缓存都不会再打扰。无 loading 占位：数据就绪且有内容才渲染。 */}
+        {checklistReady && !guideHidden && !allRequiredDone && (() => {
           // Honor dismiss only after required setup is done; otherwise local users
           // who closed the card too early would permanently lose "配置模型" guidance.
           if (checklistDismissed && !requiredSetupIncomplete) return null;
@@ -637,7 +669,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                   <h3 className="text-sm font-semibold text-fg-primary mb-1">{t('checklist.title')}</h3>
                   <p className="text-xs text-fg-secondary">{t('checklist.subtitle')}</p>
                 </div>
-                <button onClick={() => { if (uid) markChecklistDismissed(uid); setChecklistDismissBump(b => b + 1); }} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title="Dismiss">
+                <button onClick={handleChecklistDismiss} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title="Dismiss">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>

@@ -36,7 +36,7 @@ export interface AuthUser {
   role: string;
   orgId: string;
   avatarUrl?: string;
-  preferences?: { locale?: string; timezone?: string; [key: string]: unknown };
+  preferences?: { locale?: string; timezone?: string; guideHidden?: boolean; [key: string]: unknown };
 }
 
 export interface ChatSessionInfo {
@@ -1946,8 +1946,8 @@ export const api = {
       request<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
     updateProfile: (name: string, email: string) =>
       request<{ user: AuthUser }>('/auth/profile', { method: 'PUT', body: JSON.stringify({ name, email }) }),
-    updatePreferences: (prefs: { locale?: string; timezone?: string }) =>
-      request<{ ok: boolean; preferences: { locale?: string; timezone?: string } }>('/auth/me/preferences', { method: 'PUT', body: JSON.stringify(prefs) }),
+    updatePreferences: (prefs: { locale?: string; timezone?: string; guideHidden?: boolean }) =>
+      request<{ ok: boolean; preferences: { locale?: string; timezone?: string; guideHidden?: boolean; [key: string]: unknown } }>('/auth/me/preferences', { method: 'PUT', body: JSON.stringify(prefs) }),
     setup: (token: string, password: string) =>
       request<{ ok: boolean; email: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ token, password }) }),
     inviteInfo: (token: string) =>

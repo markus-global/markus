@@ -230,6 +230,36 @@ describe('APIServer targeted route coverage', () => {
       });
       expect(res.status).toBe(403);
     });
+
+    it('PUT /api/auth/me/preferences persists guideHidden and merges existing prefs', async () => {
+      // authEnabled=false 时 requireAuth 走匿名 owner，无需 cookie——聚焦验证
+      // 白名单接受 guideHidden + 回传合并后的偏好（同时覆盖原有 locale/timezone）。
+      process.env['AUTH_ENABLED'] = 'false';
+      ctx = createTestServer();
+
+      const res = await requestAsync(ctx.server, 'PUT', '/api/auth/me/preferences', {
+        guideHidden: true,
+        locale: 'zh-CN',
+      });
+      expect(res.status).toBe(200);
+      expect(res.json.ok).toBe(true);
+      // 回传合并后的偏好（含本次写入的 guideHidden + 既有 locale/timezone）
+      expect(res.json.preferences).toMatchObject({ guideHidden: true, locale: 'zh-CN' });
+
+      // 已调用 orgService.updateHumanPreferences（服务端持久化入口）
+      expect(ctx.server.orgService.updateHumanPreferences).toHaveBeenCalledWith(
+        'anonymous',
+        expect.objectContaining({ guideHidden: true, locale: 'zh-CN' }),
+      );
+
+      // 过滤非法字段：白名单外的 key 不应被写入
+      const res2 = await requestAsync(ctx.server, 'PUT', '/api/auth/me/preferences', {
+        guideHidden: true,
+        hacked: 'nope',
+      });
+      expect(res2.status).toBe(200);
+      expect(res2.json.preferences).not.toHaveProperty('hacked');
+    });
   });
 
   describe('Task creation validation and branches', () => {

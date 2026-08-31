@@ -398,6 +398,7 @@ export function createMockOrgService(agentManager = createMockAgentManager()): O
     removeTeamMember: vi.fn(async () => {}),
     removeMemberFromTeam: vi.fn(async () => {}),
     addMemberToTeam: vi.fn(async () => {}),
+    updateHumanPreferences: vi.fn((_userId: string, prefs: Record<string, unknown>) => prefs),
   } as unknown as OrganizationService;
 }
 

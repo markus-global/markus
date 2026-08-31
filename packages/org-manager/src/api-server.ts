@@ -2990,6 +2990,7 @@ export class APIServer {
           role: userRow.role,
           orgId: userRow.orgId,
           avatarUrl: userRow.avatarUrl ?? undefined,
+          preferences: userRow.preferences ?? undefined,
         },
         needsOnboarding: isFirstLogin,
       });
@@ -3175,6 +3176,7 @@ export class APIServer {
           role: finalUser.role,
           orgId: finalUser.orgId,
           avatarUrl: finalUser.avatarUrl ?? undefined,
+          preferences: finalUser.preferences ?? undefined,
         },
         needsOnboarding: isFirstLogin,
         cloudAiReady,
@@ -3227,6 +3229,7 @@ export class APIServer {
       const prefs: Record<string, unknown> = {};
       if (typeof body['locale'] === 'string') prefs.locale = body['locale'];
       if (typeof body['timezone'] === 'string') prefs.timezone = body['timezone'];
+      if (typeof body['guideHidden'] === 'boolean') prefs.guideHidden = body['guideHidden'];
       if (Object.keys(prefs).length === 0) {
         this.json(res, 400, { error: 'No supported preference fields provided' });
         return;
@@ -3239,7 +3242,12 @@ export class APIServer {
           this.orgService.getAgentManager().setRuntimeViewerContext({ locale: identity.locale, timezone: identity.timezone });
         } catch { /* agent manager not ready */ }
       }
-      this.json(res, 200, { ok: true, preferences: identity ? { locale: identity.locale, timezone: identity.timezone } : prefs });
+      // 回传合并后的偏好（含本次写入的 guideHidden 等扩展字段），避免前端丢字段。
+      const savedPrefs = {
+        ...(identity ? { locale: identity.locale, timezone: identity.timezone } : {}),
+        ...prefs,
+      };
+      this.json(res, 200, { ok: true, preferences: savedPrefs });
       return;
     }
 
