@@ -59,11 +59,9 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
     setConfirmRemovePath(null);
     const next = paths.filter(x => x !== target);
     await onUpdateProject({ knowledgeBasePaths: next });
-    // 删除路径后重新同步（仅保留剩余路径的文件）
-    // 如果已无绑定路径，无需同步——没有路径就没有文件
-    if (next.length > 0) {
-      await runSync(next);
-    }
+    // 删除路径后重新同步：移除的路径对应的文件应被清理
+    // 如果已无绑定路径，传空数组同步 → 后端会标记所有知识库文件为 outdated
+    await runSync(next);
   };
 
   // Native directory picker (desktop only) — fills the path field so users
@@ -84,7 +82,8 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
     setSyncing(true);
     setNotice(null);
     try {
-      const res = await api.projects.syncKnowledge(project.id, roots && roots.length ? roots : undefined);
+      // roots === [] 表示「清空所有知识库文件」，必须传 [] 而非 undefined
+      const res = await api.projects.syncKnowledge(project.id, roots);
       setNotice({
         type: res.errors.length > 0 ? 'error' : 'success',
         text: t('work:project.kbSyncResult', {
