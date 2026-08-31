@@ -60,7 +60,10 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
     const next = paths.filter(x => x !== target);
     await onUpdateProject({ knowledgeBasePaths: next });
     // 删除路径后重新同步（仅保留剩余路径的文件）
-    await runSync(next);
+    // 如果已无绑定路径，无需同步——没有路径就没有文件
+    if (next.length > 0) {
+      await runSync(next);
+    }
   };
 
   // Native directory picker (desktop only) — fills the path field so users
