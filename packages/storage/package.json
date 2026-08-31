@@ -13,5 +13,5 @@
   "dependencies": {
     "@markus/shared": "workspace:*"
   },
-  "version": "0.9.9-rc.1"
+  "version": "0.9.9-rc.2"
 }
