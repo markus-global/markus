@@ -13,6 +13,11 @@ import {
   useOverviewUsageData,
 } from '../components/OverviewUsage.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import {
+  isUserOnboarded,
+  isChecklistDismissed,
+  markChecklistDismissed,
+} from '../lib/onboarding.ts';
 
 const DONUT_COLORS: Record<string, string> = {
   completed: '#22c55e', in_progress: '#8b5cf6', review: '#3b82f6',
@@ -103,7 +108,13 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [showClaimModal, setShowClaimModal] = useState(false);
   const showClaimModalRef = useRef(false);
   showClaimModalRef.current = showClaimModal;
-  const [checklistDismissed, setChecklistDismissed] = useState(() => localStorage.getItem('markus_checklist_dismissed') === 'true');
+  // Per-user onboarding state（lib/onboarding.ts）：
+  //  - userOnboarded：该用户是否已完成引导（决定整卡是否渲染）
+  //  - checklistDismissed：该用户是否主动关闭过清单（仅当必做 setup 完成后才生效）
+  const uid = authUser?.id;
+  const userOnboarded = uid ? isUserOnboarded(uid) : true; // preview / 无登录态不显示引导
+  const [checklistDismissBump, setChecklistDismissBump] = useState(0);
+  const checklistDismissed = uid ? isChecklistDismissed(uid) : false;
   const [secretaryHasChat, setSecretaryHasChat] = useState(false);
   const [checklistReady, setChecklistReady] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
@@ -152,9 +163,13 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
       setAgents(d.agents);
       const sec = d.agents.find(a => a.role === 'secretary') ?? d.agents.find(a => a.name?.toLowerCase().includes('secretary'));
       if (!sec) return;
-      void api.sessions.listByAgent(sec.id, 1).then(async r => {
-        if (r.sessions.length === 0) return;
-        const m = await api.sessions.getMessages(r.sessions[0]!.id, 1);
+      // Per-user greet check: only sessions belonging to the current user count as
+      // "打过招呼". uid unknown (preview) falls back to "秘书已有会话"。
+      void api.sessions.listByAgent(sec.id, 20).then(async r => {
+        if (r.sessions.length === 0) { setSecretaryHasChat(false); return; }
+        const mine = uid ? r.sessions.filter(s => s.userId === uid) : r.sessions;
+        if (mine.length === 0) { setSecretaryHasChat(false); return; }
+        const m = await api.sessions.getMessages(mine[0]!.id, 1);
         setSecretaryHasChat(m.messages.length > 0);
       }).catch(() => {});
     }).catch(() => {});
@@ -196,10 +211,15 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           .catch(() => { /* keep prior / false */ });
       })
       .catch(() => {});
-    Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, browserP, claimP]).then(() => {
+    // checklistReady 兜底：claimP 会走 Hub 网络调用（无超时），离线/慢网时卡住
+    // 会 forever 隐藏整张引导卡。8s 超时后仍先渲染卡片，claim 步骤状态异步补。
+    Promise.race([
+      Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, browserP, claimP]),
+      new Promise<void>(resolve => setTimeout(resolve, 8000)),
+    ]).then(() => {
       setChecklistReady(true);
     });
-  }, [opsPeriod]);
+  }, [opsPeriod, uid]);
 
   useEffect(() => {
     if (previewMode || !isActive) return;
@@ -510,9 +530,11 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         )}
 
         {/* ── Onboarding Checklist ──
-             No loading placeholder: the card only renders once it is ready and
-             has real content, so it never flashes an empty "loading" box. */}
-        {checklistReady && (() => {
+             Only renders for users who have NOT completed onboarding (per-user state).
+             Existing / familiar users are marked onboarded (lib/onboarding.ts) and
+             never see this card. No loading placeholder: the card only renders once
+             it is ready and has real content, so it never flashes an empty box. */}
+        {checklistReady && !userOnboarded && (() => {
           const navigateToSecretary = (prompt: string) => {
             const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
             navBus.navigate(PAGE.TEAM, {
@@ -561,8 +583,11 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
 
           const exploreSteps = [
             { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
-            { id: 'project', done: projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
-            { id: 'requirements', done: allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
+            // Per-user ownership: 存量组织里的老数据不应让新用户误以为已完成。
+            // uid 缺失（预览等）时回退到全局存在性。
+            { id: 'project', done: uid ? projects.some(p => p.createdBy === uid) : projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
+            { id: 'requirements', done: uid ? allRequirements.some(r => r.createdBy === uid) : allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
+            // TeamInfo 无 createdBy 归属字段，保持全局存在性判定。
             { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary('帮我组建一个名为「科技前沿智库」的团队，成员包括4位科技领袖角色的智能体：埃隆·马斯克（关注太空、电动车、AI安全）、史蒂夫·乔布斯（关注产品设计与用户体验）、山姆·奥特曼（关注AGI与AI创业生态）、黄仁勋（关注GPU、AI算力与数据中心）。团队目标是从不同视角分析科技前沿趋势。') },
           ];
 
@@ -612,7 +637,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                   <h3 className="text-sm font-semibold text-fg-primary mb-1">{t('checklist.title')}</h3>
                   <p className="text-xs text-fg-secondary">{t('checklist.subtitle')}</p>
                 </div>
-                <button onClick={() => { setChecklistDismissed(true); localStorage.setItem('markus_checklist_dismissed', 'true'); }} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title="Dismiss">
+                <button onClick={() => { if (uid) markChecklistDismissed(uid); setChecklistDismissBump(b => b + 1); }} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title="Dismiss">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>

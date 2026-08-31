@@ -32,6 +32,7 @@ import { ShortcutsHelpModal } from './components/ShortcutsHelpModal.tsx';
 import { EditProfileModal } from './components/EditProfileModal.tsx';
 import { isEditableTarget, isXtermTarget } from './lib/keyboard-shortcuts.ts';
 import { knownTerminalIds, rememberTerminalId } from './lib/known-terminals.ts';
+import { isUserOnboarded, markUserOnboarded, clearUserOnboarded } from './lib/onboarding.ts';
 
 const HIDDEN_STYLE: React.CSSProperties = {
   visibility: 'hidden',
@@ -105,7 +106,9 @@ function initialPage(): PageId {
 export function App() {
   const { t } = useTranslation('common');
   const [page, setPage] = useState<PageId>(initialPage);
-  const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('markus_onboarded'));
+  // 全屏引导向导只由「登录首次」「邀请流」显式触发（见 onLogin / inviteMatch），
+  // 初始恒为 false。恢复会话（auth.me）的已登录用户绝不被引导打扰。
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const isMobile = useIsMobile();
   const theme = useTheme();
@@ -651,6 +654,10 @@ export function App() {
       .then(({ user }) => {
         setAuthUser(user);
         setSystemInitialized(true);
+        // 恢复会话的都是已登录用户（非首次注册流程），一律不弹全屏向导。
+        // per-user 标记已引导：老用户清缓存/换浏览器后也不会被引导打扰。
+        setShowOnboarding(false);
+        if (!isUserOnboarded(user.id)) markUserOnboarded(user.id);
         syncLocalePreferences(user);
         wsClient.connect(user.id);
         checkLlmConfig();
@@ -738,11 +745,16 @@ export function App() {
   if (inviteMatch) {
     return <InviteSetup token={inviteMatch[1]!} onComplete={() => {
       window.location.hash = '';
+      // 兼容旧全局 key；per-user 标记在拿到 user 后清除（见下方 reload），
+      // 确保被邀请新成员一定会看到一次引导向导。
       localStorage.removeItem('markus_onboarded');
       setShowOnboarding(true);
       setSkipOnboardingProfile(true);
       setAuthUser('loading');
-      api.auth.me().then(d => setAuthUser(d.user)).catch(() => setAuthUser(null));
+      api.auth.me().then(d => {
+        clearUserOnboarded(d.user.id);
+        setAuthUser(d.user);
+      }).catch(() => setAuthUser(null));
     }} />;
   }
 
@@ -757,11 +769,13 @@ export function App() {
       // unbound to the user until a full page reload.
       wsClient.connect(user.id);
       if (needsOnboarding) {
-        localStorage.removeItem('markus_onboarded');
+        // 首次登录：清掉该用户可能的历史标记，进入全屏向导（per-user）。
+        clearUserOnboarded(user.id);
         setShowOnboarding(true);
         if (opts?.fromHub) setSkipOnboardingProfile(true);
-      } else if (!localStorage.getItem('markus_onboarded')) {
-        localStorage.setItem('markus_onboarded', '1');
+      } else {
+        // 老用户登录（后端 isFirstLogin=false）：立即标记已引导，绝不再弹。
+        markUserOnboarded(user.id);
         setShowOnboarding(false);
       }
     }} />;
@@ -791,7 +805,11 @@ export function App() {
         setAuthUser(next);
       }}
       onComplete={() => {
-        localStorage.setItem('markus_onboarded', '1');
+        // 完成全屏向导 → per-user 标记已引导（不写旧全局 key，避免污染其它用户）。
+        if (typeof authUser === 'object' && authUser !== null && 'id' in authUser) {
+          markUserOnboarded(authUser.id);
+        }
+        localStorage.removeItem('markus_onboarded'); // 兼容清理旧全局 key
         setShowOnboarding(false);
         setSkipOnboardingProfile(false);
         // Re-fetch so sidebar / People reflect the name saved during onboarding

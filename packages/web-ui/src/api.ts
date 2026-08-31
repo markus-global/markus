@@ -250,6 +250,8 @@ export interface ProjectInfo {
   status: string;
   repositories?: Array<{ url: string; defaultBranch: string; localPath?: string }>;
   teamIds: string[];
+  /** Human user id who created the project, when known */
+  createdBy?: string;
   governancePolicy?: GovernancePolicyInfo;
   /** 知识库绑定根目录（JSON 数组），见项目级知识库需求 */
   knowledgeBasePaths?: string[];
