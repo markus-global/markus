@@ -190,11 +190,11 @@ The review outcome is properly communicated through the status transition (`comp
 Typical sources:
 
 1. **`background_exec` completion** — When a background shell process finishes, the agent receives a `callback_result` with exit code, duration, and stdout/stderr tail.
-2. **In-session A2A await** — When an agent sends `agent_send_message` with `await_in_session: true`, an `a2a_reply` callback is registered (correlated by `conversation_id`). The peer's reply is routed back into the **origin session** instead of a separate a2a session.
+2. **In-session A2A reply** — When an agent sends `agent_send_message` with `reply_in_session: true` (deprecated alias: `await_in_session`), an `a2a_reply` callback is registered (correlated by `conversation_id`). The peer's reply is routed back into the **origin session** instead of a separate a2a session.
 
 **Two delivery forms.** A resolved callback is delivered one of two ways, selected by `deliveryMode`:
 
-- **`in_session`** → enqueues a `callback_result` bound to `originSessionId`, resuming the current conversation (used for `background_exec` completions and `await_in_session` A2A replies).
+- **`in_session`** → enqueues a `callback_result` bound to `originSessionId`, resuming the current conversation (used for `background_exec` completions and `reply_in_session` A2A replies).
 - **`mailbox`** → enqueues a `system_event`, a fresh attention cycle (used for `schedule_wakeup` firings and autonomous follow-ups).
 
 Payload shape (`payload.extra`):
@@ -214,7 +214,7 @@ Processing: `in_session` callbacks route to `handleMessage()` with the **origina
 Registration flow: when an agent starts an async operation the completion is registered as a `PendingCallback` in `PendingCallbackRegistry` and persisted to SQLite:
 
 - `background_exec` — the `background_exec` tool path calls `registerBackgroundSession()` (from `Agent.executeTool`, keyed by the returned bg session id, `originSessionId = active session`).
-- `agent_send_message` with `await_in_session` — registers an `a2a_reply` callback keyed by `conversation_id`.
+- `agent_send_message` with `reply_in_session` (alias `await_in_session`) — registers an `a2a_reply` callback keyed by `conversation_id`.
 - `schedule_wakeup` — registers a `wakeup` callback with a `wakeAt` timestamp (and optional `recurringMs`).
 
 On completion/firing the registry entry is resolved and delivered via the shared `Agent.deliverCallback()` helper according to its `deliveryMode`.
@@ -752,7 +752,7 @@ interface PendingCallback {
 
 1. **Register** — An async operation is registered as a `PendingCallback` and persisted via `SqlitePendingCallbackRepo`:
    - `background_exec` → `registerBackgroundSession()` (called from `Agent.executeTool` on the tool result).
-   - `agent_send_message` with `await_in_session` → an `a2a_reply` callback keyed by `conversation_id`.
+   - `agent_send_message` with `reply_in_session` (alias `await_in_session`) → an `a2a_reply` callback keyed by `conversation_id`.
    - `schedule_wakeup` → a `wakeup` callback with `wakeAt` (+ optional `recurringMs`).
 2. **Complete / fire** — On completion (`background_exec`, `a2a_reply`) or when a wakeup is due, the entry is resolved and delivered via the shared `Agent.deliverCallback()` helper: `in_session` → `callback_result` (bound to `originSessionId`); `mailbox` → `system_event`. Recurring wakeups re-arm.
 3. **Timeout** — Heartbeat calls `getTimedOut()` to find expired callbacks, then `expireTimedOut(id)` removes each from the registry. Timed-out operations are surfaced in the heartbeat prompt (§11.4) for agent investigation — they do not silently disappear. (Wakeups use an effectively infinite timeout and are never flagged.)
@@ -1281,6 +1281,23 @@ When `delegate.performDeliberation` is available (always in production), the att
 
 **Deliberation is atomic**: yield points are suppressed during deliberation (new mail sets the interrupt signal but is not evaluated until deliberation completes).
 
+**Strict state items are excluded from deliberation (critical safety)**:
+
+Items carrying formal task/requirement/workflow state transitions — collectively **strict state items** (predicate `isStrictStateItem` in `@markus/shared`):
+- `task_status_update` with `extra.triggerExecution`（正式任务执行）
+- `review_request`（评审请求）
+- `requirement_update` / `workflow_update` with `extra.actionRequired`（收尾动作）
+
+are **filtered out of the deliberation view entirely**:
+
+1. **They are invisible to the LLM during deliberation** — `performDeliberation` receives only non-strict items; the optionality prompt (`[DELIBERATION MODE]`) and tool docs instruct the agent that `isStrictState: true` items seen via `check_mailbox` may only be reordered, never deferred/dropped/batched/inline-completed.
+2. **They never trigger deliberation** — `needsLLMTriage` returns false when the head or any queued item is strict, so tasks/reviews are processed by the normal single-item execution path with the full tool set (including `task_update` / `task_submit_review` / shell / file).
+3. **Yield-point defer is refused** — if the interrupt evaluator returns `defer` for a strict item, it falls back to the heuristic (high-priority task execution → `preempt` → executed as its own item).
+4. **Mailbox tools refuse them** — `defer_mailbox_item` / `drop_mailbox_item` return an error for strict items (defense in depth), and `complete_deliberation` rejects results that list strict items in `defer/drop/inline/batch`. The orphan-completeness check **excludes** strict items (they are not part of the deliberation view).
+5. **Lost-closure recovery** — if a task execution item ever resurfaces from persistence **without its callback closures** (e.g. deferred before start, then resurfaced after restart), the agent no longer silently completes it: it emits an `agent:incomplete` event with `reason: resurfaced-task-execution-lost-closures`, and the org-manager `TaskService` subscribes to that event and calls `recoverLostTaskExecution(taskId)` — re-dispatches the task via `runTask` (with proper closures) if it is still `in_progress` and has no active execution. This prevents tasks from hanging in `in_progress` forever.
+
+Why this matters: task execution, review, and requirement/workflow finalization must run through their dedicated state machines (`executeTask(taskId, onLog)` with live `onLog`/`cancelToken`/`responsePromise` closures). If they were deferred/dropped/merged/batched by deliberation, the closures are lost with persistence, task logs never land under the task, and the task can remain `in_progress` with nobody working it.
+
 ### Tool Access During Deliberation
 
 Defined by `DELIBERATION_ALLOWED_TOOLS` in `@markus/shared`:
@@ -1310,7 +1327,9 @@ individual mailbox items using dedicated tools:
 | `clear_working_memory` | All scenarios | Clear stale awareness |
 
 **Safety**: `human_chat` items are protected — they cannot be deferred, dropped,
-or reprioritized by tool calls.
+or reprioritized by tool calls. **Strict state items**（正式任务执行 / 评审 / 需求·工作流收尾动作，
+见上文）也是受保护的：`defer_mailbox_item` / `drop_mailbox_item` 会返回错误，只能通过
+`prioritize_mailbox_item` 调整优先级，最终由正常出队路径单独执行。
 
 **Relationship to `complete_deliberation`**: The individual tools take immediate
 effect. `complete_deliberation` handles remaining items in bulk. They are additive.

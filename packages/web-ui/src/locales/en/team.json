@@ -388,6 +388,8 @@
     "title": "Model",
     "search": "Search models",
     "applyGlobal": "Apply to global",
+    "applyAgent": "Apply to current agent",
+    "noAgent": "Select an agent to apply per-agent",
     "empty": "No enabled providers / models"
   }
 }

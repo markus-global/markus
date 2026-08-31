@@ -172,6 +172,15 @@ export interface SystemPromptSegment {
 export interface SystemPromptResult {
   text: string;
   segments: SystemPromptSegment[];
+  /**
+   * Per-turn volatile snapshot (Scheme A) that is deliberately kept OUT of the
+   * system message. For implicit prefix-cache providers the system message is
+   * one contiguous token sequence, so any per-turn change invalidates the cached
+   * prefix for everything after it (the whole history). Emitting it separately
+   * (pinned at the tail of the history) keeps the system byte-identical across
+   * turns so the prefix cache keeps hitting.
+   */
+  volatile?: string;
 }
 
 function estimateTokens(text: string, counter?: TokenCounter): number {
@@ -267,6 +276,12 @@ export class ContextEngine {
     scenario?: AgentScenario;
     /** When scenario is 'a2a', indicates whether the sender is blocking for a reply */
     a2aWaitForReply?: boolean;
+    /** Live per-colleague runtime status (agentId → AgentState['status']).
+     *  PREFERRED over identity.colleagues[].status, which is a snapshot taken at
+     *  agent creation and only refreshed on org-structure changes — it goes
+     *  stale as agents start/stop. Callers should compute this at prompt-build
+     *  time so the Team Status section reflects real-time liveness. */
+    liveColleagueStatuses?: Record<string, string>;
     /** Channel key for DM/group detection in scenario prompts */
     channelKey?: string;
     agentWorkspace?: {
@@ -705,7 +720,23 @@ export class ContextEngine {
     // Changes per interaction: project data, task board, cognitive context,
     // mailbox state, current time.
     // ═══════════════════════════════════════════════════════════════════════
-    const dynamic: string[] = [];
+    // volatile: per-turn real-time snapshot (Scheme A). For implicit prefix-cache
+    // providers (DeepSeek / OpenAI / OpenRouter), ANY byte change inside the single
+    // system message invalidates the cached prefix for EVERYTHING after it (the
+    // whole history). Segmenting the system into stable/semi/dynamic does NOT help
+    // those providers — the sent system is one contiguous token sequence. So ALL
+    // per-turn context migrates OUT of the system message and is emitted as a
+    // separate [SYSTEM] message pinned at the TAIL of the history. The system
+    // message then stays byte-identical across turns and the full system+history
+    // prefix keeps hitting.
+    const volatile: string[] = [];
+    // Tier-3 "dynamic" context ALIASES volatile. Keeping `dynamic === volatile`
+    // drains every existing dynamic.push(...) (project context, announcements,
+    // task board, human feedback, workflows, cognition/retrieved/reflection,
+    // sender identity, viewer locale) into the tail buffer — instead of the
+    // system message. The system message is therefore strictly stable + semiStable,
+    // which is what makes the implicit prefix-cache key byte-identical across turns.
+    const dynamic = volatile;
 
     if (opts.projectContext) {
       const { project, repositories, governanceRules, teamRole } = opts.projectContext;
@@ -894,40 +925,22 @@ export class ContextEngine {
           });
           opts.notebookWriter('relevant-context', lines.join('\n'), 'system');
         } else {
-          dynamic.push('\n## Relevant Memories');
+          volatile.push('\n## Relevant Memories');
           for (const mem of relevantMemories) {
             const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
-            dynamic.push(`- [${ts}] ${mem.content}`);
+            volatile.push(`- [${ts}] ${mem.content}`);
           }
         }
       }
     }
 
-    // Colleague real-time status is in the dynamic tier (not identity/Tier 2)
-    // to prevent status changes from invalidating the semi-stable cache prefix.
-    if (!isDream && opts.identity?.colleagues.length) {
-      const shown = opts.identity.colleagues
-        .filter(c => c.status)
-        .slice(0, SYSTEM_COLLEAGUES_MAX);
-      const statusEntries = shown.map(c => {
-        // AgentState uses "offline" for intentionally stopped agents — label clearly.
-        const label = c.status === 'offline' ? 'stopped'
-          : c.status === 'working' ? 'busy'
-            : c.status;
-        return `${c.name}: ${label}`;
-      });
-      if (statusEntries.length > 0) {
-        const allStopped = shown.every(c => c.status === 'offline');
-        const hint = allStopped
-          ? '\n_All listed teammates are stopped — use `agent_start` to wake someone if you need them. You can still advance Owner chat work yourself; stopped teammates are not a reason to refuse conversational progress._'
-          : '';
-        dynamic.push(`\n## Team Status\n${statusEntries.join(' | ')}${hint}`);
-      }
-    }
+    // NOTE: Colleague real-time status lives at the VERY END of the dynamic
+    // tier (see `## Team Status` below) — as late as possible in the prompt so
+    // status changes never invalidate the cacheable stable prefix.
 
-    // Channel context (group chat / DM history) is injected in the system prompt
-    // rather than prepended into the conversation messages array. This preserves
-    // the conversation-prefix cache — message indices stay stable across calls.
+    // Channel context (group chat / DM history) rides the volatile tail (Scheme A)
+    // rather than the system message. Keeping it out of the system message preserves
+    // the implicit prefix-cache — system + history prefix stays byte-identical.
     if (!isDream && !isReflex && opts.channelContext?.length) {
       const contextLines = opts.channelContext
         .slice(-CHANNEL_CONTEXT_MESSAGES)
@@ -938,11 +951,11 @@ export class ContextEngine {
           return `[${m.role}] ${body}`;
         })
         .join('\n');
-      dynamic.push(`\n## Channel History (recent messages)\n${contextLines}`);
+      volatile.push(`\n## Channel History (recent messages)\n${contextLines}`);
     }
 
     if (!isDream && opts.mailboxContext) {
-      dynamic.push(this.buildMailboxSection(opts.mailboxContext));
+      volatile.push(this.buildMailboxSection(opts.mailboxContext));
     }
 
     if (!isDream && opts.senderIdentity) {
@@ -985,6 +998,16 @@ export class ContextEngine {
     const now = new Date();
     const serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     let tz = viewerTz || serverTz;
+    // ── THROTTLED CLOCK ──────────────────────────────────────────────────
+    // DeepSeek/OpenAI implicit prefix-cache: any byte change in the system
+    // segment invalidates the cache for EVERYTHING after it (including each
+    // turn's appended history). A minute-precision clock changed on almost
+    // every request → system prefix drifted every minute → history prefix
+    // never hit → measured cache-hit 19% instead of 60-80%+.
+    // Fix: quantize the clock to a 5-minute bucket. The agent still sees
+    // useful time (exact-ish, monotonic), but consecutive turns within the
+    // same bucket produce byte-identical system segments, so the prefix
+    // cache keeps hitting across the whole history.
     let localStr: string;
     let offsetLabel: string;
     try {
@@ -994,7 +1017,10 @@ export class ContextEngine {
         hour: '2-digit', minute: '2-digit', hour12: false,
       });
       const parts = Object.fromEntries(dtf.formatToParts(now).map(p => [p.type, p.value]));
-      localStr = `${parts.year}-${parts.month}-${parts.day} ${parts.hour === '24' ? '00' : parts.hour}:${parts.minute}`;
+      const hr = parts.hour === '24' ? '00' : parts.hour;
+      const mi = parts.minute === '24' ? '00' : parts.minute; // defensive
+      const mFloor = Math.floor((parseInt(mi, 10) || 0) / 5) * 5;
+      localStr = `${parts.year}-${parts.month}-${parts.day} ${hr}:${String(mFloor).padStart(2, '0')}`;
       const offParts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(now);
       offsetLabel = offParts.find(p => p.type === 'timeZoneName')?.value ?? '';
     } catch {
@@ -1005,10 +1031,11 @@ export class ContextEngine {
       const sign = offset <= 0 ? '+' : '-';
       const absH = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
       const absM = String(Math.abs(offset) % 60).padStart(2, '0');
-      localStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      const mFloor = Math.floor(now.getMinutes() / 5) * 5;
+      localStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(mFloor)}`;
       offsetLabel = `UTC${sign}${absH}:${absM}`;
     }
-    dynamic.push(`\n---\nCurrent date and time: ${localStr} (${tz}${offsetLabel ? `, ${offsetLabel}` : ''})`);
+    volatile.push(`\n---\nCurrent date and time: ${localStr} (${tz}${offsetLabel ? `, ${offsetLabel}` : ''})`);
     if (!isDream && (viewerLocale || viewerTz)) {
       const langName = viewerLocale ? this.describeLocale(viewerLocale) : undefined;
       const bits: string[] = [];
@@ -1031,6 +1058,32 @@ export class ContextEngine {
       );
     }
 
+    // ─── Team Status: LAST volatile section pinned at the history tail ───
+    // Cache strategy (as late as possible): the system payload is stable+semiStable
+    // (both cache breakpoints); ALL per-turn data incl. team status lives in the
+    // volatile tail so a status change only invalidates the (tiny) tail region.
+    // Status values are read LIVE at build time via liveColleagueStatuses — the
+    // identity snapshot is only a fallback for callers without live statuses.
+    if (!isDream && opts.identity?.colleagues.length) {
+      const shown = opts.identity.colleagues.slice(0, SYSTEM_COLLEAGUES_MAX);
+      const statusEntries = shown.map(c => {
+        const raw = opts.liveColleagueStatuses?.[c.id] ?? c.status;
+        if (!raw) return null;
+        // AgentState uses "offline" for intentionally stopped agents — label clearly.
+        const label = raw === 'offline' ? 'stopped'
+          : raw === 'working' ? 'busy'
+            : raw;
+        return `${c.name}: ${label}`;
+      }).filter((e): e is string => e !== null);
+      if (statusEntries.length > 0) {
+        const allStopped = shown.every(c => (opts.liveColleagueStatuses?.[c.id] ?? c.status) === 'offline');
+        const hint = allStopped
+          ? '\n_All listed teammates are stopped — use `agent_start` to wake someone if you need them. You can still advance Owner chat work yourself; stopped teammates are not a reason to refuse conversational progress._'
+          : '';
+        volatile.push(`\n## Team Status\n${statusEntries.join(' | ')}${hint}`);
+      }
+    }
+
     // Soft metric only — never truncate ROLE/L0/mode/date. Size control is
     // progressive disclosure at assemble time (knowledge/announcements caps,
     // tool LIVE vs catalog), plus provider afford guard.
@@ -1043,16 +1096,17 @@ export class ContextEngine {
     // hints (e.g. Anthropic cache_control) can split on these boundaries.
     const stableText = stable.join('\n');
     const semiStableText = semiStable.join('\n');
-    const dynamicText = dynamic.join('\n');
 
     const segments: SystemPromptSegment[] = [];
     if (stableText) segments.push({ content: stableText, cacheBreakpoint: true });
     if (semiStableText) segments.push({ content: semiStableText, cacheBreakpoint: true });
-    if (dynamicText) segments.push({ content: dynamicText });
+
+    const volatileText = volatile.join('\n').trim();
 
     return {
       text: segments.map(s => s.content).join('\n'),
       segments,
+      ...(volatileText ? { volatile: volatileText } : {}),
     };
   }
 
@@ -1253,7 +1307,7 @@ export class ContextEngine {
     lines.push('');
     lines.push('**Communicating**: `notify_user` to reach humans outside chat; `agent_send_message` for peer DMs (self-contained). Do not duplicate automatic task-status notifications via A2A.');
     lines.push('');
-    lines.push('**Async**: Prefer event-driven completion (`background_exec`, `schedule_wakeup`, `await_in_session`) — do not poll.');
+    lines.push('**Async**: Prefer event-driven completion (`background_exec`, `schedule_wakeup`, `reply_in_session`) — do not poll.');
 
     return lines.join('\n');
   }
@@ -1391,7 +1445,7 @@ export class ContextEngine {
           lines.push('**Communication channel**: All A2A messaging is **asynchronous**. The sender is NOT blocking for your reply. Humans do NOT see this conversation.');
           lines.push('- To **reply to the sender**, use `agent_send_message` with the sender\'s agent ID and the same `conversation_id` (if present in the message as `[conversation:...]`). Preserving the `conversation_id` is what lets the sender correlate your reply — especially if they are awaiting it in their own conversation.');
           lines.push('- To reach a **human**, use `notify_user`.');
-          lines.push('- To reach a **different agent**, use `agent_send_message`. If you need their reply back in *this* thread, set `await_in_session: true`.');
+          lines.push('- To reach a **different agent**, use `agent_send_message`. If you need their reply back in *this* thread, set `reply_in_session: true` (it does NOT block — the reply re-wakes this thread with full context). If the recipient is stopped, pass `wake_recipient: true` to wake them first.');
           lines.push('- If no response is needed, just process the information silently (e.g., update your state, create tasks, take notes).');
           lines.push('');
           lines.push('**A2A etiquette**: Only act if:');
@@ -1555,6 +1609,12 @@ export class ContextEngine {
         lines.push('- Human messages and comments are ALWAYS highest priority.');
         lines.push('- Stale informational items (old heartbeats, status updates) should be dropped aggressively.');
         lines.push('- **Batch related items**: Multiple items for the same task/requirement → handle with ONE context lookup + ONE reply. Mark all as inline_completed.');
+        lines.push('');
+        lines.push('**⚠ 严格状态管理事件（任务执行 / 评审 / 需求·工作流收尾动作）保护**:');
+        lines.push('- `check_mailbox` 中标记为 `isStrictState: true` 的项是「正式任务执行/评审/收尾动作」，承载任务状态机与执行闭包。');
+        lines.push('- 你**只能**通过 `prioritize_mailbox_item` 调整它们的优先级顺序；**绝不** `defer_mailbox_item` / `drop_mailbox_item` / 将它们放入 `process_item_ids` 批处理 / `inline_completed_ids`。');
+        lines.push('- 它们会由正常出队路径**单独执行**（带完整 task 工具链），你在这里的分拣职责只是排序。');
+        lines.push('');
         lines.push('- When done, call `complete_deliberation` with your decision.');
         lines.push('');
         lines.push('**Communication channel**: Your text output is NOT visible to anyone. Only tool calls have effect.');
@@ -1764,6 +1824,10 @@ export class ContextEngine {
       inputSchema: Record<string, unknown>;
     }>;
     systemCacheSegments?: SystemPromptSegment[];
+    /** Scheme A: per-turn volatile state (time, mailbox, status, memories, …)
+     *  that must stay OUT of the system message to keep the prefix cache hitting.
+     *  Injected as a standalone [SYSTEM] message pinned at the tail of history. */
+    volatileState?: string;
     /** ContextOS: fixed段 C — agent-pinned slots, injected verbatim and never compacted. */
     slotsSegment?: string;
     /** ContextOS: fixed段 C — durable compaction summary anchor, injected verbatim
@@ -1784,6 +1848,8 @@ export class ContextEngine {
     let maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.4));
 
     const systemTokens = estimateTokens(opts.systemPrompt, this.tokenCounter);
+    const volatileState = opts.volatileState ?? '';
+    const volatileTokens = volatileState ? estimateTokens(volatileState, this.tokenCounter) : 0;
     const toolDefTokens = opts.toolDefinitions
       ? estimateTokens(JSON.stringify(opts.toolDefinitions), this.tokenCounter)
       : 0;
@@ -1795,12 +1861,12 @@ export class ContextEngine {
     const summarySegment = opts.summarySegment ?? '';
     const summaryTokens = summarySegment ? estimateTokens(summarySegment, this.tokenCounter) : 0;
     let safetyMargin = Math.ceil(Math.min(contextWindow * 0.08, 16_000));
-    let messageBudget = contextWindow - systemTokens - toolDefTokens - slotsTokens - summaryTokens - maxOutput - safetyMargin;
+    let messageBudget = contextWindow - systemTokens - volatileTokens - toolDefTokens - slotsTokens - summaryTokens - maxOutput - safetyMargin;
 
     // ── Defensive budget reclamation ────────────────────────────────────
     const MIN_MESSAGE_BUDGET = 1500;
     const MIN_OUTPUT_RESERVE = 2048;
-    const staticOverhead = systemTokens + toolDefTokens + slotsTokens + summaryTokens;
+    const staticOverhead = systemTokens + volatileTokens + toolDefTokens + slotsTokens + summaryTokens;
     if (messageBudget < MIN_MESSAGE_BUDGET) {
       safetyMargin = Math.min(safetyMargin, 4000);
       const roomForOutput = contextWindow - staticOverhead - safetyMargin - MIN_MESSAGE_BUDGET;
@@ -1864,8 +1930,8 @@ export class ContextEngine {
     const currentTurnStart = this.findCurrentTurnStart(messages);
     let totalTokens = this.sumTokens(messages);
 
-    const packingCeiling = systemTokens + toolDefTokens + slotsTokens + messageBudget;
-    const preCompressionUsed = systemTokens + toolDefTokens + slotsTokens + totalTokens;
+    const packingCeiling = systemTokens + volatileTokens + toolDefTokens + slotsTokens + messageBudget;
+    const preCompressionUsed = systemTokens + volatileTokens + toolDefTokens + slotsTokens + totalTokens;
     const effectiveBudget = Math.min(contextWindow - maxOutput, packingCeiling);
     const preCompressionPct = effectiveBudget > 0 ? (preCompressionUsed / effectiveBudget) * 100 : 0;
     const perMessageCap = Math.max(8_000, Math.floor(messageBudget / 4));
@@ -1974,6 +2040,36 @@ export class ContextEngine {
       messages[turnStart - 1] = { ...messages[turnStart - 1], cacheBreakpoint: true };
     }
 
+    // Scheme A: assemble the per-turn volatile snapshot (contextHint + volatileState)
+    // into ONE standalone [SYSTEM] message pinned at the TAIL of the history (just
+    // before the current user query). Keeping it out of the system message lets the
+    // implicit prefix cache (DeepSeek/OpenAI) keep hitting across system + history.
+    const liveStateBits: string[] = [];
+    if (contextHint) liveStateBits.push(contextHint);
+    if (volatileState) liveStateBits.push(volatileState);
+    const liveStateMsg: LLMMessage | null = liveStateBits.length
+      ? { role: 'user', content: `[SYSTEM] [Live context]\n${liveStateBits.join('\n\n')}` }
+      : null;
+
+    let finalMessages = messages;
+    if (liveStateMsg) {
+      // Insert just before the last user message (the current query) so the model
+      // reads the live snapshot right before answering; if none, pin at the tail.
+      let lastUserIdx = -1;
+      for (let i = finalMessages.length - 1; i >= 0; i--) {
+        if (finalMessages[i]!.role === 'user') { lastUserIdx = i; break; }
+      }
+      if (lastUserIdx >= 0) {
+        finalMessages = [
+          ...finalMessages.slice(0, lastUserIdx),
+          liveStateMsg,
+          ...finalMessages.slice(lastUserIdx),
+        ];
+      } else {
+        finalMessages = [...finalMessages, liveStateMsg];
+      }
+    }
+
     return {
       messages: [
         {
@@ -1982,10 +2078,9 @@ export class ContextEngine {
             opts.systemPrompt,
             slotsSegment ? `\n\n${slotsSegment}` : '',
             summarySegment ? `\n\n${summarySegment}` : '',
-            `\n\n${contextHint}`,  // ContextOS: agent-visible water level, rebuilt every turn
           ].join(''),
         },
-        ...messages,
+        ...finalMessages,
       ],
       usage: {
         contextWindow,

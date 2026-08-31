@@ -116,7 +116,18 @@ export class GoogleProvider implements MultiModalProviderInterface {
 
     const endpoint = `${this.baseUrl}/v1beta/models/${this.model}:streamGenerateContent?alt=sse&key=${this.apiKey}`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
+    // Idle watchdog: reset on every chunk (SS-2). An LLM stream that stalls
+    // mid-way (provider hang / lost connection) must not block the agent
+    // forever. The hard cap remains as the absolute wall-clock bound.
+    const STREAM_IDLE_TIMEOUT_MS = 120_000;
+    const STREAM_HARD_TIMEOUT_MS = 15 * 60_000;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), STREAM_IDLE_TIMEOUT_MS);
+    };
+    const hardTimer = setTimeout(() => controller.abort(), STREAM_HARD_TIMEOUT_MS);
+    resetIdle();
     if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
 
     let res: Response;
@@ -128,12 +139,14 @@ export class GoogleProvider implements MultiModalProviderInterface {
         signal: controller.signal,
       });
     } catch (err) {
-      clearTimeout(timeout);
+      clearTimeout(hardTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       throw err;
     }
 
     if (!res.ok) {
-      clearTimeout(timeout);
+      clearTimeout(hardTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       const errText = await res.text();
       throw new Error(`Gemini API error ${res.status}: ${errText}`);
     }
@@ -154,6 +167,7 @@ export class GoogleProvider implements MultiModalProviderInterface {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      resetIdle();
 
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
@@ -193,7 +207,8 @@ export class GoogleProvider implements MultiModalProviderInterface {
       }
     }
 
-    clearTimeout(timeout);
+    clearTimeout(hardTimer);
+    if (idleTimer) clearTimeout(idleTimer);
 
     const usage = { inputTokens: promptTokens, outputTokens: completionTokens };
     onEvent({ type: 'message_end', usage, finishReason });

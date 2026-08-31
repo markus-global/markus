@@ -10,6 +10,10 @@ import {
   parseOpenAICompatResponse,
   normalizeOpenAIUsage,
   createSSEAccumulator,
+  recoverTextToolCalls,
+  stripTextToolMarkup,
+  createSafeTextEmitter,
+  stripToolNoise,
 } from '../src/llm/provider-helpers.js';
 
 describe('buildOpenAICompatEndpoint', () => {
@@ -208,6 +212,24 @@ describe('normalizeOpenAIUsage', () => {
       .toEqual({ inputTokens: 1, outputTokens: 1 });
   });
 
+  it('reads DeepSeek top-level prompt_cache_hit_tokens', () => {
+    // DeepSeek reports cache hits as a top-level sibling (not prompt_tokens_details).
+    expect(normalizeOpenAIUsage({
+      prompt_tokens: 500,
+      completion_tokens: 60,
+      prompt_cache_hit_tokens: 300,
+    })).toEqual({ inputTokens: 500, outputTokens: 60, cacheReadTokens: 300 });
+  });
+
+  it('prefers the larger cache figure when both DeepSeek + OpenAI shapes present', () => {
+    expect(normalizeOpenAIUsage({
+      prompt_tokens: 500,
+      completion_tokens: 60,
+      prompt_cache_hit_tokens: 300,
+      prompt_tokens_details: { cached_tokens: 120 },
+    })).toEqual({ inputTokens: 500, outputTokens: 60, cacheReadTokens: 300 });
+  });
+
   it('returns zero usage for undefined input', () => {
     expect(normalizeOpenAIUsage(undefined)).toEqual({ inputTokens: 0, outputTokens: 0 });
   });
@@ -367,5 +389,195 @@ describe('createSSEAccumulator', () => {
     }, {});
     const calls = acc.finalizeToolCalls();
     expect(calls).toEqual([{ id: 'a', name: 'real', arguments: {} }]);
+  });
+});
+
+describe('recoverTextToolCalls edge shapes', () => {
+  it('cleans MiniMax fence noise around leaked markup', () => {
+    const clean = recoverTextToolCalls('ok\n<]minimax[><invoke name="list_projects"></invoke>');
+    expect(clean.toolCalls).toHaveLength(1);
+    expect(clean.toolCalls[0].name).toBe('list_projects');
+    expect(clean.cleanedContent).not.toContain('invoke');
+    expect(clean.cleanedContent).toContain('ok');
+  });
+
+  it('leaves plain content untouched', () => {
+    const { toolCalls, cleanedContent } = recoverTextToolCalls('Just a normal reply.');
+    expect(toolCalls).toHaveLength(0);
+    expect(cleanedContent).toBe('Just a normal reply.');
+  });
+});
+
+describe('stripTextToolMarkup', () => {
+  it('strips leaked invoke markup from historical content, keeping prose', () => {
+    const dirty = 'Polymarket 标签页已选中。\n\n<invoke name="chrome-devtools__evaluate_script"><parameter name="expression">document.body.innerText</parameter></invoke>\n\n首页已捕获。';
+    const clean = stripTextToolMarkup(dirty);
+    expect(clean).not.toContain('invoke');
+    expect(clean).not.toContain('chrome-devtools__evaluate_script');
+    expect(clean).toContain('Polymarket 标签页已选中');
+    expect(clean).toContain('首页已捕获。');
+  });
+
+  it('returns input unchanged when no markup', () => {
+    expect(stripTextToolMarkup('hello world')).toBe('hello world');
+    expect(stripTextToolMarkup(null)).toBe('');
+  });
+});
+
+describe('convertMessagesOpenAI de-infection of history', () => {
+  it('strips leaked invoke markup from historical user/assistant/tool messages', () => {
+    const dirty = '之前残留: <invoke name="memory_save"><parameter name="content">x</parameter></invoke>';
+    const out = convertMessagesOpenAI([
+      { role: 'user', content: dirty },
+      { role: 'assistant', content: dirty },
+      { role: 'tool', content: dirty, toolCallId: 'tc_1' },
+    ]);
+    for (const msg of out) {
+      expect(String(msg.content)).not.toContain('invoke');
+    }
+    expect(String(out[0].content)).toContain('之前残留');
+  });
+
+  it('leaves system messages untouched', () => {
+    const sys = 'System instructions w/o markup';
+    const out = convertMessagesOpenAI([{ role: 'system', content: sys }]);
+    expect(String(out[0].content)).toBe(sys);
+  });
+});
+
+describe('createSafeTextEmitter 流式泄漏防护', () => {
+  it('普通正文逐 chunk 实时发射，无延迟', () => {
+    const emitted: string[] = [];
+    const em = createSafeTextEmitter((t) => emitted.push(t));
+    em.emit('你好');
+    em.emit('，这是一个');
+    em.emit('普通句子。');
+    em.flush();
+    expect(emitted.join('')).toBe('你好，这是一个普通句子。');
+    expect(emitted.length).toBeGreaterThan(1);
+  });
+
+  it('整块工具调用标签被吞掉，不泄漏给 UI', () => {
+    const emitted: string[] = [];
+    const em = createSafeTextEmitter((t) => emitted.push(t));
+    em.emit('先输出普通文本');
+    em.emit('<invoke name="memory_save"><parameter name="content">x</parameter></invoke>');
+    em.emit('后置文本');
+    em.flush();
+    const all = emitted.join('');
+    expect(all).toContain('先输出普通文本');
+    expect(all).toContain('后置文本');
+    expect(all).not.toContain('invoke');
+    expect(all).not.toContain('parameter');
+    expect(all).not.toContain('memory_save');
+  });
+
+  it('跨 chunk 半截标签也能识别并吞掉', () => {
+    const emitted: string[] = [];
+    const em = createSafeTextEmitter((t) => emitted.push(t));
+    em.emit('正文');
+    em.emit('<invo');          // 半截标签
+    em.emit('ke name="tool_x"><parameter name="a">1</parameter></invoke>');
+    em.emit('结尾');
+    em.flush();
+    const all = emitted.join('');
+    expect(all).toContain('正文');
+    expect(all).toContain('结尾');
+    expect(all).not.toContain('invoke');
+  });
+
+  it('未闭合标签残渣在 flush 时被剥离', () => {
+    const emitted: string[] = [];
+    const em = createSafeTextEmitter((t) => emitted.push(t));
+    em.emit('安全文本');
+    em.emit('<invoke name="never_closed">');
+    em.flush();
+    const all = emitted.join('');
+    expect(all).not.toContain('invoke');
+    expect(all).toContain('安全文本');
+  });
+
+  it('DSML / MiniMax 围栏噪声被剥离', () => {
+    const emitted: string[] = [];
+    const em = createSafeTextEmitter((t) => emitted.push(t));
+    // DSL: 用 charCode 拼接避免字面量被误转写
+    const dsmlFence = `${String.fromCharCode(0xFF5C)}${String.fromCharCode(68, 83, 77, 76)}${String.fromCharCode(0xFF5C)}`;
+    em.emit(`${dsmlFence} 前面`);
+    em.emit('<]minimax[> 后面');
+    em.flush();
+    const all = emitted.join('');
+    expect(all).not.toContain(String.fromCharCode(68, 83, 77, 76));
+    expect(all).not.toContain('minimax');
+    expect(all).toContain('前面');
+    expect(all).toContain('后面');
+  });
+});
+
+describe('stripToolNoise 无条件噪声剥离', () => {
+  it('剥离孤立标签片段与围栏', () => {
+    const dsmlFence = `${String.fromCharCode(0xFF5C)}${String.fromCharCode(68, 83, 77, 76)}${String.fromCharCode(0xFF5C)}`;
+    const input = `前 <invoke name="x"> 中 </invoke> 后 ${dsmlFence} 尾 <]minimax[>`;
+    const out = stripToolNoise(input);
+    expect(out).not.toContain('invoke');
+    expect(out).not.toContain(String.fromCharCode(68, 83, 77, 76));
+    expect(out).not.toContain('minimax');
+  });
+
+  it('无噪声时原样返回', () => {
+    const text = '普通文本没有噪声';
+    expect(stripToolNoise(text)).toBe(text);
+  });
+
+  it('空值返回空串', () => {
+    expect(stripToolNoise(null)).toBe('');
+    expect(stripToolNoise(undefined)).toBe('');
+  });
+});
+
+describe('parseOpenAICompatResponse 混合输出清理', () => {
+  it('结构化 tool_calls + 正文明文同时存在时，剥离正文标签但仍保留结构化调用', () => {
+    const res = parseOpenAICompatResponse(
+      {
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: '我先说一句正文 <invoke name="tool_a"><parameter name="q">1</parameter></invoke> 这是正文结尾',
+            tool_calls: [
+              { id: 'tc_1', type: 'function', function: { name: 'tool_a', arguments: '{"q":"1"}' } },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      },
+      { recoverTextToolCalls: (c) => recoverTextToolCalls(c) },
+    );
+    expect(res.content).not.toContain('invoke');
+    expect(res.content).not.toContain('tool_a');
+    expect(res.toolCalls).toHaveLength(1);
+    expect(res.toolCalls![0].name).toBe('tool_a');
+    expect(res.finishReason).toBe('tool_use');
+  });
+
+  it('结构化工具调用 + 明文混合时 finishReason 保持 tool_use（不因明文剥离丢失）', () => {
+    const res = parseOpenAICompatResponse(
+      {
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: '<invoke name="run"><parameter name="cmd">ls</parameter></invoke>',
+            tool_calls: [
+              { id: 'tc_2', type: 'function', function: { name: 'run', arguments: '{"cmd":"ls"}' } },
+            ],
+          },
+          finish_reason: 'stop', // 上游误报 stop
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      },
+      { recoverTextToolCalls: (c) => recoverTextToolCalls(c) },
+    );
+    expect(res.toolCalls).toHaveLength(1);
+    expect(res.content).toBe(''); // 只剩标签标签被剥离，正文为空
+    expect(res.finishReason).toBe('tool_use');
   });
 });

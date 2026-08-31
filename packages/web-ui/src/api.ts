@@ -1,5 +1,7 @@
 const BASE = '/api';
 
+import { createStreamWatchdog } from './lib/streamResilience.ts';
+
 export interface SubagentProgressEvent {
   eventType: 'started' | 'tool_start' | 'tool_end' | 'thinking' | 'iteration' | 'completed' | 'error';
   content: string;
@@ -34,7 +36,7 @@ export interface AuthUser {
   role: string;
   orgId: string;
   avatarUrl?: string;
-  preferences?: { locale?: string; timezone?: string; [key: string]: unknown };
+  preferences?: { locale?: string; timezone?: string; guideHidden?: boolean; [key: string]: unknown };
 }
 
 export interface ChatSessionInfo {
@@ -248,7 +250,11 @@ export interface ProjectInfo {
   status: string;
   repositories?: Array<{ url: string; defaultBranch: string; localPath?: string }>;
   teamIds: string[];
+  /** Human user id who created the project, when known */
+  createdBy?: string;
   governancePolicy?: GovernancePolicyInfo;
+  /** 知识库绑定根目录（JSON 数组），见项目级知识库需求 */
+  knowledgeBasePaths?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -324,6 +330,12 @@ export interface DeliverableInfo {
   format?: string;
   tags: string[];
   status: 'active' | 'verified' | 'outdated';
+  /** 'agent'（Agent 产出物，默认）| 'knowledge'（知识库文档） */
+  source?: 'agent' | 'knowledge';
+  /** 归属知识库根路径（source='knowledge' 时有效） */
+  knowledgeRoot?: string | null;
+  /** 扫描抽取的文本内容，供全文搜索 */
+  content?: string | null;
   taskId?: string;
   agentId?: string;
   projectId?: string;
@@ -612,6 +624,65 @@ export interface AgentActivityInfo {
   startedAt: string;
 }
 
+/** OB-1：后端 /api/agents 在每个 agent 上派生的可读运行阶段（不改变 status 原始语义）。 */
+export type AgentRuntimePhase =
+  | 'idle'
+  | 'thinking'
+  | 'running'
+  | 'waiting-dependency'
+  | 'degraded'
+  | 'blocked'
+  | 'error'
+  | 'offline';
+
+export interface AgentRuntimeInfo {
+  agentId: string;
+  phase: AgentRuntimePhase;
+  status: string;
+  activityType?: string;
+  activityLabel?: string;
+  currentTaskId?: string;
+  activeTaskIds: string[];
+  blockingTaskIds: string[];
+  /** 阻塞依赖明细：taskId + 标题 + 状态 —— 用于「卡在依赖 XX」一眼定位 */
+  blockedBy: Array<{ taskId: string; title: string; status: string }>;
+  startedAt?: string;
+  runningMinutes?: number;
+  lastHeartbeat?: string;
+  lastActivityAt?: string;
+  tokensUsedToday: number;
+  lastError?: string;
+  lastErrorAt?: string;
+  /** OB-2：疑似卡死定位（stall-heartbeat / dead-dependency） */
+  stall?: AgentRuntimeStall;
+  /** OB-3：无真实任务却标记 processing 的遗留脏态判定（纯派生，供概览提示）。 */
+  dirty?: { dirty: true; agentId: string; reason: string; criterion: 'no-live-task' | 'stale-activity' | 'no-heartbeat'; recovery: 'reconcile-idle' | 'trigger-heartbeat' | 'human-review'; suggestions: string[] } | { dirty: false; reason: string };
+}
+
+export interface AgentRuntimeStall {
+  /** 是否长时间无活动 / 依赖失败阻塞 */
+  stalled: boolean;
+  /** 未卡死时的原因说明 */
+  reason?: string;
+  /** 命中判据：心跳停滞 / 依赖已死仍等待 */
+  stallKind?: 'stale-heartbeat' | 'dead-dependency';
+  /** 卡住的任务/依赖 id */
+  stuckOnTaskId?: string;
+  /** 卡住的定位标题 */
+  stuckOnTitle?: string;
+  /** 当前（被卡）任务 id */
+  currentTaskId?: string;
+  /** 最后活动时间（ISO） */
+  lastActivityAt?: string;
+  /** 最后活动距今分钟数 */
+  lastActivityAgoMin?: number;
+  /** 最近一次错误概要 */
+  lastError?: string;
+  /** 给前端/人工的可读定位 + 建议动作 */
+  stuckReason?: string;
+  suggestions?: string[];
+}
+
 export interface AgentActivityLogEntry {
   seq: number;
   type: 'status' | 'text' | 'tool_start' | 'tool_end' | 'error' | 'llm_request' | 'subagent_start' | 'subagent_progress' | 'subagent_end';
@@ -751,6 +822,8 @@ export interface AgentInfo {
   lastErrorAt?: string;
   currentTaskId?: string;
   currentActivity?: AgentActivityInfo;
+  /** OB-1：后端派生的可读运行阶段（phase/activityLabel/blockedBy/lastHeartbeat/…） */
+  runtime?: AgentRuntimeInfo;
   mailboxDepth?: number;
   attentionState?: string;
   modelSupportsVision?: boolean;
@@ -1007,7 +1080,7 @@ export interface RoleUpdateStatus {
 }
 
 export interface AgentConfigInfo {
-  llmConfig: { modelMode?: 'default' | 'custom'; primary: string; fallback?: string; maxTokensPerRequest?: number; maxTokensPerDay?: number };
+  llmConfig: { modelMode?: 'default' | 'custom'; primary: string; defaultModel?: string; fallback?: string; maxTokensPerRequest?: number; maxTokensPerDay?: number };
   computeConfig: { type: string; image?: string; cpu?: number; memoryMb?: number };
   channels: Array<{ platform: string; channelId: string; role: string }>;
   heartbeatIntervalMs: number;
@@ -1045,6 +1118,7 @@ export interface AgentDetail {
   avatarUrl?: string;
   proficiency?: Record<string, { uses: number; successes: number; lastUsed?: string }>;
   config?: AgentConfigInfo;
+  effectiveModel?: { provider?: string; model?: string; source: 'override' | 'custom' | 'global' };
   tools?: AgentToolInfo[];
   heartbeat?: AgentHeartbeatInfo;
   state: {
@@ -1057,6 +1131,26 @@ export interface AgentDetail {
     lastHeartbeat?: string;
     lastError?: string;
     lastErrorAt?: string;
+  };
+  /** OB-1：后端派生的可读运行阶段（phase/activityLabel/blockedBy/…） */
+  runtime?: {
+    phase: AgentRuntimePhase;
+    status: string;
+    activityType?: string;
+    activityLabel?: string;
+    currentTaskId?: string;
+    activeTaskIds: string[];
+    blockingTaskIds: string[];
+    blockedBy: Array<{ taskId: string; title: string; status: string }>;
+    startedAt?: string;
+    runningMinutes?: number;
+    lastHeartbeat?: string;
+    lastActivityAt?: string;
+    tokensUsedToday: number;
+    lastError?: string;
+    lastErrorAt?: string;
+    stall?: boolean;
+    dirty?: boolean;
   };
 }
 
@@ -1135,6 +1229,9 @@ export interface AgentUsageInfo {
   costToday: number;
   cuUsed?: number;
   cuUsedToday?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheHitRate?: number; // 0..1
   provider?: string;
 }
 
@@ -1236,6 +1333,7 @@ export const api = {
         let fullContent = '';
         let resultSessionId: string | undefined;
         let resultSegments: StoredSegment[] | undefined;
+        let watchdog: ReturnType<typeof createStreamWatchdog> | null = null;
         try {
           const res = await fetch(`${BASE}/agents/${id}/message`, {
             method: 'POST',
@@ -1261,8 +1359,19 @@ export const api = {
           if (!reader) { reject(new Error('No reader')); return; }
           const decoder = new TextDecoder();
           let buffer = '';
+          // 空转看门狗：若连接真正死亡（服务端每 15s 发 heartbeat，此处 60s 无任何数据），
+          // 取消 reader 并优雅降级返回，避免「永久思考中」。见 lib/streamResilience.ts。
+          if (signal) {
+            watchdog = createStreamWatchdog({
+              signal,
+              onStall: () => {
+                reader.cancel().catch(() => {});
+              },
+            });
+          }
           while (true) {
             const { done, value } = await reader.read();
+            watchdog?.bump();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
@@ -1305,6 +1414,7 @@ export const api = {
                     emptyReply,
                   });
                   reader.cancel().catch(() => {});
+                  watchdog?.stop();
                   return;
                 } else if (event.type === 'error') {
                   const errEvent = event as { type: string; message?: string; error?: string; sessionId?: string };
@@ -1313,6 +1423,7 @@ export const api = {
                   (err as Error & { sessionId?: string }).sessionId = errEvent.sessionId;
                   reject(err);
                   reader.cancel().catch(() => {});
+                  watchdog?.stop();
                   return;
                 } else if (event.type === 'thinking_commit' && event.thinking) {
                   onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
@@ -1333,8 +1444,10 @@ export const api = {
               } catch { /* skip */ }
             }
           }
+          watchdog?.stop();
           resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments });
         } catch (err) {
+          watchdog?.stop();
           if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments }); }
           else { reject(err); }
         }
@@ -1471,6 +1584,7 @@ export const api = {
         size?: number;
         streamUrl?: string;
         extension?: string;
+        format?: string;
       }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
     streamUrl: (filePath: string) =>
       `${BASE}/files/stream?path=${encodeURIComponent(filePath)}`,
@@ -1593,9 +1707,9 @@ export const api = {
     getAgent: () => request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent'),
     updateAgent: (settings: { maxToolIterations?: number; cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }) =>
       request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
-    getBrowser: () => request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser'),
-    updateBrowser: (settings: { bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; autoClickAllowDialog?: boolean }) =>
-      request<{ bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
+    getBrowser: () => request<{ mode: 'embedded' | 'system-chrome'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser'),
+    updateBrowser: (settings: { mode?: 'embedded' | 'system-chrome'; bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; autoClickAllowDialog?: boolean }) =>
+      request<{ mode: 'embedded' | 'system-chrome'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
     testAutoClick: () => request<{
       checkResult: { platform: string; supported: boolean; accessibilityPermission: boolean; chromeRunning: boolean; binaryAvailable: boolean };
       openedAccessibilitySettings: boolean;
@@ -1832,8 +1946,8 @@ export const api = {
       request<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
     updateProfile: (name: string, email: string) =>
       request<{ user: AuthUser }>('/auth/profile', { method: 'PUT', body: JSON.stringify({ name, email }) }),
-    updatePreferences: (prefs: { locale?: string; timezone?: string }) =>
-      request<{ ok: boolean; preferences: { locale?: string; timezone?: string } }>('/auth/me/preferences', { method: 'PUT', body: JSON.stringify(prefs) }),
+    updatePreferences: (prefs: { locale?: string; timezone?: string; guideHidden?: boolean }) =>
+      request<{ ok: boolean; preferences: { locale?: string; timezone?: string; guideHidden?: boolean; [key: string]: unknown } }>('/auth/me/preferences', { method: 'PUT', body: JSON.stringify(prefs) }),
     setup: (token: string, password: string) =>
       request<{ ok: boolean; email: string }>('/auth/setup', { method: 'POST', body: JSON.stringify({ token, password }) }),
     inviteInfo: (token: string) =>
@@ -1891,6 +2005,7 @@ export const api = {
         let fullContent = '';
         let resultSessionId: string | undefined = sessionId;
         let resultSegments: StoredSegment[] | undefined;
+        let watchdog: ReturnType<typeof createStreamWatchdog> | null = null;
         try {
           const res = await fetch(
             `${BASE}/agents/${agentId}/sessions/${sessionId}/stream?afterSeq=${afterSeq}`,
@@ -1911,8 +2026,19 @@ export const api = {
           }
           const decoder = new TextDecoder();
           let buffer = '';
+          // 空转看门狗：重连时若连接再次死亡（无任何数据 60s），取消 reader，
+          // 结束本次 attach（调用方据此清掉「思考中」），避免永久挂起。见 lib/streamResilience.ts。
+          if (signal) {
+            watchdog = createStreamWatchdog({
+              signal,
+              onStall: () => {
+                reader.cancel().catch(() => {});
+              },
+            });
+          }
           while (true) {
             const { done, value } = await reader.read();
+            watchdog?.bump();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
@@ -1942,10 +2068,12 @@ export const api = {
                   if (doneSegments) resultSegments = doneSegments;
                   resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true });
                   reader.cancel().catch(() => {});
+                  watchdog?.stop();
                   return;
                 } else if (type === 'error') {
                   reject(new Error((event.message as string) ?? (event.error as string) ?? 'Stream error'));
                   reader.cancel().catch(() => {});
+                  watchdog?.stop();
                   return;
                 } else if (type === 'thinking_commit' && typeof event.thinking === 'string') {
                   handlers.onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event.createdAt as string) ?? new Date().toISOString() });
@@ -1978,8 +2106,10 @@ export const api = {
             }
           }
           // Stream ended without a terminal done/error (e.g. server closed early).
+          watchdog?.stop();
           resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true });
         } catch (err) {
+          watchdog?.stop();
           // Abort is not a successful attach — caller must not finalize the turn.
           reject(err);
         }
@@ -2088,6 +2218,8 @@ export const api = {
       request<{ project: ProjectInfo }>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) =>
       request<{ deleted: boolean }>(`/projects/${id}`, { method: 'DELETE' }),
+    syncKnowledge: (id: string, knowledgeRoots?: string[]) =>
+      request<{ projectId: string; roots: string[]; scanned: number; registered: number; updated: number; outdated: number; errors: string[] }>(`/projects/${id}/knowledge/sync`, { method: 'POST', body: JSON.stringify({ knowledgeRoots }) }),
 
   },
 
@@ -2112,7 +2244,7 @@ export const api = {
 
   // ─── Deliverables (unified) ──────────────────────────────────────────
   deliverables: {
-    search: (opts?: { q?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; artifactType?: string; offset?: number; limit?: number }) => {
+    search: (opts?: { q?: string; projectId?: string; agentId?: string; taskId?: string; type?: string; status?: string; artifactType?: string; source?: 'agent' | 'knowledge'; offset?: number; limit?: number }) => {
       const params = new URLSearchParams();
       if (opts?.q) params.set('q', opts.q);
       if (opts?.projectId) params.set('projectId', opts.projectId);
@@ -2121,6 +2253,7 @@ export const api = {
       if (opts?.type) params.set('type', opts.type);
       if (opts?.status) params.set('status', opts.status);
       if (opts?.artifactType) params.set('artifactType', opts.artifactType);
+      if (opts?.source) params.set('source', opts.source);
       if (opts?.offset) params.set('offset', String(opts.offset));
       if (opts?.limit) params.set('limit', String(opts.limit));
       return request<{ results: DeliverableInfo[]; total: number }>(`/deliverables?${params}`);

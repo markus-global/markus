@@ -80,6 +80,8 @@ export interface MarkusConfig {
     };
   };
   browser?: {
+    /** Backend that drives agent browser automation: 'embedded' = built-in Electron WebContentsView (default), 'system-chrome' = Chrome extension bridge. */
+    mode?: 'embedded' | 'system-chrome';
     /** Bring Chrome tabs/windows to foreground when agent navigates (default: false) */
     bringToFront?: boolean;
     /** Remote debugging port for persistent Chrome connection (avoids repeated permission dialogs). Set to e.g. 9222 to enable. */

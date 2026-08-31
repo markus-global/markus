@@ -93,6 +93,8 @@ async function registerCommands() {
   const admin = program.command('admin').description('System administration');
   const { registerSystemCommands } = await import('./commands/system.js');
   registerSystemCommands(admin);
+  const { registerSuperviseCommand } = await import('./commands/supervise.js');
+  registerSuperviseCommand(admin);
 }
 
 registerCommands()

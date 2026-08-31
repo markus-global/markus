@@ -226,6 +226,32 @@ describe('subagent tool wrappers', () => {
     expect(parsed.results).toHaveLength(2);
   });
 
+  it('spawn_subagents tasks overlap in time (NOT serial A→B→C)', async () => {
+    // Each child blocks ~200ms on its LLM call. If serial, total ≥400ms;
+    // if parallel (Promise.allSettled), total ≈ max(200) ≈ one delay.
+    const slowRouter: LLMRouter = {
+      chat: vi.fn(async () => {
+        await new Promise(r => setTimeout(r, 200));
+        return { content: 'done', finishReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
+      }),
+      getModelContextWindow: vi.fn(() => 32000),
+    } as unknown as LLMRouter;
+    const tool = createParallelSubagentTool(makeCtx(slowRouter, new Map()));
+    const start = Date.now();
+    const parsed = JSON.parse(await tool.execute({
+      tasks: [
+        { id: 'a', task: 'Task A' },
+        { id: 'b', task: 'Task B' },
+        { id: 'c', task: 'Task C' },
+      ],
+    }));
+    const elapsed = Date.now() - start;
+    expect(parsed.status).toBe('completed');
+    expect((slowRouter.chat as ReturnType<typeof vi.fn>).mock.calls.length).toBe(3);
+    // 3 × 200ms done concurrently ≈ ~200-400ms, never ~600ms serial.
+    expect(elapsed).toBeLessThan(500);
+  });
+
   it('B4: spawn_subagents reports budgetExceeded when the fan-out exhausts the shared budget', async () => {
     // Every child loops forever (always tool_use) → the shared aggregate budget must cap them.
     const router = makeMockRouter([{

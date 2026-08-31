@@ -57,101 +57,99 @@ These are `handleMessage()` calls with `scenario: 'heartbeat'` and typed session
 
 ## 2. System Prompt Architecture
 
-The system prompt is assembled by `ContextEngine.buildSystemPrompt()` and organized into **three tiers** for optimal KV-cache reuse. Each tier has a `cache_control: { type: 'ephemeral' }` breakpoint (for Anthropic), allowing the provider to cache each stable prefix independently:
+The system prompt is built by `ContextEngine.buildSystemPrompt()`. Under **Scheme A**, the
+system prompt (`text`) is split into **two tiers**, both **byte-stable**; and all per-call
+dynamic content is moved **out of the system prompt entirely** into a volatile tail message.
 
 ```
 ╔══════════════════════════════════════════════════════════╗
-║  TIER 1 — STABLE (cache breakpoint ✓)                   ║
-║  Rarely changes between calls for the same agent.        ║
-║  Scenario-free — cached across ALL mode switches.        ║
+║  SYSTEM `text` — BYTE-STABLE (every segment = breakpoint)║
+║  Identical byte-for-byte across turns for the same agent.║
+║  This byte-stability IS the implicit prefix-cache key.   ║
 ║                                                          ║
-║   1. Role System Prompt (from ROLE.md)                   ║
-║   2. Policies                                            ║
-║   3. Tool Usage / Search / Learning Habits / Autonomy / Security (L0) ║
-║   4. Resource refs + User Language                       ║
-║   5. Task Workflow (summary only — full checklist = L3)  ║
-╠══════════════════════════════════════════════════════════╣
-║  TIER 2 — SEMI-STABLE (cache breakpoint ✓)              ║
-║  Changes with org/config/session, not per query.         ║
-║  Scenario placed LAST so identity/org/memory prefix      ║
-║  remains stable across mode switches (OpenAI benefit).   ║
+║  TIER 1 — STABLE  (cache_control: ephemeral ✓)           ║
+║   Role / Policies / Search / Learning / Autonomy /       ║
+║   Security (L0) / Resource refs / User Language /        ║
+║   Task Workflow summary / collaboration rules.           ║
 ║                                                          ║
-║   7. Identity Section (name, role, colleagues w/o status)║
-║   8. Organization Context (CONTEXT.md)                   ║
-║   9. Team Announcements & Norms                          ║
-║  10. Workspace Info (paths)                              ║
-║  11. User Profiles (users/*.md) + Team Context           ║
-║  12. Trust Level                                         ║
-║  13. Environment Profile                                 ║
-║  14. Your Knowledge (knowledge.md curated — no _observations)║
-║  15. Scenario Section (mode-specific instructions)       ║
-╠══════════════════════════════════════════════════════════╣
-║  TIER 3 — DYNAMIC (no cache breakpoint)                  ║
-║  Changes per call. Kept as small as possible.            ║
-║  Values quantized where possible to reduce churn.        ║
-║                                                          ║
-║  16. Project Context (governance)                        ║
-║  17. System Announcements                                ║
-║  18. Human Feedback                                      ║
-║  19. Project Deliverables                                ║
-║  20. Shared Deliverables                                 ║
-║  21. Dynamic Context (skills, Notebook)                  ║
-║  22. Available Skills (query-filtered, ≤30)              ║
-║  23. Task Board (capped)                                 ║
-║  24. Team Status (real-time colleague status)             ║
-║  25. Channel History (recent messages)                    ║
-║  26. Mailbox & Attention Context (quantized elapsed)      ║
-║  27. Sender Identity                                     ║
-║  28. Timestamp (minute-level, no seconds)                  ║
+║  TIER 2 — SEMI-STABLE (cache_control: ephemeral ✓)       ║
+║   Identity · Org (CONTEXT.md) · Team Announcements &     ║
+║   Norms · Workspace · User Profiles · Trust · Env ·      ║
+║   Your Knowledge (curated, no _observations) ·           ║
+║   Scenario (mode instructions, placed LAST) ·            ║
+║   Team Data Directory · Activated-skills body            ║
+╚══════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════╗
+║  VOLATILE TAIL — `[SYSTEM] [Live context]` (NOT system)  ║
+║  one `role: user` message pinned at END of history,      ║
+║  immediately BEFORE the current query. Only this tail    ║
+║  changes per call → cache across system+history persists.║
+║   contextHint ([CONTEXT x% used …]) · Relevant Memories  ║
+║   Channel History (recent msgs) · Date/locale · Mailbox  ║
+║   & attention · Team Status · Working Memory ·           ║
+║   Cognitive/Notebook context · task board · deliverables ║
 ╚══════════════════════════════════════════════════════════╝
 ```
 
 ### 2.1 KV-Cache Optimization Strategy
 
-The system prompt uses a **3-tier cache architecture** with explicit cache breakpoints:
+`buildSystemPrompt()` returns `{ text, segments, volatile }` under **Scheme A**: `text` is a byte-stable, two-tier system (Tier 1 STABLE + Tier 2 SEMI-STABLE); all per-call dynamic content lives in `volatile`, assembled by `prepareMessages()` into a single `[SYSTEM] [Live context]` message (role `user`) pinned at the end of history before the current query. Details:
 
-1. **Tier 1 (Stable)**: Role, policies, tool usage rules, communication rules. Scenario-free — these rarely change for the same agent and stay cached across ALL mode switches (chat ↔ heartbeat ↔ a2a ↔ deliberation). A cache breakpoint after this tier allows the provider to cache this prefix across all calls.
+1. **Tier 1 (Stable)**: Role, policies, tool usage rules, communication rules, collaboration rules. Scenario-free — stay cached across ALL mode switches (chat ↔ heartbeat ↔ a2a ↔ deliberation). A cache breakpoint after this tier caches this prefix across all calls.
 
-2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, `## Your Knowledge` (curated `knowledge.md`), then scenario instructions at the end. These change when the agent's configuration, team, or memory changes, but remain stable within a session. Scenario is placed last so the identity/org/memory prefix remains stable across mode switches (benefits OpenAI implicit prefix caching). A cache breakpoint here enables caching the combined Tier 1+2 prefix.
+2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, `## Your Knowledge` (curated `knowledge.md`), scenario instructions last. Change when config/team/memory changes, but stay stable within a session. Scenario placed last keeps the identity/org/memory prefix stable across mode switches (OpenAI benefit). A breakpoint here caches the combined Tier 1+2 prefix. These two tiers together form the byte-stable system `text`.
 
-3. **Tier 3 (Dynamic)**: Project context, announcements, feedback, available skills (query-filtered), task board, `## Notebook`, team status, channel history, mailbox state, timestamps. These change per call and are kept as small as possible. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn and improve implicit prefix caching on OpenAI-compatible providers. No cache breakpoint — this section is always re-processed.
+3. **Volatile tail (Scheme A)** — replaces the old Tier 3: Project/task board, system announcements, feedback, available skills (query-filtered), `## Notebook` (cognitive), relevant memories, team status, channel history, mailbox state, working memory, timestamps. These change per call and live **outside the system**: `prepareMessages()` assembles them (plus `contextHint`) into one `[SYSTEM] [Live context]` message pinned at the **end of the conversation history, before the current query**. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn. Sitting in the **history tail** rather than in the system message means changing it never invalidates the byte-stable system + history prefix (implicit prefix-cache on OpenAI-compatible providers).
 
-**Message-level cache breakpoints**: In addition to system prompt caching, a `cacheBreakpoint` is placed on the last message before the current turn in the conversation history. This allows providers (e.g. Anthropic) to cache the stable conversation prefix (older history, channel context) independently from new messages.
+**Message-level cache breakpoints**: In addition to system caching, a `cacheBreakpoint` is placed on
+the last message before the current turn in the conversation history, letting providers (e.g.
+Anthropic) cache the stable conversation prefix independently of new messages.
 
-**Channel session reuse**: A2A and group chat messages using the same channel share a stable session ID (`channel_{channelKey}_{agentId}`), so conversation history accumulates naturally and benefits from message-level prefix caching. Only the delta (new messages since last call) is added on subsequent turns. Channel history is injected in the system prompt (Tier 3) rather than prepended into conversation messages, preserving conversation-prefix cache stability.
+**Channel session reuse**: A2A and group chat messages sharing a channel reuse a stable session ID
+(`channel_{channelKey}_{agentId}`); history accumulates and only the delta is added on later turns.
+Channel history is injected as part of the volatile `[Live context]` tail, not prepended into
+history — preserving conversation-prefix cache stability.
 
-**Tool definition caching (Anthropic)**: The last tool in the `tools` array is marked with `cache_control: { type: 'ephemeral' }`, allowing Anthropic to cache the tool definitions prefix. Since tool lists are relatively stable within a session, this provides additional cache hits.
+**Tool definition caching (Anthropic)**: The last tool in the `tools` array is marked with
+`cache_control: { type: 'ephemeral' }`, caching the (deterministically registry-ordered) tool
+definitions prefix.
 
-**Dynamic value quantization**: Several dynamic fields use coarse-grained labels instead of precise values to reduce prompt churn: notebook entry ages use buckets (`just now`, `recent`, `~Nh ago`), mailbox elapsed time uses labels (`just started`, `a few minutes`, `~Nmin`), and timestamps drop seconds (minute-level precision). Coarser timestamp buckets were considered but rejected — Tier 3 has many other per-call varying fields, so the marginal cache benefit does not justify the risk of inaccurate time perception.
+**Dynamic value quantization**: Several dynamic fields use coarse labels to reduce churn: notebook
+entry ages (`just now`, `recent`, `~Nh ago`), mailbox elapsed labels (`just started`, `a few minutes`,
+`~Nmin`), timestamps drop seconds (minute-level). Coarser timestamp buckets were rejected — the tail
+has many other per-call fields, so the marginal benefit did not justify inaccurate time perception.
 
 ### 2.2 Spec: injection-point ownership audit (C3)
 
 The tiering above is the intended design; this spec makes it an enforced invariant so a new
 injection point cannot silently land in a stable tier and bust the cache prefix.
 
-- **Behavior**: every prompt injection point has an explicit tier owner. Identity, policies,
-  tool-usage rules → **Tier 1 (stable)**. Identity/org/memory/scenario → **Tier 2
-  (semi-stable)**. All per-call situational meta (CPP output via `## Notebook`, triage
-  decision, mailbox state, task board, timestamps, query-filtered skills) → **Tier 3
-  (dynamic), after the last cache breakpoint**.
+- **Behavior**: every prompt injection point has an explicit owner. Identity, policies,
+  tool-usage rules → **Tier 1 (stable)**. Org/workspace/memory/scenario/announcements/norms/
+  activated-skills → **Tier 2 (semi-stable)**. All per-call situational meta (CPP output via
+  `## Notebook`, triage decision, mailbox state, task board, timestamps, relevant memories, team
+  status, query-filtered skills, working memory, contextHint) → **volatile tail (the `[Live
+  context]` message), never in any system segment**.
 - **Invariants**:
-  - The Tier 1+2 prefix contains **no** per-call varying content (CPP/triage/notebook/mailbox
-    meta appear only after the last `cache_control` breakpoint).
-  - CPP writes to `NOTEBOOK.md` (Tier 3), never as a new stable system-prompt section (see
+  - The system `text` (all segments) contains **no** per-call varying content (CPP/triage/notebook/
+    mailbox/task/date/skills markers appear only in the `volatile` tail).
+  - Every system segment carries a `cacheBreakpoint`; CPP writes cognitive output to `NOTEBOOK.md`
+    (surfaced via `volatile`/notebook writer), never as a new stable system-prompt section (see
     [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) §3).
-- **Design rationale (Anthropic prompt caching)**: dynamic content in the stable prefix
-  invalidates every downstream cache hit; keeping it in the ephemeral tail preserves prefix
-  reuse across mode switches.
+- **Design rationale**: dynamic content in the byte-stable system prefix invalidates every downstream
+  cache hit; Scheme A keeps it in the volatile **history tail**, preserving prefix reuse across mode
+  switches (Anthropic explicit + OpenAI/DeepSeek implicit).
 - **Testing** (`packages/core/test/cache-optimization.test.ts` — the "C3:" cases): with a
   prompt carrying CPP output, mailbox/attention meta, channel history, sender identity and a
-  timestamp, assert (a) the breakpoint (Tier 1+2) prefix excludes every dynamic marker,
-  (b) those markers appear only in the tail segment after the last breakpoint, (c) identity /
-  tool-usage rules / `## Your Knowledge` stay in the stable prefix, and (d) CPP output is
+  timestamp, assert (a) **every system segment is a cache breakpoint and carries no dynamic marker**,
+  (b) those markers appear only in `volatile`, (c) identity / tool-usage /
+  `## Your Knowledge` stay in the stable prefix, and (d) CPP output is
   routed to the notebook writer rather than injected as a stable `## Cognitive Context`
-  section. The cache-hit-rate metric is tracked separately (see
+  section, and (e) two turns with different per-turn context yield byte-identical `text` but
+  different `volatile`. The cache-hit-rate metric is tracked separately (see
   [ARCHITECTURE.md §11.1](./ARCHITECTURE.md) observability).
-- **Status**: implemented (design was already in place; this adds the enforcing guard tests
-  and the `usage.compressed`-driven cache/compression metrics).
+- **Status**: implemented (Scheme A — volatile tail; adds the enforcing guard tests, the
+  byte-stability regression, and the `usage.compressed`-driven cache/compression metrics).
 
 ### 2.2 Section Details
 
@@ -179,7 +177,7 @@ The context engine no longer injects separate `## Cognitive Context`, `## Retrie
 
 Legacy aliases `update_working_memory` / `clear_working_memory` remain for backward compatibility.
 
-#### Content layers (within the 3-tier cache)
+#### Content layers (availability tiers: which content is always on vs on-demand)
 
 | Layer | Content | When |
 |-------|---------|------|
@@ -288,7 +286,7 @@ Contains:
 #### Skills (Hermes L0–L1 progressive disclosure)
 Skill **full bodies are not injected at spawn** (including former `alwaysOn` builtins and
 assigned skills). The catalog lists name + description; agents call
-`discover_tools({ name: [...] })` to load `<skill>` instructions into Tier 3 dynamic
+`discover_tools({ name: [...] })` to load `<skill>` instructions into the volatile tail
 context. MCP servers for assigned skills still connect at spawn (tools only).
 
 #### Task Board (§23)
@@ -352,8 +350,9 @@ Placed in **Tier 1 (Stable)** (`## Async work, callbacks & timing`, after the ag
 - **Await, don't poll**: after starting async work, register for the completion event and stop — do not busy-loop checking status. `background_exec` reports completion automatically; a tight `process poll` loop is discouraged.
 - **`schedule_wakeup` / `cancel_wakeup`**: agents set precise time-based follow-ups (`in_seconds` or ISO `at`, optional `recurring_seconds`) instead of relying on the heartbeat, which is now a coarse safety-net (default `DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h) rather than a frequent poll.
 - **`set_heartbeat_interval`**: agents (or users, via the Heartbeat tab / config API) can adjust the coarse safety-net cadence itself (clamped 5min–24h, applied live). This is distinct from `schedule_wakeup` — the latter is for precise one-off/recurring follow-ups; the former only changes how often the fallback patrol fires.
-- **`agent_send_message` `await_in_session`**: the peer's reply resumes the **current conversation** (an `a2a_reply` callback correlated by `conversation_id`), instead of landing in a disconnected a2a session.
-- **Two delivery forms**: `in_session` (result resumes the origin session — `background_exec`, `await_in_session`) vs `mailbox` (fresh attention cycle — `schedule_wakeup`, autonomous follow-ups). Documented so agents pick the right one.
+- **`agent_send_message` `reply_in_session`** (alias: deprecated `await_in_session`): the peer's reply resumes the **current conversation** (an `a2a_reply` callback correlated by `conversation_id`), instead of landing in a disconnected a2a session. Non-blocking — the send returns immediately and the reply re-wakes the thread.
+- **`agent_send_message` `wake_recipient`**: if the recipient is stopped, optionally wake (start) them before dispatch; the response always reports `recipient.status` so a stopped recipient is never a silent dead letter.
+- **Two delivery forms**: `in_session` (result resumes the origin session — `background_exec`, `reply_in_session`) vs `mailbox` (fresh attention cycle — `schedule_wakeup`, autonomous follow-ups). Documented so agents pick the right one.
 - Note: `task_create` is intentionally **not** wired for in-session return — tasks are an independent, tracked/reviewed workflow whose results flow through the board, review, and `notify_user`, not back into the creating conversation.
 
 #### Behavioral Policies (coding-agent patterns)
@@ -368,7 +367,7 @@ Placed in **Tier 1 (Stable)** (`## Error Recovery` + `## Autonomy & Escalation`)
 
 ### 2.3 Skill Filtering
 
-`filterSkillsByRelevance()` scores each skill against the current query by keyword overlap. Returns top 30. Each entry is one line: `**name** [category]: description`. The filtered skills catalog is placed in **Tier 3 (Dynamic)** because the filter results depend on the current query, which changes per message. This keeps Tier 2 stable and prevents per-message skill filtering from busting the semi-stable cache prefix.
+`filterSkillsByRelevance()` scores each skill against the current query by keyword overlap. Returns top 30. Each entry is one line: `**name** [category]: description`. The filtered skills catalog is placed in the **volatile tail** because the filter results depend on the current query, which changes per message. This keeps the byte-stable system prefix intact and prevents per-message skill filtering from busting the cache prefix.
 
 ---
 
@@ -473,6 +472,55 @@ When available, `smartSummarizeAndTruncate()` uses an LLM call to summarize olde
 - Orphaned tool messages are dropped.
 - Incomplete assistant+tool blocks are dropped entirely.
 - Consecutive user messages are merged (unless either is a system injection like `[SYSTEM]` or `[Conversation history summary`).
+
+### 3.7 Fixed/Variable Split & Session Anchors (ContextOS)
+
+A complement to the compression pipeline above: separate the prompt into a **fixed segment**
+(system + tools + SLOT anchors) that is **never business-compacted**, and a **variable segment**
+(history) that is the only thing compression/truncation touches. Motivation: long-session "loop"
+bugs where compaction discarded the agent's work anchors, so the agent lost its "position" and
+re-read the same files forever (diagnosed on 8/20; deliverable notes are archived in git history).
+Scope: `packages/core/src/context-slot.ts` + `tools/session.ts` + the `prepareMessages` slot
+plumbing.
+
+**Fixed vs variable:**
+
+- **Fixed (never compacted)**: system prompt, tool definitions, and the **SLOT segment**.
+- **Variable**: conversation history — the only thing shaved/compressed/truncated.
+
+**SLOT fixed segment (`[SLOTS]`)** — `context-slot.ts`:
+- Slots are agent-managed named anchors (`goal` / `done` / `next`, or any agent-chosen key)
+  persisted on the session (`ConversationSession.slots`).
+- At send time, `prepareMessages` accepts `slotsSegment` (= `serializeSlots(sessionId)`), subtracts
+  `slotsTokens` from the budget, and appends it to the system message (`[SLOTS] (agent-managed, not
+  compacted)\n· key: text…`). It is **excluded from the compaction/truncation chain** — so after any
+  compress or truncate, the agent still sees its current goal/done/next and can continue **without
+  re-reading files**.
+- Runtime caps: `CONTEXT_SLOT_MAX_CHARS` (1200).
+
+**Session tools (agent-driven compaction + anchors)** — `tools/session.ts` exposes 9 operations so
+the agent can actively manage long sessions instead of relying only on passive auto-compaction:
+`list | get | compact(keepLast, goal?, done?, next?) | pin | unpin | retrieve | include | purge | status`.
+- `compact` folds expired history into structured anchors (`compactWithAnchor`: pin goal/done/next
+  into SLOTs, then compress), keeping recent N; raw history is archived to `conversation_fragment`
+  (never deleted) and recoverable via `include`.
+- `pin`/`unpin`: write/remove named slot anchors (survive compression + truncation).
+- `include`: place archived fragment back into context precisely.
+- All read/write ops are guarded by `checkOwnership(sessionId, agentId)` — an agent may only manage
+  its own session.
+
+**Context watermark (`[CONTEXT X% used …]`)** — the agent can observe its own pressure (no more
+silent truncation) and act:
+- `usedPct = (fixedTokens + variableTokens) / effectiveBudget`.
+- `[CONTEXT WARN]` at ≥85%: nudge to `session_compact` or `session_pin` an anchor.
+- `[CONTEXT CRIT]` at ≥95%: warn that the system will hard-truncate oldest turns; instruct to
+  immediately `session_compact` + `session_pin`.
+- Injected via the volatile `[SYSTEM] [Live context]` tail (see §2.1), never into the system prefix.
+
+**Why this fixes the loop**: previously compaction dropped anchors → the agent lost position → it
+re-read the same files to re-orient → that re-reading itself grew context → re-truncated → loop.
+With SLOT anchors locked in the fixed segment, a compressed/truncated history still carries
+goal/done/next every turn, so the agent resumes without re-reading — the trigger for the loop is gone.
 
 ---
 
@@ -583,7 +631,7 @@ Key differences from chat:
 
 Heartbeat uses `handleMessage(prompt, undefined, undefined, { sessionId: 'hb_<agentId>_<ts>', allowedTools, scenario: 'heartbeat' })`.
 
-The heartbeat user prompt is assembled inline; the system prompt still comes from `buildSystemPrompt(scenario:'heartbeat')` (identity, `## Your Knowledge`, `## Notebook`, mailbox context, and the cached `heartbeat` scenario section). The inline prompt is deliberately **slim** — it carries only per-call dynamic content and defers durable rules to the cached system prompt. It includes:
+The heartbeat user prompt is assembled inline; the system prompt still comes from `buildSystemPrompt(scenario:'heartbeat')` (identity, `## Your Knowledge`, and the cached `heartbeat` scenario section); mailbox context and `## Notebook` ride the volatile `[Live context]` tail rather than the system prefix. The inline prompt is deliberately **slim** — it carries only per-call dynamic content and defers durable rules to the cached system prompt. It includes:
 1. `[HEARTBEAT CHECK-IN]` header + agent's custom checklist (from `role.heartbeatChecklist`)
 2. Last heartbeat summary (from memory search)
 3. Conditional dynamic sections, only when present: `## Background Processes Completed` (finished `background_exec` sessions), `## Timed-Out Async Operations`, **`## Active Goals`** (when `goalFetcher` is wired — each standing goal's title, status, `currentIteration`/`maxIterations`, and completion criteria), and the manager `## Daily Report Required` section (after 20:00)
@@ -796,6 +844,9 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 | [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Notebook + `knowledge.md` / `state.md` layers; `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
 | [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | CPP writes to Notebook via `notebookWriter`; cognitive depth levels (§4.2 step 0) |
 | `packages/core/src/agent.ts` | Implementation of all 7 LLM call scenarios and 4 harness variants |
-| `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation |
+| `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation; SLOT fixed segment, volatile tail, watermark |
+| `packages/core/src/context-slot.ts` | SLOT segment model: `SlotEntry` / `SlotsStore` / `buildSlotSegment()` — the never-compacted anchors (§3.7) |
+| `packages/core/src/tools/session.ts` | Session 9-op tool family (compact/pin/include/retrieve…) + `checkOwnership` (§3.7) |
 | `packages/core/src/llm/router.ts` | Provider routing, circuit breaker, model catalog, output token resolution |
 | `packages/core/src/tool-selector.ts` | Tool selection logic |
+| ~~`context-os.md`~~ | **Merged into this document §3.7** (Fixed/Variable split, SLOT anchors, session tools, watermark). "ContextOS" is the name of that mechanism; deliverable notes (8/20 repro, regression ledger) are archived in git history. |

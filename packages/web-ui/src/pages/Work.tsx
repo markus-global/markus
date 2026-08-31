@@ -11,6 +11,7 @@ import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
 import { ProjectSidebar } from '../components/ProjectSidebar.tsx';
+import { ProjectKnowledgePanel } from '../components/ProjectKnowledgePanel.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -1916,10 +1917,26 @@ function TaskDetailPanel({
     } finally { setActionInFlight(false); }
   };
 
+  // Localize / humanize a task-action error from the backend. Prefer the
+  // structured error code when present; fall back to the message with the
+  // "Server error" guard retained.
+  const taskActionErrorMessage = (err: unknown): string => {
+    if (err instanceof ApiError) {
+      if (err.code === 'TASK_BLOCKED') {
+        const depTitles: string[] = (err as { data?: { dependencyTitles?: string[] } }).data?.dependencyTitles ?? [];
+        if (depTitles.length) return t('work:task.errorBlockedDeps', { deps: depTitles.join('、') });
+        return t('work:task.errorBlocked');
+      }
+      if (err.code === 'TASK_NOT_BLOCKED') return t('work:task.errorNotBlocked');
+      if (err.code === 'TASK_NOT_RETRYABLE') return t('work:task.errorNotRetryable');
+    }
+    return String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', '');
+  };
+
   const resumeTask = async () => {
     if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.resume(task.id); onRefresh(); } catch (err) {
-      setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
+      setRunError(taskActionErrorMessage(err));
     } finally { setActionInFlight(false); }
   };
 
@@ -1952,14 +1969,14 @@ function TaskDetailPanel({
   const retryFresh = async () => {
     if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.retry(task.id); onRefresh(); } catch (err) {
-      setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
+      setRunError(taskActionErrorMessage(err));
     } finally { setActionInFlight(false); }
   };
 
   const runScheduledNow = async () => {
     if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
     try { await api.tasks.runNow(task.id); onRefresh(); } catch (err) {
-      setRunError(String(err).replace('Error: API error: 400', 'Server error').replace('Error: ', ''));
+      setRunError(taskActionErrorMessage(err));
       onRefresh();
     } finally { setActionInFlight(false); }
   };
@@ -3001,6 +3018,9 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
           </div>
         )}
       </div>
+
+      {/* Knowledge base (V2: source='knowledge' deliverables bound to this project) */}
+      <ProjectKnowledgePanel project={project} onUpdateProject={onUpdateProject} />
 
       {/* Danger zone */}
       <div className="border border-red-500/20 rounded-xl p-4">
@@ -5671,6 +5691,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           }}
           onSelectProject={(id) => {
             selectProject(id);
+            setNavFocus('projects');
+          }}
+          onEditProject={(id) => {
+            selectProject(id);
+            // 编辑按钮 = 打开项目详情面板（selectProject 在 rightDetailMode==='closed' 时保持关闭，
+            // 此处强制切到 project 面板，绕过该守卫）
+            setSelectedTask(null);
+            setSelectedReq(null);
+            setRightDetailMode('project');
             setNavFocus('projects');
           }}
           onCreateProject={() => setShowCreateProject(true)}

@@ -73,6 +73,34 @@ describe('AgentMetricsCollector', () => {
       expect(collector.getMetrics('24h').tokenUsage.cost).toBe(0);
     });
 
+    it('computes cache hit rate from cacheReadTokens over promptTokens', () => {
+      collector.recordAudit({
+        type: 'llm_request', action: 'chat', success: true,
+        inputTokens: 1000, outputTokens: 100, cacheReadTokens: 800,
+      });
+      const stats = collector.getUsageStats();
+      expect(stats.cacheReadTokens).toBe(800);
+      expect(stats.cacheHitRate).toBeCloseTo(0.8);
+      const m = collector.getMetrics('24h');
+      expect(m.harness.cacheHitRate).toBeCloseTo(0.8);
+    });
+
+    it('clamps cache hit rate to 1 when reads exceed prompt tokens', () => {
+      collector.recordAudit({
+        type: 'llm_request', action: 'chat', success: true,
+        inputTokens: 100, outputTokens: 10, cacheReadTokens: 300,
+      });
+      expect(collector.getUsageStats().cacheHitRate).toBe(1);
+    });
+
+    it('returns 0 cache hit rate when nothing cacheable reported', () => {
+      collector.recordAudit({
+        type: 'llm_request', action: 'chat', success: true,
+        inputTokens: 100, outputTokens: 10,
+      });
+      expect(collector.getUsageStats().cacheHitRate).toBe(0);
+    });
+
     it('tracks task completion metrics', () => {
       collector.recordTaskCompletion('task-1', 'completed', 5000);
       collector.recordTaskCompletion('task-2', 'completed', 3000);
@@ -228,13 +256,14 @@ describe('AgentMetricsCollector', () => {
     });
 
     it('computes cache-hit rate from provider cache tokens', () => {
-      // inputTokens=fresh prompt; cacheReadTokens=cached; hit = read / (read+write+fresh)
+      // OpenAI-compatible semantics: cache reads are already part of inputTokens (prompt),
+      // so hit = cacheRead / promptTokens. Here inputTokens=200 but cacheRead=600 (> prompt,
+      // possible when a provider mixes shapes) → clamped to 1.
       collector.recordAudit({
         type: 'llm_request', action: 'chat', success: true,
         inputTokens: 200, outputTokens: 50, cacheReadTokens: 600, cacheWriteTokens: 200,
       });
-      // 600 / (600 + 200 + 200) = 0.6
-      expect(collector.getMetrics('24h').harness.cacheHitRate).toBeCloseTo(0.6, 5);
+      expect(collector.getMetrics('24h').harness.cacheHitRate).toBe(1);
     });
 
     it('computes per-turn USD cost from reported costs', () => {

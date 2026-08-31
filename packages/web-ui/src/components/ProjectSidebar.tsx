@@ -10,6 +10,8 @@ export interface ProjectSidebarProps {
   totalTaskCount?: number;
   onSelectAll?: () => void;
   onSelectProject: (projectId: string) => void;
+  /** When provided, each project row shows an inline ✎ edit button (opens project detail / settings). */
+  onEditProject?: (projectId: string) => void;
   onCreateProject: () => void;
   onCollapse?: () => void;
   width?: number;
@@ -28,6 +30,7 @@ export function ProjectSidebar({
   totalTaskCount,
   onSelectAll,
   onSelectProject,
+  onEditProject,
   onCreateProject,
   onCollapse,
   width,
@@ -133,12 +136,14 @@ export function ProjectSidebar({
                 const count = taskCounts[p.id] ?? 0;
                 const paused = p.status === 'paused';
                 return (
-                  <button
+                  <div
                     key={p.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     data-project-id={p.id}
                     onClick={() => onSelectProject(p.id)}
-                    className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left transition-colors ${
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectProject(p.id); } }}
+                    className={`group w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left cursor-pointer transition-colors ${
                       selected
                         ? focused
                           ? 'bg-brand-500/20 ring-1 ring-brand-500/40 text-brand-500'
@@ -157,10 +162,24 @@ export function ProjectSidebar({
                         <span className="block text-[10px] text-amber-500/80">{t('work:project.statusPaused')}</span>
                       )}
                     </span>
+                    {onEditProject && (
+                      <button
+                        type="button"
+                        data-no-drag
+                        title={t('work:project.editProject')}
+                        aria-label={t('work:project.editProject')}
+                        onClick={(e) => { e.stopPropagation(); onEditProject(p.id); }}
+                        className="w-6 h-6 flex items-center justify-center rounded-md text-fg-tertiary hover:text-brand-500 hover:bg-surface-elevated transition-opacity opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                        </svg>
+                      </button>
+                    )}
                     {count > 0 && (
                       <span className="text-[10px] text-fg-tertiary tabular-nums shrink-0">{count}</span>
                     )}
-                  </button>
+                  </div>
                 );
               })}
             </>

@@ -112,7 +112,46 @@ export function preprocessEntityIds(text: string): string {
   });
 }
 
-/** Detect PlantUML content by @startuml/@enduml markers */
+// ─── Bare-URL autolink normalization ─────────────────────────────────────────
+//
+// remark-gfm autolinks bare URLs in prose, but its boundary regex stops only at
+// ASCII whitespace / punctuation — it does NOT stop at CJK ideographs or
+// full-width punctuation. So `https://x.com/去接` renders the trailing Chinese
+// (and any later CJK up to the next ASCII space) as part of the clickable link.
+//
+// Fix: pre-rewrite bare http(s) URLs into explicit `[url](url)` markdown links.
+// Once explicit, remark-gfm no longer runs its own autolink on them, so the link
+// boundary is under our control (we stop at the first CJK / full-width char).
+
+// URL terminal chars: exclude CJK ideographs, CJK punctuation, full-width
+// forms, whitespace and a few ASCII delimiters that announce a boundary.
+const URL_END_BOUNDARY = [
+  '\\s',
+  '<', '>',
+  '`',
+  '\\u4e00-\\u9fff',      // CJK ideographs
+  '\\u3000-\\u303f',      // CJK punctuation (。，「」、etc.)
+  '\\uff00-\\uffef',      // fullwidth forms (），。；：！？etc.)
+].join('');
+const BARE_URL_RE = new RegExp(`https?://[^${URL_END_BOUNDARY}]+`, 'gi');
+
+/** Wrap bare http(s) URLs in prose as explicit `[url](url)` links so GFM
+ *  autolink does not swallow trailing CJK / full-width characters. */
+export function autolinkBareUrls(text: string): string {
+  return text.replace(BARE_URL_RE, (url: string, offset: number) => {
+    // Defense in depth: never touch a URL inside a markdown destination `](...)`.
+    if (isInsideMarkdownDestination(text, offset)) return url;
+    const trimmed = url.replace(/[.,;:!?\]\)"']+$/, '');
+    if (!trimmed) return url;
+    const trail = url.slice(trimmed.length);
+    // If the URL still carries problematic parens we'd have to escape in a
+    // destination, leave it as-is rather than risk corrupting the source.
+    if (/[()[\]]/.test(trimmed)) return url;
+    return `[${trimmed}](${trimmed})${trail}`;
+  });
+}
+
+/** Detect bare PlantUML content by @startuml/@enduml markers */
 export function looksLikePlantUML(text: string): boolean {
   const t = text.trim();
   return t.startsWith('@startuml') && t.endsWith('@enduml');

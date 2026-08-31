@@ -13,6 +13,13 @@ import {
   closeRuntimeLogger,
   checkForUpdate,
   generateId,
+  installCrashGuard,
+  markRunStarted,
+  markCleanShutdown,
+  memoryWatermarkWatchdog,
+  detectUncleanShutdown,
+  getCrashLogPath,
+  APP_VERSION,
   userId,
   PROVIDERS,
   type LLMProviderConfig,
@@ -45,6 +52,7 @@ import {
   KnowledgeService,
   FileKnowledgeStore,
   DeliverableService,
+  KnowledgeSyncService,
   ReportService,
   TrustService,
   ArchiveService,
@@ -430,6 +438,9 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.browser?.autoClickAllowDialog) {
     agentManager.setBrowserAutoClickAllowDialog(true);
   }
+  if (config.browser?.mode === 'embedded' || config.browser?.mode === 'system-chrome') {
+    agentManager.setBrowserMode(config.browser.mode);
+  }
   agentManager.startBrowserBridge(config.browser?.extensionBridgePort);
 
   taskService.setAgentManager(agentManager);
@@ -501,6 +512,49 @@ async function startServerCore(
 
   // Initialize startup logger first — all startup output goes to file AND console
   const logPath = initStartupLogger();
+
+  // ── Self-heal / crash attribution (SS-3) ─────────────────────────────────
+  // Report any unclean exit from the PREVIOUS process so a silent crash isn't
+  // mistaken for a normal stop. Then install fault handlers for THIS run and
+  // start a memory watermark sampler (OOM is a common cause of the "exited
+  // with no obvious error" symptom from the 0.9.8 feedback loop).
+  const uncleanReport = detectUncleanShutdown();
+  if (uncleanReport.unclean) {
+    const crash = uncleanReport.lastCrash;
+    startupLog('WARN', `检测到上次进程为异常退出（崩溃/OOM/被杀）`);
+    if (crash) {
+      startupLog('WARN', `  原因: ${crash.reason} @ ${crash.timestamp}`);
+      if (crash.message) startupLog('WARN', `  错误: ${crash.message}`);
+      if (crash.signal) startupLog('WARN', `  信号: ${crash.signal}`);
+      if (crash.exitCode !== undefined) startupLog('WARN', `  退出码: ${crash.exitCode}`);
+      startupLog('WARN', `  RSS: ${crash.memory?.rssMb ?? '?'} MB, 堆: ${crash.memory?.heapUsedMb ?? '?'} MB`);
+      if (crash.memory && crash.memory.rssMb > 0 && crash.memory.systemTotalMb > 0 &&
+        crash.memory.rssMb / crash.memory.systemTotalMb > 0.6) {
+        startupLog('WARN', `  ⚠ RSS 超过系统内存 60% — 高度疑似 OOM。请留意内存占用。`);
+      }
+    } else if (uncleanReport.lastAliveGapSec !== null) {
+      startupLog('WARN', `  上次存活 ${uncleanReport.lastAliveGapSec}s 后无干净关闭记录（kill -9 / 断电 / 硬杀 疑似）`);
+    }
+  }
+
+  // Crash guard: uncaughtException 会写崩溃报告并硬退出（交由 supervisor 拉起）；
+  // unhandledRejection 写报告但不退出；SIGTERM/SIGINT 记录 clean shutdown。
+  installCrashGuard({
+    context: () => ({ version: APP_VERSION, host: 'cli-start' }),
+  });
+  // Explicitly mark this run as started (also records prior state for attribution).
+  markRunStarted();
+
+  // Memory watermark watchdog — unref'd so it never blocks process exit.
+  const memWatchdog = memoryWatermarkWatchdog({
+    intervalMs: 5000,
+    rssLimitMb: 0, // 0 = 只采样/记录水位，不触发自动退出（告警由启动日志体现）
+    heartbeatMs: 30000, // 每 30s 刷新 run-state 心跳，便于判断进程是否活着
+    onAlarm: (w) => {
+      startupLog('WARN', `内存超限告警 peakRSS=${w.peakRssMb}MB`);
+    },
+  });
+  memWatchdog.start();
 
   // Boot the animated progress display (CLI only)
   const progress = headless ? null : new StartupProgress(logPath);
@@ -680,6 +734,7 @@ async function startServerCore(
   const knowledgeService = new KnowledgeService(knowledgeStore);
   const deliverableService = new DeliverableService(storage?.deliverableRepo);
   await deliverableService.load();
+  const knowledgeSyncService = new KnowledgeSyncService(deliverableService);
 
   // One-time migrations
   await taskService.migrateBranchToCompletionSummary();
@@ -716,6 +771,7 @@ async function startServerCore(
   apiServer.setReportService(reportService);
   apiServer.setKnowledgeService(knowledgeService);
   apiServer.setDeliverableService(deliverableService);
+  apiServer.setKnowledgeSyncService(knowledgeSyncService);
   apiServer.setRequirementService(requirementService);
   taskService.setDeliverableService(deliverableService);
   orgService.setDeliverableService(deliverableService);
@@ -1052,6 +1108,21 @@ async function startServerCore(
       } catch (e) {
         log.warn('Failed to persist activity log', { agentId, error: String(e) });
       }
+    });
+    // 任务执行指令丢失（mailbox defer/resurface 后回调闭包丢失）→ 请求 TaskService
+    // 重新调度该任务，避免任务永远卡在 in_progress 且无人处理。
+    agentManager.getEventBus().on('agent:incomplete', (evt: unknown) => {
+      const event = evt as { agentId?: string; taskId?: string; reason?: string; type?: string };
+      if (!event?.taskId) return;
+      if (event.reason !== 'resurfaced-task-execution-lost-closures') return;
+      log.warn('agent:incomplete — lost task execution, recovering', {
+        taskId: event.taskId,
+        agentId: event.agentId,
+        reason: event.reason,
+      });
+      taskService.recoverLostTaskExecution(event.taskId).catch(err =>
+        log.warn('Failed to recover lost task execution', { taskId: event.taskId, error: String(err) })
+      );
     });
     // Heartbeat interval changed (by an agent via set_heartbeat_interval, or any
     // in-process update): persist the new value so it survives restart.
@@ -1441,6 +1512,8 @@ async function startServerCore(
         provider: event.provider,
         inputTokens: event.inputTokens,
         outputTokens: event.outputTokens,
+        cacheReadTokens: event.cacheReadTokens,
+        cacheWriteTokens: event.cacheWriteTokens,
       },
     });
     if (event.tokensUsed && event.type === 'llm_request') {
@@ -1906,6 +1979,8 @@ async function startServerCore(
   const shutdown = async () => {
     closeStartupLogger();
     closeRuntimeLogger();
+    memWatchdog.stop();
+    markCleanShutdown();
     archiveService.stop();
     staleDetector.stop();
     scheduledTaskRunner.stop();

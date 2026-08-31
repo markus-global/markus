@@ -154,11 +154,11 @@ describe('ContextEngine task board and mailbox', () => {
       assignedTasks,
     });
 
-    expect(result.text).toContain('My Tasks');
-    expect(result.text).toContain('Team Tasks');
-    expect(result.text).toContain('Peer Agent');
-    expect(result.text).toContain('more active tasks not shown');
-    expect(result.text).toContain('completed/closed tasks');
+    expect(result.volatile).toContain('My Tasks');
+    expect(result.volatile).toContain('Team Tasks');
+    expect(result.volatile).toContain('Peer Agent');
+    expect(result.volatile).toContain('more active tasks not shown');
+    expect(result.volatile).toContain('completed/closed tasks');
   });
 
   it('omits empty task board stub in converse; shows it for execute', async () => {
@@ -184,8 +184,8 @@ describe('ContextEngine task board and mailbox', () => {
       assignedTasks: [],
       scenario: 'task_execution',
     });
-    expect(execute.text).toContain('## Task Board');
-    expect(execute.text).toContain('No tasks on the board');
+    expect(execute.volatile).toContain('## Task Board');
+    expect(execute.volatile).toContain('No tasks on the board');
   });
 
   it('renders rich mailbox section with focus, queue, decisions, and merged content', async () => {
@@ -208,11 +208,11 @@ describe('ContextEngine task board and mailbox', () => {
       },
     });
 
-    expect(result.text).toContain('Current focus');
-    expect(result.text).toContain('task_99');
-    expect(result.text).toContain('Message Processing Checklists');
-    expect(result.text).toContain('Merged context');
-    expect(result.text).toContain('deployment failure');
+    expect(result.volatile).toContain('Current focus');
+    expect(result.volatile).toContain('task_99');
+    expect(result.volatile).toContain('Message Processing Checklists');
+    expect(result.volatile).toContain('Merged context');
+    expect(result.volatile).toContain('deployment failure');
   });
 });
 

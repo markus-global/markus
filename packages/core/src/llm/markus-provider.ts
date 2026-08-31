@@ -46,6 +46,9 @@ import {
   parseOpenAICompatResponse,
   createSSEAccumulator,
   isOpenRouterReasoningModel,
+  recoverTextToolCalls,
+  createSafeTextEmitter,
+  stripToolNoise,
 } from './provider-helpers.js';
 
 /** Re-export for callers/tests that import helpers from this module. */
@@ -62,61 +65,6 @@ export {
 // normalizeMarkusHubOrigin exported above with resolveMarkusRoute
 
 const log = createLogger('markus-provider');
-
-// ---------------------------------------------------------------------------
-// Text-emitted tool-call recovery
-// ---------------------------------------------------------------------------
-
-/**
- * Some models (notably `deepseek-v4-flash` via OpenAI-compatible proxies) emit
- * tool calls as *plain text* using an Anthropic-style `<invoke name="...">`
- * markup instead of the structured `tool_calls` field. When that happens the
- * upstream returns no `tool_calls`, `finish_reason` is `stop`, and the raw
- * markup leaks into the visible reply (see the `｜DSML｜` token noise some
- * DeepSeek builds wrap the tags with).
- *
- * This recovers those text-emitted calls into structured tool calls and strips
- * the markup from the content, so the agent loop can execute them normally. The
- * tag matchers use `[^<>]*?` around the tag name so they tolerate arbitrary
- * token noise between `<`/`>` and `invoke`/`parameter` (e.g. `<｜DSML｜｜invoke`).
- */
-function coerceToolParam(raw: string, nonString: boolean): unknown {
-  if (!nonString) return raw;
-  try { return JSON.parse(raw) as unknown; } catch { return raw; }
-}
-
-function recoverTextToolCalls(content: string): {
-  toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
-  cleanedContent: string;
-} {
-  if (!content || !/invoke\s+name=/i.test(content)) {
-    return { toolCalls: [], cleanedContent: content };
-  }
-  const invokeRe = /<[^<>]*?invoke\s+name="([^"]+)"[^<>]*>([\s\S]*?)<\/[^<>]*?invoke>/gi;
-  const paramRe = /<[^<>]*?parameter\s+name="([^"]+)"([^<>]*)>([\s\S]*?)<\/[^<>]*?parameter>/gi;
-  const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
-  let m: RegExpExecArray | null;
-  while ((m = invokeRe.exec(content)) !== null) {
-    const name = m[1];
-    const inner = m[2] ?? '';
-    const args: Record<string, unknown> = {};
-    let pm: RegExpExecArray | null;
-    while ((pm = paramRe.exec(inner)) !== null) {
-      const pName = pm[1];
-      const attrs = pm[2] ?? '';
-      const raw = (pm[3] ?? '').trim();
-      args[pName] = coerceToolParam(raw, /string="false"/i.test(attrs));
-    }
-    toolCalls.push({ id: `text_tc_${toolCalls.length}_${Date.now().toString(36)}`, name, arguments: args });
-  }
-  if (!toolCalls.length) return { toolCalls: [], cleanedContent: content };
-  const cleanedContent = content
-    .replace(/<[^<>]*?tool_calls>[\s\S]*?<\/[^<>]*?tool_calls>/gi, '')
-    .replace(invokeRe, '')
-    .replace(/[｜|]{1,2}\s*DSML\s*[｜|]{0,2}/gi, '')
-    .trim();
-  return { toolCalls, cleanedContent };
-}
 
 /** Models that should request visible reasoning tokens via OpenRouter. */
 function shouldEnableOpenRouterReasoning(modelId: string): boolean {
@@ -236,33 +184,43 @@ const CHAT_TIMEOUT_MS = 90_000;
 const STREAM_TIMEOUT_MS = 180_000;
 /** Absolute wall-clock cap for one stream request (prevents runaway hangs). */
 const STREAM_HARD_TIMEOUT_MS = 15 * 60_000;
-const MAX_RETRIES = 3;
-const RETRY_BASE_DELAY_MS = 500;
-/** Cap Retry-After waits so a single turn cannot sleep for minutes. */
-const MAX_RETRY_AFTER_MS = 60_000;
+export const DEFAULT_MAX_RETRIES = 3;
+export const DEFAULT_RETRY_BASE_DELAY_MS = 500;
+export const DEFAULT_MAX_RETRY_AFTER_MS = 60_000;
+
+/** Clamp an integer to [min, max]; returns fallback when value is not finite. */
+function clampInt(value: number | undefined, min: number, max: number, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
 
 /**
  * Parse OpenRouter / RFC7231 `Retry-After` (seconds or HTTP-date) to ms.
  * @see https://openrouter.ai/docs/api_reference/limits
  */
-export function parseRetryAfterMs(res: Response): number | null {
+export function parseRetryAfterMs(res: Response, maxRetryAfterMs = DEFAULT_MAX_RETRY_AFTER_MS): number | null {
   const raw = res.headers.get('retry-after');
   if (!raw) return null;
   const asSec = Number(raw);
   if (Number.isFinite(asSec) && asSec >= 0) {
-    return Math.min(asSec * 1000, MAX_RETRY_AFTER_MS);
+    return Math.min(asSec * 1000, maxRetryAfterMs);
   }
   const asDate = Date.parse(raw);
   if (Number.isFinite(asDate)) {
-    return Math.min(Math.max(0, asDate - Date.now()), MAX_RETRY_AFTER_MS);
+    return Math.min(Math.max(0, asDate - Date.now()), maxRetryAfterMs);
   }
   return null;
 }
 
-function retryDelayMs(res: Response | undefined, attempt: number): number {
-  const fromHeader = res ? parseRetryAfterMs(res) : null;
+function retryDelayMs(
+  res: Response | undefined,
+  attempt: number,
+  baseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS,
+  maxRetryAfterMs = DEFAULT_MAX_RETRY_AFTER_MS,
+): number {
+  const fromHeader = res ? parseRetryAfterMs(res, maxRetryAfterMs) : null;
   if (fromHeader !== null) return fromHeader;
-  return RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+  return baseDelayMs * Math.pow(2, attempt);
 }
 
 const CREDIT_MUTE_KEY = 'markus:credit-notif-muted';
@@ -332,6 +290,9 @@ export class MarkusProvider implements MultiModalProviderInterface {
   private hubUrl = '';
   private hubToken = '';
   private lastCuSyncAt = 0;
+  private maxRetries = DEFAULT_MAX_RETRIES;
+  private retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS;
+  private maxRetryAfterMs = DEFAULT_MAX_RETRY_AFTER_MS;
 
   constructor(config?: LLMProviderConfig) {
     this.model = config?.model ?? DEFAULT_MODEL;
@@ -342,12 +303,23 @@ export class MarkusProvider implements MultiModalProviderInterface {
     // Stream idle is independent of chat timeoutMs — never inherit a lower chat
     // timeout (e.g. 90s) or long reasoning / sparse SSE gaps abort mid-reply.
     this.streamTimeoutMs = config?.streamTimeoutMs ?? STREAM_TIMEOUT_MS;
+    this.applyRetryConfig(config);
     this.modelsUrl = config?.modelsUrl ?? process.env['MARKUS_MODELS_URL'] ?? '';
     this.hubUrl = config?.hubUrl ?? process.env['MARKUS_HUB_URL'] ?? '';
     this.hubToken = config?.hubToken ?? process.env['MARKUS_HUB_TOKEN'] ?? '';
     if (this.baseUrl && looksLikeWorkerBase(this.baseUrl)) {
       this.baseUrl = DEFAULT_OR_BASE_URL;
     }
+  }
+
+  /** Retry knobs: explicit config wins, then env vars, then defaults. */
+  private applyRetryConfig(config?: LLMProviderConfig): void {
+    const envRetries = Number(process.env['MARKUS_MAX_RETRIES']);
+    const envBase = Number(process.env['MARKUS_RETRY_BASE_DELAY_MS']);
+    const envCap = Number(process.env['MARKUS_MAX_RETRY_AFTER_MS']);
+    this.maxRetries = clampInt(config?.maxRetries ?? envRetries, 0, 10, DEFAULT_MAX_RETRIES);
+    this.retryBaseDelayMs = clampInt(config?.retryBaseDelayMs ?? envBase, 0, 60_000, DEFAULT_RETRY_BASE_DELAY_MS);
+    this.maxRetryAfterMs = clampInt(config?.maxRetryAfterMs ?? envCap, 0, 300_000, DEFAULT_MAX_RETRY_AFTER_MS);
   }
 
   configure(config: LLMProviderConfig): void {
@@ -362,6 +334,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
     if (config.hubToken !== undefined) this.hubToken = config.hubToken;
     if (config.timeoutMs) this.chatTimeoutMs = config.timeoutMs;
     if (config.streamTimeoutMs) this.streamTimeoutMs = config.streamTimeoutMs;
+    // Retry knobs follow the same precedence on re-configure (env re-read too).
+    this.applyRetryConfig(config);
   }
 
   /** Whether OpenRouter credentials are available. */
@@ -909,6 +883,13 @@ export class MarkusProvider implements MultiModalProviderInterface {
     const sse = createSSEAccumulator();
     const state = sse.state;
 
+    // Stream-side leak guard: never push raw `<invoke>` plaintext deltas to the
+    // UI. Hold suspected tool-tag starts and only emit confirmed-safe text live;
+    // flush the remainder (tool markup swallowed) before message_end.
+    const safeText = createSafeTextEmitter((text) => onEvent({ type: 'text_delta', text }));
+    const safeThinking = (thinking: string) =>
+      onEvent({ type: 'thinking_delta', thinking: stripToolNoise(thinking) });
+
     const reader = res.body?.getReader();
     if (!reader) {
       clearStreamTimeouts();
@@ -958,8 +939,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
             }
 
             sse.feed(chunk, {
-              onThinking: (thinking) => onEvent({ type: 'thinking_delta', thinking }),
-              onText: (text) => onEvent({ type: 'text_delta', text }),
+              onThinking: (thinking) => safeThinking(thinking),
+              onText: (text) => safeText.emit(text),
               onToolStart: (toolCall) => onEvent({ type: 'tool_call_start', toolCall }),
               onToolDelta: (toolCall, text) => onEvent({ type: 'tool_call_delta', toolCall, text }),
               onUsage: (usage, raw) => {
@@ -1029,18 +1010,20 @@ export class MarkusProvider implements MultiModalProviderInterface {
     });
 
     // Recover tool calls the model streamed as plain text instead of via the
-    // structured tool_calls field (see recoverTextToolCalls).
+    // structured tool_calls field. Even when structured tool calls exist, a
+    // mixed output can still carry plaintext `<invoke>` markup in the body —
+    // always strip the markup; only adopt recovered calls when none structured.
     let recoveredToolCalls = resultToolCalls;
     let content = state.content;
-    if (!recoveredToolCalls.length) {
-      const recovered = recoverTextToolCalls(content);
-      if (recovered.toolCalls.length) {
+    const recovered = recoverTextToolCalls(content);
+    if (recovered.toolCalls.length) {
+      content = recovered.cleanedContent;
+      if (!resultToolCalls.length) {
         log.warn('Recovered text-emitted tool calls from streamed content', {
           count: recovered.toolCalls.length,
           names: recovered.toolCalls.map(t => t.name),
         });
         recoveredToolCalls = recovered.toolCalls;
-        content = recovered.cleanedContent;
       }
     }
 
@@ -1051,6 +1034,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
 
     const usage: LLMResponse['usage'] = { inputTokens: state.promptTokens, outputTokens: state.completionTokens };
     if (state.cachedTokens > 0) usage.cacheReadTokens = state.cachedTokens;
+    // Flush any held-safe text (tool markup swallowed) before the turn ends.
+    safeText.flush();
     onEvent({ type: 'message_end', usage, finishReason: state.finishReason });
 
     const streamResult: LLMResponse = { content, usage, finishReason: state.finishReason };
@@ -1107,6 +1092,13 @@ export class MarkusProvider implements MultiModalProviderInterface {
       messages: convertMessagesOpenAI(request.messages, {
         // When thinking is on, DeepSeek requires reasoning_content on every assistant turn.
         backfillReasoning: enableReasoning && /deepseek/i.test(outgoingModel),
+        // Cache-friendly: split the assembled system into the stable tiers
+        // (stable / semiStable / dynamic) just like the openai provider. Without
+        // this the per-turn dynamic tail (date, mailbox, [CONTEXT] hint) would
+        // ride the single system message and break the implicit prefix-cache key
+        // (OpenAI/DeepSeek/OpenRouter) every turn. Splitting keeps the stable
+        // prefix intact across turns.
+        systemCacheSegments: request.systemCacheSegments,
       }),
       stream,
     };
@@ -1155,7 +1147,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
     url: string,
     init: RequestInit,
     skipRetry = false,
-    retries = MAX_RETRIES,
+    retries = this.maxRetries,
   ): Promise<Response> {
     let lastError: Error | undefined;
 
@@ -1189,7 +1181,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
         const errText = await res.text().catch(() => '');
         if (errText) log.warn('Response body', { body: errText.slice(0, 200) });
 
-        const delay = retryDelayMs(res, attempt);
+        const delay = retryDelayMs(res, attempt, this.retryBaseDelayMs, this.maxRetryAfterMs);
         log.info(`Waiting ${delay}ms before retry (Retry-After / backoff)`);
         await new Promise(r => setTimeout(r, delay));
         continue;
@@ -1197,7 +1189,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
         lastError = err instanceof Error ? err : new Error(String(err));
         log.warn(`Markus proxy network error (attempt ${attempt + 1}/${retries})`, { error: lastError.message });
         if (skipRetry || attempt >= retries - 1) break;
-        const delay = retryDelayMs(undefined, attempt);
+        const delay = retryDelayMs(undefined, attempt, this.retryBaseDelayMs, this.maxRetryAfterMs);
         await new Promise(r => setTimeout(r, delay));
       }
     }

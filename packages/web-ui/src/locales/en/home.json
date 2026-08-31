@@ -126,14 +126,29 @@
   },
   "liveActivity": {
     "whosWorking": "Working Now",
-    "recentChanges": "Recent Changes"
+    "recentChanges": "Recent Changes",
+    "dirtyRecovered": "Auto-recovered",
+    "dirtyNeedsHuman": "Needs attention"
   },
   "agentFocus": {
     "title": "Agent Focus",
     "totalQueued": "{{count}} total queued",
     "working": "Working...",
     "heartbeatCheckIn": "Heartbeat check-in",
-    "heartbeatSkip": "Heartbeat skipped (idle)"
+    "heartbeatSkip": "Heartbeat skipped (idle)",
+    "phaseThinking": "Thinking…",
+    "phaseRunning": "Processing…",
+    "phaseWaitingDep": "Waiting on dependency…",
+    "phaseBlocked": "Blocked",
+    "phaseDegraded": "Degraded",
+    "phaseError": "Error",
+    "blockedBy": "Stuck on dependency \"{{title}}\"",
+    "runningFor": "Running for {{n}} min",
+    "lastActivity": "Last activity {{time}}",
+    "stallStaleBadge": "no progress",
+    "stallDeadBadge": "dead dep",
+    "stallStale": "No progress for {{minutes}} min (may be a long task, may be stuck)",
+    "stallDeadDep": "Blocked: dependency \"{{title}}\" failed but still awaited"
   },
   "teamOverview": {
     "title": "Teams",

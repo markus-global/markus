@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api, wsClient, getHubToken, hubApi, type DeliverableInfo, type ProjectInfo, type AgentInfo, type TeamInfo, type AuthUser } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from '../components/ContentRenderer.tsx';
+import { OfficePreviewer } from '../components/OfficePreviewer.tsx';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { DeliverableShareModal } from '../components/DeliverableShareModal.tsx';
@@ -102,6 +103,9 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterArtifact, setFilterArtifact] = useState('');
+  const [filterSource, setFilterSource] = useState<'agent' | 'knowledge' | ''>('');
+  const [filterProject, setFilterProject] = useState('');
+  const [bindOpen, setBindOpen] = useState(false);
   const [groupBy, setGroupBy] = useState<'project' | 'agent' | 'date' | 'team'>('date');
   const [selected, setSelected] = useState<DeliverableInfo | null>(() => {
     if (previewData?.initialSelectedId && previewData.items) {
@@ -129,6 +133,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [previewFormat, setPreviewFormat] = useState<string>('markdown');
   const [previewImage, setPreviewImage] = useState<{ src: string; name: string } | null>(null);
   const [previewMedia, setPreviewMedia] = useState<{ kind: 'audio' | 'video'; src: string; name: string } | null>(null);
+  const [previewOffice, setPreviewOffice] = useState<{ format: string; streamUrl: string; name: string; size?: number; reference?: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showCopyPath, setShowCopyPath] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
@@ -136,6 +141,9 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [shareOpen, setShareOpen] = useState(false);
   const [sharedDir, setSharedDir] = useState('');
   const [missingFileIds, setMissingFileIds] = useState<Set<string>>(new Set());
+
+  // 是否有 Office 预览（PDF/DOCX/XLSX）—— 需要全高填充
+  const showOfficePreview = previewOffice && selected?.type === 'file';
 
   // Sidebar collapse (Phase 2)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -207,9 +215,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   const searchParams = useMemo(() => ({
     q: debouncedQuery || undefined,
+    projectId: filterProject || undefined,
     type: filterType || undefined,
     artifactType: filterArtifact || undefined,
-  }), [debouncedQuery, filterType, filterArtifact]);
+    source: filterSource || undefined,
+  }), [debouncedQuery, filterType, filterArtifact, filterProject, filterSource]);
 
   const fetchLimit = groupBy === 'date' ? DATE_PAGE_SIZE : ALL_ITEMS_LIMIT;
 
@@ -398,6 +408,18 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     // tool's accessUrl). The page id is the first hash segment; the second is the id.
     const hashParts = window.location.hash.slice(1).split('/');
     const hashId = resolvePageId(hashParts[0]) === PAGE.DELIVERABLES ? hashParts[1] : undefined;
+    // Navigation params from a previous page (e.g. project detail「在产出物中查看」):
+    // projectId + source filter, and openDeliverable deep-link.
+    const navProjectId = localStorage.getItem('markus_nav_projectId');
+    const navSource = localStorage.getItem('markus_nav_source');
+    if (navProjectId) {
+      localStorage.removeItem('markus_nav_projectId');
+      setFilterProject(navProjectId);
+    }
+    if (navSource === 'knowledge' || navSource === 'agent') {
+      localStorage.removeItem('markus_nav_source');
+      setFilterSource(navSource);
+    }
     const navId = localStorage.getItem('markus_nav_openDeliverable') || hashId;
     if (navId) {
       localStorage.removeItem('markus_nav_openDeliverable');
@@ -409,9 +431,12 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     }
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      if (detail?.params?.openDeliverable) {
+      const p = detail?.params as Record<string, string> | undefined;
+      if (p?.projectId) setFilterProject(p.projectId);
+      if (p?.source === 'knowledge' || p?.source === 'agent') setFilterSource(p.source);
+      if (p?.openDeliverable) {
         localStorage.removeItem('markus_nav_openDeliverable');
-        openDeliverableById(detail.params.openDeliverable);
+        openDeliverableById(p.openDeliverable);
       }
     };
     window.addEventListener('markus:navigate', handler);
@@ -566,11 +591,24 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     try {
       const resp = await api.files.preview(d.reference);
       if (resp.type === 'image' && resp.mimeType) {
-        setPreviewImage({ src: `data:${resp.mimeType};base64,${resp.content}`, name: resp.name });
+        // 后端图片返回 streamUrl（不走 base64，防超大文件撑爆 inline 上限）
+        const src = resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));
+        setPreviewImage({ src, name: resp.name });
       } else if (resp.type === 'audio' || resp.type === 'video') {
         const src = resp.streamUrl
           || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));
         setPreviewMedia({ kind: resp.type, src, name: resp.name });
+      } else if (resp.type === 'office') {
+        const src = resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));
+        setPreviewOffice({
+          format: resp.format || String(resp.extension || '').replace(/^\./, '') || 'pdf',
+          streamUrl: src,
+          name: resp.name,
+          size: resp.size,
+          reference: resp.path || d.reference,
+        });
       } else if (resp.type === 'binary') {
         setShowCopyPath(true);
       } else if (typeof resp.content === 'string') {
@@ -592,6 +630,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setPreviewFormat('markdown');
     setPreviewImage(null);
     setPreviewMedia(null);
+    setPreviewOffice(null);
     setShowCopyPath(false);
     if (selected) loadPreview(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -630,11 +669,13 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setGroupOverrides(new Set());
   }, []);
 
-  const hasActiveFilters = !!(filterType || filterArtifact || debouncedQuery);
+  const hasActiveFilters = !!(filterType || filterArtifact || filterSource || filterProject || debouncedQuery);
 
   const clearAllFilters = useCallback(() => {
     setFilterType('');
     setFilterArtifact('');
+    setFilterSource('');
+    setFilterProject('');
     setSearchQuery('');
     setDebouncedQuery('');
   }, []);
@@ -1055,6 +1096,22 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
           )}
           {/* Filter rows — always visible on desktop, collapsible on mobile */}
           <div className={isMobile && !mobileFiltersOpen ? 'hidden' : 'space-y-3'}>
+          {/* Source filter (agent / knowledge) + bind knowledge base entry */}
+          <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide filter-pills-fade">
+            <span className="text-[10px] text-fg-tertiary shrink-0">{t('filters.source')}</span>
+            <FilterPill label={t('filters.allSources')} value="" current={filterSource} onClick={() => setFilterSource('')} />
+            <FilterPill label={t('filters.sourceAgent')} value="agent" current={filterSource} onClick={v => setFilterSource((v || '') as 'agent' | 'knowledge' | '')} />
+            <FilterPill label={t('filters.sourceKnowledge')} value="knowledge" current={filterSource} onClick={v => setFilterSource((v || '') as 'agent' | 'knowledge' | '')} />
+            <button
+              type="button"
+              onClick={() => setBindOpen(true)}
+              className="ml-auto shrink-0 flex items-center gap-1 px-2 py-1 rounded text-[10px] text-fg-tertiary hover:text-brand-500 hover:bg-surface-elevated transition-colors"
+              title={t('filters.bindKnowledgeBase')}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+              {t('filters.bindKnowledgeBase')}
+            </button>
+          </div>
           {/* Type filter (includes artifact types) */}
           <div className="flex gap-1 overflow-x-auto scrollbar-hide filter-pills-fade">
             <FilterPill label={t('filters.allTypes')} value="" current={filterType || filterArtifact || ''} onClick={() => { setFilterType(''); setFilterArtifact(''); }} />
@@ -1108,6 +1165,22 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
                   {ARTIFACT_META[filterArtifact]?.icon} {t(`artifactTypes.${filterArtifact}`)}
                   <button onClick={() => setFilterArtifact('')} className="hover:text-brand-400">
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </span>
+              )}
+              {filterSource && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
+                  {filterSource === 'knowledge' ? t('filters.sourceKnowledge') : t('filters.sourceAgent')}
+                  <button onClick={() => setFilterSource('')} className="hover:text-brand-400">
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </span>
+              )}
+              {filterProject && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-brand-500/10 text-brand-500 text-[10px]">
+                  {resolveProjectName(filterProject) ?? filterProject}
+                  <button onClick={() => setFilterProject('')} className="hover:text-brand-400">
                     <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                   </button>
                 </span>
@@ -1299,7 +1372,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             </div>
           </div>
         ) : (
-          <div className="p-6 space-y-4">
+          <div className={`p-6 space-y-4 ${showOfficePreview ? 'flex flex-col min-h-0 h-full' : ''}`}>
             {/* File missing warning */}
             {!previewMode && missingFileIds.has(selected.id) && (
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-600 text-xs">
@@ -1312,7 +1385,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             )}
 
             {/* Header: title + badges + actions — all info at the top */}
-            <div className="space-y-3">
+            <div className={`space-y-3 ${showOfficePreview ? 'shrink-0' : ''}`}>
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
                 {!previewMode && (
@@ -1538,7 +1611,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 </div>
               </div>
             ) : (
-              <div className="bg-surface-elevated rounded-xl overflow-hidden">
+              <div className={`bg-surface-elevated rounded-xl overflow-hidden ${showOfficePreview ? 'flex flex-col h-full' : ''}`}>
                 {/* Edit/Preview toolbar — shown when there is editable text content */}
                 {(previewContent || selected.summary) && !previewLoading && !previewImage && !showCopyPath && selected.reference && selected.type === 'file' && (previewFormat === 'markdown' || previewFormat === 'text' || previewFormat === 'html') && (
                   <div className="flex items-center gap-2 px-4 py-2 border-b border-border-subtle bg-surface-secondary/50">
@@ -1566,7 +1639,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                     )}
                   </div>
                 )}
-                <div className="p-5">
+                <div className={showOfficePreview ? 'flex-1 min-h-0 p-5 flex flex-col' : 'p-5'}>
                   {previewLoading ? (
                     <div className="animate-pulse space-y-4">
                       <div className="h-4 bg-surface-overlay/60 rounded w-full" />
@@ -1580,6 +1653,14 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                     <div className="flex flex-col items-center gap-2">
                       <img src={previewImage.src} alt={previewImage.name} className="max-w-full max-h-[60vh] rounded-lg object-contain" />
                       <span className="text-xs text-fg-tertiary">{previewImage.name}</span>
+                    </div>
+                  ) : previewOffice ? (
+                    <div className={showOfficePreview ? 'flex-1 min-h-0' : 'h-[55vh]'}>
+                      <OfficePreviewer
+                        data={previewOffice}
+                        reference={previewOffice.reference}
+                        onFallback={previewOffice.reference ? () => { api.files.reveal(previewOffice.reference!).catch(() => {}); } : undefined}
+                      />
                     </div>
                   ) : previewMedia ? (
                     <div className="flex flex-col gap-3 py-4">
@@ -1697,6 +1778,18 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
       )}
 
       {/* Remove Confirmation */}
+      {bindOpen && (
+        <KnowledgeBindModal
+          projects={projects}
+          onClose={() => setBindOpen(false)}
+          onBound={() => {
+            setBindOpen(false);
+            setFilterSource('knowledge');
+            refresh();
+          }}
+        />
+      )}
+
       {confirmRemove && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setConfirmRemove(null)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -1749,6 +1842,108 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         </div>
       )}
 
+    </div>
+  );
+}
+
+function KnowledgeBindModal({ projects, onClose, onBound }: { projects: ProjectInfo[]; onClose: () => void; onBound: () => void }) {
+  const { t } = useTranslation('deliverables');
+  const [projectId, setProjectId] = useState('');
+  const [path, setPath] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const selectedProject = projects.find(p => p.id === projectId);
+
+  const canPickDir = typeof window !== 'undefined' && !!window.markusDesktop?.selectDirectory;
+
+  const handleBrowse = async () => {
+    try {
+      const dir = await window.markusDesktop?.selectDirectory?.(t('bindBrowseTitle', { defaultValue: 'Select knowledge base directory' }));
+      if (dir) setPath(dir);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const submit = async () => {
+    if (!projectId || !path.trim() || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const trimmed = path.trim();
+      const paths = [...new Set([...(selectedProject?.knowledgeBasePaths ?? []), trimmed])];
+      await api.projects.update(projectId, { knowledgeBasePaths: paths });
+      // 绑定后同步所有已绑路径（而非仅新路径），避免覆盖旧目录的文件
+      await api.projects.syncKnowledge(projectId);
+      onBound();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => { if (!busy) onClose(); }}>
+      <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="text-sm font-medium text-fg-primary mb-1">{t('bindKnowledgeBase')}</div>
+        <p className="text-xs text-fg-secondary mb-4">{t('bindKnowledgeBaseHint')}</p>
+
+        <label className="block text-[10px] text-fg-tertiary mb-1">{t('bindProject')}</label>
+        <select
+          value={projectId}
+          onChange={e => setProjectId(e.target.value)}
+          className="w-full mb-3 px-2.5 py-2 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary"
+        >
+          <option value="">{t('bindProjectSelect')}</option>
+          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+
+        <label className="block text-[10px] text-fg-tertiary mb-1">{t('bindPath')}</label>
+        <div className="flex gap-2 mb-2">
+          <input
+            value={path}
+            onChange={e => setPath(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') void submit(); }}
+            placeholder={t('bindPathPlaceholder')}
+            className="flex-1 min-w-0 px-2.5 py-2 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary font-mono"
+          />
+          {canPickDir && (
+            <button
+              type="button"
+              onClick={() => void handleBrowse()}
+              disabled={busy}
+              title={t('bindBrowse', { defaultValue: 'Browse…' })}
+              className="shrink-0 px-3 py-2 text-xs bg-surface-overlay text-fg-secondary hover:text-fg-primary rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {t('bindBrowse', { defaultValue: 'Browse…' })}
+            </button>
+          )}
+        </div>
+
+        {selectedProject && (selectedProject.knowledgeBasePaths ?? []).length > 0 && (
+          <div className="mb-3 space-y-1">
+            <div className="text-[10px] text-fg-tertiary">{t('bindCurrentPaths')}</div>
+            {(selectedProject.knowledgeBasePaths ?? []).map((p, i) => (
+              <div key={`${p}-${i}`} className="text-[11px] text-fg-secondary font-mono truncate" title={p}>• {p}</div>
+            ))}
+          </div>
+        )}
+
+        {error && <div className="mb-3 px-2.5 py-1.5 text-[11px] rounded-md bg-red-500/15 text-red-500">{error}</div>}
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onClose} disabled={busy} className="px-3 py-1.5 text-xs text-fg-tertiary hover:text-fg-secondary rounded-lg transition-colors">{t('common:cancel', { defaultValue: 'Cancel' })}</button>
+          <button
+            onClick={() => void submit()}
+            disabled={busy || !projectId || !path.trim()}
+            className="px-3 py-1.5 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {busy ? t('bindSaving', { defaultValue: 'Saving…' }) : t('bindSave', { defaultValue: 'Bind directory' })}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

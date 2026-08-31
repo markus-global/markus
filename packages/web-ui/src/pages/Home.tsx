@@ -13,6 +13,12 @@ import {
   useOverviewUsageData,
 } from '../components/OverviewUsage.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import {
+  isUserOnboarded,
+  isChecklistDismissed,
+  markChecklistDismissed,
+  markUserOnboarded,
+} from '../lib/onboarding.ts';
 
 const DONUT_COLORS: Record<string, string> = {
   completed: '#22c55e', in_progress: '#8b5cf6', review: '#3b82f6',
@@ -41,6 +47,28 @@ const ACTIVITY_LABEL_KEYS: Record<string, string> = {
   'Heartbeat check-in (idle skip)': 'agentFocus.heartbeatSkip',
 };
 
+/** OB-1：agent runtime phase → 圆点颜色（Home 概览进度展开） */
+const AGENT_PHASE_DOT: Record<string, string> = {
+  thinking: 'bg-amber-400 animate-pulse',
+  running: 'bg-blue-400 animate-pulse',
+  'waiting-dependency': 'bg-orange-400 animate-pulse',
+  blocked: 'bg-red-400 animate-pulse',
+  degraded: 'bg-amber-500 animate-pulse',
+  error: 'bg-red-500 animate-pulse',
+  idle: 'bg-green-400',
+  offline: 'bg-gray-400',
+};
+
+/** OB-1：agent runtime phase → i18n 文案键 */
+const AGENT_PHASE_LABEL_KEYS: Record<string, string> = {
+  thinking: 'agentFocus.phaseThinking',
+  running: 'agentFocus.phaseRunning',
+  'waiting-dependency': 'agentFocus.phaseWaitingDep',
+  blocked: 'agentFocus.phaseBlocked',
+  degraded: 'agentFocus.phaseDegraded',
+  error: 'agentFocus.phaseError',
+};
+
 // ═════════════════════════════════════════════════════════════════════════════
 
 export interface HomePreviewData {
@@ -55,7 +83,7 @@ export interface HomePreviewData {
   usageInfo?: { llmTokens: number; storageBytes: number } | null;
 }
 
-export function HomePage({ authUser, previewMode, previewData }: { authUser?: { id: string; name: string; role: string; orgId: string }; previewMode?: boolean; previewData?: HomePreviewData } = {}) {
+export function HomePage({ authUser, previewMode, previewData }: { authUser?: { id: string; name: string; role: string; orgId: string; preferences?: { guideHidden?: boolean; [key: string]: unknown } }; previewMode?: boolean; previewData?: HomePreviewData } = {}) {
   const { t } = useTranslation(['home', 'common', 'team']);
   const isMobile = useIsMobile();
   const isActive = usePageActive(PAGE.HOME);
@@ -81,7 +109,17 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [showClaimModal, setShowClaimModal] = useState(false);
   const showClaimModalRef = useRef(false);
   showClaimModalRef.current = showClaimModal;
-  const [checklistDismissed, setChecklistDismissed] = useState(() => localStorage.getItem('markus_checklist_dismissed') === 'true');
+  // Per-user onboarding state（lib/onboarding.ts + 服务端 preferences.guideHidden）：
+  //  - guideHidden：该用户是否已「不需要引导」（本地缓存 或 服务端标记，任一为 true 即隐藏）
+  //  - checklistDismissed：该用户是否主动关闭过清单（仅当必做 setup 完成后才生效）
+  const uid = authUser?.id;
+  const [guideHidden, setGuideHidden] = useState<boolean>(() => {
+    // preview / 无登录态不显示引导
+    if (!authUser?.id) return true;
+    return isUserOnboarded(authUser.id) || authUser.preferences?.guideHidden === true;
+  });
+  const [, setChecklistDismissBump] = useState(0);
+  const checklistDismissed = uid ? isChecklistDismissed(uid) : false;
   const [secretaryHasChat, setSecretaryHasChat] = useState(false);
   const [checklistReady, setChecklistReady] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
@@ -130,9 +168,13 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
       setAgents(d.agents);
       const sec = d.agents.find(a => a.role === 'secretary') ?? d.agents.find(a => a.name?.toLowerCase().includes('secretary'));
       if (!sec) return;
-      void api.sessions.listByAgent(sec.id, 1).then(async r => {
-        if (r.sessions.length === 0) return;
-        const m = await api.sessions.getMessages(r.sessions[0]!.id, 1);
+      // Per-user greet check: only sessions belonging to the current user count as
+      // "打过招呼". uid unknown (preview) falls back to "秘书已有会话"。
+      void api.sessions.listByAgent(sec.id, 20).then(async r => {
+        if (r.sessions.length === 0) { setSecretaryHasChat(false); return; }
+        const mine = uid ? r.sessions.filter(s => s.userId === uid) : r.sessions;
+        if (mine.length === 0) { setSecretaryHasChat(false); return; }
+        const m = await api.sessions.getMessages(mine[0]!.id, 1);
         setSecretaryHasChat(m.messages.length > 0);
       }).catch(() => {});
     }).catch(() => {});
@@ -174,10 +216,106 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           .catch(() => { /* keep prior / false */ });
       })
       .catch(() => {});
-    Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, browserP, claimP]).then(() => {
+    // checklistReady 兜底：claimP 会走 Hub 网络调用（无超时），离线/慢网时卡住
+    // 会 forever 隐藏整张引导卡。8s 超时后仍先渲染卡片，claim 步骤状态异步补。
+    Promise.race([
+      Promise.allSettled([agentsP, teamsP, reqsP, projsP, llmP, browserP, claimP]),
+      new Promise<void>(resolve => setTimeout(resolve, 8000)),
+    ]).then(() => {
       setChecklistReady(true);
     });
-  }, [opsPeriod]);
+  }, [opsPeriod, uid]);
+
+  // 引导清单全部完成（或用户明确 dismiss 且必做 setup 已完成）→ 持久化「不再显示」。
+  // 写服务端 preferences.guideHidden，保证换浏览器/清缓存也永久隐藏；本地缓存兜底离线。
+  const finishGuide = useCallback(() => {
+    if (!uid) return;
+    markUserOnboarded(uid);
+    setGuideHidden(true);
+    api.auth.updatePreferences({ guideHidden: true }).catch(() => { /* 离线：本地 key 本会话仍隐藏 */ });
+  }, [uid]);
+
+  // ── Onboarding checklist 状态（组件主体计算，供渲染 + 完成检测复用）──
+  const navigateToSecretary = useCallback((prompt: string) => {
+    const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
+    navBus.navigate(PAGE.TEAM, {
+      ...(secretary ? { agentId: secretary.id } : {}),
+      prefillMessage: prompt,
+    });
+  }, [agents]);
+
+  // Claim credits whenever Hub session or Markus Cloud is present.
+  // Do not gate on localStorage alone — JWT may restore from disk after paint.
+  const hubConnected = !!getHubToken();
+  const showClaimStep = hubConnected || markusConfigured;
+  const llmReady = llmConfigured === true || markusConfigured;
+  const setupSteps = [
+    ...(showClaimStep
+      ? [{
+          id: 'claim',
+          done: freeCreditsClaimed,
+          isSetup: true,
+          label: t('checklist.setup.claim'),
+          desc: t('checklist.setup.claimDesc'),
+          action: t('checklist.setup.claimAction'),
+          onClick: () => { setShowClaimModal(true); },
+        }]
+      : []),
+    {
+      id: 'llm',
+      done: llmReady,
+      isSetup: true,
+      label: t('checklist.setup.llm'),
+      desc: showClaimStep ? t('checklist.setup.llmDescHub') : t('checklist.setup.llmDesc'),
+      action: t('checklist.setup.llmAction'),
+      onClick: () => { window.location.hash = '#settings/providers'; },
+    },
+    {
+      id: 'browser',
+      done: browserConnected === true,
+      isSetup: true,
+      optional: true,
+      label: t('checklist.setup.browser'),
+      desc: t('checklist.setup.browserDesc'),
+      action: t('checklist.setup.browserAction'),
+      onClick: () => { window.location.hash = '#settings/browser'; },
+    },
+  ] as Array<{ id: string; done: boolean; isSetup?: boolean; optional?: boolean; label: string; desc: string; action: string; onClick: () => void }>;
+
+  const exploreSteps = [
+    { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
+    // Per-user ownership: 存量组织里的老数据不应让新用户误以为已完成。
+    // uid 缺失（预览等）时回退到全局存在性。
+    { id: 'project', done: uid ? projects.some(p => p.createdBy === uid) : projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
+    { id: 'requirements', done: uid ? allRequirements.some(r => r.createdBy === uid) : allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
+    // TeamInfo 无 createdBy 归属字段，保持全局存在性判定。
+    { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary('帮我组建一个名为「科技前沿智库」的团队，成员包括4位科技领袖角色的智能体：埃隆·马斯克（关注太空、电动车、AI安全）、史蒂夫·乔布斯（关注产品设计与用户体验）、山姆·奥特曼（关注AGI与AI创业生态）、黄仁勋（关注GPU、AI算力与数据中心）。团队目标是从不同视角分析科技前沿趋势。') },
+  ] as Array<{ id: string; done: boolean; isSetup?: boolean; optional?: boolean; label: string; desc: string; action: string; onClick: () => void }>;
+
+  const allSteps = [...setupSteps, ...exploreSteps];
+  const doneCount = allSteps.filter(s => s.done).length;
+  const totalSteps = allSteps.length;
+  const allRequiredDone = setupSteps.filter(s => !s.optional).every(s => s.done) && exploreSteps.every(s => s.done);
+  const requiredSetupIncomplete = setupSteps.some(s => !s.optional && !s.done);
+
+  // 用户主动关闭清单：必做 setup 未完成时仅本地记录（防止过早丢掉「配置模型」引导）；
+  // 必做 setup 已完成则视为明确不再需要 → 服务端持久化，换浏览器/清缓存也不显示。
+  const handleChecklistDismiss = () => {
+    if (!uid) return;
+    markChecklistDismissed(uid);
+    if (!requiredSetupIncomplete) {
+      finishGuide();
+    } else {
+      setChecklistDismissBump(b => b + 1);
+    }
+  };
+
+  // 清单全部必做步骤完成 → 持久化「不再显示」（服务端，跨浏览器生效）。
+  useEffect(() => {
+    if (!checklistReady || guideHidden) return;
+    if (!allRequiredDone) return;
+    finishGuide();
+  }, [checklistReady, guideHidden, allRequiredDone, finishGuide]);
 
   useEffect(() => {
     if (previewMode || !isActive) return;
@@ -224,7 +362,14 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   }
   const completed = rootStatusCounts['completed'] ?? 0;
   const totalRootTasks = Object.values(rootStatusCounts).reduce((s, c) => s + c, 0);
-  const workingAgents = agents.filter(a => a.status === 'working').length;
+  // OB-1: 「正在工作」人数按后端 runtime.phase（非 idle/offline）统计，老后端回退到 status。
+  const workingAgentsCount = agents.filter(a => {
+    const phase = a.runtime?.phase;
+    if (phase) return phase !== 'idle' && phase !== 'offline';
+    return a.status === 'working';
+  }).length;
+  // 兼容旧引用：概览「正在工作」数量统一用 runtime 派生口径
+  const workingAgents = workingAgentsCount;
   const activeProjects = projects.filter(p => p.status === 'active').length;
   const completionRate = totalRootTasks > 0 ? Math.round((completed / totalRootTasks) * 100) : 0;
   const sortedStatusEntries = STATUS_ORDER.filter(s => (rootStatusCounts[s] ?? 0) > 0).map(s => ({ status: s, count: rootStatusCounts[s]! }));
@@ -243,7 +388,11 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     });
   }, [teams, agents]);
 
-  const workingAgentsList = agents.filter(a => a.status === 'working');
+  const workingAgentsList = agents.filter(a => {
+    const phase = a.runtime?.phase;
+    if (phase) return phase !== 'idle' && phase !== 'offline';
+    return a.status === 'working';
+  });
 
   // Own-provider users don't need Markus Cloud AI quota/trends on Overview.
   const showMarkusUsage = !(llmConfigured === true && !markusConfigured);
@@ -477,69 +626,10 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         )}
 
         {/* ── Onboarding Checklist ──
-             No loading placeholder: the card only renders once it is ready and
-             has real content, so it never flashes an empty "loading" box. */}
-        {checklistReady && (() => {
-          const navigateToSecretary = (prompt: string) => {
-            const secretary = agents.find(a => a.role === 'secretary') ?? agents.find(a => a.name?.toLowerCase().includes('secretary'));
-            navBus.navigate(PAGE.TEAM, {
-              ...(secretary ? { agentId: secretary.id } : {}),
-              prefillMessage: prompt,
-            });
-          };
-
-          // Claim credits whenever Hub session or Markus Cloud is present.
-          // Do not gate on localStorage alone — JWT may restore from disk after paint.
-          const hubConnected = !!getHubToken();
-          const showClaimStep = hubConnected || markusConfigured;
-          const llmReady = llmConfigured === true || markusConfigured;
-          const setupSteps = [
-            ...(showClaimStep
-              ? [{
-                  id: 'claim',
-                  done: freeCreditsClaimed,
-                  isSetup: true,
-                  label: t('checklist.setup.claim'),
-                  desc: t('checklist.setup.claimDesc'),
-                  action: t('checklist.setup.claimAction'),
-                  onClick: () => { setShowClaimModal(true); },
-                }]
-              : []),
-            {
-              id: 'llm',
-              done: llmReady,
-              isSetup: true,
-              label: t('checklist.setup.llm'),
-              desc: showClaimStep ? t('checklist.setup.llmDescHub') : t('checklist.setup.llmDesc'),
-              action: t('checklist.setup.llmAction'),
-              onClick: () => { window.location.hash = '#settings/providers'; },
-            },
-            {
-              id: 'browser',
-              done: browserConnected === true,
-              isSetup: true,
-              optional: true,
-              label: t('checklist.setup.browser'),
-              desc: t('checklist.setup.browserDesc'),
-              action: t('checklist.setup.browserAction'),
-              onClick: () => { window.location.hash = '#settings/browser'; },
-            },
-          ];
-
-          const exploreSteps = [
-            { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
-            { id: 'project', done: projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
-            { id: 'requirements', done: allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
-            { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary('帮我组建一个名为「科技前沿智库」的团队，成员包括4位科技领袖角色的智能体：埃隆·马斯克（关注太空、电动车、AI安全）、史蒂夫·乔布斯（关注产品设计与用户体验）、山姆·奥特曼（关注AGI与AI创业生态）、黄仁勋（关注GPU、AI算力与数据中心）。团队目标是从不同视角分析科技前沿趋势。') },
-          ];
-
-          const allSteps = [...setupSteps, ...exploreSteps];
-          const doneCount = allSteps.filter(s => s.done).length;
-          const totalSteps = allSteps.length;
-          const allRequiredDone = setupSteps.filter(s => !s.optional).every(s => s.done) && exploreSteps.every(s => s.done);
-          const requiredSetupIncomplete = setupSteps.some(s => !s.optional && !s.done);
-
-          if (allRequiredDone) return null;
+             Only renders for users who have NOT finished onboarding（guideHidden=false）
+             and still have required steps to complete. 完成/关闭后服务端持久化，
+             换浏览器、清缓存都不会再打扰。无 loading 占位：数据就绪且有内容才渲染。 */}
+        {checklistReady && !guideHidden && !allRequiredDone && (() => {
           // Honor dismiss only after required setup is done; otherwise local users
           // who closed the card too early would permanently lose "配置模型" guidance.
           if (checklistDismissed && !requiredSetupIncomplete) return null;
@@ -579,7 +669,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                   <h3 className="text-sm font-semibold text-fg-primary mb-1">{t('checklist.title')}</h3>
                   <p className="text-xs text-fg-secondary">{t('checklist.subtitle')}</p>
                 </div>
-                <button onClick={() => { setChecklistDismissed(true); localStorage.setItem('markus_checklist_dismissed', 'true'); }} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title="Dismiss">
+                <button onClick={handleChecklistDismiss} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title="Dismiss">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>
@@ -674,16 +764,47 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                         <h4 className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider">{t('liveActivity.whosWorking')}</h4>
                       </div>
                       <div className="space-y-1">
-                        {workingAgentsList.map(a => (
+                        {workingAgentsList.map(a => {
+                          const r = a.runtime;
+                          const phase = r?.phase ?? (a.status === 'idle' ? 'idle' : a.status === 'offline' ? 'offline' : 'running');
+                          const dotClass = AGENT_PHASE_DOT[phase] ?? 'bg-blue-400 animate-pulse';
+                          return (
                           <div key={a.id} className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-surface-overlay/40 cursor-pointer transition-colors"
                             onClick={() => navBus.navigate(PAGE.TEAM, { agentId: a.id })}>
                             <Avatar name={a.name} avatarUrl={(a as any).avatarUrl} size={24} bgClass="bg-brand-600/30 text-brand-300" />
                             <div className="flex-1 min-w-0">
-                              <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>
-                              <div className="text-[10px] text-fg-tertiary truncate">{localizeActivityLabel(a.currentActivity?.label, t) ?? t('agentFocus.working')}</div>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`} />
+                                <span className="text-xs font-medium text-fg-primary truncate">{a.name}</span>
+                                {AGENT_PHASE_LABEL_KEYS[phase] && (
+                                  <span className="text-[10px] text-fg-tertiary shrink-0">{t(AGENT_PHASE_LABEL_KEYS[phase])}</span>
+                                )}
+                                {r?.stall?.stalled && (
+                                  <span
+                                    title={r.stall.stuckReason}
+                                    className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 ${
+                                      r.stall.stallKind === 'dead-dependency'
+                                        ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                        : 'bg-sky-500/15 text-sky-300 border border-sky-500/25'
+                                    }`}
+                                  >
+                                    {r.stall.stallKind === 'dead-dependency' ? t('agentFocus.stallDeadBadge') : t('agentFocus.stallStaleBadge')}
+                                  </span>
+                                )}
+                                {r?.dirty?.dirty && (() => {
+                                  const needsHuman = r.dirty.recovery === 'human-review';
+                                  return (
+                                    <span className={`inline-flex items-center px-1.5 py-px rounded text-[9px] font-medium shrink-0 ${needsHuman ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
+                                      {needsHuman ? t('liveActivity.dirtyNeedsHuman') : t('liveActivity.dirtyRecovered')}
+                                    </span>
+                                  );
+                                })()}
+                              </div>
+                              <div className="text-[10px] text-fg-tertiary truncate">{agentRuntimeSubtitle(a, t)}</div>
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -1161,6 +1282,52 @@ function formatRelativeTime(dateStr: string, t: TFunction): string {
 function localizeActivityLabel(label: string | undefined, t: TFunction): string | null {
   if (!label) return null;
   return ACTIVITY_LABEL_KEYS[label] ? t(ACTIVITY_LABEL_KEYS[label]) : label;
+}
+
+/** 把 ISO 时间格式化为本地 HH:mm（供「最后活动 HH:mm」使用）。 */
+function formatClockTime(iso: string | undefined, fallback = ''): string {
+  if (!iso) return fallback;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return fallback;
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/**
+ * OB-1：把 agent 的 runtime 展开为一行可读进度 ——
+ *  卡在依赖「XX」→ 或「在干 XX」→ · 已运行 X 分钟 → · 最后活动 HH:mm → · 最近错误
+ * 老后端（无 runtime）回退到 currentActivity.label。
+ */
+function agentRuntimeSubtitle(a: AgentInfo, t: TFunction): string {
+  const r = a.runtime;
+  const parts: string[] = [];
+  if (r) {
+    // OB-2：疑似卡死 —— 优先给出明确「卡在这」提示，而非笼统进度。
+    if (r.stall?.stalled) {
+      if (r.stall.stallKind === 'dead-dependency') {
+        parts.push(t('agentFocus.stallDeadDep', { title: r.stall.stuckOnTitle ?? r.stall.stuckOnTaskId ?? '' }));
+      } else {
+        const ago = r.stall.lastActivityAgoMin;
+        parts.push(t('agentFocus.stallStale', { minutes: typeof ago === 'number' ? ago : 0 }));
+      }
+    } else if (r.blockedBy && r.blockedBy.length > 0) {
+      parts.push(t('agentFocus.blockedBy', { title: r.blockedBy[0].title }));
+    } else if (r.phase === 'idle' || r.phase === 'offline') {
+      // 已 idle / offline：不展示残留活动标签（可能是待清理的遗留痕迹），让 phase 点与文案一致
+    } else if (r.activityLabel) {
+      parts.push(localizeActivityLabel(r.activityLabel, t) ?? r.activityLabel);
+    } else if (r.activityType === 'heartbeat') {
+      parts.push(t('agentFocus.heartbeatCheckIn'));
+    }
+    if (typeof r.runningMinutes === 'number' && r.runningMinutes >= 1) {
+      parts.push(t('agentFocus.runningFor', { n: r.runningMinutes }));
+    }
+    if (r.lastActivityAt || r.lastHeartbeat) {
+      parts.push(t('agentFocus.lastActivity', { time: formatClockTime(r.lastActivityAt ?? r.lastHeartbeat) }));
+    }
+    if (r.lastError) parts.push(r.lastError);
+    return parts.join(' · ');
+  }
+  return localizeActivityLabel(a.currentActivity?.label, t) ?? t('agentFocus.working');
 }
 
 function formatTokenCount(n: number): string {

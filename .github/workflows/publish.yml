@@ -13,6 +13,12 @@ permissions:
   packages: write
   id-token: write
 
+# mac/linux runners default Node heap can OOM on web-ui `vite build`
+# (observed on macos-latest: "Ineffective mark-compacts near heap limit").
+# Raise the cap for all build jobs — harmless on CI, avoids SIGABRT.
+env:
+  NODE_OPTIONS: '--max-old-space-size=8192'
+
 jobs:
   publish-npm:
     runs-on: ubuntu-latest

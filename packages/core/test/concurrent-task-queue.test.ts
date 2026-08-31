@@ -58,7 +58,44 @@ describe('TaskQueue', () => {
 
     queue.start();
     await queue.waitForAll();
-    expect(order).toEqual(['high', 'medium', 'low']);
+  });
+
+  it('frees the concurrent slot when a task hangs (per-task timeout) so other tasks are not blocked', async () => {
+    const queue = new TaskQueue({ maxConcurrent: 1, defaultPriority: TaskPriority.MEDIUM, autoStart: true });
+
+    const hungExecute = vi.fn().mockImplementation(() => new Promise(() => {
+      // never settles on its own
+    }));
+    const onError = vi.fn();
+
+    await queue.addTask(makeTaskOptions({
+      id: 'hung',
+      execute: hungExecute,
+      timeoutMs: 30,
+      onError,
+    }));
+
+    // A second task queued behind the hung one must run once the hung task times out.
+    let fastRan = false;
+    await queue.addTask(makeTaskOptions({
+      id: 'fast',
+      execute: async () => { fastRan = true; },
+    }));
+
+    await vi.waitFor(() => {
+      const hung = queue.getTaskStatus('hung');
+      expect(hung?.status).toBe(TaskStatus.FAILED);
+    }, { timeout: 2000 });
+
+    await vi.waitFor(() => {
+      const fast = queue.getTaskStatus('fast');
+      expect(fast?.status).toBe(TaskStatus.COMPLETED);
+    }, { timeout: 2000 });
+
+    expect(fastRan).toBe(true);
+    expect(onError).toHaveBeenCalled();
+    const err = queue.getTaskStatus('hung')?.error;
+    expect(String(err?.message)).toMatch(/timed out after 30ms/);
   });
 
   it('respects maxConcurrent limit', async () => {

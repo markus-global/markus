@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('markusDesktop', {
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
   focusWindow: () => ipcRenderer.invoke('app:focus-window'),
   openInBrowser: () => ipcRenderer.invoke('app:open-in-browser'),
+  /** Native directory picker — returns selected absolute path, or null if cancelled. */
+  selectDirectory: (title?: string) => ipcRenderer.invoke('dialog:open-directory', title) as Promise<string | null>,
 
   showNotification: (title: string, body: string) =>
     ipcRenderer.invoke('app:show-notification', title, body),

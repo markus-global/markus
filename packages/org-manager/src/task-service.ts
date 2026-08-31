@@ -124,6 +124,18 @@ export interface TaskEvent {
 
 export type TaskWebhook = (event: TaskEvent) => void | Promise<void>;
 
+/** Structured task error carrying a machine-readable code for the UI to i18n. */
+export class TaskServiceError extends Error {
+  code: string;
+  data?: Record<string, unknown>;
+  constructor(code: string, message: string, data?: Record<string, unknown>) {
+    super(message);
+    this.name = 'TaskServiceError';
+    this.code = code;
+    this.data = data;
+  }
+}
+
 export class TaskService {
   private tasks = new Map<string, Task>();
   private agentManager?: AgentManager;
@@ -156,6 +168,53 @@ export class TaskService {
 
   setUserNameLookup(fn: (userId: string) => string | null): void {
     this.userNameLookup = fn;
+  }
+
+  /**
+   * Whether the task's assigned agent runtime loop is currently up.
+   * A stopped/offline agent has no active attention loop to consume mailbox
+   * items — dispatching a task to it would leave the task stranded in
+   * `in_progress` forever. Scheduled triggers and retries should gate on this.
+   */
+  isAssignedAgentOnline(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task || !task.assignedAgentId || !this.agentManager) return false;
+    try {
+      const agent = this.agentManager.getAgent(task.assignedAgentId);
+      if (!agent) return false;
+      return agent.getState().status !== 'offline';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Reclaim a scheduled task that is stuck in `in_progress` because its assigned
+   * agent went offline after the round was fired but before it was consumed
+   * (mailbox sits unconsumed, task never advances to review/completed).
+   *
+   * Recovery goes through a legal FSM path: mark the round `failed` (nothing was
+   * produced), so `resetTaskForRerun` (whose resettable statuses include
+   * `failed`) naturally flips it back to `in_progress` on the next schedule tick
+   * once the agent is back online.
+   *
+   * Returns true if the task was reclaimed (transitioned to failed).
+   */
+  reclaimStuckScheduledTask(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task || task.taskType !== 'scheduled') return false;
+    if (task.status !== 'in_progress') return false;
+    if (!task.assignedAgentId || this.isAssignedAgentOnline(taskId)) return false;
+
+    task.notes = [...(task.notes ?? []),
+      `[${formatLocalTimestamp(new Date())}] 自动回收：本轮由调度器触发但执行智能体 ${task.assignedAgentId} 离线未消费，标记 failed 等待下轮补跑。`];
+    if (this.taskRepo) {
+      this.taskRepo.update(task.id, { notes: task.notes })
+        .catch(err => log.warn('Failed to persist reclaim note', { taskId, error: String(err) }));
+    }
+    this.updateTaskStatus(taskId, 'failed', undefined, true, true, 'system', 'Scheduled round reclaimed (agent offline, never consumed)');
+    log.warn('Reclaimed stuck scheduled task (agent offline, round dropped)', { taskId, title: task.title, agentId: task.assignedAgentId });
+    return true;
   }
 
   setAgentManager(am: AgentManager): void {
@@ -1034,6 +1093,34 @@ export class TaskService {
    * Returns immediately; execution runs concurrently via async.
    * @param _retryAttempt - internal retry counter, do not pass from outside
    */
+  /**
+   * 恢复「丢失执行」的任务。
+   *
+   * 当 mailbox 中的任务执行指令（triggerExecution）在 defer/resurface 后丢失了回调闭包
+   * （agent 发出 `agent:incomplete` reason=resurfaced-task-execution-lost-closures），
+   * 且该任务当前没有其他活跃执行时，重新 dispatch 一次执行（带完整闭包）。
+   *
+   * 防重入：若任务已有活跃执行（activeToken 未取消），跳过——避免与 preempt 自动重调度
+   * 双重执行。
+   */
+  async recoverLostTaskExecution(taskId: string): Promise<void> {
+    const current = this.tasks.get(taskId);
+    if (!current || current.status !== 'in_progress') return;
+    const activeToken = this.taskCancelTokens.get(taskId);
+    if (activeToken && !activeToken.cancelled) {
+      log.info('Skipping lost-task recovery: task already has an active execution', { taskId });
+      return;
+    }
+    this.addTaskNote(taskId,
+      '[System] 检测到任务执行指令丢失（mailbox defer/resurface 导致回调闭包丢失），系统已自动重新调度执行。',
+      'system'
+    );
+    log.warn('Re-dispatching lost task execution', { taskId });
+    await this.runTask(taskId).catch(err =>
+      log.warn('Failed to re-dispatch lost task execution', { taskId, error: String(err) })
+    );
+  }
+
   async runTask(taskId: string, _retryAttempt = 0, _retryReason?: 'error' | 'no_submit'): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
@@ -1797,6 +1884,26 @@ export class TaskService {
       (request.creatorRole as 'worker' | 'manager') ?? 'worker',
     );
 
+    // ── Validate blockedBy references and detect cycles at creation time ──
+    // Mirrors the updateTask guard: a task must never reference blockers that
+    // don't exist (perma-blocked forever) or create a dependency cycle.
+    if (request.blockedBy?.length) {
+      for (const blockerId of request.blockedBy) {
+        if (!this.tasks.has(blockerId)) {
+          throw new Error(
+            `Task creation failed: blockedBy references unknown task: ${blockerId}`
+          );
+        }
+      }
+      const cycle = this.detectDependencyCycle(request.blockedBy);
+      if (cycle) {
+        throw new Error(
+          `Circular dependency detected: ${cycle.join(' → ')}. ` +
+          `Cannot create task — this would create a deadlock.`
+        );
+      }
+    }
+
     const hasUnresolvedBlockers = request.blockedBy && request.blockedBy.length > 0 && !request.blockedBy.every(blockerId => {
       const blocker = this.tasks.get(blockerId);
       // Mirror of areBlockersSatisfied: completed/archived blockers are satisfied;
@@ -2020,7 +2127,24 @@ export class TaskService {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
     if (task.status !== 'blocked') {
-      throw new Error(`Cannot resume task in ${task.status} status`);
+      throw new TaskServiceError('TASK_NOT_BLOCKED', `Cannot resume task in ${task.status} status`, { status: task.status });
+    }
+    // Re-check dependencies before resuming — if a blocker (or a newly added
+    // upstream dependency) is still unfinished, the task genuinely can't run yet.
+    if (task.blockedBy?.length && !this.areBlockersSatisfied(task)) {
+      const unresolved = (task.blockedBy ?? []).filter(blockerId => {
+        const blocker = this.tasks.get(blockerId);
+        return !blocker || (blocker.status !== 'completed' && blocker.status !== 'archived');
+      });
+      const names = unresolved.map(blockerId => {
+        const b = this.tasks.get(blockerId);
+        return b ? `"${b.title}"` : blockerId;
+      });
+      throw new TaskServiceError(
+        'TASK_BLOCKED',
+        `Task is blocked by unfinished dependencies: ${names.join(', ')}. Complete these dependencies first.`,
+        { dependencies: unresolved, dependencyTitles: unresolved.map(d => this.tasks.get(d)?.title).filter(Boolean) },
+      );
     }
     return this.updateTaskStatus(id, 'in_progress', updatedBy, false, false, updatedByType);
   }
@@ -2798,6 +2922,11 @@ export class TaskService {
 
     if (data.blockedBy !== undefined) {
       if (data.blockedBy.length > 0) {
+        for (const blockerId of data.blockedBy) {
+          if (!this.tasks.has(blockerId)) {
+            throw new Error(`Cannot set blocked_by — references unknown task: ${blockerId}`);
+          }
+        }
         const cycle = this.detectBlockedByCycle(id, data.blockedBy);
         if (cycle) {
           throw new Error(
@@ -2909,9 +3038,19 @@ export class TaskService {
 
   /**
    * When a task reaches a terminal state (completed / failed / cancelled),
-   * check blocked dependents and unblock any whose blockers are all resolved.
+   * check blocked dependents:
+   *   - blockers resolved (completed/archived)         → unblock → in_progress
+   *   - blocker failed (dead dependency, non-retryable) → cascade-fail the
+   *     dependent with an explanatory note, so it never waits forever on a
+   *     dependency that will not succeed (feedback #27/#28: "全部停了不会自己跑").
+   *   - blocker cancelled                             → handled by cascadeCancelDependents.
    */
   private checkDependentTasks(finishedTask: Task): void {
+    if (finishedTask.status === 'failed') {
+      this.cascadeFailDependents(finishedTask);
+      return;
+    }
+
     for (const [, task] of this.tasks) {
       if (task.status !== 'blocked' || !task.blockedBy?.length) continue;
       if (!task.blockedBy.includes(finishedTask.id)) continue;
@@ -2920,6 +3059,31 @@ export class TaskService {
         log.info(`Unblocking task ${task.id} (dependency ${finishedTask.id} resolved)`);
         this.updateTaskStatus(task.id, 'in_progress', undefined, true);
       }
+    }
+  }
+
+  /**
+   * Cascade-fail all blocked dependents of a failed task, recursively.
+   * A dependent waiting on a failed blocker can never satisfy its dependency,
+   * so leaving it 'blocked' would deadlock it forever. Mirror of
+   * cascadeCancelDependents for the failed terminal state.
+   */
+  private cascadeFailDependents(failedTask: Task): void {
+    for (const [, task] of this.tasks) {
+      if (task.status !== 'blocked' || !task.blockedBy?.length) continue;
+      if (!task.blockedBy.includes(failedTask.id)) continue;
+
+      log.info(`Cascade-failing task ${task.id} (dependency ${failedTask.id} failed)`);
+      task.notes = [
+        ...(task.notes ?? []),
+        `Auto-failed: dependency "${failedTask.title}" (${failedTask.id}) failed, task can never satisfy its blocker`,
+      ];
+      if (this.taskRepo) {
+        this.taskRepo.update(task.id, { notes: task.notes })
+          .catch(err => log.warn('Failed to persist cascade-fail notes', { error: String(err) }));
+      }
+      this.updateTaskStatus(task.id, 'failed', undefined, true);
+      this.cascadeFailDependents(task);
     }
   }
 
@@ -2935,6 +3099,16 @@ export class TaskService {
       if (this.areBlockersSatisfied(task)) {
         log.info(`Reconciling stuck blocked task ${task.id} — dependencies satisfied, unblocking`);
         this.updateTaskStatus(task.id, 'in_progress', undefined, true);
+      } else if (task.blockedBy.some(id => this.tasks.get(id)?.status === 'failed')) {
+        // A blocked task whose blocker has failed can never satisfy its
+        // dependency. Fail it explicitly at load-time instead of leaving it
+        // deadlocked forever (feedback #27/#28). cascadeFailDependents
+        // recurses, so we only need to seed it from the first failed blocker.
+        const firstFailed = task.blockedBy
+          .map(id => this.tasks.get(id))
+          .find(b => b?.status === 'failed');
+        log.info(`Reconciling stuck blocked task ${task.id} — dependency was failed, cascade-failing`);
+        this.cascadeFailDependents(this.tasks.get(firstFailed!.id)!);
       } else if (task.blockedBy.some(id => this.tasks.get(id)?.status === 'cancelled')) {
         log.info(`Reconciling stuck blocked task ${task.id} — dependency was cancelled, cascade-cancelling`);
         this.updateTaskStatus(task.id, 'cancelled', undefined, true);
@@ -2967,17 +3141,33 @@ export class TaskService {
    * Returns the cycle path if found, or null if no cycle exists.
    */
   private detectBlockedByCycle(taskId: string, proposedBlockers: string[]): string[] | null {
-    for (const blockerId of proposedBlockers) {
+    return this.detectDependencyCycle(proposedBlockers, taskId);
+  }
+
+  /**
+   * BFS cycle detection over the existing blocked_by graph, starting from
+   * `entries`. If `originTaskId` is provided, a path that returns to it is a
+   * cycle. Without an origin (creation-time validation), we only need to know
+   * whether any of the referenced blockers already form a cycle among
+   * themselves — but since a cycle requires a back-edge to a node that is
+   * already on the path, scanning from every entry with full visited tracking
+   * detects any cycle reachable from them.
+   */
+  private detectDependencyCycle(entries: string[], originTaskId?: string): string[] | null {
+    for (const entry of entries) {
       const visited = new Set<string>();
-      const queue: { id: string; path: string[] }[] = [{ id: blockerId, path: [taskId, blockerId] }];
+      const queue: { id: string; path: string[] }[] = [{ id: entry, path: [entry] }];
       while (queue.length > 0) {
         const { id: current, path } = queue.shift()!;
-        if (current === taskId) return path;
+        if (originTaskId && current === originTaskId) return path;
         if (visited.has(current)) continue;
         visited.add(current);
         const blockerTask = this.tasks.get(current);
         if (blockerTask?.blockedBy) {
           for (const nextId of blockerTask.blockedBy) {
+            // Creation-time guard: a referenced blocker that points back to
+            // itself (self-loop) is also a deadlock.
+            if (!originTaskId && nextId === entry) return [...path, nextId];
             queue.push({ id: nextId, path: [...path, nextId] });
           }
         }
@@ -3980,7 +4170,24 @@ export class TaskService {
     const task = this.tasks.get(taskIdStr);
     if (!task) throw new Error(`Task not found: ${taskIdStr}`);
     if (!['in_progress', 'failed', 'blocked', 'review'].includes(task.status)) {
-      throw new Error(`Cannot retry task in ${task.status} status`);
+      throw new TaskServiceError('TASK_NOT_RETRYABLE', `Cannot retry task in ${task.status} status`, { status: task.status });
+    }
+    // A retry must not bypass unfinished dependencies — the task would start
+    // without the outputs it needs. Surface a friendly, localizable error.
+    if (task.blockedBy?.length && !this.areBlockersSatisfied(task)) {
+      const unresolved = (task.blockedBy ?? []).filter(blockerId => {
+        const blocker = this.tasks.get(blockerId);
+        return !blocker || (blocker.status !== 'completed' && blocker.status !== 'archived');
+      });
+      const names = unresolved.map(blockerId => {
+        const b = this.tasks.get(blockerId);
+        return b ? `"${b.title}"` : blockerId;
+      });
+      throw new TaskServiceError(
+        'TASK_BLOCKED',
+        `Task is blocked by unfinished dependencies: ${names.join(', ')}. Complete these dependencies first.`,
+        { dependencies: unresolved, dependencyTitles: unresolved.map(d => this.tasks.get(d)?.title).filter(Boolean) },
+      );
     }
 
     // Cancel any running execution before transitioning

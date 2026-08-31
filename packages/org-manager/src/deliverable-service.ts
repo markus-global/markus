@@ -39,6 +39,9 @@ export class DeliverableService {
     agentId?: string;
     projectId?: string;
     requirementId?: string;
+    source?: Deliverable['source'];
+    knowledgeRoot?: string;
+    content?: string;
     artifactType?: Deliverable['artifactType'];
     artifactData?: Deliverable['artifactData'];
     diffStats?: Deliverable['diffStats'];
@@ -57,6 +60,9 @@ export class DeliverableService {
           tags: opts.tags ?? existing.tags,
         };
         if (opts.format !== undefined) patch.format = opts.format;
+        if (opts.source !== undefined) patch.source = opts.source;
+        if (opts.knowledgeRoot !== undefined) patch.knowledgeRoot = opts.knowledgeRoot;
+        if (opts.content !== undefined) patch.content = opts.content;
         if (opts.artifactType !== undefined) patch.artifactType = opts.artifactType;
         if (opts.artifactData !== undefined) patch.artifactData = opts.artifactData;
         if (opts.diffStats !== undefined) patch.diffStats = opts.diffStats;
@@ -84,6 +90,9 @@ export class DeliverableService {
       format: opts.format,
       tags: opts.tags ?? [],
       status: 'active',
+      source: opts.source ?? 'agent',
+      knowledgeRoot: opts.knowledgeRoot ?? undefined,
+      content: opts.content ?? undefined,
       taskId: opts.taskId,
       agentId: opts.agentId,
       projectId: opts.projectId,
@@ -108,6 +117,9 @@ export class DeliverableService {
       format: opts.format,
       tags: opts.tags ?? [],
       status: 'active',
+      source: opts.source ?? 'agent',
+      knowledgeRoot: opts.knowledgeRoot,
+      content: opts.content,
       taskId: opts.taskId,
       agentId: opts.agentId,
       projectId: opts.projectId,
@@ -146,6 +158,7 @@ export class DeliverableService {
     type?: Deliverable['type'];
     status?: Deliverable['status'];
     artifactType?: Deliverable['artifactType'];
+    source?: Deliverable['source'];
     offset?: number;
     limit?: number;
   }): { results: Deliverable[]; total: number } {
@@ -163,6 +176,7 @@ export class DeliverableService {
     if (opts.status) filtered = filtered.filter(d => d.status === opts.status);
     else filtered = filtered.filter(d => d.status !== 'outdated');
     if (opts.artifactType) filtered = filtered.filter(d => d.artifactType === opts.artifactType);
+    if (opts.source) filtered = filtered.filter(d => (d.source ?? 'agent') === opts.source);
 
     if (keywords.length === 0) {
       filtered.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -170,7 +184,7 @@ export class DeliverableService {
     }
 
     const scored = filtered.map(d => {
-      const text = `${d.title} ${d.summary} ${d.tags.join(' ')}`.toLowerCase();
+      const text = `${d.title} ${d.summary} ${d.tags.join(' ')} ${d.content ?? ''}`.toLowerCase();
       let score = 0;
       for (const kw of keywords) {
         if (text.includes(kw)) score += 1;
@@ -198,6 +212,9 @@ export class DeliverableService {
     format: string;
     tags: string[];
     status: Deliverable['status'];
+    source: Deliverable['source'];
+    knowledgeRoot: string;
+    content: string;
     taskId: string;
     agentId: string;
     projectId: string;
@@ -224,6 +241,9 @@ export class DeliverableService {
     if (data.format !== undefined && data.format !== d.format) changed.push('format');
     if (data.tags !== undefined && !arrEq(data.tags, d.tags)) changed.push('tags');
     if (data.status !== undefined && data.status !== d.status) changed.push('status');
+    if (data.source !== undefined && data.source !== (d.source ?? 'agent')) changed.push('source');
+    if (data.knowledgeRoot !== undefined && data.knowledgeRoot !== d.knowledgeRoot) changed.push('knowledgeRoot');
+    if (data.content !== undefined && data.content !== d.content) changed.push('content');
     if (data.taskId !== undefined && data.taskId !== d.taskId) changed.push('taskId');
     if (data.agentId !== undefined && data.agentId !== d.agentId) changed.push('agentId');
     if (data.projectId !== undefined && data.projectId !== d.projectId) changed.push('projectId');
@@ -248,6 +268,7 @@ export class DeliverableService {
     const SIGNIFICANT_FIELDS = new Set([
       'type', 'reference', 'format', 'status',
       'artifactType', 'artifactData', 'diffStats', 'testResults',
+      'source', 'knowledgeRoot', 'content',
     ]);
     const hasSignificantChange = changed.some(f => SIGNIFICANT_FIELDS.has(f));
     const now = hasSignificantChange ? new Date().toISOString() : d.updatedAt;
@@ -264,6 +285,9 @@ export class DeliverableService {
     if (data.format !== undefined) d.format = data.format;
     if (data.tags !== undefined) d.tags = data.tags;
     if (data.status !== undefined) d.status = data.status;
+    if (data.source !== undefined) d.source = data.source;
+    if (data.knowledgeRoot !== undefined) d.knowledgeRoot = data.knowledgeRoot;
+    if (data.content !== undefined) d.content = data.content;
     if (data.taskId !== undefined) d.taskId = data.taskId;
     if (data.agentId !== undefined) d.agentId = data.agentId;
     if (data.projectId !== undefined) d.projectId = data.projectId;
@@ -468,6 +492,9 @@ export class DeliverableService {
     format?: string | null;
     tags: unknown;
     status: string;
+    source?: string | null;
+    knowledgeRoot?: string | null;
+    content?: string | null;
     taskId: string | null;
     agentId: string | null;
     projectId: string | null;
@@ -494,6 +521,9 @@ export class DeliverableService {
       format: r.format ?? undefined,
       tags: this.parseTags(r.tags),
       status: r.status as Deliverable['status'],
+      source: (r.source as Deliverable['source']) ?? 'agent',
+      knowledgeRoot: r.knowledgeRoot ?? undefined,
+      content: r.content ?? undefined,
       taskId: r.taskId ?? undefined,
       agentId: r.agentId ?? undefined,
       projectId: r.projectId ?? undefined,

@@ -1,5 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
-import { createLogger, generateId } from '@markus/shared';
+import { createLogger } from '@markus/shared';
 import type { TaskDelegation, DelegationResult } from '@markus/a2a';
 
 const log = createLogger('a2a-tools');
@@ -9,6 +9,12 @@ export interface A2AContext {
   selfName: string;
   listColleagues: () => Array<{ id: string; name: string; role: string; status: string; skills?: string[]; teamId?: string; teamName?: string; agentRole?: string }>;
   sendMessage: (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => Promise<string>;
+  /** Wake (start) a stopped agent — used by agent_send_message wake_recipient. */
+  wakeAgent?: (agentId: string) => Promise<void>;
+  /** Runtime liveness — is the agent's runtime loop currently up (state.status !== 'offline')?
+   *  Authoritative for the stopped/running distinction: a stopped agent's roster
+   *  state may still read 'idle', so checking roster status alone is unreliable. */
+  isRunning?: (agentId: string) => boolean;
   delegateTask?: (targetId: string, delegation: TaskDelegation) => Promise<DelegationResult>;
   sendGroupMessage?: (channelKey: string, message: string, senderId: string, senderName: string, replyToId?: string) => Promise<string>;
   createGroupChat?: (name: string, memberIds: string[]) => Promise<{ id: string; name: string }>;
@@ -26,6 +32,7 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         'Send a message to another agent (colleague) in your organization.',
         'This tool is ALWAYS asynchronous (fire-and-forget): the message enters the target agent\'s mailbox and you continue working.',
         'The recipient will process it on their own schedule and may reply via their own agent_send_message.',
+        'The response includes recipient.status. If the recipient is stopped, the message sits in their mailbox until they wake — pass wake_recipient: true to wake a stopped recipient first (costs LLM runs).',
         'Messages are routed through a persistent DM channel between you and the recipient.',
         'The channel has full history — both of you can recall past exchanges using recall_context.',
         'IMPORTANT: Do NOT use this tool to request substantial work from another agent.',
@@ -41,9 +48,17 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
             type: 'string',
             description: 'Optional correlation ID for multi-turn exchanges. Auto-generated if omitted.',
           },
+          reply_in_session: {
+            type: 'boolean',
+            description: 'If true, the recipient\'s reply is delivered INLINE into this conversation, resuming this thread with full context when the answer arrives. NOTE: this does NOT block — the send still returns immediately; finish your current turn and you will be woken when the reply comes in. Use when you delegate a question/subtask and need the answer in context.',
+          },
           await_in_session: {
             type: 'boolean',
-            description: 'If true, the recipient\'s reply is delivered INLINE in your current conversation (instead of a separate session), so you can continue this thread once they answer. The message is still dispatched asynchronously — you are not blocked — but when the reply arrives it resumes here. Use when you delegate a question/subtask and need the answer in context.',
+            description: '[DEPRECATED alias of reply_in_session — same behavior] Prefer reply_in_session.',
+          },
+          wake_recipient: {
+            type: 'boolean',
+            description: 'If true and the recipient is currently stopped, wake (start) them first so they process the message right away. This triggers LLM runs on the recipient — only use when their reply is actually needed. Omit to simply drop the message in their mailbox.',
           },
           wait_for_reply: {
             type: 'boolean',
@@ -55,8 +70,17 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
       async execute(args: Record<string, unknown>): Promise<string> {
         const targetId = args['agent_id'] as string;
         const message = args['message'] as string;
-        const conversationId = (args['conversation_id'] as string) || generateId('conv');
+        // Deterministic DM channel key for this (from,to) pair — used as the
+        // stable conversation identity when the caller doesn't supply one.
+        // This fixes "duplicate conversation" churn: previously every send
+        // without conversation_id generated a brand-new conv id, which broke
+        // multi-turn correlation and let A2A ping-pong loops evade the
+        // per-round depth/cooldown guards.
+        const sorted = [ctx.selfId, targetId].sort();
+        const channelKey = `dm:a2a:${sorted[0]}:${sorted[1]}`;
+        const conversationId = (args['conversation_id'] as string) || channelKey;
         const waitForReply = args['wait_for_reply'] as boolean | undefined;
+        const wakeRecipient = args['wake_recipient'] as boolean | undefined;
 
         if (targetId === ctx.selfId) {
           return JSON.stringify({ status: 'error', error: 'Cannot send a message to yourself' });
@@ -66,18 +90,61 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
           log.warn(`A2A wait_for_reply=true is deprecated and ignored (deadlock risk). Sending async. Sender: ${ctx.selfName} → ${targetId}`);
         }
 
+        // Recipient liveness check — a stopped agent has no schedule, so without
+        // a wake the message would sit in their mailbox indefinitely (silent
+        // dead letter). Runtime liveness wins when provided (a stopped agent's
+        // roster state may still read 'idle'); fall back to roster status
+        // otherwise. Report status in the response; optionally wake on request.
+        const recipient = ctx.listColleagues().find(a => a.id === targetId);
+        const recipientAlive = ctx.isRunning
+          ? ctx.isRunning(targetId)
+          : !!recipient && recipient.status !== 'stopped' && recipient.status !== 'offline';
+        const recipientStopped = !!recipient && !recipientAlive;
+        let recipientWoken = false;
+        if (wakeRecipient && recipientStopped && ctx.wakeAgent) {
+          try {
+            await ctx.wakeAgent(targetId);
+            recipientWoken = true;
+            log.info(`A2A wake_recipient: woke ${targetId} before dispatch`, { sender: ctx.selfName });
+          } catch (err) {
+            log.warn(`A2A wake_recipient failed for ${targetId}`, { error: String(err) });
+            return JSON.stringify({
+              status: 'error',
+              error: `Recipient ${targetId} is stopped and could not be woken: ${String(err)}`,
+              hint: 'Retry later, or use agent_start if you manage this agent.',
+            });
+          }
+        }
+
         const taggedMessage = `[conversation:${conversationId}]\n${message}`;
         log.info(`A2A send (async): ${ctx.selfName} → ${targetId}`, { messageLen: message.length, conversationId });
         ctx.sendMessage(targetId, taggedMessage, ctx.selfId, ctx.selfName, undefined, false).catch((err: unknown) => {
           log.warn(`A2A async message to ${targetId} failed in background`, { error: String(err) });
         });
-        const sorted = [ctx.selfId, targetId].sort();
-        const channelKey = `dm:a2a:${sorted[0]}:${sorted[1]}`;
+        let notice: string;
+        if (!recipient) {
+          notice = 'WARNING: recipient was not found in your organization roster — the dispatch may fail. Verify the agent_id via agent_list_colleagues.';
+        } else if (recipientWoken) {
+          notice = 'Recipient was stopped; you woken it, so it will process the message shortly. Use recall_context with the channel_key or conversation_id to review the exchange.';
+        } else if (recipientStopped) {
+          notice = 'WARNING: recipient is STOPPED and will not process this message until woken — it will sit in their mailbox. To wake them, resend with wake_recipient: true (or use agent_start if you manage them).';
+        } else {
+          notice = 'Message sent via DM channel. The agent will process it on their schedule. Use recall_context with the channel_key or conversation_id to review conversation history.';
+        }
         return JSON.stringify({
           status: 'dispatched',
           conversation_id: conversationId,
           channel_key: channelKey,
-          message: 'Message sent via DM channel. The agent will process it on their schedule. Use recall_context with the channel_key to review conversation history.',
+          recipient: {
+            id: recipient?.id ?? targetId,
+            name: recipient?.name,
+            // 'started' = we just woke it; the live roster state when it's up;
+            // 'stopped' = no wake, message queued in mailbox until woken;
+            // 'unknown' = recipient not in roster (cannot determine liveness).
+            status: recipientWoken ? 'started' : (!recipient ? 'unknown' : (recipientAlive ? (recipient.status || 'online') : 'stopped')),
+          },
+          ...(recipientWoken ? { recipient_woken: true } : {}),
+          message: notice,
         });
       },
     },

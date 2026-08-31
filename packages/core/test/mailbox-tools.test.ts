@@ -77,6 +77,39 @@ describe('createMailboxTools', () => {
       expect(deferItem).toHaveBeenCalledWith('item-1', 'Waiting for dependency', undefined);
     });
 
+    it('rejects strict state items (task execution) — must not defer', async () => {
+      const deferItem = vi.fn(() => true);
+      const ctx = createContext({
+        deferItem,
+        getMindState: vi.fn(() => createMockMindState({
+          queuedItems: [
+            { id: 'task-exec-1', sourceType: 'task_status_update', priority: 1, summary: 'Task: execute X', queuedAt: new Date().toISOString(), isStrictState: true },
+          ],
+        })),
+      });
+      const tool = createMailboxTools(ctx).find(t => t.name === 'defer_mailbox_item')!;
+      const result = JSON.parse(await tool.execute({ item_id: 'task-exec-1', reason: 'busy' }));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('strict state-management');
+      expect(deferItem).not.toHaveBeenCalled();
+    });
+
+    it('rejects strict state items (review request) — must not defer', async () => {
+      const deferItem = vi.fn(() => true);
+      const ctx = createContext({
+        deferItem,
+        getMindState: vi.fn(() => createMockMindState({
+          queuedItems: [
+            { id: 'review-1', sourceType: 'review_request', priority: 1, summary: 'Review task Y', queuedAt: new Date().toISOString(), isStrictState: true },
+          ],
+        })),
+      });
+      const tool = createMailboxTools(ctx).find(t => t.name === 'defer_mailbox_item')!;
+      const result = JSON.parse(await tool.execute({ item_id: 'review-1', reason: 'busy' }));
+      expect(result.status).toBe('error');
+      expect(deferItem).not.toHaveBeenCalled();
+    });
+
     it('passes defer_minutes as milliseconds', async () => {
       const deferItem = vi.fn(() => true);
       const ctx = createContext({ deferItem });
@@ -112,6 +145,23 @@ describe('createMailboxTools', () => {
       }));
       expect(result.status).toBe('dropped');
       expect(dropItem).toHaveBeenCalledWith('item-2', 'Stale notification');
+    });
+
+    it('rejects strict state items (task execution) — must not drop', async () => {
+      const dropItem = vi.fn(() => true);
+      const ctx = createContext({
+        dropItem,
+        getMindState: vi.fn(() => createMockMindState({
+          queuedItems: [
+            { id: 'task-exec-1', sourceType: 'task_status_update', priority: 1, summary: 'Task: execute X', queuedAt: new Date().toISOString(), isStrictState: true },
+          ],
+        })),
+      });
+      const tool = createMailboxTools(ctx).find(t => t.name === 'drop_mailbox_item')!;
+      const result = JSON.parse(await tool.execute({ item_id: 'task-exec-1', reason: 'stale' }));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('strict state-management');
+      expect(dropItem).not.toHaveBeenCalled();
     });
 
     it('returns error when drop fails', async () => {

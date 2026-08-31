@@ -226,6 +226,39 @@ export function stripEmbeddedReplyQuote(
 }
 
 /**
+ * Pick the agent bubble a stream-reattach should (re)attach into.
+ *
+ * MUST only ever return the in-flight bubble:
+ *   - a message still marked `isStreaming`, or
+ *   - an empty placeholder (no text / no content segments) that is still mid-turn.
+ *
+ * It MUST NEVER return a *completed* agent reply. Reusing a previous turn's
+ * finished reply caused a real regression: after a user clicked "stop" on a
+ * new turn that had no content yet (empty bubble removed), the reattach logic
+ * fell back to the LAST agent message in the list — which was the *previous*
+ * turn's reply — streamed the new reply into that bubble, and pushed the user's
+ * own question below it (history became [A, D-streaming, C]).
+ */
+export function pickStreamReattachTarget(msgs: ChatMsg[]): ChatMsg | undefined {
+  // Scan from the tail: only the most recent agent message can be in-flight.
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]!;
+    if (m.sender !== 'agent') continue;
+    if (m.isStreaming) return m; // live streaming bubble
+    const hasContent = m.text?.trim()
+      || (m.segments ?? []).some(s =>
+        (s.type === 'text' && (((s as { content?: string }).content ?? '').trim() || (s as { thinking?: string }).thinking))
+        || s.type === 'tool',
+      );
+    if (!hasContent) return m; // empty in-flight placeholder
+    // It has committed content but is not streaming → a finished reply.
+    // Never reuse it as a reattach target.
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
  * Collapse accidental adjacent duplicate user bubbles (same text, within a short window).
  * Does not touch intentional repeats that have an assistant turn between them.
  */

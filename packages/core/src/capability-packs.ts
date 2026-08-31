@@ -69,6 +69,7 @@ export const TOOL_DEF_CORE_KEEP = new Set([
   'memory_save',
   'memory_search',
   'spawn_subagent',
+  'spawn_subagents',
   'agent_send_message',
   'agent_list_colleagues',
   'deliverable_search',

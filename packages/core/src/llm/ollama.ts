@@ -104,7 +104,16 @@ export class OllamaProvider implements LLMProviderInterface {
 
     const endpoint = `${this.baseUrl.replace(/\/+$/, '')}/api/chat`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
+    // Idle watchdog: reset on every chunk (SS-2), hard cap as wall-clock bound.
+    const STREAM_IDLE_TIMEOUT_MS = 120_000;
+    const STREAM_HARD_TIMEOUT_MS = 15 * 60_000;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), STREAM_IDLE_TIMEOUT_MS);
+    };
+    const hardTimer = setTimeout(() => controller.abort(), STREAM_HARD_TIMEOUT_MS);
+    resetIdle();
     if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
 
     let res: Response;
@@ -116,12 +125,14 @@ export class OllamaProvider implements LLMProviderInterface {
         signal: controller.signal,
       });
     } catch (err) {
-      clearTimeout(timeout);
+      clearTimeout(hardTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       throw err;
     }
 
     if (!res.ok) {
-      clearTimeout(timeout);
+      clearTimeout(hardTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       const errText = await res.text();
       throw new Error(`Ollama API error ${res.status}: ${errText}`);
     }
@@ -141,6 +152,7 @@ export class OllamaProvider implements LLMProviderInterface {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      resetIdle();
 
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
@@ -174,7 +186,8 @@ export class OllamaProvider implements LLMProviderInterface {
       }
     }
 
-    clearTimeout(timeout);
+    clearTimeout(hardTimer);
+    if (idleTimer) clearTimeout(idleTimer);
 
     const finishReason: LLMResponse['finishReason'] = toolCalls.length > 0 ? 'tool_use' : 'end_turn';
     const usage = { inputTokens: promptTokens, outputTokens: completionTokens };

@@ -5,6 +5,7 @@ import {
   stripInternalBlocks,
   type AgentConfig,
   type AgentProfile,
+  type LLMAssignment,
   type AgentActivity,
   type IdentityContext,
   type HumanUser,
@@ -35,9 +36,11 @@ import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
+import { extractTextFromFile } from './file-converter.js';
+import { createOfficeGenerateTool } from './tools/office-generate.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
-import { createSettingsTools } from './tools/settings.js';
+import { createSettingsTools, type SettingsAgentContext } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
 import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
@@ -58,7 +61,7 @@ import { SecurityGuard, type SecurityPolicy } from './security.js';
 import { DelegationManager, type TaskDelegation } from '@markus/a2a';
 import type { TemplateRegistry } from './templates/registry.js';
 import type { TemplateInstantiateRequest } from './templates/types.js';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve, sep } from 'node:path';
 import { mkdirSync, readFileSync, existsSync, copyFileSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
@@ -361,6 +364,8 @@ export class AgentManager {
   private remoteDebuggingPort = 0;
   private autoClickAllowDialog = false;
   private chromeAutoClickRunning = false;
+  /** Selected browser backend: 'embedded' (built-in Electron) or 'system-chrome' (Chrome extension). */
+  private browserMode: 'embedded' | 'system-chrome' = 'embedded';
   private browserBridge: MarkusBrowserBridge;
   /** Desktop-only: Electron WebContentsView CDP backend (preferred over npx when set). */
   private embeddedBrowserHost: EmbeddedBrowserHost | null = null;
@@ -468,7 +473,7 @@ export class AgentManager {
 
   private buildDeliverableCallbacks(agentId: string, projectId?: string): Pick<
     ProjectToolsContext,
-    'deliverableCreate' | 'deliverableSearch' | 'deliverableList' | 'deliverableUpdate'
+    'deliverableCreate' | 'deliverableSearch' | 'deliverableList' | 'deliverableUpdate' | 'deliverableRead'
   > {
     if (!this.deliverableService) return {};
     const ds = this.deliverableService;
@@ -486,6 +491,9 @@ export class AgentManager {
           agentId,
           // Prefer per-call project_id from the tool; fall back to callback-scoped project.
           projectId: opts.projectId ?? projectId,
+          source: opts.source,
+          knowledgeRoot: opts.knowledgeRoot,
+          content: opts.content,
         });
       },
       deliverableSearch: async (opts) => {
@@ -494,6 +502,7 @@ export class AgentManager {
           projectId: opts.projectId,
           agentId: opts.agentId,
           type: opts.type,
+          source: opts.source,
           limit: opts.limit,
         }).results;
       },
@@ -503,6 +512,7 @@ export class AgentManager {
           agentId: opts.agentId,
           type: opts.type,
           status: opts.status,
+          source: opts.source,
           limit: opts.limit,
         }).results;
       },
@@ -515,6 +525,37 @@ export class AgentManager {
           status: data.status,
           tags,
         });
+      },
+      deliverableRead: async ({ reference, projectId }) => {
+        if (!reference) return null;
+        // Knowledge-read prefix guard (T4 review suggestion ①): when the caller
+        // scopes the read to a project, only allow files inside the project's
+        // bound knowledge directories (knowledge_base_paths). This keeps the
+        // knowledge tool from degrading into an arbitrary file-read primitive.
+        if (projectId && this.projectService) {
+          const roots = this.projectService.getProject(projectId)?.knowledgeBasePaths ?? [];
+          // A project with NO bound knowledge roots has nothing to read — the
+          // unbound case must not silently open arbitrary files.
+          if (roots.length === 0) {
+            log.warn('knowledge_read rejected: project has no knowledge base paths', { projectId });
+            return null;
+          }
+          const resolvedRef = resolve(reference);
+          const withinRoot = roots.some((root) => {
+            const resolvedRoot = resolve(root);
+            return resolvedRef === resolvedRoot || resolvedRef.startsWith(resolvedRoot + sep);
+          });
+          if (!withinRoot) return null;
+        }
+        // A missing file is not readable — report null so the tool returns an
+        // error instead of a misleading success with empty content.
+        if (!existsSync(reference)) return null;
+        try {
+          const content = await extractTextFromFile(reference);
+          return { content, reference };
+        } catch {
+          return null;
+        }
       },
     };
   }
@@ -670,7 +711,15 @@ export class AgentManager {
   }
 
   private async registerCodingTools(agent: Agent): Promise<void> {
-    if (!this._codingToolsEnabled) return;
+    // ── TEMPORARY DISABLING (2026-08) ─────────────────────────────────────────
+    // 编程工具（Claude Code / Codex / Cursor）集成被判定为过度工程，暂从 agent
+    // 工具面移除，避免出现在 agent 上下文中。agent 如需写代码，自行直接用
+    // 文件/终端工具即可。要恢复时，删除下面两行 return 即可（连同下面的
+    // !_codingToolsEnabled 检查一起恢复）。
+    void agent;
+    return;
+    // ── /TEMPORARY DISABLING ──────────────────────────────────────────────────
+    // if (!this._codingToolsEnabled) return;
 
     const { createCodingTools } = await import('./coding-tools/index.js');
     const codingTools = createCodingTools({
@@ -696,6 +745,10 @@ export class AgentManager {
 
   setBrowserAutoClickAllowDialog(enabled: boolean): void {
     this.autoClickAllowDialog = enabled;
+  }
+
+  setBrowserMode(mode: 'embedded' | 'system-chrome'): void {
+    this.browserMode = mode;
   }
 
   /**
@@ -785,7 +838,85 @@ export class AgentManager {
   }
 
   async runQuickBrowserTest(): Promise<BrowserTestResult> {
-    return runQuickBrowserTest(this.browserBridge, this.browserSessionManager);
+    // 'system-chrome' mode: the full quick test targets the Chrome extension bridge.
+    // Default 'embedded' mode: run a lightweight check against the built-in browser.
+    if (this.browserMode === 'system-chrome') {
+      return runQuickBrowserTest(this.browserBridge, this.browserSessionManager);
+    }
+    return this.runEmbeddedBrowserQuickTest();
+  }
+
+  /**
+   * Lightweight connectivity check for the embedded (built-in) browser backend.
+   * Creates a throwaway about:blank page, evaluates a script, then closes it.
+   * Returns the same BrowserTestResult shape the Settings UI already consumes.
+   */
+  private async runEmbeddedBrowserQuickTest(): Promise<BrowserTestResult> {
+    const t0 = Date.now();
+    const steps: BrowserTestResult['steps'] = [];
+    const host = this.embeddedBrowserHost;
+
+    const fail = (summary: string): BrowserTestResult => ({
+      connected: false,
+      steps,
+      totalDurationMs: Date.now() - t0,
+      passed: 0,
+      failed: 0,
+      summary,
+    });
+
+    if (!host || !host.available()) {
+      return fail('Embedded browser not available (desktop host not injected or browser window closed)');
+    }
+
+    let created = 0;
+
+    const step = async (group: string, name: string, fn: () => Promise<void>): Promise<void> => {
+      const st = Date.now();
+      try {
+        await fn();
+        steps.push({ name, group, passed: true, durationMs: Date.now() - st });
+      } catch (err) {
+        steps.push({
+          name,
+          group,
+          passed: false,
+          durationMs: Date.now() - st,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+
+    await step('Setup', 'new_page (about:blank)', async () => {
+      const r = await host!.callTool('new_page', { url: 'about:blank' });
+      if (r.error) throw new Error(`Failed to create embedded page: ${r.error}`);
+      const m = /(\d+):.*\[selected\]/.exec(r.content);
+      if (!m) throw new Error(`Could not parse created pageId: ${String(r.content).slice(0, 80)}`);
+      created = parseInt(m[1], 10);
+    });
+
+    await step('Verify', 'evaluate_script (document.title)', async () => {
+      const r = await host!.callTool('evaluate_script', { expression: 'document.title' });
+      if (r.error) throw new Error(r.error);
+    });
+
+    if (created > 0) {
+      await step('Cleanup', 'close_page', async () => {
+        const r = await host!.callTool('close_page', { pageId: created });
+        if (r.error) throw new Error(r.error);
+      });
+    }
+
+    const passed = steps.filter((s) => s.passed).length;
+    const failed = steps.length - passed;
+    return {
+      connected: failed === 0 && created > 0,
+      steps,
+      totalDurationMs: Date.now() - t0,
+      passed,
+      failed,
+      summary: failed === 0 ? 'Embedded browser OK' : `Embedded browser check failed (${failed}/${steps.length} steps)`,
+    };
   }
 
   runChaosBrowserTest(opts: {
@@ -877,13 +1008,23 @@ export class AgentManager {
       description: `[MCP:${serverName}] ${tool.description}`,
       inputSchema: tool.inputSchema,
       execute: async (args: Record<string, unknown>) => {
-        if (this.browserBridge.connected) {
-          const result = await this.browserBridge.callTool(tool.name, args);
+        if (this.browserMode === 'system-chrome') {
+          // System Chrome mode: extension only — no embedded fallback.
+          if (this.browserBridge.connected) {
+            const result = await this.browserBridge.callTool(tool.name, args);
+            if (result.error) return `Error: ${result.error}`;
+            return result.content;
+          }
+          return `Browser backend unavailable: browser.mode is set to "system-chrome" but the Chrome extension is not connected. Open Settings → Browser Automation → switch to "内置浏览器", or install & connect the Chrome extension (tool: ${tool.name}).`;
+        }
+        // Default 'embedded' mode: prefer built-in browser, then extension, then npx.
+        if (this.embeddedBrowserHost?.available()) {
+          const result = await this.embeddedBrowserHost.callTool(tool.name, args);
           if (result.error) return `Error: ${result.error}`;
           return result.content;
         }
-        if (this.embeddedBrowserHost?.available()) {
-          const result = await this.embeddedBrowserHost.callTool(tool.name, args);
+        if (this.browserBridge.connected) {
+          const result = await this.browserBridge.callTool(tool.name, args);
           if (result.error) return `Error: ${result.error}`;
           return result.content;
         }
@@ -1348,6 +1489,11 @@ export class AgentManager {
     const a2aContext: A2AContext = {
       selfId: id,
       selfName: config.name,
+      wakeAgent: async (agentId: string) => { await this.startAgent(agentId); },
+      isRunning: (agentId: string) => {
+        const a = this.agents.get(agentId);
+        return !!a && a.getState().status !== 'offline';
+      },
       listColleagues: () =>
         this.listAgents().map(a => {
           try {
@@ -1471,6 +1617,7 @@ export class AgentManager {
     for (const tool of createSettingsTools({
       llmRouter: this.llmRouter,
       persistConfig: (updates) => { try { saveConfig(updates); } catch (err) { log.debug('Failed to persist config', { error: String(err) }); } },
+      agent: this.buildSettingsAgentContext(id),
     })) {
       agent.registerTool(tool);
     }
@@ -1681,6 +1828,16 @@ export class AgentManager {
         agent.registerTool(tool);
       }
 
+      // Live colleague liveness for Team Status (prompt tail) — read at
+      // prompt-build time; the identity snapshot only refreshes on org changes.
+      agent.setColleagueStatusProvider(() => {
+        const statuses: Record<string, string> = {};
+        for (const a of this.agents.values()) {
+          try { statuses[a.id] = a.getState().status; } catch { /* skip */ }
+        }
+        return statuses;
+      });
+
       // Wire tasks fetcher — show all org tasks so agents have full board visibility
       agent.setTasksFetcher(() => {
         try {
@@ -1722,6 +1879,7 @@ export class AgentManager {
       const ps = this.projectService;
       const ts = this.taskService;
       const rs = this.requirementService;
+      const dvCallbacks = this.buildDeliverableCallbacks(id);
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
@@ -1761,9 +1919,21 @@ export class AgentManager {
           }
           return stats;
         } : undefined,
-        ...this.buildDeliverableCallbacks(id),
+        ...dvCallbacks,
       })) {
         agent.registerTool(tool);
+      }
+
+      // Office 产出物生成工具（T6）：docx/xlsx/pptx/pdf，
+      // 成功后自动经既有 deliverableCreate 桥接登记为 source='agent' 交付物。
+      if (dvCallbacks.deliverableCreate) {
+        agent.registerTool(
+          createOfficeGenerateTool({
+            agentId: id,
+            webUiBaseUrl: this.webUiBaseUrl,
+            deliverableCreate: dvCallbacks.deliverableCreate,
+          }),
+        );
       }
     }
 
@@ -2034,6 +2204,7 @@ export class AgentManager {
         return {
           modelMode: (raw.modelMode as 'default' | 'custom') ?? 'default',
           primary: (raw.primary as string) ?? 'anthropic',
+          defaultModel: raw.defaultModel as string | undefined,
           fallback: raw.fallback as string | undefined,
           maxTokensPerRequest: raw.maxTokensPerRequest as number | undefined,
           maxTokensPerDay: raw.maxTokensPerDay as number | undefined,
@@ -2237,6 +2408,11 @@ export class AgentManager {
     const a2aCtx = {
       selfId: id,
       selfName: config.name,
+      wakeAgent: async (agentId: string) => { await this.startAgent(agentId); },
+      isRunning: (agentId: string) => {
+        const a = this.agents.get(agentId);
+        return !!a && a.getState().status !== 'offline';
+      },
       listColleagues: () =>
         this.listAgents().map(a => {
           try {
@@ -2376,6 +2552,7 @@ export class AgentManager {
     for (const tool of createSettingsTools({
       llmRouter: this.llmRouter,
       persistConfig: (updates) => { try { saveConfig(updates); } catch (err) { log.debug('Failed to persist config', { error: String(err) }); } },
+      agent: this.buildSettingsAgentContext(id),
     })) {
       agent.registerTool(tool);
     }
@@ -2554,6 +2731,15 @@ export class AgentManager {
         orgId,
       };
       for (const tool of createAgentTaskTools(taskCtx)) agent.registerTool(tool);
+      // Live colleague liveness for Team Status (prompt tail) — read at
+      // prompt-build time; the identity snapshot only refreshes on org changes.
+      agent.setColleagueStatusProvider(() => {
+        const statuses: Record<string, string> = {};
+        for (const a of this.agents.values()) {
+          try { statuses[a.id] = a.getState().status; } catch { /* skip */ }
+        }
+        return statuses;
+      });
       agent.setTasksFetcher(() => {
         try {
           return ts.listTasks({ orgId }).map(t => ({
@@ -2591,6 +2777,7 @@ export class AgentManager {
       const ps2 = this.projectService;
       const ts2 = this.taskService;
       const rs2 = this.requirementService;
+      const dvCallbacks2 = this.buildDeliverableCallbacks(id);
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
@@ -2630,9 +2817,19 @@ export class AgentManager {
           }
           return stats;
         } : undefined,
-        ...this.buildDeliverableCallbacks(id),
+        ...dvCallbacks2,
       })) {
         agent.registerTool(tool);
+      }
+
+      if (dvCallbacks2.deliverableCreate) {
+        agent.registerTool(
+          createOfficeGenerateTool({
+            agentId: id,
+            webUiBaseUrl: this.webUiBaseUrl,
+            deliverableCreate: dvCallbacks2.deliverableCreate,
+          }),
+        );
       }
     }
 
@@ -2850,6 +3047,34 @@ export class AgentManager {
     this.disabledChangeHandler?.(agentId, true);
   }
 
+  /**
+   * OB-3 兜底转发：清除该 agent 无存活任务支撑的残留活动并回收至 idle（非破坏性）。
+   * @returns 是否实际清理/回收成功。
+   */
+  reconcileAgentToIdle(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent) return false;
+    try {
+      return agent.reconcileToIdle();
+    } catch (err) {
+      log.warn('reconcileAgentToIdle failed', { agentId, error: String(err) });
+      return false;
+    }
+  }
+
+  /** OB-3 兜底转发：触发一次心跳，让 agent 自行核对任务并自愈（私有 bus 上发事件）。 */
+  triggerAgentHeartbeat(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent) return false;
+    try {
+      agent.triggerHeartbeat();
+      return true;
+    } catch (err) {
+      log.warn('triggerAgentHeartbeat failed', { agentId, error: String(err) });
+      return false;
+    }
+  }
+
   async removeAgent(agentId: string, opts?: { purgeFiles?: boolean }): Promise<void> {
     const agent = this.agents.get(agentId);
     if (agent) {
@@ -2919,6 +3144,8 @@ export class AgentManager {
         tokensUsed?: number;
         inputTokens?: number;
         outputTokens?: number;
+        cacheReadTokens?: number;
+        cacheWriteTokens?: number;
         cost?: number;
         cuCost?: number;
         provider?: string;
@@ -3129,6 +3356,10 @@ export class AgentManager {
     lastErrorAt?: string;
     currentTaskId?: string;
     currentActivity?: AgentActivity;
+    activeTaskIds?: string[];
+    lastHeartbeat?: string;
+    lastProgressAt?: string;
+    tokensUsedToday?: number;
     mailboxDepth?: number;
     attentionState?: string;
     modelSupportsVision?: boolean;
@@ -3155,6 +3386,10 @@ export class AgentManager {
         lastErrorAt: state.lastErrorAt,
         currentTaskId: state.currentTaskId,
         currentActivity: state.currentActivity,
+        activeTaskIds: state.activeTaskIds,
+        lastHeartbeat: state.lastHeartbeat,
+        lastProgressAt: state.lastProgressAt,
+        tokensUsedToday: state.tokensUsedToday,
         mailboxDepth,
         attentionState,
         modelSupportsVision: a.getModelSupportsVision(),
@@ -3280,6 +3515,35 @@ export class AgentManager {
 
   setAgentConfigPersister(persister: (agentId: string, data: Record<string, unknown>) => Promise<void>): void {
     this.agentConfigPersister = persister;
+  }
+
+  /**
+   * Build the per-agent context passed to the settings tools so an agent can
+   * inspect and update its OWN default model. Mutates the live config (takes
+   * effect next call) and persists to DB via the injected persister when set.
+   */
+  private buildSettingsAgentContext(agentId: string): SettingsAgentContext {
+    return {
+      agentId,
+      getLlmConfig: () => this.getAgent(agentId)?.config.llmConfig,
+      persistLlmConfig: (patch: Partial<LLMAssignment>) => this.persistAgentLlmConfig(agentId, patch),
+    };
+  }
+
+  private async persistAgentLlmConfig(agentId: string, patch: Partial<LLMAssignment>): Promise<boolean> {
+    const target = this.getAgent(agentId);
+    if (!target) return false;
+    try {
+      // Mutate the nested object in place (readonly only bars reassigning `config`,
+      // exactly like Agent.setHeartbeatInterval mutates config fields).
+      target.config.llmConfig = { ...target.config.llmConfig, ...patch };
+      if (this.agentConfigPersister) {
+        try { await this.agentConfigPersister(agentId, { llmConfig: target.config.llmConfig }); } catch { /* best effort */ }
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   setHubClient(client: { search: (opts?: { type?: string; query?: string }) => Promise<Array<{ id: string; name: string; type: string; description: string; author: string; version?: string; downloads?: number }>>; downloadAndInstall: (itemId: string) => Promise<{ type: string; installed: unknown }> }): void {
