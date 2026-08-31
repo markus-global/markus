@@ -1,5 +1,13 @@
 # Release Log
 
+## v0.9.9
+
+**正式版发布**——从 `v0.9.9-rc.0` → `rc.1` → `rc.2` 三轮验证后提升稳定版。功能与修复详见下方 `v0.9.9-rc.0` 条目，并包含 rc.1 / rc.2 的增量修复：
+
+- **CI 修复** — LLM provider 测试 500（`isProviderDisabled` 漏可选链）；office PDF 测试在无中文字体环境跳过；mac vite build OOM（`NODE_OPTIONS=--max-old-space-size=8192`，根治 macOS 打包失败）
+- **知识库修复** — 删除最后一条知识库路径后自动清理对应交付物；删除最后路径后跳过同步，避免后端报错
+- **引导体系** — 引导状态服务端持久化（`preferences.guideHidden`），新用户可见引导、老用户永久不被打扰，覆盖 Google / GitHub / Email / 本地账户 / 会话恢复全部登录方式
+
 ## v0.9.9-rc.0
 
 ### Features
