@@ -22,5 +22,5 @@
   "devDependencies": {
     "@types/ws": "^8.18.1"
   },
-  "version": "0.9.9-rc.0"
+  "version": "0.9.9-rc.1"
 }
