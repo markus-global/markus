@@ -752,7 +752,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'pending_callbacks', column: 'correlation_id', sql: 'ALTER TABLE pending_callbacks ADD COLUMN correlation_id TEXT' },
     { table: 'pending_callbacks', column: 'wake_at', sql: 'ALTER TABLE pending_callbacks ADD COLUMN wake_at INTEGER' },
     { table: 'pending_callbacks', column: 'recurring_ms', sql: 'ALTER TABLE pending_callbacks ADD COLUMN recurring_ms INTEGER' },
-    // ─── 知识库（V2 数据模型，见 docs/knowledge-base-office-plan.md）────────────
+    // ─── 知识库（V2 数据模型：知识库文件 = deliverable source='knowledge' + project knowledge_base_paths）────────────
     { table: 'projects', column: 'knowledge_base_paths', sql: "ALTER TABLE projects ADD COLUMN knowledge_base_paths TEXT DEFAULT '[]'" },
     { table: 'deliverables', column: 'source', sql: "ALTER TABLE deliverables ADD COLUMN source TEXT NOT NULL DEFAULT 'agent'" },
     { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },

@@ -16,7 +16,7 @@ export interface Project {
   archivePolicy?: ArchivePolicy;
   reportSchedule?: ReportSchedule;
   onboardingConfig?: ProjectOnboardingConfig;
-  /** 知识库绑定根目录（JSON 数组）。见 docs/knowledge-base-office-plan.md（V2） */
+  /** 知识库绑定根目录（JSON 数组）。知识库文件 = source='knowledge' 的交付物，经 knowledge_sync 扫描注册 */
   knowledgeBasePaths?: string[];
   /** Human user id who created the project, when known */
   createdBy?: string;
