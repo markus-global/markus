@@ -1002,7 +1002,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
         setHubStatus({ shared: true, id: result.id, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public', moderationStatus: result.moderationStatus, pendingReview: result.pendingReview });
         setContentDirty(false);
         const vis = result.visibility ?? opts?.visibility ?? 'public';
-        if (vis !== 'org' && (result.moderationStatus === 'pending' || result.pendingReview)) {
+        if (vis !== 'org') {
           setNotice({
             title: t('common:share'),
             message: ensured.converted
@@ -1131,22 +1131,18 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
               const hasNewVersion = hubStatus.version !== localVersion;
               return (
                 <>
-                  {hubStatus.moderationStatus === 'pending' ? (
-                    <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.underReviewTip')}>
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                      {t('share.underReview')}
-                    </span>
-                  ) : hubStatus.moderationStatus === 'rejected' ? (
+                  {hubStatus.moderationStatus === 'rejected' && (
                     <span className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 inline-flex items-center gap-1" title={t('share.rejectedTip')}>
                       <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                       {t('share.rejected')}
                     </span>
-                  ) : hubStatus.pendingReview ? (
+                  )}
+                  {!hubStatus.moderationStatus && hubStatus.pendingReview && (
                     <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.updateUnderReviewTip')}>
                       <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                       {t('share.updateUnderReview')}
                     </span>
-                  ) : null}
+                  )}
                   {/* Desktop: open the Hub page in the system browser (not an in-app
                       window) so the user can copy the URL. href stays for web + copy-link. */}
                   {link && (

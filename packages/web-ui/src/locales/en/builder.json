@@ -76,21 +76,21 @@
     "updating": "Updating...",
     "updateVersion": "Update v{{version}}",
     "viewOnHub": "View on Hub",
-    "submittedForReview": "Submitted for review. Only you can see it until a moderator approves it — others who open the link will see an \"under review\" page.",
+    "submittedForReview": "Published to the Hub. It is now publicly visible.",
     "convertedSlug": "Package slug auto-converted from \"{{previous}}\" to \"{{slug}}\" (Chinese title kept as display name). You can rename the slug later if you want a more readable English id.",
-    "convertedAndSubmitted": "Package slug auto-converted from \"{{previous}}\" to \"{{slug}}\", then submitted for review. The Chinese title stays as the display name.",
-    "updateSubmitted": "Update submitted for review. The previously approved version stays public until the new version is approved.",
+    "convertedAndSubmitted": "Package slug auto-converted from \"{{previous}}\" to \"{{slug}}\" and published to the Hub. The Chinese title stays as the display name.",
+    "updateSubmitted": "Update published to the Hub. It is live now.",
     "underReview": "Under review",
-    "underReviewTip": "This item is waiting for moderator approval. Only you can see it for now.",
+    "underReviewTip": "This item is publicly visible and waiting for moderator approval.",
     "rejected": "Rejected",
-    "rejectedTip": "A moderator rejected this item, so it is not publicly visible.",
+    "rejectedTip": "A moderator rejected this item, so it is not publicly visible. You can edit and re-publish it.",
     "updateUnderReview": "Update under review",
-    "updateUnderReviewTip": "Your latest changes are awaiting approval. The previously approved version stays public."
+    "updateUnderReviewTip": "Your latest changes are publicly visible and awaiting moderator approval."
   },
   "pricing": {
     "label": "Price",
     "enableTips": "Let users send tips",
-    "reviewNote": "Public and link-only items are reviewed by a moderator before they become visible to others."
+    "reviewNote": "Public and link-only items appear on Hub immediately; moderation approval makes them eligible for search engines."
   },
   "shareMode": {
     "title": "Choose Share Mode",
@@ -108,7 +108,7 @@
   },
   "visibility": {
     "label": "Share to the community",
-    "subtitle": "Choose who can see it and set a price. Public items are reviewed, then appear in the Markus 广场.",
+    "subtitle": "Choose who can see it and set a price. Public items appear on Hub immediately.",
     "public": "Public",
     "publicDesc": "Visible to everyone, appears in Hub search",
     "org": "Organization",

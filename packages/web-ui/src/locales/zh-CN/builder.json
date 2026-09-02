@@ -76,21 +76,21 @@
     "updating": "正在更新...",
     "updateVersion": "更新 v{{version}}",
     "viewOnHub": "在 Hub 查看",
-    "submittedForReview": "已提交审核。审核通过前只有你自己能看到，其他人打开链接会看到「审核中」页面。",
+    "submittedForReview": "已发布到 Hub，现在公开可见。",
     "convertedSlug": "已将包标识从「{{previous}}」自动转换为「{{slug}}」（中文标题保留为显示名）。如需更易读的英文 slug，可稍后自行修改。",
-    "convertedAndSubmitted": "已将包标识从「{{previous}}」自动转换为「{{slug}}」，并已提交审核。中文标题保留为显示名。",
-    "updateSubmitted": "更新已提交审核。在新版本审核通过前，之前已通过的版本将继续公开展示。",
+    "convertedAndSubmitted": "已将包标识从「{{previous}}」自动转换为「{{slug}}」并已发布到 Hub。中文标题保留为显示名。",
+    "updateSubmitted": "更新已发布到 Hub，现已生效。",
     "underReview": "审核中",
-    "underReviewTip": "此资产正在等待管理员审核。目前只有你自己能看到。",
+    "underReviewTip": "此资产已公开可见，正在等待管理员审核。",
     "rejected": "已拒绝",
-    "rejectedTip": "管理员拒绝了此资产，因此不会公开展示。",
+    "rejectedTip": "管理员拒绝了此资产，目前已从 Hub 下架。修改后可重新发布。",
     "updateUnderReview": "更新审核中",
-    "updateUnderReviewTip": "你的最新修改正在等待审核。之前已通过的版本将继续公开展示。"
+    "updateUnderReviewTip": "你的最新修改已公开可见，正在等待管理员审核。"
   },
   "pricing": {
     "label": "价格",
     "enableTips": "允许用户打赏",
-    "reviewNote": "公开和「仅链接」的资产需经管理员审核后才会对他人可见。"
+    "reviewNote": "公开和「仅链接」的资产发布后立即在 Hub 上可见；审核通过后进入搜索引擎收录。"
   },
   "shareMode": {
     "title": "选择分享模式",
@@ -108,7 +108,7 @@
   },
   "visibility": {
     "label": "分享到社区",
-    "subtitle": "选择谁可以看到它并设置价格。公开资产将经过审核，随后出现在 Markus 广场。",
+    "subtitle": "选择谁可以看到它并设置价格。公开资产发布后立即出现在 Hub 上。",
     "public": "公开",
     "publicDesc": "所有人可见，出现在 Hub 搜索中",
     "org": "组织内",
