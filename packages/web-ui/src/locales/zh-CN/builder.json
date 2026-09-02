@@ -80,8 +80,6 @@
     "convertedSlug": "已将包标识从「{{previous}}」自动转换为「{{slug}}」（中文标题保留为显示名）。如需更易读的英文 slug，可稍后自行修改。",
     "convertedAndSubmitted": "已将包标识从「{{previous}}」自动转换为「{{slug}}」并已发布到 Hub。中文标题保留为显示名。",
     "updateSubmitted": "更新已发布到 Hub，现已生效。",
-    "underReview": "审核中",
-    "underReviewTip": "此资产已公开可见，正在等待管理员审核。",
     "rejected": "已拒绝",
     "rejectedTip": "管理员拒绝了此资产，目前已从 Hub 下架。修改后可重新发布。",
     "updateUnderReview": "更新审核中",
