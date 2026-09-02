@@ -90,7 +90,7 @@
   "pricing": {
     "label": "Price",
     "enableTips": "Let users send tips",
-    "reviewNote": "Public and link-only items are reviewed by a moderator before they become visible to others."
+    "reviewNote": "Public and link-only items appear on Hub immediately; moderation approval makes them eligible for search engines."
   },
   "shareMode": {
     "title": "Choose Share Mode",
@@ -108,7 +108,7 @@
   },
   "visibility": {
     "label": "Share to the community",
-    "subtitle": "Choose who can see it and set a price. Public items are reviewed, then appear in the Markus 广场.",
+    "subtitle": "Choose who can see it and set a price. Public items appear on Hub immediately.",
     "public": "Public",
     "publicDesc": "Visible to everyone, appears in Hub search",
     "org": "Organization",

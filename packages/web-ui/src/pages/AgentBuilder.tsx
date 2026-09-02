@@ -335,7 +335,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
       if (result.id) {
         setSharedMap(prev => { const m = new Map(prev); m.set(newKey, { id: result.id!, name, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public', moderationStatus: result.moderationStatus, pendingReview: result.pendingReview }); saveSharedMapToStorage(m); return m; });
         const vis = result.visibility ?? opts?.visibility ?? 'public';
-        if (vis !== 'org' && (result.moderationStatus === 'pending' || result.pendingReview)) {
+        if (vis !== 'org') {
           setNotice({
             title: t('common:share'),
             message: ensured.converted
@@ -677,12 +677,6 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                     </span>
                   ) : isShared ? (
                     <>
-                      {hubItem?.moderationStatus === 'pending' || !!hubItem?.pendingReview ? (
-                        <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.underReviewTip')}>
-                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                          {hubItem?.pendingReview ? t('share.updateUnderReview') : t('share.underReview')}
-                        </span>
-                      ) : null}
                       {hasNewVersion && (
                         <button onClick={() => {
                           const existingVis = hubItem?.visibility ?? 'public';
