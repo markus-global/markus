@@ -179,7 +179,7 @@
     "sharing": "Sharing…",
     "published": "Published",
     "pendingReview": "Under review",
-    "pendingHint": "Your deliverable has been submitted for review. A shareable link will be generated once approved.",
+    "pendingHint": "Your deliverable is public right now — anyone with the link can view it. Once a moderator approves it, it becomes eligible for search engines.",
     "rejected": "Rejected",
     "revoked": "Sharing removed; this deliverable is no longer publicly accessible.",
     "resubmit": "Resubmit",

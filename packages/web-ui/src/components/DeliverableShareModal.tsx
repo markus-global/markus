@@ -433,10 +433,34 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
                     <span className="px-2 py-0.5 text-[11px] rounded-full bg-amber-500/15 text-amber-500 font-medium">
                       {t('deliverables:share.pendingReview', { defaultValue: '审核中' })}
                     </span>
+                    <span className="text-[11px] text-fg-tertiary">
+                      {visibility === 'link'
+                        ? t('deliverables:share.linkVisibility', { defaultValue: '有链接可见' })
+                        : t('deliverables:share.publicVisibility', { defaultValue: '公开' })}
+                    </span>
                   </div>
                   <p className="text-sm text-fg-secondary">
-                    {t('deliverables:share.pendingHint', { defaultValue: '你的产出物已提交审核，通过后将生成可分享链接。' })}
+                    {t('deliverables:share.pendingHint', { defaultValue: '你的产出物已公开，其他人现在就能通过链接访问。管理员审核通过后，内容将进入搜索引擎收录。' })}
                   </p>
+                  {publishedUrl ? (
+                    <div className="flex items-center gap-2 bg-surface-elevated rounded-lg px-3 py-2">
+                      <span className="text-xs text-fg-secondary font-mono break-all flex-1 select-all">{publishedUrl}</span>
+                      <button
+                        onClick={copyLink}
+                        className={`px-2 py-1 text-[10px] rounded transition-colors shrink-0 ${copied ? 'bg-green-500/20 text-green-500' : 'bg-brand-600/20 text-brand-500 hover:bg-brand-600/30'}`}
+                      >
+                        {copied
+                          ? t('common:copied', { defaultValue: '已复制' })
+                          : t('common:copy', { defaultValue: '复制链接' })}
+                      </button>
+                    </div>
+                  ) : null}
+                  <button
+                    onClick={() => void doRevoke()}
+                    className="w-full px-3 py-2 text-xs font-medium rounded-lg text-red-500 border border-red-500/30 hover:bg-red-500/10 transition-colors"
+                  >
+                    {t('deliverables:share.revoke', { defaultValue: '取消分享' })}
+                  </button>
                 </div>
               ) : ui === 'rejected' ? (
                 <div className="space-y-3">

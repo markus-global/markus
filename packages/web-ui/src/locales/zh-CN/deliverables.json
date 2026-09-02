@@ -169,7 +169,7 @@
     "sharing": "分享中…",
     "published": "已发布",
     "pendingReview": "审核中",
-    "pendingHint": "你的产出物已提交审核，通过后将生成可分享链接。",
+    "pendingHint": "你的产出物已公开，其他人现在就能通过链接访问。管理员审核通过后，内容将进入搜索引擎收录。",
     "rejected": "已拒绝",
     "revoked": "已取消分享，该产出物不再公开可访问。",
     "resubmit": "重新提交",

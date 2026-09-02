@@ -651,13 +651,9 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                 return `${hubApi.getUrl()}/@${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubItem.slug)}`;
               };
 
-              // While moderation is pending/rejected (or an update is in review), only
-              // show the status chip — hide Hub link + Unshare to keep the footer tidy.
-              const hubNotApproved = isShared && (
-                hubItem?.moderationStatus === 'pending'
-                || hubItem?.moderationStatus === 'rejected'
-                || !!hubItem?.pendingReview
-              );
+              // Publish-then-review: pending is public & live, so show the Hub link;
+              // only rejected items are hidden (author can edit & re-share).
+              const hubRejected = isShared && hubItem?.moderationStatus === 'rejected';
 
               const actionButtons = (
                 <div className="flex items-center gap-1.5 justify-end" onClick={e => e.stopPropagation()}>
@@ -674,25 +670,19 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                       {busyAction === 'install' ? t('common:installing') : t('common:install')}
                     </button>
                   )}
-                  {isShared && hubNotApproved ? (
-                    hubItem?.moderationStatus === 'pending' ? (
-                      <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.underReviewTip')}>
-                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                        {t('share.underReview')}
-                      </span>
-                    ) : hubItem?.moderationStatus === 'rejected' ? (
-                      <span className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 inline-flex items-center gap-1" title={t('share.rejectedTip')}>
-                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-                        {t('share.rejected')}
-                      </span>
-                    ) : (
-                      <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.updateUnderReviewTip')}>
-                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                        {t('share.updateUnderReview')}
-                      </span>
-                    )
+                  {isShared && hubRejected ? (
+                    <span className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 inline-flex items-center gap-1" title={t('share.rejectedTip')}>
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                      {t('share.rejected')}
+                    </span>
                   ) : isShared ? (
                     <>
+                      {hubItem?.moderationStatus === 'pending' || !!hubItem?.pendingReview ? (
+                        <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.underReviewTip')}>
+                          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                          {hubItem?.pendingReview ? t('share.updateUnderReview') : t('share.underReview')}
+                        </span>
+                      ) : null}
                       {hasNewVersion && (
                         <button onClick={() => {
                           const existingVis = hubItem?.visibility ?? 'public';

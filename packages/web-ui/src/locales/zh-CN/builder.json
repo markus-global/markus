@@ -76,16 +76,16 @@
     "updating": "正在更新...",
     "updateVersion": "更新 v{{version}}",
     "viewOnHub": "在 Hub 查看",
-    "submittedForReview": "已提交审核。审核通过前只有你自己能看到，其他人打开链接会看到「审核中」页面。",
+    "submittedForReview": "已发布到 Hub，处于审核中状态。其他人现在就能看到并打开你的资产；管理员审核通过后，内容会进入搜索引擎收录。",
     "convertedSlug": "已将包标识从「{{previous}}」自动转换为「{{slug}}」（中文标题保留为显示名）。如需更易读的英文 slug，可稍后自行修改。",
-    "convertedAndSubmitted": "已将包标识从「{{previous}}」自动转换为「{{slug}}」，并已提交审核。中文标题保留为显示名。",
-    "updateSubmitted": "更新已提交审核。在新版本审核通过前，之前已通过的版本将继续公开展示。",
+    "convertedAndSubmitted": "已将包标识从「{{previous}}」自动转换为「{{slug}}」并已发布到 Hub。中文标题保留为显示名。",
+    "updateSubmitted": "更新已提交审核并公开。审核通过后进入搜索引擎收录；如被拒绝，将保持当前已发布版本。",
     "underReview": "审核中",
-    "underReviewTip": "此资产正在等待管理员审核。目前只有你自己能看到。",
+    "underReviewTip": "此资产已公开，正在等待管理员审核。审核通过后内容将进入搜索引擎收录。",
     "rejected": "已拒绝",
-    "rejectedTip": "管理员拒绝了此资产，因此不会公开展示。",
+    "rejectedTip": "管理员拒绝了此资产，目前已从 Hub 下架。修改后可重新发布。",
     "updateUnderReview": "更新审核中",
-    "updateUnderReviewTip": "你的最新修改正在等待审核。之前已通过的版本将继续公开展示。"
+    "updateUnderReviewTip": "你的最新修改已公开，正在等待管理员审核。"
   },
   "pricing": {
     "label": "价格",
