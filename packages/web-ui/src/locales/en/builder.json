@@ -80,8 +80,6 @@
     "convertedSlug": "Package slug auto-converted from \"{{previous}}\" to \"{{slug}}\" (Chinese title kept as display name). You can rename the slug later if you want a more readable English id.",
     "convertedAndSubmitted": "Package slug auto-converted from \"{{previous}}\" to \"{{slug}}\" and published to the Hub. The Chinese title stays as the display name.",
     "updateSubmitted": "Update submitted for review and published. Once approved it becomes eligible for search engines; if rejected, the currently published version stays live.",
-    "underReview": "Under review",
-    "underReviewTip": "This item is public and waiting for moderator approval. Once approved, it becomes eligible for search engines.",
     "rejected": "Rejected",
     "rejectedTip": "A moderator rejected this item, so it was removed from the Hub. You can edit and re-publish.",
     "updateUnderReview": "Update under review",
