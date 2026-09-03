@@ -355,6 +355,7 @@
     "emptyNoReqsHint": "Create a requirement to tell agents what you need.\nOnce approved, tasks will appear here automatically.",
     "emptyFilteredTitle": "No matching work",
     "emptyFilteredHint": "Nothing matches the current assignee filter. Clear filters to see all items in this project.",
+    "emptyNoReqsUnassignedHint": "Tasks without a project are hidden in a single-project view. Open “All projects” to see them.",
     "emptyDetailTitle": "No item selected",
     "emptyDetailHint": "Select a requirement or task from the list, or create one to get started.",
     "createRequirementCta": "+ Create a requirement",

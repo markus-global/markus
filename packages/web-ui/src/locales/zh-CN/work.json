@@ -355,6 +355,7 @@
     "emptyNoReqsHint": "创建需求以说明你需要什么。\n批准后，任务将自动出现在此处。",
     "emptyFilteredTitle": "没有匹配的工作项",
     "emptyFilteredHint": "当前负责人筛选下没有结果。清除筛选以查看此项目的全部内容。",
+    "emptyNoReqsUnassignedHint": "未绑定项目的任务不会显示在单个项目的视图中。点击「全部项目」可查看这些任务。",
     "emptyDetailTitle": "未选择条目",
     "emptyDetailHint": "从列表中选择一条需求或任务，或新建一条开始工作。",
     "createRequirementCta": "+ 创建需求",

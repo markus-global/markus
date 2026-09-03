@@ -4852,13 +4852,29 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     }
   }, [allRequirements]);
 
-  // Ensure a navigated-to item's project is selected in L1
+  // Ensure a navigated-to item's project is selected in L1.
+  // Tasks without a project are only visible in the "All projects" view, so
+  // fall back to it (and force a full-board reload, since the current board may
+  // be scoped to a single project) instead of early-returning — otherwise the
+  // task is created but invisible on the Tasks page (issue #294).
   const ensureProjectVisible = useCallback((projectId: string | undefined) => {
-    if (!projectId) return;
+    if (!projectId) {
+      setProjectFilter(new Set());
+      setSelectedProjectId(null);
+      setViewMode('all');
+      history.replaceState(null, '', hashPath(PAGE.WORK));
+      // Force a full reload so the unassigned task is visible in the list right
+      // away, even if the board was previously scoped to another project.
+      void api.tasks.board({}).then(r => setBoard(r.board)).catch(() => { /* ignore */ });
+      return;
+    }
     setSelectedProjectId(projectId);
     setViewMode('project');
     setProjectFilter(new Set());
     history.replaceState(null, '', hashPath(PAGE.WORK, projectId));
+    // Make sure the board is scoped to this project (it may still hold data
+    // from a previously selected project).
+    void api.tasks.board({ projectId }).then(r => setBoard(r.board)).catch(() => { /* ignore */ });
   }, []);
 
   const [scrollToComments, setScrollToComments] = useState(false);
@@ -5953,6 +5969,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                       {t('work:task.newTaskBtn')}
                     </button>
                   </div>
+                  {viewMode === 'project' && (
+                    <p className="pt-3 text-[11px] text-fg-tertiary leading-relaxed">
+                      {t('work:task.emptyNoReqsUnassignedHint')}{' '}
+                      <button type="button" onClick={() => selectAllProjects()}
+                        className="inline text-brand-500 hover:text-brand-500 hover:underline">
+                        {t('work:allProjects')}
+                      </button>
+                    </p>
+                  )}
                 </>
               )}
             </div>
