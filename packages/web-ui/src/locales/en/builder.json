@@ -82,6 +82,11 @@
     "updateSubmitted": "Update submitted for review and published. Once approved it becomes eligible for search engines; if rejected, the currently published version stays live.",
     "rejected": "Rejected",
     "rejectedTip": "A moderator rejected this item, so it was removed from the Hub. You can edit and re-publish.",
+    "rejectedDetailTitle": "Submission rejected",
+    "rejectedReasonLabel": "Reason: ",
+    "rejectedNoReason": "(The moderator did not leave a specific reason)",
+    "rejectedEncourage": "Don't worry — refine your work and re-publish it. It will go through review again. Save your changes, then click Re-submit.",
+    "resubmit": "Re-submit",
     "updateUnderReview": "Update under review",
     "updateUnderReviewTip": "Your latest changes are public and awaiting moderator approval."
   },

@@ -763,7 +763,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
   const [manifest, setManifest] = useState<ManifestData | null>(null);
   const [artPath, setArtPath] = useState('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }>({ shared: false });
+  const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; moderationNote?: string; pendingReview?: boolean }>({ shared: false });
   const [shareInProgress, setShareInProgress] = useState(false);
   const [contentDirty, setContentDirty] = useState(false);
   const [showVersionBump, setShowVersionBump] = useState(false);
@@ -865,7 +865,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       const typeDir = type === 'agent' ? 'agent' : type === 'team' ? 'team' : 'skill';
       for (const hi of items) {
         if (hi.itemType === typeDir && (hi.slug === name || hi.name === name)) {
-          setHubStatus({ shared: true, id: hi.id, slug: hi.slug, version: hi.version, visibility: hi.visibility ?? 'public', moderationStatus: hi.moderationStatus, pendingReview: hi.pendingReview });
+          setHubStatus({ shared: true, id: hi.id, slug: hi.slug, version: hi.version, visibility: hi.visibility ?? 'public', moderationStatus: hi.moderationStatus, moderationNote: hi.moderationNote, pendingReview: hi.pendingReview });
           return;
         }
       }
@@ -1144,10 +1144,27 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
               return (
                 <>
                   {hubStatus.moderationStatus === 'rejected' && (
-                    <span className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 inline-flex items-center gap-1" title={t('share.rejectedTip')}>
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-                      {t('share.rejected')}
-                    </span>
+                    <>
+                      <button
+                        onClick={() => {
+                          setNotice({
+                            title: t('share.rejectedDetailTitle'),
+                            variant: 'danger',
+                            message: `${t('share.rejectedReasonLabel')}${hubStatus.moderationNote ? hubStatus.moderationNote : t('share.rejectedNoReason')}\n\n${t('share.rejectedEncourage')}`,
+                          });
+                        }}
+                        className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors inline-flex items-center gap-1 cursor-pointer"
+                        title={t('share.rejectedTip')}
+                      >
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                        {t('share.rejected')}
+                      </button>
+                      <button onClick={() => void handleShareToHub({ visibility: hubStatus.visibility })} disabled={shareInProgress}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-brand-500/40 text-brand-400 hover:bg-brand-500/10 hover:border-brand-500/60 transition-colors disabled:opacity-50 inline-flex items-center gap-1">
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                        {shareInProgress ? t('share.updating') : t('share.resubmit')}
+                      </button>
+                    </>
                   )}
                   {!hubStatus.moderationStatus && hubStatus.pendingReview && (
                     <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.updateUnderReviewTip')}>
