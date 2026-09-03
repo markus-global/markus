@@ -14,7 +14,7 @@ import { assetGlyphPath, ASSET_TYPE_META, normalizeAssetType } from '../lib/asse
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { PAGE, hashPath } from '../routes.ts';
 import { rehypeSlugifyHeadings } from '../components/markdown-links.ts';
-import { transformOutsideCode, autolinkBareUrls } from '../components/markdown-utils.ts';
+import { transformOutsideCode, protectCurrencyDollarSigns, autolinkBareUrls } from '../components/markdown-utils.ts';
 import { useMarkdownComponents } from '../components/MarkdownComponents.tsx';
 
 interface ArtifactDetailProps {
@@ -255,7 +255,13 @@ function RenderedMarkdown({ content }: { content: string }) {
   const components = useMarkdownComponents({});
 
   const processed = useMemo(
-    () => transformOutsideCode(content, autolinkBareUrls),
+    () => {
+      // Escape currency/price $ (e.g. $90) before rendering so remark-math
+      // does not misparse prices as inline math.
+      let t = transformOutsideCode(content, protectCurrencyDollarSigns);
+      t = transformOutsideCode(t, autolinkBareUrls);
+      return t;
+    },
     [content],
   );
 
