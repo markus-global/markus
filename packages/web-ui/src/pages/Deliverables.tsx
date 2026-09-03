@@ -1456,10 +1456,12 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                   </a>
                 )}
                 {shareStatusOf(selected) === 'pending_review' && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-500/15 text-amber-500">
+                  <a href={selected.shareUrl ?? undefined} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-500/15 text-amber-500 hover:bg-amber-500/25 hover:underline"
+                    title={`${(selected.shareUrl ?? undefined)} · ${t('share.pendingReview', { defaultValue: '审核中' })}`}>
                     <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
                     {t('share.pendingReview', { defaultValue: '审核中' })}
-                  </span>
+                  </a>
                 )}
                 {shareStatusOf(selected) === 'rejected' && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-red-500/15 text-red-500"

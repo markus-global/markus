@@ -76,7 +76,7 @@ function useBuilderSubRoute(): { type: string; name: string } | null {
 }
 
 const SHARED_MAP_STORAGE_KEY = 'markus_builder_shared_map';
-type SharedEntry = { id: string; name: string; slug: string; version: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean };
+type SharedEntry = { id: string; name: string; slug: string; version: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; moderationNote?: string; pendingReview?: boolean };
 
 function loadSharedMapFromStorage(): Map<string, SharedEntry> {
   try {
@@ -124,7 +124,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
     Promise.all([
       (consume<{ artifacts: BuilderArtifact[] }>(PREFETCH_KEYS.builderArtifacts) ?? api.builder.artifacts.list()).then(d => d?.artifacts ?? []).catch(() => [] as BuilderArtifact[]),
       (consume<{ agents: AgentInfo[] }>(PREFETCH_KEYS.builderAgents) ?? api.agents.list()).then(d => d?.agents ?? []).catch(() => [] as AgentInfo[]),
-      (consume<{ items: Array<{ id: string; itemType: string; name: string; slug: string; version: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }> }>(PREFETCH_KEYS.builderHubMyItems) ?? hubApi.myItems()).then(d => d?.items ?? []).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string; version: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }>),
+      (consume<{ items: Array<{ id: string; itemType: string; name: string; slug: string; version: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; moderationNote?: string; pendingReview?: boolean }> }>(PREFETCH_KEYS.builderHubMyItems) ?? hubApi.myItems()).then(d => d?.items ?? []).catch(() => [] as Array<{ id: string; itemType: string; name: string; slug: string; version: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; moderationNote?: string; pendingReview?: boolean }>),
       (consume<{ installed: Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }> }>(PREFETCH_KEYS.builderInstalled) ?? api.builder.artifacts.installed()).then(d => d?.installed ?? {}).catch(() => ({} as Record<string, { agentId?: string; agentIds?: string[]; teamId?: string }>)),
     ]).then(([arts, agentList, hubItems, installedData]) => {
       setArtifacts(arts);
@@ -137,7 +137,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
           const typeDir = hi.itemType === 'agent' ? 'agent' : hi.itemType === 'team' ? 'team' : 'skill';
           for (const art of arts) {
             if (art.type === typeDir && (hi.slug === art.name || hi.name === ((art.meta.displayName as string) || (art.meta.name as string) || art.name))) {
-              shared.set(`${art.type}/${art.name}`, { id: hi.id, name: hi.name, slug: hi.slug || art.name, version: hi.version || '1.0.0', visibility: hi.visibility ?? 'public', moderationStatus: hi.moderationStatus, pendingReview: hi.pendingReview });
+              shared.set(`${art.type}/${art.name}`, { id: hi.id, name: hi.name, slug: hi.slug || art.name, version: hi.version || '1.0.0', visibility: hi.visibility ?? 'public', moderationStatus: hi.moderationStatus, moderationNote: hi.moderationNote, pendingReview: hi.pendingReview });
             }
           }
         }
@@ -335,7 +335,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
       if (result.id) {
         setSharedMap(prev => { const m = new Map(prev); m.set(newKey, { id: result.id!, name, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public', moderationStatus: result.moderationStatus, pendingReview: result.pendingReview }); saveSharedMapToStorage(m); return m; });
         const vis = result.visibility ?? opts?.visibility ?? 'public';
-        if (vis !== 'org' && (result.moderationStatus === 'pending' || result.pendingReview)) {
+        if (vis !== 'org') {
           setNotice({
             title: t('common:share'),
             message: ensured.converted
@@ -651,13 +651,9 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                 return `${hubApi.getUrl()}/@${encodeURIComponent(hubUser.username)}/${encodeURIComponent(hubItem.slug)}`;
               };
 
-              // While moderation is pending/rejected (or an update is in review), only
-              // show the status chip — hide Hub link + Unshare to keep the footer tidy.
-              const hubNotApproved = isShared && (
-                hubItem?.moderationStatus === 'pending'
-                || hubItem?.moderationStatus === 'rejected'
-                || !!hubItem?.pendingReview
-              );
+              // Publish-then-review: pending is public & live, so show the Hub link;
+              // only rejected items are hidden (author can edit & re-share).
+              const hubRejected = isShared && hubItem?.moderationStatus === 'rejected';
 
               const actionButtons = (
                 <div className="flex items-center gap-1.5 justify-end" onClick={e => e.stopPropagation()}>
@@ -674,23 +670,29 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                       {busyAction === 'install' ? t('common:installing') : t('common:install')}
                     </button>
                   )}
-                  {isShared && hubNotApproved ? (
-                    hubItem?.moderationStatus === 'pending' ? (
-                      <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.underReviewTip')}>
-                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                        {t('share.underReview')}
-                      </span>
-                    ) : hubItem?.moderationStatus === 'rejected' ? (
-                      <span className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 inline-flex items-center gap-1" title={t('share.rejectedTip')}>
+                  {isShared && hubRejected ? (
+                    <>
+                      <button
+                        onClick={() => {
+                          setNotice({
+                            title: t('share.rejectedDetailTitle'),
+                            variant: 'danger',
+                            message: `${t('share.rejectedReasonLabel')}${hubItem?.moderationNote ? hubItem.moderationNote : t('share.rejectedNoReason')}\n\n${t('share.rejectedEncourage')}`,
+                          });
+                        }}
+                        className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors inline-flex items-center gap-1 cursor-pointer"
+                        title={t('share.rejectedTip')}
+                      >
                         <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                         {t('share.rejected')}
-                      </span>
-                    ) : (
-                      <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.updateUnderReviewTip')}>
-                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                        {t('share.updateUnderReview')}
-                      </span>
-                    )
+                      </button>
+                      <button onClick={() => { void handleShare(art, { visibility: hubItem?.visibility ?? 'public' }); }} disabled={!!busyAction}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-brand-500/40 text-brand-400 hover:bg-brand-500/10 hover:border-brand-500/60 transition-colors disabled:opacity-50 inline-flex items-center gap-1"
+                        title={t('share.rejectedTip')}>
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                        {busyAction === 'share' ? t('common:sharing') : t('share.resubmit')}
+                      </button>
+                    </>
                   ) : isShared ? (
                     <>
                       {hasNewVersion && (

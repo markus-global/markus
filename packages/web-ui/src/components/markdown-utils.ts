@@ -21,6 +21,24 @@ export function normalizeMathDelimiters(text: string): string {
   return out;
 }
 
+/** Escape currency/price dollar signs ($90, $4,307.7, $5M…) into a literal
+ *  dollar so remark-math does not misparse them as inline-math delimiters.
+ *
+ *  Without this, a price pair like "$90系统性阈值（$90.50）" gets the text
+ *  between the two dollar signs swallowed into a KaTeX formula (math font +
+ *  nowrap → broken line wrapping / overflow on narrow screens).
+ *
+ *  IMPORTANT: must run BEFORE normalizeMathDelimiters — the dollar signs that
+ *  step generates from LaTeX parenthesised delimiters are genuine math and
+ *  must NOT be re-escaped here. An already-escaped dollar (backslash-dollar)
+ *  is left untouched. */
+export function protectCurrencyDollarSigns(text: string): string {
+  const BS = String.fromCharCode(92); // backslash
+  return text.replace(/[$](?=[0-9])/g, (m: string, offset: number, s: string) =>
+    offset > 0 && s.charCodeAt(offset - 1) === 92 ? m : BS + m,
+  );
+}
+
 const MENTION_PREFIX = '#mention:';
 
 /** Convert @mentions to markdown links. Supports bracketed (@[Name]) and word-boundary (@Name) forms. */

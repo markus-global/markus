@@ -14,7 +14,7 @@ import { assetGlyphPath, ASSET_TYPE_META, normalizeAssetType } from '../lib/asse
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { PAGE, hashPath } from '../routes.ts';
 import { rehypeSlugifyHeadings } from '../components/markdown-links.ts';
-import { transformOutsideCode, autolinkBareUrls } from '../components/markdown-utils.ts';
+import { transformOutsideCode, protectCurrencyDollarSigns, autolinkBareUrls } from '../components/markdown-utils.ts';
 import { useMarkdownComponents } from '../components/MarkdownComponents.tsx';
 
 interface ArtifactDetailProps {
@@ -255,7 +255,13 @@ function RenderedMarkdown({ content }: { content: string }) {
   const components = useMarkdownComponents({});
 
   const processed = useMemo(
-    () => transformOutsideCode(content, autolinkBareUrls),
+    () => {
+      // Escape currency/price $ (e.g. $90) before rendering so remark-math
+      // does not misparse prices as inline math.
+      let t = transformOutsideCode(content, protectCurrencyDollarSigns);
+      t = transformOutsideCode(t, autolinkBareUrls);
+      return t;
+    },
     [content],
   );
 
@@ -757,7 +763,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
   const [manifest, setManifest] = useState<ManifestData | null>(null);
   const [artPath, setArtPath] = useState('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; pendingReview?: boolean }>({ shared: false });
+  const [hubStatus, setHubStatus] = useState<{ shared: boolean; id?: string; slug?: string; version?: string; visibility?: HubVisibility; moderationStatus?: HubModerationStatus; moderationNote?: string; pendingReview?: boolean }>({ shared: false });
   const [shareInProgress, setShareInProgress] = useState(false);
   const [contentDirty, setContentDirty] = useState(false);
   const [showVersionBump, setShowVersionBump] = useState(false);
@@ -859,7 +865,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
       const typeDir = type === 'agent' ? 'agent' : type === 'team' ? 'team' : 'skill';
       for (const hi of items) {
         if (hi.itemType === typeDir && (hi.slug === name || hi.name === name)) {
-          setHubStatus({ shared: true, id: hi.id, slug: hi.slug, version: hi.version, visibility: hi.visibility ?? 'public', moderationStatus: hi.moderationStatus, pendingReview: hi.pendingReview });
+          setHubStatus({ shared: true, id: hi.id, slug: hi.slug, version: hi.version, visibility: hi.visibility ?? 'public', moderationStatus: hi.moderationStatus, moderationNote: hi.moderationNote, pendingReview: hi.pendingReview });
           return;
         }
       }
@@ -1008,7 +1014,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
         setHubStatus({ shared: true, id: result.id, slug: result.slug ?? slug, version, visibility: result.visibility ?? opts?.visibility ?? 'public', moderationStatus: result.moderationStatus, pendingReview: result.pendingReview });
         setContentDirty(false);
         const vis = result.visibility ?? opts?.visibility ?? 'public';
-        if (vis !== 'org' && (result.moderationStatus === 'pending' || result.pendingReview)) {
+        if (vis !== 'org') {
           setNotice({
             title: t('common:share'),
             message: ensured.converted
@@ -1137,22 +1143,35 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
               const hasNewVersion = hubStatus.version !== localVersion;
               return (
                 <>
-                  {hubStatus.moderationStatus === 'pending' ? (
-                    <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.underReviewTip')}>
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                      {t('share.underReview')}
-                    </span>
-                  ) : hubStatus.moderationStatus === 'rejected' ? (
-                    <span className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 inline-flex items-center gap-1" title={t('share.rejectedTip')}>
-                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-                      {t('share.rejected')}
-                    </span>
-                  ) : hubStatus.pendingReview ? (
+                  {hubStatus.moderationStatus === 'rejected' && (
+                    <>
+                      <button
+                        onClick={() => {
+                          setNotice({
+                            title: t('share.rejectedDetailTitle'),
+                            variant: 'danger',
+                            message: `${t('share.rejectedReasonLabel')}${hubStatus.moderationNote ? hubStatus.moderationNote : t('share.rejectedNoReason')}\n\n${t('share.rejectedEncourage')}`,
+                          });
+                        }}
+                        className="text-xs px-2 py-1.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors inline-flex items-center gap-1 cursor-pointer"
+                        title={t('share.rejectedTip')}
+                      >
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                        {t('share.rejected')}
+                      </button>
+                      <button onClick={() => void handleShareToHub({ visibility: hubStatus.visibility })} disabled={shareInProgress}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-brand-500/40 text-brand-400 hover:bg-brand-500/10 hover:border-brand-500/60 transition-colors disabled:opacity-50 inline-flex items-center gap-1">
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                        {shareInProgress ? t('share.updating') : t('share.resubmit')}
+                      </button>
+                    </>
+                  )}
+                  {!hubStatus.moderationStatus && hubStatus.pendingReview && (
                     <span className="text-xs px-2 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 inline-flex items-center gap-1" title={t('share.updateUnderReviewTip')}>
                       <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                       {t('share.updateUnderReview')}
                     </span>
-                  ) : null}
+                  )}
                   {/* Desktop: open the Hub page in the system browser (not an in-app
                       window) so the user can copy the URL. href stays for web + copy-link. */}
                   {link && (

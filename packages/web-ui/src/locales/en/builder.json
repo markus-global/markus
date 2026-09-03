@@ -76,21 +76,24 @@
     "updating": "Updating...",
     "updateVersion": "Update v{{version}}",
     "viewOnHub": "View on Hub",
-    "submittedForReview": "Submitted for review. Only you can see it until a moderator approves it — others who open the link will see an \"under review\" page.",
+    "submittedForReview": "Published to the Hub and pending review. It is publicly visible right now; once a moderator approves it, the content becomes eligible for search engines.",
     "convertedSlug": "Package slug auto-converted from \"{{previous}}\" to \"{{slug}}\" (Chinese title kept as display name). You can rename the slug later if you want a more readable English id.",
-    "convertedAndSubmitted": "Package slug auto-converted from \"{{previous}}\" to \"{{slug}}\", then submitted for review. The Chinese title stays as the display name.",
-    "updateSubmitted": "Update submitted for review. The previously approved version stays public until the new version is approved.",
-    "underReview": "Under review",
-    "underReviewTip": "This item is waiting for moderator approval. Only you can see it for now.",
+    "convertedAndSubmitted": "Package slug auto-converted from \"{{previous}}\" to \"{{slug}}\" and published to the Hub. The Chinese title stays as the display name.",
+    "updateSubmitted": "Update submitted for review and published. Once approved it becomes eligible for search engines; if rejected, the currently published version stays live.",
     "rejected": "Rejected",
-    "rejectedTip": "A moderator rejected this item, so it is not publicly visible.",
+    "rejectedTip": "A moderator rejected this item, so it was removed from the Hub. You can edit and re-publish.",
+    "rejectedDetailTitle": "Submission rejected",
+    "rejectedReasonLabel": "Reason: ",
+    "rejectedNoReason": "(The moderator did not leave a specific reason)",
+    "rejectedEncourage": "Don't worry — refine your work and re-publish it. It will go through review again. Save your changes, then click Re-submit.",
+    "resubmit": "Re-submit",
     "updateUnderReview": "Update under review",
-    "updateUnderReviewTip": "Your latest changes are awaiting approval. The previously approved version stays public."
+    "updateUnderReviewTip": "Your latest changes are public and awaiting moderator approval."
   },
   "pricing": {
     "label": "Price",
     "enableTips": "Let users send tips",
-    "reviewNote": "Public and link-only items are reviewed by a moderator before they become visible to others."
+    "reviewNote": "Public and link-only items appear on Hub immediately; moderation approval makes them eligible for search engines."
   },
   "shareMode": {
     "title": "Choose Share Mode",
@@ -108,7 +111,7 @@
   },
   "visibility": {
     "label": "Share to the community",
-    "subtitle": "Choose who can see it and set a price. Public items are reviewed, then appear in the Markus 广场.",
+    "subtitle": "Choose who can see it and set a price. Public items appear on Hub immediately.",
     "public": "Public",
     "publicDesc": "Visible to everyone, appears in Hub search",
     "org": "Organization",

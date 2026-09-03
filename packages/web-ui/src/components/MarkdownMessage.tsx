@@ -9,7 +9,7 @@ import rehypeHighlight from 'rehype-highlight';
 import 'katex/dist/katex.min.css';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import {
-  transformOutsideCode, normalizeMathDelimiters,
+  transformOutsideCode, normalizeMathDelimiters, protectCurrencyDollarSigns,
   preprocessMentions, preprocessEntityLinksInCode, preprocessEntityIds,
   autolinkBareUrls,
 } from './markdown-utils.ts';
@@ -226,7 +226,10 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   const layout = useLayout();
 
   const preprocess = useCallback((text: string) => {
-    let t = transformOutsideCode(text, normalizeMathDelimiters);
+    // Escape currency/price $ (e.g. $90) BEFORE math-delimiter normalisation,
+    // otherwise remark-math misparses prices as inline math (see markdown-utils).
+    let t = transformOutsideCode(text, protectCurrencyDollarSigns);
+    t = transformOutsideCode(t, normalizeMathDelimiters);
     t = transformOutsideCode(t, normalizeWindowsPathsInMarkdown);
     t = transformOutsideCode(t, preprocessEntityLinksInCode);
     t = transformOutsideCode(t, preprocessEntityIds);
