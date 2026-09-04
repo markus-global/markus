@@ -131,10 +131,18 @@ export function ProjectSidebar({
                   )}
                 </button>
               )}
-              {projects.map(p => {
+              {[...projects]
+                .sort((a, b) => {
+                  // Archived projects sink to the bottom of the rail.
+                  const aArch = a.status === 'archived' ? 1 : 0;
+                  const bArch = b.status === 'archived' ? 1 : 0;
+                  return aArch - bArch;
+                })
+                .map(p => {
                 const selected = !allIsSelected && p.id === selectedProjectId;
                 const count = taskCounts[p.id] ?? 0;
                 const paused = p.status === 'paused';
+                const archived = p.status === 'archived';
                 return (
                   <div
                     key={p.id}
@@ -158,6 +166,9 @@ export function ProjectSidebar({
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-[12px] font-medium truncate">{p.name}</span>
+                      {archived && (
+                        <span className="block text-[10px] text-fg-tertiary italic">{t('work:project.statusArchived')}</span>
+                      )}
                       {paused && (
                         <span className="block text-[10px] text-amber-500/80">{t('work:project.statusPaused')}</span>
                       )}

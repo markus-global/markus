@@ -4,7 +4,7 @@ import type { TFunction } from 'i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   api, wsClient, invalidateApiCache,
-  type AgentInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo, type ExternalAgentInfo,
+  type AgentInfo, type AgentActivityInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
   type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
   type NotificationInfo, type SubagentProgressEvent,
@@ -1039,7 +1039,25 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     refreshTeams();
     const timer = setInterval(refreshAgents, 30_000);
     const teamTimer = setInterval(refreshTeams, 60_000);
-    const unsub = wsClient.on('agent:update', () => { throttledRefreshAgents(); throttledRefreshTeams(); });
+    const unsub = wsClient.on('agent:update', (event) => {
+      // Apply the broadcast status/activity immediately — the throttled full
+      // refresh below would otherwise coalesce a quick working→idle transition
+      // into a single idle snapshot, so an agent that is actively streaming
+      // (status cycling working while responses stream) would look idle.
+      const p = event?.payload as Record<string, unknown> | undefined;
+      if (p?.agentId) {
+        const status = p.status as string | undefined;
+        const currentActivity = p.currentActivity as AgentActivityInfo | undefined;
+        setAgents(prev => prev.map(a => {
+          if (a.id !== p.agentId) return a;
+          const next = { ...a };
+          if (status) next.status = status;
+          if (currentActivity !== undefined) next.currentActivity = currentActivity;
+          return next;
+        }));
+      }
+      throttledRefreshAgents(); throttledRefreshTeams();
+    });
     const unsubTeamUpdate = wsClient.on('team:update', () => { throttledRefreshTeams(); throttledRefreshGroupChats(); });
     const unsubTeamOnAgentRemoved = wsClient.on('agent:removed', throttledRefreshTeams);
     // Team create must refresh immediately — throttled refresh left sidebar stale so

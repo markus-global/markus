@@ -5001,7 +5001,9 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // If a selected project disappears (deleted/archived), fall back to All.
+  // If a selected project disappears (deleted), fall back to All.
+  // Archived projects are still legitimately selectable — keep them selected
+  // so the sidebar and right-hand detail panel can show the archived content.
   useEffect(() => {
     if (loading) return;
     if (!selectedProjectId) {
@@ -5009,13 +5011,13 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       if (viewMode !== 'all') setViewMode('all');
       return;
     }
-    if (activeProjects.some(p => p.id === selectedProjectId)) {
+    if (projects.some(p => p.id === selectedProjectId)) {
       didInitProject.current = true;
       return;
     }
     didInitProject.current = true;
     selectAllProjects({ keepItemDetail: true });
-  }, [loading, activeProjects, selectedProjectId, selectAllProjects, viewMode]);
+  }, [loading, projects, selectedProjectId, selectAllProjects, viewMode]);
 
   // Hash change & custom navigation events
   const prevHashPageRef = useRef(resolvePageId(window.location.hash.slice(1).split('/')[0]));
@@ -5382,6 +5384,19 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     });
   }, [projects, board, showClosed]);
 
+  // For the sidebar/rail: always include archived projects (sorted to the
+  // bottom) so an archived project can be selected and its content shown,
+  // regardless of the `showClosed` toggle (which governs the task/requirement list).
+  const sidebarProjects = useMemo(
+    () => [...projects].sort((a, b) => {
+      const aArch = a.status === 'archived' ? 1 : 0;
+      const bArch = b.status === 'archived' ? 1 : 0;
+      if (aArch !== bArch) return aArch - bArch;
+      return a.name.localeCompare(b.name);
+    }),
+    [projects],
+  );
+
   // Count tasks per project — computed locally from existing board data
   const allTaskCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -5456,8 +5471,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
 
   const navigableItemsRef = useRef(navigableItems);
   navigableItemsRef.current = navigableItems;
-  const activeProjectsRef = useRef(activeProjects);
-  activeProjectsRef.current = activeProjects;
+  const sortedProjectsRef = useRef(sidebarProjects);
+  sortedProjectsRef.current = sidebarProjects;
   const selectedProjectIdRef = useRef(selectedProjectId);
   selectedProjectIdRef.current = selectedProjectId;
 
@@ -5628,7 +5643,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       if (focus === 'projects') {
         e.preventDefault();
         layout?.setKeyboardPane('l1');
-        const list = activeProjectsRef.current;
+        const list = sortedProjectsRef.current;
         // Index 0 = All, then each project
         const len = list.length + 1;
         if (list.length === 0) return;
@@ -5696,7 +5711,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       {/* ── L1 Projects sidebar (desktop) ── */}
       {!isMobile && (
         <ProjectSidebar
-          projects={activeProjects}
+          projects={sidebarProjects}
           selectedProjectId={selectedProjectId}
           allSelected={viewMode === 'all' && !selectedProjectId}
           taskCounts={allTaskCounts}
@@ -5758,7 +5773,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 </div>
               ) : (
                 <h2 className="text-sm font-semibold text-fg-primary min-w-0 flex-1 truncate">
-                  {t('work:task.projectsCount', { count: activeProjects.length })}
+                  {t('work:task.projectsCount', { count: projects.length })}
                 </h2>
               )}
               <div className="flex items-center gap-1 shrink-0">
@@ -5844,7 +5859,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             </div>
           ) : (
             <h2 className="text-sm font-semibold text-fg-primary shrink-0">
-              {t('work:task.projectsCount', { count: activeProjects.length })}
+              {t('work:task.projectsCount', { count: projects.length })}
             </h2>
           )}
           {closedCount > 0 && (
@@ -5928,7 +5943,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           </div>
         )}
 
-        {activeProjects.length === 0 ? (
+        {projects.length === 0 ? (
           <div className="flex-1 flex items-center justify-center p-8">
             <div className="max-w-sm w-full text-center space-y-3">
               <div className="w-12 h-12 mx-auto rounded-xl bg-brand-500/10 flex items-center justify-center">
@@ -6575,7 +6590,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 </button>
               </div>
             </div>
-            {activeProjects.length > 0 && (
+            {projects.length > 0 && (
               <div className="px-4 py-3">
                 <div className="text-[11px] text-fg-tertiary font-medium uppercase tracking-wider mb-2">{t('work:task.projectsFilterGroup')}</div>
                 <div className="flex flex-wrap gap-1.5">
@@ -6589,7 +6604,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                     {t('work:task.all')}
                     {totalTaskCount > 0 && <span className="text-[9px] text-fg-tertiary">{totalTaskCount}</span>}
                   </button>
-                  {activeProjects.map(p => {
+                  {sidebarProjects.map(p => {
                     const selected = selectedProjectId === p.id;
                     const count = allTaskCounts[p.id] ?? 0;
                     return (
