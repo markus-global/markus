@@ -29,6 +29,17 @@ function isBillingOrAuthError(err: unknown): boolean {
     || /insufficient|balance|quota|billing|unauthorized|forbidden|invalid.*(api|key|token)|api.key.*invalid|authentication/i.test(err.message);
 }
 
+/**
+ * Network / connectivity errors are environment problems, not code bugs:
+ * sandboxed CI, offline machines, blocked providers (e.g. no direct access
+ * to api.openai.com).  Skipping these keeps the integration suite green
+ * everywhere while still running REAL API calls when the network is up.
+ */
+function isNetworkOrEnvError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /fetch failed|und_err_|connect timed? ?out|econnrefused|enetunreach|enotfound|etimedout|network error|socket hang up|getaddrinfo/i.test(err.message);
+}
+
 // ---------------------------------------------------------------------------
 // Helper: conditionally run a test only when the env var is present
 // ---------------------------------------------------------------------------
@@ -64,15 +75,16 @@ function assertAudioResult(result: Awaited<ReturnType<NonNullable<MultiModalProv
 }
 
 /**
- * Run an async API call; if it fails with a billing/auth error, log and
- * pass the test (it's not a code bug). Re-throw any other error.
+ * Run an async API call; if it fails with a billing/auth error or a network /
+ * connectivity error, log and pass the test (it's not a code bug). Re-throw
+ * any other error.
  */
 async function runOrSkipOnBilling<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
   try {
     return await fn();
   } catch (err) {
-    if (isBillingOrAuthError(err)) {
-      console.log(`  ${label}: skipped (billing/auth) — ${(err as Error).message.slice(0, 120)}`);
+    if (isBillingOrAuthError(err) || isNetworkOrEnvError(err)) {
+      console.log(`  ${label}: skipped (billing/auth or network) — ${(err as Error).message.slice(0, 120)}`);
       return undefined;
     }
     throw err;

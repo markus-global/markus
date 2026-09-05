@@ -10,6 +10,11 @@ describe('WebSearchTool', () => {
 
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
+    // 外部环境可能设置 SEARCH_DISABLED_PROVIDERS 禁用全部 BYOK 后端
+    // （Settings → Web Search 的禁用配置）——测试内必须清理，否则
+    // 「配置 key 后应成功」的断言会得到 No search backends configured.。
+    delete process.env['SEARCH_DISABLED_PROVIDERS'];
+    delete process.env['MARKUS_SEARCH_ENABLED'];
   });
 
   afterEach(() => {
