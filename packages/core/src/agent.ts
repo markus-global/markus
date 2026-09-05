@@ -476,6 +476,8 @@ export class Agent {
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private browserCloseTabsHelper?: (sessionId: string) => string | null;
   private dynamicContextProviders = new Map<string, () => string>();
+  /** 并发模式：workerId → 该 worker 独占的 SessionWorkspace（保持跨 item 会话状态隔离）。 */
+  private workerWorkspaces = new Map<number, SessionWorkspace>();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly BROWSER_CLOSE_FOLLOWUP_MAX_ITER = 5;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
@@ -529,6 +531,12 @@ export class Agent {
     this.mailbox = new AgentMailbox(this.id, this.eventBus);
     this.attentionController = new AttentionController(this.id, this.mailbox, this.eventBus);
     this.attentionController.setDelegate(this.createAttentionDelegate());
+    // 并发处理：智能体设置 → 并发处理。默认关闭 = workerCount 1（完全串行，与旧行为一致）。
+    const concurrentCfg = this.config.concurrent;
+    if (concurrentCfg?.enabled) {
+      const workers = Math.min(Math.max(concurrentCfg.maxWorkers ?? 3, 1), 10);
+      this.attentionController.setWorkerCount(workers);
+    }
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
     this.contextEngine.setLLMSummarizer(this.createLLMSummarizer());
@@ -1204,9 +1212,23 @@ export class Agent {
         });
         if (item) {
           this.setStatus('working');
+        } else if (this.attentionController.getWorkerCount() > 1) {
+          // 并发模式：单个 worker 结束不代表 agent 空闲 —— 只有所有 worker
+          // 都空闲（聚合状态 idle）才恢复 idle，避免状态抖动。
+          if (this.attentionController.getState() === 'idle' && this.activeTasks.size === 0) {
+            this.setStatus('idle');
+          }
         } else if (this.activeTasks.size === 0) {
           this.setStatus('idle');
         }
+      },
+      getWorkerWorkspace: (workerId: number) => {
+        let ws = this.workerWorkspaces.get(workerId);
+        if (!ws) {
+          ws = createSessionWorkspace(workerId);
+          this.workerWorkspaces.set(workerId, ws);
+        }
+        return ws;
       },
       cancelProcessing: (item: MailboxItem) => {
         // Backstop-timeout single-flight: abort the orphaned in-flight turn so it
