@@ -62,7 +62,21 @@ export class AgentMailbox {
   private readonly agentId: string;
   private readonly eventBus: EventBus;
   private persistence?: MailboxPersistence;
-  private idleResolve?: () => void;
+  /**
+   * Idle waiters — one per concurrently-dequeuing attention worker.
+   * Multi-consumer: enqueue / unlock wake ALL waiters; each then re-dequeues
+   * and `shift`-style selection keeps items exclusive. Single-waiter in
+   * serial mode — exactly the old behavior.
+   */
+  private idleWaiters = new Set<() => void>();
+  /** 实体亲和锁：entityKey → holder（处理中的 mailbox item id）。同一实体永不并发。 */
+  private entityLocks = new Map<string, string>();
+  /**
+   * Set by cancelWait(): waiting dequeueAsync calls should exit with
+   * MailboxCancelledError. Cleared on any real wakeup (enqueue/unlock),
+   * so spurious broadcast wakes that lose the item race keep waiting.
+   */
+  private cancelPending = false;
 
   constructor(agentId: string, eventBus: EventBus, persistence?: MailboxPersistence) {
     this.agentId = agentId;
@@ -388,22 +402,78 @@ export class AgentMailbox {
   }
 
   /**
-   * Wake the attention loop if it's blocked in `dequeueAsync`.
+   * Wake all attention workers blocked in `dequeueAsync`.
    */
   private wakeIdleLoop(): void {
-    if (this.idleResolve) {
-      const resolve = this.idleResolve;
-      this.idleResolve = undefined;
-      resolve();
+    if (this.idleWaiters.size > 0) {
+      const waiters = [...this.idleWaiters];
+      this.idleWaiters.clear();
+      // Real work arrived — cancel intent is void (stop → restart scenario).
+      this.cancelPending = false;
+      for (const resolve of waiters) resolve();
     }
   }
 
   /**
-   * Remove and return the highest-priority item.
-   * Returns undefined if the queue is empty.
+   * Whether any queued item is currently runnable (i.e. not blocked by an
+   * entity lock). Used to avoid waking workers on exclusively locked queues.
+   */
+  private hasRunnableItem(): boolean {
+    return this.queue.some(it => it.status === 'queued' && !this.isEntityLocked(this.entityKeyOf(it)));
+  }
+
+  /**
+   * 实体亲和键：同一实体（任务/需求/会话/用户）的 item 永不并发处理。
+   * 与 consolidateByEntity 的 key 约定保持一致。
+   */
+  entityKeyOf(item: MailboxItem): string | undefined {
+    if (item.payload.taskId || item.metadata?.taskId) {
+      return `task:${item.payload.taskId ?? item.metadata?.taskId}`;
+    }
+    if (item.payload.requirementId) {
+      return `req:${item.payload.requirementId}`;
+    }
+    if (item.metadata?.dbSessionId || item.metadata?.sessionId) {
+      return `conv:${item.metadata?.dbSessionId ?? item.metadata?.sessionId}`;
+    }
+    // 同一发送者的直接对话串行，防止两个分身对同一用户做出矛盾回复。
+    const senderId = item.metadata?.senderId;
+    if (senderId && item.sourceType === 'human_chat') {
+      return `user:${senderId}`;
+    }
+    return undefined;
+  }
+
+  /** 尝试锁定实体。成功返回 true；已被其他 worker 持有返回 false。 */
+  lockEntity(entityKey: string, holder: string): boolean {
+    if (this.entityLocks.has(entityKey)) return false;
+    this.entityLocks.set(entityKey, holder);
+    return true;
+  }
+
+  /** 释放实体锁（仅当持有者匹配时；处理中止/完成路径调用）。 */
+  unlockEntity(entityKey: string, holder: string): void {
+    if (this.entityLocks.get(entityKey) === holder) {
+      this.entityLocks.delete(entityKey);
+      // 锁释放可能让被阻塞的同实体 item 变得可运行 —— 唤醒等待的 worker。
+      this.wakeIdleLoop();
+    }
+  }
+
+  /** 实体是否被其他处理持有。 */
+  isEntityLocked(entityKey: string | undefined): boolean {
+    return !!entityKey && this.entityLocks.has(entityKey);
+  }
+
+  /**
+   * Remove and return the highest-priority runnable item (skips items whose
+   * entity is currently locked by another worker; falls back to the next one).
+   * Returns undefined if the queue is empty or all items are entity-locked.
    */
   dequeue(): MailboxItem | undefined {
-    const item = this.queue.shift();
+    const idx = this.queue.findIndex(it => it.status === 'queued' && !this.isEntityLocked(this.entityKeyOf(it)));
+    if (idx === -1) return undefined;
+    const item = this.queue.splice(idx, 1)[0];
     if (item) {
       item.status = 'processing';
       item.startedAt = new Date().toISOString();
@@ -424,21 +494,33 @@ export class AgentMailbox {
   async dequeueAsync(): Promise<MailboxItem> {
     for (;;) {
       const item = this.dequeue();
-      if (item) return item;
+      if (item) {
+        this.cancelPending = false;
+        return item;
+      }
 
       await new Promise<void>(resolve => {
-        this.idleResolve = resolve;
-        // Close the race: work may have arrived after the empty dequeue above.
-        if (this.queue.length > 0) {
-          this.idleResolve = undefined;
+        this.idleWaiters.add(resolve);
+        // Close the race: runnable work may have arrived after the empty dequeue above.
+        if (this.hasRunnableItem()) {
+          this.idleWaiters.delete(resolve);
           resolve();
         }
       });
 
       const afterWake = this.dequeue();
-      if (afterWake) return afterWake;
-      // cancelWait() (or a spurious wake) with an empty queue
-      throw new MailboxCancelledError();
+      if (afterWake) {
+        this.cancelPending = false;
+        return afterWake;
+      }
+      // Genuine cancel (shutdown): throw so the loop exits cleanly. Note we do NOT
+      // clear cancelPending here — every waiter woken by cancelWait must exit too.
+      if (this.cancelPending) {
+        throw new MailboxCancelledError();
+      }
+      // Either another waiter won the item race (spurious broadcast wake) or
+      // everything remaining is entity-locked — keep waiting for the next
+      // enqueue / lock-release wakeup.
     }
   }
 
@@ -724,12 +806,14 @@ export class AgentMailbox {
   }
 
   /**
-   * Cancel the idle wait (used during shutdown).
+   * Cancel the idle wait (used during shutdown). Wakes ALL waiting workers.
    */
   cancelWait(): void {
-    if (this.idleResolve) {
-      this.idleResolve();
-      this.idleResolve = undefined;
+    this.cancelPending = true;
+    if (this.idleWaiters.size > 0) {
+      const waiters = [...this.idleWaiters];
+      this.idleWaiters.clear();
+      for (const resolve of waiters) resolve();
     }
   }
 
