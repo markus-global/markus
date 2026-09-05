@@ -588,6 +588,48 @@ describe('TaskService', () => {
       expect(() => ts.acceptTask(task.id, AGENT_A)).toThrow(/cannot accept their own task/);
     });
 
+    it('allows the task-recorded reviewer even when they are not the assignee team manager', async () => {
+      // Regression: a reviewer recorded on the task (task.reviewerId) but NOT the
+      // assignee's team manager (e.g. cross-team specialist, or agent with no team
+      // membership) was blocked from reviewing. The recorded reviewer is the task's
+      // governance contract and must be trusted.
+      ts.setOrgService({
+        listTeams: vi.fn(() => [
+          { id: 'team-1', name: 'Team 1', managerId: 'manager-x', managerType: 'agent', memberAgentIds: [AGENT_A], humanMemberIds: [] },
+        ]),
+      } as unknown as OrganizationService);
+
+      const task = await createTaskInReview(ts); // task.reviewerId = REVIEWER
+      const accepted = ts.acceptTask(task.id, REVIEWER);
+      expect(accepted.status).toBe('completed');
+    });
+
+    it('allows the task-recorded reviewer to request revision cross-team', async () => {
+      ts.setOrgService({
+        listTeams: vi.fn(() => [
+          { id: 'team-1', name: 'Team 1', managerId: 'manager-x', managerType: 'agent', memberAgentIds: [AGENT_A], humanMemberIds: [] },
+        ]),
+      } as unknown as OrganizationService);
+
+      const task = await createTaskInReview(ts);
+      const revised = await ts.requestRevision(task.id, 'Please redo', REVIEWER);
+      expect(revised.status).toBe('in_progress');
+    });
+
+    it('still rejects an arbitrary agent who is not the recorded reviewer', async () => {
+      // The relaxed rule trusts ONLY the recorded reviewer — random agents must
+      // still prove team-manager or creator relationship.
+      ts.setOrgService({
+        listTeams: vi.fn(() => [
+          { id: 'team-1', name: 'Team 1', managerId: 'manager-x', managerType: 'agent', memberAgentIds: [AGENT_A], humanMemberIds: [] },
+        ]),
+      } as unknown as OrganizationService);
+
+      const task = await createTaskInReview(ts); // task.reviewerId = REVIEWER
+      expect(() => ts.acceptTask(task.id, AGENT_B)).toThrow(/not allowed to review/);
+      await expect(ts.requestRevision(task.id, 'nope', AGENT_B)).rejects.toThrow(/not allowed to review/);
+    });
+
     it('requests revision and increments execution round', async () => {
       const taskCommentRepo = {
         add: vi.fn().mockResolvedValue({ id: 'c1' }),

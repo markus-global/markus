@@ -3674,12 +3674,22 @@ export class TaskService {
   }
 
   /**
-   * Managers can only review tasks from their own team members or tasks they created.
-   * Human reviewers are unrestricted.
+   * A reviewer is allowed to review a task when:
+   *  1. They are the reviewer explicitly recorded on the task (task.reviewerId) — the
+   *     task's governance contract, validated at creation and changeable only via
+   *     updateTask (audited). Without this, a reviewer assigned from outside the
+   *     assignee's team (cross-team specialist, or an agent with no team membership)
+   *     could never accept/reject the very task they were assigned to review.
+   *  2. They created the task.
+   *  3. They manage the team the assignee belongs to.
+   * Human reviewers (agents not tracked in agentManager) are unrestricted.
    */
   private isReviewerAllowedForTask(reviewerId: string, task: Task): boolean {
     if (!this.agentManager || !this.orgService) return true;
     if (!this.agentManager.hasAgent(reviewerId)) return true;
+
+    // The reviewer explicitly recorded on the task is always trusted.
+    if (task.reviewerId === reviewerId) return true;
 
     if (task.createdBy === reviewerId) return true;
 
@@ -3702,7 +3712,7 @@ export class TaskService {
         : reviewerId;
       throw new Error(
         `Agent "${reviewerName}" (${reviewerId}) is not allowed to review task "${task.title}". ` +
-        `Managers can only review tasks from their own team members or tasks they created/assigned.`
+        `Reviewers must be the task's recorded reviewer, the task creator, or the assignee's team manager.`
       );
     }
   }
