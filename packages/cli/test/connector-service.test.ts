@@ -12,6 +12,12 @@ import {
   readPlatformLLMProviders,
 } from '../src/connector-service.js';
 
+// 外部环境可能设置 MARKUS_TEMPLATES_DIR（桌面版运行时注入），installSkillTemplate
+// 从 resolveTemplatesDir 拿模板源会被它劫持到 app.asar 打包目录 —— 测试必须清理，
+// 否则任何装了桌面版的机器上该断言都会失败。每个 vitest worker 是独立进程，
+// 模块级 delete 即可（不要在 afterEach 恢复，否则后续测试又被 app.asar 劫持）。
+delete process.env.MARKUS_TEMPLATES_DIR;
+
 describe('connector-service', () => {
   let tmpHome: string;
   const originalHome = process.env.HOME;
