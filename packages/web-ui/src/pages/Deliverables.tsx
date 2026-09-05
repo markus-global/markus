@@ -4,6 +4,8 @@ import { api, wsClient, getHubToken, hubApi, type DeliverableInfo, type ProjectI
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from '../components/ContentRenderer.tsx';
 import { OfficePreviewer } from '../components/OfficePreviewer.tsx';
+import { DirectoryPreview } from '../components/DirectoryPreview.tsx';
+import type { DirectoryEntry } from '../api.ts';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { DeliverableShareModal } from '../components/DeliverableShareModal.tsx';
@@ -134,9 +136,14 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [previewImage, setPreviewImage] = useState<{ src: string; name: string } | null>(null);
   const [previewMedia, setPreviewMedia] = useState<{ kind: 'audio' | 'video'; src: string; name: string } | null>(null);
   const [previewOffice, setPreviewOffice] = useState<{ format: string; streamUrl: string; name: string; size?: number; reference?: string } | null>(null);
+  const [previewDirectory, setPreviewDirectory] = useState<{ path: string; name: string; entries: DirectoryEntry[] } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showCopyPath, setShowCopyPath] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
+  // 从目录内点开文件时：记录来源目录 + 当前预览文件路径，用于文件预览顶部的
+  // 「返回上级目录 / 复制路径 / 在文件浏览器中显示」工具条。
+  const [previewParentDir, setPreviewParentDir] = useState<string | null>(null);
+  const [previewFilePath, setPreviewFilePath] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<DeliverableInfo | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [sharedDir, setSharedDir] = useState('');
@@ -144,6 +151,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   // 是否有 Office 预览（PDF/DOCX/XLSX）—— 需要全高填充
   const showOfficePreview = previewOffice && selected?.type === 'file';
+  // 是否有「全高」填充内容（Office 预览 / 目录预览）—— 需要整条 flex 高度链
+  const showFullHeightPreview = showOfficePreview || (!!previewDirectory && selected?.type === 'directory');
 
   // Sidebar collapse (Phase 2)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -582,41 +591,92 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     navBus.navigate(PAGE.BUILDER);
   };
 
+  const applyPreview = useCallback(async (
+    resp: Awaited<ReturnType<typeof api.files.preview>>,
+    fallbackPath: string,
+    formatHint?: string,
+  ) => {
+    if (resp.type === 'directory' && Array.isArray(resp.entries)) {
+      setPreviewDirectory({ path: resp.path!, name: resp.name, entries: resp.entries });
+    } else if (resp.type === 'image' && resp.mimeType) {
+      // 后端图片返回 streamUrl（不走 base64，防超大文件撑爆 inline 上限）
+      const src = resp.streamUrl
+        || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(fallbackPath));
+      setPreviewImage({ src, name: resp.name });
+    } else if (resp.type === 'audio' || resp.type === 'video') {
+      const src = resp.streamUrl
+        || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(fallbackPath));
+      setPreviewMedia({ kind: resp.type, src, name: resp.name });
+    } else if (resp.type === 'office') {
+      const src = resp.streamUrl
+        || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(fallbackPath));
+      setPreviewOffice({
+        format: resp.format || String(resp.extension || '').replace(/^\./, '') || 'pdf',
+        streamUrl: src,
+        name: resp.name,
+        size: resp.size,
+        reference: resp.path || fallbackPath,
+      });
+    } else if (resp.type === 'binary') {
+      setShowCopyPath(true);
+    } else if (typeof resp.content === 'string') {
+      setPreviewContent(resp.content);
+      setPreviewFormat(resolveFormat({ format: formatHint, reference: fallbackPath, content: resp.content }));
+    } else {
+      setShowCopyPath(true);
+    }
+  }, []);
+
+  /** 浏览目录（目录交付物 / 目录内点击子目录）。 */
+  const loadDir = useCallback(async (dirPath: string) => {
+    setPreviewLoading(true);
+    setPreviewContent(null);
+    setPreviewImage(null);
+    setPreviewMedia(null);
+    setPreviewOffice(null);
+    setShowCopyPath(false);
+    setPreviewDirectory(null);
+    setPreviewParentDir(null);
+    setPreviewFilePath(null);
+    try {
+      const resp = await api.files.preview(dirPath);
+      if (resp.type === 'directory' && Array.isArray(resp.entries)) {
+        setPreviewDirectory({ path: resp.path!, name: resp.name, entries: resp.entries });
+      } else {
+        await applyPreview(resp, dirPath);
+      }
+    } catch {
+      setShowCopyPath(true);
+    }
+    setPreviewLoading(false);
+  }, [applyPreview]);
+
+  /** 目录内点击文件 → 内联预览该文件（支持全部可预览类型）。 */
+  const loadPreviewPath = useCallback(async (filePath: string, parentDir?: string | null) => {
+    setPreviewLoading(true);
+    // 记住来源目录，供文件预览顶部「返回上级目录」使用
+    setPreviewParentDir(parentDir ?? null);
+    setPreviewFilePath(filePath);
+    setPreviewDirectory(null);
+    try {
+      const resp = await api.files.preview(filePath);
+      await applyPreview(resp, filePath);
+    } catch {
+      setPreviewContent(null);
+      setShowCopyPath(true);
+    }
+    setPreviewLoading(false);
+  }, [applyPreview]);
+
   const loadPreview = async (d: DeliverableInfo) => {
     if (!d.reference) return;
     if (isUrl(d.reference)) return;
-    if (d.type === 'directory') { setShowCopyPath(true); return; }
+    if (d.type === 'directory') { void loadDir(d.reference); return; }
 
     setPreviewLoading(true);
     try {
       const resp = await api.files.preview(d.reference);
-      if (resp.type === 'image' && resp.mimeType) {
-        // 后端图片返回 streamUrl（不走 base64，防超大文件撑爆 inline 上限）
-        const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));
-        setPreviewImage({ src, name: resp.name });
-      } else if (resp.type === 'audio' || resp.type === 'video') {
-        const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));
-        setPreviewMedia({ kind: resp.type, src, name: resp.name });
-      } else if (resp.type === 'office') {
-        const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(d.reference));
-        setPreviewOffice({
-          format: resp.format || String(resp.extension || '').replace(/^\./, '') || 'pdf',
-          streamUrl: src,
-          name: resp.name,
-          size: resp.size,
-          reference: resp.path || d.reference,
-        });
-      } else if (resp.type === 'binary') {
-        setShowCopyPath(true);
-      } else if (typeof resp.content === 'string') {
-        setPreviewContent(resp.content);
-        setPreviewFormat(resolveFormat({ format: d.format, reference: d.reference, content: resp.content }));
-      } else {
-        setShowCopyPath(true);
-      }
+      await applyPreview(resp, d.reference, d.format);
     } catch {
       setPreviewContent(null);
       if (d.type === 'file') setShowCopyPath(true);
@@ -631,7 +691,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     setPreviewImage(null);
     setPreviewMedia(null);
     setPreviewOffice(null);
+    setPreviewDirectory(null);
     setShowCopyPath(false);
+    setPreviewParentDir(null);
+    setPreviewFilePath(null);
     if (selected) loadPreview(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, previewMode]);
@@ -1372,7 +1435,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             </div>
           </div>
         ) : (
-          <div className={`p-6 space-y-4 ${showOfficePreview ? 'flex flex-col min-h-0 h-full' : ''}`}>
+          <div className={`p-6 space-y-4 ${showFullHeightPreview ? 'flex flex-col min-h-0 h-full' : ''}`}>
             {/* File missing warning */}
             {!previewMode && missingFileIds.has(selected.id) && (
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-600 text-xs">
@@ -1385,7 +1448,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             )}
 
             {/* Header: title + badges + actions — all info at the top */}
-            <div className={`space-y-3 ${showOfficePreview ? 'shrink-0' : ''}`}>
+            <div className={`space-y-3 ${showFullHeightPreview ? 'shrink-0' : ''}`}>
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-xl font-semibold text-fg-primary">{selected.title}</h2>
                 {!previewMode && (
@@ -1594,28 +1657,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                   >{t('detail.openUrl')}</button>
                 </div>
               </div>
-            ) : selected.type === 'directory' && selected.reference ? (
-              <div className="space-y-4">
-                {selected.summary && (
-                  <div className="bg-surface-elevated rounded-xl p-5">
-                    <MarkdownMessage content={selected.summary} className="text-fg-secondary text-sm" />
-                  </div>
-                )}
-                <div className="flex flex-col items-center justify-center py-10">
-                  <svg className="w-10 h-10 text-fg-muted mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                  </svg>
-                  <p className="text-xs text-fg-tertiary font-mono mb-4 px-4 text-center break-all select-all">{selected.reference}</p>
-                  <button
-                    onClick={() => { api.files.reveal(selected.reference).catch(() => flashMsg('error', t('detail.failedToOpenBrowser'))); }}
-                    className="px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-colors"
-                  >{t('detail.openInFileBrowser')}</button>
-                </div>
-              </div>
             ) : (
-              <div className={`bg-surface-elevated rounded-xl overflow-hidden ${showOfficePreview ? 'flex flex-col h-full' : ''}`}>
+              <div className={`bg-surface-elevated rounded-xl overflow-hidden ${showFullHeightPreview ? 'flex flex-col h-full' : ''}`}>
                 {/* Edit/Preview toolbar — shown when there is editable text content */}
-                {(previewContent || selected.summary) && !previewLoading && !previewImage && !showCopyPath && selected.reference && selected.type === 'file' && (previewFormat === 'markdown' || previewFormat === 'text' || previewFormat === 'html') && (
+                {(previewContent || selected.summary) && !previewLoading && !previewImage && !previewDirectory && !showCopyPath && selected.reference && selected.type === 'file' && (previewFormat === 'markdown' || previewFormat === 'text' || previewFormat === 'html') && (
                   <div className="flex items-center gap-2 px-4 py-2 border-b border-border-subtle bg-surface-secondary/50">
                     <button
                       onClick={handleSwitchToPreview}
@@ -1641,7 +1686,31 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                     )}
                   </div>
                 )}
-                <div className={showOfficePreview ? 'flex-1 min-h-0 p-5 flex flex-col' : 'p-5'}>
+                <div className={showFullHeightPreview ? 'flex-1 min-h-0 p-5 flex flex-col' : 'p-5'}>
+                  {/* 从目录内点开文件时：文件预览顶部的「返回上级目录 / 复制路径 / 在文件浏览器中显示」工具条。
+                      对所有可预览类型（文本/office/图片/音视频/不可预览）生效，不局限图片。 */}
+                  {previewParentDir && previewFilePath && !previewDirectory && !previewLoading && (
+                    <div className="flex items-center gap-2 mb-3 px-3 py-2 border border-border-subtle bg-surface-secondary/50 rounded-lg shrink-0">
+                      <button
+                        className="inline-flex items-center gap-1 text-xs text-fg-secondary hover:text-brand-500 transition-colors cursor-pointer"
+                        onClick={() => { const dir = previewParentDir; setPreviewParentDir(null); setPreviewFilePath(null); void loadDir(dir); }}
+                      >
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clipRule="evenodd" />
+                        </svg>
+                        返回上级目录
+                      </button>
+                      <div className="flex-1" />
+                      <button
+                        className="shrink-0 text-xs text-fg-secondary hover:text-fg-primary hover:underline cursor-pointer"
+                        onClick={() => copyPath(previewFilePath)}
+                      >{copiedPath ? t('common:copied') : t('common:copyPath', { defaultValue: '复制路径' })}</button>
+                      <button
+                        className="shrink-0 text-xs text-fg-secondary hover:text-fg-primary hover:underline cursor-pointer"
+                        onClick={() => { api.files.reveal(previewFilePath).catch(() => flashMsg('error', t('detail.failedToOpenBrowser'))); }}
+                      >{t('detail.openInFileBrowser', { defaultValue: '在文件浏览器中显示' })}</button>
+                    </div>
+                  )}
                   {previewLoading ? (
                     <div className="animate-pulse space-y-4">
                       <div className="h-4 bg-surface-overlay/60 rounded w-full" />
@@ -1650,6 +1719,17 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                       <div className="h-32 bg-surface-overlay/40 rounded-lg w-full mt-2" />
                       <div className="h-4 bg-surface-overlay/60 rounded w-3/4" />
                       <div className="h-4 bg-surface-overlay/60 rounded w-2/3" />
+                    </div>
+                  ) : previewDirectory ? (
+                    <div className={selected.type === 'directory' ? 'flex-1 min-h-0' : 'h-[50vh] min-h-[300px]'}>
+                      <DirectoryPreview
+                        path={previewDirectory.path}
+                        entries={previewDirectory.entries}
+                        onNavigate={(p) => void loadDir(p)}
+                        onOpenFile={(p) => void loadPreviewPath(p, previewDirectory?.path)}
+                        onReveal={(p) => { api.files.reveal(p).catch(() => flashMsg('error', t('detail.failedToOpenBrowser'))); }}
+                        onCopyPath={(p) => copyPath(p)}
+                      />
                     </div>
                   ) : previewImage ? (
                     <div className="flex flex-col items-center gap-2">

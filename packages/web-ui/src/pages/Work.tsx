@@ -6,6 +6,7 @@ import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, s
 import { taskLogToStreamEntry, activityLogToStreamEntry, type AgentActivityLogEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer } from '../components/ContentRenderer.tsx';
+import { OfficePreviewer } from '../components/OfficePreviewer.tsx';
 import { Avatar } from '../components/Avatar.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
@@ -1615,6 +1616,7 @@ const PREVIEWABLE_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
   '.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.opus',
   '.mp4', '.webm', '.mov', '.mkv', '.m4v',
+  '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt',
 ]);
 
 function fmtSize(bytes?: number): string {
@@ -1631,6 +1633,7 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
   const [data, setData] = useState<PreviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -1648,6 +1651,13 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
 
   const openInFinder = (p: string) => {
     api.files.reveal(p).catch(() => {});
+  };
+
+  const copyPath = () => {
+    navigator.clipboard?.writeText(currentPath).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
   };
 
   const handleEntryClick = (entry: DirEntry) => {
@@ -1692,6 +1702,9 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
             {isDir && data.entries && <span className="text-[10px] text-fg-tertiary shrink-0">({data.entries.length})</span>}
           </div>
           <div className="flex items-center gap-1 shrink-0 ml-3">
+            <button onClick={copyPath} className="text-fg-tertiary hover:text-fg-primary px-2 py-1.5 rounded hover:bg-surface-elevated/60 transition-colors text-xs" title={t('common:copyPath', { defaultValue: '复制路径' })}>
+              {copied ? `${t('common:copied', { defaultValue: '已复制' })} ✓` : t('common:copyPath', { defaultValue: '复制路径' })}
+            </button>
             <button onClick={() => onOpenExternal ? onOpenExternal() : openInFinder(currentPath)} className="text-fg-tertiary hover:text-fg-primary p-1.5 rounded hover:bg-surface-elevated/60 transition-colors" title={onOpenExternal ? t('work:task.openInDeliverables') : t('work:task.openInFinder')}>
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
             </button>
@@ -1736,7 +1749,18 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
           {/* File preview */}
           {data && data.type !== 'directory' && (
             <div className="p-5">
-              {data.type === 'image' && data.content ? (
+              {data.type === 'office' && data.streamUrl ? (
+                <OfficePreviewer
+                  data={{
+                    format: (data.extension || '').replace(/^\./, '') || 'pdf',
+                    streamUrl: data.streamUrl || (data.path ? api.files.streamUrl(data.path) : api.files.streamUrl(currentPath)),
+                    name: data.name,
+                    size: data.size,
+                  }}
+                  reference={data.path || currentPath}
+                  onFallback={() => openInFinder(currentPath)}
+                />
+              ) : data.type === 'image' && data.content ? (
                 <div className="flex justify-center">
                   <img src={`data:${data.mimeType};base64,${data.content}`} alt={data.name} className="max-w-full max-h-[60vh] rounded-lg" />
                 </div>
