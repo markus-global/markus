@@ -32,9 +32,25 @@ import zhDeliverables from '../locales/zh-CN/deliverables.json';
 import zhReports from '../locales/zh-CN/reports.json';
 import zhShowcase from '../locales/zh-CN/showcase.json';
 
+import esCommon from '../locales/es/common.json';
+import esNav from '../locales/es/nav.json';
+import esAuth from '../locales/es/auth.json';
+import esHome from '../locales/es/home.json';
+import esTeam from '../locales/es/team.json';
+import esWork from '../locales/es/work.json';
+import esSettings from '../locales/es/settings.json';
+import esOnboarding from '../locales/es/onboarding.json';
+import esBuilder from '../locales/es/builder.json';
+import esStore from '../locales/es/store.json';
+import esAgent from '../locales/es/agent.json';
+import esDeliverables from '../locales/es/deliverables.json';
+import esReports from '../locales/es/reports.json';
+import esShowcase from '../locales/es/showcase.json';
+
 export const SUPPORTED_LANGUAGES = [
   { code: 'en', label: 'English' },
   { code: 'zh-CN', label: '中文' },
+  { code: 'es', label: 'Español' },
 ] as const;
 
 export const DEFAULT_NS = 'common';
@@ -80,6 +96,22 @@ void i18n
         deliverables: zhDeliverables,
         reports: zhReports,
         showcase: zhShowcase,
+      },
+      es: {
+        common: esCommon,
+        nav: esNav,
+        auth: esAuth,
+        home: esHome,
+        team: esTeam,
+        work: esWork,
+        settings: esSettings,
+        onboarding: esOnboarding,
+        builder: esBuilder,
+        store: esStore,
+        agent: esAgent,
+        deliverables: esDeliverables,
+        reports: esReports,
+        showcase: esShowcase,
       },
     },
     fallbackLng: 'en',
