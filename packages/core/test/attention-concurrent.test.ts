@@ -230,4 +230,38 @@ describe('AttentionController 并发 worker 池（方案 A）', () => {
     expect(doneIds).toHaveLength(2);
     expect(mailbox.depth).toBe(0);
   });
+
+  it('P2-B：处理抛错后实体锁释放，同实体后续 item 仍可继续（防锁泄漏）', async () => {
+    const eventBus = new EventBus();
+    const mailbox = new AgentMailbox(AGENT_ID, eventBus);
+    const doneIds: string[] = [];
+    let failOnce = true;
+    const delegate: AttentionDelegate = {
+      processMailboxItem: vi.fn(async (item: MailboxItem) => {
+        if (failOnce) {
+          failOnce = false;
+          throw new Error('simulated processing failure');
+        }
+        await sleep(20);
+        doneIds.push(item.id);
+        return 'ok';
+      }),
+      onDecisionMade: vi.fn(),
+      onFocusChanged: vi.fn(),
+      evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
+    };
+    const controller = new AttentionController(AGENT_ID, mailbox, eventBus);
+    controller.setDelegate(delegate);
+    controller.start();
+
+    // 同一实体的两个 item：第一个处理失败（抛错），第二个必须等锁释放后仍被处理
+    mailbox.enqueue('a2a_message', { taskId: 'tsk_FAIL', summary: 'first', content: 'boom' });
+    mailbox.enqueue('a2a_message', { taskId: 'tsk_FAIL', summary: 'second', content: 'ok' });
+    await waitFor(() => doneIds.length === 1);
+    controller.stop();
+
+    // 失败 item 会被 requeue 或完成，但锁绝不该泄漏——第二个 item 最终被处理
+    expect(doneIds).toHaveLength(1);
+    expect(mailbox.isEntityLocked('tsk_FAIL')).toBe(false); // 锁已释放
+  });
 });
