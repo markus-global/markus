@@ -1,0 +1,243 @@
+{
+  "title": "Resumen",
+  "subtitle": "Esto es lo que está pasando con tu fuerza laboral de AI hoy..",
+  "hireAgent": "Implementar agente",
+  "metricCards": {
+    "working": "Trabajo",
+    "tasksDone": "Tareas realizadas",
+    "projects": "Proyectos",
+    "health": "Salud"
+  },
+  "statusBar": {
+    "agentsWorking": "de trabajo",
+    "tasksDone": "tareas realizadas",
+    "projects": "proyectos",
+    "health": "Salud"
+  },
+  "systemHealth": {
+    "title": "Sistema de salud",
+    "successRate": "Tasa de éxito",
+    "tasksTotal": "Total",
+    "tokenUsage": "Token Usage",
+    "currentWorking": "Actualmente",
+    "storage": "Almacenamiento"
+  },
+  "gettingStarted": {
+    "title": "Su fuerza de trabajo AI está lista",
+    "subtitle": "Comenzar en un minuto — describir lo que necesita y dejar que su equipo lo tome desde aquí.",
+    "describeGoal": "Describe tu Objetivo",
+    "describeGoalDesc": "Charlar con el Secretario - montará un equipo y romperá tareas",
+    "hireAgents": "Agentes Contratados",
+    "hireAgentsDesc": "Buscar plantillas: desarrolladores, investigadores, escritores, analistas y más",
+    "createProject": "Crear un proyecto",
+    "createProjectDesc": "Establecer requisitos y dejar a los agentes planear, ejecutar y entregar"
+  },
+  "claim": {
+    "title": "Créditos de la indemnización",
+    "subtitle": "Empieza con Markus Cloud AI — no se necesita ninguna configuración de clave de API.",
+    "provider": "Proveedor por defecto",
+    "creditsUnit": "Créditos",
+    "oneTimeNote": "Créditos de recompensa de una sola vez para su cuenta.",
+    "loading": "Revisar su cuenta…",
+    "claimNow": "Reclamación",
+    "claiming": "Reclamando…",
+    "tooSoon": "Casi listo, por favor espera {{seconds}}S y probar de nuevo.",
+    "success": "{{amount}} los créditos de recompensa están en su cuenta. Estás listo para irte.!",
+    "startUsing": "Puedes empezar a usar Markus Cloud ahora.",
+    "openHub": "Open Hub para reclamar",
+    "openHubHint": "Continúe en Markus Hub para reclamar su {{amount}} recompensa credits.",
+    "notClaimable": "Estos créditos no están disponibles para esta cuenta.",
+    "loadFailed": "No podía cargar el estado de reclamo. Por favor, inténtelo de nuevo.",
+    "claimFailed": "No podía reclamar créditos. Por favor, inténtelo de nuevo.",
+    "retry": "Reintentar"
+  },
+  "checklist": {
+    "title": "Empieza con Markus",
+    "subtitle": "Siga estos pasos para establecer su fuerza de trabajo AI y comenzar a trabajar.",
+    "progress": "{{done}}/{{total}} terminado",
+    "setup": {
+      "title": "Configuración del sistema",
+      "claim": "Créditos de la recompensa de Claim Markus",
+      "claimDesc": "Reclamar 1.000 créditos de recompensa de Markus Cloud y comenzar a chatear",
+      "claimAction": "Créditos de las reclamaciones",
+      "markus": "Créditos de la recompensa de Claim Markus",
+      "markusDesc": "Reclamar 1.000 créditos de recompensa de Markus Cloud y comenzar a chatear",
+      "markusAction": "Créditos de las reclamaciones",
+      "markusActionConfigured": "Modelos de gestión",
+      "llm": "Configurar modelo de IA",
+      "llmDesc": "Configurar la clave API de su proveedor de LLM — esto es necesario para que los agentes trabajen",
+      "llmDescHub": "Use Markus Cloud AI, o agregue la clave de API de su propio proveedor, necesaria para que los agentes trabajen",
+      "llmAction": "Configuración",
+      "search": "Configurar el motor de búsqueda",
+      "searchDesc": "Configurar una clave API de búsqueda para que los agentes puedan buscar en Internet",
+      "searchAction": "Configuración",
+      "browser": "Configurar la automatización del navegador",
+      "browserDesc": "Instalar la extensión de Chrome para permitir que los agentes controlen el navegador",
+      "browserAction": "Configuración",
+      "optional": "Facultativo",
+      "update": "Actualizar"
+    },
+    "explore": {
+      "title": "Explotación inicial",
+      "greet": "Diga hola al Secretario",
+      "greetDesc": "Conoce a tu secretaria de AI y aprende lo que puede hacer por ti",
+      "greetAction": "Inicio Chat",
+      "project": "Crear su primer proyecto",
+      "projectDesc": "Deje que el Secretario cree un proyecto de exploración para usted",
+      "projectAction": "Pregunta al Secretario",
+      "requirements": "Agregar requisitos",
+      "requirementsDesc": "Añadir requisitos a su proyecto: los agentes los romperán en tareas",
+      "requirementsAction": "Pregunta al Secretario",
+      "team": "Crear Tech Frontier Think Tank",
+      "teamDesc": "Construir un think tank con 4 personas visionarias tecnológicas — Elon Musk, Steve Jobs, Sam Altman y Jensen Huang— para analizar las tendencias tecnológicas de vanguardia desde diferentes perspectivas",
+      "teamAction": "Crear ahora"
+    }
+  },
+  "heroBanner": {
+    "title": "Construir. Colabora. Escala.",
+    "subtitle": "Markus es tu plataforma de trabajo AI. Implementar agentes especializados, automatizar tareas complejas y lograr más juntos.",
+    "watchDemo": "Ver Demo",
+    "learnMore": "Más información"
+  },
+  "attention": {
+    "title": "Necesita tu atención",
+    "allClear": "Todo despejado - nada necesita tu atención ahora mismo.",
+    "approvals": "a) Aprobaciones pendientes",
+    "requirements": "requisito(s) para examinar",
+    "tasksReview": "task(s) necesita su revisión",
+    "reportPlans": "planes de informe pendientes",
+    "blocked": "tarea(s) atascada/bloqueada",
+    "blockedAbnormal": "tareas o tareas bloqueadas anormalmente",
+    "blockedNormal": "tareas pendientes de dependencia",
+    "viewBlocked": "Ver tareas bloqueadas →",
+    "report": "informe",
+    "planItems": "Temas",
+    "goReview": "Revisión",
+    "goApprove": "Aprobar",
+    "viewDetails": "Vista"
+  },
+  "globalOverview": {
+    "title": "Resumen",
+    "projects": "Proyectos",
+    "requirements": "Requisitos",
+    "tasks": "Tareas",
+    "deliverables": "Suministros",
+    "active": "activo activo"
+  },
+  "liveActivity": {
+    "whosWorking": "Trabajando ahora",
+    "recentChanges": "Cambios recientes",
+    "dirtyRecovered": "Auto-recovered",
+    "dirtyNeedsHuman": "Necesita atención"
+  },
+  "agentFocus": {
+    "title": "Agente Focus",
+    "totalQueued": "{{count}} total queued",
+    "working": "Trabajo...",
+    "heartbeatCheckIn": "Comprobación de latido cardíaco",
+    "heartbeatSkip": "Latido de corazón saltado (idle)",
+    "phaseThinking": "Pensando…",
+    "phaseRunning": "Procesamiento…",
+    "phaseWaitingDep": "Esperando la dependencia…",
+    "phaseBlocked": "Bloqueado",
+    "phaseDegraded": "Degradado",
+    "phaseError": "Error",
+    "blockedBy": "Atascado en la dependencia \"{{title}}\"",
+    "runningFor": "Corriendo por {{n}} min",
+    "lastActivity": "Última actividad {{time}}",
+    "stallStaleBadge": "no progreso",
+    "stallDeadBadge": "muerto",
+    "stallStale": "No hay progreso {{minutes}} min (puede ser una tarea larga, puede estar atrapado)",
+    "stallDeadDep": "Bloqueados: dependencia \"{{title}}\" falló, pero aún esperada"
+  },
+  "teamOverview": {
+    "title": "Equipos",
+    "subtitle": "{{teams}} equipos · {{members}} miembros",
+    "activeCount": "{{count}} Activo"
+  },
+  "teamStatus": {
+    "title": "Estado del equipo",
+    "noTeams": "Todavía no hay equipos. Crear un equipo o agentes de alquiler para empezar.",
+    "unassignedAgents": "Agentes no asignados",
+    "workingCount": "{{count}} de trabajo",
+    "activeCount": "{{count}} activo activo"
+  },
+  "topPerformers": {
+    "title": "Top Performers",
+    "tasksCompleted": "{{count}} tareas terminadas",
+    "done": "hecho"
+  },
+  "ranking": {
+    "title": "Agentes &amp; Ranking",
+    "workingNow": "Trabajando ahora",
+    "subtitle": "{{count}} agentes totales",
+    "agent": "Agente",
+    "health": "Salud",
+    "tasks": "Tareas",
+    "tokens": "Tokens",
+    "errorRate": "Errores",
+    "noData": "No hay datos de agente disponibles todavía.",
+    "sortBy": "Ordenar por"
+  },
+  "recentDeliverables": {
+    "title": "Entregas recientes",
+    "empty": "No hay entregables todavía.",
+    "file": "Archivo",
+    "directory": "Directorio"
+  },
+  "createMenu": {
+    "agent": "Crear agente",
+    "team": "Crear equipo",
+    "skill": "Crear habilidad",
+    "discover": "Más información"
+  },
+  "usage": {
+    "sectionTitle": "Usage y Rankings",
+    "creditsTitle": "Uso del crédito",
+    "kpi": {
+      "cuConsumed": "CU Consumido",
+      "tokensConsumed": "Tokens Usados",
+      "todayAmount": "Hoy: {{amount}}"
+    },
+    "quota": {
+      "title": "Markus Cloud AI",
+      "personalLimitLabel": "Límite personal",
+      "personalLimit": "Su administrador de organización ha establecido un límite de crédito personal para usted.",
+      "notConnected": "No conectado a Markus Hub",
+      "connect": "Conectar",
+      "connectedAs": "Sesión iniciada como @{{username}}",
+      "resetsAt": "Resets {{date}}",
+      "topUp": "Arriba"
+    },
+    "agents": {
+      "title": "Agente Rankings",
+      "noData": "Todavía no hay datos de agente. Comiencen agentes para ver su actividad aquí.",
+      "name": "Agente",
+      "team": "Equipo",
+      "tasks": "Tareas",
+      "cuUsed": "CU",
+      "tokens": "Tokens",
+      "efficiency": "Eficiencia",
+      "total": "Total ({{count}} agentes)",
+      "mixedProviders": "Proveedores mixtos — CU sólo rastrea Cloud AI",
+      "showAll": "Mostrar todo {{count}}",
+      "showLess": "Mostrar menos"
+    },
+    "trends": {
+      "title": "Tendencias de uso",
+      "expand": "Ampliación",
+      "collapse": "Contraer",
+      "byDay": "Por día",
+      "byHour": "Por hora",
+      "days": "días",
+      "totalCredits": "Créditos utilizados",
+      "totalTokens": "Tokens Usados",
+      "totalRequests": "Solicitudes",
+      "creditsChart": "Créditos",
+      "tokensChart": "Tokens",
+      "max": "Máx.",
+      "noData": "Todavía no hay datos de uso. Conectar a Markus Hub para ver tendencias.",
+      "models": "Modelos"
+    }
+  }
+}

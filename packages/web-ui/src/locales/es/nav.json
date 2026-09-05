@@ -1,0 +1,42 @@
+{
+  "home": "Inicio",
+  "team": "Equipo",
+  "work": "Tareas",
+  "store": "Explorar",
+  "builder": "Activos",
+  "deliverables": "Salida",
+  "reports": "Informes",
+  "notifications": "Notificaciones",
+  "settings": "Configuración",
+  "sections": {
+    "quick": "",
+    "workspace": "TRABAJO",
+    "build": "BUILD",
+    "system": "SYSTEM"
+  },
+  "sidebar": {
+    "collapseSidebar": "Barra lateral de colapso",
+    "expandSidebar": "Ampliar la barra lateral",
+    "signOut": "A ver.",
+    "newProject": "Nuevo proyecto",
+    "createFirstProject": "Crea tu primer proyecto",
+    "showAllProjects": "Mostrar todo {{count}} proyectos...",
+    "hubConnected": "Hub conectado",
+    "hubConnectedAs": "Hub: @{{username}}",
+    "hubDisconnected": "Hub no conectado",
+    "hubAccountMismatch": "El usuario local difiere de la cuenta de Hub: los créditos siguen el Hub (@{{username}})",
+    "hubLogin": "Iniciar sesión",
+    "hubLoginShort": "Iniciar sesión",
+    "hubConnecting": "…",
+    "hubShort": "Hub",
+    "hubAccount": "Cuenta"
+  },
+  "tabs": {
+    "create": "Crear",
+    "discover": "Descubre",
+    "agents": "Agentes",
+    "teams": "Equipos",
+    "skills": "Habilidades",
+    "installed": "Instalado"
+  }
+}

@@ -1,0 +1,110 @@
+{
+  "title": "Informes",
+  "tabs": {
+    "dashboard": "Panel",
+    "history": "Historia"
+  },
+  "kpi": {
+    "tasksCompleted": "Tareas completadas",
+    "ofTotal": "de {{total}} total",
+    "activeContributors": "Distribuidores activos",
+    "agentsAndHumans": "{{agents}} agentes · {{humans}} humanos",
+    "cuConsumed": "CU Consumido",
+    "tokensConsumed": "Tokens Usados",
+    "todayAmount": "Hoy: {{amount}}",
+    "successRate": "Tasa de éxito",
+    "healthScore": "Salud: {{score}}/100"
+  },
+  "quota": {
+    "title": "Cloud AI",
+    "personalLimitLabel": "Límite personal",
+    "personalLimit": "Su administrador de organización ha establecido un límite de crédito personal para usted.",
+    "notConnected": "No conectado a Markus Hub",
+    "connect": "Conectar",
+    "bonus": "Bono: {{amount}}",
+    "resetsAt": "Resets {{date}}",
+    "topUp": "Arriba",
+    "windowQuota": "5h ventana: {{amount}} CU (agradable))",
+    "windowUsageLabel": "5h uso de la ventana",
+    "windowQuotaNone": "5h ventana: no aplicada",
+    "rateLimit": "No Markus solicitud-frecuencia cap; los proveedores de modelos de corriente arriba todavía pueden ritmo-limit"
+  },
+  "agents": {
+    "title": "Agente Rankings",
+    "noData": "Todavía no hay datos de agente. Comiencen agentes para ver su actividad aquí.",
+    "name": "Agente",
+    "team": "Equipo",
+    "tasks": "Tareas",
+    "cuUsed": "CU",
+    "tokens": "Tokens",
+    "efficiency": "Eficiencia",
+    "total": "Total ({{count}} agentes)",
+    "mixedProviders": "Proveedores mixtos — CU sólo rastrea Cloud AI",
+    "showAll": "Mostrar todo {{count}}",
+    "showLess": "Mostrar menos"
+  },
+  "humans": {
+    "title": "Miembros del Equipo",
+    "name": "Nombre",
+    "role": "Rol",
+    "team": "Equipo"
+  },
+  "teamPerf": {
+    "title": "Ejecución del equipo",
+    "members": "{{agents}}A · {{humans}}H",
+    "tasks": "Tareas",
+    "cuUsed": "CU",
+    "tokens": "Tokens",
+    "managedBy": "Gestionado por {{name}}"
+  },
+  "trends": {
+    "title": "Tendencias de uso",
+    "byDay": "Por día",
+    "byHour": "Por hora",
+    "days": "días",
+    "totalCredits": "Créditos utilizados",
+    "totalTokens": "Tokens Usados",
+    "totalRequests": "Solicitudes",
+    "creditsChart": "Créditos",
+    "tokensChart": "Tokens",
+    "max": "Máx.",
+    "noData": "Todavía no hay datos de uso. Conectar a Markus Hub para ver tendencias.",
+    "models": "Modelos"
+  },
+  "history": {
+    "planPending": "Plan pendiente",
+    "planStatus": "Plan {{status}}",
+    "taskMetrics": "Metrices de tareas",
+    "metric": {
+      "completed": "Completado",
+      "inProgress": "En curso",
+      "created": "Creado",
+      "blocked": "Bloqueado",
+      "failed": "Fallido"
+    },
+    "costOverview": "Sinopsis de gastos",
+    "totalTokens": "Tokens totales",
+    "cuUsed": "CU",
+    "trend": "Tendencia",
+    "taskSummary": "Resumen",
+    "completedCount": "Completado ({{count}})",
+    "inProgressCount": "En progreso ({{count}})",
+    "blockedCount": "Bloqueados ({{count}})",
+    "noTasks": "No hay tareas en este período.",
+    "highlights": "Aspectos destacados",
+    "blockers": "Bloqueadores",
+    "upcomingPlan": "Plan de desarrollo",
+    "approvePlan": "Plan aprobado",
+    "rejectPlan": "Plan de expulsión",
+    "rejectionReason": "Razón de rechazo:",
+    "planApproved": "Plan aprobado",
+    "planRejected": "Plan rechazado",
+    "noDetailedMetrics": "Este informe no contiene datos métricos detallados.",
+    "feedbackTitle": "Comentarios ({{count}})",
+    "feedbackPlaceholder": "Agregar comentarios o instrucciones…",
+    "feedbackAdded": "Opiniones añadidas"
+  },
+  "noReportsYet": "No se han generado informes.",
+  "reportType": "{{type}} Informe",
+  "backToList": "← Volver a la lista"
+}
