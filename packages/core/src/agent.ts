@@ -241,6 +241,46 @@ export interface AgentOptions {
 
 export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'group_chat' | 'comment_response' | 'memory_consolidation' | 'distillation' | 'review' | 'requirement_action' | 'workflow_action' | 'deliberation';
 
+/**
+ * SessionWorkspace：单个分身（worker）处理一个会话/任务时独占的可变状态。
+ *
+ * 并发设计的核心抽象：把原先 Agent 实例级的单值字段（currentSessionId、
+ * activeStreamToken、pendingInjections……）下放到 workspace，通过
+ * AsyncLocalStorage 绑定到处理链路的异步上下文。
+ * - worker=1（未开并发）：所有处理共享 rootWorkspace，行为与旧版完全一致。
+ * - worker=N（并发模式）：每个 worker 用独立的 workspace 挂载处理，
+ *   await 后的异步代码仍能读到属于自己的 workspace，互不污染。
+ */
+export interface SessionWorkspace {
+  /** 分身编号（并发模式有效；串行模式恒为 1）。 */
+  workerId: number;
+  currentTaskId?: string;
+  currentSessionId?: string;
+  currentInteractingUserId?: string;
+  /** Scenario of the in-flight handleMessage / stream turn (for chat-only tools). */
+  activeScenario?: AgentScenario;
+  /** Scheme A: per-turn volatile state (time, mailbox, status, memories…) */
+  volatileState?: string;
+  pendingDeliberationResult?: DeliberationResult;
+  /** Buffered user messages injected while tool calls are in-flight. */
+  pendingInjections: Map<string, string[]>;
+  activeStreamToken?: { cancelled: boolean; userStopped?: boolean };
+  /** One chat turn / session model pick from the Chat UI (provider must be enabled). */
+  turnModelOverride?: { provider: string; model: string };
+  /** The mailbox item ID currently being processed – threaded into activity records. */
+  processingMailboxItemId?: string;
+  /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
+  lastInjectedActivityType?: string;
+}
+
+/** 创建一个全新的会话工作区（pendingInjections 为空 Map）。 */
+export function createSessionWorkspace(workerId = 1): SessionWorkspace {
+  return { workerId, pendingInjections: new Map() };
+}
+
+/** 进程级 AsyncLocalStorage：承载「当前分身工作区」。 */
+export const sessionWorkspaceStore = new AsyncLocalStorage<SessionWorkspace>();
+
 interface HandleMessageOptions {
   sessionId?: string;
   channelContext?: Array<{ role: string; content: string }>;
@@ -331,12 +371,22 @@ export class Agent {
   private memory: IMemoryStore;
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
-  private currentTaskId?: string;
+  /** 根工作区：并发 worker=1 时所有处理共享；ALS 上下文之外 fallback 到它。 */
+  private rootWorkspace: SessionWorkspace = createSessionWorkspace(1);
+
+  /** 当前分身工作区：ALS 上下文内是当前 worker 的，否则是根工作区。 */
+  private workspace(): SessionWorkspace {
+    return sessionWorkspaceStore.getStore() ?? this.rootWorkspace;
+  }
+
+  private get currentTaskId(): string | undefined { return this.workspace().currentTaskId; }
+  private set currentTaskId(v: string | undefined) { this.workspace().currentTaskId = v; }
   /** Scheme A: per-turn volatile state (time, mailbox, status, memories…) rebuilt
    *  by buildSystemPrompt each call and passed to prepareMessages so it can be
    *  pinned at the TAIL of history instead of inside the system message. Keeping
    *  the system message byte-identical across turns preserves the prefix cache. */
-  private volatileState?: string;
+  private get volatileState(): string | undefined { return this.workspace().volatileState; }
+  private set volatileState(v: string | undefined) { this.workspace().volatileState = v; }
   private pathPolicy?: PathAccessPolicy;
   private skillRegistry?: SkillRegistry;
   private toolSelector: ToolSelector;
@@ -363,11 +413,15 @@ export class Agent {
   /** Locale/timezone used for autonomous runs (no interactive sender), typically the org owner's preferences. */
   private runtimeViewerContext?: { locale?: string; timezone?: string };
   private semanticSearch?: SemanticMemorySearch;
-  private currentSessionId?: string;
-  private currentInteractingUserId?: string;
+  private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
+  private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
+  private get currentInteractingUserId(): string | undefined { return this.workspace().currentInteractingUserId; }
+  private set currentInteractingUserId(v: string | undefined) { this.workspace().currentInteractingUserId = v; }
   /** Scenario of the in-flight handleMessage / stream turn (for chat-only tools). */
-  private activeScenario?: AgentScenario;
-  private pendingDeliberationResult?: DeliberationResult;
+  private get activeScenario(): AgentScenario | undefined { return this.workspace().activeScenario; }
+  private set activeScenario(v: AgentScenario | undefined) { this.workspace().activeScenario = v; }
+  private get pendingDeliberationResult(): DeliberationResult | undefined { return this.workspace().pendingDeliberationResult; }
+  private set pendingDeliberationResult(v: DeliberationResult | undefined) { this.workspace().pendingDeliberationResult = v; }
   private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
   private contextMdPath?: string;
@@ -411,14 +465,18 @@ export class Agent {
    * appended, right before the next LLM call — this avoids interleaving
    * user messages between tool results (which is invalid message ordering).
    */
-  private pendingInjections = new Map<string, string[]>();
-  private activeStreamToken?: { cancelled: boolean; userStopped?: boolean };
+  private get pendingInjections(): Map<string, string[]> { return this.workspace().pendingInjections; }
+  private get activeStreamToken(): { cancelled: boolean; userStopped?: boolean } | undefined { return this.workspace().activeStreamToken; }
+  private set activeStreamToken(v: { cancelled: boolean; userStopped?: boolean } | undefined) { this.workspace().activeStreamToken = v; }
   /** One chat turn / session model pick from the Chat UI (provider must be enabled). */
-  private turnModelOverride?: { provider: string; model: string };
+  private get turnModelOverride(): { provider: string; model: string } | undefined { return this.workspace().turnModelOverride; }
+  private set turnModelOverride(v: { provider: string; model: string } | undefined) { this.workspace().turnModelOverride = v; }
   /** The mailbox item ID currently being processed – threaded into activity records. */
-  private processingMailboxItemId?: string;
+  private get processingMailboxItemId(): string | undefined { return this.workspace().processingMailboxItemId; }
+  private set processingMailboxItemId(v: string | undefined) { this.workspace().processingMailboxItemId = v; }
   /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
-  private lastInjectedActivityType?: string;
+  private get lastInjectedActivityType(): string | undefined { return this.workspace().lastInjectedActivityType; }
+  private set lastInjectedActivityType(v: string | undefined) { this.workspace().lastInjectedActivityType = v; }
   /** Notebook — the single cognitive workspace. Persisted to NOTEBOOK.md. */
   private workingMemory: Map<string, NotebookEntry> = new Map();
   private static readonly NOTEBOOK_MAX_AGENT_ENTRIES = 4;
@@ -1460,6 +1518,12 @@ export class Agent {
    * content is composed into the primary item's message for unified handling.
    */
   private async processMailboxItemInternal(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
+    // 会话工作区挂载点：P0 所有处理共享 rootWorkspace（与旧行为完全一致）；
+    // P1 并发模式将按 worker / 实体换成独立的 SessionWorkspace。
+    return sessionWorkspaceStore.run(this.rootWorkspace, () => this.processMailboxItemCore(item, batchItems, batchContext));
+  }
+
+  private async processMailboxItemCore(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
     this.processingMailboxItemId = item.id;
 
     // Compose batch content into primary item if batch processing
