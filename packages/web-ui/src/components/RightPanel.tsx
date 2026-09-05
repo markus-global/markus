@@ -8,6 +8,8 @@ import { ContentRenderer, resolveFormat, type HtmlSelectionData } from './Conten
 import { CodeFileEditor, confirmDiscardDirty, languageFromPath } from './CodeFileEditor.tsx';
 import { FilePreviewEditor } from './FilePreviewEditor.tsx';
 import { OfficePreviewer } from './OfficePreviewer.tsx';
+import { DirectoryPreview } from './DirectoryPreview.tsx';
+import type { DirectoryEntry } from '../api.ts';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
 import { DeliverableShareModal } from './DeliverableShareModal.tsx';
@@ -67,6 +69,7 @@ type PreviewState =
   | { mode: 'binary'; name: string; reference: string; size?: number; extension?: string }
   | { mode: 'artifact'; summary: string }
   | { mode: 'office'; format: string; streamUrl: string; name: string; size?: number; reference?: string }
+  | { mode: 'directory'; path: string; name?: string; entries: DirectoryEntry[] }
   | { mode: 'url'; url: string; browserId?: string }
   | { mode: 'terminal'; terminalId: string; title?: string; cwd?: string }
   | { mode: 'unpreviewable'; reference: string; isDirectory: boolean };
@@ -76,6 +79,13 @@ function formatBytes(n?: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function parentDir(p: string): string {
+  const sep = p.includes('\\') ? '\\' : '/';
+  const idx = p.lastIndexOf(sep);
+  if (idx <= 0) return sep === '/' ? '/' : p.slice(0, 2);
+  return p.slice(0, idx);
 }
 
 interface SelectionToolbar {
@@ -131,6 +141,9 @@ export function RightPanel({
 }) {
   const { t } = useTranslation(['deliverables', 'agent', 'common']);
   const [preview, setPreview] = useState<PreviewState>({ mode: 'loading' });
+  // Cursor for in-panel directory navigation (subdirectory / file opened from a
+  // directory listing). null = follow the panel payload's own reference.
+  const [dirNavPath, setDirNavPath] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareRecord, setShareRecord] = useState<DeliverableShareRecord | null>(null);
@@ -226,6 +239,9 @@ export function RightPanel({
 
   const reference = payloadReference(payload);
   const title = payloadTitle(payload);
+  // When the user navigates inside a directory listing, `dirNavPath` takes over
+  // from the payload reference (subdirectory or file opened from the preview).
+  const activePath = dirNavPath ?? reference;
   // Show tabs in the chrome row when present (browser-style). Panel × collapses the panel.
   const showTabs = (tabs?.length ?? 0) >= 1;
   const contentKey = previewIdentity(payload, activeTabId);
@@ -287,36 +303,35 @@ export function RightPanel({
       setPreview({ mode: 'artifact', summary: payload.deliverable.summary || payload.deliverable.title || '' });
       return () => { cancelled = true; };
     }
-    if (!reference) {
+    if (!activePath) {
       setPreview({ mode: 'unpreviewable', reference: '', isDirectory: false });
       return () => { cancelled = true; };
     }
-    const isDirectory = payload.kind === 'deliverable' && payload.deliverable.type === 'directory';
-    if (isDirectory) {
-      setPreview({ mode: 'unpreviewable', reference, isDirectory: true });
-      return () => { cancelled = true; };
-    }
 
-    api.files.preview(reference).then((resp) => {
+    api.files.preview(activePath).then((resp) => {
       if (cancelled) return;
+      if (resp.type === 'directory' && Array.isArray(resp.entries)) {
+        setPreview({ mode: 'directory', path: resp.path!, name: resp.name, entries: resp.entries });
+        return;
+      }
       if (resp.type === 'image') {
         // Prefer stream URL (works for large webp/png); fall back to legacy base64 content.
         const src = resp.content
           ? `data:${resp.mimeType || 'image/png'};base64,${resp.content}`
           : (resp.streamUrl
-            || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(reference)));
+            || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath)));
         setPreview({ mode: 'image', src, name: resp.name || title });
         return;
       }
       if (resp.type === 'audio') {
         const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(reference));
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath));
         setPreview({ mode: 'audio', src, name: resp.name || title, mimeType: resp.mimeType || 'audio/mpeg', size: resp.size });
         return;
       }
       if (resp.type === 'video') {
         const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(reference));
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath));
         setPreview({ mode: 'video', src, name: resp.name || title, mimeType: resp.mimeType || 'video/mp4', size: resp.size });
         return;
       }
@@ -324,7 +339,7 @@ export function RightPanel({
         setPreview({
           mode: 'binary',
           name: resp.name || title,
-          reference: resp.path || reference,
+          reference: resp.path || activePath,
           size: resp.size,
           extension: resp.extension,
         });
@@ -332,19 +347,19 @@ export function RightPanel({
       }
       if (resp.type === 'office') {
         const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(reference));
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath));
         setPreview({
           mode: 'office',
           format: resp.format || String(resp.extension || '').replace(/^\./, '') || 'pdf',
           streamUrl: src,
           name: resp.name || title,
           size: resp.size,
-          reference: resp.path || reference,
+          reference: resp.path || activePath,
         });
         return;
       }
       if (typeof resp.content !== 'string') {
-        setPreview({ mode: 'unpreviewable', reference, isDirectory: false });
+        setPreview({ mode: 'unpreviewable', reference: activePath, isDirectory: false });
         return;
       }
       const format = resolveFormat({
@@ -355,15 +370,18 @@ export function RightPanel({
       setPreview({ mode: 'content', content: resp.content, format });
     }).catch(() => {
       if (cancelled) return;
-      setPreview({ mode: 'unpreviewable', reference, isDirectory: false });
+      setPreview({ mode: 'unpreviewable', reference: activePath, isDirectory: false });
     });
 
     return () => { cancelled = true; };
   // Reload whenever the active tab / preview identity changes — not just payload
   // object identity (which can be sticky across tab clicks in some open paths).
-  }, [contentKey, payload, reference, title]);
+  }, [contentKey, payload, activePath, reference, title]);
 
-  const sourceLabel = title || reference;
+  // Reset in-panel directory navigation when the payload / active tab changes.
+  useEffect(() => { setDirNavPath(null); }, [contentKey]);
+
+  const sourceLabel = title || activePath;
 
   const buildChip = useCallback((text: string, htmlMeta?: { xpath: string; cssSelector: string }): ChatContextChip => {
     const short = text.length > 40 ? `${text.slice(0, 24)}…${text.slice(-12)}` : text;
@@ -477,9 +495,9 @@ export function RightPanel({
     };
   }, [onAddToChat, preview.mode]);
 
-  const reveal = () => { api.files.reveal(reference).catch(() => {}); };
+  const reveal = () => { api.files.reveal(activePath || reference).catch(() => {}); };
   const copyPath = () => {
-    navigator.clipboard?.writeText(reference).then(() => {
+    navigator.clipboard?.writeText(activePath || reference).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }).catch(() => {});
@@ -857,6 +875,22 @@ export function RightPanel({
             )}
             {canRevealInFileBrowser && (
               <button
+                onClick={copyPath}
+                title={copied ? t('common:copied', { defaultValue: 'Copied' }) : t('common:copyPath', { defaultValue: '复制路径' })}
+                aria-label={t('common:copyPath', { defaultValue: '复制路径' })}
+                className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${copied ? 'text-green-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
+              >
+                {copied ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                )}
+              </button>
+            )}
+            {canRevealInFileBrowser && (
+              <button
                 onClick={reveal}
                 title={t('detail.openInFileBrowser', { defaultValue: 'Reveal in file browser' })}
                 aria-label={t('detail.openInFileBrowser', { defaultValue: 'Reveal in file browser' })}
@@ -902,12 +936,26 @@ export function RightPanel({
         <div
           key={contentKey}
           className={`flex-1 min-w-0 min-h-0 ${
-            preview.mode === 'url' || preview.mode === 'terminal' || preview.mode === 'office'
+            preview.mode === 'url' || preview.mode === 'terminal' || preview.mode === 'office' || preview.mode === 'directory'
               || (preview.mode === 'content' && ['code', 'json', 'text', 'markdown', 'html'].includes(preview.format))
               ? 'overflow-hidden p-2 flex flex-col'
               : 'overflow-auto p-4'
           }`}
         >
+          {dirNavPath && preview.mode !== 'directory' && preview.mode !== 'loading' && (
+            <div className="shrink-0 mb-2">
+              <button
+                className="inline-flex items-center gap-1 text-xs text-fg-secondary hover:text-brand-500 transition-colors cursor-pointer"
+                onClick={() => setDirNavPath(parentDir(activePath))}
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clipRule="evenodd" />
+                </svg>
+                返回上级目录
+              </button>
+            </div>
+          )}
+
           {preview.mode === 'loading' && (
             <div className="animate-pulse space-y-3">
               <div className="h-4 bg-surface-overlay/60 rounded w-full" />
@@ -1077,6 +1125,17 @@ export function RightPanel({
                 }}
               />
             </div>
+          )}
+
+          {preview.mode === 'directory' && (
+            <DirectoryPreview
+              path={preview.path}
+              entries={preview.entries}
+              onNavigate={(p) => setDirNavPath(p)}
+              onOpenFile={(p) => setDirNavPath(p)}
+              onReveal={reveal}
+              onCopyPath={copyPath}
+            />
           )}
 
           {preview.mode === 'unpreviewable' && (

@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback, useRef, useSyncExternalStore, lazy, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../api.ts';
+import type { DirectoryEntry } from '../api.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
+import { DirectoryPreview } from './DirectoryPreview.tsx';
+import { OfficePreviewer } from './OfficePreviewer.tsx';
 
 const LazyMarkdownMessage = lazy(() => import('./MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 const LazyContentRenderer = lazy(() => import('./ContentRenderer.tsx').then(m => ({ default: m.ContentRenderer })));
@@ -133,10 +136,20 @@ export function looksLikeFilePath(text: string): boolean {
   return FILE_PATH_RE.test(text);
 }
 
+function parentDir(p: string): string {
+  const sep = p.includes('\\') ? '\\' : '/';
+  const idx = p.lastIndexOf(sep);
+  if (idx <= 0) return sep === '/' ? '/' : p.slice(0, 2);
+  return p.slice(0, idx);
+}
+
 // ─── File preview modal ──────────────────────────────────────────────────────
 
 function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: () => void }) {
   const zIndex = useModalStack(onClose);
+  // Navigation cursor — starts at the link's path; subdir/file clicks update it
+  // so the modal browses inside the directory without leaving the modal.
+  const [activePath, setActivePath] = useState(filePath);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState('');
@@ -144,28 +157,46 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
   const [fileName, setFileName] = useState('');
   const [mimeType, setMimeType] = useState('');
   const [streamUrl, setStreamUrl] = useState('');
+  const [dirEntries, setDirEntries] = useState<DirectoryEntry[] | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    api.files.preview(filePath).then((data) => {
-      setContent(typeof data.content === 'string' ? data.content : '');
+    setContent('');
+    setDirEntries(null);
+    api.files.preview(activePath).then((data) => {
+      if (data.type === 'directory' && Array.isArray(data.entries)) {
+        setFileType('directory');
+        setFileName(data.name);
+        setDirEntries(data.entries);
+        return;
+      }
       setFileType(data.type);
       setFileName(data.name);
       setMimeType(data.mimeType || '');
+      setContent(typeof data.content === 'string' ? data.content : '');
       setStreamUrl(
         data.streamUrl
         || (data.path ? api.files.streamUrl(data.path) : '')
-        || (data.type === 'audio' || data.type === 'video' ? api.files.streamUrl(filePath) : ''),
+        || (data.type === 'audio' || data.type === 'video' ? api.files.streamUrl(activePath) : ''),
       );
     }).catch((err) => {
       setError(String(err?.message || err));
     }).finally(() => {
       setLoading(false);
     });
-  }, [filePath]);
+  }, [activePath]);
 
-  const displayName = fileName || filePath.split(/[/\\]/).pop() || filePath;
+  const displayName = fileName || activePath.split(/[/\\]/).pop() || activePath;
+  const dirNavEnabled = fileType === 'directory' || activePath !== filePath;
+  const backToDir = () => setActivePath((prev) => parentDir(prev));
+  const copyPath = () => {
+    navigator.clipboard?.writeText(activePath).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  };
 
   return createPortal(
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center" style={{ zIndex }} onClick={onClose}>
@@ -176,16 +207,39 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border-default bg-surface-elevated/50 shrink-0">
           <div className="flex items-center gap-2 min-w-0">
-            <svg className="w-4 h-4 shrink-0 text-fg-secondary" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
-            </svg>
+            {fileType === 'directory' && (
+              <svg className="w-4 h-4 shrink-0 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M3.5 3A1.5 1.5 0 002 4.5v11A1.5 1.5 0 003.5 17h13a1.5 1.5 0 001.5-1.5v-8A1.5 1.5 0 0016.5 6h-6.53a.5.5 0 01-.354-.146L8.706 4.854A1.5 1.5 0 007.586 4H3.5z" />
+              </svg>
+            )}
+            {fileType !== 'directory' && (
+              <svg className="w-4 h-4 shrink-0 text-fg-secondary" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+              </svg>
+            )}
             <span className="text-sm font-medium text-fg-primary truncate">{displayName}</span>
-            <span className="text-xs text-fg-tertiary truncate hidden sm:inline">{filePath}</span>
+            <span className="text-xs text-fg-tertiary truncate hidden sm:inline">{activePath}</span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {dirNavEnabled && (
+              <button
+                className="text-xs text-fg-secondary hover:text-fg-primary px-2 py-1 rounded hover:bg-surface-elevated transition-colors"
+                onClick={backToDir}
+                title="返回上级目录"
+              >
+                ← 上级
+              </button>
+            )}
             <button
               className="text-xs text-fg-secondary hover:text-fg-primary px-2 py-1 rounded hover:bg-surface-elevated transition-colors"
-              onClick={() => api.files.reveal(filePath)}
+              onClick={copyPath}
+              title="复制路径"
+            >
+              {copied ? '✓ 已复制' : '复制路径'}
+            </button>
+            <button
+              className="text-xs text-fg-secondary hover:text-fg-primary px-2 py-1 rounded hover:bg-surface-elevated transition-colors"
+              onClick={() => api.files.reveal(activePath)}
               title="Reveal in file explorer"
             >
               <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
@@ -216,6 +270,32 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
               <p className="text-xs text-fg-tertiary">{error}</p>
             </div>
           )}
+          {!loading && !error && fileType === 'directory' && dirEntries && (
+            <DirectoryPreview
+              path={activePath}
+              entries={dirEntries}
+              onNavigate={(p) => setActivePath(p)}
+              onOpenFile={(p) => setActivePath(p)}
+              onReveal={(p) => api.files.reveal(p)}
+              onCopyPath={(p) => {
+                navigator.clipboard?.writeText(p).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                }).catch(() => {});
+              }}
+            />
+          )}
+          {!loading && !error && fileType === 'office' && streamUrl && (
+            <OfficePreviewer
+              data={{
+                format: (activePath.split('.').pop() || 'pdf').toLowerCase(),
+                streamUrl,
+                name: displayName,
+              }}
+              reference={activePath}
+              onFallback={() => void api.files.reveal(activePath)}
+            />
+          )}
           {!loading && !error && fileType === 'image' && content && (
             <div className="flex justify-center">
               <img src={`data:${mimeType || 'image/png'};base64,${content}`} alt={displayName} className="max-w-full rounded" />
@@ -227,18 +307,18 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
           {!loading && !error && fileType === 'video' && streamUrl && (
             <video controls preload="metadata" src={streamUrl} className="w-full max-h-[60vh] rounded-lg bg-black" />
           )}
-          {!loading && !error && (fileType === 'binary' || (!content && fileType !== 'image' && fileType !== 'audio' && fileType !== 'video')) && (
+          {!loading && !error && (fileType === 'binary' || (!content && fileType !== 'image' && fileType !== 'audio' && fileType !== 'video' && fileType !== 'directory')) && (
             <div className="text-center py-8 space-y-3">
               <p className="text-sm text-fg-secondary">This file type cannot be previewed.</p>
               <button
                 className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors"
-                onClick={() => void api.files.reveal(filePath)}
+                onClick={() => void api.files.reveal(activePath)}
               >
                 Reveal in file explorer
               </button>
             </div>
           )}
-          {!loading && !error && content && fileType !== 'image' && fileType !== 'audio' && fileType !== 'video' && fileType !== 'binary' && (
+          {!loading && !error && content && fileType !== 'image' && fileType !== 'audio' && fileType !== 'video' && fileType !== 'binary' && fileType !== 'directory' && (
             <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
               <LazyContentRenderer content={content} format={fileType === 'text' ? 'text' : fileType} className="text-sm" />
             </Suspense>
@@ -259,7 +339,8 @@ export function FilePathLink({ path: filePath }: { path: string }) {
 
   const exists = info?.exists ?? false;
   const isPreviewable = info?.type === 'markdown' || info?.type === 'html' || info?.type === 'json'
-    || info?.type === 'text' || info?.type === 'image' || info?.type === 'audio' || info?.type === 'video';
+    || info?.type === 'text' || info?.type === 'image' || info?.type === 'audio' || info?.type === 'video'
+    || info?.type === 'office' || info?.type === 'directory';
 
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.preventDefault();

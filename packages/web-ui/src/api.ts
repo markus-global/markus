@@ -321,6 +321,14 @@ export interface KnowledgeEntryInfo {
   verifiedBy?: string;
 }
 
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size?: number;
+  ext?: string;
+}
+
 export interface DeliverableInfo {
   id: string;
   type: 'file' | 'directory';
@@ -1585,6 +1593,8 @@ export const api = {
         streamUrl?: string;
         extension?: string;
         format?: string;
+        /** Present when `type === 'directory'`. */
+        entries?: DirectoryEntry[];
       }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
     streamUrl: (filePath: string) =>
       `${BASE}/files/stream?path=${encodeURIComponent(filePath)}`,
