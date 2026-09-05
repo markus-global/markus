@@ -26,6 +26,7 @@ import {
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import type { AgentMailbox } from './mailbox.js';
+import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } from './session-workspace.js';
 
 // ─── Abnormal Completion Detection ──────────────────────────────────────────
 
@@ -97,6 +98,13 @@ export interface AttentionDelegate {
   onDeliberationCompleted?(result: DeliberationResult | null): void;
   /** Apply memory updates from deliberation (working + longterm). */
   applyMemoryUpdates?(updates: Array<{ type: 'working' | 'longterm'; key: string; content: string }>): void;
+  /**
+   * Provide a per-worker SessionWorkspace in concurrent mode (workerId >= 1).
+   * Implementations should return a fresh, cached workspace per worker so each
+   * concurrent processing loop gets isolated session state. Undefined falls
+   * back to a fresh default workspace for that worker.
+   */
+  getWorkerWorkspace?(workerId: number): SessionWorkspace | undefined;
 }
 
 export interface DecisionPersistence {
@@ -123,9 +131,26 @@ export type LLMDecisionJudge = (prompt: string) => Promise<DecisionType>;
  * There is NO polling. The agent's focus is broken only when an external
  * event (new mail) demands attention.
  */
+/** 单个并发 worker 的可变状态（workerCount=1 时不用，走实例单值字段）。 */
+interface AttentionWorkerState {
+  workerId: number;
+  state: AttentionState;
+  focus?: MailboxItem;
+  processingStartedAt?: number;
+}
+
 export class AttentionController {
-  private state: AttentionState = 'idle';
-  private currentFocus: MailboxItem | undefined;
+  /** 串行模式单值状态（workerCount=1 时与旧行为完全一致）。 */
+  private stateStorage: AttentionState = 'idle';
+  /** 串行模式 focus 存储（workerCount=1 时 currentFocus 的承载）。 */
+  private focusStorage: MailboxItem | undefined;
+  /** 并发模式 worker 状态容器。 */
+  private workerStates = new Map<number, AttentionWorkerState>();
+  /** 并发 worker 数（默认 1 = 串行）。 */
+  private workerCount = 1;
+  private workerPromises: Promise<void>[] = [];
+  private activeWorkerIds = new Set<number>();
+
   private interruptSignal = false;
   /** Explicit user cancel of the focused item (Cancel button) — not a new-mail preempt. */
   private userCancelCurrent = false;
@@ -150,7 +175,8 @@ export class AttentionController {
   private decisions: AttentionDecision[] = [];
   private watchdogTimer?: ReturnType<typeof setInterval>;
   private watchdogLastTick = Date.now();
-  private processingStartedAt?: number;
+  /** 串行模式处理起始时间存储（并发模式走 workerStates）。 */
+  private processingStartedAtStorage?: number;
   private waitingForHumanApproval = false;
   /** Backstop timeout override (test/config); defaults to MAILBOX_PROCESSING_TIMEOUT_MS. */
   private processingTimeoutMs?: number;
@@ -161,6 +187,77 @@ export class AttentionController {
   private loopAlive = false;
   /** Bumped on each launchLoop so a superseded loop exits instead of double-consuming. */
   private loopGeneration = 0;
+
+  // ─── 并发 accessor ───────────────────────────────────────────────────────
+
+  /** 当前 workerId：ALS 上下文内从 SessionWorkspace 拿；否则 1（串行/外部）。 */
+  private currentWorkerId(): number {
+    return sessionWorkspaceStore.getStore()?.workerId ?? 1;
+  }
+
+  private get state(): AttentionState {
+    if (this.workerCount > 1) return this.workerState(this.currentWorkerId()).state;
+    return this.stateStorage;
+  }
+  private set state(v: AttentionState) {
+    if (this.workerCount > 1) this.workerState(this.currentWorkerId()).state = v;
+    else this.stateStorage = v;
+  }
+
+  private workerState(workerId: number): AttentionWorkerState {
+    let ws = this.workerStates.get(workerId);
+    if (!ws) {
+      ws = { workerId, state: 'idle' };
+      this.workerStates.set(workerId, ws);
+    }
+    return ws;
+  }
+
+  private get currentFocus(): MailboxItem | undefined {
+    if (this.workerCount > 1) return this.workerState(this.currentWorkerId()).focus;
+    return this.focusStorage;
+  }
+  private set currentFocus(v: MailboxItem | undefined) {
+    if (this.workerCount > 1) this.workerState(this.currentWorkerId()).focus = v;
+    else this.focusStorage = v;
+  }
+
+  private get processingStartedAt(): number | undefined {
+    if (this.workerCount > 1) return this.workerState(this.currentWorkerId()).processingStartedAt;
+    return this.processingStartedAtStorage;
+  }
+  private set processingStartedAt(v: number | undefined) {
+    if (this.workerCount > 1) this.workerState(this.currentWorkerId()).processingStartedAt = v;
+    else this.processingStartedAtStorage = v;
+  }
+
+  /** 任一活跃 worker 的处理起始时间（watchdog 用）。 */
+  private anyProcessingStartedAt(): number | undefined {
+    if (this.workerCount > 1) {
+      for (const st of this.workerStates.values()) if (st.processingStartedAt) return st.processingStartedAt;
+      return undefined;
+    }
+    return this.processingStartedAtStorage;
+  }
+
+  /** 活跃 worker 数（watchdog 重启判断 / agent 状态上报用）。 */
+  private activeWorkerCount(): number {
+    if (this.workerCount > 1) return this.activeWorkerIds.size;
+    return this.loopAlive ? 1 : 0;
+  }
+
+  /** 聚合状态（并发模式下任一 worker 非 idle 即非空闲）。 */
+  private aggregateState(): AttentionState {
+    if (this.workerCount > 1) {
+      let any = false;
+      for (const st of this.workerStates.values()) {
+        if (st.state !== 'idle') return 'focused';
+        any = true;
+      }
+      return any ? 'idle' : this.state;
+    }
+    return this.state;
+  }
 
   constructor(
     agentId: string,
@@ -190,6 +287,24 @@ export class AttentionController {
   }
 
   /**
+   * 设置并发 worker 数（1 = 串行，与旧行为完全一致）。
+   * 运行中调用会重启 attention 循环以应用新 worker 数。
+   */
+  setWorkerCount(n: number): void {
+    const count = Math.max(1, Math.min(10, Math.floor(n || 1)));
+    if (count === this.workerCount) return;
+    const wasRunning = this.running;
+    if (wasRunning) this.stop();
+    this.workerCount = count;
+    if (wasRunning) this.start();
+  }
+
+  /** 当前并发 worker 数。 */
+  getWorkerCount(): number {
+    return this.workerCount;
+  }
+
+  /**
    * Start the attention loop. Listens for mailbox events and processes items.
    */
   start(): void {
@@ -211,12 +326,15 @@ export class AttentionController {
   }
 
   /**
-   * Launch (or re-launch) the runLoop with auto-restart on unexpected exit.
-   * If the loop exits while `this.running` is true, it restarts after a
-   * brief delay — defense-in-depth against exceptions that escape the
-   * outer try-catch inside the loop body.
+   * Launch (or re-launch) the attention loops with auto-restart on unexpected exit.
+   * Serial mode (workerCount=1) launches the single runLoop; concurrent mode
+   * launches a pool of worker loops (see launchWorkerPool).
    */
   private launchLoop(): void {
+    if (this.workerCount > 1) {
+      this.launchWorkerPool();
+      return;
+    }
     const gen = ++this.loopGeneration;
     // Wake any prior waiter so a superseded loop can exit cleanly.
     this.mailbox.cancelWait();
@@ -232,6 +350,32 @@ export class AttentionController {
         }, 2000);
       }
     });
+  }
+
+  /** 并发模式：启动 N 个 worker 协程；任一异常退出则整体重启。 */
+  private launchWorkerPool(): void {
+    const gen = ++this.loopGeneration;
+    this.mailbox.cancelWait();
+    this.workerPromises = [];
+    this.activeWorkerIds.clear();
+    for (let w = 1; w <= this.workerCount; w++) {
+      this.workerState(w); // 预创建 worker 状态
+      const p = this.concurrentWorkerLoop(w, gen).catch(err => {
+        if (this.running && gen === this.loopGeneration) {
+          log.error(`Attention worker ${w} exited unexpectedly — restarting pool in 2 s`, {
+            agentId: this.agentId,
+            error: String(err),
+            stack: (err as Error)?.stack,
+          });
+          setTimeout(() => {
+            if (this.running && gen === this.loopGeneration) this.launchWorkerPool();
+          }, 2000);
+        }
+      });
+      this.workerPromises.push(p);
+    }
+    this.loopPromise = Promise.all(this.workerPromises).then(() => undefined);
+    log.info('Attention worker pool started', { agentId: this.agentId, workers: this.workerCount });
   }
 
   /**
@@ -256,26 +400,27 @@ export class AttentionController {
       this.watchdogLastTick = now;
 
       if (elapsed > WATCHDOG_INTERVAL_MS + WATCHDOG_DRIFT_THRESHOLD_MS) {
-        const focusedId = this.currentFocus?.id;
-        const processingFor = this.processingStartedAt
-          ? Math.round((now - this.processingStartedAt) / 1000)
+        const focusedId = this.getCurrentFocus()?.id;
+        const processingFor = this.anyProcessingStartedAt()
+          ? Math.round((now - this.anyProcessingStartedAt()!) / 1000)
           : 0;
         log.warn('System sleep/wake detected', {
           agentId: this.agentId,
           driftMs: elapsed,
-          state: this.state,
+          state: this.aggregateState(),
           focusedItemId: focusedId,
           processingForSec: processingFor,
         });
       }
 
-      // Self-heal: if the loop died while we're still supposed to be running,
-      // restart it.  The outer try-catch + launchLoop auto-restart should
+      // Self-heal: if the loops died while we're still supposed to be running,
+      // restart them.  The outer try-catch + launchLoop auto-restart should
       // prevent this, but this is a last-resort safety net.
-      if (this.running && !this.loopAlive) {
+      if (this.running && this.activeWorkerCount() === 0) {
         log.error('Watchdog: attention loop is dead — restarting', {
           agentId: this.agentId,
-          state: this.state,
+          state: this.aggregateState(),
+          workers: this.workerCount,
           queueDepth: this.mailbox.depth,
         });
         this.launchLoop();
@@ -287,7 +432,8 @@ export class AttentionController {
       // silently or the process was interrupted between activity end and
       // status update.  Also triggers during 'deciding' (triage/deliberation)
       // because no item is actively being processed at that point either.
-      if (this.running && !this.currentFocus && (this.state === 'idle' || this.state === 'deciding')) {
+      const aggregated = this.aggregateState();
+      if (this.running && this.activeWorkerCount() === 0 && (aggregated === 'idle' || aggregated === 'deciding')) {
         try {
           const cleaned = this.mailbox.cleanStaleProcessing();
           if (cleaned > 0) {
@@ -309,7 +455,7 @@ export class AttentionController {
           }
           // Self-heal lost-wakeup: idle with a non-empty queue means the loop
           // is parked without having seen the enqueue signal — nudge it.
-          if (this.state === 'idle' && this.mailbox.depth > 0) {
+          if (aggregated === 'idle' && this.mailbox.depth > 0) {
             log.warn('Watchdog: idle with queued mail — nudging attention loop', {
               agentId: this.agentId,
               queueDepth: this.mailbox.depth,
@@ -542,6 +688,85 @@ export class AttentionController {
   }
 
   /**
+   * 并发 worker 循环（workerCount > 1 时每个 worker 一个协程）。
+   *
+   * 按方案 A 设计——「并发不打断」：
+   * - 每个 worker 是纯消费者：dequeueAsync → 实体锁 → processMailboxItem → 解锁 → 循环；
+   * - 不做 triage/deliberation/中断抢占（这些保留给串行模式的 runLoop）；
+   * - 实体亲和锁保证同一任务/需求/会话/用户永不并发处理；
+   * - 每个 worker 用独立 SessionWorkspace 挂载处理链路（async_hooks 隔离）。
+   */
+  private async concurrentWorkerLoop(workerId: number, gen: number): Promise<void> {
+    this.activeWorkerIds.add(workerId);
+    const wsState = this.workerState(workerId);
+    try {
+      while (this.running && gen === this.loopGeneration) {
+        wsState.state = 'idle';
+        wsState.focus = undefined;
+        wsState.processingStartedAt = undefined;
+
+        let item: MailboxItem;
+        try {
+          item = await this.mailbox.dequeueAsync();
+        } catch {
+          // MailboxCancelledError（或任何错误）且非 running → 正常退出
+          if (!this.running || gen !== this.loopGeneration) break;
+          continue;
+        }
+
+        // 被更新的 pool 取代 → 放回，退出
+        if (gen !== this.loopGeneration) {
+          try { this.mailbox.putBack(item); } catch { /* ignore */ }
+          break;
+        }
+
+        // 实体亲和锁：取到即锁，处理完必释放（lockEntity 内部排他）。
+        const entityKey = this.mailbox.entityKeyOf(item);
+        const holder = item.id;
+        if (entityKey && !this.mailbox.lockEntity(entityKey, holder)) {
+          // 竞态：锁已被其他 worker 持有 → 放回队列，等锁释放唤醒。
+          try { this.mailbox.putBack(item); } catch { /* ignore */ }
+          continue;
+        }
+
+        const workspace = this.delegate?.getWorkerWorkspace?.(workerId) ?? createSessionWorkspace(workerId);
+        try {
+          await sessionWorkspaceStore.run(workspace, async () => {
+            wsState.state = 'focused';
+            wsState.focus = item;
+            wsState.processingStartedAt = Date.now();
+            this.delegate?.onFocusChanged(item);
+            await this.processFocusedItem(item);
+          });
+        } catch (err) {
+          const isUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(item.sourceType);
+          log.error(`Attention worker ${workerId} processing failed — ${isUserInteraction ? 'completing' : 'requeueing'} item`, {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            error: String(err),
+          });
+          if (isUserInteraction) {
+            try { this.mailbox.complete(item.id); } catch { /* ignore */ }
+          } else {
+            try { this.mailbox.requeue(item); } catch { /* ignore */ }
+          }
+        } finally {
+          if (entityKey) this.mailbox.unlockEntity(entityKey, holder);
+          wsState.focus = undefined;
+          wsState.processingStartedAt = undefined;
+          wsState.state = 'idle';
+          this.delegate?.onFocusChanged(undefined);
+        }
+      }
+    } finally {
+      this.activeWorkerIds.delete(workerId);
+      wsState.state = 'idle';
+      wsState.focus = undefined;
+    }
+  }
+
+  /**
    * Process a single mailbox item with full focus.
    * After processing, validates the result; if the LLM produced an abnormal
    * reply (e.g. raw XML tool-call markup), the item is requeued for retry
@@ -742,8 +967,16 @@ export class AttentionController {
    * If focused, registers an interrupt signal for the next yield point.
    * For critical user messages, also fires the critical-interrupt promise so that
    * long-running tool execution can be aborted early.
+   *
+   * 并发模式（workerCount > 1）：方案 A —— 不打断忙碌 worker。新邮件靠
+   * dequeueAsync 的广播唤醒被空闲 worker 取走；忙碌 worker 不被抢占。
    */
   private onNewMail(): void {
+    if (this.workerCount > 1) {
+      // 空闲 worker 会被 dequeueAsync 的广播唤醒取走新邮件；这里无需中断信号。
+      return;
+    }
+
     if (this.state === 'idle') {
       return;
     }
@@ -1334,9 +1567,14 @@ export class AttentionController {
   // ─── State & Queries ──────────────────────────────────────────────────────
 
   getState(): AttentionState {
+    if (this.workerCount > 1) return this.aggregateState();
     return this.state;
   }
 
+  /**
+   * 当前 focus。串行模式返回唯一的 focus；并发模式返回当前 worker
+   * （ALS 上下文）的 focus，外部调用无 ALS 上下文时返回 worker 1 的 focus。
+   */
   getCurrentFocus(): MailboxItem | undefined {
     return this.currentFocus;
   }
@@ -1347,8 +1585,9 @@ export class AttentionController {
 
   getMindState(): AgentMindState {
     const queued = this.mailbox.getQueuedItems();
+    const state = this.workerCount > 1 ? this.aggregateState() : this.state;
     return {
-      attentionState: this.state,
+      attentionState: state,
       isDeliberating: this.isDeliberating || undefined,
       currentFocus: this.currentFocus
         ? {
@@ -1425,6 +1664,8 @@ export class AttentionController {
   }
 
   hasInterruptPending(): boolean {
+    // 并发模式无中断信号（方案 A）。
+    if (this.workerCount > 1) return false;
     return this.interruptSignal;
   }
 

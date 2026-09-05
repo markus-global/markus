@@ -239,7 +239,9 @@ export interface AgentOptions {
   handbookPath?: string;
 }
 
-export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'group_chat' | 'comment_response' | 'memory_consolidation' | 'distillation' | 'review' | 'requirement_action' | 'workflow_action' | 'deliberation';
+import { createSessionWorkspace, sessionWorkspaceStore, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
+// re-export 保持 agent.js 的既有导出契约（attention.ts 等从 agent.js 引用类型的地方无需改动）。
+export { createSessionWorkspace, sessionWorkspaceStore, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
 
 interface HandleMessageOptions {
   sessionId?: string;
@@ -331,12 +333,22 @@ export class Agent {
   private memory: IMemoryStore;
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
-  private currentTaskId?: string;
+  /** 根工作区：并发 worker=1 时所有处理共享；ALS 上下文之外 fallback 到它。 */
+  private rootWorkspace: SessionWorkspace = createSessionWorkspace(1);
+
+  /** 当前分身工作区：ALS 上下文内是当前 worker 的，否则是根工作区。 */
+  private workspace(): SessionWorkspace {
+    return sessionWorkspaceStore.getStore() ?? this.rootWorkspace;
+  }
+
+  private get currentTaskId(): string | undefined { return this.workspace().currentTaskId; }
+  private set currentTaskId(v: string | undefined) { this.workspace().currentTaskId = v; }
   /** Scheme A: per-turn volatile state (time, mailbox, status, memories…) rebuilt
    *  by buildSystemPrompt each call and passed to prepareMessages so it can be
    *  pinned at the TAIL of history instead of inside the system message. Keeping
    *  the system message byte-identical across turns preserves the prefix cache. */
-  private volatileState?: string;
+  private get volatileState(): string | undefined { return this.workspace().volatileState; }
+  private set volatileState(v: string | undefined) { this.workspace().volatileState = v; }
   private pathPolicy?: PathAccessPolicy;
   private skillRegistry?: SkillRegistry;
   private toolSelector: ToolSelector;
@@ -363,11 +375,15 @@ export class Agent {
   /** Locale/timezone used for autonomous runs (no interactive sender), typically the org owner's preferences. */
   private runtimeViewerContext?: { locale?: string; timezone?: string };
   private semanticSearch?: SemanticMemorySearch;
-  private currentSessionId?: string;
-  private currentInteractingUserId?: string;
+  private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
+  private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
+  private get currentInteractingUserId(): string | undefined { return this.workspace().currentInteractingUserId; }
+  private set currentInteractingUserId(v: string | undefined) { this.workspace().currentInteractingUserId = v; }
   /** Scenario of the in-flight handleMessage / stream turn (for chat-only tools). */
-  private activeScenario?: AgentScenario;
-  private pendingDeliberationResult?: DeliberationResult;
+  private get activeScenario(): AgentScenario | undefined { return this.workspace().activeScenario; }
+  private set activeScenario(v: AgentScenario | undefined) { this.workspace().activeScenario = v; }
+  private get pendingDeliberationResult(): DeliberationResult | undefined { return this.workspace().pendingDeliberationResult; }
+  private set pendingDeliberationResult(v: DeliberationResult | undefined) { this.workspace().pendingDeliberationResult = v; }
   private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
   private contextMdPath?: string;
@@ -411,14 +427,18 @@ export class Agent {
    * appended, right before the next LLM call — this avoids interleaving
    * user messages between tool results (which is invalid message ordering).
    */
-  private pendingInjections = new Map<string, string[]>();
-  private activeStreamToken?: { cancelled: boolean; userStopped?: boolean };
+  private get pendingInjections(): Map<string, string[]> { return this.workspace().pendingInjections; }
+  private get activeStreamToken(): { cancelled: boolean; userStopped?: boolean } | undefined { return this.workspace().activeStreamToken; }
+  private set activeStreamToken(v: { cancelled: boolean; userStopped?: boolean } | undefined) { this.workspace().activeStreamToken = v; }
   /** One chat turn / session model pick from the Chat UI (provider must be enabled). */
-  private turnModelOverride?: { provider: string; model: string };
+  private get turnModelOverride(): { provider: string; model: string } | undefined { return this.workspace().turnModelOverride; }
+  private set turnModelOverride(v: { provider: string; model: string } | undefined) { this.workspace().turnModelOverride = v; }
   /** The mailbox item ID currently being processed – threaded into activity records. */
-  private processingMailboxItemId?: string;
+  private get processingMailboxItemId(): string | undefined { return this.workspace().processingMailboxItemId; }
+  private set processingMailboxItemId(v: string | undefined) { this.workspace().processingMailboxItemId = v; }
   /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
-  private lastInjectedActivityType?: string;
+  private get lastInjectedActivityType(): string | undefined { return this.workspace().lastInjectedActivityType; }
+  private set lastInjectedActivityType(v: string | undefined) { this.workspace().lastInjectedActivityType = v; }
   /** Notebook — the single cognitive workspace. Persisted to NOTEBOOK.md. */
   private workingMemory: Map<string, NotebookEntry> = new Map();
   private static readonly NOTEBOOK_MAX_AGENT_ENTRIES = 4;
@@ -456,6 +476,8 @@ export class Agent {
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private browserCloseTabsHelper?: (sessionId: string) => string | null;
   private dynamicContextProviders = new Map<string, () => string>();
+  /** 并发模式：workerId → 该 worker 独占的 SessionWorkspace（保持跨 item 会话状态隔离）。 */
+  private workerWorkspaces = new Map<number, SessionWorkspace>();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly BROWSER_CLOSE_FOLLOWUP_MAX_ITER = 5;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
@@ -509,6 +531,12 @@ export class Agent {
     this.mailbox = new AgentMailbox(this.id, this.eventBus);
     this.attentionController = new AttentionController(this.id, this.mailbox, this.eventBus);
     this.attentionController.setDelegate(this.createAttentionDelegate());
+    // 并发处理：智能体设置 → 并发处理。默认关闭 = workerCount 1（完全串行，与旧行为一致）。
+    const concurrentCfg = this.config.concurrent;
+    if (concurrentCfg?.enabled) {
+      const workers = Math.min(Math.max(concurrentCfg.maxWorkers ?? 3, 1), 10);
+      this.attentionController.setWorkerCount(workers);
+    }
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
     this.contextEngine.setLLMSummarizer(this.createLLMSummarizer());
@@ -1184,9 +1212,23 @@ export class Agent {
         });
         if (item) {
           this.setStatus('working');
+        } else if (this.attentionController.getWorkerCount() > 1) {
+          // 并发模式：单个 worker 结束不代表 agent 空闲 —— 只有所有 worker
+          // 都空闲（聚合状态 idle）才恢复 idle，避免状态抖动。
+          if (this.attentionController.getState() === 'idle' && this.activeTasks.size === 0) {
+            this.setStatus('idle');
+          }
         } else if (this.activeTasks.size === 0) {
           this.setStatus('idle');
         }
+      },
+      getWorkerWorkspace: (workerId: number) => {
+        let ws = this.workerWorkspaces.get(workerId);
+        if (!ws) {
+          ws = createSessionWorkspace(workerId);
+          this.workerWorkspaces.set(workerId, ws);
+        }
+        return ws;
       },
       cancelProcessing: (item: MailboxItem) => {
         // Backstop-timeout single-flight: abort the orphaned in-flight turn so it
@@ -1460,6 +1502,12 @@ export class Agent {
    * content is composed into the primary item's message for unified handling.
    */
   private async processMailboxItemInternal(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
+    // 会话工作区挂载点：P0 所有处理共享 rootWorkspace（与旧行为完全一致）；
+    // P1 并发模式将按 worker / 实体换成独立的 SessionWorkspace。
+    return sessionWorkspaceStore.run(this.rootWorkspace, () => this.processMailboxItemCore(item, batchItems, batchContext));
+  }
+
+  private async processMailboxItemCore(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
     this.processingMailboxItemId = item.id;
 
     // Compose batch content into primary item if batch processing
