@@ -78,6 +78,7 @@ import type { SkillRegistry } from './skills/types.js';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { ConcurrentHandoffLog } from './concurrent-handoff.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
@@ -478,6 +479,8 @@ export class Agent {
   private dynamicContextProviders = new Map<string, () => string>();
   /** 并发模式：workerId → 该 worker 独占的 SessionWorkspace（保持跨 item 会话状态隔离）。 */
   private workerWorkspaces = new Map<number, SessionWorkspace>();
+  /** 并发交接记录（P2a）：worker 生命周期的 declared/fact/done/conflict 持久化日志。 */
+  private handoffLog: ConcurrentHandoffLog | undefined;
   /**
    * P2：agent 级「工具写互斥」链。所有写语义工具（task_update/comment、
    * memory_save、file_write、shell_execute 等）执行时互斥——并发 worker 时，
@@ -513,6 +516,11 @@ export class Agent {
   /** Attention controller for event-driven focus management */
   private attentionController: AttentionController;
 
+  /** 公开访问 attention 控制器（并发设置热传播等用）。 */
+  get attention(): AttentionController {
+    return this.attentionController;
+  }
+
   constructor(options: AgentOptions) {
     this.id = options.config.id || genAgentId();
     this.config = { ...options.config, id: this.id };
@@ -538,11 +546,19 @@ export class Agent {
     this.mailbox = new AgentMailbox(this.id, this.eventBus);
     this.attentionController = new AttentionController(this.id, this.mailbox, this.eventBus);
     this.attentionController.setDelegate(this.createAttentionDelegate());
-    // 并发处理：智能体设置 → 并发处理。默认关闭 = workerCount 1（完全串行，与旧行为一致）。
-    const concurrentCfg = this.config.concurrent;
-    if (concurrentCfg?.enabled) {
+    // 并发处理：智能体设置 → 并发处理。老板要求「默认支持并发」——
+    // 缺省或无显式配置时默认开启（maxWorkers=3）；显式 enabled:false 才关闭。
+    const concurrentCfg = this.config.concurrent ?? { enabled: true, maxWorkers: 3 };
+    if (concurrentCfg.enabled) {
       const workers = Math.min(Math.max(concurrentCfg.maxWorkers ?? 3, 1), 10);
       this.attentionController.setWorkerCount(workers);
+    }
+    this.attentionController.setConflictPolicy(concurrentCfg.conflictPolicy ?? 'auto');
+    // 并发交接记录（P2a）：仅并发模式下创建（worker>1），持久化到 agent dataDir。
+    if (this.attentionController.getWorkerCount() > 1 && options.dataDir) {
+      const log = new ConcurrentHandoffLog(join(options.dataDir, 'concurrent-handoffs.jsonl'));
+      log.load();
+      this.handoffLog = log;
     }
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     this.contextEngine = new ContextEngine();
@@ -963,7 +979,10 @@ export class Agent {
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
           isFirstConversation: senderInfo?.isFirstConversation,
-          dbSessionId: options?.sessionRestore?.dbSessionId ?? options?.sessionId,
+          // 显式新会话（sessionRestore === null）时不绑定任何 dbSessionId（同 sendMessageStream）。
+          dbSessionId: options?.sessionRestore === null
+            ? undefined
+            : (options?.sessionRestore?.dbSessionId ?? options?.sessionId),
           responsePromise: { resolve, reject },
         },
       });
@@ -1036,7 +1055,13 @@ export class Agent {
           senderRole: senderInfo?.role,
           isFirstConversation: senderInfo?.isFirstConversation,
           isResume: options?.isResume,
-          dbSessionId: options?.sessionRestore?.dbSessionId ?? (this.getDbSessionId() || undefined),
+          // 显式新会话（sessionRestore === null）时绝不回填当前内存会话 id：
+          // 此时 agent 处理该消息时会 `startNewSession()` 切换到一个全新会话，
+          // 若在此回填旧 id，attention 的 R0 会把新消息误判为「本会话追问」而 merge
+          // 进正在流式输出的旧会话 —— 新对话 tab 的消息会错误地污染当前流。
+          dbSessionId: options?.sessionRestore === null
+            ? undefined
+            : (options?.sessionRestore?.dbSessionId ?? (this.getDbSessionId() || undefined)),
           responsePromise: { resolve, reject },
         },
       });
@@ -1236,6 +1261,12 @@ export class Agent {
           this.workerWorkspaces.set(workerId, ws);
         }
         return ws;
+      },
+      onConcurrentHandoff: (kind: 'declared' | 'done' | 'conflict', workerId: number, item: MailboxItem | undefined, summary: string) => {
+        const log = this.handoffLog;
+        if (!log) return;
+        const entityKey = item ? this.mailbox.entityKeyOf(item) : undefined;
+        log.append(kind, workerId, entityKey, summary);
       },
       cancelProcessing: (item: MailboxItem) => {
         // Backstop-timeout single-flight: abort the orphaned in-flight turn so it
@@ -1509,8 +1540,14 @@ export class Agent {
    * content is composed into the primary item's message for unified handling.
    */
   private async processMailboxItemInternal(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
-    // 会话工作区挂载点：P0 所有处理共享 rootWorkspace（与旧行为完全一致）；
-    // P1 并发模式将按 worker / 实体换成独立的 SessionWorkspace。
+    // 会话工作区挂载点：串行模式（无外层 ALS store）fallback 到 rootWorkspace，与旧行为一致；
+    // 并发模式下 concurrentWorkerLoop 已用 worker workspace 包裹 ALS store——
+    // 这里绝不覆盖外层 store，否则分身会话状态互相污染、workerId 全部退化为 1。
+    const existing = sessionWorkspaceStore.getStore();
+    if (existing) {
+      return this.processMailboxItemCore(item, batchItems, batchContext);
+    }
+    // 串行 / 无外层上下文：rootWorkspace 兜底
     return sessionWorkspaceStore.run(this.rootWorkspace, () => this.processMailboxItemCore(item, batchItems, batchContext));
   }
 
@@ -3062,6 +3099,33 @@ export class Agent {
     };
   }
 
+  /**
+   * 并发上下文（P2b）：仅并发模式（worker>1）且存在交接日志时生成。
+   * 返回 undefined 时 context-engine 不注入并发段（串行模式与旧行为完全一致）。
+   */
+  private getConcurrentContext(): {
+    enabled: boolean;
+    workerId: number;
+    workerCount: number;
+    handoffs: Array<{ workerId: number; kind: 'declared' | 'fact' | 'done' | 'conflict'; entityKey?: string; summary: string }>;
+  } | undefined {
+    const log = this.handoffLog;
+    const workerCount = this.attentionController.getWorkerCount();
+    if (!log || workerCount <= 1) return undefined;
+    const workerId = this.workspace().workerId;
+    return {
+      enabled: true,
+      workerId,
+      workerCount,
+      handoffs: log.recent(12).map(h => ({
+        workerId: h.workerId,
+        kind: h.kind,
+        entityKey: h.entityKey,
+        summary: h.summary,
+      })),
+    };
+  }
+
   setAuditCallback(
     cb: (event: {
       type: string;
@@ -3721,6 +3785,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      concurrentContext: this.getConcurrentContext(),
       workflowContext: isLightweight ? undefined : this.workflowContextFetcher?.(),
       cognitiveContext,
       notebookWriter: this.getNotebookWriter(),
@@ -4429,6 +4494,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
       notebookWriter: this.getNotebookWriter(),
@@ -5200,6 +5266,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
       notebookWriter: this.getNotebookWriter(),
@@ -5762,6 +5829,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
       notebookWriter: this.getNotebookWriter(),
@@ -6434,6 +6502,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      concurrentContext: this.getConcurrentContext(),
       notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });

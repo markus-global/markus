@@ -47,6 +47,8 @@ import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { getDefaultTokenCounter, type TokenCounter } from './token-counter.js';
 import type { EnvironmentProfile } from './environment-profile.js';
 import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capability-packs.js';
+import type { ConcurrentHandoff, ConcurrentHandoffLite } from './concurrent-handoff.js';
+import { formatHandoffsForContext } from './concurrent-handoff.js';
 
 const log = createLogger('context-engine');
 
@@ -326,6 +328,13 @@ export class ContextEngine {
     promptProfile?: PromptProfile;
     /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected so agents do NOT need to search for it. If omitted, a source-dir path is used as fallback. */
     handbookPath?: string;
+    /** 并发上下文（仅并发模式 worker>1 时注入）：分身声明 + 其他 worker 交接记录。 */
+    concurrentContext?: {
+      enabled: boolean;
+      workerId: number;
+      workerCount: number;
+      handoffs: ConcurrentHandoffLite[];
+    };
   }): Promise<SystemPromptResult> {
     const isDream = opts.scenario === 'memory_consolidation';
     const promptProfile: PromptProfile = opts.promptProfile
@@ -1056,6 +1065,36 @@ export class ContextEngine {
         'tool fields (task/requirement/deliverable/goal titles & descriptions, comments, notifications). ' +
         'Do not default those fields to English merely because these instructions are in English.'
       );
+    }
+
+    // ─── Concurrency Context: volatile segment injected ONLY in concurrent mode ───
+    // Per-turn data: handoff records change constantly, so it lives in the
+    // volatile tail (never invalidates the stable/semiStable prefix cache).
+    const cc = opts.concurrentContext;
+    if (cc?.enabled && cc.workerCount > 1) {
+      const lines: string[] = ['\n## Concurrency Context（并发上下文）'];
+      lines.push(
+        `- 当前 Agent 处于并发模式：本会话是你（worker ${cc.workerId}）处理的多个会话之一，共有 ${cc.workerCount} 个分身。`
+      );
+      const flight = cc.handoffs.filter(h => (h.kind === 'declared' || h.kind === 'fact')).slice(-4);
+      if (flight.length > 0) {
+        lines.push('- 正在进行中的其他分身：');
+        for (const h of flight) {
+          if (h.workerId !== cc.workerId) lines.push(`  - worker ${h.workerId}${h.entityKey ? ` → ${h.entityKey}` : ''}：${h.summary}`);
+        }
+      }
+      const done = cc.handoffs.filter(h => h.kind === 'done' || h.kind === 'conflict').slice(-4).reverse();
+      if (done.length > 0) {
+        lines.push('- 最近完成的交接：');
+        for (const h of done) lines.push(`  - worker ${h.workerId}（${h.kind === 'done' ? '完成' : '冲突'}）${h.entityKey ? ` ${h.entityKey}` : ''}：${h.summary}`);
+      }
+      lines.push(
+        '- 一致性规则：',
+        '  1. 你并不独占认知。做任何持久化决策前，先查共享知识 + 交接记录，避免与已完成/进行中的工作矛盾或重复。',
+        '  2. 同一任务/需求/对话串同时只能有一个分身处理——发现实体已被占用，不要强行开做，如实说明。',
+        '  3. 发现事实冲突时（你的认知与交接记录矛盾），优先报告差异并请求合并决策，不静默覆盖。'
+      );
+      volatile.push(lines.join('\n'));
     }
 
     // ─── Team Status: LAST volatile section pinned at the history tail ───

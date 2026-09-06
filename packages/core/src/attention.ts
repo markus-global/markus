@@ -105,6 +105,19 @@ export interface AttentionDelegate {
    * back to a fresh default workspace for that worker.
    */
   getWorkerWorkspace?(workerId: number): SessionWorkspace | undefined;
+  /**
+   * 并发交接钩子（P2c）：worker 处理 item 的关键生命周期事件。
+   * - 'declared'：worker 开始处理 item（声明意图，防重复动作）
+   * - 'done'：worker 处理完成（沉淀结论 + 遗留）
+   * - 'conflict'：worker 处理时检测到与实体锁冲突/目标已被占用
+   * Implementations 写入 ConcurrentHandoffLog（持久化），供其他 worker 的 prompt 注入。
+   */
+  onConcurrentHandoff?(
+    kind: 'declared' | 'done' | 'conflict',
+    workerId: number,
+    item: MailboxItem | undefined,
+    summary: string,
+  ): void;
 }
 
 export interface DecisionPersistence {
@@ -173,6 +186,9 @@ export class AttentionController {
   private lastYieldDecision?: DecisionType;
   private unsubscribeNewItem?: () => void;
   private decisions: AttentionDecision[] = [];
+  /** 冲突策略：auto=实体锁冲突时放回队列错开（默认）；report=冲突时上报并放回。 */
+  private conflictPolicy: 'auto' | 'report' = 'auto';
+  /** 判定"空闲"的处理 watchdog（ms）。 */
   private watchdogTimer?: ReturnType<typeof setInterval>;
   private watchdogLastTick = Date.now();
   /** 串行模式处理起始时间存储（并发模式走 workerStates）。 */
@@ -302,6 +318,16 @@ export class AttentionController {
   /** 当前并发 worker 数。 */
   getWorkerCount(): number {
     return this.workerCount;
+  }
+
+  /** 设置冲突策略（auto=自动错开放回，report=冲突时上报）。 */
+  setConflictPolicy(policy: 'auto' | 'report'): void {
+    this.conflictPolicy = policy;
+  }
+
+  /** 当前冲突策略。 */
+  getConflictPolicy(): 'auto' | 'report' {
+    return this.conflictPolicy;
   }
 
   /**
@@ -688,6 +714,15 @@ export class AttentionController {
   }
 
   /**
+   * MailboxItem → 一句话摘要（用于并发交接记录）。
+   */
+  private describeItem(item: MailboxItem): string {
+    const task = item.payload.taskId ?? item.metadata?.taskId;
+    const label = `${item.sourceType}: "${item.payload.summary}"`;
+    return task ? `${label} [task ${task}]` : label;
+  }
+
+  /**
    * 并发 worker 循环（workerCount > 1 时每个 worker 一个协程）。
    *
    * 按方案 A 设计——「并发不打断」：
@@ -726,10 +761,25 @@ export class AttentionController {
         if (entityKey && !this.mailbox.lockEntity(entityKey, holder)) {
           // 竞态：锁已被其他 worker 持有 → 放回队列，等锁释放唤醒。
           try { this.mailbox.putBack(item); } catch { /* ignore */ }
+          this.delegate?.onConcurrentHandoff?.('conflict', workerId, item, `实体 ${entityKey} 已被分身 ${holder} 锁定，暂缓处理并放回队列`);
+          if (this.conflictPolicy === 'report') {
+            // report 策略：冲突不再静默——发事件让父级感知，同时小退避防止忙循环。
+            this.eventBus.emit('agent:entity-conflict', {
+              agentId: this.agentId,
+              entityKey,
+              holder,
+              itemId: item.id,
+              workerId,
+              summary: item.payload.summary.slice(0, 200),
+            });
+            await new Promise<void>(r => setTimeout(r, 250 + Math.min(item.retryCount ?? 0, 8) * 250));
+          }
           continue;
         }
 
         const workspace = this.delegate?.getWorkerWorkspace?.(workerId) ?? createSessionWorkspace(workerId);
+        this.delegate?.onConcurrentHandoff?.('declared', workerId, item, this.describeItem(item));
+        let handoffWritten = false;
         try {
           await sessionWorkspaceStore.run(workspace, async () => {
             wsState.state = 'focused';
@@ -751,12 +801,17 @@ export class AttentionController {
           } else {
             try { this.mailbox.requeue(item); } catch { /* ignore */ }
           }
+          this.delegate?.onConcurrentHandoff?.('done', workerId, item, `处理失败（${isUserInteraction ? '已结束' : '已重新入队'}）：${String(err).slice(0, 200)}`);
+          handoffWritten = true;
         } finally {
           if (entityKey) this.mailbox.unlockEntity(entityKey, holder);
           wsState.focus = undefined;
           wsState.processingStartedAt = undefined;
           wsState.state = 'idle';
           this.delegate?.onFocusChanged(undefined);
+          if (!handoffWritten) {
+            this.delegate?.onConcurrentHandoff?.('done', workerId, item, `处理完成：${this.describeItem(item)}`);
+          }
         }
       }
     } finally {
@@ -1227,6 +1282,7 @@ export class AttentionController {
    * | Rule | Condition                                      | Decision  |
    * |------|------------------------------------------------|-----------|
    * | R0   | Same user, same session, both human_chat       | merge     |
+   * | R0x  | New human_chat is explicit NEW session          | continue  |
    * | R1   | New is human_chat, current is not              | preempt   |
    * | R1.5 | New is a2a_message, current is background      | preempt   |
    * | R2   | task_comment on same taskId as current          | merge     |
@@ -1247,6 +1303,15 @@ export class AttentionController {
     // so the agent processes them sequentially with correct context.
     // Skip merge when the current stream is being cancelled (user aborted) —
     // the new message should be processed as a fresh turn after cancellation.
+    // 显式新会话信号（extra.sessionRestore === null，即用户点了「新对话」）在任何情况
+    // 下都绝不 merge —— 该消息属于独立会话，必须排队等当前流完成后再单独处理。
+    if (
+      newItem.sourceType === 'human_chat' &&
+      currentItem.sourceType === 'human_chat' &&
+      (newItem.payload?.extra as { sessionRestore?: unknown } | undefined)?.sessionRestore === null
+    ) {
+      return 'continue';
+    }
     if (
       newItem.sourceType === 'human_chat' &&
       currentItem.sourceType === 'human_chat' &&

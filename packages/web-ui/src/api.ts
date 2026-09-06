@@ -1714,9 +1714,21 @@ export const api = {
       defaultProvider?: string;
     }) =>
       request('/settings/llm', { method: 'POST', body: JSON.stringify(data) }),
-    getAgent: () => request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent'),
-    updateAgent: (settings: { maxToolIterations?: number; cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }) =>
-      request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
+    getAgent: () => request<{
+      maxToolIterations: number;
+      cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number };
+      concurrent: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
+    }>('/settings/agent'),
+    updateAgent: (settings: {
+      maxToolIterations?: number;
+      cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number };
+      concurrent?: { enabled?: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
+    }) =>
+      request<{
+        maxToolIterations: number;
+        cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number };
+        concurrent: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
+      }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
     getBrowser: () => request<{ mode: 'embedded' | 'system-chrome'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser'),
     updateBrowser: (settings: { mode?: 'embedded' | 'system-chrome'; bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; autoClickAllowDialog?: boolean }) =>
       request<{ mode: 'embedded' | 'system-chrome'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),

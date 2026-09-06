@@ -248,6 +248,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [cppMaxDepth, setCppMaxDepth] = useState(1);
   const [cppSaving, setCppSaving] = useState(false);
   const [cppMsg, setCppMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  // Concurrent Processing settings
+  const [concEnabled, setConcEnabled] = useState(false);
+  const [concMaxWorkers, setConcMaxWorkers] = useState(3);
+  const [concConflictPolicy, setConcConflictPolicy] = useState<'auto' | 'report'>('auto');
+  const [concSaving, setConcSaving] = useState(false);
+  const [concMsg, setConcMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   // Browser automation settings
   const [browserMode, setBrowserMode] = useState<'embedded' | 'system-chrome'>('embedded');
@@ -325,6 +331,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         if (d?.cognitive) {
           setCppEnabled(d.cognitive.enabled ?? false);
           setCppMaxDepth(d.cognitive.maxDepth ?? 1);
+        }
+        if (d?.concurrent) {
+          setConcEnabled(d.concurrent.enabled ?? false);
+          setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
+          setConcConflictPolicy(d.concurrent.conflictPolicy ?? 'auto');
         }
       })
       .catch(() => {});
@@ -2204,6 +2215,85 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </button>
             </div>
             {cppMsg && <Msg type={cppMsg.type} text={cppMsg.text} />}
+          </div>
+        </Section>
+
+        {/* ── Concurrent Processing（并发处理） ── */}
+        <Section title={t('concurrent.title')}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+            <div className="text-xs text-fg-tertiary">{t('concurrent.description')}</div>
+
+            {/* Enable toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('concurrent.enabled')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('concurrent.enabledDesc')}</div>
+              </div>
+              <button
+                onClick={() => { setConcEnabled(!concEnabled); setConcMsg(null); }}
+                className={`relative w-10 h-5 rounded-full transition-colors ${concEnabled ? 'bg-brand-500' : 'bg-fg-quaternary'}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${concEnabled ? 'translate-x-5' : ''}`} />
+              </button>
+            </div>
+
+            {/* Max Workers */}
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('concurrent.maxWorkers')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('concurrent.maxWorkersDesc')}</div>
+              </div>
+              <input
+                type="number"
+                min={1}
+                max={10}
+                disabled={!concEnabled}
+                value={concMaxWorkers}
+                onChange={e => { setConcMaxWorkers(Number(e.target.value)); setConcMsg(null); }}
+                className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right disabled:opacity-40"
+              />
+            </div>
+
+            {/* Conflict Policy */}
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('concurrent.conflictPolicy')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('concurrent.conflictPolicyDesc')}</div>
+              </div>
+              <select
+                value={concConflictPolicy}
+                disabled={!concEnabled}
+                onChange={e => { setConcConflictPolicy(e.target.value as 'auto' | 'report'); setConcMsg(null); }}
+                className="px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary disabled:opacity-40"
+              >
+                <option value="auto">{t('concurrent.policyAuto')}</option>
+                <option value="report">{t('concurrent.policyReport')}</option>
+              </select>
+            </div>
+
+            {/* Save */}
+            <div className="flex items-center justify-end gap-2">
+              <button
+                disabled={concSaving}
+                onClick={async () => {
+                  setConcSaving(true); setConcMsg(null);
+                  try {
+                    const d = await api.settings.updateAgent({
+                      concurrent: { enabled: concEnabled, maxWorkers: concMaxWorkers, conflictPolicy: concConflictPolicy },
+                    });
+                    setConcEnabled(d.concurrent.enabled);
+                    setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
+                    setConcConflictPolicy(d.concurrent.conflictPolicy ?? 'auto');
+                    setConcMsg({ type: 'ok', text: t('concurrent.saved') });
+                  } catch { setConcMsg({ type: 'err', text: t('concurrent.failedToSave') }); }
+                  setConcSaving(false);
+                }}
+                className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+              >
+                {concSaving ? t('common:saving') : t('common:save')}
+              </button>
+            </div>
+            {concMsg && <Msg type={concMsg.type} text={concMsg.text} />}
           </div>
         </Section>
         </>}

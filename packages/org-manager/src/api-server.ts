@@ -8124,6 +8124,7 @@ EXPLANATION_END`;
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
         cognitive: am.cognitiveConfig ?? { enabled: false },
+        concurrent: am.concurrentConfig ?? { enabled: false },
       });
       return;
     }
@@ -8148,12 +8149,23 @@ EXPLANATION_END`;
         };
         changed = true;
       }
+      if (body['concurrent'] && typeof body['concurrent'] === 'object') {
+        const cc = body['concurrent'] as Record<string, unknown>;
+        const policy = cc['conflictPolicy'];
+        am.concurrentConfig = {
+          enabled: cc['enabled'] === true,
+          maxWorkers: typeof cc['maxWorkers'] === 'number' ? cc['maxWorkers'] : undefined,
+          conflictPolicy: policy === 'report' ? 'report' : 'auto',
+        };
+        changed = true;
+      }
       if (changed) {
         try {
           saveConfig({
             agent: {
               maxToolIterations: am.maxToolIterations,
               cognitive: am.cognitiveConfig,
+              concurrent: am.concurrentConfig,
             },
           } as any, this.markusConfigPath);
         } catch (e) {
@@ -8175,6 +8187,7 @@ EXPLANATION_END`;
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
         cognitive: am.cognitiveConfig ?? { enabled: false },
+        concurrent: am.concurrentConfig ?? { enabled: false },
       });
       return;
     }
