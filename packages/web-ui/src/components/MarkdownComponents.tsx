@@ -8,7 +8,7 @@
  * tab (web), never navigating the Electron window.
  */
 
-import { useState, useRef, useEffect, useCallback, useMemo, type MouseEvent as ReactMouseEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, memo, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
@@ -192,8 +192,14 @@ function localImageUrl(filePath: string): string {
 }
 
 const loadedImageCache = new Map<string, string>();
+/**
+ * Cache failed image loads by resolved src so a broken path is NOT re-fetched
+ * on every re-render / re-mount. Without this, a bad path in a streaming
+ * message causes repeated fetch + skeleton + error cycles → page flicker.
+ */
+const failedImageCache = new Map<string, string>();
 
-export function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: string; onPreview?: (src: string) => void; basePath?: string }) {
+export const MarkdownImage = memo(function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: string; onPreview?: (src: string) => void; basePath?: string }) {
   const effectiveSrc = useMemo(() => {
     if (!isLocalImagePath(src)) return src;
     return localImageUrl(resolveImagePath(src, basePath));
@@ -201,15 +207,26 @@ export function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; 
 
   const isLocalApi = effectiveSrc.startsWith('/api/files/image?');
   const cached = loadedImageCache.get(effectiveSrc);
+  const cachedFail = failedImageCache.get(effectiveSrc);
   const [displaySrc, setDisplaySrc] = useState<string | null>(cached ?? (isLocalApi ? null : effectiveSrc));
   const [loaded, setLoaded] = useState(!!cached);
-  const [error, setError] = useState(false);
-  const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [error, setError] = useState(!!cachedFail);
+  const [errorDetail, setErrorDetail] = useState<string | null>(cachedFail ?? null);
   const [retryToken, setRetryToken] = useState(0);
   const fetchGenRef = useRef(0);
 
+  /** Persist a failure so the same broken path is skipped on future mounts. */
+  const markFailed = useCallback((detail: string) => {
+    failedImageCache.set(effectiveSrc, detail);
+    setErrorDetail(detail);
+    setError(true);
+    setLoaded(false);
+  }, [effectiveSrc]);
+
+  /** Clear both caches and force a fresh load (user-requested retry). */
   const retryLoad = useCallback(() => {
     loadedImageCache.delete(effectiveSrc);
+    failedImageCache.delete(effectiveSrc);
     setError(false);
     setErrorDetail(null);
     setLoaded(false);
@@ -225,6 +242,15 @@ export function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; 
       setLoaded(true);
       setError(false);
       setErrorDetail(null);
+      return;
+    }
+    const errHit = failedImageCache.get(effectiveSrc);
+    if (errHit !== undefined) {
+      // Already known-bad — render the error state immediately instead of
+      // flashing the skeleton and re-fetching the same broken path.
+      setError(true);
+      setErrorDetail(errHit);
+      setLoaded(false);
       return;
     }
 
@@ -262,15 +288,21 @@ export function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; 
         if (gen !== fetchGenRef.current) return;
         const msg = err instanceof Error ? err.message : String(err);
         console.warn('[MarkdownImage] failed to load local image', effectiveSrc, err);
-        setErrorDetail(msg);
-        setError(true);
-        setLoaded(false);
+        markFailed(msg);
       }
     })();
   }, [isLocalApi, effectiveSrc, retryToken]);
 
   useEffect(() => {
     if (isLocalApi) return;
+    const errHit = failedImageCache.get(effectiveSrc);
+    if (errHit !== undefined) {
+      // Known-bad remote URL — show the stable error state, no repeated load.
+      setError(true);
+      setErrorDetail(errHit);
+      setLoaded(false);
+      return;
+    }
     setDisplaySrc(effectiveSrc);
     setLoaded(!!loadedImageCache.get(effectiveSrc));
     setError(false);
@@ -309,8 +341,7 @@ export function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; 
             setLoaded(true);
           }}
           onError={() => {
-            setErrorDetail('Image decode failed');
-            setError(true);
+            markFailed('Image decode failed');
           }}
           onClick={() => onPreview?.(displaySrc)}
           className={`max-w-full h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity my-1${!loaded ? ' absolute opacity-0 pointer-events-none' : ''}`}
@@ -319,7 +350,7 @@ export function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; 
       ) : null}
     </span>
   );
-}
+});
 
 // ─── Image Preview Modal ──────────────────────────────────────────────────────
 

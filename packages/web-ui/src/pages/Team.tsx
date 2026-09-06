@@ -1590,9 +1590,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [chatRightReserve, mainTab, visibleMessages.length, sending, loadingChat, scrollChatToBottom]);
 
   // Load channel messages from DB → store in buffer + update display
-  const loadChannelMessages = useCallback(async (channel: string, bufferKey?: string) => {
+  // `quiet` skips the loading spinner — used by the WS reconnect catch-up so
+  // a background refetch does not flash loading UI over an already-visible chat.
+  const loadChannelMessages = useCallback(async (channel: string, bufferKey?: string, opts?: { quiet?: boolean }) => {
     const key = bufferKey ?? `ch:${channel}`;
-    if (currentConvKeyRef.current === key) setLoadingChat(true);
+    if (!opts?.quiet && currentConvKeyRef.current === key) setLoadingChat(true);
     try {
       const result = await api.channels.getMessages(channel, 50);
       const msgs = result.messages.map(m => channelMsgToChat(m, authUser?.id));
@@ -1605,7 +1607,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } catch {
       if (currentConvKeyRef.current === key) { setMessages([]); setHasMore(false); }
     } finally {
-      if (currentConvKeyRef.current === key) setLoadingChat(false);
+      if (!opts?.quiet && currentConvKeyRef.current === key) setLoadingChat(false);
     }
   }, []);
 
@@ -2279,6 +2281,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         sender: isSelf ? 'user' : 'agent',
         text: wsText,
         time: new Date().toLocaleTimeString(),
+        rawCreatedAt: (event.timestamp as string | undefined) ?? new Date().toISOString(),
         agentName: isSelf ? undefined : wsSenderName,
         agentId: isSelf ? undefined : wsSenderId,
         replyToId: (p['replyToId'] as string) ?? undefined,
@@ -2317,7 +2320,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       } else {
         key = `ch:${msgChannel}`;
       }
-      updateConvMsgs(key, prev => [...prev, newMsg]);
+      // Insert ordered by createdAt and skip ids already present in the buffer
+      // (reconnect catch-up + late WS events must not duplicate history).
+      updateConvMsgs(key, prev => insertChatMsgByCreatedAt(prev, newMsg));
 
       // Track new messages arriving while user is scrolled up
       if (key === currentConvKeyRef.current && !userAtBottomRef.current) {
@@ -2339,6 +2344,27 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     });
     return unsub;
   }, [previewMode, updateConvMsgs, authUser?.id, activeChannel]);
+
+  // WS reconnect catch-up. The server does NOT replay events that were sent
+  // while the socket was down (it ignores the `since` param), but every
+  // successful connection emits `connected`. When several agents reply to a
+  // group message concurrently and one finishes inside the reconnect gap, its
+  // persisted message would never reach the UI → the bubble looks stuck until
+  // a manual refresh. On every reconnect (after the initial connect, which the
+  // normal load path already covers) refetch the active channel history.
+  const wsFirstConnectedRef = useRef(false);
+  useEffect(() => {
+    if (previewMode) return;
+    const unsub = wsClient.on('connected', () => {
+      const first = !wsFirstConnectedRef.current;
+      wsFirstConnectedRef.current = true;
+      if (first) return;
+      if (chatMode === 'channel' && activeChannel) {
+        void loadChannelMessages(activeChannel, undefined, { quiet: true });
+      }
+    });
+    return unsub;
+  }, [previewMode, chatMode, activeChannel, loadChannelMessages]);
 
   // Remove agent from thinkingAgents when it decides not to respond
   useEffect(() => {
