@@ -426,6 +426,7 @@ export class AgentManager {
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private _cognitiveConfig?: CognitiveConfig;
+  private _concurrentConfig?: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
   private _codingToolsEnabled = false;
   private _codingToolsConfigs?: Record<string, CodingToolConfig>;
   private templateRegistry?: TemplateRegistry;
@@ -670,6 +671,28 @@ export class AgentManager {
 
   set cognitiveConfig(value: CognitiveConfig | undefined) {
     this._cognitiveConfig = value;
+  }
+
+  get concurrentConfig(): { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' } | undefined {
+    return this._concurrentConfig;
+  }
+
+  set concurrentConfig(value: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' } | undefined) {
+    this._concurrentConfig = value;
+    // 热传播：同步到所有已加载 agent 的 attention（无需重启进程）。
+    for (const info of this.listAgents()) {
+      try {
+        const agent = this.getAgent(info.id);
+        if (!agent) continue;
+        const cfg = value ?? { enabled: true, maxWorkers: 3 };
+        if (agent.config) agent.config.concurrent = cfg;
+        if (cfg.enabled) {
+          const workers = Math.min(Math.max(cfg.maxWorkers ?? 3, 1), 10);
+          agent.attention?.setWorkerCount(workers);
+        }
+        agent.attention?.setConflictPolicy(cfg.conflictPolicy ?? 'auto');
+      } catch { /* 单个 agent 传播失败不阻塞整体 */ }
+    }
   }
 
   get codingToolsEnabled(): boolean {
@@ -1298,6 +1321,7 @@ export class AgentManager {
         : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
       channels: [],
       heartbeatIntervalMs: request.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      concurrent: this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -2212,6 +2236,7 @@ export class AgentManager {
       })(),
       channels: [],
       heartbeatIntervalMs: row.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      concurrent: (row as Record<string, unknown>)['concurrent'] as AgentConfig['concurrent'] ?? this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

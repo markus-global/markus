@@ -393,6 +393,20 @@
     "saved": "Saved",
     "failedToSave": "Failed to save"
   },
+  "concurrent": {
+    "title": "Concurrent Processing",
+    "description": "Let your agent handle multiple conversations, tasks, and messages at the same time with isolated worker sessions. When disabled, it processes strictly one item at a time (serial).",
+    "enabled": "Enable concurrent processing",
+    "enabledDesc": "Recommended. Agents can process multiple independent items in parallel; each worker gets isolated session state.",
+    "maxWorkers": "Max workers",
+    "maxWorkersDesc": "1 (serial) to 10. Default 3. Each concurrent worker runs its own processing loop.",
+    "conflictPolicy": "Conflict policy",
+    "conflictPolicyDesc": "How the agent handles overlapping/failed entity-lock situations.",
+    "policyAuto": "Auto (requeue & retry)",
+    "policyReport": "Report to parent (escalate)",
+    "saved": "Saved",
+    "failedToSave": "Failed to save"
+  },
   "searchApi": {
     "title": "Web Search",
     "description": "Priority: Hub connected with balance → Markus hosted first; otherwise your API keys first.",

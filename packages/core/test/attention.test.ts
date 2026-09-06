@@ -212,6 +212,55 @@ describe('heuristicDecision', () => {
     const incoming = makeItem({ sourceType: 'review_request', priority: 1 as MailboxPriority });
     expect(controller.heuristicDecision(current, incoming)).toBe('continue');
   });
+
+  it('R0x: explicit NEW session (sessionRestore=null) never merges into active chat', () => {
+    // 老板场景：agent 正在流式输出会话 A，用户点「新对话」发新消息。
+    // 新消息带显式 sessionRestore=null 信号 → 必须排队，绝不 merge 进当前流。
+    const current = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_old' },
+    });
+    const incoming = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_old' }, // 即使 id 相同也不 merge
+      payload: {
+        summary: 'new chat msg',
+        content: 'hello',
+        extra: { sessionRestore: null }, // 显式新会话信号
+      },
+    });
+    expect(controller.heuristicDecision(current, incoming)).toBe('continue');
+  });
+
+  it('R0: same user + same session merges (normal follow-up)', () => {
+    const current = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_a' },
+    });
+    const incoming = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_a' },
+    });
+    expect(controller.heuristicDecision(current, incoming)).toBe('merge');
+  });
+
+  it('R0: same user but DIFFERENT sessions queues behind current (no merge)', () => {
+    const current = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_a' },
+    });
+    const incoming = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_b' },
+    });
+    expect(controller.heuristicDecision(current, incoming)).toBe('continue');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

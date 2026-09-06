@@ -264,4 +264,105 @@ describe('AttentionController 并发 worker 池（方案 A）', () => {
     expect(doneIds).toHaveLength(1);
     expect(mailbox.isEntityLocked('tsk_FAIL')).toBe(false); // 锁已释放
   });
+
+  it('P2-C：并发 worker 会话工作区隔离（ALS 内 workerId 正确，不串线）', async () => {
+    const eventBus = new EventBus();
+    const mailbox = new AgentMailbox(AGENT_ID, eventBus);
+    const seen: Array<{ workerId: number; itemId: string; entity: string }> = [];
+    const delegate: AttentionDelegate = {
+      processMailboxItem: vi.fn(async (item: MailboxItem) => {
+        // 模拟真实 Agent#processMailboxItemCore：从 ALS 读取当前 worker 工作区。
+        const ws = sessionWorkspaceStore.getStore();
+        const entity = item.payload.taskId ?? '?';
+        seen.push({ workerId: ws?.workerId ?? 0, itemId: item.id, entity });
+        // 处理时阻塞片刻，放大并发窗口
+        await sleep(40);
+        return 'ok';
+      }),
+      onDecisionMade: vi.fn(),
+      onFocusChanged: vi.fn(),
+      evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
+      getWorkerWorkspace: (workerId: number) => createSessionWorkspace(workerId),
+    };
+    const controller = new AttentionController(AGENT_ID, mailbox, eventBus);
+    controller.setWorkerCount(3);
+    controller.setDelegate(delegate);
+    controller.start();
+
+    // 3 个不同实体 → 会被并发 worker 同时处理
+    mailbox.enqueue('a2a_message', { taskId: 'tsk_A', summary: 'A', content: 'A' });
+    mailbox.enqueue('a2a_message', { taskId: 'tsk_B', summary: 'B', content: 'B' });
+    mailbox.enqueue('a2a_message', { taskId: 'tsk_C', summary: 'C', content: 'C' });
+    await waitFor(() => seen.length === 3, 5000);
+    controller.stop();
+
+    // 每个 item 都必须在某个 worker 工作区内处理（workerId >= 1）
+    expect(seen).toHaveLength(3);
+    for (const s of seen) {
+      expect(s.workerId).toBeGreaterThanOrEqual(1);
+    }
+    // 同一实体绝不该出现在两个不同 workerId（隔离核心）
+    const entityWorkers = new Map<string, Set<number>>();
+    for (const s of seen) {
+      if (!entityWorkers.has(s.entity)) entityWorkers.set(s.entity, new Set());
+      entityWorkers.get(s.entity)!.add(s.workerId);
+    }
+    for (const [entity, workers] of entityWorkers) {
+      expect(workers.size, `实体 ${entity} 被多个 worker 同时处理（隔离失败）`).toBe(1);
+    }
+    // 至少发生过真实并行（不同实体由不同 worker/并发完成）——宽松断言：3 个实体应分配在不同 worker 上（共 3 worker）
+    const usedWorkers = new Set(seen.map(s => s.workerId));
+    expect(usedWorkers.size).toBeGreaterThanOrEqual(2);
+  });
+
+  it('P2-D：conflictPolicy=report 时冲突上报事件发出且不丢 item', async () => {
+    const eventBus = new EventBus();
+    const mailbox = new AgentMailbox(AGENT_ID, eventBus);
+    const doneIds: string[] = [];
+    const conflicts: Array<{ entityKey: string; workerId: number }> = [];
+    eventBus.on('agent:entity-conflict', (payload: { entityKey: string; workerId: number }) => {
+      conflicts.push(payload);
+    });
+
+    // 用 lockEntity 直接构造实体锁占用，但注意 dequeue 会跳过被锁实体——
+    // 所以这里用「两个 worker 抢同一实体的竞态窗口」来触发：把一个 worker 的
+    // 处理故意阻塞，让另一个 worker 拿到同实体 item 时锁已被持有。
+    let blockFirst = true;
+    const delegate: AttentionDelegate = {
+      processMailboxItem: vi.fn(async (item: MailboxItem) => {
+        if (item.payload.taskId === 'tsk_RACE') {
+          // 第一个处理该实体的 worker 阻塞 150ms，制造冲突窗口
+          if (blockFirst) {
+            blockFirst = false;
+            await sleep(150);
+          }
+        }
+        await sleep(20);
+        doneIds.push(item.id);
+        return 'ok';
+      }),
+      onDecisionMade: vi.fn(),
+      onFocusChanged: vi.fn(),
+      evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
+    };
+    const controller = new AttentionController(AGENT_ID, mailbox, eventBus);
+    controller.setWorkerCount(2);
+    controller.setConflictPolicy('report');
+    controller.setDelegate(delegate);
+    controller.start();
+
+    // 同一实体的两个 item 同时入队 → 两 worker 竞相抢同一实体锁，必有一个冲突
+    mailbox.enqueue('a2a_message', { taskId: 'tsk_RACE', summary: 'r1', content: 'r1' });
+    mailbox.enqueue('a2a_message', { taskId: 'tsk_RACE', summary: 'r2', content: 'r2' });
+    await waitFor(() => doneIds.length >= 2, 6000);
+    controller.stop();
+
+    // report 策略下应至少发出一次冲突事件（同实体并发必然有锁竞争）
+    expect(conflicts.length).toBeGreaterThanOrEqual(1);
+    expect(conflicts[0].entityKey).toBe('task:tsk_RACE');
+    // item 不丢：两个 item 最终都被处理
+    expect(doneIds).toHaveLength(2);
+    // 锁不泄漏
+    expect(mailbox.isEntityLocked('tsk_RACE')).toBe(false);
+  });
 });
