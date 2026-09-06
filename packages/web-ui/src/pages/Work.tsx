@@ -1851,12 +1851,22 @@ function TaskDetailPanel({
   const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'history'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
+  const [deliverablesPage, setDeliverablesPage] = useState(1);
+  const [unifiedDeliverables, setUnifiedDeliverables] = useState<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string }>>([]);
+  const loadUnifiedDeliverables = useCallback(async () => {
+    try {
+      const { results } = await api.deliverables.search({ taskId: task.id, limit: 200 });
+      setUnifiedDeliverables(results.filter((d: any) => d.status !== 'outdated'));
+    } catch { /* ok */ }
+  }, [task.id]);
   const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables' | 'history') => {
     setActiveTab(tab);
+    // 用户主动切到交付物页时拉取最新（覆盖任何未通过事件到达的更新）
+    if (tab === 'deliverables') void loadUnifiedDeliverables();
     requestAnimationFrame(() => {
       scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
     });
-  }, []);
+  }, [loadUnifiedDeliverables]);
   const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }, { id: 'history' as const }], []);
   const detailSwipe = useSwipeTabs(detailTabs, activeTab, switchTab);
 
@@ -1906,15 +1916,19 @@ function TaskDetailPanel({
   }, [editingDesc]);
   const [showRevision, setShowRevision] = useState(false);
   const [revisionReason, setRevisionReason] = useState('');
-  const [deliverablesPage, setDeliverablesPage] = useState(1);
-  const [unifiedDeliverables, setUnifiedDeliverables] = useState<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string }>>([]);
-  const loadUnifiedDeliverables = useCallback(async () => {
-    try {
-      const { results } = await api.deliverables.search({ taskId: task.id, limit: 200 });
-      setUnifiedDeliverables(results.filter((d: any) => d.status !== 'outdated'));
-    } catch { /* ok */ }
-  }, [task.id]);
-  useEffect(() => { void loadUnifiedDeliverables(); }, [loadUnifiedDeliverables]);
+  // 任务对象变化（状态更新/交付物提交，updatedAt 随之刷新）时重新拉取交付物
+  useEffect(() => { void loadUnifiedDeliverables(); }, [loadUnifiedDeliverables, task.updatedAt]);
+  // 交付物事件（创建/更新/删除）到达且属于当前任务时即时刷新
+  useEffect(() => {
+    const unsubs = (['created', 'updated', 'removed'] as const).map(action =>
+      wsClient.on(`deliverable:${action}` as never, (event: { payload?: Record<string, unknown> }) => {
+        const p = event.payload;
+        if (!p || (p.taskId as string) !== task.id) return;
+        void loadUnifiedDeliverables();
+      })
+    );
+    return () => { unsubs.forEach(u => u()); };
+  }, [task.id, loadUnifiedDeliverables]);
   const [descExpanded, setDescExpanded] = useState(false);
   const isMobile = useIsMobile();
   const PAGE_SIZE = 20;
@@ -1922,7 +1936,7 @@ function TaskDetailPanel({
     try { const d = await api.tasks.listSubtasks(task.id); setSubtasks(d.subtasks); } catch { /* ok */ }
   }, [task.id]);
 
-  useEffect(() => { void loadSubtasks(); }, [loadSubtasks]);
+  useEffect(() => { void loadSubtasks(); }, [loadSubtasks, task.updatedAt]);
 
   const doUpdate = async (fn: () => Promise<unknown>) => {
     if (actionInFlight) return; setActionInFlight(true);
@@ -2016,10 +2030,11 @@ function TaskDetailPanel({
       const p = event.payload as Record<string, unknown>;
       if ((p.taskId as string) !== task.id) return;
       void loadSubtasks();
+      void loadUnifiedDeliverables();
       onRefreshRef.current();
     });
     return unsub;
-  }, [task.id, loadSubtasks]);
+  }, [task.id, loadSubtasks, loadUnifiedDeliverables]);
 
   const completedCount = subtasks.filter(s => s.status === 'completed').length;
   const cancelledCount = subtasks.filter(s => s.status === 'cancelled').length;
