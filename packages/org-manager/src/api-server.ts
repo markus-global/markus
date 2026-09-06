@@ -798,6 +798,9 @@ export class APIServer {
             senderType: 'agent',
             senderName,
             text: cleanText,
+            // Carry the persisted message id so clients can dedupe against
+            // history fetched after reconnect (agent_send_group_message).
+            ...(persistedMsgId ? { id: persistedMsgId } : {}),
           },
           timestamp: new Date().toISOString(),
         };
@@ -1873,6 +1876,10 @@ export class APIServer {
           senderName: agentName,
           text: cleanReply,
           metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+          // Carry the persisted message id so clients can dedupe against
+          // history fetched on reconnect (group async replies otherwise get
+          // an opaque ws_* temp id and can duplicate after a WS gap).
+          ...(persistedMsgId ? { id: persistedMsgId } : {}),
           ...(isA2A ? {
             replyToId: opts?.replyToMsgId,
             replyToSender: opts?.replyToAgentName,

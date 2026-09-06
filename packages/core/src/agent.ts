@@ -478,6 +478,13 @@ export class Agent {
   private dynamicContextProviders = new Map<string, () => string>();
   /** 并发模式：workerId → 该 worker 独占的 SessionWorkspace（保持跨 item 会话状态隔离）。 */
   private workerWorkspaces = new Map<number, SessionWorkspace>();
+  /**
+   * P2：agent 级「工具写互斥」链。所有写语义工具（task_update/comment、
+   * memory_save、file_write、shell_execute 等）执行时互斥——并发 worker 时，
+   * 同一 agent 的状态写永不并发（同实体写必然是其中子集），读/纯计算仍并行。
+   * Promise 链实现：前一个写完成后唤醒下一个。
+   */
+  private toolWriteChain: Promise<void> = Promise.resolve();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly BROWSER_CLOSE_FOLLOWUP_MAX_ITER = 5;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
@@ -6873,7 +6880,70 @@ export class Agent {
     return JSON.stringify(result);
   }
 
+  /**
+   * 写语义工具：执行时跨 worker 互斥（P2-A）。
+   * 精确列出会修改共享状态的工具；task_* 前缀中 task_list/task_get 是读，
+   * 不在此列。覆盖：任务/需求/交付物/记忆/通知/消息/文件系统/配置/心跳。
+   */
+  private static readonly WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
+    // 任务与需求（写）
+    'task_create', 'task_update', 'task_comment',
+    'subtask_create', 'subtask_update', 'subtask_complete',
+    'requirement_propose', 'requirement_update', 'requirement_comment',
+    'goal_create', 'goal_update',
+    'deliverable_create',
+    // 记忆 / 笔记本
+    'memory_save', 'memory_update', 'memory_update_longterm', 'memory_delete',
+    'update_notebook', 'clear_notebook', 'update_working_memory', 'clear_working_memory',
+    // 通知 / 消息 / 委托（写其他实体状态）
+    'notify_user', 'agent_send_message', 'agent_send_group_message',
+    'agent_create_group_chat', 'agent_broadcast_status', 'agent_stop', 'agent_delegate_task',
+    'task_submit_review',
+    // 文件系统（最典型的共享状态写）
+    'shell_execute', 'file_write', 'file_edit', 'apply_patch',
+    // 安装 / 部署 / 配置
+    'package_install', 'hub_install',
+    'llm_switch_model', 'llm_set_capability_routing', 'llm_add_model', 'llm_add_provider', 'llm_edit_provider',
+    // 调度
+    'schedule_wakeup', 'set_heartbeat_interval',
+    // 邮箱管理（写）
+    'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item',
+  ]);
+
+  /** 工具是否具备写语义（需要跨 worker 互斥）。 */
+  private static isWriteTool(name: string): boolean {
+    return Agent.WRITE_TOOL_NAMES.has(name);
+  }
+
+  /**
+   * Agent 级写互斥（Promise 链，FIFO）。所有写工具串行执行；读工具不经过。
+   * 链式实现：后到的写工具 await 前一个 release 后再执行，天然无死锁
+   * （工具调用是同步 await 链，同一 worker 不会嵌套等待自己）。
+   */
+  private async withToolWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const next = new Promise<void>(r => { release = r; });
+    const prev = this.toolWriteChain;
+    this.toolWriteChain = prev.then(() => next);
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
+    // P2-A：写语义工具跨 worker 互斥（所有外部调用走这里）：
+    //   写工具 → 拿 agent 级写锁 → 执行瀑布逻辑（executeToolInternal）
+    //   读工具 → 直接执行，不互斥
+    if (Agent.isWriteTool(toolCall.name)) {
+      return await this.withToolWriteLock(() => this.executeToolInternal(toolCall, onOutput, sessionId));
+    }
+    return await this.executeToolInternal(toolCall, onOutput, sessionId);
+  }
+
+  private async executeToolInternal(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
     // Handle the discover_tools meta-tool: activate requested tools, skills, and skill MCP servers
     if (toolCall.name === 'discover_tools') {
       return await this.handleDiscoverTools(toolCall.arguments);
