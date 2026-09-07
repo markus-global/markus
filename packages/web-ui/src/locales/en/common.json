@@ -155,6 +155,7 @@
     "thinking": "Thinking",
     "thinkingEllipsis": "Thinking...",
     "writingResponse": "Writing response...",
+    "toolsSummary": "{{count}} tool call(s) · click to view execution",
     "toolRunning": "Running",
     "toolSuccess": "Success",
     "toolFailed": "Failed",

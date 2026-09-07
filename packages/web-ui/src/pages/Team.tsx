@@ -45,6 +45,7 @@ import {
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
   appendLiveOutput, appendSubagentLog,
+  finalizeAgentMessage, finalizeLastInterruptedAgent, msgHasContent, stopRunningTools, hasStreamingTail,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
 import {
@@ -597,7 +598,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     msgBuffers, sessionMsgCache, activeSessionBuffer, actBuffers, sessionTabsBuffer,
     currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
-    beginLoad, beginStream, endStream, resetConv,
+    beginLoad, beginStream, endStream, resetConv, abortStream,
     loadAndDisplay,
     incrementSending, decrementSending, resetSending, isSendingFor,
     setStreamSession, clearStreamSession, getStreamSession,
@@ -624,15 +625,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Badge must follow local SSE/sending state — agent.status can return to idle
-  // while the UI is still flushing thinking/text deltas. Only scan the tail:
-  // streaming bubbles are always near the end of the conversation.
-  const chatStreamActive = sending || streamingVisual || (() => {
-    for (let i = messages.length - 1; i >= Math.max(0, messages.length - 8); i--) {
-      const m = messages[i]!;
-      if (m.isStreaming && !m.isStopped) return true;
-    }
-    return false;
-  })();
+  // while the UI is still flushing thinking/text deltas. The tail scan is the
+  // authoritative reattach-window signal (sending already ended, bubble still
+  // isStreaming) — extracted to hasStreamingTail in ChatHelpers.
+  const chatStreamActive = sending || streamingVisual || hasStreamingTail(messages);
 
   // Preview mode: typewriter streaming effect for the last agent message
   const previewStreamRef = useRef<{ fullText: string; timers: ReturnType<typeof setTimeout>[] }>({ fullText: '', timers: [] });
@@ -2649,14 +2645,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       userStoppedSessionsRef.current.add(activeSessionId);
     }
 
-    // 4) Unblock the UI immediately
-    const sendKey = currentConvKeyRef.current;
-    resetSending(sendKey);
-    actBuffers.delete(activeSessionId ?? sendKey);
-    if (activeSessionId) clearStreamSession(sendKey, activeSessionId);
-    endStream(sendKey);
-    setSending(false);
-    setActivities([]);
+    // 4) Unblock the UI immediately — single idempotent teardown.
+    //    (replaces: resetSending + actBuffers.delete + endStream +
+    //     clearStreamSession + setSending + setActivities)
+    abortStream(currentConvKeyRef.current, activeSessionId);
   };
 
   const [rememberTarget, setRememberTarget] = useState<ChatMsg | null>(null);
@@ -2701,10 +2693,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           abortControllerRef.current?.abort();
           abortControllerRef.current = null;
           void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
-          resetSending(prevKey);
-          actBuffers.delete(activeSessionId ?? prevKey);
-          endStream(prevKey);
-          if (activeSessionId) clearStreamSession(prevKey, activeSessionId);
+          abortStream(prevKey, activeSessionId);
           // Drop the in-flight user+empty agent pair before the retry re-adds them.
           updateConvMsgs(prevKey, prev => {
             const u = [...prev];
@@ -2713,8 +2702,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             if (u.length > 0 && u[u.length - 1]!.sender === 'user' && u[u.length - 1]!.text === text) u.pop();
             return u;
           });
-          setSending(false);
-          setActivities([]);
           await new Promise(r => setTimeout(r, 50));
           return send(text, { isRetry: true });
         }
@@ -2722,33 +2709,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         abortControllerRef.current?.abort();
         abortControllerRef.current = null;
         void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
-        resetSending(prevKey);
-        actBuffers.delete(activeSessionId ?? prevKey);
-        endStream(prevKey);
-        if (activeSessionId) clearStreamSession(prevKey, activeSessionId);
-        updateConvMsgs(prevKey, prev => {
-          const u = [...prev];
-          for (let i = u.length - 1; i >= 0; i--) {
-            if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
-              const msg = u[i]!;
-              const hasContent = msg.text?.trim() || (msg.segments ?? []).some(s =>
-                (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-              );
-              if (!hasContent) {
-                u.splice(i, 1);
-              } else {
-                const segs = (msg.segments ?? []).map(s =>
-                  s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
-                );
-                u[i] = { ...msg, isStopped: true, segments: segs };
-              }
-              break;
-            }
-          }
-          return u;
-        });
-        setSending(false);
-        setActivities([]);
+        abortStream(prevKey, activeSessionId);
+        updateConvMsgs(prevKey, prev => finalizeLastInterruptedAgent(prev));
         await new Promise(r => setTimeout(r, 50));
       }
       // For new session (NEW_CHAT_PLACEHOLDER_ID): don't abort. The message will be
@@ -2759,33 +2721,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
       const prevKey = currentConvKeyRef.current;
-      resetSending(prevKey);
-      actBuffers.delete(prevKey);
-      endStream(prevKey);
-      clearStreamSession(prevKey);
-      updateConvMsgs(prevKey, prev => {
-        const u = [...prev];
-        for (let i = u.length - 1; i >= 0; i--) {
-          if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
-            const msg = u[i]!;
-            const hasContent = msg.text?.trim() || (msg.segments ?? []).some(s =>
-              (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-            );
-            if (!hasContent) {
-              u.splice(i, 1);
-            } else {
-              const segs = (msg.segments ?? []).map(s =>
-                s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
-              );
-              u[i] = { ...msg, isStopped: true, segments: segs };
-            }
-            break;
-          }
-        }
-        return u;
-      });
-      setSending(false);
-      setActivities([]);
+      abortStream(prevKey);
+      updateConvMsgs(prevKey, prev => finalizeLastInterruptedAgent(prev));
       await new Promise(r => setTimeout(r, 50));
     }
 
@@ -3178,8 +3115,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       const abortCtrl = new AbortController();
       abortControllerRef.current = abortCtrl;
-      const effectiveSessionId = options?.sessionIdOverride
-        ?? (activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId);
+      // Same source as streamSessionId's initial value (formula deduped — the
+      // async session_start resolution happens only inside messageStream below,
+      // so this snapshot always equals the initial streamSessionId).
+      const effectiveSessionId = streamSessionId;
       const streamSessionAtStart = effectiveSessionId;
       // A fresh user turn cancels any earlier stop — reattach may resume if the
       // stream drops while THIS turn is still generating.
@@ -3403,15 +3342,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const u = [...prev];
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx >= 0) {
-              const msg = u[idx]!;
-              const hasContent = msg.text
-                || (msg.segments && msg.segments.length > 0 && msg.segments.some(s =>
-                  (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-                ));
-              if (!hasContent) {
-                return prev.filter(m => m.id !== agentMsgId);
-              }
-              u[idx] = { ...msg, isStopped: true };
+              const finalized = finalizeAgentMessage(u[idx]!, 'stopped');
+              if (finalized === null) return prev.filter(m => m.id !== agentMsgId);
+              u[idx] = finalized;
             }
             return u;
           }, streamSessionId);
@@ -3422,12 +3355,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       updateConvMsgs(sendKey, prev => {
         const u = [...prev];
         const idx = u.findIndex(m => m.id === agentMsgId);
-        if (idx >= 0) {
-          const segs = (u[idx]!.segments ?? []).map(s =>
-            s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
-          );
-          u[idx] = { ...u[idx]!, segments: segs };
-        }
+        if (idx >= 0) u[idx] = { ...u[idx]!, segments: stopRunningTools(u[idx]!.segments) };
         return u;
       }, streamSessionId);
 
@@ -3438,15 +3366,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           const u = [...prev];
           const idx = u.findIndex(m => m.id === agentMsgId);
           if (idx >= 0) {
-            const msg = u[idx]!;
-            const hasContent = msg.text
-              || (msg.segments && msg.segments.length > 0 && msg.segments.some(s =>
-                (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-              ));
-            if (!hasContent) {
-              return prev.filter(m => m.id !== agentMsgId);
-            }
-            u[idx] = { ...msg, isStopped: true };
+            const finalized = finalizeAgentMessage(u[idx]!, 'stopped');
+            if (finalized === null) return prev.filter(m => m.id !== agentMsgId);
+            u[idx] = finalized;
           }
           return u;
         }, streamSessionId);
@@ -3459,9 +3381,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const currentMsgs = msgBuffers.get(sendKey) ?? [];
       const agentMsg = currentMsgs.find(m => m.id === agentMsgId);
       const pollSessionId = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-      const hasVisibleContent = agentMsg?.text || (agentMsg?.segments?.some(s =>
-        (s.type === 'text' && (s as { content: string }).content) || s.type === 'tool'
-      ));
+      const hasVisibleContent = agentMsg ? msgHasContent(agentMsg) : false;
       if (agentMsg && !hasVisibleContent && chatMode === 'direct' && pollSessionId && !abortCtrl.signal.aborted) {
         // 指数退避 + 抖动 + 重试上限：SSE 断连后从 DB 恢复回复，避免紧密死循环轮询，
         // 也避免所有客户端同时狂轮。见 lib/streamResilience.ts。
@@ -3780,6 +3700,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setSessionModelOverride(null);
     const key = currentConvKeyRef.current;
     resetConv(key);
+    // resetConv deletes the manager's activeSession for this key. Re-pin it to
+    // the new-chat placeholder so a still-running stream from a PREVIOUS session
+    // is routed to its own session cache (isSameSession=false) instead of being
+    // written into the fresh new-chat buffer — this is what mixed concurrent
+    // streams together and made content land in the wrong bubbles.
+    activeSessionBuffer.set(key, NEW_CHAT_PLACEHOLDER_ID);
     setMessages([]);
     setHasMore(false);
     oldestMsgId.current = null;
@@ -4177,6 +4103,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // ── Render ────────────────────────────────────────────────────────────────────
   const showChatOnMobile = isMobile && mobileLayer === 'chat';
+  // Loading label: name the conversation being loaded, instead of a generic
+  // "Loading conversation…" (UX: switching to a session with history should
+  // not look like a brand-new chat while the history loads).
+  const loadingChatLabel = useMemo(() => {
+    if (chatMode === 'direct') {
+      const sess = sessions.find(s => s.id === activeSessionId);
+      if (sess?.title) return sess.title;
+      if (currentAgent?.name) return currentAgent.name;
+    }
+    return (chatMode === 'channel'
+      ? (activeGroupChat?.name ?? activeChannel)
+      : activeDmUser?.name) || t('page.loadingChat', { defaultValue: 'Loading conversation…' });
+  }, [chatMode, sessions, activeSessionId, currentAgent?.name, activeChannel, activeDmUserId, activeGroupChat?.name, activeDmUser?.name, t]);
+
   const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !sending && !loadingChat;
   // Non-empty sessions: Cursor-style single-line composer that grows with content.
   const compactComposer = mainTab === 'chat' && visibleMessages.length > 0;
@@ -5057,9 +4997,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
-              <span className="text-xs text-fg-tertiary animate-pulse">
-                {t('page.loadingChat', { defaultValue: 'Loading conversation…' })}
-              </span>
+              <div className="flex flex-col items-center gap-0.5">
+                <span className="text-xs text-fg-tertiary animate-pulse">
+                  {t('page.loadingChat', { defaultValue: 'Loading conversation…' })}
+                </span>
+                <span className="text-[11px] text-fg-quaternary max-w-[70%] truncate">{loadingChatLabel}</span>
+              </div>
             </div>
           )}
           {loadingMore && (
