@@ -12,6 +12,7 @@ import { useCallback, useRef, useState, useEffect } from 'react';
 import { ConversationBufferManager, type ConvPhase, makeConvKey } from '../lib/ConversationBufferManager.ts';
 import type { ChatMsg } from '../pages/ChatHelpers.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
+import { chatStore } from '../pages/useChatStore.ts';
 
 export { type ConvPhase } from '../lib/ConversationBufferManager.ts';
 export { makeConvKey } from '../lib/ConversationBufferManager.ts';
@@ -47,11 +48,29 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     if (r.displayChanged && r.newActivities) setActivities(r.newActivities);
   }, []);
 
-  // Phase transitions
+  // Phase transitions. beginStream marks the agent busy for the sidebar; the
+  // busy mark is REMOVED only via clearStreamSession below (the single stream
+  // lifecycle removal point) — NOT via endStream. This makes add/remove
+  // pairing structural: every stream path (done, abort, stop, soft-disconnect
+  // → reattach, session switch, retry) eventually calls clearStreamSession,
+  // so the sidebar busy state cannot drift or leak.
+  const isAgentKey = (key: string): boolean =>
+    !!key && !key.startsWith('ch:') && !key.startsWith('dm:') && key !== '_direct';
+
   const getPhase = useCallback((key: string) => mgr.current.getPhase(key), []);
   const beginLoad = useCallback((key: string) => mgr.current.beginLoad(key), []);
-  const beginStream = useCallback((key: string) => mgr.current.beginStream(key), []);
-  const endStream = useCallback((key: string) => mgr.current.endStream(key), []);
+  const beginStream = useCallback((key: string) => {
+    mgr.current.beginStream(key);
+    // Direct conversation keys are the agent id itself (see makeConvKey):
+    // `ch:*` (team/channel) and `dm:*` (human DM) never map to one agent.
+    if (isAgentKey(key)) chatStore.markAgentStreaming(key, true);
+  }, []);
+  const endStream = useCallback((key: string) => {
+    mgr.current.endStream(key);
+    // NOTE: intentionally does NOT unmark the agent — see comment above.
+    // The agent stays busy until clearStreamSession is called by whichever
+    // path owns the stream's end.
+  }, []);
   const resetConv = useCallback((key: string) => { mgr.current.resetConv(key); mgr.current.deleteBuffer(key); }, []);
 
   // Phase-aware async load
@@ -110,9 +129,18 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     decrementSending: (k: string) => mgr.current.decrementSend(k),
     resetSending: (k: string) => mgr.current.resetSend(k),
     isSendingFor: (k: string) => mgr.current.isSending(k),
-    // Stream session helpers
-    setStreamSession: (k: string, s: string) => mgr.current.addStreamSession(k, s),
-    clearStreamSession: (k: string, s?: string) => mgr.current.removeStreamSession(k, s),
+    // Stream session helpers. These are the SINGLE add/remove points for the
+    // sidebar busy signal: calling setStreamSession marks the agent busy,
+    // calling clearStreamSession unmarks it. Every other stream cleanup path
+    // in Team.tsx funnels through clearStreamSession.
+    setStreamSession: (k: string, s: string) => {
+      mgr.current.addStreamSession(k, s);
+      if (isAgentKey(k)) chatStore.markAgentStreaming(k, true);
+    },
+    clearStreamSession: (k: string, s?: string) => {
+      mgr.current.removeStreamSession(k, s);
+      if (isAgentKey(k)) chatStore.markAgentStreaming(k, false);
+    },
     getStreamSession: (k: string) => mgr.current.getStreamSessions(k),
     // Session switch helpers
     saveSessionToCache: (k: string, s: string) => mgr.current.saveToCache(k, s),

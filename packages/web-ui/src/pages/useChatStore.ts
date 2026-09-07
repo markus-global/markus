@@ -31,6 +31,64 @@ class ChatStore {
   private actBuffers = new Map<string, ActivityStep[]>();
   private sendingConvs = new Set<string>();
   private currentConvKey = '';
+
+  /**
+   * Agents that currently have an in-flight streaming reply on THIS client.
+   *
+   * This is a plain idempotent Set, NOT a refcount. The add/remove pairing is
+   * structurally guaranteed (not by convention): adds happen in beginStream /
+   * setStreamSession, and the ONLY remove path is clearStreamSession — every
+   * stream lifecycle (done, abort, stop, soft-disconnect→reattach, session
+   * switch, retry) funnels through that single removal point. Because the set
+   * is idempotent, accidental double-begin can never pin an agent busy.
+   */
+  private streamingAgents = new Set<string>();
+  private streamingVersion = 0;
+
+  /**
+   * Mark an agent as having an active (streaming) response or the reverse.
+   * Idempotent set membership — repeated begin / repeated end are safe by
+   * construction (no refcount can leak or go negative).
+   */
+  markAgentStreaming(agentId: string | null | undefined, active: boolean): void {
+    if (!agentId) return;
+    const had = this.streamingAgents.has(agentId);
+    if (active && !had) {
+      this.streamingAgents.add(agentId);
+      this.streamingVersion++;
+      this.emit();
+    } else if (!active && had) {
+      this.streamingAgents.delete(agentId);
+      this.streamingVersion++;
+      this.emit();
+    }
+  }
+
+  /**
+   * Force-clear the streaming mark for an agent. Called when backend
+   * authoritative state says the agent can no longer be generating (agent:update
+   * → offline), so a stale local mark can never pin the sidebar to "working".
+   */
+  clearAgentStreaming(agentId: string | null | undefined): void {
+    if (!agentId) return;
+    if (this.streamingAgents.delete(agentId)) {
+      this.streamingVersion++;
+      this.emit();
+    }
+  }
+
+  getStreamingAgents(): ReadonlySet<string> {
+    return this.streamingAgents;
+  }
+
+  isAgentStreaming(agentId: string | null | undefined): boolean {
+    return !!agentId && this.streamingAgents.has(agentId);
+  }
+
+  /** Monotonic counter that changes whenever the streaming set changes. */
+  getStreamingVersion(): number {
+    return this.streamingVersion;
+  }
   private rafPending: number | null = null;
 
   private state: ChatState = {
