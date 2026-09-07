@@ -45,7 +45,7 @@ import {
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
   appendLiveOutput, appendSubagentLog,
-  finalizeAgentMessage, finalizeLastInterruptedAgent, msgHasContent, stopRunningTools, hasStreamingTail,
+  finalizeAgentMessage, finalizeLastInterruptedAgent, finalizeStreamEnd, finalizeLastStreamingBubble, msgHasContent, stopRunningTools, hasStreamingTail,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
 import {
@@ -2040,12 +2040,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
     } catch (err) {
       // Aborted by stop / newer reattach / navigation — always clear local stream UI.
-      if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
+      const wasActive = reattachAbortRef.current === abortCtrl;
+      if (wasActive) reattachAbortRef.current = null;
       endStream(convKey);
       // Same as above: whatever ended this reattach (abort / error) means the
       // stream session is no longer active — release it.
       clearStreamSession(convKey, sessionId);
-      if (currentConvKeyRef.current === convKey) setSending(false);
+      if (currentConvKeyRef.current === convKey) {
+        setSending(false);
+        // The bubble this reattach was feeding is still marked streaming (the
+        // handover / placeholder set isStreaming: true). Abort or death of the
+        // reattach ends the local stream — finalize the bubble instead of
+        // leaving a perpetual "thinking…" ghost. Only act when THIS was the
+        // active reattach: a newer one may still be streaming the same bubble.
+        if (wasActive) {
+          updateConvMsgs(convKey, prev => finalizeLastStreamingBubble(prev), sessionId);
+        }
+      }
       if (err instanceof Error && err.name === 'AbortError') return;
     }
   }, [appendConvActivity, beginStream, endStream, getStreamSession, msgBuffers, setStreamSession, updateConvMsgs, updateConvMsgsRaf]);
@@ -3359,13 +3370,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         }
       }
 
-      // Mark any still-running tool segments as stopped (stream ended due to cancellation or disconnect)
-      updateConvMsgs(sendKey, prev => {
-        const u = [...prev];
-        const idx = u.findIndex(m => m.id === agentMsgId);
-        if (idx >= 0) u[idx] = { ...u[idx]!, segments: stopRunningTools(u[idx]!.segments) };
-        return u;
-      }, streamSessionId);
+      // Mark any still-running tool segments as stopped (stream ended due to
+      // cancellation or disconnect). This block is the SINGLE convergence point
+      // for every terminal path of a direct send(): done (with/without server
+      // segments), error, soft-disconnect without reattach, SSE drop + poll
+      // recovery. It must land the authoritative stream-end flag: the optimistic
+      // placeholder carries isStreaming: true and nothing else in this flow
+      // resets it — if it stayed true the bubble would render as a perpetual
+      // "thinking…" (isStreamingMsg = ... || !!msg.isStreaming) and the sidebar
+      // busy mark would hold via hasStreamingTail. See finalizeStreamEnd.
+      updateConvMsgs(sendKey, prev => finalizeStreamEnd(prev, agentMsgId), streamSessionId);
 
       // If stream was aborted by user (api resolves rather than rejects on abort) —
       // keep partial content and mark as stopped. The catch block handles the rejection path.
