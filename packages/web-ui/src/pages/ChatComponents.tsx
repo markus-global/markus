@@ -593,7 +593,13 @@ export const AgentMessageBody = memo(function AgentMessageBody({
       .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
       .trim() || null;
     const segmentText = allText ? stripMarkup(allText) : null;
+    // Fall back to the thinking block when the turn ended without visible prose
+    // (e.g. the model only reasoned). Without this the bubble renders as blank.
+    const thinkingText = !isStreaming && !segmentText
+      ? textSegments.map(s => s.thinking ?? '').filter(Boolean).join('\n\n').trim() || null
+      : null;
     const displayText = segmentText
+      || thinkingText
       || (!isStreaming && msg.text ? stripMarkup(msg.text) : null);
     // Collapse the tool timeline after the turn completes: keep the natural
     // answer as the visual focus, with a one-line "N tool call(s)" summary that
@@ -613,6 +619,12 @@ export const AgentMessageBody = memo(function AgentMessageBody({
 
     return (
       <div className="space-y-2 min-h-[1em] min-w-0 overflow-x-hidden">
+        {/* While streaming with only thinking (no tool rows and no visible text),
+            the timeline branch has no content to render — show the live activity
+            indicator ("thinking…") instead of a blank bubble. */}
+        {isStreaming && !hasTools && !segmentText && !(msg.text && msg.text.trim()) && (
+          <ActivityIndicator activities={liveActivities} isActive />
+        )}
         {hasTools ? (
           showFullTimeline ? (
             <FullExecutionLog
@@ -634,12 +646,12 @@ export const AgentMessageBody = memo(function AgentMessageBody({
                 onClick={() => setTimelineExpanded(true)}
                 className="inline-flex items-center gap-1.5 mt-1 px-2.5 py-1 rounded-lg text-[11px] text-fg-tertiary hover:bg-surface-elevated/50 hover:text-brand-500 transition-colors cursor-pointer select-none"
               >
-                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M6 14l3 3M6 14l-3 3M6 14l6 0" />
+                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
                 </svg>
-                <span>{t('execution.toolsSummary', { count: toolCount })}</span>
-                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M7 17a2 2 0 012.828 6l8 8a2 2 0 018.435-.938" />
+                <span>{t('common:execution.toolsSummary', { count: toolCount })}</span>
+                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
                 </svg>
               </button>
             </>
