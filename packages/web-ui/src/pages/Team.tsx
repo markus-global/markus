@@ -3120,8 +3120,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
       const abortCtrl = new AbortController();
       abortControllerRef.current = abortCtrl;
-      const effectiveSessionId = options?.sessionIdOverride
-        ?? (activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId);
+      // Same source as streamSessionId's initial value (formula deduped — the
+      // async session_start resolution happens only inside messageStream below,
+      // so this snapshot always equals the initial streamSessionId).
+      const effectiveSessionId = streamSessionId;
       const streamSessionAtStart = effectiveSessionId;
       // A fresh user turn cancels any earlier stop — reattach may resume if the
       // stream drops while THIS turn is still generating.
