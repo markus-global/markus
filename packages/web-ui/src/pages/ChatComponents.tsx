@@ -620,6 +620,10 @@ export const AgentMessageBody = memo(function AgentMessageBody({
               isActive={isStreaming}
               embedded
               hideApprovalCards
+              // Allow collapsing back to the one-line summary — without this the
+              // expand was one-way (timelineExpanded never reset), leaving users
+              // stuck in the full log with no way back.
+              onCollapse={isStreaming ? undefined : () => setTimelineExpanded(false)}
             />
           ) : (
             <>
