@@ -36,6 +36,7 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
+import { chatStore } from './useChatStore.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
@@ -1048,6 +1049,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (p?.agentId) {
         const status = p.status as string | undefined;
         const currentActivity = p.currentActivity as AgentActivityInfo | undefined;
+        // Authoritative stop: an offline agent can never be streaming. Force-clear
+        // any stale frontend streaming refcount so the sidebar cannot stay pinned
+        // to "working" after a missed endStream (abort / stop / disconnect path).
+        if (status === 'offline') chatStore.clearAgentStreaming(p.agentId as string);
         setAgents(prev => prev.map(a => {
           if (a.id !== p.agentId) return a;
           const next = { ...a };
@@ -1656,13 +1661,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     let abortCtrl: AbortController | null = null;
     try {
       // Live send() still owns this session's SSE — keep consuming there; a second
-      // attach would double-apply tool/subagent events.
+      // attach would double-apply tool/subagent events. IMPORTANT: do NOT call
+      // beginStream here — the owning send() already marked the agent as
+      // streaming and will endStream it. Calling it again leaks the refcount
+      // and pins the sidebar to "working" after the agent has stopped.
       if (
         abortControllerRef.current
         && !abortControllerRef.current.signal.aborted
         && getStreamSession(convKey)?.has(sessionId)
       ) {
-        beginStream(convKey);
         if (currentConvKeyRef.current === convKey) setSending(true);
         return;
       }
@@ -3263,6 +3270,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 decrementSending(sendKey);
                 if (abortControllerRef.current === abortCtrl) abortControllerRef.current = null;
                 setStreamSession(sendKey, resumeSessionId);
+                // Balance OUR beginStream(sendKey) above before handing over to
+                // reattach — tryReattachActiveStream marks the agent streaming
+                // itself and will endStream it. Without this the refcount leaks
+                // +1 and the sidebar pins the agent to "working" after it stops.
+                endStream(sendKey);
                 void tryReattachActiveStream(selectedAgent, resumeSessionId, sendKey);
                 return;
               }
@@ -5633,7 +5645,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const isWorking = agent.status === 'working' || !!streamActive;
+  const isWorking = agent.status === 'working' || (!!streamActive && agent.status !== 'offline');
   const isError = agent.status === 'error';
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
   const activity = agent.currentActivity;

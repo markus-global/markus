@@ -34,7 +34,16 @@ class ChatStore {
 
   /** Refcount of in-flight streaming responses per agent (any conversation). */
   private streamingAgents = new Map<string, number>();
+  private streamingTouchedAt = new Map<string, number>();
   private streamingVersion = 0;
+
+  /**
+   * Defensive TTL for a streaming mark. If a refcount stays > 0 for this long
+   * it is a missed endStream pair (abort / stop / disconnect path), not a real
+   * generation — a live SSE reply refreshes the touch far more often. Prevents
+   * the sidebar showing "working" forever after an agent has stopped.
+   */
+  private static readonly STREAM_STALE_MS = 10 * 60 * 1000;
 
   /**
    * Mark an agent as having an active (streaming) response or the reverse.
@@ -48,13 +57,42 @@ class ChatStore {
     const cur = this.streamingAgents.get(agentId) ?? 0;
     const next = Math.max(0, cur + (active ? 1 : -1));
     if (next === cur) return; // no change (e.g. defensive double endStream)
-    if (next === 0) this.streamingAgents.delete(agentId);
-    else this.streamingAgents.set(agentId, next);
+    if (next === 0) {
+      this.streamingAgents.delete(agentId);
+      this.streamingTouchedAt.delete(agentId);
+    } else {
+      this.streamingAgents.set(agentId, next);
+      this.streamingTouchedAt.set(agentId, Date.now());
+    }
     this.streamingVersion++;
     this.emit();
   }
 
+  /**
+   * Force-clear all streaming marks for an agent. Used when authoritative
+   * backend state says the agent can no longer be generating (e.g. stopped),
+   * so a stale frontend refcount can never pin the sidebar to "working".
+   */
+  clearAgentStreaming(agentId: string | null | undefined): void {
+    if (!agentId) return;
+    const had = this.streamingAgents.delete(agentId) || this.streamingTouchedAt.delete(agentId);
+    if (had) {
+      this.streamingVersion++;
+      this.emit();
+    }
+  }
+
   getStreamingAgents(): ReadonlyMap<string, number> {
+    // Lazy TTL sweep — a stuck refcount is a bug we must not let pin the UI.
+    // Called during the sidebar render, so the cleaned map is read right away.
+    if (this.streamingAgents.size === 0) return this.streamingAgents;
+    const now = Date.now();
+    for (const [id, touchedAt] of this.streamingTouchedAt) {
+      if (now - touchedAt > ChatStore.STREAM_STALE_MS) {
+        this.streamingAgents.delete(id);
+        this.streamingTouchedAt.delete(id);
+      }
+    }
     return this.streamingAgents;
   }
 

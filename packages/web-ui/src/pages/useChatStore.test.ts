@@ -56,4 +56,27 @@ describe('chatStore.markAgentStreaming (sidebar busy signal)', () => {
     expect(v2).toBeGreaterThan(v1);
     expect(v3).toBeGreaterThan(v2);
   });
+
+  it('clearAgentStreaming force-clears a stuck refcount (agent stopped)', () => {
+    chatStore.markAgentStreaming('agt_stuck', true); // begin without end (leak)
+    chatStore.markAgentStreaming('agt_stuck', true); // second stream
+    expect(chatStore.isAgentStreaming('agt_stuck')).toBe(true);
+    chatStore.clearAgentStreaming('agt_stuck');
+    expect(chatStore.isAgentStreaming('agt_stuck')).toBe(false);
+    expect(chatStore.getStreamingAgents().has('agt_stuck')).toBe(false);
+  });
+
+  it('clearAgentStreaming is a no-op (no emit) when agent was not streaming', () => {
+    const before = chatStore.getStreamingVersion();
+    chatStore.clearAgentStreaming('agt_clean');
+    expect(chatStore.getStreamingVersion()).toBe(before);
+    expect(chatStore.isAgentStreaming('agt_clean')).toBe(false);
+  });
+
+  it('clearAgentStreaming ignores null/undefined', () => {
+    const before = chatStore.getStreamingVersion();
+    chatStore.clearAgentStreaming(null);
+    chatStore.clearAgentStreaming(undefined);
+    expect(chatStore.getStreamingVersion()).toBe(before);
+  });
 });

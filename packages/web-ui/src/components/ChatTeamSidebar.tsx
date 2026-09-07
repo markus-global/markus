@@ -665,7 +665,9 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     // Busy = backend says working, OR this client has an in-flight streaming
     // reply for the agent (a streamed response can outlive status → idle).
     // Matches AgentStatusBadge's streamActive logic so header + sidebar agree.
-    const isBusy = streamingAgents.has(a.id) || a.status === 'working';
+    // NOTE: an agent that is offline CANNOT be streaming — authoritative stop
+    // must always win over a stale frontend refcount (missed endStream pair).
+    const isBusy = !isStopped && (streamingAgents.has(a.id) || a.status === 'working');
     const statusColor = isBusy ? 'bg-blue-500 animate-pulse'
       : a.status === 'error' ? 'bg-red-500'
       : isStopped ? 'bg-gray-600'
