@@ -4,6 +4,7 @@ import {
   dbMsgToChat,
   finalizeAgentMessage,
   finalizeLastInterruptedAgent,
+  hasStreamingTail,
   insertChatMsgByCreatedAt,
   isRememberActionVisible,
   msgHasContent,
@@ -256,5 +257,30 @@ describe('message finalization helpers', () => {
   it('stopRunningTools returns same ref when nothing is running', () => {
     const segs = [{ type: 'tool' as const, key: 'k', tool: 't', status: 'done' as const }];
     expect(stopRunningTools(segs)).toBe(segs);
+  });
+
+  it('hasStreamingTail detects a live streaming bubble in the tail', () => {
+    const msgs = [
+      agentMsg('a0', 'done'),
+      agentMsg('a1', 'streaming…', { isStreaming: true }),
+    ];
+    expect(hasStreamingTail(msgs)).toBe(true);
+  });
+
+  it('hasStreamingTail ignores stopped / error bubbles', () => {
+    const msgs = [
+      agentMsg('a0', 'stopped', { isStreaming: true, isStopped: true }),
+      agentMsg('a1', 'err', { isError: true }),
+    ];
+    expect(hasStreamingTail(msgs)).toBe(false);
+  });
+
+  it('hasStreamingTail respects lookback window', () => {
+    const old = agentMsg('a_old', 'still streaming far up', { isStreaming: true });
+    const tail = [agentMsg('a1', 'done'), agentMsg('a2', 'done')];
+    // old is beyond the default 8-window from the end
+    const msgs = [old, ...tail];
+    expect(hasStreamingTail(msgs)).toBe(true); // within 8
+    expect(hasStreamingTail(msgs, 2)).toBe(false); // only last 2 scanned
   });
 });

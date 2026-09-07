@@ -85,6 +85,21 @@ export function msgHasContent(msg: ChatMsg): boolean {
     );
 }
 
+/**
+ * True when the TARGET conversation still has a live (non-stopped) streaming
+ * bubble in its tail. This is the authoritative "agent is still generating"
+ * check for the header badge — covers the reattach window where `sending`
+ * has already ended but the resumed stream is still flushing deltas.
+ * Scanning only the tail is safe: streaming bubbles are always recent.
+ */
+export function hasStreamingTail(msgs: ChatMsg[], lookback = 8): boolean {
+  for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - lookback); i--) {
+    const m = msgs[i]!;
+    if (m.isStreaming && !m.isStopped) return true;
+  }
+  return false;
+}
+
 /** Mark any still-running tool segments as stopped. Returns same ref when no change. */
 export function stopRunningTools(segs: MsgSegment[] | undefined): MsgSegment[] | undefined {
   if (!segs || segs.length === 0) return segs;

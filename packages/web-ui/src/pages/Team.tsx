@@ -45,7 +45,7 @@ import {
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
   appendLiveOutput, appendSubagentLog,
-  finalizeAgentMessage, finalizeLastInterruptedAgent, msgHasContent, stopRunningTools,
+  finalizeAgentMessage, finalizeLastInterruptedAgent, msgHasContent, stopRunningTools, hasStreamingTail,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
 import {
@@ -625,15 +625,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Badge must follow local SSE/sending state — agent.status can return to idle
-  // while the UI is still flushing thinking/text deltas. Only scan the tail:
-  // streaming bubbles are always near the end of the conversation.
-  const chatStreamActive = sending || streamingVisual || (() => {
-    for (let i = messages.length - 1; i >= Math.max(0, messages.length - 8); i--) {
-      const m = messages[i]!;
-      if (m.isStreaming && !m.isStopped) return true;
-    }
-    return false;
-  })();
+  // while the UI is still flushing thinking/text deltas. The tail scan is the
+  // authoritative reattach-window signal (sending already ended, bubble still
+  // isStreaming) — extracted to hasStreamingTail in ChatHelpers.
+  const chatStreamActive = sending || streamingVisual || hasStreamingTail(messages);
 
   // Preview mode: typewriter streaming effect for the last agent message
   const previewStreamRef = useRef<{ fullText: string; timers: ReturnType<typeof setTimeout>[] }>({ fullText: '', timers: [] });
@@ -4108,6 +4103,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // ── Render ────────────────────────────────────────────────────────────────────
   const showChatOnMobile = isMobile && mobileLayer === 'chat';
+  // Loading label: name the conversation being loaded, instead of a generic
+  // "Loading conversation…" (UX: switching to a session with history should
+  // not look like a brand-new chat while the history loads).
+  const loadingChatLabel = useMemo(() => {
+    if (chatMode === 'direct') {
+      const sess = sessions.find(s => s.id === activeSessionId);
+      if (sess?.title) return sess.title;
+      if (currentAgent?.name) return currentAgent.name;
+    }
+    return (chatMode === 'channel'
+      ? (activeGroupChat?.name ?? activeChannel)
+      : activeDmUser?.name) || t('page.loadingChat', { defaultValue: 'Loading conversation…' });
+  }, [chatMode, sessions, activeSessionId, currentAgent?.name, activeChannel, activeDmUserId, activeGroupChat?.name, activeDmUser?.name, t]);
+
   const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !sending && !loadingChat;
   // Non-empty sessions: Cursor-style single-line composer that grows with content.
   const compactComposer = mainTab === 'chat' && visibleMessages.length > 0;
@@ -4988,9 +4997,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
-              <span className="text-xs text-fg-tertiary animate-pulse">
-                {t('page.loadingChat', { defaultValue: 'Loading conversation…' })}
-              </span>
+              <div className="flex flex-col items-center gap-0.5">
+                <span className="text-xs text-fg-tertiary animate-pulse">
+                  {t('page.loadingChat', { defaultValue: 'Loading conversation…' })}
+                </span>
+                <span className="text-[11px] text-fg-quaternary max-w-[70%] truncate">{loadingChatLabel}</span>
+              </div>
             </div>
           )}
           {loadingMore && (
