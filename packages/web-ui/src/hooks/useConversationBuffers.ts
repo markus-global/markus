@@ -12,6 +12,7 @@ import { useCallback, useRef, useState, useEffect } from 'react';
 import { ConversationBufferManager, type ConvPhase, makeConvKey } from '../lib/ConversationBufferManager.ts';
 import type { ChatMsg } from '../pages/ChatHelpers.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
+import { chatStore } from '../pages/useChatStore.ts';
 
 export { type ConvPhase } from '../lib/ConversationBufferManager.ts';
 export { makeConvKey } from '../lib/ConversationBufferManager.ts';
@@ -47,11 +48,26 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     if (r.displayChanged && r.newActivities) setActivities(r.newActivities);
   }, []);
 
-  // Phase transitions
+  // Phase transitions. beginStream/endStream also update the global streaming
+  // tracker (refcounted per agent) so the L1/L2 sidebar shows the same busy
+  // state as the chat header — a streamed reply can outlive `agent.status`
+  // flipping back to idle on the backend.
   const getPhase = useCallback((key: string) => mgr.current.getPhase(key), []);
   const beginLoad = useCallback((key: string) => mgr.current.beginLoad(key), []);
-  const beginStream = useCallback((key: string) => mgr.current.beginStream(key), []);
-  const endStream = useCallback((key: string) => mgr.current.endStream(key), []);
+  const beginStream = useCallback((key: string) => {
+    mgr.current.beginStream(key);
+    // Direct conversation keys are the agent id itself (see makeConvKey):
+    // `ch:*` (team/channel) and `dm:*` (human DM) never map to one agent.
+    if (key && !key.startsWith('ch:') && !key.startsWith('dm:') && key !== '_direct') {
+      chatStore.markAgentStreaming(key, true);
+    }
+  }, []);
+  const endStream = useCallback((key: string) => {
+    mgr.current.endStream(key);
+    if (key && !key.startsWith('ch:') && !key.startsWith('dm:') && key !== '_direct') {
+      chatStore.markAgentStreaming(key, false);
+    }
+  }, []);
   const resetConv = useCallback((key: string) => { mgr.current.resetConv(key); mgr.current.deleteBuffer(key); }, []);
 
   // Phase-aware async load

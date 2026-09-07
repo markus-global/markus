@@ -31,6 +31,41 @@ class ChatStore {
   private actBuffers = new Map<string, ActivityStep[]>();
   private sendingConvs = new Set<string>();
   private currentConvKey = '';
+
+  /** Refcount of in-flight streaming responses per agent (any conversation). */
+  private streamingAgents = new Map<string, number>();
+  private streamingVersion = 0;
+
+  /**
+   * Mark an agent as having an active (streaming) response or the reverse.
+   * Refcounted so multiple concurrent conversations with the same agent keep
+   * it busy until the last stream ends. Always notifies subscribers — the
+   * sidebar subscribes to this even when the edited conversation is not the
+   * one currently in view.
+   */
+  markAgentStreaming(agentId: string | null | undefined, active: boolean): void {
+    if (!agentId) return;
+    const cur = this.streamingAgents.get(agentId) ?? 0;
+    const next = Math.max(0, cur + (active ? 1 : -1));
+    if (next === cur) return; // no change (e.g. defensive double endStream)
+    if (next === 0) this.streamingAgents.delete(agentId);
+    else this.streamingAgents.set(agentId, next);
+    this.streamingVersion++;
+    this.emit();
+  }
+
+  getStreamingAgents(): ReadonlyMap<string, number> {
+    return this.streamingAgents;
+  }
+
+  isAgentStreaming(agentId: string | null | undefined): boolean {
+    return !!agentId && (this.streamingAgents.get(agentId) ?? 0) > 0;
+  }
+
+  /** Monotonic counter that changes whenever the streaming set changes. */
+  getStreamingVersion(): number {
+    return this.streamingVersion;
+  }
   private rafPending: number | null = null;
 
   private state: ChatState = {

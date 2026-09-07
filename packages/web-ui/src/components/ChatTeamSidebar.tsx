@@ -18,6 +18,7 @@ import {
 import { Avatar } from './Avatar.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import { useChatStore, chatStore } from '../pages/useChatStore.ts';
 
 // Module-level cache so last-message previews survive unmount/remount cycles on mobile
 let _lastMsgCache: Map<string, string> = new Map();
@@ -225,6 +226,9 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   const layout = useLayout();
   const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
   const externalMarkusIds = useMemo(() => new Set(externalAgents.map(ea => ea.markusAgentId).filter(Boolean) as string[]), [externalAgents]);
+
+  const _streamVersion = useChatStore(() => chatStore.getStreamingVersion()); // subscribe — re-render on stream lifecycle changes
+  const streamingAgents = chatStore.getStreamingAgents();
 
   // Ungrouped members (from teams API)
   const [ungrouped, setUngrouped] = useState<TeamMemberInfo[]>([]);
@@ -658,10 +662,14 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     const selected = chatMode === 'direct' && selectedAgent === a.id;
     const isExt = externalMarkusIds.has(a.id);
     const isStopped = a.status === 'offline';
-    const statusColor = a.status === 'idle' ? 'bg-green-500'
-      : a.status === 'working' ? 'bg-blue-500 animate-pulse'
+    // Busy = backend says working, OR this client has an in-flight streaming
+    // reply for the agent (a streamed response can outlive status → idle).
+    // Matches AgentStatusBadge's streamActive logic so header + sidebar agree.
+    const isBusy = streamingAgents.has(a.id) || a.status === 'working';
+    const statusColor = isBusy ? 'bg-blue-500 animate-pulse'
       : a.status === 'error' ? 'bg-red-500'
-      : 'bg-gray-600';
+      : isStopped ? 'bg-gray-600'
+      : 'bg-green-500';
 
     const team = teamId ? teamMap.get(teamId) : undefined;
     const isManager = team?.managerId === a.id;
@@ -672,7 +680,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     const subtitle = agentLastMsg.get(a.id)
       || (a.currentActivity?.label?.slice(0, 60) || '');
 
-    const statusTitle = a.status === 'idle' ? t('common:status.online') : a.status === 'working' ? t('common:status.working') : a.status === 'error' ? t('common:status.error') : t('common:status.offline');
+    const statusTitle = isBusy ? t('common:status.working') : a.status === 'error' ? t('common:status.error') : isStopped ? t('common:status.offline') : t('common:status.online');
 
     return (
       <div
