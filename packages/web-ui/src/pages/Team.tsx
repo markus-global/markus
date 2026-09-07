@@ -1971,6 +1971,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         // No live stream to reattach — clear stuck「思考中」locally (DB heal
         // runs on message load / process start; this covers the current view).
         endStream(convKey);
+        // Reattach added this session to the streaming set; it is not coming
+        // back — release the session so the sidebar busy mark is removed.
+        clearStreamSession(convKey, sessionId);
         if (currentConvKeyRef.current === convKey) {
           updateConvMsgs(convKey, prev => {
             const u = [...prev];
@@ -2020,11 +2023,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         setSending(false);
       }
       endStream(convKey);
+      // This reattach's stream session is finished (stream completed) — remove
+      // it so the sidebar busy mark clears with the stream.
+      clearStreamSession(convKey, sessionId);
       if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
     } catch (err) {
       // Aborted by stop / newer reattach / navigation — always clear local stream UI.
       if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
       endStream(convKey);
+      // Same as above: whatever ended this reattach (abort / error) means the
+      // stream session is no longer active — release it.
+      clearStreamSession(convKey, sessionId);
       if (currentConvKeyRef.current === convKey) setSending(false);
       if (err instanceof Error && err.name === 'AbortError') return;
     }
@@ -2627,6 +2636,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           resetSending(prevKey);
           actBuffers.delete(activeSessionId ?? prevKey);
           endStream(prevKey);
+          if (activeSessionId) clearStreamSession(prevKey, activeSessionId);
           // Drop the in-flight user+empty agent pair before the retry re-adds them.
           updateConvMsgs(prevKey, prev => {
             const u = [...prev];
@@ -2647,6 +2657,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         resetSending(prevKey);
         actBuffers.delete(activeSessionId ?? prevKey);
         endStream(prevKey);
+        if (activeSessionId) clearStreamSession(prevKey, activeSessionId);
         updateConvMsgs(prevKey, prev => {
           const u = [...prev];
           for (let i = u.length - 1; i >= 0; i--) {
@@ -2683,6 +2694,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       resetSending(prevKey);
       actBuffers.delete(prevKey);
       endStream(prevKey);
+      clearStreamSession(prevKey);
       updateConvMsgs(prevKey, prev => {
         const u = [...prev];
         for (let i = u.length - 1; i >= 0; i--) {
