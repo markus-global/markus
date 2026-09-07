@@ -156,6 +156,52 @@ export function finalizeLastInterruptedAgent(msgs: ChatMsg[]): ChatMsg[] {
   return u;
 }
 
+/**
+ * Terminal cleanup for the message of a finished direct stream (the single
+ * convergence point every terminal path of send() passes through: done with or
+ * without server segments, stream error, soft-disconnect without reattach, SSE
+ * drop + poll recovery). Stops running tools and lands isStreaming: false.
+ *
+ * The optimistic placeholder is created with isStreaming: true and nothing in
+ * the streaming pipeline resets it — if this step ever regresses, the bubble
+ * renders as a perpetual "thinking…" (isStreamingMsg = ... || !!msg.isStreaming)
+ * and the sidebar busy mark holds via hasStreamingTail. Returns the same array
+ * ref when nothing changed so React can skip the re-render.
+ */
+export function finalizeStreamEnd(msgs: ChatMsg[], agentMsgId: string): ChatMsg[] {
+  const idx = msgs.findIndex(m => m.id === agentMsgId);
+  if (idx < 0) return msgs;
+  const msg = msgs[idx]!;
+  const segs = stopRunningTools(msg.segments);
+  if (!msg.isStreaming && segs === msg.segments) return msgs;
+  const u = [...msgs];
+  u[idx] = { ...msg, isStreaming: false, segments: segs };
+  return u;
+}
+
+/**
+ * Finalize the last in-flight agent bubble (agent && isStreaming && !isStopped)
+ * — used when a reattach stream dies/aborts while feeding an existing bubble.
+ * Unlike finalizeLastInterruptedAgent this never touches a completed reply:
+ * a message that is NOT streaming is not this stream's bubble. Empty bubbles
+ * are spliced out (empty-reply rule).
+ */
+export function finalizeLastStreamingBubble(msgs: ChatMsg[], outcome: StreamOutcome = 'stopped'): ChatMsg[] {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]!;
+    if (m.sender === 'agent' && m.isStreaming && !m.isStopped) {
+      const finalized = finalizeAgentMessage(m, outcome);
+      if (finalized === null) {
+        return msgs.filter((_, j) => j !== i);
+      }
+      const u = [...msgs];
+      u[i] = finalized;
+      return u;
+    }
+  }
+  return msgs;
+}
+
 export function insertChatMsgByCreatedAt(msgs: ChatMsg[], msg: ChatMsg): ChatMsg[] {
   if (msgs.some((m) => m.id === msg.id)) return msgs;
   const t = msg.rawCreatedAt ? Date.parse(msg.rawCreatedAt) : NaN;

@@ -4,6 +4,8 @@ import {
   dbMsgToChat,
   finalizeAgentMessage,
   finalizeLastInterruptedAgent,
+  finalizeStreamEnd,
+  finalizeLastStreamingBubble,
   hasStreamingTail,
   insertChatMsgByCreatedAt,
   isRememberActionVisible,
@@ -257,6 +259,48 @@ describe('message finalization helpers', () => {
   it('stopRunningTools returns same ref when nothing is running', () => {
     const segs = [{ type: 'tool' as const, key: 'k', tool: 't', status: 'done' as const }];
     expect(stopRunningTools(segs)).toBe(segs);
+  });
+
+  it('finalizeStreamEnd lands isStreaming:false + stops running tools (terminal convergence)', () => {
+    // Regression: the direct-send() completion paths used to leave the
+    // placeholder (isStreaming: true) untouched → perpetual "thinking…" bubble.
+    const msgs = [agentMsg('a0', 'ok', {
+      isStreaming: true,
+      segments: [{ type: 'tool', key: 'k', tool: 'shell', status: 'running' }],
+    })];
+    const out = finalizeStreamEnd(msgs, 'a0');
+    expect(out[0]!.isStreaming).toBe(false);
+    expect(out[0]!.segments![0]).toMatchObject({ status: 'stopped' });
+  });
+
+  it('finalizeStreamEnd is idempotent — no-op when already finalized', () => {
+    const msgs = [agentMsg('a0', 'done', { isStreaming: false })];
+    expect(finalizeStreamEnd(msgs, 'a0')).toBe(msgs);
+  });
+
+  it('finalizeLastStreamingBubble finalizes the in-flight bubble, never a completed reply', () => {
+    const msgs = [
+      agentMsg('a0', 'completed', { isStopped: false }),
+      agentMsg('a1', 'partial', { isStreaming: true }),
+    ];
+    const out = finalizeLastStreamingBubble(msgs);
+    expect(out[1]!.isStopped).toBe(true);
+    expect(out[1]!.isStreaming).toBe(false);
+    // completed reply untouched
+    expect(out[0]!.isStopped).toBeFalsy();
+  });
+
+  it('finalizeLastStreamingBubble splices an empty in-flight bubble', () => {
+    const msgs = [
+      agentMsg('a0', 'completed'),
+      agentMsg('a1', '', { isStreaming: true }),
+    ];
+    expect(finalizeLastStreamingBubble(msgs).map(m => m.id)).toEqual(['a0']);
+  });
+
+  it('finalizeLastStreamingBubble returns same ref when nothing is in flight', () => {
+    const msgs = [agentMsg('a0', 'done'), agentMsg('a1', 'err', { isError: true })];
+    expect(finalizeLastStreamingBubble(msgs)).toBe(msgs);
   });
 
   it('hasStreamingTail detects a live streaming bubble in the tail', () => {

@@ -45,7 +45,7 @@ import {
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
   appendLiveOutput, appendSubagentLog,
-  finalizeAgentMessage, finalizeLastInterruptedAgent, msgHasContent, stopRunningTools, hasStreamingTail,
+  finalizeAgentMessage, finalizeLastInterruptedAgent, finalizeStreamEnd, finalizeLastStreamingBubble, msgHasContent, stopRunningTools, hasStreamingTail,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
 import {
@@ -678,6 +678,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadingChat, setLoadingChat] = useState(false);
+  // Monotonic switch counter: only the LATEST switchSession may clear loadingChat.
+  // Rapid tab switching otherwise lets an older request's finally{} kill the
+  // spinner of the session that is actually being viewed now.
+  const sessionSwitchSeqRef = useRef(0);
   // Image attachments
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
   /** In-app lightbox for chat image attachments (avoid window.open on data: URLs). */
@@ -1622,6 +1626,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // Load session messages from DB — phase-aware via ConversationBufferManager.
   // During streaming phase, DB data is written to cache only, never to display.
   const loadSessionMessages = useCallback(async (sessionId: string, convKey: string): Promise<number> => {
+    const seqAtStart = sessionSwitchSeqRef.current;
     // Soft-refresh (buffer already has messages) should not flash a full-page spinner.
     const showSpinner = currentConvKeyRef.current === convKey
       && (msgBuffers.get(convKey)?.length ?? 0) === 0;
@@ -1642,9 +1647,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       oldestMsgId.current = oldestCursor;
       return count;
     } finally {
-      if (showSpinner && currentConvKeyRef.current === convKey) setLoadingChat(false);
+      // Only the latest session switch may clear the spinner — an older tab
+      // request resolving late otherwise kills the loading state of the tab
+      // the user is actually viewing now.
+      if (showSpinner && currentConvKeyRef.current === convKey && sessionSwitchSeqRef.current === seqAtStart) setLoadingChat(false);
     }
-  }, [loadAndDisplay, msgBuffers]);
+  }, [loadAndDisplay, msgBuffers, sessionSwitchSeqRef]);
 
   /**
    * After refresh / session switch: if the server still has an active generation
@@ -2032,12 +2040,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
     } catch (err) {
       // Aborted by stop / newer reattach / navigation — always clear local stream UI.
-      if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
+      const wasActive = reattachAbortRef.current === abortCtrl;
+      if (wasActive) reattachAbortRef.current = null;
       endStream(convKey);
       // Same as above: whatever ended this reattach (abort / error) means the
       // stream session is no longer active — release it.
       clearStreamSession(convKey, sessionId);
-      if (currentConvKeyRef.current === convKey) setSending(false);
+      if (currentConvKeyRef.current === convKey) {
+        setSending(false);
+        // The bubble this reattach was feeding is still marked streaming (the
+        // handover / placeholder set isStreaming: true). Abort or death of the
+        // reattach ends the local stream — finalize the bubble instead of
+        // leaving a perpetual "thinking…" ghost. Only act when THIS was the
+        // active reattach: a newer one may still be streaming the same bubble.
+        if (wasActive) {
+          updateConvMsgs(convKey, prev => finalizeLastStreamingBubble(prev), sessionId);
+        }
+      }
       if (err instanceof Error && err.name === 'AbortError') return;
     }
   }, [appendConvActivity, beginStream, endStream, getStreamSession, msgBuffers, setStreamSession, updateConvMsgs, updateConvMsgsRaf]);
@@ -2860,7 +2879,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         const agentCreatedAt = new Date().toISOString();
         updateConvMsgs(sendKey, prev => [
           ...prev,
-          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [] },
+          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [], isStreaming: true },
         ], streamSessionId);
       } else {
         const agentCreatedAt = new Date().toISOString();
@@ -2870,7 +2889,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         updateConvMsgs(sendKey, prev => [
           ...prev,
           userMsg,
-          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [] },
+          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [], isStreaming: true },
         ], streamSessionId);
       }
 
@@ -3351,13 +3370,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         }
       }
 
-      // Mark any still-running tool segments as stopped (stream ended due to cancellation or disconnect)
-      updateConvMsgs(sendKey, prev => {
-        const u = [...prev];
-        const idx = u.findIndex(m => m.id === agentMsgId);
-        if (idx >= 0) u[idx] = { ...u[idx]!, segments: stopRunningTools(u[idx]!.segments) };
-        return u;
-      }, streamSessionId);
+      // Mark any still-running tool segments as stopped (stream ended due to
+      // cancellation or disconnect). This block is the SINGLE convergence point
+      // for every terminal path of a direct send(): done (with/without server
+      // segments), error, soft-disconnect without reattach, SSE drop + poll
+      // recovery. It must land the authoritative stream-end flag: the optimistic
+      // placeholder carries isStreaming: true and nothing else in this flow
+      // resets it — if it stayed true the bubble would render as a perpetual
+      // "thinking…" (isStreamingMsg = ... || !!msg.isStreaming) and the sidebar
+      // busy mark would hold via hasStreamingTail. See finalizeStreamEnd.
+      updateConvMsgs(sendKey, prev => finalizeStreamEnd(prev, agentMsgId), streamSessionId);
 
       // If stream was aborted by user (api resolves rather than rejects on abort) —
       // keep partial content and mark as stopped. The catch block handles the rejection path.
@@ -3595,6 +3617,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   };
 
   const switchSession = async (s: ChatSessionInfo) => {
+    const switchSeq = ++sessionSwitchSeqRef.current;
     const prevSessionId = activeSessionId;
     setActiveSessionId(s.id);
     setShowSessions(false);
@@ -3622,13 +3645,27 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (prevSessionId && prevSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
       saveSessionToCache(key, prevSessionId);
     }
-    restoreSessionFromCache(key, s.id);
+    // If this session has no cached messages yet, show the loading state
+    // immediately instead of a blank "new chat" surface while the DB fetch
+    // is in flight. The try/finally guarantees the spinner is cleared even
+    // when loadSessionMessages' own showSpinner guard doesn't fire (e.g. the
+    // currentConvKey ref lags the just-switched activeSessionId).
+    const restored = restoreSessionFromCache(key, s.id);
+    if ((!restored || restored.length === 0) && s.id !== NEW_CHAT_PLACEHOLDER_ID) {
+      setLoadingChat(true);
+    }
     setOpenSessionTabs(prev => prev.some(t => t.id === s.id) ? prev : [...prev, s]);
     // Remove from closed-tabs list since user explicitly opened it
     if (selectedAgent) removeClosedTab(selectedAgent, s.id);
     // Always attempt DB load to sync with server. The phase-aware loadSessionMessages
     // blocks display writes during streaming, preventing race conditions.
-    await loadSessionMessages(s.id, key);
+    // Only the most recent switch may clear loadingChat (rapid tab switching).
+    if (currentConvKeyRef.current !== key) currentConvKeyRef.current = key;
+    try {
+      await loadSessionMessages(s.id, key);
+    } finally {
+      if (sessionSwitchSeqRef.current === switchSeq) setLoadingChat(false);
+    }
     const mo = s.metadata?.modelOverride;
     setSessionModelOverride(mo?.provider && mo?.model ? { provider: mo.provider, model: mo.model } : null);
     if (selectedAgent && !isStreaming) {
@@ -5137,12 +5174,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                             }
                           </div>
                         : msg.sender === 'agent' && chatMode === 'channel' && !(msg.segments && msg.segments.length > 0)
-                          ? <ErrorBoundary
-                              resetKeys={[msg.text]}
-                              fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
-                            >
-                              <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
-                            </ErrorBoundary>
+                          ? (isStreamingMsg && !msg.text?.trim()
+                            ? <ActivityIndicator activities={activities} isActive />
+                            : <ErrorBoundary
+                                resetKeys={[msg.text]}
+                                fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
+                              >
+                                <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
+                              </ErrorBoundary>)
                           : <ErrorBoundary
                               resetKeys={[msg.id, msg.text, msg.segments?.length, isStreamingMsg]}
                               fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}

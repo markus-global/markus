@@ -155,7 +155,7 @@ manager.abortStream(key, opts: { markStopped?: boolean; sessionId?: string })
 | S1 | 文档 + 状态机缺陷清单 | 本文件，typecheck 通过 |
 | S2 | `abortStream` 单一收敛入口落地，替换 4 处复制粘贴 teardown | ✅ `b0dd2c93`：停止/中断/重发/切会话行为不变，5 个幂等单测 |
 | S3 | 流式会话归属收敛（C 病灶） | ✅ `682d0df7`：`streamSessionId` 与 `effectiveSessionId` 重复公式合一；归属仍是 send() 局部正确状态（路由到正确缓存所需），多会话流隔离行为不变 |
-| S4 | 结束态收敛 `finalizeAgentMessage`（D 病灶） | ✅ `9ecd655e`：12+ 处手工 isStopped/isError/tool 变换收敛为 4 个辅助函数 + 8 个单测 |
+| S4 | 结束态收敛 `finalizeAgentMessage`（D 病灶） | ✅ `9ecd655e`：12+ 处手工 isStopped/isError/tool 变换收敛为 4 个辅助函数 + 8 个单测。**后续补全**（`d63f3c75` 之后）：原 done/error 收尾路径并不经过 finalize，`finalizeStreamEnd`/`finalizeLastStreamingBubble` 补齐直连流 done/error/软断连 + reattach 中断的 isStreaming 收敛（新增 5 个单测） |
 | S5 | 消除隐性双源（B/E 病灶），chatStore 单一职责 | ✅ `682d0df7`：chatStore 删除 8 个从未读写的死状态字段（226→110 行），只保留流式 agent 集合 + 版本号；`messages/sending/activities` 本就收敛于 manager，Team 无重复 useState |
 | S6 | 视觉状态收敛（E 病灶） | ✅ `50065608`：`chatStreamActive` 尾部扫描提取为 `hasStreamingTail` 纯函数（3 个单测）；thinkingAgents 生命周期自洽（WS 事件 + 120s 兜底）无需改造 |
 | S7 | 拆分 tab 面板（会话/流式渲染/审批/搜索） | ⬜ 未做：消息渲染已内聚在 ChatComponents/ExecutionTimeline，Team.tsx 为编排层；拆分收益 < 风险，留作后续独立 PR |

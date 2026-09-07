@@ -22,7 +22,7 @@ import {
   scrollToMarkdownFragment,
 } from './markdown-links.ts';
 import {
-  looksLikePlantUML, looksLikeMermaid,
+  looksLikePlantUML,
 } from './markdown-utils.ts';
 import {
   EntityChip, EntityCard, looksLikeEntityId, chipTypeToEntityType, type EntityType,
@@ -102,10 +102,17 @@ export const mdComponents = {
   code: ({ children, className: cls }: { children?: React.ReactNode; className?: string }) => {
     const text = typeof children === 'string' ? children : String(children ?? '');
     const trimmed = text.trim();
+    // Diagram rendering rules:
+    //  - PlantUML: auto-detect the strong `@startuml`/`@enduml` markers (near-zero
+    //    false positives) OR the explicit ```plantuml fence.
+    //  - Mermaid: opt-in ONLY via explicit ```mermaid fence. We deliberately do
+    //    NOT auto-detect unlabeled code as mermaid — the old heuristic matched
+    //    `pie|journey|timeline|gantt|mindmap` and misfired on ordinary
+    //    prose/code, producing spurious "Mermaid render error".
     if (cls?.includes('language-plantuml') || looksLikePlantUML(trimmed)) {
       return <DiagramToggleBlock code={trimmed} language="plantuml"><PlantUMLBlock code={trimmed} /></DiagramToggleBlock>;
     }
-    if (cls?.includes('language-mermaid') || (!cls && looksLikeMermaid(trimmed))) {
+    if (cls?.includes('language-mermaid')) {
       return <DiagramToggleBlock code={trimmed} language="mermaid"><MermaidBlock code={trimmed} /></DiagramToggleBlock>;
     }
     if (cls?.includes('language-')) {
