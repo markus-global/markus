@@ -543,9 +543,10 @@ export const AgentMessageBody = memo(function AgentMessageBody({
   const { t } = useTranslation(['team', 'common']);
   const segments = msg.segments;
   const isStopped = msg.isStopped;
-  // The execution timeline (tool calls + thinking + answer) is always shown
-  // expanded — no compact/collapse state. Users see the complete history without
-  // an extra click, which keeps the view consistent and removes mental overhead.
+  // Tool-call timeline collapses to a single line once the turn completes so the
+  // natural-language answer is the visual focus. While streaming (or when the
+  // user manually expands) the full execution log is shown.
+  const [timelineExpanded, setTimelineExpanded] = useState(false);
 
   // Include thinking length — thinking_delta updates seg.thinking without changing
   // content length, and a content-only key would freeze the timeline mid-stream.
@@ -582,6 +583,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
 
   if (segments !== undefined && segments.length > 0) {
     const hasTools = segments.some(s => s.type === 'tool');
+    const toolCount = segments.filter(s => s.type === 'tool').length;
     const textSegments = segments.filter(s => s.type === 'text');
     const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
     const stripMarkup = (t: string) => t
@@ -593,6 +595,10 @@ export const AgentMessageBody = memo(function AgentMessageBody({
     const segmentText = allText ? stripMarkup(allText) : null;
     const displayText = segmentText
       || (!isStreaming && msg.text ? stripMarkup(msg.text) : null);
+    // Collapse the tool timeline after the turn completes: keep the natural
+    // answer as the visual focus, with a one-line "N tool call(s)" summary that
+    // expands the full execution log on click. While streaming it stays open.
+    const showFullTimeline = isStreaming || timelineExpanded;
 
     // Collect approval cards once for the bubble footer. The timeline hides its
     // mid-row copies via hideApprovalCards so the same card is not shown twice.
@@ -607,14 +613,33 @@ export const AgentMessageBody = memo(function AgentMessageBody({
 
     return (
       <div className="space-y-2 min-h-[1em] min-w-0 overflow-x-hidden">
-        {(hasTools || isStreaming) ? (
-          // Always expanded: the full timeline includes tools, thinking and the answer.
-          <FullExecutionLog
-            entries={fullLogEntries}
-            isActive={isStreaming}
-            embedded
-            hideApprovalCards
-          />
+        {hasTools ? (
+          showFullTimeline ? (
+            <FullExecutionLog
+              entries={fullLogEntries}
+              isActive={isStreaming}
+              embedded
+              hideApprovalCards
+            />
+          ) : (
+            <>
+              {displayText && (
+                <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
+              )}
+              <button
+                onClick={() => setTimelineExpanded(true)}
+                className="inline-flex items-center gap-1.5 mt-1 px-2.5 py-1 rounded-lg text-[11px] text-fg-tertiary hover:bg-surface-elevated/50 hover:text-brand-500 transition-colors cursor-pointer select-none"
+              >
+                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6 14l3 3M6 14l-3 3M6 14l6 0" />
+                </svg>
+                <span>{t('execution.toolsSummary', { count: toolCount })}</span>
+                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M7 17a2 2 0 012.828 6l8 8a2 2 0 018.435-.938" />
+                </svg>
+              </button>
+            </>
+          )
         ) : (
           displayText && (
             <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />

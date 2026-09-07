@@ -3780,6 +3780,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setSessionModelOverride(null);
     const key = currentConvKeyRef.current;
     resetConv(key);
+    // resetConv deletes the manager's activeSession for this key. Re-pin it to
+    // the new-chat placeholder so a still-running stream from a PREVIOUS session
+    // is routed to its own session cache (isSameSession=false) instead of being
+    // written into the fresh new-chat buffer — this is what mixed concurrent
+    // streams together and made content land in the wrong bubbles.
+    activeSessionBuffer.set(key, NEW_CHAT_PLACEHOLDER_ID);
     setMessages([]);
     setHasMore(false);
     oldestMsgId.current = null;

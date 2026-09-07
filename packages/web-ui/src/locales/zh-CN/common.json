@@ -155,6 +155,7 @@
     "thinking": "思考中",
     "thinkingEllipsis": "思考中…",
     "writingResponse": "正在生成回复…",
+    "toolsSummary": "{{count}} 次工具调用 · 点击查看执行过程",
     "toolRunning": "运行中",
     "toolSuccess": "成功",
     "toolFailed": "失败",
