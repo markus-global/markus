@@ -3555,12 +3555,23 @@ export class APIServer {
       const authUser = await this.getAuthUser(req);
       const agentId = path.split('/')[3]!;
       if (!this.storage) {
-        this.json(res, 200, { sessions: [] });
+        this.json(res, 200, { sessions: [], total: 0, page: 1, pageSize: 0, hasMore: false });
         return;
       }
-      const limit = parseInt(url.searchParams.get('limit') ?? '20');
-      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, limit, authUser?.userId);
-      this.json(res, 200, { sessions });
+      // Paginated session list — the Team chat History panel loads pages of 20
+      // and "loads more" on demand instead of capping at 10 (which felt
+      // "incomplete"). Response: { sessions, total, page, pageSize, hasMore }.
+      const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+      const pageSize = Math.min(
+        Math.max(1, parseInt(url.searchParams.get('pageSize') ?? url.searchParams.get('limit') ?? '20', 10) || 20),
+        50,
+      );
+      const result = this.storage.chatSessionRepo.listSessionsPaginated(agentId, {
+        page,
+        pageSize,
+        userId: authUser?.userId,
+      });
+      this.json(res, 200, result);
       return;
     }
 
@@ -3634,6 +3645,45 @@ export class APIServer {
       existing['modelOverride'] = { provider, model };
       this.storage.chatSessionRepo.updateSessionMetadata(sessionId, existing);
       this.json(res, 200, { modelOverride: { provider, model } });
+      return;
+    }
+
+    // Session title rename (agent-initiated session_rename tool + UI edit).
+    // Updates chat_sessions.title and broadcasts so the open History panel
+    // refreshes the title in real time.
+    if (path.match(/^\/api\/sessions\/[^/]+\/title$/) && req.method === 'PATCH') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const sessionId = path.split('/')[3]!;
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const session = this.storage.chatSessionRepo.getSession(sessionId);
+      if (!session) {
+        this.json(res, 404, { error: 'Session not found' });
+        return;
+      }
+      if (session.userId && session.userId !== authUser.userId) {
+        const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+        if (!isAdminOrOwner) {
+          this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+          return;
+        }
+      }
+      const body = await this.readBody(req);
+      const title = typeof body['title'] === 'string' ? body['title'].trim() : '';
+      if (!title) {
+        this.json(res, 400, { error: 'title is required' });
+        return;
+      }
+      const updated = this.storage.chatSessionRepo.updateTitle(sessionId, title);
+      this.ws.broadcast({
+        type: 'session:title_updated',
+        payload: { sessionId, agentId: session.agentId, title: updated?.title ?? title },
+        timestamp: new Date().toISOString(),
+      });
+      this.json(res, 200, { ok: true, session: updated });
       return;
     }
 
@@ -12459,6 +12509,7 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+\/model-override$/, 'PUT'),
+      regex(/^\/api\/sessions\/[^/]+\/title$/, 'PATCH'),
       regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message|evolve-from-message)$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+\/evolve-from-message$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),

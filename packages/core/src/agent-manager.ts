@@ -387,6 +387,8 @@ export class AgentManager {
   }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] }>;
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
   private runtimeViewerContext?: { locale?: string; timezone?: string };
+  /** org-manager injects this so session_rename on cs_* sessions persists to Sqlite + broadcasts to UI. */
+  private sessionTitleUpdater?: (sessionId: string, title: string) => void;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
   private deliverableService?: DeliverableServiceBridge;
@@ -1167,6 +1169,15 @@ export class AgentManager {
     }
   }
 
+  /**
+   * Inject a hook that persists a chat (cs_*) session title renames into the
+   * Sqlite chat store and broadcasts to the web UI (wired by the org-manager
+   * server). Lets agents rename the current chat session via session_rename.
+   */
+  setSessionTitleUpdater(fn: (sessionId: string, title: string) => void): void {
+    this.sessionTitleUpdater = fn;
+  }
+
   setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
     this.userNotifier = cb;
     for (const info of this.listAgents()) {
@@ -1635,6 +1646,8 @@ export class AgentManager {
     agent.registerTool(createSessionTool({
       agentId: id, chatSessionRepo: createMemorySessionRepo(mem),
       compactor, slotStore, fragmentStore,
+      titleUpdater: this.sessionTitleUpdater,
+      currentDbSessionId: () => agent.getDbSessionId(),
     }));
 
     // Settings tools — agents can list providers and switch models via chat
@@ -2571,6 +2584,8 @@ export class AgentManager {
           purgeSessionFragments: (sid) => mem2.purgeSessionFragments ? mem2.purgeSessionFragments(sid) : 0,
           sessionStats: (sid) => mem2.sessionStats ? mem2.sessionStats(sid) : { messageCount: 0, slotKeys: [], fragmentCount: 0 },
         },
+        titleUpdater: this.sessionTitleUpdater,
+        currentDbSessionId: () => agent.getDbSessionId(),
       }));
     }
 
@@ -3363,6 +3378,8 @@ export class AgentManager {
           purgeSessionFragments: (sid) => mem.purgeSessionFragments ? mem.purgeSessionFragments(sid) : 0,
           sessionStats: (sid) => mem.sessionStats ? mem.sessionStats(sid) : { messageCount: 0, slotKeys: [], fragmentCount: 0 },
         },
+        titleUpdater: this.sessionTitleUpdater,
+        currentDbSessionId: () => agent.getDbSessionId(),
       }));
     }
   }

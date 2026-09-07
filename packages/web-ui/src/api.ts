@@ -1988,8 +1988,15 @@ export const api = {
   sessions: {
     hasAny: () =>
       request<{ hasAny: boolean }>('/sessions/has-any'),
-    listByAgent: (agentId: string, limit = 20) =>
-      request<{ sessions: ChatSessionInfo[] }>(`/agents/${agentId}/sessions?limit=${limit}`),
+    listByAgent: (agentId: string, limit = 20, page = 1) =>
+      request<{ sessions: ChatSessionInfo[]; total: number; page: number; pageSize: number; hasMore: boolean }>(
+        `/agents/${agentId}/sessions?page=${page}&limit=${limit}`
+      ),
+    renameTitle: (sessionId: string, title: string) =>
+      request<{ ok: boolean; session: ChatSessionInfo }>(
+        `/sessions/${sessionId}/title`,
+        { method: 'PATCH', body: JSON.stringify({ title }) }
+      ),
     getMessages: (sessionId: string, limit = 50, before?: string) =>
       request<{ messages: ChatMessageInfo[]; hasMore: boolean }>(
         `/sessions/${sessionId}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
