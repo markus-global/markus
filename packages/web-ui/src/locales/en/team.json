@@ -305,6 +305,8 @@
     "sessionMain": "Main",
     "sessionConversation": "Conversation",
     "noConversationsYet": "No conversations yet",
+    "renameSession": "Rename",
+    "loadMoreSessions": "Load more sessions",
     "chatGreetings": [
       "How can I help you?",
       "What would you like me to do?",

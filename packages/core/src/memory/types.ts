@@ -19,6 +19,7 @@ export interface MemoryEntry {
 export interface ConversationSession {
   id: string;
   agentId: string;
+  title?: string;
   messages: LLMMessage[];
   startedAt: string;
   lastActivityAt: string;
@@ -69,6 +70,8 @@ export interface IMemoryStore {
   getLatestMainSession(agentId: string): ConversationSession | undefined;
   createSession(agentId: string): ConversationSession;
   getOrCreateSession(agentId: string, sessionId: string): ConversationSession;
+  /** Rename a session (used by the agent session_rename tool). */
+  renameSession?(sessionId: string, title: string): void;
   appendMessage(sessionId: string, message: LLMMessage): void;
   getRecentMessages(sessionId: string, limit: number): LLMMessage[];
   compactSession(sessionId: string, keepLast?: number): { summary: string; flushedCount: number };

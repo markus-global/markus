@@ -50,6 +50,8 @@ export interface SessionRepo {
   };
   /** 统计某 session 中某 agent 发出的消息数（用于"参与"权限判定）。 */
   countMessagesByAgent(sessionId: string, agentId: string): number;
+  /** 重命名一个 session。可选 —— 不支持的适配器可忽略。 */
+  updateTitle?(sessionId: string, title: string): void | null | { id: string; title: string | null };
 }
 
 /** 可选注入：让 agent 通过 session 工具主动压缩自己的历史上下文（0.9.7 context-root-fix）。 */
@@ -92,6 +94,10 @@ export interface SessionToolContext {
   slotStore?: SessionSlotStore;
   /** ContextOS 可选。提供后，agent 可用 retrieve/include/purge 管理已归档片段。 */
   fragmentStore?: SessionFragmentStore;
+  /** 可选。提供后，rename 会把聊天（cs_*）会话标题同步写入 Sqlite 并广播到 UI（由 org-manager 注入）。 */
+  titleUpdater?: (sessionId: string, title: string) => void;
+  /** 可选。返回 agent 当前绑定的聊天会话 id（cs_*）——用于把当前 memory session 的改名映射到 UI 可见的聊天标题。 */
+  currentDbSessionId?: () => string | null;
 }
 
 /**
@@ -185,16 +191,21 @@ export function createMemorySessionRepo(mem: IMemoryStore): SessionRepo {
       // 会话归属该 agent 即视为"参与"（memory session 都是单主会话）
       return s.agentId === agentId ? s.messages.length : 0;
     },
+    updateTitle(sessionId: string, title: string) {
+      if (mem.renameSession) mem.renameSession(sessionId, title);
+      return { id: sessionId, title };
+    },
   };
 }
 
 const OP_ALIASES = new Set([
   'list', 'get', 'compact',
   'pin', 'unpin', 'include', 'retrieve', 'purge', 'status',
+  'rename', 'title', 'update_title', 'rename_title', 'set_title',
 ]);
 
 export function normalizeSessionArgs(args: Record<string, unknown>): {
-  operation: 'list' | 'get' | 'compact' | 'pin' | 'unpin' | 'include' | 'retrieve' | 'purge' | 'status';
+  operation: 'list' | 'get' | 'compact' | 'pin' | 'unpin' | 'include' | 'retrieve' | 'purge' | 'status' | 'rename';
   sessionId: string | undefined;
   since: string | undefined;
   until: string | undefined;
@@ -210,6 +221,7 @@ export function normalizeSessionArgs(args: Record<string, unknown>): {
   goal: string | undefined;
   done: string | undefined;
   next: string | undefined;
+  title: string | undefined;
 } {
   const sessionId = (args.session_id ?? args.sessionId ?? args.id) as string | undefined;
   let since = (args.since ?? args.after) as string | undefined;
@@ -226,6 +238,7 @@ export function normalizeSessionArgs(args: Record<string, unknown>): {
   const goal = (args.goal ?? args.anchor_goal) as string | undefined;
   const done = (args.done ?? args.anchor_done) as string | undefined;
   const next = (args.next ?? args.anchor_next) as string | undefined;
+  const title = (args.title ?? args.new_title ?? args.name) as string | undefined;
 
   let explicit = (args.operation ?? args.op ?? args.action ?? args.mode) as string | undefined;
   if (typeof explicit === 'string') explicit = explicit.trim().toLowerCase();
@@ -241,6 +254,8 @@ export function normalizeSessionArgs(args: Record<string, unknown>): {
   else if (explicit?.startsWith('retrieve')) explicit = 'retrieve';
   else if (explicit?.startsWith('purge')) explicit = 'purge';
   else if (explicit?.startsWith('status')) explicit = 'status';
+  else if (explicit?.startsWith('rename')) explicit = 'rename';
+  else if (explicit === 'title' || explicit?.startsWith('set_title') || explicit?.startsWith('update_title')) explicit = 'rename';
   if (explicit && !OP_ALIASES.has(explicit)) explicit = undefined;
 
   // Free-form query like "get cs-1"
@@ -253,7 +268,7 @@ export function normalizeSessionArgs(args: Record<string, unknown>): {
     }
   }
 
-  let operation: 'list' | 'get' | 'compact' | 'pin' | 'unpin' | 'include' | 'retrieve' | 'purge' | 'status';
+  let operation: 'list' | 'get' | 'compact' | 'pin' | 'unpin' | 'include' | 'retrieve' | 'purge' | 'status' | 'rename';
   if (explicit === 'get') operation = 'get';
   else if (explicit === 'list') operation = 'list';
   else if (explicit === 'compact') operation = 'compact';
@@ -263,12 +278,13 @@ export function normalizeSessionArgs(args: Record<string, unknown>): {
   else if (explicit === 'retrieve') operation = 'retrieve';
   else if (explicit === 'purge') operation = 'purge';
   else if (explicit === 'status') operation = 'status';
+  else if (explicit === 'rename') operation = 'rename';
   else if (sessionId) operation = 'get';
   else operation = 'list';
 
   return {
     operation, sessionId, since, until, userId, page, pageSize, keepLast,
-    key, content, query, maxResults, fragmentId, goal, done, next,
+    key, content, query, maxResults, fragmentId, goal, done, next, title,
   };
 }
 
@@ -569,6 +585,49 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
     }
   }
 
+  async function doRename(args: Record<string, unknown>): Promise<string> {
+    const n = normalizeSessionArgs(args);
+    if (!n.sessionId) {
+      return JSON.stringify({ status: 'error', message: 'Rename needs session_id.' });
+    }
+    const title = String(n.title ?? '').trim();
+    if (!title) {
+      return JSON.stringify({ status: 'error', message: 'Rename needs a non-empty title (summarize the purpose in a few words).' });
+    }
+    if (title.length > 120) {
+      return JSON.stringify({ status: 'error', message: 'Title too long (max 120 chars).' });
+    }
+    // Chat sessions (cs_*) live in the UI/team-chat store — update via the
+    // server-side titleUpdater so the title is persisted in Sqlite and the
+    // web UI refreshes the History panel immediately.
+    if (ctx.titleUpdater && n.sessionId.startsWith('cs_')) {
+      ctx.titleUpdater(n.sessionId, title);
+      return JSON.stringify({
+        status: 'ok', sessionId: n.sessionId, title,
+        note: 'Chat session title updated — visible in Team chat History.',
+      });
+    }
+    // Agent's own memory session: if it is currently bound to a chat (cs_*)
+    // session, rename that chat session so the title change reaches the UI.
+    if (ctx.titleUpdater && ctx.currentDbSessionId) {
+      const dbId = ctx.currentDbSessionId();
+      if (dbId && dbId.startsWith('cs_')) {
+        ctx.titleUpdater(dbId, title);
+        return JSON.stringify({
+          status: 'ok', sessionId: n.sessionId, chatSessionId: dbId, title,
+          note: `Current chat session (${dbId}) title updated — visible in Team chat History.`,
+        });
+      }
+    }
+    const own = checkOwnership(repo, n.sessionId, ctx.agentId);
+    if (own.error) return own.error;
+    if (typeof repo.updateTitle !== 'function') {
+      return JSON.stringify({ status: 'error', message: 'Rename is not supported for this session type.' });
+    }
+    repo.updateTitle(n.sessionId, title);
+    return JSON.stringify({ status: 'ok', sessionId: n.sessionId, title, note: 'Memory session title updated.' });
+  }
+
   return {
     name: 'session',
     description: [
@@ -589,18 +648,21 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
       '• session_include — reinject an archived fragment (by fragment_id) back into context. Args: session_id, fragment_id.',
       '• session_purge — permanently delete archived fragments for a session. Args: session_id.',
       '• session_status — read-only snapshot: message count, pinned slot keys, archived fragment count. Returns { status, sessionId, messageCount, fragmentCount, slots: [key...] }. Args: session_id.',
+      '• session_rename — set the title of the CURRENT chat session (or any session you own) to a short summary of its purpose, so it is easy to find again in Team chat History or session_list. Args: session_id (or omit to target your current session), title (≤120 chars).',
+      '  Example: { "operation": "rename", "title": "修复 Team chat 历史列表不完整 + 新增 session_rename 工具" }',
       '',
-      'Permissions: you may list sessions you own; get/status sessions you own OR participated in; compact/pin/unpin/include/purge ONLY sessions you own.',
+      'Permissions: you may list sessions you own; get/status sessions you own OR participated in; compact/pin/unpin/include/purge/rename ONLY sessions you own.',
     ].join('\n'),
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['list', 'get', 'compact', 'pin', 'unpin', 'include', 'retrieve', 'purge', 'status'],
+          enum: ['list', 'get', 'compact', 'pin', 'unpin', 'include', 'retrieve', 'purge', 'status', 'rename'],
           description: 'Which session operation to run. Default: list when no session_id, get when session_id present.',
         },
-        session_id: { type: 'string', description: 'The session id to operate on (sess_* / task_* / a2a_* / hb_* — see session_list).' },
+        session_id: { type: 'string', description: 'The session id to operate on (sess_* / task_* / a2a_* / hb_* / cs_* — see session_list).' },
+        title: { type: 'string', description: 'For rename: the new session title (≤120 chars), summarizing the user\'s purpose.' },
         since: { type: 'string', description: 'ISO timestamp — filter sessions/messages with timestamp >= since.' },
         until: { type: 'string', description: 'ISO timestamp — filter sessions/messages with timestamp <= until.' },
         page: { type: 'number', description: '1-based page number (default 1).' },
@@ -629,6 +691,7 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
           case 'include': return await doInclude(args);
           case 'purge': return await doPurge(args);
           case 'status': return await doStatus(args);
+          case 'rename': return await doRename(args);
           default: return await doList(args);
         }
       } catch (err) {

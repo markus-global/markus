@@ -274,3 +274,35 @@ describe('ContextOS purge contract (phase-2)', () => {
     expect(fragmentStore.purgeSessionFragments).toHaveBeenCalledWith('sess_1');
   });
 });
+
+describe('session_rename', () => {
+  it('normalizeSessionArgs 识别 rename 及别名', () => {
+    expect(normalizeSessionArgs({ operation: 'rename', session_id: 'cs_1', title: '目标' }))
+      .toMatchObject({ operation: 'rename', sessionId: 'cs_1', title: '目标' });
+    expect(normalizeSessionArgs({ operation: 'set_title', session_id: 'cs_1', new_title: 'T' }).title).toBe('T');
+    expect(normalizeSessionArgs({ operation: 'title', session_id: 'cs_1', name: 'N' }).operation).toBe('rename');
+  });
+
+  it('聊天会话 (cs_*) → 走注入的 titleUpdater（标题直达 Sqlite + UI 广播）', async () => {
+    const titleUpdater = vi.fn();
+    const ctx = makeCtx({
+      titleUpdater,
+      currentDbSessionId: () => 'cs_1',
+    });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'rename', session_id: 'cs_1', title: '修复历史列表' }));
+    expect(titleUpdater).toHaveBeenCalledWith('cs_1', '修复历史列表');
+    expect(res.status).toBe('ok');
+    expect(res.title).toBe('修复历史列表');
+  });
+
+  it('缺 title → 清晰错误；无注入时落到 repo.updateTitle（记忆会话）', async () => {
+    const res = JSON.parse(await createSessionTool(makeCtx()).execute({ operation: 'rename', session_id: 'cs_1' }));
+    expect(res.status).toBe('error');
+
+    const updateTitle = vi.fn(() => ({ id: 'sess_mem', title: '记忆会话' }));
+    const ctx = makeCtx({ chatSessionRepo: { getSession: vi.fn(() => makeSession({ id: 'sess_mem', agentId: 'agt-A' })), updateTitle } as never });
+    const res2 = JSON.parse(await createSessionTool(ctx).execute({ operation: 'rename', session_id: 'sess_mem', title: '记忆会话' }));
+    expect(updateTitle).toHaveBeenCalledWith('sess_mem', '记忆会话');
+    expect(res2.status).toBe('ok');
+  });
+});

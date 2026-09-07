@@ -412,6 +412,16 @@ export class MemoryStore implements IMemoryStore {
     return session;
   }
 
+  /** Rename a memory session (titles surface in session_list and agent tooling). */
+  renameSession(sessionId: string, title: string): void {
+    let session = this.sessions.get(sessionId);
+    if (!session) session = this.tryLoadSessionFromDisk(sessionId);
+    if (!session) return;
+    session.title = String(title ?? '').trim().slice(0, 120);
+    if (!session.title) delete session.title;
+    this.saveSessionToDisk(session);
+  }
+
   appendMessage(sessionId: string, message: LLMMessage): void {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);

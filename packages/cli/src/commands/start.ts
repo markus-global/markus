@@ -718,6 +718,22 @@ async function startServerCore(
   apiServer.setTelemetryService(telemetryService);
   apiServer.setAuditService(auditService);
 
+  // session_rename tool → persist chat (cs_*) session titles to Sqlite and
+  // broadcast so the Team chat History panel refreshes the title live.
+  agentManager.setSessionTitleUpdater((sessionId, title) => {
+    if (!storage?.chatSessionRepo) return;
+    try {
+      const updated = storage.chatSessionRepo.updateTitle(sessionId, title);
+      apiServer.ws.broadcast({
+        type: 'session:title_updated',
+        payload: { sessionId, agentId: updated?.agentId, title: updated?.title ?? title },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      log.warn('Failed to persist session title rename', { sessionId, error: String(err) });
+    }
+  });
+
   const projectService = new ProjectService();
   const storage = orgService.getStorage();
   if (storage?.notificationRepo) {

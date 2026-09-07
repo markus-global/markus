@@ -2189,6 +2189,19 @@ export class SqliteChatSessionRepo {
     return r ? this._mapSession(r) : null;
   }
 
+  /** Rename a chat session (used by agent session_rename tool + UI edit). Returns the updated row or null. */
+  updateTitle(sessionId: string, title: string) {
+    const clean = String(title ?? '').trim();
+    if (!clean) return null;
+    this.db
+      .prepare('UPDATE chat_sessions SET title = ? WHERE id = ?')
+      .run(clean.slice(0, 120), sessionId);
+    const r = this.db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(sessionId) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? this._mapSession(r) : null;
+  }
+
   updateLastMessage(sessionId: string, title?: string) {
     if (title) {
       this.db

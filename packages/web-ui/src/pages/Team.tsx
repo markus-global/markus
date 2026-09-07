@@ -751,8 +751,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   };
 
   const [sessions, setSessions] = useState<ChatSessionInfo[]>([]);
+  const [sessionsTotal, setSessionsTotal] = useState(0);
+  const [sessionsPage, setSessionsPage] = useState(1);
+  const [sessionsHasMore, setSessionsHasMore] = useState(false);
+  const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
+  // Inline rename state: which session is being renamed + the draft value
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renamingDraft, setRenamingDraft] = useState('');
   // Pending request_user_input requests raised by the agent during a direct chat.
   const [userInputApprovals, setUserInputApprovals] = useState<ApprovalInfo[]>([]);
   const [activeInputModal, setActiveInputModal] = useState<ApprovalInfo | null>(null);
@@ -2048,15 +2055,60 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     void tryReattachActiveStream(selectedAgent, sid, currentConvKeyRef.current);
   }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, tryReattachActiveStream]);
 
-  // Load sessions list for agent
+  // Load sessions list for agent (paginated — History panel loads 20 at a time)
   const loadSessions = useCallback(async (agentId: string) => {
-    if (!agentId) { setSessions([]); return []; }
+    if (!agentId) { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
     try {
-      const { sessions: s } = await api.sessions.listByAgent(agentId, 10);
-      setSessions(s);
-      return s;
-    } catch { setSessions([]); return []; }
+      const res = await api.sessions.listByAgent(agentId, 20, 1);
+      setSessions(res.sessions);
+      setSessionsTotal(res.total ?? res.sessions.length);
+      setSessionsPage(res.page ?? 1);
+      setSessionsHasMore(!!res.hasMore);
+      return res.sessions;
+    } catch { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
   }, []);
+
+  // Load older sessions (append to the list) — History panel "load more"
+  const loadMoreSessions = useCallback(async () => {
+    if (sessionsLoadingMore || !selectedAgent || !sessionsHasMore) return;
+    setSessionsLoadingMore(true);
+    const nextPage = sessionsPage + 1;
+    const agentId = selectedAgent;
+    try {
+      const res = await api.sessions.listByAgent(agentId, 20, nextPage);
+      setSessions(prev => {
+        const seen = new Set(prev.map(s => s.id));
+        const merged = [...prev, ...res.sessions.filter(s => !seen.has(s.id))];
+        setSessionsTotal(res.total ?? merged.length);
+        return merged;
+      });
+      setSessionsPage(nextPage);
+      setSessionsHasMore(!!res.hasMore);
+    } catch { /* keep current state */ }
+    setSessionsLoadingMore(false);
+  }, [sessionsLoadingMore, sessionsHasMore, sessionsPage, selectedAgent]);
+
+  // Rename a session (inline in the History panel)
+  const startRenameSession = useCallback((s: ChatSessionInfo) => {
+    setRenamingSessionId(s.id);
+    setRenamingDraft((s.isMain ? '' : s.title) || '');
+  }, []);
+  const cancelRenameSession = useCallback(() => {
+    setRenamingSessionId(null);
+    setRenamingDraft('');
+  }, []);
+  const submitRenameSession = useCallback(async (s: ChatSessionInfo) => {
+    const title = renamingDraft.trim();
+    if (!title) { cancelRenameSession(); return; }
+    try {
+      const res = await api.sessions.renameTitle(s.id, title);
+      const newTitle = res?.session?.title ?? title;
+      setSessions(prev => prev.map(x => x.id === s.id ? { ...x, title: newTitle } : x));
+      // Keep any open session tab in sync
+      setOpenSessionTabs(prev => prev.map(x => x.id === s.id ? { ...x, title: newTitle } : x));
+    } catch { /* best effort */ }
+    cancelRenameSession();
+  }, [renamingDraft, cancelRenameSession]);
 
   // Load more (pagination) — preserves scroll position after prepending
   const prependCountRef = useRef(0);
@@ -2402,6 +2454,22 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     });
     return unsub;
   }, [previewMode, activeChannel]);
+
+  // Session title renamed (agent session_rename tool or another tab) — keep the
+  // History panel list + open session tabs in sync without a full reload.
+  useEffect(() => {
+    if (previewMode) return;
+    const unsub = wsClient.on('session:title_updated', (event) => {
+      const p = event.payload as Record<string, unknown> | undefined;
+      if (!p) return;
+      const sessionId = p['sessionId'] as string | undefined;
+      const title = p['title'] as string | undefined;
+      if (!sessionId || typeof title !== 'string') return;
+      setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, title } : s));
+      setOpenSessionTabs(prev => prev.map(s => s.id === sessionId ? { ...s, title } : s));
+    });
+    return unsub;
+  }, [previewMode]);
 
   // WS live updates for proactive agent/user messages (direct mode)
   useEffect(() => {
@@ -4851,23 +4919,79 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <div key={g.label} className="mb-2">
                       <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider px-3 py-1.5">{g.label}</div>
                       {g.items.map(s => (
-                        <button
+                        <div
                           key={s.id}
-                          onClick={() => void switchSession(s)}
-                          className={`w-full text-left px-3 py-2.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                            s.id === activeSessionId ? 'bg-brand-600/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-elevated'
+                          className={`w-full text-left px-3 py-2 rounded-lg text-xs mb-0.5 transition-colors ${
+                            s.id === activeSessionId ? 'bg-brand-600/20 text-brand-500' : 'hover:bg-surface-elevated'
                           }`}
                         >
-                          <div className="truncate font-medium flex items-center gap-1">
-                            {s.isMain && <span className="text-[10px] text-brand-500 opacity-80">●</span>}
-                            {s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation'))}
-                          </div>
-                          <div className="text-fg-tertiary text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
-                        </button>
+                          {renamingSessionId === s.id ? (
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                autoFocus
+                                value={renamingDraft}
+                                onChange={(e) => setRenamingDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') { e.stopPropagation(); void submitRenameSession(s); }
+                                  if (e.key === 'Escape') cancelRenameSession();
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                placeholder={s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation'))}
+                                className="w-full bg-surface-primary border border-brand-500/50 rounded-md px-2 py-1 text-xs text-fg-primary outline-none focus:ring-1 focus:ring-brand-500/50"
+                              />
+                              <button
+                                onClick={(e) => { e.stopPropagation(); void submitRenameSession(s); }}
+                                className="text-brand-400 hover:text-brand-300 shrink-0"
+                                title={t('common:save')}
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); cancelRenameSession(); }}
+                                className="text-fg-tertiary hover:text-fg-secondary shrink-0"
+                                title={t('common:cancel')}
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => void switchSession(s)}
+                              className="w-full text-left group/session"
+                            >
+                              <div className="truncate font-medium flex items-center gap-1">
+                                {s.isMain && <span className="text-[10px] text-brand-500 opacity-80">●</span>}
+                                <span className="truncate">{s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation'))}</span>
+                                {!s.isMain && (
+                                  <span
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={(e) => { e.stopPropagation(); startRenameSession(s); }}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); startRenameSession(s); } }}
+                                    className="opacity-0 group-hover/session:opacity-100 transition-opacity ml-auto text-fg-tertiary hover:text-brand-400 shrink-0"
+                                    title={t('page.renameSession')}
+                                  >
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-fg-tertiary text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
+                            </button>
+                          )}
+                        </div>
                       ))}
                     </div>
                   ));
                 })()}
+                {sessionsHasMore && (
+                  <button
+                    onClick={() => void loadMoreSessions()}
+                    disabled={sessionsLoadingMore}
+                    className="w-full text-center text-[11px] text-fg-tertiary hover:text-brand-400 py-2 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {sessionsLoadingMore ? t('page.loadingEarlierMessages') : `${t('page.loadMoreSessions')} (${sessions.length}/${sessionsTotal})`}
+                  </button>
+                )}
               </div>
             </div>
           )}
