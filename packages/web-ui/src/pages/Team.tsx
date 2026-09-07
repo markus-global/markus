@@ -597,7 +597,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     msgBuffers, sessionMsgCache, activeSessionBuffer, actBuffers, sessionTabsBuffer,
     currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
-    beginLoad, beginStream, endStream, resetConv,
+    beginLoad, beginStream, endStream, resetConv, abortStream,
     loadAndDisplay,
     incrementSending, decrementSending, resetSending, isSendingFor,
     setStreamSession, clearStreamSession, getStreamSession,
@@ -2649,14 +2649,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       userStoppedSessionsRef.current.add(activeSessionId);
     }
 
-    // 4) Unblock the UI immediately
-    const sendKey = currentConvKeyRef.current;
-    resetSending(sendKey);
-    actBuffers.delete(activeSessionId ?? sendKey);
-    if (activeSessionId) clearStreamSession(sendKey, activeSessionId);
-    endStream(sendKey);
-    setSending(false);
-    setActivities([]);
+    // 4) Unblock the UI immediately — single idempotent teardown.
+    //    (replaces: resetSending + actBuffers.delete + endStream +
+    //     clearStreamSession + setSending + setActivities)
+    abortStream(currentConvKeyRef.current, activeSessionId);
   };
 
   const [rememberTarget, setRememberTarget] = useState<ChatMsg | null>(null);
@@ -2701,10 +2697,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           abortControllerRef.current?.abort();
           abortControllerRef.current = null;
           void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
-          resetSending(prevKey);
-          actBuffers.delete(activeSessionId ?? prevKey);
-          endStream(prevKey);
-          if (activeSessionId) clearStreamSession(prevKey, activeSessionId);
+          abortStream(prevKey, activeSessionId);
           // Drop the in-flight user+empty agent pair before the retry re-adds them.
           updateConvMsgs(prevKey, prev => {
             const u = [...prev];
@@ -2713,8 +2706,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             if (u.length > 0 && u[u.length - 1]!.sender === 'user' && u[u.length - 1]!.text === text) u.pop();
             return u;
           });
-          setSending(false);
-          setActivities([]);
           await new Promise(r => setTimeout(r, 50));
           return send(text, { isRetry: true });
         }
@@ -2722,10 +2713,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         abortControllerRef.current?.abort();
         abortControllerRef.current = null;
         void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
-        resetSending(prevKey);
-        actBuffers.delete(activeSessionId ?? prevKey);
-        endStream(prevKey);
-        if (activeSessionId) clearStreamSession(prevKey, activeSessionId);
+        abortStream(prevKey, activeSessionId);
         updateConvMsgs(prevKey, prev => {
           const u = [...prev];
           for (let i = u.length - 1; i >= 0; i--) {
@@ -2747,8 +2735,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           }
           return u;
         });
-        setSending(false);
-        setActivities([]);
         await new Promise(r => setTimeout(r, 50));
       }
       // For new session (NEW_CHAT_PLACEHOLDER_ID): don't abort. The message will be
@@ -2759,10 +2745,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
       const prevKey = currentConvKeyRef.current;
-      resetSending(prevKey);
-      actBuffers.delete(prevKey);
-      endStream(prevKey);
-      clearStreamSession(prevKey);
+      abortStream(prevKey);
       updateConvMsgs(prevKey, prev => {
         const u = [...prev];
         for (let i = u.length - 1; i >= 0; i--) {
@@ -2784,8 +2767,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         }
         return u;
       });
-      setSending(false);
-      setActivities([]);
       await new Promise(r => setTimeout(r, 50));
     }
 

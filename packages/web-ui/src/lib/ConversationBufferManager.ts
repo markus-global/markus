@@ -290,6 +290,44 @@ export class ConversationBufferManager {
     return this.streamingSessions.get(key);
   }
 
+  /**
+   * Single, idempotent teardown for ANY path that must stop the current
+   * send/stream: user stop, double-submit retry, same-session interrupt,
+   * channel abort, unmount. Replaces the fragile copy-pasted cleanup
+   * sequences that could leak state when one step was forgotten.
+   *
+   * Clears, in one pass: send counter, activity buffer (keyed by sessionId
+   * when provided, mirroring how activities are written), phase
+   * (streaming → ready), and the streaming-session marks. Safe to call when
+   * nothing is active — returns false so callers can skip follow-up work.
+   */
+  abortStream(key: string, sessionId?: string | null): boolean {
+    let affected = false;
+
+    if ((this.sendCount.get(key) ?? 0) > 0) {
+      this.sendCount.set(key, 0);
+      affected = true;
+    }
+
+    const bufKey = sessionId ?? key;
+    if (this.actBuffers.delete(bufKey)) affected = true;
+
+    if (this.getPhase(key) === 'streaming') {
+      this.phase.set(key, 'ready');
+      affected = true;
+    }
+
+    if (sessionId) {
+      const had = this.streamingSessions.get(key)?.has(sessionId) ?? false;
+      this.removeStreamSession(key, sessionId);
+      if (had) affected = true;
+    } else if (this.streamingSessions.delete(key)) {
+      affected = true;
+    }
+
+    return affected;
+  }
+
   // ── Buffer reads ──
 
   getMessages(key: string): ChatMsg[] | undefined {

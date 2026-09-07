@@ -71,6 +71,17 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     // The agent stays busy until clearStreamSession is called by whichever
     // path owns the stream's end.
   }, []);
+  // Single teardown entry for abort-like paths (stop / retry / interrupt /
+  // channel abort / unmount). Replaces the copy-pasted cleanup sequences in
+  // Team.tsx; see ConversationBufferManager.abortStream for the pure logic.
+  const abortStream = useCallback((key: string, sessionId?: string | null) => {
+    const affected = mgr.current.abortStream(key, sessionId);
+    if (affected && isAgentKey(key)) chatStore.markAgentStreaming(key, false);
+    if (mgr.current.currentConvKey === key) {
+      setSending(false);
+      setActivities([]);
+    }
+  }, []);
   const resetConv = useCallback((key: string) => { mgr.current.resetConv(key); mgr.current.deleteBuffer(key); }, []);
 
   // Phase-aware async load
@@ -123,6 +134,7 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     // Methods
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     getPhase, beginLoad, beginStream, endStream, resetConv,
+    abortStream,
     loadAndDisplay,
     // Send counter helpers
     incrementSending: (k: string) => mgr.current.incrementSend(k),
