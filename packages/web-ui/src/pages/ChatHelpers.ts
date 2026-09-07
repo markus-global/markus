@@ -71,6 +71,76 @@ export function appendSubagentLog<T>(logs: T[] | undefined, entry: T, max = MAX_
  * when timestamps are missing. Used for proactive/notify WS so late delivery still
  * lands before an in-flight reply that started later.
  */
+// ─── Message finalization helpers ───────────────────────────────────────────
+// Converge the repeated hand-written transforms (isStopped / isError / tool
+// running→stopped) that previously appeared at ~12 sites in Team.tsx with
+// subtly different variants. Single source of truth for "how a message looks
+// when a stream ends".
+
+/** True when a ChatMsg carries any visible content (text or segments). */
+export function msgHasContent(msg: ChatMsg): boolean {
+  return !!msg.text?.trim()
+    || (msg.segments ?? []).some(s =>
+      (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
+    );
+}
+
+/** Mark any still-running tool segments as stopped. Returns same ref when no change. */
+export function stopRunningTools(segs: MsgSegment[] | undefined): MsgSegment[] | undefined {
+  if (!segs || segs.length === 0) return segs;
+  let changed = false;
+  const next = segs.map(s =>
+    s.type === 'tool' && s.status === 'running'
+      ? (changed = true, { ...s, status: 'stopped' as const })
+      : s,
+  );
+  return changed ? next : segs;
+}
+
+/** Terminal outcome of a stream for a single agent message. */
+export type StreamOutcome = 'done' | 'stopped' | 'error';
+
+/**
+ * Finalize one agent message with a single outcome. Returns null when the
+ * message has no visible content and the outcome is not 'done' — the caller
+ * should drop the empty bubble (this is the "empty reply" rule).
+ */
+export function finalizeAgentMessage(msg: ChatMsg, outcome: StreamOutcome): ChatMsg | null {
+  const hasContent = msgHasContent(msg);
+  if (!hasContent && outcome !== 'done') return null;
+  const base = { ...msg, isStreaming: false, segments: stopRunningTools(msg.segments) };
+  switch (outcome) {
+    case 'done':
+      return { ...base, isStopped: false, isError: false };
+    case 'stopped':
+      return { ...base, isStopped: true, isError: false };
+    case 'error':
+      return { ...base, isStopped: true, isError: true };
+  }
+}
+
+/**
+ * Finalize the LAST in-flight agent message in an array (used when a turn is
+ * interrupted by user send/stop). Mirrors the old copy-pasted loops: find the
+ * last agent bubble that isn't already stopped/errored; if it has no content,
+ * splice it out; otherwise mark it stopped (tools also stopped).
+ */
+export function finalizeLastInterruptedAgent(msgs: ChatMsg[]): ChatMsg[] {
+  const u = [...msgs];
+  for (let i = u.length - 1; i >= 0; i--) {
+    if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
+      const finalized = finalizeAgentMessage(u[i]!, 'stopped');
+      if (finalized === null) {
+        u.splice(i, 1);
+      } else {
+        u[i] = finalized;
+      }
+      break;
+    }
+  }
+  return u;
+}
+
 export function insertChatMsgByCreatedAt(msgs: ChatMsg[], msg: ChatMsg): ChatMsg[] {
   if (msgs.some((m) => m.id === msg.id)) return msgs;
   const t = msg.rawCreatedAt ? Date.parse(msg.rawCreatedAt) : NaN;

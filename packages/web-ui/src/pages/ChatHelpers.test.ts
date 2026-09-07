@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   dedupeAdjacentUserMessages,
   dbMsgToChat,
+  finalizeAgentMessage,
+  finalizeLastInterruptedAgent,
   insertChatMsgByCreatedAt,
   isRememberActionVisible,
+  msgHasContent,
   pickStreamReattachTarget,
+  stopRunningTools,
   stripEmbeddedReplyQuote,
   stripNotifyContext,
   type ChatMsg,
@@ -175,5 +179,82 @@ describe('pickStreamReattachTarget', () => {
       mk('a1', 'agent', '⚠ error', { isError: true }),
     ];
     expect(pickStreamReattachTarget(msgs)).toBeUndefined();
+  });
+});
+
+describe('message finalization helpers', () => {
+  const agentMsg = (id: string, text = '', opts: Partial<ChatMsg> = {}) =>
+    ({ id, sender: 'agent', text, time: '12:00', ...opts }) as ChatMsg;
+
+  it('msgHasContent detects text / text segments / tool segments / thinking', () => {
+    expect(msgHasContent(agentMsg('a', 'hi'))).toBe(true);
+    expect(msgHasContent(agentMsg('a', '  '))).toBe(false);
+    expect(msgHasContent(agentMsg('a', '', { segments: [{ type: 'tool', key: 'k', tool: 't', status: 'done' }] }))).toBe(true);
+    expect(msgHasContent(agentMsg('a', '', { segments: [{ type: 'text', content: 'x', thinking: '' }] }))).toBe(true);
+    expect(msgHasContent(agentMsg('a', '', { segments: [{ type: 'text', content: '', thinking: 'deep think' }] }))).toBe(true);
+  });
+
+  it('finalizeAgentMessage("stopped") drops an empty bubble (empty-reply rule)', () => {
+    expect(finalizeAgentMessage(agentMsg('a'), 'stopped')).toBeNull();
+  });
+
+  it('finalizeAgentMessage("stopped") keeps content and marks stopped + tools stopped', () => {
+    const msg = agentMsg('a', 'partial', {
+      isStreaming: true,
+      segments: [{ type: 'tool', key: 'k', tool: 'shell', status: 'running' }],
+    });
+    const out = finalizeAgentMessage(msg, 'stopped')!;
+    expect(out.isStopped).toBe(true);
+    expect(out.isStreaming).toBe(false);
+    expect(out.isError).toBeFalsy();
+    expect(out.segments![0]).toMatchObject({ status: 'stopped' });
+  });
+
+  it('finalizeAgentMessage("error") marks isError', () => {
+    const out = finalizeAgentMessage(agentMsg('a', 'boom'), 'error')!;
+    expect(out.isError).toBe(true);
+    expect(out.isStopped).toBe(true);
+  });
+
+  it('finalizeAgentMessage("done") clears stopped/error flags', () => {
+    const out = finalizeAgentMessage(agentMsg('a', 'ok', { isStopped: true, isError: true, isStreaming: true }), 'done')!;
+    expect(out.isStopped).toBe(false);
+    expect(out.isError).toBe(false);
+    expect(out.isStreaming).toBe(false);
+  });
+
+  it('finalizeLastInterruptedAgent marks the LAST in-flight agent, splicing empty ones', () => {
+    const msgs = [
+      agentMsg('a0', 'completed'),
+      agentMsg('a1', 'older empty'),
+      agentMsg('a2', 'partial', { isStreaming: true }),
+    ];
+    const out = finalizeLastInterruptedAgent(msgs);
+    expect(out.map(m => m.id)).toEqual(['a0', 'a1', 'a2']);
+    expect(out[2]!.isStopped).toBe(true);
+    // a0 (completed) untouched
+    expect(out[0]!.isStopped).toBeFalsy();
+  });
+
+  it('finalizeLastInterruptedAgent splices an EMPTY in-flight bubble', () => {
+    const msgs = [
+      agentMsg('a0', 'completed'),
+      agentMsg('a2', '', { isStreaming: true }),
+    ];
+    const out = finalizeLastInterruptedAgent(msgs);
+    expect(out.map(m => m.id)).toEqual(['a0']);
+  });
+
+  it('finalizeLastInterruptedAgent does not touch a stopped/error bubble', () => {
+    const msgs = [
+      agentMsg('a0', 'already stopped', { isStopped: true }),
+      agentMsg('a1', 'error', { isError: true }),
+    ];
+    expect(finalizeLastInterruptedAgent(msgs)).toEqual(msgs);
+  });
+
+  it('stopRunningTools returns same ref when nothing is running', () => {
+    const segs = [{ type: 'tool' as const, key: 'k', tool: 't', status: 'done' as const }];
+    expect(stopRunningTools(segs)).toBe(segs);
   });
 });

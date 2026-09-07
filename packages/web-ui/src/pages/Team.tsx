@@ -45,6 +45,7 @@ import {
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
   appendLiveOutput, appendSubagentLog,
+  finalizeAgentMessage, finalizeLastInterruptedAgent, msgHasContent, stopRunningTools,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
 import {
@@ -2714,27 +2715,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         abortControllerRef.current = null;
         void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
         abortStream(prevKey, activeSessionId);
-        updateConvMsgs(prevKey, prev => {
-          const u = [...prev];
-          for (let i = u.length - 1; i >= 0; i--) {
-            if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
-              const msg = u[i]!;
-              const hasContent = msg.text?.trim() || (msg.segments ?? []).some(s =>
-                (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-              );
-              if (!hasContent) {
-                u.splice(i, 1);
-              } else {
-                const segs = (msg.segments ?? []).map(s =>
-                  s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
-                );
-                u[i] = { ...msg, isStopped: true, segments: segs };
-              }
-              break;
-            }
-          }
-          return u;
-        });
+        updateConvMsgs(prevKey, prev => finalizeLastInterruptedAgent(prev));
         await new Promise(r => setTimeout(r, 50));
       }
       // For new session (NEW_CHAT_PLACEHOLDER_ID): don't abort. The message will be
@@ -2746,27 +2727,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       abortControllerRef.current = null;
       const prevKey = currentConvKeyRef.current;
       abortStream(prevKey);
-      updateConvMsgs(prevKey, prev => {
-        const u = [...prev];
-        for (let i = u.length - 1; i >= 0; i--) {
-          if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
-            const msg = u[i]!;
-            const hasContent = msg.text?.trim() || (msg.segments ?? []).some(s =>
-              (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-            );
-            if (!hasContent) {
-              u.splice(i, 1);
-            } else {
-              const segs = (msg.segments ?? []).map(s =>
-                s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
-              );
-              u[i] = { ...msg, isStopped: true, segments: segs };
-            }
-            break;
-          }
-        }
-        return u;
-      });
+      updateConvMsgs(prevKey, prev => finalizeLastInterruptedAgent(prev));
       await new Promise(r => setTimeout(r, 50));
     }
 
@@ -3384,15 +3345,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const u = [...prev];
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx >= 0) {
-              const msg = u[idx]!;
-              const hasContent = msg.text
-                || (msg.segments && msg.segments.length > 0 && msg.segments.some(s =>
-                  (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-                ));
-              if (!hasContent) {
-                return prev.filter(m => m.id !== agentMsgId);
-              }
-              u[idx] = { ...msg, isStopped: true };
+              const finalized = finalizeAgentMessage(u[idx]!, 'stopped');
+              if (finalized === null) return prev.filter(m => m.id !== agentMsgId);
+              u[idx] = finalized;
             }
             return u;
           }, streamSessionId);
@@ -3403,12 +3358,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       updateConvMsgs(sendKey, prev => {
         const u = [...prev];
         const idx = u.findIndex(m => m.id === agentMsgId);
-        if (idx >= 0) {
-          const segs = (u[idx]!.segments ?? []).map(s =>
-            s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
-          );
-          u[idx] = { ...u[idx]!, segments: segs };
-        }
+        if (idx >= 0) u[idx] = { ...u[idx]!, segments: stopRunningTools(u[idx]!.segments) };
         return u;
       }, streamSessionId);
 
@@ -3419,15 +3369,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           const u = [...prev];
           const idx = u.findIndex(m => m.id === agentMsgId);
           if (idx >= 0) {
-            const msg = u[idx]!;
-            const hasContent = msg.text
-              || (msg.segments && msg.segments.length > 0 && msg.segments.some(s =>
-                (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-              ));
-            if (!hasContent) {
-              return prev.filter(m => m.id !== agentMsgId);
-            }
-            u[idx] = { ...msg, isStopped: true };
+            const finalized = finalizeAgentMessage(u[idx]!, 'stopped');
+            if (finalized === null) return prev.filter(m => m.id !== agentMsgId);
+            u[idx] = finalized;
           }
           return u;
         }, streamSessionId);
@@ -3440,9 +3384,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const currentMsgs = msgBuffers.get(sendKey) ?? [];
       const agentMsg = currentMsgs.find(m => m.id === agentMsgId);
       const pollSessionId = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-      const hasVisibleContent = agentMsg?.text || (agentMsg?.segments?.some(s =>
-        (s.type === 'text' && (s as { content: string }).content) || s.type === 'tool'
-      ));
+      const hasVisibleContent = agentMsg ? msgHasContent(agentMsg) : false;
       if (agentMsg && !hasVisibleContent && chatMode === 'direct' && pollSessionId && !abortCtrl.signal.aborted) {
         // 指数退避 + 抖动 + 重试上限：SSE 断连后从 DB 恢复回复，避免紧密死循环轮询，
         // 也避免所有客户端同时狂轮。见 lib/streamResilience.ts。
