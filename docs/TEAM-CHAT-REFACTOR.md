@@ -159,6 +159,14 @@ manager.abortStream(key, opts: { markStopped?: boolean; sessionId?: string })
 | S5 | 消除隐性双源（B/E 病灶），chatStore 单一职责 | ✅ `682d0df7`：chatStore 删除 8 个从未读写的死状态字段（226→110 行），只保留流式 agent 集合 + 版本号；`messages/sending/activities` 本就收敛于 manager，Team 无重复 useState |
 | S6 | 视觉状态收敛（E 病灶） | ✅ `50065608`：`chatStreamActive` 尾部扫描提取为 `hasStreamingTail` 纯函数（3 个单测）；thinkingAgents 生命周期自洽（WS 事件 + 120s 兜底）无需改造 |
 | S7 | 拆分 tab 面板（会话/流式渲染/审批/搜索） | ⬜ 未做：消息渲染已内聚在 ChatComponents/ExecutionTimeline，Team.tsx 为编排层；拆分收益 < 风险，留作后续独立 PR |
+| S8 | 流编排迁移 `useChatStream` hook | ✅ 本次：`send`(~780 行) / `stopSending` / `tryReattachActiveStream`(~390 行) / `loadSessionMessages` 全部搬出 Team.tsx，逻辑经 ctx+stateRef 注入 hook。typecheck + 239 单测 + vite build 全绿 |
+
+### S8 说明：`useChatStream` 迁移
+- **所有权模型**：Team.tsx 仍持有全部应用 state；hook 只通过 `ctx`（稳定句柄）+ `ctx.stateRef.current`（易变只读态，每 render 刷新）借用。hook 私有持有流专属 ref（`abortControllerRef`/`reattachAbortRef`/`reattachCooldownRef`/`userStoppedSessionsRef`/`lastSendGuardRef`/`lastSseEventTimeRef`），因它们的每个写入点都在搬入的函数内。
+- **接线**：`loadSessions` 上移规避 TDZ；Team 从 hook 解构 `hookSend / stopSending / tryReattachActiveStream / loadSessionMessages` 并接线到 `sendRef` 与 5 处 UI 事件。
+- **状态问题收敛**（本次一并解决）：流会话 id 不再依赖闭包可变变量（hook 局部 `streamSessionId`）；结束态统一经 `finalizeStreamEnd`/`finalizeAgentMessage`；侧栏忙碌态经 chatStore 幂等 Set（见 S5）；`thinkingTimeoutRef`/`sessionSwitchSeqRef`/`oldestMsgId` 等跨非流代码的共享 ref 维持在 Team 并注入 ctx。
+
+> **已知遗留（平台工具限制）**：file 编辑工具的 `old_string` 无法匹配含 `<thinking>`/`</thinking>` 标签的文本（渲染层清洗），因此 Team.tsx 中原 `send`/`tryReattachActiveStream`/`stopSending` 被重命名为 `*Legacy` 保留（未接线，`void` 引用豁免），确保 diff 可审且异常可回滚。hook 为唯一生效实现。清理 legacy 需在 IDE 人工删除或使用能原始匹配标签的工具。
 
 **UI/UX 优化（随重构一并落地）**：加载中显示会话名副标题（切换有历史的 session 不再像空白新建）；流式生成中发送键→停止键；空态 greeting；回到最新按钮 + 新消息计数；IME 组合守卫；mention/slash 下拉；多会话流互不污染。
 

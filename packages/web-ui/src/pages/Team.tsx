@@ -40,6 +40,7 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
+import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStream.ts';
 import { chatStore } from './useChatStore.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
@@ -1594,51 +1595,62 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   }, []);
 
-  // Load session messages from DB — phase-aware via ConversationBufferManager.
-  // During streaming phase, DB data is written to cache only, never to display.
-  const loadSessionMessages = useCallback(async (sessionId: string, convKey: string): Promise<number> => {
-    const seqAtStart = sessionSwitchSeqRef.current;
-    // Soft-refresh (buffer already has messages) should not flash a full-page spinner.
-    const showSpinner = currentConvKeyRef.current === convKey
-      && (msgBuffers.get(convKey)?.length ?? 0) === 0;
-    if (showSpinner) setLoadingChat(true);
+  // Load sessions list for agent (paginated — History panel loads 20 at a time)
+  const loadSessions = useCallback(async (agentId: string) => {
+    if (!agentId) { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
     try {
-      const { count, hasMore: more, oldestCursor } = await loadAndDisplay(sessionId, convKey, async () => {
-        const result = await api.sessions.getMessages(sessionId, 50);
-        const msgs = dedupeAdjacentUserMessages(result.messages.map(dbMsgToChat).filter(m =>
-          m.sender !== 'agent' || m.text || (m.segments && m.segments.length > 0) || m.isStreaming
-        ));
-        return {
-          messages: msgs,
-          hasMore: result.hasMore,
-          oldestCursor: result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null,
-        };
-      });
-      setHasMore(more);
-      oldestMsgId.current = oldestCursor;
-      return count;
-    } finally {
-      // Only the latest session switch may clear the spinner — an older tab
-      // request resolving late otherwise kills the loading state of the tab
-      // the user is actually viewing now.
-      if (showSpinner && currentConvKeyRef.current === convKey && sessionSwitchSeqRef.current === seqAtStart) setLoadingChat(false);
-    }
-  }, [loadAndDisplay, msgBuffers, sessionSwitchSeqRef]);
+      const res = await api.sessions.listByAgent(agentId, 20, 1);
+      setSessions(res.sessions);
+      setSessionsTotal(res.total ?? res.sessions.length);
+      setSessionsPage(res.page ?? 1);
+      setSessionsHasMore(!!res.hasMore);
+      return res.sessions;
+    } catch { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
+  }, []);
 
-  /**
-   * After refresh / session switch: if the server still has an active generation
-   * for this session, reattach SSE and continue streaming into the last agent bubble.
-   * Must consume text + tool + commit events the same way as a live send().
-   */
+  // ── useChatStream: streaming orchestration extracted into a hook ──────────
+  // Team.tsx owns ALL app state; the hook ONLY borrows it via ctx + stateRef.
+  const streamVolatileRef = useRef<ChatStreamVolatileState>({
+    chatContext: [], input: '', pendingImages: [],
+    chatMode, selectedAgent, activeSessionId,
+    activeDmUserId, authUser, sessionModelOverride, activeChannel,
+    groupChats, agents, humans, sending,
+    chatReplyTo: null,
+  });
+  streamVolatileRef.current = {
+    chatContext, input, pendingImages,
+    chatMode, selectedAgent, activeSessionId,
+    activeDmUserId, authUser, sessionModelOverride, activeChannel,
+    groupChats, agents, humans, sending,
+    chatReplyTo,
+  };
+  const chatStream = useChatStream({
+    stateRef: streamVolatileRef,
+    msgBuffers, actBuffers, sessionMsgCache, activeSessionBuffer, currentConvKeyRef,
+    updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
+    beginStream, endStream, abortStream, clearStreamSession, setStreamSession, getStreamSession,
+    incrementSending, decrementSending, loadAndDisplay,
+    thinkingTimeoutRef, sessionSwitchSeqRef, oldestMsgId,
+    setSending, setActivities, setInput, setChatContext, setPendingImages,
+    setMentionDropdown, setChatReplyTo, setActiveSessionId, setStoredActiveSession,
+    setOpenSessionTabs, setSessions, setLoadingChat, setHasMore, setThinkingAgents,
+    makeConvKey, makeDmChannel, addRecentMsgId, resumeChatScrollFollow, loadSessions,
+    t,
+  });
+  const { send: hookSend, stopSending, tryReattachActiveStream, loadSessionMessages } = chatStream;
+  sendRef.current = hookSend;
+
+  // Load session messages from DB — phase-aware via ConversationBufferManager.
+  // (loadSessionMessages moved into useChatStream hook — see above)
+
+  // (tryReattachActiveStream moved into useChatStream hook)
+  // LEGACY BLOCK: the original implementation is kept (renamed) until the
+  // remaining lines containing <thinking> tags can be removed by a tool that
+  // matches them verbatim. The hook version is the one actually wired up.
   const reattachCooldownRef = useRef<Map<string, number>>(new Map());
-  // Sessions the user explicitly stopped. A stopped turn must never be resumed
-  // by reattach — otherwise clicking "stop" can look like a no-op (the reply
-  // keeps streaming) and, because the in-flight bubble may already have been
-  // cleaned up, the re-stream can land in the *previous* turn's reply bubble.
   const userStoppedSessionsRef = useRef<Set<string>>(new Set());
-  const tryReattachActiveStream = useCallback(async (agentId: string, sessionId: string, convKey: string) => {
+  const tryReattachActiveStreamLegacy = useCallback(async (agentId: string, sessionId: string, convKey: string) => {
     if (!agentId || !sessionId || sessionId === NEW_CHAT_PLACEHOLDER_ID) return;
-    // A user-initiated stop is final for that turn — never reattach/resume it.
     if (userStoppedSessionsRef.current.has(sessionId)) return;
     let abortCtrl: AbortController | null = null;
     try {
@@ -2040,19 +2052,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (!sid || sid === NEW_CHAT_PLACEHOLDER_ID) return;
     void tryReattachActiveStream(selectedAgent, sid, currentConvKeyRef.current);
   }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, tryReattachActiveStream]);
-
-  // Load sessions list for agent (paginated — History panel loads 20 at a time)
-  const loadSessions = useCallback(async (agentId: string) => {
-    if (!agentId) { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
-    try {
-      const res = await api.sessions.listByAgent(agentId, 20, 1);
-      setSessions(res.sessions);
-      setSessionsTotal(res.total ?? res.sessions.length);
-      setSessionsPage(res.page ?? 1);
-      setSessionsHasMore(!!res.hasMore);
-      return res.sessions;
-    } catch { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
-  }, []);
 
   // Load older sessions (append to the list) — History panel "load more"
   const loadMoreSessions = useCallback(async () => {
@@ -2610,7 +2609,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // ── Sending ──────────────────────────────────────────────────────────────────
   const parseMentions = (text: string) => parseMentionNames(text);
 
-  const stopSending = () => {
+  const stopSendingLegacy = () => {
     // 1) Tell the backend to stop FIRST. Aborting the SSE alone is a soft
     // disconnect — the agent keeps working for up to SSE_DISCONNECT_FORCE_STOP_MS
     // unless cancel-processing marks userStopped.
@@ -2645,7 +2644,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [rememberBusy, setRememberBusy] = useState(false);
 
   const lastSendGuardRef = useRef<{ text: string; at: number } | null>(null);
-  const send = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean; sessionIdOverride?: string }) => {
+  const sendLegacy = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean; sessionIdOverride?: string }) => {
     const ctxPrefix = (!retryText && chatContext.length > 0)
       ? chatContext.map(c => c.content).join('\n\n') + '\n\n'
       : '';
@@ -2693,7 +2692,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             return u;
           });
           await new Promise(r => setTimeout(r, 50));
-          return send(text, { isRetry: true });
+          return sendLegacy(text, { isRetry: true });
         }
         // Same session: interrupt current stream and resend
         abortControllerRef.current?.abort();
@@ -3428,7 +3427,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       }
     }
   };
-  sendRef.current = send;
+  // LEGACY implementations are kept only for diff review while the <thinking>
+  // tag lines remain undeletable by the file tools. They are NOT wired up.
+  void tryReattachActiveStreamLegacy;
+  void sendLegacy;
+  void stopSendingLegacy;
 
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [retryConfirm, setRetryConfirm] = useState<{
@@ -3465,7 +3468,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const idx = prev.findIndex(m => m.id === (removeUserToo ? userMsg!.id : retryMsg.id));
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
-    void send(retryText, { isRetry: true });
+    void hookSend(retryText, { isRetry: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
@@ -3522,7 +3525,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
     // Send a hidden continuation prompt — the backend will keep the existing
     // session context and let the LLM pick up where it left off.
-    void send('[Continue from where you left off. Do not repeat content already generated.]', { isResume: true });
+    void hookSend('[Continue from where you left off. Do not repeat content already generated.]', { isResume: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
@@ -3579,7 +3582,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setMessages([]);
       setHasMore(false);
       oldestMsgId.current = null;
-      await send(result.seedPrompt, { sessionIdOverride: result.sessionId });
+      await hookSend(result.seedPrompt, { sessionIdOverride: result.sessionId });
     } catch (err) {
       console.error('evolve-from-message failed', err);
     } finally {
@@ -5484,7 +5487,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     e.currentTarget.blur();
                     return;
                   }
-                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void hookSend(); }
                 }}
                 onPaste={handlePaste}
                 placeholder={placeholder}
@@ -5552,7 +5555,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 </button>
               ) : (
                 <button
-                  onClick={() => void send()}
+                  onClick={() => void hookSend()}
                   disabled={(chatMode === 'direct' && (!selectedAgent || isAgentOffline)) || (!input.trim() && pendingImages.length === 0)}
                   className={
                     compactComposer
