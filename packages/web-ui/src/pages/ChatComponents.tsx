@@ -13,7 +13,7 @@ import {
   type TaskApprovalInfo, type RequirementApprovalInfo,
 } from '../components/ExecutionTimeline.tsx';
 import { Avatar } from '../components/Avatar.tsx';
-import { isRememberActionVisible, stripNotifyContext, type ChatMsg, type MsgSegment } from './ChatHelpers.ts';
+import { isRememberActionVisible, stripNotifyContext, stripThinkingBlocks, type ChatMsg, type MsgSegment } from './ChatHelpers.ts';
 export { isRememberActionVisible };
 
 // ─── NotificationBadge ────────────────────────────────────────────────────────

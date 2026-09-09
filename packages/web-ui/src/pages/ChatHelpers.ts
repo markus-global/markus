@@ -236,6 +236,25 @@ export function stripNotifyContext(text: string): { cleaned: string; priority?: 
   return { cleaned: text.replace(NOTIFY_CONTEXT_RE, '').trimEnd(), priority };
 }
 
+/**
+ * Remove complete <thinking>…</thinking> blocks from display/persist text.
+ *
+ * CRITICAL: the matcher REQUIRES a closing tag. Earlier defensive regexes used
+ * `(<\/think>|$)` as the terminator — whenever plain prose contained the word
+ * " thinking" (extremely common in English replies) WITHOUT a closing tag, the
+ * regex deleted everything from that word to the END of the string. The result
+ * looked exactly like "the final reply text is truncated / incomplete".
+ *
+ * With a closing tag required, bare " thinking" in normal text is left intact,
+ * and only true (legacy/raw) thinking blocks are stripped.
+ */
+const THINK_BLOCK_RE = /(?:<thinking>| thinking)[\s\S]*?<\/thinking>/g;
+const THINK_BLOCK_RE_LEGACY = /(?:<thinking>| thinking| thinking| think)[\s\S]*?<\/think>/g;
+
+export function stripThinkingBlocks(text: string): string {
+  return text.replace(THINK_BLOCK_RE, '').replace(THINK_BLOCK_RE_LEGACY, '');
+}
+
 /** Map a persisted/SSE segment into chat UI shape, keeping nested sub-agent logs. */
 export function storedSegmentToMsgSegment(
   s: StoredSegment,

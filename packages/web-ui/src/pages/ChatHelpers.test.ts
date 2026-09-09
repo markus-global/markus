@@ -14,6 +14,7 @@ import {
   stopRunningTools,
   stripEmbeddedReplyQuote,
   stripNotifyContext,
+  stripThinkingBlocks,
   type ChatMsg,
 } from './ChatHelpers.ts';
 import type { ChatMessageInfo } from '../api.ts';
@@ -326,5 +327,38 @@ describe('message finalization helpers', () => {
     const msgs = [old, ...tail];
     expect(hasStreamingTail(msgs)).toBe(true); // within 8
     expect(hasStreamingTail(msgs, 2)).toBe(false); // only last 2 scanned
+  });
+
+  describe('stripThinkingBlocks', () => {
+    it('keeps plain English prose containing the word "thinking" intact (regression)', () => {
+      // Regression: the old regex / thinking[\s\S]*?(<\/think>|$)/ matched the bare
+      // word "thinking" in ordinary text and deleted everything to the end of the
+      // string — making complete replies look truncated.
+      const text = "I was thinking about the design, and the final answer is yes.";
+      expect(stripThinkingBlocks(text)).toBe(text);
+    });
+
+    it('strips complete <thinking>…</thinking> blocks (new stream format)', () => {
+      const text = "前言\n<thinking>deep reasoning part</thinking>\n正文内容";
+      expect(stripThinkingBlocks(text)).toBe("前言\n\n正文内容");
+    });
+
+    it('strips legacy chunk-split " thinking"…"</thinking>" blocks with no angle brackets', () => {
+      const text = "答 thinking internal reasoning </thinking> 结果";
+      expect(stripThinkingBlocks(text).replace(/\s+/g, ' ').trim()).toBe("答 结果");
+    });
+
+    it('strips legacy blocks closed with </think> (single t)', () => {
+      const text = "开始\n<thinking>old format</think>\n结尾";
+      expect(stripThinkingBlocks(text)).toContain("开始");
+      expect(stripThinkingBlocks(text)).toContain("结尾");
+      expect(stripThinkingBlocks(text)).not.toContain("old format");
+    });
+
+    it('leaves an unclosed <thinking> block as-is (does not swallow the rest)', () => {
+      // No closing tag → must NOT truncate the remainder of the reply.
+      const text = "思考中<thinking>仍 在输出";
+      expect(stripThinkingBlocks(text)).toBe(text);
+    });
   });
 });

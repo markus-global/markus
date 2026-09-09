@@ -19,6 +19,7 @@ import { Avatar } from './Avatar.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { useChatStore, chatStore } from '../pages/useChatStore.ts';
+import { stripThinkingBlocks } from '../pages/ChatHelpers.ts';
 
 // Module-level cache so last-message previews survive unmount/remount cycles on mobile
 let _lastMsgCache: Map<string, string> = new Map();
@@ -406,8 +407,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
 
     // WS-driven updates: listen for real-time message events
     const agentIdSet = new Set(agents.map(a => a.id));
-    const stripMarkup = (raw: string) => raw
-      .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+    const stripMarkup = (raw: string) => stripThinkingBlocks(raw)
       .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
       .replace(/\n+/g, ' ').trim().slice(0, 80);
     const updateLastMsg = (agentId: string, message: string) => {
