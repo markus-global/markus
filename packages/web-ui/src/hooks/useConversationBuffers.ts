@@ -82,7 +82,10 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
       setActivities([]);
     }
   }, []);
-  const resetConv = useCallback((key: string) => { mgr.current.resetConv(key); mgr.current.deleteBuffer(key); }, []);
+  const resetConv = useCallback((key: string, repinTo?: string) => {
+    mgr.current.resetConv(key, repinTo);
+    mgr.current.deleteBuffer(key);
+  }, []);
 
   // Phase-aware async load
   const loadAndDisplay = useCallback(async (

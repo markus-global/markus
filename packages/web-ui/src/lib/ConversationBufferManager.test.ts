@@ -102,6 +102,65 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
     expect(visibleIds).not.toContain('a_old');
     expect(visibleIds).toContain('u_new');
   });
+
+  it('resetConv with repinTo keeps stale PREVIOUS-session streams out of the fresh buffer (regression: order bug)', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt_x';
+
+    // Scenario: user clicks "new conversation" while 'sess_old' is still streaming.
+    // resetConv(key, NEW_CHAT_ID) must atomically reset AND re-pin so the running
+    // old stream routes to its own cache, not the fresh display buffer.
+    mgr.resetConv('agt_x', ConversationBufferManager.NEW_CHAT_ID);
+
+    // Stale stream from the old session keeps pushing SSE events.
+    const rOld = mgr.updateMessages(
+      'agt_x',
+      () => [msg('a_old', 'agent', 'stale chunk', '2026-08-02T07:06:00.000Z')],
+      'sess_old',
+    );
+    expect(rOld.displayChanged).toBe(false);
+    expect(mgr.msgBuffers.get('agt_x')).toBeUndefined();
+
+    // Fresh new-chat optimistic message still lands in the visible buffer.
+    const rNew = mgr.updateMessages(
+      'agt_x',
+      () => [msg('u_new', 'user', 'hello', '2026-08-02T07:07:00.000Z')],
+      null,
+    );
+    expect(rNew.displayChanged).toBe(true);
+    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['u_new']);
+
+    // If repinTo were NOT applied (the old bug), activeSession would be undefined
+    // and the stale stream would have been treated as same-session and written
+    // into the display buffer. Assert it stayed clean.
+    expect(mgr.activeSession.get('agt_x')).toBe(ConversationBufferManager.NEW_CHAT_ID);
+    expect(mgr.msgBuffers.get('agt_x')!.some(m => m.id === 'a_old')).toBe(false);
+  });
+
+  it('resetConv repins to an existing session id when switching to it (remember/evolution path)', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt_x';
+    // handleRememberConfirm: resetConv(key, childSession.id) after creating the child.
+    mgr.resetConv('agt_x', 'sess_child');
+
+    // Parent session stream still running — must NOT leak into the child buffer.
+    const rParent = mgr.updateMessages(
+      'agt_x',
+      () => [msg('a_parent', 'agent', 'parent still streaming', '2026-08-02T07:06:00.000Z')],
+      'sess_parent',
+    );
+    expect(rParent.displayChanged).toBe(false);
+
+    // Child's own send (sessionIdOverride) writes to the child's display buffer.
+    const rChild = mgr.updateMessages(
+      'agt_x',
+      () => [msg('a_child', 'agent', 'child reply', '2026-08-02T07:08:00.000Z')],
+      'sess_child',
+    );
+    expect(rChild.displayChanged).toBe(true);
+    expect(mgr.activeSession.get('agt_x')).toBe('sess_child');
+    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['a_child']);
+  });
 });
 
 describe('ConversationBufferManager.abortStream', () => {

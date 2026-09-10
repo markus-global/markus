@@ -78,9 +78,22 @@ export class ConversationBufferManager {
     }
   }
 
-  resetConv(key: string): void {
+  /**
+   * Reset a conversation to empty idle state.
+   *
+   * CRITICAL (multi-session direct mode): `activeSession` is the single
+   * routing gate that prevents stale streams from a PREVIOUS session writing
+   * into a fresh buffer (see updateMessages → isSameSession). Every caller
+   * MUST re-pin after reset — otherwise activeSession becomes undefined and
+   * any still-running backend stream is treated as same-session and mixed in.
+   * Passing `repinTo` makes reset + re-pin atomic so the ordering can never
+   * be wrong. Pass NEW_CHAT_ID for a fresh conversation, or the session id
+   * when switching to an existing session.
+   */
+  resetConv(key: string, repinTo?: string): void {
     this.phase.set(key, 'idle');
     this.activeSession.delete(key);
+    if (repinTo) this.activeSession.set(key, repinTo);
   }
 
   // ── Message buffer writes ──

@@ -3576,9 +3576,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setOpenSessionTabs(prev => prev.some(t => t.id === childSession.id) ? prev : [...prev, childSession]);
       setActiveSessionId(childSession.id);
       const key = makeConvKey('direct', selectedAgent, activeChannel, activeDmUserId);
-      activeSessionBuffer.set(key, childSession.id);
+      // reset + re-pin atomically: resetConv deletes the manager's activeSession
+      // for this key, then re-pins to the child session — so a stream from the
+      // PARENT session still running on the backend is routed to its own cache,
+      // never mixed into this new conversation's buffer.
+      resetConv(key, childSession.id);
       setStoredActiveSession(selectedAgent, childSession.id);
-      resetConv(key);
       setMessages([]);
       setHasMore(false);
       oldestMsgId.current = null;
@@ -3710,13 +3713,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // default — deterministic. The user can pick a model in this new chat.
     setSessionModelOverride(null);
     const key = currentConvKeyRef.current;
-    resetConv(key);
-    // resetConv deletes the manager's activeSession for this key. Re-pin it to
-    // the new-chat placeholder so a still-running stream from a PREVIOUS session
-    // is routed to its own session cache (isSameSession=false) instead of being
-    // written into the fresh new-chat buffer — this is what mixed concurrent
-    // streams together and made content land in the wrong bubbles.
-    activeSessionBuffer.set(key, NEW_CHAT_PLACEHOLDER_ID);
+    // reset + re-pin atomically: resetConv deletes the manager's activeSession
+    // for this key, then re-pins it to the new-chat placeholder so a
+    // still-running stream from a PREVIOUS session is routed to its own session
+    // cache (isSameSession=false) instead of being written into the fresh
+    // new-chat buffer — this is what mixed concurrent streams together and made
+    // content land in the wrong bubbles.
+    resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
     setMessages([]);
     setHasMore(false);
     oldestMsgId.current = null;
@@ -4680,7 +4683,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       // default, never from another session's model override.
                       setSessionModelOverride(null);
                       const key = currentConvKeyRef.current;
-                      resetConv(key);
+                      // Same atomic reset + re-pin as newConversation(): keeps a
+                      // concurrently-streaming PREVIOUS session out of this tab.
+                      resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
                       setMessages([]);
                     } else {
                       void switchSession(s);
