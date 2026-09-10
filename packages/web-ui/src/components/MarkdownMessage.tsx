@@ -55,7 +55,7 @@ interface Props {
   basePath?: string;
 }
 
-const thinkRegex = / thinking([\s\S]*?)(<\/think>|$)/g;
+const thinkRegex = /(?:<thinking>| thinking)([\s\S]*?)<\/thinking>/g;
 
 function extractThinkBlocks(text: string): { thinking: string[]; rest: string } {
   const thinking: string[] = [];
@@ -64,7 +64,7 @@ function extractThinkBlocks(text: string): { thinking: string[]; rest: string } 
     if (trimmed) thinking.push(trimmed);
     return '';
   });
-  rest = rest.replace(/<\/think>/g, '').replace(/ thinking/g, '');
+  rest = rest.replace(/<thinking>/gi, '').replace(/<\/thinking>/gi, '');
   return { thinking, rest: rest.trim() };
 }
 

@@ -102,6 +102,104 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
     expect(visibleIds).not.toContain('a_old');
     expect(visibleIds).toContain('u_new');
   });
+
+  it('resetConv with repinTo keeps stale PREVIOUS-session streams out of the fresh buffer (regression: order bug)', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt_x';
+
+    // Scenario: user clicks "new conversation" while 'sess_old' is still streaming.
+    // resetConv(key, NEW_CHAT_ID) must atomically reset AND re-pin so the running
+    // old stream routes to its own cache, not the fresh display buffer.
+    mgr.resetConv('agt_x', ConversationBufferManager.NEW_CHAT_ID);
+
+    // Stale stream from the old session keeps pushing SSE events.
+    const rOld = mgr.updateMessages(
+      'agt_x',
+      () => [msg('a_old', 'agent', 'stale chunk', '2026-08-02T07:06:00.000Z')],
+      'sess_old',
+    );
+    expect(rOld.displayChanged).toBe(false);
+    expect(mgr.msgBuffers.get('agt_x')).toBeUndefined();
+
+    // Fresh new-chat optimistic message still lands in the visible buffer.
+    const rNew = mgr.updateMessages(
+      'agt_x',
+      () => [msg('u_new', 'user', 'hello', '2026-08-02T07:07:00.000Z')],
+      null,
+    );
+    expect(rNew.displayChanged).toBe(true);
+    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['u_new']);
+
+    // If repinTo were NOT applied (the old bug), activeSession would be undefined
+    // and the stale stream would have been treated as same-session and written
+    // into the display buffer. Assert it stayed clean.
+    expect(mgr.activeSession.get('agt_x')).toBe(ConversationBufferManager.NEW_CHAT_ID);
+    expect(mgr.msgBuffers.get('agt_x')!.some(m => m.id === 'a_old')).toBe(false);
+  });
+
+  it('resetConv repins to an existing session id when switching to it (remember/evolution path)', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt_x';
+    // handleRememberConfirm: resetConv(key, childSession.id) after creating the child.
+    mgr.resetConv('agt_x', 'sess_child');
+
+    // Parent session stream still running — must NOT leak into the child buffer.
+    const rParent = mgr.updateMessages(
+      'agt_x',
+      () => [msg('a_parent', 'agent', 'parent still streaming', '2026-08-02T07:06:00.000Z')],
+      'sess_parent',
+    );
+    expect(rParent.displayChanged).toBe(false);
+
+    // Child's own send (sessionIdOverride) writes to the child's display buffer.
+    const rChild = mgr.updateMessages(
+      'agt_x',
+      () => [msg('a_child', 'agent', 'child reply', '2026-08-02T07:08:00.000Z')],
+      'sess_child',
+    );
+    expect(rChild.displayChanged).toBe(true);
+    expect(mgr.activeSession.get('agt_x')).toBe('sess_child');
+    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['a_child']);
+  });
+
+  it('switchSession pin: a background session stream routes to its own cache, never the shared display buffer', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt_x';
+    // User is viewing tab A → switchSession pins the gate to sess_a.
+    mgr.setActiveSession('agt_x', 'sess_a');
+
+    // Session A streaming in the foreground: same-session writes hit the display buffer.
+    const rA = mgr.updateMessages('agt_x', () => [
+      msg('u_a', 'user', 'q', '2026-08-02T07:00:00.000Z'),
+      msg('a_a', 'agent', 'partial', '2026-08-02T07:01:00.000Z'),
+    ], 'sess_a');
+    expect(rA.displayChanged).toBe(true);
+    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['u_a', 'a_a']);
+
+    // User switches to tab B → switchSession re-pins the gate to sess_b.
+    mgr.setActiveSession('agt_x', 'sess_b');
+
+    // A's stream is STILL running in the background. Its chunk must go to
+    // session A's cache only — NOT into the display buffer (which is B's view).
+    const rA2 = mgr.updateMessages('agt_x', (prev) => {
+      const u = [...prev];
+      u[u.length - 1] = { ...u[u.length - 1]!, text: 'partial + more' };
+      return u;
+    }, 'sess_a');
+    expect(rA2.displayChanged).toBe(false);
+    // Shared display buffer untouched by A's background stream.
+    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['u_a', 'a_a']);
+
+    // Lateral cache must NOT have picked up A's stream either.
+    expect((mgr.sessionMsgCache.get('sess_a') ?? []).map(m => m.id)).toEqual(['u_a', 'a_a']);
+    expect(mgr.sessionMsgCache.get('sess_a')![1]!.text).toBe('partial + more');
+
+    // Switching back to A (switchSession again) restores the accumulated stream.
+    mgr.setActiveSession('agt_x', 'sess_a');
+    const restored = mgr.restoreFromCache('agt_x', 'sess_a')!;
+    expect(restored.map(m => m.id)).toEqual(['u_a', 'a_a']);
+    expect(restored[restored.length - 1]!.text).toBe('partial + more');
+  });
 });
 
 describe('ConversationBufferManager.abortStream', () => {

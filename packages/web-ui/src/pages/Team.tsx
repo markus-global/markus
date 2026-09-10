@@ -27,15 +27,20 @@ import { exponentialBackoffDelay } from '../lib/streamResilience.ts';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
 import { RightPanel } from '../components/RightPanel.tsx';
+import { ChatSearchPanel, GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
-import { AgentProfile, TAB_DEF as AGENT_TAB_DEF, type ProfileTab } from './AgentProfile.tsx';
-import { TeamProfile, TABS as TEAM_TABS, type TeamTab } from './TeamProfile.tsx';
+import { AgentProfile, type ProfileTab } from './AgentProfile.tsx';
+import { TeamProfile, type TeamTab } from './TeamProfile.tsx';
+import {
+  type MainTab, AGENT_TABS, TEAM_TAB_SET, tabLabel, tabIcon, isProfileTab,
+} from './tabDefs.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
+import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStream.ts';
 import { chatStore } from './useChatStore.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
@@ -72,40 +77,7 @@ function notifySessionId(n: NotificationInfo): string | undefined {
   return undefined;
 }
 
-function agentInitials(name: string) {
-  return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-}
-
 // ─── Main Component ───────────────────────────────────────────────────────────
-
-type MainTab = 'chat' | 'profile'
-  | 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'deliverables'
-  | 'announcements' | 'norms' | 'settings';
-
-const AGENT_TABS: MainTab[] = ['chat', 'overview', 'files', 'tools', 'memory', 'deliverables'];
-const TEAM_TAB_SET: MainTab[] = ['chat', 'overview', 'announcements', 'norms', 'settings'];
-
-function tabLabel(tab: MainTab, t: TFunction): string {
-  if (tab === 'chat') return t('page.chatTitle');
-  const agentDef = AGENT_TAB_DEF.find(d => d.key === tab);
-  if (agentDef) return t(`agent:tabs.${tab}`);
-  const teamDef = TEAM_TABS.find(d => d.key === tab);
-  if (teamDef) return t(teamDef.labelKey);
-  return tab;
-}
-
-function tabIcon(tab: MainTab): string {
-  if (tab === 'chat') return '💬';
-  const agentDef = AGENT_TAB_DEF.find(d => d.key === tab);
-  if (agentDef) return agentDef.icon;
-  const teamDef = TEAM_TABS.find(d => d.key === tab);
-  if (teamDef) return teamDef.icon;
-  return '';
-}
-
-function isProfileTab(tab: MainTab): boolean {
-  return tab !== 'chat';
-}
 
 // ── Hash-based store: the URL is the single source of truth for mobile nav ────
 const _hashSubs = new Set<() => void>();
@@ -596,6 +568,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     sending, setSending,
     activities, setActivities,
     msgBuffers, sessionMsgCache, activeSessionBuffer, actBuffers, sessionTabsBuffer,
+    setActiveSession,
     currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginLoad, beginStream, endStream, resetConv, abortStream,
@@ -878,6 +851,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const sendRef = useRef<(text?: string) => Promise<void>>(undefined);
+  /**
+   * SINGLE entry point for changing the active session view state. It always
+   * keeps the manager's routing gate (ConversationBufferManager.activeSession)
+   * in sync: a missing pin is exactly what lets a background session's stream
+   * write into the shared display buffer (misordered / blank bubbles, the
+   * multi-tab direct-mode bug family). Use this everywhere instead of calling
+   * setActiveSessionId directly; paths that need resetConv (new chat / new
+   * conversation) keep using the atomic resetConv(key, id) pair instead.
+   */
+  const changeActiveSession = useCallback((key: string, id: string | null) => {
+    setActiveSessionId(id);
+    if (!key) return;
+    if (id === null) {
+      bufMgr.clearActiveSession(key);
+    } else {
+      bufMgr.setActiveSession(key, id);
+    }
+  }, [setActiveSessionId, bufMgr]);
   /** When true, the next scroll-to-bottom effect is suppressed (used by loadMore) */
   const skipScrollRef = useRef(false);
   /** Tracks whether user is at/near the bottom of the chat scroll container */
@@ -1623,51 +1614,63 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   }, []);
 
-  // Load session messages from DB — phase-aware via ConversationBufferManager.
-  // During streaming phase, DB data is written to cache only, never to display.
-  const loadSessionMessages = useCallback(async (sessionId: string, convKey: string): Promise<number> => {
-    const seqAtStart = sessionSwitchSeqRef.current;
-    // Soft-refresh (buffer already has messages) should not flash a full-page spinner.
-    const showSpinner = currentConvKeyRef.current === convKey
-      && (msgBuffers.get(convKey)?.length ?? 0) === 0;
-    if (showSpinner) setLoadingChat(true);
+  // Load sessions list for agent (paginated — History panel loads 20 at a time)
+  const loadSessions = useCallback(async (agentId: string) => {
+    if (!agentId) { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
     try {
-      const { count, hasMore: more, oldestCursor } = await loadAndDisplay(sessionId, convKey, async () => {
-        const result = await api.sessions.getMessages(sessionId, 50);
-        const msgs = dedupeAdjacentUserMessages(result.messages.map(dbMsgToChat).filter(m =>
-          m.sender !== 'agent' || m.text || (m.segments && m.segments.length > 0) || m.isStreaming
-        ));
-        return {
-          messages: msgs,
-          hasMore: result.hasMore,
-          oldestCursor: result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null,
-        };
-      });
-      setHasMore(more);
-      oldestMsgId.current = oldestCursor;
-      return count;
-    } finally {
-      // Only the latest session switch may clear the spinner — an older tab
-      // request resolving late otherwise kills the loading state of the tab
-      // the user is actually viewing now.
-      if (showSpinner && currentConvKeyRef.current === convKey && sessionSwitchSeqRef.current === seqAtStart) setLoadingChat(false);
-    }
-  }, [loadAndDisplay, msgBuffers, sessionSwitchSeqRef]);
+      const res = await api.sessions.listByAgent(agentId, 20, 1);
+      setSessions(res.sessions);
+      setSessionsTotal(res.total ?? res.sessions.length);
+      setSessionsPage(res.page ?? 1);
+      setSessionsHasMore(!!res.hasMore);
+      return res.sessions;
+    } catch { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
+  }, []);
 
-  /**
-   * After refresh / session switch: if the server still has an active generation
-   * for this session, reattach SSE and continue streaming into the last agent bubble.
-   * Must consume text + tool + commit events the same way as a live send().
-   */
+  // ── useChatStream: streaming orchestration extracted into a hook ──────────
+  // Team.tsx owns ALL app state; the hook ONLY borrows it via ctx + stateRef.
+  const streamVolatileRef = useRef<ChatStreamVolatileState>({
+    chatContext: [], input: '', pendingImages: [],
+    chatMode, selectedAgent, activeSessionId,
+    activeDmUserId, authUser, sessionModelOverride, activeChannel,
+    groupChats, agents, humans, sending,
+    chatReplyTo: null,
+  });
+  streamVolatileRef.current = {
+    chatContext, input, pendingImages,
+    chatMode, selectedAgent, activeSessionId,
+    activeDmUserId, authUser, sessionModelOverride, activeChannel,
+    groupChats, agents, humans, sending,
+    chatReplyTo,
+  };
+  const chatStream = useChatStream({
+    stateRef: streamVolatileRef,
+    msgBuffers, actBuffers, sessionMsgCache, activeSessionBuffer, currentConvKeyRef,
+    updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
+    beginStream, endStream, abortStream, clearStreamSession, setStreamSession, getStreamSession,
+    setActiveSession,
+    incrementSending, decrementSending, loadAndDisplay,
+    thinkingTimeoutRef, sessionSwitchSeqRef, oldestMsgId,
+    setSending, setActivities, setInput, setChatContext, setPendingImages,
+    setMentionDropdown, setChatReplyTo, setActiveSessionId, setStoredActiveSession,
+    setOpenSessionTabs, setSessions, setLoadingChat, setHasMore, setThinkingAgents,
+    makeConvKey, makeDmChannel, addRecentMsgId, resumeChatScrollFollow, loadSessions,
+    t,
+  });
+  const { send: hookSend, stopSending, tryReattachActiveStream, loadSessionMessages } = chatStream;
+  sendRef.current = hookSend;
+
+  // Load session messages from DB — phase-aware via ConversationBufferManager.
+  // (loadSessionMessages moved into useChatStream hook — see above)
+
+  // (tryReattachActiveStream moved into useChatStream hook)
+  // LEGACY BLOCK: the original implementation is kept (renamed) until the
+  // remaining lines containing <thinking> tags can be removed by a tool that
+  // matches them verbatim. The hook version is the one actually wired up.
   const reattachCooldownRef = useRef<Map<string, number>>(new Map());
-  // Sessions the user explicitly stopped. A stopped turn must never be resumed
-  // by reattach — otherwise clicking "stop" can look like a no-op (the reply
-  // keeps streaming) and, because the in-flight bubble may already have been
-  // cleaned up, the re-stream can land in the *previous* turn's reply bubble.
   const userStoppedSessionsRef = useRef<Set<string>>(new Set());
-  const tryReattachActiveStream = useCallback(async (agentId: string, sessionId: string, convKey: string) => {
+  const tryReattachActiveStreamLegacy = useCallback(async (agentId: string, sessionId: string, convKey: string) => {
     if (!agentId || !sessionId || sessionId === NEW_CHAT_PLACEHOLDER_ID) return;
-    // A user-initiated stop is final for that turn — never reattach/resume it.
     if (userStoppedSessionsRef.current.has(sessionId)) return;
     let abortCtrl: AbortController | null = null;
     try {
@@ -2070,19 +2073,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     void tryReattachActiveStream(selectedAgent, sid, currentConvKeyRef.current);
   }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, tryReattachActiveStream]);
 
-  // Load sessions list for agent (paginated — History panel loads 20 at a time)
-  const loadSessions = useCallback(async (agentId: string) => {
-    if (!agentId) { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
-    try {
-      const res = await api.sessions.listByAgent(agentId, 20, 1);
-      setSessions(res.sessions);
-      setSessionsTotal(res.total ?? res.sessions.length);
-      setSessionsPage(res.page ?? 1);
-      setSessionsHasMore(!!res.hasMore);
-      return res.sessions;
-    } catch { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
-  }, []);
-
   // Load older sessions (append to the list) — History panel "load more"
   const loadMoreSessions = useCallback(async () => {
     if (sessionsLoadingMore || !selectedAgent || !sessionsHasMore) return;
@@ -2245,7 +2235,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setMessages(bufferedMsgs!);
       setHasMore(false);
       if (savedActiveSession !== undefined) {
-        setActiveSessionId(savedActiveSession);
+        changeActiveSession(newKey, savedActiveSession);
       }
       if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
       // Refresh from server in background to catch anything we missed while away
@@ -2313,8 +2303,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               if (found) initialTabs = [...initialTabs, found];
             }
             const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
-            setActiveSessionId(validId);
-            activeSessionBuffer.set(newKey, validId);
+            // changeActiveSession keeps view state and the manager routing gate
+            // in sync (single entry) — a concurrently-streaming OTHER session
+            // of this agent cannot land chunks in this buffer (same bug family
+            // as switchSession).
+            changeActiveSession(newKey, validId);
             setStoredActiveSession(selectedAgent!, validId);
             setOpenSessionTabs(initialTabs);
             const restored = s.find(ss => ss.id === validId);
@@ -2326,7 +2319,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               }
             });
           } else {
-            setActiveSessionId(null);
+            // No sessions exist yet — view has no active session and the gate
+            // is unpinned so a stray background stream is conservatively routed
+            // to its own cache (isDisplayRoute), never into this empty view.
+            changeActiveSession(newKey, null);
             setSessionModelOverride(null);
             setLoadingChat(false);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
@@ -2639,7 +2635,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // ── Sending ──────────────────────────────────────────────────────────────────
   const parseMentions = (text: string) => parseMentionNames(text);
 
-  const stopSending = () => {
+  const stopSendingLegacy = () => {
     // 1) Tell the backend to stop FIRST. Aborting the SSE alone is a soft
     // disconnect — the agent keeps working for up to SSE_DISCONNECT_FORCE_STOP_MS
     // unless cancel-processing marks userStopped.
@@ -2674,7 +2670,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [rememberBusy, setRememberBusy] = useState(false);
 
   const lastSendGuardRef = useRef<{ text: string; at: number } | null>(null);
-  const send = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean; sessionIdOverride?: string }) => {
+  const sendLegacy = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean; sessionIdOverride?: string }) => {
     const ctxPrefix = (!retryText && chatContext.length > 0)
       ? chatContext.map(c => c.content).join('\n\n') + '\n\n'
       : '';
@@ -2722,7 +2718,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             return u;
           });
           await new Promise(r => setTimeout(r, 50));
-          return send(text, { isRetry: true });
+          return sendLegacy(text, { isRetry: true });
         }
         // Same session: interrupt current stream and resend
         abortControllerRef.current?.abort();
@@ -3457,7 +3453,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       }
     }
   };
-  sendRef.current = send;
+  // LEGACY implementations are kept only for diff review while the <thinking>
+  // tag lines remain undeletable by the file tools. They are NOT wired up.
+  void tryReattachActiveStreamLegacy;
+  void sendLegacy;
+  void stopSendingLegacy;
 
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [retryConfirm, setRetryConfirm] = useState<{
@@ -3494,7 +3494,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const idx = prev.findIndex(m => m.id === (removeUserToo ? userMsg!.id : retryMsg.id));
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
-    void send(retryText, { isRetry: true });
+    void hookSend(retryText, { isRetry: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
@@ -3551,7 +3551,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
     // Send a hidden continuation prompt — the backend will keep the existing
     // session context and let the LLM pick up where it left off.
-    void send('[Continue from where you left off. Do not repeat content already generated.]', { isResume: true });
+    void hookSend('[Continue from where you left off. Do not repeat content already generated.]', { isResume: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
@@ -3602,13 +3602,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setOpenSessionTabs(prev => prev.some(t => t.id === childSession.id) ? prev : [...prev, childSession]);
       setActiveSessionId(childSession.id);
       const key = makeConvKey('direct', selectedAgent, activeChannel, activeDmUserId);
-      activeSessionBuffer.set(key, childSession.id);
+      // reset + re-pin atomically: resetConv deletes the manager's activeSession
+      // for this key, then re-pins to the child session — so a stream from the
+      // PARENT session still running on the backend is routed to its own cache,
+      // never mixed into this new conversation's buffer.
+      resetConv(key, childSession.id);
       setStoredActiveSession(selectedAgent, childSession.id);
-      resetConv(key);
       setMessages([]);
       setHasMore(false);
       oldestMsgId.current = null;
-      await send(result.seedPrompt, { sessionIdOverride: result.sessionId });
+      await hookSend(result.seedPrompt, { sessionIdOverride: result.sessionId });
     } catch (err) {
       console.error('evolve-from-message failed', err);
     } finally {
@@ -3619,7 +3622,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const switchSession = async (s: ChatSessionInfo) => {
     const switchSeq = ++sessionSwitchSeqRef.current;
     const prevSessionId = activeSessionId;
-    setActiveSessionId(s.id);
+    const key = currentConvKeyRef.current;
+    // Single entry point: updates view state + manager routing gate together.
+    // Without the gate pin the gate stays on whatever resetConv pinned last
+    // (new-chat placeholder) or undefined, so `updateMessages` judges every
+    // stream same-session: a still-running stream from the PREVIOUS tab keeps
+    // writing into the shared display buffer and mixes its bubbles into THIS
+    // tab (user bubble lands below a streaming agent bubble / blank bubble
+    // until refresh — the multi-tab direct-mode corruption family).
+    changeActiveSession(key, s.id);
     setShowSessions(false);
     setHasMore(false);
     oldestMsgId.current = null;
@@ -3630,7 +3641,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // Sync sending visual with the target session:
     // - If stream belongs to THIS session → show spinner
     // - If stream belongs to a DIFFERENT session → suppress spinner
-    const key = currentConvKeyRef.current;
     const streamingSessions = getStreamSession(key);
     const streamForThis = !!streamingSessions && (streamingSessions.has(s.id) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
     const isStreaming = isSendingFor(key) && streamForThis;
@@ -3640,7 +3650,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } else {
       setActivities([]);
     }
-    activeSessionBuffer.set(key, s.id);
     if (selectedAgent) setStoredActiveSession(selectedAgent, s.id);
     if (prevSessionId && prevSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
       saveSessionToCache(key, prevSessionId);
@@ -3736,13 +3745,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // default — deterministic. The user can pick a model in this new chat.
     setSessionModelOverride(null);
     const key = currentConvKeyRef.current;
-    resetConv(key);
-    // resetConv deletes the manager's activeSession for this key. Re-pin it to
-    // the new-chat placeholder so a still-running stream from a PREVIOUS session
-    // is routed to its own session cache (isSameSession=false) instead of being
-    // written into the fresh new-chat buffer — this is what mixed concurrent
-    // streams together and made content land in the wrong bubbles.
-    activeSessionBuffer.set(key, NEW_CHAT_PLACEHOLDER_ID);
+    // reset + re-pin atomically: resetConv deletes the manager's activeSession
+    // for this key, then re-pins it to the new-chat placeholder so a
+    // still-running stream from a PREVIOUS session is routed to its own session
+    // cache (isSameSession=false) instead of being written into the fresh
+    // new-chat buffer — this is what mixed concurrent streams together and made
+    // content land in the wrong bubbles.
+    resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
     setMessages([]);
     setHasMore(false);
     oldestMsgId.current = null;
@@ -4678,58 +4687,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
           {/* Search panel */}
           {searchOpen && (
-            <div className="border-b border-border-default bg-surface-secondary/50 px-4 py-2 space-y-2 animate-in slide-in-from-top-2 duration-200">
-              <div className="flex items-center gap-2">
-                <div className="flex-1 relative">
-                  <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-                  </svg>
-                  <input
-                    autoFocus
-                    value={searchQuery}
-                    onChange={e => handleSearchInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); } }}
-                    placeholder={t('page.searchPlaceholder')}
-                    className="w-full pl-8 pr-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg outline-none focus:border-brand-500/50 transition-colors"
-                  />
-                </div>
-                <button
-                  onClick={() => { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); }}
-                  className="text-fg-tertiary hover:text-fg-secondary text-xs px-1"
-                >✕</button>
-              </div>
-              {searchLoading && (
-                <div className="flex items-center gap-2 text-xs text-fg-tertiary py-1">
-                  <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                  {t('page.searching')}
-                </div>
-              )}
-              {!searchLoading && searchQuery.length >= 2 && searchResults.length === 0 && (
-                <div className="text-xs text-fg-tertiary py-1">{t('page.noSearchResults')}</div>
-              )}
-              {searchResults.length > 0 && (
-                <div className="max-h-60 overflow-y-auto space-y-0.5">
-                  {searchResults.map(r => (
-                    <button
-                      key={r.id}
-                      onClick={() => handleSearchResultClick(r)}
-                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface-elevated transition-colors group"
-                    >
-                      <div className="flex items-center gap-2 text-[11px] text-fg-tertiary mb-0.5">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${r.source === 'channel' ? 'bg-blue-500/10 text-blue-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
-                          {r.source === 'channel' ? '#' : '1:1'}
-                        </span>
-                        {r.senderName && <span>{r.senderName}</span>}
-                        <span>{new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
-                      </div>
-                      <div className="text-xs text-fg-secondary line-clamp-2 group-hover:text-fg-primary transition-colors">
-                        {r.text.length > 200 ? r.text.slice(0, 200) + '…' : r.text}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <ChatSearchPanel
+              searchQuery={searchQuery}
+              searchLoading={searchLoading}
+              searchResults={searchResults}
+              onInputChange={handleSearchInput}
+              onResultClick={handleSearchResultClick}
+              onClose={() => { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); }}
+            />
           )}
 
           {/* Session tab bar (direct mode, chat tab) — hide when only 1 session */}
@@ -4750,7 +4715,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       // default, never from another session's model override.
                       setSessionModelOverride(null);
                       const key = currentConvKeyRef.current;
-                      resetConv(key);
+                      // Same atomic reset + re-pin as newConversation(): keeps a
+                      // concurrently-streaming PREVIOUS session out of this tab.
+                      resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
                       setMessages([]);
                     } else {
                       void switchSession(s);
@@ -4783,7 +4750,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           {chatMode === 'channel' && activeGroupChat?.type === 'custom' && showMemberPanel && (() => {
             const gc = activeGroupChat;
             const currentMembers = gc.members ?? [];
-            const allCandidates: Array<{ id: string; name: string; type: 'human' | 'agent'; subtitle: string }> = [];
+            const allCandidates: PanelCandidate[] = [];
             for (const a of agents) {
               if (!currentMembers.some(m => m.id === a.id)) {
                 allCandidates.push({ id: a.id, name: a.name, type: 'agent', subtitle: a.role || 'Agent' });
@@ -4795,65 +4762,29 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               }
             }
             return (
-              <div className="bg-surface-secondary/80 px-4 py-3 flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-fg-secondary">{t('page.members')} ({currentMembers.length})</span>
-                  <button onClick={() => setShowMemberPanel(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {currentMembers.map(m => (
-                    <span key={m.id} className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-medium ${
-                      m.type === 'agent' ? 'bg-brand-500/10 text-brand-500' : 'bg-green-500/10 text-green-600'
-                    }`}>
-                      <Avatar name={m.name} size={16} bgClass={m.type === 'agent' ? 'bg-brand-500/15 text-brand-500' : 'bg-green-500/15 text-green-600'} />
-                      {m.name}
-                      {m.id !== authUser?.id && (
-                        <button
-                          onClick={async () => {
-                            try {
-                              await api.groupChats.removeMember(gc.id, m.id);
-                              setGroupChats(prev => prev.map(g => g.id === gc.id ? { ...g, members: (g.members ?? []).filter(x => x.id !== m.id), memberCount: (g.memberCount ?? 1) - 1 } : g));
-                            } catch { /* ignore */ }
-                          }}
-                          className="ml-0.5 hover:text-red-500 transition-colors"
-                          title={t('common:remove')}
-                        >
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                        </button>
-                      )}
-                    </span>
-                  ))}
-                </div>
-                {allCandidates.length > 0 && (
-                  <div className="mt-1">
-                    <select
-                      className="w-full bg-surface-primary border border-border-default rounded-lg px-2.5 py-1.5 text-xs text-fg-primary outline-none focus:ring-1 focus:ring-brand-500/50"
-                      value=""
-                      onChange={async (e) => {
-                        const id = e.target.value;
-                        if (!id) return;
-                        const c = allCandidates.find(x => x.id === id);
-                        if (!c) return;
-                        try {
-                          await api.groupChats.addMember(gc.id, c.id, c.type, c.name);
-                          setGroupChats(prev => prev.map(g => g.id === gc.id ? {
-                            ...g,
-                            members: [...(g.members ?? []), { id: c.id, name: c.name, type: c.type }],
-                            memberCount: (g.memberCount ?? 0) + 1,
-                          } : g));
-                        } catch { /* ignore */ }
-                      }}
-                    >
-                      <option value="">{t('page.addMemberPlaceholder')}</option>
-                      {allCandidates.map(c => (
-                        <option key={c.id} value={c.id}>[{c.type === 'agent' ? 'Agent' : 'Human'}] {c.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
+              <GroupMemberPanel
+                members={currentMembers}
+                candidates={allCandidates}
+                currentUserId={authUser?.id}
+                memberCount={currentMembers.length}
+                onClose={() => setShowMemberPanel(false)}
+                onRemoveMember={(memberId) => {
+                  void api.groupChats.removeMember(gc.id, memberId).then(() => {
+                    setGroupChats(prev => prev.map(g => g.id === gc.id ? { ...g, members: (g.members ?? []).filter(x => x.id !== memberId), memberCount: (g.memberCount ?? 1) - 1 } : g));
+                  }).catch(() => {});
+                }}
+                onAddMember={(candidateId) => {
+                  const c = allCandidates.find(x => x.id === candidateId);
+                  if (!c) return;
+                  void api.groupChats.addMember(gc.id, c.id, c.type, c.name).then(() => {
+                    setGroupChats(prev => prev.map(g => g.id === gc.id ? {
+                      ...g,
+                      members: [...(g.members ?? []), { id: c.id, name: c.name, type: c.type }],
+                      memberCount: (g.memberCount ?? 0) + 1,
+                    } : g));
+                  }).catch(() => {});
+                }}
+              />
             );
           })()}
 
@@ -5593,7 +5524,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     e.currentTarget.blur();
                     return;
                   }
-                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void hookSend(); }
                 }}
                 onPaste={handlePaste}
                 placeholder={placeholder}
@@ -5661,7 +5592,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 </button>
               ) : (
                 <button
-                  onClick={() => void send()}
+                  onClick={() => void hookSend()}
                   disabled={(chatMode === 'direct' && (!selectedAgent || isAgentOffline)) || (!input.trim() && pendingImages.length === 0)}
                   className={
                     compactComposer

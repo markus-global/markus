@@ -81,6 +81,16 @@ export class ScheduledTaskRunner {
         continue;
       }
 
+      // One-shot tasks (runAt): `advanceScheduleConfig` consumes nextRunAt to
+      // undefined on the first fire. A consumed runAt must NOT be read as
+      // "already due" (0) — doing so caused an infinite rerun loop where every
+      // completed round was immediately reset and re-dispatched by the next tick.
+      // Once consumed, a one-shot task is done forever; manual re-runs go
+      // through the dedicated run-now API instead.
+      if (config.runAt && !config.nextRunAt) {
+        continue;
+      }
+
       // Recovery: a scheduled task stuck in `in_progress` whose assigned agent is
       // offline will never advance on its own (mailbox unconsumed). Reclaim it so
       // `resetTaskForRerun` re-fires it on the next tick once the agent returns.
@@ -135,6 +145,15 @@ export class ScheduledTaskRunner {
   }
 
   private async fireScheduledTask(task: Task): Promise<void> {
+    // Defensive guard: never auto-dispatch a one-shot (runAt) task whose
+    // schedule has already been consumed. tick() skips these, but the staggered
+    // startup path and any future callers must not re-fire them either.
+    const cfg = task.scheduleConfig;
+    if (cfg?.runAt && !cfg.nextRunAt) {
+      log.info('Skipping one-shot scheduled task — already fired once', { taskId: task.id, title: task.title });
+      return;
+    }
+
     log.info('Firing scheduled task', { taskId: task.id, title: task.title });
 
     // Guard: never dispatch to an offline/stopped agent. A stopped agent has no
