@@ -139,6 +139,11 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     getPhase, beginLoad, beginStream, endStream, resetConv,
     abortStream,
     loadAndDisplay,
+    // Route pinning (must mirror every setActiveSessionId transition so the
+    // manager routes background streams to their own session cache — see
+    // ConversationBufferManager.activeSession).
+    setActiveSession: (k: string, s: string) => mgr.current.setActiveSession(k, s),
+    clearActiveSession: (k: string) => mgr.current.clearActiveSession(k),
     // Send counter helpers
     incrementSending: (k: string) => mgr.current.incrementSend(k),
     decrementSending: (k: string) => mgr.current.decrementSend(k),

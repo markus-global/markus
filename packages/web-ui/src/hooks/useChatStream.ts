@@ -80,6 +80,11 @@ export interface ChatStreamContext {
   clearStreamSession: (k: string, s?: string) => void;
   setStreamSession: (k: string, s: string) => void;
   getStreamSession: (k: string) => Set<string> | undefined;
+  /** Pin the manager's active-session routing gate for a conversation key.
+   *  Must be kept in sync with every setActiveSessionId transition so
+   *  `updateMessages` can route a background session's stream into its own
+   *  cache instead of the shared display buffer (multi-tab direct mode). */
+  setActiveSession: (k: string, s: string) => void;
   incrementSending: (k: string) => void;
   decrementSending: (k: string) => number;
   loadAndDisplay: (s: string, k: string, f: () => Promise<{ messages: ChatMsg[]; hasMore: boolean; oldestCursor: string | null }>) => Promise<{ count: number; hasMore: boolean; oldestCursor: string | null }>;
@@ -133,7 +138,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
     msgBuffers, actBuffers, sessionMsgCache, activeSessionBuffer, currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginStream, endStream, abortStream,
-    clearStreamSession, setStreamSession, getStreamSession,
+    clearStreamSession, setStreamSession, getStreamSession, setActiveSession,
     incrementSending, decrementSending, loadAndDisplay,
     thinkingTimeoutRef, sessionSwitchSeqRef, oldestMsgId,
     setSending, setActivities, setInput, setChatContext, setPendingImages,
@@ -921,6 +926,11 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             if (!currentSess || currentSess === NEW_CHAT_PLACEHOLDER_ID || currentSess === event.sessionId) {
               setActiveSessionId(event.sessionId);
               activeSessionBuffer.set(sendKey, event.sessionId);
+              // Pin the routing gate the same way the view state is pinned —
+              // otherwise the manager (activeSession) stays on the placeholder
+              // and every stream update is judged same-session, mixing it into
+              // the shared display buffer.
+              setActiveSession(sendKey, event.sessionId);
               if (volatile.selectedAgent) setStoredActiveSession(volatile.selectedAgent, event.sessionId);
               setOpenSessionTabs(prev => {
                 // Replace placeholder if exists; otherwise ensure the session tab is present
@@ -1182,6 +1192,12 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
               }
               return prev;
             });
+            // Keep the manager's routing gate in sync (see session_start): only
+            // re-pin when this stream still owns the currently-viewed session.
+            const curSess = activeSessionBuffer.get(sendKey);
+            if (!curSess || curSess === NEW_CHAT_PLACEHOLDER_ID || curSess === streamResult.sessionId) {
+              setActiveSession(sendKey, streamResult.sessionId);
+            }
             setOpenSessionTabs(prev => {
               // Replace placeholder if exists
               if (prev.some(t => t.id === NEW_CHAT_PLACEHOLDER_ID)) {
@@ -1260,6 +1276,9 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         const errSessionId = (e as Error & { sessionId?: string })?.sessionId;
         if (errSessionId && volatile.chatMode === 'direct' && currentConvKeyRef.current === sendKey) {
           setActiveSessionId(errSessionId);
+          // Keep the routing gate in sync with the resolved session id so a
+          // later reattach cannot mix this stream into another session's buffer.
+          setActiveSession(sendKey, errSessionId);
           setOpenSessionTabs(prev =>
             prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: errSessionId } : t)
           );

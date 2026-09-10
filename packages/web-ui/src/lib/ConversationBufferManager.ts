@@ -104,11 +104,9 @@ export class ConversationBufferManager {
     sessionId?: string | null,
   ): BufferWriteResult {
     const activeSessionId = this.activeSession.get(key);
-    const isSameSession = !sessionId
-      || activeSessionId === sessionId
-      || activeSessionId === undefined;
+    const routedToDisplay = this.isDisplayRoute(key, activeSessionId, sessionId);
 
-    const source = isSameSession
+    const source = routedToDisplay
       ? (this.msgBuffers.get(key) ?? [])
       : (this.sessionMsgCache.get(sessionId!) ?? []);
 
@@ -118,7 +116,7 @@ export class ConversationBufferManager {
     }
 
     let displayChanged = false;
-    if (isSameSession) {
+    if (routedToDisplay) {
       this.msgBuffers.set(key, next);
       this.evictIfNeeded(key);
       displayChanged = this.currentConvKey === key;
@@ -129,6 +127,39 @@ export class ConversationBufferManager {
     }
 
     return { displayChanged, newMessages: displayChanged ? next : undefined };
+  }
+
+  /**
+   * Decide whether a message-buffer write may touch the shared display buffer.
+   *
+   * - Optimistic writes without a real session (`!sessionId`) always go to
+   *   display — they are the user's own send in the currently-viewed view.
+   * - When the routing gate is PINNED to a session, only that session may
+   *   write to display. This is the structural guarantee that a background
+   *   session's stream (another tab / still-running reattach) can never mix
+   *   into the view (misordered bubbles / blank bubbles until refresh).
+   * - When the gate is NOT pinned (undefined, or still on the new-chat
+   *   placeholder), fall back to a conservative guard: only treat the write as
+   *   display if the shared buffer visibly belongs to an in-flight stream
+   *   (an unfinished agent bubble from the optimistic placeholder). Otherwise
+   *   route to the session cache — a background stream can never corrupt the
+   *   view even if a future caller forgets to pin the gate.
+   */
+  private isDisplayRoute(
+    key: string,
+    activeSessionId: string | undefined,
+    sessionId?: string | null,
+  ): boolean {
+    if (!sessionId) return true;
+    if (activeSessionId !== undefined && activeSessionId !== ConversationBufferManager.NEW_CHAT_ID) {
+      return activeSessionId === sessionId;
+    }
+    const buf = this.msgBuffers.get(key) ?? [];
+    for (let i = buf.length - 1; i >= Math.max(0, buf.length - 3); i--) {
+      const m = buf[i];
+      if (m?.sender === 'agent' && m.isStreaming && !m.isStopped) return true;
+    }
+    return false;
   }
 
   /**
@@ -228,6 +259,13 @@ export class ConversationBufferManager {
 
   setActiveSession(key: string, sessionId: string): void {
     this.activeSession.set(key, sessionId);
+  }
+
+  /** Unpin the routing gate (e.g. no session selected). After this, writes
+   * with a real session id are handled by the conservative isDisplayRoute
+   * guard until the gate is pinned again. */
+  clearActiveSession(key: string): void {
+    this.activeSession.delete(key);
   }
 
   saveToCache(key: string, sessionId: string): void {

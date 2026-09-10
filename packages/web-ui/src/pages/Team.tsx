@@ -568,6 +568,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     sending, setSending,
     activities, setActivities,
     msgBuffers, sessionMsgCache, activeSessionBuffer, actBuffers, sessionTabsBuffer,
+    setActiveSession, clearActiveSession,
     currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginLoad, beginStream, endStream, resetConv, abortStream,
@@ -850,6 +851,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const sendRef = useRef<(text?: string) => Promise<void>>(undefined);
+  /**
+   * SINGLE entry point for changing the active session view state. It always
+   * keeps the manager's routing gate (ConversationBufferManager.activeSession)
+   * in sync: a missing pin is exactly what lets a background session's stream
+   * write into the shared display buffer (misordered / blank bubbles, the
+   * multi-tab direct-mode bug family). Use this everywhere instead of calling
+   * setActiveSessionId directly; paths that need resetConv (new chat / new
+   * conversation) keep using the atomic resetConv(key, id) pair instead.
+   */
+  const changeActiveSession = useCallback((key: string, id: string | null) => {
+    setActiveSessionId(id);
+    if (!key) return;
+    if (id === null) {
+      clearActiveSession(key);
+    } else {
+      setActiveSession(key, id);
+    }
+  }, [setActiveSessionId, setActiveSession, clearActiveSession]);
   /** When true, the next scroll-to-bottom effect is suppressed (used by loadMore) */
   const skipScrollRef = useRef(false);
   /** Tracks whether user is at/near the bottom of the chat scroll container */
@@ -1629,6 +1648,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     msgBuffers, actBuffers, sessionMsgCache, activeSessionBuffer, currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginStream, endStream, abortStream, clearStreamSession, setStreamSession, getStreamSession,
+    setActiveSession,
     incrementSending, decrementSending, loadAndDisplay,
     thinkingTimeoutRef, sessionSwitchSeqRef, oldestMsgId,
     setSending, setActivities, setInput, setChatContext, setPendingImages,
@@ -2215,7 +2235,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setMessages(bufferedMsgs!);
       setHasMore(false);
       if (savedActiveSession !== undefined) {
-        setActiveSessionId(savedActiveSession);
+        changeActiveSession(newKey, savedActiveSession);
       }
       if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
       // Refresh from server in background to catch anything we missed while away
@@ -2283,8 +2303,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               if (found) initialTabs = [...initialTabs, found];
             }
             const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
-            setActiveSessionId(validId);
-            activeSessionBuffer.set(newKey, validId);
+            // changeActiveSession keeps view state and the manager routing gate
+            // in sync (single entry) — a concurrently-streaming OTHER session
+            // of this agent cannot land chunks in this buffer (same bug family
+            // as switchSession).
+            changeActiveSession(newKey, validId);
             setStoredActiveSession(selectedAgent!, validId);
             setOpenSessionTabs(initialTabs);
             const restored = s.find(ss => ss.id === validId);
@@ -2296,7 +2319,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               }
             });
           } else {
-            setActiveSessionId(null);
+            // No sessions exist yet — view has no active session and the gate
+            // is unpinned so a stray background stream is conservatively routed
+            // to its own cache (isDisplayRoute), never into this empty view.
+            changeActiveSession(newKey, null);
             setSessionModelOverride(null);
             setLoadingChat(false);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
@@ -3596,7 +3622,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const switchSession = async (s: ChatSessionInfo) => {
     const switchSeq = ++sessionSwitchSeqRef.current;
     const prevSessionId = activeSessionId;
-    setActiveSessionId(s.id);
+    const key = currentConvKeyRef.current;
+    // Single entry point: updates view state + manager routing gate together.
+    // Without the gate pin the gate stays on whatever resetConv pinned last
+    // (new-chat placeholder) or undefined, so `updateMessages` judges every
+    // stream same-session: a still-running stream from the PREVIOUS tab keeps
+    // writing into the shared display buffer and mixes its bubbles into THIS
+    // tab (user bubble lands below a streaming agent bubble / blank bubble
+    // until refresh — the multi-tab direct-mode corruption family).
+    changeActiveSession(key, s.id);
     setShowSessions(false);
     setHasMore(false);
     oldestMsgId.current = null;
@@ -3607,7 +3641,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // Sync sending visual with the target session:
     // - If stream belongs to THIS session → show spinner
     // - If stream belongs to a DIFFERENT session → suppress spinner
-    const key = currentConvKeyRef.current;
     const streamingSessions = getStreamSession(key);
     const streamForThis = !!streamingSessions && (streamingSessions.has(s.id) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
     const isStreaming = isSendingFor(key) && streamForThis;
@@ -3617,7 +3650,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } else {
       setActivities([]);
     }
-    activeSessionBuffer.set(key, s.id);
     if (selectedAgent) setStoredActiveSession(selectedAgent, s.id);
     if (prevSessionId && prevSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
       saveSessionToCache(key, prevSessionId);
