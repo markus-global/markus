@@ -159,7 +159,8 @@ manager.abortStream(key, opts: { markStopped?: boolean; sessionId?: string })
 | S5 | 消除隐性双源（B/E 病灶），chatStore 单一职责 | ✅ `682d0df7`：chatStore 删除 8 个从未读写的死状态字段（226→110 行），只保留流式 agent 集合 + 版本号；`messages/sending/activities` 本就收敛于 manager，Team 无重复 useState |
 | S6 | 视觉状态收敛（E 病灶） | ✅ `50065608`：`chatStreamActive` 尾部扫描提取为 `hasStreamingTail` 纯函数（3 个单测）；thinkingAgents 生命周期自洽（WS 事件 + 120s 兜底）无需改造 |
 | S7 | 拆分 tab 面板（会话/流式渲染/审批/搜索） | ⬜ 未做：消息渲染已内聚在 ChatComponents/ExecutionTimeline，Team.tsx 为编排层；拆分收益 < 风险，留作后续独立 PR |
-| S8 | 流编排迁移 `useChatStream` hook | ✅ 本次：`send`(~780 行) / `stopSending` / `tryReattachActiveStream`(~390 行) / `loadSessionMessages` 全部搬出 Team.tsx，逻辑经 ctx+stateRef 注入 hook。typecheck + 239 单测 + vite build 全绿 |
+| S8 | 流编排迁移 `useChatStream` hook | ✅ 本次：`send`(~780 行) / `stopSending` / `tryReattachActiveStream`(~390 行) / `loadSessionMessages` 全部搬出 Team.tsx，逻辑经 typecheck + 239 单测 + vite build 全绿 |
+| S9 | 多 session tab 并发串台修复 | ✅ `614f419f`：`resetConv(key, repinTo?)` 原子化 reset + activeSession re-pin，消除「reset 后未 re-pin → 旧 session 流混入新 buffer」的顺序 bug（handleRememberConfirm 先 pin 后 reset 反序、tab 新对话漏 pin）。新增 2 个回归单测，246 单测 + build 全绿 |
 
 ### S8 说明：`useChatStream` 迁移
 - **所有权模型**：Team.tsx 仍持有全部应用 state；hook 只通过 `ctx`（稳定句柄）+ `ctx.stateRef.current`（易变只读态，每 render 刷新）借用。hook 私有持有流专属 ref（`abortControllerRef`/`reattachAbortRef`/`reattachCooldownRef`/`userStoppedSessionsRef`/`lastSendGuardRef`/`lastSseEventTimeRef`），因它们的每个写入点都在搬入的函数内。
