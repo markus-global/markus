@@ -1147,11 +1147,13 @@ export class Agent {
   /** Get the current cognitive state of the agent. */
   getMindState(): AgentMindState & { notebook?: Array<{ key: string; text: string; updatedAt: number; managed: string }> } {
     const mind = this.attentionController.getMindState() as AgentMindState & { notebook?: Array<{ key: string; text: string; updatedAt: number; managed: string }> };
-    if (mind.isDeliberating && this.state.currentActivity) {
+    // 双源兼容：workspace 聚合（并发正确）+ legacy state.currentActivity（测试/旧代码直接写）。
+    const act = this.getCurrentActivity() ?? this.state.currentActivity;
+    if (mind.isDeliberating && act) {
       mind.deliberationActivity = {
-        activityId: this.state.currentActivity.id,
-        label: this.state.currentActivity.label,
-        startedAt: this.state.currentActivity.startedAt,
+        activityId: act.id,
+        label: act.label,
+        startedAt: act.startedAt,
       };
     }
     mind.notebook = this.getWorkingMemorySnapshot().map(e => ({
@@ -3195,7 +3197,7 @@ export class Agent {
     this.metricsCollector.recordAudit(event);
     this.auditCallback?.(event);
 
-    const actId = this.state.currentActivity?.id;
+    const actId = this.workspaceActivity?.id;
     if (actId && event.type !== 'tool_call') {
       const logType: AgentActivityLogEntry['type'] =
         event.type === 'llm_request' ? 'llm_request' :
@@ -3262,7 +3264,7 @@ export class Agent {
         activeTaskIds: [...this.activeTasks],
         lastError: this.state.lastError,
         lastErrorAt: this.state.lastErrorAt,
-        currentActivity: this.state.currentActivity,
+        currentActivity: this.getCurrentActivity(),
       });
     }
   }
@@ -3404,11 +3406,41 @@ export class Agent {
 
   // ─── Activity Tracking ───────────────────────────────────────────────────────
 
+  /**
+   * 当前 worker 的活跃活动（串行模式 = rootWorkspace.currentActivity，完全兼容旧行为）。
+   * 不要在 worker 上下文外调用（如 HTTP handler 线程）——那是聚合视图的职责。
+   */
+  private get workspaceActivity(): AgentActivity | undefined {
+    return this.workspace().currentActivity;
+  }
+
+  private set workspaceActivity(v: AgentActivity | undefined) {
+    this.workspace().currentActivity = v;
+  }
+
+  /**
+   * 聚合视图：所有并发 worker 的活跃活动（按 startedAt 升序）。
+   * 串行/无并发上下文时退化为 rootWorkspace 单元素数组。
+   * rootWorkspace 始终纳入——无 ALS 上下文的外部调用（HTTP handler / watchdog）
+   * 写入的活动落在 rootWorkspace，必须能被读到，否则并发模式下外部发起的
+   * 活动会"消失"在聚合视图外。
+   */
+  private liveActivities(): AgentActivity[] {
+    const acts: AgentActivity[] = [];
+    if (this.rootWorkspace.currentActivity) acts.push(this.rootWorkspace.currentActivity);
+    if (this.attentionController.getWorkerCount() > 1) {
+      for (const ws of this.workerWorkspaces.values()) {
+        if (ws.currentActivity && ws !== this.rootWorkspace) acts.push(ws.currentActivity);
+      }
+    }
+    return acts.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+  }
+
   private startActivity(type: AgentActivity['type'], label: string, extra?: Partial<AgentActivity>): string {
     const id = `act-${this.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const mailboxItemId = extra?.mailboxItemId ?? this.processingMailboxItemId;
     const activity: AgentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra, ...(mailboxItemId ? { mailboxItemId } : {}) };
-    this.state.currentActivity = activity;
+    this.workspaceActivity = activity;
     this.activityLogs.set(id, []);
     this.activitySeqCounters.set(id, 0);
 
@@ -3453,7 +3485,7 @@ export class Agent {
   }
 
   private endActivity(activityId?: string, opts?: { success?: boolean }): void {
-    const aid = activityId ?? this.state.currentActivity?.id;
+    const aid = activityId ?? this.workspaceActivity?.id;
     if (aid) {
       this.emitActivityLog(aid, 'status', 'Completed');
 
@@ -3482,7 +3514,7 @@ export class Agent {
       this.activityLogs.delete(aid);
       this.activitySeqCounters.delete(aid);
     }
-    this.state.currentActivity = undefined;
+    this.workspaceActivity = undefined;
     this.notifyStateChange();
   }
 
@@ -3531,11 +3563,14 @@ export class Agent {
   }
 
   getCurrentActivity(): AgentActivity | undefined {
-    return this.state.currentActivity;
+    // 聚合视图：并发时返回「最新启动」的活跃活动（与串行的单值语义对齐）。
+    const acts = this.liveActivities();
+    return acts.length > 0 ? acts[acts.length - 1] : undefined;
   }
 
   getCurrentActivityId(): string | undefined {
-    return this.state.currentActivity?.id;
+    const acts = this.liveActivities();
+    return acts.length > 0 ? acts[acts.length - 1]!.id : undefined;
   }
 
   /** Return summary of currently-live in-memory activities */
@@ -3548,19 +3583,19 @@ export class Agent {
     startedAt: string;
     logCount: number;
   }> {
-    const current = this.state.currentActivity;
-    if (!current) return [];
-
-    const logs = this.activityLogs.get(current.id);
-    return [{
-      id: current.id,
-      type: current.type,
-      label: current.label,
-      taskId: current.taskId,
-      heartbeatName: current.heartbeatName,
-      startedAt: current.startedAt,
-      logCount: logs?.length ?? 0,
-    }];
+    const acts = this.liveActivities();
+    return acts.map(act => {
+      const logs = this.activityLogs.get(act.id);
+      return {
+        id: act.id,
+        type: act.type,
+        label: act.label,
+        taskId: act.taskId,
+        heartbeatName: act.heartbeatName,
+        startedAt: act.startedAt,
+        logCount: logs?.length ?? 0,
+      };
+    });
   }
 
   /** Inject a function that returns tasks for system prompt context (all org tasks with assignment info) */
@@ -3665,7 +3700,7 @@ export class Agent {
 
     // Track chat activity (only if not already in a heartbeat or other activity)
     let chatActivityId: string | undefined;
-    if (!this.state.currentActivity) {
+    if (!this.workspaceActivity) {
       let actType: AgentActivity['type'] = 'chat';
       let actLabel: string;
       const peerName = senderInfo?.name || senderId || undefined;
@@ -3926,7 +3961,7 @@ export class Agent {
           this.memory.appendMessage(sessionId, contMsg);
         } else {
           // Normal tool_use flow
-          const currentActId = this.state.currentActivity?.id;
+          const currentActId = this.workspaceActivity?.id;
           if (currentActId && response.reasoningContent?.trim()) {
             this.emitActivityLog(currentActId, 'text', response.reasoningContent, { isThinking: true });
           }
@@ -4172,7 +4207,7 @@ export class Agent {
 
         // Execute tool calls from the reminder response
         if (response.finishReason === 'tool_use' && response.toolCalls?.length) {
-          const currentActId = this.state.currentActivity?.id;
+          const currentActId = this.workspaceActivity?.id;
           this.memory.appendMessage(sessionId, {
             role: 'assistant',
             content: response.content,
@@ -4277,7 +4312,7 @@ export class Agent {
         );
 
         if (response.finishReason === 'tool_use' && response.toolCalls?.length) {
-          const currentActId = this.state.currentActivity?.id;
+          const currentActId = this.workspaceActivity?.id;
           this.memory.appendMessage(sessionId, {
             role: 'assistant',
             content: response.content,
@@ -4440,7 +4475,7 @@ export class Agent {
 
     // Track chat activity for streaming
     let streamChatActivityId: string | undefined;
-    if (!this.state.currentActivity) {
+    if (!this.workspaceActivity) {
       const senderLabel = senderInfo?.name ?? senderId ?? 'user';
       streamChatActivityId = this.startActivity('chat', `Chat with ${senderLabel}`);
     }
@@ -4705,7 +4740,7 @@ export class Agent {
               subagentEvent: { eventType: event.type, content: event.content, metadata: event.metadata },
             });
           };
-          const streamActId = streamChatActivityId ?? this.state.currentActivity?.id;
+          const streamActId = streamChatActivityId ?? this.workspaceActivity?.id;
           const toolResults = await Promise.all(
             response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
@@ -6310,29 +6345,60 @@ export class Agent {
    */
   reconcileToIdle(): boolean {
     if (this.activeTasks.size > 0) return false;
-    const act = this.state.currentActivity;
+    // 双源：workspace 聚合（并发 worker / rootWorkspace）+ legacy state.currentActivity
+    // （旧代码/测试直接写 this.state 的残留痕迹）。
+    const acts = this.liveActivities();
+    const legacyAct = this.state.currentActivity;
+    const allActs = legacyAct && !acts.includes(legacyAct) ? [...acts, legacyAct] : [...acts];
+    // 并发模式：任一来源有「非 stale」的活跃活动 → 不清理（agent 仍在干活）。
+    const nonStale = allActs.some(act => {
+      const startedTs = Date.parse(act.startedAt);
+      const fresh = !Number.isNaN(startedTs) && Date.now() - startedTs < 60_000;
+      return fresh;
+    });
+    if (nonStale) return false;
+    const act = allActs[allActs.length - 1]; // 最新启动的活动（清理时以它为准）
     if (!act && this.state.status === 'idle') return false;
 
-    if (act) {
-      const startedTs = Date.parse(act.startedAt);
+    let cleared = false;
+    for (const a of allActs) {
+      const startedTs = Date.parse(a.startedAt);
       // 竞态保护：活动刚启动（<60s）不清理，避免误杀刚开始的真实工作。
       const fresh = !Number.isNaN(startedTs) && Date.now() - startedTs < 60_000;
-      if (fresh) return false;
+      if (fresh) continue;
       log.info('Reconciling stale activity to idle', {
         agentId: this.id,
-        activity: `${act.type}:${act.label ?? ''}`,
-        startedAt: act.startedAt,
+        activity: `${a.type}:${a.label ?? ''}`,
+        startedAt: a.startedAt,
       });
-      this.activityLogs.delete(act.id);
-      this.activitySeqCounters.delete(act.id);
-      this.state.currentActivity = undefined;
+      this.activityLogs.delete(a.id);
+      this.activitySeqCounters.delete(a.id);
+      cleared = true;
+    }
+    // 清理后清掉所有 worker 的 currentActivity 标记 + legacy state.currentActivity
+    // （保留未 stale 的）。
+    for (const ws of (this.attentionController.getWorkerCount() > 1 ? this.workerWorkspaces.values() : [this.rootWorkspace])) {
+      const a = ws.currentActivity;
+      if (a) {
+        const startedTs = Date.parse(a.startedAt);
+        const fresh = !Number.isNaN(startedTs) && Date.now() - startedTs < 60_000;
+        if (!fresh) ws.currentActivity = undefined;
+      }
+    }
+    if (this.state.currentActivity) {
+      const startedTs = Date.parse(this.state.currentActivity.startedAt);
+      const fresh = !Number.isNaN(startedTs) && Date.now() - startedTs < 60_000;
+      if (!fresh) this.state.currentActivity = undefined;
     }
 
     if (this.state.status !== 'idle') this.setStatus('idle');
-    this.notifyStateChange();
-    this.eventBus.emit('agent:reconciled-idle', { agentId: this.id, clearedActivity: !!act });
-    log.info('Agent reconciled to idle', { agentId: this.id, clearedActivity: !!act });
-    return true;
+    if (cleared) {
+      this.notifyStateChange();
+      this.eventBus.emit('agent:reconciled-idle', { agentId: this.id, clearedActivity: true });
+      log.info('Agent reconciled to idle', { agentId: this.id, clearedActivity: true });
+      return true;
+    }
+    return false;
   }
 
   /** 触发一次心跳（api-server 脏态兜底用）：在 agent 私有 bus 上发 heartbeat:trigger。 */
