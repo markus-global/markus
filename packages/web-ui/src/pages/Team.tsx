@@ -568,7 +568,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     sending, setSending,
     activities, setActivities,
     msgBuffers, sessionMsgCache, activeSessionBuffer, actBuffers, sessionTabsBuffer,
-    setActiveSession, clearActiveSession,
+    setActiveSession,
     currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginLoad, beginStream, endStream, resetConv, abortStream,
@@ -864,11 +864,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setActiveSessionId(id);
     if (!key) return;
     if (id === null) {
-      clearActiveSession(key);
+      bufMgr.clearActiveSession(key);
     } else {
-      setActiveSession(key, id);
+      bufMgr.setActiveSession(key, id);
     }
-  }, [setActiveSessionId, setActiveSession, clearActiveSession]);
+  }, [setActiveSessionId, bufMgr]);
   /** When true, the next scroll-to-bottom effect is suppressed (used by loadMore) */
   const skipScrollRef = useRef(false);
   /** Tracks whether user is at/near the bottom of the chat scroll container */
