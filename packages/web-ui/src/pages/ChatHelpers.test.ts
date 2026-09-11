@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  appendTextToSegments,
+  appendThinkingToSegments,
   dedupeAdjacentUserMessages,
   dbMsgToChat,
   finalizeAgentMessage,
@@ -360,5 +362,59 @@ describe('message finalization helpers', () => {
       const text = "思考中<thinking>仍 在输出";
       expect(stripThinkingBlocks(text)).toBe(text);
     });
+  });
+});
+
+// ─── Structured stream segment appenders ──────────────────────────────────────
+// Thinking and answer prose are separate fields on the text segment. These
+// appenders are the only writers during streaming, so a regression here shows up
+// as reasoning leaking into the answer (or vanishing) in the live bubble.
+
+describe('appendThinkingToSegments / appendTextToSegments', () => {
+  it('merges reasoning into the trailing text segment without touching content', () => {
+    const segs = appendThinkingToSegments([{ type: 'text', content: '', createdAt: 't0' }], '先想一下');
+    expect(segs).toHaveLength(1);
+    expect(segs[0]).toMatchObject({ type: 'text', content: '', thinking: '先想一下' });
+    // createdAt of the in-flight segment must be preserved (ordering authority).
+    expect(segs[0]!.createdAt).toBe('t0');
+  });
+
+  it('concatenates consecutive reasoning chunks into one thinking block', () => {
+    let segs = appendThinkingToSegments([], '第一段');
+    segs = appendThinkingToSegments(segs, '第二段');
+    expect(segs).toHaveLength(1);
+    expect((segs[0] as { thinking?: string }).thinking).toBe('第一段第二段');
+  });
+
+  it('merges answer prose into the trailing text segment without touching thinking', () => {
+    let segs = appendThinkingToSegments([], '推理');
+    segs = appendTextToSegments(segs, '答');
+    segs = appendTextToSegments(segs, '案');
+    expect(segs).toHaveLength(1);
+    expect(segs[0]).toMatchObject({ content: '答案', thinking: '推理' });
+  });
+
+  it('starts a new text segment after a tool row (text/tool interleaving)', () => {
+    const withTool = [
+      { type: 'text' as const, content: '前' },
+      { type: 'tool' as const, key: 't1', tool: 'shell_execute', status: 'done' as const },
+    ];
+    const segs = appendTextToSegments(withTool, '后');
+    expect(segs).toHaveLength(3);
+    expect(segs[2]).toMatchObject({ type: 'text', content: '后' });
+    expect((segs[2] as { thinking?: string }).thinking).toBeUndefined();
+  });
+
+  it('is a no-op for empty chunks (keeps the array ref for React)', () => {
+    const segs = [{ type: 'text' as const, content: 'x' }];
+    expect(appendThinkingToSegments(segs, '')).toBe(segs);
+    expect(appendTextToSegments(segs, '')).toBe(segs);
+  });
+
+  it('never writes reasoning into the answer content (no inline markup)', () => {
+    const segs = appendThinkingToSegments([], '内心独白');
+    const only = segs[0] as { content: string };
+    expect(only.content).toBe('');
+    expect(only.content).not.toContain('内心独白');
   });
 });

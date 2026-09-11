@@ -168,9 +168,123 @@ describe('P2-A Agent 工具写互斥', () => {
     // 读 / 纯计算（即使带 task_ 前缀）
     for (const r of ['task_list', 'task_get', 'requirement_list', 'requirement_get',
       'memory_search', 'list_projects', 'team_list', 'web_search',
-      'web_fetch', 'discover_tools', 'llm_switch_model' === '' ? '' : 'llm_list_providers']) {
+      'web_fetch', 'discover_tools', 'llm_list_providers']) {
       expect(cls.isWriteTool(r)).toBe(false);
     }
+  });
+
+  it('写工具集合与资源域表一致（防「两张表漂移」守卫）', () => {
+    const cls = Agent as unknown as {
+      WRITE_TOOL_NAMES: ReadonlySet<string>;
+      WRITE_TOOL_DOMAINS: Record<string, { domain: string; arg?: readonly string[] }>;
+    };
+    // isWriteTool 由 WRITE_TOOL_DOMAINS 推导 —— 必须严格等价。
+    expect([...cls.WRITE_TOOL_NAMES].sort()).toEqual(Object.keys(cls.WRITE_TOOL_DOMAINS).sort());
+
+    // 所有登记项都必须声明非空域，且 fs 域必须能用参数定位路径（否则丧失细分能力）。
+    for (const [name, spec] of Object.entries(cls.WRITE_TOOL_DOMAINS)) {
+      expect(spec.domain, `${name} 缺少 domain`).toBeTruthy();
+      if (spec.domain === 'fs') {
+        expect(spec.arg, `${name} 应声明路径参数`).toBeTruthy();
+      }
+    }
+  });
+
+  it('写工具必须显式登记：新增漏登记会被此清单拦下', () => {
+    const cls = Agent as unknown as { WRITE_TOOL_NAMES: ReadonlySet<string> };
+    // 这份清单就是「产品语义上的全部写工具」。新增写工具时必须同步登记其资源域。
+    const EXPECTED_WRITE_TOOLS = [
+      'task_create', 'task_update', 'task_comment', 'task_submit_review',
+      'subtask_create', 'subtask_update', 'subtask_complete',
+      'requirement_propose', 'requirement_update', 'requirement_comment',
+      'goal_create', 'goal_update', 'deliverable_create',
+      'memory_save', 'memory_update', 'memory_update_longterm', 'memory_delete',
+      'update_notebook', 'clear_notebook', 'update_working_memory', 'clear_working_memory',
+      'notify_user', 'agent_send_message', 'agent_send_group_message',
+      'agent_create_group_chat', 'agent_broadcast_status', 'agent_stop', 'agent_delegate_task',
+      'shell_execute', 'file_write', 'file_edit', 'apply_patch',
+      'package_install', 'hub_install',
+      'llm_switch_model', 'llm_set_capability_routing', 'llm_add_model',
+      'llm_add_provider', 'llm_edit_provider',
+      'schedule_wakeup', 'set_heartbeat_interval',
+      'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item',
+    ].sort();
+    expect([...cls.WRITE_TOOL_NAMES].sort()).toEqual(EXPECTED_WRITE_TOOLS);
+  });
+
+  it('不同文件的 file_write 可并行（资源域细分 ≠ 全局串行）', async () => {
+    const active = { max: 0 };
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    a.tools.set('file_write', makeObservedTool('file_write', { active }));
+
+    await Promise.all([
+      a.executeTool(makeToolCall('file_write', { path: '/tmp/a.txt', content: 'a' })),
+      a.executeTool(makeToolCall('file_write', { path: '/tmp/b.txt', content: 'b' })),
+    ]);
+
+    expect(active.max).toBe(2);
+  });
+
+  it('同一文件的 file_write（路径写法不同）仍被串行 —— 路径归一化生效', async () => {
+    const active = { max: 0 };
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    a.tools.set('file_write', makeObservedTool('file_write', { active }));
+
+    await Promise.all([
+      a.executeTool(makeToolCall('file_write', { path: '/tmp/same.txt', content: 'a' })),
+      // 同一文件的另一种写法 —— 归一化后必须落到同一把锁
+      a.executeTool(makeToolCall('file_write', { path: '/tmp/./same.txt', content: 'b' })),
+    ]);
+
+    expect(active.max).toBe(1);
+  });
+
+  it('shell_execute（全局域）与 file_write 互斥 —— 不能边跑 shell 边写文件', async () => {
+    const fileActive = { max: 0 };
+    const shellActive = { max: 0 };
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    a.tools.set('file_write', makeObservedTool('file_write', { active: fileActive }));
+    a.tools.set('shell_execute', makeObservedTool('shell_execute', { active: shellActive }));
+
+    const order: string[] = [];
+    await Promise.all([
+      a.executeTool(makeToolCall('file_write', { path: '/tmp/c.txt', content: 'c' })).then(() => order.push('file')),
+      a.executeTool(makeToolCall('shell_execute', { command: 'true' })).then(() => order.push('shell')),
+    ]);
+
+    // 全局域与任何域互斥 → 二者绝不重叠
+    expect(fileActive.max).toBe(1);
+    expect(shellActive.max).toBe(1);
+    expect(order).toHaveLength(2);
+  });
+
+  it('不同 task_id 的 task_update 可并行（实体级细分）', async () => {
+    const active = { max: 0 };
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    a.tools.set('task_update', makeObservedTool('task_update', { active }));
+
+    await Promise.all([
+      a.executeTool(makeToolCall('task_update', { task_id: 'tsk_1', note: 'x' })),
+      a.executeTool(makeToolCall('task_update', { task_id: 'tsk_2', note: 'y' })),
+    ]);
+
+    expect(active.max).toBe(2);
   });
 
   it('写工具抛错后锁释放，后续写工具能继续执行（防锁泄漏）', async () => {

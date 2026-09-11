@@ -585,7 +585,11 @@ export const AgentMessageBody = memo(function AgentMessageBody({
     const hasTools = segments.some(s => s.type === 'tool');
     const toolCount = segments.filter(s => s.type === 'tool').length;
     const textSegments = segments.filter(s => s.type === 'text');
-    const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
+    // Live segments are the source of truth while streaming too. Gating this on
+    // `!isStreaming` left every tool-less reply with an EMPTY bubble mid-stream
+    // (the answer only appeared once the turn ended), while tool-using replies
+    // looked fine because they render through FullExecutionLog instead.
+    const allText = textSegments.map(s => s.content).join('');
     const stripMarkup = (t: string) => t
       .replace(/\n*<!--\s*notify_context:\s*[\s\S]*?-->/g, '')
       .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
@@ -600,7 +604,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
       : null;
     const displayText = segmentText
       || thinkingText
-      || (!isStreaming && msg.text ? stripMarkup(msg.text) : null);
+      || (msg.text ? stripMarkup(msg.text) : null);
     // Collapse the tool timeline after the turn completes: keep the natural
     // answer as the visual focus, with a one-line "N tool call(s)" summary that
     // expands the full execution log on click. While streaming it stays open.

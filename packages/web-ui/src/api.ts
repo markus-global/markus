@@ -1243,6 +1243,51 @@ export interface AgentUsageInfo {
   provider?: string;
 }
 
+/**
+ * Handlers shared by the two chat stream endpoints (`agents.messageStream` and
+ * `sessions.reattachStream`).
+ *
+ * Thinking is delivered STRUCTURED: the server emits `thinking_delta` with the
+ * raw reasoning text, so `onChunk` only ever carries answer prose. Consumers
+ * must not have to parse transport markers back out of prose — doing so was the
+ * source of a whole class of display bugs (thinking leaking into the answer, or
+ * silently disappearing when the marker spelling drifted).
+ */
+export interface ChatStreamHandlers {
+  onChunk?: (chunk: string) => void;
+  onThinking?: (thinking: string) => void;
+  onActivity?: (event: AgentToolEvent) => void;
+  onCommit?: (event: StreamCommitEvent) => void;
+  onSnapshot?: (snapshot: { content: string; segments: StoredSegment[] }) => void;
+}
+
+/** Non-callback knobs for `agents.messageStream`. */
+export interface MessageStreamOptions {
+  signal?: AbortSignal;
+  images?: string[];
+  sessionId?: string | null;
+  isRetry?: boolean;
+  isResume?: boolean;
+  fileNames?: string[];
+  replyTo?: { id: string; sender: string; text: string } | null;
+  modelOverride?: { provider: string; model: string } | null;
+}
+
+/**
+ * Single source of truth for routing a `thinking_delta` to consumers.
+ *
+ * Preference order: the structured `onThinking` handler. Only consumers that
+ * implement `onChunk` alone (legacy inline implementations) get the old
+ * `<think>…</think>` inline protocol, kept so their parser stays correct.
+ */
+export function dispatchThinkingDelta(
+  handlers: Pick<ChatStreamHandlers, 'onChunk' | 'onThinking'>,
+  thinking: string,
+): void {
+  if (handlers.onThinking) { handlers.onThinking(thinking); return; }
+  handlers.onChunk?.(`<think>${thinking}</think>`);
+}
+
 export const api = {
   agents: {
     list: () => request<{ agents: AgentInfo[] }>('/agents').then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
@@ -1341,8 +1386,16 @@ export const api = {
     },
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[], replyTo?: { id: string; sender: string; text: string } | null, modelOverride?: { provider: string; model: string } | null): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean }> => {
+    messageStream: (
+      id: string,
+      text: string,
+      handlers: ChatStreamHandlers,
+      options?: MessageStreamOptions,
+    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean }> => {
       return new Promise(async (resolve, reject) => {
+        const {
+          signal, images, sessionId, isRetry, isResume, fileNames, replyTo, modelOverride,
+        } = options ?? {};
         let fullContent = '';
         let resultSessionId: string | undefined;
         let resultSegments: StoredSegment[] | undefined;
@@ -1397,7 +1450,7 @@ export const api = {
                 if (event.type === 'session_start' && event.sessionId) {
                   resultSessionId = event.sessionId;
                   const userMessageId = (event as { userMessageId?: string }).userMessageId;
-                  onCommit?.({
+                  handlers.onCommit?.({
                     type: 'session_start',
                     content: '',
                     createdAt: new Date().toISOString(),
@@ -1406,9 +1459,9 @@ export const api = {
                   });
                 } else if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
-                  onChunk(event.text);
+                  handlers.onChunk?.(event.text);
                 } else if (event.type === 'thinking_delta' && event.thinking) {
-                  onChunk?.(`<think>${event.thinking}</think>`);
+                  dispatchThinkingDelta(handlers, event.thinking);
                 } else if (event.type === 'done') {
                   fullContent = event.content || fullContent;
                   if (event.sessionId) resultSessionId = event.sessionId;
@@ -1439,20 +1492,20 @@ export const api = {
                   watchdog?.stop();
                   return;
                 } else if (event.type === 'thinking_commit' && event.thinking) {
-                  onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
+                  handlers.onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
                 } else if (event.type === 'text_commit' && event.text) {
-                  onCommit?.({ type: 'text_commit', content: event.text, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
+                  handlers.onCommit?.({ type: 'text_commit', content: event.text, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
-                  onActivity?.({ tool: event.toolCall.name, phase: 'start' });
+                  handlers.onActivity?.({ tool: event.toolCall.name, phase: 'start' });
                 } else if (event.type === 'agent_tool' && event.tool && event.phase) {
-                  if (event.phase === 'start') onActivity?.({ tool: event.tool, phase: 'start', arguments: event.arguments });
-                  else if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
+                  if (event.phase === 'start') handlers.onActivity?.({ tool: event.tool, phase: 'start', arguments: event.arguments });
+                  else if (event.phase === 'end') handlers.onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
                 } else if (event.type === 'tool_output' && event.tool) {
-                  onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
+                  handlers.onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
                 } else if (event.type === 'subagent_progress' && event.tool) {
-                  onActivity?.({ tool: event.tool, phase: 'subagent_progress', subagentEvent: (event as Record<string, unknown>).subagentEvent as SubagentProgressEvent });
+                  handlers.onActivity?.({ tool: event.tool, phase: 'subagent_progress', subagentEvent: (event as Record<string, unknown>).subagentEvent as SubagentProgressEvent });
                 } else if (event.type === 'heartbeat') {
-                  onActivity?.({ tool: '', phase: 'heartbeat' });
+                  handlers.onActivity?.({ tool: '', phase: 'heartbeat' });
                 }
               } catch { /* skip */ }
             }
@@ -2026,12 +2079,7 @@ export const api = {
     reattachStream: (
       agentId: string,
       sessionId: string,
-      handlers: {
-        onChunk?: (chunk: string) => void;
-        onActivity?: (event: AgentToolEvent) => void;
-        onCommit?: (event: StreamCommitEvent) => void;
-        onSnapshot?: (snapshot: { content: string; segments: StoredSegment[] }) => void;
-      },
+      handlers: ChatStreamHandlers,
       signal?: AbortSignal,
       afterSeq = 0,
     ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; attached: boolean }> => {
@@ -2094,7 +2142,7 @@ export const api = {
                   fullContent += event.text;
                   handlers.onChunk?.(event.text);
                 } else if (type === 'thinking_delta' && typeof event.thinking === 'string') {
-                  handlers.onChunk?.(`<think>${event.thinking}</think>`);
+                  dispatchThinkingDelta(handlers, event.thinking);
                 } else if (type === 'done') {
                   fullContent = (event.content as string) || fullContent;
                   if (typeof event.sessionId === 'string') resultSessionId = event.sessionId;

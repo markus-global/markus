@@ -322,6 +322,20 @@ export const MAILBOX_COALESCE_WINDOW_MS = 200;
  *  plus LLM turns, while still catching genuine hangs. */
 export const MAILBOX_PROCESSING_TIMEOUT_MS = 45 * 60 * 1000;
 
+/** Grace period (ms) after a backstop timeout during which the attention loop
+ *  waits for the orphaned in-flight turn to actually settle before deciding
+ *  whether the item may be safely requeued.
+ *
+ *  Single-flight rule: an item may only be re-processed once its previous
+ *  attempt has provably stopped — otherwise the re-run would duplicate the
+ *  side effects of tools the orphan may still be executing. If the orphan does
+ *  not settle within this grace, the item is completed as `incomplete`
+ *  (visible, resumable by the user) instead of being requeued.
+ *
+ *  Kept short: the backstop already means something is deeply wrong, and the
+ *  cancel signal is a cooperative abort that normally lands in milliseconds. */
+export const BACKSTOP_CANCEL_GRACE_MS = 10 * 1000;
+
 /** After the Chat SSE client disconnects (e.g. page refresh), keep the agent
  *  running this long before force-stopping. Matches mailbox long-tool budget
  *  so video generation is not killed by a refresh. */
