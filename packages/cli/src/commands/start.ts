@@ -1462,6 +1462,18 @@ async function startServerCore(
     }
   }
 
+  // Warm the Markus Hub model catalog BEFORE the server starts serving traffic,
+  // i.e. before any agent picks up its first mailbox item. WHY HERE: the context
+  // window / max-output lookups are SYNCHRONOUS and cannot block on the network
+  // (they return a 1M fallback until a catalog lands), so on a cold start the
+  // very first turn would otherwise plan its budget from the fallback. Preheating
+  // here means that first turn already sees the REAL Hub window values.
+  // Bounded (8s) and non-throwing: ensureMarkusCatalogLoaded swallows every error
+  // and timeout, so a cold/offline Hub can never block or crash startup. In the
+  // common case this simply joins the single-flight refresh already kicked off by
+  // LLMRouter.createDefault(), so it usually returns almost immediately.
+  await llmRouter.ensureMarkusCatalogLoaded?.({ timeoutMs: 8000 });
+
   await apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());

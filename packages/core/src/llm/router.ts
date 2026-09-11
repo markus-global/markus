@@ -173,6 +173,24 @@ export class LLMRouter {
   private _routingDefaultModel?: { provider: string; model: string };
   /** Hub is_default (or first catalog id) from the last Markus catalog refresh. */
   private _markusCatalogPreferredId?: string;
+  /**
+   * True once a NON-empty Markus Hub catalog has been written to
+   * `customModelCatalog`. Used by the async preflight
+   * ({@link ensureMarkusCatalogLoaded}) for an O(1) fast path: once the catalog
+   * is ready there is no reason to touch the network again on every turn.
+   * The synchronous lookups ({@link getModelContextWindow} /
+   * {@link getModelMaxOutput}) deliberately do NOT consult this flag — they must
+   * stay non-blocking and simply return their documented fallback until a
+   * refresh lands.
+   */
+  private _markusCatalogLoaded = false;
+  /**
+   * Single-flight guard for {@link refreshMarkusCatalog}: the promise of the one
+   * refresh currently in progress. A second caller joins this promise instead of
+   * starting a competing fetch, which both de-duplicates the Hub round-trip and
+   * serializes the write-back to `customModelCatalog`.
+   */
+  private _markusCatalogInFlight: Promise<number> | null = null;
 
   private readonly CIRCUIT_OPEN_AFTER = 2;
   private readonly CIRCUIT_RESET_MS = 5 * 60 * 1000;
@@ -531,8 +549,29 @@ export class LLMRouter {
    * Fetch the Hub-served OR model catalog into the Markus provider's picker.
    * Keeps the current active model when it still exists in the catalog;
    * only when the active model is missing/obsolete does it fall back to Hub default.
+   *
+   * Single-flight: while a refresh is in flight, concurrent callers — the
+   * fire-and-forget refresh kicked off at provider-registration time, the
+   * Settings warm-up, and the per-turn preflight — join the SAME promise
+   * instead of starting a second Hub round-trip. Besides de-duplicating the
+   * (relatively expensive) fetch, this serializes the write-back to
+   * `customModelCatalog`, so two overlapping refreshes can no longer interleave
+   * and clobber each other's result.
    */
   async refreshMarkusCatalog(): Promise<number> {
+    if (this._markusCatalogInFlight) return this._markusCatalogInFlight;
+    const flight = this.loadMarkusCatalog();
+    this._markusCatalogInFlight = flight;
+    try {
+      return await flight;
+    } finally {
+      // Only the owner clears the slot; joiners merely awaited the shared promise.
+      if (this._markusCatalogInFlight === flight) this._markusCatalogInFlight = null;
+    }
+  }
+
+  /** Actual Hub fetch + write-back. Always reached through the single-flight wrapper. */
+  private async loadMarkusCatalog(): Promise<number> {
     const provider = this.providers.get('markus');
     if (!(provider instanceof MarkusProvider)) return 0;
 
@@ -572,6 +611,7 @@ export class LLMRouter {
     }
 
     this.customModelCatalog.set('markus', defs);
+    this._markusCatalogLoaded = true;
 
     const ids = new Set(defs.map(d => d.id));
     const preferred = models.find(m => m.is_default)?.id ?? defs[0]!.id;
@@ -587,6 +627,52 @@ export class LLMRouter {
       log.info('Markus Hub catalog refreshed', { model: provider.model, count: defs.length });
     }
     return defs.length;
+  }
+
+  /** True once a NON-empty Markus Hub catalog has been loaded successfully. */
+  isMarkusCatalogLoaded(): boolean {
+    return this._markusCatalogLoaded;
+  }
+
+  /**
+   * Await Markus Hub catalog readiness. This is the async half of the cold-start
+   * fix: the context-window / max-output lookups stay SYNCHRONOUS (their callers
+   * do not await), so they cannot block on the network, and instead return their
+   * documented fallback until a catalog lands. The "wait for readiness" work is
+   * therefore pushed here, into an async PREFLIGHT that runs before the packing
+   * budget is derived — so the turn that triggers the load already sees the real
+   * Hub values.
+   *
+   * Contract:
+   *   - already loaded (and not `force`)  → O(1) return, no network.
+   *   - otherwise race the single-flight refresh against a bounded timeout
+   *     (default 3000ms).
+   *   - ALL failures — Hub unreachable, malformed payload, timeout — are
+   *     swallowed with a warn. This method NEVER rejects, so a cold/offline Hub
+   *     can never abort an agent turn; the sync lookups just use their fallback
+   *     until a later refresh succeeds.
+   */
+  async ensureMarkusCatalogLoaded(opts?: { timeoutMs?: number; force?: boolean }): Promise<void> {
+    if (this._markusCatalogLoaded && !opts?.force) return;
+    const timeoutMs = opts?.timeoutMs ?? 3000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.refreshMarkusCatalog(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`markus catalog load timed out after ${timeoutMs}ms`)),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } catch (err) {
+      log.warn('Markus catalog not ready before budget planning — using fallback values', {
+        error: String(err),
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /**
