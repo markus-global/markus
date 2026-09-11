@@ -64,6 +64,34 @@ Stored under the `agent` section of `~/.markus/markus.json` and surfaced in
 |-------|------|---------|---------|
 | `enabled` | boolean | **`true`** | Master switch. `false` forces serial mode (worker count 1). |
 | `maxWorkers` | number | **`3`** | Worker count, clamped to `[1, 10]`. `1` = serial. |
+
+### Unified concurrency gate (one knob, two limits)
+
+`maxWorkers` is the **single source of truth** for how much concurrency an agent has.
+It drives *both* limits, which used to be two independent and mutually contradicting
+knobs (`maxWorkers` vs `profile.maxConcurrentTasks`, defaulting to 1):
+
+| Limit | Derived value | Where |
+|---|---|---|
+| Attention worker count | `enabled ? clamp(maxWorkers, 1, 10) : 1` | `AttentionController.setWorkerCount` |
+| Task-execution concurrency | `min(worker count, profile.maxConcurrentTasks ?? worker count)` | `TaskExecutor → TaskQueue` |
+
+Consequences:
+
+- **No more drift.** `Agent.applyConcurrency()` is the one entry point (constructor and
+  the live `AgentManager.concurrentConfig` hot-update both call it), so the worker pool
+  and the task queue can never disagree.
+- **`min`, never `max`.** Task concurrency can never exceed worker concurrency, so
+  `maxWorkers = 1` still implies fully serial task execution (the equivalence contract
+  holds without a special case).
+- **`profile.maxConcurrentTasks` is now a ceiling, not the gate.** It can only make task
+  concurrency *tighter*. Leaving it unset means task concurrency follows `maxWorkers`
+  (previously it silently stayed at 1, so three workers would pick up three task items
+  while the queue admitted one — the other two workers blocked, and task throughput was
+  pinned at 1).
+- **Turning concurrency off really turns it off.** Previously the live-update path only
+  applied `enabled: true`, so unchecking the switch left running agents at their old
+  worker count until a restart.
 | `conflictPolicy` | `'auto' \| 'report'` | `'auto'` | Behaviour when a worker meets a locked entity. |
 
 **Default-value note.** The runtime default is *enabled with 3 workers*. The type

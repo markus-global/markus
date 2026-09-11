@@ -82,12 +82,19 @@ export interface AttentionDelegate {
   onDecisionMade(decision: AttentionDecision): void;
   onFocusChanged(item: MailboxItem | undefined): void;
   /**
-   * Best-effort cancel of the in-flight processing for `item` — invoked when the
-   * backstop timeout fires so the orphaned turn stops before the item is requeued
+   * Cancel the in-flight processing for `item` — invoked when the backstop
+   * timeout fires so the orphaned turn stops before the item is requeued
    * (prevents duplicate tool side effects). Implementations abort the active LLM
    * stream and set the processing cancel flag. Optional for non-agent delegates.
+   *
+   * `workerId` is the worker that was **holding `item`** when the timeout fired
+   * (captured before the race — NOT re-derived from ALS). The call site is a
+   * timer callback, so implementations must use this to pick the target turn
+   * deterministically; inferring the target from AsyncLocalStorage would fall
+   * back to worker 1 and cancel the wrong worker. Handlers may return a promise;
+   * a rejection is logged, never fatal.
    */
-  cancelProcessing?(item: MailboxItem): void;
+  cancelProcessing?(item: MailboxItem, workerId?: number): void | Promise<void>;
   evaluateInterrupt(
     currentItem: MailboxItem,
     newItem: MailboxItem,
@@ -863,6 +870,10 @@ export class AttentionController {
    * up to `MAILBOX_ITEM_MAX_RETRIES` times.
    */
   private async processFocusedItem(item: MailboxItem): Promise<void> {
+    // 捕获「持有该 item 的 worker」，全程复用这个值（不再二次 currentWorkerId()）。
+    // 根因 2：ALS 漂移时重算会删错在途登记键，残留登记使
+    // awaitInFlightSettled 永远返回 false；根因 1：定向取消也必须用这个值。
+    const workerId = this.currentWorkerId();
     this.setState('focused');
     this.currentFocus = item;
     this.interruptSignal = false;
@@ -888,7 +899,6 @@ export class AttentionController {
       // is a generous backstop — by the time it fires, all underlying I/O has
       // surely completed or failed, so requeuing is safe.
       const processing = this.delegate?.processMailboxItem(item, batchItems, batchContext);
-      const workerId = this.currentWorkerId();
       if (processing) this.inFlightProcessing.set(workerId, processing);
       const backstopMs = this.waitingForHumanApproval
         ? APPROVAL_WAIT_TIMEOUT_MS
@@ -911,9 +921,26 @@ export class AttentionController {
         //   3. requeue ONLY if it settled — otherwise complete as `incomplete`,
         //      so the item is never silently re-run on top of live side effects.
         try {
-          this.delegate?.cancelProcessing?.(item);
+          // 定向：把持有该 item 的 workerId 显式交给 delegate —— 不靠 ALS 推断。
+          const cancelled = this.delegate?.cancelProcessing?.(item, workerId);
+          if (cancelled && typeof (cancelled as Promise<void>).catch === 'function') {
+            void (cancelled as Promise<void>).catch(err => {
+              log.warn('cancelProcessing rejected on backstop timeout', {
+                agentId: this.agentId,
+                itemId: item.id,
+                workerId,
+                error: String(err),
+              });
+            });
+          }
         } catch (err) {
-          log.debug('cancelProcessing threw on backstop timeout', { itemId: item.id, error: String(err) });
+          // 根因 5：取消失败不再只留 debug —— 必须可见。
+          log.warn('cancelProcessing threw on backstop timeout', {
+            agentId: this.agentId,
+            itemId: item.id,
+            workerId,
+            error: String(err),
+          });
         }
         const orphanSettled = await this.awaitInFlightSettled(workerId, this.backstopCancelGraceMs);
         if (orphanSettled) {
@@ -944,7 +971,8 @@ export class AttentionController {
     } finally {
       // Deregister the in-flight attempt for this worker (the promise may still be
       // pending when abandoned — we simply stop waiting on it).
-      this.inFlightProcessing.delete(this.currentWorkerId());
+      // 必须用开始时捕获的 workerId：重算 currentWorkerId() 在 ALS 漂移时会删错键。
+      this.inFlightProcessing.delete(workerId);
     }
 
     this.processingStartedAt = undefined;
@@ -1194,6 +1222,49 @@ export class AttentionController {
         || f.payload?.extra?.sessionId === sessionId) return wid;
     }
     return undefined;
+  }
+
+  /**
+   * 诊断/测试：当前登记了在途处理 promise 的 workerId 列表。
+   * 正常收敛（无残留登记）时应为空 —— 用于回护根因 2（ALS 漂移删错键）。
+   */
+  getInFlightWorkerIds(): number[] {
+    return [...this.inFlightProcessing.keys()];
+  }
+
+  /**
+   * 诊断/测试：某 worker 当前的 focus item（并发模式不看 ALS 上下文）。
+   * 串行模式返回唯一的 focus。
+   */
+  getWorkerFocus(workerId: number): MailboxItem | undefined {
+    if (this.workerCount > 1) return this.workerStates.get(workerId)?.focus;
+    return this.focusStorage;
+  }
+
+  /**
+   * 诊断/测试：某 worker 的定向用户取消标志（并发模式不看 ALS 上下文）。
+   * 定向取消的断言就靠它 —— 「只置位目标 worker」必须可观测。
+   */
+  getWorkerUserCancel(workerId: number): boolean {
+    if (this.workerCount > 1) return !!this.workerStates.get(workerId)?.userCancelCurrent;
+    return this.userCancelCurrentStorage;
+  }
+
+  /**
+   * 诊断/测试：某 worker 的状态快照（state / focus item id / 定向取消标志）。
+   * 串行模式（workerCount=1）返回实例单值快照。
+   */
+  getWorkerSnapshot(workerId: number): { state: AttentionState; focusItemId?: string; userCancelCurrent: boolean } | undefined {
+    if (this.workerCount <= 1) {
+      return {
+        state: this.stateStorage,
+        focusItemId: this.focusStorage?.id,
+        userCancelCurrent: this.userCancelCurrentStorage,
+      };
+    }
+    const ws = this.workerStates.get(workerId);
+    if (!ws) return undefined;
+    return { state: ws.state, focusItemId: ws.focus?.id, userCancelCurrent: !!ws.userCancelCurrent };
   }
 
   /**

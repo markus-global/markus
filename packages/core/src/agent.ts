@@ -514,7 +514,6 @@ export class Agent {
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly BROWSER_CLOSE_FOLLOWUP_MAX_ITER = 5;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
-  private static readonly MAX_CONCURRENT_TASKS = 1;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
   private static readonly TOOL_RETRY_BASE_MS = 500;
@@ -542,6 +541,52 @@ export class Agent {
   /** 公开访问 attention 控制器（并发设置热传播等用）。 */
   get attention(): AttentionController {
     return this.attentionController;
+  }
+
+  /**
+   * 统一并发闸的**单一事实源**：把「设置 → 并发处理」折算成本 agent 实际可用的
+   * 并发度。
+   *  - `enabled: false` → 1（**串行等价契约**：worker=1 必须与旧行为逐字节一致）
+   *  - 否则 → `clamp(maxWorkers ?? 3, 1, 10)`
+   */
+  private effectiveWorkerCount(cfg = this.config.concurrent): number {
+    const c = cfg ?? { enabled: true, maxWorkers: 3 };
+    if (!c.enabled) return 1;
+    return Math.min(Math.max(c.maxWorkers ?? 3, 1), 10);
+  }
+
+  /**
+   * 统一任务并发闸 = `min(worker 闸, profile.maxConcurrentTasks 显式上限)`。
+   *
+   * 历史上这是两个互不相干的闸：worker 闸（`maxWorkers`）与任务闸
+   * （`profile.maxConcurrentTasks`，默认 1）。于是出现「设置里并发数写着 3，任务
+   * 却永远一个个跑」——3 个 worker 抢到 3 个任务 item，但任务队列只放行 1 个，
+   * 另外 2 个 worker 只能阻塞等队列，任务吞吐恒为 1，同时白占实体锁。
+   *
+   * 取 **min** 而不是 max 是硬约束：任务并发永不大于 worker 并发，因此
+   * `worker=1 ⇒ 任务必串行`，串行等价契约天然守住；`profile.maxConcurrentTasks`
+   * 降级为「可选的更紧上限」（越紧越安全，不会反超）。
+   */
+  private unifiedTaskConcurrency(cfg = this.config.concurrent): number {
+    const workers = this.effectiveWorkerCount(cfg);
+    const cap = this.config.profile?.maxConcurrentTasks;
+    const profileCap = typeof cap === 'number' && Number.isFinite(cap) && cap > 0 ? cap : workers;
+    return Math.max(1, Math.min(workers, profileCap));
+  }
+
+  /**
+   * 运行中统一应用并发闸：worker 数与任务并发上限**一起**改，杜绝两闸漂移。
+   * 构造与 `AgentManager.concurrentConfig` 热更新共用这一个入口。
+   */
+  applyConcurrency(cfg = this.config.concurrent): void {
+    const c = cfg ?? { enabled: true, maxWorkers: 3 };
+    this.attentionController.setWorkerCount(this.effectiveWorkerCount(c));
+    this.taskExecutor?.setMaxConcurrentTasks(this.unifiedTaskConcurrency(c));
+  }
+
+  /** 诊断/测试：当前生效的任务并发闸上限（= 统一后的值）。 */
+  getTaskConcurrencyLimit(): number {
+    return this.taskExecutor?.getMaxConcurrentTasks() ?? 1;
   }
 
   constructor(options: AgentOptions) {
@@ -572,10 +617,9 @@ export class Agent {
     // 并发处理：智能体设置 → 并发处理。老板要求「默认支持并发」——
     // 缺省或无显式配置时默认开启（maxWorkers=3）；显式 enabled:false 才关闭。
     const concurrentCfg = this.config.concurrent ?? { enabled: true, maxWorkers: 3 };
-    if (concurrentCfg.enabled) {
-      const workers = Math.min(Math.max(concurrentCfg.maxWorkers ?? 3, 1), 10);
-      this.attentionController.setWorkerCount(workers);
-    }
+    // 统一并发闸（单一事实源 =「设置 → 并发处理」里的并发数）：worker 数由
+    // effectiveWorkerCount() 折算，enabled:false ⇒ 1（与旧行为完全一致的串行等价）。
+    this.attentionController.setWorkerCount(this.effectiveWorkerCount(concurrentCfg));
     this.attentionController.setConflictPolicy(concurrentCfg.conflictPolicy ?? 'auto');
     // 并发交接记录（P2a）：仅并发模式下创建（worker>1），持久化到 agent dataDir。
     if (this.attentionController.getWorkerCount() > 1 && options.dataDir) {
@@ -662,7 +706,8 @@ export class Agent {
     // Initialize task executor
     this.taskExecutor = new TaskExecutor({
       agentId: this.id,
-      maxConcurrentTasks: this.config.profile?.maxConcurrentTasks ?? Agent.MAX_CONCURRENT_TASKS,
+      // 统一并发闸：任务并发跟随「并发数」（并与 profile 显式上限取更紧者）。
+      maxConcurrentTasks: this.unifiedTaskConcurrency(),
       defaultPriority: TaskPriority.MEDIUM,
     });
 
@@ -1293,13 +1338,17 @@ export class Agent {
         const entityKey = item ? this.mailbox.entityKeyOf(item) : undefined;
         log.append(kind, workerId, entityKey, summary);
       },
-      cancelProcessing: (item: MailboxItem) => {
+      cancelProcessing: (item: MailboxItem, workerId?: number) => {
         // Backstop-timeout single-flight: abort the orphaned in-flight turn so it
         // stops before the item is requeued and re-processed (no double side effects).
+        //
+        // 确定性定向：这个调用点在 backstop 定时器回调里（没有 ALS 上下文），
+        // 旧实现不带 target 会退化为 rootWorkspace/worker1 —— 取消错 worker。
+        // 优先用 attention 给出的权威 workerId（持有该 item 者），itemId 做兜底反查。
         try {
-          this.cancelActiveStream();
+          this.cancelActiveStream({ workerId, itemId: item.id });
         } catch (err) {
-          log.debug('cancelProcessing: cancelActiveStream failed', { agentId: this.id, itemId: item.id, error: String(err) });
+          log.warn('cancelProcessing: cancelActiveStream failed', { agentId: this.id, itemId: item.id, workerId, error: String(err) });
         }
       },
       evaluateInterrupt: async (currentItem: MailboxItem, newItem: MailboxItem) => {
@@ -1578,6 +1627,8 @@ export class Agent {
 
   private async processMailboxItemCore(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
     this.processingMailboxItemId = item.id;
+    // eslint-disable-next-line no-console
+    console.error('[PMC-enter]', item.id, item.sourceType, (item.payload.extra as {sessionId?: string} | undefined)?.sessionId, 't', Date.now() % 100000);
 
     // Compose batch content into primary item if batch processing
     if (batchItems && batchItems.length > 0) {
@@ -1705,12 +1756,14 @@ export class Agent {
               : {};
           const opts = buildHandleOpts(defaults);
           if (item.sourceType === 'a2a_message') opts.scenario = 'a2a';
+          console.error('[PMC-before-handleMessage]', item.id, opts.sessionId, 't', Date.now() % 100000);
           let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             opts,
           );
+          console.error('[PMC-after-handleMessage]', item.id, 't', Date.now() % 100000);
           if (needsMarker && item.sourceType !== 'human_chat') {
             reply = await this.ensureCompletionMarker(reply, opts.sessionId ?? this.currentSessionId);
           }
@@ -2454,36 +2507,88 @@ export class Agent {
   /**
    * Cancel the currently focused work (user-initiated Cancel button / stop).
    *
-   * 并发模式下支持定向取消：外部 HTTP 线程调用时没有 ALS 上下文，
-   * `workspace()` 会回退到 rootWorkspace、`getCurrentFocus` 返回 worker 1 的 focus，
-   * 导致并发下取消错对象。因此按 target 定位持有该 item/session 的 worker，
-   * 在其独立的 worker workspace ALS 上下文内执行取消（activeStreamToken 定向）。
-   * 无 target 时兼容旧行为（当前 focus / 当前 ALS 上下文）。
+   * 并发模式下支持**确定性定向取消**：外部 HTTP 线程与 backstop 定时器回调
+   * 都没有 ALS 上下文，`workspace()` 会回退到 rootWorkspace、
+   * `getCurrentFocus()` 返回 worker 1 的 focus —— 靠 ALS 推断必然取消错 worker。
+   * 因此这里完全按 target 定位持有该 item / session 的 worker（或直接采用调用方
+   * 给出的权威 workerId），把取消直接写进该 worker 的独立 workspace，
+   * 不读也不依赖任何 ALS 状态。
+   *
+   * @returns 实际命中的 workerId（并发 + 定向命中）；undefined 表示走的是
+   *          串行/无 target 的兼容路径。同值记入 `lastCancelledWorkerId` 供
+   *          测试与诊断断言。
    */
-  cancelActiveStream(target?: { itemId?: string; sessionId?: string }): void {
+  cancelActiveStream(target?: { itemId?: string; sessionId?: string; workerId?: number }): number | undefined {
     const workerId = this.resolveCancelTargetWorker(target);
-    if (workerId !== undefined) {
-      // 并发模式：目标 worker 的独立 workspace（worker loop 用 delegate.getWorkerWorkspace
-      // 缓存的 workspace，worker 1 亦然——与 rootWorkspace 不是同一个对象）。
-      const ws = this.workerWorkspaces.get(workerId) ?? (this.attentionController.getWorkerCount() <= 1 ? this.rootWorkspace : undefined);
-      if (ws) {
-        sessionWorkspaceStore.run(ws, () => this.cancelActiveStreamCore());
-        return;
-      }
+    // eslint-disable-next-line no-console
+    console.error('[CAS]', JSON.stringify(target), '-> resolved', workerId, 't', Date.now() % 100000, 'wsKeys', [...this.workerWorkspaces.keys()]);
+    if (workerId !== undefined && this.workerWorkspaces.has(workerId)) {
+      this.cancelActiveStreamCore(workerId);
+      this.lastCancelledWorkerId = workerId;
+      return workerId;
     }
+    // 兼容路径：串行模式 / 无 target / 目标 worker 尚无 workspace。
     this.cancelActiveStreamCore();
-  }
-
-  /** 解析定向取消目标所属的 workerId（无 target / 串行模式返回 undefined → 走当前上下文）。 */
-  private resolveCancelTargetWorker(target?: { itemId?: string; sessionId?: string }): number | undefined {
-    if (!target) return undefined;
-    if (this.attentionController.getWorkerCount() <= 1) return undefined;
-    if (target.itemId) return this.attentionController.findWorkerByItemId(target.itemId);
-    if (target.sessionId) return this.attentionController.findWorkerBySessionId(target.sessionId);
+    this.lastCancelledWorkerId = undefined;
     return undefined;
   }
 
-  private cancelActiveStreamCore(): void {
+  /** 最近一次定向取消实际命中的 workerId（未定向命中时为 undefined）。 */
+  private lastCancelledWorkerId?: number;
+
+  /** 诊断/测试：最近一次 cancelActiveStream 命中的 workerId。 */
+  getLastCancelledWorkerId(): number | undefined {
+    return this.lastCancelledWorkerId;
+  }
+
+  /**
+   * 解析定向取消目标所属的 workerId。
+   * 并发模式下按 workerId（权威）→ itemId → sessionId 依次尝试；
+   * 串行模式统一返回 undefined（走 ALS/rootWorkspace 兼容路径）。
+   */
+  private resolveCancelTargetWorker(target?: { itemId?: string; sessionId?: string; workerId?: number }): number | undefined {
+    if (!target) return undefined;
+    if (this.attentionController.getWorkerCount() <= 1) return undefined;
+    if (target.workerId !== undefined && this.workerWorkspaces.has(target.workerId)) {
+      return target.workerId;
+    }
+    if (target.itemId) {
+      const byItem = this.attentionController.findWorkerByItemId(target.itemId);
+      if (byItem !== undefined) return byItem;
+    }
+    if (target.sessionId) {
+      const bySession = this.attentionController.findWorkerBySessionId(target.sessionId);
+      if (bySession !== undefined) return bySession;
+    }
+    return undefined;
+  }
+
+  private cancelActiveStreamCore(workerId?: number): void {
+    // ── 定向路径（并发模式，优先）：直接写目标 worker 的独立 workspace。
+    //    不读也不依赖任何 ALS 上下文 —— 无 ALS 调用点也能精确命中。
+    if (workerId !== undefined) {
+      const ws = this.workerWorkspaces.get(workerId);
+      if (ws) {
+        // Durable token so a stop that arrives before handleMessageStream links
+        // the SSE cancelToken is not lost.
+        if (!ws.activeStreamToken) {
+          ws.activeStreamToken = { cancelled: true, userStopped: true };
+        } else {
+          ws.activeStreamToken.cancelled = true;
+          ws.activeStreamToken.userStopped = true;
+        }
+        // Only the *current* focus of the target worker — never poison queued
+        // human_chat waiting next (nor the sibling workers).
+        this.markCancelTokenStopped(ws.activeStreamToken, this.attentionController.getWorkerFocus(workerId));
+        // Make non-stream paths (heartbeat / handleMessage) observe cancel at yield.
+        // 定向置位：只碰目标 worker 的 userCancelCurrent，不靠 ALS 推断。
+        this.attentionController.requestUserCancelForWorker(workerId);
+        log.info('Active processing cancelled by user (directed)', { agentId: this.id, workerId });
+        return;
+      }
+    }
+
+    // ── 兼容路径：当前 ALS 上下文（串行模式 / 无 target 的旧行为）。
     // Durable token so a stop that arrives before handleMessageStream links
     // the SSE cancelToken is not lost.
     if (!this.activeStreamToken) {
@@ -2501,14 +2606,21 @@ export class Agent {
 
   /** Mark only the focused item's stream cancel token (not the whole queue). */
   private markCurrentFocusCancelTokenStopped(): void {
+    this.markCancelTokenStopped(this.activeStreamToken, this.attentionController.getCurrentFocus());
+  }
+
+  /**
+   * 只标记「指定 token + 指定 focus item 的 cancelToken」——不污染队列里的
+   * 其他 item，也不跨 worker 泄漏。
+   */
+  private markCancelTokenStopped(token: unknown, focus: MailboxItem | undefined): void {
     const mark = (ct: unknown) => {
       if (!ct || typeof ct !== 'object') return;
-      const token = ct as { cancelled?: boolean; userStopped?: boolean };
-      token.cancelled = true;
-      token.userStopped = true;
+      const t = ct as { cancelled?: boolean; userStopped?: boolean };
+      t.cancelled = true;
+      t.userStopped = true;
     };
-    mark(this.activeStreamToken);
-    const focus = this.attentionController.getCurrentFocus();
+    mark(token);
     const focusExtra = focus?.payload?.extra as { cancelToken?: unknown } | undefined;
     mark(focusExtra?.cancelToken);
   }
@@ -3870,6 +3982,8 @@ export class Agent {
     }
     this.memory.getOrCreateSession(this.id, sessionId);
     const userContent = await this.buildUserContent(userMessage, options?.images, options?.fileNames, options?.imagePaths);
+    // eslint-disable-next-line no-console
+    console.error('[HM] userContent-done', sessionId, Date.now() % 100000);
     this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
 
     // Channel context is now injected in the system prompt (dynamic tier) rather
@@ -3885,6 +3999,8 @@ export class Agent {
     }
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
+    // eslint-disable-next-line no-console
+    console.error('[HM] cogctx-done', options?.sessionId, Date.now() % 100000);
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -3923,6 +4039,8 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
     const { volatile } = systemPromptBuild;
+    // eslint-disable-next-line no-console
+    console.error('[HM] sysprompt-done', sessionId, Date.now() % 100000);
     let { text: systemPrompt, segments: systemCacheSegments } = systemPromptBuild;
 
     const toolSelectCtx = this.buildSessionAwareToolSelectContext(sessionId, effectiveMessage);
@@ -3935,6 +4053,8 @@ export class Agent {
       scenario,
     };
     let llmTools = this.buildToolDefinitions(toolSelectOpts);
+    // eslint-disable-next-line no-console
+    console.error('[HM] tools-done', sessionId, Date.now() % 100000);
     // Afford.S2 catalog: rides the per-turn volatile TAIL block, never the system
     // prompt (it changes with the per-turn tool selection and would invalidate
     // the whole cached prefix). See consumeDeferredToolCatalog().
@@ -3965,7 +4085,21 @@ export class Agent {
     }
 
     // A2: flush important memory to disk before context fills (turn-level preflight).
+    // eslint-disable-next-line no-console
+    console.error('[HM] before-memflush', sessionId, Date.now() % 100000);
     await this.maybeMemoryFlushPreflight(sessionId);
+    // eslint-disable-next-line no-console
+    console.error('[HM] memflush-done', sessionId, Date.now() % 100000);
+
+    // Cold-start fix: the Markus Hub catalog may not be loaded yet on the very
+    // first turn (the Router kicks off the refresh fire-and-forget). The sync
+    // window/max-output lookups below would then resolve the FALLBACK value and
+    // under-budget the request. Await readiness here — bounded (3s) and
+    // fail-safe (never throws) — so the FIRST turn already packs against real
+    // Hub values. O(1) no-op once the catalog is warm.
+    await this.llmRouter.ensureMarkusCatalogLoaded?.({ timeoutMs: 3000 });
+    // eslint-disable-next-line no-console
+    console.error('[HM] catalog-done', sessionId, Date.now() % 100000);
 
     const sessionMessages = this.requestHistory(sessionId);
     this.volatileState = this.mergeVolatile(volatile, deferredToolCatalog);
@@ -4013,6 +4147,8 @@ export class Agent {
       this.checkDailyTokenBudget();
       this.lastEstimatedInputTokens = this.estimateMessagesTokens(messages);
       const llmStart = Date.now();
+      // eslint-disable-next-line no-console
+      console.error('[HM] before-llm', sessionId, Date.now() % 100000);
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chat({
           messages,
@@ -5227,13 +5363,13 @@ export class Agent {
     executionRound?: number
   ): Promise<void> {
     this.currentTaskId = taskId;
-    if (
-      this.config.profile?.maxConcurrentTasks !== undefined &&
-      this.config.profile.maxConcurrentTasks !== null &&
-      this.activeTasks.size >= this.config.profile.maxConcurrentTasks
-    ) {
+    // 防御性闸（统一闸之后仍保留）：拿**实际生效**的任务并发上限对账，而不是原始
+    // profile 值。旧实现用 `!== undefined && activeTasks.size >= profile`，
+    // profile=0 / 负数这类脏配置会让它变成「恒真」的假闸。
+    const taskConcurrencyLimit = this.getTaskConcurrencyLimit();
+    if (this.activeTasks.size >= taskConcurrencyLimit) {
       throw new Error(
-        `Agent has reached maximum concurrent tasks (${this.config.profile.maxConcurrentTasks})`
+        `Agent has reached maximum concurrent tasks (${taskConcurrencyLimit})`,
       );
     }
     this.setStatus('working');

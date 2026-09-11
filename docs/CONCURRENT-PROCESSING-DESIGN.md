@@ -344,7 +344,7 @@ UI 呈现（智能体设置 → 新增「并发处理」区块）：
 | §5.3 分身认知协议 | ✅ 已实现（提示词层） | 并发上下文段内含一致性规则三项 |
 | §5.4 实体亲和（Per-Entity Lock） | ✅ 已实现 | 键：`task:` / `req:` / `conv:` / `user:`。**a2a / heartbeat / group_chat 无键**（已知限制） |
 | §7 设置项字段 | ✅ 已实现 | `agent.concurrent.{enabled,maxWorkers,conflictPolicy}`；默认 `enabled: true, maxWorkers: 3` |
-| §7 `maxWorkers` 与 `profile.maxConcurrentTasks` 联动合并 | ❌ 未合并 | 仍为两个独立闸；UI 只暴露一个「并发数」驱动注意循环 worker 数 |
+| §7 `maxWorkers` 与 `profile.maxConcurrentTasks` 联动合并 | ✅ 已合并 | **单一事实源** = `agent.concurrent.maxWorkers`（设置里的「并发数」）；任务闸 = `min(worker 闸, profile.maxConcurrentTasks 显式上限)`，构造与热更新都走 `Agent.applyConcurrency()` 一处同时驱动两闸（详见 CONCURRENT-PROCESSING.md）。`worker=1 ⇒ 任务必串行` 的串行等价契约由 min 保证。 |
 | §8 P0–P4 | ✅ 全部完成 | 见 git 提交序列（P0 状态下放 → P1 worker 池 → P2 上下文/交接 → P3 设置 UI → P4 打磨） |
 | §9 风险表 | ✅ 已覆盖 | 认知一致性（实体锁+交接+冲突报告）、成本（maxWorkers 上限）、回归（worker=1 等价契约） |
 
