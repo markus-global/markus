@@ -333,7 +333,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setCppMaxDepth(d.cognitive.maxDepth ?? 1);
         }
         if (d?.concurrent) {
-          setConcEnabled(d.concurrent.enabled ?? false);
+          setConcEnabled(d.concurrent.enabled ?? true);
           setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
           setConcConflictPolicy(d.concurrent.conflictPolicy ?? 'auto');
         }
