@@ -661,11 +661,38 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [imagePreviewSrc, setImagePreviewSrc] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  /** Session-scoped model pick from the composer menu (null = use global routing). */
-  const [sessionModelOverride, setSessionModelOverride] = useState<ChatModelSelection | null>(null);
-  /** The currently selected agent's per-agent default model (from its config). */
+  /**
+   * The composer's model label.
+   *   - non-null → the agent's OWN bound model (per-agent default)
+   *   - null     → the agent follows global routing, and ChatModelMenu falls
+   *                back to the global default itself.
+   * Deliberately NOT session-scoped: every session of the same agent therefore
+   * shows the same model, so switching tabs can never surface a foreign or
+   * stale model name.
+   */
   const [agentBoundModel, setAgentBoundModel] = useState<ChatModelSelection | null>(null);
   const reattachAbortRef = useRef<AbortController | null>(null);
+
+  // Hydrate the composer's model label from the backend's authoritative
+  // `effectiveModel`. This is the ONLY writer besides the composer's own
+  // onSelect — no per-session/per-turn state is involved, so the label cannot
+  // lag behind the agent it belongs to (the old code re-read a per-session
+  // override *after* an awaited history fetch, which is why the name only
+  // refreshed on a second visit / full reload).
+  useEffect(() => {
+    if (!selectedAgent) { setAgentBoundModel(null); return; }
+    let cancelled = false;
+    api.agents.get(selectedAgent)
+      .then(d => {
+        if (cancelled) return;
+        const em = d.effectiveModel;
+        setAgentBoundModel(
+          em?.provider && em?.model ? { provider: em.provider, model: em.model } : null,
+        );
+      })
+      .catch(() => { if (!cancelled) setAgentBoundModel(null); });
+    return () => { cancelled = true; };
+  }, [selectedAgent]);
 
   /** Compact (1-line) composer vs taller empty-chat starter. Synced before render. */
   const compactComposerRef = useRef(false);
@@ -1632,14 +1659,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const streamVolatileRef = useRef<ChatStreamVolatileState>({
     chatContext: [], input: '', pendingImages: [],
     chatMode, selectedAgent, activeSessionId,
-    activeDmUserId, authUser, sessionModelOverride, activeChannel,
+    activeDmUserId, authUser, activeChannel,
     groupChats, agents, humans, sending,
     chatReplyTo: null,
   });
   streamVolatileRef.current = {
     chatContext, input, pendingImages,
     chatMode, selectedAgent, activeSessionId,
-    activeDmUserId, authUser, sessionModelOverride, activeChannel,
+    activeDmUserId, authUser, activeChannel,
     groupChats, agents, humans, sending,
     chatReplyTo,
   };
@@ -2310,9 +2337,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             changeActiveSession(newKey, validId);
             setStoredActiveSession(selectedAgent!, validId);
             setOpenSessionTabs(initialTabs);
-            const restored = s.find(ss => ss.id === validId);
-            const mo = restored?.metadata?.modelOverride;
-            setSessionModelOverride(mo?.provider && mo?.model ? { provider: mo.provider, model: mo.model } : null);
             void loadSessionMessages(validId!, newKey).then(() => {
               if (currentConvKeyRef.current === newKey && selectedAgent) {
                 void tryReattachActiveStream(selectedAgent, validId!, newKey);
@@ -2323,7 +2347,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             // is unpinned so a stray background stream is conservatively routed
             // to its own cache (isDisplayRoute), never into this empty view.
             changeActiveSession(newKey, null);
-            setSessionModelOverride(null);
             setLoadingChat(false);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
           }
@@ -2960,10 +2983,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             clearStreamSession(sendKey, prevStreamSessionId);
           }
           setStreamSession(sendKey, event.sessionId);
-          // Persist composer model pick onto the newly created session
-          if (sessionModelOverride) {
-            void api.sessions.setModelOverride(event.sessionId, sessionModelOverride).catch(() => {});
-          }
           // Replace optimistic user id with the server-persisted id so reload/dedupe align.
           if (event.userMessageId && !options?.isResume) {
             updateConvMsgs(sendKey, prev => prev.map(m =>
@@ -3160,7 +3179,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             isResume: options?.isResume,
             fileNames: fileNamesToSend,
             replyTo: replyCtx,
-            modelOverride: sessionModelOverride,
           },
         );
         if (currentConvKeyRef.current === sendKey) {
@@ -3677,8 +3695,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } finally {
       if (sessionSwitchSeqRef.current === switchSeq) setLoadingChat(false);
     }
-    const mo = s.metadata?.modelOverride;
-    setSessionModelOverride(mo?.provider && mo?.model ? { provider: mo.provider, model: mo.model } : null);
     if (selectedAgent && !isStreaming) {
       void tryReattachActiveStream(selectedAgent, s.id, key);
     }
@@ -3741,11 +3757,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const newConversation = () => {
     setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
-    // A brand-new conversation must NOT inherit the previous session's model
-    // override: stale/disabled models caused the composer pill to "jump" from
-    // A to B whenever the catalog refreshed. Start from the global routing
-    // default — deterministic. The user can pick a model in this new chat.
-    setSessionModelOverride(null);
+    // No model state to reset: the composer's label follows the AGENT (its own
+    // bound model, else global routing), never the session — so a fresh chat
+    // cannot inherit a foreign pick.
     const key = currentConvKeyRef.current;
     // reset + re-pin atomically: resetConv deletes the manager's activeSession
     // for this key, then re-pins it to the new-chat placeholder so a
@@ -4700,7 +4714,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           )}
 
           {/* Session tab bar (direct mode, chat tab) — hide when only 1 session */}
-          {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 1 && (
+          {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 1 && (() => {
+            // Which of THIS agent's sessions currently have an in-flight stream.
+            // Read live from the buffer manager during render;
+            // useConversationBuffers bumps its own state on every membership
+            // change, so a BACKGROUND tab's dot appears/disappears without
+            // needing the user to switch to it first.
+            const liveStreamSessions = getStreamSession(currentConvKeyRef.current);
+            const isStreamingTab = (s: ChatSessionInfo) =>
+              (liveStreamSessions?.has(s.id) ?? false)
+              // Pre-`session_start` window: a brand-new chat streams before the
+              // server assigns a real session id, so the active tab is the only
+              // one that can be generating.
+              || (sending && s.id === activeSessionId);
+            return (
             <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide">
               {openSessionTabs.map(s => (
                 <div
@@ -4713,12 +4740,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   onClick={() => {
                     if (s.id === NEW_CHAT_PLACEHOLDER_ID) {
                       setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
-                      // Same as + 新对话: a new chat starts from the global
-                      // default, never from another session's model override.
-                      setSessionModelOverride(null);
-                      const key = currentConvKeyRef.current;
                       // Same atomic reset + re-pin as newConversation(): keeps a
                       // concurrently-streaming PREVIOUS session out of this tab.
+                      const key = currentConvKeyRef.current;
                       resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
                       setMessages([]);
                     } else {
@@ -4728,6 +4752,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 >
                   {s.isMain && <span className="text-[10px] opacity-50 shrink-0">●</span>}
                   <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? t('page.newChat') : (s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation')))}</span>
+                  {isStreamingTab(s) && (
+                    // Same "agent working" signal as the sidebar (L1) — a blue
+                    // pulsing dot, shown only while this session is generating.
+                    <span
+                      className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shrink-0"
+                      title={t('common:status.working')}
+                      aria-label={t('common:status.working')}
+                      data-testid="session-tab-streaming"
+                    />
+                  )}
                   {!s.isMain && (
                     <button
                       onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
@@ -4739,7 +4773,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 </div>
               ))}
             </div>
-          )}
+            );
+          })()}
           {chatMode === 'direct' && mainTab === 'chat'
             && (openSessionTabs.find(s => s.id === activeSessionId) ?? sessions.find(s => s.id === activeSessionId))
               ?.metadata?.kind === 'evolution' && (
@@ -5544,41 +5579,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             <div className={`flex items-center gap-1.5 shrink-0 ${composerExpanded ? 'justify-end' : ''}`}>
               {chatMode === 'direct' && (
                 <ChatModelMenu
-                  value={sessionModelOverride ?? agentBoundModel}
+                  value={agentBoundModel}
                   agentId={selectedAgent}
                   disabled={!selectedAgent || isAgentOffline}
                   onSelect={(sel, scope) => {
                     if (scope === 'agent') {
-                      // Per-agent pick: apply only to the current agent's model
-                      // config; keep status to reflect it. Session override is
-                      // cleared so the agent's default applies.
-                      setSessionModelOverride(null);
+                      // Bind the model to the AGENT: every session of this agent
+                      // then shows (and uses) it — no per-session divergence.
                       setAgentBoundModel(sel);
-                      const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-                      void applyChatModelSelection(sid, sel, scope, selectedAgent).catch(() => { /* ignore */ });
-                      if (sid) {
-                        setSessions(prev => prev.map(s =>
-                          s.id === sid
-                            ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: undefined } }
-                            : s,
-                        ));
-                      }
+                      void applyChatModelSelection(sel, scope, selectedAgent).catch(() => { /* ignore */ });
                       return;
                     }
-                    // Global pick: update global routing AND reset the current agent
-                    // to follow global — so the shown model equals both the global
-                    // default and the agent's actual model (no ambiguity).
-                    setSessionModelOverride(sel);
+                    // Global pick: update global routing AND reset the current
+                    // agent to "follow global" — so the shown label equals both
+                    // the global default and the agent's actual model (no
+                    // ambiguity). The agent no longer carries a model of its own,
+                    // so the label falls back to the global default.
                     setAgentBoundModel(null);
-                    const sid2 = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-                    void applyChatModelSelection(sid2, sel, scope, selectedAgent).catch(() => { /* ignore */ });
-                    if (sid2) {
-                      setSessions(prev => prev.map(s =>
-                        s.id === sid2
-                          ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: sel } }
-                          : s,
-                      ));
-                    }
+                    void applyChatModelSelection(sel, scope, selectedAgent).catch(() => { /* ignore */ });
                   }}
                 />
               )}

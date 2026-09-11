@@ -24,6 +24,14 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   const [sending, setSending] = useState(false);
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const rafRef = useRef<number | null>(null);
+  // Bumped whenever a session enters/leaves the per-conversation streaming set.
+  // The value is intentionally unused: this state lives in the CALLER's component
+  // (the hook is invoked by Team.tsx), so bumping it re-renders the session tab
+  // bar even when the change belongs to a session that is NOT the active one.
+  // Without it, a background tab's "streaming" dot would only appear/disappear
+  // on some unrelated re-render — the membership Set itself is not reactive.
+  const [, setStreamMembershipTick] = useState(0);
+  const bumpStreamMembership = useCallback(() => setStreamMembershipTick(v => v + 1), []);
 
   useEffect(() => () => { if (rafRef.current !== null) cancelAnimationFrame(rafRef.current); }, []);
 
@@ -77,11 +85,12 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   const abortStream = useCallback((key: string, sessionId?: string | null) => {
     const affected = mgr.current.abortStream(key, sessionId);
     if (affected && isAgentKey(key)) chatStore.markAgentStreaming(key, false);
+    if (affected) bumpStreamMembership();
     if (mgr.current.currentConvKey === key) {
       setSending(false);
       setActivities([]);
     }
-  }, []);
+  }, [bumpStreamMembership]);
   const resetConv = useCallback((key: string, repinTo?: string) => {
     mgr.current.resetConv(key, repinTo);
     mgr.current.deleteBuffer(key);
@@ -156,10 +165,12 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     setStreamSession: (k: string, s: string) => {
       mgr.current.addStreamSession(k, s);
       if (isAgentKey(k)) chatStore.markAgentStreaming(k, true);
+      bumpStreamMembership();
     },
     clearStreamSession: (k: string, s?: string) => {
       mgr.current.removeStreamSession(k, s);
       if (isAgentKey(k)) chatStore.markAgentStreaming(k, false);
+      bumpStreamMembership();
     },
     getStreamSession: (k: string) => mgr.current.getStreamSessions(k),
     // Session switch helpers

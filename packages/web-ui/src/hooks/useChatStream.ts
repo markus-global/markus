@@ -53,7 +53,6 @@ export interface ChatStreamVolatileState {
   activeSessionId?: string | null;
   activeDmUserId: string;
   authUser?: AuthUser;
-  sessionModelOverride?: { provider: string; model: string } | null;
   activeChannel?: string;
   groupChats: Array<{ channelKey: string; members?: Array<{ id: string; name: string; type: string; avatarUrl?: string }> }>;
   agents: AgentInfo[];
@@ -874,10 +873,6 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             clearStreamSession(sendKey, prevStreamSessionId);
           }
           setStreamSession(sendKey, event.sessionId);
-          // Persist composer model pick onto the newly created session
-          if (volatile.sessionModelOverride) {
-            void api.sessions.setModelOverride(event.sessionId, volatile.sessionModelOverride).catch(() => {});
-          }
           // Replace optimistic user id with the server-persisted id so reload/dedupe align.
           if (event.userMessageId && !options?.isResume) {
             updateConvMsgs(sendKey, prev => prev.map(m =>
@@ -1084,7 +1079,6 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             isResume: options?.isResume,
             fileNames: fileNamesToSend,
             replyTo: replyCtx,
-            modelOverride: volatile.sessionModelOverride,
           },
         );
         if (currentConvKeyRef.current === sendKey) {

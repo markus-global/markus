@@ -46,6 +46,11 @@ export interface ChatSessionInfo {
   title: string | null;
   isMain?: boolean;
   metadata?: {
+    /**
+     * @deprecated Session-scoped model overrides are retired — a model belongs
+     * to the AGENT or to global routing. The backend no longer honours this
+     * field; it only survives on sessions written by older builds.
+     */
     modelOverride?: { provider: string; model: string };
     kind?: string;
     parentSessionId?: string;
@@ -1270,7 +1275,6 @@ export interface MessageStreamOptions {
   isResume?: boolean;
   fileNames?: string[];
   replyTo?: { id: string; sender: string; text: string } | null;
-  modelOverride?: { provider: string; model: string } | null;
 }
 
 /**
@@ -1394,7 +1398,7 @@ export const api = {
     ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         const {
-          signal, images, sessionId, isRetry, isResume, fileNames, replyTo, modelOverride,
+          signal, images, sessionId, isRetry, isResume, fileNames, replyTo,
         } = options ?? {};
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -1414,9 +1418,6 @@ export const api = {
               isRetry: isRetry || undefined,
               isResume: isResume || undefined,
               replyTo: replyTo || undefined,
-              ...(modelOverride?.provider && modelOverride?.model
-                ? { provider: modelOverride.provider, model: modelOverride.model }
-                : {}),
             }),
             signal,
           });
@@ -2060,6 +2061,12 @@ export const api = {
         `/sessions/${sessionId}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),
     delete: (sessionId: string) => request(`/sessions/${sessionId}`, { method: 'DELETE' }),
+    /**
+     * @deprecated Retired: the backend no longer honours session-level model
+     * overrides (see `ChatSessionInfo.metadata.modelOverride`). Kept only so an
+     * older client that still calls it gets a valid response instead of a 404;
+     * nothing in this app calls it any more.
+     */
     setModelOverride: (sessionId: string, override: { provider: string; model: string } | null) =>
       request<{ modelOverride: { provider: string; model: string } | null }>(
         `/sessions/${sessionId}/model-override`,
