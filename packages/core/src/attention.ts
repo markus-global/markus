@@ -150,6 +150,8 @@ interface AttentionWorkerState {
   state: AttentionState;
   focus?: MailboxItem;
   processingStartedAt?: number;
+  /** worker 定向的用户取消请求（并发模式承载；串行走实例字段）。 */
+  userCancelCurrent?: boolean;
 }
 
 export class AttentionController {
@@ -165,8 +167,17 @@ export class AttentionController {
   private activeWorkerIds = new Set<number>();
 
   private interruptSignal = false;
-  /** Explicit user cancel of the focused item (Cancel button) — not a new-mail preempt. */
-  private userCancelCurrent = false;
+  /** Explicit user cancel of the focused item (Cancel button) — not a new-mail preempt.
+   * 并发模式按 worker 承载（每 worker 独立 userCancel），避免取消串到其他 worker。 */
+  private userCancelCurrentStorage = false;
+  private get userCancelCurrent(): boolean {
+    if (this.workerCount > 1) return !!this.workerState(this.currentWorkerId()).userCancelCurrent;
+    return this.userCancelCurrentStorage;
+  }
+  private set userCancelCurrent(v: boolean) {
+    if (this.workerCount > 1) this.workerState(this.currentWorkerId()).userCancelCurrent = v;
+    else this.userCancelCurrentStorage = v;
+  }
   private pendingInterruptItem: MailboxItem | undefined;
   private criticalInterruptResolve?: () => void;
   private running = false;
@@ -763,7 +774,7 @@ export class AttentionController {
           try { this.mailbox.putBack(item); } catch { /* ignore */ }
           this.delegate?.onConcurrentHandoff?.('conflict', workerId, item, `实体 ${entityKey} 已被分身 ${holder} 锁定，暂缓处理并放回队列`);
           if (this.conflictPolicy === 'report') {
-            // report 策略：冲突不再静默——发事件让父级感知，同时小退避防止忙循环。
+            // report 策略：冲突不再静默——发事件让父级感知。
             this.eventBus.emit('agent:entity-conflict', {
               agentId: this.agentId,
               entityKey,
@@ -772,8 +783,10 @@ export class AttentionController {
               workerId,
               summary: item.payload.summary.slice(0, 200),
             });
-            await new Promise<void>(r => setTimeout(r, 250 + Math.min(item.retryCount ?? 0, 8) * 250));
           }
+          // auto 与 report 都做轻量退避：避免两个 worker 反复竞抢同一被锁实体
+          // 造成忙循环（unlockEntity 的广播唤醒 + 重新入队会立刻再次触发竞态）。
+          await new Promise<void>(r => setTimeout(r, 250 + Math.min(item.retryCount ?? 0, 8) * 250));
           continue;
         }
 
@@ -1101,6 +1114,52 @@ export class AttentionController {
       itemId: this.currentFocus.id,
       type: this.currentFocus.sourceType,
     });
+  }
+
+  /** 并发模式：查找持有指定 mailbox item 的 workerId（串行始终返回 1）。 */
+  findWorkerByItemId(itemId: string): number | undefined {
+    if (this.workerCount <= 1) return 1;
+    for (const [wid, ws] of this.workerStates) {
+      if (ws.focus?.id === itemId) return wid;
+    }
+    return undefined;
+  }
+
+  /**
+   * 并发模式：按会话定位持有该会话的 workerId（串行始终返回 1）。
+   * 匹配 focus 的 metadata.sessionId / dbSessionId / payload.extra.sessionId。
+   * 用于外部 HTTP 线程按 session 定向取消，避免取消错对象。
+   */
+  findWorkerBySessionId(sessionId: string): number | undefined {
+    if (this.workerCount <= 1) return 1;
+    for (const [wid, ws] of this.workerStates) {
+      const f = ws.focus;
+      if (!f) continue;
+      if (f.metadata?.sessionId === sessionId
+        || f.metadata?.dbSessionId === sessionId
+        || f.payload?.extra?.sessionId === sessionId) return wid;
+    }
+    return undefined;
+  }
+
+  /**
+   * 按 worker 定向取消（并发模式）。直接对该 worker 的取消状态置位，
+   * 不依赖 ALS 上下文——外部 HTTP 线程也能精确命中持有目标 item 的 worker。
+   * 返回是否命中（worker 存在且正在处理 focus）。
+   */
+  requestUserCancelForWorker(workerId: number): boolean {
+    const ws = this.workerCount > 1 ? this.workerStates.get(workerId) : undefined;
+    const focus = ws?.focus;
+    if (!focus) return false;
+    ws!.userCancelCurrent = true;
+    this.interruptSignal = true;
+    log.info('User cancel requested for worker', {
+      agentId: this.agentId,
+      workerId,
+      itemId: focus.id,
+      type: focus.sourceType,
+    });
+    return true;
   }
 
   /** Clear a pending user-cancel flag (e.g. after the focused item finishes). */

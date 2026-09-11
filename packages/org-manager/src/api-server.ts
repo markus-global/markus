@@ -4308,7 +4308,12 @@ export class APIServer {
       if (action === 'cancel-processing') {
         try {
           const agent = this.orgService.getAgentManager().getAgent(agentId!);
-          agent.cancelActiveStream();
+          // 并发模式下按 target（sessionId/itemId）定向取消，避免取消错 worker。
+          const body = await this.readBody(req).catch(() => undefined);
+          const target = body && typeof body === 'object'
+            ? { itemId: (body as { itemId?: string }).itemId, sessionId: (body as { sessionId?: string }).sessionId }
+            : undefined;
+          agent.cancelActiveStream(target);
           this.json(res, 200, { status: 'cancelled' });
         } catch (err) {
           this.json(res, 404, { error: err instanceof Error ? err.message : String(err) });

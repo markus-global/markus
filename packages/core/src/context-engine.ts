@@ -1083,7 +1083,7 @@ export class ContextEngine {
           if (h.workerId !== cc.workerId) lines.push(`  - worker ${h.workerId}${h.entityKey ? ` → ${h.entityKey}` : ''}：${h.summary}`);
         }
       }
-      const done = cc.handoffs.filter(h => h.kind === 'done' || h.kind === 'conflict').slice(-4).reverse();
+      const done = cc.handoffs.filter(h => h.workerId !== cc.workerId && (h.kind === 'done' || h.kind === 'conflict')).slice(-4).reverse();
       if (done.length > 0) {
         lines.push('- 最近完成的交接：');
         for (const h of done) lines.push(`  - worker ${h.workerId}（${h.kind === 'done' ? '完成' : '冲突'}）${h.entityKey ? ` ${h.entityKey}` : ''}：${h.summary}`);

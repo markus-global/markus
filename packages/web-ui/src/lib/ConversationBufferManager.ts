@@ -207,6 +207,15 @@ export class ConversationBufferManager {
    * then any cache-only rows (e.g. a streaming tail not yet flushed to DB) that
    * are missing from DB, inserted by createdAt so late WS arrivals stay ordered.
    * Duplicates by id are dropped; user rows present in DB are never reordered.
+   *
+   * Ordering exception: LIVE-streaming agent bubbles are ALWAYS appended last.
+   * Their rawCreatedAt is the OPTIMISTIC send-time (set before the server
+   * persists the user message), which is EARLIER than the DB user row's
+   * createdAt. Chronologically inserting them would place the in-flight agent
+   * reply ABOVE the user message it answers — "user bubble appears below the
+   * agent streaming bubble" when re-opening a tab mid-stream. The streaming
+   * bubble is by definition the latest in-flight response, so the tail is
+   * authoritative regardless of timestamps.
    */
   private mergeDbWithCache(dbMsgs: ChatMsg[], cache?: ChatMsg[]): ChatMsg[] {
     if (!cache || cache.length === 0) return [...dbMsgs];
@@ -216,7 +225,20 @@ export class ConversationBufferManager {
       byId.add(m.id);
       out.push(m);
     }
+    // Split cache-only rows: live streaming agent bubbles (must append last) vs
+    // everything else (kept chronologically ordered among DB rows).
+    const streamingTail: ChatMsg[] = [];
+    const rest: ChatMsg[] = [];
     for (const cm of cache) {
+      if (byId.has(cm.id)) continue;
+      if (cm.sender === 'agent' && cm.isStreaming) {
+        streamingTail.push(cm);
+        byId.add(cm.id);
+      } else {
+        rest.push(cm);
+      }
+    }
+    for (const cm of rest) {
       if (byId.has(cm.id)) continue;
       // Insert cache-only messages chronologically among DB messages.
       const t = cm.rawCreatedAt ? Date.parse(cm.rawCreatedAt) : NaN;
@@ -229,6 +251,8 @@ export class ConversationBufferManager {
       out.splice(i, 0, cm);
       byId.add(cm.id);
     }
+    // Live streaming tails go last, in cache order (their own turn ordering).
+    for (const cm of streamingTail) out.push(cm);
     return out;
   }
 

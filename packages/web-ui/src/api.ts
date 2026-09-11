@@ -1255,7 +1255,12 @@ export const api = {
     pause: (id: string, _reason?: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
     /** @deprecated Use start() instead */
     resume: (id: string) => request<{ status: string }>(`/agents/${id}/start`, { method: 'POST' }),
-    cancelProcessing: (id: string) => request(`/agents/${id}/cancel-processing`, { method: 'POST' }),
+    cancelProcessing: (id: string, target?: { itemId?: string; sessionId?: string }) =>
+      request(`/agents/${id}/cancel-processing`, {
+        method: 'POST',
+        body: target ? JSON.stringify(target) : undefined,
+        headers: target ? { 'Content-Type': 'application/json' } : undefined,
+      }),
     evolveFromMessage: (
       id: string,
       body: {

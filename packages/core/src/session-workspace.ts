@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { DeliberationResult } from '@markus/shared';
+import type { DeliberationResult, AgentActivity } from '@markus/shared';
 
 /**
  * AgentScenario：一次 handleMessage / stream turn 的场景标签。
@@ -50,6 +50,13 @@ export interface SessionWorkspace {
   processingMailboxItemId?: string;
   /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
   lastInjectedActivityType?: string;
+  /**
+   * 当前活动（对该 worker 而言）。并发模式下每个 worker 独立持有自己的
+   * currentActivity——两个 worker 并行处理 A/B 时互不覆盖，聚合视图由
+   * Agent.getLiveActivities() 提供。串行模式（workspace=rootWorkspace）行为与
+   * 旧版 this.state.currentActivity 完全一致。
+   */
+  currentActivity?: AgentActivity;
 }
 
 /** 创建一个全新的会话工作区（pendingInjections 为空 Map）。 */

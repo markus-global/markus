@@ -51,7 +51,7 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
       'conv',
       () => [
         msg('u1', 'user', 'hello', '2026-08-02T07:04:00.000Z'),
-        msg('tail', 'agent', 'streaming tail not yet in DB', '2026-08-02T07:06:00.000Z'),
+        { ...msg('tail', 'agent', 'streaming tail not yet in DB', '2026-08-02T07:06:00.000Z'), isStreaming: true },
       ],
       'sess_1',
     );
@@ -64,6 +64,41 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
     const r = mgr.applyLoadResult('conv', 'sess_1', dbMsgs);
     const ids = r.newMessages!.map(m => m.id);
     expect(ids).toEqual(['u1', 'a2', 'tail']);
+  });
+
+  it('regression: streaming tail with optimistic (earlier) timestamp never lands above the user message', () => {
+    // Multi-tab direct mode: user sends M in tab A, switches to tab B, then back
+    // to A while the agent is still streaming. On return the DB already persisted
+    // M (server time LATER than the optimistic send-time), but the agent reply is
+    // cache-only with an OPTIMISTIC rawCreatedAt (earlier). Chronological merge
+    // previously inserted the streaming agent bubble BEFORE the persisted user
+    // message — "user bubble appears below the agent streaming bubble".
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'conv';
+    mgr.setActiveSession('conv', 'sess_1');
+    mgr.loadingSession = 'sess_1';
+
+    // Cache: user M (server id) + still-streaming agent tail. The tail's
+    // rawCreatedAt is the optimistic send-time (EARLIER than DB persist time).
+    mgr.updateMessages(
+      'conv',
+      () => [
+        msg('u1', 'user', 'hello', '2026-08-02T07:05:00.000Z'),
+        { ...msg('tail', 'agent', 'partial stream', '2026-08-02T07:04:30.000Z'), isStreaming: true },
+      ],
+      'sess_1',
+    );
+
+    // DB only has the persisted user message (agent reply not flushed yet).
+    const dbMsgs = [
+      msg('u1', 'user', 'hello', '2026-08-02T07:05:00.000Z'),
+    ];
+
+    const r = mgr.applyLoadResult('conv', 'sess_1', dbMsgs);
+    const ids = r.newMessages!.map(m => m.id);
+    // User bubble MUST come before the streaming agent tail.
+    expect(ids.indexOf('u1')).toBeLessThan(ids.indexOf('tail'));
+    expect(ids).toEqual(['u1', 'tail']);
   });
 });
 
