@@ -406,6 +406,7 @@ function createMockStorage(): StorageBridge {
     },
     chatSessionRepo: {
       getSessionsByAgent: vi.fn(async () => []),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
       createSession: vi.fn(async () => ({ id: 'sess-1', title: null })),
       appendMessage: vi.fn(async () => ({ id: 'msg-1' })),
       updateLastMessage: vi.fn(async () => {}),
