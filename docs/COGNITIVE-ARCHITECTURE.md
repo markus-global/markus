@@ -34,6 +34,8 @@ Stimulus ──► Triage / Appraisal ──► Context Assembly ──► Delib
 
 The cycle is **continuous**: heartbeat patrols re-enter the loop, checking active goals, timed-out callbacks, and stalled work even when the mailbox is quiet.
 
+**Concurrency note.** This five-stage cycle describes the **serial** (single-worker) attention loop. When an agent runs a concurrent worker pool ([CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)), each worker executes a *reduced* loop — Stimulus → Context Assembly → Deliberation → Action → Reflection — and deliberately **skips Triage / Appraisal and interrupt/preempt logic** ("concurrency without interruption", Scheme A). Triage, deliberation-over-queue, preemption and cancellation remain the serial loop's responsibility. Cross-worker consistency is instead handled structurally: an entity-affinity lock in the mailbox plus a `ConcurrentHandoffLog` whose records are injected into each worker's volatile context.
+
 ---
 
 ## 2. Cognitive Science Foundations

@@ -6,21 +6,29 @@
 
 ## 1. Design Philosophy
 
-Markus agents are modelled as **single-threaded cognitive entities**. Like a human employee, an agent can only focus on one thing at a time. When multiple stimuli arrive concurrently — chat messages, task assignments, status updates, review requests — the agent must make deliberate decisions about what to attend to and in what order.
+Markus agents are modelled as **entities that focus on one thing at a time**. Like a human employee, an agent must not hold two conflicting beliefs about the same piece of work. When multiple stimuli arrive concurrently — chat messages, task assignments, status updates, review requests — the agent must make deliberate decisions about what to attend to and in what order.
 
 This is implemented through two core abstractions:
 
 - **Agent Mailbox** — A priority queue that serialises all incoming stimuli.
 - **Attention Controller** — An event-driven focus manager that processes mailbox items one at a time, with interrupt handling at safe yield points.
 
-### Why not concurrent processing?
+**Concurrent processing (default on, opt-out).** The attention loop can instead run as a pool of N isolated **worker loops** so the agent handles several *independent* entities at once — see [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md). Serialisation is preserved **per entity**: an entity-affinity lock in the mailbox guarantees a given task / requirement / conversation / user is never processed by two workers simultaneously, and each worker holds its own `SessionWorkspace`, so the "one thing at a time" guarantee still holds for any single line of work. Setting `agent.concurrent.enabled = false` (or `maxWorkers = 1`) restores a strictly single-worker loop with identical behaviour to the original design.
 
-Previous designs allowed agents to handle multiple messages simultaneously. This caused:
+### Why was processing originally serialised?
+
+Early Markus let an agent handle multiple messages simultaneously, which caused:
 - **Memory contamination** — Concurrent conversations polluted each other's session context.
 - **Cognitive interference** — An agent composing a code review could be mid-thought when a chat message hijacked its attention.
-- **Non-deterministic behaviour** — Race conditions in state mutations made debugging nearly impossible.
+- **Non-deterministic behaviour** — Race conditions in shared state made debugging nearly impossible.
 
-The mailbox model eliminates these issues by treating the agent's attention as a scarce, serial resource.
+The mailbox model fixed this by treating the agent's attention as a scarce, serial resource. Concurrent processing re-introduces parallelism **only *between* entities**, and addresses each of these three failures directly:
+
+- **Memory contamination** → per-worker [`SessionWorkspace`](../packages/core/src/session-workspace.ts) isolation via `AsyncLocalStorage`.
+- **Cognitive interference** → concurrent worker loops are pure consumers; triage / deliberation / preempt logic runs only in the serial loop.
+- **Non-deterministic races** → entity-affinity lock in the mailbox + an agent-level tool write-lock.
+
+See [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md) for the full guarantees, configuration, and known limitations.
 
 ---
 
@@ -50,6 +58,14 @@ External Events                    Agent Internals
 
 PendingCallbackRegistry ──enqueue('callback_result')──► AgentMailbox  (async op completions)
 ```
+
+> **Concurrent mode:** `AttentionController` may run `N` worker loops instead of one
+> (`launchWorkerPool()`), each dequeuing its own item and mounting an isolated
+> `SessionWorkspace`. The mailbox skips any item whose *entity key* is already locked by
+> another worker, so a single entity is still processed one item at a time. The diagram
+> above shows the single-worker (serial) shape; the concurrent shape is
+> `AttentionController → N × (dequeueAsync → lockEntity → processFocusedItem → unlockEntity)`.
+> See [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md).
 
 ---
 

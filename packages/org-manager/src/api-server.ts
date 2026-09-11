@@ -8179,7 +8179,7 @@ EXPLANATION_END`;
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
         cognitive: am.cognitiveConfig ?? { enabled: false },
-        concurrent: am.concurrentConfig ?? { enabled: false },
+        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
       });
       return;
     }
@@ -8242,7 +8242,7 @@ EXPLANATION_END`;
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
         cognitive: am.cognitiveConfig ?? { enabled: false },
-        concurrent: am.concurrentConfig ?? { enabled: false },
+        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
       });
       return;
     }

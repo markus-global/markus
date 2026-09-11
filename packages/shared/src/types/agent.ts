@@ -121,9 +121,9 @@ export interface AgentProfile {
   workspacePath?: string;
 }
 
-/** 并发处理配置（智能体设置 → 并发处理）。默认关闭 = 现有串行行为。 */
+/** 并发处理配置（智能体设置 → 并发处理）。默认开启 = 智能体并发处理消息。 */
 export interface AgentConcurrentConfig {
-  /** 总开关。false/缺省 = 串行（一次一件事，与当前完全一致）。 */
+  /** 总开关。缺省 = 开启（maxWorkers=3）；显式 enabled:false 才关闭（串行）。 */
   enabled?: boolean;
   /** 并发 worker 数上限（1-10）。1 = 串行。默认开启时为 3。 */
   maxWorkers?: number;

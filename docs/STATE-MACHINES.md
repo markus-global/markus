@@ -534,7 +534,7 @@ All mailbox items, including `callback_result`, follow the standard attention pi
 enqueue (queued)
     │
     ▼
-dequeueAsync → processing
+dequeueAsync → (entity lock, concurrent mode) → processing
     │
     ▼
 AttentionController triage → handleMessage(originSessionId)
@@ -542,6 +542,14 @@ AttentionController triage → handleMessage(originSessionId)
     ▼
 complete (completed)
 ```
+
+> **Concurrent mode.** With a worker pool ([CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)),
+> a worker takes an **entity-affinity lock** right after `dequeueAsync` and releases it in a
+> `finally` after processing; items whose entity is already locked are skipped by
+> `dequeue()` (put back and retried after a back-off). The worker loop **does not run
+> triage / interrupt logic**, so the `deferred`, `dropped`, and `preempt` outcomes below are
+> produced by the **serial** loop only. A worker's terminal outcomes are: *completed*,
+> *requeued* (backstop timeout / non-user failure), or *completed-incomplete* for user items.
 
 ### Terminal Outcomes (all mailbox items)
 
