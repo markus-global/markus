@@ -186,7 +186,9 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
     // unless cancel-processing marks userStopped.
     const agentId = stateRef.current.chatMode === 'direct' ? stateRef.current.selectedAgent : null;
     if (agentId) {
-      void api.agents.cancelProcessing(agentId).catch(() => {});
+      const sid = stateRef.current.activeSessionId;
+      const target = sid && sid !== NEW_CHAT_PLACEHOLDER_ID ? { sessionId: sid } : undefined;
+      void api.agents.cancelProcessing(agentId, target).catch(() => {});
     }
 
     // 2) Abort both the live send() stream and any reattachStream consumer.
@@ -652,7 +654,8 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         if (lastUser?.text === text && !options?.isRetry && !options?.isResume) {
           abortControllerRef.current?.abort();
           abortControllerRef.current = null;
-          void api.agents.cancelProcessing(volatile.selectedAgent!).catch(() => {});
+          const sid0 = volatile.activeSessionId ?? undefined;
+          void api.agents.cancelProcessing(volatile.selectedAgent!, { sessionId: sid0 }).catch(() => {});
           abortStream(prevKey, volatile.activeSessionId);
           // Drop the in-flight user+empty agent pair before the retry re-adds them.
           updateConvMsgs(prevKey, prev => {
@@ -668,7 +671,8 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         // Same session: interrupt current stream and resend
         abortControllerRef.current?.abort();
         abortControllerRef.current = null;
-        void api.agents.cancelProcessing(volatile.selectedAgent!).catch(() => {});
+        const sid1 = volatile.activeSessionId ?? undefined;
+        void api.agents.cancelProcessing(volatile.selectedAgent!, { sessionId: sid1 }).catch(() => {});
         abortStream(prevKey, volatile.activeSessionId);
         updateConvMsgs(prevKey, prev => finalizeLastInterruptedAgent(prev));
         await new Promise(r => setTimeout(r, 50));

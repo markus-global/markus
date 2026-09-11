@@ -2384,8 +2384,39 @@ export class Agent {
     return this.taskExecutor.cancelTask(taskId);
   }
 
-  /** Cancel the currently focused work (user-initiated Cancel button / stop). */
-  cancelActiveStream(): void {
+  /**
+   * Cancel the currently focused work (user-initiated Cancel button / stop).
+   *
+   * 并发模式下支持定向取消：外部 HTTP 线程调用时没有 ALS 上下文，
+   * `workspace()` 会回退到 rootWorkspace、`getCurrentFocus` 返回 worker 1 的 focus，
+   * 导致并发下取消错对象。因此按 target 定位持有该 item/session 的 worker，
+   * 在其独立的 worker workspace ALS 上下文内执行取消（activeStreamToken 定向）。
+   * 无 target 时兼容旧行为（当前 focus / 当前 ALS 上下文）。
+   */
+  cancelActiveStream(target?: { itemId?: string; sessionId?: string }): void {
+    const workerId = this.resolveCancelTargetWorker(target);
+    if (workerId !== undefined) {
+      // 并发模式：目标 worker 的独立 workspace（worker loop 用 delegate.getWorkerWorkspace
+      // 缓存的 workspace，worker 1 亦然——与 rootWorkspace 不是同一个对象）。
+      const ws = this.workerWorkspaces.get(workerId) ?? (this.attentionController.getWorkerCount() <= 1 ? this.rootWorkspace : undefined);
+      if (ws) {
+        sessionWorkspaceStore.run(ws, () => this.cancelActiveStreamCore());
+        return;
+      }
+    }
+    this.cancelActiveStreamCore();
+  }
+
+  /** 解析定向取消目标所属的 workerId（无 target / 串行模式返回 undefined → 走当前上下文）。 */
+  private resolveCancelTargetWorker(target?: { itemId?: string; sessionId?: string }): number | undefined {
+    if (!target) return undefined;
+    if (this.attentionController.getWorkerCount() <= 1) return undefined;
+    if (target.itemId) return this.attentionController.findWorkerByItemId(target.itemId);
+    if (target.sessionId) return this.attentionController.findWorkerBySessionId(target.sessionId);
+    return undefined;
+  }
+
+  private cancelActiveStreamCore(): void {
     // Durable token so a stop that arrives before handleMessageStream links
     // the SSE cancelToken is not lost.
     if (!this.activeStreamToken) {
