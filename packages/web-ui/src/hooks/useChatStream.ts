@@ -33,6 +33,7 @@ import {
   dbMsgToChat, channelMsgToChat,
   storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
   appendLiveOutput, appendSubagentLog,
+  appendTextToSegments, appendThinkingToSegments,
   finalizeAgentMessage, finalizeLastInterruptedAgent, finalizeStreamEnd, finalizeLastStreamingBubble, msgHasContent,
 } from '../pages/ChatHelpers.ts';
 import { NEW_CHAT_PLACEHOLDER_ID } from './useConversationBuffers.ts';
@@ -302,7 +303,10 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         ), sessionId);
       }
 
-      let insideThink = false;
+      /**
+       * Append a text chunk to the segment stream (RAF-batched to reduce re-renders).
+       * `chunk` is answer prose only — reasoning arrives via onThinking.
+       */
       const appendTextChunk = (chunk: string) => {
         if (currentConvKeyRef.current !== convKey) return;
         lastSseEventTimeRef.current = Date.now();
@@ -313,41 +317,28 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           // previous turn's completed reply (history-corruption bug).
           const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
           if (i < 0) return prev;
-          const segs = u[i]!.segments ?? [];
-          const lastSeg = segs[segs.length - 1];
-          const prevThinking = lastSeg?.type === 'text' ? (lastSeg as { thinking?: string }).thinking ?? '' : '';
+          const msg = u[i]!;
+          u[i] = {
+            ...msg,
+            text: (msg.text ?? '') + chunk,
+            segments: appendTextToSegments(msg.segments ?? [], chunk),
+            isStreaming: true,
+          };
+          return u;
+        }, sessionId);
+      };
 
-          let thinking = '';
-          let content = '';
-          let remaining = chunk;
-          while (remaining.length > 0) {
-            if (insideThink) {
-              const closeIdx = remaining.indexOf('</thinking>');
-              if (closeIdx >= 0) {
-                thinking += remaining.slice(0, closeIdx);
-                remaining = remaining.slice(closeIdx + '</thinking>'.length);
-                insideThink = false;
-              } else {
-                thinking += remaining;
-                remaining = '';
-              }
-            } else {
-              const openIdx = remaining.indexOf('<thinking>');
-              if (openIdx >= 0) {
-                content += remaining.slice(0, openIdx);
-                remaining = remaining.slice(openIdx + '<thinking>'.length);
-                insideThink = true;
-              } else {
-                content += remaining;
-                remaining = '';
-              }
-            }
-          }
-          const mergedThinking = (prevThinking + thinking) || undefined;
-          const newSegs = lastSeg?.type === 'text'
-            ? [...segs.slice(0, -1), { type: 'text' as const, content: lastSeg.content + content, thinking: mergedThinking, createdAt: lastSeg.createdAt }]
-            : [...segs, { type: 'text' as const, content, thinking: mergedThinking, createdAt: new Date().toISOString() }];
-          u[i] = { ...u[i]!, text: (u[i]!.text ?? '') + content, segments: newSegs, isStreaming: true };
+      /** Append a raw reasoning chunk (structured event — no inline tags to parse). */
+      const appendThinkingChunk = (chunk: string) => {
+        if (currentConvKeyRef.current !== convKey) return;
+        lastSseEventTimeRef.current = Date.now();
+        updateConvMsgsRaf(convKey, prev => {
+          const u = [...prev];
+          const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
+          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
+          if (i < 0) return prev;
+          const msg = u[i]!;
+          u[i] = { ...msg, segments: appendThinkingToSegments(msg.segments ?? [], chunk), isStreaming: true };
           return u;
         }, sessionId);
       };
@@ -524,6 +515,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         sessionId,
         {
           onChunk: appendTextChunk,
+          onThinking: appendThinkingChunk,
           onActivity: handleToolEvent,
           onCommit: handleCommitEvent,
           onSnapshot: handleSnapshot,
@@ -838,56 +830,31 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         ], streamSessionId);
       }
 
-      /** Track whether we're inside a <thinking> block across streaming chunks */
-      let insideThink = false;
-
-      /** Append a text chunk to the segment stream (RAF-batched to reduce re-renders) */
+      /**
+       * Append a text chunk to the segment stream (RAF-batched to reduce re-renders).
+       * `chunk` is answer prose only — reasoning arrives via onThinking.
+       */
       const appendTextChunk = (chunk: string) => {
         lastSseEventTimeRef.current = Date.now();
         updateConvMsgsRaf(sendKey, prev => {
           const u = [...prev];
           const idx = u.findIndex(m => m.id === agentMsgId);
           if (idx < 0) return prev;
-          const segs = u[idx]!.segments ?? [];
-          const last = segs[segs.length - 1];
-          const prevThinking = last?.type === 'text' ? (last as { thinking?: string }).thinking ?? '' : '';
+          const msg = u[idx]!;
+          u[idx] = { ...msg, text: (msg.text ?? '') + chunk, segments: appendTextToSegments(msg.segments ?? [], chunk) };
+          return u;
+        }, streamSessionId);
+      };
 
-          let thinking = '';
-          let content = '';
-          let remaining = chunk;
-
-          // Process the chunk character-by-character tracking think state.
-          // Handles <thinking>... response that may span across multiple chunks.
-          while (remaining.length > 0) {
-            if (insideThink) {
-              const closeIdx = remaining.indexOf('</thinking>');
-              if (closeIdx >= 0) {
-                thinking += remaining.slice(0, closeIdx);
-                remaining = remaining.slice(closeIdx + '</thinking>'.length);
-                insideThink = false;
-              } else {
-                thinking += remaining;
-                remaining = '';
-              }
-            } else {
-              const openIdx = remaining.indexOf('<thinking>');
-              if (openIdx >= 0) {
-                content += remaining.slice(0, openIdx);
-                remaining = remaining.slice(openIdx + '<thinking>'.length);
-                insideThink = true;
-              } else {
-                content += remaining;
-                remaining = '';
-              }
-            }
-          }
-
-          const mergedThinking = (prevThinking + thinking) || undefined;
-
-          const newSegs: MsgSegment[] = last?.type === 'text'
-            ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: mergedThinking, createdAt: last.createdAt }]
-            : [...segs, { type: 'text', content, thinking: mergedThinking, createdAt: new Date().toISOString() }];
-          u[idx] = { ...u[idx]!, text: (u[idx]!.text ?? '') + content, segments: newSegs };
+      /** Append a raw reasoning chunk (structured event — no inline tags to parse). */
+      const appendThinkingChunk = (chunk: string) => {
+        lastSseEventTimeRef.current = Date.now();
+        updateConvMsgsRaf(sendKey, prev => {
+          const u = [...prev];
+          const idx = u.findIndex(m => m.id === agentMsgId);
+          if (idx < 0) return prev;
+          const msg = u[idx]!;
+          u[idx] = { ...msg, segments: appendThinkingToSegments(msg.segments ?? [], chunk) };
           return u;
         }, streamSessionId);
       };
@@ -1103,17 +1070,22 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         // so reload does not show the quoted agent message inside the user bubble.
         const streamResult = await api.agents.messageStream(
           volatile.selectedAgent!, text,
-          appendTextChunk,
-          handleToolEvent,
-          abortCtrl.signal,
-          imagesToSend,
-          effectiveSessionId,
-          options?.isRetry,
-          options?.isResume,
-          handleCommitEvent,
-          fileNamesToSend,
-          replyCtx,
-          volatile.sessionModelOverride,
+          {
+            onChunk: appendTextChunk,
+            onThinking: appendThinkingChunk,
+            onActivity: handleToolEvent,
+            onCommit: handleCommitEvent,
+          },
+          {
+            signal: abortCtrl.signal,
+            images: imagesToSend,
+            sessionId: effectiveSessionId,
+            isRetry: options?.isRetry,
+            isResume: options?.isResume,
+            fileNames: fileNamesToSend,
+            replyTo: replyCtx,
+            modelOverride: volatile.sessionModelOverride,
+          },
         );
         if (currentConvKeyRef.current === sendKey) {
           // Message was merged into the agent's active processing — remove the

@@ -220,6 +220,32 @@ export function insertChatMsgByCreatedAt(msgs: ChatMsg[], msg: ChatMsg): ChatMsg
   return next;
 }
 
+/**
+ * Append a reasoning chunk to the in-flight segment stream.
+ *
+ * Reasoning lives in the segment's `thinking` field — never as inline markup in
+ * `content` — so provider interleaving of reasoning and answer prose cannot make
+ * either one leak into the other's display path.
+ */
+export function appendThinkingToSegments(segments: MsgSegment[], thinking: string): MsgSegment[] {
+  if (!thinking) return segments;
+  const last = segments[segments.length - 1];
+  if (last?.type === 'text') {
+    return [...segments.slice(0, -1), { ...last, thinking: (last.thinking ?? '') + thinking }];
+  }
+  return [...segments, { type: 'text', content: '', thinking, createdAt: new Date().toISOString() }];
+}
+
+/** Append answer prose to the in-flight segment stream (merges into the trailing text segment). */
+export function appendTextToSegments(segments: MsgSegment[], content: string): MsgSegment[] {
+  if (!content) return segments;
+  const last = segments[segments.length - 1];
+  if (last?.type === 'text') {
+    return [...segments.slice(0, -1), { ...last, content: last.content + content }];
+  }
+  return [...segments, { type: 'text', content, createdAt: new Date().toISOString() }];
+}
+
 /** Matches `<!-- notify_context: ... -->` including optional surrounding newlines. */
 const NOTIFY_CONTEXT_RE = /\n*<!--\s*notify_context:\s*([\s\S]*?)-->/g;
 

@@ -3151,17 +3151,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         // so reload does not show the quoted agent message inside the user bubble.
         const streamResult = await api.agents.messageStream(
           selectedAgent, text,
-          appendTextChunk,
-          handleToolEvent,
-          abortCtrl.signal,
-          imagesToSend,
-          effectiveSessionId,
-          options?.isRetry,
-          options?.isResume,
-          handleCommitEvent,
-          fileNamesToSend,
-          replyCtx,
-          sessionModelOverride,
+          { onChunk: appendTextChunk, onActivity: handleToolEvent, onCommit: handleCommitEvent },
+          {
+            signal: abortCtrl.signal,
+            images: imagesToSend,
+            sessionId: effectiveSessionId,
+            isRetry: options?.isRetry,
+            isResume: options?.isResume,
+            fileNames: fileNamesToSend,
+            replyTo: replyCtx,
+            modelOverride: sessionModelOverride,
+          },
         );
         if (currentConvKeyRef.current === sendKey) {
           // Message was merged into the agent's active processing — remove the
