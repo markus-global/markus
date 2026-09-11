@@ -2641,7 +2641,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // unless cancel-processing marks userStopped.
     const agentId = chatMode === 'direct' ? selectedAgent : null;
     if (agentId) {
-      void api.agents.cancelProcessing(agentId).catch(() => {});
+      const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : undefined;
+      void api.agents.cancelProcessing(agentId, sid ? { sessionId: sid } : undefined).catch(() => {});
     }
 
     // 2) Abort both the live send() stream and any reattachStream consumer.
@@ -2707,7 +2708,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         if (lastUser?.text === text && !options?.isRetry && !options?.isResume) {
           abortControllerRef.current?.abort();
           abortControllerRef.current = null;
-          void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
+          void api.agents.cancelProcessing(selectedAgent!, { sessionId: activeSessionId }).catch(() => {});
           abortStream(prevKey, activeSessionId);
           // Drop the in-flight user+empty agent pair before the retry re-adds them.
           updateConvMsgs(prevKey, prev => {
@@ -2723,7 +2724,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         // Same session: interrupt current stream and resend
         abortControllerRef.current?.abort();
         abortControllerRef.current = null;
-        void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
+        const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : undefined;
+        void api.agents.cancelProcessing(selectedAgent!, sid ? { sessionId: sid } : undefined).catch(() => {});
         abortStream(prevKey, activeSessionId);
         updateConvMsgs(prevKey, prev => finalizeLastInterruptedAgent(prev));
         await new Promise(r => setTimeout(r, 50));
