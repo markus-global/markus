@@ -76,7 +76,7 @@ import { shouldEnterDeepSleep, nextDeepSleepIntervalMs, resetIdleOnWake } from '
 import { recordSkillActivation } from './learning-loop.js';
 import type { SkillRegistry } from './skills/types.js';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ConcurrentHandoffLog } from './concurrent-handoff.js';
 import { createBuiltinTools } from './tools/builtin.js';
@@ -86,6 +86,7 @@ import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
+import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
 
 /**
  * Per-task async context — propagates the executing taskId and task-local
@@ -114,6 +115,21 @@ import { ToolLoopDetector } from './tool-loop-detector.js';
 import { RepetitionGuard } from './repetition-detector.js';
 
 const log = createLogger('agent');
+
+/**
+ * 把文件路径归一化为稳定的锁键（供资源域锁使用）。
+ *
+ * 目的：`/a/b.ts`、`./b.ts`、`/a/./b.ts` 指向同一文件时必须落到**同一个**锁键，
+ * 否则两个 worker 会以为各写各的而并发改写同一文件。
+ * 相对路径按进程 cwd 解析 —— 同一进程内一致即可，无需知道各 worker 的逻辑工作目录。
+ */
+function normalizeFsLockKey(rawPath: string): string {
+  try {
+    return resolvePath(rawPath);
+  } catch {
+    return rawPath;
+  }
+}
 
 /**
  * Strip raw XML tool-call markup from LLM replies.  The completion marker
@@ -487,7 +503,11 @@ export class Agent {
    * 同一 agent 的状态写永不并发（同实体写必然是其中子集），读/纯计算仍并行。
    * Promise 链实现：前一个写完成后唤醒下一个。
    */
-  private toolWriteChain: Promise<void> = Promise.resolve();
+  /**
+   * 写工具的资源域锁（并发模式下跨 worker 串行化共享状态写）。
+   * 见 `resource-locks.ts` —— 取代早期的单一全局写链。
+   */
+  private readonly resourceLocks = new ResourceLockRegistry();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly BROWSER_CLOSE_FOLLOWUP_MAX_ITER = 5;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
@@ -7047,34 +7067,74 @@ export class Agent {
   }
 
   /**
-   * 写语义工具：执行时跨 worker 互斥（P2-A）。
-   * 精确列出会修改共享状态的工具；task_* 前缀中 task_list/task_get 是读，
-   * 不在此列。覆盖：任务/需求/交付物/记忆/通知/消息/文件系统/配置/心跳。
+   * 写语义工具的**互斥资源域**表 —— 唯一真源。
+   *
+   * - 工具在此表中 ⟺ 它是写工具（`WRITE_TOOL_NAMES` 由本表推导，杜绝「两张表漂移」）。
+   * - `domain: '*'` 表示可触及任意资源，必须与所有写操作串行。
+   * - `arg` 给出「域内细分键」的参数名候选，命中即用该值作 `sub`（不同值可并行）。
+   *
+   * 新增写工具时必须在此登记；`agent-write-lock.test.ts` 会断言登记集合与预期一致，
+   * 使漏登记成为测试失败而不是静默的并发竞态。
    */
-  private static readonly WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
-    // 任务与需求（写）
-    'task_create', 'task_update', 'task_comment',
-    'subtask_create', 'subtask_update', 'subtask_complete',
-    'requirement_propose', 'requirement_update', 'requirement_comment',
-    'goal_create', 'goal_update',
-    'deliverable_create',
-    // 记忆 / 笔记本
-    'memory_save', 'memory_update', 'memory_update_longterm', 'memory_delete',
-    'update_notebook', 'clear_notebook', 'update_working_memory', 'clear_working_memory',
-    // 通知 / 消息 / 委托（写其他实体状态）
-    'notify_user', 'agent_send_message', 'agent_send_group_message',
-    'agent_create_group_chat', 'agent_broadcast_status', 'agent_stop', 'agent_delegate_task',
-    'task_submit_review',
-    // 文件系统（最典型的共享状态写）
-    'shell_execute', 'file_write', 'file_edit', 'apply_patch',
-    // 安装 / 部署 / 配置
-    'package_install', 'hub_install',
-    'llm_switch_model', 'llm_set_capability_routing', 'llm_add_model', 'llm_add_provider', 'llm_edit_provider',
-    // 调度
-    'schedule_wakeup', 'set_heartbeat_interval',
-    // 邮箱管理（写）
-    'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item',
-  ]);
+  private static readonly WRITE_TOOL_DOMAINS: Readonly<Record<string, { domain: string; arg?: readonly string[] }>> = {
+    // ── 文件系统：按路径细分（不同文件可并行）；定位不到路径则全域串行
+    file_write:       { domain: 'fs', arg: ['path', 'filePath'] },
+    file_edit:        { domain: 'fs', arg: ['path', 'filePath'] },
+    // ── 可触及任意资源 → 全局独占
+    shell_execute:    { domain: GLOBAL_LOCK_DOMAIN },
+    apply_patch:      { domain: GLOBAL_LOCK_DOMAIN },
+    package_install:  { domain: GLOBAL_LOCK_DOMAIN },
+    hub_install:      { domain: GLOBAL_LOCK_DOMAIN },
+    // ── 单体状态资源
+    memory_save:            { domain: 'memory' },
+    memory_update:          { domain: 'memory' },
+    memory_update_longterm: { domain: 'memory' },
+    memory_delete:          { domain: 'memory' },
+    update_notebook:        { domain: 'notebook' },
+    clear_notebook:         { domain: 'notebook' },
+    update_working_memory:  { domain: 'working-memory' },
+    clear_working_memory:   { domain: 'working-memory' },
+    // ── 全局配置
+    llm_switch_model:           { domain: 'llm-config' },
+    llm_set_capability_routing: { domain: 'llm-config' },
+    llm_add_model:              { domain: 'llm-config' },
+    llm_add_provider:           { domain: 'llm-config' },
+    llm_edit_provider:          { domain: 'llm-config' },
+    schedule_wakeup:            { domain: 'schedule' },
+    set_heartbeat_interval:     { domain: 'schedule' },
+    // ── 任务 / 目标：按任务实体细分
+    task_create:        { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_update:        { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_comment:       { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_submit_review: { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_create:     { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_update:     { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_complete:   { domain: 'task', arg: ['task_id', 'taskId'] },
+    goal_create:        { domain: 'task', arg: ['task_id', 'taskId'] },
+    goal_update:        { domain: 'task', arg: ['task_id', 'taskId'] },
+    // ── 需求：按需求实体细分
+    requirement_propose: { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_update:  { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_comment: { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    deliverable_create:  { domain: 'deliverable' },
+    // ── 对外消息 / 通知：按目标细分
+    agent_send_message:       { domain: 'a2a-out', arg: ['agent_id', 'agentId', 'to'] },
+    agent_send_group_message: { domain: 'a2a-out', arg: ['channelKey', 'channel_key', 'group_id'] },
+    agent_delegate_task:      { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
+    agent_stop:               { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
+    agent_create_group_chat:  { domain: 'a2a-out' },
+    agent_broadcast_status:   { domain: 'a2a-out' },
+    notify_user:              { domain: 'notify' },
+    // ── 邮箱管理：按 item 细分
+    defer_mailbox_item:      { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
+    drop_mailbox_item:       { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
+    prioritize_mailbox_item: { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
+  };
+
+  /** 写语义工具集合（由 WRITE_TOOL_DOMAINS 推导 —— 单一真源）。 */
+  private static readonly WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(
+    Object.keys(Agent.WRITE_TOOL_DOMAINS),
+  );
 
   /** 工具是否具备写语义（需要跨 worker 互斥）。 */
   private static isWriteTool(name: string): boolean {
@@ -7082,29 +7142,46 @@ export class Agent {
   }
 
   /**
-   * Agent 级写互斥（Promise 链，FIFO）。所有写工具串行执行；读工具不经过。
-   * 链式实现：后到的写工具 await 前一个 release 后再执行，天然无死锁
-   * （工具调用是同步 await 链，同一 worker 不会嵌套等待自己）。
+   * 推导一次写工具调用的互斥资源域。
+   *
+   * 文件路径做 `resolve` 归一化，避免 `/a/b`、`./b`、`/a/./b` 指向同一文件却
+   * 拿到不同锁键；未登记的写工具（或缺少细分参数）退化为整域 / 全局独占 ——
+   * 宁可串行，不可竞态。
    */
-  private async withToolWriteLock<T>(fn: () => Promise<T>): Promise<T> {
-    let release!: () => void;
-    const next = new Promise<void>(r => { release = r; });
-    const prev = this.toolWriteChain;
-    this.toolWriteChain = prev.then(() => next);
-    await prev;
-    try {
-      return await fn();
-    } finally {
-      release();
+  private static resourceLocksFor(toolCall: LLMToolCall): LockRequest[] {
+    const spec = Agent.WRITE_TOOL_DOMAINS[toolCall.name];
+    if (!spec) return [{ domain: GLOBAL_LOCK_DOMAIN }];
+
+    let sub: string | undefined;
+    if (spec.arg) {
+      const args = (toolCall.arguments ?? {}) as Record<string, unknown>;
+      for (const field of spec.arg) {
+        const raw = args[field];
+        if (typeof raw === 'string' && raw.length > 0) {
+          sub = spec.domain === 'fs' ? normalizeFsLockKey(raw) : raw;
+          break;
+        }
+      }
     }
+    return [sub === undefined ? { domain: spec.domain } : { domain: spec.domain, sub }];
+  }
+
+  /**
+   * 写工具跨 worker 互斥（资源域锁）。
+   *
+   * 取代早期的「一把 Agent 级全局写锁」：不同资源域可并行，同域严格串行。
+   * 详见 `resource-locks.ts`。
+   */
+  private async withToolWriteLock<T>(toolCall: LLMToolCall, fn: () => Promise<T>): Promise<T> {
+    return this.resourceLocks.withLocks(Agent.resourceLocksFor(toolCall), fn);
   }
 
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
-    // P2-A：写语义工具跨 worker 互斥（所有外部调用走这里）：
-    //   写工具 → 拿 agent 级写锁 → 执行瀑布逻辑（executeToolInternal）
+    // 写语义工具跨 worker 互斥（所有外部调用走这里）：
+    //   写工具 → 取资源域锁 → 执行瀑布逻辑（executeToolInternal）
     //   读工具 → 直接执行，不互斥
     if (Agent.isWriteTool(toolCall.name)) {
-      return await this.withToolWriteLock(() => this.executeToolInternal(toolCall, onOutput, sessionId));
+      return await this.withToolWriteLock(toolCall, () => this.executeToolInternal(toolCall, onOutput, sessionId));
     }
     return await this.executeToolInternal(toolCall, onOutput, sessionId);
   }

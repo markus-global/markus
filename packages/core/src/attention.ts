@@ -17,6 +17,7 @@ import {
   MAILBOX_ITEM_MAX_RETRIES,
   hasCompletionMarker,
   MAILBOX_PROCESSING_TIMEOUT_MS,
+  BACKSTOP_CANCEL_GRACE_MS,
   MAILBOX_COALESCE_WINDOW_MS,
   APPROVAL_WAIT_TIMEOUT_MS,
   WATCHDOG_INTERVAL_MS,
@@ -165,6 +166,14 @@ export class AttentionController {
   private workerCount = 1;
   private workerPromises: Promise<void>[] = [];
   private activeWorkerIds = new Set<number>();
+  /**
+   * 在途处理登记：workerId → 正在执行的 `processMailboxItem` promise。
+   *
+   * 用途：backstop 超时后的 single-flight 判定 —— 必须先确认上一次尝试
+   * 真的结束，才允许把 item 重新入队重跑；否则重跑会与仍在执行的工具
+   * 产生重复副作用。键为 workerId（并发模式）或 1（串行模式）。
+   */
+  private inFlightProcessing = new Map<number, Promise<unknown>>();
 
   private interruptSignal = false;
   /** Explicit user cancel of the focused item (Cancel button) — not a new-mail preempt.
@@ -207,6 +216,11 @@ export class AttentionController {
   private waitingForHumanApproval = false;
   /** Backstop timeout override (test/config); defaults to MAILBOX_PROCESSING_TIMEOUT_MS. */
   private processingTimeoutMs?: number;
+  /**
+   * Backstop 超时后等待「在途 turn 真正结束」的宽限期。
+   * 可用 setBackstopCancelGraceMs 覆盖（测试需要确定性短宽限期）。
+   */
+  private backstopCancelGraceMs = BACKSTOP_CANCEL_GRACE_MS;
 
   private static readonly MAX_RECENT_DECISIONS = 50;
 
@@ -313,6 +327,13 @@ export class AttentionController {
     this.processingTimeoutMs = ms > 0 ? ms : undefined;
   }
 
+  /**
+   * 覆盖 backstop 超时后的取消宽限期（毫秒）。0 表示不等待（立即判定为「未结束」）。
+   * 主要供测试使用；生产走 `BACKSTOP_CANCEL_GRACE_MS` 默认值。
+   */
+  setBackstopCancelGraceMs(ms: number): void {
+    this.backstopCancelGraceMs = Math.max(0, ms);
+  }
   /**
    * 设置并发 worker 数（1 = 串行，与旧行为完全一致）。
    * 运行中调用会重启 attention 循环以应用新 worker 数。
@@ -766,13 +787,14 @@ export class AttentionController {
           break;
         }
 
-        // 实体亲和锁：取到即锁，处理完必释放（lockEntity 内部排他）。
-        const entityKey = this.mailbox.entityKeyOf(item);
+        // 实体亲和锁：取到即锁全部实体维度，处理完必释放（lockEntities 为全有或全无）。
+        const entityKeys = this.mailbox.entityKeysOf(item);
+        const entityKey = entityKeys[0];
         const holder = item.id;
-        if (entityKey && !this.mailbox.lockEntity(entityKey, holder)) {
-          // 竞态：锁已被其他 worker 持有 → 放回队列，等锁释放唤醒。
+        if (!this.mailbox.lockEntities(entityKeys, holder)) {
+          // 竞态：任一实体维度已被其他 worker 持有 → 放回队列，等锁释放唤醒。
           try { this.mailbox.putBack(item); } catch { /* ignore */ }
-          this.delegate?.onConcurrentHandoff?.('conflict', workerId, item, `实体 ${entityKey} 已被分身 ${holder} 锁定，暂缓处理并放回队列`);
+          this.delegate?.onConcurrentHandoff?.('conflict', workerId, item, `实体 ${entityKeys.join(', ')} 已被其他分身锁定，暂缓处理并放回队列`);
           if (this.conflictPolicy === 'report') {
             // report 策略：冲突不再静默——发事件让父级感知。
             this.eventBus.emit('agent:entity-conflict', {
@@ -817,7 +839,7 @@ export class AttentionController {
           this.delegate?.onConcurrentHandoff?.('done', workerId, item, `处理失败（${isUserInteraction ? '已结束' : '已重新入队'}）：${String(err).slice(0, 200)}`);
           handoffWritten = true;
         } finally {
-          if (entityKey) this.mailbox.unlockEntity(entityKey, holder);
+          this.mailbox.unlockEntities(entityKeys, holder);
           wsState.focus = undefined;
           wsState.processingStartedAt = undefined;
           wsState.state = 'idle';
@@ -858,12 +880,16 @@ export class AttentionController {
 
     let reply: string | void = undefined;
     let timedOut = false;
+    /** backstop 超时后，上一次尝试在宽限期内仍未结束 → 禁止重排（防重复副作用）。 */
+    let orphanAbandoned = false;
     try {
       // The delegate's processMailboxItem makes LLM calls and shell commands,
       // each of which has its own transport-level timeout. This outer timeout
       // is a generous backstop — by the time it fires, all underlying I/O has
       // surely completed or failed, so requeuing is safe.
       const processing = this.delegate?.processMailboxItem(item, batchItems, batchContext);
+      const workerId = this.currentWorkerId();
+      if (processing) this.inFlightProcessing.set(workerId, processing);
       const backstopMs = this.waitingForHumanApproval
         ? APPROVAL_WAIT_TIMEOUT_MS
         : (this.processingTimeoutMs ?? MAILBOX_PROCESSING_TIMEOUT_MS);
@@ -878,21 +904,35 @@ export class AttentionController {
         reply = result.reply;
       } else {
         timedOut = true;
-        // Single-flight guard: cancel the orphaned in-flight processing before we
-        // requeue, so the timed-out turn cannot keep running tools and double the
-        // side effects once the requeued item is processed again. The late result
-        // of `processing` is already discarded by the Promise.race above.
+        // Single-flight guard. The backstop only stops us *waiting* — it must not
+        // let a second attempt start while the first may still be executing tools.
+        //   1. signal the orphan to abort (cooperative, via the delegate);
+        //   2. wait (bounded) for it to actually settle;
+        //   3. requeue ONLY if it settled — otherwise complete as `incomplete`,
+        //      so the item is never silently re-run on top of live side effects.
         try {
           this.delegate?.cancelProcessing?.(item);
         } catch (err) {
           log.debug('cancelProcessing threw on backstop timeout', { itemId: item.id, error: String(err) });
         }
-        log.error('Processing exceeded backstop timeout — cancelling in-flight and requeueing', {
-          agentId: this.agentId,
-          itemId: item.id,
-          type: item.sourceType,
-          timeoutMs: backstopMs,
-        });
+        const orphanSettled = await this.awaitInFlightSettled(workerId, this.backstopCancelGraceMs);
+        if (orphanSettled) {
+          log.error('Processing exceeded backstop timeout — orphan settled, requeueing', {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            timeoutMs: backstopMs,
+          });
+        } else {
+          orphanAbandoned = true;
+          log.error('Processing exceeded backstop timeout — orphan still running; completing as incomplete instead of requeueing', {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            timeoutMs: backstopMs,
+            graceMs: this.backstopCancelGraceMs,
+          });
+        }
       }
     } catch (err) {
       log.warn('Error processing mailbox item', {
@@ -901,13 +941,27 @@ export class AttentionController {
         type: item.sourceType,
         error: String(err),
       });
+    } finally {
+      // Deregister the in-flight attempt for this worker (the promise may still be
+      // pending when abandoned — we simply stop waiting on it).
+      this.inFlightProcessing.delete(this.currentWorkerId());
     }
 
     this.processingStartedAt = undefined;
 
     let statusResolved = false;
     if (timedOut) {
-      this.mailbox.requeue(item);
+      if (orphanAbandoned) {
+        // Visibility + no silent re-run: an orphan we could not stop is exactly
+        // the "completed but unfinished" terminal, not a retryable failure.
+        this.emitIncomplete(
+          item,
+          'backstop timeout — in-flight turn did not settle within grace; not requeued to avoid duplicate side effects',
+        );
+        this.mailbox.complete(item.id);
+      } else {
+        this.mailbox.requeue(item);
+      }
       statusResolved = true;
     } else if (reply === '[cancelled]' || this.lastYieldDecision === 'cancel') {
       // Permanently cancelled by an explicit cancel decision — the new incoming
@@ -1177,6 +1231,32 @@ export class AttentionController {
    * without finishing cleanly (marker missing after continuation, or abnormal reply
    * accepted without retry). Visibility only — does not change retry semantics.
    */
+  /**
+   * 等待某 worker 的在途处理 promise 结束（有界等待）。
+   *
+   * 返回 `true` = 已在 `timeoutMs` 内结束（item 可安全重排重跑）；
+   * 返回 `false` = 仍在运行（**不可**重排，否则会重复副作用）。
+   * 无登记（无 delegate / 已结束）视为已结束。
+   */
+  private async awaitInFlightSettled(workerId: number, timeoutMs: number): Promise<boolean> {
+    const inFlight = this.inFlightProcessing.get(workerId);
+    if (!inFlight) return true;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<false>(resolve => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    });
+    try {
+      // 无论成功还是抛错，只要 settle 就算结束（异常路径不重排也没意义）。
+      return await Promise.race([
+        inFlight.then(() => true, () => true),
+        timeout,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   private emitIncomplete(item: MailboxItem, reason: string): void {
     try {
       this.eventBus.emit('agent:incomplete', {

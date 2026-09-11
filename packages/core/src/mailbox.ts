@@ -11,6 +11,7 @@ import {
   type MailboxItemStatus,
   type MailboxPriority,
   MAILBOX_TYPE_REGISTRY,
+  resolveEntityKeys,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 
@@ -419,50 +420,83 @@ export class AgentMailbox {
    * entity lock). Used to avoid waking workers on exclusively locked queues.
    */
   private hasRunnableItem(): boolean {
-    return this.queue.some(it => it.status === 'queued' && !this.isEntityLocked(this.entityKeyOf(it)));
+    return this.queue.some(it => it.status === 'queued' && !this.isItemEntityLocked(it));
   }
 
   /**
-   * 实体亲和键：同一实体（任务/需求/会话/用户）的 item 永不并发处理。
-   * 与 consolidateByEntity 的 key 约定保持一致。
+   * 实体亲和键**集合**：一个 item 可同时属于多个实体维度（如 human_chat 既是
+   * `user:{senderId}` 又是 `conv:{sessionId}`），**全部**需要锁定。
+   *
+   * 作用域映射是**声明式**的 —— 由 `MAILBOX_TYPE_REGISTRY[type].entityScopes`
+   * 定义（见 @markus/shared `resolveEntityKeys`），而不是在这里硬编码 if 链，
+   * 因此新增 mailbox 类型不会静默绕过并发保护。
+   *
+   * 返回值恒为非空数组：无法解析出具体实体时退化为 `['system:{agentId}']`
+   * （同 Agent 内串行），即「未知 = 保守串行」而非「未知 = 完全并发」。
    */
-  entityKeyOf(item: MailboxItem): string | undefined {
-    if (item.payload.taskId || item.metadata?.taskId) {
-      return `task:${item.payload.taskId ?? item.metadata?.taskId}`;
+  entityKeysOf(item: MailboxItem): string[] {
+    return resolveEntityKeys(item, this.agentId);
+  }
+
+  /**
+   * 主实体键（用于日志 / 交接记录 / 冲突提示）。
+   * 加锁请用 `entityKeysOf` + `lockEntities`，否则会漏掉其他实体维度。
+   */
+  entityKeyOf(item: MailboxItem): string {
+    return this.entityKeysOf(item)[0];
+  }
+
+  /**
+   * 一次性锁定多个实体键（全有或全无）。
+   *
+   * 全部键在同一个同步块内获取，不存在「部分持有后等待」的窗口，
+   * 因此不会与其他 worker 形成环路等待（无死锁）。任一键已被占用则
+   * 回滚已获取的键并返回 false。
+   */
+  lockEntities(entityKeys: readonly string[], holder: string): boolean {
+    const acquired: string[] = [];
+    for (const key of entityKeys) {
+      if (this.entityLocks.has(key)) {
+        for (const held of acquired) this.entityLocks.delete(held);
+        return false;
+      }
+      this.entityLocks.set(key, holder);
+      acquired.push(key);
     }
-    if (item.payload.requirementId) {
-      return `req:${item.payload.requirementId}`;
+    return true;
+  }
+
+  /** 释放一组实体键（仅当持有者匹配时）。 */
+  unlockEntities(entityKeys: readonly string[], holder: string): void {
+    let released = false;
+    for (const key of entityKeys) {
+      if (this.entityLocks.get(key) === holder) {
+        this.entityLocks.delete(key);
+        released = true;
+      }
     }
-    if (item.metadata?.dbSessionId || item.metadata?.sessionId) {
-      return `conv:${item.metadata?.dbSessionId ?? item.metadata?.sessionId}`;
-    }
-    // 同一发送者的直接对话串行，防止两个分身对同一用户做出矛盾回复。
-    const senderId = item.metadata?.senderId;
-    if (senderId && item.sourceType === 'human_chat') {
-      return `user:${senderId}`;
-    }
-    return undefined;
+    // 锁释放可能让被阻塞的同实体 item 变得可运行 —— 唤醒等待的 worker。
+    if (released) this.wakeIdleLoop();
   }
 
   /** 尝试锁定实体。成功返回 true；已被其他 worker 持有返回 false。 */
   lockEntity(entityKey: string, holder: string): boolean {
-    if (this.entityLocks.has(entityKey)) return false;
-    this.entityLocks.set(entityKey, holder);
-    return true;
+    return this.lockEntities([entityKey], holder);
   }
 
   /** 释放实体锁（仅当持有者匹配时；处理中止/完成路径调用）。 */
   unlockEntity(entityKey: string, holder: string): void {
-    if (this.entityLocks.get(entityKey) === holder) {
-      this.entityLocks.delete(entityKey);
-      // 锁释放可能让被阻塞的同实体 item 变得可运行 —— 唤醒等待的 worker。
-      this.wakeIdleLoop();
-    }
+    this.unlockEntities([entityKey], holder);
   }
 
   /** 实体是否被其他处理持有。 */
   isEntityLocked(entityKey: string | undefined): boolean {
     return !!entityKey && this.entityLocks.has(entityKey);
+  }
+
+  /** item 的任一实体维度是否已被锁定。 */
+  isItemEntityLocked(item: MailboxItem): boolean {
+    return this.entityKeysOf(item).some(k => this.entityLocks.has(k));
   }
 
   /**
@@ -471,7 +505,7 @@ export class AgentMailbox {
    * Returns undefined if the queue is empty or all items are entity-locked.
    */
   dequeue(): MailboxItem | undefined {
-    const idx = this.queue.findIndex(it => it.status === 'queued' && !this.isEntityLocked(this.entityKeyOf(it)));
+    const idx = this.queue.findIndex(it => it.status === 'queued' && !this.isItemEntityLocked(it));
     if (idx === -1) return undefined;
     const item = this.queue.splice(idx, 1)[0];
     if (item) {
