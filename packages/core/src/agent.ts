@@ -90,6 +90,14 @@ import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
 import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
 import { requestHistoryWindow } from './history-window.js';
+import {
+  normalizeTurnSessionHint,
+  describeTurnSessionHint,
+  hintCarriesDbIdentity,
+  looksLikeDbSessionId,
+  type TurnSessionHint,
+  type TurnSessionRestorePayload,
+} from './session-hint.js';
 
 /**
  * Per-task async context — propagates the executing taskId and task-local
@@ -1005,11 +1013,24 @@ export class Agent {
     userMessage: string,
     senderId?: string,
     senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
+    /**
+     * 跨层参数命名规则（第 2 步）：
+     *  - `dbSessionId` = **DB 会话身份**（`cs_*`），只用于恢复/写绑定；
+     *  - `sessionId`   = **内存会话 key**（`sess_*`）。
+     * ⚠️ `sessionId` 传 `cs_*` 会被当成内存 key（split-brain）——运行期已加告警。
+     *    需要表达「这是哪轮 DB 会话」请用 `dbSessionId` 或 `sessionHint`。
+     */
     options?: HandleMessageOptions & {
       sourceType?: MailboxItemType;
       priority?: MailboxPriority;
       taskId?: string;
       requirementId?: string;
+      /**
+       * 会话身份契约（第 0 步）。入口可以直接给出本轮是什么会话；
+       * 优先于下面的零散旧字段（sessionRestore / dbSessionId / sessionId）。
+       * 不传时由 `normalizeTurnSessionHint()` 从旧字段归一，仍推不出来则告警（unknown）。
+       */
+      sessionHint?: TurnSessionHint;
       /**
        * 本轮的 DB 会话 id（cs_*）。**仅供绑定/恢复使用，绝不当作内存会话 key。**
        *
@@ -1023,6 +1044,14 @@ export class Agent {
   ): Promise<string> {
     const sourceType = options?.sourceType
       ?? (senderId ? 'human_chat' : 'system_event');
+    // 会话身份契约（第 0 步）：把零散旧字段归一成**唯一的** hint，并拦一类典型误用：
+    // 把 cs_*（DB 身份）当成 sessionId（内存会话 key）传进来 —— 那会造成 split-brain。
+    if (looksLikeDbSessionId(options?.sessionId)) {
+      log.warn('sendMessage got a DB session id in `sessionId` (a memory-session key) — use `dbSessionId`', {
+        agentId: this.id,
+        sessionId: options?.sessionId,
+      });
+    }
 
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -1033,6 +1062,13 @@ export class Agent {
         sessionId: options?.sessionId,
         // 仅用于「写 DB→memory 绑定」的请求身份，不会被当成内存会话 key。
         dbSessionId: options?.dbSessionId,
+        // 会话身份契约：入口优先直接传 sessionHint；否则从旧字段归一。
+        sessionHint: options?.sessionHint ?? normalizeTurnSessionHint({
+          sessionRestore: options?.sessionRestore,
+          dbSessionId: options?.dbSessionId,
+          sessionId: options?.sessionId,
+          sourceType,
+        }),
         channelContext: options?.channelContext,
         channelKey: options?.channelKey,
         images: options?.images,
@@ -1108,7 +1144,7 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
-    options?: { isResume?: boolean; sessionId?: string; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
+    options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -1127,6 +1163,13 @@ export class Agent {
         // handleMessageStream) —— and must not be inferred from the workspace
         // pointer, which is per-worker and may belong to another conversation.
         sessionId: options?.sessionId,
+        // 会话身份契约（与 sendMessage 同源）：流式路径优先用入口直接给的 hint。
+        sessionHint: options?.sessionHint ?? normalizeTurnSessionHint({
+          sessionRestore: options?.sessionRestore,
+          dbSessionId: options?.dbSessionId,
+          sessionId: options?.sessionId,
+          sourceType: 'human_chat',
+        }),
       },
     };
 
@@ -1702,40 +1745,26 @@ export class Agent {
     };
 
     try {
+      // ── 会话身份：唯一解析点（所有 sourceType 共用）
+      // 入口在 mailbox item 的 extra.sessionHint 里表态；没表态的（unknown）会告警，
+      // 并按「保持当前会话」处理 —— 绝不静默新建。旧字段（sessionRestore / dbSessionId /
+      // sessionId / channelKey）在 sendMessage* 入口已归一成 hint；这里再兑一次底，
+      // 保证从其它途径直接 enqueue 进来的 item 也能被正确解析。
+      const sessionHint = (extra.sessionHint as TurnSessionHint | undefined)
+        ?? normalizeTurnSessionHint({
+          sessionRestore: extra.sessionRestore as TurnSessionRestorePayload | null | undefined,
+          dbSessionId: extra.dbSessionId as string | undefined,
+          sessionId: extra.sessionId as string | undefined,
+          channelKey: extra.channelKey as string | undefined,
+          sourceType: item.sourceType,
+        });
+      this.resolveTurnSession(sessionHint, item);
+
       switch (item.sourceType) {
         case 'human_chat':
         case 'a2a_message': {
-          // Apply deferred session restore at processing time (not at HTTP request time)
-          // to prevent corrupting an in-progress stream's session context.
-          const sessionRestore = extra.sessionRestore as { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null | undefined;
-          if (sessionRestore) {
-            this.restoreSessionFromHistory(sessionRestore.dbSessionId, sessionRestore.messages, {
-              isRetry: !!sessionRestore.isRetry,
-              preferredMemorySessionId: sessionRestore.preferredMemorySessionId ?? null,
-            });
-          } else if (extra.sessionRestore === null) {
-            this.startNewSession();
-          }
-          // Write the DB→memory binding HERE — in the workspace that actually
-          // resolved this turn's session. The HTTP thread cannot do it reliably:
-          // all it can read is its own (root) workspace pointer, so under
-          // concurrency it wrote a stale binding or none at all, and a later
-          // restart then rebuilt a thin context from `chat_messages`
-          // (observed: 57 memory messages → 3).
-          const dbSessionIdForBinding =
-            // The request's own id first: for a BRAND-NEW chat the metadata
-            // deliberately omits dbSessionId (so attention's R0 cannot merge the
-            // first message into a live stream of the old session), which used to
-            // leave a fresh conversation with NO binding at all — the second
-            // message then had to rebuild a thin context from chat_messages
-            // instead of reattaching to this rich memory session.
-            (extra.sessionId as string | undefined)
-            ?? (extra.dbSessionId as string | undefined)
-            ?? (item.metadata as { dbSessionId?: string } | undefined)?.dbSessionId
-            ?? sessionRestore?.dbSessionId;
-          if (dbSessionIdForBinding && this.currentSessionId) {
-            this.dbSessionMap.set(dbSessionIdForBinding, this.currentSessionId);
-          }
+          // 会话恢复与 DB→内存绑定已上提到「唯一解析点」：`resolveTurnSession()`
+          // （见本方法开头的 sessionHint）。此 case 不再自己解析会话身份。
           const ct = extra.cancelToken as { cancelled: boolean; userStopped?: boolean } | undefined;
           if (extra.stream && typeof extra.onEvent === 'function') {
             if (ct?.cancelled && !ct.userStopped) {
@@ -2167,6 +2196,50 @@ export class Agent {
    * Start a fresh conversation session, discarding the current in-memory session context.
    * Called when the user explicitly starts a "New Chat".
    */
+  /**
+   * 会话身份**唯一解析点**（第 0 步落地的结构性收敛）。
+   *
+   * 以前只有 `human_chat` / `a2a_message` 这一个 case 会做「恢复会话 + 写 DB→内存绑定」，
+   * 其余路径以及漏传身份的入口会静默开一个新会话 —— 这正是「agent 失忆」反复出现的根因。
+   * 现在所有 sourceType 都先经过这里，行为按 hint 的四种契约明确化：
+   *   - existing：从 DB 历史恢复（可 reattach 到已绑定的富内存会话）
+   *   - new      ：显式新对话（用户点了「新对话」）
+   *   - system   ：系统/内部会话（heartbeat / task / report / announce / a2a / channel）—— 保持既有语义，
+   *                 不动当前会话（各分支自己决定系统、任务、频道的会话 id）
+   *   - unknown  ：入口没表态 → **告警**并保持当前会话（不新建、不静默）
+   *
+   * 另外：只要 hint 带 DB 身份，就顺手在**处理该 item 的工作区**里写 DB→内存绑定。
+   * （HTTP 线程读不到 worker 的指针，写在那里只会得到陈旧/空绑定。）
+   */
+  private resolveTurnSession(hint: TurnSessionHint, item: MailboxItem): void {
+    switch (hint.kind) {
+      case 'existing':
+        this.restoreSessionFromHistory(hint.dbSessionId, hint.messages ?? [], {
+          isRetry: !!hint.isRetry,
+          preferredMemorySessionId: hint.preferredMemorySessionId ?? null,
+        });
+        break;
+      case 'new':
+        this.startNewSession();
+        break;
+      case 'system':
+        // 系统/内部会话由各自分支决定 sessionId，这里不干预当前会话。
+        break;
+      case 'unknown':
+        log.warn('Turn has NO session identity — keeping the current session (never silently starting a new one)', {
+          agentId: this.id,
+          itemId: item.id,
+          sourceType: item.sourceType,
+          reason: hint.reason,
+        });
+        break;
+    }
+
+    if (hintCarriesDbIdentity(hint) && this.currentSessionId) {
+      this.dbSessionMap.set(hint.dbSessionId, this.currentSessionId);
+    }
+  }
+
   startNewSession(): void {
     const session = this.memory.createSession(this.id);
     this.currentSessionId = session.id;

@@ -47,6 +47,8 @@ const RULE_SCOPE = {
   // 面向用户的输出通道，不属于违规。
   'no-console': (relPath) => /^packages\/(core|org-manager)\//.test(relPath),
   'no-empty-catch': (relPath) => /^packages\/(core|org-manager)\//.test(relPath),
+  // 会话身份契约只在「服务端入口层」强制（core/org-manager 的 src）。
+  'session-identity': (relPath) => /^packages\/(core|org-manager)\/src\//.test(relPath),
 };
 
 /** 递归收集 packages/<pkg>/src/** 下的源码文件（只看 src，不看测试）。 */
@@ -77,6 +79,31 @@ function collectSources() {
   };
   for (const root of SCAN_ROOTS) walk(join(ROOT, root));
   return files;
+}
+
+/**
+ * 规则 3：入口必须显式表态会话身份（第 0 步「会话身份契约」的静态门禁）。
+ *
+ * 背景：「同一会话后续请求看不到历史」反复出现的根因是——**入口没带会话身份**，
+ * agent 于是静默开一个新会话。运行期已经有 unknown 告警，但那是事后；这里把它提前
+ * 到提交前：调用 sendMessage / sendMessageStream / enqueueToMailbox 时，调用的
+ * 参数里（含后续十几行，容许多行书写）必须出现会话身份字段之一：
+ *   sessionHint | sessionId | dbSessionId | sessionRestore | channelKey
+ *
+ * 白名单按文件豁免（存量系统消息调用经人工确认后登记）；**新增的裸调用会被拦住**。
+ */
+const IDENTITY_CALL_RE = /\.(sendMessage|sendMessageStream|enqueueToMailbox|sendTaskExecution)\s*\(/;
+const IDENTITY_TOKEN_RE = /sessionHint|sessionId|dbSessionId|sessionRestore|channelKey/;
+function checkSessionIdentity(file, text) {
+  const out = [];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!IDENTITY_CALL_RE.test(lines[i])) continue;
+    const window = lines.slice(i, Math.min(lines.length, i + 14)).join('\n');
+    if (IDENTITY_TOKEN_RE.test(window)) continue;
+    out.push({ rule: 'session-identity', line: i + 1, snippet: lines[i].trim().slice(0, 120) });
+  }
+  return out;
 }
 
 /** 规则 1：禁止 console.*（除白名单文件）。 */
@@ -110,7 +137,7 @@ function checkBareEmptyCatch(file, text) {
 }
 
 function loadAllowlist() {
-  if (!existsSync(ALLOWLIST_FILE)) return { 'no-console': {}, 'no-empty-catch': {} };
+  if (!existsSync(ALLOWLIST_FILE)) return { 'no-console': {}, 'no-empty-catch': {}, 'session-identity': {} };
   try {
     return JSON.parse(readFileSync(ALLOWLIST_FILE, 'utf-8'));
   } catch (err) {
@@ -126,7 +153,7 @@ const violations = [];
 for (const file of collectSources()) {
   const text = readFileSync(file, 'utf-8');
   const relPath = rel(file);
-  for (const v of [...checkNoConsole(file, text), ...checkBareEmptyCatch(file, text)]) {
+  for (const v of [...checkNoConsole(file, text), ...checkBareEmptyCatch(file, text), ...checkSessionIdentity(file, text)]) {
     if (!(RULE_SCOPE[v.rule]?.(relPath) ?? true)) continue;
     violations.push({ ...v, file: relPath, allowed: Boolean(allowlist[v.rule]?.[relPath]) });
   }

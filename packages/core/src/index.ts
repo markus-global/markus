@@ -343,3 +343,12 @@ export {
 export { matchAgentsForSkillFanout, applyFanoutDailyCap } from './skill-fanout.js';
 export { extractTextFromFile, convertFilesToText, resetMarkitdownCache, type ConvertedFile } from './file-converter.js';
 export { requestHistoryStart, requestHistoryWindow } from './history-window.js';
+export {
+  normalizeTurnSessionHint,
+  describeTurnSessionHint,
+  hintCarriesDbIdentity,
+  looksLikeDbSessionId,
+  type TurnSessionHint,
+  type TurnSessionRestorePayload,
+  type TurnSessionHintInput,
+} from './session-hint.js';

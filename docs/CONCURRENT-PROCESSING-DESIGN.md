@@ -335,18 +335,20 @@ UI 呈现（智能体设置 → 新增「并发处理」区块）：
 |---|---|---|
 | §5.1.1 `SessionWorkspace` per-worker 状态隔离 | ✅ 已实现 | `packages/core/src/session-workspace.ts`；`AsyncLocalStorage` 绑定，串行时共享 `rootWorkspace` |
 | §5.1.2 mailbox 广播唤醒 | ✅ 已实现 | `mailbox.ts` `idleWaiters: Set`，`wakeIdleLoop()` 全量唤醒 |
-| §5.1.2 实体锁 | ✅ 已实现 | `mailbox.ts` `entityKeyOf` / `lockEntity` / `unlockEntity`；`dequeue()` 跳过硬锁项 |
+| §5.1.2 实体锁 | ✅ 已实现 | `mailbox.ts` `entityKeysOf` / `lockEntities` / `unlockEntities`（声明式多键、恒非空）；`dequeue()` 跳过共享已锁键的项 |
 | §5.1.3 `SharedStateCoordinator`（统一写入仲裁） | ⚠️ 部分实现 | **未**建同名协调器。落地为：agent 级工具写互斥 `withToolWriteLock`（`agent.ts`）+ 任务级 `activeTasks` 闸。memory/文件的多步「读-改-写」仍靠交接记录软约束（见 AS-BUILT §7 已知限制） |
 | §5.1.4 `ConcurrentHandoffLog` | ✅ 已实现 | `packages/core/src/concurrent-handoff.ts`；四类 kind + JSONL 持久化 |
 | §5.2.1 System Prompt「并发上下文」段 | ✅ 已实现 | `context-engine.ts`，仅注入 volatile 段、不破坏 stable 缓存 |
 | §5.2.2 并发快照注入 | ✅ 已实现 | `HANDOFF_CONTEXT_LIMIT = 8`，过滤本 worker 自己的记录 |
 | §5.2.3 完成时写 `done` | ✅ 已实现 | attention 并发 worker 的 completed / failed 钩子 |
 | §5.3 分身认知协议 | ✅ 已实现（提示词层） | 并发上下文段内含一致性规则三项 |
-| §5.4 实体亲和（Per-Entity Lock） | ✅ 已实现 | 键：`task:` / `req:` / `conv:` / `user:`。**a2a / heartbeat / group_chat 无键**（已知限制） |
+| §5.4 实体亲和（Per-Entity Lock） | ✅ 已实现 | 键：`task:` / `req:` / `conv:` / `user:` / `channel:`（声明式多键，由 `MAILBOX_TYPE_REGISTRY[type].entityScopes` 解析，恒非空）。`a2a_message` 走 `channel` 作用域；`heartbeat` / 无 channel 的群聊等无具体实体时退化 `system:{agentId}` |
 | §7 设置项字段 | ✅ 已实现 | `agent.concurrent.{enabled,maxWorkers,conflictPolicy}`；默认 `enabled: true, maxWorkers: 3` |
 | §7 `maxWorkers` 与 `profile.maxConcurrentTasks` 联动合并 | ✅ 已合并 | **单一事实源** = `agent.concurrent.maxWorkers`（设置里的「并发数」）；任务闸 = `min(worker 闸, profile.maxConcurrentTasks 显式上限)`，构造与热更新都走 `Agent.applyConcurrency()` 一处同时驱动两闸（详见 CONCURRENT-PROCESSING.md）。`worker=1 ⇒ 任务必串行` 的串行等价契约由 min 保证。 |
 | §8 P0–P4 | ✅ 全部完成 | 见 git 提交序列（P0 状态下放 → P1 worker 池 → P2 上下文/交接 → P3 设置 UI → P4 打磨） |
 | §9 风险表 | ✅ 已覆盖 | 认知一致性（实体锁+交接+冲突报告）、成本（maxWorkers 上限）、回归（worker=1 等价契约） |
+
+<!-- verified-against-code: 2026-09-11, packages/core/src/mailbox.ts:437-489, packages/shared/src/types/mailbox.ts:83-118 -->
 
 **实现期新增（设计稿未提）**：
 
@@ -355,4 +357,6 @@ UI 呈现（智能体设置 → 新增「并发处理」区块）：
 3. **冲突退避**：`auto` 与 `report` 两种策略都做轻量退避（`250ms × (1 + min(retryCount,8))`），消除双 worker 竞抢同一实体锁时的忙循环。
 4. **并发下的活动聚合**：`currentActivity` 下放 workspace 后，实时活动由 `Agent.getLiveActivities()` 聚合展示。
 
-**已知限制**（与 AS-BUILT §7 一致）：实体键未覆盖 a2a/heartbeat/group_chat；backstop 超时取消为 best-effort；缺少「两 worker 并行跑完整会话链路」的端到端并发测试。
+**已知限制**（与 AS-BUILT §7 一致）：实体锁为**按实体**（per-entity）而非全局——不同实体的两个 worker 仍可能并发对共享文件 / 全局 memory 做多步读-改-写（仅靠交接记录软约束）；backstop 超时取消为 best-effort；缺少「两 worker 并行跑完整会话链路」的端到端并发测试。
+
+<!-- verified-against-code: 2026-09-11, packages/core/src/mailbox.ts:437-489, packages/shared/src/types/mailbox.ts:83-118 -->

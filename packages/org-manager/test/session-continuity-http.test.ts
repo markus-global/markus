@@ -102,6 +102,8 @@ function createOrgService(agentManager: AgentManager): OrganizationService {
     getAgentManager: () => agentManager,
     resolveHumanIdentity: (id: string) => ({ id, name: 'Test User', role: 'owner' }),
     syncHumanIdentity: vi.fn(),
+    // `/api/message` 需要先路由到一个 agent；入口矩阵用例用它把消息定向到本测试的 agent。
+    routeMessage: (_orgId: string, req: { targetAgentId?: string }) => req.targetAgentId ?? agent.id,
   } as unknown as OrganizationService;
 }
 
@@ -240,22 +242,13 @@ describe('会话连续性 HTTP 层（POST /api/agents/:id/message）', () => {
   });
 
   /**
-   * 已知缺陷（如实记录，不用宽松断言掩盖）：HTTP 层首轮没有建立 DB→内存 绑定。
+   * 曾经是「已知缺陷」：HTTP 层首轮不建立 DB→内存 绑定（导致第二轮只能从瘦 DB 重建）。
    *
-   * 实测证据（2026-09-11）：
-   *  - api-server **确实**下发了 `dbSessionId` + `sessionRestore: null`（HTTP-DIAG 插桩证实）；
-   *  - 但 core 的 `processMailboxItemCore` 本轮**未被走到**（其入口插桩未触发），
-   *    因此绑定未写入（`getMemorySessionIdForDbSession -> null`）；
-   *  - 同一条语义在 core 层是好的：`packages/core/test/session-continuity-smoke.test.ts`
-   *    以及一条临时探针（`sendMessage` + `dbSessionId` + `sessionRestore: null` → 绑定成功）均通过。
-   *
-   * 结论：不是绑定逻辑本身坏了，而是 **HTTP 层实际走的消息处理路径与我们的假设不同**。
-   * 下一步：在 api-server → agent 之间把真实执行路径点亮（确认到底哪条路径在处理
-   * human_chat），再决定是把绑定/恢复逻辑挪到那条路径，还是把两条路径合流。
-   *
-   * 用 `it.fails` 记录：修好后本条会变成「意外通过」，届时改成普通 `it` 即可。
+   * 第 0/1 步落地后已修复（会话身份契约 TurnSessionHint + 唯一解析点 resolveTurnSession()
+   * + 入口显式传 dbSessionId），所以从 `it.fails` 改回普通 `it` —— 它现在是真正的回归门禁。
+   * （当时的证据保留在 docs/SESSION-IDENTITY-PLAN.md 的「本次核查的边界」一节。）
    */
-  it.fails('【已知缺陷】HTTP 非流式首轮必须建立 DB→内存 绑定（现为 null）', { timeout: 15000 }, async () => {
+  it('HTTP 非流式首轮必须建立 DB→内存 绑定', { timeout: 15000 }, async () => {
     const rec = makeRecordingRouter();
     await newHarness(rec);
 
@@ -268,5 +261,26 @@ describe('会话连续性 HTTP 层（POST /api/agents/:id/message）', () => {
       agent.getMemorySessionIdForDbSession(sessionId),
       '第一轮必须建立 DB→内存 会话绑定',
     ).toBeTruthy();
+  });
+
+  /**
+   * 入口矩阵（第 1、3 步）：`POST /api/message` 原本**完全不带会话身份** → 每条消息都开新会话。
+   * 现在它必须显式表态：带 channelId 时按频道绑定（同频道连续），否则声明 unknown（告警 + 保持当前会话）。
+   * 这条锁住「显式契约」这个行为，避免再退回“静默新会话”。
+   */
+  it('入口矩阵：POST /api/message 带 channelId 时，同频道两连发落在同一会话且看到历史', { timeout: 20000 }, async () => {
+    const rec = makeRecordingRouter();
+    await newHarness(rec);
+
+    const channelId = 'grp_matrix_1';
+    const url = '/api/message';
+    const res1 = await post(server, url, { text: 'CH_TURN1', stream: false, channelId, targetAgentId: agent.id });
+    expect(res1.statusCode, '第一条必须成功').toBe(200);
+    const res2 = await post(server, url, { text: 'CH_TURN2', stream: false, channelId, targetAgentId: agent.id });
+    expect(res2.statusCode, '第二条必须成功').toBe(200);
+
+    const turn2 = rec.calls.filter(c => c.text.includes('CH_TURN2'));
+    expect(turn2.length, '第二轮必须真的发起 LLM 调用').toBeGreaterThan(0);
+    expect(turn2[turn2.length - 1]!.text, '第二轮必须看到第一轮').toContain('CH_TURN1');
   });
 });
