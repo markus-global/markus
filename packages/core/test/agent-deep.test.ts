@@ -1168,9 +1168,14 @@ describe('vision and channel key sessions', () => {
     });
 
     const chatCall = router.chat.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: unknown }> };
-    // Scheme A prepends a synthetic [SYSTEM] live-context message (role 'user')
-    // before the current query, so pick the LAST user message for the actual query.
-    const userMsgs = chatCall.messages.filter(m => m.role === 'user');
+    // Scheme A pins the synthetic [SYSTEM] live-context block at the TAIL of the
+    // history (prefix-cache safety: it changes every turn, so anything after it
+    // would be un-cacheable). The actual query is therefore the last user message
+    // that is NOT that block.
+    const isLiveContext = (m: { content: unknown }) =>
+      typeof m.content === 'string' && m.content.startsWith('[SYSTEM] [Live context]');
+    expect(isLiveContext(chatCall.messages[chatCall.messages.length - 1]!)).toBe(true);
+    const userMsgs = chatCall.messages.filter(m => m.role === 'user' && !isLiveContext(m));
     const userMsg = userMsgs[userMsgs.length - 1]!;
     expect(Array.isArray(userMsg?.content)).toBe(true);
   });
@@ -1327,5 +1332,45 @@ describe('loop detection and escalation', () => {
     await agent.handleMessage('trigger failures');
     // Escalation may fire after consecutive failures — verify tool ran multiple times
     expect(callIndex).toBeGreaterThan(1);
+  });
+});
+
+describe('Afford.S2 deferred-tool catalog placement (prefix-cache safety)', () => {
+  it('rides the per-turn volatile tail instead of the system prompt', async () => {
+    const router = makeMockRouter({ chatFn: async () => makeResponse('ok', 'end_turn') });
+    const agent = createAgent(router);
+
+    // Simulate what ToolSelector does when the per-turn pack budget evicts tools:
+    // a DIFFERENT evicted set per turn is exactly why this catalog used to bust
+    // the whole cached prefix when it lived in the system message.
+    const sel = (agent as unknown as { toolSelector: { selectTools: (o: never) => unknown } }).toolSelector;
+    const inner = sel.selectTools.bind(sel);
+    vi.spyOn(sel, 'selectTools').mockImplementation(((opts: never) => {
+      const picked = inner(opts);
+      (sel as unknown as { lastDeferredCatalog: unknown }).lastDeferredCatalog = [
+        { name: 'zzz_probe_deferred_alpha', description: 'Sentinel deferred tool A' },
+        { name: 'zzz_probe_deferred_beta', description: 'Sentinel deferred tool B' },
+      ];
+      return picked;
+    }) as never);
+
+    await agent.handleMessage('hello');
+
+    const req = router.chat.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: unknown }> };
+    // The system prompt is byte-stable prefix — the per-turn catalog must NOT be in it.
+    // (Assert on the sentinel tool names: the platform's own L0 text legitimately
+    // contains a "## Deferred Tools" heading of its own.)
+    const system = req.messages
+      .filter(m => m.role === 'system')
+      .map(m => String(m.content))
+      .join('\n');
+    expect(system).not.toContain('zzz_probe_deferred_alpha');
+
+    const last = req.messages[req.messages.length - 1]!;
+    expect(last.role).toBe('user');
+    expect(String(last.content)).toContain('[SYSTEM] [Live context]');
+    expect(String(last.content)).toContain('Deferred Tools');
+    expect(String(last.content)).toContain('zzz_probe_deferred_alpha');
+    expect(String(last.content)).toContain('zzz_probe_deferred_beta');
   });
 });
