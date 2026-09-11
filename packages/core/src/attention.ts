@@ -774,7 +774,7 @@ export class AttentionController {
           try { this.mailbox.putBack(item); } catch { /* ignore */ }
           this.delegate?.onConcurrentHandoff?.('conflict', workerId, item, `实体 ${entityKey} 已被分身 ${holder} 锁定，暂缓处理并放回队列`);
           if (this.conflictPolicy === 'report') {
-            // report 策略：冲突不再静默——发事件让父级感知，同时小退避防止忙循环。
+            // report 策略：冲突不再静默——发事件让父级感知。
             this.eventBus.emit('agent:entity-conflict', {
               agentId: this.agentId,
               entityKey,
@@ -783,8 +783,10 @@ export class AttentionController {
               workerId,
               summary: item.payload.summary.slice(0, 200),
             });
-            await new Promise<void>(r => setTimeout(r, 250 + Math.min(item.retryCount ?? 0, 8) * 250));
           }
+          // auto 与 report 都做轻量退避：避免两个 worker 反复竞抢同一被锁实体
+          // 造成忙循环（unlockEntity 的广播唤醒 + 重新入队会立刻再次触发竞态）。
+          await new Promise<void>(r => setTimeout(r, 250 + Math.min(item.retryCount ?? 0, 8) * 250));
           continue;
         }
 
