@@ -2107,6 +2107,43 @@ export class APIServer {
 
   /** Persist the user message first (before LLM), returns session id for subsequent assistant persistence.
    *  When sessionId is provided, appends to that session; when null/undefined, creates a new session. */
+  /**
+   * Read the persisted DB→memory session binding for a chat session.
+   * Best-effort: a missing or corrupt metadata blob simply yields `null`.
+   */
+  private readMemorySessionBinding(dbSessionId: string): string | null {
+    try {
+      const meta = this.storage?.chatSessionRepo.getSessionMetadata(dbSessionId);
+      const value = meta?.['memorySessionId'];
+      return typeof value === 'string' && value ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Persist the DB→memory session binding so a restart can reattach to the RICH
+   * memory session (tool calls + results) instead of rebuilding a thin context
+   * from `chat_messages` (which stores user/assistant rows only). Read-merge-write
+   * because `updateSessionMetadata` replaces the whole metadata blob.
+   */
+  private persistMemorySessionBinding(
+    dbSessionId: string,
+    agent: { getCurrentSessionId(): string | null },
+  ): void {
+    if (!this.storage) return;
+    // Best-effort: a failed binding write must never break the chat turn.
+    try {
+      const memorySessionId = agent.getCurrentSessionId();
+      if (!memorySessionId) return;
+      const existing = this.storage.chatSessionRepo.getSessionMetadata(dbSessionId) ?? {};
+      if (existing['memorySessionId'] === memorySessionId) return;
+      this.storage.chatSessionRepo.updateSessionMetadata(dbSessionId, { ...existing, memorySessionId });
+    } catch (err) {
+      log.debug('Failed to persist memory-session binding', { dbSessionId, error: String(err) });
+    }
+  }
+
   private async persistUserMessage(
     agentId: string,
     userMessage: string,
@@ -2537,6 +2574,7 @@ export class APIServer {
       let sessionRestoreData: {
         dbSessionId: string;
         messages: Array<{ role: string; content: string }>;
+        preferredMemorySessionId?: string | null;
       } | null = null;
       if (this.storage) {
         try {
@@ -2553,6 +2591,7 @@ export class APIServer {
               role: m.role,
               content: m.content,
             })),
+            preferredMemorySessionId: this.readMemorySessionBinding(sessionId),
           };
         } catch (err) {
           log.warn('Failed to prepare Feishu main-session restore', { error: String(err) });
@@ -2565,6 +2604,7 @@ export class APIServer {
           secretary.restoreSessionFromHistory(
             sessionRestoreData.dbSessionId,
             sessionRestoreData.messages,
+            { preferredMemorySessionId: sessionRestoreData.preferredMemorySessionId ?? null },
           );
         }
       }
@@ -2589,6 +2629,7 @@ export class APIServer {
         );
         if (persisted) {
           secretary.bindDbSession(persisted.sessionId);
+          this.persistMemorySessionBinding(persisted.sessionId, secretary);
           mainSessionId = persisted.sessionId;
           feishuUserMessageId = persisted.messageId;
           // Push the user turn to Team Chat immediately (do not wait for the reply).
@@ -4382,7 +4423,7 @@ export class APIServer {
         // Prepare session restoration data but DON'T apply it eagerly.
         // Session context is applied when the mailbox item is actually processed,
         // preventing corruption of an in-progress stream's session state.
-        let sessionRestoreData: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null = null;
+        let sessionRestoreData: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null = null;
         if (!sessionId) {
           // New session — will be created at processing time
           sessionRestoreData = null;
@@ -4396,6 +4437,9 @@ export class APIServer {
               dbSessionId: sessionId,
               messages: histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
               isRetry: !!isRetry,
+              // A persisted binding lets restore reattach to the RICH memory
+              // session instead of rebuilding a thin context from chat_messages.
+              preferredMemorySessionId: this.readMemorySessionBinding(sessionId),
             };
           } catch (err) {
             log.warn('Failed to load session history, will start fresh', { sessionId, error: String(err) });
@@ -4409,7 +4453,10 @@ export class APIServer {
             agent.restoreSessionFromHistory(
               sessionRestoreData.dbSessionId,
               sessionRestoreData.messages,
-              { isRetry: !!sessionRestoreData.isRetry },
+              {
+                isRetry: !!sessionRestoreData.isRetry,
+                preferredMemorySessionId: sessionRestoreData.preferredMemorySessionId ?? null,
+              },
             );
           } else if (!sessionId) {
             agent.startNewSession();
@@ -4445,6 +4492,9 @@ export class APIServer {
           const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo);
           if (persisted && !sessId) {
             agent.bindDbSession(persisted.sessionId);
+          }
+          if (persisted) {
+            this.persistMemorySessionBinding(persisted.sessionId, agent);
           }
           return persisted ? { sessionId: persisted.sessionId, messageId: persisted.messageId } : null;
         };

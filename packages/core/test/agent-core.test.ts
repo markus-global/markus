@@ -580,6 +580,61 @@ describe('session management', () => {
     expect(session?.messages.some(m => String(m.content).includes('Bad answer'))).toBe(false);
   });
 
+  it('getCurrentSessionId returns the bound memory session id', () => {
+    const agent = createTestAgent(makeMockRouter());
+    agent.startNewSession();
+    expect(agent.getCurrentSessionId()).toBeTruthy();
+    expect(agent.getCurrentSessionId()).toBe(agent.getMemory().listSessions(agent.id).slice(-1)[0]?.id);
+  });
+
+  it('restoreSessionFromHistory reattaches to the persisted memory session (keeps rich context)', () => {
+    const agent = createTestAgent(makeMockRouter());
+    // The RICH memory session as it exists before a restart.
+    const rich = agent.getMemory().createSession(agent.id);
+    agent.getMemory().appendMessage(rich.id, { role: 'user', content: 'original markus-hub question' });
+    agent.getMemory().appendMessage(rich.id, { role: 'assistant', content: 'rich tool-backed answer' });
+
+    // After a restart the DB only holds a thin user/assistant slice.
+    agent.restoreSessionFromHistory('cs_restart_1', [{ role: 'user', content: 'thin db row' }], {
+      preferredMemorySessionId: rich.id,
+    });
+
+    expect(agent.getCurrentSessionId()).toBe(rich.id);
+    expect(agent.getDbSessionId()).toBe('cs_restart_1');
+    const reattached = agent.getMemory().getSession(rich.id);
+    expect(reattached?.messages.some(m => String(m.content).includes('rich tool-backed answer'))).toBe(true);
+    expect(reattached?.messages.some(m => String(m.content).includes('thin db row'))).toBe(false);
+  });
+
+  it('restoreSessionFromHistory falls back to the DB rebuild when the preferred session is unknown', () => {
+    const agent = createTestAgent(makeMockRouter());
+    agent.restoreSessionFromHistory('cs_restart_2', [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'rebuilt answer' },
+    ], { preferredMemorySessionId: 'sess_does_not_exist' });
+
+    const sessions = agent.getMemory().listSessions(agent.id);
+    expect(sessions.some(s => s.messages.some(m => String(m.content) === 'rebuilt answer'))).toBe(true);
+  });
+
+  it('restoreSessionFromHistory rebuilds when the preferred memory session is BEHIND the DB', () => {
+    const agent = createTestAgent(makeMockRouter());
+    const stale = agent.getMemory().createSession(agent.id);
+    agent.getMemory().appendMessage(stale.id, { role: 'user', content: 'only one row' });
+
+    // The DB moved ahead (e.g. out-of-band persisted messages) — a stale memory
+    // session must NOT win, or those newer DB rows would be silently lost.
+    agent.restoreSessionFromHistory('cs_restart_3', [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+      { role: 'user', content: 'c' },
+      { role: 'assistant', content: 'out-of-band answer' },
+    ], { preferredMemorySessionId: stale.id });
+
+    const sessions = agent.getMemory().listSessions(agent.id);
+    expect(sessions.some(s => s.messages.some(m => String(m.content).includes('out-of-band answer')))).toBe(true);
+  });
+
   it('injectUserMessage appends directly when no active task', () => {
     const agent = createTestAgent(makeMockRouter());
     const session = agent.getMemory().createSession(agent.id);
