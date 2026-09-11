@@ -1098,7 +1098,7 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
-    options?: { isResume?: boolean; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
+    options?: { isResume?: boolean; sessionId?: string; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -1111,6 +1111,12 @@ export class Agent {
         onEvent,
         cancelToken,
         sessionRestore: options?.sessionRestore,
+        // The REQUEST's DB session id, carried explicitly so the worker that ends
+        // up processing this item can resolve the matching memory session. It is
+        // advisory only — never used as a memory-session key (see
+        // handleMessageStream) —— and must not be inferred from the workspace
+        // pointer, which is per-worker and may belong to another conversation.
+        sessionId: options?.sessionId,
       },
     };
 
@@ -1129,7 +1135,13 @@ export class Agent {
           // 进正在流式输出的旧会话 —— 新对话 tab 的消息会错误地污染当前流。
           dbSessionId: options?.sessionRestore === null
             ? undefined
-            : (options?.sessionRestore?.dbSessionId ?? (this.getDbSessionId() || undefined)),
+            : (options?.sessionRestore?.dbSessionId
+              // Explicit request id wins over the workspace pointer:
+              // `getDbSessionId()` reads the current memory session, which on an
+              // HTTP thread is the root workspace and under concurrency can point
+              // at a completely different conversation.
+              ?? options?.sessionId
+              ?? (this.getDbSessionId() || undefined)),
           responsePromise: { resolve, reject },
         },
       });
@@ -1696,6 +1708,18 @@ export class Agent {
           } else if (extra.sessionRestore === null) {
             this.startNewSession();
           }
+          // Write the DB→memory binding HERE — in the workspace that actually
+          // resolved this turn's session. The HTTP thread cannot do it reliably:
+          // all it can read is its own (root) workspace pointer, so under
+          // concurrency it wrote a stale binding or none at all, and a later
+          // restart then rebuilt a thin context from `chat_messages`
+          // (observed: 57 memory messages → 3).
+          const dbSessionIdForBinding =
+            (item.metadata as { dbSessionId?: string } | undefined)?.dbSessionId
+            ?? sessionRestore?.dbSessionId;
+          if (dbSessionIdForBinding && this.currentSessionId) {
+            this.dbSessionMap.set(dbSessionIdForBinding, this.currentSessionId);
+          }
           const ct = extra.cancelToken as { cancelled: boolean; userStopped?: boolean } | undefined;
           if (extra.stream && typeof extra.onEvent === 'function') {
             if (ct?.cancelled && !ct.userStopped) {
@@ -1714,6 +1738,9 @@ export class Agent {
                 extra.images as string[] | undefined,
                 extra.fileNames as string[] | undefined,
                 extra.imagePaths as string[] | undefined,
+                // Explicit DB session id from the request — used to resolve the
+                // bound memory session instead of trusting the worker pointer.
+                extra.sessionId as string | undefined,
               );
               // Team Chat: do not burn an extra LLM round just to obtain <<HANDLE_COMPLETE>>.
               // Prompt discipline ends the turn; attention already completes chat without retry.
@@ -4675,6 +4702,7 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
+    explicitDbSessionId?: string,
   ): Promise<string> {
     // Link the external cancel token to activeStreamToken so that
     // cancelActiveStream() (called via the cancel-processing API)
@@ -4723,7 +4751,31 @@ export class Agent {
     }
     const effectiveMessage = inputCheck.transformedInput ?? userMessage;
 
-    if (!this.currentSessionId) {
+    // Resolve the session identity for THIS turn:
+    //   1) the memory session bound to the request's DB session (the binding is
+    //      written when the restore runs — in this worker's workspace), else
+    //   2) the workspace pointer, else
+    //   3) a brand-new session.
+    // The DB id is NEVER used as a memory key directly: the two id spaces must
+    // not be conflated, or one conversation ends up split across two stores.
+    // Relying on the pointer alone was the bug: it is per-worker, so a later
+    // message picked up by another worker (or by one that has since served a
+    // different conversation) silently started an empty session and
+    // `requestHistory()` returned [] — the agent "forgot" its conversation.
+    const boundMemorySessionId = explicitDbSessionId
+      ? this.dbSessionMap.get(explicitDbSessionId)
+      : undefined;
+    if (explicitDbSessionId && !boundMemorySessionId) {
+      log.warn('Streaming turn has no memory session bound to its DB session — falling back to the workspace session', {
+        agentId: this.id,
+        dbSessionId: explicitDbSessionId,
+        workspaceSessionId: this.currentSessionId,
+      });
+    }
+    const resolvedSessionId = boundMemorySessionId ?? this.currentSessionId;
+    if (resolvedSessionId) {
+      this.currentSessionId = resolvedSessionId;
+    } else {
       const session = this.memory.createSession(this.id);
       this.currentSessionId = session.id;
     }

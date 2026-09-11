@@ -4451,9 +4451,9 @@ export class APIServer {
         // Prepare session restoration data but DON'T apply it eagerly.
         // Session context is applied when the mailbox item is actually processed,
         // preventing corruption of an in-progress stream's session state.
-        let sessionRestoreData: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null = null;
+        let sessionRestoreData: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null | undefined;
         if (!sessionId) {
-          // New session — will be created at processing time
+          // Explicit new chat: the worker starts a fresh session.
           sessionRestoreData = null;
         } else if (this.storage) {
           try {
@@ -4470,26 +4470,23 @@ export class APIServer {
               preferredMemorySessionId: this.readMemorySessionBinding(sessionId),
             };
           } catch (err) {
-            log.warn('Failed to load session history, will start fresh', { sessionId, error: String(err) });
-            sessionRestoreData = null;
+            // IMPORTANT: do NOT collapse "history load failed" into "new chat".
+            // `undefined` means "identity unknown — keep the current session";
+            // `null` would silently start an empty conversation and drop context.
+            log.warn('Failed to load session history — keeping current session identity', { sessionId, error: String(err) });
+            sessionRestoreData = undefined;
           }
+        } else {
+          // No storage ⇒ we cannot tell whether this is an existing conversation.
+          // Never fabricate a "new chat" on missing information.
+          sessionRestoreData = undefined;
         }
-        // Only apply session context immediately if the agent is idle (no active stream).
-        // This preserves the original fast-path for the common case.
-        if (!agent.isProcessing()) {
-          if (sessionRestoreData) {
-            agent.restoreSessionFromHistory(
-              sessionRestoreData.dbSessionId,
-              sessionRestoreData.messages,
-              {
-                isRetry: !!sessionRestoreData.isRetry,
-                preferredMemorySessionId: sessionRestoreData.preferredMemorySessionId ?? null,
-              },
-            );
-          } else if (!sessionId) {
-            agent.startNewSession();
-          }
-        }
+        // Session context is ALWAYS handed to the mailbox item and applied at
+        // PROCESSING time, inside the worker workspace that actually runs the turn.
+        // It used to be applied right here (HTTP thread) whenever the agent was
+        // idle — but that writes to the ROOT workspace, so the worker that picked
+        // the item up never saw it and silently began an empty session, losing the
+        // conversation it was in.
 
         const userText = body['text'] as string;
         // Persist user-attached files (any type incl. pasted images) to local
@@ -4530,7 +4527,7 @@ export class APIServer {
         if (stream) {
           // Pass deferred session restore when agent is busy — it will be applied
           // at mailbox processing time to avoid corrupting an in-progress session.
-          const deferredRestore = agent.isProcessing() ? sessionRestoreData : undefined;
+          const deferredRestore = sessionRestoreData;
           // Optional ONE-SHOT model override, honoured only from the explicit
           // request body. Session-level overrides are deliberately no longer
           // read: a model belongs to the AGENT (its own binding) or to global
@@ -4577,7 +4574,7 @@ export class APIServer {
           const persistedSessionId = userMsgPersisted?.sessionId ?? null;
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
-          const deferredRestoreNonStream = agent.isProcessing() ? sessionRestoreData : undefined;
+          const deferredRestoreNonStream = sessionRestoreData;
           try {
             reply = await agent.sendMessage(agentText, senderId, senderInfo, {
               images, fileNames, imagePaths, toolEventCollector: toolEvents,
