@@ -66,6 +66,8 @@ export interface IMemoryStore {
   // -- Episodic Memory: conversation sessions --
   getSession(sessionId: string): ConversationSession | undefined;
   listSessions(agentId?: string): ConversationSession[];
+  /** Count session files on disk (honest total vs the in-memory warm cap). */
+  countSessionsOnDisk?(): number;
   getLatestSession(agentId: string): ConversationSession | undefined;
   getLatestMainSession(agentId: string): ConversationSession | undefined;
   createSession(agentId: string): ConversationSession;

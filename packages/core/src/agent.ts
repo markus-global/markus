@@ -965,7 +965,7 @@ export class Agent {
       priority?: MailboxPriority;
       taskId?: string;
       requirementId?: string;
-      sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null;
+      sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null;
     },
   ): Promise<string> {
     const sourceType = options?.sourceType
@@ -1053,7 +1053,7 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
-    options?: { isResume?: boolean; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null },
+    options?: { isResume?: boolean; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -1636,9 +1636,12 @@ export class Agent {
         case 'a2a_message': {
           // Apply deferred session restore at processing time (not at HTTP request time)
           // to prevent corrupting an in-progress stream's session context.
-          const sessionRestore = extra.sessionRestore as { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null | undefined;
+          const sessionRestore = extra.sessionRestore as { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null | undefined;
           if (sessionRestore) {
-            this.restoreSessionFromHistory(sessionRestore.dbSessionId, sessionRestore.messages, { isRetry: !!sessionRestore.isRetry });
+            this.restoreSessionFromHistory(sessionRestore.dbSessionId, sessionRestore.messages, {
+              isRetry: !!sessionRestore.isRetry,
+              preferredMemorySessionId: sessionRestore.preferredMemorySessionId ?? null,
+            });
           } else if (extra.sessionRestore === null) {
             this.startNewSession();
           }
@@ -2092,8 +2095,35 @@ export class Agent {
   restoreSessionFromHistory(
     dbSessionId: string,
     dbMessages: Array<{ role: string; content: string }>,
-    options?: { isRetry?: boolean },
+    options?: { isRetry?: boolean; preferredMemorySessionId?: string | null },
   ): void {
+    // Fast path — reattach to a persisted DB→memory binding. The memory session
+    // is the RICH record (tool calls + results included); `chat_messages` only
+    // stores user/assistant rows, so rebuilding from DB after a restart silently
+    // guts the context (observed in the wild: 57 memory messages → 3). When the
+    // binding is known and still resolvable — MemoryStore lazily loads the
+    // session from disk by id — prefer it over a thin rebuild.
+    if (!options?.isRetry && options?.preferredMemorySessionId) {
+      const preferred = this.memory.getSession(options.preferredMemorySessionId);
+      // Reattach only when the memory session is at least as complete as the DB
+      // slice. If the DB has moved ahead of memory (e.g. messages persisted
+      // out-of-band such as notify_user), fall through to the rebuild so those
+      // messages are not lost.
+      if (
+        preferred
+        && preferred.agentId === this.id
+        && preferred.messages.length > 0
+        && preferred.messages.length >= dbMessages.length
+      ) {
+        this.currentSessionId = preferred.id;
+        this.dbSessionMap.set(dbSessionId, preferred.id);
+        log.info(
+          `Reattached DB session ${dbSessionId} → persisted memory session ${preferred.id} (${preferred.messages.length} messages)`,
+        );
+        return;
+      }
+    }
+
     const existingMemorySessionId = this.dbSessionMap.get(dbSessionId);
     if (existingMemorySessionId) {
       const session = this.memory.getSession(existingMemorySessionId);
@@ -2209,6 +2239,20 @@ export class Agent {
   /** Returns true if the agent is currently processing a mailbox item (streaming or otherwise). */
   isProcessing(): boolean {
     return this.state.status === 'working' || !!this.processingMailboxItemId;
+  }
+
+  /** Returns the id of the in-memory session currently bound to this agent, if any. */
+  getCurrentSessionId(): string | null {
+    return this.currentSessionId ?? null;
+  }
+
+  /**
+   * Reverse of getDbSessionId(): resolve a DB chat session id (cs_*) to the
+   * in-memory session currently bound to it, if any. Lets tools accept both id
+   * spaces so an agent can introspect "which conversation am I in".
+   */
+  getMemorySessionIdForDbSession(dbSessionId: string): string | null {
+    return this.dbSessionMap.get(dbSessionId) ?? null;
   }
 
   /** Returns the DB session ID currently bound to the active memory session, if any. */

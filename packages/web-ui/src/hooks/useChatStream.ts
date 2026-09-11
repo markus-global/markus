@@ -130,6 +130,13 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
   const reattachCooldownRef = useRef<Map<string, number>>(new Map());
   const userStoppedSessionsRef = useRef<Set<string>>(new Set());
   const lastSendGuardRef = useRef<{ text: string; at: number } | null>(null);
+  // Guards against duplicate resume requests for the same conversation
+  // (double-click / double Enter). `lastSendGuardRef` deliberately exempts
+  // retry/resume (identical text must stay repeatable), so without this a
+  // double-click fired two concurrent resumes — the backend then raced a
+  // restore against a fresh-session creation and the agent ended up with two
+  // divergent memory sessions for one DB session.
+  const resumeGuardRef = useRef<Map<string, number>>(new Map());
   const lastSseEventTimeRef = useRef<number>(0);
 
   const { stateRef } = ctx;
@@ -631,6 +638,15 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       return;
     }
     lastSendGuardRef.current = { text, at: now };
+
+    // Duplicate-resume guard (see resumeGuardRef). Keyed by the bound session so
+    // re-resuming the SAME conversation twice in quick succession is ignored,
+    // while a genuine resume after a stop still works.
+    if (options?.isResume) {
+      const resumeKey = options.sessionIdOverride ?? volatile.activeSessionId ?? '';
+      if (now - (resumeGuardRef.current.get(resumeKey) ?? 0) < 2000) return;
+      resumeGuardRef.current.set(resumeKey, now);
+    }
 
     // If agent is currently streaming in this same conversation, interrupt it first.
     // If the user is in a DIFFERENT session (e.g., new chat tab) while another session

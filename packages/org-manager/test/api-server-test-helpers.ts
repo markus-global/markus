@@ -311,6 +311,13 @@ export function createMockStorage(): StorageBridge {
     },
     chatSessionRepo: {
       getSessionsByAgent: vi.fn(async () => [{ id: 'sess-1', title: 'Chat', agentId: AGENT_A }]),
+      listSessionsPaginated: vi.fn((agentId: string, opts?: { page?: number; pageSize?: number }) => ({
+        sessions: [{ id: 'sess-1', title: 'Chat', agentId, isMain: true }],
+        total: 1,
+        page: opts?.page ?? 1,
+        pageSize: opts?.pageSize ?? 20,
+        hasMore: false,
+      })),
       createSession: vi.fn((agentId: string, userId?: string) => ({
         id: 'sess-child-1', agentId, userId: userId ?? null, title: null, isMain: false,
         createdAt: new Date(), lastMessageAt: new Date(),

@@ -1648,6 +1648,9 @@ export class AgentManager {
       compactor, slotStore, fragmentStore,
       titleUpdater: this.sessionTitleUpdater,
       currentDbSessionId: () => agent.getDbSessionId(),
+      currentMemorySessionId: () => agent.getCurrentSessionId(),
+      resolveMemorySessionByDbSessionId: (dbId) => agent.getMemorySessionIdForDbSession(dbId),
+      diskSessionCount: () => mem.countSessionsOnDisk?.() ?? 0,
     }));
 
     // Settings tools — agents can list providers and switch models via chat
@@ -2586,6 +2589,9 @@ export class AgentManager {
         },
         titleUpdater: this.sessionTitleUpdater,
         currentDbSessionId: () => agent.getDbSessionId(),
+        currentMemorySessionId: () => agent.getCurrentSessionId(),
+        resolveMemorySessionByDbSessionId: (dbId) => agent.getMemorySessionIdForDbSession(dbId),
+        diskSessionCount: () => mem2.countSessionsOnDisk?.() ?? 0,
       }));
     }
 
@@ -3380,6 +3386,9 @@ export class AgentManager {
         },
         titleUpdater: this.sessionTitleUpdater,
         currentDbSessionId: () => agent.getDbSessionId(),
+        currentMemorySessionId: () => agent.getCurrentSessionId(),
+        resolveMemorySessionByDbSessionId: (dbId) => agent.getMemorySessionIdForDbSession(dbId),
+        diskSessionCount: () => mem.countSessionsOnDisk?.() ?? 0,
       }));
     }
   }

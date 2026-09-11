@@ -48,7 +48,7 @@ export interface SSEMessageHandlerOptions {
   messageId?: string;
   isResume?: boolean;
   /** Deferred session restore data — applied when the mailbox item is processed, not at HTTP request time */
-  sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null;
+  sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null;
   /** Registry for refresh reattach (optional — when omitted, soft-disconnect still avoids cancel). */
   activeStreams?: ActiveStreamRegistry;
 }

@@ -3569,11 +3569,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       return u;
     });
 
-    // Send a hidden continuation prompt — the backend will keep the existing
-    // session context and let the LLM pick up where it left off.
-    void hookSend('[Continue from where you left off. Do not repeat content already generated.]', { isResume: true });
+    // Resolve the conversation's session id EXPLICITLY. A resume only makes
+    // sense against an already-bound session: relying on the async view state
+    // (activeSessionId) meant that after an app restart — before the view had
+    // re-attached — the request went out with no session id and the backend
+    // started a brand-new session, handing the model the "[Continue…]" prompt
+    // with ZERO prior context.
+    const resumeSessionId = activeSessionBuffer.get(convKey)
+      ?? (activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null);
+    if (!resumeSessionId) {
+      // Nothing to resume into — refuse rather than silently creating a new session.
+      console.warn('[resume] no session bound to this conversation — resume aborted');
+      return;
+    }
+
+    // Send a hidden continuation prompt — the backend reattaches to the bound
+    // session and lets the LLM pick up where it left off.
+    void hookSend(
+      '[Continue from where you left off. Do not repeat content already generated.]',
+      { isResume: true, sessionIdOverride: resumeSessionId },
+    );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, updateConvMsgs]);
+  }, [messages, updateConvMsgs, activeSessionId]);
 
   const handleReplyMsg = useCallback((msg: ChatMsg) => {
     const senderName = msg.sender === 'user' ? (authUser?.name ?? t('page.fallbackYou')) : (msg.agentName ?? t('page.fallbackAgent'));
