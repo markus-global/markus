@@ -2603,15 +2603,9 @@ export class APIServer {
         }
       }
 
-      if (!secretary.isProcessing()) {
-        if (sessionRestoreData) {
-          secretary.restoreSessionFromHistory(
-            sessionRestoreData.dbSessionId,
-            sessionRestoreData.messages,
-            { preferredMemorySessionId: sessionRestoreData.preferredMemorySessionId ?? null },
-          );
-        }
-      }
+      // Feishu 入站：会话上下文**一律**交给处理该 item 的 worker 应用（与主路一致）。
+      // 这里以前在 HTTP 线程 eager restore —— 那只写 root 工作区，worker 看不到；
+      // 并发下还会写下陈旧/空绑定（下面 persistMemorySessionBinding 已改为按 DB id 定向查询）。
 
       // Persist the inbound Feishu user turn onto the main session before streaming
       // (restore snapshot above intentionally excludes this message).
@@ -2632,9 +2626,7 @@ export class APIServer {
           },
         );
         if (persisted) {
-          secretary.bindDbSession(persisted.sessionId);
-          // 签名已改为「显式内存会话 id」：不要再传 agent（那会去读 root 工作区指针，
-          // 并发下会写下陈旧/空绑定）。改为按 DB id 定向查询。
+          // 绑定由处理该消息的 worker 写；这里只按 DB id 定向回写持久化映射。
           this.persistMemorySessionBinding(
             persisted.sessionId,
             secretary.getMemorySessionIdForDbSession(persisted.sessionId),
@@ -2659,7 +2651,7 @@ export class APIServer {
         }
       }
 
-      const deferredRestore = secretary.isProcessing() ? sessionRestoreData : undefined;
+      const deferredRestore = sessionRestoreData;
       const feishuSenderLabel = senderName.startsWith('Feishu') ? senderName : `Feishu:${senderName}`;
       const reply = await secretary.sendMessageStream(
         text,
@@ -2670,7 +2662,11 @@ export class APIServer {
         undefined,
         undefined,
         undefined,
-        deferredRestore !== undefined ? { sessionRestore: deferredRestore } : undefined,
+        {
+          ...(deferredRestore !== undefined ? { sessionRestore: deferredRestore } : {}),
+          // 本轮 DB 会话 id：让 worker 能按 cs_* 解析并写 DB→内存绑定。
+          ...(mainSessionId ? { dbSessionId: mainSessionId } : {}),
+        },
       );
 
       // Invalidate in-flight mid-stream card patches before writing the final card.
@@ -6456,6 +6452,13 @@ EXPLANATION_END`;
       const imagePaths = persistedImages.map(p => p.path);
 
       const stream = body['stream'] as boolean | undefined;
+      // 会话身份契约（第 0 步）：这个入口历史上**不带任何会话身份** → agent 每次都开新会话。
+      // 现按契约明确表态：有 channelId 则按频道绑定（同频道连续）；否则显式声明 unknown
+      //（core 会告警并保持当前会话，绝不静默新建）。
+      const channelIdForHint = body['channelId'] as string | undefined;
+      const sessionHint = channelIdForHint
+        ? ({ kind: 'system', role: 'channel', key: channelIdForHint } as const)
+        : ({ kind: 'unknown', reason: 'POST /api/message 未提供 sessionId 或 channelId' } as const);
       if (stream) {
         const userText = body['text'] as string;
 
@@ -6468,6 +6471,7 @@ EXPLANATION_END`;
           imagePaths,
           senderId,
           senderInfo,
+          sessionHint,
           executionStreamRepo: this.storage?.executionStreamRepo,
           onComplete: async (reply, segments, tokensUsed) => {
             const meta = segments.length > 0 ? { segments } : undefined;
@@ -6481,7 +6485,7 @@ EXPLANATION_END`;
         const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
         let reply: string;
         try {
-          reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, imagePaths, toolEventCollector: toolEvents });
+          reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint });
         } catch (err) {
           throw err;
         }
