@@ -314,6 +314,20 @@ their mailbox on demand using `check_mailbox` in any scenario.
 
 All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
 
+#### Concurrency Context (volatile tail)
+Source: `buildSystemPrompt()` with `opts.concurrentContext` in `ContextEngine`.
+Injected **only** when concurrent processing is enabled *and* `workerCount > 1` (see
+[CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)). It is a **volatile-tail** segment,
+never a system-prompt section, so its per-turn churn cannot invalidate the STABLE /
+SEMI-STABLE prefix cache. It injects:
+- **Worker identity**: "this session is one of N workers (worker W)".
+- **In-flight siblings**: up to 4 recent `declared`/`fact` handoff records from *other* workers (own records filtered out).
+- **Recent handoffs**: up to 4 `done`/`conflict` records from other workers, newest first.
+- **Consistency rules**: (1) do not assume exclusive cognition — check shared knowledge + handoff log before any persistent decision; (2) an entity is processed by one worker at a time — do not force work whose entity is held; (3) on a detected conflict, report the divergence instead of silently overwriting.
+
+The data comes from the agent's `ConcurrentHandoffLog`; the injectable subset is bounded
+by `HANDOFF_CONTEXT_LIMIT` (8).
+
 #### Scenario Section (§15)
 Source: `buildScenarioSection()`.  
 Placed at the **end of Tier 2** so the identity/org/memory prefix remains stable across mode switches (chat ↔ heartbeat ↔ a2a). Eight distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow and Tool Usage Rules rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
@@ -565,6 +579,14 @@ Step 0 is the Cognitive Preparation Pipeline. It runs once before the main harne
 ### 4.3 Tool Execution
 
 All tool calls within a single LLM response are executed **in parallel** (`Promise.all`) in `handleMessage` and `handleMessageStream`. In `_executeTaskInternal` and `respondInSession`, they are executed **sequentially** (for-of loop) with per-tool status events.
+
+**Write serialisation under concurrency.** When the agent runs a concurrent worker pool,
+state-mutating tool calls are routed through an agent-level FIFO **write lock**
+(`Agent.withToolWriteLock`, see [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)) so
+two workers cannot mutate shared state at the same instant. Read-only tools are not
+blocked; the lock is released even when the wrapped call throws. Note this serialises a
+*single tool call*, not an entire multi-step flow — see the known-limitations section of
+that doc.
 
 `spawn_subagent` and `spawn_subagents` let the model delegate focused subtasks to lightweight LLM subagents; `spawn_subagents` runs several in parallel. They are registered on the Agent like other built-in tools. All subagent limits (max parallel count, LLM retry policy, preview truncation lengths) are centralized in `packages/shared/src/limits.ts` — not hardcoded in the subagent module.
 

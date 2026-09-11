@@ -133,3 +133,21 @@ narrows the gap without breaking that principle by distinguishing **revocation**
   chat-non-preemptable mapping is retained; A1's `cancelProcessing` aborts the active stream.
 - **Status**: implemented (yield-point `cancel` → abort + `[cancelled]`; `preempt` → restore;
   shared abort via `cancelActiveStream`).
+
+### 4.3 Spec: directed cancel under concurrency (Scheme B)
+
+Under concurrent processing ([CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)) a stop
+request can no longer target "the agent" — several workers may have in-flight streams. The
+cancel API is therefore **directed**:
+
+- `cancelActiveStream(target?)` accepts `target = { itemId?, sessionId? }`.
+- The HTTP/SSE caller has **no** `AsyncLocalStorage` context of its own, so it resolves the
+  owning worker via `AttentionController.findWorkerByItemId()` / `findWorkerBySessionId()`,
+  then runs the abort **inside that worker's workspace** via
+  `sessionWorkspaceStore.run(ws, () => cancelActiveStreamCore())`.
+- Frontend **Stop** and **Retry** always pass a stable `sessionId` target, so stopping a
+  stream in one session tab never aborts another tab's in-flight turn.
+
+- **Status**: implemented (`packages/core/test/attention-directed-cancel.test.ts`,
+  `agent-concurrent-activity.test.ts`). In serial mode `target` is optional and cancel falls
+  back to the instance-level stream token.
