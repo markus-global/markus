@@ -399,7 +399,7 @@
     "enabled": "Enable concurrent processing",
     "enabledDesc": "Recommended. Agents can process multiple independent items in parallel; each worker gets isolated session state.",
     "maxWorkers": "Max workers",
-    "maxWorkersDesc": "1 (serial) to 10. Default 3. Each concurrent worker runs its own processing loop.",
+    "maxWorkersDesc": "1 (serial) to 10. Default 3. Each concurrent worker runs its own processing loop, and this same number caps how many tasks may execute in parallel (task concurrency = min(workers, per-agent task limit)). Higher values mean more in-flight model calls and higher cost.",
     "conflictPolicy": "Conflict policy",
     "conflictPolicyDesc": "How the agent handles overlapping/failed entity-lock situations.",
     "policyAuto": "Auto (requeue & retry)",

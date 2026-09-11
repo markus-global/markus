@@ -1767,8 +1767,14 @@ export class Agent {
           // route the reply into the ORIGIN session so the delegating thread continues
           // where it left off, instead of a disconnected a2a_* session.
           let awaitOriginSessionId: string | undefined;
+          // A2A 会话身份按「对话」而不是「消息」绑定：同一条 [conversation:x] 往来的多条
+          // 消息必须落在同一个会话里。旧实现把时间戳当默认会话 id，等于每条消息都开一个
+          // 新会话 —— 多轮 a2a 协作会彼此失忆（与 human_chat 那个 bug 同源）。
+          // 没有 conversation 标记的孤立消息保持原样（每条独立，避免互相污染）。
+          let a2aConversationId: string | undefined;
           if (item.sourceType === 'a2a_message') {
             const convMatch = /\[conversation:([^\]]+)\]/.exec(item.payload.content);
+            a2aConversationId = convMatch?.[1];
             if (convMatch?.[1]) {
               const cb = pendingCallbackRegistry.findByCorrelation(this.id, convMatch[1]);
               if (cb && cb.type === 'a2a_reply' && (cb.deliveryMode ?? 'in_session') === 'in_session') {
@@ -1780,7 +1786,9 @@ export class Agent {
           }
           const defaults: HandleMessageOptions = item.sourceType === 'a2a_message'
             ? {
-                sessionId: awaitOriginSessionId ?? channelSessionId ?? `a2a_${this.id}_${ts}`,
+                sessionId: awaitOriginSessionId
+                  ?? channelSessionId
+                  ?? (a2aConversationId ? `a2a_${this.id}_${a2aConversationId}` : `a2a_${this.id}_${ts}`),
                 scenario: 'a2a' as const,
               }
             : channelSessionId
