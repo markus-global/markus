@@ -1639,8 +1639,6 @@ export class Agent {
 
   private async processMailboxItemCore(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
     this.processingMailboxItemId = item.id;
-    // eslint-disable-next-line no-console
-    console.error('[PMC-enter]', item.id, item.sourceType, (item.payload.extra as {sessionId?: string} | undefined)?.sessionId, 't', Date.now() % 100000);
 
     // Compose batch content into primary item if batch processing
     if (batchItems && batchItems.length > 0) {
@@ -1715,7 +1713,14 @@ export class Agent {
           // restart then rebuilt a thin context from `chat_messages`
           // (observed: 57 memory messages → 3).
           const dbSessionIdForBinding =
-            (item.metadata as { dbSessionId?: string } | undefined)?.dbSessionId
+            // The request's own id first: for a BRAND-NEW chat the metadata
+            // deliberately omits dbSessionId (so attention's R0 cannot merge the
+            // first message into a live stream of the old session), which used to
+            // leave a fresh conversation with NO binding at all — the second
+            // message then had to rebuild a thin context from chat_messages
+            // instead of reattaching to this rich memory session.
+            (extra.sessionId as string | undefined)
+            ?? (item.metadata as { dbSessionId?: string } | undefined)?.dbSessionId
             ?? sessionRestore?.dbSessionId;
           if (dbSessionIdForBinding && this.currentSessionId) {
             this.dbSessionMap.set(dbSessionIdForBinding, this.currentSessionId);
@@ -1783,14 +1788,12 @@ export class Agent {
               : {};
           const opts = buildHandleOpts(defaults);
           if (item.sourceType === 'a2a_message') opts.scenario = 'a2a';
-          console.error('[PMC-before-handleMessage]', item.id, opts.sessionId, 't', Date.now() % 100000);
           let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             item.metadata?.senderId,
             senderInfo,
             opts,
           );
-          console.error('[PMC-after-handleMessage]', item.id, 't', Date.now() % 100000);
           if (needsMarker && item.sourceType !== 'human_chat') {
             reply = await this.ensureCompletionMarker(reply, opts.sessionId ?? this.currentSessionId);
           }
@@ -2547,8 +2550,6 @@ export class Agent {
    */
   cancelActiveStream(target?: { itemId?: string; sessionId?: string; workerId?: number }): number | undefined {
     const workerId = this.resolveCancelTargetWorker(target);
-    // eslint-disable-next-line no-console
-    console.error('[CAS]', JSON.stringify(target), '-> resolved', workerId, 't', Date.now() % 100000, 'wsKeys', [...this.workerWorkspaces.keys()]);
     if (workerId !== undefined && this.workerWorkspaces.has(workerId)) {
       this.cancelActiveStreamCore(workerId);
       this.lastCancelledWorkerId = workerId;
@@ -4009,8 +4010,6 @@ export class Agent {
     }
     this.memory.getOrCreateSession(this.id, sessionId);
     const userContent = await this.buildUserContent(userMessage, options?.images, options?.fileNames, options?.imagePaths);
-    // eslint-disable-next-line no-console
-    console.error('[HM] userContent-done', sessionId, Date.now() % 100000);
     this.memory.appendMessage(sessionId, { role: 'user', content: userContent });
 
     // Channel context is now injected in the system prompt (dynamic tier) rather
@@ -4026,8 +4025,6 @@ export class Agent {
     }
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
-    // eslint-disable-next-line no-console
-    console.error('[HM] cogctx-done', options?.sessionId, Date.now() % 100000);
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -4066,8 +4063,6 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
     const { volatile } = systemPromptBuild;
-    // eslint-disable-next-line no-console
-    console.error('[HM] sysprompt-done', sessionId, Date.now() % 100000);
     let { text: systemPrompt, segments: systemCacheSegments } = systemPromptBuild;
 
     const toolSelectCtx = this.buildSessionAwareToolSelectContext(sessionId, effectiveMessage);
@@ -4080,8 +4075,6 @@ export class Agent {
       scenario,
     };
     let llmTools = this.buildToolDefinitions(toolSelectOpts);
-    // eslint-disable-next-line no-console
-    console.error('[HM] tools-done', sessionId, Date.now() % 100000);
     // Afford.S2 catalog: rides the per-turn volatile TAIL block, never the system
     // prompt (it changes with the per-turn tool selection and would invalidate
     // the whole cached prefix). See consumeDeferredToolCatalog().
@@ -4112,11 +4105,7 @@ export class Agent {
     }
 
     // A2: flush important memory to disk before context fills (turn-level preflight).
-    // eslint-disable-next-line no-console
-    console.error('[HM] before-memflush', sessionId, Date.now() % 100000);
     await this.maybeMemoryFlushPreflight(sessionId);
-    // eslint-disable-next-line no-console
-    console.error('[HM] memflush-done', sessionId, Date.now() % 100000);
 
     // Cold-start fix: the Markus Hub catalog may not be loaded yet on the very
     // first turn (the Router kicks off the refresh fire-and-forget). The sync
@@ -4125,8 +4114,6 @@ export class Agent {
     // fail-safe (never throws) — so the FIRST turn already packs against real
     // Hub values. O(1) no-op once the catalog is warm.
     await this.llmRouter.ensureMarkusCatalogLoaded?.({ timeoutMs: 3000 });
-    // eslint-disable-next-line no-console
-    console.error('[HM] catalog-done', sessionId, Date.now() % 100000);
 
     const sessionMessages = this.requestHistory(sessionId);
     this.volatileState = this.mergeVolatile(volatile, deferredToolCatalog);
@@ -4174,8 +4161,6 @@ export class Agent {
       this.checkDailyTokenBudget();
       this.lastEstimatedInputTokens = this.estimateMessagesTokens(messages);
       const llmStart = Date.now();
-      // eslint-disable-next-line no-console
-      console.error('[HM] before-llm', sessionId, Date.now() % 100000);
       let response = await this.withNetworkRetry(
         () => this.llmRouter.chat({
           messages,

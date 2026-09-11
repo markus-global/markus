@@ -4437,14 +4437,9 @@ export class APIServer {
           : undefined;
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
 
-        // A resume must bind to an existing conversation. Without a sessionId
-        // the backend would `startNewSession()` and hand the model a bare
-        // "[Continue…]" prompt with zero history — silently discarding context.
-        // Reject instead of fabricating a fresh session.
-        if (isResume && !sessionId) {
-          this.json(res, 400, { error: 'isResume requires an existing sessionId' });
-          return;
-        }
+        // (The isResume/sessionId guard lives above, right after the request body
+        // is read — it must run BEFORE the agent lookup so a malformed resume never
+        // reaches agent state. It used to be copy-pasted a second time here.)
 
         this.ws.broadcastAgentUpdate(agentId!, 'working');
 
