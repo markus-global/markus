@@ -184,17 +184,21 @@ describe('AgentMailbox entity scopes (registry-driven, no silent gaps)', () => {
     expect(mailbox.dequeue()?.id).toBe(m3.id);
   });
 
-  it('human_chat 以「发起人」为优先实体（同用户消息串行，符合设计意图）', () => {
+  it('human_chat 以「会话」为优先实体（同用户不同会话可并行，同一会话串行）', () => {
+    const { mailbox } = makeMailbox();
     const c1 = mailbox.enqueue('human_chat', { summary: 'a', content: 'a' }, { metadata: { senderId: 'user_1', sessionId: 'sess_A' } });
     const c2 = mailbox.enqueue('human_chat', { summary: 'b', content: 'b' }, { metadata: { senderId: 'user_1', sessionId: 'sess_B' } });
-    const c3 = mailbox.enqueue('human_chat', { summary: 'c', content: 'c' }, { metadata: { senderId: 'user_2', sessionId: 'sess_A' } });
+    const c3 = mailbox.enqueue('human_chat', { summary: 'c', content: 'c' }, { metadata: { senderId: 'user_1', sessionId: 'sess_A' } });
 
-    expect(mailbox.entityKeyOf(c1)).toBe('user:user_1');
-    expect(mailbox.entityKeyOf(c2)).toBe('user:user_1'); // 同用户不同会话 → 仍串行
-    expect(mailbox.entityKeyOf(c3)).toBe('user:user_2');
+    expect(mailbox.entityKeyOf(c1)).toBe('conv:sess_A');
+    expect(mailbox.entityKeyOf(c2)).toBe('conv:sess_B');
 
-    expect(mailbox.lockEntity('user:user_1', c1.id)).toBe(true);
-    expect(mailbox.dequeue()?.id).toBe(c3.id); // 别的用户不受影响
+    expect(mailbox.lockEntities(mailbox.entityKeysOf(c1), c1.id)).toBe(true);
+    // 同一个人、不同会话 tab → 可并行（本次改动的核心：不再按发起人串行）
+    expect(mailbox.isItemEntityLocked(c2)).toBe(false);
+    // 同一会话连发 → 仍串行（保序）
+    expect(mailbox.isItemEntityLocked(c3)).toBe(true);
+    expect(mailbox.dequeue()?.id).toBe(c2.id);
   });
 
   it('human_chat 无 senderId 时回落到会话键', () => {
@@ -202,40 +206,41 @@ describe('AgentMailbox entity scopes (registry-driven, no silent gaps)', () => {
     expect(mailbox.entityKeyOf(c)).toBe('conv:sess_Z');
   });
 
-  it('多实体维度：同时锁 user + conv（任一维度冲突都串行）', () => {
+  it('多实体维度：human_chat 带 taskId 时同时锁 task + conv（任一维度冲突都串行）', () => {
     // 独立 mailbox：上面的用例会留下未释放的锁
     const { mailbox } = makeMailbox();
-    const c1 = mailbox.enqueue('human_chat', { summary: 'a', content: 'a' }, { metadata: { senderId: 'user_1', sessionId: 'sess_A' } });
-    const c2 = mailbox.enqueue('human_chat', { summary: 'b', content: 'b' }, { metadata: { senderId: 'user_1', sessionId: 'sess_B' } }); // 同用户
-    const c3 = mailbox.enqueue('human_chat', { summary: 'c', content: 'c' }, { metadata: { senderId: 'user_2', sessionId: 'sess_A' } }); // 同会话
-    const c4 = mailbox.enqueue('human_chat', { summary: 'd', content: 'd' }, { metadata: { senderId: 'user_3', sessionId: 'sess_C' } }); // 无关
+    const c1 = mailbox.enqueue('human_chat', { summary: 'a', content: 'a', taskId: 'tsk_1' }, { metadata: { senderId: 'user_1', sessionId: 'sess_A' } });
+    const c2 = mailbox.enqueue('human_chat', { summary: 'b', content: 'b', taskId: 'tsk_2' }, { metadata: { senderId: 'user_1', sessionId: 'sess_B' } }); // 同用户、会话/任务均不同
+    const c3 = mailbox.enqueue('human_chat', { summary: 'c', content: 'c', taskId: 'tsk_3' }, { metadata: { senderId: 'user_2', sessionId: 'sess_A' } }); // 同会话
+    const c4 = mailbox.enqueue('human_chat', { summary: 'd', content: 'd', taskId: 'tsk_4' }, { metadata: { senderId: 'user_3', sessionId: 'sess_C' } }); // 无关
 
-    expect(mailbox.entityKeysOf(c1).sort()).toEqual(['conv:sess_A', 'user:user_1']);
+    expect(mailbox.entityKeysOf(c1).sort()).toEqual(['conv:sess_A', 'task:tsk_1']);
 
     expect(mailbox.lockEntities(mailbox.entityKeysOf(c1), c1.id)).toBe(true);
-    // 同用户（不同会话）→ 被 user: 维度挡住
-    expect(mailbox.isItemEntityLocked(c2)).toBe(true);
-    // 同会话（不同用户）→ 被 conv: 维度挡住
+    // 同 user 但会话/任务都不同 → 不再互锁（会话优先，本次改动）
+    expect(mailbox.isItemEntityLocked(c2)).toBe(false);
+    // 同会话 → 被 conv: 维度挡住
     expect(mailbox.isItemEntityLocked(c3)).toBe(true);
     // 互不相关 → 可处理
     expect(mailbox.isItemEntityLocked(c4)).toBe(false);
-    expect(mailbox.dequeue()?.id).toBe(c4.id);
+    // 可出队的一定是未锁的项（c2/c4），绝不会是被锁的 c1/c3
+    expect([c2.id, c4.id]).toContain(mailbox.dequeue()?.id);
 
     // 释放后两个维度都解锁
     mailbox.unlockEntities(mailbox.entityKeysOf(c1), c1.id);
-    expect(mailbox.isEntityLocked('user:user_1')).toBe(false);
+    expect(mailbox.isEntityLocked('task:tsk_1')).toBe(false);
     expect(mailbox.isEntityLocked('conv:sess_A')).toBe(false);
   });
 
   it('lockEntities 全有或全无：部分冲突时不残留半锁', () => {
     const { mailbox } = makeMailbox();
-    const a = mailbox.enqueue('human_chat', { summary: 'a', content: 'a' }, { metadata: { senderId: 'user_X', sessionId: 'sess_1' } });
+    const a = mailbox.enqueue('human_chat', { summary: 'a', content: 'a', taskId: 'tsk_1' }, { metadata: { senderId: 'user_X', sessionId: 'sess_1' } });
     // 先占住其中一个维度
     mailbox.lockEntity('conv:sess_1', 'other-holder');
 
     expect(mailbox.lockEntities(mailbox.entityKeysOf(a), a.id)).toBe(false);
     // 未被占用的那个维度不能被"顺带"锁上（否则等于锁泄漏）
-    expect(mailbox.isEntityLocked('user:user_X')).toBe(false);
+    expect(mailbox.isEntityLocked('task:tsk_1')).toBe(false);
     expect(mailbox.isEntityLocked('conv:sess_1')).toBe(true);
   });
 

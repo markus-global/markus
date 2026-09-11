@@ -228,7 +228,7 @@ describe('端到端并发：两个独立会话被两个分身同时服务（A �
     await manager.startAgent(agent.id);
 
     try {
-      // 同一会话连发两条 —— 实体键完全相同（user:user_A + conv:sess_SAME），
+      // 同一会话连发两条 —— 实体键完全相同（conv:sess_SAME），
       // 因此无论走串行还是走「合并成一次 turn」，都不允许两个分身同时服务它。
       const [r1, r2] = await Promise.all([
         agent.sendMessage('同一会话第一条 TOKEN_A', 'user_A', undefined, { sessionId: 'sess_SAME' }),
