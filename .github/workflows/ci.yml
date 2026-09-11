@@ -38,4 +38,4 @@ jobs:
       # 会话不变量：锁住「同一会话后续请求必须看到历史」这类跨线程语义。
       # 单元测试覆盖不到「HTTP 线程写 / worker 读」那一段，所以单列一步、必过。
       - name: Session continuity invariants
-        run: npx vitest run packages/core/test/conversation-session-invariants.test.ts packages/core/test/session-continuity-smoke.test.ts
+        run: npx vitest run packages/core/test/conversation-session-invariants.test.ts packages/core/test/session-continuity-smoke.test.ts packages/org-manager/test/session-continuity-http.test.ts

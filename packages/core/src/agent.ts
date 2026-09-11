@@ -1010,6 +1010,14 @@ export class Agent {
       priority?: MailboxPriority;
       taskId?: string;
       requirementId?: string;
+      /**
+       * 本轮的 DB 会话 id（cs_*）。**仅供绑定/恢复使用，绝不当作内存会话 key。**
+       *
+       * 为什么不直接复用 `sessionId`：`sessionId` 会被非流式 `handleMessage`
+       * 当成**内存会话 key**使用，把 cs_* 传进去会造成 split-brain（同一个对话
+       * 分裂到两个存储）。所以 DB 身份单独走一个字段，只进 extra、只用于写绑定。
+       */
+      dbSessionId?: string;
       sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null;
     },
   ): Promise<string> {
@@ -1023,6 +1031,8 @@ export class Agent {
       requirementId: options?.requirementId,
       extra: {
         sessionId: options?.sessionId,
+        // 仅用于「写 DB→memory 绑定」的请求身份，不会被当成内存会话 key。
+        dbSessionId: options?.dbSessionId,
         channelContext: options?.channelContext,
         channelKey: options?.channelKey,
         images: options?.images,
@@ -1720,6 +1730,7 @@ export class Agent {
             // message then had to rebuild a thin context from chat_messages
             // instead of reattaching to this rich memory session.
             (extra.sessionId as string | undefined)
+            ?? (extra.dbSessionId as string | undefined)
             ?? (item.metadata as { dbSessionId?: string } | undefined)?.dbSessionId
             ?? sessionRestore?.dbSessionId;
           if (dbSessionIdForBinding && this.currentSessionId) {
@@ -1767,8 +1778,14 @@ export class Agent {
           // route the reply into the ORIGIN session so the delegating thread continues
           // where it left off, instead of a disconnected a2a_* session.
           let awaitOriginSessionId: string | undefined;
+          // A2A 会话身份按「对话」而不是「消息」绑定：同一条 [conversation:x] 往来的多条
+          // 消息必须落在同一个会话里。旧实现把时间戳当默认会话 id，等于每条消息都开一个
+          // 新会话 —— 多轮 a2a 协作会彼此失忆（与 human_chat 那个 bug 同源）。
+          // 没有 conversation 标记的孤立消息保持原样（每条独立，避免互相污染）。
+          let a2aConversationId: string | undefined;
           if (item.sourceType === 'a2a_message') {
             const convMatch = /\[conversation:([^\]]+)\]/.exec(item.payload.content);
+            a2aConversationId = convMatch?.[1];
             if (convMatch?.[1]) {
               const cb = pendingCallbackRegistry.findByCorrelation(this.id, convMatch[1]);
               if (cb && cb.type === 'a2a_reply' && (cb.deliveryMode ?? 'in_session') === 'in_session') {
@@ -1780,7 +1797,9 @@ export class Agent {
           }
           const defaults: HandleMessageOptions = item.sourceType === 'a2a_message'
             ? {
-                sessionId: awaitOriginSessionId ?? channelSessionId ?? `a2a_${this.id}_${ts}`,
+                sessionId: awaitOriginSessionId
+                  ?? channelSessionId
+                  ?? (a2aConversationId ? `a2a_${this.id}_${a2aConversationId}` : `a2a_${this.id}_${ts}`),
                 scenario: 'a2a' as const,
               }
             : channelSessionId

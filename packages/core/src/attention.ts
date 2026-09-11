@@ -1329,6 +1329,18 @@ export class AttentionController {
   }
 
   private emitIncomplete(item: MailboxItem, reason: string): void {
+    // 用户可见性：以前这里只发事件，而 human_chat 的 `agent:incomplete` 没有任何 UI
+    // 消费者（只有 CLI 恢复任务与 task-service 的特定 reason 在听），于是「一轮被超时
+    // 取消」对用户完全不可见——他只看得到半截回复，也不知道可以重试。这里先把事实明确
+    // 记到日志（哪条消息 / 哪个会话 / 什么原因），而不是只留一个没人听的 debug 事件。
+    log.warn('Mailbox item completed as incomplete', {
+      agentId: this.agentId,
+      itemId: item.id,
+      type: item.sourceType,
+      sessionId: (item.payload?.extra as { sessionId?: string } | undefined)?.sessionId,
+      taskId: item.payload?.taskId,
+      reason,
+    });
     try {
       this.eventBus.emit('agent:incomplete', {
         agentId: this.agentId,
@@ -1338,7 +1350,8 @@ export class AttentionController {
         reason,
       });
     } catch (err) {
-      log.debug('Failed to emit agent:incomplete', { itemId: item.id, error: String(err) });
+      // 事件发不出去也要可见：静默吞掉这里会让「有轮失败了」彻底消失。
+      log.warn('Failed to emit agent:incomplete', { itemId: item.id, error: String(err) });
     }
   }
 

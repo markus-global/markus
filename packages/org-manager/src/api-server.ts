@@ -2129,12 +2129,16 @@ export class APIServer {
    */
   private persistMemorySessionBinding(
     dbSessionId: string,
-    agent: { getCurrentSessionId(): string | null },
+    memorySessionId: string | null | undefined,
   ): void {
     if (!this.storage) return;
     // Best-effort: a failed binding write must never break the chat turn.
     try {
-      const memorySessionId = agent.getCurrentSessionId();
+      // NOTE: the caller must pass an EXPLICITLY resolved memory session id.
+      // This used to read `agent.getCurrentSessionId()`, which reads the current
+      // workspace — on an HTTP thread that is the ROOT workspace, so under
+      // concurrency it persisted a stale/empty binding (or none at all) and a
+      // later restart rebuilt a thin context instead of the rich one.
       if (!memorySessionId) return;
       const existing = this.storage.chatSessionRepo.getSessionMetadata(dbSessionId) ?? {};
       if (existing['memorySessionId'] === memorySessionId) return;
@@ -2629,7 +2633,12 @@ export class APIServer {
         );
         if (persisted) {
           secretary.bindDbSession(persisted.sessionId);
-          this.persistMemorySessionBinding(persisted.sessionId, secretary);
+          // 签名已改为「显式内存会话 id」：不要再传 agent（那会去读 root 工作区指针，
+          // 并发下会写下陈旧/空绑定）。改为按 DB id 定向查询。
+          this.persistMemorySessionBinding(
+            persisted.sessionId,
+            secretary.getMemorySessionIdForDbSession(persisted.sessionId),
+          );
           mainSessionId = persisted.sessionId;
           feishuUserMessageId = persisted.messageId;
           // Push the user turn to Team Chat immediately (do not wait for the reply).
@@ -4510,12 +4519,10 @@ export class APIServer {
           aId: string, _text: string, sId?: string, imgs?: string[], sessId?: string,
         ): Promise<{ sessionId: string; messageId: string } | null> => {
           const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo);
-          if (persisted && !sessId) {
-            agent.bindDbSession(persisted.sessionId);
-          }
-          if (persisted) {
-            this.persistMemorySessionBinding(persisted.sessionId, agent);
-          }
+          // NOTE: 这里以前会顺手做两件「写绑定」的事（agent.bindDbSession +
+          // persistMemorySessionBinding）。两者都跑在 HTTP 线程上、读的是 root 工作区，
+          // 并发下只会写下陈旧/空绑定。绑定现在由处理该消息的 worker 写，持久化则在
+          // 回合结束后按 DB id 定向查询回写（见 persistTurnSessionBinding）。
           return persisted ? { sessionId: persisted.sessionId, messageId: persisted.messageId } : null;
         };
 
@@ -4573,6 +4580,10 @@ export class APIServer {
           try {
             reply = await agent.sendMessage(agentText, senderId, senderInfo, {
               images, fileNames, imagePaths, toolEventCollector: toolEvents,
+              // 把本轮 DB 会话 id 显式交给处理该消息的分身：它用它写 DB→memory 绑定。
+              // 以前这里什么都不传，于是新对话的首条消息根本落不下绑定 —— 第二条
+              // 只能从瘦 DB 重建（明明是同一个会话，却换了个内存会话）。
+              ...(persistedSessionId ? { dbSessionId: persistedSessionId } : {}),
               ...(deferredRestoreNonStream !== undefined ? { sessionRestore: deferredRestoreNonStream } : {}),
             });
           } catch (err) {
