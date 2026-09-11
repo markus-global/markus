@@ -2246,6 +2246,15 @@ export class Agent {
     return this.currentSessionId ?? null;
   }
 
+  /**
+   * Reverse of getDbSessionId(): resolve a DB chat session id (cs_*) to the
+   * in-memory session currently bound to it, if any. Lets tools accept both id
+   * spaces so an agent can introspect "which conversation am I in".
+   */
+  getMemorySessionIdForDbSession(dbSessionId: string): string | null {
+    return this.dbSessionMap.get(dbSessionId) ?? null;
+  }
+
   /** Returns the DB session ID currently bound to the active memory session, if any. */
   getDbSessionId(): string | null {
     if (!this.currentSessionId) return null;

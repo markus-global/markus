@@ -357,6 +357,19 @@ export class MemoryStore implements IMemoryStore {
     return all;
   }
 
+  /**
+   * Count session files persisted on disk. Cheap (a single readdir) and used to
+   * report an honest `total` — the in-memory cap (MAX_SESSIONS_IN_MEMORY)
+   * otherwise makes `session list` look like older conversations vanished.
+   */
+  countSessionsOnDisk(): number {
+    try {
+      return readdirSync(this.sessionsDir).filter((f) => f.endsWith('.json')).length;
+    } catch {
+      return this.sessions.size;
+    }
+  }
+
   getLatestSession(agentId: string): ConversationSession | undefined {
     const agentSessions = this.listSessions(agentId);
     if (agentSessions.length === 0) return undefined;

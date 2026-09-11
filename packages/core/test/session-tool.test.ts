@@ -306,3 +306,69 @@ describe('session_rename', () => {
     expect(res2.status).toBe('ok');
   });
 });
+
+describe('P3: cs_* ↔ memory session 解析 + 当前会话自证', () => {
+  it('get 用 cs_* id → 解析到绑定的内存会话', async () => {
+    const getSession = vi.fn(() => makeSession());
+    const ctx = makeCtx({
+      chatSessionRepo: {
+        listSessionsPaginated: vi.fn(() => ({ sessions: [makeSession()], total: 1, page: 1, pageSize: 20, hasMore: false })),
+        getSession,
+        listMessagesPaginated: vi.fn(() => ({ messages: [makeMsg()], total: 1, page: 1, pageSize: 50, hasMore: false })),
+        countMessagesByAgent: vi.fn(() => 0),
+      } as never,
+      resolveMemorySessionByDbSessionId: (id) => (id === 'cs_live' ? 'sess_mem_1' : null),
+    });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'get', session_id: 'cs_live' }));
+    expect(res.status).toBe('ok');
+    expect(getSession).toHaveBeenCalledWith('sess_mem_1');
+    expect(res.session.chatSessionId).toBe('cs_live');
+  });
+
+  it('get 用无法解析的 cs_* id → 不是干瘪的 not_found，而是解释两种 id 空间', async () => {
+    const ctx = makeCtx({ resolveMemorySessionByDbSessionId: () => null });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'get', session_id: 'cs_orphan' }));
+    expect(res.status).toBe('not_found');
+    expect(res.chatSessionId).toBe('cs_orphan');
+    expect(String(res.message)).toContain('cs_*');
+    expect(String(res.message)).toContain('status');
+  });
+
+  it('status 不传 session_id → 默认当前会话，并回显双 id', async () => {
+    const ctx = makeCtx({
+      currentMemorySessionId: () => 'sess_mem_1',
+      currentDbSessionId: () => 'cs_live',
+    });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'status' }));
+    expect(res.status).toBe('ok');
+    expect(res.sessionId).toBe('sess_mem_1');
+    expect(res.chatSessionId).toBe('cs_live');
+    expect(res.isCurrent).toBe(true);
+  });
+
+  it('rename 不传 session_id → 作用于当前聊天会话（修正文档/实现不一致）', async () => {
+    const titleUpdater = vi.fn();
+    const ctx = makeCtx({
+      titleUpdater,
+      currentMemorySessionId: () => 'sess_mem_1',
+      currentDbSessionId: () => 'cs_live',
+    });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'rename', title: '修复历史列表' }));
+    expect(res.status).toBe('ok');
+    expect(titleUpdater).toHaveBeenCalledWith('cs_live', '修复历史列表');
+    expect(res.chatSessionId).toBe('cs_live');
+  });
+
+  it('list 标出当前会话，并如实报告磁盘总数（内存只热加载一部分）', async () => {
+    const ctx = makeCtx({
+      currentMemorySessionId: () => 'cs-1',
+      currentDbSessionId: () => 'cs_live',
+      diskSessionCount: () => 500,
+    });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'list' }));
+    expect(res.current).toEqual({ memorySessionId: 'cs-1', chatSessionId: 'cs_live' });
+    expect(res.sessions[0].isCurrent).toBe(true);
+    expect(res.totalOnDisk).toBe(500);
+    expect(String(res.note)).toContain('on disk');
+  });
+});
