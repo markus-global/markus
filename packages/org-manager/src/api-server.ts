@@ -4433,17 +4433,22 @@ export class APIServer {
           // Pass deferred session restore when agent is busy — it will be applied
           // at mailbox processing time to avoid corrupting an in-progress session.
           const deferredRestore = agent.isProcessing() ? sessionRestoreData : undefined;
-          // Optional one-shot / session model override for this turn
+          // Optional ONE-SHOT model override, honoured only from the explicit
+          // request body. Session-level overrides are deliberately no longer
+          // read: a model belongs to the AGENT (its own binding) or to global
+          // routing, never to a single conversation — otherwise two sessions of
+          // the same agent could silently run a different model than the
+          // composer shows.
           const overrideProvider = typeof body['provider'] === 'string' ? body['provider'].trim() : '';
           const overrideModel = typeof body['model'] === 'string' ? body['model'].trim() : '';
           if (overrideProvider && overrideModel) {
             agent.setTurnModelOverride({ provider: overrideProvider, model: overrideModel });
-          } else if (sessionId && this.storage) {
-            const sessMeta = this.storage.chatSessionRepo.getSessionMetadata(sessionId);
-            const mo = sessMeta?.['modelOverride'] as { provider?: string; model?: string } | undefined;
-            if (mo?.provider && mo?.model) {
-              agent.setTurnModelOverride({ provider: mo.provider, model: mo.model });
-            }
+          } else {
+            // Clear any leftover override. `setTurnModelOverride` persists on the
+            // agent workspace (not per-request), so without this an override sent
+            // once would pin the agent's model for every later turn — the agent
+            // would keep using a model the composer no longer shows.
+            agent.setTurnModelOverride(null);
           }
 
           const sseHandler = new SSEHandler({

@@ -174,23 +174,31 @@ describe('端到端并发：两个独立会话被两个分身同时服务（A �
 
       for (const [own, sibling] of [['TOKEN_A', 'TOKEN_B'], ['TOKEN_B', 'TOKEN_A']] as const) {
         for (const call of probe.calls.filter(c => c.token === own)) {
-          // 2a. 会话隔离（结构化断言）：作为「当前消息」送进去的最后一条 user message
-          //     必须只有本会话自己的内容 —— 别的会话的消息绝不能混进会话历史。
-          const current = call.messages[call.messages.length - 1];
-          expect(current.role, 'prompt 末尾应是当前 user message').toBe('user');
+          // 2a. Scheme A 位置不变量：per-turn volatile 快照必须是**最后一条**消息。
+          //     它逐轮变化，只要后面还有任何消息，那部分就永远无法命中前缀缓存。
+          const last = call.messages[call.messages.length - 1]!;
+          expect(last.role, 'prompt 末尾应是 volatile 快照').toBe('user');
+          expect(last.text, 'volatile 快照必须钉在 history 尾部').toContain('[SYSTEM] [Live context]');
+
+          // 2b. 会话隔离：最后一条「真实」user message（即当前提问，排除 volatile
+          //     快照）必须只有本会话自己的内容 —— 别的会话的消息绝不能混进会话历史。
+          const realUserMsgs = call.messages.filter(
+            m => m.role === 'user' && !m.text.startsWith('[SYSTEM] [Live context]'),
+          );
+          const current = realUserMsgs[realUserMsgs.length - 1]!;
           expect(current.text, `${call.sessionId} 当前消息应是自己发的`).toContain(own);
           expect(current.text, `${call.sessionId} 当前消息混入了其他会话内容`).not.toContain(sibling);
 
-          // 2b. 跨分身感知是**有意且有界的**：兄弟会话最多以「Concurrency Context」里的一行
-          //     摘要出现在更早的上下文中（用途是避免两个分身做出互相矛盾的决策），
-          //     而不是把这部分内容当成本会话的消息。
-          const earlier = call.messages.slice(0, -1).map(m => m.text).join('\n');
-          const occurrences = earlier.split(sibling).length - 1;
+          // 2c. 跨分身感知是**有意且有界的**：兄弟会话的内容只允许作为一行摘要出现在
+          //     volatile 感知区块（Concurrency Context）里 —— 而不是被当成本会话的消息。
+          const whole = call.messages.map(m => m.text).join('\n');
+          const occurrences = whole.split(sibling).length - 1;
           expect(occurrences, '兄弟会话内容被重复注入').toBeLessThanOrEqual(1);
           if (occurrences === 1) {
-            const idx = earlier.indexOf(sibling);
+            expect(last.text, '兄弟会话内容只能出现在 volatile 感知区块').toContain(sibling);
+            const idx = last.text.indexOf(sibling);
             expect(
-              earlier.slice(Math.max(0, idx - 800), idx),
+              last.text.slice(Math.max(0, idx - 800), idx),
               '兄弟会话内容只能出现在 Concurrency Context 感知区块中',
             ).toContain('Concurrency Context');
           }

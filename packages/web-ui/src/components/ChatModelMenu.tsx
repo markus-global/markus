@@ -19,7 +19,9 @@ export interface GlobalScopeOptions {
    * When true (default), applying to global ALSO resets the current agent's
    * per-agent binding back to "follow global" — so the composer's shown model
    * equals both the global default and the agent's actual model (no ambiguity).
-   * Internal fallback repairs pass false to avoid wiping a user's per-agent setup.
+   * The catalog-repair path also passes true: an agent pinned to a model that
+   * is no longer in the enabled catalog must lose that binding, otherwise the
+   * label would keep advertising a model the agent can no longer resolve.
    */
   resetCurrentAgent?: boolean;
 }
@@ -41,8 +43,8 @@ interface ChatModelMenuProps {
  *     selected, the current agent is ALSO reset to follow global, so the shown
  *     model equals both the global default and the agent's actual model.
  * The per-agent scope is the default: picking a model writes the current
- * agent's per-agent default. Turning on 'agent' clears any session override so
- * the per-agent model is what applies to this agent (no leftover session pick).
+ * agent's per-agent default — a model is bound to the AGENT (or to global
+ * routing), never to a single conversation/session.
  */
 export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelMenuProps) {
   const { t } = useTranslation('team');
@@ -195,7 +197,11 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
     return !!p?.models.some(m => m.id === sel.model);
   }, [providers]);
 
-  // Session override can also be sticky-stale after CN catalog filter.
+  // The agent's bound model can go missing from the catalog (provider turned
+  // off, CN geo-filter dropping it). Repair by falling back to the global
+  // default AND resetting the agent to "follow global" — the unusable binding
+  // must go too, otherwise the label would keep showing a model the agent no
+  // longer resolves to (and the repair would re-fire on every render).
   useEffect(() => {
     if (!value || providers.length === 0) return;
     if (selectionInCatalog(value)) return;
@@ -209,7 +215,7 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
           }
           return null;
         })();
-    if (fallback) onSelect(fallback, 'global', { resetCurrentAgent: false });
+    if (fallback) onSelect(fallback, 'global', { resetCurrentAgent: true });
   }, [value, providers, globalDefault, selectionInCatalog, onSelect]);
 
   const effective = (value && selectionInCatalog(value)) ? value : globalDefault;
@@ -328,39 +334,36 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
   );
 }
 
-/** Persist a model selection at the requested scope.
- * - scope 'global': update global LLM routing (and optionally the session
- *   override). When agentId is given, ALSO reset that agent's per-agent
- *   binding to "follow global", so the composer's selected model matches the
- *   agent's actual model and the global default — no ambiguity.
+/**
+ * Persist a model selection at the requested scope.
+ *
+ * There is deliberately NO session scope: a model belongs to the AGENT (or to
+ * global routing), never to a single conversation. The removed session-scoped
+ * override let two tabs of the same agent show — and actually use — different
+ * models, and made the composer label lag until the tab was re-entered.
+ *
+ * - scope 'global': update global LLM routing. When agentId is given, ALSO
+ *   reset that agent's per-agent binding to "follow global", so the composer's
+ *   shown model matches the agent's actual model and the global default.
  * - scope 'agent' : update ONLY the given agent's per-agent default model
  *                   (llmConfig.modelMode='custom', primary=provider,
- *                   defaultModel=model) and clear the session override so the
- *                   per-agent model is what applies.
+ *                   defaultModel=model).
  */
 export async function applyChatModelSelection(
-  sessionId: string | null,
   sel: ChatModelSelection,
   scope: 'global' | 'agent',
   agentId?: string,
   opts?: GlobalScopeOptions,
 ): Promise<void> {
   if (scope === 'agent') {
-    if (agentId) {
-      // Clear any session override so the agent's default actually applies on
-      // this session (per-agent > global; session override would win, which we
-      // don't want when the user picked "apply to current agent").
-      if (sessionId && !sessionId.startsWith('new_')) {
-        await api.sessions.setModelOverride(sessionId, null).catch(() => {});
-      }
-      await api.agents.updateConfig(agentId, {
-        llmConfig: {
-          modelMode: 'custom',
-          primary: sel.provider,
-          defaultModel: sel.model,
-        },
-      });
-    }
+    if (!agentId) return;
+    await api.agents.updateConfig(agentId, {
+      llmConfig: {
+        modelMode: 'custom',
+        primary: sel.provider,
+        defaultModel: sel.model,
+      },
+    });
     return;
   }
   // global scope
@@ -371,9 +374,6 @@ export async function applyChatModelSelection(
     await api.agents.updateConfig(agentId, {
       llmConfig: { modelMode: 'default', primary: '', defaultModel: undefined },
     }).catch(() => { /* best-effort; per-agent cache refreshes on next agent switch */ });
-  }
-  if (sessionId && !sessionId.startsWith('new_')) {
-    await api.sessions.setModelOverride(sessionId, sel);
   }
   await api.settings.updateRouting({
     defaultProvider: sel.provider,

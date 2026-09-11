@@ -771,3 +771,130 @@ describe('Learning Habits (LEARNING-LOOP §8)', () => {
     expect(section.length).toBeLessThanOrEqual(1600);
   });
 });
+
+describe('Scheme A prefix-cache invariants', () => {
+  /** A tool-loop transcript: the ONLY user message sits at index 1 for the whole turn. */
+  const toolLoopTranscript = (): LLMMessage[] => [
+    { role: 'user', content: 'TASK INSTRUCTION' },
+    { role: 'assistant', content: 'working', toolCalls: [{ id: 'c1', name: 'shell_execute', arguments: {} }] },
+    { role: 'tool', content: 'tool output 1', toolCallId: 'c1' },
+    { role: 'assistant', content: 'still working', toolCalls: [{ id: 'c2', name: 'file_read', arguments: {} }] },
+    { role: 'tool', content: 'tool output 2', toolCallId: 'c2' },
+  ];
+
+  it('C-cache-volatile-tail: pins the live snapshot as the LAST message, never at messages[1]', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+
+    const prepared = await engine.prepareMessages({
+      systemPrompt: 'STABLE SYSTEM',
+      sessionMessages: toolLoopTranscript(),
+      memory,
+      sessionId: 'sess_tail',
+      agentId: 'agt_ctx',
+      modelContextWindow: 200_000,
+      modelMaxOutput: 8_000,
+      volatileState: '## Team Status\nA | B',
+    });
+
+    const msgs = prepared.messages;
+    // System is untouched by the per-turn snapshot.
+    expect(msgs[0]!.role).toBe('system');
+    expect(String(msgs[0]!.content)).not.toContain('## Team Status');
+    // The original task instruction must stay at index 1 — if the volatile block
+    // lands here it changes every turn and re-bills the whole replayed history.
+    expect(msgs[1]!.role).toBe('user');
+    expect(String(msgs[1]!.content)).toBe('TASK INSTRUCTION');
+    // The snapshot is the tail.
+    const last = msgs[msgs.length - 1]!;
+    expect(last.role).toBe('user');
+    expect(String(last.content)).toContain('[SYSTEM] [Live context]');
+    expect(String(last.content)).toContain('## Team Status');
+    // Exactly one live block, no duplicates.
+    expect(msgs.filter(m => String(m.content).startsWith('[SYSTEM] [Live context]')).length).toBe(1);
+  });
+
+  it('C-cache-volatile-stable-head: the replayed head is byte-identical across two turns of the same loop', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const call = (sessionMessages: LLMMessage[], volatileState: string) => engine.prepareMessages({
+      systemPrompt: 'STABLE SYSTEM',
+      sessionMessages,
+      memory,
+      sessionId: 'sess_head',
+      agentId: 'agt_ctx',
+      modelContextWindow: 200_000,
+      modelMaxOutput: 8_000,
+      volatileState,
+    });
+
+    const base = toolLoopTranscript();
+    const first = await call(base, '## Team Status\nA | B');
+    const second = await call(
+      [...base, { role: 'assistant', content: 'more', toolCalls: [{ id: 'c3', name: 'file_read', arguments: {} }] },
+        { role: 'tool', content: 'tool output 3', toolCallId: 'c3' }],
+      '## Team Status\nA | C',   // volatile content changed on purpose
+    );
+
+    // Same system, and the volatile block is last in both → the whole prefix up to
+    // the previous turn's end is reusable.
+    expect(second.messages[0]).toEqual(first.messages[0]);
+    const stablePrefix = first.messages.slice(0, -1).map(m => JSON.stringify(m));
+    const secondPrefix = second.messages.slice(0, -1).map(m => JSON.stringify(m));
+    expect(secondPrefix.slice(0, stablePrefix.length)).toEqual(stablePrefix);
+  });
+
+  it('ContextOS slots + summary ride EVERY prepare path without being passed explicitly', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const session = memory.createSession('agt_ctx');
+    memory.setSlot(session.id, 'goal', 'fix the prefix cache');
+
+    // Force a real compaction so a durable summary anchor exists.
+    for (let i = 0; i < 40; i++) {
+      memory.appendMessage(session.id, { role: 'user', content: `msg ${i}` });
+      memory.appendMessage(session.id, { role: 'assistant', content: `ack ${i}` });
+    }
+    memory.compactSessionOnDemand(session.id, 6);
+
+    // NOTE: no slotsSegment / summarySegment passed — they must be derived.
+    const prepared = await engine.prepareMessages({
+      systemPrompt: 'STABLE SYSTEM',
+      sessionMessages: memory.getRecentMessages(session.id, 50),
+      memory,
+      sessionId: session.id,
+      agentId: 'agt_ctx',
+      modelContextWindow: 200_000,
+      modelMaxOutput: 8_000,
+    });
+
+    const system = String(prepared.messages[0]!.content);
+    expect(system).toContain('[SLOTS]');
+    expect(system).toContain('fix the prefix cache');
+    expect(system).toContain('[CONTEXT SUMMARY]');
+    expect(prepared.slotsSegment).toContain('[SLOTS]');
+    expect(prepared.summarySegment).toContain('[CONTEXT SUMMARY]');
+  });
+
+  it('an explicit slotsSegment still wins (no double injection)', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const session = memory.createSession('agt_ctx');
+    memory.setSlot(session.id, 'goal', 'from memory');
+
+    const prepared = await engine.prepareMessages({
+      systemPrompt: 'STABLE SYSTEM',
+      sessionMessages: [{ role: 'user', content: 'hi' }],
+      memory,
+      sessionId: session.id,
+      agentId: 'agt_ctx',
+      modelContextWindow: 200_000,
+      modelMaxOutput: 8_000,
+      slotsSegment: '[SLOTS] explicit wins',
+    });
+
+    const system = String(prepared.messages[0]!.content);
+    expect(system).toContain('explicit wins');
+    expect(system).not.toContain('from memory');
+  });
+});

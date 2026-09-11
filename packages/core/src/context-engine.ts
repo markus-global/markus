@@ -681,37 +681,10 @@ export class ContextEngine {
       semiStable.push(this.buildEnvironmentSection(opts.environment));
     }
 
-    // knowledge.md injection — omitted for reflex; tighter for converse (AGENT-RUNTIME §4 / §6)
-    const knowledgeTokCap = isReflex
-      ? KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX
-      : isConverse
-        ? KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE
-        : KNOWLEDGE_PROMPT_MAX_TOKENS;
-    if (knowledgeTokCap > 0) {
-      const longTermMem = opts.memory.getLongTermMemory();
-      if (longTermMem) {
-        const knowledgeCapChars = Math.min(SYSTEM_KNOWLEDGE_CHARS, knowledgeTokCap * 4);
-        semiStable.push('\n## Your Knowledge');
-        const prepared = prepareKnowledgeForPrompt(longTermMem, knowledgeCapChars);
-        semiStable.push(prepared.text);
-        if (prepared.truncated) {
-          semiStable.push(
-            '_[knowledge truncated — use `memory_search` or read `knowledge.md` for the rest]_',
-          );
-        }
-      }
-    } else if (isReflex) {
-      // Optional short state snapshot lines (state.md or notebook tip)
-      try {
-        const stateFn = (opts.memory as { getStateMemory?: () => string }).getStateMemory;
-        const stateText = typeof stateFn === 'function' ? stateFn.call(opts.memory) : '';
-        if (stateText?.trim()) {
-          const lines = stateText.trim().split('\n').slice(0, STATE_PROMPT_MAX_LINES_REFLEX);
-          semiStable.push('\n## Current State (short)');
-          semiStable.push(lines.join('\n'));
-        }
-      } catch { /* optional */ }
-    }
+    // NOTE: `## Your Knowledge` (knowledge.md) and `## Current State (short)`
+    // (state.md) used to be injected HERE, into Tier 2. They are now pushed into
+    // the volatile tail — see the MEMORY / KNOWLEDGE block below for the rationale
+    // (their WRITE FREQUENCY, not their size, is what made Tier 2 wrong for them).
 
     const scenario = opts.scenario ?? 'chat';
     semiStable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager, channelKey: opts.channelKey }));
@@ -746,6 +719,52 @@ export class ContextEngine {
     // system message. The system message is therefore strictly stable + semiStable,
     // which is what makes the implicit prefix-cache key byte-identical across turns.
     const dynamic = volatile;
+
+    // ─── MEMORY / KNOWLEDGE → volatile tail ─────────────────────────────────
+    // knowledge.md and state.md are AGENT-WRITTEN, and they change far more often
+    // than "semi-stable" implies: `memory_save` appends to `## _observations` on
+    // every call, and `memory_update` rewrites curated sections. While they sat in
+    // the byte-stable system text, EVERY such write invalidated the whole cached
+    // prefix (system + entire replayed history) — a high-frequency cache buster
+    // hiding inside the tier that was supposed to change only occasionally.
+    //
+    // Cost of keeping them in the tail is bounded by KNOWLEDGE_PROMPT_MAX_TOKENS
+    // (and they are reference material the model re-reads anyway); the saving is
+    // one full-history re-bill per memory write. See docs/PROMPT-ENGINEERING.md §2.1.1.
+    //
+    // Deliberately NOT moved: trust level, org/team context, workspace paths, team
+    // announcements/norms, `## About the Owner`. Those change on org/config events
+    // (rare), which is exactly what Tier 2's cache-then-invalidate trade-off is for.
+    const knowledgeTokCap = isReflex
+      ? KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX
+      : isConverse
+        ? KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE
+        : KNOWLEDGE_PROMPT_MAX_TOKENS;
+    if (knowledgeTokCap > 0) {
+      const longTermMem = opts.memory.getLongTermMemory();
+      if (longTermMem) {
+        const knowledgeCapChars = Math.min(SYSTEM_KNOWLEDGE_CHARS, knowledgeTokCap * 4);
+        volatile.push('\n## Your Knowledge');
+        const prepared = prepareKnowledgeForPrompt(longTermMem, knowledgeCapChars);
+        volatile.push(prepared.text);
+        if (prepared.truncated) {
+          volatile.push(
+            '_[knowledge truncated — use `memory_search` or read `knowledge.md` for the rest]_',
+          );
+        }
+      }
+    } else if (isReflex) {
+      // Optional short state snapshot lines (state.md or notebook tip)
+      try {
+        const stateFn = (opts.memory as { getStateMemory?: () => string }).getStateMemory;
+        const stateText = typeof stateFn === 'function' ? stateFn.call(opts.memory) : '';
+        if (stateText?.trim()) {
+          const lines = stateText.trim().split('\n').slice(0, STATE_PROMPT_MAX_LINES_REFLEX);
+          volatile.push('\n## Current State (short)');
+          volatile.push(lines.join('\n'));
+        }
+      } catch { /* optional */ }
+    }
 
     if (opts.projectContext) {
       const { project, repositories, governanceRules, teamRole } = opts.projectContext;
@@ -1894,10 +1913,21 @@ export class ContextEngine {
       : 0;
     // ContextOS: pinned slots are part of the fixed segment — reserve budget for
     // them and never let them enter the variable-segment compression path.
-    const slotsSegment = opts.slotsSegment ?? '';
+    //
+    // Default from (memory, sessionId) rather than relying on the caller: only
+    // the NON-STREAM chat path passed these explicitly, so the streaming path,
+    // every tool-loop continuation, and the task/review/session scenarios
+    // silently dropped session_pin anchors AND the [CONTEXT SUMMARY] compaction
+    // anchor. Deriving them here is the single source of truth — a new call site
+    // cannot forget them.
+    const slotsSegment = opts.slotsSegment
+      ?? opts.memory?.serializeSlots?.(opts.sessionId)
+      ?? '';
     const slotsTokens = slotsSegment ? estimateTokens(slotsSegment, this.tokenCounter) : 0;
     // ContextOS: durable compaction summary is a separate fixed segment block.
-    const summarySegment = opts.summarySegment ?? '';
+    const summarySegment = opts.summarySegment
+      ?? opts.memory?.serializeSummary?.(opts.sessionId)
+      ?? '';
     const summaryTokens = summarySegment ? estimateTokens(summarySegment, this.tokenCounter) : 0;
     let safetyMargin = Math.ceil(Math.min(contextWindow * 0.08, 16_000));
     let messageBudget = contextWindow - systemTokens - volatileTokens - toolDefTokens - slotsTokens - summaryTokens - maxOutput - safetyMargin;
@@ -2092,21 +2122,20 @@ export class ContextEngine {
 
     let finalMessages = messages;
     if (liveStateMsg) {
-      // Insert just before the last user message (the current query) so the model
-      // reads the live snapshot right before answering; if none, pin at the tail.
-      let lastUserIdx = -1;
-      for (let i = finalMessages.length - 1; i >= 0; i--) {
-        if (finalMessages[i]!.role === 'user') { lastUserIdx = i; break; }
-      }
-      if (lastUserIdx >= 0) {
-        finalMessages = [
-          ...finalMessages.slice(0, lastUserIdx),
-          liveStateMsg,
-          ...finalMessages.slice(lastUserIdx),
-        ];
-      } else {
-        finalMessages = [...finalMessages, liveStateMsg];
-      }
+      // Scheme A placement is load-bearing for the prefix cache: the volatile
+      // snapshot MUST be the LAST message.
+      //
+      // Do NOT "insert just before the last user message": inside an agent tool
+      // loop the last user message is the ORIGINAL task instruction (index 1) —
+      // every later turn is assistant/tool — so that insertion point is actually
+      // the FRONT of the history. It re-wrote message[1] on every call, which
+      // broke the byte-identical prefix at the first message after `system` and
+      // re-billed the entire replayed history on every LLM call (measured: 46%
+      // prefix reuse instead of 79%).
+      //
+      // Appending at the tail is also semantically what we want: the model reads
+      // the live snapshot immediately before answering.
+      finalMessages = [...finalMessages, liveStateMsg];
     }
 
     return {

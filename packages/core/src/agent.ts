@@ -48,6 +48,8 @@ import {
   type UserInputQuestion,
   type UserInputAnswer,
   DEFERRED_CATALOG_MAX_CHARS,
+  SESSION_REQUEST_HISTORY_MIN,
+  SESSION_REQUEST_HISTORY_BLOCK,
   isStrictStateItem,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
@@ -87,6 +89,7 @@ import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } fro
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
 import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
+import { requestHistoryWindow } from './history-window.js';
 
 /**
  * Per-task async context — propagates the executing taskId and task-local
@@ -3808,8 +3811,6 @@ export class Agent {
     }
     const effectiveMessage = inputCheck.transformedInput ?? userMessage;
 
-    const maxHistory = 200;
-
     // Session resolution: explicit sessionId > auto-generated
     let sessionId: string;
     if (options?.sessionId) {
@@ -3890,10 +3891,10 @@ export class Agent {
       scenario,
     };
     let llmTools = this.buildToolDefinitions(toolSelectOpts);
-    ({ text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
-      systemPrompt,
-      systemCacheSegments,
-    ));
+    // Afford.S2 catalog: rides the per-turn volatile TAIL block, never the system
+    // prompt (it changes with the per-turn tool selection and would invalidate
+    // the whole cached prefix). See consumeDeferredToolCatalog().
+    const deferredToolCatalog = this.consumeDeferredToolCatalog();
     if (options?.allowedTools) {
       const allowed = options.allowedTools;
       // Restrict to the scenario's allow-list...
@@ -3922,8 +3923,8 @@ export class Agent {
     // A2: flush important memory to disk before context fills (turn-level preflight).
     await this.maybeMemoryFlushPreflight(sessionId);
 
-    const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
-    this.volatileState = volatile;
+    const sessionMessages = this.requestHistory(sessionId);
+    this.volatileState = this.mergeVolatile(volatile, deferredToolCatalog);
     let prepared = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
@@ -4180,7 +4181,7 @@ export class Agent {
           llmTools = llmTools.filter((t) => allowed.has(t.name));
         }
 
-        const updatedSessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+        const updatedSessionMessages = this.requestHistory(sessionId);
         const prepared2 = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: updatedSessionMessages,
@@ -4231,7 +4232,7 @@ export class Agent {
           content: '[SYSTEM] You are about to end your turn WITHOUT posting a reply and WITHOUT marking [NO_REPLY_NEEDED]. In this scenario your text output is NOT visible to anyone. You MUST either: (1) call `task_comment` or `requirement_comment` tool to post your reply in the comment thread, OR (2) output exactly [NO_REPLY_NEEDED] if you have determined that no response is warranted. Do it now.',
         });
 
-        const reminderMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+        const reminderMessages = this.requestHistory(sessionId);
         const preparedReminder = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: reminderMessages,
@@ -4296,7 +4297,7 @@ export class Agent {
           }
 
           // One final LLM call to get the closing text
-          const finalMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+          const finalMessages = this.requestHistory(sessionId);
           const preparedFinal = await this.contextEngine.prepareMessages({
             systemPrompt,
             sessionMessages: finalMessages,
@@ -4337,7 +4338,7 @@ export class Agent {
           content: '[SYSTEM] You are about to end your turn WITHOUT taking any action. In requirement_action mode your text output is NOT visible to anyone. You MUST call at least one action tool: requirement_update_status, requirement_comment, task_create, or notify_user. Call requirement_get first if you need context, then take action.',
         });
 
-        const reminderMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+        const reminderMessages = this.requestHistory(sessionId);
         const preparedReminder = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: reminderMessages,
@@ -4400,7 +4401,7 @@ export class Agent {
             this.memory.appendMessage(sessionId, { role: 'tool', content: tr.content, toolCallId: tr.toolCallId });
           }
 
-          const finalMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+          const finalMessages = this.requestHistory(sessionId);
           const preparedFinal = await this.contextEngine.prepareMessages({
             systemPrompt,
             sessionMessages: finalMessages,
@@ -4592,16 +4593,14 @@ export class Agent {
     this.activeScenario = 'chat';
     const streamToolSelectOpts = { userMessage: effectiveMessage, isChat: true as const, scenario: 'chat' as const };
     let llmTools = this.buildToolDefinitions(streamToolSelectOpts);
-    ({ text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
-      systemPrompt,
-      systemCacheSegments,
-    ));
+    // Afford.S2 catalog rides the per-turn volatile tail (see consumeDeferredToolCatalog).
+    const streamDeferredCatalog = this.consumeDeferredToolCatalog();
 
     // A2: flush important memory to disk before context fills (turn-level preflight).
     await this.maybeMemoryFlushPreflight(this.currentSessionId);
 
-    const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
-    this.volatileState = volatileState;
+    const sessionMessages = this.requestHistory(this.currentSessionId);
+    this.volatileState = this.mergeVolatile(volatileState, streamDeferredCatalog);
     let preparedStream = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
@@ -4917,7 +4916,7 @@ export class Agent {
 
         llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, streamToolSelectOpts);
 
-        const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
+        const updatedSessionMessages = this.requestHistory(this.currentSessionId);
         const preparedCont = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: updatedSessionMessages,
@@ -5641,7 +5640,7 @@ export class Agent {
 
         const preparedTaskCont = await this.contextEngine.prepareMessages({
           systemPrompt,
-          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          sessionMessages: this.requestHistory(sessionId),
           memory: this.memory,
           sessionId,
           agentId: this.id,
@@ -5711,7 +5710,7 @@ export class Agent {
 
         const preparedFinal = await this.contextEngine.prepareMessages({
           systemPrompt,
-          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          sessionMessages: this.requestHistory(sessionId),
           memory: this.memory,
           sessionId,
           agentId: this.id,
@@ -6073,7 +6072,7 @@ export class Agent {
 
         const preparedCont = await this.contextEngine.prepareMessages({
           systemPrompt,
-          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          sessionMessages: this.requestHistory(sessionId),
           memory: this.memory,
           sessionId,
           agentId: this.id,
@@ -6574,20 +6573,49 @@ export class Agent {
       + `\n\n[NOTE] Your current model does not support vision. To understand the IMAGE file(s) above, call the describe_image tool with their paths (e.g. describe_image with images: [...paths]). You may also switch to a vision-capable model via llm_switch_model, or ask the user which you prefer.`;
   }
 
-  /** Afford.S2: inject short deferred-tool catalog into system Tier 3 (not tool schema). */
-  private appendDeferredToolCatalog(
-    systemPrompt: string,
-    segments: SystemPromptSegment[],
-  ): { text: string; segments: SystemPromptSegment[] } {
+  /**
+   * Afford.S2: deferred-tool catalog (tools the per-turn pack budget evicted).
+   *
+   * Returns the catalog TEXT for the caller to merge into the per-turn volatile
+   * tail (`mergeVolatile`), and consumes it from the selector.
+   *
+   * It deliberately does NOT go into the system prompt any more: the evicted set
+   * follows the keyword-selected tool set, so it changes between turns — and any
+   * change inside the single system message invalidates the cached prefix for the
+   * ENTIRE request (system + history). Same content, zero cache cost, when it
+   * rides the volatile block at the history tail.
+   */
+  private consumeDeferredToolCatalog(): string {
     const deferred = this.toolSelector.consumeDeferredCatalog();
-    if (!deferred.length) return { text: systemPrompt, segments };
-    const catalog = formatEvictedToolCatalog(deferred, DEFERRED_CATALOG_MAX_CHARS);
-    if (!catalog) return { text: systemPrompt, segments };
-    const nextSegments = [...segments, { content: catalog }];
-    return {
-      text: `${systemPrompt}\n${catalog}`,
-      segments: nextSegments,
-    };
+    if (!deferred.length) return '';
+    return formatEvictedToolCatalog(deferred, DEFERRED_CATALOG_MAX_CHARS);
+  }
+
+  /**
+   * Merge per-turn volatile bits into ONE tail block. Keeps the block byte-stable
+   * when a bit is empty, and keeps ordering deterministic (system snapshot first,
+   * then the deferred-tool catalog).
+   */
+  private mergeVolatile(base: string | undefined, ...extra: Array<string | undefined>): string | undefined {
+    const parts = [base, ...extra].map(p => (p ?? '').trim()).filter(Boolean);
+    return parts.length ? parts.join('\n\n') : undefined;
+  }
+
+  /**
+   * Prefix-cache-safe request history (see `history-window.ts`).
+   *
+   * Replaces `memory.getRecentMessages(id, N)` for every LLM request: a raw
+   * "last N" slice moves `messages[0]` every turn once the session is longer
+   * than N, which busts the implicit prefix cache for the whole replayed
+   * history. The quantized window keeps the head stable for ~BLOCK/2 turns.
+   */
+  private requestHistory(
+    sessionId: string,
+    minMessages: number = SESSION_REQUEST_HISTORY_MIN,
+    block: number = SESSION_REQUEST_HISTORY_BLOCK,
+  ): LLMMessage[] {
+    const all = this.memory.getRecentMessages(sessionId, Number.MAX_SAFE_INTEGER);
+    return requestHistoryWindow(all, minMessages, block);
   }
 
   /** Slim reflex pack used when afford guard must downgrade fixed prefix. */
@@ -6637,7 +6665,9 @@ export class Agent {
   }
 
   /**
-   * Catalog + prepareMessages + Afford.S1 for any scenario (chat/task/review/session).
+   * Deferred-tool catalog + prepareMessages + Afford.S1 for any scenario
+   * (chat/task/review/session). The catalog goes to the volatile tail, not the
+   * system prompt (see `consumeDeferredToolCatalog`).
    */
   private async prepareWithAffordGuard(opts: {
     systemPrompt: string;
@@ -6653,13 +6683,15 @@ export class Agent {
     systemPrompt: string;
     systemCacheSegments: SystemPromptSegment[];
   }> {
-    const { text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
-      opts.systemPrompt,
-      opts.systemCacheSegments,
-    );
-    const sessionMessages = this.memory.getRecentMessages(
+    const { systemPrompt, systemCacheSegments } = opts;
+    // Afford.S2 catalog rides the per-turn volatile tail (see consumeDeferredToolCatalog).
+    // Stored on the workspace so the afford-guard downgrade re-prepare below keeps it.
+    const gapDeferredCatalog = this.consumeDeferredToolCatalog();
+    const volatileForPrepare = this.mergeVolatile(this.volatileState, gapDeferredCatalog);
+    this.volatileState = volatileForPrepare;
+    const sessionMessages = this.requestHistory(
       opts.sessionId,
-      opts.sessionMessageLimit ?? 200,
+      opts.sessionMessageLimit ?? SESSION_REQUEST_HISTORY_MIN,
     );
     const prepared = await this.contextEngine.prepareMessages({
       systemPrompt,
