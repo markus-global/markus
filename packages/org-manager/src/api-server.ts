@@ -3592,6 +3592,34 @@ export class APIServer {
       return;
     }
 
+    // Create a chat session up-front (the Team-chat "New Chat" button). Minting
+    // the session id at creation time means the FIRST message already carries its
+    // conversation identity, so concurrent session tabs stay isolated — entity
+    // affinity keys on `conv:<sessionId>`, and without an id two fresh tabs both
+    // fall back to `system:<agentId>` and serialise.
+    if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const agentId = path.split('/')[3]!;
+      if (!this.storage) {
+        this.json(res, 500, { error: 'storage unavailable' });
+        return;
+      }
+      const created = await this.storage.chatSessionRepo.createSession(agentId, authUser.userId);
+      this.json(res, 201, {
+        session: {
+          id: created.id,
+          agentId: created.agentId,
+          userId: created.userId ?? null,
+          title: created.title ?? null,
+          isMain: !!created.isMain,
+          createdAt: created.createdAt,
+          lastMessageAt: created.lastMessageAt,
+        },
+      });
+      return;
+    }
+
     if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'GET') {
       const authUser = await this.getAuthUser(req);
       const agentId = path.split('/')[3]!;
@@ -12585,7 +12613,7 @@ EXPLANATION_END`;
       // ── Agents ───────────────────────────────────────────────────────────
       exact('/api/agents', 'GET', 'POST'),
       exact('/api/agents/role-updates', 'GET'),
-      regex(/^\/api\/agents\/[^/]+\/sessions$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/sessions$/, 'GET', 'POST'),
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+\/model-override$/, 'PUT'),

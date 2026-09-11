@@ -2047,6 +2047,14 @@ export const api = {
   sessions: {
     hasAny: () =>
       request<{ hasAny: boolean }>('/sessions/has-any'),
+    /**
+     * Mint a fresh chat session up-front (the "New Chat" button) so the FIRST
+     * message already carries its own conversation identity. That identity is
+     * what the backend's entity affinity keys on (`conv:<sessionId>`), so
+     * without it two brand-new tabs are indistinguishable and get serialised.
+     */
+    create: (agentId: string) =>
+      request<{ session: ChatSessionInfo }>(`/agents/${agentId}/sessions`, { method: 'POST' }),
     listByAgent: (agentId: string, limit = 20, page = 1) =>
       request<{ sessions: ChatSessionInfo[]; total: number; page: number; pageSize: number; hasMore: boolean }>(
         `/agents/${agentId}/sessions?page=${page}&limit=${limit}`
