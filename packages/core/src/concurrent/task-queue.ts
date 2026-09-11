@@ -108,6 +108,22 @@ export class TaskQueue {
   }
 
   /**
+   * 运行中调整并发上限（统一并发闸热更新用）。提高上限会立即尝试补位；
+   * 降低上限不打断已在跑的任务，靠现有 run-loop 自然收敛。
+   */
+  setMaxConcurrent(n: number): void {
+    const next = Math.max(1, Math.floor(n || 1));
+    if (next === this.options.maxConcurrent) return;
+    this.options.maxConcurrent = next;
+    if (this.isProcessing) void this.processQueue();
+  }
+
+  /** 当前生效的并发上限。 */
+  getMaxConcurrent(): number {
+    return this.options.maxConcurrent;
+  }
+
+  /**
    * 添加任务到队列
    */
   async addTask(options: TaskOptions): Promise<string> {

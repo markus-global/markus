@@ -688,10 +688,10 @@ export class AgentManager {
         if (!agent) continue;
         const cfg = value ?? { enabled: true, maxWorkers: 3 };
         if (agent.config) agent.config.concurrent = cfg;
-        if (cfg.enabled) {
-          const workers = Math.min(Math.max(cfg.maxWorkers ?? 3, 1), 10);
-          agent.attention?.setWorkerCount(workers);
-        }
+        // 统一并发闸：worker 数与任务并发上限一起改（applyConcurrency 内部同源计算）。
+        // 旧实现只在 `enabled === true` 时下发，导致「运行中关掉并发」不会把
+        // workerCount / 任务闸降回 1；这里始终下发，enabled:false ⇒ 两者都回 1。
+        agent.applyConcurrency?.(cfg);
         agent.attention?.setConflictPolicy(cfg.conflictPolicy ?? 'auto');
       } catch { /* 单个 agent 传播失败不阻塞整体 */ }
     }
