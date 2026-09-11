@@ -609,4 +609,15 @@ describe('APIServer targeted route coverage', () => {
       expect([200, 404]).toContain(res.status);
     });
   });
+
+  describe('Chat resume guard', () => {
+    it('rejects isResume without a sessionId (400) instead of starting a fresh session', async () => {
+      const res = await requestAsync(ctx.server, 'POST', `/api/agents/${AGENT_A}/message`, {
+        text: '[Continue from where you left off. Do not repeat content already generated.]',
+        isResume: true,
+      }, GW_AUTH);
+      expect(res.status).toBe(400);
+      expect(String(res.json.error)).toMatch(/sessionId/i);
+    });
+  });
 });

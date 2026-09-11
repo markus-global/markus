@@ -4348,6 +4348,16 @@ export class APIServer {
         const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
         const isRetry = body['isRetry'] as boolean | undefined;
         const isResume = body['isResume'] as boolean | undefined;
+
+        // A resume must bind to an existing conversation. Without a sessionId
+        // the backend would `startNewSession()` and hand the model a bare
+        // "[Continue…]" prompt with zero history — silently discarding context.
+        // Reject instead of fabricating a fresh session.
+        if (isResume && !sessionId) {
+          this.json(res, 400, { error: 'isResume requires an existing sessionId' });
+          return;
+        }
+
         const replyTo = body['replyTo'] as { id: string; sender: string; text: string } | undefined;
         const baseSenderInfo = this.orgService.resolveHumanIdentity(senderId);
         const isFirstConversation = this.storage
@@ -4357,6 +4367,16 @@ export class APIServer {
           ? { ...baseSenderInfo, isFirstConversation }
           : undefined;
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
+
+        // A resume must bind to an existing conversation. Without a sessionId
+        // the backend would `startNewSession()` and hand the model a bare
+        // "[Continue…]" prompt with zero history — silently discarding context.
+        // Reject instead of fabricating a fresh session.
+        if (isResume && !sessionId) {
+          this.json(res, 400, { error: 'isResume requires an existing sessionId' });
+          return;
+        }
+
         this.ws.broadcastAgentUpdate(agentId!, 'working');
 
         // Prepare session restoration data but DON'T apply it eagerly.
