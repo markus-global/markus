@@ -64,8 +64,10 @@ PendingCallbackRegistry ──enqueue('callback_result')──► AgentMailbox  
 > `SessionWorkspace`. The mailbox skips any item whose *entity key* is already locked by
 > another worker, so a single entity is still processed one item at a time. The diagram
 > above shows the single-worker (serial) shape; the concurrent shape is
-> `AttentionController → N × (dequeueAsync → lockEntity → processFocusedItem → unlockEntity)`.
+> `AttentionController → N × (dequeueAsync → lockEntities → processFocusedItem → unlockEntities)`.
 > See [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md).
+
+<!-- verified-against-code: 2026-09-11, packages/core/src/attention.ts:798-806 -->
 
 ---
 
@@ -73,7 +75,11 @@ PendingCallbackRegistry ──enqueue('callback_result')──► AgentMailbox  
 
 ### 3.1 Single Source of Truth
 
-All mailbox item types, their metadata, and their processing behaviour are defined in **one place**: `MAILBOX_TYPE_REGISTRY` in `@markus/shared`. Every other module (core routing, attention heuristics, default priorities, frontend filters/labels/icons) reads from this registry. **No string literals for type values should appear outside the registry and the shared type union.**
+All mailbox item types, their metadata, and their processing behaviour are defined in **one place**: `MAILBOX_TYPE_REGISTRY` in `@markus/shared`. Every other module (core routing, attention heuristics, default priorities, frontend filters/labels/icons) reads from this registry.
+
+> **Target — not yet enforced: no string literals for type values outside the registry and the shared type union.** At present some consumers still hardcode type values as literals, e.g. the attention heuristics in `packages/core/src/attention.ts:1532-1580` (`'human_chat'`, `'task_comment'`, `'requirement_update'`, `'requirement_comment'`) and the `USER_INTERACTION_TYPES` / `PEER_INTERACTION_TYPES` sets at `packages/core/src/attention.ts:1493-1500`. The goal is to converge these onto registry-driven predicates; until then this constraint is aspirational, **not** a completed invariant.
+
+<!-- verified-against-code: 2026-09-11, packages/core/src/attention.ts:1493-1500,1532-1580 -->
 
 ```typescript
 // @markus/shared — packages/shared/src/types/mailbox.ts
@@ -92,9 +98,12 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
   daily_report:         { label: 'Daily Report',         defaultPriority: 2, category: 'system',        icon: '📊', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
   heartbeat:            { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡',  activityType: 'heartbeat',          createsActivity: true,  invokesLLM: true  },
   memory_consolidation: { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
+  workflow_update:      { label: 'Workflow Update',      defaultPriority: 2, category: 'task',          icon: '🔄', activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
   callback_result:     { label: 'Callback Result',     defaultPriority: 1, category: 'system',        icon: '↩',  activityType: 'internal',           createsActivity: true,  invokesLLM: true  },
 };
 ```
+
+<!-- verified-against-code: 2026-09-11, packages/shared/src/types/mailbox.ts:3-18,102-118 -->
 
 ### 3.2 Type Descriptor Schema
 
@@ -119,9 +128,11 @@ The frontend uses `category` for filtering. Users can also filter by individual 
 | Category | Types | Description |
 |----------|-------|-------------|
 | `interaction` | `human_chat`, `a2a_message`, `mention` | Direct conversations with humans or agents |
-| `task` | `task_status_update`, `task_comment`, `requirement_comment`, `review_request`, `session_reply` | Task & requirement lifecycle events (including execution triggers) |
+| `task` | `task_status_update`, `task_comment`, `requirement_comment`, `review_request`, `session_reply`, `workflow_update` | Task & requirement lifecycle events (including execution triggers) |
 | `notification` | `requirement_update` | Status change notifications |
 | `system` | `system_event`, `heartbeat`, `daily_report`, `memory_consolidation`, `callback_result` | Internal agent processes |
+
+<!-- verified-against-code: 2026-09-11, packages/shared/src/types/mailbox.ts:121-126 -->
 
 ### 3.4 Special Processing Rules
 
@@ -287,13 +298,15 @@ The heuristic interrupt rules (`heuristicDecision`) never produce `cancel` — o
 
 ### Priority Invariant: User Interactions First
 
-User chat (`human_chat`), task comments (`task_comment`), and requirement comments (`requirement_comment`) are assigned **priority 0 (critical)** — the highest possible level. The heuristic rules enforce:
+Only user chat (`human_chat`) is assigned **priority 0 (critical)** — the highest possible level. `task_comment` and `requirement_comment` are **priority 2 (normal)**, not critical. The heuristic rules enforce:
 
 1. **R0**: If a new `human_chat` arrives from the **same user** while the agent is already processing that user's previous message, the new message is **merged** (injected into the active session as a follow-up). This avoids unnecessary preemption and allows natural multi-message conversations.
-2. **R1**: If a new `human_chat`, `task_comment`, or `requirement_comment` arrives while the agent is focused on any non-user work, the agent **always preempts** to handle the user interaction immediately.
+2. **R1**: If a new `human_chat` arrives while the agent is focused on any non-user work, the agent **always preempts** to handle it immediately. Only `human_chat` is in `USER_INTERACTION_TYPES`, so comments do **not** preempt this way — a `task_comment` / `requirement_comment` on the focused task/requirement is **merged** into context instead (R2 / R3).
 3. When idle with multiple items queued, the priority queue ensures user interactions are dequeued first.
 4. The agent's system prompt includes the **full mailbox queue** (not a truncated view), so the agent is always aware of everything waiting for its attention.
 5. **Deliberation abort**: If a `human_chat` arrives during active deliberation, the deliberation is aborted immediately and the user message is processed first. Deliberation results are discarded; items remain in queue for next cycle.
+
+<!-- verified-against-code: 2026-09-11, packages/shared/src/types/mailbox.ts:105-112, packages/core/src/attention.ts:1493-1495,1555-1585 -->
 
 ### Safe Yield Points
 

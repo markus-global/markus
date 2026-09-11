@@ -134,17 +134,19 @@ Each `concurrentWorkerLoop` is a **pure consumer**:
 ```
 while (running) {
   item = await mailbox.dequeueAsync();          // one item, never repeats
-  key  = mailbox.entityKeyOf(item);
-  if (key && !mailbox.lockEntity(key, item.id)) {
+  keys = mailbox.entityKeysOf(item);            // ≥1 key; falls back to system:{agentId}
+  if (!mailbox.lockEntities(keys, item.id)) {   // multi-key, all-or-nothing
       mailbox.putBack(item);                    // busy → back off & retry
       await sleep(250 + min(retryCount,8)*250);
       continue;
   }
   const ws = delegate.getWorkerWorkspace(workerId);
   await sessionWorkspaceStore.run(ws, () => processFocusedItem(item));
-  if (key) mailbox.unlockEntity(key, item.id);
+  mailbox.unlockEntities(keys, item.id);
 }
 ```
+
+<!-- verified-against-code: 2026-09-11, packages/core/src/attention.ts:798-806, packages/core/src/mailbox.ts:437-489 -->
 
 Design choice — **"concurrency without interruption" (Scheme A)**: the worker loop
 deliberately does **not** run triage, LLM deliberation, or interrupt/preempt logic.
@@ -199,20 +201,30 @@ Two additions make the queue safe for multiple consumers:
    re-runs `dequeue()`, and the `shift()`-style splice gives mutual exclusion — exactly
    one worker wins each item. The arm-before-recheck pattern prevents lost wakeups.
 
-2. **Entity-affinity locks.** `lockEntity(key, holder)`, `unlockEntity(key, holder)`,
-   `isEntityLocked(key)`. `dequeue()` skips any item whose `entityKeyOf()` is locked, so
+2. **Entity-affinity locks.** `entityKeysOf(item)` → `lockEntities(keys, holder)` /
+   `unlockEntities(keys, holder)`. The worker locks **every** entity dimension of an item
+   at once (all-or-nothing), and `dequeue()` skips any item that shares a locked key, so
    two workers can never hold the same entity:
 
    ```
-   entityKeyOf(item):
+   entityKeysOf(item):            // ≥1 key, never empty
      task:{taskId}                 ← payload.taskId / metadata.taskId
      req:{requirementId}           ← payload.requirementId
      conv:{dbSessionId|sessionId}  ← metadata.dbSessionId / metadata.sessionId
-     user:{senderId}               ← human_chat from a given sender
-     (undefined)                   ← unkeyed items (a2a / heartbeat / group chat)
+     user:{senderId}               ← metadata.senderId
+     channel:{channelKey}          ← payload.extra.channelKey (a2a_message)
+     system:{agentId}              ← fallback when no concrete entity resolves
    ```
 
-   The key convention matches the pre-existing `consolidateByEntity` merge logic.
+   The per-type scope list is **declarative** — `MAILBOX_TYPE_REGISTRY[type].entityScopes`
+   in `@markus/shared`, resolved by `resolveEntityKeys` — so no item type is left unkeyed:
+   `a2a_message` locks its channel, and `heartbeat` / group chats fall back to
+   `system:{agentId}` (serial within one agent). The key convention matches the
+   pre-existing `consolidateByEntity` merge logic. (`entityKeyOf()` / `lockEntity()` /
+   `unlockEntity()` survive as single-key conveniences for logging / handoff, but locking
+   always goes through the multi-key API.)
+
+   <!-- verified-against-code: 2026-09-11, packages/core/src/mailbox.ts:437-489, packages/shared/src/types/mailbox.ts:102-118 -->
 
 ## 4. Consistency model
 
@@ -297,11 +309,16 @@ first, workers second) and is asserted by the existing serial test suites.
 
 These are deliberate trade-offs, documented rather than hidden:
 
-1. **Entity-key coverage.** `entityKeyOf` covers `task:` / `req:` / `conv:` / `user:`.
-   Items without a key — `a2a_message`, `heartbeat`, `group_chat` — are **not**
-   entity-locked. Multi-step read-modify-write flows across *shared* files or global
-   memory by two workers are therefore guarded only by the *soft* signal in the handoff
-   log, not a hard lock. Extending key coverage is an architecture-level follow-up.
+1. **Entity-key coverage is per-entity, not global.** `entityKeysOf` covers `task:` /
+   `req:` / `conv:` / `user:` / `channel:` and always returns ≥1 key — unresolved items
+   (`heartbeat`, group chats without a channel) fall back to `system:{agentId}` — so
+   `a2a_message`, `heartbeat`, and group chats **are** entity-locked. The remaining gap is
+   the *shared* surface: two workers on **different** entities can still run multi-step
+   read-modify-write flows across the same *shared* files or global memory concurrently,
+   guarded only by the *soft* signal in the handoff log, not a hard lock. Extending
+   coverage to a global write arbiter is an architecture-level follow-up.
+
+   <!-- verified-against-code: 2026-09-11, packages/core/src/mailbox.ts:437-451, packages/shared/src/types/mailbox.ts:83-118 -->
 
 2. **Tool write lock granularity.** `withToolWriteLock` serialises a *single tool call*,
    not an entire task/flow. It narrows but does not eliminate cross-tool interleaving.
