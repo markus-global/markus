@@ -1010,6 +1010,14 @@ export class Agent {
       priority?: MailboxPriority;
       taskId?: string;
       requirementId?: string;
+      /**
+       * 本轮的 DB 会话 id（cs_*）。**仅供绑定/恢复使用，绝不当作内存会话 key。**
+       *
+       * 为什么不直接复用 `sessionId`：`sessionId` 会被非流式 `handleMessage`
+       * 当成**内存会话 key**使用，把 cs_* 传进去会造成 split-brain（同一个对话
+       * 分裂到两个存储）。所以 DB 身份单独走一个字段，只进 extra、只用于写绑定。
+       */
+      dbSessionId?: string;
       sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null;
     },
   ): Promise<string> {
@@ -1023,6 +1031,8 @@ export class Agent {
       requirementId: options?.requirementId,
       extra: {
         sessionId: options?.sessionId,
+        // 仅用于「写 DB→memory 绑定」的请求身份，不会被当成内存会话 key。
+        dbSessionId: options?.dbSessionId,
         channelContext: options?.channelContext,
         channelKey: options?.channelKey,
         images: options?.images,
@@ -1720,6 +1730,7 @@ export class Agent {
             // message then had to rebuild a thin context from chat_messages
             // instead of reattaching to this rich memory session.
             (extra.sessionId as string | undefined)
+            ?? (extra.dbSessionId as string | undefined)
             ?? (item.metadata as { dbSessionId?: string } | undefined)?.dbSessionId
             ?? sessionRestore?.dbSessionId;
           if (dbSessionIdForBinding && this.currentSessionId) {
