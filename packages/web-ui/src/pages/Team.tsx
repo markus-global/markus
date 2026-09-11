@@ -3801,6 +3801,34 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         lastMessageAt: new Date().toISOString(),
       }, ...without];
     });
+    // Mint a REAL session id right away so this tab is isolated from the start.
+    // The first message then carries its own conversation identity
+    // (`conv:<sessionId>`) — the key the backend's entity affinity locks on.
+    // With only a placeholder, two fresh tabs share no distinguishable entity and
+    // both fall back to `system:<agentId>`, i.e. they serialise instead of running
+    // in parallel.
+    const agentForNew = selectedAgent;
+    if (agentForNew) {
+      void api.sessions.create(agentForNew)
+        .then(res => {
+          const created = res?.session;
+          if (!created?.id) return;
+          const newId = created.id;
+          // Adopt only if the user is STILL on this fresh, still-unbound tab —
+          // otherwise a late response would hijack a conversation already in flight.
+          if (currentConvKeyRef.current !== key) return;
+          const pinned = activeSessionBuffer.get(key);
+          if (pinned !== undefined && pinned !== NEW_CHAT_PLACEHOLDER_ID) return;
+          changeActiveSession(key, newId);
+          setStoredActiveSession(agentForNew, newId);
+          setOpenSessionTabs(prev => prev.map(tab =>
+            tab.id === NEW_CHAT_PLACEHOLDER_ID
+              ? { ...tab, id: newId, title: created.title ?? tab.title }
+              : tab,
+          ));
+        })
+        .catch(() => { /* best-effort — if this fails the first message mints one server-side */ });
+    }
   };
 
   const handleInputChange = (val: string) => {

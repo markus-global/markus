@@ -73,9 +73,12 @@ export type MailboxEntityScope =
  * 全局唯一顺序 —— 各类型声明的 `entityScopes` 必须是本序列的**子序列**，
  * 只表达「参与哪些维度」，不自行定义顺序。校验见 shared-types.test.ts。
  *
- * `user` 先于 `conversation` 是有意的：同一发起人即使在多个会话/标签页里
- * 同时发言，也必须串行处理，否则两个分身会针对同一个人同时做出可能矛盾的
- * 回复或决策（「身份优先于传输通道」）。
+ * **会话优先**（conversation 而非 user）是刻意的：聊天的并发隔离维度是
+ * **会话/标签页**，不是发起人。同一个人在不同 session tab 里同时发言应当
+ * 真并行（各 tab 各自上下文、各自流），只有**同一会话**才必须串行以保序。
+ * 早期版本把 `user` 排在 `conversation` 之前，使同一个人的多标签页被全量
+ * 串行（实测交接日志出现 41 次 `user:*` 冲突）；现改为会话优先。
+ * `user` 仍保留在可选维度中，供确实需要「按人串行」的类型（如 mention）使用。
  */
 export const ENTITY_SCOPE_ORDER: readonly MailboxEntityScope[] = [
   'task', 'requirement', 'user', 'conversation', 'channel', 'system',
@@ -99,7 +102,7 @@ export interface MailboxTypeDescriptor {
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
   //                                                                                                        ── entity affinity scopes (precedence order; MUST end with 'system')
   system_event:         { label: 'System Event',         defaultPriority: 1, category: 'system',       icon: '⚙',  activityType: 'internal',           createsActivity: true,  invokesLLM: true,  entityScopes: ['system'] },
-  human_chat:           { label: 'Chat',                 defaultPriority: 0, category: 'interaction',   icon: '💬', activityType: 'chat',               createsActivity: true,  invokesLLM: true,  entityScopes: ['task', 'requirement', 'user', 'conversation', 'system'] },
+  human_chat:           { label: 'Chat',                 defaultPriority: 0, category: 'interaction',   icon: '💬', activityType: 'chat',               createsActivity: true,  invokesLLM: true,  entityScopes: ['task', 'requirement', 'conversation', 'system'] },
   task_comment:         { label: 'Task Comment',         defaultPriority: 2, category: 'task',          icon: '💬', activityType: null,                 createsActivity: false, invokesLLM: false, entityScopes: ['task', 'requirement', 'system'] },
   mention:              { label: 'Mention',              defaultPriority: 1, category: 'interaction',   icon: '@',  activityType: 'chat',               createsActivity: true,  invokesLLM: true,  entityScopes: ['task', 'requirement', 'user', 'conversation', 'system'] },
   session_reply:        { label: 'Session Reply',        defaultPriority: 1, category: 'task',          icon: '↩',  activityType: 'respond_in_session', createsActivity: true,  invokesLLM: true,  entityScopes: ['task', 'requirement', 'conversation', 'system'] },
