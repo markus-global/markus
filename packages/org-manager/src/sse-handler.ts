@@ -202,6 +202,10 @@ export class SSEHandler {
         {
           ...(this.options.isResume ? { isResume: true } : {}),
           ...(this.options.sessionRestore !== undefined ? { sessionRestore: this.options.sessionRestore } : {}),
+          // Request DB session id: lets the worker that ends up processing this
+          // item resolve the memory session BOUND to this conversation instead of
+          // trusting its own (possibly stale) workspace pointer.
+          ...(this.sessionId ? { sessionId: this.sessionId } : {}),
         },
       );
 
