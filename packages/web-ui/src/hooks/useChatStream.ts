@@ -246,10 +246,29 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         return;
       }
 
+      /**
+       * P1-15：确定「不 attach」时必须平账，否则调用方留下的 `isStreaming`
+       * 气泡会永久「思考中」+ 侧栏 busy 残留。只在本地无任何 stream session
+       * 归属该会话时清理（其他路径仍在消费时不得抢拆）。本函数在这两条早退
+       * 路径上从未 `beginStream`，故也不调 `endStream`（避免 refcount 下溢）。
+       */
+      const finalizeIfDetached = () => {
+        const owned = getStreamSession(convKey);
+        if (owned && owned.size > 0) return;
+        clearStreamSession(convKey, sessionId);
+        if (currentConvKeyRef.current === convKey) {
+          setSending(false);
+          updateConvMsgs(convKey, prev => finalizeLastStreamingBubble(prev), sessionId);
+        }
+      };
+
       // Prevent attach storms when the browser is out of sockets / soft-disconnect loops.
       const cooldownKey = `${agentId}:${sessionId}`;
       const lastAttempt = reattachCooldownRef.current.get(cooldownKey) ?? 0;
-      if (Date.now() - lastAttempt < 1500) return;
+      if (Date.now() - lastAttempt < 1500) {
+        finalizeIfDetached();
+        return;
+      }
 
       const status = await api.sessions.streamStatus(agentId, sessionId);
       const msgs = msgBuffers.get(convKey) ?? [];
@@ -264,7 +283,10 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       const lateTerminal = !!status.active
         && (status.status === 'done' || status.status === 'error')
         && !!last?.isStreaming;
-      if (!serverStreaming && !lateTerminal) return;
+      if (!serverStreaming && !lateTerminal) {
+        finalizeIfDetached();
+        return;
+      }
 
       reattachCooldownRef.current.set(cooldownKey, Date.now());
       reattachAbortRef.current?.abort();
@@ -1384,7 +1406,10 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // already points to the new controller — skip cleanup to avoid killing
       // the new stream's state.
       const newCount = decrementSending(sendKey);
-      if (streamSessionId) clearStreamSession(sendKey, streamSessionId);
+      // P1-14：无论 sessionId 是否已解析都要解除 busy。旧代码 `if (streamSessionId)`
+      // 在「新会话首包前失败」（sessionId 仍为 null）时跳过清理，侧栏永久「工作中」，
+      // 刷新/切页/reattach 均不自愈。clearStreamSession 已支持 sid 省略（整键清理）。
+      clearStreamSession(sendKey, streamSessionId ?? undefined);
       endStream(sendKey);
       if (abortControllerRef.current === abortCtrl || abortControllerRef.current === null) {
         abortControllerRef.current = null;
