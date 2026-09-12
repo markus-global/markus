@@ -504,11 +504,6 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_source ON mailbox_items(agent_id, source_type);
--- P0 原子认领：按 (agent_id, status, lease_until) 定位可回收的过期租约。
-CREATE INDEX IF NOT EXISTS idx_mailbox_agent_lease ON mailbox_items(agent_id, status, lease_until);
--- P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
--- 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
-CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS agent_decisions (
   id TEXT PRIMARY KEY,
@@ -785,6 +780,13 @@ export function openSqlite(dbPath: string): DatabaseSync {
   _db.exec('CREATE INDEX IF NOT EXISTS idx_pending_callbacks_wake ON pending_callbacks(wake_at)');
   _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_source ON deliverables(source)');
   _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_knowledge_root ON deliverables(knowledge_root)');
+  // P0 原子认领：按 (agent_id, status, lease_until) 定位可回收的过期租约。
+  // 依赖 mailbox_items.lease_until 列，必须在列迁移（migrations）之后创建，
+  // 否则既有数据库上 openSqlite 会在 SCHEMA_SQL 阶段报 no such column 导致 storage 初始化整体失败。
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_agent_lease ON mailbox_items(agent_id, status, lease_until)');
+  // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
+  // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
+  _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
 
   migrateToExecutionStreamLogs(_db);
 
