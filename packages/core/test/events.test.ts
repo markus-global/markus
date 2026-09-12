@@ -81,4 +81,27 @@ describe('EventBus', () => {
     expect(() => bus.emit('err', 'data')).not.toThrow();
     expect(good).toHaveBeenCalledWith('data');
   });
+
+  // P1-5：监听器异常以前被静默吞掉（无日志、无计数）→ 订阅方故障不可观测。
+  it('P1-5: counts listener errors instead of silently swallowing them', () => {
+    const bus = new EventBus();
+    const good = vi.fn();
+    bus.on('err', () => {
+      throw new Error('listener failed');
+    });
+    bus.on('err', good);
+    expect(() => bus.emit('err', 'data')).not.toThrow();
+    // 广播语义保留：其他监听器照常收到。
+    expect(good).toHaveBeenCalledWith('data');
+    // 但异常不再静默：计数可见。
+    expect(bus.getListenerErrorCount()).toBe(1);
+  });
+
+  it('P1-5: healthy bus reports zero listener errors', () => {
+    const bus = new EventBus();
+    bus.on('ok', () => { /* noop */ });
+    bus.emit('ok');
+    bus.emit('unlistened');
+    expect(bus.getListenerErrorCount()).toBe(0);
+  });
 });
