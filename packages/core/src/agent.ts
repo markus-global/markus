@@ -1026,6 +1026,13 @@ export class Agent {
       taskId?: string;
       requirementId?: string;
       /**
+       * 「每 (task, round) 至多一次」类型的轮次（P1 · 根因 #1）：透传到
+       * `payload.extra.round`，供 mailbox 计算**跨进程幂等键**
+       * `(agent_id, sourceType, taskId, round)` 并做单播路由。
+       * 缺省时 mailbox 不施加约束（旧行为），不改变事件语义。
+       */
+      round?: number;
+      /**
        * 会话身份契约（第 0 步）。入口可以直接给出本轮是什么会话；
        * 优先于下面的零散旧字段（sessionRestore / dbSessionId / sessionId）。
        * 不传时由 `normalizeTurnSessionHint()` 从旧字段归一，仍推不出来则告警（unknown）。
@@ -1059,6 +1066,8 @@ export class Agent {
       taskId: options?.taskId,
       requirementId: options?.requirementId,
       extra: {
+        // P1：轮次（幂等键 / 单播路由用）。缺省 undefined → mailbox 不施加约束。
+        round: options?.round,
         sessionId: options?.sessionId,
         // 仅用于「写 DB→memory 绑定」的请求身份，不会被当成内存会话 key。
         dbSessionId: options?.dbSessionId,

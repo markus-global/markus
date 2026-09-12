@@ -146,8 +146,33 @@ export class TaskService {
   private hitlService?: HITLService;
   /** Cancel tokens for active task executions — keyed by taskId */
   private taskCancelTokens = new Map<string, { cancelled: boolean }>();
-  /** Tasks currently being reviewed — prevents duplicate review notifications */
+  /**
+   * 评审通知去重键（P1 · 根因 #1）：`${taskId}:r${round}`（**轮次化**）。
+   *
+   * 旧实现 key 只有 taskId，且发送**成功后立即 delete** → 去重窗口只覆盖「发送中」，
+   * 重启 / 跨进程即失效；同一任务第 2 轮评审也会被上一轮残留键误抑制。
+   * 轮次化后：同 (taskId, round) 的重复投递被抑制，进入新一轮自然放行；
+   * **仅发送失败时**移除该键（允许重试）。键在任务离开 review 时按前缀清理。
+   */
   private activeReviews = new Set<string>();
+
+  /**
+   * 评审收口幂等记录（P1 · 根因 #1）：taskId → 当前评审轮的结算状态。
+   *
+   * `round` = **被评审的轮次**（进入 review 时的 executionRound）；`verdict`：
+   * - `pending` —— 该轮仍在评审中（进入 review 时写入）
+   * - `approved` / `revision` —— 该轮已收口
+   *
+   * 用途：识别「同一 (taskId, round) 的重复 / 迟到 approve·revision」→ **返回当前状态、
+   * 不再触发第二次状态转移**。直接消除「多分身各自持有同一 review_request、互相让位 +
+   * 逐轮空转」，并防止迟到 approve 把已 revision 的任务错误标 completed。
+   */
+  private reviewSettlements = new Map<string, {
+    round: number;
+    verdict: 'pending' | 'approved' | 'revision';
+    at: string;
+    by?: string;
+  }>();
   /** Tracks tasks where submitForReview was called in the current execution round.
    *  Used to avoid false "did not call task_submit_review" when a fast reviewer
    *  transitions the task back to in_progress before execution_finished fires. */
@@ -2317,6 +2342,8 @@ export class TaskService {
     const executionTriggered = this.maybeAutoStartExecution(task, from, to, skipAutoStart);
 
     // Stage 4: Agent notifications
+    // P1：先登记本轮评审幂等键（reviewer 缺失时也登记，保证 round 语义一致），再投递。
+    this.recordReviewEntry(task, from, to);
     this.maybeNotifyReviewer(task, from, to);
     this.maybeNotifyAssignee(task, from, to, executionTriggered, updatedBy);
 
@@ -2343,7 +2370,8 @@ export class TaskService {
       }
     }
     if (from === 'review' && to !== 'review') {
-      this.activeReviews.delete(taskId);
+      // P1：键已轮次化为 `${taskId}:r${round}`，需按前缀清理（否则下一轮评审被误抑制）。
+      this.clearActiveReviews(taskId);
     }
     // NOTE: tasksSubmittedForReview is deliberately NOT cleaned here.
     // Cleaning it on terminal status transitions causes a race condition:
@@ -2438,11 +2466,13 @@ export class TaskService {
       if (!current || current.status !== 'review') return;
 
       if (result.approved) {
+        this.markReviewSettled(current, 'approved', task.reviewerId);
         this.updateTaskStatus(task.id, 'completed', task.reviewerId, false, false, 'human', 'Review approved');
       } else {
         const comment = result.comment ? ` — ${result.comment}` : '';
         task.notes = task.notes ?? [];
         task.notes.push(`[Review by human] Revision requested${comment}`);
+        this.markReviewSettled(current, 'revision', task.reviewerId);
         this.updateTaskStatus(task.id, 'in_progress', task.reviewerId, false, false, 'human', `Revision requested${comment}`);
       }
     }).catch(err => {
@@ -3499,12 +3529,20 @@ export class TaskService {
       return;
     }
 
-    // Prevent duplicate review sessions for the same task
-    if (this.activeReviews.has(task.id)) {
-      log.debug('Review notification already active for task, skipping duplicate', { taskId: task.id, reviewerId });
+    // P1 · 根因 #1：评审通知去重键**轮次化**为 `${taskId}:r${round}`。
+    // 旧实现 key 只有 taskId，且发送成功后立即删除 → 只能挡住「发送中」的并发重复，
+    // 重启 / 跨进程即失效，也会把新一轮通知误抑制。轮次化 + 成功不删（仅失败删）
+    // 后：同轮重复投递被抑制、新轮次自然放行。
+    const reviewRound = task.executionRound ?? 1;
+    const reviewKey = `${task.id}:r${reviewRound}`;
+    if (this.activeReviews.has(reviewKey)) {
+      log.info('Duplicate review notification suppressed for this round', {
+        event: 'review_request_suppressed',
+        taskId: task.id, round: reviewRound, reviewerId, reviewKey, count: 1,
+      });
       return;
     }
-    this.activeReviews.add(task.id);
+    this.activeReviews.add(reviewKey);
 
     try {
       const assigneeName = task.assignedAgentId
@@ -3580,20 +3618,29 @@ export class TaskService {
 
       const reviewMessage = parts.join('\n');
       const reviewerAgent = this.agentManager.getAgent(reviewerId);
+      // P1：透传 `round` → mailbox 据此计算**跨进程幂等键**
+      // `(agent_id, review_request, taskId, round)` 并做单播路由（只唤醒一个 waiter）。
       reviewerAgent.sendMessage(
         reviewMessage,
         task.assignedAgentId ?? 'system',
         { name: assigneeName, role: 'worker' },
-        { sourceType: 'review_request', taskId: task.id },
+        { sourceType: 'review_request', taskId: task.id, round: reviewRound },
       ).then(() => {
-        this.activeReviews.delete(task.id);
+        // 成功：**保留**去重键（本轮重复 / 迟到投递应继续被抑制）；
+        // 键在任务离开 review 时统一清理（见 cleanupOnLeaveStatus）。
       }).catch(err => {
-        this.activeReviews.delete(task.id);
+        // 仅失败时移除，允许后续重试（否则一次投递失败会让本轮永久静默）。
+        this.activeReviews.delete(reviewKey);
         log.warn('Failed to notify reviewer about review', { taskId: task.id, reviewerId, error: String(err) });
       });
-      log.info('Notified reviewer about review', { taskId: task.id, reviewerId });
+      log.info('Notified reviewer about review', {
+        event: 'review_request_dispatched',
+        taskId: task.id, reviewerId, round: reviewRound, reviewKey,
+        dedupKey: `review_request:${task.id}:${reviewRound}`,
+        channel: 'mailbox-unicast',
+      });
     } catch (err) {
-      this.activeReviews.delete(task.id);
+      this.activeReviews.delete(reviewKey);
       log.warn('Failed to notify reviewer about review', { taskId: task.id, reviewerId, error: String(err) });
     }
   }
@@ -3717,18 +3764,102 @@ export class TaskService {
     }
   }
 
+  // ─── P1 · 评审收口幂等（根因 #1）────────────────────────────────────────
+
+  /** 评审收口记录上限（FIFO 淘汰最旧），避免长期运行内存无界增长。 */
+  private static readonly REVIEW_SETTLEMENTS_MAX = 1000;
+
+  /**
+   * 进入 review 时登记本轮评审的幂等键（P1 · 根因 #1）。
+   * 无论评审人是 agent 还是 human 都登记，保证收口幂等判定的 round 语义一致。
+   */
+  private recordReviewEntry(task: Task, from: TaskStatus, to: TaskStatus): void {
+    if (to !== 'review' || from === 'review') return;
+    this.reviewSettlements.set(task.id, {
+      round: task.executionRound ?? 1,
+      verdict: 'pending',
+      at: new Date().toISOString(),
+    });
+    this.pruneReviewSettlements();
+  }
+
+  /**
+   * 登记某轮评审已收口（P1 · 根因 #1）。
+   *
+   * 必须在 `requestRevision` 自增 executionRound **之前**调用 —— 记录的 round
+   * 是「被评审的轮次」。
+   */
+  private markReviewSettled(task: Task, verdict: 'approved' | 'revision', by?: string): void {
+    this.reviewSettlements.set(task.id, {
+      round: task.executionRound ?? 1,
+      verdict,
+      at: new Date().toISOString(),
+      by,
+    });
+    this.pruneReviewSettlements();
+  }
+
+  private pruneReviewSettlements(): void {
+    if (this.reviewSettlements.size <= TaskService.REVIEW_SETTLEMENTS_MAX) return;
+    const entries = [...this.reviewSettlements.entries()]
+      .sort((a, b) => a[1].at.localeCompare(b[1].at));
+    const excess = this.reviewSettlements.size - TaskService.REVIEW_SETTLEMENTS_MAX;
+    for (let i = 0; i < excess; i++) this.reviewSettlements.delete(entries[i]![0]);
+  }
+
+  /**
+   * 判断本次收口请求是否为**已收口轮次的重复 / 迟到**调用。
+   *
+   * 返回 `undefined` = 不适用幂等短路 → 交给原有校验（抛错）处理，保持既有语义不变。
+   * 三条同时满足才判定为重复/迟到：
+   *   1. 任务当前**不在 review**（否则是正常评审路径）
+   *   2. 存在该任务的收口记录且 verdict 已定（approved / revision）
+   *   3. 记录轮次 <= 当前 executionRound（否则记录陈旧，不适用）
+   */
+  private resolveSettledReview(
+    taskId: string, currentStatus: TaskStatus,
+  ): { round: number; verdict: 'approved' | 'revision' } | undefined {
+    if (currentStatus === 'review') return undefined;
+    const s = this.reviewSettlements.get(taskId);
+    if (!s || s.verdict === 'pending') return undefined;
+    const currentRound = this.tasks.get(taskId)?.executionRound ?? 1;
+    if (s.round > currentRound) return undefined;
+    return { round: s.round, verdict: s.verdict };
+  }
+
+  /** 清理某任务的全部评审通知去重键（`${taskId}:r{n}`）。 */
+  private clearActiveReviews(taskId: string): void {
+    const prefix = `${taskId}:r`;
+    for (const key of [...this.activeReviews]) {
+      if (key === taskId || key.startsWith(prefix)) this.activeReviews.delete(key);
+    }
+  }
+
   acceptTask(taskId: string, reviewerId?: string, notes?: string): Task {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
-    if (task.status !== 'review') {
-      throw new Error(`Task ${taskId} is in ${task.status} status, cannot accept`);
-    }
 
+    // 授权校验**先于**幂等短路：非评审人不得因「已收口」而得到成功语义的返回。
     if (reviewerId && task.assignedAgentId && reviewerId === task.assignedAgentId) {
       throw new Error(`Agent ${reviewerId} cannot accept their own task.`);
     }
     if (reviewerId) {
       this.assertReviewerAllowed(reviewerId, task);
+    }
+
+    // P1 幂等（根因 #1）：重复 / 迟到的 approve —— 该 (taskId, round) 已收口 →
+    // 返回当前状态，**不产生第二次状态转移**（也不重复记 audit / 触发 reflection）。
+    const settled = this.resolveSettledReview(task.id, task.status);
+    if (settled) {
+      log.info('Duplicate/late review approval ignored — returning current state', {
+        event: 'review_settlement_idempotent', taskId: task.id, round: settled.round,
+        settledVerdict: settled.verdict, currentStatus: task.status, reviewerId, count: 1,
+      });
+      return task;
+    }
+
+    if (task.status !== 'review') {
+      throw new Error(`Task ${taskId} is in ${task.status} status, cannot accept`);
     }
 
     // approved_with_notes: persist notes, still complete (STATE-MACHINES Spec)
@@ -3744,6 +3875,10 @@ export class TaskService {
     } else {
       (task as { reviewVerdict?: string }).reviewVerdict = 'approved';
     }
+
+    // P1：先登记「本轮已按 approve 收口」再转移状态 —— 后续同 (taskId, round)
+    // 的重复 / 迟到 approve·revision 将被幂等短路（返回当前状态，不再转移）。
+    this.markReviewSettled(task, 'approved', reviewerId);
 
     // Transition to completed — updateTaskStatus handles all side effects
     this.updateTaskStatus(
@@ -3866,15 +4001,31 @@ export class TaskService {
   async requestRevision(taskId: string, reason: string, author?: string): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
-    if (task.status !== 'review') {
-      throw new Error(`Task ${taskId} is in ${task.status} status, cannot request revision`);
-    }
 
+    // 授权校验**先于**幂等短路（非评审人仍被拒，不因已收口而获得成功语义）。
     if (author) {
       this.assertReviewerAllowed(author, task);
     }
 
+    // P1 幂等（根因 #1）：重复 / 迟到的 revision —— 该 (taskId, round) 已收口 →
+    // 返回当前状态。**关键：不得再次自增 executionRound**（否则一条迟到的
+    // revision 会凭空多开一轮执行，正是实测中「逐轮空转」的来源）。
+    const settled = this.resolveSettledReview(task.id, task.status);
+    if (settled) {
+      log.info('Duplicate/late revision request ignored — returning current state', {
+        event: 'review_settlement_idempotent', taskId: task.id, round: settled.round,
+        settledVerdict: settled.verdict, currentStatus: task.status, author, count: 1,
+      });
+      return task;
+    }
+
+    if (task.status !== 'review') {
+      throw new Error(`Task ${taskId} is in ${task.status} status, cannot request revision`);
+    }
+
     const by = author || 'Reviewer';
+    // P1：登记收口**必须在自增 executionRound 之前**（round = 被评审轮次）。
+    this.markReviewSettled(task, 'revision', by);
     const now = new Date();
     task.executionRound = (task.executionRound ?? 1) + 1;
     task.notes = task.notes ?? [];

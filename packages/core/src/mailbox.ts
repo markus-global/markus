@@ -57,6 +57,39 @@ const AT_MOST_ONCE_PER_ROUND_TYPES: ReadonlySet<MailboxItemType> = new Set<Mailb
 ]);
 
 /**
+ * 单播唤醒类型（P1 · 根因 #3）：这类 item 语义上「一次事件只需一个 worker 处理」，
+ * 入队时**只唤醒恰好一个** idle waiter，而不是广播唤醒全部。
+ *
+ * 为什么：`review_request` 被投递给同一个 agent 的多个并发 worker 时，广播会让
+ * N 个 worker 同时醒来自相竞争同一 item，败者「让位」后空转（实测 3 分身互让 + PM 4 轮裁决）。
+ * 单播把「竞争」前移到唤醒选择处，从源头消除无谓唤醒。
+ */
+const UNICAST_WAKE_TYPES: ReadonlySet<MailboxItemType> = new Set<MailboxItemType>([
+  'review_request',
+]);
+
+/**
+ * P2 可观测事件名（结构化日志）。
+ *
+ * 仅日志、无指标后端：每条日志都带稳定的 `event` 字段与可加总的计数字段，
+ * 可直接用 `grep` / 日志聚合按 `event` 计数得到「竞争次数 / 丢弃重复投递数」。
+ */
+export const MAILBOX_OBSERVABILITY_EVENTS = {
+  /** 认领竞争：候选已被其它 worker / 实例认领，本次认领失败并让位。 */
+  claimContested: 'mailbox.claim_contested',
+  /** 认领通道异常（持久层抛错）→ 保守放行（fail-open）。 */
+  claimError: 'mailbox.claim_error',
+  /** 租约过期重放：过期租约被回收、item 退回 queued 后可被重新认领。 */
+  leaseExpiredReplay: 'mailbox.lease_expired_replay',
+  /** 处理中丢失租约（被回收或转手）→ 本实例已不是合法认领者。 */
+  leaseLost: 'mailbox.lease_lost',
+  /** 重复投递被丢弃：幂等键（items 唯一键 / 入队幂等键）拦截，未入队。 */
+  duplicateDeliveryDropped: 'mailbox.duplicate_delivery_dropped',
+  /** 单播唤醒：从多个 idle waiter 中确定性选出恰好一个。 */
+  unicastWake: 'mailbox.unicast_wake',
+} as const;
+
+/**
  * 幂等键（P0 · 根因 #5）：`agent_id + source_type + task_id + round` 的后三段。
  * `agent_id` 由持久层的唯一索引列承担，本函数返回 `sourceType:taskId:round`。
  *
@@ -396,8 +429,17 @@ export class AgentMailbox {
     return removed;
   }
 
+  /**
+   * 预合并阶段**禁止合并**的类型（P1 · 根因 #4）。
+   *
+   * 这些 item 承载正式状态流转，被合并就会把它吞进 informational item 而丢失执行
+   * （审计 dim2 M2：strict-state 项被 consolidateGroup 合并 → 评审可能永不执行）。
+   * `review_request` 与 `human_chat` 同属「必须独立、完整走一次执行路径」的事件 ——
+   * 与 @markus/shared `isStrictStateItem()` 的判定保持一致。
+   */
   private static readonly CONSOLIDATION_PROTECTED_TYPES: ReadonlySet<MailboxItemType> = new Set([
     'human_chat',
+    'review_request',
   ]);
 
   private consolidateGroup(
@@ -494,11 +536,17 @@ export class AgentMailbox {
     const dedupKey = mailboxDedupKey(item);
     const persisted = this.persistence?.save(item, dedupKey);
     if (persisted === false) {
+      // P2 可观测：`duplicateDeliveryDropped` —— 「被丢弃的重复投递」。
+      // 计数字段：count=1（按 event 求和 = 累计丢弃的重复投递数）、dedupKey = 幂等键。
       log.warn('Duplicate mailbox delivery rejected by idempotency key — not enqueued', {
+        event: MAILBOX_OBSERVABILITY_EVENTS.duplicateDeliveryDropped,
         agentId: this.agentId,
         itemId: item.id,
         type: sourceType,
         dedupKey,
+        taskId: payload.taskId ?? item.metadata?.taskId,
+        round: payload.extra?.round ?? (item.metadata as Record<string, unknown> | undefined)?.['round'],
+        count: 1,
       });
       this.eventBus.emit('mailbox:duplicate-rejected', {
         agentId: this.agentId,
@@ -529,7 +577,8 @@ export class AgentMailbox {
     });
 
     this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item });
-    this.wakeIdleLoop();
+    // P1：把「入队事件」的类型 + 路由键交给唤醒器，让其对单播类型只唤醒一个 waiter。
+    this.wakeIdleLoop({ type: sourceType, key: AgentMailbox.unicastRouteKey(item) });
 
     return item;
   }
@@ -537,14 +586,68 @@ export class AgentMailbox {
   /**
    * Wake all attention workers blocked in `dequeueAsync`.
    */
-  private wakeIdleLoop(): void {
-    if (this.idleWaiters.size > 0) {
+  private wakeIdleLoop(routeHint?: { type: MailboxItemType; key: string }): void {
+    if (this.idleWaiters.size === 0) return;
+
+    // P1 单播（根因 #3）：语义上「一次事件只需一个 worker」的类型只唤醒**恰好一个**
+    // waiter。广播唤醒 N 个 worker 会让它们同时醒来自相竞争同一 item，败者让位后
+    // 空转（实测 3 分身互让 + PM 连续 4 轮裁决）。
+    //
+    // 只当存在多个 waiter 时才需要单播；单 waiter 时广播 / 单播等价（走到下面的分支）。
+    if (routeHint && UNICAST_WAKE_TYPES.has(routeHint.type)
+      && this.idleWaiters.size > 1) {
       const waiters = [...this.idleWaiters];
-      this.idleWaiters.clear();
-      // Real work arrived — cancel intent is void (stop → restart scenario).
+      // 确定性路由：hash(taskId+round) % n —— 同一轮评审稳定落到同一 waiter，
+      // 不依赖注册顺序、不用随机数（可复现、可断言）。
+      const idx = AgentMailbox.hashKey(routeHint.key) % waiters.length;
+      const target = waiters[idx]!;
+      // 只把被选中的 waiter 移出在册集合并唤醒；**其余保持注册**（若一并移出而不
+      // resolve，它们将永远不再被唤醒 = 死锁）。
+      this.idleWaiters.delete(target);
       this.cancelPending = false;
-      for (const resolve of waiters) resolve();
+      log.info('Mailbox unicast wake — exactly one waiter selected', {
+        event: MAILBOX_OBSERVABILITY_EVENTS.unicastWake,
+        agentId: this.agentId,
+        type: routeHint.type,
+        routeKey: routeHint.key,
+        waiters: waiters.length,
+        targetIndex: idx,
+      });
+      target();
+      return;
     }
+
+    const waiters = [...this.idleWaiters];
+    this.idleWaiters.clear();
+    // Real work arrived — cancel intent is void (stop → restart scenario).
+    this.cancelPending = false;
+    for (const resolve of waiters) resolve();
+  }
+
+  /**
+   * 稳定字符串散列（FNV-1a 32bit）—— 单播路由用。
+   * 纯函数：同一 key 恒返回同一值，使「哪个 waiter 被唤醒」可预测、可测试。
+   */
+  private static hashKey(key: string): number {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < key.length; i++) {
+      h ^= key.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return h >>> 0;
+  }
+
+  /**
+   * 单播路由键：优先 `(taskId, round)`（与幂等键同源），退化到幂等键 / item id。
+   * 保证同一轮评审请求的路由键稳定。
+   */
+  private static unicastRouteKey(item: MailboxItem): string {
+    const taskId = item.payload.taskId ?? (item.metadata?.taskId as string | undefined);
+    const roundRaw = item.payload.extra?.round
+      ?? (item.metadata as Record<string, unknown> | undefined)?.['round'];
+    const round = typeof roundRaw === 'number' && Number.isFinite(roundRaw) ? roundRaw : undefined;
+    if (taskId) return `${taskId}:r${round ?? '?'}`;
+    return mailboxDedupKey(item) ?? item.id;
   }
 
   /**
@@ -648,7 +751,8 @@ export class AgentMailbox {
     } catch (err) {
       // 认领通道故障时保守放行，避免整条注意力循环因持久层异常停摆。
       log.warn('Mailbox claimItem threw — falling back to local claim', {
-        agentId: this.agentId, itemId: item.id, error: String(err),
+        event: MAILBOX_OBSERVABILITY_EVENTS.claimError,
+        agentId: this.agentId, itemId: item.id, type: item.sourceType, error: String(err),
       });
       return true;
     }
@@ -686,7 +790,8 @@ export class AgentMailbox {
     }
     if (!ok) {
       log.warn('Mailbox lease lost — item was reclaimed or handed over', {
-        agentId: this.agentId, itemId, ownerId: this.ownerId,
+        event: MAILBOX_OBSERVABILITY_EVENTS.leaseLost,
+        agentId: this.agentId, itemId, ownerId: this.ownerId, count: 1,
       });
     }
     return ok;
@@ -709,7 +814,12 @@ export class AgentMailbox {
       return 0;
     }
     if (n > 0) {
-      log.warn('Reclaimed mailbox items with expired leases', { agentId: this.agentId, count: n });
+      // P2 可观测：`leaseExpiredReplay` —— 「租约过期重放」。
+      // 计数字段：count=n（按 event 求和 = 累计被回收重放的项数）。
+      log.warn('Reclaimed mailbox items with expired leases', {
+        event: MAILBOX_OBSERVABILITY_EVENTS.leaseExpiredReplay,
+        agentId: this.agentId, count: n,
+      });
       // 退回的行已在 DB 变为 queued，需要重新载入内存队列才会被再次认领。
       for (const item of p.loadQueued?.(this.agentId) ?? []) {
         if (this.queue.some(q => q.id === item.id)) continue;
@@ -747,8 +857,16 @@ export class AgentMailbox {
       if (!this.tryClaim(candidate)) {
         // 已被他人认领 / 正在处理：本地副本失效，移出后继续找下一个候选。
         this.queue.splice(idx, 1);
+        // P2 可观测：`claimContested` —— 「认领竞争」。
+        // 计数字段：count=1（按 event 求和 = 累计认领竞争次数）。
         log.info('Mailbox item already claimed by another worker — skipped', {
-          agentId: this.agentId, itemId: candidate.id, ownerId: this.ownerId,
+          event: MAILBOX_OBSERVABILITY_EVENTS.claimContested,
+          agentId: this.agentId,
+          itemId: candidate.id,
+          ownerId: this.ownerId,
+          type: candidate.sourceType,
+          taskId: candidate.payload.taskId ?? candidate.metadata?.taskId,
+          count: 1,
         });
         continue;
       }
