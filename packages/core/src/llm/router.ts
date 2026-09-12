@@ -38,9 +38,36 @@ const OLLAMA_DEFAULT_MAX_OUTPUT = 4096;
  * precise value. `DEFAULT_CONTEXT_WINDOW_FALLBACK` is kept comfortably larger
  * than `DEFAULT_MAX_OUTPUT_FALLBACK` so the derived message budget never goes
  * negative.
+ *
+ * P1-7: this used to be 1_000_000. A catalog miss therefore handed an unlisted
+ * model a 1M window, which made the packing budget systematically optimistic:
+ * small-window models were over-packed every turn until the upstream returned
+ * 400 (observed live: `[CONTEXT] window 1000k`). Fail closed to a conservative
+ * window instead; operators who actually have a larger model can raise it
+ * explicitly via `MARKUS_FALLBACK_CONTEXT_WINDOW`.
  */
-const DEFAULT_CONTEXT_WINDOW_FALLBACK = 1_000_000;
-const DEFAULT_MAX_OUTPUT_FALLBACK = 131_072;
+export const DEFAULT_CONTEXT_WINDOW_FALLBACK = 32_768;
+const DEFAULT_MAX_OUTPUT_FALLBACK = 8_192;
+/**
+ * Upper sanity bound for a resolved context window. Real models top out around
+ * 1M today; anything above this is a catalog/config error and would again
+ * produce absurd packing budgets, so we clamp and warn.
+ */
+const MAX_CONTEXT_WINDOW_SANITY = 2_000_000;
+
+/**
+ * Resolve the conservative catalog-miss fallback window, allowing an explicit
+ * operator override. Kept as a function (not a const) so the env var is read at
+ * call time and clamped to the sanity bound.
+ */
+function resolveFallbackContextWindow(): number {
+  const raw = process.env['MARKUS_FALLBACK_CONTEXT_WINDOW'];
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.min(n, MAX_CONTEXT_WINDOW_SANITY);
+  }
+  return DEFAULT_CONTEXT_WINDOW_FALLBACK;
+}
 
 const CAPABILITY_KEY_MAP: Partial<Record<ModelCapabilityType, keyof ProviderCapabilities>> = {
   image_generation: 'imageGeneration',
@@ -2084,20 +2111,27 @@ export class LLMRouter {
   /**
    * Returns the context window (in tokens) for a specific provider, or the
    * active default if no provider name is given.
+   *
+   * P1-8: `model` is the model actually used for this request
+   * ({@link Agent.getEffectiveModel}, possibly session-overridden). When omitted
+   * we keep the old behaviour of using the provider's configured model.
    */
   getActiveModelContextWindow(): number {
     return this.getModelContextWindow();
   }
 
-  getModelContextWindow(providerName?: string): number {
+  getModelContextWindow(providerName?: string, model?: string): number {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);
     if (!provider) {
       throw new Error(`Cannot resolve context window: provider "${name}" is not registered. Available: ${[...this.providers.keys()].join(', ') || '(none)'}.`);
     }
+    const effectiveModel = model ?? provider.model;
     const custom = this.customModelConfigs.get(name);
-    if (custom?.contextWindow && custom.contextWindow > 0) return custom.contextWindow;
-    const catalogEntry = findCatalogEntry(name, provider.model, {
+    // Provider-level custom config only applies to the provider's own model; an
+    // explicit effective model must be resolved through the catalog.
+    if (custom?.contextWindow && custom.contextWindow > 0 && !model) return custom.contextWindow;
+    const catalogEntry = findCatalogEntry(name, effectiveModel, {
       builtin: BUILTIN_MODEL_CATALOG,
       hub: this.customModelCatalog.get(name),
     });
@@ -2105,10 +2139,16 @@ export class LLMRouter {
     if (!ctx || ctx <= 0) {
       // Any real model must be usable. A model absent from the built-in/Hub
       // catalog (private BYOK, local Ollama, self-hosted endpoint) should NOT
-      // take the whole agent turn down — fall back to a sane window and warn so
-      // the operator can configure an exact value for accurate budgeting.
-      log.warn(`No context_window for provider "${name}" model "${provider.model || '(unset)'}" — using fallback ${DEFAULT_CONTEXT_WINDOW_FALLBACK}. Configure the model for accurate budgeting.`);
-      return DEFAULT_CONTEXT_WINDOW_FALLBACK;
+      // take the whole agent turn down — fall back to a CONSERVATIVE window and
+      // warn so the operator can configure an exact value for accurate
+      // budgeting. Never silently assume a 1M window (P1-7).
+      const fallback = resolveFallbackContextWindow();
+      log.warn(`No context_window for provider "${name}" model "${effectiveModel || '(unset)'}" — using conservative fallback ${fallback} (NOT 1M). Register the model or set MARKUS_FALLBACK_CONTEXT_WINDOW for accurate budgeting.`);
+      return fallback;
+    }
+    if (ctx > MAX_CONTEXT_WINDOW_SANITY) {
+      log.warn(`context_window ${ctx} for "${name}/${effectiveModel}" exceeds sanity bound ${MAX_CONTEXT_WINDOW_SANITY} — clamping.`);
+      return MAX_CONTEXT_WINDOW_SANITY;
     }
     return ctx;
   }
@@ -2117,15 +2157,16 @@ export class LLMRouter {
     return this.getModelMaxOutput();
   }
 
-  getModelMaxOutput(providerName?: string): number {
+  getModelMaxOutput(providerName?: string, model?: string): number {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);
     if (!provider) {
       throw new Error(`Cannot resolve max output tokens: provider "${name}" is not registered. Available: ${[...this.providers.keys()].join(', ') || '(none)'}.`);
     }
+    const effectiveModel = model ?? provider.model;
     const custom = this.customModelConfigs.get(name);
-    if (custom?.maxOutputTokens && custom.maxOutputTokens > 0) return custom.maxOutputTokens;
-    const catalogEntry = findCatalogEntry(name, provider.model, {
+    if (custom?.maxOutputTokens && custom.maxOutputTokens > 0 && !model) return custom.maxOutputTokens;
+    const catalogEntry = findCatalogEntry(name, effectiveModel, {
       builtin: BUILTIN_MODEL_CATALOG,
       hub: this.customModelCatalog.get(name),
     });
@@ -2134,7 +2175,7 @@ export class LLMRouter {
       // Mirror the context-window policy: a missing output cap is not fatal —
       // many upstreams legitimately omit it. Fall back instead of throwing so
       // unknown/private models keep working.
-      log.warn(`No max_output_tokens for provider "${name}" model "${provider.model || '(unset)'}" — using fallback ${DEFAULT_MAX_OUTPUT_FALLBACK}.`);
+      log.warn(`No max_output_tokens for provider "${name}" model "${effectiveModel || '(unset)'}" — using fallback ${DEFAULT_MAX_OUTPUT_FALLBACK}.`);
       return DEFAULT_MAX_OUTPUT_FALLBACK;
     }
     return out;
