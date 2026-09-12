@@ -1690,24 +1690,38 @@ async function startServerCore(
         const agent = agentManager.getAgent(agentId);
         const mailbox = agent.getMailbox();
         mailbox.setPersistence({
-          save: (item) => {
+          save: (item, dedupKey) => {
             try {
               const { responsePromise, ...persistableMetadata } = (item.metadata ?? {}) as Record<string, unknown>;
-              mbRepo.save({
+              const inserted = mbRepo.save({
                 id: item.id, agentId: item.agentId, sourceType: item.sourceType,
                 priority: item.priority, status: item.status,
                 payload: item.payload as unknown as Record<string, unknown>,
                 metadata: persistableMetadata,
                 queuedAt: item.queuedAt,
+                dedupKey,
               });
-            } catch (e) { log.warn('Failed to persist mailbox item', { id: item.id, error: String(e) }); }
+              if (!inserted) {
+                // P0 幂等键：重复投递（同 agent + 同 dedup_key）被 DB 拒绝，不产生第二行。
+                // 返回 false → mailbox 将这次投递**整体拒绝**（不入队 + 了结 responsePromise）。
+                log.warn('Duplicate mailbox item rejected by idempotency key', {
+                  id: item.id, agentId: item.agentId, sourceType: item.sourceType, dedupKey,
+                });
+                return false;
+              }
+              return true;
+            } catch (e) {
+              // 持久化异常**不阻断处理**：返回 undefined（非显式拒绝）→ mailbox 照常入队，
+              // 认领阶段对「行不存在」fail-open，避免基础设施抖动导致消息静默丢失。
+              log.warn('Failed to persist mailbox item', { id: item.id, error: String(e) });
+            }
           },
           updateStatus: (itemId: string, status: string, extra?: Partial<Record<string, unknown>>) => {
             try { mbRepo.updateStatus(itemId, status, extra as Record<string, unknown>); }
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
           markStaleProcessingAsDropped: (aid: string) => mbRepo.markStaleProcessingAsDropped(aid),
-          markStaleProcessingAsCompleted: (aid: string) => mbRepo.markStaleProcessingAsCompleted(aid),
+          markStaleProcessingAsCompleted: (aid: string, ownerId?: string) => mbRepo.markStaleProcessingAsCompleted(aid, ownerId),
           loadQueued: (aid: string) => {
             const rows = mbRepo.getByAgent(aid, { status: 'queued' });
             return rows.map((r: any) => ({
@@ -1744,6 +1758,14 @@ async function startServerCore(
               retryCount: r.retryCount ?? 0,
             }));
           },
+          // ── P0 原子认领 / 租约（根因 #2）────────────────────────────────
+          // 认领以 DB 条件更新决定唯一胜者；租约 TTL + 续租 + 过期回收。
+          claimItem: (itemId: string, ownerId: string, leaseUntil: string, nowIso: string) =>
+            mbRepo.claimItem(itemId, ownerId, leaseUntil, nowIso),
+          renewLease: (itemId: string, ownerId: string, leaseUntil: string) =>
+            mbRepo.renewLease(itemId, ownerId, leaseUntil),
+          releaseClaim: (itemId: string, ownerId: string) => mbRepo.releaseClaim(itemId, ownerId),
+          releaseExpiredLeases: (aid: string, nowIso: string) => mbRepo.releaseExpiredLeases(aid, nowIso),
         });
         const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
         if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });
