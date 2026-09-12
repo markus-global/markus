@@ -54,6 +54,7 @@ import {
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
+import type { SmartTokenCounter } from './token-counter.js';
 import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
 import { HeartbeatScheduler } from './heartbeat.js';
@@ -2987,13 +2988,43 @@ export class Agent {
     }
   }
 
+  private _tokenCounter: SmartTokenCounter | null = null;
+
+  /**
+   * P1-9：每个 agent 拥有**独立**的 token 计数器实例。
+   *
+   * 以前所有 agent 共用 `getDefaultTokenCounter()` 这一个进程级单例：其
+   * `activeModel` 与编码器槽会被并发 agent 互相覆盖（GPT agent 设置的 o200k
+   * 编码器会污染随后 Claude/DeepSeek agent 的计数），而流式主路径又从不调用
+   * `setActiveModel`，于是长上下文预算按错误模型计数。
+   */
+  private get tokenCounter(): SmartTokenCounter {
+    if (!this._tokenCounter) {
+      // 惰性 require，保持 token-counter 包按需加载。
+      const { createTokenCounter } = require('./token-counter.js') as typeof import('./token-counter.js');
+      this._tokenCounter = createTokenCounter();
+    }
+    return this._tokenCounter;
+  }
+
+  /**
+   * P1-9：把 token 计数器切到本次生效模型（流式 + 非流式路径都要先调）。
+   * `ensureReady()` 预加载 tiktoken 编码器，避免首轮退化到启发式。
+   */
+  private async activateTokenCounterForModel(): Promise<void> {
+    try {
+      const model = this.getEffectiveModel()
+        ?? this.llmRouter.getActiveModelName(this.getEffectiveProvider());
+      if (!model) return;
+      this.tokenCounter.setActiveModel(model);
+      await this.tokenCounter.ensureReady();
+    } catch (err) {
+      log.debug('Failed to activate token counter for model', { error: String(err) });
+    }
+  }
+
   private estimateMessagesTokens(messages: LLMMessage[]): number {
-    const counter = (() => {
-      try {
-        const { getDefaultTokenCounter } = require('./token-counter.js');
-        return getDefaultTokenCounter();
-      } catch { return null; }
-    })();
+    const counter = this.tokenCounter;
     if (!counter) return 0;
     let total = 0;
     for (const msg of messages) {
@@ -3006,10 +3037,9 @@ export class Agent {
   private calibrateTokenCounter(actualInputTokens: number): void {
     if (this.lastEstimatedInputTokens > 0 && actualInputTokens > 0) {
       try {
-        const { getDefaultTokenCounter } = require('./token-counter.js');
-        const counter = getDefaultTokenCounter();
+        const counter = this.tokenCounter;
         if ('calibrate' in counter) {
-          (counter as any).calibrate(this.lastEstimatedInputTokens, actualInputTokens);
+          (counter as { calibrate: (e: number, a: number) => void }).calibrate(this.lastEstimatedInputTokens, actualInputTokens);
         }
       } catch (err) { log.debug('Token counter calibration failed', { error: String(err) }); }
     }
@@ -4198,14 +4228,8 @@ export class Agent {
     // Channel context is now injected in the system prompt (dynamic tier) rather
     // than prepended into conversation messages, preserving prefix cache stability.
 
-    // Set active model on token counter and ensure tiktoken encoder is loaded
-    const effectiveModelName = this.llmRouter.getActiveModelName(this.getEffectiveProvider());
-    if (effectiveModelName) {
-      const { getDefaultTokenCounter } = await import('./token-counter.js');
-      const counter = getDefaultTokenCounter();
-      counter.setActiveModel(effectiveModelName);
-      await counter.ensureReady();
-    }
+    // P1-9：按生效模型激活 token 计数器（非流式路径）。
+    await this.activateTokenCounterForModel();
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
 

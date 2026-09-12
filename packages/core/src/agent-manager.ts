@@ -27,6 +27,7 @@ import type { OrgContext } from './context-engine.js';
 import type { LLMRouter } from './llm/router.js';
 import { RoleLoader } from './role-loader.js';
 import { EventBus } from './events.js';
+import { initTokenCounter } from './token-counter.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { BrowserSessionManager } from './tools/browser-session.js';
@@ -372,8 +373,6 @@ export const AGENT_FORWARDED_EVENTS = [
   'agent:notify-user',
   'agent:ui-layout',
   'agent:escalation',
-  'agent:activity-log',
-  'agent:activity_log',
   'agent:heartbeat-interval-changed',
   // P0-1：任务执行闭包丢失的自愈信号（agent.ts / attention.ts 在私有 bus 上 emit，
   // start.ts 在 manager bus 上订阅）。补登前该事件永不可达。
@@ -636,6 +635,14 @@ export class AgentManager {
     this.dataDir = options.dataDir ?? join(homedir(), '.markus', 'agents');
     this.sharedDataDir = options.sharedDataDir;
     this.eventBus = options.eventBus ?? new EventBus();
+    // P1-10：启动期接线 Anthropic 精确 token 计数。
+    // 此前 `initTokenCounter()` 只在测试里被调用，生产启动路径从未启用它 →
+    // Claude 全部走启发式估算，长上下文预算精度无保证（“入口存在、接线缺失”类）。
+    // 按已配置的环境变量初始化；缺 key 时保持启发式，不影响启动。
+    initTokenCounter({
+      anthropicApiKey: process.env['ANTHROPIC_API_KEY'],
+      anthropicBaseUrl: process.env['ANTHROPIC_BASE_URL'],
+    });
     this.mcpManager = new MCPClientManager();
     this.mcpManager.setOnReconnect((serverName) => {
       this.triggerChromeDialogAutoClick(serverName);
