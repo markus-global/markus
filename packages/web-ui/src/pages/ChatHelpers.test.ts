@@ -8,6 +8,7 @@ import {
   finalizeLastInterruptedAgent,
   finalizeStreamEnd,
   finalizeLastStreamingBubble,
+  formatSmartTime,
   hasStreamingTail,
   insertChatMsgByCreatedAt,
   isRememberActionVisible,
@@ -416,5 +417,28 @@ describe('appendThinkingToSegments / appendTextToSegments', () => {
     const only = segs[0] as { content: string };
     expect(only.content).toBe('');
     expect(only.content).not.toContain('内心独白');
+  });
+});
+
+describe('formatSmartTime', () => {
+  // Agent 推送多条消息时常落在同一分钟内；只有到秒的显示才能明确先后顺序。
+  const noonOn = (daysAgo: number) => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate() - daysAgo, 12, 0, 0).toISOString();
+  };
+
+  it('shows seconds for today so same-minute messages stay distinguishable', () => {
+    const res = formatSmartTime('', new Date().toISOString(), { yesterday: 'Yesterday' });
+    expect(res).toMatch(/^\d{1,2}:\d{2}:\d{2}$/);
+  });
+
+  it('keeps seconds for yesterday, prefixed with the label', () => {
+    const res = formatSmartTime('', noonOn(1), { yesterday: 'Yesterday' });
+    expect(res).toMatch(/^Yesterday \d{1,2}:\d{2}:\d{2}$/);
+  });
+
+  it('keeps seconds for older messages, prefixed with the date', () => {
+    const res = formatSmartTime('', noonOn(3), { yesterday: 'Yesterday' });
+    expect(res).toMatch(/\d{1,2}:\d{2}:\d{2}$/);
   });
 });

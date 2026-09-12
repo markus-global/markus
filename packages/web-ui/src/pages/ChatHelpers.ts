@@ -518,10 +518,11 @@ export function formatSmartTime(isoOrLocale: string, rawCreatedAt?: string, labe
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const ts = d.getTime();
-  const hhmm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  if (ts >= todayStart) return hhmm;
-  if (ts >= todayStart - 86400000) return `${labels?.yesterday ?? 'Yesterday'} ${hhmm}`;
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + hhmm;
+  // Include seconds so consecutive agent pushes within the same minute stay distinguishable.
+  const hhmmss = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  if (ts >= todayStart) return hhmmss;
+  if (ts >= todayStart - 86400000) return `${labels?.yesterday ?? 'Yesterday'} ${hhmmss}`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + hhmmss;
 }
 
 export function getDateKey(rawCreatedAt?: string): string {
