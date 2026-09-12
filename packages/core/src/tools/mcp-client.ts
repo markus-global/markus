@@ -98,6 +98,7 @@ export class MCPClientManager {
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private idleTimeoutMs: number = DEFAULT_IDLE_TIMEOUT_MS;
   private onReconnectCallback?: (serverName: string) => void;
+  private onToolsChangedCallback?: (serverName: string, tools: MCPToolDescriptor[]) => void;
 
   private static scopedKey(name: string, scopeId: string): string {
     return `${name}::${scopeId}`;
@@ -105,6 +106,18 @@ export class MCPClientManager {
 
   setOnReconnect(callback: (serverName: string) => void): void {
     this.onReconnectCallback = callback;
+  }
+
+  /**
+   * P1-11：服务器工具清单变化通知。
+   *
+   * 进程退出 → `[]`（工具的 handler 已成 stale：以前只 `servers.delete`，agent
+   * 工具表永不删项，消失的工具仍可被模型“调用”然后必然报错）；连接/重连成功 →
+   * 最新 `tools/list`（以前重连只换进程不重拉清单，新增工具不可见）。
+   * 上层据此注销 stale 工具 / 刷新清单。
+   */
+  setOnToolsChanged(callback: (serverName: string, tools: MCPToolDescriptor[]) => void): void {
+    this.onToolsChangedCallback = callback;
   }
 
   setIdleTimeout(ms: number): void {
@@ -187,6 +200,9 @@ export class MCPClientManager {
       this.servers.delete(key);
       this.stdoutBuffers.delete(proc);
       this.clearIdleTimer(key);
+      // P1-11：进程没了 → 该 server 的工具全部 stale，宣告注销（保 serverConfigs
+      // 不变，以便 callToolByKey 仍可自动重连）。
+      this.onToolsChangedCallback?.(key.split('::')[0]!, []);
       for (const [id, req] of this.pendingRequests) {
         if (req.proc !== proc) continue;
         req.reject(new Error(`MCP server ${displayName} exited (code ${code}) while awaiting ${req.method}`));
@@ -215,6 +231,8 @@ export class MCPClientManager {
       // Cache tool descriptors by base server name (for lazy registration)
       const baseName = key.split('::')[0];
       this.toolCache.set(baseName, tools);
+      // P1-11：连接/重连成功后广播最新清单（重连时会重新走 tools/list）。
+      this.onToolsChangedCallback?.(baseName, tools);
       log.info(`MCP server ${displayName} connected with ${tools.length} tools`);
 
       return tools;
@@ -283,7 +301,7 @@ export class MCPClientManager {
         });
         server = this.servers.get(key);
       }
-      if (!server) throw new Error(`MCP server not found: ${key}`);
+      if (!server) throw new Error(`MCP server "${key}" is disconnected — no running process and no saved config to auto-reconnect. Re-activate the skill/MCP server to restore its tools.`);
     }
 
     this.resetIdleTimer(key);
