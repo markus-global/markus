@@ -589,10 +589,12 @@ export class ToolSelector {
     });
 
     // Converse: spawn_subagents / deliverable_create are discover-only.
+    // 审计 P1-12：此 splice 发生在 activated 注入之后，旧实现会把「已被 discover_tools
+    // 显式激活」的工具也无条件剔除（激活成功却永远拿不到）。已激活者必须放行。
     if (pack === 'converse' || pack === 'govern') {
       for (let i = result.length - 1; i >= 0; i--) {
         const n = result[i]?.name;
-        if (n && CONVERSE_FORBIDDEN_DEFAULT.has(n)) result.splice(i, 1);
+        if (n && CONVERSE_FORBIDDEN_DEFAULT.has(n) && !activated.has(n)) result.splice(i, 1);
       }
     }
 
