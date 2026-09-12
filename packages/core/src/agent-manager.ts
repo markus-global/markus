@@ -647,6 +647,20 @@ export class AgentManager {
     this.mcpManager.setOnReconnect((serverName) => {
       this.triggerChromeDialogAutoClick(serverName);
     });
+    // P1-11：MCP 工具清单变化（退出→[] / 连接→最新 tools/list）时保持可见，
+    // 避免 stale 工具静默残留、新增工具不可见。
+    this.mcpManager.setOnToolsChanged((serverName, tools) => {
+      log.info('MCP tool set changed', {
+        serverName,
+        toolCount: tools.length,
+        tools: tools.map(t => t.name),
+      });
+      this.eventBus.emit('agent:mcp-tools-changed', {
+        serverName,
+        toolCount: tools.length,
+        toolNames: tools.map(t => t.name),
+      });
+    });
     this.browserSessionManager = new BrowserSessionManager();
     this.browserSessionManager.onOwnershipChange((event) => {
       this.eventBus.emit('browser:tab-ownership', event);
