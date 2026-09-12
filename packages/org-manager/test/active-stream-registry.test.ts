@@ -99,4 +99,47 @@ describe('ActiveStreamRegistry', () => {
     session.push({ type: 'text_delta', text: '!' });
     expect(res.body).toContain('"text":"!"');
   });
+
+  // P1-3：重连流以前不发心跳 → 前端 60s stall 看门狗误判死连接并 cancel。
+  it('P1-3: reattached stream emits 15s heartbeats so the stall watchdog is not tripped', () => {
+    const reg = new ActiveStreamRegistry();
+    const session = reg.register({
+      streamId: 's1',
+      agentId: 'a1',
+      sessionId: 'sess1',
+      messageId: 'm1',
+    });
+    const res = new MockResponse() as unknown as ServerResponse;
+    session.attach(res, 0);
+    const m = res as unknown as MockResponse;
+    expect(m.body).not.toContain('"type":"heartbeat"');
+
+    vi.advanceTimersByTime(15_000);
+    expect(m.body).toContain('"type":"heartbeat"');
+
+    // 60s 窗口（前端看门狗阈值）内应至少 4 帧心跳。
+    vi.advanceTimersByTime(45_000);
+    const beats = (m.body.match(/"type":"heartbeat"/g) ?? []).length;
+    expect(beats).toBe(4);
+  });
+
+  it('P1-3: heartbeat stops once the stream completes (no timer leak)', () => {
+    const reg = new ActiveStreamRegistry();
+    const session = reg.register({
+      streamId: 's1',
+      agentId: 'a1',
+      sessionId: 'sess1',
+      messageId: 'm1',
+    });
+    const res = new MockResponse() as unknown as ServerResponse;
+    session.attach(res, 0);
+    const m = res as unknown as MockResponse;
+
+    session.complete({ type: 'done', content: 'x' });
+    const before = (m.body.match(/"type":"heartbeat"/g) ?? []).length;
+    vi.advanceTimersByTime(120_000);
+    const after = (m.body.match(/"type":"heartbeat"/g) ?? []).length;
+    expect(after).toBe(before);
+    expect(m.writableEnded).toBe(true);
+  });
 });

@@ -29,6 +29,17 @@ type Subscriber = (event: BufferedStreamEvent) => void;
 const RING_CAP = 2500;
 /** Keep finished streams briefly so a late reattach still gets the final `done`. */
 const DONE_TTL_MS = 90_000;
+/**
+ * P1-3：重连（reattach）流的应用层心跳间隔。
+ *
+ * 前端 SSE 读循环的 stall 看门狗（`web-ui/src/lib/streamResilience.ts`）以
+ * 「连续无任何字节」判死连接，默认阈值 60s，并假定服务端每 15s 有心跳
+ * （初始聊天流 `sse-handler.ts` 的 `heartbeatInterval: 15000`）。但重连路径
+ * （`attach()`）以前**只转发存量 + 后续事件**，不发任何心跳：慢工具 / 长思考时
+ * 合法静默 > 60s，前端误判死连接并 `reader.cancel()`，用户看到「被中断」。
+ * 这里保证 attach 后的连接与初始流同样每 15s 有一帧，避免误杀。
+ */
+export const STREAM_ATTACH_HEARTBEAT_MS = 15_000;
 
 export class ActiveStreamSession {
   readonly streamId: string;
@@ -197,6 +208,15 @@ export class ActiveStreamSession {
       return;
     }
 
+    // P1-3：心跳定时器 —— 与初始聊天流一致，保证前端 60s stall 看门狗不误杀重连流。
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    const stopHeartbeat = () => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+    };
+
     // Subscribe before backlog drain so events that arrive mid-attach aren't lost.
     const sub: Subscriber = (item) => {
       writeOnce(item);
@@ -206,10 +226,18 @@ export class ActiveStreamSession {
         this.status !== 'streaming'
       ) {
         this.subscribers.delete(sub);
+        stopHeartbeat();
         if (!res.writableEnded) res.end();
       }
     };
     this.subscribers.add(sub);
+
+    // 应用层心跳：慢工具 / 长思考期间同样保持每 15s 一帧。
+    heartbeatTimer = setInterval(() => {
+      write({ type: 'heartbeat', timestamp: Date.now() });
+    }, STREAM_ATTACH_HEARTBEAT_MS);
+    // 不要让心跳定时器把进程吊住（Node 默认会因活动 timer 保持 event loop）。
+    (heartbeatTimer as { unref?: () => void }).unref?.();
 
     if (useSnapshot) {
       // Only events newer than the snapshot (live gap + future).
@@ -222,6 +250,7 @@ export class ActiveStreamSession {
 
     const cleanup = () => {
       this.subscribers.delete(sub);
+      stopHeartbeat();
     };
     res.on('close', cleanup);
     res.on('error', cleanup);
