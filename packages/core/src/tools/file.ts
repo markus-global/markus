@@ -3,6 +3,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { type PathAccessPolicy, validateManifest } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
+import { matchedDenyWritePath } from '../write-guard.js';
 
 const MANIFEST_FILENAMES = new Set(['agent.json', 'team.json', 'skill.json']);
 
@@ -34,12 +35,10 @@ function resolveAndCheckAccess(
 ): { resolved: string; access: AccessLevel } {
   const resolved = workspacePath ? resolve(workspacePath, rawPath) : resolve(rawPath);
 
-  if (policy?.denyWritePaths) {
-    for (const denied of policy.denyWritePaths) {
-      if (resolved.startsWith(resolve(denied))) {
-        return { resolved, access: 'denied' };
-      }
-    }
+  // 判定收口到 write-guard（单一门禁，审计 P0-2 / G1），并用边界感知匹配，
+  // 避免 `/agents/agt_a` 误伤同前缀目录 `/agents/agt_ab`。
+  if (matchedDenyWritePath(resolved, policy?.denyWritePaths)) {
+    return { resolved, access: 'denied' };
   }
 
   return { resolved, access: 'readwrite' };

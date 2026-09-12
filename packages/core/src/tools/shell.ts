@@ -5,6 +5,7 @@ import { SHELL_TIMEOUT_DEFAULT_MS, SHELL_TIMEOUT_MAX_MS, sanitizeForLLM, isToolD
 import type { AgentToolHandler, ToolOutputCallback } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 import { getShellSessionManager } from './shell-session.js';
+import { assertShellWriteAllowed } from '../write-guard.js';
 
 export interface ShellAgentMeta {
   agentId: string;
@@ -157,6 +158,19 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
             command,
           });
         }
+      }
+
+      // ── 写门禁（审计 P0-2 / 机制点 G1）─────────────────────────────────
+      // 静态解析 `>` `>>` `tee` `sed -i` `dd of=` 等写目标，命中 denyWritePaths
+      // （其他 agent 工作区）或敏感文件即拒绝——堵住「用 shell 绕过 file 工具写门禁」
+      // 的路径。只在目标确实被 deny 时拒绝，不影响正常写入。
+      const writeCheck = assertShellWriteAllowed(command, {
+        cwd: effectiveCwd,
+        workspacePath,
+        policy,
+      });
+      if (!writeCheck.allowed) {
+        return JSON.stringify({ status: 'denied', error: writeCheck.reason });
       }
 
       const gitCheck = validateGitBranchSafety(command);
