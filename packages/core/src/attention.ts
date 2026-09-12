@@ -26,7 +26,7 @@ import {
   isStrictStateItem,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
-import type { AgentMailbox } from './mailbox.js';
+import { MAILBOX_LEASE_RENEW_INTERVAL_MS, type AgentMailbox } from './mailbox.js';
 import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } from './session-workspace.js';
 
 // ─── Abnormal Completion Detection ──────────────────────────────────────────
@@ -507,6 +507,14 @@ export class AttentionController {
               cleaned,
             });
           }
+          // P0 租约：回收过期租约（崩溃/超时的 worker 不永久占位），退回的项重新入队。
+          const reclaimed = this.mailbox.reclaimExpiredLeases();
+          if (reclaimed > 0) {
+            log.warn('Watchdog: reclaimed mailbox items with expired leases', {
+              agentId: this.agentId,
+              reclaimed,
+            });
+          }
           // Also age-out stale informational/callback ghosts while idle so the
           // queue cannot fill with items that never reach pre-triage cleanup.
           if (this.mailbox.depth > 0) {
@@ -893,6 +901,20 @@ export class AttentionController {
     let timedOut = false;
     /** backstop 超时后，上一次尝试在宽限期内仍未结束 → 禁止重排（防重复副作用）。 */
     let orphanAbandoned = false;
+    // P0 租约续租：处理期间周期续租。不续租 → 租约到期后该项会被其它 worker
+    // （含其它实例）回收重认领 → 同一 item 被两个 worker 重复处理。
+    const leaseRenewTimer = setInterval(() => {
+      try {
+        if (!this.mailbox.renewLease(item.id)) {
+          log.warn('Mailbox lease renewal lost during processing', {
+            agentId: this.agentId, itemId: item.id, type: item.sourceType,
+          });
+        }
+      } catch (err) {
+        log.debug('Mailbox lease renewal threw', { itemId: item.id, error: String(err) });
+      }
+    }, MAILBOX_LEASE_RENEW_INTERVAL_MS);
+    if (typeof leaseRenewTimer.unref === 'function') leaseRenewTimer.unref();
     try {
       // The delegate's processMailboxItem makes LLM calls and shell commands,
       // each of which has its own transport-level timeout. This outer timeout
@@ -969,6 +991,7 @@ export class AttentionController {
         error: String(err),
       });
     } finally {
+      clearInterval(leaseRenewTimer);
       // Deregister the in-flight attempt for this worker (the promise may still be
       // pending when abandoned — we simply stop waiting on it).
       // 必须用开始时捕获的 workerId：重算 currentWorkerId() 在 ALS 漂移时会删错键。

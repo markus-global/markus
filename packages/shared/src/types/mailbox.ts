@@ -225,6 +225,17 @@ export interface MailboxItem {
   mergedInto?: string;
   /** Tracks how many times this item has been retried after abnormal completion. */
   retryCount?: number;
+  /**
+   * 原子认领者标识（P0 · 并发正确性）：认领该 item 的 worker 实例 id
+   * （形如 `agentId#pid#seq`）。只有认领者本人有资格续租 / 释放 / 完成该项；
+   * 其它实例即使持有内存副本也不得处理（`claimed_by` 不匹配即非本人）。
+   */
+  claimedBy?: string;
+  /**
+   * 认领租约到期时间（ISO 8601）。语义：`claimedBy` 非空且 `leaseUntil < now`
+   * → 该项为「租约过期的孤儿」，可被其它 worker（含其它进程实例）重新认领。
+   */
+  leaseUntil?: string;
 }
 
 /**

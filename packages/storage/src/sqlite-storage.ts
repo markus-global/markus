@@ -493,11 +493,19 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   completed_at TEXT,
   deferred_until TEXT,
   merged_into TEXT,
-  retry_count INTEGER NOT NULL DEFAULT 0
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  claimed_by TEXT,
+  lease_until TEXT,
+  dedup_key TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_source ON mailbox_items(agent_id, source_type);
+-- P0 原子认领：按 (agent_id, status, lease_until) 定位可回收的过期租约。
+CREATE INDEX IF NOT EXISTS idx_mailbox_agent_lease ON mailbox_items(agent_id, status, lease_until);
+-- P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
+-- 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS agent_decisions (
   id TEXT PRIMARY KEY,
@@ -719,6 +727,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'chat_sessions', column: 'is_main', sql: "ALTER TABLE chat_sessions ADD COLUMN is_main INTEGER NOT NULL DEFAULT 0" },
     { table: 'chat_sessions', column: 'metadata', sql: "ALTER TABLE chat_sessions ADD COLUMN metadata TEXT" },
     { table: 'mailbox_items', column: 'retry_count', sql: "ALTER TABLE mailbox_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0" },
+    { table: 'mailbox_items', column: 'claimed_by', sql: "ALTER TABLE mailbox_items ADD COLUMN claimed_by TEXT" },
+    { table: 'mailbox_items', column: 'lease_until', sql: "ALTER TABLE mailbox_items ADD COLUMN lease_until TEXT" },
+    { table: 'mailbox_items', column: 'dedup_key', sql: "ALTER TABLE mailbox_items ADD COLUMN dedup_key TEXT" },
     { table: 'users', column: 'avatar_url', sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT" },
     { table: 'users', column: 'invite_token', sql: "ALTER TABLE users ADD COLUMN invite_token TEXT" },
     { table: 'users', column: 'invite_expires_at', sql: "ALTER TABLE users ADD COLUMN invite_expires_at TEXT" },
@@ -4361,11 +4372,27 @@ export interface MailboxItemRow {
   deferredUntil: string | null;
   mergedInto: string | null;
   retryCount: number;
+  /** P0：认领者标识（未认领为 null）。 */
+  claimedBy?: string | null;
+  /** P0：租约到期时间（未认领为 null）。 */
+  leaseUntil?: string | null;
+  /** P0：幂等键（无幂等语义的项为 null）。 */
+  dedupKey?: string | null;
 }
 
 export class SqliteMailboxRepo {
   constructor(private db: DatabaseSync) {}
 
+  /**
+   * 持久化一个 item。`dedupKey` 非空时依赖部分唯一索引 `uq_mailbox_agent_dedup`
+   * 拒绝重复行（P0 幂等键，根因 #5）。
+   *
+   * 用 `ON CONFLICT DO NOTHING`（而非原先的 `INSERT OR REPLACE`）有两个原因：
+   * 1. 重复投递必须**被拒**（不产生第二行），而不是覆盖已有行；
+   * 2. `OR REPLACE` 会先 DELETE 命中行再 INSERT，会把已有的认领/租约状态一并抹掉。
+   *
+   * @returns true = 本次插入成功；false = 重复（id 或 dedup_key 冲突）被拒。
+   */
   save(item: {
     id: string;
     agentId: string;
@@ -4375,16 +4402,113 @@ export class SqliteMailboxRepo {
     payload: Record<string, unknown>;
     metadata?: Record<string, unknown>;
     queuedAt: string;
-  }): void {
-    this.db
+    /** P0 幂等键；缺省 / undefined 表示不加约束（落库为 NULL）。 */
+    dedupKey?: string;
+  }): boolean {
+    const res = this.db
       .prepare(
-        'INSERT OR REPLACE INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT DO NOTHING`
       )
       .run(
         item.id, item.agentId, item.sourceType, item.priority,
         item.status, toJson(item.payload), toJson(item.metadata ?? {}),
-        item.queuedAt,
+        item.queuedAt, item.dedupKey ?? null,
       );
+    return ((res as { changes?: number }).changes ?? 0) === 1;
+  }
+
+  /**
+   * 原子认领（P0 · 根因 #2）：把 item 由 `queued` 抢到 `processing`，并写入认领者与租约。
+   *
+   * 条件写保证**唯一胜者**：仅当该项仍为 `queued` 且未被有效租约持有（`claimed_by` 为空
+   * 或租约已过期）时，`changes === 1`。并发调用只有一个能拿到 `true`。
+   * `nowIso` 作为「当前时间」上界用于租约过期判定。
+   */
+  claimItem(itemId: string, ownerId: string, leaseUntil: string, nowIso: string): boolean {
+    const res = this.db
+      .prepare(
+        `UPDATE mailbox_items
+            SET status = 'processing', started_at = ?, claimed_by = ?, lease_until = ?
+          WHERE id = ?
+            AND status = 'queued'
+            AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?)`
+      )
+      .run(nowIso, ownerId, leaseUntil, itemId, nowIso);
+    if (((res as { changes?: number }).changes ?? 0) === 1) return true;
+
+    // 未胜出有两种可能，必须区分开：
+    //  a) 行存在、但被有效租约持有或状态不允许 → 认领失败（唯一胜者语义，必须拒绝）；
+    //  b) 行**根本不存在**（该 item 从未落库：持久化抛错被适配器吞掉，或在
+    //     setPersistence 接线之前就已入队）→ 放行（fail-open）。否则这条消息会被
+    //     **静默跳过**，比 P0 之前更糟（旧行为不依赖 DB 行即可处理）。
+    //     fail-open 不会引入重复处理：重复投递已在 enqueue 层被幂等键显式拒绝。
+    const exists = this.db.prepare('SELECT 1 FROM mailbox_items WHERE id = ? LIMIT 1').get(itemId);
+    if (!exists) {
+      log.warn('Claim on unpersisted mailbox item — allowing local processing (fail-open)', {
+        itemId, ownerId,
+      });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 续租（P0 租约机制）：仅当认领者仍是 `ownerId` 且该项在 `processing` 时成功。
+   * 返回 false 表示**租约已丢**（被回收或转手）：调用方应视为自己不再是合法认领者。
+   */
+  renewLease(itemId: string, ownerId: string, leaseUntil: string): boolean {
+    const res = this.db
+      .prepare(
+        `UPDATE mailbox_items
+            SET lease_until = ?
+          WHERE id = ? AND claimed_by = ? AND status = 'processing'`
+      )
+      .run(leaseUntil, itemId, ownerId);
+    return ((res as { changes?: number }).changes ?? 0) === 1;
+  }
+
+  /** 释放认领（幂等）。只释放**本人**持有的认领，不会误清其它实例的状态。 */
+  releaseClaim(itemId: string, ownerId: string): void {
+    this.db
+      .prepare("UPDATE mailbox_items SET claimed_by = NULL, lease_until = NULL WHERE id = ? AND claimed_by = ?")
+      .run(itemId, ownerId);
+  }
+
+  /**
+   * 回收过期租约（P0）：把 `processing` 且租约已过期的 item 退回 `queued`，
+   * 使崩溃或超时的 worker 不会永久占位。返回回收条数。
+   */
+  releaseExpiredLeases(agentId: string, nowIso: string): number {
+    const res = this.db
+      .prepare(
+        `UPDATE mailbox_items
+            SET status = 'queued', started_at = NULL, claimed_by = NULL, lease_until = NULL
+          WHERE agent_id = ?
+            AND status = 'processing'
+            AND lease_until IS NOT NULL
+            AND lease_until < ?`
+      )
+      .run(agentId, nowIso);
+    return (res as { changes?: number }).changes ?? 0;
+  }
+
+  /**
+   * P0：仅清理**无有效租约**的残留 `processing` 行。
+   * 与旧行为（无条件全清）的区别：多实例下启动不得抹掉其它实例正持有的租约，
+   * 只回收「无认领」或「租约已过期」的孤儿。
+   */
+  markStaleProcessingAsDropped(agentId: string, nowIso?: string): number {
+    const now = nowIso ?? new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE mailbox_items SET status = 'dropped'
+          WHERE agent_id = ? AND status = 'processing'
+            AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?)`
+      )
+      .run(agentId, now);
+    return (result as { changes?: number }).changes ?? 0;
   }
 
   updateStatus(itemId: string, status: string, extra?: Record<string, unknown>): void {
@@ -4395,22 +4519,30 @@ export class SqliteMailboxRepo {
     if (extra?.deferredUntil !== undefined) { parts.push('deferred_until = ?'); params.push((extra.deferredUntil as string) ?? null); }
     if (extra?.mergedInto !== undefined) { parts.push('merged_into = ?'); params.push((extra.mergedInto as string) ?? null); }
     if (extra?.retryCount !== undefined) { parts.push('retry_count = ?'); params.push(extra.retryCount as number); }
+    // P0：priority 走 updateStatus（save 为幂等插入语义，不再覆盖既有行）。
+    if (extra?.priority !== undefined) { parts.push('priority = ?'); params.push(extra.priority as number); }
     params.push(itemId);
     this.db.prepare(`UPDATE mailbox_items SET ${parts.join(', ')} WHERE id = ?`).run(...params);
   }
 
-  markStaleProcessingAsDropped(agentId: string): number {
-    const result = this.db
-      .prepare("UPDATE mailbox_items SET status = 'dropped' WHERE agent_id = ? AND status = 'processing'")
-      .run(agentId);
-    return (result as { changes?: number }).changes ?? 0;
-  }
-
-  markStaleProcessingAsCompleted(agentId: string): number {
+  markStaleProcessingAsCompleted(agentId: string, ownerId?: string): number {
     const ts = now();
+    if (!ownerId) {
+      // 未指定认领者 → 保持旧契约（清理全部 processing 行），兼容既有调用与测试。
+      // 生产路径（mailbox.cleanStaleProcessing）始终传 ownerId，走下面的租约感知分支。
+      const legacy = this.db
+        .prepare("UPDATE mailbox_items SET status = 'completed', completed_at = ? WHERE agent_id = ? AND status = 'processing'")
+        .run(ts, agentId);
+      return (legacy as { changes?: number }).changes ?? 0;
+    }
+    // 租约感知：只清「无认领 / 租约已过期 / 本实例持有」的行 → 不误杀其它实例在飞项。
     const result = this.db
-      .prepare("UPDATE mailbox_items SET status = 'completed', completed_at = ? WHERE agent_id = ? AND status = 'processing'")
-      .run(ts, agentId);
+      .prepare(
+        "UPDATE mailbox_items SET status = 'completed', completed_at = ? "
+        + "WHERE agent_id = ? AND status = 'processing' "
+        + "AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ? OR claimed_by = ?)"
+      )
+      .run(ts, agentId, ts, ownerId);
     return (result as { changes?: number }).changes ?? 0;
   }
 
@@ -4480,6 +4612,9 @@ export class SqliteMailboxRepo {
       deferredUntil: r['deferred_until'] as string | null,
       mergedInto: r['merged_into'] as string | null,
       retryCount: (r['retry_count'] as number) ?? 0,
+      claimedBy: (r['claimed_by'] as string | null) ?? null,
+      leaseUntil: (r['lease_until'] as string | null) ?? null,
+      dedupKey: (r['dedup_key'] as string | null) ?? null,
     };
   }
 }
