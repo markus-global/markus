@@ -804,28 +804,39 @@ export function openSqlite(dbPath: string): DatabaseSync {
     }
   }
 
-  // One-time heartbeat interval migration: agents created before the coarse
-  // safety-net redesign persisted the legacy 30-min default (1800000). Bump
-  // those (and only those) up to the current DEFAULT_HEARTBEAT_INTERVAL_MS.
-  // Gated by PRAGMA user_version so it runs exactly once — any interval a user
-  // or agent deliberately sets afterwards is respected and never clobbered.
-  const HEARTBEAT_MIGRATION_VERSION = 1;
+  // One-time schema maintenance steps, gated by PRAGMA user_version so each runs
+  // exactly once across upgrades — anything a user/agent deliberately sets later
+  // is respected and never clobbered. Version numbering is monotonic:
+  //   v1 = heartbeat interval migration
+  //   v2 = purge leaked tool markup (存量清洗，仅一次；避免每次启动都对
+  //        数百万行大表做 LIKE 全表扫描，曾导致启动耗时 20s+)
+  const SCHEMA_MIGRATION_VERSION = 2;
   const LEGACY_HEARTBEAT_DEFAULT_MS = 1800000;
-  const userVersionRow = _db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined;
-  if ((userVersionRow?.user_version ?? 0) < HEARTBEAT_MIGRATION_VERSION) {
+  const userVersion = (_db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0;
+
+  if (userVersion < 1) {
+    // Agents created before the coarse safety-net redesign persisted the legacy
+    // 30-min default (1800000). Bump those (and only those) up to the current
+    // default safety-net interval.
     const result = _db
       .prepare('UPDATE agents SET heartbeat_interval_ms = ? WHERE heartbeat_interval_ms = ?')
       .run(DEFAULT_HEARTBEAT_INTERVAL_MS, LEGACY_HEARTBEAT_DEFAULT_MS);
     if (result.changes > 0) {
       log.info(`Heartbeat migration: bumped ${result.changes} agent(s) from legacy 30m default to ${DEFAULT_HEARTBEAT_INTERVAL_MS}ms safety-net`);
     }
-    _db.exec(`PRAGMA user_version = ${HEARTBEAT_MIGRATION_VERSION}`);
   }
 
-  // One-time purge of leaked text-emitted tool markup from historical rows.
   // DeepSeek(compat) models once streamed `<invoke name=...>` as plaintext into
   // chat/log rows; strip the markup so stale history stops showing it in the UI.
-  purgeLeakedToolMarkup(_db);
+  // One-time only: the write path already strips tool noise (stripToolNoise), so
+  // re-scanning multi-million-row tables on every startup is pure waste.
+  if (userVersion < 2) {
+    purgeLeakedToolMarkup(_db);
+  }
+
+  if (userVersion < SCHEMA_MIGRATION_VERSION) {
+    _db.exec(`PRAGMA user_version = ${SCHEMA_MIGRATION_VERSION}`);
+  }
 
   log.info('SQLite database opened', { path: dbPath });
   return _db;
@@ -5643,8 +5654,11 @@ export class SqlitePendingCallbackRepo {
 // ─── Auto-migration: task_logs + agent_activity_logs -> execution_stream_logs ─
 
 export function migrateToExecutionStreamLogs(db: DatabaseSync): void {
-  const countRow = db.prepare('SELECT COUNT(*) as cnt FROM execution_stream_logs').get() as { cnt: number };
-  if (countRow.cnt > 0) return;
+  // 探测改用 LIMIT 1：只需知道表是否为空，COUNT(*) 在百万级大表上每次启动
+  // 都是全表扫描（曾显著拖慢启动）。真正回填逻辑仍由版本门（v3）控制，
+  // 此守卫只兜底异常路径。
+  const probe = db.prepare('SELECT 1 AS one FROM execution_stream_logs LIMIT 1').get() as { one?: number } | undefined;
+  if (probe !== undefined) return;
 
   runInTransaction(db, () => {
     const taskLogCount = (db.prepare('SELECT COUNT(*) as cnt FROM task_logs').get() as { cnt: number }).cnt;

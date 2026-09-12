@@ -122,3 +122,42 @@ describe('openSqlite — 旧库升级（P0 迁移完整性）', () => {
     ).toBe(false); // 幂等键拒绝重复
   });
 });
+
+describe('openSqlite — 一次性维护步骤版本门（v2 purge 存量清洗）', () => {
+  it('user_version=2 时重开数据库不重复执行 purge（脏数据原样保留）', () => {
+    // 1) 手工构造一个已升级到 v2 的库，并放入泄漏标签脏数据
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec('CREATE TABLE chat_messages (id TEXT PRIMARY KEY, session_id TEXT, agent_id TEXT, role TEXT, content TEXT, created_at TEXT)');
+    legacy
+      .prepare('INSERT INTO chat_messages (id, session_id, agent_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run('cm_v2_1', 'sess_1', 'agt_1', 'assistant', '残留 <invoke name="run">', '2026-09-12T00:00:00.000Z');
+    legacy.exec('PRAGMA user_version = 2');
+    legacy.close();
+
+    // 2) openSqlite —— purge 应被版本门跳过，脏数据保留
+    const db = openSqlite(dbPath);
+    const row = db.prepare('SELECT content FROM chat_messages WHERE id = ?').get('cm_v2_1') as { content: string };
+    expect(row.content).toContain('invoke');
+    // 且版本不再回退
+    const ver = db.prepare('PRAGMA user_version').get() as { user_version: number };
+    expect(ver.user_version).toBe(2);
+  });
+
+  it('user_version 低于 2 时执行一次 purge 并升级到 2', () => {
+    // 1) 旧库（v1，心跳迁移已跑过）+ 泄漏标签脏数据
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec('CREATE TABLE chat_messages (id TEXT PRIMARY KEY, session_id TEXT, agent_id TEXT, role TEXT, content TEXT, created_at TEXT)');
+    legacy
+      .prepare('INSERT INTO chat_messages (id, session_id, agent_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run('cm_v1_1', 'sess_1', 'agt_1', 'assistant', '残留 <invoke name="run">', '2026-09-12T00:00:00.000Z');
+    legacy.exec('PRAGMA user_version = 1');
+    legacy.close();
+
+    // 2) openSqlite —— purge 执行：脏数据被剥离
+    const db = openSqlite(dbPath);
+    const row = db.prepare('SELECT content FROM chat_messages WHERE id = ?').get('cm_v1_1') as { content: string };
+    expect(row.content).not.toContain('invoke');
+    const ver = db.prepare('PRAGMA user_version').get() as { user_version: number };
+    expect(ver.user_version).toBe(2);
+  });
+});
