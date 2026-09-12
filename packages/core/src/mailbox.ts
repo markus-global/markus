@@ -12,6 +12,7 @@ import {
   type MailboxPriority,
   MAILBOX_TYPE_REGISTRY,
   resolveEntityKeys,
+  isStrictStateItem,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 
@@ -211,7 +212,10 @@ export class AgentMailbox {
     for (let i = 0; i < this.queue.length; i++) {
       const item = this.queue[i];
       if (item.status !== 'queued' || !eligibleTypes.has(item.sourceType)) continue;
-      if (item.payload.extra?.triggerExecution) continue;
+      // 审计 P1-2：用统一 strict 谓词（4 类），而非只看 triggerExecution，否则
+      // review_request / requirement_update[actionRequired] / workflow_update[actionRequired]
+      // 会被同实体 informational item 合并吞掉。
+      if (isStrictStateItem(item)) continue;
 
       const key = getKey(item);
       if (!key) continue;
@@ -307,7 +311,7 @@ export class AgentMailbox {
     for (let i = 0; i < this.queue.length; i++) {
       const item = this.queue[i];
       if (item.status !== 'queued') continue;
-      if (item.payload.extra?.triggerExecution) continue;
+      if (isStrictStateItem(item)) continue;
       if (!opts?.skipProtectedCheck && AgentMailbox.CONSOLIDATION_PROTECTED_TYPES.has(item.sourceType)) continue;
 
       const key = getKey(item);
@@ -670,7 +674,7 @@ export class AgentMailbox {
       const item = this.queue[i];
       if (item.status === 'queued'
         && item.sourceType === 'task_status_update'
-        && !item.payload.extra?.triggerExecution
+        && !isStrictStateItem(item)
         && (item.payload.taskId === taskId || item.metadata?.taskId === taskId)) {
         toRemove.push(i);
       }
@@ -795,7 +799,7 @@ export class AgentMailbox {
       if (item.status !== 'queued') continue;
       // Only drop informational types, never human messages / A2A / execution triggers
       if (!staleTypes.has(item.sourceType)) continue;
-      if (item.payload.extra?.triggerExecution) continue;
+      if (isStrictStateItem(item)) continue;
 
       const age = now - new Date(item.queuedAt).getTime();
       if (age > TRIAGE_STALE_INFO_TTL_MS) {
@@ -860,8 +864,9 @@ export class AgentMailbox {
     sourceType: MailboxItemType,
     payload: MailboxPayload,
   ): MailboxItem | undefined {
-    // Never merge execution-trigger items — they must remain standalone.
-    if (payload.extra?.triggerExecution) return undefined;
+    // Never merge strict-state items (execution trigger / review / action-required updates)
+    // — they must remain standalone。审计 P1-2。
+    if (isStrictStateItem({ sourceType, payload })) return undefined;
 
     let existing: MailboxItem | undefined;
 
@@ -871,7 +876,7 @@ export class AgentMailbox {
         existing = this.queue.find(
           i => i.status === 'queued'
             && AgentMailbox.TASK_COMMENT_DEDUP_TYPES.has(i.sourceType)
-            && !i.payload.extra?.triggerExecution
+            && !isStrictStateItem(i)
             && (i.payload.taskId === taskId || i.metadata?.taskId === taskId),
         );
       }
