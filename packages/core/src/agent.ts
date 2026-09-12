@@ -647,7 +647,13 @@ export class Agent {
       this.handoffLog = log;
     }
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
-    this.contextEngine = new ContextEngine();
+    // P1-9（M2 修订）：ContextEngine 必须复用**本 agent 的**计数器实例。
+    // 之前这里 `new ContextEngine()` 不带 config → 其内部 `getDefaultTokenCounter()`
+    // 拿的是进程级单例；而 P1-9 把 `setActiveModel` 从单例迁到 per-agent 计数器后，
+    // 单例的 `activeModel` 恒为 '' → `resolveEncoder()` 恒 null → 打包/预算计数整体
+    // 回退启发式（精度回退）。注入同一个实例后，`activateTokenCounterForModel()` 设置
+    // 的模型对 ContextEngine 同样生效。
+    this.contextEngine = new ContextEngine({ tokenCounter: this.tokenCounter });
     this.contextEngine.setLLMSummarizer(this.createLLMSummarizer());
     this.guardrails = new GuardrailPipeline();
     this.toolHooks = new ToolHookRegistry();
@@ -4974,6 +4980,11 @@ export class Agent {
     const userContent = await this.buildUserContent(userMessage, images, fileNames, imagePaths);
     this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userContent });
 
+    // P1-9（M1 修订）：**流式主路径**同样要按本次生效模型激活 token 计数器。
+    // 此前只在非流式 `handleMessage()` 里调用，主聊天流式路径从未激活 → 长上下文
+    // 预算按错误模型/过期编码器计数（跨 agent 串扰）。
+    await this.activateTokenCounterForModel();
+
     const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
@@ -5743,6 +5754,9 @@ export class Agent {
     } else {
       this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });
     }
+
+    // P1-9（M1 修订）：任务执行路径同样按生效模型激活 token 计数器（与 chat 两条路径一致）。
+    await this.activateTokenCounterForModel();
 
     const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
 
