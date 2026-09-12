@@ -673,7 +673,9 @@ export class ToolSelector {
       parts.push(`\nSkills available (activate by name to load instructions into your context):`);
       for (const skill of shown) {
         const desc = skill.description.slice(0, 80);
-        const tag = skill.instructions ? 'has instructions' : 'no instructions';
+        const tag = skill.instructionsLoadError
+          ? 'load error'
+          : skill.instructions ? 'has instructions' : 'no instructions';
         parts.push(`  [${skill.name}] ${desc} (${tag})`);
       }
       if (skillCatalog.length > maxSkills) {

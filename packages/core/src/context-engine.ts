@@ -393,7 +393,7 @@ export class ContextEngine {
       stable.push('');
       stable.push('**Deferred tools — when to discover**: Tools listed under `## Deferred Tools` have their full schemas omitted (only ≤40 char blurbs shown). You MUST `discover_tools({ name: ["tool-name"] })` before the FIRST call to any deferred tool you intend to use. Once discovered in this session, the schema is available — you do not need to re-discover. This applies to: `generate_image`, `llm_list_providers`, `llm_switch_model`, `schedule_wakeup`, `package_install`, `hub_install`, and others in the deferred list.');
       stable.push('');
-      stable.push('**Skills with instructions**: When an installed skill shows "(has instructions)" in `## Available Skills`, the skill\'s SOP/procedures are NOT loaded yet. Call `discover_tools({ name: ["skill-name"] })` to inject them. Skills without "(has instructions)" are already active — their tools are callable without activation.');
+      stable.push('**Skills with instructions**: When an installed skill shows "(has instructions)" in `## Available Skills`, the skill\'s SOP/procedures are NOT loaded yet. Call `discover_tools({ name: ["skill-name"] })` to inject them. Skills showing "(no instructions)" have no SOP body, but this does NOT mean all of their tools are callable — any tools they expose via MCP still follow the normal deferred-discovery rule (`discover_tools` first). Skills marked "(load error)" had an unreadable SKILL.md: treat their instructions as unavailable and re-check the skill before relying on it.');
 
       stable.push('');
       stable.push('\n## Search & Exploration Strategy');

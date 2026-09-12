@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createLogger, readManifest } from '@markus/shared';
 import { InMemorySkillRegistry } from './registry.js';
-import { readSkillInstructions, resolveMcpServerPaths } from './loader.js';
+import { readSkillInstructionsDetailed, resolveMcpServerPaths } from './loader.js';
 import type { SkillManifest, SkillCategory } from './types.js';
 
 const log = createLogger('skill-registry');
@@ -105,7 +105,14 @@ export function discoverSkillsInDir(dir: string): Array<{ manifest: SkillManifes
     const fsHelper = { existsSync, readFileSync: (p: string, _enc: 'utf-8') => readFileSync(p, 'utf-8'), join };
     const pkg = readManifest(skillDir, 'skill', fsHelper);
     if (pkg && pkg.type === 'skill') {
-      const instructions = readSkillInstructions(skillDir);
+      const read = readSkillInstructionsDetailed(skillDir);
+      if (!read.ok) {
+        // P1-13：与「无指令」区分开，告警并标记。
+        log.warn(`Skill ${pkg.name} instructions failed to load (load error)`, {
+          path: skillDir,
+          error: read.error,
+        });
+      }
       const manifest: SkillManifest = {
         name: pkg.name,
         version: pkg.version,
@@ -113,7 +120,8 @@ export function discoverSkillsInDir(dir: string): Array<{ manifest: SkillManifes
         author: pkg.author ?? '',
         category: (pkg.category ?? 'custom') as SkillCategory,
         tags: pkg.tags,
-        instructions: instructions ?? undefined,
+        instructions: read.ok ? read.instructions : undefined,
+        instructionsLoadError: read.ok ? undefined : read.error,
         requiredPermissions: pkg.skill?.requiredPermissions,
         mcpServers: resolveMcpServerPaths(pkg.skill?.mcpServers, skillDir),
         isolation: pkg.skill?.isolation,

@@ -44,18 +44,40 @@ export interface SkillLoadResult {
 }
 
 /**
- * Read SKILL.md from a skill directory, strip YAML frontmatter, return the instruction body.
+ * P1-13：歧义结果类型。
+ * `ok:true` = 该 skill 合法地没有指令（无 SKILL.md / 空 body）；
+ * `ok:false` = SKILL.md 存在但**读盘失败**（以前与「无指令」不可区分）。
  */
-export function readSkillInstructions(skillDir: string): string | undefined {
+export type SkillInstructionsRead =
+  | { ok: true; instructions?: string }
+  | { ok: false; error: string };
+
+/**
+ * P1-13：区分「无指令」与「读取失败」。
+ * 以前 `readSkillInstructions` 把两种情况都返回 `undefined`，导致磁盘/权限故障
+ * 被静默当成「无指令型 skill」，模型看到的是一个残缺的工具说明集。
+ */
+export function readSkillInstructionsDetailed(skillDir: string): SkillInstructionsRead {
   const skillMdPath = join(skillDir, 'SKILL.md');
-  if (!existsSync(skillMdPath)) return undefined;
+  if (!existsSync(skillMdPath)) return { ok: true };
   try {
     const content = readFileSync(skillMdPath, 'utf-8');
     const body = content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim();
-    return body || undefined;
-  } catch {
-    return undefined;
+    return body ? { ok: true, instructions: body } : { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
   }
+}
+
+/**
+ * Read SKILL.md from a skill directory, strip YAML frontmatter, return the instruction body.
+ *
+ * @deprecated P1-13: 新代码请用 {@link readSkillInstructionsDetailed}，后者能区分
+ * 「无指令」与「读取失败」。此包装仅为向后兼容保留。
+ */
+export function readSkillInstructions(skillDir: string): string | undefined {
+  const r = readSkillInstructionsDetailed(skillDir);
+  return r.ok ? r.instructions : undefined;
 }
 
 /**
@@ -112,8 +134,17 @@ export class SkillLoader {
             continue;
           }
 
-          const instructions = readSkillInstructions(skillDir);
-          if (instructions) manifest.instructions = instructions;
+          const read = readSkillInstructionsDetailed(skillDir);
+          if (read.ok) {
+            if (read.instructions) manifest.instructions = read.instructions;
+          } else {
+            // P1-13：读盘失败不再伪装成「无指令」——告警 + 标记，让模型/UI 可见。
+            log.warn(`Skill ${manifest.name} instructions failed to load — marked (load error)`, {
+              path: skillDir,
+              error: read.error,
+            });
+            manifest.instructionsLoadError = read.error;
+          }
 
           let readme: string | undefined;
           const readmePath = join(skillDir, 'README.md');
