@@ -351,6 +351,61 @@ export interface RoleSyncResult {
   synced: string[];
 }
 
+/**
+ * Agent 私有 EventBus → manager EventBus 的**转发白名单**。
+ *
+ * 契约（由 `scripts/architecture-guard.mjs` 的 `event-reachability` 规则强制）：
+ * 凡是在 agent 私有 bus 上 `emit`、又在 agent 私有 bus 之外被订阅的事件，必须登记在本表；
+ * 否则订阅方（`cli/start.ts` 的 WS 广播、TaskService 的自愈等）永远收不到 —— 相关路径会静默
+ * 变成死代码。历史事故（审计 P0-1）：`agent:incomplete` 漏登，导致「任务执行闭包丢失 → 自动
+ * 重调度」这条自愈路径从引入至今不可达，任务可永久卡在 `in_progress`。
+ */
+export const AGENT_FORWARDED_EVENTS = [
+  'agent:activity-log',
+  'agent:activity_log',
+  'agent:started',
+  'agent:stopped',
+  'agent:paused',
+  'agent:resumed',
+  'agent:focus-changed',
+  'agent:message',
+  'agent:notify-user',
+  'agent:ui-layout',
+  'agent:escalation',
+  'agent:activity-log',
+  'agent:activity_log',
+  'agent:heartbeat-interval-changed',
+  // P0-1：任务执行闭包丢失的自愈信号（agent.ts / attention.ts 在私有 bus 上 emit，
+  // start.ts 在 manager bus 上订阅）。补登前该事件永不可达。
+  'agent:incomplete',
+  // P0-1 同族：实体亲和锁冲突（conflictPolicy:'report'）的可见性信号。
+  'agent:entity-conflict',
+  'task:completed',
+  'task:failed',
+  'mailbox:new-item',
+  'attention:decision',
+  'attention:state-changed',
+  'attention:triage',
+] as const;
+
+/**
+ * 把 agent 私有 bus 上的事件转发到 manager bus。
+ *
+ * 抽为纯函数，便于单测直接验证「agent bus emit → manager bus 收到」的可达性契约
+ * （`test/agent-event-forwarding.test.ts`），而不必构造完整的 AgentManager。
+ */
+export function wireAgentEventForwarding(
+  agentBus: EventBus,
+  managerBus: EventBus,
+  events: readonly string[] = AGENT_FORWARDED_EVENTS,
+): void {
+  for (const eventName of events) {
+    agentBus.on(eventName, (payload: unknown) => {
+      managerBus.emit(eventName, payload);
+    });
+  }
+}
+
 export class AgentManager {
   private agents = new Map<string, Agent>();
   private eventBus: EventBus;
@@ -3299,34 +3354,9 @@ export class AgentManager {
    * manager-level bus where start.ts registers WS broadcast handlers.
    */
   private forwardAgentEvents(agent: Agent): void {
-    const FORWARDED_EVENTS = [
-      'agent:activity-log',
-      'agent:activity_log',
-      'agent:started',
-      'agent:stopped',
-      'agent:paused',
-      'agent:resumed',
-      'agent:focus-changed',
-      'agent:message',
-      'agent:notify-user',
-      'agent:ui-layout',
-      'agent:escalation',
-      'agent:activity-log',
-      'agent:activity_log',
-      'agent:heartbeat-interval-changed',
-      'task:completed',
-      'task:failed',
-      'mailbox:new-item',
-      'attention:decision',
-      'attention:state-changed',
-      'attention:triage',
-    ] as const;
-    const agentBus = agent.getEventBus();
-    for (const eventName of FORWARDED_EVENTS) {
-      agentBus.on(eventName, (payload: unknown) => {
-        this.eventBus.emit(eventName, payload);
-      });
-    }
+    // 白名单与转发实现见模块级 `AGENT_FORWARDED_EVENTS` / `wireAgentEventForwarding`：
+    // 抽出去是为了让「事件可达性」既有单测、又能在 architecture-guard 里静态强制。
+    wireAgentEventForwarding(agent.getEventBus(), this.eventBus);
   }
 
   setActivityCallbacks(cbs: {
