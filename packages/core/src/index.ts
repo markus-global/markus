@@ -21,6 +21,8 @@ export {
   SmartTokenCounter,
   getDefaultTokenCounter,
   initTokenCounter,
+  createTokenCounter,
+  isAnthropicTokenCounterEnabled,
   type TokenCounter,
 } from './token-counter.js';
 export {
