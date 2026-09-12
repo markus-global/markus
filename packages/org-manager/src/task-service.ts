@@ -147,6 +147,20 @@ export class TaskService {
   /** Cancel tokens for active task executions — keyed by taskId */
   private taskCancelTokens = new Map<string, { cancelled: boolean }>();
   /**
+   * T2 · 派发侧实体独占登记（本卡）：taskId → 活跃执行会话信息。
+   *
+   * 同一 task 任一时刻仅一个执行会话；活跃期内重复派发被**拒绝**并留痕（谁/何时/原会话）。
+   * 与 `taskCancelTokens` 的分工：token 负责「取消」，本登记负责「单飞判定」。
+   * 执行到达终态（finally）时释放；异常泄漏由 TTL 自愈，避免永久阻塞合法重派。
+   */
+  private taskExecutionOwners = new Map<string, {
+    sessionId: string;
+    round: number;
+    startedAt: number;
+    initiatedBy: string;
+    token: { cancelled: boolean };
+  }>();
+  /**
    * 评审通知去重键（P1 · 根因 #1）：`${taskId}:r${round}`（**轮次化**）。
    *
    * 旧实现 key 只有 taskId，且发送**成功后立即 delete** → 去重窗口只覆盖「发送中」，
@@ -693,6 +707,11 @@ export class TaskService {
   private static readonly MAX_TASK_RETRIES = TASK_MAX_RETRIES;
   private static readonly MAX_IN_PROGRESS_RETRIES = TASK_MAX_NO_SUBMIT_RETRIES;
   private static readonly RETRY_DELAYS_MS = TASK_RETRY_DELAYS_MS;
+  /**
+   * T2：task 级单飞登记的最大存活时长（陈旧自愈）。
+   * 正常路径由执行 finally 释放；此上限仅防止异常泄漏永久阻塞合法重派。
+   */
+  private static readonly TASK_EXECUTION_OWNER_TTL_MS = 90 * 60_000;
 
   private static readonly STATUS_ACTION_GUIDANCE: Record<string, string> = {
     blocked:   'Task is paused. Stop any active work on this task.',
@@ -1146,6 +1165,77 @@ export class TaskService {
     );
   }
 
+  // ─── T2：task 级单飞（派发侧实体独占）─────────────────────────────────────
+
+  /**
+   * T2：登记 task 级单飞所有者（同一 task 任一时刻仅一个执行会话）。
+   * 执行到达终态时由 `releaseTaskExecutionOwner` 释放；异常泄漏由 TTL 自愈。
+   */
+  private registerTaskExecutionOwner(
+    taskId: string, round: number, initiatedBy: string, token: { cancelled: boolean },
+  ): void {
+    this.taskExecutionOwners.set(taskId, {
+      sessionId: `task_${taskId}_r${round}`,
+      round,
+      startedAt: Date.now(),
+      initiatedBy,
+      token,
+    });
+  }
+
+  /** T2：释放 task 级单飞登记（仅释放本 token 对应的登记，避免误清更新会话）。 */
+  private releaseTaskExecutionOwner(taskId: string, token: { cancelled: boolean }): void {
+    const owner = this.taskExecutionOwners.get(taskId);
+    if (owner && owner.token === token) this.taskExecutionOwners.delete(taskId);
+  }
+
+  /**
+   * T2：查询该 task 是否已有**仍活跃**的执行会话。
+   * 已取消（token.cancelled）或超陈旧 TTL 的登记不算活跃（并顺带清除）。
+   */
+  private findLiveTaskExecution(
+    taskId: string,
+  ): { sessionId: string; round: number; startedAt: number; initiatedBy: string } | undefined {
+    const owner = this.taskExecutionOwners.get(taskId);
+    if (!owner) return undefined;
+    if (owner.token.cancelled) return undefined;
+    if (Date.now() - owner.startedAt >= TaskService.TASK_EXECUTION_OWNER_TTL_MS) {
+      this.taskExecutionOwners.delete(taskId);
+      return undefined;
+    }
+    return { sessionId: owner.sessionId, round: owner.round, startedAt: owner.startedAt, initiatedBy: owner.initiatedBy };
+  }
+
+  /** T2：重复派发被拦截时留痕（结构化日志 + WS 广播：谁/何时/原会话）。 */
+  private logDuplicateDispatchRejected(
+    taskId: string,
+    agentId: string | undefined,
+    live: { sessionId: string; startedAt: number; initiatedBy: string },
+    requester: string,
+  ): void {
+    log.warn('Duplicate task dispatch rejected — task already has a live execution', {
+      event: 'task.dispatch_rejected_duplicate',
+      taskId,
+      agentId,
+      existingSessionId: live.sessionId,
+      existingStartedAt: live.startedAt,
+      existingInitiatedBy: live.initiatedBy,
+      requester,
+    });
+    this.ws?.broadcast({
+      type: 'task:dispatch:duplicate-rejected',
+      payload: {
+        taskId,
+        agentId,
+        existingSessionId: live.sessionId,
+        existingStartedAt: live.startedAt,
+        existingInitiatedBy: live.initiatedBy,
+        requester,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   async runTask(taskId: string, _retryAttempt = 0, _retryReason?: 'error' | 'no_submit'): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
@@ -1163,6 +1253,21 @@ export class TaskService {
       return;
     }
 
+    // ── T2 派发侧实体独占（单飞）─────────────────────────────────────────────
+    // 同一 task 任一时刻仅一个执行会话。若已有仍活跃的执行（token 未取消、未超
+    // 陈旧 TTL），本次重复派发直接**拒绝**并留痕——不再「取消旧执行 + 起新执行」，
+    // 避免两个执行会话并发写同一 worktree（现场缺陷）。
+    // 合法重派（抢占重排 / 重试 / 定时重跑）都发生在旧执行进入终态之后，
+    // 此时登记已由 finally 释放，不受影响。
+    const liveOwner = this.findLiveTaskExecution(taskId);
+    if (liveOwner) {
+      this.logDuplicateDispatchRejected(
+        taskId, task.assignedAgentId, liveOwner,
+        _retryReason ?? (_retryAttempt > 0 ? 'retry' : 'dispatch'),
+      );
+      return;
+    }
+
     // Clean up any stale submitted-for-review flag from a previous execution round.
     // This is safe because a new execution is starting — any prior submission is
     // irrelevant; the agent must call submitForReview again in this new round.
@@ -1176,6 +1281,12 @@ export class TaskService {
 
     const cancelToken = { cancelled: false };
     this.taskCancelTokens.set(taskId, cancelToken);
+    // T2：登记单飞所有者（此后同一 task 的重复派发将被 findLiveTaskExecution 拒绝）
+    this.registerTaskExecutionOwner(
+      taskId, task.executionRound ?? 1,
+      _retryReason ?? (_retryAttempt > 0 ? 'retry' : 'dispatch'),
+      cancelToken,
+    );
 
     // Load previous execution history + comments so the agent can resume
     let prevContext = '';
@@ -1708,6 +1819,8 @@ export class TaskService {
         if (this.taskCancelTokens.get(taskId) === cancelToken) {
           this.taskCancelTokens.delete(taskId);
         }
+        // T2：执行终态 → 释放 task 级单飞登记，允许后续合法重派（抢占/重试/定时重跑）
+        this.releaseTaskExecutionOwner(taskId, cancelToken);
       });
   }
 
@@ -4408,11 +4521,19 @@ export class TaskService {
       return;
     }
 
+    // T2：派发侧实体独占（与 runTask 共用同一登记 → 跨入口生效）。
+    const liveOwnerFresh = this.findLiveTaskExecution(taskId);
+    if (liveOwnerFresh) {
+      this.logDuplicateDispatchRejected(taskId, task.assignedAgentId, liveOwnerFresh, 'retry-fresh');
+      return;
+    }
+
     const agent = this.agentManager.getAgent(task.assignedAgentId);
     const executionRound = task.executionRound ?? 1;
 
     const cancelToken = { cancelled: false };
     this.taskCancelTokens.set(taskId, cancelToken);
+    this.registerTaskExecutionOwner(taskId, executionRound, 'retry-fresh', cancelToken);
 
     // Build dependency context (same as runTask)
     let dependencyContext = '';
@@ -4648,6 +4769,10 @@ export class TaskService {
           this.taskRetryErrors.delete(taskId);
           this.updateTaskStatus(taskId, 'failed');
         }
+      })
+      .finally(() => {
+        // T2：执行终态 → 释放 task 级单飞登记
+        this.releaseTaskExecutionOwner(taskId, cancelToken);
       });
   }
 

@@ -450,6 +450,16 @@ export class Agent {
   /** Generation counter per task — prevents stale finally blocks from clearing a newer execution */
   private activeTaskGen = new Map<string, number>();
   /**
+   * T3 · 消费侧实体独占登记（本卡）：taskId → 活跃执行会话信息。
+   *
+   * `task_status_update(triggerExecution)` 消费侧据此判定「重复派发」：同 task 已有
+   * 活跃执行会话时，第二条件标 non-actionable 并留痕，绝不启动第二个执行会话（单飞）。
+   * 陈旧登记（超 `TASK_EXECUTION_INFLIGHT_TTL_MS`）自动失效，避免泄漏阻塞后续派发。
+   */
+  private taskExecutionsInFlight = new Map<string, { sessionId: string; round: number; startedAt: number }>();
+  /** T3：执行单飞登记的最大存活时长（陈旧自愈）。 */
+  private static readonly TASK_EXECUTION_INFLIGHT_TTL_MS = 90 * 60_000;
+  /**
    * Buffered user messages injected while tool calls are in-flight.
    * Draining happens after all tool results for the current LLM turn are
    * appended, right before the next LLM call — this avoids interleaving
@@ -1891,15 +1901,59 @@ export class Agent {
             const taskId = item.payload.taskId;
             const description = item.payload.content;
             const onLog = extra.onLog as (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void;
-            await this.executeTask(
-              taskId,
-              description,
-              onLog,
-              extra.cancelToken as { cancelled: boolean } | undefined,
-              extra.taskProjectContext as TaskProjectContext | undefined,
-              extra.executionRound as number | undefined,
-              item.payload.requirementId,
-            );
+
+            // ── T3 消费侧实体独占（单飞）────────────────────────────────────
+            // 同一 task 已有活跃执行会话 → 本条为重复派发：标 non-actionable 并留痕，
+            // 绝不启动第二个执行会话（无文件写入 / 无提交 / 无实现类工具调用）。
+            const inFlight = this.getInFlightTaskExecution(taskId);
+            if (inFlight) {
+              log.warn('Duplicate task execution item dropped (non-actionable) — task already in flight', {
+                event: 'task.execution_skipped_duplicate',
+                agentId: this.id,
+                taskId,
+                itemId: item.id,
+                existingSessionId: inFlight.sessionId,
+                existingRound: inFlight.round,
+                existingStartedAt: inFlight.startedAt,
+              });
+              try {
+                this.eventBus.emit('agent:task-execution-skipped-duplicate', {
+                  agentId: this.id,
+                  taskId,
+                  itemId: item.id,
+                  existingSessionId: inFlight.sessionId,
+                  existingStartedAt: inFlight.startedAt,
+                });
+              } catch (err) {
+                log.debug('emit task-execution-skipped-duplicate failed', { error: String(err) });
+              }
+              try { this.mailbox.drop(item.id); } catch { /* non-actionable 留痕后即收口 */ }
+              resolveResponse('');
+              return;
+            }
+
+            const executionRegistration = {
+              sessionId: `task_${taskId}_r${(extra.executionRound as number | undefined) ?? 1}`,
+              round: (extra.executionRound as number | undefined) ?? 1,
+              startedAt: Date.now(),
+            };
+            this.taskExecutionsInFlight.set(taskId, executionRegistration);
+            try {
+              await this.executeTask(
+                taskId,
+                description,
+                onLog,
+                extra.cancelToken as { cancelled: boolean } | undefined,
+                extra.taskProjectContext as TaskProjectContext | undefined,
+                extra.executionRound as number | undefined,
+                item.payload.requirementId,
+              );
+            } finally {
+              // 仅当仍是本条登记时释放（防止陈旧 finally 清掉更新会话的登记）
+              if (this.taskExecutionsInFlight.get(taskId) === executionRegistration) {
+                this.taskExecutionsInFlight.delete(taskId);
+              }
+            }
             // Task execution handles preemption internally: it emits a
             // 'preempted' status event and TaskService re-queues the task
             // with fresh callbacks after a delay.  Clear the yield decision
@@ -2592,6 +2646,22 @@ export class Agent {
   }
 
   /**
+   * T3：查询该 task 是否已有**仍活跃**的执行会话（消费侧单飞判定）。
+   * 陈旧登记（超 TTL）视为失效并顺带清除。
+   */
+  private getInFlightTaskExecution(
+    taskId: string,
+  ): { sessionId: string; round: number; startedAt: number } | undefined {
+    const rec = this.taskExecutionsInFlight.get(taskId);
+    if (!rec) return undefined;
+    if (Date.now() - rec.startedAt >= Agent.TASK_EXECUTION_INFLIGHT_TTL_MS) {
+      this.taskExecutionsInFlight.delete(taskId);
+      return undefined;
+    }
+    return rec;
+  }
+
+  /**
    * Externally remove a task from the activeTasks set.
    * Used when a task reaches a terminal state outside of the executeTask finally block
    * (e.g. reviewer completes the task while the execution is already winding down).
@@ -2607,6 +2677,14 @@ export class Agent {
   /**
    * 获取运行中的任务
    */
+  /**
+   * T3：标记「非本会话分配/重复派发」的 task 执行指令为非可执行（non-actionable）。
+   * 供测试与诊断使用；生产路径在 `task_status_update` case 内直接 drop。
+   */
+  isTaskExecutionInFlight(taskId: string): boolean {
+    return !!this.getInFlightTaskExecution(taskId);
+  }
+
   getRunningTasks() {
     if (!this.stateManager) {
       return Array.from(this.activeTasks).map(taskId => ({
