@@ -175,4 +175,53 @@ describe('T3 消费侧实体独占：同一 task 单飞', () => {
     release();
     await Promise.all([a, b]);
   });
+
+  /**
+   * 修订轮（T1 §8.8 差距 8）：**closure-lost resurface 分支**的记录性断言。
+   *
+   * 该分支在 T3 闸**之前** `return` 并 emit `agent:incomplete`
+   * （`reason=resurfaced-task-execution-lost-closures`）→ 不启动执行、不进入 T3 重复-drop 计数；
+   * 真正执行由 TaskService 重新发起（T2 派发侧闸 + settle 来源②兜底）。
+   * 即「非缺陷但须如实记录」：本用例在设计上两侧均应绿（非漏检护栏）。
+   */
+  it('closure-lost resurface 分支：不启动执行、发 agent:incomplete，不计入 T3 重复-drop', async () => {
+    const agent = createTestAgent();
+    agent.attentionController.setWorkerCount(2);
+
+    const executed: string[] = [];
+    const executeTaskSpy = vi
+      .spyOn(agent, 'executeTask')
+      .mockImplementation(async (taskId: string) => { executed.push(taskId); });
+
+    const incomplete: Array<Record<string, unknown>> = [];
+    const skipped: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (agent as any).eventBus.on('agent:incomplete', (p: Record<string, unknown>) => incomplete.push(p));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (agent as any).eventBus.on('agent:task-execution-skipped-duplicate', (p: Record<string, unknown>) => skipped.push(p));
+
+    // resurface 后闭包丢失：extra.onLog / cancelToken / responsePromise 在 JSON 序列化中丢失
+    const lost = makeTaskExecutionItem('task_lost', 'mbx-lost');
+    (lost.payload as unknown as { extra: Record<string, unknown> }).extra.onLog = undefined;
+
+    await agent.processMailboxItemInternal(lost);
+
+    // 不启动执行（无第二个 worktree 写入方）
+    expect(executeTaskSpy).not.toHaveBeenCalled();
+    expect(executed).toEqual([]);
+    // 交回 TaskService 重新调度，而非被判为 T3 的重复-drop
+    const lostClosureEvents = incomplete.filter(
+      e => e.reason === 'resurfaced-task-execution-lost-closures',
+    );
+    expect(lostClosureEvents).toHaveLength(1);
+    expect(lostClosureEvents[0]).toMatchObject({
+      agentId: agent.id,
+      taskId: 'task_lost',
+      itemId: 'mbx-lost',
+      reason: 'resurfaced-task-execution-lost-closures',
+    });
+    expect(skipped).toHaveLength(0);
+    // 该分支不做登记（在 T3 闸之前返回）
+    expect(agent.isTaskExecutionInFlight('task_lost')).toBe(false);
+  });
 });
