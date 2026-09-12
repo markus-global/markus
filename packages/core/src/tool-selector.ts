@@ -608,10 +608,13 @@ export class ToolSelector {
 
     const budget = packToolDefBudget(pack);
     // HITL/discover + Markus core are eviction-immune.
-    // Activated skill/MCP are LIVE but LRU-evictable under budget (progressive disclosure).
+    // 审计 P0-3：**已激活工具一律晋升 protected（豁免驱逐）**。
+    // 旧实现只豁免「非 skill/MCP」的激活工具，导致 skill/MCP 被 discover_tools 激活后
+    // 可能在同一轮就被预算驱逐 → agent.ts 静默删除激活态 → 工具彻底不可见 → 模型反复
+    // discover_tools 空烧 token。未激活的 skill/MCP 仍按渐进披露（catalog）延迟。
     const protectedNames = new Set<string>([...TOOL_DEF_PROTECTED, ...TOOL_DEF_CORE_KEEP]);
     for (const name of activated) {
-      if (!isSkillOrMcpToolName(name)) protectedNames.add(name);
+      if (opts.allTools.has(name)) protectedNames.add(name);
     }
     const { tools: capped, evicted } = evictToolsToBudget(
       result,

@@ -6764,7 +6764,8 @@ export class Agent {
 
   /**
    * Mark tool names as activated for LIVE schemas (typically after discover_tools).
-   * Skill/MCP activations may be LRU-evicted under pack toolDef budget; core tools stay.
+   * 审计 P0-3：已激活工具在 tool-selector 中一律豁免驱逐（promote to protected），
+   * 因此激活必然可见，core 工具与激活工具都保持 LIVE。
    */
   activateTools(names: string[]): void {
     for (const name of names) {
@@ -6774,11 +6775,21 @@ export class Agent {
     }
   }
 
-  /** Drop activated extras that were deferred to stay under toolDef budget. */
+  /**
+   * 审计 P0-3：已激活工具**绝不静默删除**。
+   *
+   * 旧实现把本轮被预算驱逐的激活工具从 `activatedExtraTools` 里 `delete`，于是该工具
+   * 在之后所有轮次都不可见 → 模型只能反复 discover_tools（空烧 token、永不成功）。
+   * 现在 tool-selector 已把「已激活工具」全部晋升 protected（不再会被驱逐）；此处再做
+   * 一层兜底：即使收到驱逐名单，也**保留激活态（sticky）并显式告警**，而不是静默移除，
+   * 让「激活了却拿不到」在日志里可见、可查。
+   */
   private pruneEvictedActivatedTools(names: string[]): void {
-    for (const name of names) {
-      this.activatedExtraTools.delete(name);
-    }
+    if (names.length === 0) return;
+    log.warn('Activated tools reported evicted — keeping them sticky (no silent drop)', {
+      agentId: this.id,
+      evictedActivated: names,
+    });
   }
 
   /**

@@ -377,7 +377,10 @@ describe('ToolSelector', () => {
     expect(withActivated).toContain('discover_tools');
   });
 
-  it('S-activated-mcp-lru: activated MCP can defer; core stays LIVE', () => {
+  it('P0-3: activated skill/MCP stay LIVE under budget pressure (no silent eviction)', () => {
+    // 回归审计 P0-3：旧实现允许已激活的 skill/MCP 被预算驱逐，agent 随即静默删除其激活态，
+    // 导致该工具之后永久不可见 → 模型反复 discover_tools 空烧 token。现在已激活工具一律
+    // 豁免驱逐，且在 schema 中稳定可见；consumeEvictedActivated() 必须为空。
     const selector = new ToolSelector();
     const bigSchema = {
       type: 'object',
@@ -403,11 +406,9 @@ describe('ToolSelector', () => {
     });
     const names = selected.map((t) => t.name);
     expect(names).toContain('shell_execute');
-    expect(names).toContain('file_read');
     expect(names).toContain('discover_tools');
-    const deferred = selector.consumeDeferredCatalog();
-    const evictedActivated = selector.consumeEvictedActivated();
-    expect(deferred.some((d) => d.name.startsWith('feishu_')) || evictedActivated.some((n) => n.startsWith('feishu_'))).toBe(true);
+    for (const n of activatedMcp) expect(names).toContain(n);
+    expect(selector.consumeEvictedActivated()).toEqual([]);
   });
 
   it('CACHE: identical tool set emits byte-identical schema regardless of activation order (stable registry order)', () => {
