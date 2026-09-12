@@ -1766,6 +1766,12 @@ async function startServerCore(
             mbRepo.renewLease(itemId, ownerId, leaseUntil),
           releaseClaim: (itemId: string, ownerId: string) => mbRepo.releaseClaim(itemId, ownerId),
           releaseExpiredLeases: (aid: string, nowIso: string) => mbRepo.releaseExpiredLeases(aid, nowIso),
+          // ── P1.x 重投/恢复不丢（最小写 + 只读 API）───────────────────────
+          // requeueItem：单条 SQL 覆盖 (a) 复用原行回队 / (b) 刷新 queued_at / (d) 启动回队，
+          //   **无条件**清 claimed_by/lease_until（回队不得依赖 releaseClaim：跨实例 ownerId 不匹配 → no-op）。
+          requeueItem: (itemId: string, opts?: { queuedAt?: string }) => mbRepo.requeueItem(itemId, opts),
+          // findByDedupKey：只读，供 mailbox 三态判定（新增/幂等抑制/复用原行回队）取既有行状态。
+          findByDedupKey: (aid: string, dedupKey: string) => mbRepo.findByDedupKey(aid, dedupKey),
         });
         const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
         if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });

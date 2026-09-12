@@ -152,21 +152,33 @@ describe('P0 租约 · 续租 / 释放 / 过期回收（验收 3）', () => {
   });
 });
 
-describe('P0 启动清理 · 不误杀有效租约', () => {
-  it('有效租约的 processing 行不被清理；无认领/租约过期的行才被清', () => {
-    repo.save(row('mbx_s1')); // 无认领的 processing
-    repo.save(row('mbx_s2')); // 有效租约
-    repo.save(row('mbx_s3')); // 过期租约
+describe('启动清理 · 不误杀有效租约', () => {
+  it('有效租约的 processing 行不被清理；无认领/租约过期的行才被处置（P1.x (d) 按类型分流）', () => {
+    // 注意：P0 本用例 fixture 原为 review_request（**strict-state**）。
+    // P1.x (d)（CTO 定调）后 strict-state 行在启动清理时改为**租约感知回队**、不再 drop：
+    //  ⇒ 原「只清 s1+s3 = dropped」断言对 strict-state 已失效，故本用例改为：
+    //     - strict-state（review_request）孤儿/过期租约 → **回队 queued**（s1、s3）；
+    //     - 非 strict-state（heartbeat）孤儿 → **维持 dropped**（s4）；
+    //     - 有效租约（s2）→ 任何类型都不动。
+    repo.save(row('mbx_s1')); // strict-state · 无认领的 processing → 回队
+    repo.save(row('mbx_s2')); // strict-state · 有效租约 → 不动
+    repo.save(row('mbx_s3')); // strict-state · 过期租约 → 回队
+    // 非 strict-state 行（heartbeat）：沿用原「孤儿 → dropped」语义，锁定 P0 行为逐字不变。
+    const nonStrict = { ...row('mbx_s4'), sourceType: 'heartbeat' };
+    repo.save(nonStrict);
 
     const t = now().toISOString();
     repo.updateStatus('mbx_s1', 'processing');
     expect(repo.claimItem('mbx_s2', 'live', iso(600_000), t)).toBe(true);
     expect(repo.claimItem('mbx_s3', 'dead', iso(-60_000), t)).toBe(true);
+    repo.updateStatus('mbx_s4', 'processing');
 
-    expect(repo.markStaleProcessingAsDropped('agt_1', t), '只清 s1 + s3').toBe(2);
-    expect(repo.getById('mbx_s1')!.status).toBe('dropped');
+    // (d)：strict 回队（不进 dropped 计数），heartbeat（非 strict）孤儿仍 drop。
+    expect(repo.markStaleProcessingAsDropped('agt_1', t), '只清非 strict 孤儿 s4').toBe(1);
+    expect(repo.getById('mbx_s1')!.status, 'strict 孤儿 → 回队').toBe('queued');
     expect(repo.getById('mbx_s2')!.status, '有效租约不被动').toBe('processing');
-    expect(repo.getById('mbx_s3')!.status).toBe('dropped');
+    expect(repo.getById('mbx_s3')!.status, 'strict 过期租约 → 回队').toBe('queued');
+    expect(repo.getById('mbx_s4')!.status, '非 strict 孤儿 → 维持 dropped（逐字不变）').toBe('dropped');
   });
 });
 

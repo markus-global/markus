@@ -597,9 +597,18 @@ export class AttentionController {
             const hasLiveCallback = item.sourceType === 'a2a_message' && !!item.metadata?.responsePromise;
             if (item.sourceType !== 'human_chat' && !hasLiveCallback) {
               try {
+                // P1.x (a)(R2)：**显式复用原行**回队（而不仅仅是重投）。
+                //
+                // 停机时 item 刚被本实例取走（持久行为 `processing` + `claimed_by` = 本实例），
+                // 而 P1 已给 review_request 打上非空幂等键：若无条件 `enqueue(resue)` 新 id，
+                // 唯一键会返 false → 该次投递被抑、原行永远停在 processing
+                // （重试 < 租约 TTL 延 15min，> TTL 被清成 dropped = 评审永久丢失）。
+                // 传 `reuseItemId` 后走 `resolveReinjectDecision` 的「复用原行回队」分支：
+                // 不新增行、无条件释放认领、刷新 `queued_at`，返回 `status='queued'`。
                 this.mailbox.enqueue(item.sourceType, item.payload, {
                   priority: item.priority,
                   metadata: item.metadata,
+                  reuseItemId: item.id,
                 });
               } catch (err) {
                 log.warn('Failed to re-enqueue item on shutdown', { itemId: item.id, error: String(err) });
