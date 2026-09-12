@@ -821,7 +821,8 @@ export class Agent {
    */
   private getModelMaxOutputForBudget(): number | undefined {
     try {
-      return this.llmRouter.getModelMaxOutput(this.getEffectiveProvider());
+      // P1-8: same effective-model resolution as the context window.
+      return this.llmRouter.getModelMaxOutput(this.getEffectiveProvider(), this.getEffectiveModel());
     } catch {
       return undefined;
     }
@@ -2397,11 +2398,14 @@ export class Agent {
     promptAffordTokens: number | null;
   } {
     const provider = this.getEffectiveProvider();
+    const effectiveModel = this.getEffectiveModel();
     const afford = typeof this.llmRouter.getPromptAffordTokens === 'function'
       ? this.llmRouter.getPromptAffordTokens(provider)
       : null;
     return {
-      modelContextWindow: this.llmRouter.getModelContextWindow(provider),
+      // P1-8: window must be resolved for the model actually used this request,
+      // not the provider's configured default (which the session may override).
+      modelContextWindow: this.llmRouter.getModelContextWindow(provider, effectiveModel),
       modelMaxOutput: this.getModelMaxOutputForBudget(),
       promptAffordTokens: afford ?? null,
     };

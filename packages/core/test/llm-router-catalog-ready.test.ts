@@ -16,7 +16,7 @@ import { LLMRouter } from '../src/llm/router.js';
 import { MarkusProvider, clearMarkusModelListCache } from '../src/llm/markus-provider.js';
 import type { MarkusModelInfo } from '../src/llm/markus-provider.js';
 
-const FALLBACK_CONTEXT_WINDOW = 1_000_000; // DEFAULT_CONTEXT_WINDOW_FALLBACK
+const FALLBACK_CONTEXT_WINDOW = 32_768; // DEFAULT_CONTEXT_WINDOW_FALLBACK (P1-7: conservative, was 1M)
 const PROVIDER_MODEL = 'deepseek/deepseek-v4-flash';
 const HUB_CONTEXT_WINDOW = 200_000;
 
