@@ -85,6 +85,12 @@ export const MAILBOX_OBSERVABILITY_EVENTS = {
   leaseLost: 'mailbox.lease_lost',
   /** 重复投递被丢弃：幂等键（items 唯一键 / 入队幂等键）拦截，未入队。 */
   duplicateDeliveryDropped: 'mailbox.duplicate_delivery_dropped',
+  /**
+   * 重投复用原行回队（P1.x (a)(R6)）：同键冲突但既有行未收口（`dropped`/`failed`）
+   * 或调用方显式交还在飞项 → 复用原行回队，**不新增行**。
+   * count=1（按 event 求和 = 累计补偿重投数）。
+   */
+  deliveryReinjected: 'mailbox.delivery_reinjected',
   /** 单播唤醒：从多个 idle waiter 中确定性选出恰好一个。 */
   unicastWake: 'mailbox.unicast_wake',
 } as const;
@@ -109,6 +115,14 @@ export function mailboxDedupKey(
 export interface EnqueueOptions {
   priority?: MailboxPriority;
   metadata?: MailboxItemMetadata;
+  /**
+   * P1.x (a)(R2)：调用方明确声明「我正在交还这一条既有行」——停停机重投 / 崩溃恢复时，
+   * 该 item 的持久行正是「本实例刚取走、未处理完就停机」的那一条。
+   *
+   * 传入后：跳过入队合并 + 命中既有行时走 **复用原行回队**（不新增行、不触发唯一键
+   * 拒绝），而不是被「同键 → 幂等抑制」拦下（后者会让该行永远停在 `processing`）。
+   */
+  reuseItemId?: string;
 }
 
 export interface MailboxPersistence {
@@ -149,11 +163,84 @@ export interface MailboxPersistence {
   /** 释放认领（完成 / 丢弃 / 合并 / 回队时调用）。对非本人认领的项为 no-op。 */
   releaseClaim?(itemId: string, ownerId: string): void;
   /**
+   * P1.x (a)(b)(d)（最小写 API）：**无条件**把既有行回队（不校验认领者）。
+   *
+   * 语义 = `status='queued'` + 清 `claimed_by`/`lease_until`/`started_at`/`completed_at`
+   * + **刷新 `queued_at`**，一条 SQL 覆盖 (a) 复用原行 / (b) 刷新 TTL 基准 / (d) 启动回队。
+   * **不得用 `releaseClaim` 代替**：其 `WHERE id=? AND claimed_by=?` 在重启后的新实例上
+   * 因 `ownerId` 已变而 0 changes（静默 no-op）。
+   *
+   * @returns true = 命中并已回队；false = 行不存在 / 状态不允许回队。
+   *          未实现时 mailbox 退化为 `updateStatus(id,'queued')`（不含 `queued_at` 刷新）。
+   */
+  requeueItem?(itemId: string, options?: { queuedAt?: string }): boolean;
+  /**
+   * P1.x (c)（最小只读 API）：按幂等键查询既有行（仅判定所需最小字段）。
+   *
+   * 没有它就无法区分「已在飞 → 抑制」与「已 dropped/failed 但该轮未收口 → 允许补偿重投」。
+   * 未实现时 mailbox 退化为 P0 行为（仅依赖 `save()` 返回 false 一律拒重）。
+   */
+  findByDedupKey?(agentId: string, dedupKey: string): MailboxExistingRow | undefined;
+  /**
    * 回收过期租约（P0）：把 `processing` 且租约已过期的 item 退回 `queued`
    * （清空 claimed_by / lease_until / started_at），返回回收条数。
    * 使崩溃或超时的 worker 不会永久占位。
    */
   releaseExpiredLeases?(agentId: string, nowIso: string): number;
+}
+
+/** P1.x (c)：既有行在判定中需要的最小字段集（与 storage `MailboxDedupRow` 同形）。 */
+export interface MailboxExistingRow {
+  id: string;
+  status: string;
+  claimedBy?: string | null;
+  leaseUntil?: string | null;
+  queuedAt?: string;
+}
+
+/** P1.x (c)：重投/回投的三态判定结果。 */
+export type ReinjectDecision =
+  /** 行不存在 → 正常插入（新行）。 */
+  | { action: 'insert' }
+  /** 行存在但不得复用（在飞 / 已收口）→ 幂等抑制，返回既有行状态。 */
+  | { action: 'suppress'; itemId: string; status: string; reason: 'in-flight' | 'settled' }
+  /** 行存在且可补偿重投 → **复用原行回队**（不新增行）。 */
+  | { action: 'reuse'; itemId: string };
+
+/**
+ * P1.x (c) · 幂等键命中后「新增 / 抑制 / 复用原行回队」的**唯一判定实现**（全库只此一处）。
+ *
+ * `mailbox.enqueue`（投递/冲突分支）与 `attention.ts` 停机重投（经
+ * `mailbox.reEnqueueOnShutdown` → `enqueue({reuseItemId})`）**共用本函数**，
+ * 禁止在别处内联同一判定（唯一例外：`enqueue` 内 `save()===false` 的竞态兜底）。
+ *
+ * 判定只依赖「既有行状态 + 调用方意图」，不读内存态（重启后内存队列为空，猜不得）。
+ *
+ *  - 行不存在 → `insert`（正常插入）；
+ *  - 调用方声明 `explicitReuseId === 既有行 id`（停机重投：该行就是刚被本实例取走、
+ *    未处理完的项）→ 一律 `reuse`；**即使其状态是 `processing`** —— 否则同键冲突会让
+ *    这条在飞项永远停在 `processing`（直到租约过期甚至被 `MAILBOX_QUEUED_TTL_MS` 判死）；
+ *  - 状态 ∈ {`dropped`,`failed`}（未收口终态）→ `reuse`（R6：丢消息后可补偿重投）；
+ *  - 状态 ∈ {`completed`,`merged`}（已收口 / 已合并）→ `suppress(settled)`（重投会重复执行）；
+ *  - 其余（`queued` / `processing` / `deferred` / 未知）→ `suppress(in-flight)`（保守：宁延迟不重复）。
+ */
+export function resolveReinjectDecision(
+  existing: MailboxExistingRow | undefined,
+  intent?: { explicitReuseId?: string },
+): ReinjectDecision {
+  if (!existing) return { action: 'insert' };
+
+  if (intent?.explicitReuseId && intent.explicitReuseId === existing.id) {
+    return { action: 'reuse', itemId: existing.id };
+  }
+
+  if (existing.status === 'dropped' || existing.status === 'failed') {
+    return { action: 'reuse', itemId: existing.id };
+  }
+  if (existing.status === 'completed' || existing.status === 'merged') {
+    return { action: 'suppress', itemId: existing.id, status: existing.status, reason: 'settled' };
+  }
+  return { action: 'suppress', itemId: existing.id, status: existing.status, reason: 'in-flight' };
 }
 
 /**
@@ -511,8 +598,10 @@ export class AgentMailbox {
     payload: MailboxPayload,
     options?: EnqueueOptions,
   ): MailboxItem {
-    // Enqueue-time dedup: merge into existing queued item for the same entity
-    const merged = this.tryMergeIntoExisting(sourceType, payload);
+    // 注意：显式复用（reuseItemId）不走内存合并 —— 调用方要求把**这一条在飞项**
+    // 送回队列，若被合并进别的 item，原行会永远停在 processing（直到租约过期 / 被 TTL 判死）。
+    const reuseItemId = options?.reuseItemId;
+    const merged = reuseItemId ? undefined : this.tryMergeIntoExisting(sourceType, payload);
     if (merged) {
       this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item: merged });
       this.wakeIdleLoop();
@@ -520,7 +609,7 @@ export class AgentMailbox {
     }
 
     const item: MailboxItem = {
-      id: generateId('mbx'),
+      id: reuseItemId ?? generateId('mbx'),
       agentId: this.agentId,
       sourceType,
       priority: options?.priority ?? DEFAULT_PRIORITY[sourceType],
@@ -534,35 +623,29 @@ export class AgentMailbox {
     // 即「同一 (agent, sourceType, taskId, round) 已投递过」——此时**不入队**，
     // 让「不产生重复投递」成为显式语义，而不是靠后续「无 DB 行 → 认领失败」间接兜住。
     const dedupKey = mailboxDedupKey(item);
+
+    // P1.x (c)：先按幂等键读既有行状态，再走**唯一判定函数**（而非直接 `save()`）：
+    // 这样才能区分「在飞 → 抑制」/「已 dropped 未收口 → 复用原行重投」/「已收口 → 拒」。
+    if (dedupKey && this.persistence?.findByDedupKey) {
+      const existing = this.persistedRowFor(dedupKey);
+      if (existing) {
+        const decision = resolveReinjectDecision(existing, { explicitReuseId: reuseItemId });
+        if (decision.action === 'suppress') {
+          return this.suppressDuplicateDelivery(item, sourceType, dedupKey, decision.status);
+        }
+        // insert / reuse 都交由同一回队实现：它先尝试按 id 回队（行存在 → 复用），
+        // 行不存在时才退回正常插入。
+        return this.reinjectExistingRow(item, dedupKey, decision.action === 'reuse' ? existing : undefined);
+      }
+    }
+    // 显式交还在飞项（停机重投）但没有幂等键（如 a2a_message）：直接按原 id 回队。
+    if (reuseItemId) return this.reinjectExistingRow(item, dedupKey);
+
     const persisted = this.persistence?.save(item, dedupKey);
     if (persisted === false) {
-      // P2 可观测：`duplicateDeliveryDropped` —— 「被丢弃的重复投递」。
-      // 计数字段：count=1（按 event 求和 = 累计丢弃的重复投递数）、dedupKey = 幂等键。
-      log.warn('Duplicate mailbox delivery rejected by idempotency key — not enqueued', {
-        event: MAILBOX_OBSERVABILITY_EVENTS.duplicateDeliveryDropped,
-        agentId: this.agentId,
-        itemId: item.id,
-        type: sourceType,
-        dedupKey,
-        taskId: payload.taskId ?? item.metadata?.taskId,
-        round: payload.extra?.round ?? (item.metadata as Record<string, unknown> | undefined)?.['round'],
-        count: 1,
-      });
-      this.eventBus.emit('mailbox:duplicate-rejected', {
-        agentId: this.agentId,
-        itemId: item.id,
-        sourceType,
-        dedupKey,
-      });
-      // 投递方可能在 await responsePromise（如 notifyReviewer 的 .then）：
-      // 重复投递既然被抑制，就必须显式了结该 Promise，否则调用方永久挂起
-      // （其内存态 activeReviews 会残留 → 后续轮次的评审通知被误抑制）。
-      const pending = item.metadata?.responsePromise;
-      if (pending) {
-        try { pending.resolve('[duplicate-delivery-suppressed]'); } catch { /* caller gone */ }
-      }
-      item.status = 'dropped';
-      return item;
+      // 竞态兜底（D3）：仅在「findByDedupKey 未实现（旧持久层）」或「查询→插入」之间的极小
+      // 窗口内被并发插入时到达。停机重投的**主路径**已由上方的复用分支承担，不再是这里。
+      return this.suppressDuplicateDelivery(item, sourceType, dedupKey);
     }
 
     this.insertSorted(item);
@@ -1076,13 +1159,173 @@ export class AgentMailbox {
   /**
    * Return a dequeued item to the queue without incrementing retryCount.
    * Used by the triage phase when it picks a different item to process.
+   *
+   * P1.x (a)(b)：回队持久写走**同一条**路径（`requeuePersisted` → `requeueItem`）：
+   * 无条件清 `claimed_by`/`lease_until` + **刷新 `queued_at`**。
+   * 不再用 `releaseClaim` —— 其 `WHERE id=? AND claimed_by=?` 在「新实例回队旧实例遗留行」
+   * 时因 `ownerId` 已变而 0 changes（静默 no-op）；不刷 `queued_at` 还会让刚回队的行
+   * 在同一次 `recoverStaleItems` 中被 TTL 判 expired → dropped。
    */
   putBack(item: MailboxItem): void {
+    const queuedAt = new Date().toISOString();
     item.status = 'queued';
     item.startedAt = undefined;
+    item.claimedBy = undefined;
+    item.leaseUntil = undefined;
+    item.queuedAt = queuedAt;
     this.insertSorted(item);
-    this.persistence?.updateStatus(item.id, 'queued');
-    this.releaseClaim(item.id);
+    this.requeuePersisted(item.id, queuedAt);
+  }
+
+  /**
+   * P1.x (a)(R2) · 停机重投 / 崩溃恢复：把本实例**在飞的 item** 交还队列。
+   *
+   * 与 `enqueue` 的冲突分支共用**同一个判定实现** `resolveReinjectDecision`（D3）：
+   * 经 `enqueue(..., { reuseItemId: item.id })` 声明「我正持有这一条」，使判定走
+   * 「复用原行回队」而不是「同键 → 幂等抑制」（后者会让该行永远停在 `processing`）。
+   *
+   * @returns 回队后的 item（`status === 'queued'`）；若既有行已收口则返回被抑制的 item。
+   */
+  reEnqueueOnShutdown(item: MailboxItem): MailboxItem {
+    return this.enqueue(item.sourceType, item.payload, {
+      priority: item.priority,
+      metadata: item.metadata,
+      reuseItemId: item.id,
+    });
+  }
+
+  /**
+   * P1.x (c)：读取幂等键对应的既有行（只读）。
+   * 持久层未实现 `findByDedupKey` 时返回 undefined → 调用方退化为 P0 行为。
+   */
+  private persistedRowFor(dedupKey: string): MailboxExistingRow | undefined {
+    const p = this.persistence;
+    if (!p?.findByDedupKey) return undefined;
+    try {
+      return p.findByDedupKey(this.agentId, dedupKey) ?? undefined;
+    } catch (err) {
+      log.warn('Mailbox findByDedupKey threw', { agentId: this.agentId, dedupKey, error: String(err) });
+      return undefined;
+    }
+  }
+
+  /**
+   * P1.x (a)(b)(d)：把既有行**无条件**回队（复用原行，不新增行）。
+   *
+   * 未实现 `requeueItem` 的旧持久层退化为 `updateStatus(id,'queued')`（不刷 `queued_at`）。
+   *
+   * @returns true = 已确认回队；false = 行不存在 / 状态不允许 / 无持久层。
+   */
+  private requeuePersisted(itemId: string, queuedAt: string): boolean {
+    const p = this.persistence;
+    if (!p) return false;
+    try {
+      if (p.requeueItem) return p.requeueItem(itemId, { queuedAt }) !== false;
+      p.updateStatus?.(itemId, 'queued');
+      return true;
+    } catch (err) {
+      log.warn('Mailbox requeue of persisted row threw', {
+        agentId: this.agentId, itemId, error: String(err),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * P1.x (a)(R2)：**复用既有行回队**（不新增行、不触发唯一键拒绝）。
+   *
+   * 返回的 item `status === 'queued'`；**绝不返回 `dropped`** —— QA 原始打回症状正是
+   * 「re-enqueue 返回 `status=dropped`、队列 `0→0`」，调用方（attention.ts 停机重投）
+   * 会据此误判为「消息已丢弃」。
+   *
+   * 行不存在（从未落库）时才退回正常插入；行存在但不可回队（已 `completed`/`merged`）
+   * 则归入幂等抑制，不复活已收口轮次。
+   */
+  private reinjectExistingRow(
+    item: MailboxItem,
+    dedupKey: string | undefined,
+    existing?: MailboxExistingRow,
+  ): MailboxItem {
+    const targetId = existing?.id ?? item.id;
+    const queuedAt = new Date().toISOString();
+    const requeued: MailboxItem = {
+      ...item,
+      id: targetId,
+      status: 'queued',
+      queuedAt,
+      startedAt: undefined,
+      completedAt: undefined,
+      claimedBy: undefined,
+      leaseUntil: undefined,
+    };
+
+    if (this.requeuePersisted(targetId, queuedAt)) {
+      if (!this.queue.some(q => q.id === targetId)) this.insertSorted(requeued);
+      // P2 可观测：`deliveryReinjected` —— 「补偿重投复用原行回队」。
+      // 计数字段：count=1（按 event 求和 = 累计复用回队数）。
+      log.warn('Mailbox redelivery reuse — existing row requeued (no new row)', {
+        event: MAILBOX_OBSERVABILITY_EVENTS.deliveryReinjected,
+        agentId: this.agentId,
+        itemId: targetId,
+        type: item.sourceType,
+        dedupKey,
+        previousStatus: existing?.status ?? 'processing',
+        count: 1,
+      });
+      this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item: requeued });
+      this.wakeIdleLoop({ type: item.sourceType, key: AgentMailbox.unicastRouteKey(requeued) });
+      return requeued;
+    }
+
+    // 行不存在 → 正常插入（保持 P0 行为：先落库再入队）。
+    const persisted = this.persistence?.save(requeued, dedupKey);
+    if (persisted === false) {
+      return this.suppressDuplicateDelivery(requeued, item.sourceType, dedupKey, existing?.status);
+    }
+    if (!this.queue.some(q => q.id === targetId)) this.insertSorted(requeued);
+    this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item: requeued });
+    this.wakeIdleLoop({ type: item.sourceType, key: AgentMailbox.unicastRouteKey(requeued) });
+    return requeued;
+  }
+
+  /**
+   * P1.x (c) suppress 分支：既有投递在飞 / 已收口 → 本次投递**不入队**。
+   * 保留 P0/P1 的全部可观测与 Promise 了结语义。
+   */
+  private suppressDuplicateDelivery(
+    item: MailboxItem,
+    sourceType: MailboxItemType,
+    dedupKey: string | undefined,
+    existingStatus?: string,
+  ): MailboxItem {
+    // P2 可观测：`duplicateDeliveryDropped` —— 「被丢弃的重复投递」。
+    // 计数字段：count=1（按 event 求和 = 累计丢弃的重复投递数）、dedupKey = 幂等键。
+    log.warn('Duplicate mailbox delivery rejected by idempotency key — not enqueued', {
+      event: MAILBOX_OBSERVABILITY_EVENTS.duplicateDeliveryDropped,
+      agentId: this.agentId,
+      itemId: item.id,
+      type: sourceType,
+      dedupKey,
+      existingStatus,
+      taskId: item.payload.taskId ?? item.metadata?.taskId,
+      round: item.payload.extra?.round ?? (item.metadata as Record<string, unknown> | undefined)?.['round'],
+      count: 1,
+    });
+    this.eventBus.emit('mailbox:duplicate-rejected', {
+      agentId: this.agentId,
+      itemId: item.id,
+      sourceType,
+      dedupKey,
+    });
+    // 投递方可能在 await responsePromise（如 notifyReviewer 的 .then）：
+    // 重复投递既然被抑制，就必须显式了结该 Promise，否则调用方永久挂起
+    // （其内存态 activeReviews 会残留 → 后续轮次的评审通知被误抑制）。
+    const pending = item.metadata?.responsePromise;
+    if (pending) {
+      try { pending.resolve('[duplicate-delivery-suppressed]'); } catch { /* caller gone */ }
+    }
+    item.status = 'dropped';
+    return item;
   }
 
   /**

@@ -8,7 +8,10 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, type UserInputQuestion, type UserInputAnswer } from '@markus/shared';
+import {
+  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem,
+  type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
+} from '@markus/shared';
 
 type SqlParams = SQLInputValue[];
 
@@ -4380,6 +4383,20 @@ export interface MailboxItemRow {
   dedupKey?: string | null;
 }
 
+/**
+ * P1.x (c)：按幂等键只读查询既有行的结果 —— **只含判定所需的五个字段**。
+ *
+ * 刻意不回传 `payload` / `metadata`：投递方在 `enqueue` 热路径上只需据此判定
+ * 「新增 / 幂等抑制 / 复用原行回队」，全量负载由调用方自己构造的 item 提供。
+ */
+export interface MailboxDedupRow {
+  id: string;
+  status: string;
+  claimedBy: string | null;
+  leaseUntil: string | null;
+  queuedAt: string;
+}
+
 export class SqliteMailboxRepo {
   constructor(private db: DatabaseSync) {}
 
@@ -4477,30 +4494,139 @@ export class SqliteMailboxRepo {
   }
 
   /**
-   * 回收过期租约（P0）：把 `processing` 且租约已过期的 item 退回 `queued`，
+   * P1.x (a)(b)(d)：**无条件**把既有行回队（复用原行，不新增行）。
+   *
+   * 语义 = `status='queued'` + 清 `claimed_by`/`lease_until`/`started_at`/`completed_at`
+   * + **刷新 `queued_at`**。一条写路径同时覆盖本卡三处缺口：
+   *  - (a) 同键冲突复用原行回队：不触发 `uq_mailbox_agent_dedup` 唯一键拒绝、不产生第二行；
+   *  - (b) 回队必须刷新 `queued_at`：否则重启时 `recoverStaleItems` 会按
+   *        `MAILBOX_QUEUED_TTL_MS` 把刚回队的行判 expired → dropped（= 白修）；
+   *  - (d) 启动清理把 strict-state 孤儿行/过期租约行回队时同样需要上面两点。
+   *
+   * ⚠️ 与 `releaseClaim(itemId, ownerId)` 的**根本区别：不校验认领者**。
+   * 回队的语义本就是「跨实例接管」：重启后的新实例（`ownerId = agentId#pid#seq` 已变）
+   * 必须能回队上一实例遗留的 `processing` 行；若改用 `releaseClaim`，其
+   * `WHERE claimed_by = ?` 会因属主不匹配而 0 changes **静默 no-op**。
+   *
+   * `status` 守卫使本方法不会复活已收口/已合并的行（`completed` / `merged`）。
+   *
+   * @returns true = 命中 1 行并已回队；false = 行不存在或状态不允许回队（调用方自行决定后续）。
+   */
+  requeueItem(itemId: string, options?: { queuedAt?: string }): boolean {
+    const res = this.db
+      .prepare(
+        `UPDATE mailbox_items
+            SET status = 'queued', queued_at = ?, started_at = NULL, completed_at = NULL,
+                claimed_by = NULL, lease_until = NULL
+          WHERE id = ? AND status IN ('queued', 'processing', 'dropped', 'failed')`
+      )
+      .run(options?.queuedAt ?? now(), itemId);
+    return ((res as { changes?: number }).changes ?? 0) === 1;
+  }
+
+  /**
+   * P1.x (c)：按幂等键**只读**查询既有行（命中部分唯一索引 `uq_mailbox_agent_dedup`）。
+   *
+   * 为什么必需：`save()` 是 `INSERT … ON CONFLICT DO NOTHING`，冲突时**只回 `false`、
+   * 不回传既有行**；全文件亦无任何按 `dedup_key` 的查询面。因此投递方拿不到
+   * 「既有行当前处于什么状态」，无法实现「在飞 → 幂等抑制 / 未收口 → 允许补偿重投 /
+   * 已收口 → 拒重投」的判定。本方法只补上这一**只读**面，不改 schema、不加索引。
+   *
+   * 约束（评审硬验收）：只读（无任何 INSERT/UPDATE 副作用）；查询为
+   * `WHERE agent_id = ? AND dedup_key = ?`（**不得**退化为 agent 级全表扫）；
+   * 只回判定所需字段（见 `MailboxDedupRow`），不回传 `payload` / `metadata`。
+   */
+  findByDedupKey(agentId: string, dedupKey: string): MailboxDedupRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, status, claimed_by, lease_until, queued_at
+           FROM mailbox_items
+          WHERE agent_id = ? AND dedup_key = ?
+          LIMIT 1`
+      )
+      .get(agentId, dedupKey) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return {
+      id: row['id'] as string,
+      status: row['status'] as string,
+      claimedBy: (row['claimed_by'] as string | null) ?? null,
+      leaseUntil: (row['lease_until'] as string | null) ?? null,
+      queuedAt: row['queued_at'] as string,
+    };
+  }
+
+  /**
+   * 回收过期租约（P0 · 运行期看门狗）：把 `processing` 且租约已过期的 item 退回 `queued`，
    * 使崩溃或超时的 worker 不会永久占位。返回回收条数。
+   *
+   * P1.x (b)：回队同时**刷新 `queued_at`**，与 `requeueItem` 保持同一回队语义 ——
+   * 否则被回收的行仍带旧时间戳，`recoverStaleItems` 在下一次启动会按
+   * `MAILBOX_QUEUED_TTL_MS` 判它 expired → dropped（既有回队路径上的同一缺口）。
    */
   releaseExpiredLeases(agentId: string, nowIso: string): number {
     const res = this.db
       .prepare(
         `UPDATE mailbox_items
-            SET status = 'queued', started_at = NULL, claimed_by = NULL, lease_until = NULL
+            SET status = 'queued', queued_at = ?, started_at = NULL, claimed_by = NULL, lease_until = NULL
           WHERE agent_id = ?
             AND status = 'processing'
             AND lease_until IS NOT NULL
             AND lease_until < ?`
       )
-      .run(agentId, nowIso);
+      .run(nowIso, agentId, nowIso);
     return (res as { changes?: number }).changes ?? 0;
   }
 
   /**
-   * P0：仅清理**无有效租约**的残留 `processing` 行。
+   * 启动清理：把**无有效租约**的残留 `processing` 行做终局处置。
+   *
    * 与旧行为（无条件全清）的区别：多实例下启动不得抹掉其它实例正持有的租约，
-   * 只回收「无认领」或「租约已过期」的孤儿。
+   * 只处理「无认领」或「租约已过期」的孤儿；`lease_until` 未过期的 `processing`
+   * 行不在候选集内 ⇒ **不会被清理**。
+   *
+   * P1.x (d) · **按类型分流**（禁止类型无关的统一处置）：
+   *  - **strict-state 行**（shared `isStrictStateItem()`：`triggerExecution` / `review_request` /
+   *    `requirement_update|workflow_update + actionRequired`）→ **租约感知 + 回队**
+   *    （`requeueItem`：无条件清认领 + 刷 `queued_at`）。这类行承载正式状态流转，
+   *    丢掉等价于「评审/任务永不执行」。
+   *  - **非 strict-state 行**（`heartbeat` / `a2a_message` …）→ **维持原 `dropped` 语义，逐字不变**
+   *    （下方原 SQL 原样执行）。
+   *
+   * 判据形态刻意采用「SELECT 候选行 + 逐条调用 shared 谓词」而不是把 strict-state 判据
+   * 写成等价 SQL：该谓词含 payload 分支，用 SQL 复制会与 shared 实现双源分叉，
+   * 破坏「判定逻辑单一实现」。
+   *
+   * @returns 被判 `dropped` 的条数（回队的 strict-state 行不计入）。
    */
   markStaleProcessingAsDropped(agentId: string, nowIso?: string): number {
     const now = nowIso ?? new Date().toISOString();
+
+    // (d) 第一步：候选中属 strict-state 的行**回队**。回队后其 status 变为 'queued'，
+    // 下方原 SQL 自然不再命中 ⇒ 非 strict-state 的处置路径保持逐字不变。
+    try {
+      const candidates = this.db
+        .prepare(
+          `SELECT id, source_type, payload FROM mailbox_items
+            WHERE agent_id = ? AND status = 'processing'
+              AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?)`
+        )
+        .all(agentId, now) as Array<{ id: string; source_type: string; payload: string | null }>;
+      for (const row of candidates) {
+        const item = {
+          sourceType: row.source_type as MailboxItemType,
+          payload: (fromJson<MailboxPayload>(row.payload) ?? {}) as MailboxPayload,
+        };
+        if (!isStrictStateItem(item)) continue;
+        this.requeueItem(row.id, { queuedAt: now });
+      }
+    } catch (err) {
+      // 判据读取失败时**保守退化为原行为**（全量 drop），不因解析异常改变终局语义。
+      log.warn('Type-split stale-processing cleanup failed — falling back to drop-only', {
+        agentId, error: String(err),
+      });
+    }
+
+    // 原 SQL 逐字保留：非 strict-state 行（及未被回队的行）继续 drop。
     const result = this.db
       .prepare(
         `UPDATE mailbox_items SET status = 'dropped'
