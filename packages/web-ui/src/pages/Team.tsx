@@ -4097,7 +4097,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z" /><path d="M12 8v4" /><path d="M12 16h.01" /></svg>
                   </span>
                   <span className="flex-1 min-w-0">
-                    <span className="block text-sm font-medium text-fg-primary truncate">{a.title}</span>
+                    <span className="flex items-baseline gap-1.5 min-w-0">
+                      <span className="flex-1 text-sm font-medium text-fg-primary truncate">{a.title}</span>
+                      <span className="text-[10px] text-fg-tertiary shrink-0 whitespace-nowrap">{formatSmartTime(a.requestedAt, a.requestedAt, dateLabels)}</span>
+                    </span>
                     <span className="block text-xs text-fg-tertiary truncate">
                       {t('page.userInputPrompt', { count: a.questions?.length ?? 1, defaultValue: `${a.questions?.length ?? 1} question(s) awaiting your response` })}
                     </span>
@@ -4129,7 +4132,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       </svg>
                     </span>
                     <span className="flex-1 min-w-0">
-                      <span className="block text-sm font-medium text-fg-primary truncate">{n.title}</span>
+                      <span className="flex items-baseline gap-1.5 min-w-0">
+                        <span className="flex-1 text-sm font-medium text-fg-primary truncate">{n.title}</span>
+                        <span className="text-[10px] text-fg-tertiary shrink-0 whitespace-nowrap">{formatSmartTime(n.createdAt, n.createdAt, dateLabels)}</span>
+                      </span>
                       <span className="block text-xs text-fg-tertiary truncate">
                         {n.body?.replace(/\s+/g, ' ').trim() || t('page.notifyUserPrompt', { defaultValue: 'Agent notification awaiting your attention' })}
                       </span>
