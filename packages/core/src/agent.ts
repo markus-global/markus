@@ -54,7 +54,7 @@ import {
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
-import type { SmartTokenCounter } from './token-counter.js';
+import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
 import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
 import { HeartbeatScheduler } from './heartbeat.js';
@@ -3000,8 +3000,6 @@ export class Agent {
    */
   private get tokenCounter(): SmartTokenCounter {
     if (!this._tokenCounter) {
-      // 惰性 require，保持 token-counter 包按需加载。
-      const { createTokenCounter } = require('./token-counter.js') as typeof import('./token-counter.js');
       this._tokenCounter = createTokenCounter();
     }
     return this._tokenCounter;
