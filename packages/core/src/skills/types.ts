@@ -13,6 +13,11 @@ export interface SkillManifest {
   tags?: string[];
   /** Full SKILL.md body content -- the actual skill instructions */
   instructions?: string;
+  /**
+   * P1-13: set when SKILL.md exists but could not be read. Distinguishes a real
+   * load failure from a skill that legitimately has no instructions.
+   */
+  instructionsLoadError?: string;
   /** @deprecated Kept for backward compat with old manifest.json files; ignored by system */
   tools?: SkillToolDef[];
   requiredEnv?: string[];
