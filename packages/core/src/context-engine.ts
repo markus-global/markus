@@ -47,8 +47,7 @@ import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { getDefaultTokenCounter, type TokenCounter } from './token-counter.js';
 import type { EnvironmentProfile } from './environment-profile.js';
 import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capability-packs.js';
-import type { ConcurrentHandoff, ConcurrentHandoffLite } from './concurrent-handoff.js';
-import { formatHandoffsForContext } from './concurrent-handoff.js';
+import type { ConcurrentHandoffLite } from './concurrent-handoff.js';
 
 const log = createLogger('context-engine');
 
