@@ -18,6 +18,21 @@ function notify() {
   for (const fn of _listeners) fn();
 }
 
+/**
+ * Shallow value-equality for the flat records this store holds.
+ *
+ * `notify()` fires on every WS unread event, and the listeners used to hand React a brand-new
+ * object identity each time — so a no-op notification still re-rendered the whole Team page
+ * (84 agent rows + the message list). Bailing out on value-identical payloads keeps the store
+ * honest about "nothing changed".
+ */
+function sameRecord<T>(a: Record<string, T>, b: Record<string, T>): boolean {
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) if (a[k] !== b[k]) return false;
+  return true;
+}
+
 async function _fetchCounts() {
   try {
     const resp = await api.unread.getCounts();
@@ -85,10 +100,10 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
 
     let _prevSessionAgentMap = _globalSessionAgentMap;
     const listener = () => {
-      setCounts({ ..._globalCounts });
+      setCounts(prev => sameRecord(prev, _globalCounts) ? prev : { ..._globalCounts });
       if (_prevSessionAgentMap !== _globalSessionAgentMap) {
         _prevSessionAgentMap = _globalSessionAgentMap;
-        setSessionAgentMap({ ..._globalSessionAgentMap });
+        setSessionAgentMap(prev => sameRecord(prev, _globalSessionAgentMap) ? prev : { ..._globalSessionAgentMap });
       }
     };
     _listeners.add(listener);
