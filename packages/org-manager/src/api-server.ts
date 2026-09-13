@@ -3955,7 +3955,13 @@ export class APIServer {
                   priority: 'low',
                   actionType: 'navigate',
                   actionTarget: JSON.stringify({ path: `/team?channel=${encodeURIComponent(channel)}` }),
-                  metadata: { senderId, senderName, channel, groupName: gcName },
+                  metadata: {
+                    senderId, senderName, channel, groupName: gcName,
+                    i18n: {
+                      titleKey: 'notifications.titles.groupMessage',
+                      titleParams: { senderName, groupName: gcName },
+                    },
+                  },
                 });
               }
             }

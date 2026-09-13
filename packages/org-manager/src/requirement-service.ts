@@ -776,7 +776,21 @@ export class RequirementService {
         body,
         actionType: 'navigate',
         actionTarget: JSON.stringify({ path: `/work?openRequirement=${req.id}` }),
-        metadata: { requirementId: req.id, decision, createdBy: creatorId },
+        metadata: {
+          requirementId: req.id,
+          decision,
+          createdBy: creatorId,
+          i18n: {
+            titleKey: decision === 'approved'
+              ? 'notifications.titles.requirementApproved'
+              : 'notifications.titles.requirementRejected',
+            titleParams: { title: req.title },
+            bodyKey: decision === 'approved'
+              ? 'notifications.bodies.requirementApprovedBody'
+              : 'notifications.bodies.requirementRejectedBody',
+            bodyParams: { title: req.title, reason: reason ?? '' },
+          },
+        },
       });
     }
   }

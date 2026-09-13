@@ -199,6 +199,33 @@
       "viewAgent": "查看智能体 →",
       "viewApproval": "查看审批 →"
     },
+    "titles": {
+      "taskCreated": "任务已创建：{{title}}",
+      "taskReadyForReview": "任务待审核：{{title}}",
+      "taskCompleted": "任务已完成：{{title}}",
+      "taskFailed": "任务失败：{{title}}",
+      "requirementApproved": "需求已批准：{{title}}",
+      "requirementRejected": "需求已拒绝：{{title}}",
+      "mentionedYou": "{{authorName}} 提到了你",
+      "groupMessage": "{{senderName}} 在 {{groupName}} 中"
+    },
+    "bodies": {
+      "agentCreatedTask": "智能体创建了任务「{{title}}」",
+      "taskStatusChanged": "任务「{{title}}」状态已变为 {{status}}",
+      "requirementApprovedBody": "需求「{{title}}」已批准，正在进行中。",
+      "requirementRejectedBody": "需求「{{title}}」已被拒绝。{{reason}}",
+      "mentionPreview": "{{itemTitle}}：{{preview}}"
+    },
+    "approvalDesc": {
+      "requirementProposed": "智能体「{{agentName}}」提出了需求「{{title}}」（优先级：{{priority}}）。",
+      "requirementResubmitted": "智能体「{{agentName}}」重新提交了需求「{{title}}」（优先级：{{priority}}）。",
+      "taskCreate": "智能体「{{agentName}}」想创建任务「{{title}}」（优先级：{{priority}}）。",
+      "taskReview": "任务「{{title}}」已提交审核。"
+    },
+    "optionLabels": {
+      "requestChanges": "请求修改"
+    },
+    "badgeLabel": "通知",
     "approvalType": {
       "task": "任务",
       "requirement": "需求",

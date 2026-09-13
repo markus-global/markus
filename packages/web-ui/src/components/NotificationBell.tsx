@@ -118,6 +118,43 @@ function actionHint(n: NotificationInfo, t: TFunction): string | null {
   }
 }
 
+/**
+ * 后端在生成通知时会附带结构化 i18n 元数据（titleKey/bodyKey + 参数），
+ * 这里据此用当前语言渲染标题/正文。旧通知（无 i18n 元数据）回落原文。
+ */
+interface NotifI18nMeta {
+  titleKey?: string;
+  titleParams?: Record<string, string>;
+  bodyKey?: string;
+  bodyParams?: Record<string, string>;
+}
+
+function notifI18n(n: NotificationInfo): NotifI18nMeta | undefined {
+  const meta = n.metadata as Record<string, unknown> | undefined;
+  if (!meta || typeof meta.i18n !== 'object' || !meta.i18n) return undefined;
+  return meta.i18n as NotifI18nMeta;
+}
+
+export function notifTitle(n: NotificationInfo, t: TFunction): string {
+  const i18n = notifI18n(n);
+  if (!i18n?.titleKey) return n.title;
+  const params = { ...(i18n.titleParams ?? {}) };
+  return t(`team:${i18n.titleKey}`, { ...params, defaultValue: n.title });
+}
+
+export function notifBody(n: NotificationInfo, t: TFunction): string {
+  const i18n = notifI18n(n);
+  if (!i18n?.bodyKey) return n.body;
+  const params: Record<string, string> = {};
+  for (const [k, v] of Object.entries(i18n.bodyParams ?? {})) {
+    // status 类参数用 common:status.* 本地化，其余（标题等用户内容）原样保留
+    params[k] = k === 'status' || k === 'statusKey'
+      ? t(`common:status.${v}`, { defaultValue: v })
+      : v;
+  }
+  return t(`team:${i18n.bodyKey}`, { ...params, defaultValue: n.body });
+}
+
 function playNotificationSound() {
   try {
     const ctx = new AudioContext();
@@ -680,6 +717,34 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     return null;
   };
 
+  /**
+   * 审批描述本地化：结构化审批（需求提出/重新提交/任务创建）的描述是后端生成的模板句，
+   * 根据 subType + 参数重建为当前语言；task_review 仅替换首行模板，保留活动详情/交付物等用户内容；
+   * 其余（自定义审批）保留原文。
+   */
+  const approvalDesc = (a: ApprovalInfo): string => {
+    const details = a.details ?? {};
+    const sub = details.subType as string | undefined;
+    const priorityKey = details.priority as string | undefined;
+    const priority = priorityKey ? t(`common:priority.${priorityKey}`, { defaultValue: priorityKey }) : '';
+    if (sub === 'requirement') {
+      return t('team:notifications.approvalDesc.requirementProposed', { agentName: a.agentName, title: a.title, priority, defaultValue: a.description });
+    }
+    if (sub === 'requirement_resubmit') {
+      return t('team:notifications.approvalDesc.requirementResubmitted', { agentName: a.agentName, title: a.title, priority, defaultValue: a.description });
+    }
+    if (sub === 'task') {
+      return t('team:notifications.approvalDesc.taskCreate', { agentName: a.agentName, title: a.title, priority, defaultValue: a.description });
+    }
+    if (sub === 'task_review') {
+      const first = `Task "${a.title}" has been submitted for your review.`;
+      if (a.description.startsWith(first)) {
+        return t('team:notifications.approvalDesc.taskReview', { title: a.title }) + a.description.slice(first.length);
+      }
+    }
+    return a.description;
+  };
+
   const approvalSourceLabel = (a: ApprovalInfo): string => {
     const parts: string[] = [];
     parts.push(a.agentName);
@@ -688,11 +753,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     if (taskTitle) {
       parts.push(taskTitle);
     } else if (taskId) {
-      parts.push(`Task ${taskId.slice(0, 8)}`);
+      parts.push(`${t('team:notifications.approvalType.task')} ${taskId.slice(0, 8)}`);
     }
     const reqId = a.details?.requirementId as string | undefined;
     if (reqId && !taskId) {
-      parts.push(`Req ${reqId.slice(0, 8)}`);
+      parts.push(`${t('team:notifications.approvalType.requirement')} ${reqId.slice(0, 8)}`);
     }
     return parts.join(' · ');
   };
@@ -815,7 +880,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                 <div className="divide-y divide-border-default/50">
                   {pendingList.map(a => {
                     const cmd = a.details?.command as string | undefined;
-                    const descClean = cmd ? a.description.replace(/\s*Command:.*$/, '') : a.description;
+                    const descClean = cmd ? approvalDesc(a).replace(/\s*Command:.*$/, '') : approvalDesc(a);
                     return (
                     <div key={a.id} className="px-3 py-3 space-y-2.5">
                       <div
@@ -850,7 +915,12 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                         const txt = (freeformTexts[a.id] ?? '').trim();
 
                         if (hasOptions) {
-                          return (
+                          const optionLabel = (opt: { id: string; label: string }): string => {
+                      if (opt.id === 'approve') return t('common:approve', { defaultValue: opt.label });
+                      if (opt.id === 'reject' || opt.id === 'request_changes') return t('team:notifications.optionLabels.requestChanges', { defaultValue: opt.label });
+                      return opt.label;
+                    };
+                    return (
                             <div className="space-y-1.5">
                               {a.options!.map((opt, idx) => (
                                 <button
@@ -867,7 +937,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                                   <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold shrink-0">
                                     {String.fromCharCode(65 + idx)}
                                   </span>
-                                  {opt.label}
+                                  {optionLabel(opt)}
                                 </button>
                               ))}
                               <div className="flex gap-1.5 mt-1">
@@ -1038,10 +1108,10 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
                           {!n.read && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_DOT[n.priority] ?? PRIORITY_DOT.normal}`} />}
-                          <span className="text-xs text-fg-primary font-medium truncate">{n.title}</span>
+                          <span className="text-xs text-fg-primary font-medium truncate">{notifTitle(n, t)}</span>
                         </div>
                         <div className="text-[11px] text-fg-tertiary mt-0.5 ">
-                          <MarkdownMessage content={n.body} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
+                          <MarkdownMessage content={notifBody(n, t)} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
                         </div>
                         <div className="flex items-center gap-2 mt-0.5">
                           <span className="text-[10px] text-fg-muted">{timeAgo(n.createdAt, t)}</span>
@@ -1160,7 +1230,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                 <div className="divide-y divide-border-default/50">
                   {pendingList.map(a => {
                     const cmd = a.details?.command as string | undefined;
-                    const descClean = cmd ? a.description.replace(/\s*Command:.*$/, '') : a.description;
+                    const descClean = cmd ? approvalDesc(a).replace(/\s*Command:.*$/, '') : approvalDesc(a);
                     return (
                       <div key={a.id} className="px-3 py-3 space-y-2.5">
                         <div className="cursor-pointer hover:bg-surface-overlay/50 -mx-3 -mt-3 px-3 pt-3 pb-1 rounded-t-md transition-colors" onClick={() => navigateForApproval(a)}>
@@ -1188,6 +1258,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           const txt = (freeformTexts[a.id] ?? '').trim();
 
                           if (hasOptions) {
+                            const optionLabel = (opt: { id: string; label: string }): string => {
+                              if (opt.id === 'approve') return t('common:approve', { defaultValue: opt.label });
+                              if (opt.id === 'reject' || opt.id === 'request_changes') return t('team:notifications.optionLabels.requestChanges', { defaultValue: opt.label });
+                              return opt.label;
+                            };
                             return (
                               <div className="space-y-1.5">
                                 {a.options!.map((opt, idx) => (
@@ -1205,7 +1280,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                                     <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold shrink-0">
                                       {String.fromCharCode(65 + idx)}
                                     </span>
-                                    {opt.label}
+                                    {optionLabel(opt)}
                                   </button>
                                 ))}
                                 <div className="flex gap-1.5 mt-1">
@@ -1354,10 +1429,10 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5">
                             {!n.read && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_DOT[n.priority] ?? PRIORITY_DOT.normal}`} />}
-                            <span className="text-xs text-fg-primary font-medium truncate">{n.title}</span>
+                            <span className="text-xs text-fg-primary font-medium truncate">{notifTitle(n, t)}</span>
                           </div>
                           <div className="text-[11px] text-fg-tertiary mt-0.5 ">
-                            <MarkdownMessage content={n.body} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
+                            <MarkdownMessage content={notifBody(n, t)} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
                           </div>
                           <div className="flex items-center gap-2 mt-0.5">
                             <span className="text-[10px] text-fg-muted">{timeAgo(n.createdAt, t)}</span>

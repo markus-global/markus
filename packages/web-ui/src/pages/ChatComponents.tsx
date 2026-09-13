@@ -19,7 +19,11 @@ export { isRememberActionVisible };
 // ─── NotificationBadge ────────────────────────────────────────────────────────
 
 export function NotificationBadge({ priority }: { priority?: string }) {
+  const { t } = useTranslation(['common', 'team']);
   const isHigh = priority === 'high' || priority === 'critical';
+  const priorityLabel = priority && priority !== 'normal'
+    ? ` · ${t(`common:priority.${priority}`, { defaultValue: priority })}`
+    : '';
   return (
     <div className={`inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium ${
       isHigh
@@ -30,7 +34,7 @@ export function NotificationBadge({ priority }: { priority?: string }) {
         <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
         <path d="M13.73 21a2 2 0 0 1-3.46 0" />
       </svg>
-      <span>Notification{priority && priority !== 'normal' ? ` · ${priority}` : ''}</span>
+      <span>{t('team:notifications.badgeLabel')}{priorityLabel}</span>
     </div>
   );
 }
