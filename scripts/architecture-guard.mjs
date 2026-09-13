@@ -27,6 +27,19 @@ import { join, relative, resolve } from 'node:path';
 
 // 支持用 MARKUS_GUARD_ROOT 指向夹具目录（供 architecture-guard 自测用）。
 const ROOT = process.env['MARKUS_GUARD_ROOT'] ? resolve(process.env['MARKUS_GUARD_ROOT']) : process.cwd();
+
+// 夹具模式：ROOT 是一个**合成夹具目录**（只含被测规则需要的若干文件）。
+//
+// 契约不变量（INVARIANT_RULES）断言的是**真实仓库**的属性 ——「必需文件存在，
+// 且内部含指定结构」。在合成夹具里这些文件本就不存在，若照跑必然全红，
+// 于是自测永远失败、且失败原因与被测规则无关。因此夹具模式下只跑
+// 「路径级规则」（no-console / no-empty-catch / session-identity /
+// event-reachability / write-gate …），契约不变量交由真实仓库运行（CI / 本地）强制。
+//
+// 注意：门禁**自检**（selfTestInvariants，用内置 fixtures 字符串验证检测器
+// 不误报/不漏报）在夹具模式下仍然执行 —— 那是「门禁永远不该静默失效」的底线，
+// 与 ROOT 无关。
+const FIXTURE_MODE = Boolean(process.env['MARKUS_GUARD_ROOT']);
 const ALLOWLIST_FILE = join(ROOT, 'scripts', 'architecture-allowlist.json');
 const SCAN_ROOTS = ['packages'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', 'out']);
@@ -152,8 +165,10 @@ function selfTestInvariants() {
   return failures;
 }
 
-/** 在真实源码上执行契约不变量检查。命中 = 违规（无白名单豁免）。 */
+/** 在真实源码上执行契约不变量检查。命中 = 违规（无白名单豁免）。
+ *  夹具模式（MARKUS_GUARD_ROOT）下跳过：见 FIXTURE_MODE 处说明。 */
 function checkInvariants() {
+  if (FIXTURE_MODE) return [];
   const out = [];
   for (const rule of INVARIANT_RULES) {
     for (const c of rule.checks) {
@@ -417,7 +432,9 @@ const invariantViolations = checkInvariants();
 
 if (listOnly) {
   for (const v of invariantViolations) console.log(`  ✗ [${v.rule}] ${v.file} —— ${v.label}`);
-  console.log(`\n[guard] 契约不变量：${invariantChecksTotal - invariantViolations.length}/${invariantChecksTotal} 满足（--list 不失败）。\n`);
+  console.log(FIXTURE_MODE
+    ? `\n[guard] 契约不变量：夹具模式跳过（仅真实仓库强制）。\n`
+    : `\n[guard] 契约不变量：${invariantChecksTotal - invariantViolations.length}/${invariantChecksTotal} 满足（--list 不失败）。\n`);
   process.exit(0);
 }
 
@@ -440,4 +457,6 @@ if (invariantViolations.length) {
   process.exit(1);
 }
 
-console.log(`\n[guard] ✓ 通过：${violations.length} 处命中全部在已登记白名单内；契约不变量 ${invariantChecksTotal}/${invariantChecksTotal} 满足。\n`);
+console.log(FIXTURE_MODE
+  ? `\n[guard] ✓ 通过：${violations.length} 处命中全部在已登记白名单内；契约不变量 跳过（夹具模式，仅真实仓库强制）。\n`
+  : `\n[guard] ✓ 通过：${violations.length} 处命中全部在已登记白名单内；契约不变量 ${invariantChecksTotal}/${invariantChecksTotal} 满足。\n`);
