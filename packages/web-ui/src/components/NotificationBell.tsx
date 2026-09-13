@@ -161,6 +161,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const notifScrollRef = useRef<HTMLDivElement>(null);
   const lastTabRef = useRef<'approvals' | 'notifications'>('approvals');
   const [creditDialog, setCreditDialog] = useState(false);
+  /** 通知列表过滤：默认只看未读（Owner 诉求），可切到「全部」（未读 + 已读）。 */
+  const [notifFilter, setNotifFilter] = useState<'unread' | 'all'>('unread');
 
   const NOTIF_PAGE_SIZE = 30;
 
@@ -385,6 +387,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
 
   useEffect(() => {
     if (!open) return;
+    // 每次打开都回到「未读」默认视图（Owner 诉求：默认只显示未读）。
+    setNotifFilter('unread');
     const hasPending = approvals.some(a => a.status === 'pending');
     const hasUnread = notifications.some(n => !n.read);
     if (hasPending && !hasUnread) {
@@ -405,6 +409,19 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     }
     return true;
   });
+
+  // 统一按时间倒序。loadMore 会追加更旧的页、标记已读也会就地改 read，
+  // 显式排序保证「按时间」这条语义不依赖接口返回顺序。
+  const sortedNotifications = [...displayNotifications].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+  /** 默认只显示未读；切到「全部」时显示未读 + 已读（同样按时间倒序）。 */
+  const visibleNotifications = notifFilter === 'all'
+    ? sortedNotifications
+    : sortedNotifications.filter(n => !n.read);
+  const emptyNotifText = notifFilter === 'unread'
+    ? t('team:notifications.noUnread')
+    : t('team:notifications.noNotifications');
 
   // Count unread notifications excluding those that have matching pending approvals
   // (pending approvals are counted separately to avoid double-counting)
@@ -697,6 +714,34 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     />
   ) : null;
 
+  /** 通知过滤条：左侧「未读 / 全部」切换（默认未读），右侧「全部标为已读」。 */
+  const notifFilterBar = (
+    <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-border-default/50 shrink-0">
+      <div className="flex items-center gap-0.5 rounded-md bg-surface-overlay/60 p-0.5">
+        {(['unread', 'all'] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setNotifFilter(f)}
+            aria-pressed={notifFilter === f}
+            title={f === 'unread' ? t('team:notifications.noUnread') : undefined}
+            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+              notifFilter === f ? 'bg-surface-base text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'
+            }`}
+          >
+            {f === 'unread'
+              ? t('team:notifications.filterUnread') + (adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : '')
+              : t('team:notifications.filterAll')}
+          </button>
+        ))}
+      </div>
+      {unreadCount > 0 && (
+        <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors shrink-0">
+          {t('team:notifications.markAllRead')}
+        </button>
+      )}
+    </div>
+  );
+
   const panelContent = (
     <>
       {/* Tabs + Close */}
@@ -729,11 +774,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       </div>
 
       {/* Actions bar */}
-      {tab === 'notifications' && unreadCount > 0 && (
-        <div className="flex justify-end px-3 py-1.5 border-b border-border-default/50 shrink-0">
-          <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">{t('team:notifications.markAllRead')}</button>
-        </div>
-      )}
+      {tab === 'notifications' && notifFilterBar}
 
       {/* Content */}
       <div ref={notifScrollRef} className="flex-1 overflow-y-auto" onScroll={(e) => {
@@ -946,11 +987,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
             )}
 
             {tab === 'notifications' && (
-              displayNotifications.length === 0 ? (
-                <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noNotifications')}</div>
+              visibleNotifications.length === 0 ? (
+                <div className="p-6 text-center text-xs text-fg-tertiary">{emptyNotifText}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {displayNotifications.map(n => {
+                  {visibleNotifications.map(n => {
                     const typeColor = TYPE_COLOR[n.type] ?? 'text-fg-tertiary';
                     return (
                     <div
@@ -1078,11 +1119,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
         </div>
 
         {/* Actions bar */}
-        {tab === 'notifications' && unreadCount > 0 && (
-          <div className="flex justify-end px-3 py-1.5 border-b border-border-default/50 shrink-0">
-            <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">{t('team:notifications.markAllRead')}</button>
-          </div>
-        )}
+        {tab === 'notifications' && notifFilterBar}
 
         {/* Swipeable content */}
         <div className="flex-1 overflow-hidden relative" {...handleSwipe}>
@@ -1277,11 +1314,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
               )}
             </div>
             <div className="w-full shrink-0 h-full overflow-y-auto scrollbar-thin">
-              {displayNotifications.length === 0 ? (
-                <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noNotifications')}</div>
+              {visibleNotifications.length === 0 ? (
+                <div className="p-6 text-center text-xs text-fg-tertiary">{emptyNotifText}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {displayNotifications.slice(0, 50).map(n => {
+                  {visibleNotifications.slice(0, 50).map(n => {
                     const typeColor = TYPE_COLOR[n.type] ?? 'text-fg-tertiary';
                     return (
                       <button key={n.id} onClick={() => handleNotificationClick(n)} className={`w-full text-left px-3 py-2.5 flex gap-2.5 transition-colors ${n.read ? 'opacity-50 hover:opacity-70' : 'hover:bg-surface-overlay'}`}>
