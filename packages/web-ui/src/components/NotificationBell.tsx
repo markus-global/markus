@@ -151,6 +151,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
   const [unreadCount, setUnreadCount] = useState(0);
+  /**
+   * 「未读」视图的数据源：直接来自服务端的未读查询，而不是从最新一页里挑出来的未读。
+   * 之前是后者，导致未读行落在第二页之后时列表永远为空、数字却照常显示。
+   */
+  const [unreadNotifs, setUnreadNotifs] = useState<NotificationInfo[]>([]);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number; width: number; maxHeight: number }>({ top: 0, left: 0, width: 448, maxHeight: 576 });
@@ -165,17 +170,24 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [notifFilter, setNotifFilter] = useState<'unread' | 'all'>('unread');
 
   const NOTIF_PAGE_SIZE = 30;
+  /**
+   * 未读视图一次取多少条。同时也是内嵌侧栏的渲染上限 —— 两者必须是同一个数，
+   * 否则「数字」和「列表条数」又会分叉。
+   */
+  const NOTIF_UNREAD_LIMIT = 100;
 
   const fetchData = useCallback(async () => {
     try {
       // Avoid GET dedup returning a stale empty approvals list right after HITL create.
       invalidateApiCache('/approvals');
       invalidateApiCache('/notifications');
-      const [n, a] = await Promise.all([
+      const [n, a, u] = await Promise.all([
         api.notifications.list(userId, false, { limit: NOTIF_PAGE_SIZE, offset: 0 }),
         api.approvals.list(),
+        api.notifications.list(userId, true, { limit: NOTIF_UNREAD_LIMIT, offset: 0 }),
       ]);
       setNotifications(n.notifications);
+      setUnreadNotifs(u.notifications);
       const serverUnread = n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length;
       setUnreadCount(serverUnread);
       setHasMoreNotifications(n.totalCount != null ? n.notifications.length < n.totalCount : n.notifications.length >= NOTIF_PAGE_SIZE);
@@ -215,6 +227,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       if (toMark.length === 0) return prev;
       for (const n of toMark) api.notifications.markRead(n.id).catch(() => {});
       setUnreadCount(c => Math.max(0, c - toMark.length));
+      const markedIds = new Set(toMark.map(m => m.id));
+      setUnreadNotifs(list => list.filter(x => !markedIds.has(x.id)));
       return prev.map(n => toMark.some(m => m.id === n.id) ? { ...n, read: true } : n);
     });
   }, []);
@@ -403,40 +417,44 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
 
   const pendingApprovalIds = new Set(approvals.filter(a => a.status === 'pending').map(a => a.id));
   const allApprovalIds = new Set(approvals.map(a => a.id));
-  const displayNotifications = notifications.filter(n => {
-    if (n.type === 'approval_request' && n.metadata?.approvalId && allApprovalIds.has(n.metadata.approvalId as string)) {
-      return false;
-    }
-    return true;
-  });
+  /** 审批类通知只要有对应审批（pending 或已裁决）就由「审批」标签页承载，通知列表不重复展示。 */
+  const isApprovalBackedNotification = (n: NotificationInfo) =>
+    n.type === 'approval_request' && !!n.metadata?.approvalId &&
+    allApprovalIds.has(n.metadata.approvalId as string);
 
   // 统一按时间倒序。loadMore 会追加更旧的页、标记已读也会就地改 read，
   // 显式排序保证「按时间」这条语义不依赖接口返回顺序。
-  const sortedNotifications = [...displayNotifications].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
+  const sortByTimeDesc = (list: NotificationInfo[]) =>
+    [...list].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  const displayNotifications = notifications.filter(n => !isApprovalBackedNotification(n));
+  /** 未读视图：服务端未读查询的结果，去掉已由审批页承载的行。 */
+  const displayUnreadNotifications = unreadNotifs.filter(n => !isApprovalBackedNotification(n));
+
+  const sortedNotifications = sortByTimeDesc(displayNotifications);
+  const sortedUnreadNotifications = sortByTimeDesc(displayUnreadNotifications);
+
   /** 默认只显示未读；切到「全部」时显示未读 + 已读（同样按时间倒序）。 */
   const visibleNotifications = notifFilter === 'all'
     ? sortedNotifications
-    : sortedNotifications.filter(n => !n.read);
+    : sortedUnreadNotifications;
   const emptyNotifText = notifFilter === 'unread'
     ? t('team:notifications.noUnread')
     : t('team:notifications.noNotifications');
 
-  // Every unread approval_request the list HIDES must also leave the count —
-  // otherwise the badge advertises unread rows the list cannot show. That is
-  // exactly the "未读 (1) over an empty list" bug: an approval_request whose
-  // approval was resolved (approved/rejected) is hidden by displayNotifications
-  // (matched on ALL approval ids), but subtracting only PENDING ones left it
-  // counted, so the unread view was empty while the badge read 1.
-  // Pending approvals are still added back separately via `pendingApprovals`.
-  const hiddenUnreadApprovalCount = notifications.filter(n =>
-    n.type === 'approval_request' && !n.read &&
-    n.metadata?.approvalId && allApprovalIds.has(n.metadata.approvalId as string)
-  ).length;
-  const adjustedUnreadCount = Math.max(0, unreadCount - hiddenUnreadApprovalCount);
+  /**
+   * 面板上所有「未读」数字的唯一来源 = 未读列表本身的长度。
+   *
+   * 之前数字取服务端 unreadCount（全表统计），列表却只装了最新一页，两者天然分叉：
+   * 未读行落在加载窗口之外时，数字显示 N 而列表是空的。实测 Owner 账号
+   * user_3cd21fb3205979a0ba7f8978：12389 条通知、2 条未读，分别位于按时间倒序的第 46 / 75 位
+   * —— 页大小 30，所以两条未读一条都不在首屏，数字却照常显示。
+   *
+   * 现在数字与列表同源，构造上不可能不一致；pending 审批由「审批」标签页承载，单独加回。
+   */
+  const unreadNotificationCount = sortedUnreadNotifications.length;
   const pendingApprovals = pendingApprovalIds.size;
-  const badgeCount = adjustedUnreadCount + pendingApprovals;
+  const badgeCount = unreadNotificationCount + pendingApprovals;
 
   useEffect(() => {
     if (prevPendingRef.current !== null && pendingApprovals > prevPendingRef.current) {
@@ -448,6 +466,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const handleMarkRead = async (id: string) => {
     await api.notifications.markRead(id);
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    setUnreadNotifs(prev => prev.filter(n => n.id !== id));
     setUnreadCount(prev => Math.max(0, prev - 1));
     window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
   };
@@ -636,6 +655,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       if (!userId) return;
       await api.notifications.markAllRead(userId);
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setUnreadNotifs([]);
       setUnreadCount(0);
       invalidateApiCache('/notifications');
       window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
@@ -643,6 +663,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       const unread = displayNotifications.filter(n => !n.read);
       await Promise.all(unread.map(n => api.notifications.markRead(n.id)));
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setUnreadNotifs([]);
       setUnreadCount(0);
       invalidateApiCache('/notifications');
       window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
@@ -734,7 +755,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
             }`}
           >
             {f === 'unread'
-              ? t('team:notifications.filterUnread') + (adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : '')
+              ? t('team:notifications.filterUnread') + (unreadNotificationCount > 0 ? ` (${unreadNotificationCount})` : '')
               : t('team:notifications.filterAll')}
           </button>
         ))}
@@ -765,7 +786,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
             tab === 'notifications' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
           }`}
         >
-          {t('team:notifications.notifications')}{adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : ''}
+          {t('team:notifications.notifications')}{unreadNotificationCount > 0 ? ` (${unreadNotificationCount})` : ''}
         </button>
         <button
           onClick={closePanel}
@@ -1117,7 +1138,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
             >
               {t_id === 'approvals'
                 ? <>{t('team:notifications.approvals')}{pendingApprovals > 0 ? ` (${pendingApprovals})` : ''}</>
-                : <>{t('team:notifications.notifications')}{adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : ''}</>
+                : <>{t('team:notifications.notifications')}{unreadNotificationCount > 0 ? ` (${unreadNotificationCount})` : ''}</>
               }
             </button>
           ))}
@@ -1323,7 +1344,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                 <div className="p-6 text-center text-xs text-fg-tertiary">{emptyNotifText}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {visibleNotifications.slice(0, 50).map(n => {
+                  {visibleNotifications.slice(0, notifFilter === 'unread' ? NOTIF_UNREAD_LIMIT : 50).map(n => {
                     const typeColor = TYPE_COLOR[n.type] ?? 'text-fg-tertiary';
                     return (
                       <button key={n.id} onClick={() => handleNotificationClick(n)} className={`w-full text-left px-3 py-2.5 flex gap-2.5 transition-colors ${n.read ? 'opacity-50 hover:opacity-70' : 'hover:bg-surface-overlay'}`}>
