@@ -341,6 +341,57 @@ html {
   animation: activity-text-shimmer 1.6s ease-in-out infinite;
 }
 
+/* ─── Animation budget ──────────────────────────────────────────────────────
+   Any running CSS animation makes the compositor produce a frame every vsync
+   — up to 120/s on a ProMotion display. On this app's DOM a frame costs ~2ms,
+   so a handful of permanently-running status indicators pins the renderer at
+   25-35% CPU even when nothing is happening.
+
+   Measured on the desktop build (renderer process, window visible):
+     idle:  animations on 3.5%  ->  animations off 0%
+     busy:  animations on 33%   ->  animations off 3.1%
+   Injecting 30 extra animated elements added only +4.7%, i.e. the cost tracks
+   continuous frame production, NOT the number of animated DOM nodes.
+   (Also measured: swapping background-clip:text for an opacity breathe did
+   NOT help — +8.5% vs +4.7% — so the animated property is not the lever.)
+
+   Two levers, both below:
+     1. don't produce frames the user cannot see (data-anim-paused, set by JS)
+     2. step the endless sweeps so the compositor can skip frames in between
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* 1. Nothing animates while the window is hidden or unfocused. Agents run for
+      hours while the app sits in the background — this is the biggest win. */
+html[data-anim-paused='true'] *,
+html[data-anim-paused='true'] *::before,
+html[data-anim-paused='true'] *::after {
+  animation-play-state: paused !important;
+}
+
+/* 2. Step the never-ending indicators. A stepped value is constant between
+      steps, so the compositor can skip those frames: ~120/s -> ~10-24/s, while
+      keeping the same soft look. Tune (or drop) these if a step looks harsh. */
+.animate-pulse {
+  animation-timing-function: steps(10, end) !important;
+}
+.animate-spin {
+  animation-timing-function: steps(24, end) !important;
+}
+.activity-text-shimmer {
+  animation-timing-function: steps(16, end) !important;
+}
+
+/* 3. Honour the OS "reduce motion" setting. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 /* Horizontal scroll rail with snap for discovery carousels */
 .rail {
   @apply flex gap-4 overflow-x-auto;
