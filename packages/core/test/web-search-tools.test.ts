@@ -18,6 +18,8 @@ describe('WebSearchTool', () => {
       'GOOGLE_SEARCH_API_KEY', 'GOOGLE_SEARCH_CX', 'SERPAPI_API_KEY',
       'BRAVE_SEARCH_API_KEY', 'EXA_API_KEY', 'BOCHA_API_KEY',
       'HTTPS_PROXY', 'HTTP_PROXY',
+      // 外部环境禁用配置会污染测试（Settings → Web Search）；测试必须干净。
+      'SEARCH_DISABLED_PROVIDERS', 'MARKUS_SEARCH_ENABLED',
     ]) {
       envBackup[key] = process.env[key];
       delete process.env[key];

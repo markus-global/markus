@@ -78,9 +78,22 @@ export class ConversationBufferManager {
     }
   }
 
-  resetConv(key: string): void {
+  /**
+   * Reset a conversation to empty idle state.
+   *
+   * CRITICAL (multi-session direct mode): `activeSession` is the single
+   * routing gate that prevents stale streams from a PREVIOUS session writing
+   * into a fresh buffer (see updateMessages → isSameSession). Every caller
+   * MUST re-pin after reset — otherwise activeSession becomes undefined and
+   * any still-running backend stream is treated as same-session and mixed in.
+   * Passing `repinTo` makes reset + re-pin atomic so the ordering can never
+   * be wrong. Pass NEW_CHAT_ID for a fresh conversation, or the session id
+   * when switching to an existing session.
+   */
+  resetConv(key: string, repinTo?: string): void {
     this.phase.set(key, 'idle');
     this.activeSession.delete(key);
+    if (repinTo) this.activeSession.set(key, repinTo);
   }
 
   // ── Message buffer writes ──
@@ -91,11 +104,9 @@ export class ConversationBufferManager {
     sessionId?: string | null,
   ): BufferWriteResult {
     const activeSessionId = this.activeSession.get(key);
-    const isSameSession = !sessionId
-      || activeSessionId === sessionId
-      || activeSessionId === undefined;
+    const routedToDisplay = this.isDisplayRoute(key, activeSessionId, sessionId);
 
-    const source = isSameSession
+    const source = routedToDisplay
       ? (this.msgBuffers.get(key) ?? [])
       : (this.sessionMsgCache.get(sessionId!) ?? []);
 
@@ -105,7 +116,7 @@ export class ConversationBufferManager {
     }
 
     let displayChanged = false;
-    if (isSameSession) {
+    if (routedToDisplay) {
       this.msgBuffers.set(key, next);
       this.evictIfNeeded(key);
       displayChanged = this.currentConvKey === key;
@@ -116,6 +127,39 @@ export class ConversationBufferManager {
     }
 
     return { displayChanged, newMessages: displayChanged ? next : undefined };
+  }
+
+  /**
+   * Decide whether a message-buffer write may touch the shared display buffer.
+   *
+   * - Optimistic writes without a real session (`!sessionId`) always go to
+   *   display — they are the user's own send in the currently-viewed view.
+   * - When the routing gate is PINNED to a session, only that session may
+   *   write to display. This is the structural guarantee that a background
+   *   session's stream (another tab / still-running reattach) can never mix
+   *   into the view (misordered bubbles / blank bubbles until refresh).
+   * - When the gate is NOT pinned (undefined, or still on the new-chat
+   *   placeholder), fall back to a conservative guard: only treat the write as
+   *   display if the shared buffer visibly belongs to an in-flight stream
+   *   (an unfinished agent bubble from the optimistic placeholder). Otherwise
+   *   route to the session cache — a background stream can never corrupt the
+   *   view even if a future caller forgets to pin the gate.
+   */
+  private isDisplayRoute(
+    key: string,
+    activeSessionId: string | undefined,
+    sessionId?: string | null,
+  ): boolean {
+    if (!sessionId) return true;
+    if (activeSessionId !== undefined && activeSessionId !== ConversationBufferManager.NEW_CHAT_ID) {
+      return activeSessionId === sessionId;
+    }
+    const buf = this.msgBuffers.get(key) ?? [];
+    for (let i = buf.length - 1; i >= Math.max(0, buf.length - 3); i--) {
+      const m = buf[i];
+      if (m?.sender === 'agent' && m.isStreaming && !m.isStopped) return true;
+    }
+    return false;
   }
 
   /**
@@ -163,6 +207,15 @@ export class ConversationBufferManager {
    * then any cache-only rows (e.g. a streaming tail not yet flushed to DB) that
    * are missing from DB, inserted by createdAt so late WS arrivals stay ordered.
    * Duplicates by id are dropped; user rows present in DB are never reordered.
+   *
+   * Ordering exception: LIVE-streaming agent bubbles are ALWAYS appended last.
+   * Their rawCreatedAt is the OPTIMISTIC send-time (set before the server
+   * persists the user message), which is EARLIER than the DB user row's
+   * createdAt. Chronologically inserting them would place the in-flight agent
+   * reply ABOVE the user message it answers — "user bubble appears below the
+   * agent streaming bubble" when re-opening a tab mid-stream. The streaming
+   * bubble is by definition the latest in-flight response, so the tail is
+   * authoritative regardless of timestamps.
    */
   private mergeDbWithCache(dbMsgs: ChatMsg[], cache?: ChatMsg[]): ChatMsg[] {
     if (!cache || cache.length === 0) return [...dbMsgs];
@@ -172,7 +225,20 @@ export class ConversationBufferManager {
       byId.add(m.id);
       out.push(m);
     }
+    // Split cache-only rows: live streaming agent bubbles (must append last) vs
+    // everything else (kept chronologically ordered among DB rows).
+    const streamingTail: ChatMsg[] = [];
+    const rest: ChatMsg[] = [];
     for (const cm of cache) {
+      if (byId.has(cm.id)) continue;
+      if (cm.sender === 'agent' && cm.isStreaming) {
+        streamingTail.push(cm);
+        byId.add(cm.id);
+      } else {
+        rest.push(cm);
+      }
+    }
+    for (const cm of rest) {
       if (byId.has(cm.id)) continue;
       // Insert cache-only messages chronologically among DB messages.
       const t = cm.rawCreatedAt ? Date.parse(cm.rawCreatedAt) : NaN;
@@ -185,6 +251,8 @@ export class ConversationBufferManager {
       out.splice(i, 0, cm);
       byId.add(cm.id);
     }
+    // Live streaming tails go last, in cache order (their own turn ordering).
+    for (const cm of streamingTail) out.push(cm);
     return out;
   }
 
@@ -215,6 +283,13 @@ export class ConversationBufferManager {
 
   setActiveSession(key: string, sessionId: string): void {
     this.activeSession.set(key, sessionId);
+  }
+
+  /** Unpin the routing gate (e.g. no session selected). After this, writes
+   * with a real session id are handled by the conservative isDisplayRoute
+   * guard until the gate is pinned again. */
+  clearActiveSession(key: string): void {
+    this.activeSession.delete(key);
   }
 
   saveToCache(key: string, sessionId: string): void {
@@ -288,6 +363,44 @@ export class ConversationBufferManager {
 
   getStreamSessions(key: string): Set<string> | undefined {
     return this.streamingSessions.get(key);
+  }
+
+  /**
+   * Single, idempotent teardown for ANY path that must stop the current
+   * send/stream: user stop, double-submit retry, same-session interrupt,
+   * channel abort, unmount. Replaces the fragile copy-pasted cleanup
+   * sequences that could leak state when one step was forgotten.
+   *
+   * Clears, in one pass: send counter, activity buffer (keyed by sessionId
+   * when provided, mirroring how activities are written), phase
+   * (streaming → ready), and the streaming-session marks. Safe to call when
+   * nothing is active — returns false so callers can skip follow-up work.
+   */
+  abortStream(key: string, sessionId?: string | null): boolean {
+    let affected = false;
+
+    if ((this.sendCount.get(key) ?? 0) > 0) {
+      this.sendCount.set(key, 0);
+      affected = true;
+    }
+
+    const bufKey = sessionId ?? key;
+    if (this.actBuffers.delete(bufKey)) affected = true;
+
+    if (this.getPhase(key) === 'streaming') {
+      this.phase.set(key, 'ready');
+      affected = true;
+    }
+
+    if (sessionId) {
+      const had = this.streamingSessions.get(key)?.has(sessionId) ?? false;
+      this.removeStreamSession(key, sessionId);
+      if (had) affected = true;
+    } else if (this.streamingSessions.delete(key)) {
+      affected = true;
+    }
+
+    return affected;
   }
 
   // ── Buffer reads ──

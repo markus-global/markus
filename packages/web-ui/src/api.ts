@@ -46,6 +46,11 @@ export interface ChatSessionInfo {
   title: string | null;
   isMain?: boolean;
   metadata?: {
+    /**
+     * @deprecated Session-scoped model overrides are retired — a model belongs
+     * to the AGENT or to global routing. The backend no longer honours this
+     * field; it only survives on sessions written by older builds.
+     */
     modelOverride?: { provider: string; model: string };
     kind?: string;
     parentSessionId?: string;
@@ -319,6 +324,14 @@ export interface KnowledgeEntryInfo {
   updatedAt: string;
   filePath?: string;
   verifiedBy?: string;
+}
+
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size?: number;
+  ext?: string;
 }
 
 export interface DeliverableInfo {
@@ -1235,6 +1248,50 @@ export interface AgentUsageInfo {
   provider?: string;
 }
 
+/**
+ * Handlers shared by the two chat stream endpoints (`agents.messageStream` and
+ * `sessions.reattachStream`).
+ *
+ * Thinking is delivered STRUCTURED: the server emits `thinking_delta` with the
+ * raw reasoning text, so `onChunk` only ever carries answer prose. Consumers
+ * must not have to parse transport markers back out of prose — doing so was the
+ * source of a whole class of display bugs (thinking leaking into the answer, or
+ * silently disappearing when the marker spelling drifted).
+ */
+export interface ChatStreamHandlers {
+  onChunk?: (chunk: string) => void;
+  onThinking?: (thinking: string) => void;
+  onActivity?: (event: AgentToolEvent) => void;
+  onCommit?: (event: StreamCommitEvent) => void;
+  onSnapshot?: (snapshot: { content: string; segments: StoredSegment[] }) => void;
+}
+
+/** Non-callback knobs for `agents.messageStream`. */
+export interface MessageStreamOptions {
+  signal?: AbortSignal;
+  images?: string[];
+  sessionId?: string | null;
+  isRetry?: boolean;
+  isResume?: boolean;
+  fileNames?: string[];
+  replyTo?: { id: string; sender: string; text: string } | null;
+}
+
+/**
+ * Single source of truth for routing a `thinking_delta` to consumers.
+ *
+ * Preference order: the structured `onThinking` handler. Only consumers that
+ * implement `onChunk` alone (legacy inline implementations) get the old
+ * `<think>…</think>` inline protocol, kept so their parser stays correct.
+ */
+export function dispatchThinkingDelta(
+  handlers: Pick<ChatStreamHandlers, 'onChunk' | 'onThinking'>,
+  thinking: string,
+): void {
+  if (handlers.onThinking) { handlers.onThinking(thinking); return; }
+  handlers.onChunk?.(`<think>${thinking}</think>`);
+}
+
 export const api = {
   agents: {
     list: () => request<{ agents: AgentInfo[] }>('/agents').then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
@@ -1247,7 +1304,12 @@ export const api = {
     pause: (id: string, _reason?: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
     /** @deprecated Use start() instead */
     resume: (id: string) => request<{ status: string }>(`/agents/${id}/start`, { method: 'POST' }),
-    cancelProcessing: (id: string) => request(`/agents/${id}/cancel-processing`, { method: 'POST' }),
+    cancelProcessing: (id: string, target?: { itemId?: string; sessionId?: string }) =>
+      request(`/agents/${id}/cancel-processing`, {
+        method: 'POST',
+        body: target ? JSON.stringify(target) : undefined,
+        headers: target ? { 'Content-Type': 'application/json' } : undefined,
+      }),
     evolveFromMessage: (
       id: string,
       body: {
@@ -1328,8 +1390,16 @@ export const api = {
     },
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
-    messageStream: (id: string, text: string, onChunk: (chunk: string) => void, onActivity?: (event: AgentToolEvent) => void, signal?: AbortSignal, images?: string[], sessionId?: string | null, isRetry?: boolean, isResume?: boolean, onCommit?: (event: StreamCommitEvent) => void, fileNames?: string[], replyTo?: { id: string; sender: string; text: string } | null, modelOverride?: { provider: string; model: string } | null): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean }> => {
+    messageStream: (
+      id: string,
+      text: string,
+      handlers: ChatStreamHandlers,
+      options?: MessageStreamOptions,
+    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean }> => {
       return new Promise(async (resolve, reject) => {
+        const {
+          signal, images, sessionId, isRetry, isResume, fileNames, replyTo,
+        } = options ?? {};
         let fullContent = '';
         let resultSessionId: string | undefined;
         let resultSegments: StoredSegment[] | undefined;
@@ -1348,9 +1418,6 @@ export const api = {
               isRetry: isRetry || undefined,
               isResume: isResume || undefined,
               replyTo: replyTo || undefined,
-              ...(modelOverride?.provider && modelOverride?.model
-                ? { provider: modelOverride.provider, model: modelOverride.model }
-                : {}),
             }),
             signal,
           });
@@ -1384,7 +1451,7 @@ export const api = {
                 if (event.type === 'session_start' && event.sessionId) {
                   resultSessionId = event.sessionId;
                   const userMessageId = (event as { userMessageId?: string }).userMessageId;
-                  onCommit?.({
+                  handlers.onCommit?.({
                     type: 'session_start',
                     content: '',
                     createdAt: new Date().toISOString(),
@@ -1393,9 +1460,9 @@ export const api = {
                   });
                 } else if (event.type === 'text_delta' && event.text) {
                   fullContent += event.text;
-                  onChunk(event.text);
+                  handlers.onChunk?.(event.text);
                 } else if (event.type === 'thinking_delta' && event.thinking) {
-                  onChunk?.(`<think>${event.thinking}</think>`);
+                  dispatchThinkingDelta(handlers, event.thinking);
                 } else if (event.type === 'done') {
                   fullContent = event.content || fullContent;
                   if (event.sessionId) resultSessionId = event.sessionId;
@@ -1426,20 +1493,20 @@ export const api = {
                   watchdog?.stop();
                   return;
                 } else if (event.type === 'thinking_commit' && event.thinking) {
-                  onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
+                  handlers.onCommit?.({ type: 'thinking_commit', content: event.thinking, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
                 } else if (event.type === 'text_commit' && event.text) {
-                  onCommit?.({ type: 'text_commit', content: event.text, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
+                  handlers.onCommit?.({ type: 'text_commit', content: event.text, createdAt: (event as Record<string, unknown>).createdAt as string ?? new Date().toISOString() });
                 } else if (event.type === 'tool_call_start' && event.toolCall?.name) {
-                  onActivity?.({ tool: event.toolCall.name, phase: 'start' });
+                  handlers.onActivity?.({ tool: event.toolCall.name, phase: 'start' });
                 } else if (event.type === 'agent_tool' && event.tool && event.phase) {
-                  if (event.phase === 'start') onActivity?.({ tool: event.tool, phase: 'start', arguments: event.arguments });
-                  else if (event.phase === 'end') onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
+                  if (event.phase === 'start') handlers.onActivity?.({ tool: event.tool, phase: 'start', arguments: event.arguments });
+                  else if (event.phase === 'end') handlers.onActivity?.({ tool: event.tool, phase: 'end', success: event.success, arguments: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs });
                 } else if (event.type === 'tool_output' && event.tool) {
-                  onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
+                  handlers.onActivity?.({ tool: event.tool, phase: 'output', output: event.text });
                 } else if (event.type === 'subagent_progress' && event.tool) {
-                  onActivity?.({ tool: event.tool, phase: 'subagent_progress', subagentEvent: (event as Record<string, unknown>).subagentEvent as SubagentProgressEvent });
+                  handlers.onActivity?.({ tool: event.tool, phase: 'subagent_progress', subagentEvent: (event as Record<string, unknown>).subagentEvent as SubagentProgressEvent });
                 } else if (event.type === 'heartbeat') {
-                  onActivity?.({ tool: '', phase: 'heartbeat' });
+                  handlers.onActivity?.({ tool: '', phase: 'heartbeat' });
                 }
               } catch { /* skip */ }
             }
@@ -1585,6 +1652,8 @@ export const api = {
         streamUrl?: string;
         extension?: string;
         format?: string;
+        /** Present when `type === 'directory'`. */
+        entries?: DirectoryEntry[];
       }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
     streamUrl: (filePath: string) =>
       `${BASE}/files/stream?path=${encodeURIComponent(filePath)}`,
@@ -1704,9 +1773,21 @@ export const api = {
       defaultProvider?: string;
     }) =>
       request('/settings/llm', { method: 'POST', body: JSON.stringify(data) }),
-    getAgent: () => request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent'),
-    updateAgent: (settings: { maxToolIterations?: number; cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }) =>
-      request<{ maxToolIterations: number; cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number } }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
+    getAgent: () => request<{
+      maxToolIterations: number;
+      cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number };
+      concurrent: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
+    }>('/settings/agent'),
+    updateAgent: (settings: {
+      maxToolIterations?: number;
+      cognitive?: { enabled?: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number };
+      concurrent?: { enabled?: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
+    }) =>
+      request<{
+        maxToolIterations: number;
+        cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number };
+        concurrent: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
+      }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
     getBrowser: () => request<{ mode: 'embedded' | 'system-chrome'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser'),
     updateBrowser: (settings: { mode?: 'embedded' | 'system-chrome'; bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; autoClickAllowDialog?: boolean }) =>
       request<{ mode: 'embedded' | 'system-chrome'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
@@ -1966,13 +2047,34 @@ export const api = {
   sessions: {
     hasAny: () =>
       request<{ hasAny: boolean }>('/sessions/has-any'),
-    listByAgent: (agentId: string, limit = 20) =>
-      request<{ sessions: ChatSessionInfo[] }>(`/agents/${agentId}/sessions?limit=${limit}`),
+    /**
+     * Mint a fresh chat session up-front (the "New Chat" button) so the FIRST
+     * message already carries its own conversation identity. That identity is
+     * what the backend's entity affinity keys on (`conv:<sessionId>`), so
+     * without it two brand-new tabs are indistinguishable and get serialised.
+     */
+    create: (agentId: string) =>
+      request<{ session: ChatSessionInfo }>(`/agents/${agentId}/sessions`, { method: 'POST' }),
+    listByAgent: (agentId: string, limit = 20, page = 1) =>
+      request<{ sessions: ChatSessionInfo[]; total: number; page: number; pageSize: number; hasMore: boolean }>(
+        `/agents/${agentId}/sessions?page=${page}&limit=${limit}`
+      ),
+    renameTitle: (sessionId: string, title: string) =>
+      request<{ ok: boolean; session: ChatSessionInfo }>(
+        `/sessions/${sessionId}/title`,
+        { method: 'PATCH', body: JSON.stringify({ title }) }
+      ),
     getMessages: (sessionId: string, limit = 50, before?: string) =>
       request<{ messages: ChatMessageInfo[]; hasMore: boolean }>(
         `/sessions/${sessionId}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),
     delete: (sessionId: string) => request(`/sessions/${sessionId}`, { method: 'DELETE' }),
+    /**
+     * @deprecated Retired: the backend no longer honours session-level model
+     * overrides (see `ChatSessionInfo.metadata.modelOverride`). Kept only so an
+     * older client that still calls it gets a valid response instead of a 404;
+     * nothing in this app calls it any more.
+     */
     setModelOverride: (sessionId: string, override: { provider: string; model: string } | null) =>
       request<{ modelOverride: { provider: string; model: string } | null }>(
         `/sessions/${sessionId}/model-override`,
@@ -1992,12 +2094,7 @@ export const api = {
     reattachStream: (
       agentId: string,
       sessionId: string,
-      handlers: {
-        onChunk?: (chunk: string) => void;
-        onActivity?: (event: AgentToolEvent) => void;
-        onCommit?: (event: StreamCommitEvent) => void;
-        onSnapshot?: (snapshot: { content: string; segments: StoredSegment[] }) => void;
-      },
+      handlers: ChatStreamHandlers,
       signal?: AbortSignal,
       afterSeq = 0,
     ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; attached: boolean }> => {
@@ -2060,7 +2157,7 @@ export const api = {
                   fullContent += event.text;
                   handlers.onChunk?.(event.text);
                 } else if (type === 'thinking_delta' && typeof event.thinking === 'string') {
-                  handlers.onChunk?.(`<think>${event.thinking}</think>`);
+                  dispatchThinkingDelta(handlers, event.thinking);
                 } else if (type === 'done') {
                   fullContent = (event.content as string) || fullContent;
                   if (typeof event.sessionId === 'string') resultSessionId = event.sessionId;

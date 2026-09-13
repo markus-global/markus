@@ -4,10 +4,10 @@ import type { TFunction } from 'i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   api, wsClient, invalidateApiCache,
-  type AgentInfo, type AgentActivityInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo, type ExternalAgentInfo,
+  type AgentInfo, type AgentActivityInfo, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
   type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
-  type NotificationInfo, type SubagentProgressEvent,
+  type NotificationInfo,
 } from '../api.ts';
 import { MarkdownMessage, ImagePreviewModal } from '../components/MarkdownMessage.tsx';
 import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
@@ -22,28 +22,33 @@ import {
 import { isVirtualScrollAdjustSuppressed } from '../components/execution-utils.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
-import { parseMentionNames, renderMentionText } from '../components/CommentInput.tsx';
-import { exponentialBackoffDelay } from '../lib/streamResilience.ts';
+import { renderMentionText } from '../components/CommentInput.tsx';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
 import { RightPanel } from '../components/RightPanel.tsx';
+import { ChatSearchPanel, GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
-import { AgentProfile, TAB_DEF as AGENT_TAB_DEF, type ProfileTab } from './AgentProfile.tsx';
-import { TeamProfile, TABS as TEAM_TABS, type TeamTab } from './TeamProfile.tsx';
+import { AgentProfile, type ProfileTab } from './AgentProfile.tsx';
+import { TeamProfile, type TeamTab } from './TeamProfile.tsx';
+import {
+  type MainTab, AGENT_TABS, TEAM_TAB_SET, tabLabel, tabIcon, isProfileTab,
+} from './tabDefs.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
+import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStream.ts';
+import { chatStore } from './useChatStore.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
-  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
-  appendLiveOutput, appendSubagentLog,
+  dedupeAdjacentUserMessages,
+  stopRunningTools, hasStreamingTail,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
 } from './ChatHelpers.ts';
 import {
@@ -70,40 +75,7 @@ function notifySessionId(n: NotificationInfo): string | undefined {
   return undefined;
 }
 
-function agentInitials(name: string) {
-  return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-}
-
 // ─── Main Component ───────────────────────────────────────────────────────────
-
-type MainTab = 'chat' | 'profile'
-  | 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'deliverables'
-  | 'announcements' | 'norms' | 'settings';
-
-const AGENT_TABS: MainTab[] = ['chat', 'overview', 'files', 'tools', 'memory', 'deliverables'];
-const TEAM_TAB_SET: MainTab[] = ['chat', 'overview', 'announcements', 'norms', 'settings'];
-
-function tabLabel(tab: MainTab, t: TFunction): string {
-  if (tab === 'chat') return t('page.chatTitle');
-  const agentDef = AGENT_TAB_DEF.find(d => d.key === tab);
-  if (agentDef) return t(`agent:tabs.${tab}`);
-  const teamDef = TEAM_TABS.find(d => d.key === tab);
-  if (teamDef) return t(teamDef.labelKey);
-  return tab;
-}
-
-function tabIcon(tab: MainTab): string {
-  if (tab === 'chat') return '💬';
-  const agentDef = AGENT_TAB_DEF.find(d => d.key === tab);
-  if (agentDef) return agentDef.icon;
-  const teamDef = TEAM_TABS.find(d => d.key === tab);
-  if (teamDef) return teamDef.icon;
-  return '';
-}
-
-function isProfileTab(tab: MainTab): boolean {
-  return tab !== 'chat';
-}
 
 // ── Hash-based store: the URL is the single source of truth for mobile nav ────
 const _hashSubs = new Set<() => void>();
@@ -594,9 +566,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     sending, setSending,
     activities, setActivities,
     msgBuffers, sessionMsgCache, activeSessionBuffer, actBuffers, sessionTabsBuffer,
+    setActiveSession,
     currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
-    beginLoad, beginStream, endStream, resetConv,
+    beginLoad, beginStream, endStream, resetConv, abortStream,
     loadAndDisplay,
     incrementSending, decrementSending, resetSending, isSendingFor,
     setStreamSession, clearStreamSession, getStreamSession,
@@ -623,15 +596,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Badge must follow local SSE/sending state — agent.status can return to idle
-  // while the UI is still flushing thinking/text deltas. Only scan the tail:
-  // streaming bubbles are always near the end of the conversation.
-  const chatStreamActive = sending || streamingVisual || (() => {
-    for (let i = messages.length - 1; i >= Math.max(0, messages.length - 8); i--) {
-      const m = messages[i]!;
-      if (m.isStreaming && !m.isStopped) return true;
-    }
-    return false;
-  })();
+  // while the UI is still flushing thinking/text deltas. The tail scan is the
+  // authoritative reattach-window signal (sending already ended, bubble still
+  // isStreaming) — extracted to hasStreamingTail in ChatHelpers.
+  const chatStreamActive = sending || streamingVisual || hasStreamingTail(messages);
 
   // Preview mode: typewriter streaming effect for the last agent message
   const previewStreamRef = useRef<{ fullText: string; timers: ReturnType<typeof setTimeout>[] }>({ fullText: '', timers: [] });
@@ -671,27 +639,51 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return () => { timers.forEach(t => clearTimeout(t)); previewStreamRef.current.timers = []; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Track last SSE event time — used only for diagnostics / fallback polling,
-  // NOT for auto-aborting the stream.  The SSE connection is kept alive by
-  // server-side heartbeats; the browser / fetch API handles detecting a truly
-  // dead TCP connection.  Any timer-based abort is inherently fragile because
-  // tool executions can legitimately run for minutes or longer.
-  const lastSseEventTimeRef = useRef<number>(0);
 
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadingChat, setLoadingChat] = useState(false);
+  // Monotonic switch counter: only the LATEST switchSession may clear loadingChat.
+  // Rapid tab switching otherwise lets an older request's finally{} kill the
+  // spinner of the session that is actually being viewed now.
+  const sessionSwitchSeqRef = useRef(0);
   // Image attachments
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; dataUrl: string; name: string }>>([]);
   /** In-app lightbox for chat image attachments (avoid window.open on data: URLs). */
   const [imagePreviewSrc, setImagePreviewSrc] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  /** Session-scoped model pick from the composer menu (null = use global routing). */
-  const [sessionModelOverride, setSessionModelOverride] = useState<ChatModelSelection | null>(null);
-  /** The currently selected agent's per-agent default model (from its config). */
+  /**
+   * The composer's model label.
+   *   - non-null → the agent's OWN bound model (per-agent default)
+   *   - null     → the agent follows global routing, and ChatModelMenu falls
+   *                back to the global default itself.
+   * Deliberately NOT session-scoped: every session of the same agent therefore
+   * shows the same model, so switching tabs can never surface a foreign or
+   * stale model name.
+   */
   const [agentBoundModel, setAgentBoundModel] = useState<ChatModelSelection | null>(null);
-  const reattachAbortRef = useRef<AbortController | null>(null);
+
+  // Hydrate the composer's model label from the backend's authoritative
+  // `effectiveModel`. This is the ONLY writer besides the composer's own
+  // onSelect — no per-session/per-turn state is involved, so the label cannot
+  // lag behind the agent it belongs to (the old code re-read a per-session
+  // override *after* an awaited history fetch, which is why the name only
+  // refreshed on a second visit / full reload).
+  useEffect(() => {
+    if (!selectedAgent) { setAgentBoundModel(null); return; }
+    let cancelled = false;
+    api.agents.get(selectedAgent)
+      .then(d => {
+        if (cancelled) return;
+        const em = d.effectiveModel;
+        setAgentBoundModel(
+          em?.provider && em?.model ? { provider: em.provider, model: em.model } : null,
+        );
+      })
+      .catch(() => { if (!cancelled) setAgentBoundModel(null); });
+    return () => { cancelled = true; };
+  }, [selectedAgent]);
 
   /** Compact (1-line) composer vs taller empty-chat starter. Synced before render. */
   const compactComposerRef = useRef(false);
@@ -750,8 +742,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   };
 
   const [sessions, setSessions] = useState<ChatSessionInfo[]>([]);
+  const [sessionsTotal, setSessionsTotal] = useState(0);
+  const [sessionsPage, setSessionsPage] = useState(1);
+  const [sessionsHasMore, setSessionsHasMore] = useState(false);
+  const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
+  // Inline rename state: which session is being renamed + the draft value
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renamingDraft, setRenamingDraft] = useState('');
   // Pending request_user_input requests raised by the agent during a direct chat.
   const [userInputApprovals, setUserInputApprovals] = useState<ApprovalInfo[]>([]);
   const [activeInputModal, setActiveInputModal] = useState<ApprovalInfo | null>(null);
@@ -868,8 +867,25 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const messagesEnd = useRef<HTMLDivElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
   const sendRef = useRef<(text?: string) => Promise<void>>(undefined);
+  /**
+   * SINGLE entry point for changing the active session view state. It always
+   * keeps the manager's routing gate (ConversationBufferManager.activeSession)
+   * in sync: a missing pin is exactly what lets a background session's stream
+   * write into the shared display buffer (misordered / blank bubbles, the
+   * multi-tab direct-mode bug family). Use this everywhere instead of calling
+   * setActiveSessionId directly; paths that need resetConv (new chat / new
+   * conversation) keep using the atomic resetConv(key, id) pair instead.
+   */
+  const changeActiveSession = useCallback((key: string, id: string | null) => {
+    setActiveSessionId(id);
+    if (!key) return;
+    if (id === null) {
+      bufMgr.clearActiveSession(key);
+    } else {
+      bufMgr.setActiveSession(key, id);
+    }
+  }, [setActiveSessionId, bufMgr]);
   /** When true, the next scroll-to-bottom effect is suppressed (used by loadMore) */
   const skipScrollRef = useRef(false);
   /** Tracks whether user is at/near the bottom of the chat scroll container */
@@ -1048,6 +1064,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (p?.agentId) {
         const status = p.status as string | undefined;
         const currentActivity = p.currentActivity as AgentActivityInfo | undefined;
+        // Authoritative stop: an offline agent can never be streaming. Force-clear
+        // any stale frontend streaming refcount so the sidebar cannot stay pinned
+        // to "working" after a missed endStream (abort / stop / disconnect path).
+        if (status === 'offline') chatStore.clearAgentStreaming(p.agentId as string);
         setAgents(prev => prev.map(a => {
           if (a.id !== p.agentId) return a;
           const next = { ...a };
@@ -1590,9 +1610,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [chatRightReserve, mainTab, visibleMessages.length, sending, loadingChat, scrollChatToBottom]);
 
   // Load channel messages from DB → store in buffer + update display
-  const loadChannelMessages = useCallback(async (channel: string, bufferKey?: string) => {
+  // `quiet` skips the loading spinner — used by the WS reconnect catch-up so
+  // a background refetch does not flash loading UI over an already-visible chat.
+  const loadChannelMessages = useCallback(async (channel: string, bufferKey?: string, opts?: { quiet?: boolean }) => {
     const key = bufferKey ?? `ch:${channel}`;
-    if (currentConvKeyRef.current === key) setLoadingChat(true);
+    if (!opts?.quiet && currentConvKeyRef.current === key) setLoadingChat(true);
     try {
       const result = await api.channels.getMessages(channel, 50);
       const msgs = result.messages.map(m => channelMsgToChat(m, authUser?.id));
@@ -1605,421 +1627,60 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } catch {
       if (currentConvKeyRef.current === key) { setMessages([]); setHasMore(false); }
     } finally {
-      if (currentConvKeyRef.current === key) setLoadingChat(false);
+      if (!opts?.quiet && currentConvKeyRef.current === key) setLoadingChat(false);
     }
   }, []);
 
+  // Load sessions list for agent (paginated — History panel loads 20 at a time)
+  const loadSessions = useCallback(async (agentId: string) => {
+    if (!agentId) { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
+    try {
+      const res = await api.sessions.listByAgent(agentId, 20, 1);
+      setSessions(res.sessions);
+      setSessionsTotal(res.total ?? res.sessions.length);
+      setSessionsPage(res.page ?? 1);
+      setSessionsHasMore(!!res.hasMore);
+      return res.sessions;
+    } catch { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
+  }, []);
+
+  // ── useChatStream: streaming orchestration extracted into a hook ──────────
+  // Team.tsx owns ALL app state; the hook ONLY borrows it via ctx + stateRef.
+  const streamVolatileRef = useRef<ChatStreamVolatileState>({
+    chatContext: [], input: '', pendingImages: [],
+    chatMode, selectedAgent, activeSessionId,
+    activeDmUserId, authUser, activeChannel,
+    groupChats, agents, humans, sending,
+    chatReplyTo: null,
+  });
+  streamVolatileRef.current = {
+    chatContext, input, pendingImages,
+    chatMode, selectedAgent, activeSessionId,
+    activeDmUserId, authUser, activeChannel,
+    groupChats, agents, humans, sending,
+    chatReplyTo,
+  };
+  const chatStream = useChatStream({
+    stateRef: streamVolatileRef,
+    msgBuffers, actBuffers, sessionMsgCache, activeSessionBuffer, currentConvKeyRef,
+    updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
+    beginStream, endStream, abortStream, clearStreamSession, setStreamSession, getStreamSession,
+    setActiveSession,
+    incrementSending, decrementSending, loadAndDisplay,
+    thinkingTimeoutRef, sessionSwitchSeqRef, oldestMsgId,
+    setSending, setActivities, setInput, setChatContext, setPendingImages,
+    setMentionDropdown, setChatReplyTo, setActiveSessionId, setStoredActiveSession,
+    setOpenSessionTabs, setSessions, setLoadingChat, setHasMore, setThinkingAgents,
+    makeConvKey, makeDmChannel, addRecentMsgId, resumeChatScrollFollow, loadSessions,
+    t,
+  });
+  const { send: hookSend, stopSending, tryReattachActiveStream, loadSessionMessages } = chatStream;
+  sendRef.current = hookSend;
+
   // Load session messages from DB — phase-aware via ConversationBufferManager.
-  // During streaming phase, DB data is written to cache only, never to display.
-  const loadSessionMessages = useCallback(async (sessionId: string, convKey: string): Promise<number> => {
-    // Soft-refresh (buffer already has messages) should not flash a full-page spinner.
-    const showSpinner = currentConvKeyRef.current === convKey
-      && (msgBuffers.get(convKey)?.length ?? 0) === 0;
-    if (showSpinner) setLoadingChat(true);
-    try {
-      const { count, hasMore: more, oldestCursor } = await loadAndDisplay(sessionId, convKey, async () => {
-        const result = await api.sessions.getMessages(sessionId, 50);
-        const msgs = dedupeAdjacentUserMessages(result.messages.map(dbMsgToChat).filter(m =>
-          m.sender !== 'agent' || m.text || (m.segments && m.segments.length > 0) || m.isStreaming
-        ));
-        return {
-          messages: msgs,
-          hasMore: result.hasMore,
-          oldestCursor: result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null,
-        };
-      });
-      setHasMore(more);
-      oldestMsgId.current = oldestCursor;
-      return count;
-    } finally {
-      if (showSpinner && currentConvKeyRef.current === convKey) setLoadingChat(false);
-    }
-  }, [loadAndDisplay, msgBuffers]);
+  // (loadSessionMessages moved into useChatStream hook — see above)
 
-  /**
-   * After refresh / session switch: if the server still has an active generation
-   * for this session, reattach SSE and continue streaming into the last agent bubble.
-   * Must consume text + tool + commit events the same way as a live send().
-   */
-  const reattachCooldownRef = useRef<Map<string, number>>(new Map());
-  // Sessions the user explicitly stopped. A stopped turn must never be resumed
-  // by reattach — otherwise clicking "stop" can look like a no-op (the reply
-  // keeps streaming) and, because the in-flight bubble may already have been
-  // cleaned up, the re-stream can land in the *previous* turn's reply bubble.
-  const userStoppedSessionsRef = useRef<Set<string>>(new Set());
-  const tryReattachActiveStream = useCallback(async (agentId: string, sessionId: string, convKey: string) => {
-    if (!agentId || !sessionId || sessionId === NEW_CHAT_PLACEHOLDER_ID) return;
-    // A user-initiated stop is final for that turn — never reattach/resume it.
-    if (userStoppedSessionsRef.current.has(sessionId)) return;
-    let abortCtrl: AbortController | null = null;
-    try {
-      // Live send() still owns this session's SSE — keep consuming there; a second
-      // attach would double-apply tool/subagent events.
-      if (
-        abortControllerRef.current
-        && !abortControllerRef.current.signal.aborted
-        && getStreamSession(convKey)?.has(sessionId)
-      ) {
-        beginStream(convKey);
-        if (currentConvKeyRef.current === convKey) setSending(true);
-        return;
-      }
-
-      // Prevent attach storms when the browser is out of sockets / soft-disconnect loops.
-      const cooldownKey = `${agentId}:${sessionId}`;
-      const lastAttempt = reattachCooldownRef.current.get(cooldownKey) ?? 0;
-      if (Date.now() - lastAttempt < 1500) return;
-
-      const status = await api.sessions.streamStatus(agentId, sessionId);
-      const msgs = msgBuffers.get(convKey) ?? [];
-      // Reattach must only ever continue the IN-FLIGHT bubble. Never reuse a
-      // previous turn's completed reply — that overwrote history when the empty
-      // in-flight bubble had already been removed (see pickStreamReattachTarget).
-      const last = pickStreamReattachTarget(msgs);
-      // `active` stays true for ~90s after done/error so late refresh can drain
-      // the terminal event — only attach when still streaming, or when the UI
-      // bubble is still marked in-flight and needs the final `done`.
-      const serverStreaming = status.status === 'streaming';
-      const lateTerminal = !!status.active
-        && (status.status === 'done' || status.status === 'error')
-        && !!last?.isStreaming;
-      if (!serverStreaming && !lateTerminal) return;
-
-      reattachCooldownRef.current.set(cooldownKey, Date.now());
-      reattachAbortRef.current?.abort();
-      abortCtrl = new AbortController();
-      reattachAbortRef.current = abortCtrl;
-      beginStream(convKey);
-      setSending(true);
-      setStreamSession(convKey, sessionId);
-
-      // Ensure there is an agent bubble to stream into. Keep DB tool segments as
-      // an interim view — server `snapshot` (or live tool events) will replace/
-      // update them. Do NOT wipe tools here: ring replay alone can miss early
-      // tool events once the text_delta ring overflows.
-      let agentMsgId = last?.id;
-      if (!last || last.isError) {
-        agentMsgId = `reattach_${Date.now()}`;
-        updateConvMsgs(convKey, prev => [
-          ...prev,
-          { id: agentMsgId!, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), isStreaming: true, segments: [] },
-        ], sessionId);
-      } else {
-        // Keep tool cards from soft-disconnect DB persist; drop text segments so
-        // ring text_delta fallback (no snapshot) does not duplicate DB text.
-        const revivedTools = (last.segments ?? [])
-          .filter((s): s is Extract<typeof s, { type: 'tool' }> => s.type === 'tool')
-          .map(s =>
-            s.status === 'stopped' || s.status === 'running'
-              ? { ...s, status: 'running' as const }
-              : s,
-          );
-        updateConvMsgs(convKey, prev => prev.map(m =>
-          m.id === last.id
-            ? {
-                ...m,
-                text: '',
-                isStreaming: true,
-                isStopped: false,
-                segments: revivedTools,
-                committedSegments: undefined,
-              }
-            : m,
-        ), sessionId);
-      }
-
-      let insideThink = false;
-      const appendTextChunk = (chunk: string) => {
-        if (currentConvKeyRef.current !== convKey) return;
-        lastSseEventTimeRef.current = Date.now();
-        updateConvMsgsRaf(convKey, prev => {
-          const u = [...prev];
-          const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-          // Fallback MUST require an in-flight bubble — never stream into a
-          // previous turn's completed reply (history-corruption bug).
-          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
-          if (i < 0) return prev;
-          const segs = u[i]!.segments ?? [];
-          const lastSeg = segs[segs.length - 1];
-          const prevThinking = lastSeg?.type === 'text' ? (lastSeg as { thinking?: string }).thinking ?? '' : '';
-
-          let thinking = '';
-          let content = '';
-          let remaining = chunk;
-          while (remaining.length > 0) {
-            if (insideThink) {
-              const closeIdx = remaining.indexOf('</think>');
-              if (closeIdx >= 0) {
-                thinking += remaining.slice(0, closeIdx);
-                remaining = remaining.slice(closeIdx + '</think>'.length);
-                insideThink = false;
-              } else {
-                thinking += remaining;
-                remaining = '';
-              }
-            } else {
-              const openIdx = remaining.indexOf('<think>');
-              if (openIdx >= 0) {
-                content += remaining.slice(0, openIdx);
-                remaining = remaining.slice(openIdx + '<think>'.length);
-                insideThink = true;
-              } else {
-                content += remaining;
-                remaining = '';
-              }
-            }
-          }
-          const mergedThinking = (prevThinking + thinking) || undefined;
-          const newSegs = lastSeg?.type === 'text'
-            ? [...segs.slice(0, -1), { type: 'text' as const, content: lastSeg.content + content, thinking: mergedThinking, createdAt: lastSeg.createdAt }]
-            : [...segs, { type: 'text' as const, content, thinking: mergedThinking, createdAt: new Date().toISOString() }];
-          u[i] = { ...u[i]!, text: (u[i]!.text ?? '') + content, segments: newSegs, isStreaming: true };
-          return u;
-        }, sessionId);
-      };
-
-      const handleToolEvent = (event: AgentToolEvent) => {
-        if (currentConvKeyRef.current !== convKey) return;
-        lastSseEventTimeRef.current = Date.now();
-        if (event.phase === 'heartbeat') return;
-        if (event.phase === 'start' || event.phase === 'end') {
-          appendConvActivity(convKey, { ...event, phase: event.phase, ts: Date.now() }, sessionId);
-        }
-        if (event.phase === 'start') {
-          const toolKey = `${event.tool}_${Date.now()}`;
-          const now = new Date().toISOString();
-          // Revive a soft-disconnect "stopped/running" tool for the same name, else push a new one.
-          const reviveOrPush = (list: MsgSegment[]): MsgSegment[] => {
-            const arr = [...list];
-            for (let i = arr.length - 1; i >= 0; i--) {
-              const s = arr[i]!;
-              if (s.type === 'tool' && s.tool === event.tool && (s.status === 'running' || s.status === 'stopped')) {
-                arr[i] = { ...s, status: 'running', args: event.arguments ?? s.args };
-                return arr;
-              }
-            }
-            arr.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
-            return arr;
-          };
-          updateConvMsgs(convKey, prev => {
-            const u = [...prev];
-            const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-            if (idx < 0) return prev;
-            const segs = reviveOrPush(u[idx]!.segments ?? []);
-            // Keep committedSegments (snapshot-seeded) in sync so the always-expanded
-            // full log renders tools that arrive live after reattach.
-            const prevCommitted = u[idx]!.committedSegments;
-            const committed = prevCommitted ? reviveOrPush(prevCommitted) : prevCommitted;
-            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed, isStreaming: true };
-            return u;
-          }, sessionId);
-        } else if (event.phase === 'end') {
-          const now = new Date().toISOString();
-          const finalize = (list: MsgSegment[]): MsgSegment[] => {
-            const arr = [...list];
-            for (let i = arr.length - 1; i >= 0; i--) {
-              const s = arr[i]!;
-              if (s.type === 'tool' && s.tool === event.tool && (s.status === 'running' || s.status === 'stopped')) {
-                arr[i] = {
-                  ...s,
-                  status: event.success === false ? 'error' : 'done',
-                  args: event.arguments ?? s.args,
-                  result: event.result,
-                  error: event.error,
-                  durationMs: event.durationMs,
-                  liveOutput: undefined,
-                  createdAt: now,
-                };
-                break;
-              }
-            }
-            return arr;
-          };
-          updateConvMsgs(convKey, prev => {
-            const u = [...prev];
-            const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-            if (idx < 0) return prev;
-            const segs = finalize(u[idx]!.segments ?? []);
-            const prevCommitted = u[idx]!.committedSegments;
-            const committed = prevCommitted ? finalize(prevCommitted) : prevCommitted;
-            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed, isStreaming: true };
-            return u;
-          }, sessionId);
-        } else if (event.phase === 'subagent_progress' && event.subagentEvent) {
-          const appendLog = (list: MsgSegment[]): MsgSegment[] => {
-            const next = [...list];
-            for (let i = next.length - 1; i >= 0; i--) {
-              const s = next[i]!;
-              if (s.type === 'tool' && (s.tool === 'spawn_subagent' || s.tool === 'spawn_subagents') && (s.status === 'running' || s.status === 'stopped')) {
-                next[i] = { ...s, status: 'running', subagentLogs: appendSubagentLog(s.subagentLogs, event.subagentEvent!) };
-                break;
-              }
-            }
-            return next;
-          };
-          updateConvMsgsRaf(convKey, prev => {
-            const u = [...prev];
-            const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-            if (idx < 0) return prev;
-            const segs = appendLog(u[idx]!.segments ?? []);
-            const prevCommitted = u[idx]!.committedSegments;
-            const committed = prevCommitted ? appendLog(prevCommitted) : prevCommitted;
-            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed, isStreaming: true };
-            return u;
-          }, sessionId);
-        }
-      };
-
-      const handleCommitEvent = (event: StreamCommitEvent) => {
-        if (currentConvKeyRef.current !== convKey) return;
-        lastSseEventTimeRef.current = Date.now();
-        updateConvMsgs(convKey, prev => {
-          const u = [...prev];
-          const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-          if (idx < 0) return prev;
-          const committed = [...(u[idx]!.committedSegments ?? [])];
-          if (event.type === 'thinking_commit') {
-            committed.push({ type: 'text', content: '', thinking: event.content, createdAt: event.createdAt });
-          } else if (event.type === 'text_commit') {
-            committed.push({ type: 'text', content: event.content, createdAt: event.createdAt });
-          } else {
-            return prev;
-          }
-          u[idx] = { ...u[idx]!, committedSegments: committed, isStreaming: true };
-          return u;
-        }, sessionId);
-      };
-
-      const handleSnapshot = (snapshot: { content: string; segments: Array<{ type: string; content?: string; thinking?: string; tool?: string; status?: string; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string; subagentLogs?: SubagentProgressEvent[] }> }) => {
-        if (currentConvKeyRef.current !== convKey) return;
-        lastSseEventTimeRef.current = Date.now();
-        const segs = (snapshot.segments ?? []).map((s, si) =>
-          s.type === 'tool'
-            ? {
-                type: 'tool' as const,
-                key: `${s.tool}_${si}`,
-                tool: s.tool ?? 'tool',
-                status: (s.status === 'error' ? 'error' : s.status === 'running' || s.status === 'stopped' ? 'running' : 'done') as 'running' | 'done' | 'error' | 'stopped',
-                args: s.arguments,
-                result: s.result,
-                error: s.error,
-                durationMs: s.durationMs,
-                createdAt: s.createdAt,
-                ...(s.subagentLogs?.length ? { subagentLogs: s.subagentLogs } : {}),
-              }
-            : {
-                type: 'text' as const,
-                content: s.content ?? '',
-                thinking: s.thinking,
-                createdAt: s.createdAt,
-              },
-        );
-        updateConvMsgs(convKey, prev => {
-          const u = [...prev];
-          const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-          if (idx < 0) return prev;
-          u[idx] = {
-            ...u[idx]!,
-            text: snapshot.content || u[idx]!.text,
-            segments: segs,
-            committedSegments: segs,
-            isStreaming: true,
-            isStopped: false,
-          };
-          return u;
-        }, sessionId);
-        // Rebuild activity chips from restored tool segments.
-        for (const s of segs) {
-          if (s.type !== 'tool') continue;
-          appendConvActivity(convKey, {
-            tool: s.tool,
-            phase: s.status === 'running' || s.status === 'stopped' ? 'start' : 'end',
-            success: s.status !== 'error',
-            arguments: s.args,
-            result: s.result,
-            error: s.error,
-            durationMs: s.durationMs,
-            ts: Date.now(),
-          }, sessionId);
-        }
-      };
-
-      // Prefer server snapshot (tools + text). Falls back to ring replay if older server.
-      const result = await api.sessions.reattachStream(
-        agentId,
-        sessionId,
-        {
-          onChunk: appendTextChunk,
-          onActivity: handleToolEvent,
-          onCommit: handleCommitEvent,
-          onSnapshot: handleSnapshot,
-        },
-        abortCtrl.signal,
-        0,
-      );
-
-      if (!result.attached) {
-        // No live stream to reattach — clear stuck「思考中」locally (DB heal
-        // runs on message load / process start; this covers the current view).
-        endStream(convKey);
-        if (currentConvKeyRef.current === convKey) {
-          updateConvMsgs(convKey, prev => {
-            const u = [...prev];
-            const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-            const i = idx >= 0
-              ? idx
-              : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
-            if (i < 0) return prev;
-            const msg = u[i]!;
-            if (!msg.isStreaming) return prev;
-            u[i] = {
-              ...msg,
-              isStreaming: false,
-              isStopped: msg.isError ? msg.isStopped : true,
-            };
-            return u;
-          }, sessionId);
-          setSending(false);
-        }
-        return;
-      }
-
-      if (currentConvKeyRef.current === convKey) {
-        updateConvMsgs(convKey, prev => {
-          const u = [...prev];
-          const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-          const i = idx >= 0 ? idx : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
-          if (i < 0) return prev;
-          const msg = u[i]!;
-          // Only a still-in-flight bubble may be finalized here — never a
-          // previous turn's completed reply.
-          if (!msg.isStreaming) return prev;
-          const finalSegs = result.segments?.length
-            ? storedSegmentsToMsgSegments(result.segments, msg.segments)
-            : undefined;
-          u[i] = {
-            ...msg,
-            text: result.content || msg.text,
-            isStreaming: false,
-            isStopped: false,
-            ...(finalSegs
-              ? { segments: finalSegs, committedSegments: finalSegs }
-              : {}),
-          };
-          return u;
-        }, sessionId);
-        setSending(false);
-      }
-      endStream(convKey);
-      if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
-    } catch (err) {
-      // Aborted by stop / newer reattach / navigation — always clear local stream UI.
-      if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
-      endStream(convKey);
-      if (currentConvKeyRef.current === convKey) setSending(false);
-      if (err instanceof Error && err.name === 'AbortError') return;
-    }
-  }, [appendConvActivity, beginStream, endStream, getStreamSession, msgBuffers, setStreamSession, updateConvMsgs, updateConvMsgsRaf]);
+  // (tryReattachActiveStream moved into useChatStream hook)
 
   // Returning to Team after visiting another page: reattach if a generation is
   // still running (SSE may have been killed while the tab was hidden).
@@ -2030,15 +1691,47 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     void tryReattachActiveStream(selectedAgent, sid, currentConvKeyRef.current);
   }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, tryReattachActiveStream]);
 
-  // Load sessions list for agent
-  const loadSessions = useCallback(async (agentId: string) => {
-    if (!agentId) { setSessions([]); return []; }
+  // Load older sessions (append to the list) — History panel "load more"
+  const loadMoreSessions = useCallback(async () => {
+    if (sessionsLoadingMore || !selectedAgent || !sessionsHasMore) return;
+    setSessionsLoadingMore(true);
+    const nextPage = sessionsPage + 1;
+    const agentId = selectedAgent;
     try {
-      const { sessions: s } = await api.sessions.listByAgent(agentId, 10);
-      setSessions(s);
-      return s;
-    } catch { setSessions([]); return []; }
+      const res = await api.sessions.listByAgent(agentId, 20, nextPage);
+      setSessions(prev => {
+        const seen = new Set(prev.map(s => s.id));
+        const merged = [...prev, ...res.sessions.filter(s => !seen.has(s.id))];
+        setSessionsTotal(res.total ?? merged.length);
+        return merged;
+      });
+      setSessionsPage(nextPage);
+      setSessionsHasMore(!!res.hasMore);
+    } catch { /* keep current state */ }
+    setSessionsLoadingMore(false);
+  }, [sessionsLoadingMore, sessionsHasMore, sessionsPage, selectedAgent]);
+
+  // Rename a session (inline in the History panel)
+  const startRenameSession = useCallback((s: ChatSessionInfo) => {
+    setRenamingSessionId(s.id);
+    setRenamingDraft((s.isMain ? '' : s.title) || '');
   }, []);
+  const cancelRenameSession = useCallback(() => {
+    setRenamingSessionId(null);
+    setRenamingDraft('');
+  }, []);
+  const submitRenameSession = useCallback(async (s: ChatSessionInfo) => {
+    const title = renamingDraft.trim();
+    if (!title) { cancelRenameSession(); return; }
+    try {
+      const res = await api.sessions.renameTitle(s.id, title);
+      const newTitle = res?.session?.title ?? title;
+      setSessions(prev => prev.map(x => x.id === s.id ? { ...x, title: newTitle } : x));
+      // Keep any open session tab in sync
+      setOpenSessionTabs(prev => prev.map(x => x.id === s.id ? { ...x, title: newTitle } : x));
+    } catch { /* best effort */ }
+    cancelRenameSession();
+  }, [renamingDraft, cancelRenameSession]);
 
   // Load more (pagination) — preserves scroll position after prepending
   const prependCountRef = useRef(0);
@@ -2160,7 +1853,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setMessages(bufferedMsgs!);
       setHasMore(false);
       if (savedActiveSession !== undefined) {
-        setActiveSessionId(savedActiveSession);
+        changeActiveSession(newKey, savedActiveSession);
       }
       if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
       // Refresh from server in background to catch anything we missed while away
@@ -2228,21 +1921,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               if (found) initialTabs = [...initialTabs, found];
             }
             const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
-            setActiveSessionId(validId);
-            activeSessionBuffer.set(newKey, validId);
+            // changeActiveSession keeps view state and the manager routing gate
+            // in sync (single entry) — a concurrently-streaming OTHER session
+            // of this agent cannot land chunks in this buffer (same bug family
+            // as switchSession).
+            changeActiveSession(newKey, validId);
             setStoredActiveSession(selectedAgent!, validId);
             setOpenSessionTabs(initialTabs);
-            const restored = s.find(ss => ss.id === validId);
-            const mo = restored?.metadata?.modelOverride;
-            setSessionModelOverride(mo?.provider && mo?.model ? { provider: mo.provider, model: mo.model } : null);
             void loadSessionMessages(validId!, newKey).then(() => {
               if (currentConvKeyRef.current === newKey && selectedAgent) {
                 void tryReattachActiveStream(selectedAgent, validId!, newKey);
               }
             });
           } else {
-            setActiveSessionId(null);
-            setSessionModelOverride(null);
+            // No sessions exist yet — view has no active session and the gate
+            // is unpinned so a stray background stream is conservatively routed
+            // to its own cache (isDisplayRoute), never into this empty view.
+            changeActiveSession(newKey, null);
             setLoadingChat(false);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
           }
@@ -2279,6 +1974,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         sender: isSelf ? 'user' : 'agent',
         text: wsText,
         time: new Date().toLocaleTimeString(),
+        rawCreatedAt: (event.timestamp as string | undefined) ?? new Date().toISOString(),
         agentName: isSelf ? undefined : wsSenderName,
         agentId: isSelf ? undefined : wsSenderId,
         replyToId: (p['replyToId'] as string) ?? undefined,
@@ -2317,7 +2013,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       } else {
         key = `ch:${msgChannel}`;
       }
-      updateConvMsgs(key, prev => [...prev, newMsg]);
+      // Insert ordered by createdAt and skip ids already present in the buffer
+      // (reconnect catch-up + late WS events must not duplicate history).
+      updateConvMsgs(key, prev => insertChatMsgByCreatedAt(prev, newMsg));
 
       // Track new messages arriving while user is scrolled up
       if (key === currentConvKeyRef.current && !userAtBottomRef.current) {
@@ -2340,6 +2038,27 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return unsub;
   }, [previewMode, updateConvMsgs, authUser?.id, activeChannel]);
 
+  // WS reconnect catch-up. The server does NOT replay events that were sent
+  // while the socket was down (it ignores the `since` param), but every
+  // successful connection emits `connected`. When several agents reply to a
+  // group message concurrently and one finishes inside the reconnect gap, its
+  // persisted message would never reach the UI → the bubble looks stuck until
+  // a manual refresh. On every reconnect (after the initial connect, which the
+  // normal load path already covers) refetch the active channel history.
+  const wsFirstConnectedRef = useRef(false);
+  useEffect(() => {
+    if (previewMode) return;
+    const unsub = wsClient.on('connected', () => {
+      const first = !wsFirstConnectedRef.current;
+      wsFirstConnectedRef.current = true;
+      if (first) return;
+      if (chatMode === 'channel' && activeChannel) {
+        void loadChannelMessages(activeChannel, undefined, { quiet: true });
+      }
+    });
+    return unsub;
+  }, [previewMode, chatMode, activeChannel, loadChannelMessages]);
+
   // Remove agent from thinkingAgents when it decides not to respond
   useEffect(() => {
     if (previewMode) return;
@@ -2360,6 +2079,22 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     });
     return unsub;
   }, [previewMode, activeChannel]);
+
+  // Session title renamed (agent session_rename tool or another tab) — keep the
+  // History panel list + open session tabs in sync without a full reload.
+  useEffect(() => {
+    if (previewMode) return;
+    const unsub = wsClient.on('session:title_updated', (event) => {
+      const p = event.payload as Record<string, unknown> | undefined;
+      if (!p) return;
+      const sessionId = p['sessionId'] as string | undefined;
+      const title = p['title'] as string | undefined;
+      if (!sessionId || typeof title !== 'string') return;
+      setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, title } : s));
+      setOpenSessionTabs(prev => prev.map(s => s.id === sessionId ? { ...s, title } : s));
+    });
+    return unsub;
+  }, [previewMode]);
 
   // WS live updates for proactive agent/user messages (direct mode)
   useEffect(() => {
@@ -2512,892 +2247,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   useEffect(() => { setLinkedTaskId(null); }, [selectedAgent]);
 
   // ── Sending ──────────────────────────────────────────────────────────────────
-  const parseMentions = (text: string) => parseMentionNames(text);
-
-  const stopSending = () => {
-    // 1) Tell the backend to stop FIRST. Aborting the SSE alone is a soft
-    // disconnect — the agent keeps working for up to SSE_DISCONNECT_FORCE_STOP_MS
-    // unless cancel-processing marks userStopped.
-    const agentId = chatMode === 'direct' ? selectedAgent : null;
-    if (agentId) {
-      void api.agents.cancelProcessing(agentId).catch(() => {});
-    }
-
-    // 2) Abort both the live send() stream and any reattachStream consumer.
-    // Previously only abortControllerRef was cleared — after refresh/reattach
-    // the stop button looked clickable but did nothing to the open SSE.
-    abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
-    reattachAbortRef.current?.abort();
-    reattachAbortRef.current = null;
-
-    // 3) A user-initiated stop is final for the CURRENT turn. Remember the
-    // session so reattach/refresh never resumes it (the agent may still report
-    // "streaming" for a moment after cancel, which previously made the stop
-    // look like a no-op and let the reply stream into a removed bubble).
-    if (agentId && activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
-      userStoppedSessionsRef.current.add(activeSessionId);
-    }
-
-    // 4) Unblock the UI immediately
-    const sendKey = currentConvKeyRef.current;
-    resetSending(sendKey);
-    actBuffers.delete(activeSessionId ?? sendKey);
-    if (activeSessionId) clearStreamSession(sendKey, activeSessionId);
-    endStream(sendKey);
-    setSending(false);
-    setActivities([]);
-  };
 
   const [rememberTarget, setRememberTarget] = useState<ChatMsg | null>(null);
   const [rememberBusy, setRememberBusy] = useState(false);
 
-  const lastSendGuardRef = useRef<{ text: string; at: number } | null>(null);
-  const send = async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean; sessionIdOverride?: string }) => {
-    const ctxPrefix = (!retryText && chatContext.length > 0)
-      ? chatContext.map(c => c.content).join('\n\n') + '\n\n'
-      : '';
-    const text = (retryText ?? (ctxPrefix + input)).trim();
-    if (!text && pendingImages.length === 0) return;
-    if (chatMode === 'direct' && !selectedAgent) return;
-    resumeChatScrollFollow();
-
-    // Ignore accidental double-submit of the same text (double Enter / double click).
-    const now = Date.now();
-    const prevSend = lastSendGuardRef.current;
-    if (
-      !options?.isRetry
-      && !options?.isResume
-      && text
-      && prevSend
-      && prevSend.text === text
-      && now - prevSend.at < 1500
-    ) {
-      return;
-    }
-    lastSendGuardRef.current = { text, at: now };
-
-    // If agent is currently streaming in this same conversation, interrupt it first.
-    // If the user is in a DIFFERENT session (e.g., new chat tab) while another session
-    // streams, DON'T abort — the agent's mailbox will queue or merge the new message.
-    if (sending && chatMode === 'direct') {
-      const isSameSession = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID;
-      if (isSameSession) {
-        const prevKey = currentConvKeyRef.current;
-        const buf = msgBuffers.get(prevKey) ?? [];
-        const lastUser = [...buf].reverse().find(m => m.sender === 'user');
-        // Same text already in-flight — don't stack another user bubble; retry the turn.
-        if (lastUser?.text === text && !options?.isRetry && !options?.isResume) {
-          abortControllerRef.current?.abort();
-          abortControllerRef.current = null;
-          void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
-          resetSending(prevKey);
-          actBuffers.delete(activeSessionId ?? prevKey);
-          endStream(prevKey);
-          // Drop the in-flight user+empty agent pair before the retry re-adds them.
-          updateConvMsgs(prevKey, prev => {
-            const u = [...prev];
-            // Remove trailing empty/partial agent, then the matching user bubble.
-            if (u.length > 0 && u[u.length - 1]!.sender === 'agent') u.pop();
-            if (u.length > 0 && u[u.length - 1]!.sender === 'user' && u[u.length - 1]!.text === text) u.pop();
-            return u;
-          });
-          setSending(false);
-          setActivities([]);
-          await new Promise(r => setTimeout(r, 50));
-          return send(text, { isRetry: true });
-        }
-        // Same session: interrupt current stream and resend
-        abortControllerRef.current?.abort();
-        abortControllerRef.current = null;
-        void api.agents.cancelProcessing(selectedAgent!).catch(() => {});
-        resetSending(prevKey);
-        actBuffers.delete(activeSessionId ?? prevKey);
-        endStream(prevKey);
-        updateConvMsgs(prevKey, prev => {
-          const u = [...prev];
-          for (let i = u.length - 1; i >= 0; i--) {
-            if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
-              const msg = u[i]!;
-              const hasContent = msg.text?.trim() || (msg.segments ?? []).some(s =>
-                (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-              );
-              if (!hasContent) {
-                u.splice(i, 1);
-              } else {
-                const segs = (msg.segments ?? []).map(s =>
-                  s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
-                );
-                u[i] = { ...msg, isStopped: true, segments: segs };
-              }
-              break;
-            }
-          }
-          return u;
-        });
-        setSending(false);
-        setActivities([]);
-        await new Promise(r => setTimeout(r, 50));
-      }
-      // For new session (NEW_CHAT_PLACEHOLDER_ID): don't abort. The message will be
-      // sent to the agent's mailbox and queued. The agent will process it after
-      // finishing the current stream, and the response will arrive via SSE or WS fallback.
-    } else if (sending && chatMode !== 'direct') {
-      // Non-direct mode (channel/dm): abort as before since channels are independent
-      abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
-      const prevKey = currentConvKeyRef.current;
-      resetSending(prevKey);
-      actBuffers.delete(prevKey);
-      endStream(prevKey);
-      updateConvMsgs(prevKey, prev => {
-        const u = [...prev];
-        for (let i = u.length - 1; i >= 0; i--) {
-          if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
-            const msg = u[i]!;
-            const hasContent = msg.text?.trim() || (msg.segments ?? []).some(s =>
-              (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-            );
-            if (!hasContent) {
-              u.splice(i, 1);
-            } else {
-              const segs = (msg.segments ?? []).map(s =>
-                s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
-              );
-              u[i] = { ...msg, isStopped: true, segments: segs };
-            }
-            break;
-          }
-        }
-        return u;
-      });
-      setSending(false);
-      setActivities([]);
-      await new Promise(r => setTimeout(r, 50));
-    }
-
-    const imagesToSend = pendingImages.length > 0 ? pendingImages.map(img => img.dataUrl) : undefined;
-    const fileNamesToSend = pendingImages.length > 0 ? pendingImages.map(img => img.name) : undefined;
-    const sendKey = makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId);
-    const replyCtx = chatReplyTo;
-
-    if (!retryText) {
-      setInput('');
-      setChatContext([]);
-    }
-    setPendingImages([]);
-    setMentionDropdown(false);
-    setChatReplyTo(null);
-
-    // Mark this conv as sending (skip for DM — instant DB write, no LLM wait)
-    const isDm = chatMode === 'dm';
-    incrementSending(sendKey);
-    // Initialize activity buffer keyed by session (not convKey) to prevent cross-session pollution
-    const actBufKey = activeSessionId ?? sendKey;
-    actBuffers.set(actBufKey, []);
-    if (currentConvKeyRef.current === sendKey && !isDm) {
-      setSending(true);
-      setActivities([]);
-    }
-
-    if (chatMode === 'dm') {
-      // Human-to-human DM or personal notepad — store only, never route to agents/LLM.
-      const dmChannel = makeDmChannel(authUser?.id ?? '', activeDmUserId);
-      const optId = `opt_${Date.now()}`;
-      const userMsgDm: ChatMsg = { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: new Date().toISOString() };
-      if (imagesToSend?.length) userMsgDm.images = imagesToSend;
-      if (replyCtx) { userMsgDm.replyToId = replyCtx.id; userMsgDm.replyToSender = replyCtx.sender; userMsgDm.replyToText = replyCtx.text; }
-      updateConvMsgs(sendKey, prev => [...prev, userMsgDm]);
-      try {
-        const result = await api.channels.sendMessage(dmChannel, {
-          text, senderName: authUser?.name ?? t('page.fallbackYou'),
-          senderId: authUser?.id,
-          mentions: [], orgId: 'default',
-          humanOnly: true, // never route to agents
-          ...(imagesToSend?.length ? { images: imagesToSend } : {}),
-          ...(fileNamesToSend?.length ? { fileNames: fileNamesToSend } : {}),
-        });
-        if (result.userMessage) addRecentMsgId(result.userMessage.id);
-        updateConvMsgs(sendKey, prev => {
-          const without = prev.filter(m => m.id !== optId);
-          const newMsgs: ChatMsg[] = [];
-          if (result.userMessage) newMsgs.push(channelMsgToChat(result.userMessage, authUser?.id));
-          return newMsgs.length > 0 ? [...without, ...newMsgs] : prev;
-        });
-      } catch (e) {
-        if (isMarkusCreditError(e)) dispatchCreditNotification();
-        updateConvMsgs(sendKey, prev => {
-          const without = prev.filter(m => m.id !== optId);
-          return [...without, {
-            id: `err_${Date.now()}`, sender: 'agent', text: t('page.errorWithMessage', { message: String(e) }),
-            time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
-          }];
-        });
-      }
-      decrementSending(sendKey);
-      if (currentConvKeyRef.current === sendKey) setSending(false);
-    } else if (chatMode === 'channel') {
-      const optId = `opt_${Date.now()}`;
-      const userMsgCh: ChatMsg = { id: optId, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: new Date().toISOString() };
-      if (replyCtx) { userMsgCh.replyToId = replyCtx.id; userMsgCh.replyToSender = replyCtx.sender; userMsgCh.replyToText = replyCtx.text; }
-      updateConvMsgs(sendKey, prev => [...prev, userMsgCh]);
-
-      // All agents in a group channel receive and process the message.
-      // Mentioned agents are instructed to respond; others may stay silent.
-      const mentions = parseMentions(text);
-      const gc = groupChats.find(g => g.channelKey === activeChannel);
-      if (activeChannel.startsWith('group:')) {
-        const allGroupAgents: Array<{ id: string; name: string; avatarUrl?: string }> = [];
-        if (gc?.members) {
-          for (const m of gc.members) {
-            if (m.type === 'agent') {
-              const a = agents.find(ag => ag.id === m.id);
-              if (a) allGroupAgents.push({ id: a.id, name: a.name, avatarUrl: a.avatarUrl });
-            }
-          }
-        }
-        if (allGroupAgents.length > 0) {
-          if (thinkingTimeoutRef.current) clearTimeout(thinkingTimeoutRef.current);
-          setThinkingAgents(allGroupAgents);
-          thinkingTimeoutRef.current = setTimeout(() => setThinkingAgents([]), 120_000);
-        }
-      }
-
-      try {
-        // Persist/send only the user's text. Reply context is carried via replyToId
-        // (server prefixes [REPLY] for the agent; UI shows the quote header from metadata).
-        const result = await api.channels.sendMessage(activeChannel, {
-          text, senderName: authUser?.name ?? t('page.fallbackYou'), mentions,
-          senderId: authUser?.id,
-          orgId: 'default',
-          replyToId: replyCtx?.id,
-          ...(imagesToSend?.length ? { images: imagesToSend } : {}),
-          ...(fileNamesToSend?.length ? { fileNames: fileNamesToSend } : {}),
-        });
-        if (result.userMessage) addRecentMsgId(result.userMessage.id);
-        if (result.agentMessage) addRecentMsgId(result.agentMessage.id);
-        updateConvMsgs(sendKey, prev => {
-          const without = prev.filter(m => m.id !== optId);
-          const newMsgs: ChatMsg[] = [];
-          if (result.userMessage) newMsgs.push(channelMsgToChat(result.userMessage, authUser?.id));
-          if (result.agentMessage) newMsgs.push(channelMsgToChat(result.agentMessage, authUser?.id));
-          return newMsgs.length > 0 ? [...without, ...newMsgs] : prev;
-        });
-      } catch (e) {
-        if (isMarkusCreditError(e)) dispatchCreditNotification();
-        const friendly = friendlyAgentError(e, t) || t('page.errorWithMessage', { message: String(e) });
-        updateConvMsgs(sendKey, prev => [...prev, {
-          id: `err_${Date.now()}`, sender: 'agent', text: friendly,
-          time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
-        }]);
-        if (thinkingTimeoutRef.current) { clearTimeout(thinkingTimeoutRef.current); thinkingTimeoutRef.current = null; }
-        setThinkingAgents([]);
-      }
-      decrementSending(sendKey);
-      if (currentConvKeyRef.current === sendKey) setSending(false);
-    } else {
-      // direct — build an interleaved segment stream
-      beginStream(sendKey);
-      const sendNonce = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-      const agentMsgId = `a_${sendNonce}`;
-      const optimisticUserId = `u_${sendNonce}`;
-      // Mutable session ID that gets resolved when session_start event arrives
-      let streamSessionId: string | null = options?.sessionIdOverride
-        ?? (activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId);
-      if (options?.isResume) {
-        // Resume: don't add a duplicate user message — just append the
-        // agent continuation placeholder after the existing partial response.
-        const agentCreatedAt = new Date().toISOString();
-        updateConvMsgs(sendKey, prev => [
-          ...prev,
-          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [] },
-        ], streamSessionId);
-      } else {
-        const agentCreatedAt = new Date().toISOString();
-        const userMsg: ChatMsg = { id: optimisticUserId, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt };
-        if (imagesToSend?.length) userMsg.images = imagesToSend;
-        if (replyCtx) { userMsg.replyToId = replyCtx.id; userMsg.replyToSender = replyCtx.sender; userMsg.replyToText = replyCtx.text; }
-        updateConvMsgs(sendKey, prev => [
-          ...prev,
-          userMsg,
-          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [] },
-        ], streamSessionId);
-      }
-
-      /** Track whether we're inside a <think> block across streaming chunks */
-      let insideThink = false;
-
-      /** Append a text chunk to the segment stream (RAF-batched to reduce re-renders) */
-      const appendTextChunk = (chunk: string) => {
-        lastSseEventTimeRef.current = Date.now();
-        updateConvMsgsRaf(sendKey, prev => {
-          const u = [...prev];
-          const idx = u.findIndex(m => m.id === agentMsgId);
-          if (idx < 0) return prev;
-          const segs = u[idx]!.segments ?? [];
-          const last = segs[segs.length - 1];
-          const prevThinking = last?.type === 'text' ? (last as { thinking?: string }).thinking ?? '' : '';
-
-          let thinking = '';
-          let content = '';
-          let remaining = chunk;
-
-          // Process the chunk character-by-character tracking think state.
-          // Handles <think>...</think> that may span across multiple chunks.
-          while (remaining.length > 0) {
-            if (insideThink) {
-              const closeIdx = remaining.indexOf('</think>');
-              if (closeIdx >= 0) {
-                thinking += remaining.slice(0, closeIdx);
-                remaining = remaining.slice(closeIdx + '</think>'.length);
-                insideThink = false;
-              } else {
-                thinking += remaining;
-                remaining = '';
-              }
-            } else {
-              const openIdx = remaining.indexOf('<think>');
-              if (openIdx >= 0) {
-                content += remaining.slice(0, openIdx);
-                remaining = remaining.slice(openIdx + '<think>'.length);
-                insideThink = true;
-              } else {
-                content += remaining;
-                remaining = '';
-              }
-            }
-          }
-
-          const mergedThinking = (prevThinking + thinking) || undefined;
-
-          const newSegs: MsgSegment[] = last?.type === 'text'
-            ? [...segs.slice(0, -1), { type: 'text', content: last.content + content, thinking: mergedThinking, createdAt: last.createdAt }]
-            : [...segs, { type: 'text', content, thinking: mergedThinking, createdAt: new Date().toISOString() }];
-          u[idx] = { ...u[idx]!, text: u[idx]!.text + content, segments: newSegs };
-          return u;
-        }, streamSessionId);
-      };
-
-      /** Handle server-committed per-turn text/thinking entries (clean, non-fragmented) */
-      const handleCommitEvent = (event: StreamCommitEvent) => {
-        lastSseEventTimeRef.current = Date.now();
-        // Capture sessionId early so subsequent messages continue in the same session
-        // even if the stream is aborted before the final 'done' event.
-        if (event.type === 'session_start' && event.sessionId) {
-          // Resolve the stream's session ID — replace placeholder with real ID
-          const prevStreamSessionId = streamSessionId;
-          streamSessionId = event.sessionId;
-          // A new stream started in this session — clear any earlier user-stop.
-          userStoppedSessionsRef.current.delete(event.sessionId);
-          if (prevStreamSessionId && prevStreamSessionId !== event.sessionId) {
-            clearStreamSession(sendKey, prevStreamSessionId);
-          }
-          setStreamSession(sendKey, event.sessionId);
-          // Persist composer model pick onto the newly created session
-          if (sessionModelOverride) {
-            void api.sessions.setModelOverride(event.sessionId, sessionModelOverride).catch(() => {});
-          }
-          // Replace optimistic user id with the server-persisted id so reload/dedupe align.
-          if (event.userMessageId && !options?.isResume) {
-            updateConvMsgs(sendKey, prev => prev.map(m =>
-              m.id === optimisticUserId ? { ...m, id: event.userMessageId! } : m
-            ), event.sessionId);
-          }
-          // Seed the session cache with current buffer so streaming reads don't start empty
-          const currentBuf = msgBuffers.get(sendKey);
-          if (currentBuf && currentBuf.length > 0) {
-            sessionMsgCache.set(event.sessionId, currentBuf);
-          }
-          if (currentConvKeyRef.current === sendKey) {
-            // Only update activeSessionId if this stream's session matches what user expects.
-            // If user was on __new_chat__ or the same session, update. Otherwise skip to
-            // prevent a different session's stream from hijacking the user's view.
-            const currentSess = activeSessionId;
-            if (!currentSess || currentSess === NEW_CHAT_PLACEHOLDER_ID || currentSess === event.sessionId) {
-              setActiveSessionId(event.sessionId);
-              activeSessionBuffer.set(sendKey, event.sessionId);
-              if (selectedAgent) setStoredActiveSession(selectedAgent, event.sessionId);
-              setOpenSessionTabs(prev => {
-                // Replace placeholder if exists; otherwise ensure the session tab is present
-                if (prev.some(t => t.id === NEW_CHAT_PLACEHOLDER_ID)) {
-                  return prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: event.sessionId! } : t);
-                }
-                if (!prev.some(t => t.id === event.sessionId)) {
-                  return [...prev, { id: event.sessionId!, agentId: selectedAgent ?? '', userId: null, title: '', createdAt: new Date().toISOString(), lastMessageAt: new Date().toISOString() }];
-                }
-                return prev;
-              });
-            }
-          }
-          return;
-        }
-        updateConvMsgs(sendKey, prev => {
-          const u = [...prev];
-          const idx = u.findIndex(m => m.id === agentMsgId);
-          if (idx < 0) return prev;
-          const committed = [...(u[idx]!.committedSegments ?? [])];
-          if (event.type === 'thinking_commit') {
-            committed.push({ type: 'text', content: '', thinking: event.content, createdAt: event.createdAt });
-          } else {
-            committed.push({ type: 'text', content: event.content, createdAt: event.createdAt });
-          }
-          u[idx] = { ...u[idx]!, committedSegments: committed };
-          return u;
-        }, streamSessionId);
-      };
-
-      /** Handle a tool event: start adds a 'running' segment, end updates it, output appends live text */
-      const handleToolEvent = (event: AgentToolEvent) => {
-        lastSseEventTimeRef.current = Date.now();
-        if (event.phase === 'heartbeat') return;
-        if (event.phase === 'start' || event.phase === 'end') {
-          appendConvActivity(sendKey, { ...event, phase: event.phase, ts: Date.now() }, streamSessionId);
-        }
-        if (event.phase === 'start') {
-          updateConvMsgs(sendKey, prev => {
-            const u = [...prev];
-            const idx = u.findIndex(m => m.id === agentMsgId);
-            if (idx < 0) return prev;
-            const segs = [...(u[idx]!.segments ?? [])];
-            let updated = false;
-            if (event.arguments) {
-              for (let i = segs.length - 1; i >= 0; i--) {
-                const s = segs[i]!;
-                if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-                  segs[i] = { ...s, args: event.arguments };
-                  updated = true;
-                  break;
-                }
-              }
-            }
-            const toolKey = `${event.tool}_${Date.now()}`;
-            const now = new Date().toISOString();
-            if (!updated) {
-              segs.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
-            }
-            const committed = [...(u[idx]!.committedSegments ?? [])];
-            if (event.arguments !== undefined) {
-              committed.push({ type: 'tool', key: toolKey, tool: event.tool, status: 'running', args: event.arguments, createdAt: now });
-            }
-            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
-            return u;
-          }, streamSessionId);
-        } else if (event.phase === 'output') {
-          // RAF-batch high-frequency stdout chunks (same as text deltas).
-          updateConvMsgsRaf(sendKey, prev => {
-            const u = [...prev];
-            const idx = u.findIndex(m => m.id === agentMsgId);
-            if (idx < 0) return prev;
-            const segs = [...(u[idx]!.segments ?? [])];
-            for (let i = segs.length - 1; i >= 0; i--) {
-              const s = segs[i]!;
-              if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-                segs[i] = { ...s, liveOutput: appendLiveOutput(s.liveOutput, event.output ?? '') };
-                break;
-              }
-            }
-            u[idx] = { ...u[idx]!, segments: segs };
-            return u;
-          }, streamSessionId);
-        } else if (event.phase === 'subagent_progress' && event.subagentEvent) {
-          // RAF-batch nested progress; cap retained rows so long sub-agents don't balloon DOM.
-          updateConvMsgsRaf(sendKey, prev => {
-            const u = [...prev];
-            const idx = u.findIndex(m => m.id === agentMsgId);
-            if (idx < 0) return prev;
-            const appendLog = (list: MsgSegment[]): MsgSegment[] => {
-              const next = [...list];
-              for (let i = next.length - 1; i >= 0; i--) {
-                const s = next[i]!;
-                if (s.type === 'tool' && (s.tool === 'spawn_subagent' || s.tool === 'spawn_subagents') && s.status === 'running') {
-                  next[i] = { ...s, subagentLogs: appendSubagentLog(s.subagentLogs, event.subagentEvent!) };
-                  break;
-                }
-              }
-              return next;
-            };
-            const segs = appendLog(u[idx]!.segments ?? []);
-            const committed = appendLog(u[idx]!.committedSegments ?? []);
-            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
-            return u;
-          }, streamSessionId);
-        } else {
-          updateConvMsgs(sendKey, prev => {
-            const u = [...prev];
-            const idx = u.findIndex(m => m.id === agentMsgId);
-            if (idx < 0) return prev;
-            const now = new Date().toISOString();
-            const segs = [...(u[idx]!.segments ?? [])];
-            let endedSubagentLogs: Extract<MsgSegment, { type: 'tool' }>['subagentLogs'];
-            for (let i = segs.length - 1; i >= 0; i--) {
-              const s = segs[i]!;
-              if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-                endedSubagentLogs = s.subagentLogs;
-                segs[i] = { ...s, status: event.success === false ? 'error' : 'done', args: event.arguments, result: event.result, error: event.error, durationMs: event.durationMs, liveOutput: undefined, createdAt: now };
-                break;
-              }
-            }
-            const committed = [...(u[idx]!.committedSegments ?? [])];
-            for (let i = committed.length - 1; i >= 0; i--) {
-              const s = committed[i]!;
-              if (s.type === 'tool' && s.tool === event.tool && s.status === 'running') {
-                // Prefer logs accumulated on the live segment (progress may have
-                // arrived before this committed row existed).
-                committed[i] = {
-                  ...s,
-                  status: event.success === false ? 'error' : 'done',
-                  args: event.arguments,
-                  result: event.result,
-                  error: event.error,
-                  durationMs: event.durationMs,
-                  liveOutput: undefined,
-                  createdAt: now,
-                  subagentLogs: endedSubagentLogs ?? s.subagentLogs,
-                };
-                break;
-              }
-            }
-            u[idx] = { ...u[idx]!, segments: segs, committedSegments: committed };
-            return u;
-          }, streamSessionId);
-        }
-      };
-
-      const abortCtrl = new AbortController();
-      abortControllerRef.current = abortCtrl;
-      const effectiveSessionId = options?.sessionIdOverride
-        ?? (activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : activeSessionId);
-      const streamSessionAtStart = effectiveSessionId;
-      // A fresh user turn cancels any earlier stop — reattach may resume if the
-      // stream drops while THIS turn is still generating.
-      if (streamSessionAtStart) userStoppedSessionsRef.current.delete(streamSessionAtStart);
-      // Add this session to the set of actively streaming sessions for this agent.
-      if (streamSessionAtStart) {
-        setStreamSession(sendKey, streamSessionAtStart);
-      }
-
-      try {
-        lastSseEventTimeRef.current = Date.now();
-        // Persist/send only the user's text. Reply context goes via replyTo metadata
-        // so reload does not show the quoted agent message inside the user bubble.
-        const streamResult = await api.agents.messageStream(
-          selectedAgent, text,
-          appendTextChunk,
-          handleToolEvent,
-          abortCtrl.signal,
-          imagesToSend,
-          effectiveSessionId,
-          options?.isRetry,
-          options?.isResume,
-          handleCommitEvent,
-          fileNamesToSend,
-          replyCtx,
-          sessionModelOverride,
-        );
-        if (currentConvKeyRef.current === sendKey) {
-          // Message was merged into the agent's active processing — remove the
-          // empty agent placeholder and the follow-up user bubble (server also
-          // deletes that DB row so reload won't resurrect it).
-          if (streamResult.merged) {
-            updateConvMsgs(sendKey, prev => prev.filter(m =>
-              m.id !== agentMsgId && m.id !== optimisticUserId
-            ), streamSessionId);
-          }
-
-          // Apply server's authoritative final segments and content so the
-          // rendered state matches the DB-persisted data.  This prevents a
-          // blank bubble when delta-built segments have empty content (e.g.
-          // thinking-only responses before text_delta arrives).
-          if (!streamResult.merged && streamResult.segments?.length) {
-            updateConvMsgs(sendKey, prev => {
-              const u = [...prev];
-              const idx = u.findIndex(m => m.id === agentMsgId);
-              if (idx < 0) return prev;
-              const finalSegs = storedSegmentsToMsgSegments(streamResult.segments!, u[idx]!.segments);
-              let finalText = streamResult.content || u[idx]!.text;
-              if (!finalText) {
-                finalText = finalSegs
-                  .filter(s => s.type === 'text')
-                  .map(s => (s as { content: string }).content)
-                  .join('');
-              }
-              const empty = !finalText?.trim() && !finalSegs.some(s =>
-                (s.type === 'text' && (s.content || s.thinking)) || s.type === 'tool'
-              );
-              u[idx] = {
-                ...u[idx]!,
-                text: finalText,
-                segments: finalSegs,
-                committedSegments: finalSegs,
-                isStopped: streamResult.cancelled || u[idx]!.isStopped,
-                emptyReply: streamResult.emptyReply || empty || undefined,
-                isError: streamResult.emptyReply || empty ? true : u[idx]!.isError,
-              };
-              return u;
-            }, streamSessionId);
-          }
-
-          // Fallback for pure text responses where the server sends text_commit
-          // events (no text_delta, no done.segments) — build final segments
-          // from the committedSegments that were accumulated during streaming.
-          if (!streamResult.merged && !streamResult.segments?.length) {
-            updateConvMsgs(sendKey, prev => {
-              const u = [...prev];
-              const idx = u.findIndex(m => m.id === agentMsgId);
-              if (idx < 0) return prev;
-              const msg = u[idx]!;
-              const committed = msg.committedSegments ?? [];
-              const committedText = committed
-                .filter((s): s is MsgSegment & { type: 'text' } => s.type === 'text' && !!s.content)
-                .map(s => s.content)
-                .join('');
-              const finalText = committedText || streamResult.content || msg.text;
-              const empty = !finalText?.trim() && committed.length === 0;
-              if (committed.length > 0 || finalText || streamResult.cancelled || streamResult.emptyReply || empty) {
-                u[idx] = {
-                  ...msg,
-                  text: finalText,
-                  segments: committed.length > 0 ? committed : msg.segments,
-                  isStopped: streamResult.cancelled || msg.isStopped,
-                  emptyReply: streamResult.emptyReply || empty || undefined,
-                  isError: (streamResult.emptyReply || empty) ? true : msg.isError,
-                };
-              }
-              return u;
-            }, streamSessionId);
-          }
-
-          if (streamResult.sessionId) {
-            // Only update active session if user hasn't switched to a different session
-            setActiveSessionId(prev => {
-              if (!prev || prev === NEW_CHAT_PLACEHOLDER_ID || prev === streamResult.sessionId) {
-                return streamResult.sessionId!;
-              }
-              return prev;
-            });
-            setOpenSessionTabs(prev => {
-              // Replace placeholder if exists
-              if (prev.some(t => t.id === NEW_CHAT_PLACEHOLDER_ID)) {
-                return prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: streamResult.sessionId! } : t);
-              }
-              // Deduplicate: don't add if already present
-              if (prev.some(t => t.id === streamResult.sessionId)) return prev;
-              return [...prev, { id: streamResult.sessionId!, agentId: selectedAgent ?? '', userId: null, title: '', createdAt: new Date().toISOString(), lastMessageAt: new Date().toISOString() }];
-            });
-          }
-          loadSessions(selectedAgent).then(s => {
-            if (currentConvKeyRef.current !== sendKey) return;
-            setSessions(s);
-            if (streamResult.sessionId) {
-              const newSess = s.find(ss => ss.id === streamResult.sessionId);
-              if (newSess) {
-                setOpenSessionTabs(prev => {
-                  const exists = prev.some(t => t.id === newSess.id);
-                  if (exists) return prev.map(t => t.id === newSess.id ? newSess : t);
-                  return [newSess, ...prev.filter(t => t.id !== NEW_CHAT_PLACEHOLDER_ID)];
-                });
-              }
-            }
-          });
-
-          // Soft disconnect (refresh / browser killing the SSE): the fetch ends
-          // without a terminal `done`, but the agent may still be running. Keep
-          // nested subagent progress and reattach instead of freezing the bubble.
-          const resumeSessionId = streamResult.sessionId
-            ?? (streamSessionAtStart && streamSessionAtStart !== NEW_CHAT_PLACEHOLDER_ID
-              ? streamSessionAtStart
-              : null);
-          if (
-            !abortCtrl.signal.aborted
-            && !streamResult.merged
-            // `segments === undefined` means the SSE closed without a terminal `done`.
-            && streamResult.segments === undefined
-            && chatMode === 'direct'
-            && selectedAgent
-            && resumeSessionId
-          ) {
-            try {
-              const st = await api.sessions.streamStatus(selectedAgent, resumeSessionId);
-              // `active` stays true briefly after done/error (TTL) — only resume mid-run.
-              if (st.status === 'streaming') {
-                updateConvMsgs(sendKey, prev => prev.map(m =>
-                  m.id === agentMsgId
-                    ? {
-                        ...m,
-                        isStreaming: true,
-                        isStopped: false,
-                        segments: (m.segments ?? []).map(s =>
-                          s.type === 'tool' && (s.status === 'stopped' || s.status === 'running')
-                            ? { ...s, status: 'running' as const }
-                            : s,
-                        ),
-                      }
-                    : m,
-                ), resumeSessionId);
-                decrementSending(sendKey);
-                if (abortControllerRef.current === abortCtrl) abortControllerRef.current = null;
-                setStreamSession(sendKey, resumeSessionId);
-                void tryReattachActiveStream(selectedAgent, resumeSessionId, sendKey);
-                return;
-              }
-            } catch { /* fall through to normal cleanup */ }
-          }
-        }
-      } catch (e) {
-        // Preserve sessionId from error so subsequent messages stay in the same session
-        const errSessionId = (e as Error & { sessionId?: string })?.sessionId;
-        if (errSessionId && chatMode === 'direct' && currentConvKeyRef.current === sendKey) {
-          setActiveSessionId(errSessionId);
-          setOpenSessionTabs(prev =>
-            prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: errSessionId } : t)
-          );
-          loadSessions(selectedAgent!).then(s => {
-            if (currentConvKeyRef.current !== sendKey) return;
-            setSessions(s);
-            const newSess = s.find(ss => ss.id === errSessionId);
-            if (newSess) {
-              setOpenSessionTabs(prev => {
-                const exists = prev.some(t => t.id === newSess.id);
-                if (exists) return prev.map(t => t.id === newSess.id ? newSess : t);
-                return [newSess, ...prev];
-              });
-            }
-          });
-        }
-
-        if (isMarkusCreditError(e)) dispatchCreditNotification();
-
-        const errText = friendlyAgentError(e, t);
-        if (errText) {
-          updateConvMsgs(sendKey, prev => {
-            const u = [...prev];
-            const idx = u.findIndex(m => m.id === agentMsgId);
-            if (idx >= 0) {
-              const segs = u[idx]!.segments ?? [];
-              u[idx] = { ...u[idx]!, text: errText, isError: true,
-                segments: [...segs, { type: 'text', content: errText }] };
-            }
-            return u;
-          }, streamSessionId);
-        } else {
-          // User cancelled — keep partial content and mark as stopped
-          updateConvMsgs(sendKey, prev => {
-            const u = [...prev];
-            const idx = u.findIndex(m => m.id === agentMsgId);
-            if (idx >= 0) {
-              const msg = u[idx]!;
-              const hasContent = msg.text
-                || (msg.segments && msg.segments.length > 0 && msg.segments.some(s =>
-                  (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-                ));
-              if (!hasContent) {
-                return prev.filter(m => m.id !== agentMsgId);
-              }
-              u[idx] = { ...msg, isStopped: true };
-            }
-            return u;
-          }, streamSessionId);
-        }
-      }
-
-      // Mark any still-running tool segments as stopped (stream ended due to cancellation or disconnect)
-      updateConvMsgs(sendKey, prev => {
-        const u = [...prev];
-        const idx = u.findIndex(m => m.id === agentMsgId);
-        if (idx >= 0) {
-          const segs = (u[idx]!.segments ?? []).map(s =>
-            s.type === 'tool' && s.status === 'running' ? { ...s, status: 'stopped' as const } : s
-          );
-          u[idx] = { ...u[idx]!, segments: segs };
-        }
-        return u;
-      }, streamSessionId);
-
-      // If stream was aborted by user (api resolves rather than rejects on abort) —
-      // keep partial content and mark as stopped. The catch block handles the rejection path.
-      if (abortCtrl.signal.aborted) {
-        updateConvMsgs(sendKey, prev => {
-          const u = [...prev];
-          const idx = u.findIndex(m => m.id === agentMsgId);
-          if (idx >= 0) {
-            const msg = u[idx]!;
-            const hasContent = msg.text
-              || (msg.segments && msg.segments.length > 0 && msg.segments.some(s =>
-                (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
-              ));
-            if (!hasContent) {
-              return prev.filter(m => m.id !== agentMsgId);
-            }
-            u[idx] = { ...msg, isStopped: true };
-          }
-          return u;
-        }, streamSessionId);
-      }
-
-      // Fallback: if the agent message is empty (SSE connection may have dropped),
-      // poll the session messages to recover the persisted reply.
-      // Use the actual session ID from the stream result (or activeSessionId) instead
-      // of blindly fetching the "latest" session which could be a different conversation.
-      const currentMsgs = msgBuffers.get(sendKey) ?? [];
-      const agentMsg = currentMsgs.find(m => m.id === agentMsgId);
-      const pollSessionId = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-      const hasVisibleContent = agentMsg?.text || (agentMsg?.segments?.some(s =>
-        (s.type === 'text' && (s as { content: string }).content) || s.type === 'tool'
-      ));
-      if (agentMsg && !hasVisibleContent && chatMode === 'direct' && pollSessionId && !abortCtrl.signal.aborted) {
-        // 指数退避 + 抖动 + 重试上限：SSE 断连后从 DB 恢复回复，避免紧密死循环轮询，
-        // 也避免所有客户端同时狂轮。见 lib/streamResilience.ts。
-        const pollForReply = async (retries: number, baseDelayMs: number) => {
-          for (let i = 0; i < retries; i++) {
-            const delay = exponentialBackoffDelay(i, { baseMs: baseDelayMs, maxMs: 8000, maxAttempts: retries });
-            await new Promise(r => setTimeout(r, delay));
-            try {
-              const result = await api.sessions.getMessages(pollSessionId, 2);
-              const assistantMsg = result.messages.find(m => m.role === 'assistant');
-              if (assistantMsg?.content) {
-                const recovered = dbMsgToChat(assistantMsg);
-                updateConvMsgs(sendKey, prev => {
-                  const u = [...prev];
-                  const idx = u.findIndex(m => m.id === agentMsgId);
-                  if (idx >= 0) {
-                    u[idx] = {
-                      ...u[idx]!,
-                      text: recovered.text,
-                      segments: recovered.segments,
-                    };
-                  }
-                  return u;
-                }, streamSessionId);
-                return;
-              }
-            } catch { /* retry */ }
-          }
-        };
-        // Await polling so `sending` stays true (and the streaming animation
-        // remains visible) while we recover the reply from the DB.
-        await pollForReply(5, 2000);
-      }
-
-      // Only clean up if this invocation is still the active sender.
-      // When a newer send() has taken over (user interrupted), abortControllerRef
-      // already points to the new controller — skip cleanup to avoid killing
-      // the new stream's state.
-      const newCount = decrementSending(sendKey);
-      if (streamSessionId) clearStreamSession(sendKey, streamSessionId);
-      endStream(sendKey);
-      if (abortControllerRef.current === abortCtrl || abortControllerRef.current === null) {
-        abortControllerRef.current = null;
-        actBuffers.delete(streamSessionId ?? sendKey);
-        if (currentConvKeyRef.current === sendKey) {
-          setSending(newCount > 0);
-          if (newCount === 0) setActivities([]);
-        }
-      } else {
-        actBuffers.delete(streamSessionId ?? sendKey);
-      }
-    }
-  };
-  sendRef.current = send;
 
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [retryConfirm, setRetryConfirm] = useState<{
@@ -3434,7 +2287,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const idx = prev.findIndex(m => m.id === (removeUserToo ? userMsg!.id : retryMsg.id));
       return idx >= 0 ? prev.slice(0, idx) : prev;
     });
-    void send(retryText, { isRetry: true });
+    void hookSend(retryText, { isRetry: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, updateConvMsgs]);
 
@@ -3489,11 +2342,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       return u;
     });
 
-    // Send a hidden continuation prompt — the backend will keep the existing
-    // session context and let the LLM pick up where it left off.
-    void send('[Continue from where you left off. Do not repeat content already generated.]', { isResume: true });
+    // Resolve the conversation's session id EXPLICITLY. A resume only makes
+    // sense against an already-bound session: relying on the async view state
+    // (activeSessionId) meant that after an app restart — before the view had
+    // re-attached — the request went out with no session id and the backend
+    // started a brand-new session, handing the model the "[Continue…]" prompt
+    // with ZERO prior context.
+    const resumeSessionId = activeSessionBuffer.get(convKey)
+      ?? (activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null);
+    if (!resumeSessionId) {
+      // Nothing to resume into — refuse rather than silently creating a new session.
+      console.warn('[resume] no session bound to this conversation — resume aborted');
+      return;
+    }
+
+    // Send a hidden continuation prompt — the backend reattaches to the bound
+    // session and lets the LLM pick up where it left off.
+    void hookSend(
+      '[Continue from where you left off. Do not repeat content already generated.]',
+      { isResume: true, sessionIdOverride: resumeSessionId },
+    );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, updateConvMsgs]);
+  }, [messages, updateConvMsgs, activeSessionId]);
 
   const handleReplyMsg = useCallback((msg: ChatMsg) => {
     const senderName = msg.sender === 'user' ? (authUser?.name ?? t('page.fallbackYou')) : (msg.agentName ?? t('page.fallbackAgent'));
@@ -3542,13 +2412,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setOpenSessionTabs(prev => prev.some(t => t.id === childSession.id) ? prev : [...prev, childSession]);
       setActiveSessionId(childSession.id);
       const key = makeConvKey('direct', selectedAgent, activeChannel, activeDmUserId);
-      activeSessionBuffer.set(key, childSession.id);
+      // reset + re-pin atomically: resetConv deletes the manager's activeSession
+      // for this key, then re-pins to the child session — so a stream from the
+      // PARENT session still running on the backend is routed to its own cache,
+      // never mixed into this new conversation's buffer.
+      resetConv(key, childSession.id);
       setStoredActiveSession(selectedAgent, childSession.id);
-      resetConv(key);
       setMessages([]);
       setHasMore(false);
       oldestMsgId.current = null;
-      await send(result.seedPrompt, { sessionIdOverride: result.sessionId });
+      await hookSend(result.seedPrompt, { sessionIdOverride: result.sessionId });
     } catch (err) {
       console.error('evolve-from-message failed', err);
     } finally {
@@ -3557,8 +2430,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   };
 
   const switchSession = async (s: ChatSessionInfo) => {
+    const switchSeq = ++sessionSwitchSeqRef.current;
     const prevSessionId = activeSessionId;
-    setActiveSessionId(s.id);
+    const key = currentConvKeyRef.current;
+    // Single entry point: updates view state + manager routing gate together.
+    // Without the gate pin the gate stays on whatever resetConv pinned last
+    // (new-chat placeholder) or undefined, so `updateMessages` judges every
+    // stream same-session: a still-running stream from the PREVIOUS tab keeps
+    // writing into the shared display buffer and mixes its bubbles into THIS
+    // tab (user bubble lands below a streaming agent bubble / blank bubble
+    // until refresh — the multi-tab direct-mode corruption family).
+    changeActiveSession(key, s.id);
     setShowSessions(false);
     setHasMore(false);
     oldestMsgId.current = null;
@@ -3569,7 +2451,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // Sync sending visual with the target session:
     // - If stream belongs to THIS session → show spinner
     // - If stream belongs to a DIFFERENT session → suppress spinner
-    const key = currentConvKeyRef.current;
     const streamingSessions = getStreamSession(key);
     const streamForThis = !!streamingSessions && (streamingSessions.has(s.id) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
     const isStreaming = isSendingFor(key) && streamForThis;
@@ -3579,20 +2460,31 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } else {
       setActivities([]);
     }
-    activeSessionBuffer.set(key, s.id);
     if (selectedAgent) setStoredActiveSession(selectedAgent, s.id);
     if (prevSessionId && prevSessionId !== NEW_CHAT_PLACEHOLDER_ID) {
       saveSessionToCache(key, prevSessionId);
     }
-    restoreSessionFromCache(key, s.id);
+    // If this session has no cached messages yet, show the loading state
+    // immediately instead of a blank "new chat" surface while the DB fetch
+    // is in flight. The try/finally guarantees the spinner is cleared even
+    // when loadSessionMessages' own showSpinner guard doesn't fire (e.g. the
+    // currentConvKey ref lags the just-switched activeSessionId).
+    const restored = restoreSessionFromCache(key, s.id);
+    if ((!restored || restored.length === 0) && s.id !== NEW_CHAT_PLACEHOLDER_ID) {
+      setLoadingChat(true);
+    }
     setOpenSessionTabs(prev => prev.some(t => t.id === s.id) ? prev : [...prev, s]);
     // Remove from closed-tabs list since user explicitly opened it
     if (selectedAgent) removeClosedTab(selectedAgent, s.id);
     // Always attempt DB load to sync with server. The phase-aware loadSessionMessages
     // blocks display writes during streaming, preventing race conditions.
-    await loadSessionMessages(s.id, key);
-    const mo = s.metadata?.modelOverride;
-    setSessionModelOverride(mo?.provider && mo?.model ? { provider: mo.provider, model: mo.model } : null);
+    // Only the most recent switch may clear loadingChat (rapid tab switching).
+    if (currentConvKeyRef.current !== key) currentConvKeyRef.current = key;
+    try {
+      await loadSessionMessages(s.id, key);
+    } finally {
+      if (sessionSwitchSeqRef.current === switchSeq) setLoadingChat(false);
+    }
     if (selectedAgent && !isStreaming) {
       void tryReattachActiveStream(selectedAgent, s.id, key);
     }
@@ -3655,13 +2547,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const newConversation = () => {
     setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
-    // A brand-new conversation must NOT inherit the previous session's model
-    // override: stale/disabled models caused the composer pill to "jump" from
-    // A to B whenever the catalog refreshed. Start from the global routing
-    // default — deterministic. The user can pick a model in this new chat.
-    setSessionModelOverride(null);
+    // No model state to reset: the composer's label follows the AGENT (its own
+    // bound model, else global routing), never the session — so a fresh chat
+    // cannot inherit a foreign pick.
     const key = currentConvKeyRef.current;
-    resetConv(key);
+    // reset + re-pin atomically: resetConv deletes the manager's activeSession
+    // for this key, then re-pins it to the new-chat placeholder so a
+    // still-running stream from a PREVIOUS session is routed to its own session
+    // cache (isSameSession=false) instead of being written into the fresh
+    // new-chat buffer — this is what mixed concurrent streams together and made
+    // content land in the wrong bubbles.
+    resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
     setMessages([]);
     setHasMore(false);
     oldestMsgId.current = null;
@@ -3678,6 +2574,34 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         lastMessageAt: new Date().toISOString(),
       }, ...without];
     });
+    // Mint a REAL session id right away so this tab is isolated from the start.
+    // The first message then carries its own conversation identity
+    // (`conv:<sessionId>`) — the key the backend's entity affinity locks on.
+    // With only a placeholder, two fresh tabs share no distinguishable entity and
+    // both fall back to `system:<agentId>`, i.e. they serialise instead of running
+    // in parallel.
+    const agentForNew = selectedAgent;
+    if (agentForNew) {
+      void api.sessions.create(agentForNew)
+        .then(res => {
+          const created = res?.session;
+          if (!created?.id) return;
+          const newId = created.id;
+          // Adopt only if the user is STILL on this fresh, still-unbound tab —
+          // otherwise a late response would hijack a conversation already in flight.
+          if (currentConvKeyRef.current !== key) return;
+          const pinned = activeSessionBuffer.get(key);
+          if (pinned !== undefined && pinned !== NEW_CHAT_PLACEHOLDER_ID) return;
+          changeActiveSession(key, newId);
+          setStoredActiveSession(agentForNew, newId);
+          setOpenSessionTabs(prev => prev.map(tab =>
+            tab.id === NEW_CHAT_PLACEHOLDER_ID
+              ? { ...tab, id: newId, title: created.title ?? tab.title }
+              : tab,
+          ));
+        })
+        .catch(() => { /* best-effort — if this fails the first message mints one server-side */ });
+    }
   };
 
   const handleInputChange = (val: string) => {
@@ -4059,6 +2983,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // ── Render ────────────────────────────────────────────────────────────────────
   const showChatOnMobile = isMobile && mobileLayer === 'chat';
+  // Loading label: name the conversation being loaded, instead of a generic
+  // "Loading conversation…" (UX: switching to a session with history should
+  // not look like a brand-new chat while the history loads).
+  const loadingChatLabel = useMemo(() => {
+    if (chatMode === 'direct') {
+      const sess = sessions.find(s => s.id === activeSessionId);
+      if (sess?.title) return sess.title;
+      if (currentAgent?.name) return currentAgent.name;
+    }
+    return (chatMode === 'channel'
+      ? (activeGroupChat?.name ?? activeChannel)
+      : activeDmUser?.name) || t('page.loadingChat', { defaultValue: 'Loading conversation…' });
+  }, [chatMode, sessions, activeSessionId, currentAgent?.name, activeChannel, activeDmUserId, activeGroupChat?.name, activeDmUser?.name, t]);
+
   const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !sending && !loadingChat;
   // Non-empty sessions: Cursor-style single-line composer that grows with content.
   const compactComposer = mainTab === 'chat' && visibleMessages.length > 0;
@@ -4583,62 +3521,31 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
           {/* Search panel */}
           {searchOpen && (
-            <div className="border-b border-border-default bg-surface-secondary/50 px-4 py-2 space-y-2 animate-in slide-in-from-top-2 duration-200">
-              <div className="flex items-center gap-2">
-                <div className="flex-1 relative">
-                  <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-                  </svg>
-                  <input
-                    autoFocus
-                    value={searchQuery}
-                    onChange={e => handleSearchInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); } }}
-                    placeholder={t('page.searchPlaceholder')}
-                    className="w-full pl-8 pr-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg outline-none focus:border-brand-500/50 transition-colors"
-                  />
-                </div>
-                <button
-                  onClick={() => { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); }}
-                  className="text-fg-tertiary hover:text-fg-secondary text-xs px-1"
-                >✕</button>
-              </div>
-              {searchLoading && (
-                <div className="flex items-center gap-2 text-xs text-fg-tertiary py-1">
-                  <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                  {t('page.searching')}
-                </div>
-              )}
-              {!searchLoading && searchQuery.length >= 2 && searchResults.length === 0 && (
-                <div className="text-xs text-fg-tertiary py-1">{t('page.noSearchResults')}</div>
-              )}
-              {searchResults.length > 0 && (
-                <div className="max-h-60 overflow-y-auto space-y-0.5">
-                  {searchResults.map(r => (
-                    <button
-                      key={r.id}
-                      onClick={() => handleSearchResultClick(r)}
-                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface-elevated transition-colors group"
-                    >
-                      <div className="flex items-center gap-2 text-[11px] text-fg-tertiary mb-0.5">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${r.source === 'channel' ? 'bg-blue-500/10 text-blue-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
-                          {r.source === 'channel' ? '#' : '1:1'}
-                        </span>
-                        {r.senderName && <span>{r.senderName}</span>}
-                        <span>{new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
-                      </div>
-                      <div className="text-xs text-fg-secondary line-clamp-2 group-hover:text-fg-primary transition-colors">
-                        {r.text.length > 200 ? r.text.slice(0, 200) + '…' : r.text}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <ChatSearchPanel
+              searchQuery={searchQuery}
+              searchLoading={searchLoading}
+              searchResults={searchResults}
+              onInputChange={handleSearchInput}
+              onResultClick={handleSearchResultClick}
+              onClose={() => { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); }}
+            />
           )}
 
           {/* Session tab bar (direct mode, chat tab) — hide when only 1 session */}
-          {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 1 && (
+          {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 1 && (() => {
+            // Which of THIS agent's sessions currently have an in-flight stream.
+            // Read live from the buffer manager during render;
+            // useConversationBuffers bumps its own state on every membership
+            // change, so a BACKGROUND tab's dot appears/disappears without
+            // needing the user to switch to it first.
+            const liveStreamSessions = getStreamSession(currentConvKeyRef.current);
+            const isStreamingTab = (s: ChatSessionInfo) =>
+              (liveStreamSessions?.has(s.id) ?? false)
+              // Pre-`session_start` window: a brand-new chat streams before the
+              // server assigns a real session id, so the active tab is the only
+              // one that can be generating.
+              || (sending && s.id === activeSessionId);
+            return (
             <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide">
               {openSessionTabs.map(s => (
                 <div
@@ -4651,11 +3558,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   onClick={() => {
                     if (s.id === NEW_CHAT_PLACEHOLDER_ID) {
                       setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
-                      // Same as + 新对话: a new chat starts from the global
-                      // default, never from another session's model override.
-                      setSessionModelOverride(null);
+                      // Same atomic reset + re-pin as newConversation(): keeps a
+                      // concurrently-streaming PREVIOUS session out of this tab.
                       const key = currentConvKeyRef.current;
-                      resetConv(key);
+                      resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
                       setMessages([]);
                     } else {
                       void switchSession(s);
@@ -4664,6 +3570,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 >
                   {s.isMain && <span className="text-[10px] opacity-50 shrink-0">●</span>}
                   <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? t('page.newChat') : (s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation')))}</span>
+                  {isStreamingTab(s) && (
+                    // Same "agent working" signal as the sidebar (L1) — a blue
+                    // pulsing dot, shown only while this session is generating.
+                    <span
+                      className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shrink-0"
+                      title={t('common:status.working')}
+                      aria-label={t('common:status.working')}
+                      data-testid="session-tab-streaming"
+                    />
+                  )}
                   {!s.isMain && (
                     <button
                       onClick={(e) => { e.stopPropagation(); closeSessionTab(s.id); }}
@@ -4675,7 +3591,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 </div>
               ))}
             </div>
-          )}
+            );
+          })()}
           {chatMode === 'direct' && mainTab === 'chat'
             && (openSessionTabs.find(s => s.id === activeSessionId) ?? sessions.find(s => s.id === activeSessionId))
               ?.metadata?.kind === 'evolution' && (
@@ -4688,7 +3605,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           {chatMode === 'channel' && activeGroupChat?.type === 'custom' && showMemberPanel && (() => {
             const gc = activeGroupChat;
             const currentMembers = gc.members ?? [];
-            const allCandidates: Array<{ id: string; name: string; type: 'human' | 'agent'; subtitle: string }> = [];
+            const allCandidates: PanelCandidate[] = [];
             for (const a of agents) {
               if (!currentMembers.some(m => m.id === a.id)) {
                 allCandidates.push({ id: a.id, name: a.name, type: 'agent', subtitle: a.role || 'Agent' });
@@ -4700,65 +3617,29 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               }
             }
             return (
-              <div className="bg-surface-secondary/80 px-4 py-3 flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-fg-secondary">{t('page.members')} ({currentMembers.length})</span>
-                  <button onClick={() => setShowMemberPanel(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {currentMembers.map(m => (
-                    <span key={m.id} className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-medium ${
-                      m.type === 'agent' ? 'bg-brand-500/10 text-brand-500' : 'bg-green-500/10 text-green-600'
-                    }`}>
-                      <Avatar name={m.name} size={16} bgClass={m.type === 'agent' ? 'bg-brand-500/15 text-brand-500' : 'bg-green-500/15 text-green-600'} />
-                      {m.name}
-                      {m.id !== authUser?.id && (
-                        <button
-                          onClick={async () => {
-                            try {
-                              await api.groupChats.removeMember(gc.id, m.id);
-                              setGroupChats(prev => prev.map(g => g.id === gc.id ? { ...g, members: (g.members ?? []).filter(x => x.id !== m.id), memberCount: (g.memberCount ?? 1) - 1 } : g));
-                            } catch { /* ignore */ }
-                          }}
-                          className="ml-0.5 hover:text-red-500 transition-colors"
-                          title={t('common:remove')}
-                        >
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                        </button>
-                      )}
-                    </span>
-                  ))}
-                </div>
-                {allCandidates.length > 0 && (
-                  <div className="mt-1">
-                    <select
-                      className="w-full bg-surface-primary border border-border-default rounded-lg px-2.5 py-1.5 text-xs text-fg-primary outline-none focus:ring-1 focus:ring-brand-500/50"
-                      value=""
-                      onChange={async (e) => {
-                        const id = e.target.value;
-                        if (!id) return;
-                        const c = allCandidates.find(x => x.id === id);
-                        if (!c) return;
-                        try {
-                          await api.groupChats.addMember(gc.id, c.id, c.type, c.name);
-                          setGroupChats(prev => prev.map(g => g.id === gc.id ? {
-                            ...g,
-                            members: [...(g.members ?? []), { id: c.id, name: c.name, type: c.type }],
-                            memberCount: (g.memberCount ?? 0) + 1,
-                          } : g));
-                        } catch { /* ignore */ }
-                      }}
-                    >
-                      <option value="">{t('page.addMemberPlaceholder')}</option>
-                      {allCandidates.map(c => (
-                        <option key={c.id} value={c.id}>[{c.type === 'agent' ? 'Agent' : 'Human'}] {c.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
+              <GroupMemberPanel
+                members={currentMembers}
+                candidates={allCandidates}
+                currentUserId={authUser?.id}
+                memberCount={currentMembers.length}
+                onClose={() => setShowMemberPanel(false)}
+                onRemoveMember={(memberId) => {
+                  void api.groupChats.removeMember(gc.id, memberId).then(() => {
+                    setGroupChats(prev => prev.map(g => g.id === gc.id ? { ...g, members: (g.members ?? []).filter(x => x.id !== memberId), memberCount: (g.memberCount ?? 1) - 1 } : g));
+                  }).catch(() => {});
+                }}
+                onAddMember={(candidateId) => {
+                  const c = allCandidates.find(x => x.id === candidateId);
+                  if (!c) return;
+                  void api.groupChats.addMember(gc.id, c.id, c.type, c.name).then(() => {
+                    setGroupChats(prev => prev.map(g => g.id === gc.id ? {
+                      ...g,
+                      members: [...(g.members ?? []), { id: c.id, name: c.name, type: c.type }],
+                      memberCount: (g.memberCount ?? 0) + 1,
+                    } : g));
+                  }).catch(() => {});
+                }}
+              />
             );
           })()}
 
@@ -4801,23 +3682,79 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <div key={g.label} className="mb-2">
                       <div className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider px-3 py-1.5">{g.label}</div>
                       {g.items.map(s => (
-                        <button
+                        <div
                           key={s.id}
-                          onClick={() => void switchSession(s)}
-                          className={`w-full text-left px-3 py-2.5 rounded-lg text-xs mb-0.5 transition-colors ${
-                            s.id === activeSessionId ? 'bg-brand-600/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-elevated'
+                          className={`w-full text-left px-3 py-2 rounded-lg text-xs mb-0.5 transition-colors ${
+                            s.id === activeSessionId ? 'bg-brand-600/20 text-brand-500' : 'hover:bg-surface-elevated'
                           }`}
                         >
-                          <div className="truncate font-medium flex items-center gap-1">
-                            {s.isMain && <span className="text-[10px] text-brand-500 opacity-80">●</span>}
-                            {s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation'))}
-                          </div>
-                          <div className="text-fg-tertiary text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
-                        </button>
+                          {renamingSessionId === s.id ? (
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                autoFocus
+                                value={renamingDraft}
+                                onChange={(e) => setRenamingDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') { e.stopPropagation(); void submitRenameSession(s); }
+                                  if (e.key === 'Escape') cancelRenameSession();
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                placeholder={s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation'))}
+                                className="w-full bg-surface-primary border border-brand-500/50 rounded-md px-2 py-1 text-xs text-fg-primary outline-none focus:ring-1 focus:ring-brand-500/50"
+                              />
+                              <button
+                                onClick={(e) => { e.stopPropagation(); void submitRenameSession(s); }}
+                                className="text-brand-400 hover:text-brand-300 shrink-0"
+                                title={t('common:save')}
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); cancelRenameSession(); }}
+                                className="text-fg-tertiary hover:text-fg-secondary shrink-0"
+                                title={t('common:cancel')}
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => void switchSession(s)}
+                              className="w-full text-left group/session"
+                            >
+                              <div className="truncate font-medium flex items-center gap-1">
+                                {s.isMain && <span className="text-[10px] text-brand-500 opacity-80">●</span>}
+                                <span className="truncate">{s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation'))}</span>
+                                {!s.isMain && (
+                                  <span
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={(e) => { e.stopPropagation(); startRenameSession(s); }}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); startRenameSession(s); } }}
+                                    className="opacity-0 group-hover/session:opacity-100 transition-opacity ml-auto text-fg-tertiary hover:text-brand-400 shrink-0"
+                                    title={t('page.renameSession')}
+                                  >
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-fg-tertiary text-[10px] mt-0.5">{new Date(s.lastMessageAt).toLocaleString()}</div>
+                            </button>
+                          )}
+                        </div>
                       ))}
                     </div>
                   ));
                 })()}
+                {sessionsHasMore && (
+                  <button
+                    onClick={() => void loadMoreSessions()}
+                    disabled={sessionsLoadingMore}
+                    className="w-full text-center text-[11px] text-fg-tertiary hover:text-brand-400 py-2 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {sessionsLoadingMore ? t('page.loadingEarlierMessages') : `${t('page.loadMoreSessions')} (${sessions.length}/${sessionsTotal})`}
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -4883,9 +3820,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
-              <span className="text-xs text-fg-tertiary animate-pulse">
-                {t('page.loadingChat', { defaultValue: 'Loading conversation…' })}
-              </span>
+              <div className="flex flex-col items-center gap-0.5">
+                <span className="text-xs text-fg-tertiary animate-pulse">
+                  {t('page.loadingChat', { defaultValue: 'Loading conversation…' })}
+                </span>
+                <span className="text-[11px] text-fg-quaternary max-w-[70%] truncate">{loadingChatLabel}</span>
+              </div>
             </div>
           )}
           {loadingMore && (
@@ -5020,12 +3960,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                             }
                           </div>
                         : msg.sender === 'agent' && chatMode === 'channel' && !(msg.segments && msg.segments.length > 0)
-                          ? <ErrorBoundary
-                              resetKeys={[msg.text]}
-                              fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
-                            >
-                              <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
-                            </ErrorBoundary>
+                          ? (isStreamingMsg && !msg.text?.trim()
+                            ? <ActivityIndicator activities={activities} isActive />
+                            : <ErrorBoundary
+                                resetKeys={[msg.text]}
+                                fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
+                              >
+                                <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
+                              </ErrorBoundary>)
                           : <ErrorBoundary
                               resetKeys={[msg.id, msg.text, msg.segments?.length, isStreamingMsg]}
                               fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
@@ -5155,7 +4097,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z" /><path d="M12 8v4" /><path d="M12 16h.01" /></svg>
                   </span>
                   <span className="flex-1 min-w-0">
-                    <span className="block text-sm font-medium text-fg-primary truncate">{a.title}</span>
+                    <span className="flex items-baseline gap-1.5 min-w-0">
+                      <span className="flex-1 text-sm font-medium text-fg-primary truncate">{a.title}</span>
+                      <span className="text-[10px] text-fg-tertiary shrink-0 whitespace-nowrap">{formatSmartTime(a.requestedAt, a.requestedAt, dateLabels)}</span>
+                    </span>
                     <span className="block text-xs text-fg-tertiary truncate">
                       {t('page.userInputPrompt', { count: a.questions?.length ?? 1, defaultValue: `${a.questions?.length ?? 1} question(s) awaiting your response` })}
                     </span>
@@ -5187,7 +4132,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       </svg>
                     </span>
                     <span className="flex-1 min-w-0">
-                      <span className="block text-sm font-medium text-fg-primary truncate">{n.title}</span>
+                      <span className="flex items-baseline gap-1.5 min-w-0">
+                        <span className="flex-1 text-sm font-medium text-fg-primary truncate">{n.title}</span>
+                        <span className="text-[10px] text-fg-tertiary shrink-0 whitespace-nowrap">{formatSmartTime(n.createdAt, n.createdAt, dateLabels)}</span>
+                      </span>
                       <span className="block text-xs text-fg-tertiary truncate">
                         {n.body?.replace(/\s+/g, ' ').trim() || t('page.notifyUserPrompt', { defaultValue: 'Agent notification awaiting your attention' })}
                       </span>
@@ -5437,7 +4385,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     e.currentTarget.blur();
                     return;
                   }
-                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void hookSend(); }
                 }}
                 onPaste={handlePaste}
                 placeholder={placeholder}
@@ -5455,41 +4403,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             <div className={`flex items-center gap-1.5 shrink-0 ${composerExpanded ? 'justify-end' : ''}`}>
               {chatMode === 'direct' && (
                 <ChatModelMenu
-                  value={sessionModelOverride ?? agentBoundModel}
+                  value={agentBoundModel}
                   agentId={selectedAgent}
                   disabled={!selectedAgent || isAgentOffline}
                   onSelect={(sel, scope) => {
                     if (scope === 'agent') {
-                      // Per-agent pick: apply only to the current agent's model
-                      // config; keep status to reflect it. Session override is
-                      // cleared so the agent's default applies.
-                      setSessionModelOverride(null);
+                      // Bind the model to the AGENT: every session of this agent
+                      // then shows (and uses) it — no per-session divergence.
                       setAgentBoundModel(sel);
-                      const sid = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-                      void applyChatModelSelection(sid, sel, scope, selectedAgent).catch(() => { /* ignore */ });
-                      if (sid) {
-                        setSessions(prev => prev.map(s =>
-                          s.id === sid
-                            ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: undefined } }
-                            : s,
-                        ));
-                      }
+                      void applyChatModelSelection(sel, scope, selectedAgent).catch(() => { /* ignore */ });
                       return;
                     }
-                    // Global pick: update global routing AND reset the current agent
-                    // to follow global — so the shown model equals both the global
-                    // default and the agent's actual model (no ambiguity).
-                    setSessionModelOverride(sel);
+                    // Global pick: update global routing AND reset the current
+                    // agent to "follow global" — so the shown label equals both
+                    // the global default and the agent's actual model (no
+                    // ambiguity). The agent no longer carries a model of its own,
+                    // so the label falls back to the global default.
                     setAgentBoundModel(null);
-                    const sid2 = activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null;
-                    void applyChatModelSelection(sid2, sel, scope, selectedAgent).catch(() => { /* ignore */ });
-                    if (sid2) {
-                      setSessions(prev => prev.map(s =>
-                        s.id === sid2
-                          ? { ...s, metadata: { ...(s.metadata ?? {}), modelOverride: sel } }
-                          : s,
-                      ));
-                    }
+                    void applyChatModelSelection(sel, scope, selectedAgent).catch(() => { /* ignore */ });
                   }}
                 />
               )}
@@ -5505,7 +4436,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 </button>
               ) : (
                 <button
-                  onClick={() => void send()}
+                  onClick={() => void hookSend()}
                   disabled={(chatMode === 'direct' && (!selectedAgent || isAgentOffline)) || (!input.trim() && pendingImages.length === 0)}
                   className={
                     compactComposer
@@ -5607,7 +4538,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const isWorking = agent.status === 'working' || !!streamActive;
+  const isWorking = agent.status === 'working' || (!!streamActive && agent.status !== 'offline');
   const isError = agent.status === 'error';
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
   const activity = agent.currentActivity;

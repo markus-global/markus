@@ -357,6 +357,19 @@ export class MemoryStore implements IMemoryStore {
     return all;
   }
 
+  /**
+   * Count session files persisted on disk. Cheap (a single readdir) and used to
+   * report an honest `total` — the in-memory cap (MAX_SESSIONS_IN_MEMORY)
+   * otherwise makes `session list` look like older conversations vanished.
+   */
+  countSessionsOnDisk(): number {
+    try {
+      return readdirSync(this.sessionsDir).filter((f) => f.endsWith('.json')).length;
+    } catch {
+      return this.sessions.size;
+    }
+  }
+
   getLatestSession(agentId: string): ConversationSession | undefined {
     const agentSessions = this.listSessions(agentId);
     if (agentSessions.length === 0) return undefined;
@@ -412,6 +425,16 @@ export class MemoryStore implements IMemoryStore {
     return session;
   }
 
+  /** Rename a memory session (titles surface in session_list and agent tooling). */
+  renameSession(sessionId: string, title: string): void {
+    let session = this.sessions.get(sessionId);
+    if (!session) session = this.tryLoadSessionFromDisk(sessionId);
+    if (!session) return;
+    session.title = String(title ?? '').trim().slice(0, 120);
+    if (!session.title) delete session.title;
+    this.saveSessionToDisk(session);
+  }
+
   appendMessage(sessionId: string, message: LLMMessage): void {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
@@ -423,9 +446,29 @@ export class MemoryStore implements IMemoryStore {
     this.checkAndCompact(session);
   }
 
+  /**
+   * Recent messages for a session.
+   *
+   * Two deliberate properties (both regressions from the old silent version):
+   *  1. A session that is merely NOT RESIDENT (evicted from the in-memory LRU,
+   *     or never preloaded after a restart) is lazily loaded from disk — the
+   *     same lookup `getSession()` performs. Returning [] for it made valid
+   *     conversations look empty after a restart or a busy day.
+   *  2. A genuinely unknown id now WARNS instead of returning [] silently: an
+   *     unknown/empty session id used to be indistinguishable from "this
+   *     conversation has no history yet", which is exactly what let a session
+   *     identity bug masquerade as an empty conversation.
+   */
   getRecentMessages(sessionId: string, limit: number): LLMMessage[] {
-    const session = this.sessions.get(sessionId);
-    if (!session) return [];
+    if (!sessionId) {
+      log.warn('getRecentMessages called without a session id — returning empty history');
+      return [];
+    }
+    const session = this.sessions.get(sessionId) ?? this.getSession(sessionId);
+    if (!session) {
+      log.warn('getRecentMessages: unknown session id — returning empty history', { sessionId });
+      return [];
+    }
     return session.messages.slice(-limit);
   }
 

@@ -48,10 +48,13 @@ import {
   type UserInputQuestion,
   type UserInputAnswer,
   DEFERRED_CATALOG_MAX_CHARS,
+  SESSION_REQUEST_HISTORY_MIN,
+  SESSION_REQUEST_HISTORY_BLOCK,
   isStrictStateItem,
 } from '@markus/shared';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
+import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
 import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
 import { HeartbeatScheduler } from './heartbeat.js';
@@ -76,8 +79,9 @@ import { shouldEnterDeepSleep, nextDeepSleepIntervalMs, resetIdleOnWake } from '
 import { recordSkillActivation } from './learning-loop.js';
 import type { SkillRegistry } from './skills/types.js';
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { ConcurrentHandoffLog } from './concurrent-handoff.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
@@ -85,6 +89,16 @@ import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
+import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
+import { requestHistoryWindow } from './history-window.js';
+import {
+  normalizeTurnSessionHint,
+  describeTurnSessionHint,
+  hintCarriesDbIdentity,
+  looksLikeDbSessionId,
+  type TurnSessionHint,
+  type TurnSessionRestorePayload,
+} from './session-hint.js';
 
 /**
  * Per-task async context — propagates the executing taskId and task-local
@@ -113,6 +127,21 @@ import { ToolLoopDetector } from './tool-loop-detector.js';
 import { RepetitionGuard } from './repetition-detector.js';
 
 const log = createLogger('agent');
+
+/**
+ * 把文件路径归一化为稳定的锁键（供资源域锁使用）。
+ *
+ * 目的：`/a/b.ts`、`./b.ts`、`/a/./b.ts` 指向同一文件时必须落到**同一个**锁键，
+ * 否则两个 worker 会以为各写各的而并发改写同一文件。
+ * 相对路径按进程 cwd 解析 —— 同一进程内一致即可，无需知道各 worker 的逻辑工作目录。
+ */
+function normalizeFsLockKey(rawPath: string): string {
+  try {
+    return resolvePath(rawPath);
+  } catch {
+    return rawPath;
+  }
+}
 
 /**
  * Strip raw XML tool-call markup from LLM replies.  The completion marker
@@ -239,7 +268,9 @@ export interface AgentOptions {
   handbookPath?: string;
 }
 
-export type AgentScenario = 'chat' | 'task_execution' | 'heartbeat' | 'a2a' | 'group_chat' | 'comment_response' | 'memory_consolidation' | 'distillation' | 'review' | 'requirement_action' | 'workflow_action' | 'deliberation';
+import { createSessionWorkspace, sessionWorkspaceStore, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
+// re-export 保持 agent.js 的既有导出契约（attention.ts 等从 agent.js 引用类型的地方无需改动）。
+export { createSessionWorkspace, sessionWorkspaceStore, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
 
 interface HandleMessageOptions {
   sessionId?: string;
@@ -331,12 +362,22 @@ export class Agent {
   private memory: IMemoryStore;
   private contextEngine: ContextEngine;
   private tools: Map<string, AgentToolHandler>;
-  private currentTaskId?: string;
+  /** 根工作区：并发 worker=1 时所有处理共享；ALS 上下文之外 fallback 到它。 */
+  private rootWorkspace: SessionWorkspace = createSessionWorkspace(1);
+
+  /** 当前分身工作区：ALS 上下文内是当前 worker 的，否则是根工作区。 */
+  private workspace(): SessionWorkspace {
+    return sessionWorkspaceStore.getStore() ?? this.rootWorkspace;
+  }
+
+  private get currentTaskId(): string | undefined { return this.workspace().currentTaskId; }
+  private set currentTaskId(v: string | undefined) { this.workspace().currentTaskId = v; }
   /** Scheme A: per-turn volatile state (time, mailbox, status, memories…) rebuilt
    *  by buildSystemPrompt each call and passed to prepareMessages so it can be
    *  pinned at the TAIL of history instead of inside the system message. Keeping
    *  the system message byte-identical across turns preserves the prefix cache. */
-  private volatileState?: string;
+  private get volatileState(): string | undefined { return this.workspace().volatileState; }
+  private set volatileState(v: string | undefined) { this.workspace().volatileState = v; }
   private pathPolicy?: PathAccessPolicy;
   private skillRegistry?: SkillRegistry;
   private toolSelector: ToolSelector;
@@ -363,11 +404,15 @@ export class Agent {
   /** Locale/timezone used for autonomous runs (no interactive sender), typically the org owner's preferences. */
   private runtimeViewerContext?: { locale?: string; timezone?: string };
   private semanticSearch?: SemanticMemorySearch;
-  private currentSessionId?: string;
-  private currentInteractingUserId?: string;
+  private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
+  private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
+  private get currentInteractingUserId(): string | undefined { return this.workspace().currentInteractingUserId; }
+  private set currentInteractingUserId(v: string | undefined) { this.workspace().currentInteractingUserId = v; }
   /** Scenario of the in-flight handleMessage / stream turn (for chat-only tools). */
-  private activeScenario?: AgentScenario;
-  private pendingDeliberationResult?: DeliberationResult;
+  private get activeScenario(): AgentScenario | undefined { return this.workspace().activeScenario; }
+  private set activeScenario(v: AgentScenario | undefined) { this.workspace().activeScenario = v; }
+  private get pendingDeliberationResult(): DeliberationResult | undefined { return this.workspace().pendingDeliberationResult; }
+  private set pendingDeliberationResult(v: DeliberationResult | undefined) { this.workspace().pendingDeliberationResult = v; }
   private dbSessionMap = new Map<string, string>();
   private orgContext?: OrgContext;
   private contextMdPath?: string;
@@ -406,19 +451,33 @@ export class Agent {
   /** Generation counter per task — prevents stale finally blocks from clearing a newer execution */
   private activeTaskGen = new Map<string, number>();
   /**
+   * T3 · 消费侧实体独占登记（本卡）：taskId → 活跃执行会话信息。
+   *
+   * `task_status_update(triggerExecution)` 消费侧据此判定「重复派发」：同 task 已有
+   * 活跃执行会话时，第二条件标 non-actionable 并留痕，绝不启动第二个执行会话（单飞）。
+   * 陈旧登记（超 `TASK_EXECUTION_INFLIGHT_TTL_MS`）自动失效，避免泄漏阻塞后续派发。
+   */
+  private taskExecutionsInFlight = new Map<string, { sessionId: string; round: number; startedAt: number }>();
+  /** T3：执行单飞登记的最大存活时长（陈旧自愈）。 */
+  private static readonly TASK_EXECUTION_INFLIGHT_TTL_MS = 90 * 60_000;
+  /**
    * Buffered user messages injected while tool calls are in-flight.
    * Draining happens after all tool results for the current LLM turn are
    * appended, right before the next LLM call — this avoids interleaving
    * user messages between tool results (which is invalid message ordering).
    */
-  private pendingInjections = new Map<string, string[]>();
-  private activeStreamToken?: { cancelled: boolean; userStopped?: boolean };
+  private get pendingInjections(): Map<string, string[]> { return this.workspace().pendingInjections; }
+  private get activeStreamToken(): { cancelled: boolean; userStopped?: boolean } | undefined { return this.workspace().activeStreamToken; }
+  private set activeStreamToken(v: { cancelled: boolean; userStopped?: boolean } | undefined) { this.workspace().activeStreamToken = v; }
   /** One chat turn / session model pick from the Chat UI (provider must be enabled). */
-  private turnModelOverride?: { provider: string; model: string };
+  private get turnModelOverride(): { provider: string; model: string } | undefined { return this.workspace().turnModelOverride; }
+  private set turnModelOverride(v: { provider: string; model: string } | undefined) { this.workspace().turnModelOverride = v; }
   /** The mailbox item ID currently being processed – threaded into activity records. */
-  private processingMailboxItemId?: string;
+  private get processingMailboxItemId(): string | undefined { return this.workspace().processingMailboxItemId; }
+  private set processingMailboxItemId(v: string | undefined) { this.workspace().processingMailboxItemId = v; }
   /** Last activity type injected into main session — used to collapse consecutive duplicates like heartbeats. */
-  private lastInjectedActivityType?: string;
+  private get lastInjectedActivityType(): string | undefined { return this.workspace().lastInjectedActivityType; }
+  private set lastInjectedActivityType(v: string | undefined) { this.workspace().lastInjectedActivityType = v; }
   /** Notebook — the single cognitive workspace. Persisted to NOTEBOOK.md. */
   private workingMemory: Map<string, NotebookEntry> = new Map();
   private static readonly NOTEBOOK_MAX_AGENT_ENTRIES = 4;
@@ -456,10 +515,24 @@ export class Agent {
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private browserCloseTabsHelper?: (sessionId: string) => string | null;
   private dynamicContextProviders = new Map<string, () => string>();
+  /** 并发模式：workerId → 该 worker 独占的 SessionWorkspace（保持跨 item 会话状态隔离）。 */
+  private workerWorkspaces = new Map<number, SessionWorkspace>();
+  /** 并发交接记录（P2a）：worker 生命周期的 declared/fact/done/conflict 持久化日志。 */
+  private handoffLog: ConcurrentHandoffLog | undefined;
+  /**
+   * P2：agent 级「工具写互斥」链。所有写语义工具（task_update/comment、
+   * memory_save、file_write、shell_execute 等）执行时互斥——并发 worker 时，
+   * 同一 agent 的状态写永不并发（同实体写必然是其中子集），读/纯计算仍并行。
+   * Promise 链实现：前一个写完成后唤醒下一个。
+   */
+  /**
+   * 写工具的资源域锁（并发模式下跨 worker 串行化共享状态写）。
+   * 见 `resource-locks.ts` —— 取代早期的单一全局写链。
+   */
+  private readonly resourceLocks = new ResourceLockRegistry();
   private static readonly MAX_ACTIVITY_LOG_ENTRIES = 200;
   private static readonly BROWSER_CLOSE_FOLLOWUP_MAX_ITER = 5;
   private static readonly MAX_ACTIVITY_LOGS_KEPT = 10;
-  private static readonly MAX_CONCURRENT_TASKS = 1;
   private static readonly MAX_CONSECUTIVE_FAILURES = 3;
   private static readonly TOOL_RETRY_MAX = 2;
   private static readonly TOOL_RETRY_BASE_MS = 500;
@@ -483,6 +556,57 @@ export class Agent {
   private mailbox: AgentMailbox;
   /** Attention controller for event-driven focus management */
   private attentionController: AttentionController;
+
+  /** 公开访问 attention 控制器（并发设置热传播等用）。 */
+  get attention(): AttentionController {
+    return this.attentionController;
+  }
+
+  /**
+   * 统一并发闸的**单一事实源**：把「设置 → 并发处理」折算成本 agent 实际可用的
+   * 并发度。
+   *  - `enabled: false` → 1（**串行等价契约**：worker=1 必须与旧行为逐字节一致）
+   *  - 否则 → `clamp(maxWorkers ?? 3, 1, 10)`
+   */
+  private effectiveWorkerCount(cfg = this.config.concurrent): number {
+    const c = cfg ?? { enabled: true, maxWorkers: 3 };
+    if (!c.enabled) return 1;
+    return Math.min(Math.max(c.maxWorkers ?? 3, 1), 10);
+  }
+
+  /**
+   * 统一任务并发闸 = `min(worker 闸, profile.maxConcurrentTasks 显式上限)`。
+   *
+   * 历史上这是两个互不相干的闸：worker 闸（`maxWorkers`）与任务闸
+   * （`profile.maxConcurrentTasks`，默认 1）。于是出现「设置里并发数写着 3，任务
+   * 却永远一个个跑」——3 个 worker 抢到 3 个任务 item，但任务队列只放行 1 个，
+   * 另外 2 个 worker 只能阻塞等队列，任务吞吐恒为 1，同时白占实体锁。
+   *
+   * 取 **min** 而不是 max 是硬约束：任务并发永不大于 worker 并发，因此
+   * `worker=1 ⇒ 任务必串行`，串行等价契约天然守住；`profile.maxConcurrentTasks`
+   * 降级为「可选的更紧上限」（越紧越安全，不会反超）。
+   */
+  private unifiedTaskConcurrency(cfg = this.config.concurrent): number {
+    const workers = this.effectiveWorkerCount(cfg);
+    const cap = this.config.profile?.maxConcurrentTasks;
+    const profileCap = typeof cap === 'number' && Number.isFinite(cap) && cap > 0 ? cap : workers;
+    return Math.max(1, Math.min(workers, profileCap));
+  }
+
+  /**
+   * 运行中统一应用并发闸：worker 数与任务并发上限**一起**改，杜绝两闸漂移。
+   * 构造与 `AgentManager.concurrentConfig` 热更新共用这一个入口。
+   */
+  applyConcurrency(cfg = this.config.concurrent): void {
+    const c = cfg ?? { enabled: true, maxWorkers: 3 };
+    this.attentionController.setWorkerCount(this.effectiveWorkerCount(c));
+    this.taskExecutor?.setMaxConcurrentTasks(this.unifiedTaskConcurrency(c));
+  }
+
+  /** 诊断/测试：当前生效的任务并发闸上限（= 统一后的值）。 */
+  getTaskConcurrencyLimit(): number {
+    return this.taskExecutor?.getMaxConcurrentTasks() ?? 1;
+  }
 
   constructor(options: AgentOptions) {
     this.id = options.config.id || genAgentId();
@@ -509,8 +633,27 @@ export class Agent {
     this.mailbox = new AgentMailbox(this.id, this.eventBus);
     this.attentionController = new AttentionController(this.id, this.mailbox, this.eventBus);
     this.attentionController.setDelegate(this.createAttentionDelegate());
+    // 并发处理：智能体设置 → 并发处理。老板要求「默认支持并发」——
+    // 缺省或无显式配置时默认开启（maxWorkers=3）；显式 enabled:false 才关闭。
+    const concurrentCfg = this.config.concurrent ?? { enabled: true, maxWorkers: 3 };
+    // 统一并发闸（单一事实源 =「设置 → 并发处理」里的并发数）：worker 数由
+    // effectiveWorkerCount() 折算，enabled:false ⇒ 1（与旧行为完全一致的串行等价）。
+    this.attentionController.setWorkerCount(this.effectiveWorkerCount(concurrentCfg));
+    this.attentionController.setConflictPolicy(concurrentCfg.conflictPolicy ?? 'auto');
+    // 并发交接记录（P2a）：仅并发模式下创建（worker>1），持久化到 agent dataDir。
+    if (this.attentionController.getWorkerCount() > 1 && options.dataDir) {
+      const log = new ConcurrentHandoffLog(join(options.dataDir, 'concurrent-handoffs.jsonl'));
+      log.load();
+      this.handoffLog = log;
+    }
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
-    this.contextEngine = new ContextEngine();
+    // P1-9（M2 修订）：ContextEngine 必须复用**本 agent 的**计数器实例。
+    // 之前这里 `new ContextEngine()` 不带 config → 其内部 `getDefaultTokenCounter()`
+    // 拿的是进程级单例；而 P1-9 把 `setActiveModel` 从单例迁到 per-agent 计数器后，
+    // 单例的 `activeModel` 恒为 '' → `resolveEncoder()` 恒 null → 打包/预算计数整体
+    // 回退启发式（精度回退）。注入同一个实例后，`activateTokenCounterForModel()` 设置
+    // 的模型对 ContextEngine 同样生效。
+    this.contextEngine = new ContextEngine({ tokenCounter: this.tokenCounter });
     this.contextEngine.setLLMSummarizer(this.createLLMSummarizer());
     this.guardrails = new GuardrailPipeline();
     this.toolHooks = new ToolHookRegistry();
@@ -588,7 +731,8 @@ export class Agent {
     // Initialize task executor
     this.taskExecutor = new TaskExecutor({
       agentId: this.id,
-      maxConcurrentTasks: this.config.profile?.maxConcurrentTasks ?? Agent.MAX_CONCURRENT_TASKS,
+      // 统一并发闸：任务并发跟随「并发数」（并与 profile 显式上限取更紧者）。
+      maxConcurrentTasks: this.unifiedTaskConcurrency(),
       defaultPriority: TaskPriority.MEDIUM,
     });
 
@@ -694,7 +838,8 @@ export class Agent {
    */
   private getModelMaxOutputForBudget(): number | undefined {
     try {
-      return this.llmRouter.getModelMaxOutput(this.getEffectiveProvider());
+      // P1-8: same effective-model resolution as the context window.
+      return this.llmRouter.getModelMaxOutput(this.getEffectiveProvider(), this.getEffectiveModel());
     } catch {
       return undefined;
     }
@@ -886,16 +1031,52 @@ export class Agent {
     userMessage: string,
     senderId?: string,
     senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
+    /**
+     * 跨层参数命名规则（第 2 步）：
+     *  - `dbSessionId` = **DB 会话身份**（`cs_*`），只用于恢复/写绑定；
+     *  - `sessionId`   = **内存会话 key**（`sess_*`）。
+     * ⚠️ `sessionId` 传 `cs_*` 会被当成内存 key（split-brain）——运行期已加告警。
+     *    需要表达「这是哪轮 DB 会话」请用 `dbSessionId` 或 `sessionHint`。
+     */
     options?: HandleMessageOptions & {
       sourceType?: MailboxItemType;
       priority?: MailboxPriority;
       taskId?: string;
       requirementId?: string;
-      sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null;
+      /**
+       * 「每 (task, round) 至多一次」类型的轮次（P1 · 根因 #1）：透传到
+       * `payload.extra.round`，供 mailbox 计算**跨进程幂等键**
+       * `(agent_id, sourceType, taskId, round)` 并做单播路由。
+       * 缺省时 mailbox 不施加约束（旧行为），不改变事件语义。
+       */
+      round?: number;
+      /**
+       * 会话身份契约（第 0 步）。入口可以直接给出本轮是什么会话；
+       * 优先于下面的零散旧字段（sessionRestore / dbSessionId / sessionId）。
+       * 不传时由 `normalizeTurnSessionHint()` 从旧字段归一，仍推不出来则告警（unknown）。
+       */
+      sessionHint?: TurnSessionHint;
+      /**
+       * 本轮的 DB 会话 id（cs_*）。**仅供绑定/恢复使用，绝不当作内存会话 key。**
+       *
+       * 为什么不直接复用 `sessionId`：`sessionId` 会被非流式 `handleMessage`
+       * 当成**内存会话 key**使用，把 cs_* 传进去会造成 split-brain（同一个对话
+       * 分裂到两个存储）。所以 DB 身份单独走一个字段，只进 extra、只用于写绑定。
+       */
+      dbSessionId?: string;
+      sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null;
     },
   ): Promise<string> {
     const sourceType = options?.sourceType
       ?? (senderId ? 'human_chat' : 'system_event');
+    // 会话身份契约（第 0 步）：把零散旧字段归一成**唯一的** hint，并拦一类典型误用：
+    // 把 cs_*（DB 身份）当成 sessionId（内存会话 key）传进来 —— 那会造成 split-brain。
+    if (looksLikeDbSessionId(options?.sessionId)) {
+      log.warn('sendMessage got a DB session id in `sessionId` (a memory-session key) — use `dbSessionId`', {
+        agentId: this.id,
+        sessionId: options?.sessionId,
+      });
+    }
 
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -903,7 +1084,18 @@ export class Agent {
       taskId: options?.taskId,
       requirementId: options?.requirementId,
       extra: {
+        // P1：轮次（幂等键 / 单播路由用）。缺省 undefined → mailbox 不施加约束。
+        round: options?.round,
         sessionId: options?.sessionId,
+        // 仅用于「写 DB→memory 绑定」的请求身份，不会被当成内存会话 key。
+        dbSessionId: options?.dbSessionId,
+        // 会话身份契约：入口优先直接传 sessionHint；否则从旧字段归一。
+        sessionHint: options?.sessionHint ?? normalizeTurnSessionHint({
+          sessionRestore: options?.sessionRestore,
+          dbSessionId: options?.dbSessionId,
+          sessionId: options?.sessionId,
+          sourceType,
+        }),
         channelContext: options?.channelContext,
         channelKey: options?.channelKey,
         images: options?.images,
@@ -928,7 +1120,10 @@ export class Agent {
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
           isFirstConversation: senderInfo?.isFirstConversation,
-          dbSessionId: options?.sessionRestore?.dbSessionId ?? options?.sessionId,
+          // 显式新会话（sessionRestore === null）时不绑定任何 dbSessionId（同 sendMessageStream）。
+          dbSessionId: options?.sessionRestore === null
+            ? undefined
+            : (options?.sessionRestore?.dbSessionId ?? options?.sessionId),
           responsePromise: { resolve, reject },
         },
       });
@@ -976,7 +1171,7 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
-    options?: { isResume?: boolean; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null },
+    options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: userMessage.slice(0, 100),
@@ -989,6 +1184,19 @@ export class Agent {
         onEvent,
         cancelToken,
         sessionRestore: options?.sessionRestore,
+        // The REQUEST's DB session id, carried explicitly so the worker that ends
+        // up processing this item can resolve the matching memory session. It is
+        // advisory only — never used as a memory-session key (see
+        // handleMessageStream) —— and must not be inferred from the workspace
+        // pointer, which is per-worker and may belong to another conversation.
+        sessionId: options?.sessionId,
+        // 会话身份契约（与 sendMessage 同源）：流式路径优先用入口直接给的 hint。
+        sessionHint: options?.sessionHint ?? normalizeTurnSessionHint({
+          sessionRestore: options?.sessionRestore,
+          dbSessionId: options?.dbSessionId,
+          sessionId: options?.sessionId,
+          sourceType: 'human_chat',
+        }),
       },
     };
 
@@ -1001,7 +1209,19 @@ export class Agent {
           senderRole: senderInfo?.role,
           isFirstConversation: senderInfo?.isFirstConversation,
           isResume: options?.isResume,
-          dbSessionId: options?.sessionRestore?.dbSessionId ?? (this.getDbSessionId() || undefined),
+          // 显式新会话（sessionRestore === null）时绝不回填当前内存会话 id：
+          // 此时 agent 处理该消息时会 `startNewSession()` 切换到一个全新会话，
+          // 若在此回填旧 id，attention 的 R0 会把新消息误判为「本会话追问」而 merge
+          // 进正在流式输出的旧会话 —— 新对话 tab 的消息会错误地污染当前流。
+          dbSessionId: options?.sessionRestore === null
+            ? undefined
+            : (options?.sessionRestore?.dbSessionId
+              // Explicit request id wins over the workspace pointer:
+              // `getDbSessionId()` reads the current memory session, which on an
+              // HTTP thread is the root workspace and under concurrency can point
+              // at a completely different conversation.
+              ?? options?.sessionId
+              ?? (this.getDbSessionId() || undefined)),
           responsePromise: { resolve, reject },
         },
       });
@@ -1087,11 +1307,13 @@ export class Agent {
   /** Get the current cognitive state of the agent. */
   getMindState(): AgentMindState & { notebook?: Array<{ key: string; text: string; updatedAt: number; managed: string }> } {
     const mind = this.attentionController.getMindState() as AgentMindState & { notebook?: Array<{ key: string; text: string; updatedAt: number; managed: string }> };
-    if (mind.isDeliberating && this.state.currentActivity) {
+    // 双源兼容：workspace 聚合（并发正确）+ legacy state.currentActivity（测试/旧代码直接写）。
+    const act = this.getCurrentActivity() ?? this.state.currentActivity;
+    if (mind.isDeliberating && act) {
       mind.deliberationActivity = {
-        activityId: this.state.currentActivity.id,
-        label: this.state.currentActivity.label,
-        startedAt: this.state.currentActivity.startedAt,
+        activityId: act.id,
+        label: act.label,
+        startedAt: act.startedAt,
       };
     }
     mind.notebook = this.getWorkingMemorySnapshot().map(e => ({
@@ -1184,17 +1406,41 @@ export class Agent {
         });
         if (item) {
           this.setStatus('working');
+        } else if (this.attentionController.getWorkerCount() > 1) {
+          // 并发模式：单个 worker 结束不代表 agent 空闲 —— 只有所有 worker
+          // 都空闲（聚合状态 idle）才恢复 idle，避免状态抖动。
+          if (this.attentionController.getState() === 'idle' && this.activeTasks.size === 0) {
+            this.setStatus('idle');
+          }
         } else if (this.activeTasks.size === 0) {
           this.setStatus('idle');
         }
       },
-      cancelProcessing: (item: MailboxItem) => {
+      getWorkerWorkspace: (workerId: number) => {
+        let ws = this.workerWorkspaces.get(workerId);
+        if (!ws) {
+          ws = createSessionWorkspace(workerId);
+          this.workerWorkspaces.set(workerId, ws);
+        }
+        return ws;
+      },
+      onConcurrentHandoff: (kind: 'declared' | 'done' | 'conflict', workerId: number, item: MailboxItem | undefined, summary: string) => {
+        const log = this.handoffLog;
+        if (!log) return;
+        const entityKey = item ? this.mailbox.entityKeyOf(item) : undefined;
+        log.append(kind, workerId, entityKey, summary);
+      },
+      cancelProcessing: (item: MailboxItem, workerId?: number) => {
         // Backstop-timeout single-flight: abort the orphaned in-flight turn so it
         // stops before the item is requeued and re-processed (no double side effects).
+        //
+        // 确定性定向：这个调用点在 backstop 定时器回调里（没有 ALS 上下文），
+        // 旧实现不带 target 会退化为 rootWorkspace/worker1 —— 取消错 worker。
+        // 优先用 attention 给出的权威 workerId（持有该 item 者），itemId 做兜底反查。
         try {
-          this.cancelActiveStream();
+          this.cancelActiveStream({ workerId, itemId: item.id });
         } catch (err) {
-          log.debug('cancelProcessing: cancelActiveStream failed', { agentId: this.id, itemId: item.id, error: String(err) });
+          log.warn('cancelProcessing: cancelActiveStream failed', { agentId: this.id, itemId: item.id, workerId, error: String(err) });
         }
       },
       evaluateInterrupt: async (currentItem: MailboxItem, newItem: MailboxItem) => {
@@ -1460,6 +1706,18 @@ export class Agent {
    * content is composed into the primary item's message for unified handling.
    */
   private async processMailboxItemInternal(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
+    // 会话工作区挂载点：串行模式（无外层 ALS store）fallback 到 rootWorkspace，与旧行为一致；
+    // 并发模式下 concurrentWorkerLoop 已用 worker workspace 包裹 ALS store——
+    // 这里绝不覆盖外层 store，否则分身会话状态互相污染、workerId 全部退化为 1。
+    const existing = sessionWorkspaceStore.getStore();
+    if (existing) {
+      return this.processMailboxItemCore(item, batchItems, batchContext);
+    }
+    // 串行 / 无外层上下文：rootWorkspace 兜底
+    return sessionWorkspaceStore.run(this.rootWorkspace, () => this.processMailboxItemCore(item, batchItems, batchContext));
+  }
+
+  private async processMailboxItemCore(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
     this.processingMailboxItemId = item.id;
 
     // Compose batch content into primary item if batch processing
@@ -1514,17 +1772,26 @@ export class Agent {
     };
 
     try {
+      // ── 会话身份：唯一解析点（所有 sourceType 共用）
+      // 入口在 mailbox item 的 extra.sessionHint 里表态；没表态的（unknown）会告警，
+      // 并按「保持当前会话」处理 —— 绝不静默新建。旧字段（sessionRestore / dbSessionId /
+      // sessionId / channelKey）在 sendMessage* 入口已归一成 hint；这里再兑一次底，
+      // 保证从其它途径直接 enqueue 进来的 item 也能被正确解析。
+      const sessionHint = (extra.sessionHint as TurnSessionHint | undefined)
+        ?? normalizeTurnSessionHint({
+          sessionRestore: extra.sessionRestore as TurnSessionRestorePayload | null | undefined,
+          dbSessionId: extra.dbSessionId as string | undefined,
+          sessionId: extra.sessionId as string | undefined,
+          channelKey: extra.channelKey as string | undefined,
+          sourceType: item.sourceType,
+        });
+      this.resolveTurnSession(sessionHint, item);
+
       switch (item.sourceType) {
         case 'human_chat':
         case 'a2a_message': {
-          // Apply deferred session restore at processing time (not at HTTP request time)
-          // to prevent corrupting an in-progress stream's session context.
-          const sessionRestore = extra.sessionRestore as { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null | undefined;
-          if (sessionRestore) {
-            this.restoreSessionFromHistory(sessionRestore.dbSessionId, sessionRestore.messages, { isRetry: !!sessionRestore.isRetry });
-          } else if (extra.sessionRestore === null) {
-            this.startNewSession();
-          }
+          // 会话恢复与 DB→内存绑定已上提到「唯一解析点」：`resolveTurnSession()`
+          // （见本方法开头的 sessionHint）。此 case 不再自己解析会话身份。
           const ct = extra.cancelToken as { cancelled: boolean; userStopped?: boolean } | undefined;
           if (extra.stream && typeof extra.onEvent === 'function') {
             if (ct?.cancelled && !ct.userStopped) {
@@ -1543,6 +1810,9 @@ export class Agent {
                 extra.images as string[] | undefined,
                 extra.fileNames as string[] | undefined,
                 extra.imagePaths as string[] | undefined,
+                // Explicit DB session id from the request — used to resolve the
+                // bound memory session instead of trusting the worker pointer.
+                extra.sessionId as string | undefined,
               );
               // Team Chat: do not burn an extra LLM round just to obtain <<HANDLE_COMPLETE>>.
               // Prompt discipline ends the turn; attention already completes chat without retry.
@@ -1564,8 +1834,14 @@ export class Agent {
           // route the reply into the ORIGIN session so the delegating thread continues
           // where it left off, instead of a disconnected a2a_* session.
           let awaitOriginSessionId: string | undefined;
+          // A2A 会话身份按「对话」而不是「消息」绑定：同一条 [conversation:x] 往来的多条
+          // 消息必须落在同一个会话里。旧实现把时间戳当默认会话 id，等于每条消息都开一个
+          // 新会话 —— 多轮 a2a 协作会彼此失忆（与 human_chat 那个 bug 同源）。
+          // 没有 conversation 标记的孤立消息保持原样（每条独立，避免互相污染）。
+          let a2aConversationId: string | undefined;
           if (item.sourceType === 'a2a_message') {
             const convMatch = /\[conversation:([^\]]+)\]/.exec(item.payload.content);
+            a2aConversationId = convMatch?.[1];
             if (convMatch?.[1]) {
               const cb = pendingCallbackRegistry.findByCorrelation(this.id, convMatch[1]);
               if (cb && cb.type === 'a2a_reply' && (cb.deliveryMode ?? 'in_session') === 'in_session') {
@@ -1577,7 +1853,9 @@ export class Agent {
           }
           const defaults: HandleMessageOptions = item.sourceType === 'a2a_message'
             ? {
-                sessionId: awaitOriginSessionId ?? channelSessionId ?? `a2a_${this.id}_${ts}`,
+                sessionId: awaitOriginSessionId
+                  ?? channelSessionId
+                  ?? (a2aConversationId ? `a2a_${this.id}_${a2aConversationId}` : `a2a_${this.id}_${ts}`),
                 scenario: 'a2a' as const,
               }
             : channelSessionId
@@ -1631,15 +1909,59 @@ export class Agent {
             const taskId = item.payload.taskId;
             const description = item.payload.content;
             const onLog = extra.onLog as (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void;
-            await this.executeTask(
-              taskId,
-              description,
-              onLog,
-              extra.cancelToken as { cancelled: boolean } | undefined,
-              extra.taskProjectContext as TaskProjectContext | undefined,
-              extra.executionRound as number | undefined,
-              item.payload.requirementId,
-            );
+
+            // ── T3 消费侧实体独占（单飞）────────────────────────────────────
+            // 同一 task 已有活跃执行会话 → 本条为重复派发：标 non-actionable 并留痕，
+            // 绝不启动第二个执行会话（无文件写入 / 无提交 / 无实现类工具调用）。
+            const inFlight = this.getInFlightTaskExecution(taskId);
+            if (inFlight) {
+              log.warn('Duplicate task execution item dropped (non-actionable) — task already in flight', {
+                event: 'task.execution_skipped_duplicate',
+                agentId: this.id,
+                taskId,
+                itemId: item.id,
+                existingSessionId: inFlight.sessionId,
+                existingRound: inFlight.round,
+                existingStartedAt: inFlight.startedAt,
+              });
+              try {
+                this.eventBus.emit('agent:task-execution-skipped-duplicate', {
+                  agentId: this.id,
+                  taskId,
+                  itemId: item.id,
+                  existingSessionId: inFlight.sessionId,
+                  existingStartedAt: inFlight.startedAt,
+                });
+              } catch (err) {
+                log.debug('emit task-execution-skipped-duplicate failed', { error: String(err) });
+              }
+              try { this.mailbox.drop(item.id); } catch { /* non-actionable 留痕后即收口 */ }
+              resolveResponse('');
+              return;
+            }
+
+            const executionRegistration = {
+              sessionId: `task_${taskId}_r${(extra.executionRound as number | undefined) ?? 1}`,
+              round: (extra.executionRound as number | undefined) ?? 1,
+              startedAt: Date.now(),
+            };
+            this.taskExecutionsInFlight.set(taskId, executionRegistration);
+            try {
+              await this.executeTask(
+                taskId,
+                description,
+                onLog,
+                extra.cancelToken as { cancelled: boolean } | undefined,
+                extra.taskProjectContext as TaskProjectContext | undefined,
+                extra.executionRound as number | undefined,
+                item.payload.requirementId,
+              );
+            } finally {
+              // 仅当仍是本条登记时释放（防止陈旧 finally 清掉更新会话的登记）
+              if (this.taskExecutionsInFlight.get(taskId) === executionRegistration) {
+                this.taskExecutionsInFlight.delete(taskId);
+              }
+            }
             // Task execution handles preemption internally: it emits a
             // 'preempted' status event and TaskService re-queues the task
             // with fresh callbacks after a delay.  Clear the yield decision
@@ -1945,6 +2267,50 @@ export class Agent {
    * Start a fresh conversation session, discarding the current in-memory session context.
    * Called when the user explicitly starts a "New Chat".
    */
+  /**
+   * 会话身份**唯一解析点**（第 0 步落地的结构性收敛）。
+   *
+   * 以前只有 `human_chat` / `a2a_message` 这一个 case 会做「恢复会话 + 写 DB→内存绑定」，
+   * 其余路径以及漏传身份的入口会静默开一个新会话 —— 这正是「agent 失忆」反复出现的根因。
+   * 现在所有 sourceType 都先经过这里，行为按 hint 的四种契约明确化：
+   *   - existing：从 DB 历史恢复（可 reattach 到已绑定的富内存会话）
+   *   - new      ：显式新对话（用户点了「新对话」）
+   *   - system   ：系统/内部会话（heartbeat / task / report / announce / a2a / channel）—— 保持既有语义，
+   *                 不动当前会话（各分支自己决定系统、任务、频道的会话 id）
+   *   - unknown  ：入口没表态 → **告警**并保持当前会话（不新建、不静默）
+   *
+   * 另外：只要 hint 带 DB 身份，就顺手在**处理该 item 的工作区**里写 DB→内存绑定。
+   * （HTTP 线程读不到 worker 的指针，写在那里只会得到陈旧/空绑定。）
+   */
+  private resolveTurnSession(hint: TurnSessionHint, item: MailboxItem): void {
+    switch (hint.kind) {
+      case 'existing':
+        this.restoreSessionFromHistory(hint.dbSessionId, hint.messages ?? [], {
+          isRetry: !!hint.isRetry,
+          preferredMemorySessionId: hint.preferredMemorySessionId ?? null,
+        });
+        break;
+      case 'new':
+        this.startNewSession();
+        break;
+      case 'system':
+        // 系统/内部会话由各自分支决定 sessionId，这里不干预当前会话。
+        break;
+      case 'unknown':
+        log.warn('Turn has NO session identity — keeping the current session (never silently starting a new one)', {
+          agentId: this.id,
+          itemId: item.id,
+          sourceType: item.sourceType,
+          reason: hint.reason,
+        });
+        break;
+    }
+
+    if (hintCarriesDbIdentity(hint) && this.currentSessionId) {
+      this.dbSessionMap.set(hint.dbSessionId, this.currentSessionId);
+    }
+  }
+
   startNewSession(): void {
     const session = this.memory.createSession(this.id);
     this.currentSessionId = session.id;
@@ -1975,8 +2341,35 @@ export class Agent {
   restoreSessionFromHistory(
     dbSessionId: string,
     dbMessages: Array<{ role: string; content: string }>,
-    options?: { isRetry?: boolean },
+    options?: { isRetry?: boolean; preferredMemorySessionId?: string | null },
   ): void {
+    // Fast path — reattach to a persisted DB→memory binding. The memory session
+    // is the RICH record (tool calls + results included); `chat_messages` only
+    // stores user/assistant rows, so rebuilding from DB after a restart silently
+    // guts the context (observed in the wild: 57 memory messages → 3). When the
+    // binding is known and still resolvable — MemoryStore lazily loads the
+    // session from disk by id — prefer it over a thin rebuild.
+    if (!options?.isRetry && options?.preferredMemorySessionId) {
+      const preferred = this.memory.getSession(options.preferredMemorySessionId);
+      // Reattach only when the memory session is at least as complete as the DB
+      // slice. If the DB has moved ahead of memory (e.g. messages persisted
+      // out-of-band such as notify_user), fall through to the rebuild so those
+      // messages are not lost.
+      if (
+        preferred
+        && preferred.agentId === this.id
+        && preferred.messages.length > 0
+        && preferred.messages.length >= dbMessages.length
+      ) {
+        this.currentSessionId = preferred.id;
+        this.dbSessionMap.set(dbSessionId, preferred.id);
+        log.info(
+          `Reattached DB session ${dbSessionId} → persisted memory session ${preferred.id} (${preferred.messages.length} messages)`,
+        );
+        return;
+      }
+    }
+
     const existingMemorySessionId = this.dbSessionMap.get(dbSessionId);
     if (existingMemorySessionId) {
       const session = this.memory.getSession(existingMemorySessionId);
@@ -2075,11 +2468,14 @@ export class Agent {
     promptAffordTokens: number | null;
   } {
     const provider = this.getEffectiveProvider();
+    const effectiveModel = this.getEffectiveModel();
     const afford = typeof this.llmRouter.getPromptAffordTokens === 'function'
       ? this.llmRouter.getPromptAffordTokens(provider)
       : null;
     return {
-      modelContextWindow: this.llmRouter.getModelContextWindow(provider),
+      // P1-8: window must be resolved for the model actually used this request,
+      // not the provider's configured default (which the session may override).
+      modelContextWindow: this.llmRouter.getModelContextWindow(provider, effectiveModel),
       modelMaxOutput: this.getModelMaxOutputForBudget(),
       promptAffordTokens: afford ?? null,
     };
@@ -2092,6 +2488,20 @@ export class Agent {
   /** Returns true if the agent is currently processing a mailbox item (streaming or otherwise). */
   isProcessing(): boolean {
     return this.state.status === 'working' || !!this.processingMailboxItemId;
+  }
+
+  /** Returns the id of the in-memory session currently bound to this agent, if any. */
+  getCurrentSessionId(): string | null {
+    return this.currentSessionId ?? null;
+  }
+
+  /**
+   * Reverse of getDbSessionId(): resolve a DB chat session id (cs_*) to the
+   * in-memory session currently bound to it, if any. Lets tools accept both id
+   * spaces so an agent can introspect "which conversation am I in".
+   */
+  getMemorySessionIdForDbSession(dbSessionId: string): string | null {
+    return this.dbSessionMap.get(dbSessionId) ?? null;
   }
 
   /** Returns the DB session ID currently bound to the active memory session, if any. */
@@ -2247,6 +2657,22 @@ export class Agent {
   }
 
   /**
+   * T3：查询该 task 是否已有**仍活跃**的执行会话（消费侧单飞判定）。
+   * 陈旧登记（超 TTL）视为失效并顺带清除。
+   */
+  private getInFlightTaskExecution(
+    taskId: string,
+  ): { sessionId: string; round: number; startedAt: number } | undefined {
+    const rec = this.taskExecutionsInFlight.get(taskId);
+    if (!rec) return undefined;
+    if (Date.now() - rec.startedAt >= Agent.TASK_EXECUTION_INFLIGHT_TTL_MS) {
+      this.taskExecutionsInFlight.delete(taskId);
+      return undefined;
+    }
+    return rec;
+  }
+
+  /**
    * Externally remove a task from the activeTasks set.
    * Used when a task reaches a terminal state outside of the executeTask finally block
    * (e.g. reviewer completes the task while the execution is already winding down).
@@ -2262,6 +2688,14 @@ export class Agent {
   /**
    * 获取运行中的任务
    */
+  /**
+   * T3：标记「非本会话分配/重复派发」的 task 执行指令为非可执行（non-actionable）。
+   * 供测试与诊断使用；生产路径在 `task_status_update` case 内直接 drop。
+   */
+  isTaskExecutionInFlight(taskId: string): boolean {
+    return !!this.getInFlightTaskExecution(taskId);
+  }
+
   getRunningTasks() {
     if (!this.stateManager) {
       return Array.from(this.activeTasks).map(taskId => ({
@@ -2290,8 +2724,89 @@ export class Agent {
     return this.taskExecutor.cancelTask(taskId);
   }
 
-  /** Cancel the currently focused work (user-initiated Cancel button / stop). */
-  cancelActiveStream(): void {
+  /**
+   * Cancel the currently focused work (user-initiated Cancel button / stop).
+   *
+   * 并发模式下支持**确定性定向取消**：外部 HTTP 线程与 backstop 定时器回调
+   * 都没有 ALS 上下文，`workspace()` 会回退到 rootWorkspace、
+   * `getCurrentFocus()` 返回 worker 1 的 focus —— 靠 ALS 推断必然取消错 worker。
+   * 因此这里完全按 target 定位持有该 item / session 的 worker（或直接采用调用方
+   * 给出的权威 workerId），把取消直接写进该 worker 的独立 workspace，
+   * 不读也不依赖任何 ALS 状态。
+   *
+   * @returns 实际命中的 workerId（并发 + 定向命中）；undefined 表示走的是
+   *          串行/无 target 的兼容路径。同值记入 `lastCancelledWorkerId` 供
+   *          测试与诊断断言。
+   */
+  cancelActiveStream(target?: { itemId?: string; sessionId?: string; workerId?: number }): number | undefined {
+    const workerId = this.resolveCancelTargetWorker(target);
+    if (workerId !== undefined && this.workerWorkspaces.has(workerId)) {
+      this.cancelActiveStreamCore(workerId);
+      this.lastCancelledWorkerId = workerId;
+      return workerId;
+    }
+    // 兼容路径：串行模式 / 无 target / 目标 worker 尚无 workspace。
+    this.cancelActiveStreamCore();
+    this.lastCancelledWorkerId = undefined;
+    return undefined;
+  }
+
+  /** 最近一次定向取消实际命中的 workerId（未定向命中时为 undefined）。 */
+  private lastCancelledWorkerId?: number;
+
+  /** 诊断/测试：最近一次 cancelActiveStream 命中的 workerId。 */
+  getLastCancelledWorkerId(): number | undefined {
+    return this.lastCancelledWorkerId;
+  }
+
+  /**
+   * 解析定向取消目标所属的 workerId。
+   * 并发模式下按 workerId（权威）→ itemId → sessionId 依次尝试；
+   * 串行模式统一返回 undefined（走 ALS/rootWorkspace 兼容路径）。
+   */
+  private resolveCancelTargetWorker(target?: { itemId?: string; sessionId?: string; workerId?: number }): number | undefined {
+    if (!target) return undefined;
+    if (this.attentionController.getWorkerCount() <= 1) return undefined;
+    if (target.workerId !== undefined && this.workerWorkspaces.has(target.workerId)) {
+      return target.workerId;
+    }
+    if (target.itemId) {
+      const byItem = this.attentionController.findWorkerByItemId(target.itemId);
+      if (byItem !== undefined) return byItem;
+    }
+    if (target.sessionId) {
+      const bySession = this.attentionController.findWorkerBySessionId(target.sessionId);
+      if (bySession !== undefined) return bySession;
+    }
+    return undefined;
+  }
+
+  private cancelActiveStreamCore(workerId?: number): void {
+    // ── 定向路径（并发模式，优先）：直接写目标 worker 的独立 workspace。
+    //    不读也不依赖任何 ALS 上下文 —— 无 ALS 调用点也能精确命中。
+    if (workerId !== undefined) {
+      const ws = this.workerWorkspaces.get(workerId);
+      if (ws) {
+        // Durable token so a stop that arrives before handleMessageStream links
+        // the SSE cancelToken is not lost.
+        if (!ws.activeStreamToken) {
+          ws.activeStreamToken = { cancelled: true, userStopped: true };
+        } else {
+          ws.activeStreamToken.cancelled = true;
+          ws.activeStreamToken.userStopped = true;
+        }
+        // Only the *current* focus of the target worker — never poison queued
+        // human_chat waiting next (nor the sibling workers).
+        this.markCancelTokenStopped(ws.activeStreamToken, this.attentionController.getWorkerFocus(workerId));
+        // Make non-stream paths (heartbeat / handleMessage) observe cancel at yield.
+        // 定向置位：只碰目标 worker 的 userCancelCurrent，不靠 ALS 推断。
+        this.attentionController.requestUserCancelForWorker(workerId);
+        log.info('Active processing cancelled by user (directed)', { agentId: this.id, workerId });
+        return;
+      }
+    }
+
+    // ── 兼容路径：当前 ALS 上下文（串行模式 / 无 target 的旧行为）。
     // Durable token so a stop that arrives before handleMessageStream links
     // the SSE cancelToken is not lost.
     if (!this.activeStreamToken) {
@@ -2309,14 +2824,21 @@ export class Agent {
 
   /** Mark only the focused item's stream cancel token (not the whole queue). */
   private markCurrentFocusCancelTokenStopped(): void {
+    this.markCancelTokenStopped(this.activeStreamToken, this.attentionController.getCurrentFocus());
+  }
+
+  /**
+   * 只标记「指定 token + 指定 focus item 的 cancelToken」——不污染队列里的
+   * 其他 item，也不跨 worker 泄漏。
+   */
+  private markCancelTokenStopped(token: unknown, focus: MailboxItem | undefined): void {
     const mark = (ct: unknown) => {
       if (!ct || typeof ct !== 'object') return;
-      const token = ct as { cancelled?: boolean; userStopped?: boolean };
-      token.cancelled = true;
-      token.userStopped = true;
+      const t = ct as { cancelled?: boolean; userStopped?: boolean };
+      t.cancelled = true;
+      t.userStopped = true;
     };
-    mark(this.activeStreamToken);
-    const focus = this.attentionController.getCurrentFocus();
+    mark(token);
     const focusExtra = focus?.payload?.extra as { cancelToken?: unknown } | undefined;
     mark(focusExtra?.cancelToken);
   }
@@ -2472,13 +2994,41 @@ export class Agent {
     }
   }
 
+  private _tokenCounter: SmartTokenCounter | null = null;
+
+  /**
+   * P1-9：每个 agent 拥有**独立**的 token 计数器实例。
+   *
+   * 以前所有 agent 共用 `getDefaultTokenCounter()` 这一个进程级单例：其
+   * `activeModel` 与编码器槽会被并发 agent 互相覆盖（GPT agent 设置的 o200k
+   * 编码器会污染随后 Claude/DeepSeek agent 的计数），而流式主路径又从不调用
+   * `setActiveModel`，于是长上下文预算按错误模型计数。
+   */
+  private get tokenCounter(): SmartTokenCounter {
+    if (!this._tokenCounter) {
+      this._tokenCounter = createTokenCounter();
+    }
+    return this._tokenCounter;
+  }
+
+  /**
+   * P1-9：把 token 计数器切到本次生效模型（流式 + 非流式路径都要先调）。
+   * `ensureReady()` 预加载 tiktoken 编码器，避免首轮退化到启发式。
+   */
+  private async activateTokenCounterForModel(): Promise<void> {
+    try {
+      const model = this.getEffectiveModel()
+        ?? this.llmRouter.getActiveModelName(this.getEffectiveProvider());
+      if (!model) return;
+      this.tokenCounter.setActiveModel(model);
+      await this.tokenCounter.ensureReady();
+    } catch (err) {
+      log.debug('Failed to activate token counter for model', { error: String(err) });
+    }
+  }
+
   private estimateMessagesTokens(messages: LLMMessage[]): number {
-    const counter = (() => {
-      try {
-        const { getDefaultTokenCounter } = require('./token-counter.js');
-        return getDefaultTokenCounter();
-      } catch { return null; }
-    })();
+    const counter = this.tokenCounter;
     if (!counter) return 0;
     let total = 0;
     for (const msg of messages) {
@@ -2491,10 +3041,9 @@ export class Agent {
   private calibrateTokenCounter(actualInputTokens: number): void {
     if (this.lastEstimatedInputTokens > 0 && actualInputTokens > 0) {
       try {
-        const { getDefaultTokenCounter } = require('./token-counter.js');
-        const counter = getDefaultTokenCounter();
+        const counter = this.tokenCounter;
         if ('calibrate' in counter) {
-          (counter as any).calibrate(this.lastEstimatedInputTokens, actualInputTokens);
+          (counter as { calibrate: (e: number, a: number) => void }).calibrate(this.lastEstimatedInputTokens, actualInputTokens);
         }
       } catch (err) { log.debug('Token counter calibration failed', { error: String(err) }); }
     }
@@ -3007,6 +3556,33 @@ export class Agent {
     };
   }
 
+  /**
+   * 并发上下文（P2b）：仅并发模式（worker>1）且存在交接日志时生成。
+   * 返回 undefined 时 context-engine 不注入并发段（串行模式与旧行为完全一致）。
+   */
+  private getConcurrentContext(): {
+    enabled: boolean;
+    workerId: number;
+    workerCount: number;
+    handoffs: Array<{ workerId: number; kind: 'declared' | 'fact' | 'done' | 'conflict'; entityKey?: string; summary: string }>;
+  } | undefined {
+    const log = this.handoffLog;
+    const workerCount = this.attentionController.getWorkerCount();
+    if (!log || workerCount <= 1) return undefined;
+    const workerId = this.workspace().workerId;
+    return {
+      enabled: true,
+      workerId,
+      workerCount,
+      handoffs: log.recent(12).map(h => ({
+        workerId: h.workerId,
+        kind: h.kind,
+        entityKey: h.entityKey,
+        summary: h.summary,
+      })),
+    };
+  }
+
   setAuditCallback(
     cb: (event: {
       type: string;
@@ -3076,7 +3652,7 @@ export class Agent {
     this.metricsCollector.recordAudit(event);
     this.auditCallback?.(event);
 
-    const actId = this.state.currentActivity?.id;
+    const actId = this.workspaceActivity?.id;
     if (actId && event.type !== 'tool_call') {
       const logType: AgentActivityLogEntry['type'] =
         event.type === 'llm_request' ? 'llm_request' :
@@ -3143,7 +3719,7 @@ export class Agent {
         activeTaskIds: [...this.activeTasks],
         lastError: this.state.lastError,
         lastErrorAt: this.state.lastErrorAt,
-        currentActivity: this.state.currentActivity,
+        currentActivity: this.getCurrentActivity(),
       });
     }
   }
@@ -3285,11 +3861,41 @@ export class Agent {
 
   // ─── Activity Tracking ───────────────────────────────────────────────────────
 
+  /**
+   * 当前 worker 的活跃活动（串行模式 = rootWorkspace.currentActivity，完全兼容旧行为）。
+   * 不要在 worker 上下文外调用（如 HTTP handler 线程）——那是聚合视图的职责。
+   */
+  private get workspaceActivity(): AgentActivity | undefined {
+    return this.workspace().currentActivity;
+  }
+
+  private set workspaceActivity(v: AgentActivity | undefined) {
+    this.workspace().currentActivity = v;
+  }
+
+  /**
+   * 聚合视图：所有并发 worker 的活跃活动（按 startedAt 升序）。
+   * 串行/无并发上下文时退化为 rootWorkspace 单元素数组。
+   * rootWorkspace 始终纳入——无 ALS 上下文的外部调用（HTTP handler / watchdog）
+   * 写入的活动落在 rootWorkspace，必须能被读到，否则并发模式下外部发起的
+   * 活动会"消失"在聚合视图外。
+   */
+  private liveActivities(): AgentActivity[] {
+    const acts: AgentActivity[] = [];
+    if (this.rootWorkspace.currentActivity) acts.push(this.rootWorkspace.currentActivity);
+    if (this.attentionController.getWorkerCount() > 1) {
+      for (const ws of this.workerWorkspaces.values()) {
+        if (ws.currentActivity && ws !== this.rootWorkspace) acts.push(ws.currentActivity);
+      }
+    }
+    return acts.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+  }
+
   private startActivity(type: AgentActivity['type'], label: string, extra?: Partial<AgentActivity>): string {
     const id = `act-${this.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const mailboxItemId = extra?.mailboxItemId ?? this.processingMailboxItemId;
     const activity: AgentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra, ...(mailboxItemId ? { mailboxItemId } : {}) };
-    this.state.currentActivity = activity;
+    this.workspaceActivity = activity;
     this.activityLogs.set(id, []);
     this.activitySeqCounters.set(id, 0);
 
@@ -3334,7 +3940,7 @@ export class Agent {
   }
 
   private endActivity(activityId?: string, opts?: { success?: boolean }): void {
-    const aid = activityId ?? this.state.currentActivity?.id;
+    const aid = activityId ?? this.workspaceActivity?.id;
     if (aid) {
       this.emitActivityLog(aid, 'status', 'Completed');
 
@@ -3363,7 +3969,7 @@ export class Agent {
       this.activityLogs.delete(aid);
       this.activitySeqCounters.delete(aid);
     }
-    this.state.currentActivity = undefined;
+    this.workspaceActivity = undefined;
     this.notifyStateChange();
   }
 
@@ -3412,11 +4018,14 @@ export class Agent {
   }
 
   getCurrentActivity(): AgentActivity | undefined {
-    return this.state.currentActivity;
+    // 聚合视图：并发时返回「最新启动」的活跃活动（与串行的单值语义对齐）。
+    const acts = this.liveActivities();
+    return acts.length > 0 ? acts[acts.length - 1] : undefined;
   }
 
   getCurrentActivityId(): string | undefined {
-    return this.state.currentActivity?.id;
+    const acts = this.liveActivities();
+    return acts.length > 0 ? acts[acts.length - 1]!.id : undefined;
   }
 
   /** Return summary of currently-live in-memory activities */
@@ -3429,19 +4038,19 @@ export class Agent {
     startedAt: string;
     logCount: number;
   }> {
-    const current = this.state.currentActivity;
-    if (!current) return [];
-
-    const logs = this.activityLogs.get(current.id);
-    return [{
-      id: current.id,
-      type: current.type,
-      label: current.label,
-      taskId: current.taskId,
-      heartbeatName: current.heartbeatName,
-      startedAt: current.startedAt,
-      logCount: logs?.length ?? 0,
-    }];
+    const acts = this.liveActivities();
+    return acts.map(act => {
+      const logs = this.activityLogs.get(act.id);
+      return {
+        id: act.id,
+        type: act.type,
+        label: act.label,
+        taskId: act.taskId,
+        heartbeatName: act.heartbeatName,
+        startedAt: act.startedAt,
+        logCount: logs?.length ?? 0,
+      };
+    });
   }
 
   /** Inject a function that returns tasks for system prompt context (all org tasks with assignment info) */
@@ -3546,7 +4155,7 @@ export class Agent {
 
     // Track chat activity (only if not already in a heartbeat or other activity)
     let chatActivityId: string | undefined;
-    if (!this.state.currentActivity) {
+    if (!this.workspaceActivity) {
       let actType: AgentActivity['type'] = 'chat';
       let actLabel: string;
       const peerName = senderInfo?.name || senderId || undefined;
@@ -3603,8 +4212,6 @@ export class Agent {
     }
     const effectiveMessage = inputCheck.transformedInput ?? userMessage;
 
-    const maxHistory = 200;
-
     // Session resolution: explicit sessionId > auto-generated
     let sessionId: string;
     if (options?.sessionId) {
@@ -3625,14 +4232,8 @@ export class Agent {
     // Channel context is now injected in the system prompt (dynamic tier) rather
     // than prepended into conversation messages, preserving prefix cache stability.
 
-    // Set active model on token counter and ensure tiktoken encoder is loaded
-    const effectiveModelName = this.llmRouter.getActiveModelName(this.getEffectiveProvider());
-    if (effectiveModelName) {
-      const { getDefaultTokenCounter } = await import('./token-counter.js');
-      const counter = getDefaultTokenCounter();
-      counter.setActiveModel(effectiveModelName);
-      await counter.ensureReady();
-    }
+    // P1-9：按生效模型激活 token 计数器（非流式路径）。
+    await this.activateTokenCounterForModel();
 
     const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
 
@@ -3666,6 +4267,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      concurrentContext: this.getConcurrentContext(),
       workflowContext: isLightweight ? undefined : this.workflowContextFetcher?.(),
       cognitiveContext,
       notebookWriter: this.getNotebookWriter(),
@@ -3684,10 +4286,10 @@ export class Agent {
       scenario,
     };
     let llmTools = this.buildToolDefinitions(toolSelectOpts);
-    ({ text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
-      systemPrompt,
-      systemCacheSegments,
-    ));
+    // Afford.S2 catalog: rides the per-turn volatile TAIL block, never the system
+    // prompt (it changes with the per-turn tool selection and would invalidate
+    // the whole cached prefix). See consumeDeferredToolCatalog().
+    const deferredToolCatalog = this.consumeDeferredToolCatalog();
     if (options?.allowedTools) {
       const allowed = options.allowedTools;
       // Restrict to the scenario's allow-list...
@@ -3716,8 +4318,16 @@ export class Agent {
     // A2: flush important memory to disk before context fills (turn-level preflight).
     await this.maybeMemoryFlushPreflight(sessionId);
 
-    const sessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
-    this.volatileState = volatile;
+    // Cold-start fix: the Markus Hub catalog may not be loaded yet on the very
+    // first turn (the Router kicks off the refresh fire-and-forget). The sync
+    // window/max-output lookups below would then resolve the FALLBACK value and
+    // under-budget the request. Await readiness here — bounded (3s) and
+    // fail-safe (never throws) — so the FIRST turn already packs against real
+    // Hub values. O(1) no-op once the catalog is warm.
+    await this.llmRouter.ensureMarkusCatalogLoaded?.({ timeoutMs: 3000 });
+
+    const sessionMessages = this.requestHistory(sessionId);
+    this.volatileState = this.mergeVolatile(volatile, deferredToolCatalog);
     let prepared = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
@@ -3806,7 +4416,7 @@ export class Agent {
           this.memory.appendMessage(sessionId, contMsg);
         } else {
           // Normal tool_use flow
-          const currentActId = this.state.currentActivity?.id;
+          const currentActId = this.workspaceActivity?.id;
           if (currentActId && response.reasoningContent?.trim()) {
             this.emitActivityLog(currentActId, 'text', response.reasoningContent, { isThinking: true });
           }
@@ -3974,7 +4584,7 @@ export class Agent {
           llmTools = llmTools.filter((t) => allowed.has(t.name));
         }
 
-        const updatedSessionMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+        const updatedSessionMessages = this.requestHistory(sessionId);
         const prepared2 = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: updatedSessionMessages,
@@ -4025,7 +4635,7 @@ export class Agent {
           content: '[SYSTEM] You are about to end your turn WITHOUT posting a reply and WITHOUT marking [NO_REPLY_NEEDED]. In this scenario your text output is NOT visible to anyone. You MUST either: (1) call `task_comment` or `requirement_comment` tool to post your reply in the comment thread, OR (2) output exactly [NO_REPLY_NEEDED] if you have determined that no response is warranted. Do it now.',
         });
 
-        const reminderMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+        const reminderMessages = this.requestHistory(sessionId);
         const preparedReminder = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: reminderMessages,
@@ -4052,7 +4662,7 @@ export class Agent {
 
         // Execute tool calls from the reminder response
         if (response.finishReason === 'tool_use' && response.toolCalls?.length) {
-          const currentActId = this.state.currentActivity?.id;
+          const currentActId = this.workspaceActivity?.id;
           this.memory.appendMessage(sessionId, {
             role: 'assistant',
             content: response.content,
@@ -4090,7 +4700,7 @@ export class Agent {
           }
 
           // One final LLM call to get the closing text
-          const finalMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+          const finalMessages = this.requestHistory(sessionId);
           const preparedFinal = await this.contextEngine.prepareMessages({
             systemPrompt,
             sessionMessages: finalMessages,
@@ -4131,7 +4741,7 @@ export class Agent {
           content: '[SYSTEM] You are about to end your turn WITHOUT taking any action. In requirement_action mode your text output is NOT visible to anyone. You MUST call at least one action tool: requirement_update_status, requirement_comment, task_create, or notify_user. Call requirement_get first if you need context, then take action.',
         });
 
-        const reminderMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+        const reminderMessages = this.requestHistory(sessionId);
         const preparedReminder = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: reminderMessages,
@@ -4157,7 +4767,7 @@ export class Agent {
         );
 
         if (response.finishReason === 'tool_use' && response.toolCalls?.length) {
-          const currentActId = this.state.currentActivity?.id;
+          const currentActId = this.workspaceActivity?.id;
           this.memory.appendMessage(sessionId, {
             role: 'assistant',
             content: response.content,
@@ -4194,7 +4804,7 @@ export class Agent {
             this.memory.appendMessage(sessionId, { role: 'tool', content: tr.content, toolCallId: tr.toolCallId });
           }
 
-          const finalMessages = this.memory.getRecentMessages(sessionId, maxHistory);
+          const finalMessages = this.requestHistory(sessionId);
           const preparedFinal = await this.contextEngine.prepareMessages({
             systemPrompt,
             sessionMessages: finalMessages,
@@ -4288,6 +4898,7 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
+    explicitDbSessionId?: string,
   ): Promise<string> {
     // Link the external cancel token to activeStreamToken so that
     // cancelActiveStream() (called via the cancel-processing API)
@@ -4320,7 +4931,7 @@ export class Agent {
 
     // Track chat activity for streaming
     let streamChatActivityId: string | undefined;
-    if (!this.state.currentActivity) {
+    if (!this.workspaceActivity) {
       const senderLabel = senderInfo?.name ?? senderId ?? 'user';
       streamChatActivityId = this.startActivity('chat', `Chat with ${senderLabel}`);
     }
@@ -4336,7 +4947,31 @@ export class Agent {
     }
     const effectiveMessage = inputCheck.transformedInput ?? userMessage;
 
-    if (!this.currentSessionId) {
+    // Resolve the session identity for THIS turn:
+    //   1) the memory session bound to the request's DB session (the binding is
+    //      written when the restore runs — in this worker's workspace), else
+    //   2) the workspace pointer, else
+    //   3) a brand-new session.
+    // The DB id is NEVER used as a memory key directly: the two id spaces must
+    // not be conflated, or one conversation ends up split across two stores.
+    // Relying on the pointer alone was the bug: it is per-worker, so a later
+    // message picked up by another worker (or by one that has since served a
+    // different conversation) silently started an empty session and
+    // `requestHistory()` returned [] — the agent "forgot" its conversation.
+    const boundMemorySessionId = explicitDbSessionId
+      ? this.dbSessionMap.get(explicitDbSessionId)
+      : undefined;
+    if (explicitDbSessionId && !boundMemorySessionId) {
+      log.warn('Streaming turn has no memory session bound to its DB session — falling back to the workspace session', {
+        agentId: this.id,
+        dbSessionId: explicitDbSessionId,
+        workspaceSessionId: this.currentSessionId,
+      });
+    }
+    const resolvedSessionId = boundMemorySessionId ?? this.currentSessionId;
+    if (resolvedSessionId) {
+      this.currentSessionId = resolvedSessionId;
+    } else {
       const session = this.memory.createSession(this.id);
       this.currentSessionId = session.id;
     }
@@ -4344,6 +4979,11 @@ export class Agent {
 
     const userContent = await this.buildUserContent(userMessage, images, fileNames, imagePaths);
     this.memory.appendMessage(this.currentSessionId, { role: 'user', content: userContent });
+
+    // P1-9（M1 修订）：**流式主路径**同样要按本次生效模型激活 token 计数器。
+    // 此前只在非流式 `handleMessage()` 里调用，主聊天流式路径从未激活 → 长上下文
+    // 预算按错误模型/过期编码器计数（跨 agent 串扰）。
+    await this.activateTokenCounterForModel();
 
     const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
 
@@ -4374,6 +5014,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
       notebookWriter: this.getNotebookWriter(),
@@ -4385,16 +5026,14 @@ export class Agent {
     this.activeScenario = 'chat';
     const streamToolSelectOpts = { userMessage: effectiveMessage, isChat: true as const, scenario: 'chat' as const };
     let llmTools = this.buildToolDefinitions(streamToolSelectOpts);
-    ({ text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
-      systemPrompt,
-      systemCacheSegments,
-    ));
+    // Afford.S2 catalog rides the per-turn volatile tail (see consumeDeferredToolCatalog).
+    const streamDeferredCatalog = this.consumeDeferredToolCatalog();
 
     // A2: flush important memory to disk before context fills (turn-level preflight).
     await this.maybeMemoryFlushPreflight(this.currentSessionId);
 
-    const sessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
-    this.volatileState = volatileState;
+    const sessionMessages = this.requestHistory(this.currentSessionId);
+    this.volatileState = this.mergeVolatile(volatileState, streamDeferredCatalog);
     let preparedStream = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
@@ -4584,7 +5223,7 @@ export class Agent {
               subagentEvent: { eventType: event.type, content: event.content, metadata: event.metadata },
             });
           };
-          const streamActId = streamChatActivityId ?? this.state.currentActivity?.id;
+          const streamActId = streamChatActivityId ?? this.workspaceActivity?.id;
           const toolResults = await Promise.all(
             response.toolCalls!.map(async tc => {
               const toolStart = Date.now();
@@ -4710,7 +5349,7 @@ export class Agent {
 
         llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, streamToolSelectOpts);
 
-        const updatedSessionMessages = this.memory.getRecentMessages(this.currentSessionId, 200);
+        const updatedSessionMessages = this.requestHistory(this.currentSessionId);
         const preparedCont = await this.contextEngine.prepareMessages({
           systemPrompt,
           sessionMessages: updatedSessionMessages,
@@ -4977,13 +5616,13 @@ export class Agent {
     executionRound?: number
   ): Promise<void> {
     this.currentTaskId = taskId;
-    if (
-      this.config.profile?.maxConcurrentTasks !== undefined &&
-      this.config.profile.maxConcurrentTasks !== null &&
-      this.activeTasks.size >= this.config.profile.maxConcurrentTasks
-    ) {
+    // 防御性闸（统一闸之后仍保留）：拿**实际生效**的任务并发上限对账，而不是原始
+    // profile 值。旧实现用 `!== undefined && activeTasks.size >= profile`，
+    // profile=0 / 负数这类脏配置会让它变成「恒真」的假闸。
+    const taskConcurrencyLimit = this.getTaskConcurrencyLimit();
+    if (this.activeTasks.size >= taskConcurrencyLimit) {
       throw new Error(
-        `Agent has reached maximum concurrent tasks (${this.config.profile.maxConcurrentTasks})`
+        `Agent has reached maximum concurrent tasks (${taskConcurrencyLimit})`,
       );
     }
     this.setStatus('working');
@@ -5116,6 +5755,9 @@ export class Agent {
       this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });
     }
 
+    // P1-9（M1 修订）：任务执行路径同样按生效模型激活 token 计数器（与 chat 两条路径一致）。
+    await this.activateTokenCounterForModel();
+
     const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
@@ -5145,6 +5787,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
       notebookWriter: this.getNotebookWriter(),
@@ -5433,7 +6076,7 @@ export class Agent {
 
         const preparedTaskCont = await this.contextEngine.prepareMessages({
           systemPrompt,
-          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          sessionMessages: this.requestHistory(sessionId),
           memory: this.memory,
           sessionId,
           agentId: this.id,
@@ -5503,7 +6146,7 @@ export class Agent {
 
         const preparedFinal = await this.contextEngine.prepareMessages({
           systemPrompt,
-          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          sessionMessages: this.requestHistory(sessionId),
           memory: this.memory,
           sessionId,
           agentId: this.id,
@@ -5707,6 +6350,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
       notebookWriter: this.getNotebookWriter(),
@@ -5864,7 +6508,7 @@ export class Agent {
 
         const preparedCont = await this.contextEngine.prepareMessages({
           systemPrompt,
-          sessionMessages: this.memory.getRecentMessages(sessionId, 200),
+          sessionMessages: this.requestHistory(sessionId),
           memory: this.memory,
           sessionId,
           agentId: this.id,
@@ -6160,7 +6804,8 @@ export class Agent {
 
   /**
    * Mark tool names as activated for LIVE schemas (typically after discover_tools).
-   * Skill/MCP activations may be LRU-evicted under pack toolDef budget; core tools stay.
+   * 审计 P0-3：已激活工具在 tool-selector 中一律豁免驱逐（promote to protected），
+   * 因此激活必然可见，core 工具与激活工具都保持 LIVE。
    */
   activateTools(names: string[]): void {
     for (const name of names) {
@@ -6170,11 +6815,21 @@ export class Agent {
     }
   }
 
-  /** Drop activated extras that were deferred to stay under toolDef budget. */
+  /**
+   * 审计 P0-3：已激活工具**绝不静默删除**。
+   *
+   * 旧实现把本轮被预算驱逐的激活工具从 `activatedExtraTools` 里 `delete`，于是该工具
+   * 在之后所有轮次都不可见 → 模型只能反复 discover_tools（空烧 token、永不成功）。
+   * 现在 tool-selector 已把「已激活工具」全部晋升 protected（不再会被驱逐）；此处再做
+   * 一层兜底：即使收到驱逐名单，也**保留激活态（sticky）并显式告警**，而不是静默移除，
+   * 让「激活了却拿不到」在日志里可见、可查。
+   */
   private pruneEvictedActivatedTools(names: string[]): void {
-    for (const name of names) {
-      this.activatedExtraTools.delete(name);
-    }
+    if (names.length === 0) return;
+    log.warn('Activated tools reported evicted — keeping them sticky (no silent drop)', {
+      agentId: this.id,
+      evictedActivated: names,
+    });
   }
 
   /**
@@ -6187,29 +6842,60 @@ export class Agent {
    */
   reconcileToIdle(): boolean {
     if (this.activeTasks.size > 0) return false;
-    const act = this.state.currentActivity;
+    // 双源：workspace 聚合（并发 worker / rootWorkspace）+ legacy state.currentActivity
+    // （旧代码/测试直接写 this.state 的残留痕迹）。
+    const acts = this.liveActivities();
+    const legacyAct = this.state.currentActivity;
+    const allActs = legacyAct && !acts.includes(legacyAct) ? [...acts, legacyAct] : [...acts];
+    // 并发模式：任一来源有「非 stale」的活跃活动 → 不清理（agent 仍在干活）。
+    const nonStale = allActs.some(act => {
+      const startedTs = Date.parse(act.startedAt);
+      const fresh = !Number.isNaN(startedTs) && Date.now() - startedTs < 60_000;
+      return fresh;
+    });
+    if (nonStale) return false;
+    const act = allActs[allActs.length - 1]; // 最新启动的活动（清理时以它为准）
     if (!act && this.state.status === 'idle') return false;
 
-    if (act) {
-      const startedTs = Date.parse(act.startedAt);
+    let cleared = false;
+    for (const a of allActs) {
+      const startedTs = Date.parse(a.startedAt);
       // 竞态保护：活动刚启动（<60s）不清理，避免误杀刚开始的真实工作。
       const fresh = !Number.isNaN(startedTs) && Date.now() - startedTs < 60_000;
-      if (fresh) return false;
+      if (fresh) continue;
       log.info('Reconciling stale activity to idle', {
         agentId: this.id,
-        activity: `${act.type}:${act.label ?? ''}`,
-        startedAt: act.startedAt,
+        activity: `${a.type}:${a.label ?? ''}`,
+        startedAt: a.startedAt,
       });
-      this.activityLogs.delete(act.id);
-      this.activitySeqCounters.delete(act.id);
-      this.state.currentActivity = undefined;
+      this.activityLogs.delete(a.id);
+      this.activitySeqCounters.delete(a.id);
+      cleared = true;
+    }
+    // 清理后清掉所有 worker 的 currentActivity 标记 + legacy state.currentActivity
+    // （保留未 stale 的）。
+    for (const ws of (this.attentionController.getWorkerCount() > 1 ? this.workerWorkspaces.values() : [this.rootWorkspace])) {
+      const a = ws.currentActivity;
+      if (a) {
+        const startedTs = Date.parse(a.startedAt);
+        const fresh = !Number.isNaN(startedTs) && Date.now() - startedTs < 60_000;
+        if (!fresh) ws.currentActivity = undefined;
+      }
+    }
+    if (this.state.currentActivity) {
+      const startedTs = Date.parse(this.state.currentActivity.startedAt);
+      const fresh = !Number.isNaN(startedTs) && Date.now() - startedTs < 60_000;
+      if (!fresh) this.state.currentActivity = undefined;
     }
 
     if (this.state.status !== 'idle') this.setStatus('idle');
-    this.notifyStateChange();
-    this.eventBus.emit('agent:reconciled-idle', { agentId: this.id, clearedActivity: !!act });
-    log.info('Agent reconciled to idle', { agentId: this.id, clearedActivity: !!act });
-    return true;
+    if (cleared) {
+      this.notifyStateChange();
+      this.eventBus.emit('agent:reconciled-idle', { agentId: this.id, clearedActivity: true });
+      log.info('Agent reconciled to idle', { agentId: this.id, clearedActivity: true });
+      return true;
+    }
+    return false;
   }
 
   /** 触发一次心跳（api-server 脏态兜底用）：在 agent 私有 bus 上发 heartbeat:trigger。 */
@@ -6334,20 +7020,49 @@ export class Agent {
       + `\n\n[NOTE] Your current model does not support vision. To understand the IMAGE file(s) above, call the describe_image tool with their paths (e.g. describe_image with images: [...paths]). You may also switch to a vision-capable model via llm_switch_model, or ask the user which you prefer.`;
   }
 
-  /** Afford.S2: inject short deferred-tool catalog into system Tier 3 (not tool schema). */
-  private appendDeferredToolCatalog(
-    systemPrompt: string,
-    segments: SystemPromptSegment[],
-  ): { text: string; segments: SystemPromptSegment[] } {
+  /**
+   * Afford.S2: deferred-tool catalog (tools the per-turn pack budget evicted).
+   *
+   * Returns the catalog TEXT for the caller to merge into the per-turn volatile
+   * tail (`mergeVolatile`), and consumes it from the selector.
+   *
+   * It deliberately does NOT go into the system prompt any more: the evicted set
+   * follows the keyword-selected tool set, so it changes between turns — and any
+   * change inside the single system message invalidates the cached prefix for the
+   * ENTIRE request (system + history). Same content, zero cache cost, when it
+   * rides the volatile block at the history tail.
+   */
+  private consumeDeferredToolCatalog(): string {
     const deferred = this.toolSelector.consumeDeferredCatalog();
-    if (!deferred.length) return { text: systemPrompt, segments };
-    const catalog = formatEvictedToolCatalog(deferred, DEFERRED_CATALOG_MAX_CHARS);
-    if (!catalog) return { text: systemPrompt, segments };
-    const nextSegments = [...segments, { content: catalog }];
-    return {
-      text: `${systemPrompt}\n${catalog}`,
-      segments: nextSegments,
-    };
+    if (!deferred.length) return '';
+    return formatEvictedToolCatalog(deferred, DEFERRED_CATALOG_MAX_CHARS);
+  }
+
+  /**
+   * Merge per-turn volatile bits into ONE tail block. Keeps the block byte-stable
+   * when a bit is empty, and keeps ordering deterministic (system snapshot first,
+   * then the deferred-tool catalog).
+   */
+  private mergeVolatile(base: string | undefined, ...extra: Array<string | undefined>): string | undefined {
+    const parts = [base, ...extra].map(p => (p ?? '').trim()).filter(Boolean);
+    return parts.length ? parts.join('\n\n') : undefined;
+  }
+
+  /**
+   * Prefix-cache-safe request history (see `history-window.ts`).
+   *
+   * Replaces `memory.getRecentMessages(id, N)` for every LLM request: a raw
+   * "last N" slice moves `messages[0]` every turn once the session is longer
+   * than N, which busts the implicit prefix cache for the whole replayed
+   * history. The quantized window keeps the head stable for ~BLOCK/2 turns.
+   */
+  private requestHistory(
+    sessionId: string,
+    minMessages: number = SESSION_REQUEST_HISTORY_MIN,
+    block: number = SESSION_REQUEST_HISTORY_BLOCK,
+  ): LLMMessage[] {
+    const all = this.memory.getRecentMessages(sessionId, Number.MAX_SAFE_INTEGER);
+    return requestHistoryWindow(all, minMessages, block);
   }
 
   /** Slim reflex pack used when afford guard must downgrade fixed prefix. */
@@ -6379,6 +7094,7 @@ export class Agent {
       agentDataDir: this.dataDir,
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
+      concurrentContext: this.getConcurrentContext(),
       notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
@@ -6396,7 +7112,9 @@ export class Agent {
   }
 
   /**
-   * Catalog + prepareMessages + Afford.S1 for any scenario (chat/task/review/session).
+   * Deferred-tool catalog + prepareMessages + Afford.S1 for any scenario
+   * (chat/task/review/session). The catalog goes to the volatile tail, not the
+   * system prompt (see `consumeDeferredToolCatalog`).
    */
   private async prepareWithAffordGuard(opts: {
     systemPrompt: string;
@@ -6412,13 +7130,15 @@ export class Agent {
     systemPrompt: string;
     systemCacheSegments: SystemPromptSegment[];
   }> {
-    const { text: systemPrompt, segments: systemCacheSegments } = this.appendDeferredToolCatalog(
-      opts.systemPrompt,
-      opts.systemCacheSegments,
-    );
-    const sessionMessages = this.memory.getRecentMessages(
+    const { systemPrompt, systemCacheSegments } = opts;
+    // Afford.S2 catalog rides the per-turn volatile tail (see consumeDeferredToolCatalog).
+    // Stored on the workspace so the afford-guard downgrade re-prepare below keeps it.
+    const gapDeferredCatalog = this.consumeDeferredToolCatalog();
+    const volatileForPrepare = this.mergeVolatile(this.volatileState, gapDeferredCatalog);
+    this.volatileState = volatileForPrepare;
+    const sessionMessages = this.requestHistory(
       opts.sessionId,
-      opts.sessionMessageLimit ?? 200,
+      opts.sessionMessageLimit ?? SESSION_REQUEST_HISTORY_MIN,
     );
     const prepared = await this.contextEngine.prepareMessages({
       systemPrompt,
@@ -6825,7 +7545,127 @@ export class Agent {
     return JSON.stringify(result);
   }
 
+  /**
+   * 写语义工具的**互斥资源域**表 —— 唯一真源。
+   *
+   * - 工具在此表中 ⟺ 它是写工具（`WRITE_TOOL_NAMES` 由本表推导，杜绝「两张表漂移」）。
+   * - `domain: '*'` 表示可触及任意资源，必须与所有写操作串行。
+   * - `arg` 给出「域内细分键」的参数名候选，命中即用该值作 `sub`（不同值可并行）。
+   *
+   * 新增写工具时必须在此登记；`agent-write-lock.test.ts` 会断言登记集合与预期一致，
+   * 使漏登记成为测试失败而不是静默的并发竞态。
+   */
+  private static readonly WRITE_TOOL_DOMAINS: Readonly<Record<string, { domain: string; arg?: readonly string[] }>> = {
+    // ── 文件系统：按路径细分（不同文件可并行）；定位不到路径则全域串行
+    file_write:       { domain: 'fs', arg: ['path', 'filePath'] },
+    file_edit:        { domain: 'fs', arg: ['path', 'filePath'] },
+    // ── 可触及任意资源 → 全局独占
+    shell_execute:    { domain: GLOBAL_LOCK_DOMAIN },
+    apply_patch:      { domain: GLOBAL_LOCK_DOMAIN },
+    package_install:  { domain: GLOBAL_LOCK_DOMAIN },
+    hub_install:      { domain: GLOBAL_LOCK_DOMAIN },
+    // ── 单体状态资源
+    memory_save:            { domain: 'memory' },
+    memory_update:          { domain: 'memory' },
+    memory_update_longterm: { domain: 'memory' },
+    memory_delete:          { domain: 'memory' },
+    update_notebook:        { domain: 'notebook' },
+    clear_notebook:         { domain: 'notebook' },
+    update_working_memory:  { domain: 'working-memory' },
+    clear_working_memory:   { domain: 'working-memory' },
+    // ── 全局配置
+    llm_switch_model:           { domain: 'llm-config' },
+    llm_set_capability_routing: { domain: 'llm-config' },
+    llm_add_model:              { domain: 'llm-config' },
+    llm_add_provider:           { domain: 'llm-config' },
+    llm_edit_provider:          { domain: 'llm-config' },
+    schedule_wakeup:            { domain: 'schedule' },
+    set_heartbeat_interval:     { domain: 'schedule' },
+    // ── 任务 / 目标：按任务实体细分
+    task_create:        { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_update:        { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_comment:       { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_submit_review: { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_create:     { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_update:     { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_complete:   { domain: 'task', arg: ['task_id', 'taskId'] },
+    goal_create:        { domain: 'task', arg: ['task_id', 'taskId'] },
+    goal_update:        { domain: 'task', arg: ['task_id', 'taskId'] },
+    // ── 需求：按需求实体细分
+    requirement_propose: { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_update:  { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_comment: { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    deliverable_create:  { domain: 'deliverable' },
+    // ── 对外消息 / 通知：按目标细分
+    agent_send_message:       { domain: 'a2a-out', arg: ['agent_id', 'agentId', 'to'] },
+    agent_send_group_message: { domain: 'a2a-out', arg: ['channelKey', 'channel_key', 'group_id'] },
+    agent_delegate_task:      { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
+    agent_stop:               { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
+    agent_create_group_chat:  { domain: 'a2a-out' },
+    agent_broadcast_status:   { domain: 'a2a-out' },
+    notify_user:              { domain: 'notify' },
+    // ── 邮箱管理：按 item 细分
+    defer_mailbox_item:      { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
+    drop_mailbox_item:       { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
+    prioritize_mailbox_item: { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
+  };
+
+  /** 写语义工具集合（由 WRITE_TOOL_DOMAINS 推导 —— 单一真源）。 */
+  private static readonly WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(
+    Object.keys(Agent.WRITE_TOOL_DOMAINS),
+  );
+
+  /** 工具是否具备写语义（需要跨 worker 互斥）。 */
+  private static isWriteTool(name: string): boolean {
+    return Agent.WRITE_TOOL_NAMES.has(name);
+  }
+
+  /**
+   * 推导一次写工具调用的互斥资源域。
+   *
+   * 文件路径做 `resolve` 归一化，避免 `/a/b`、`./b`、`/a/./b` 指向同一文件却
+   * 拿到不同锁键；未登记的写工具（或缺少细分参数）退化为整域 / 全局独占 ——
+   * 宁可串行，不可竞态。
+   */
+  private static resourceLocksFor(toolCall: LLMToolCall): LockRequest[] {
+    const spec = Agent.WRITE_TOOL_DOMAINS[toolCall.name];
+    if (!spec) return [{ domain: GLOBAL_LOCK_DOMAIN }];
+
+    let sub: string | undefined;
+    if (spec.arg) {
+      const args = (toolCall.arguments ?? {}) as Record<string, unknown>;
+      for (const field of spec.arg) {
+        const raw = args[field];
+        if (typeof raw === 'string' && raw.length > 0) {
+          sub = spec.domain === 'fs' ? normalizeFsLockKey(raw) : raw;
+          break;
+        }
+      }
+    }
+    return [sub === undefined ? { domain: spec.domain } : { domain: spec.domain, sub }];
+  }
+
+  /**
+   * 写工具跨 worker 互斥（资源域锁）。
+   *
+   * 取代早期的「一把 Agent 级全局写锁」：不同资源域可并行，同域严格串行。
+   * 详见 `resource-locks.ts`。
+   */
+  private async withToolWriteLock<T>(toolCall: LLMToolCall, fn: () => Promise<T>): Promise<T> {
+    return this.resourceLocks.withLocks(Agent.resourceLocksFor(toolCall), fn);
+  }
+
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
+    // 写语义工具跨 worker 互斥（所有外部调用走这里）：
+    //   写工具 → 取资源域锁 → 执行瀑布逻辑（executeToolInternal）
+    //   读工具 → 直接执行，不互斥
+    if (Agent.isWriteTool(toolCall.name)) {
+      return await this.withToolWriteLock(toolCall, () => this.executeToolInternal(toolCall, onOutput, sessionId));
+    }
+    return await this.executeToolInternal(toolCall, onOutput, sessionId);
+  }
+
+  private async executeToolInternal(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
     // Handle the discover_tools meta-tool: activate requested tools, skills, and skill MCP servers
     if (toolCall.name === 'discover_tools') {
       return await this.handleDiscoverTools(toolCall.arguments);

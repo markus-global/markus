@@ -46,3 +46,63 @@ describe('segmentsToStreamEntries thinking merge', () => {
     expect(texts.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ─── Live bubble rendering ────────────────────────────────────────────────────
+// Regression guard for "the bubble is empty while the answer streams": live
+// `segments` (not just the completed turn) must drive the visible body text.
+
+describe('AgentMessageBody live streaming bubble', () => {
+  const render = async (msg: Record<string, unknown>, isStreaming: boolean) => {
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const React = await import('react');
+    const { AgentMessageBody } = await import('./ChatComponents.tsx');
+    return renderToStaticMarkup(
+      React.createElement(AgentMessageBody, {
+        msg: {
+          id: 'm', sender: 'agent', time: '',
+          rawCreatedAt: '2026-09-11T00:00:00.000Z',
+          isStreaming,
+          ...msg,
+        },
+        isStreaming,
+        liveActivities: [],
+      } as never),
+    );
+  };
+
+  it('renders answer prose while the turn is still streaming (no tool rows yet)', async () => {
+    const html = await render(
+      { text: '正在流式输出的回答', segments: [{ type: 'text', content: '正在流式输出的回答' }] },
+      true,
+    );
+    expect(html).toContain('正在流式输出的回答');
+    expect(html).not.toContain('activity-text-shimmer');
+  });
+
+  it('shows the thinking indicator (not a blank bubble) when only reasoning arrived', async () => {
+    const html = await render(
+      { text: '', segments: [{ type: 'text', content: '', thinking: '内心独白内容' }] },
+      true,
+    );
+    expect(html).toContain('activity-text-shimmer');
+    // Reasoning is never rendered as the answer body while streaming.
+    expect(html).not.toContain('内心独白内容');
+  });
+
+  it('surfaces reasoning as a thinking row once a tool row exists', async () => {
+    const html = await render(
+      {
+        text: '答案',
+        segments: [
+          { type: 'text', content: '', thinking: '内心独白内容' },
+          { type: 'tool', key: 't1', tool: 'shell_execute', status: 'running' },
+          { type: 'text', content: '答案' },
+        ],
+      },
+      true,
+    );
+    // The timeline renders a (collapsed) thinking row labelled execution.thinking.
+    expect(html).toContain('execution.thinking');
+    expect(html).toContain('答案');
+  });
+});

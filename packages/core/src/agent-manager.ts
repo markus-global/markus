@@ -27,6 +27,7 @@ import type { OrgContext } from './context-engine.js';
 import type { LLMRouter } from './llm/router.js';
 import { RoleLoader } from './role-loader.js';
 import { EventBus } from './events.js';
+import { initTokenCounter } from './token-counter.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { MCPClientManager } from './tools/mcp-client.js';
 import { BrowserSessionManager } from './tools/browser-session.js';
@@ -351,6 +352,59 @@ export interface RoleSyncResult {
   synced: string[];
 }
 
+/**
+ * Agent 私有 EventBus → manager EventBus 的**转发白名单**。
+ *
+ * 契约（由 `scripts/architecture-guard.mjs` 的 `event-reachability` 规则强制）：
+ * 凡是在 agent 私有 bus 上 `emit`、又在 agent 私有 bus 之外被订阅的事件，必须登记在本表；
+ * 否则订阅方（`cli/start.ts` 的 WS 广播、TaskService 的自愈等）永远收不到 —— 相关路径会静默
+ * 变成死代码。历史事故（审计 P0-1）：`agent:incomplete` 漏登，导致「任务执行闭包丢失 → 自动
+ * 重调度」这条自愈路径从引入至今不可达，任务可永久卡在 `in_progress`。
+ */
+export const AGENT_FORWARDED_EVENTS = [
+  'agent:activity-log',
+  'agent:activity_log',
+  'agent:started',
+  'agent:stopped',
+  'agent:paused',
+  'agent:resumed',
+  'agent:focus-changed',
+  'agent:message',
+  'agent:notify-user',
+  'agent:ui-layout',
+  'agent:escalation',
+  'agent:heartbeat-interval-changed',
+  // P0-1：任务执行闭包丢失的自愈信号（agent.ts / attention.ts 在私有 bus 上 emit，
+  // start.ts 在 manager bus 上订阅）。补登前该事件永不可达。
+  'agent:incomplete',
+  // P0-1 同族：实体亲和锁冲突（conflictPolicy:'report'）的可见性信号。
+  'agent:entity-conflict',
+  'task:completed',
+  'task:failed',
+  'mailbox:new-item',
+  'attention:decision',
+  'attention:state-changed',
+  'attention:triage',
+] as const;
+
+/**
+ * 把 agent 私有 bus 上的事件转发到 manager bus。
+ *
+ * 抽为纯函数，便于单测直接验证「agent bus emit → manager bus 收到」的可达性契约
+ * （`test/agent-event-forwarding.test.ts`），而不必构造完整的 AgentManager。
+ */
+export function wireAgentEventForwarding(
+  agentBus: EventBus,
+  managerBus: EventBus,
+  events: readonly string[] = AGENT_FORWARDED_EVENTS,
+): void {
+  for (const eventName of events) {
+    agentBus.on(eventName, (payload: unknown) => {
+      managerBus.emit(eventName, payload);
+    });
+  }
+}
+
 export class AgentManager {
   private agents = new Map<string, Agent>();
   private eventBus: EventBus;
@@ -387,6 +441,8 @@ export class AgentManager {
   }) => Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] }>;
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
   private runtimeViewerContext?: { locale?: string; timezone?: string };
+  /** org-manager injects this so session_rename on cs_* sessions persists to Sqlite + broadcasts to UI. */
+  private sessionTitleUpdater?: (sessionId: string, title: string) => void;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
   private deliverableService?: DeliverableServiceBridge;
@@ -426,6 +482,7 @@ export class AgentManager {
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private _cognitiveConfig?: CognitiveConfig;
+  private _concurrentConfig?: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
   private _codingToolsEnabled = false;
   private _codingToolsConfigs?: Record<string, CodingToolConfig>;
   private templateRegistry?: TemplateRegistry;
@@ -578,9 +635,31 @@ export class AgentManager {
     this.dataDir = options.dataDir ?? join(homedir(), '.markus', 'agents');
     this.sharedDataDir = options.sharedDataDir;
     this.eventBus = options.eventBus ?? new EventBus();
+    // P1-10：启动期接线 Anthropic 精确 token 计数。
+    // 此前 `initTokenCounter()` 只在测试里被调用，生产启动路径从未启用它 →
+    // Claude 全部走启发式估算，长上下文预算精度无保证（“入口存在、接线缺失”类）。
+    // 按已配置的环境变量初始化；缺 key 时保持启发式，不影响启动。
+    initTokenCounter({
+      anthropicApiKey: process.env['ANTHROPIC_API_KEY'],
+      anthropicBaseUrl: process.env['ANTHROPIC_BASE_URL'],
+    });
     this.mcpManager = new MCPClientManager();
     this.mcpManager.setOnReconnect((serverName) => {
       this.triggerChromeDialogAutoClick(serverName);
+    });
+    // P1-11：MCP 工具清单变化（退出→[] / 连接→最新 tools/list）时保持可见，
+    // 避免 stale 工具静默残留、新增工具不可见。
+    this.mcpManager.setOnToolsChanged((serverName, tools) => {
+      log.info('MCP tool set changed', {
+        serverName,
+        toolCount: tools.length,
+        tools: tools.map(t => t.name),
+      });
+      this.eventBus.emit('agent:mcp-tools-changed', {
+        serverName,
+        toolCount: tools.length,
+        toolNames: tools.map(t => t.name),
+      });
     });
     this.browserSessionManager = new BrowserSessionManager();
     this.browserSessionManager.onOwnershipChange((event) => {
@@ -670,6 +749,28 @@ export class AgentManager {
 
   set cognitiveConfig(value: CognitiveConfig | undefined) {
     this._cognitiveConfig = value;
+  }
+
+  get concurrentConfig(): { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' } | undefined {
+    return this._concurrentConfig;
+  }
+
+  set concurrentConfig(value: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' } | undefined) {
+    this._concurrentConfig = value;
+    // 热传播：同步到所有已加载 agent 的 attention（无需重启进程）。
+    for (const info of this.listAgents()) {
+      try {
+        const agent = this.getAgent(info.id);
+        if (!agent) continue;
+        const cfg = value ?? { enabled: true, maxWorkers: 3 };
+        if (agent.config) agent.config.concurrent = cfg;
+        // 统一并发闸：worker 数与任务并发上限一起改（applyConcurrency 内部同源计算）。
+        // 旧实现只在 `enabled === true` 时下发，导致「运行中关掉并发」不会把
+        // workerCount / 任务闸降回 1；这里始终下发，enabled:false ⇒ 两者都回 1。
+        agent.applyConcurrency?.(cfg);
+        agent.attention?.setConflictPolicy(cfg.conflictPolicy ?? 'auto');
+      } catch { /* 单个 agent 传播失败不阻塞整体 */ }
+    }
   }
 
   get codingToolsEnabled(): boolean {
@@ -1144,6 +1245,15 @@ export class AgentManager {
     }
   }
 
+  /**
+   * Inject a hook that persists a chat (cs_*) session title renames into the
+   * Sqlite chat store and broadcasts to the web UI (wired by the org-manager
+   * server). Lets agents rename the current chat session via session_rename.
+   */
+  setSessionTitleUpdater(fn: (sessionId: string, title: string) => void): void {
+    this.sessionTitleUpdater = fn;
+  }
+
   setUserNotifier(cb: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void): void {
     this.userNotifier = cb;
     for (const info of this.listAgents()) {
@@ -1298,6 +1408,7 @@ export class AgentManager {
         : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
       channels: [],
       heartbeatIntervalMs: request.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      concurrent: this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1611,6 +1722,11 @@ export class AgentManager {
     agent.registerTool(createSessionTool({
       agentId: id, chatSessionRepo: createMemorySessionRepo(mem),
       compactor, slotStore, fragmentStore,
+      titleUpdater: this.sessionTitleUpdater,
+      currentDbSessionId: () => agent.getDbSessionId(),
+      currentMemorySessionId: () => agent.getCurrentSessionId(),
+      resolveMemorySessionByDbSessionId: (dbId) => agent.getMemorySessionIdForDbSession(dbId),
+      diskSessionCount: () => mem.countSessionsOnDisk?.() ?? 0,
     }));
 
     // Settings tools — agents can list providers and switch models via chat
@@ -2212,6 +2328,7 @@ export class AgentManager {
       })(),
       channels: [],
       heartbeatIntervalMs: row.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      concurrent: (row as Record<string, unknown>)['concurrent'] as AgentConfig['concurrent'] ?? this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -2546,6 +2663,11 @@ export class AgentManager {
           purgeSessionFragments: (sid) => mem2.purgeSessionFragments ? mem2.purgeSessionFragments(sid) : 0,
           sessionStats: (sid) => mem2.sessionStats ? mem2.sessionStats(sid) : { messageCount: 0, slotKeys: [], fragmentCount: 0 },
         },
+        titleUpdater: this.sessionTitleUpdater,
+        currentDbSessionId: () => agent.getDbSessionId(),
+        currentMemorySessionId: () => agent.getCurrentSessionId(),
+        resolveMemorySessionByDbSessionId: (dbId) => agent.getMemorySessionIdForDbSession(dbId),
+        diskSessionCount: () => mem2.countSessionsOnDisk?.() ?? 0,
       }));
     }
 
@@ -3253,34 +3375,9 @@ export class AgentManager {
    * manager-level bus where start.ts registers WS broadcast handlers.
    */
   private forwardAgentEvents(agent: Agent): void {
-    const FORWARDED_EVENTS = [
-      'agent:activity-log',
-      'agent:activity_log',
-      'agent:started',
-      'agent:stopped',
-      'agent:paused',
-      'agent:resumed',
-      'agent:focus-changed',
-      'agent:message',
-      'agent:notify-user',
-      'agent:ui-layout',
-      'agent:escalation',
-      'agent:activity-log',
-      'agent:activity_log',
-      'agent:heartbeat-interval-changed',
-      'task:completed',
-      'task:failed',
-      'mailbox:new-item',
-      'attention:decision',
-      'attention:state-changed',
-      'attention:triage',
-    ] as const;
-    const agentBus = agent.getEventBus();
-    for (const eventName of FORWARDED_EVENTS) {
-      agentBus.on(eventName, (payload: unknown) => {
-        this.eventBus.emit(eventName, payload);
-      });
-    }
+    // 白名单与转发实现见模块级 `AGENT_FORWARDED_EVENTS` / `wireAgentEventForwarding`：
+    // 抽出去是为了让「事件可达性」既有单测、又能在 architecture-guard 里静态强制。
+    wireAgentEventForwarding(agent.getEventBus(), this.eventBus);
   }
 
   setActivityCallbacks(cbs: {
@@ -3338,6 +3435,11 @@ export class AgentManager {
           purgeSessionFragments: (sid) => mem.purgeSessionFragments ? mem.purgeSessionFragments(sid) : 0,
           sessionStats: (sid) => mem.sessionStats ? mem.sessionStats(sid) : { messageCount: 0, slotKeys: [], fragmentCount: 0 },
         },
+        titleUpdater: this.sessionTitleUpdater,
+        currentDbSessionId: () => agent.getDbSessionId(),
+        currentMemorySessionId: () => agent.getCurrentSessionId(),
+        resolveMemorySessionByDbSessionId: (dbId) => agent.getMemorySessionIdForDbSession(dbId),
+        diskSessionCount: () => mem.countSessionsOnDisk?.() ?? 0,
       }));
     }
   }

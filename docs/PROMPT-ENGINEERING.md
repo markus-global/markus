@@ -75,31 +75,37 @@ dynamic content is moved **out of the system prompt entirely** into a volatile t
 ║  TIER 2 — SEMI-STABLE (cache_control: ephemeral ✓)       ║
 ║   Identity · Org (CONTEXT.md) · Team Announcements &     ║
 ║   Norms · Workspace · User Profiles · Trust · Env ·      ║
-║   Your Knowledge (curated, no _observations) ·           ║
 ║   Scenario (mode instructions, placed LAST) ·            ║
 ║   Team Data Directory · Activated-skills body            ║
+║   (agent-written memory — knowledge.md / state.md —      ║
+║    is NOT here: it rides the volatile tail, see §2.1.1)  ║
 ╚══════════════════════════════════════════════════════════╝
 ╔══════════════════════════════════════════════════════════╗
 ║  VOLATILE TAIL — `[SYSTEM] [Live context]` (NOT system)  ║
-║  one `role: user` message pinned at END of history,      ║
-║  immediately BEFORE the current query. Only this tail    ║
-║  changes per call → cache across system+history persists.║
+║  one `role: user` message appended as the LAST message,  ║
+║  AFTER all history. Only this tail changes per call     ║
+║  → cache across system+history persists.                ║
 ║   contextHint ([CONTEXT x% used …]) · Relevant Memories  ║
 ║   Channel History (recent msgs) · Date/locale · Mailbox  ║
 ║   & attention · Team Status · Working Memory ·           ║
 ║   Cognitive/Notebook context · task board · deliverables ║
+║   · deferred-tool catalog (Afford.S2)                    ║
+║   · Your Knowledge (knowledge.md) · Current State        ║
+║     (state.md)  ← agent-written, see §2.1.1 inv. 5       ║
 ╚══════════════════════════════════════════════════════════╝
 ```
 
 ### 2.1 KV-Cache Optimization Strategy
 
-`buildSystemPrompt()` returns `{ text, segments, volatile }` under **Scheme A**: `text` is a byte-stable, two-tier system (Tier 1 STABLE + Tier 2 SEMI-STABLE); all per-call dynamic content lives in `volatile`, assembled by `prepareMessages()` into a single `[SYSTEM] [Live context]` message (role `user`) pinned at the end of history before the current query. Details:
+`buildSystemPrompt()` returns `{ text, segments, volatile }` under **Scheme A**: `text` is a byte-stable, two-tier system (Tier 1 STABLE + Tier 2 SEMI-STABLE); all per-call dynamic content lives in `volatile`, assembled by `prepareMessages()` into a single `[SYSTEM] [Live context]` message (role `user`) appended as the **last message of the request** (after all history). Details:
 
 1. **Tier 1 (Stable)**: Role, policies, tool usage rules, communication rules, collaboration rules. Scenario-free — stay cached across ALL mode switches (chat ↔ heartbeat ↔ a2a ↔ deliberation). A cache breakpoint after this tier caches this prefix across all calls.
 
-2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, `## Your Knowledge` (curated `knowledge.md`), scenario instructions last. Change when config/team/memory changes, but stay stable within a session. Scenario placed last keeps the identity/org/memory prefix stable across mode switches (OpenAI benefit). A breakpoint here caches the combined Tier 1+2 prefix. These two tiers together form the byte-stable system `text`.
+2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, scenario instructions last. Change on org/config events (days–weeks), but stay stable within a session. Scenario placed last keeps the identity/org prefix stable across mode switches (OpenAI benefit). A breakpoint here caches the combined Tier 1+2 prefix. These two tiers together form the byte-stable system `text`. **Agent-written memory (knowledge.md, state.md) is deliberately NOT in this tier** — see §2.1.1 invariant 5.
 
-3. **Volatile tail (Scheme A)** — replaces the old Tier 3: Project/task board, system announcements, feedback, available skills (query-filtered), `## Notebook` (cognitive), relevant memories, team status, channel history, mailbox state, working memory, timestamps. These change per call and live **outside the system**: `prepareMessages()` assembles them (plus `contextHint`) into one `[SYSTEM] [Live context]` message pinned at the **end of the conversation history, before the current query**. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn. Sitting in the **history tail** rather than in the system message means changing it never invalidates the byte-stable system + history prefix (implicit prefix-cache on OpenAI-compatible providers).
+3. **Volatile tail (Scheme A)** — replaces the old Tier 3: Project/task board, system announcements, feedback, available skills (query-filtered), `## Notebook` (cognitive), relevant memories, team status, channel history, mailbox state, working memory, timestamps, deferred-tool catalog. These change per call and live **outside the system**: `prepareMessages()` assembles them (plus `contextHint`) into one `[SYSTEM] [Live context]` message appended as the **LAST message of the request**. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn. Sitting in the **history tail** rather than in the system message means changing it never invalidates the byte-stable system + history prefix (implicit prefix-cache on OpenAI-compatible providers).
+
+   > **Placement is load-bearing — it must be the LAST message.** Do NOT "insert it just before the current query": inside an agent tool loop the last user message is the ORIGINAL task instruction (index 1) — every later turn is assistant/tool — so that insertion point is actually the *front* of the history. Rewriting `messages[1]` every turn broke the byte-identical prefix right after `system` and re-billed the entire replayed history on every LLM call (measured on real logs: 46% prefix reuse instead of 79%, ~90k tokens re-sent per call).
 
 **Message-level cache breakpoints**: In addition to system caching, a `cacheBreakpoint` is placed on
 the last message before the current turn in the conversation history, letting providers (e.g.
@@ -119,14 +125,75 @@ entry ages (`just now`, `recent`, `~Nh ago`), mailbox elapsed labels (`just star
 `~Nmin`), timestamps drop seconds (minute-level). Coarser timestamp buckets were rejected — the tail
 has many other per-call fields, so the marginal benefit did not justify inaccurate time perception.
 
+### 2.1.1 Prefix-cache invariants (regression-tested)
+
+The implicit prefix cache is **byte-prefix based**: the first byte that differs throws away
+everything after it. That makes four things invariants rather than preferences. Each has a
+guard test; break one and long sessions silently re-bill their whole history on every call.
+
+| # | Invariant | Where | Guard test |
+|---|-----------|-------|-----------|
+| 1 | The volatile `[Live context]` block is the **last message** — never inserted at `messages[1]` | `context-engine.prepareMessages` | `context-engine.test.ts` → `C-cache-volatile-tail`, `C-cache-volatile-stable-head` |
+| 2 | The request-history window **slides in blocks**, not per message | `history-window.ts` (`requestHistoryStart`), used by every `Agent.requestHistory()` call | `history-window.test.ts` |
+| 3 | The deferred-tool catalog (Afford.S2) rides the **volatile tail**, never the system prompt | `Agent.consumeDeferredToolCatalog()` + `mergeVolatile()` | `agent-deep.test.ts` → `deferred-tool catalog placement` |
+| 4 | ContextOS `[SLOTS]` + `[CONTEXT SUMMARY]` are **derived in the engine**, so every prepare path carries them | `context-engine.prepareMessages` defaults from `(memory, sessionId)` | `context-engine.test.ts` → `ContextOS slots + summary ride EVERY prepare path` |
+
+**Invariant 2 — request-history window.** A raw `getRecentMessages(id, N)` returns the *last N*
+messages, so once a session is longer than N the window head moves by 1–2 messages **every turn**
+and the whole replayed history misses the cache. The fix is quantization, not a bigger N: keep at
+least `SESSION_REQUEST_HISTORY_MIN` (400) messages and advance the window start only in
+`SESSION_REQUEST_HISTORY_BLOCK` (100) steps, so the head — and therefore the whole replayed prefix —
+stays byte-identical for ~50 turns. Per-call token packing still bounds the prompt (the budget path
+compresses/trims independently), and storage-level compaction
+(`SESSION_STORAGE_COMPACT_TRIGGER` 2000 / `KEEP` 1000) remains the deliberate, rare anchor shift
+every ~1000 messages.
+
+**Invariant 4 — why it matters.** Only the non-stream chat path used to pass `slotsSegment` /
+`summarySegment` explicitly. The streaming path, every tool-loop continuation, and the
+task/review/session scenarios silently dropped `session_pin` anchors **and** the
+`[CONTEXT SUMMARY]` compaction anchor. Deriving them inside `prepareMessages` makes it impossible
+for a new call site to forget them.
+
+**Invariant 5 — agent-written memory/knowledge belongs to the volatile tail.** `## Your Knowledge`
+(knowledge.md) and `## Current State (short)` (state.md) are **agent-written** and change far more
+often than "semi-stable" implies: `memory_save` appends to `## _observations` on *every* call, and
+`memory_update` rewrites curated sections. While they sat in the byte-stable Tier 2, every one of
+those writes invalidated the cached prefix for the **entire replayed history** — a high-frequency
+cache buster hiding inside the tier whose whole justification is "changes only occasionally".
+Measured on this org's 91 agents: 498 accumulated `_observations` lines (36 agents), i.e. 498
+full-prefix invalidations since the last prune, plus every `memory_update`.
+
+The tier boundary is therefore **write frequency, not subject matter**:
+
+| Block | Written by | Frequency | Tier |
+|-------|-----------|-----------|------|
+| `## Your Knowledge` (knowledge.md) | the agent (`memory_save`/`memory_update`) | many× per task | **volatile** |
+| `## Current State (short)` (state.md) | the agent | per task | **volatile** |
+| Relevant memories, notebook, mailbox, task board, team status | platform | per turn | volatile |
+| `## About the Owner` (USER.md), org/team context, workspace paths, team announcements/norms, `## Your Trust Level` | humans / org config | days–weeks | Tier 2 (cached) |
+| Role, policies, tool-usage rules, Learning Habits | repo/build | only on release | Tier 1 (cached) |
+
+**The trade-off, stated honestly:** volatile tokens are never prefix-cached, so the move is not
+free — it costs up to `KNOWLEDGE_PROMPT_MAX_TOKENS` (1 500; 1 200 converse; 0 reflex) extra
+full-price tokens **per call**. It is worth it because the alternative was a full-history re-bill
+(~30k–90k tokens, depending on window) **per memory write**: the crossover is roughly one write per
+50 calls, and active agents write memory several times per task. Keeping knowledge cached only wins
+for an agent that never learns anything.
+
+Guard tests: `cache-optimization.test.ts` → `C-cache-knowledge-body`, `C-cache-knowledge-write`
+(the latter asserts that a `memory_save` leaves `result.text` byte-identical while still reaching the
+model through `result.volatile`). Both were verified to FAIL against the old Tier-2 placement.
+
 ### 2.2 Spec: injection-point ownership audit (C3)
 
 The tiering above is the intended design; this spec makes it an enforced invariant so a new
 injection point cannot silently land in a stable tier and bust the cache prefix.
 
 - **Behavior**: every prompt injection point has an explicit owner. Identity, policies,
-  tool-usage rules → **Tier 1 (stable)**. Org/workspace/memory/scenario/announcements/norms/
-  activated-skills → **Tier 2 (semi-stable)**. All per-call situational meta (CPP output via
+  tool-usage rules → **Tier 1 (stable)**. Org/workspace/scenario/announcements/norms/
+  activated-skills/user-profile/trust → **Tier 2 (semi-stable; written on org/config events)**.
+  Agent-written memory (`## Your Knowledge`, `## Current State (short)`) → **volatile** (§2.1.1
+  invariant 5). All per-call situational meta (CPP output via
   `## Notebook`, triage decision, mailbox state, task board, timestamps, relevant memories, team
   status, query-filtered skills, working memory, contextHint) → **volatile tail (the `[Live
   context]` message), never in any system segment**.
@@ -142,11 +209,12 @@ injection point cannot silently land in a stable tier and bust the cache prefix.
 - **Testing** (`packages/core/test/cache-optimization.test.ts` — the "C3:" cases): with a
   prompt carrying CPP output, mailbox/attention meta, channel history, sender identity and a
   timestamp, assert (a) **every system segment is a cache breakpoint and carries no dynamic marker**,
-  (b) those markers appear only in `volatile`, (c) identity / tool-usage /
-  `## Your Knowledge` stay in the stable prefix, and (d) CPP output is
-  routed to the notebook writer rather than injected as a stable `## Cognitive Context`
-  section, and (e) two turns with different per-turn context yield byte-identical `text` but
-  different `volatile`. The cache-hit-rate metric is tracked separately (see
+  (b) those markers appear only in `volatile`, (c) identity / tool-usage rules stay in the stable
+  prefix while the **agent-written knowledge body stays OUT of it** (`C-cache-knowledge-body`) and a
+  `memory_save` leaves the system text byte-identical (`C-cache-knowledge-write`), and (d) CPP output
+  is routed to the notebook writer rather than injected as a stable `## Cognitive Context` section,
+  and (e) two turns with different per-turn context yield byte-identical `text` but different
+  `volatile`. The cache-hit-rate metric is tracked separately (see
   [ARCHITECTURE.md §11.1](./ARCHITECTURE.md) observability).
 - **Status**: implemented (Scheme A — volatile tail; adds the enforcing guard tests, the
   byte-stability regression, and the `usage.compressed`-driven cache/compression metrics).
@@ -314,9 +382,23 @@ their mailbox on demand using `check_mailbox` in any scenario.
 
 All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
 
+#### Concurrency Context (volatile tail)
+Source: `buildSystemPrompt()` with `opts.concurrentContext` in `ContextEngine`.
+Injected **only** when concurrent processing is enabled *and* `workerCount > 1` (see
+[CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)). It is a **volatile-tail** segment,
+never a system-prompt section, so its per-turn churn cannot invalidate the STABLE /
+SEMI-STABLE prefix cache. It injects:
+- **Worker identity**: "this session is one of N workers (worker W)".
+- **In-flight siblings**: up to 4 recent `declared`/`fact` handoff records from *other* workers (own records filtered out).
+- **Recent handoffs**: up to 4 `done`/`conflict` records from other workers, newest first.
+- **Consistency rules**: (1) do not assume exclusive cognition — check shared knowledge + handoff log before any persistent decision; (2) an entity is processed by one worker at a time — do not force work whose entity is held; (3) on a detected conflict, report the divergence instead of silently overwriting.
+
+The data comes from the agent's `ConcurrentHandoffLog`; the injectable subset is bounded
+by `HANDOFF_CONTEXT_LIMIT` (8).
+
 #### Scenario Section (§15)
 Source: `buildScenarioSection()`.  
-Placed at the **end of Tier 2** so the identity/org/memory prefix remains stable across mode switches (chat ↔ heartbeat ↔ a2a). Eight distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow and Tool Usage Rules rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
+Placed at the **end of Tier 2** so the identity/org prefix remains stable across mode switches (chat ↔ heartbeat ↔ a2a). Eight distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow and Tool Usage Rules rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
 
 | Scenario | Key Instructions | Output Visibility | Communication Tools |
 |----------|-----------------|-------------------|-------------------|
@@ -565,6 +647,14 @@ Step 0 is the Cognitive Preparation Pipeline. It runs once before the main harne
 ### 4.3 Tool Execution
 
 All tool calls within a single LLM response are executed **in parallel** (`Promise.all`) in `handleMessage` and `handleMessageStream`. In `_executeTaskInternal` and `respondInSession`, they are executed **sequentially** (for-of loop) with per-tool status events.
+
+**Write serialisation under concurrency.** When the agent runs a concurrent worker pool,
+state-mutating tool calls are routed through an agent-level FIFO **write lock**
+(`Agent.withToolWriteLock`, see [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)) so
+two workers cannot mutate shared state at the same instant. Read-only tools are not
+blocked; the lock is released even when the wrapped call throws. Note this serialises a
+*single tool call*, not an entire multi-step flow — see the known-limitations section of
+that doc.
 
 `spawn_subagent` and `spawn_subagents` let the model delegate focused subtasks to lightweight LLM subagents; `spawn_subagents` runs several in parallel. They are registered on the Agent like other built-in tools. All subagent limits (max parallel count, LLM retry policy, preview truncation lengths) are centralized in `packages/shared/src/limits.ts` — not hardcoded in the subagent module.
 

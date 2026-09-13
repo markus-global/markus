@@ -12,6 +12,7 @@ import { useCallback, useRef, useState, useEffect } from 'react';
 import { ConversationBufferManager, type ConvPhase, makeConvKey } from '../lib/ConversationBufferManager.ts';
 import type { ChatMsg } from '../pages/ChatHelpers.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
+import { chatStore } from '../pages/useChatStore.ts';
 
 export { type ConvPhase } from '../lib/ConversationBufferManager.ts';
 export { makeConvKey } from '../lib/ConversationBufferManager.ts';
@@ -23,6 +24,14 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   const [sending, setSending] = useState(false);
   const [activities, setActivities] = useState<ActivityStep[]>([]);
   const rafRef = useRef<number | null>(null);
+  // Bumped whenever a session enters/leaves the per-conversation streaming set.
+  // The value is intentionally unused: this state lives in the CALLER's component
+  // (the hook is invoked by Team.tsx), so bumping it re-renders the session tab
+  // bar even when the change belongs to a session that is NOT the active one.
+  // Without it, a background tab's "streaming" dot would only appear/disappear
+  // on some unrelated re-render — the membership Set itself is not reactive.
+  const [, setStreamMembershipTick] = useState(0);
+  const bumpStreamMembership = useCallback(() => setStreamMembershipTick(v => v + 1), []);
 
   useEffect(() => () => { if (rafRef.current !== null) cancelAnimationFrame(rafRef.current); }, []);
 
@@ -47,12 +56,45 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     if (r.displayChanged && r.newActivities) setActivities(r.newActivities);
   }, []);
 
-  // Phase transitions
+  // Phase transitions. beginStream marks the agent busy for the sidebar; the
+  // busy mark is REMOVED only via clearStreamSession below (the single stream
+  // lifecycle removal point) — NOT via endStream. This makes add/remove
+  // pairing structural: every stream path (done, abort, stop, soft-disconnect
+  // → reattach, session switch, retry) eventually calls clearStreamSession,
+  // so the sidebar busy state cannot drift or leak.
+  const isAgentKey = (key: string): boolean =>
+    !!key && !key.startsWith('ch:') && !key.startsWith('dm:') && key !== '_direct';
+
   const getPhase = useCallback((key: string) => mgr.current.getPhase(key), []);
   const beginLoad = useCallback((key: string) => mgr.current.beginLoad(key), []);
-  const beginStream = useCallback((key: string) => mgr.current.beginStream(key), []);
-  const endStream = useCallback((key: string) => mgr.current.endStream(key), []);
-  const resetConv = useCallback((key: string) => { mgr.current.resetConv(key); mgr.current.deleteBuffer(key); }, []);
+  const beginStream = useCallback((key: string) => {
+    mgr.current.beginStream(key);
+    // Direct conversation keys are the agent id itself (see makeConvKey):
+    // `ch:*` (team/channel) and `dm:*` (human DM) never map to one agent.
+    if (isAgentKey(key)) chatStore.markAgentStreaming(key, true);
+  }, []);
+  const endStream = useCallback((key: string) => {
+    mgr.current.endStream(key);
+    // NOTE: intentionally does NOT unmark the agent — see comment above.
+    // The agent stays busy until clearStreamSession is called by whichever
+    // path owns the stream's end.
+  }, []);
+  // Single teardown entry for abort-like paths (stop / retry / interrupt /
+  // channel abort / unmount). Replaces the copy-pasted cleanup sequences in
+  // Team.tsx; see ConversationBufferManager.abortStream for the pure logic.
+  const abortStream = useCallback((key: string, sessionId?: string | null) => {
+    const affected = mgr.current.abortStream(key, sessionId);
+    if (affected && isAgentKey(key)) chatStore.markAgentStreaming(key, false);
+    if (affected) bumpStreamMembership();
+    if (mgr.current.currentConvKey === key) {
+      setSending(false);
+      setActivities([]);
+    }
+  }, [bumpStreamMembership]);
+  const resetConv = useCallback((key: string, repinTo?: string) => {
+    mgr.current.resetConv(key, repinTo);
+    mgr.current.deleteBuffer(key);
+  }, []);
 
   // Phase-aware async load
   const loadAndDisplay = useCallback(async (
@@ -104,15 +146,32 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     // Methods
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     getPhase, beginLoad, beginStream, endStream, resetConv,
+    abortStream,
     loadAndDisplay,
+    // Route pinning (must mirror every setActiveSessionId transition so the
+    // manager routes background streams to their own session cache — see
+    // ConversationBufferManager.activeSession).
+    setActiveSession: (k: string, s: string) => mgr.current.setActiveSession(k, s),
+    clearActiveSession: (k: string) => mgr.current.clearActiveSession(k),
     // Send counter helpers
     incrementSending: (k: string) => mgr.current.incrementSend(k),
     decrementSending: (k: string) => mgr.current.decrementSend(k),
     resetSending: (k: string) => mgr.current.resetSend(k),
     isSendingFor: (k: string) => mgr.current.isSending(k),
-    // Stream session helpers
-    setStreamSession: (k: string, s: string) => mgr.current.addStreamSession(k, s),
-    clearStreamSession: (k: string, s?: string) => mgr.current.removeStreamSession(k, s),
+    // Stream session helpers. These are the SINGLE add/remove points for the
+    // sidebar busy signal: calling setStreamSession marks the agent busy,
+    // calling clearStreamSession unmarks it. Every other stream cleanup path
+    // in Team.tsx funnels through clearStreamSession.
+    setStreamSession: (k: string, s: string) => {
+      mgr.current.addStreamSession(k, s);
+      if (isAgentKey(k)) chatStore.markAgentStreaming(k, true);
+      bumpStreamMembership();
+    },
+    clearStreamSession: (k: string, s?: string) => {
+      mgr.current.removeStreamSession(k, s);
+      if (isAgentKey(k)) chatStore.markAgentStreaming(k, false);
+      bumpStreamMembership();
+    },
     getStreamSession: (k: string) => mgr.current.getStreamSessions(k),
     // Session switch helpers
     saveSessionToCache: (k: string, s: string) => mgr.current.saveToCache(k, s),

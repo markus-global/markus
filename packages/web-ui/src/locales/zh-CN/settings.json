@@ -393,6 +393,20 @@
     "saved": "已保存",
     "failedToSave": "保存失败"
   },
+  "concurrent": {
+    "title": "并发处理",
+    "description": "让智能体用多个隔离的分身会话同时处理多个对话、任务与消息。关闭时严格逐个处理（串行）。",
+    "enabled": "启用并发处理",
+    "enabledDesc": "推荐开启。智能体可并行处理多个独立事项，每个分身拥有独立的会话状态。",
+    "maxWorkers": "并发数上限",
+    "maxWorkersDesc": "1（串行）到 10，默认 3。每个并发分身运行独立的处理循环；它同时决定可并行执行的任务数上限（任务并发 = min(并发数, 单智能体任务上限)）。数值越高，同时在飞的模型调用越多，成本也越高。",
+    "conflictPolicy": "冲突策略",
+    "conflictPolicyDesc": "分身遇到实体占用/重叠情形时的处理方式。",
+    "policyAuto": "自动（放回队列重试）",
+    "policyReport": "上报父级（升级处理）",
+    "saved": "已保存",
+    "failedToSave": "保存失败"
+  },
   "searchApi": {
     "title": "网络搜索",
     "description": "优先级：已连接 Hub 且余额不为 0 时优先 Markus 托管；否则优先自备 API。",

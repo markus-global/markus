@@ -166,13 +166,15 @@ The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagen
 | `trusted` | score >= 60, >= 15 deliveries | Higher autonomy, can review others |
 | `senior` | score >= 80, >= 25 deliveries | Highest autonomy, key reviewer |
 
-### 3.2 Mailbox & Attention (Single-Threaded Cognition)
+### 3.2 Mailbox & Attention (Serialised Per Entity, Concurrent Across Entities)
 
-Each agent has a **single-threaded attention model** — it processes one item at a time. **Every LLM invocation** flows through a per-agent **Mailbox** (priority queue), and an **AttentionController** manages which item the agent focuses on.
+Each agent routes **every LLM invocation** through a per-agent **Mailbox** (priority queue), and an **AttentionController** decides which item the agent focuses on. By default the agent runs a **pool of concurrent worker loops** (`agent.concurrent`, default `enabled: true, maxWorkers: 3`); each worker is an independent consumer of the mailbox, but the mailbox serialises **per entity** (task / requirement / conversation / user) via an entity-affinity lock, so a single line of work is never processed by two workers at once. With `maxWorkers = 1` the behaviour is the original strictly-serial attention model. See [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md).
 
 Key components:
 - **AgentMailbox** — Priority queue accepting 15 item types including `human_chat`, `a2a_message`, `callback_result`, `heartbeat`, `memory_consolidation`, and task/requirement events (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md))
-- **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals
+- **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals. Runs either a single serial loop (`maxWorkers = 1`) or a pool of concurrent worker loops
+- **Concurrent worker pool** — `N` independent consumers of the mailbox; each mounts an isolated `SessionWorkspace` via `AsyncLocalStorage` and writes to a shared `ConcurrentHandoffLog` so workers stay aware of one another ([CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md))
+- **Entity-affinity lock** — mailbox-level guarantee that one task/requirement/conversation/user is never processed by two workers at once
 - **Yield Points** — Safe checkpoints in the tool loop where the agent can pause to evaluate interrupts
 - **Decision Engine** — Produces decisions: `continue`, `preempt`, `cancel`, `merge`, `defer`, `drop`. Heuristic rules handle clear cases (e.g., user chat always preempts); an **LLM interrupt judge** handles ambiguous cases with semantic understanding (e.g., "stop publishing" → cancel, "hold off for now" → preempt)
 - **Preempt vs Cancel** — `preempt` pauses current work (item deferred, session preserved for later resumption); `cancel` permanently stops current work (item dropped, will NOT be resumed)

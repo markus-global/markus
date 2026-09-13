@@ -9,6 +9,8 @@ export interface AgentConfig {
   agentRole: 'manager' | 'worker';
   skills: string[];
   profile?: AgentProfile;
+  /** 并发处理配置（智能体设置 → 并发处理）。 */
+  concurrent?: AgentConcurrentConfig;
   llmConfig: LLMAssignment;
   channels: ChannelBinding[];
   heartbeatIntervalMs: number;
@@ -117,6 +119,16 @@ export interface AgentProfile {
   requireApprovalFor?: string[];
   /** Working directory constraint — agent tools restricted to this path */
   workspacePath?: string;
+}
+
+/** 并发处理配置（智能体设置 → 并发处理）。默认开启 = 智能体并发处理消息。 */
+export interface AgentConcurrentConfig {
+  /** 总开关。缺省 = 开启（maxWorkers=3）；显式 enabled:false 才关闭（串行）。 */
+  enabled?: boolean;
+  /** 并发 worker 数上限（1-10）。1 = 串行。默认开启时为 3。 */
+  maxWorkers?: number;
+  /** 冲突处理策略：auto=实体亲和自动错开（默认）；report=冲突时停下报告。 */
+  conflictPolicy?: 'auto' | 'report';
 }
 
 /**

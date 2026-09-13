@@ -248,7 +248,8 @@ describe('AgentMailbox async and persistence', () => {
     });
 
     expect(mailbox.cleanStaleProcessing()).toBe(3);
-    expect(markCompleted).toHaveBeenCalledWith(AGENT_ID);
+    // P0：cleanStaleProcessing 传本实例 ownerId（用于排除其它实例有效租约内的在飞项）
+    expect(markCompleted).toHaveBeenCalledWith(AGENT_ID, expect.any(String));
   });
 
   it('emits mailbox:new-item on enqueue', () => {

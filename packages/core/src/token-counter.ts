@@ -105,10 +105,31 @@ export class SmartTokenCounter implements TokenCounter {
     }
   }
 
+  /**
+   * P1-9：按当前生效模型惰性解析编码器。
+   *
+   * 以前只在 `setActiveModel()` 里预加载到单一 `tiktokenEncoder` 槽；流式路径
+   * 从未调 `setActiveModel`，于是沿用上一个模型/编码器（跨 agent 串扰）。这里在
+   * 计数时刻按 `activeModel` 回查模块级 `tiktokenCache`（按 encoding 名缓存，安全），
+   * 保证即使未预加载也不会用错编码器。
+   */
+  private resolveEncoder(): TiktokenEncoding | null {
+    if (this.tiktokenEncoder) return this.tiktokenEncoder;
+    const encoding = getTiktokenEncodingName(this.activeModel);
+    if (!encoding) return null;
+    const cached = tiktokenCache.get(encoding);
+    if (cached) {
+      this.tiktokenEncoder = cached;
+      return cached;
+    }
+    return null;
+  }
+
   countTokens(text: string): number {
-    if (this.tiktokenEncoder) {
+    const enc = this.resolveEncoder();
+    if (enc) {
       try {
-        return this.tiktokenEncoder.encode(text).length;
+        return enc.encode(text).length;
       } catch {
         // fall through to heuristic
       }
@@ -118,9 +139,10 @@ export class SmartTokenCounter implements TokenCounter {
 
   countMessageTokens(content: string, role?: string): number {
     const overhead = 20;
-    if (this.tiktokenEncoder) {
+    const enc = this.resolveEncoder();
+    if (enc) {
       try {
-        return this.tiktokenEncoder.encode(content).length + overhead;
+        return enc.encode(content).length + overhead;
       } catch {
         // fall through
       }
@@ -211,15 +233,36 @@ export class SmartTokenCounter implements TokenCounter {
 }
 
 let defaultCounter: SmartTokenCounter | null = null;
+/**
+ * P1-9 / P1-10：最近一次 `initTokenCounter` 的配置。
+ * 作为「建造新计数器实例」的默认值，让每个 agent 拥有**独立**计数器（不共享
+ * `activeModel` / 编码器），同时保留锚定 Anthropic 精确计数所需的凭据。
+ */
+let counterDefaults: { anthropicApiKey?: string; anthropicBaseUrl?: string } = {};
 
 export function getDefaultTokenCounter(): SmartTokenCounter {
   if (!defaultCounter) {
-    defaultCounter = new SmartTokenCounter();
+    defaultCounter = new SmartTokenCounter(counterDefaults);
   }
   return defaultCounter;
 }
 
 export function initTokenCounter(opts: { anthropicApiKey?: string; anthropicBaseUrl?: string }): SmartTokenCounter {
+  counterDefaults = { ...opts };
   defaultCounter = new SmartTokenCounter(opts);
   return defaultCounter;
+}
+
+/**
+ * P1-9：为单个 agent / 请求创建一个**独立**的计数器实例，避免进程级单例的
+ * `activeModel` + 编码器槽被并发 agent 相互覆盖（跨 agent 串扰）。新实例继承
+ * 最近一次 `initTokenCounter` 写入的配置（如 Anthropic key，用于精确计数）。
+ */
+export function createTokenCounter(opts?: { anthropicApiKey?: string; anthropicBaseUrl?: string }): SmartTokenCounter {
+  return new SmartTokenCounter({ ...counterDefaults, ...opts });
+}
+
+/** P1-10：当前是否已启用 Anthropic 精确计数（供启动期自检/健康检查）。 */
+export function isAnthropicTokenCounterEnabled(): boolean {
+  return Boolean(counterDefaults.anthropicApiKey);
 }

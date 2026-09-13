@@ -305,6 +305,8 @@
     "sessionMain": "主会话",
     "sessionConversation": "对话",
     "noConversationsYet": "暂无对话",
+    "renameSession": "重命名",
+    "loadMoreSessions": "加载更多会话",
     "chatGreetings": [
       "您有什么吩咐？",
       "有什么我可以帮您的？",

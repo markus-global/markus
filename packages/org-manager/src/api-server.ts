@@ -798,6 +798,9 @@ export class APIServer {
             senderType: 'agent',
             senderName,
             text: cleanText,
+            // Carry the persisted message id so clients can dedupe against
+            // history fetched after reconnect (agent_send_group_message).
+            ...(persistedMsgId ? { id: persistedMsgId } : {}),
           },
           timestamp: new Date().toISOString(),
         };
@@ -1873,6 +1876,10 @@ export class APIServer {
           senderName: agentName,
           text: cleanReply,
           metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+          // Carry the persisted message id so clients can dedupe against
+          // history fetched on reconnect (group async replies otherwise get
+          // an opaque ws_* temp id and can duplicate after a WS gap).
+          ...(persistedMsgId ? { id: persistedMsgId } : {}),
           ...(isA2A ? {
             replyToId: opts?.replyToMsgId,
             replyToSender: opts?.replyToAgentName,
@@ -2100,6 +2107,47 @@ export class APIServer {
 
   /** Persist the user message first (before LLM), returns session id for subsequent assistant persistence.
    *  When sessionId is provided, appends to that session; when null/undefined, creates a new session. */
+  /**
+   * Read the persisted DB→memory session binding for a chat session.
+   * Best-effort: a missing or corrupt metadata blob simply yields `null`.
+   */
+  private readMemorySessionBinding(dbSessionId: string): string | null {
+    try {
+      const meta = this.storage?.chatSessionRepo.getSessionMetadata(dbSessionId);
+      const value = meta?.['memorySessionId'];
+      return typeof value === 'string' && value ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Persist the DB→memory session binding so a restart can reattach to the RICH
+   * memory session (tool calls + results) instead of rebuilding a thin context
+   * from `chat_messages` (which stores user/assistant rows only). Read-merge-write
+   * because `updateSessionMetadata` replaces the whole metadata blob.
+   */
+  private persistMemorySessionBinding(
+    dbSessionId: string,
+    memorySessionId: string | null | undefined,
+  ): void {
+    if (!this.storage) return;
+    // Best-effort: a failed binding write must never break the chat turn.
+    try {
+      // NOTE: the caller must pass an EXPLICITLY resolved memory session id.
+      // This used to read `agent.getCurrentSessionId()`, which reads the current
+      // workspace — on an HTTP thread that is the ROOT workspace, so under
+      // concurrency it persisted a stale/empty binding (or none at all) and a
+      // later restart rebuilt a thin context instead of the rich one.
+      if (!memorySessionId) return;
+      const existing = this.storage.chatSessionRepo.getSessionMetadata(dbSessionId) ?? {};
+      if (existing['memorySessionId'] === memorySessionId) return;
+      this.storage.chatSessionRepo.updateSessionMetadata(dbSessionId, { ...existing, memorySessionId });
+    } catch (err) {
+      log.debug('Failed to persist memory-session binding', { dbSessionId, error: String(err) });
+    }
+  }
+
   private async persistUserMessage(
     agentId: string,
     userMessage: string,
@@ -2530,6 +2578,7 @@ export class APIServer {
       let sessionRestoreData: {
         dbSessionId: string;
         messages: Array<{ role: string; content: string }>;
+        preferredMemorySessionId?: string | null;
       } | null = null;
       if (this.storage) {
         try {
@@ -2546,6 +2595,7 @@ export class APIServer {
               role: m.role,
               content: m.content,
             })),
+            preferredMemorySessionId: this.readMemorySessionBinding(sessionId),
           };
         } catch (err) {
           log.warn('Failed to prepare Feishu main-session restore', { error: String(err) });
@@ -2553,14 +2603,9 @@ export class APIServer {
         }
       }
 
-      if (!secretary.isProcessing()) {
-        if (sessionRestoreData) {
-          secretary.restoreSessionFromHistory(
-            sessionRestoreData.dbSessionId,
-            sessionRestoreData.messages,
-          );
-        }
-      }
+      // Feishu 入站：会话上下文**一律**交给处理该 item 的 worker 应用（与主路一致）。
+      // 这里以前在 HTTP 线程 eager restore —— 那只写 root 工作区，worker 看不到；
+      // 并发下还会写下陈旧/空绑定（下面 persistMemorySessionBinding 已改为按 DB id 定向查询）。
 
       // Persist the inbound Feishu user turn onto the main session before streaming
       // (restore snapshot above intentionally excludes this message).
@@ -2581,7 +2626,11 @@ export class APIServer {
           },
         );
         if (persisted) {
-          secretary.bindDbSession(persisted.sessionId);
+          // 绑定由处理该消息的 worker 写；这里只按 DB id 定向回写持久化映射。
+          this.persistMemorySessionBinding(
+            persisted.sessionId,
+            secretary.getMemorySessionIdForDbSession(persisted.sessionId),
+          );
           mainSessionId = persisted.sessionId;
           feishuUserMessageId = persisted.messageId;
           // Push the user turn to Team Chat immediately (do not wait for the reply).
@@ -2602,7 +2651,7 @@ export class APIServer {
         }
       }
 
-      const deferredRestore = secretary.isProcessing() ? sessionRestoreData : undefined;
+      const deferredRestore = sessionRestoreData;
       const feishuSenderLabel = senderName.startsWith('Feishu') ? senderName : `Feishu:${senderName}`;
       const reply = await secretary.sendMessageStream(
         text,
@@ -2613,7 +2662,11 @@ export class APIServer {
         undefined,
         undefined,
         undefined,
-        deferredRestore !== undefined ? { sessionRestore: deferredRestore } : undefined,
+        {
+          ...(deferredRestore !== undefined ? { sessionRestore: deferredRestore } : {}),
+          // 本轮 DB 会话 id：让 worker 能按 cs_* 解析并写 DB→内存绑定。
+          ...(mainSessionId ? { dbSessionId: mainSessionId } : {}),
+        },
       );
 
       // Invalidate in-flight mid-stream card patches before writing the final card.
@@ -3544,16 +3597,55 @@ export class APIServer {
       return;
     }
 
+    // Create a chat session up-front (the Team-chat "New Chat" button). Minting
+    // the session id at creation time means the FIRST message already carries its
+    // conversation identity, so concurrent session tabs stay isolated — entity
+    // affinity keys on `conv:<sessionId>`, and without an id two fresh tabs both
+    // fall back to `system:<agentId>` and serialise.
+    if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const agentId = path.split('/')[3]!;
+      if (!this.storage) {
+        this.json(res, 500, { error: 'storage unavailable' });
+        return;
+      }
+      const created = await this.storage.chatSessionRepo.createSession(agentId, authUser.userId);
+      this.json(res, 201, {
+        session: {
+          id: created.id,
+          agentId: created.agentId,
+          userId: created.userId ?? null,
+          title: created.title ?? null,
+          isMain: !!created.isMain,
+          createdAt: created.createdAt,
+          lastMessageAt: created.lastMessageAt,
+        },
+      });
+      return;
+    }
+
     if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'GET') {
       const authUser = await this.getAuthUser(req);
       const agentId = path.split('/')[3]!;
       if (!this.storage) {
-        this.json(res, 200, { sessions: [] });
+        this.json(res, 200, { sessions: [], total: 0, page: 1, pageSize: 0, hasMore: false });
         return;
       }
-      const limit = parseInt(url.searchParams.get('limit') ?? '20');
-      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, limit, authUser?.userId);
-      this.json(res, 200, { sessions });
+      // Paginated session list — the Team chat History panel loads pages of 20
+      // and "loads more" on demand instead of capping at 10 (which felt
+      // "incomplete"). Response: { sessions, total, page, pageSize, hasMore }.
+      const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+      const pageSize = Math.min(
+        Math.max(1, parseInt(url.searchParams.get('pageSize') ?? url.searchParams.get('limit') ?? '20', 10) || 20),
+        50,
+      );
+      const result = this.storage.chatSessionRepo.listSessionsPaginated(agentId, {
+        page,
+        pageSize,
+        userId: authUser?.userId,
+      });
+      this.json(res, 200, result);
       return;
     }
 
@@ -3627,6 +3719,45 @@ export class APIServer {
       existing['modelOverride'] = { provider, model };
       this.storage.chatSessionRepo.updateSessionMetadata(sessionId, existing);
       this.json(res, 200, { modelOverride: { provider, model } });
+      return;
+    }
+
+    // Session title rename (agent-initiated session_rename tool + UI edit).
+    // Updates chat_sessions.title and broadcasts so the open History panel
+    // refreshes the title in real time.
+    if (path.match(/^\/api\/sessions\/[^/]+\/title$/) && req.method === 'PATCH') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const sessionId = path.split('/')[3]!;
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const session = this.storage.chatSessionRepo.getSession(sessionId);
+      if (!session) {
+        this.json(res, 404, { error: 'Session not found' });
+        return;
+      }
+      if (session.userId && session.userId !== authUser.userId) {
+        const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+        if (!isAdminOrOwner) {
+          this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+          return;
+        }
+      }
+      const body = await this.readBody(req);
+      const title = typeof body['title'] === 'string' ? body['title'].trim() : '';
+      if (!title) {
+        this.json(res, 400, { error: 'title is required' });
+        return;
+      }
+      const updated = this.storage.chatSessionRepo.updateTitle(sessionId, title);
+      this.ws.broadcast({
+        type: 'session:title_updated',
+        payload: { sessionId, agentId: session.agentId, title: updated?.title ?? title },
+        timestamp: new Date().toISOString(),
+      });
+      this.json(res, 200, { ok: true, session: updated });
       return;
     }
 
@@ -4251,7 +4382,12 @@ export class APIServer {
       if (action === 'cancel-processing') {
         try {
           const agent = this.orgService.getAgentManager().getAgent(agentId!);
-          agent.cancelActiveStream();
+          // 并发模式下按 target（sessionId/itemId）定向取消，避免取消错 worker。
+          const body = await this.readBody(req).catch(() => undefined);
+          const target = body && typeof body === 'object'
+            ? { itemId: (body as { itemId?: string }).itemId, sessionId: (body as { sessionId?: string }).sessionId }
+            : undefined;
+          agent.cancelActiveStream(target);
           this.json(res, 200, { status: 'cancelled' });
         } catch (err) {
           this.json(res, 404, { error: err instanceof Error ? err.message : String(err) });
@@ -4286,6 +4422,16 @@ export class APIServer {
         const fileNames = (body['fileNames'] as string[] | undefined)?.filter(Boolean);
         const isRetry = body['isRetry'] as boolean | undefined;
         const isResume = body['isResume'] as boolean | undefined;
+
+        // A resume must bind to an existing conversation. Without a sessionId
+        // the backend would `startNewSession()` and hand the model a bare
+        // "[Continue…]" prompt with zero history — silently discarding context.
+        // Reject instead of fabricating a fresh session.
+        if (isResume && !sessionId) {
+          this.json(res, 400, { error: 'isResume requires an existing sessionId' });
+          return;
+        }
+
         const replyTo = body['replyTo'] as { id: string; sender: string; text: string } | undefined;
         const baseSenderInfo = this.orgService.resolveHumanIdentity(senderId);
         const isFirstConversation = this.storage
@@ -4295,14 +4441,19 @@ export class APIServer {
           ? { ...baseSenderInfo, isFirstConversation }
           : undefined;
         const agent = this.orgService.getAgentManager().getAgent(agentId!);
+
+        // (The isResume/sessionId guard lives above, right after the request body
+        // is read — it must run BEFORE the agent lookup so a malformed resume never
+        // reaches agent state. It used to be copy-pasted a second time here.)
+
         this.ws.broadcastAgentUpdate(agentId!, 'working');
 
         // Prepare session restoration data but DON'T apply it eagerly.
         // Session context is applied when the mailbox item is actually processed,
         // preventing corruption of an in-progress stream's session state.
-        let sessionRestoreData: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null = null;
+        let sessionRestoreData: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null | undefined;
         if (!sessionId) {
-          // New session — will be created at processing time
+          // Explicit new chat: the worker starts a fresh session.
           sessionRestoreData = null;
         } else if (this.storage) {
           try {
@@ -4314,25 +4465,28 @@ export class APIServer {
               dbSessionId: sessionId,
               messages: histResult.messages.map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
               isRetry: !!isRetry,
+              // A persisted binding lets restore reattach to the RICH memory
+              // session instead of rebuilding a thin context from chat_messages.
+              preferredMemorySessionId: this.readMemorySessionBinding(sessionId),
             };
           } catch (err) {
-            log.warn('Failed to load session history, will start fresh', { sessionId, error: String(err) });
-            sessionRestoreData = null;
+            // IMPORTANT: do NOT collapse "history load failed" into "new chat".
+            // `undefined` means "identity unknown — keep the current session";
+            // `null` would silently start an empty conversation and drop context.
+            log.warn('Failed to load session history — keeping current session identity', { sessionId, error: String(err) });
+            sessionRestoreData = undefined;
           }
+        } else {
+          // No storage ⇒ we cannot tell whether this is an existing conversation.
+          // Never fabricate a "new chat" on missing information.
+          sessionRestoreData = undefined;
         }
-        // Only apply session context immediately if the agent is idle (no active stream).
-        // This preserves the original fast-path for the common case.
-        if (!agent.isProcessing()) {
-          if (sessionRestoreData) {
-            agent.restoreSessionFromHistory(
-              sessionRestoreData.dbSessionId,
-              sessionRestoreData.messages,
-              { isRetry: !!sessionRestoreData.isRetry },
-            );
-          } else if (!sessionId) {
-            agent.startNewSession();
-          }
-        }
+        // Session context is ALWAYS handed to the mailbox item and applied at
+        // PROCESSING time, inside the worker workspace that actually runs the turn.
+        // It used to be applied right here (HTTP thread) whenever the agent was
+        // idle — but that writes to the ROOT workspace, so the worker that picked
+        // the item up never saw it and silently began an empty session, losing the
+        // conversation it was in.
 
         const userText = body['text'] as string;
         // Persist user-attached files (any type incl. pasted images) to local
@@ -4361,27 +4515,33 @@ export class APIServer {
           aId: string, _text: string, sId?: string, imgs?: string[], sessId?: string,
         ): Promise<{ sessionId: string; messageId: string } | null> => {
           const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo);
-          if (persisted && !sessId) {
-            agent.bindDbSession(persisted.sessionId);
-          }
+          // NOTE: 这里以前会顺手做两件「写绑定」的事（agent.bindDbSession +
+          // persistMemorySessionBinding）。两者都跑在 HTTP 线程上、读的是 root 工作区，
+          // 并发下只会写下陈旧/空绑定。绑定现在由处理该消息的 worker 写，持久化则在
+          // 回合结束后按 DB id 定向查询回写（见 persistTurnSessionBinding）。
           return persisted ? { sessionId: persisted.sessionId, messageId: persisted.messageId } : null;
         };
 
         if (stream) {
           // Pass deferred session restore when agent is busy — it will be applied
           // at mailbox processing time to avoid corrupting an in-progress session.
-          const deferredRestore = agent.isProcessing() ? sessionRestoreData : undefined;
-          // Optional one-shot / session model override for this turn
+          const deferredRestore = sessionRestoreData;
+          // Optional ONE-SHOT model override, honoured only from the explicit
+          // request body. Session-level overrides are deliberately no longer
+          // read: a model belongs to the AGENT (its own binding) or to global
+          // routing, never to a single conversation — otherwise two sessions of
+          // the same agent could silently run a different model than the
+          // composer shows.
           const overrideProvider = typeof body['provider'] === 'string' ? body['provider'].trim() : '';
           const overrideModel = typeof body['model'] === 'string' ? body['model'].trim() : '';
           if (overrideProvider && overrideModel) {
             agent.setTurnModelOverride({ provider: overrideProvider, model: overrideModel });
-          } else if (sessionId && this.storage) {
-            const sessMeta = this.storage.chatSessionRepo.getSessionMetadata(sessionId);
-            const mo = sessMeta?.['modelOverride'] as { provider?: string; model?: string } | undefined;
-            if (mo?.provider && mo?.model) {
-              agent.setTurnModelOverride({ provider: mo.provider, model: mo.model });
-            }
+          } else {
+            // Clear any leftover override. `setTurnModelOverride` persists on the
+            // agent workspace (not per-request), so without this an override sent
+            // once would pin the agent's model for every later turn — the agent
+            // would keep using a model the composer no longer shows.
+            agent.setTurnModelOverride(null);
           }
 
           const sseHandler = new SSEHandler({
@@ -4412,10 +4572,14 @@ export class APIServer {
           const persistedSessionId = userMsgPersisted?.sessionId ?? null;
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
-          const deferredRestoreNonStream = agent.isProcessing() ? sessionRestoreData : undefined;
+          const deferredRestoreNonStream = sessionRestoreData;
           try {
             reply = await agent.sendMessage(agentText, senderId, senderInfo, {
               images, fileNames, imagePaths, toolEventCollector: toolEvents,
+              // 把本轮 DB 会话 id 显式交给处理该消息的分身：它用它写 DB→memory 绑定。
+              // 以前这里什么都不传，于是新对话的首条消息根本落不下绑定 —— 第二条
+              // 只能从瘦 DB 重建（明明是同一个会话，却换了个内存会话）。
+              ...(persistedSessionId ? { dbSessionId: persistedSessionId } : {}),
               ...(deferredRestoreNonStream !== undefined ? { sessionRestore: deferredRestoreNonStream } : {}),
             });
           } catch (err) {
@@ -6288,6 +6452,13 @@ EXPLANATION_END`;
       const imagePaths = persistedImages.map(p => p.path);
 
       const stream = body['stream'] as boolean | undefined;
+      // 会话身份契约（第 0 步）：这个入口历史上**不带任何会话身份** → agent 每次都开新会话。
+      // 现按契约明确表态：有 channelId 则按频道绑定（同频道连续）；否则显式声明 unknown
+      //（core 会告警并保持当前会话，绝不静默新建）。
+      const channelIdForHint = body['channelId'] as string | undefined;
+      const sessionHint = channelIdForHint
+        ? ({ kind: 'system', role: 'channel', key: channelIdForHint } as const)
+        : ({ kind: 'unknown', reason: 'POST /api/message 未提供 sessionId 或 channelId' } as const);
       if (stream) {
         const userText = body['text'] as string;
 
@@ -6300,6 +6471,7 @@ EXPLANATION_END`;
           imagePaths,
           senderId,
           senderInfo,
+          sessionHint,
           executionStreamRepo: this.storage?.executionStreamRepo,
           onComplete: async (reply, segments, tokensUsed) => {
             const meta = segments.length > 0 ? { segments } : undefined;
@@ -6313,7 +6485,7 @@ EXPLANATION_END`;
         const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
         let reply: string;
         try {
-          reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, imagePaths, toolEventCollector: toolEvents });
+          reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint });
         } catch (err) {
           throw err;
         }
@@ -8117,6 +8289,7 @@ EXPLANATION_END`;
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
         cognitive: am.cognitiveConfig ?? { enabled: false },
+        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
       });
       return;
     }
@@ -8141,12 +8314,23 @@ EXPLANATION_END`;
         };
         changed = true;
       }
+      if (body['concurrent'] && typeof body['concurrent'] === 'object') {
+        const cc = body['concurrent'] as Record<string, unknown>;
+        const policy = cc['conflictPolicy'];
+        am.concurrentConfig = {
+          enabled: cc['enabled'] === true,
+          maxWorkers: typeof cc['maxWorkers'] === 'number' ? cc['maxWorkers'] : undefined,
+          conflictPolicy: policy === 'report' ? 'report' : 'auto',
+        };
+        changed = true;
+      }
       if (changed) {
         try {
           saveConfig({
             agent: {
               maxToolIterations: am.maxToolIterations,
               cognitive: am.cognitiveConfig,
+              concurrent: am.concurrentConfig,
             },
           } as any, this.markusConfigPath);
         } catch (e) {
@@ -8168,6 +8352,7 @@ EXPLANATION_END`;
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
         cognitive: am.cognitiveConfig ?? { enabled: false },
+        concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
       });
       return;
     }
@@ -12008,10 +12193,20 @@ EXPLANATION_END`;
       }
       const body = await this.readBody(req);
       const roots = (body['knowledgeRoots'] as string[] | undefined) ?? project.knowledgeBasePaths;
-      if (!roots || roots.length === 0) {
-        this.json(res, 400, { error: 'No knowledge base paths bound to this project' });
+      // 显式传 [] 表示清空该项目的所有知识库文件
+      if (roots === undefined || roots === null) {
+        if (!project.knowledgeBasePaths || project.knowledgeBasePaths.length === 0) {
+          this.json(res, 400, { error: 'No knowledge base paths bound to this project' });
+          return;
+        }
+        // 未传 knowledgeRoots → 使用项目已绑定路径
+        const result = await this.knowledgeSyncService.sync(projectId, project.knowledgeBasePaths, {
+          ownerId: body['ownerId'] as string | undefined,
+        });
+        this.json(res, 200, result);
         return;
       }
+      // roots === [] 也视为合法——清空文件
       try {
         const result = await this.knowledgeSyncService.sync(projectId, roots, {
           ownerId: body['ownerId'] as string | undefined,
@@ -12435,10 +12630,11 @@ EXPLANATION_END`;
       // ── Agents ───────────────────────────────────────────────────────────
       exact('/api/agents', 'GET', 'POST'),
       exact('/api/agents/role-updates', 'GET'),
-      regex(/^\/api\/agents\/[^/]+\/sessions$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/sessions$/, 'GET', 'POST'),
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+\/model-override$/, 'PUT'),
+      regex(/^\/api\/sessions\/[^/]+\/title$/, 'PATCH'),
       regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message|evolve-from-message)$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+\/evolve-from-message$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),

@@ -38,9 +38,36 @@ const OLLAMA_DEFAULT_MAX_OUTPUT = 4096;
  * precise value. `DEFAULT_CONTEXT_WINDOW_FALLBACK` is kept comfortably larger
  * than `DEFAULT_MAX_OUTPUT_FALLBACK` so the derived message budget never goes
  * negative.
+ *
+ * P1-7: this used to be 1_000_000. A catalog miss therefore handed an unlisted
+ * model a 1M window, which made the packing budget systematically optimistic:
+ * small-window models were over-packed every turn until the upstream returned
+ * 400 (observed live: `[CONTEXT] window 1000k`). Fail closed to a conservative
+ * window instead; operators who actually have a larger model can raise it
+ * explicitly via `MARKUS_FALLBACK_CONTEXT_WINDOW`.
  */
-const DEFAULT_CONTEXT_WINDOW_FALLBACK = 1_000_000;
-const DEFAULT_MAX_OUTPUT_FALLBACK = 131_072;
+export const DEFAULT_CONTEXT_WINDOW_FALLBACK = 32_768;
+const DEFAULT_MAX_OUTPUT_FALLBACK = 8_192;
+/**
+ * Upper sanity bound for a resolved context window. Real models top out around
+ * 1M today; anything above this is a catalog/config error and would again
+ * produce absurd packing budgets, so we clamp and warn.
+ */
+const MAX_CONTEXT_WINDOW_SANITY = 2_000_000;
+
+/**
+ * Resolve the conservative catalog-miss fallback window, allowing an explicit
+ * operator override. Kept as a function (not a const) so the env var is read at
+ * call time and clamped to the sanity bound.
+ */
+function resolveFallbackContextWindow(): number {
+  const raw = process.env['MARKUS_FALLBACK_CONTEXT_WINDOW'];
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.min(n, MAX_CONTEXT_WINDOW_SANITY);
+  }
+  return DEFAULT_CONTEXT_WINDOW_FALLBACK;
+}
 
 const CAPABILITY_KEY_MAP: Partial<Record<ModelCapabilityType, keyof ProviderCapabilities>> = {
   image_generation: 'imageGeneration',
@@ -173,6 +200,24 @@ export class LLMRouter {
   private _routingDefaultModel?: { provider: string; model: string };
   /** Hub is_default (or first catalog id) from the last Markus catalog refresh. */
   private _markusCatalogPreferredId?: string;
+  /**
+   * True once a NON-empty Markus Hub catalog has been written to
+   * `customModelCatalog`. Used by the async preflight
+   * ({@link ensureMarkusCatalogLoaded}) for an O(1) fast path: once the catalog
+   * is ready there is no reason to touch the network again on every turn.
+   * The synchronous lookups ({@link getModelContextWindow} /
+   * {@link getModelMaxOutput}) deliberately do NOT consult this flag — they must
+   * stay non-blocking and simply return their documented fallback until a
+   * refresh lands.
+   */
+  private _markusCatalogLoaded = false;
+  /**
+   * Single-flight guard for {@link refreshMarkusCatalog}: the promise of the one
+   * refresh currently in progress. A second caller joins this promise instead of
+   * starting a competing fetch, which both de-duplicates the Hub round-trip and
+   * serializes the write-back to `customModelCatalog`.
+   */
+  private _markusCatalogInFlight: Promise<number> | null = null;
 
   private readonly CIRCUIT_OPEN_AFTER = 2;
   private readonly CIRCUIT_RESET_MS = 5 * 60 * 1000;
@@ -531,8 +576,29 @@ export class LLMRouter {
    * Fetch the Hub-served OR model catalog into the Markus provider's picker.
    * Keeps the current active model when it still exists in the catalog;
    * only when the active model is missing/obsolete does it fall back to Hub default.
+   *
+   * Single-flight: while a refresh is in flight, concurrent callers — the
+   * fire-and-forget refresh kicked off at provider-registration time, the
+   * Settings warm-up, and the per-turn preflight — join the SAME promise
+   * instead of starting a second Hub round-trip. Besides de-duplicating the
+   * (relatively expensive) fetch, this serializes the write-back to
+   * `customModelCatalog`, so two overlapping refreshes can no longer interleave
+   * and clobber each other's result.
    */
   async refreshMarkusCatalog(): Promise<number> {
+    if (this._markusCatalogInFlight) return this._markusCatalogInFlight;
+    const flight = this.loadMarkusCatalog();
+    this._markusCatalogInFlight = flight;
+    try {
+      return await flight;
+    } finally {
+      // Only the owner clears the slot; joiners merely awaited the shared promise.
+      if (this._markusCatalogInFlight === flight) this._markusCatalogInFlight = null;
+    }
+  }
+
+  /** Actual Hub fetch + write-back. Always reached through the single-flight wrapper. */
+  private async loadMarkusCatalog(): Promise<number> {
     const provider = this.providers.get('markus');
     if (!(provider instanceof MarkusProvider)) return 0;
 
@@ -572,6 +638,7 @@ export class LLMRouter {
     }
 
     this.customModelCatalog.set('markus', defs);
+    this._markusCatalogLoaded = true;
 
     const ids = new Set(defs.map(d => d.id));
     const preferred = models.find(m => m.is_default)?.id ?? defs[0]!.id;
@@ -587,6 +654,52 @@ export class LLMRouter {
       log.info('Markus Hub catalog refreshed', { model: provider.model, count: defs.length });
     }
     return defs.length;
+  }
+
+  /** True once a NON-empty Markus Hub catalog has been loaded successfully. */
+  isMarkusCatalogLoaded(): boolean {
+    return this._markusCatalogLoaded;
+  }
+
+  /**
+   * Await Markus Hub catalog readiness. This is the async half of the cold-start
+   * fix: the context-window / max-output lookups stay SYNCHRONOUS (their callers
+   * do not await), so they cannot block on the network, and instead return their
+   * documented fallback until a catalog lands. The "wait for readiness" work is
+   * therefore pushed here, into an async PREFLIGHT that runs before the packing
+   * budget is derived — so the turn that triggers the load already sees the real
+   * Hub values.
+   *
+   * Contract:
+   *   - already loaded (and not `force`)  → O(1) return, no network.
+   *   - otherwise race the single-flight refresh against a bounded timeout
+   *     (default 3000ms).
+   *   - ALL failures — Hub unreachable, malformed payload, timeout — are
+   *     swallowed with a warn. This method NEVER rejects, so a cold/offline Hub
+   *     can never abort an agent turn; the sync lookups just use their fallback
+   *     until a later refresh succeeds.
+   */
+  async ensureMarkusCatalogLoaded(opts?: { timeoutMs?: number; force?: boolean }): Promise<void> {
+    if (this._markusCatalogLoaded && !opts?.force) return;
+    const timeoutMs = opts?.timeoutMs ?? 3000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.refreshMarkusCatalog(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`markus catalog load timed out after ${timeoutMs}ms`)),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } catch (err) {
+      log.warn('Markus catalog not ready before budget planning — using fallback values', {
+        error: String(err),
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /**
@@ -1998,20 +2111,27 @@ export class LLMRouter {
   /**
    * Returns the context window (in tokens) for a specific provider, or the
    * active default if no provider name is given.
+   *
+   * P1-8: `model` is the model actually used for this request
+   * ({@link Agent.getEffectiveModel}, possibly session-overridden). When omitted
+   * we keep the old behaviour of using the provider's configured model.
    */
   getActiveModelContextWindow(): number {
     return this.getModelContextWindow();
   }
 
-  getModelContextWindow(providerName?: string): number {
+  getModelContextWindow(providerName?: string, model?: string): number {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);
     if (!provider) {
       throw new Error(`Cannot resolve context window: provider "${name}" is not registered. Available: ${[...this.providers.keys()].join(', ') || '(none)'}.`);
     }
+    const effectiveModel = model ?? provider.model;
     const custom = this.customModelConfigs.get(name);
-    if (custom?.contextWindow && custom.contextWindow > 0) return custom.contextWindow;
-    const catalogEntry = findCatalogEntry(name, provider.model, {
+    // Provider-level custom config only applies to the provider's own model; an
+    // explicit effective model must be resolved through the catalog.
+    if (custom?.contextWindow && custom.contextWindow > 0 && !model) return custom.contextWindow;
+    const catalogEntry = findCatalogEntry(name, effectiveModel, {
       builtin: BUILTIN_MODEL_CATALOG,
       hub: this.customModelCatalog.get(name),
     });
@@ -2019,10 +2139,16 @@ export class LLMRouter {
     if (!ctx || ctx <= 0) {
       // Any real model must be usable. A model absent from the built-in/Hub
       // catalog (private BYOK, local Ollama, self-hosted endpoint) should NOT
-      // take the whole agent turn down — fall back to a sane window and warn so
-      // the operator can configure an exact value for accurate budgeting.
-      log.warn(`No context_window for provider "${name}" model "${provider.model || '(unset)'}" — using fallback ${DEFAULT_CONTEXT_WINDOW_FALLBACK}. Configure the model for accurate budgeting.`);
-      return DEFAULT_CONTEXT_WINDOW_FALLBACK;
+      // take the whole agent turn down — fall back to a CONSERVATIVE window and
+      // warn so the operator can configure an exact value for accurate
+      // budgeting. Never silently assume a 1M window (P1-7).
+      const fallback = resolveFallbackContextWindow();
+      log.warn(`No context_window for provider "${name}" model "${effectiveModel || '(unset)'}" — using conservative fallback ${fallback} (NOT 1M). Register the model or set MARKUS_FALLBACK_CONTEXT_WINDOW for accurate budgeting.`);
+      return fallback;
+    }
+    if (ctx > MAX_CONTEXT_WINDOW_SANITY) {
+      log.warn(`context_window ${ctx} for "${name}/${effectiveModel}" exceeds sanity bound ${MAX_CONTEXT_WINDOW_SANITY} — clamping.`);
+      return MAX_CONTEXT_WINDOW_SANITY;
     }
     return ctx;
   }
@@ -2031,15 +2157,16 @@ export class LLMRouter {
     return this.getModelMaxOutput();
   }
 
-  getModelMaxOutput(providerName?: string): number {
+  getModelMaxOutput(providerName?: string, model?: string): number {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);
     if (!provider) {
       throw new Error(`Cannot resolve max output tokens: provider "${name}" is not registered. Available: ${[...this.providers.keys()].join(', ') || '(none)'}.`);
     }
+    const effectiveModel = model ?? provider.model;
     const custom = this.customModelConfigs.get(name);
-    if (custom?.maxOutputTokens && custom.maxOutputTokens > 0) return custom.maxOutputTokens;
-    const catalogEntry = findCatalogEntry(name, provider.model, {
+    if (custom?.maxOutputTokens && custom.maxOutputTokens > 0 && !model) return custom.maxOutputTokens;
+    const catalogEntry = findCatalogEntry(name, effectiveModel, {
       builtin: BUILTIN_MODEL_CATALOG,
       hub: this.customModelCatalog.get(name),
     });
@@ -2048,7 +2175,7 @@ export class LLMRouter {
       // Mirror the context-window policy: a missing output cap is not fatal —
       // many upstreams legitimately omit it. Fall back instead of throwing so
       // unknown/private models keep working.
-      log.warn(`No max_output_tokens for provider "${name}" model "${provider.model || '(unset)'}" — using fallback ${DEFAULT_MAX_OUTPUT_FALLBACK}.`);
+      log.warn(`No max_output_tokens for provider "${name}" model "${effectiveModel || '(unset)'}" — using fallback ${DEFAULT_MAX_OUTPUT_FALLBACK}.`);
       return DEFAULT_MAX_OUTPUT_FALLBACK;
     }
     return out;

@@ -718,6 +718,22 @@ async function startServerCore(
   apiServer.setTelemetryService(telemetryService);
   apiServer.setAuditService(auditService);
 
+  // session_rename tool → persist chat (cs_*) session titles to Sqlite and
+  // broadcast so the Team chat History panel refreshes the title live.
+  agentManager.setSessionTitleUpdater((sessionId, title) => {
+    if (!storage?.chatSessionRepo) return;
+    try {
+      const updated = storage.chatSessionRepo.updateTitle(sessionId, title);
+      apiServer.ws.broadcast({
+        type: 'session:title_updated',
+        payload: { sessionId, agentId: updated?.agentId, title: updated?.title ?? title },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      log.warn('Failed to persist session title rename', { sessionId, error: String(err) });
+    }
+  });
+
   const projectService = new ProjectService();
   const storage = orgService.getStorage();
   if (storage?.notificationRepo) {
@@ -1446,6 +1462,18 @@ async function startServerCore(
     }
   }
 
+  // Warm the Markus Hub model catalog BEFORE the server starts serving traffic,
+  // i.e. before any agent picks up its first mailbox item. WHY HERE: the context
+  // window / max-output lookups are SYNCHRONOUS and cannot block on the network
+  // (they return a 1M fallback until a catalog lands), so on a cold start the
+  // very first turn would otherwise plan its budget from the fallback. Preheating
+  // here means that first turn already sees the REAL Hub window values.
+  // Bounded (8s) and non-throwing: ensureMarkusCatalogLoaded swallows every error
+  // and timeout, so a cold/offline Hub can never block or crash startup. In the
+  // common case this simply joins the single-flight refresh already kicked off by
+  // LLMRouter.createDefault(), so it usually returns almost immediately.
+  await llmRouter.ensureMarkusCatalogLoaded?.({ timeoutMs: 8000 });
+
   await apiServer.start();
   taskService.setWSBroadcaster(apiServer.getWSBroadcaster());
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
@@ -1662,24 +1690,38 @@ async function startServerCore(
         const agent = agentManager.getAgent(agentId);
         const mailbox = agent.getMailbox();
         mailbox.setPersistence({
-          save: (item) => {
+          save: (item, dedupKey) => {
             try {
               const { responsePromise, ...persistableMetadata } = (item.metadata ?? {}) as Record<string, unknown>;
-              mbRepo.save({
+              const inserted = mbRepo.save({
                 id: item.id, agentId: item.agentId, sourceType: item.sourceType,
                 priority: item.priority, status: item.status,
                 payload: item.payload as unknown as Record<string, unknown>,
                 metadata: persistableMetadata,
                 queuedAt: item.queuedAt,
+                dedupKey,
               });
-            } catch (e) { log.warn('Failed to persist mailbox item', { id: item.id, error: String(e) }); }
+              if (!inserted) {
+                // P0 幂等键：重复投递（同 agent + 同 dedup_key）被 DB 拒绝，不产生第二行。
+                // 返回 false → mailbox 将这次投递**整体拒绝**（不入队 + 了结 responsePromise）。
+                log.warn('Duplicate mailbox item rejected by idempotency key', {
+                  id: item.id, agentId: item.agentId, sourceType: item.sourceType, dedupKey,
+                });
+                return false;
+              }
+              return true;
+            } catch (e) {
+              // 持久化异常**不阻断处理**：返回 undefined（非显式拒绝）→ mailbox 照常入队，
+              // 认领阶段对「行不存在」fail-open，避免基础设施抖动导致消息静默丢失。
+              log.warn('Failed to persist mailbox item', { id: item.id, error: String(e) });
+            }
           },
           updateStatus: (itemId: string, status: string, extra?: Partial<Record<string, unknown>>) => {
             try { mbRepo.updateStatus(itemId, status, extra as Record<string, unknown>); }
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
           markStaleProcessingAsDropped: (aid: string) => mbRepo.markStaleProcessingAsDropped(aid),
-          markStaleProcessingAsCompleted: (aid: string) => mbRepo.markStaleProcessingAsCompleted(aid),
+          markStaleProcessingAsCompleted: (aid: string, ownerId?: string) => mbRepo.markStaleProcessingAsCompleted(aid, ownerId),
           loadQueued: (aid: string) => {
             const rows = mbRepo.getByAgent(aid, { status: 'queued' });
             return rows.map((r: any) => ({
@@ -1716,6 +1758,20 @@ async function startServerCore(
               retryCount: r.retryCount ?? 0,
             }));
           },
+          // ── P0 原子认领 / 租约（根因 #2）────────────────────────────────
+          // 认领以 DB 条件更新决定唯一胜者；租约 TTL + 续租 + 过期回收。
+          claimItem: (itemId: string, ownerId: string, leaseUntil: string, nowIso: string) =>
+            mbRepo.claimItem(itemId, ownerId, leaseUntil, nowIso),
+          renewLease: (itemId: string, ownerId: string, leaseUntil: string) =>
+            mbRepo.renewLease(itemId, ownerId, leaseUntil),
+          releaseClaim: (itemId: string, ownerId: string) => mbRepo.releaseClaim(itemId, ownerId),
+          releaseExpiredLeases: (aid: string, nowIso: string) => mbRepo.releaseExpiredLeases(aid, nowIso),
+          // ── P1.x 重投/恢复不丢（最小写 + 只读 API）───────────────────────
+          // requeueItem：单条 SQL 覆盖 (a) 复用原行回队 / (b) 刷新 queued_at / (d) 启动回队，
+          //   **无条件**清 claimed_by/lease_until（回队不得依赖 releaseClaim：跨实例 ownerId 不匹配 → no-op）。
+          requeueItem: (itemId: string, opts?: { queuedAt?: string }) => mbRepo.requeueItem(itemId, opts),
+          // findByDedupKey：只读，供 mailbox 三态判定（新增/幂等抑制/复用原行回队）取既有行状态。
+          findByDedupKey: (aid: string, dedupKey: string) => mbRepo.findByDedupKey(aid, dedupKey),
         });
         const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
         if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });

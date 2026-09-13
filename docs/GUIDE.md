@@ -195,6 +195,14 @@ The left sidebar lets you choose a conversation target:
 
 **A2A Communication** — Agents communicate with each other via DM channels with persistent conversation history (deterministic `dm:a2a:{sorted_ids}` routing). Use group chat or agent messaging; substantial work should go through requirements and tasks.
 
+### Settings Page
+
+- **Agent settings** include a **Concurrent Processing** block:
+  - **Enable concurrent processing** (default on) — let the agent work several *independent* items at once via isolated worker sessions.
+  - **Max workers** (1–10, default 3) — `1` means strictly serial (one item at a time), identical to disabling concurrency.
+  - **Conflict policy** — *Auto* (requeue & retry when an entity is busy) or *Report* (escalate/emit a conflict event).
+  - Note: concurrency only ever applies **between** different entities. The same task, requirement, conversation, or user is never processed by two workers at once — see [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md).
+
 ### Tasks Page
 
 - Kanban view with columns by status (pending, assigned, in_progress, review, revision, accepted, completed, archived, etc.)
@@ -206,7 +214,7 @@ The left sidebar lets you choose a conversation target:
 
 - **System Status** — See whether the system is in pause or emergency-stop mode
 - **Global Controls** — Pause all Agents, Resume, or Emergency Stop
-- **Governance Policy** — Configure default approval levels, max concurrent tasks, approval rules
+- **Governance Policy** — Configure default approval levels, **max concurrent tasks** (the task-execution cap, distinct from the agent-level Concurrent Processing worker count), approval rules
 - **Announcements** — Create and view system-wide broadcast messages
 
 ### Projects Page

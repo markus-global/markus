@@ -71,6 +71,137 @@ export function appendSubagentLog<T>(logs: T[] | undefined, entry: T, max = MAX_
  * when timestamps are missing. Used for proactive/notify WS so late delivery still
  * lands before an in-flight reply that started later.
  */
+// ─── Message finalization helpers ───────────────────────────────────────────
+// Converge the repeated hand-written transforms (isStopped / isError / tool
+// running→stopped) that previously appeared at ~12 sites in Team.tsx with
+// subtly different variants. Single source of truth for "how a message looks
+// when a stream ends".
+
+/** True when a ChatMsg carries any visible content (text or segments). */
+export function msgHasContent(msg: ChatMsg): boolean {
+  return !!msg.text?.trim()
+    || (msg.segments ?? []).some(s =>
+      (s.type === 'text' && ((s as { content: string }).content || (s as { thinking?: string }).thinking)) || s.type === 'tool'
+    );
+}
+
+/**
+ * True when the TARGET conversation still has a live (non-stopped) streaming
+ * bubble in its tail. This is the authoritative "agent is still generating"
+ * check for the header badge — covers the reattach window where `sending`
+ * has already ended but the resumed stream is still flushing deltas.
+ * Scanning only the tail is safe: streaming bubbles are always recent.
+ */
+export function hasStreamingTail(msgs: ChatMsg[], lookback = 8): boolean {
+  for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - lookback); i--) {
+    const m = msgs[i]!;
+    if (m.isStreaming && !m.isStopped) return true;
+  }
+  return false;
+}
+
+/** Mark any still-running tool segments as stopped. Returns same ref when no change. */
+export function stopRunningTools(segs: MsgSegment[] | undefined): MsgSegment[] | undefined {
+  if (!segs || segs.length === 0) return segs;
+  let changed = false;
+  const next = segs.map(s =>
+    s.type === 'tool' && s.status === 'running'
+      ? (changed = true, { ...s, status: 'stopped' as const })
+      : s,
+  );
+  return changed ? next : segs;
+}
+
+/** Terminal outcome of a stream for a single agent message. */
+export type StreamOutcome = 'done' | 'stopped' | 'error';
+
+/**
+ * Finalize one agent message with a single outcome. Returns null when the
+ * message has no visible content and the outcome is not 'done' — the caller
+ * should drop the empty bubble (this is the "empty reply" rule).
+ */
+export function finalizeAgentMessage(msg: ChatMsg, outcome: StreamOutcome): ChatMsg | null {
+  const hasContent = msgHasContent(msg);
+  if (!hasContent && outcome !== 'done') return null;
+  const base = { ...msg, isStreaming: false, segments: stopRunningTools(msg.segments) };
+  switch (outcome) {
+    case 'done':
+      return { ...base, isStopped: false, isError: false };
+    case 'stopped':
+      return { ...base, isStopped: true, isError: false };
+    case 'error':
+      return { ...base, isStopped: true, isError: true };
+  }
+}
+
+/**
+ * Finalize the LAST in-flight agent message in an array (used when a turn is
+ * interrupted by user send/stop). Mirrors the old copy-pasted loops: find the
+ * last agent bubble that isn't already stopped/errored; if it has no content,
+ * splice it out; otherwise mark it stopped (tools also stopped).
+ */
+export function finalizeLastInterruptedAgent(msgs: ChatMsg[]): ChatMsg[] {
+  const u = [...msgs];
+  for (let i = u.length - 1; i >= 0; i--) {
+    if (u[i]!.sender === 'agent' && !u[i]!.isStopped && !u[i]!.isError) {
+      const finalized = finalizeAgentMessage(u[i]!, 'stopped');
+      if (finalized === null) {
+        u.splice(i, 1);
+      } else {
+        u[i] = finalized;
+      }
+      break;
+    }
+  }
+  return u;
+}
+
+/**
+ * Terminal cleanup for the message of a finished direct stream (the single
+ * convergence point every terminal path of send() passes through: done with or
+ * without server segments, stream error, soft-disconnect without reattach, SSE
+ * drop + poll recovery). Stops running tools and lands isStreaming: false.
+ *
+ * The optimistic placeholder is created with isStreaming: true and nothing in
+ * the streaming pipeline resets it — if this step ever regresses, the bubble
+ * renders as a perpetual "thinking…" (isStreamingMsg = ... || !!msg.isStreaming)
+ * and the sidebar busy mark holds via hasStreamingTail. Returns the same array
+ * ref when nothing changed so React can skip the re-render.
+ */
+export function finalizeStreamEnd(msgs: ChatMsg[], agentMsgId: string): ChatMsg[] {
+  const idx = msgs.findIndex(m => m.id === agentMsgId);
+  if (idx < 0) return msgs;
+  const msg = msgs[idx]!;
+  const segs = stopRunningTools(msg.segments);
+  if (!msg.isStreaming && segs === msg.segments) return msgs;
+  const u = [...msgs];
+  u[idx] = { ...msg, isStreaming: false, segments: segs };
+  return u;
+}
+
+/**
+ * Finalize the last in-flight agent bubble (agent && isStreaming && !isStopped)
+ * — used when a reattach stream dies/aborts while feeding an existing bubble.
+ * Unlike finalizeLastInterruptedAgent this never touches a completed reply:
+ * a message that is NOT streaming is not this stream's bubble. Empty bubbles
+ * are spliced out (empty-reply rule).
+ */
+export function finalizeLastStreamingBubble(msgs: ChatMsg[], outcome: StreamOutcome = 'stopped'): ChatMsg[] {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]!;
+    if (m.sender === 'agent' && m.isStreaming && !m.isStopped) {
+      const finalized = finalizeAgentMessage(m, outcome);
+      if (finalized === null) {
+        return msgs.filter((_, j) => j !== i);
+      }
+      const u = [...msgs];
+      u[i] = finalized;
+      return u;
+    }
+  }
+  return msgs;
+}
+
 export function insertChatMsgByCreatedAt(msgs: ChatMsg[], msg: ChatMsg): ChatMsg[] {
   if (msgs.some((m) => m.id === msg.id)) return msgs;
   const t = msg.rawCreatedAt ? Date.parse(msg.rawCreatedAt) : NaN;
@@ -89,6 +220,32 @@ export function insertChatMsgByCreatedAt(msgs: ChatMsg[], msg: ChatMsg): ChatMsg
   return next;
 }
 
+/**
+ * Append a reasoning chunk to the in-flight segment stream.
+ *
+ * Reasoning lives in the segment's `thinking` field — never as inline markup in
+ * `content` — so provider interleaving of reasoning and answer prose cannot make
+ * either one leak into the other's display path.
+ */
+export function appendThinkingToSegments(segments: MsgSegment[], thinking: string): MsgSegment[] {
+  if (!thinking) return segments;
+  const last = segments[segments.length - 1];
+  if (last?.type === 'text') {
+    return [...segments.slice(0, -1), { ...last, thinking: (last.thinking ?? '') + thinking }];
+  }
+  return [...segments, { type: 'text', content: '', thinking, createdAt: new Date().toISOString() }];
+}
+
+/** Append answer prose to the in-flight segment stream (merges into the trailing text segment). */
+export function appendTextToSegments(segments: MsgSegment[], content: string): MsgSegment[] {
+  if (!content) return segments;
+  const last = segments[segments.length - 1];
+  if (last?.type === 'text') {
+    return [...segments.slice(0, -1), { ...last, content: last.content + content }];
+  }
+  return [...segments, { type: 'text', content, createdAt: new Date().toISOString() }];
+}
+
 /** Matches `<!-- notify_context: ... -->` including optional surrounding newlines. */
 const NOTIFY_CONTEXT_RE = /\n*<!--\s*notify_context:\s*([\s\S]*?)-->/g;
 
@@ -103,6 +260,25 @@ export function stripNotifyContext(text: string): { cleaned: string; priority?: 
     if (priMatch) priority = priMatch[1];
   }
   return { cleaned: text.replace(NOTIFY_CONTEXT_RE, '').trimEnd(), priority };
+}
+
+/**
+ * Remove complete <thinking>…</thinking> blocks from display/persist text.
+ *
+ * CRITICAL: the matcher REQUIRES a closing tag. Earlier defensive regexes used
+ * `(<\/think>|$)` as the terminator — whenever plain prose contained the word
+ * " thinking" (extremely common in English replies) WITHOUT a closing tag, the
+ * regex deleted everything from that word to the END of the string. The result
+ * looked exactly like "the final reply text is truncated / incomplete".
+ *
+ * With a closing tag required, bare " thinking" in normal text is left intact,
+ * and only true (legacy/raw) thinking blocks are stripped.
+ */
+const THINK_BLOCK_RE = /(?:<thinking>| thinking)[\s\S]*?<\/thinking>/g;
+const THINK_BLOCK_RE_LEGACY = /(?:<thinking>| thinking| thinking| think)[\s\S]*?<\/think>/g;
+
+export function stripThinkingBlocks(text: string): string {
+  return text.replace(THINK_BLOCK_RE, '').replace(THINK_BLOCK_RE_LEGACY, '');
 }
 
 /** Map a persisted/SSE segment into chat UI shape, keeping nested sub-agent logs. */
@@ -342,10 +518,11 @@ export function formatSmartTime(isoOrLocale: string, rawCreatedAt?: string, labe
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const ts = d.getTime();
-  const hhmm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  if (ts >= todayStart) return hhmm;
-  if (ts >= todayStart - 86400000) return `${labels?.yesterday ?? 'Yesterday'} ${hhmm}`;
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + hhmm;
+  // Include seconds so consecutive agent pushes within the same minute stay distinguishable.
+  const hhmmss = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  if (ts >= todayStart) return hhmmss;
+  if (ts >= todayStart - 86400000) return `${labels?.yesterday ?? 'Yesterday'} ${hhmmss}`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + hhmmss;
 }
 
 export function getDateKey(rawCreatedAt?: string): string {

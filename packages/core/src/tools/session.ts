@@ -50,6 +50,8 @@ export interface SessionRepo {
   };
   /** 统计某 session 中某 agent 发出的消息数（用于"参与"权限判定）。 */
   countMessagesByAgent(sessionId: string, agentId: string): number;
+  /** 重命名一个 session。可选 —— 不支持的适配器可忽略。 */
+  updateTitle?(sessionId: string, title: string): void | null | { id: string; title: string | null };
 }
 
 /** 可选注入：让 agent 通过 session 工具主动压缩自己的历史上下文（0.9.7 context-root-fix）。 */
@@ -92,6 +94,20 @@ export interface SessionToolContext {
   slotStore?: SessionSlotStore;
   /** ContextOS 可选。提供后，agent 可用 retrieve/include/purge 管理已归档片段。 */
   fragmentStore?: SessionFragmentStore;
+  /** 可选。提供后，rename 会把聊天（cs_*）会话标题同步写入 Sqlite 并广播到 UI（由 org-manager 注入）。 */
+  titleUpdater?: (sessionId: string, title: string) => void;
+  /** 可选。返回 agent 当前绑定的聊天会话 id（cs_*）——用于把当前 memory session 的改名映射到 UI 可见的聊天标题。 */
+  currentDbSessionId?: () => string | null;
+  /** 可选。返回 agent 当前内存会话 id（sess_ 或 task_ 前缀）——让 status 不传 session_id 时默认作用于「当前会话」。 */
+  currentMemorySessionId?: () => string | null;
+  /**
+   * 可选。把聊天会话 id（cs_*）解析为 agent 绑定过的内存会话 id（sess_ 或 task_ 前缀）。
+   * 有了它，session 工具才同时接受两种 id 空间 —— agent 才能自证「我在哪条会话」，
+   * 而不是拿 cs_* 去 MemoryStore 里查、拿到一个误导性的 not_found。
+   */
+  resolveMemorySessionByDbSessionId?: (dbSessionId: string) => string | null;
+  /** 可选。磁盘上的会话文件总数 —— 用于如实报告 total（内存只热加载最近 N 个）。 */
+  diskSessionCount?: () => number;
 }
 
 /**
@@ -185,16 +201,21 @@ export function createMemorySessionRepo(mem: IMemoryStore): SessionRepo {
       // 会话归属该 agent 即视为"参与"（memory session 都是单主会话）
       return s.agentId === agentId ? s.messages.length : 0;
     },
+    updateTitle(sessionId: string, title: string) {
+      if (mem.renameSession) mem.renameSession(sessionId, title);
+      return { id: sessionId, title };
+    },
   };
 }
 
 const OP_ALIASES = new Set([
   'list', 'get', 'compact',
   'pin', 'unpin', 'include', 'retrieve', 'purge', 'status',
+  'rename', 'title', 'update_title', 'rename_title', 'set_title',
 ]);
 
 export function normalizeSessionArgs(args: Record<string, unknown>): {
-  operation: 'list' | 'get' | 'compact' | 'pin' | 'unpin' | 'include' | 'retrieve' | 'purge' | 'status';
+  operation: 'list' | 'get' | 'compact' | 'pin' | 'unpin' | 'include' | 'retrieve' | 'purge' | 'status' | 'rename';
   sessionId: string | undefined;
   since: string | undefined;
   until: string | undefined;
@@ -210,6 +231,7 @@ export function normalizeSessionArgs(args: Record<string, unknown>): {
   goal: string | undefined;
   done: string | undefined;
   next: string | undefined;
+  title: string | undefined;
 } {
   const sessionId = (args.session_id ?? args.sessionId ?? args.id) as string | undefined;
   let since = (args.since ?? args.after) as string | undefined;
@@ -226,6 +248,7 @@ export function normalizeSessionArgs(args: Record<string, unknown>): {
   const goal = (args.goal ?? args.anchor_goal) as string | undefined;
   const done = (args.done ?? args.anchor_done) as string | undefined;
   const next = (args.next ?? args.anchor_next) as string | undefined;
+  const title = (args.title ?? args.new_title ?? args.name) as string | undefined;
 
   let explicit = (args.operation ?? args.op ?? args.action ?? args.mode) as string | undefined;
   if (typeof explicit === 'string') explicit = explicit.trim().toLowerCase();
@@ -241,6 +264,8 @@ export function normalizeSessionArgs(args: Record<string, unknown>): {
   else if (explicit?.startsWith('retrieve')) explicit = 'retrieve';
   else if (explicit?.startsWith('purge')) explicit = 'purge';
   else if (explicit?.startsWith('status')) explicit = 'status';
+  else if (explicit?.startsWith('rename')) explicit = 'rename';
+  else if (explicit === 'title' || explicit?.startsWith('set_title') || explicit?.startsWith('update_title')) explicit = 'rename';
   if (explicit && !OP_ALIASES.has(explicit)) explicit = undefined;
 
   // Free-form query like "get cs-1"
@@ -253,7 +278,7 @@ export function normalizeSessionArgs(args: Record<string, unknown>): {
     }
   }
 
-  let operation: 'list' | 'get' | 'compact' | 'pin' | 'unpin' | 'include' | 'retrieve' | 'purge' | 'status';
+  let operation: 'list' | 'get' | 'compact' | 'pin' | 'unpin' | 'include' | 'retrieve' | 'purge' | 'status' | 'rename';
   if (explicit === 'get') operation = 'get';
   else if (explicit === 'list') operation = 'list';
   else if (explicit === 'compact') operation = 'compact';
@@ -263,12 +288,13 @@ export function normalizeSessionArgs(args: Record<string, unknown>): {
   else if (explicit === 'retrieve') operation = 'retrieve';
   else if (explicit === 'purge') operation = 'purge';
   else if (explicit === 'status') operation = 'status';
+  else if (explicit === 'rename') operation = 'rename';
   else if (sessionId) operation = 'get';
   else operation = 'list';
 
   return {
     operation, sessionId, since, until, userId, page, pageSize, keepLast,
-    key, content, query, maxResults, fragmentId, goal, done, next,
+    key, content, query, maxResults, fragmentId, goal, done, next, title,
   };
 }
 
@@ -305,6 +331,9 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
       page,
       pageSize,
     });
+    const currentMemorySessionId = ctx.currentMemorySessionId?.() ?? null;
+    const currentChatSessionId = ctx.currentDbSessionId?.() ?? null;
+    const totalOnDisk = ctx.diskSessionCount?.();
     return JSON.stringify({
       status: 'ok',
       sessions: res.sessions.map(s => ({
@@ -315,15 +344,27 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
         isMain: !!s.isMain,
         createdAt: iso(s.createdAt as string | Date),
         lastMessageAt: iso(s.lastMessageAt as string | Date),
+        isCurrent: !!currentMemorySessionId && s.id === currentMemorySessionId,
       })),
+      current: {
+        memorySessionId: currentMemorySessionId,
+        chatSessionId: currentChatSessionId,
+      },
       total: res.total,
+      ...(typeof totalOnDisk === 'number' ? { totalOnDisk } : {}),
       page: res.page,
       pageSize: res.pageSize,
       hasMore: res.hasMore,
+      ...(typeof totalOnDisk === 'number' && totalOnDisk > res.total
+        ? {
+            note: `total counts only the ${res.total} session(s) warm in memory; ${totalOnDisk} exist on disk. ` +
+              `An older session is still readable via { "operation": "get", "session_id": "<id>" } when you know its id.`,
+          }
+        : {}),
     });
   }
 
-  async function doGet(args: Record<string, unknown>): Promise<string> {
+  async function doGet(args: Record<string, unknown>, chatSessionId?: string): Promise<string> {
     const n = normalizeSessionArgs(args);
     if (!n.sessionId) {
       return JSON.stringify({
@@ -355,6 +396,7 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
       status: 'ok',
       session: {
         id: session.id,
+        chatSessionId: chatSessionId ?? null,
         agentId: session.agentId,
         userId: session.userId ?? null,
         title: session.title ?? null,
@@ -535,30 +577,39 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
     }
   }
 
-  async function doStatus(args: Record<string, unknown>): Promise<string> {
+  async function doStatus(args: Record<string, unknown>, chatSessionId?: string): Promise<string> {
     const n = normalizeSessionArgs(args);
-    if (!n.sessionId) {
-      return JSON.stringify({ status: 'error', message: 'Status needs session_id.' });
+    // No session_id → default to the CURRENT session, so "which session am I in?"
+    // is answerable without knowing the sess_*/cs_* id-space split.
+    let sessionId = n.sessionId;
+    if (!sessionId) {
+      sessionId = ctx.currentMemorySessionId?.() ?? undefined;
+      if (!sessionId) {
+        return JSON.stringify({ status: 'error', message: 'Status needs session_id (or an active session to default to).' });
+      }
+      chatSessionId = chatSessionId ?? ctx.currentDbSessionId?.() ?? undefined;
     }
     // status is read-only: ownership OR participation is enough (same as get).
-    const session = repo.getSession(n.sessionId);
+    const session = repo.getSession(sessionId);
     if (!session) {
-      return JSON.stringify({ status: 'not_found', message: `No session with id ${n.sessionId}.` });
+      return JSON.stringify({ status: 'not_found', message: `No session with id ${sessionId}.` });
     }
     const isOwner = session.agentId === ctx.agentId;
     if (!isOwner) {
-      const participated = repo.countMessagesByAgent(n.sessionId, ctx.agentId) > 0;
+      const participated = repo.countMessagesByAgent(sessionId, ctx.agentId) > 0;
       if (!participated) {
-        return JSON.stringify({ status: 'forbidden', message: `Not authorized to read session ${n.sessionId}.` });
+        return JSON.stringify({ status: 'forbidden', message: `Not authorized to read session ${sessionId}.` });
       }
     }
     try {
-      const fragmentStats = ctx.fragmentStore?.sessionStats ? ctx.fragmentStore.sessionStats(n.sessionId) : undefined;
-      const slots = ctx.slotStore?.getSlots ? ctx.slotStore.getSlots(n.sessionId) : [];
+      const fragmentStats = ctx.fragmentStore?.sessionStats ? ctx.fragmentStore.sessionStats(sessionId) : undefined;
+      const slots = ctx.slotStore?.getSlots ? ctx.slotStore.getSlots(sessionId) : [];
       return JSON.stringify({
         status: 'ok',
-        sessionId: n.sessionId,
-        messageCount: fragmentStats?.messageCount ?? repo.listMessagesPaginated(n.sessionId, { page: 1, pageSize: 1 }).total,
+        sessionId,
+        chatSessionId: chatSessionId ?? null,
+        isCurrent: (ctx.currentMemorySessionId?.() ?? null) === sessionId,
+        messageCount: fragmentStats?.messageCount ?? repo.listMessagesPaginated(sessionId, { page: 1, pageSize: 1 }).total,
         fragmentCount: fragmentStats?.fragmentCount ?? 0,
         slots: slots.map((s) => s.key),
         note: 'Use session_status to observe your context water level; use session_compact / session_pin to actively manage it.',
@@ -569,13 +620,76 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
     }
   }
 
+  async function doRename(args: Record<string, unknown>): Promise<string> {
+    const n = normalizeSessionArgs(args);
+    const title = String(n.title ?? '').trim();
+    if (!title) {
+      return JSON.stringify({ status: 'error', message: 'Rename needs a non-empty title (summarize the purpose in a few words).' });
+    }
+    if (title.length > 120) {
+      return JSON.stringify({ status: 'error', message: 'Title too long (max 120 chars).' });
+    }
+    let sessionId = n.sessionId;
+    if (!sessionId) {
+      // Documented behaviour: omitting session_id renames the CURRENT session.
+      // (Previously this errored out — the description promised something the
+      //  implementation never did.)
+      const curDb = ctx.currentDbSessionId?.() ?? null;
+      if (curDb && curDb.startsWith('cs_') && ctx.titleUpdater) {
+        ctx.titleUpdater(curDb, title);
+        return JSON.stringify({
+          status: 'ok',
+          sessionId: ctx.currentMemorySessionId?.() ?? curDb,
+          chatSessionId: curDb,
+          title,
+          note: `Current chat session (${curDb}) title updated — visible in Team chat History.`,
+        });
+      }
+      sessionId = ctx.currentMemorySessionId?.() ?? undefined;
+      if (!sessionId) {
+        return JSON.stringify({ status: 'error', message: 'Rename needs session_id (or an active session to default to).' });
+      }
+    }
+    // Chat sessions (cs_*) live in the UI/team-chat store — update via the
+    // server-side titleUpdater so the title is persisted in Sqlite and the
+    // web UI refreshes the History panel immediately.
+    if (ctx.titleUpdater && sessionId.startsWith('cs_')) {
+      ctx.titleUpdater(sessionId, title);
+      return JSON.stringify({
+        status: 'ok', sessionId, title,
+        note: 'Chat session title updated — visible in Team chat History.',
+      });
+    }
+    // Agent's own memory session: if it is currently bound to a chat (cs_*)
+    // session, rename that chat session so the title change reaches the UI.
+    if (ctx.titleUpdater && ctx.currentDbSessionId) {
+      const dbId = ctx.currentDbSessionId();
+      if (dbId && dbId.startsWith('cs_')) {
+        ctx.titleUpdater(dbId, title);
+        return JSON.stringify({
+          status: 'ok', sessionId, chatSessionId: dbId, title,
+          note: `Current chat session (${dbId}) title updated — visible in Team chat History.`,
+        });
+      }
+    }
+    const own = checkOwnership(repo, sessionId, ctx.agentId);
+    if (own.error) return own.error;
+    if (typeof repo.updateTitle !== 'function') {
+      return JSON.stringify({ status: 'error', message: 'Rename is not supported for this session type.' });
+    }
+    repo.updateTitle(sessionId, title);
+    return JSON.stringify({ status: 'ok', sessionId, title, note: 'Memory session title updated.' });
+  }
+
   return {
     name: 'session',
     description: [
-      'Manage your own conversation sessions (MemoryStore sessions, ids like sess_* / task_* / a2a_* / hb_*) and context.',
+      'Manage your own conversation sessions and context. Your context lives in MemoryStore sessions (ids like sess_* / task_* / a2a_* / hb_*); Team-chat (UI) sessions use cs_* ids.',
+      'Both id spaces are accepted: a cs_* id is resolved to the memory session bound to it.',
+      'Not sure which session you are in? Call { "operation": "status" } with NO session_id — it reports your CURRENT session (both ids).',
       '',
       'Commands (pick one):',
-      '• session_list — list your sessions. Args: since/until (ISO), page, page_size. Returns { sessions: [{id, agentId, createdAt, lastMessageAt}], total, page, page_size, has_more }.',
+      '• session_list — list your sessions. Returns { sessions: [{id, ..., isCurrent}], current: {memorySessionId, chatSessionId}, total, totalOnDisk, page, page_size, has_more }. total counts only sessions warm in memory; totalOnDisk is the true on-disk count.',
       '  Example: { "operation": "list", "since": "2026-08-01", "page": 1, "page_size": 20 }',
       '• session_get — get one session + its messages. Args: session_id, since/until, page, page_size. Returns { status, sessionId, messages: [{role, content}], total, page }.',
       '  Example: { "operation": "get", "session_id": "sess_...", "page_size": 50 }',
@@ -588,19 +702,22 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
       '• session_retrieve — search archived (compacted) history fragments by keyword. Returns { status, hits: [{id: fragment_id, content}] } — note the field is "hits", each element carries the fragment id needed for session_include. Args: session_id, query, max_results.',
       '• session_include — reinject an archived fragment (by fragment_id) back into context. Args: session_id, fragment_id.',
       '• session_purge — permanently delete archived fragments for a session. Args: session_id.',
-      '• session_status — read-only snapshot: message count, pinned slot keys, archived fragment count. Returns { status, sessionId, messageCount, fragmentCount, slots: [key...] }. Args: session_id.',
+      '• session_status — read-only snapshot: message count, pinned slot keys, archived fragment count. Returns { status, sessionId, chatSessionId, isCurrent, messageCount, fragmentCount, slots: [key...] }. Args: session_id (optional — defaults to your CURRENT session).',
+      '• session_rename — set the title of the CURRENT chat session (or any session you own) to a short summary of its purpose, so it is easy to find again in Team chat History or session_list. Args: session_id (or omit to target your current session), title (≤120 chars).',
+      '  Example: { "operation": "rename", "title": "修复 Team chat 历史列表不完整 + 新增 session_rename 工具" }',
       '',
-      'Permissions: you may list sessions you own; get/status sessions you own OR participated in; compact/pin/unpin/include/purge ONLY sessions you own.',
+      'Permissions: you may list sessions you own; get/status sessions you own OR participated in; compact/pin/unpin/include/purge/rename ONLY sessions you own.',
     ].join('\n'),
     inputSchema: {
       type: 'object',
       properties: {
         operation: {
           type: 'string',
-          enum: ['list', 'get', 'compact', 'pin', 'unpin', 'include', 'retrieve', 'purge', 'status'],
+          enum: ['list', 'get', 'compact', 'pin', 'unpin', 'include', 'retrieve', 'purge', 'status', 'rename'],
           description: 'Which session operation to run. Default: list when no session_id, get when session_id present.',
         },
-        session_id: { type: 'string', description: 'The session id to operate on (sess_* / task_* / a2a_* / hb_* — see session_list).' },
+        session_id: { type: 'string', description: 'The session id to operate on (sess_* / task_* / a2a_* / hb_* / cs_* — see session_list).' },
+        title: { type: 'string', description: 'For rename: the new session title (≤120 chars), summarizing the user\'s purpose.' },
         since: { type: 'string', description: 'ISO timestamp — filter sessions/messages with timestamp >= since.' },
         until: { type: 'string', description: 'ISO timestamp — filter sessions/messages with timestamp <= until.' },
         page: { type: 'number', description: '1-based page number (default 1).' },
@@ -620,16 +737,43 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
     async execute(args: Record<string, unknown>, _onOutput?: unknown): Promise<string> {
       try {
         const n = normalizeSessionArgs(args);
+        // Accept BOTH id spaces: a cs_* Team-chat id resolves to the memory
+        // session bound to it, so the agent can run any operation by either id.
+        // Without this, `get cs_…` returned a misleading not_found and the agent
+        // could not answer "which conversation am I in?".
+        // (rename excluded — it already has a native cs_* path that edits the
+        //  UI-visible chat title.)
+        let effectiveArgs = args;
+        let chatSessionId: string | undefined;
+        if (n.operation !== 'rename' && typeof n.sessionId === 'string' && n.sessionId.startsWith('cs_')) {
+          const memoryId = ctx.resolveMemorySessionByDbSessionId?.(n.sessionId) ?? null;
+          if (memoryId) {
+            chatSessionId = n.sessionId;
+            effectiveArgs = { ...args, session_id: memoryId };
+            delete effectiveArgs['sessionId'];
+            delete effectiveArgs['id'];
+          } else if (n.operation === 'get' || n.operation === 'status') {
+            return JSON.stringify({
+              status: 'not_found',
+              chatSessionId: n.sessionId,
+              message:
+                `Chat session ${n.sessionId} is not bound to one of your memory sessions. ` +
+                'cs_* ids are Team-chat (UI) session ids; your own context lives in sess_*/task_* sessions. ' +
+                'Use { "operation": "list" } to see your sessions, or { "operation": "status" } with no session_id to inspect your CURRENT session.',
+            });
+          }
+        }
         switch (n.operation) {
-          case 'get': return await doGet(args);
-          case 'compact': return await doCompact(args);
-          case 'pin': return await doPin(args);
-          case 'unpin': return await doUnpin(args);
-          case 'retrieve': return await doRetrieve(args);
-          case 'include': return await doInclude(args);
-          case 'purge': return await doPurge(args);
-          case 'status': return await doStatus(args);
-          default: return await doList(args);
+          case 'get': return await doGet(effectiveArgs, chatSessionId);
+          case 'compact': return await doCompact(effectiveArgs);
+          case 'pin': return await doPin(effectiveArgs);
+          case 'unpin': return await doUnpin(effectiveArgs);
+          case 'retrieve': return await doRetrieve(effectiveArgs);
+          case 'include': return await doInclude(effectiveArgs);
+          case 'purge': return await doPurge(effectiveArgs);
+          case 'status': return await doStatus(effectiveArgs, chatSessionId);
+          case 'rename': return await doRename(effectiveArgs);
+          default: return await doList(effectiveArgs);
         }
       } catch (err) {
         log.error('session tool failed', { error: String(err) });

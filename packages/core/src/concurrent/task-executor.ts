@@ -40,11 +40,27 @@ export class TaskExecutor {
 
   constructor(private options: TaskExecutorOptions) {
     this.taskQueue = new TaskQueue({
-      maxConcurrent: options.maxConcurrentTasks || 5,
+      // 用 `??` 而不是 `||`：`||` 会把「显式 0」当成缺省而放大成 5，方向与统一
+      // 并发闸相反（并发越小越安全）。
+      maxConcurrent: Math.max(1, options.maxConcurrentTasks ?? 5),
       defaultPriority: options.defaultPriority || TaskPriority.MEDIUM,
       name: `executor-${options.agentId}`,
       autoStart: true,
     });
+  }
+
+  /**
+   * 运行中调整任务并发上限（统一并发闸热更新用）。
+   */
+  setMaxConcurrentTasks(n: number): void {
+    const next = Math.max(1, Math.floor(n || 1));
+    this.options.maxConcurrentTasks = next;
+    this.taskQueue.setMaxConcurrent(next);
+  }
+
+  /** 当前生效的任务并发上限。 */
+  getMaxConcurrentTasks(): number {
+    return this.taskQueue.getMaxConcurrent();
   }
 
   /**

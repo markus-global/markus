@@ -413,7 +413,13 @@ describe('ContextEngine — cache optimization', () => {
       'Current date and time:',
     ];
     // Stable/semi-stable (Tier 1+2) markers that must live in the cached prefix.
-    const STABLE_MARKERS = ['## Tool Usage Rules', '## Your Knowledge'];
+    // NOTE: '## Your Knowledge' is deliberately NOT here any more — the knowledge
+    // BODY is agent-written and moved to the volatile tail (see the two tests
+    // below). The *string* '## Your Knowledge' still occurs in the stable prefix as
+    // a cross-reference inside Learning Habits ('skim `## Your Knowledge`'), so
+    // asserting on that heading can't distinguish the two — assert on the BODY.
+    const STABLE_MARKERS = ['## Tool Usage Rules'];
+    const KNOWLEDGE_BODY = '- Prefer TypeScript.';
 
     async function buildRichPrompt() {
       const memory = makeMockMemory();
@@ -505,7 +511,7 @@ describe('ContextEngine — cache optimization', () => {
       expect(turn2.volatile).toContain('Turn B');
     });
 
-    it('keeps identity/tools/knowledge in the stable prefix', async () => {
+    it('keeps identity/tools in the stable prefix; knowledge body must NOT be there', async () => {
       const result = await buildRichPrompt();
       const stablePrefix = result.segments
         .filter(s => s.cacheBreakpoint)
@@ -514,6 +520,58 @@ describe('ContextEngine — cache optimization', () => {
       for (const marker of STABLE_MARKERS) {
         expect(stablePrefix, `stable prefix must contain "${marker}"`).toContain(marker);
       }
+      expect(
+        stablePrefix,
+        'agent-written knowledge must not sit in the cached prefix — it changes on every memory_save',
+      ).not.toContain(KNOWLEDGE_BODY);
+    });
+
+    it('C-cache-knowledge-body: knowledge + state ride the volatile tail, not the prefix', async () => {
+      const result = await buildRichPrompt();
+      const stablePrefix = result.segments
+        .filter(s => s.cacheBreakpoint)
+        .map(s => s.content)
+        .join('\n');
+
+      expect(result.volatile, 'volatile tail must carry the knowledge body').toContain('## Your Knowledge');
+      expect(result.volatile).toContain(KNOWLEDGE_BODY);
+      expect(stablePrefix).not.toContain(KNOWLEDGE_BODY);
+    });
+
+    it('C-cache-knowledge-write: a memory write does NOT change the cached system text', async () => {
+      // THE regression this whole change exists for: `memory_save` appends to
+      // knowledge.md `## _observations`, and `memory_update` rewrites curated
+      // sections. When knowledge lived in the byte-stable system text, every one
+      // of those writes invalidated the cached prefix for the ENTIRE replayed
+      // history (~90k tokens re-billed), even though only a few lines changed.
+      const makeMemory = (knowledge: string) => {
+        const m = makeMockMemory() as any;
+        m.getLongTermMemory = () => knowledge;
+        m.getLongTermMemoryExcluding = () => knowledge;
+        return m;
+      };
+      const base = {
+        agentId: 'test-agent',
+        agentName: 'TestAgent',
+        role: makeRole(),
+        scenario: 'a2a' as any,
+      };
+
+      const before = await engine.buildSystemPrompt({
+        ...base,
+        memory: makeMemory(KNOWLEDGE_BODY),
+      });
+      const after = await engine.buildSystemPrompt({
+        ...base,
+        memory: makeMemory(`${KNOWLEDGE_BODY}\n- 刚学到的一条经验（memory_save）`),
+      });
+
+      // Cache key (the system text) is byte-identical ...
+      expect(after.text).toBe(before.text);
+      // ... while the new knowledge still reaches the model, via the tail.
+      expect(after.volatile).not.toBe(before.volatile);
+      expect(after.volatile).toContain('刚学到的一条经验');
+      expect(after.volatile).toContain('## Your Knowledge');
     });
 
     it('routes CPP output to the notebook (Tier 3) rather than a new stable section when a writer is provided', async () => {

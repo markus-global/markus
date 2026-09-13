@@ -1,7 +1,15 @@
+import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resolveTemplatesDir, allTemplateDirs, resolveWebUiDir } from '../src/paths.js';
+
+// 外部环境可能设置 MARKUS_TEMPLATES_DIR（例如桌面版运行时注入的模板目录）。
+// 它会让 resolveTemplatesDir 的 envDir 分支恒命中，导致「user-local / cwd 优先」
+// 的断言在任何装有桌面版的机器上都失败——测试必须清理。
+// 每个 vitest worker 是独立进程，模块级 delete 即可（不要在 afterEach 恢复，
+// 否则第一个测试后 env 又变回 app.asar 劫持后续断言）。
+delete process.env.MARKUS_TEMPLATES_DIR;
 
 describe('resolveTemplatesDir', () => {
   let tmpHome: string;

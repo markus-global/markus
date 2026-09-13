@@ -13,7 +13,7 @@ import {
   type TaskApprovalInfo, type RequirementApprovalInfo,
 } from '../components/ExecutionTimeline.tsx';
 import { Avatar } from '../components/Avatar.tsx';
-import { isRememberActionVisible, stripNotifyContext, type ChatMsg, type MsgSegment } from './ChatHelpers.ts';
+import { isRememberActionVisible, stripNotifyContext, stripThinkingBlocks, type ChatMsg, type MsgSegment } from './ChatHelpers.ts';
 export { isRememberActionVisible };
 
 // ─── NotificationBadge ────────────────────────────────────────────────────────
@@ -543,9 +543,10 @@ export const AgentMessageBody = memo(function AgentMessageBody({
   const { t } = useTranslation(['team', 'common']);
   const segments = msg.segments;
   const isStopped = msg.isStopped;
-  // The execution timeline (tool calls + thinking + answer) is always shown
-  // expanded — no compact/collapse state. Users see the complete history without
-  // an extra click, which keeps the view consistent and removes mental overhead.
+  // Tool-call timeline collapses to a single line once the turn completes so the
+  // natural-language answer is the visual focus. While streaming (or when the
+  // user manually expands) the full execution log is shown.
+  const [timelineExpanded, setTimelineExpanded] = useState(false);
 
   // Include thinking length — thinking_delta updates seg.thinking without changing
   // content length, and a content-only key would freeze the timeline mid-stream.
@@ -582,8 +583,13 @@ export const AgentMessageBody = memo(function AgentMessageBody({
 
   if (segments !== undefined && segments.length > 0) {
     const hasTools = segments.some(s => s.type === 'tool');
+    const toolCount = segments.filter(s => s.type === 'tool').length;
     const textSegments = segments.filter(s => s.type === 'text');
-    const allText = !isStreaming ? textSegments.map(s => s.content).join('') : null;
+    // Live segments are the source of truth while streaming too. Gating this on
+    // `!isStreaming` left every tool-less reply with an EMPTY bubble mid-stream
+    // (the answer only appeared once the turn ended), while tool-using replies
+    // looked fine because they render through FullExecutionLog instead.
+    const allText = textSegments.map(s => s.content).join('');
     const stripMarkup = (t: string) => t
       .replace(/\n*<!--\s*notify_context:\s*[\s\S]*?-->/g, '')
       .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
@@ -591,8 +597,18 @@ export const AgentMessageBody = memo(function AgentMessageBody({
       .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
       .trim() || null;
     const segmentText = allText ? stripMarkup(allText) : null;
+    // Fall back to the thinking block when the turn ended without visible prose
+    // (e.g. the model only reasoned). Without this the bubble renders as blank.
+    const thinkingText = !isStreaming && !segmentText
+      ? textSegments.map(s => s.thinking ?? '').filter(Boolean).join('\n\n').trim() || null
+      : null;
     const displayText = segmentText
-      || (!isStreaming && msg.text ? stripMarkup(msg.text) : null);
+      || thinkingText
+      || (msg.text ? stripMarkup(msg.text) : null);
+    // Collapse the tool timeline after the turn completes: keep the natural
+    // answer as the visual focus, with a one-line "N tool call(s)" summary that
+    // expands the full execution log on click. While streaming it stays open.
+    const showFullTimeline = isStreaming || timelineExpanded;
 
     // Collect approval cards once for the bubble footer. The timeline hides its
     // mid-row copies via hideApprovalCards so the same card is not shown twice.
@@ -607,14 +623,43 @@ export const AgentMessageBody = memo(function AgentMessageBody({
 
     return (
       <div className="space-y-2 min-h-[1em] min-w-0 overflow-x-hidden">
-        {(hasTools || isStreaming) ? (
-          // Always expanded: the full timeline includes tools, thinking and the answer.
-          <FullExecutionLog
-            entries={fullLogEntries}
-            isActive={isStreaming}
-            embedded
-            hideApprovalCards
-          />
+        {/* While streaming with only thinking (no tool rows and no visible text),
+            the timeline branch has no content to render — show the live activity
+            indicator ("thinking…") instead of a blank bubble. */}
+        {isStreaming && !hasTools && !segmentText && !(msg.text && msg.text.trim()) && (
+          <ActivityIndicator activities={liveActivities} isActive />
+        )}
+        {hasTools ? (
+          showFullTimeline ? (
+            <FullExecutionLog
+              entries={fullLogEntries}
+              isActive={isStreaming}
+              embedded
+              hideApprovalCards
+              // Allow collapsing back to the one-line summary — without this the
+              // expand was one-way (timelineExpanded never reset), leaving users
+              // stuck in the full log with no way back.
+              onCollapse={isStreaming ? undefined : () => setTimelineExpanded(false)}
+            />
+          ) : (
+            <>
+              {displayText && (
+                <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
+              )}
+              <button
+                onClick={() => setTimelineExpanded(true)}
+                className="inline-flex items-center gap-1.5 mt-1 px-2.5 py-1 rounded-lg text-[11px] text-fg-tertiary hover:bg-surface-elevated/50 hover:text-brand-500 transition-colors cursor-pointer select-none"
+              >
+                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M9 5l7 7-7 7" />
+                </svg>
+                <span>{t('common:execution.toolsSummary', { count: toolCount })}</span>
+                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </>
+          )
         ) : (
           displayText && (
             <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />

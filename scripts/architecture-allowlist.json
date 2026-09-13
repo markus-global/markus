@@ -1,0 +1,21 @@
+{
+  "no-console": {
+    "packages/core/src/coding-tools/adapters/cursor-agent-adapter.ts": "外部 CLI 适配器：把 exitCode + stderr 打到 stderr 是刻意的错误上报；该模块刻意不依赖 logger（避免适配器层耦合运行时）。",
+    "packages/core/src/concurrent/state-manager.ts": "事件监听器内的兜底错误打印：监听器抛错无处上抛，打出来就是为了不静默吞掉。",
+    "packages/core/src/concurrent/task-executor.ts": "任务进度事件监听器的兜底错误打印（同上，避免静默）。",
+    "packages/core/src/concurrent/task-queue.ts": "任务回调（onStart/onComplete/onError/onProgress）的兜底错误打印：回调异常不能上抛打断队列。",
+    "packages/core/src/llm/openai.ts": "provider 文件刻意保持不依赖 logger（模块头部有注释说明），warn 用于报告已恢复的异常工具调用。",
+    "packages/org-manager/src/routes/skills.ts": "catch 内真实错误上报（fs 删除失败），不是调试残留。"
+  },
+  "no-empty-catch": {},
+  "session-identity": {
+    "packages/org-manager/src/task-service.ts": "任务系统消息：会话身份由 core 按 sourceType 归一为 system 契约（task_* 会话），按设计不需要 DB 绑定。",
+    "packages/org-manager/src/api-server.ts": "系统/频道类转发入口（群聊广播、限流去重、工作流触发等）：走 system/channel 契约，已人工确认；带 DB 身份的两个主入口（/api/agents/:id/message、/api/message、Feishu 入站）已显式传 dbSessionId/sessionHint。",
+    "packages/org-manager/src/requirement-service.ts": "需求评论/状态更新的系统会话（system 契约）。",
+    "packages/core/src/agent-manager.ts": "a2a 委派与公告：system 契约（a2a 按对话绑定）。",
+    "packages/core/src/agent.ts": " heartbeat / daily_report / memory_consolidation 等系统会话（system 契约，sessionId 为 sys_*）。",
+    "packages/org-manager/src/workflow-runner.ts": "工作流触发的系统会话（sys_* 契约）。",
+    "packages/core/src/tools/a2a.ts": "a2a 工具调用：system 契约（按对话绑定）。",
+    "packages/core/src/tools/a2a-structured.ts": "a2a 结构化工具调用：system 契约（按对话绑定）。"
+  }
+}

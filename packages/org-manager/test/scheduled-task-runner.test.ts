@@ -79,6 +79,51 @@ describe('ScheduledTaskRunner', () => {
     expect(taskService.advanceScheduleConfig).not.toHaveBeenCalled();
   });
 
+  it('does not re-fire a one-shot (runAt) task after its schedule has been consumed', async () => {
+    // Regression: a one-shot task whose runAt already fired has nextRunAt
+    // consumed to undefined by advanceScheduleConfig. It must NOT be treated
+    // as "already due" and re-dispatched on every poll — that caused an
+    // infinite rerun loop (completed → reset → in_progress → ...).
+    taskService.listScheduledTasks.mockReturnValue([
+      {
+        id: 'one-shot-done', title: 'OneShot', status: 'completed',
+        assignedAgentId: 'agt-1',
+        scheduleConfig: {
+          runAt: '2026-06-15T11:00:00.000Z',
+          currentRuns: 1,
+          lastRunAt: '2026-06-15T11:00:00.000Z',
+          // nextRunAt deliberately absent (consumed by the first fire)
+        },
+      },
+    ]);
+    taskService.getTask.mockReturnValue({ id: 'one-shot-done', status: 'in_progress' });
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(taskService.advanceScheduleConfig).not.toHaveBeenCalled();
+    expect(taskService.resetTaskForRerun).not.toHaveBeenCalled();
+    expect(taskService.runTask).not.toHaveBeenCalled();
+  });
+
+  it('still fires a one-shot (runAt) task whose runAt arrived and is not yet consumed', async () => {
+    // First fire of a one-shot task must keep working: nextRunAt === runAt has
+    // elapsed, so the runner dispatches exactly once.
+    taskService.listScheduledTasks.mockReturnValue([
+      {
+        id: 'one-shot-first', title: 'OneShotFirst', status: 'completed',
+        assignedAgentId: 'agt-1',
+        scheduleConfig: { runAt: '2026-06-15T11:00:00.000Z', nextRunAt: '2026-06-15T11:00:00.000Z', currentRuns: 0 },
+      },
+    ]);
+    taskService.getTask.mockReturnValue({ id: 'one-shot-first', status: 'in_progress' });
+
+    runner.start();
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(taskService.advanceScheduleConfig).toHaveBeenCalledWith('one-shot-first');
+    expect(taskService.resetTaskForRerun).toHaveBeenCalledWith('one-shot-first');
+    expect(taskService.runTask).toHaveBeenCalledWith('one-shot-first');
+  });
+
   it('handles unexpected status and runTask errors', async () => {
     taskService.listScheduledTasks.mockReturnValue([
       { id: 'weird', title: 'Weird', status: 'draft', scheduleConfig: { nextRunAt: '2026-06-15T11:00:00.000Z' } },

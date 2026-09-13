@@ -589,10 +589,12 @@ export class ToolSelector {
     });
 
     // Converse: spawn_subagents / deliverable_create are discover-only.
+    // 审计 P1-12：此 splice 发生在 activated 注入之后，旧实现会把「已被 discover_tools
+    // 显式激活」的工具也无条件剔除（激活成功却永远拿不到）。已激活者必须放行。
     if (pack === 'converse' || pack === 'govern') {
       for (let i = result.length - 1; i >= 0; i--) {
         const n = result[i]?.name;
-        if (n && CONVERSE_FORBIDDEN_DEFAULT.has(n)) result.splice(i, 1);
+        if (n && CONVERSE_FORBIDDEN_DEFAULT.has(n) && !activated.has(n)) result.splice(i, 1);
       }
     }
 
@@ -608,10 +610,13 @@ export class ToolSelector {
 
     const budget = packToolDefBudget(pack);
     // HITL/discover + Markus core are eviction-immune.
-    // Activated skill/MCP are LIVE but LRU-evictable under budget (progressive disclosure).
+    // 审计 P0-3：**已激活工具一律晋升 protected（豁免驱逐）**。
+    // 旧实现只豁免「非 skill/MCP」的激活工具，导致 skill/MCP 被 discover_tools 激活后
+    // 可能在同一轮就被预算驱逐 → agent.ts 静默删除激活态 → 工具彻底不可见 → 模型反复
+    // discover_tools 空烧 token。未激活的 skill/MCP 仍按渐进披露（catalog）延迟。
     const protectedNames = new Set<string>([...TOOL_DEF_PROTECTED, ...TOOL_DEF_CORE_KEEP]);
     for (const name of activated) {
-      if (!isSkillOrMcpToolName(name)) protectedNames.add(name);
+      if (opts.allTools.has(name)) protectedNames.add(name);
     }
     const { tools: capped, evicted } = evictToolsToBudget(
       result,
@@ -668,7 +673,9 @@ export class ToolSelector {
       parts.push(`\nSkills available (activate by name to load instructions into your context):`);
       for (const skill of shown) {
         const desc = skill.description.slice(0, 80);
-        const tag = skill.instructions ? 'has instructions' : 'no instructions';
+        const tag = skill.instructionsLoadError
+          ? 'load error'
+          : skill.instructions ? 'has instructions' : 'no instructions';
         parts.push(`  [${skill.name}] ${desc} (${tag})`);
       }
       if (skillCatalog.length > maxSkills) {

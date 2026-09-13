@@ -212,6 +212,55 @@ describe('heuristicDecision', () => {
     const incoming = makeItem({ sourceType: 'review_request', priority: 1 as MailboxPriority });
     expect(controller.heuristicDecision(current, incoming)).toBe('continue');
   });
+
+  it('R0x: explicit NEW session (sessionRestore=null) never merges into active chat', () => {
+    // 老板场景：agent 正在流式输出会话 A，用户点「新对话」发新消息。
+    // 新消息带显式 sessionRestore=null 信号 → 必须排队，绝不 merge 进当前流。
+    const current = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_old' },
+    });
+    const incoming = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_old' }, // 即使 id 相同也不 merge
+      payload: {
+        summary: 'new chat msg',
+        content: 'hello',
+        extra: { sessionRestore: null }, // 显式新会话信号
+      },
+    });
+    expect(controller.heuristicDecision(current, incoming)).toBe('continue');
+  });
+
+  it('R0: same user + same session merges (normal follow-up)', () => {
+    const current = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_a' },
+    });
+    const incoming = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_a' },
+    });
+    expect(controller.heuristicDecision(current, incoming)).toBe('merge');
+  });
+
+  it('R0: same user but DIFFERENT sessions queues behind current (no merge)', () => {
+    const current = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_a' },
+    });
+    const incoming = makeItem({
+      sourceType: 'human_chat',
+      priority: 0 as MailboxPriority,
+      metadata: { senderId: 'usr_owner', dbSessionId: 'cs_b' },
+    });
+    expect(controller.heuristicDecision(current, incoming)).toBe('continue');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -290,45 +339,72 @@ describe('processFocusedItem (via runLoop)', () => {
     expect(callCount).toBe(3);
   });
 
-  it('A1: cancels in-flight processing on backstop timeout, requeues, and drops the late result', async () => {
-    let resolveProcessing: ((v: string) => void) | undefined;
+  it('A1a: on backstop timeout, waits for the orphan to settle, then requeues (single-flight)', async () => {
     let processCalls = 0;
-    // Attempt #1 hangs (forces a backstop timeout); attempt #2 (after requeue)
-    // completes normally so the loop settles deterministically.
+    let resolveFirst: ((v: string) => void) | undefined;
+    // Attempt #1 hangs (forces a backstop timeout) but the cancel signal we send
+    // makes it settle — so a requeue is safe. Attempt #2 completes normally.
     const processMailboxItem = vi.fn().mockImplementation(() => {
       processCalls++;
       if (processCalls === 1) {
-        return new Promise<string>(res => { resolveProcessing = res; });
+        return new Promise<string>(res => { resolveFirst = res; });
       }
       return Promise.resolve(`ok ${COMPLETION_MARKER}`);
     });
-    const cancelProcessing = vi.fn();
+    // Cooperative abort: the delegate stops the orphan, which then settles.
+    const cancelProcessing = vi.fn().mockImplementation(() => {
+      resolveFirst?.(`aborted ${COMPLETION_MARKER}`);
+    });
     const { controller, mailbox, delegate } = makeController({ processMailboxItem, cancelProcessing });
-    // Tiny backstop so the timeout branch fires deterministically on attempt #1.
     controller.setProcessingTimeoutMs(40);
+    controller.setBackstopCancelGraceMs(500);
     const requeueSpy = vi.spyOn(mailbox, 'requeue');
 
     mailbox.enqueue('a2a_message', { summary: 'slow', content: 'body' });
     controller.start();
 
-    // Attempt #1 times out → cancelProcessing invoked + requeue; attempt #2 completes.
+    // Attempt #1 times out → cancel → orphan settles → requeue → attempt #2 completes.
     await vi.waitFor(() => {
       expect(cancelProcessing).toHaveBeenCalledTimes(1);
       expect(processCalls).toBe(2);
       expect(mailbox.depth).toBe(0);
     }, { timeout: 3000 });
 
-    const requeuesAfterSettle = requeueSpy.mock.calls.length;
+    controller.stop();
+    expect(delegate.cancelProcessing).toHaveBeenCalledTimes(1); // only attempt #1 timed out
+    expect(requeueSpy.mock.calls.length).toBe(1); // requeued exactly once
+  });
 
-    // The timed-out attempt #1 resolves late — must be dropped (Promise.race already
-    // discarded it), causing no additional requeue/complete and no crash.
-    resolveProcessing?.(`late done ${COMPLETION_MARKER}`);
-    await new Promise(r => setTimeout(r, 100));
+  it('A1b: on backstop timeout, does NOT requeue when the orphan never settles (no duplicate side effects)', async () => {
+    let processCalls = 0;
+    // Attempt #1 hangs forever and ignores the cancel signal — the pathological
+    // case the single-flight guard exists for.
+    const processMailboxItem = vi.fn().mockImplementation(() => {
+      processCalls++;
+      return new Promise<string>(() => { /* never settles */ });
+    });
+    const cancelProcessing = vi.fn();
+    const { controller, mailbox, eventBus, delegate } = makeController({ processMailboxItem, cancelProcessing });
+    controller.setProcessingTimeoutMs(40);
+    controller.setBackstopCancelGraceMs(30); // tiny grace → deterministic
+    const requeueSpy = vi.spyOn(mailbox, 'requeue');
+    const incomplete = vi.fn();
+    eventBus.on('agent:incomplete', incomplete);
+
+    mailbox.enqueue('a2a_message', { summary: 'stuck', content: 'body' });
+    controller.start();
+
+    await vi.waitFor(() => {
+      expect(incomplete).toHaveBeenCalledTimes(1);
+    }, { timeout: 3000 });
+    await new Promise(r => setTimeout(r, 80));
     controller.stop();
 
-    expect(delegate.cancelProcessing).toHaveBeenCalledTimes(1); // only attempt #1 timed out
-    expect(requeueSpy.mock.calls.length).toBe(requeuesAfterSettle); // late resolve added nothing
-    expect(requeuesAfterSettle).toBeGreaterThanOrEqual(1); // item was requeued, not lost
+    // The item must be completed as incomplete — never re-run on top of live work.
+    expect(processCalls).toBe(1);
+    expect(requeueSpy).not.toHaveBeenCalled();
+    expect(mailbox.depth).toBe(0);
+    expect(delegate.cancelProcessing).toHaveBeenCalledTimes(1); // cancel was still attempted
   });
 
   it('A3: emits agent:incomplete (no retry) when the completion marker is missing', async () => {

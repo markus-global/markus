@@ -124,6 +124,76 @@ export interface TaskEvent {
 
 export type TaskWebhook = (event: TaskEvent) => void | Promise<void>;
 
+/**
+ * T2 · 修订轮：派发意图 —— 决定「任务已有在飞执行时，本次派发」的语义。
+ *
+ * 依据 T1 §8.4「路径归属表」把 13 条重入路径归为两类：
+ * - `dispatch`：**非调度意图**（外部/通用派发）。任务已经在跑即已满足本次意图，
+ *   无工作丢失 → **拒绝**并留痕（`task.dispatch_rejected_duplicate`）。
+ * - 其余为**调度意图**（自动启动 / 抢占重排 / 重试 / 重启恢复 / 丢失恢复 / fresh 重试）。
+ *   这些请求代表「任务必须（再次）运行」，在旧执行 drain 期**拒绝 = 静默丢工作** →
+ *   一律走 **deferred queue + settle 后 re-arm**（`task.dispatch_deferred[_coalesced]` → `task.dispatch_rearmed`）。
+ */
+export type TaskDispatchIntent =
+  | 'dispatch'
+  | 'auto-start'
+  | 'preempted'
+  | 'retry'
+  | 'no_submit'
+  | 'resume'
+  | 'recover'
+  | 'retry-fresh';
+
+/** 调度意图集合：在飞期内必须延后重放而非拒绝（`dispatch` 不在其中）。 */
+const DEFERRABLE_DISPATCH_INTENTS: ReadonlySet<TaskDispatchIntent> = new Set<TaskDispatchIntent>([
+  'auto-start', 'preempted', 'retry', 'no_submit', 'resume', 'recover', 'retry-fresh',
+]);
+
+/**
+ * 单个执行纪元的在飞登记记录。**键 = 执行身份** `task_${taskId}_r${round}`（不是 taskId）。
+ *
+ * `settled` 是单飞闸的**唯一权威判据**（CAS）：执行实际收口时由 settle 信号首次置位，
+ * 同身份后续信号一律 no-op。`{cancelled:boolean}` 结构上无法表达「已实际停止」，
+ * 故 token 不再参与闸判定。
+ */
+interface TaskExecutionRecord {
+  /** 执行身份 `task_${taskId}_r${round}`（在飞登记表的键） */
+  identity: string;
+  taskId: string;
+  round: number;
+  startedAt: number;
+  /** 本纪元由哪条调度意图启动 */
+  initiatedBy: TaskDispatchIntent;
+  /** 本纪元的取消信号通道（派生缓存，非单飞判据；仅供执行方协作式终止） */
+  cancelToken: { cancelled: boolean };
+  /** settle CAS：首次信号置 true；后续同身份信号 no-op */
+  settled: boolean;
+  settledAt?: number;
+  /** settle 来源：① `.finally()` 实际收口；② `recoverLostTaskExecution` 兜底（孤儿执行） */
+  settleSource?: 'finally' | 'recover';
+}
+
+/**
+ * deferred queue 条目（键 = taskId）。N 笔 pending → **1 次**执行（coalesce run-once），
+ * 请求方上下文按 **latest-wins** 覆盖。
+ */
+interface DeferredDispatch {
+  taskId: string;
+  /** 最新请求方上下文（latest-wins） */
+  intent: TaskDispatchIntent;
+  /** 是否走 `runTaskFresh`（无历史上下文） */
+  fresh: boolean;
+  /** 目标执行轮次（re-arm 时的 executionRound 依据） */
+  round: number;
+  retryAttempt: number;
+  retryReason?: 'error' | 'no_submit';
+  requestedBy: string;
+  firstRequestedAt: number;
+  lastRequestedAt: number;
+  /** 被合并进本条的 pending 请求数（≥1） */
+  coalescedCount: number;
+}
+
 /** Structured task error carrying a machine-readable code for the UI to i18n. */
 export class TaskServiceError extends Error {
   code: string;
@@ -144,10 +214,64 @@ export class TaskService {
   private taskLogRepo?: TaskLogRepo;
   private executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown; executionRound?: number }): unknown };
   private hitlService?: HITLService;
-  /** Cancel tokens for active task executions — keyed by taskId */
+  /**
+   * Cancel tokens for active task executions — keyed by taskId。
+   *
+   * ⚠ 修订轮**降级为派生缓存 / 非权威**：它只承载「向执行方传递协作式取消信号」
+   * （`sendTaskExecution` 的 cancelToken 通道；`cleanupOnLeaveStatus` 置位/清理）。
+   * **不得**再作为单飞判据 —— `{cancelled:boolean}` 结构上无法表达「已实际停止」，
+   * 旧判据 `!token.cancelled` + TTL 会把「已请求取消但仍在 drain」的旧执行误判为已停，
+   * 从而放行新会话 = 第二个 worktree 写入方（本卡修复的缺陷本身）。
+   * 单飞判据唯一化到 `taskExecutions` 记录的 `settled` 状态（见 `settleTaskExecution`）。
+   */
   private taskCancelTokens = new Map<string, { cancelled: boolean }>();
-  /** Tasks currently being reviewed — prevents duplicate review notifications */
+  /**
+   * T2 · 修订轮：**在飞执行登记表（settle 语义 SSOT）**，键 = **执行身份**
+   * `task_${taskId}_r${round}`（不是 taskId —— 差距 3；每笔 pending 的上下文按身份寻址）。
+   *
+   * - 记录生命周期：派发时登记 → 执行**实际收口**时由 settle CAS 置 `settled` 并移除；
+   * - 闸判定：`getLiveExecution()` 只看「存在且未 settled」的记录（不看 token、不看 TTL）；
+   * - CAS 依据是**记录对象引用**：同身份的迟到 / 重复 settle 信号命中同一对象 → no-op，
+   *   保证「每个执行纪元 settle 恰一次」（双次 settle ⇒ 双次重派发 ⇒ 新的第二写入方）。
+   */
+  private taskExecutions = new Map<string, TaskExecutionRecord>();
+  /** 派生索引：taskId → 当前在飞执行身份（由 `taskExecutions` 派生，不一致时自愈重建） */
+  private liveExecutionByTask = new Map<string, string>();
+  /**
+   * T2 · 修订轮：**deferred queue**（合法重派发的延后重放），键 = taskId。
+   *
+   * 任务已有在飞执行时，**调度意图**的派发不得被拒绝（拒绝 = 静默丢工作）→ 挂起于此；
+   * 旧执行实际 settle 后由 `armDeferredDispatch()` 取出**一次**重派发并**再过同一单飞闸**。
+   * coalesce = run-once：N 笔 pending 合并为 1 次执行（latest-wins），`coalescedCount` 计数。
+   */
+  private deferredDispatches = new Map<string, DeferredDispatch>();
+  /**
+   * 评审通知去重键（P1 · 根因 #1）：`${taskId}:r${round}`（**轮次化**）。
+   *
+   * 旧实现 key 只有 taskId，且发送**成功后立即 delete** → 去重窗口只覆盖「发送中」，
+   * 重启 / 跨进程即失效；同一任务第 2 轮评审也会被上一轮残留键误抑制。
+   * 轮次化后：同 (taskId, round) 的重复投递被抑制，进入新一轮自然放行；
+   * **仅发送失败时**移除该键（允许重试）。键在任务离开 review 时按前缀清理。
+   */
   private activeReviews = new Set<string>();
+
+  /**
+   * 评审收口幂等记录（P1 · 根因 #1）：taskId → 当前评审轮的结算状态。
+   *
+   * `round` = **被评审的轮次**（进入 review 时的 executionRound）；`verdict`：
+   * - `pending` —— 该轮仍在评审中（进入 review 时写入）
+   * - `approved` / `revision` —— 该轮已收口
+   *
+   * 用途：识别「同一 (taskId, round) 的重复 / 迟到 approve·revision」→ **返回当前状态、
+   * 不再触发第二次状态转移**。直接消除「多分身各自持有同一 review_request、互相让位 +
+   * 逐轮空转」，并防止迟到 approve 把已 revision 的任务错误标 completed。
+   */
+  private reviewSettlements = new Map<string, {
+    round: number;
+    verdict: 'pending' | 'approved' | 'revision';
+    at: string;
+    by?: string;
+  }>();
   /** Tracks tasks where submitForReview was called in the current execution round.
    *  Used to avoid false "did not call task_submit_review" when a fast reviewer
    *  transitions the task back to in_progress before execution_finished fires. */
@@ -668,6 +792,15 @@ export class TaskService {
   private static readonly MAX_TASK_RETRIES = TASK_MAX_RETRIES;
   private static readonly MAX_IN_PROGRESS_RETRIES = TASK_MAX_NO_SUBMIT_RETRIES;
   private static readonly RETRY_DELAYS_MS = TASK_RETRY_DELAYS_MS;
+  /**
+   * T2 · 修订轮：**已移除** task 级单飞登记的「陈旧 TTL 自愈」与闸判据里的 `!token.cancelled`。
+   *
+   * 原因（CTO 修正 1，T1 §8.8 差距 1）：`{cancelled:boolean}` 只能表达「已请求取消」，
+   * 结构上无法表达「已实际停止」；`cancelled=true` + TTL 组合会把「仍在 drain 的旧执行」
+   * 判为已停并放行新会话 = 第二写入方（缺陷本身）。
+   * 孤儿执行（`.finally()` 永不回来）改由 **settle 来源②** 兜底
+   * （`recoverLostTaskExecution` / `agent:incomplete` 链），不再用 TTL。
+   */
 
   private static readonly STATUS_ACTION_GUIDANCE: Record<string, string> = {
     blocked:   'Task is paused. Stop any active work on this task.',
@@ -1098,30 +1231,287 @@ export class TaskService {
    *
    * 当 mailbox 中的任务执行指令（triggerExecution）在 defer/resurface 后丢失了回调闭包
    * （agent 发出 `agent:incomplete` reason=resurfaced-task-execution-lost-closures），
-   * 且该任务当前没有其他活跃执行时，重新 dispatch 一次执行（带完整闭包）。
+   * **原始派发的执行 Promise 永不 settle**（resurface 后的 `resolveResponse` 落在新造的
+   * 空闭包上）→ 该纪元成为**孤儿**，`.finally()` 不会回来。故本方法同时充当
+   * **settle 来源②**（T1 §8.3③ / 卡面 item 5）：
    *
-   * 防重入：若任务已有活跃执行（activeToken 未取消），跳过——避免与 preempt 自动重调度
-   * 双重执行。
+   * 1. 若存在在飞执行登记：先入 deferred queue（`recover` 意图），再按**执行身份 CAS**
+   *    settle 该纪元（首次生效、同身份后续 no-op）—— 解除单飞闸的悬挂并由 re-arm
+   *    再过同一闸重新派发（带完整闭包）；**绝不在活执行旁另起会话**。
+   * 2. 若已无在飞执行（`agent:incomplete` 之前 `.finally()` 已收口 / 从未派发）：
+   *    直接以 `recover` 意图派发。
+   *
+   * ⚠ 不使用缺口 4 的 stale 回收（层级不对：执行层 vs 存储/消费层），也不使用 TTL。
+   * ⚠ 安全护栏：仅 settle **与本任务当前执行轮次一致**的在飞纪元，避免误伤陈旧/无关纪元。
+   *
+   * 防重入：任务离开 in_progress 时直接返回（无派发、无写入）。
    */
   async recoverLostTaskExecution(taskId: string): Promise<void> {
     const current = this.tasks.get(taskId);
     if (!current || current.status !== 'in_progress') return;
-    const activeToken = this.taskCancelTokens.get(taskId);
-    if (activeToken && !activeToken.cancelled) {
-      log.info('Skipping lost-task recovery: task already has an active execution', { taskId });
+
+    const live = this.getLiveExecution(taskId);
+    if (live) {
+      if (live.round !== (current.executionRound ?? 1)) {
+        // 在飞纪元与任务当前轮次不一致 → 不是「本轮指令丢失」，不宣告 settle（避免误伤）。
+        log.warn('Skipping lost-task recovery: live execution round differs from task round', {
+          taskId, liveSessionId: live.identity, liveRound: live.round, taskRound: current.executionRound ?? 1,
+        });
+        return;
+      }
+      this.addTaskNote(taskId,
+        '[System] 检测到任务执行指令丢失（mailbox defer/resurface 导致回调闭包丢失），系统已自动重新调度执行。',
+        'system'
+      );
+      log.warn('Settling orphaned execution (settle source②) then re-dispatching lost task execution', {
+        taskId, sessionId: live.identity, round: live.round,
+      });
+      // 入队 → CAS settle → settle 触发 armDeferredDispatch（re-arm 再过同一单飞闸）。
+      this.deferTaskDispatch(taskId, 'recover', { round: live.round }, live);
+      this.settleTaskExecution(live, 'recover');
       return;
     }
+
     this.addTaskNote(taskId,
       '[System] 检测到任务执行指令丢失（mailbox defer/resurface 导致回调闭包丢失），系统已自动重新调度执行。',
       'system'
     );
     log.warn('Re-dispatching lost task execution', { taskId });
-    await this.runTask(taskId).catch(err =>
+    await this.runTask(taskId, 0, undefined, 'recover').catch(err =>
       log.warn('Failed to re-dispatch lost task execution', { taskId, error: String(err) })
     );
   }
 
-  async runTask(taskId: string, _retryAttempt = 0, _retryReason?: 'error' | 'no_submit'): Promise<void> {
+  // ─── T2：task 级单飞（派发侧实体独占 · 修订轮 settle 语义）─────────────────
+
+  /**
+   * T2：登记一个执行纪元（键 = 执行身份 `task_${taskId}_r${round}`）。
+   * settle 由 `settleTaskExecution` 收口；闸判定由 `getLiveExecution` 读取。
+   */
+  private registerTaskExecution(
+    taskId: string, round: number, initiatedBy: TaskDispatchIntent, cancelToken: { cancelled: boolean },
+  ): TaskExecutionRecord {
+    const record: TaskExecutionRecord = {
+      identity: `task_${taskId}_r${round}`,
+      taskId,
+      round,
+      startedAt: Date.now(),
+      initiatedBy,
+      cancelToken,
+      settled: false,
+    };
+    this.taskExecutions.set(record.identity, record);
+    this.liveExecutionByTask.set(taskId, record.identity);
+    return record;
+  }
+
+  /**
+   * T2：查询该 task 是否有**在飞（未 settle）**的执行纪元 —— 单飞闸的唯一权威判据。
+   *
+   * 判据只有 `settled`：**不看** `token.cancelled`（只能表达「已请求取消」）、**不看** TTL
+   * （陈旧自愈已移除，孤儿由 settle 来源②兜底）。
+   */
+  private getLiveExecution(taskId: string): TaskExecutionRecord | undefined {
+    const identity = this.liveExecutionByTask.get(taskId);
+    if (!identity) return undefined;
+    const record = this.taskExecutions.get(identity);
+    if (!record || record.settled) {
+      // 派生索引与权威登记表不一致 → 自愈（索引可重建）
+      this.liveExecutionByTask.delete(taskId);
+      return undefined;
+    }
+    return record;
+  }
+
+  /**
+   * T2：**settle CAS** —— 执行纪元到达终态的唯一入口（双源统一）。
+   *
+   * - 来源①：`runTask` / `runTaskFresh` 的 `.finally()`（执行**实际收口**处，含 abort；
+   *   调用点位于 token 身份判据**之外**——挂在 token 判据上会因 `cleanupOnLeaveStatus`
+   *   先删 token 而恒不触发 → deferred queue 永不 drain = 更隐蔽的静默丢工作）；
+   * - 来源②：`recoverLostTaskExecution`（孤儿执行，`.finally()` 永不回来）。
+   *
+   * CAS 语义：**首次信号生效，同身份后续信号一律 no-op**（依据是记录对象引用，
+   * 即使登记表条目已被移除也不会误触发）。漏触发 = 永久悬挂；重叠触发 = 双次重派发
+   * = 新的第二写入方。
+   *
+   * @returns 本次调用是否**首次**完成 settle
+   */
+  private settleTaskExecution(record: TaskExecutionRecord, source: 'finally' | 'recover'): boolean {
+    if (record.settled) return false;
+    record.settled = true;
+    record.settledAt = Date.now();
+    record.settleSource = source;
+    if (this.taskExecutions.get(record.identity) === record) this.taskExecutions.delete(record.identity);
+    if (this.liveExecutionByTask.get(record.taskId) === record.identity) {
+      this.liveExecutionByTask.delete(record.taskId);
+    }
+    this.emitExecutionSettled(record, source);
+    // settle 后 drain deferred queue（re-arm 触发的重派发必须再过同一单飞闸）。
+    this.armDeferredDispatch(record.taskId);
+    return true;
+  }
+
+  /**
+   * T2：settle 事件（可观测留痕）。
+   * 观测口径：`task-service.ts` 内 settle CAS 事件，**每个执行纪元恰一次**
+   * （不取自 `attention.ts`，不以「token 被删」当 settle）。
+   */
+  private emitExecutionSettled(record: TaskExecutionRecord, source: 'finally' | 'recover'): void {
+    const payload = {
+      taskId: record.taskId,
+      sessionId: record.identity,
+      round: record.round,
+      source,
+      settledAt: record.settledAt,
+      hasDeferred: this.deferredDispatches.has(record.taskId),
+    };
+    log.info('Task execution settled (CAS)', { event: 'task.execution_settled', ...payload });
+    this.ws?.broadcast({
+      type: 'task:execution:settled',
+      payload,
+      timestamp: new Date(record.settledAt ?? Date.now()).toISOString(),
+    });
+  }
+
+  /**
+   * T2：合法重派发**延后重放** —— 入 deferred queue（N→1 coalesce，latest-wins）。
+   *
+   * 硬约束（卡面 item 2）：合法 fire-once 重派发在旧执行 drain 期**不得被拦**
+   * （拦 = 静默丢工作）→ 挂起，待旧执行**实际 settle** 后由 `armDeferredDispatch` 取出。
+   */
+  private deferTaskDispatch(
+    taskId: string,
+    intent: TaskDispatchIntent,
+    opts: { fresh?: boolean; round?: number; retryAttempt?: number; retryReason?: 'error' | 'no_submit' },
+    live: TaskExecutionRecord,
+  ): void {
+    const now = Date.now();
+    const existing = this.deferredDispatches.get(taskId);
+    if (existing) {
+      // coalesce = run-once（N→1）：latest-wins 覆盖请求方上下文，执行数有界且 ≥1。
+      existing.intent = intent;
+      existing.fresh = opts.fresh ?? false;
+      existing.round = opts.round ?? existing.round;
+      existing.retryAttempt = opts.retryAttempt ?? 0;
+      existing.retryReason = opts.retryReason;
+      existing.requestedBy = intent;
+      existing.lastRequestedAt = now;
+      existing.coalescedCount += 1;
+      const payload = {
+        taskId,
+        intent,
+        coalescedCount: existing.coalescedCount,
+        pendingRound: existing.round,
+        existingSessionId: live.identity,
+      };
+      log.info('Task dispatch deferred — coalesced into existing pending (N→1)', {
+        event: 'task.dispatch_deferred_coalesced', ...payload,
+      });
+      this.ws?.broadcast({ type: 'task:dispatch:deferred-coalesced', payload, timestamp: new Date(now).toISOString() });
+      return;
+    }
+
+    const entry: DeferredDispatch = {
+      taskId,
+      intent,
+      fresh: opts.fresh ?? false,
+      round: opts.round ?? live.round,
+      retryAttempt: opts.retryAttempt ?? 0,
+      retryReason: opts.retryReason,
+      requestedBy: intent,
+      firstRequestedAt: now,
+      lastRequestedAt: now,
+      coalescedCount: 1,
+    };
+    this.deferredDispatches.set(taskId, entry);
+    const payload = {
+      taskId,
+      intent,
+      pendingRound: entry.round,
+      existingSessionId: live.identity,
+      existingStartedAt: live.startedAt,
+      existingInitiatedBy: live.initiatedBy,
+    };
+    log.info('Task dispatch deferred — will replay after the live execution actually settles', {
+      event: 'task.dispatch_deferred', ...payload,
+    });
+    this.ws?.broadcast({ type: 'task:dispatch:deferred', payload, timestamp: new Date(now).toISOString() });
+  }
+
+  /**
+   * T2：settle 后 **re-arm** —— 取出 deferred queue 的一次重派发并**再过同一单飞闸**。
+   *
+   * 硬约束（卡面 item 2）：re-arm 触发的重派发必须再过同一闸，否则 re-arm 自身即第二写入方。
+   * 故这里只是「重新发起一次普通派发」：若此刻又有新的在飞纪元（例如刚被重试启动），
+   * 闸会把本次请求重新 defer 回队列（coalesce），不会溢出为并发执行。
+   */
+  private armDeferredDispatch(taskId: string): void {
+    const pending = this.deferredDispatches.get(taskId);
+    if (!pending) return;
+    this.deferredDispatches.delete(taskId);
+    const payload = {
+      taskId,
+      intent: pending.intent,
+      pendingRound: pending.round,
+      coalescedCount: pending.coalescedCount,
+      waitedMs: Date.now() - pending.firstRequestedAt,
+      requestedBy: pending.requestedBy,
+    };
+    log.info('Deferred task dispatch re-armed after settle', { event: 'task.dispatch_rearmed', ...payload });
+    this.ws?.broadcast({ type: 'task:dispatch:rearmed', payload, timestamp: new Date().toISOString() });
+    // setImmediate：脱离 settle 调用栈，避免与 settle 同步路径重入；随后再过同一单飞闸。
+    setImmediate(() => {
+      const run = pending.fresh
+        ? this.runTaskFresh(taskId, 'retry-fresh')
+        : this.runTask(taskId, pending.retryAttempt, pending.retryReason, pending.intent);
+      run.catch(err =>
+        log.warn('Re-armed task dispatch failed', { taskId, intent: pending.intent, error: String(err) })
+      );
+    });
+  }
+
+  /** T2：非调度意图（`dispatch`）在飞期内被拦截时留痕（结构化日志 + WS 广播：谁/何时/原会话）。 */
+  private logDuplicateDispatchRejected(
+    taskId: string,
+    agentId: string | undefined,
+    live: TaskExecutionRecord,
+    requester: string,
+  ): void {
+    log.warn('Duplicate task dispatch rejected — task already has a live execution', {
+      event: 'task.dispatch_rejected_duplicate',
+      taskId,
+      agentId,
+      existingSessionId: live.identity,
+      existingStartedAt: live.startedAt,
+      existingInitiatedBy: live.initiatedBy,
+      requester,
+    });
+    this.ws?.broadcast({
+      type: 'task:dispatch:duplicate-rejected',
+      payload: {
+        taskId,
+        agentId,
+        existingSessionId: live.identity,
+        existingStartedAt: live.startedAt,
+        existingInitiatedBy: live.initiatedBy,
+        requester,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * @param intent 派发意图（T1 §8.4 路径归属表）。默认 `dispatch`（非调度意图）：
+   *   任务已在跑即已满足本次意图 → **拒绝**并留痕；调度意图（auto-start/preempted/
+   *   retry/no_submit/resume/recover/retry-fresh）在旧执行 drain 期**延后重放**。
+   */
+  async runTask(
+    taskId: string,
+    _retryAttempt = 0,
+    _retryReason?: 'error' | 'no_submit',
+    intent: TaskDispatchIntent = 'dispatch',
+  ): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (!task.assignedAgentId) throw new Error(`Task ${taskId} has no assigned agent`);
@@ -1138,6 +1528,26 @@ export class TaskService {
       return;
     }
 
+    // ── T2 派发侧实体独占（单飞 · 修订轮 settle 语义）─────────────────────────
+    // 唯一判据 = 在飞登记表「存在且未 settle」的执行纪元（`!token.cancelled` + TTL 已作废，
+    // 见 taskCancelTokens 注释）。同一 task 任一时刻仅一个执行纪元，避免两个会话并发写同一
+    // worktree（现场缺陷）。被拦时的语义按派发意图分流（T1 §8.4 路径归属表）：
+    //   · 非调度意图 `dispatch` → 拒绝（第一条在跑，无工作丢失）+ 留痕；
+    //   · 调度意图 → **延后重放**（拒绝 = 静默丢工作），待旧执行**实际 settle**后 re-arm。
+    const liveOwner = this.getLiveExecution(taskId);
+    if (liveOwner) {
+      if (DEFERRABLE_DISPATCH_INTENTS.has(intent)) {
+        this.deferTaskDispatch(taskId, intent, {
+          round: task.executionRound ?? 1,
+          retryAttempt: _retryAttempt,
+          retryReason: _retryReason,
+        }, liveOwner);
+        return;
+      }
+      this.logDuplicateDispatchRejected(taskId, task.assignedAgentId, liveOwner, intent);
+      return;
+    }
+
     // Clean up any stale submitted-for-review flag from a previous execution round.
     // This is safe because a new execution is starting — any prior submission is
     // irrelevant; the agent must call submitForReview again in this new round.
@@ -1146,11 +1556,17 @@ export class TaskService {
     const agent = this.agentManager.getAgent(task.assignedAgentId);
 
     // Cancel any currently running execution for this task before starting a new one
+    //（仅在闸放行、即无在飞纪元时才可能走到这里；此处为取消信号通道的兜底清理）
     const existing = this.taskCancelTokens.get(taskId);
     if (existing) existing.cancelled = true;
 
     const cancelToken = { cancelled: false };
     this.taskCancelTokens.set(taskId, cancelToken);
+    // T2：登记在飞执行纪元（**键 = 执行身份** `task_${taskId}_r${round}`）。
+    // 此后同一 task 的重复派发由 getLiveExecution 判定（拒绝 / 延后重放）。
+    const executionRecord = this.registerTaskExecution(
+      taskId, task.executionRound ?? 1, intent, cancelToken,
+    );
 
     // Load previous execution history + comments so the agent can resume
     let prevContext = '';
@@ -1541,7 +1957,7 @@ export class TaskService {
                   setTimeout(() => {
                     const current = this.tasks.get(taskId);
                     if (!current || current.status !== 'in_progress') return;
-                    this.runTask(taskId, nextAttempt, 'no_submit').catch(e =>
+                    this.runTask(taskId, nextAttempt, 'no_submit', 'no_submit').catch(e =>
                       log.error('No-submit retry invocation failed', { taskId, error: String(e) })
                     );
                   }, delayMs);
@@ -1585,10 +2001,10 @@ export class TaskService {
               setTimeout(() => {
                 const current = this.tasks.get(taskId);
                 if (!current || current.status !== 'in_progress') return;
-                const activeToken = this.taskCancelTokens.get(taskId);
-                if (activeToken && !activeToken.cancelled) return;
                 log.info('Re-queuing preempted task', { taskId });
-                this.runTask(taskId).catch(err =>
+                // 调度意图：旧执行可能仍在 drain → 交由单飞闸决定「立即启动 / 延后重放」。
+                // 不再用 `!token.cancelled` 本地判据直接丢弃（旧式丢弃 = 静默丢工作）。
+                this.runTask(taskId, 0, undefined, 'preempted').catch(err =>
                   log.warn('Failed to re-queue preempted task', { taskId, error: String(err) })
                 );
               }, PREEMPT_REQUEUE_DELAY_MS);
@@ -1628,7 +2044,8 @@ export class TaskService {
               setTimeout(() => {
                 const current = this.tasks.get(taskId);
                 if (!current || current.status !== 'in_progress') return;
-                this.runTask(taskId, nextAttempt).catch(e =>
+                // 调度意图 retry：旧执行 drain 期不得被拦（拦 = 静默丢工作）→ 闸决定延后重放。
+                this.runTask(taskId, nextAttempt, 'error', 'retry').catch(e =>
                   log.error('Retry invocation failed', { taskId, error: String(e) })
                 );
               }, delayMs);
@@ -1667,7 +2084,7 @@ export class TaskService {
             setTimeout(() => {
               const current = this.tasks.get(taskId);
               if (!current || current.status !== 'in_progress') return;
-              this.runTask(taskId, nextAttempt).catch(e =>
+              this.runTask(taskId, nextAttempt, 'error', 'retry').catch(e =>
                 log.error('Retry invocation failed', { taskId, error: String(e) })
               );
             }, delayMs);
@@ -1683,6 +2100,12 @@ export class TaskService {
         if (this.taskCancelTokens.get(taskId) === cancelToken) {
           this.taskCancelTokens.delete(taskId);
         }
+        // T2 · settle 信号（来源①）：执行**实际收口**处**无条件**发信号 —— 调用点位于上面
+        // token 身份判据**之外**（挂在 token 判据上会因 cleanupOnLeaveStatus 先无条件 delete
+        // token 而身份匹配恒 false → settle 永不触发 → deferred queue 永不 drain =
+        // 更隐蔽的静默丢工作）。含 abort / 取消路径：执行已停止即应收口。
+        // CAS：首次生效、同身份后续信号 no-op；随后 drain deferred queue（re-arm）。
+        this.settleTaskExecution(executionRecord, 'finally');
       });
   }
 
@@ -1818,7 +2241,7 @@ export class TaskService {
 
     for (const task of inProgressTasks) {
       try {
-        await this.runTask(task.id);
+        await this.runTask(task.id, 0, undefined, 'resume');
         log.info(`Resumed task execution after restart`, { taskId: task.id, title: task.title, priority: task.priority });
       } catch (err) {
         log.warn(`Failed to resume task on startup`, {
@@ -2016,7 +2439,7 @@ export class TaskService {
     if (task.status === 'in_progress' && task.assignedAgentId && this.agentManager) {
       log.info('Auto-starting newly created task', { taskId: task.id });
       setImmediate(() => {
-        this.runTask(task.id).catch(err =>
+        this.runTask(task.id, 0, undefined, 'auto-start').catch(err =>
           log.warn('Auto-start runTask failed for new task', { taskId: task.id, error: String(err) }),
         );
       });
@@ -2317,6 +2740,8 @@ export class TaskService {
     const executionTriggered = this.maybeAutoStartExecution(task, from, to, skipAutoStart);
 
     // Stage 4: Agent notifications
+    // P1：先登记本轮评审幂等键（reviewer 缺失时也登记，保证 round 语义一致），再投递。
+    this.recordReviewEntry(task, from, to);
     this.maybeNotifyReviewer(task, from, to);
     this.maybeNotifyAssignee(task, from, to, executionTriggered, updatedBy);
 
@@ -2341,9 +2766,19 @@ export class TaskService {
         this.taskCancelTokens.delete(taskId);
         log.info(`Cancelled running execution for task ${taskId} (status → ${to})`);
       }
+      // T2 · 修订轮：任务离开 in_progress → 挂起的重派发已无意义（任务不再需要运行）→ 丢弃，
+      // 避免陈旧 pending 在后续无关 settle 上产生一次多余执行。
+      // ⚠ 注意：这里**只丢 queue**，**不得**顺手 settle 在飞纪元（删 token ≠ 已停；
+      // 拿它当 settle 会在旧执行仍在 drain 时放行新会话 = 复刻本卡缺陷）。
+      if (this.deferredDispatches.delete(taskId)) {
+        log.info('Dropped deferred task dispatch — task left in_progress', {
+          event: 'task.dispatch_deferred_dropped', taskId, from, to,
+        });
+      }
     }
     if (from === 'review' && to !== 'review') {
-      this.activeReviews.delete(taskId);
+      // P1：键已轮次化为 `${taskId}:r${round}`，需按前缀清理（否则下一轮评审被误抑制）。
+      this.clearActiveReviews(taskId);
     }
     // NOTE: tasksSubmittedForReview is deliberately NOT cleaned here.
     // Cleaning it on terminal status transitions causes a race condition:
@@ -2379,12 +2814,11 @@ export class TaskService {
     if (skipAutoStart || to !== 'in_progress' || from === 'in_progress') return false;
     if (!task.assignedAgentId || !this.agentManager) return false;
 
-    const activeToken = this.taskCancelTokens.get(task.id);
-    if (activeToken && !activeToken.cancelled) return false;
-
+    // 注：此处不再用 `!token.cancelled` 本地判据（token 已降级为派生缓存）。
+    // 若有在飞执行，闸会把本次**调度意图**改为「延后重放」，不会静默丢工作。
     log.info('Auto-starting task execution', { taskId: task.id });
     setImmediate(() => {
-      this.runTask(task.id).catch(err =>
+      this.runTask(task.id, 0, undefined, 'auto-start').catch(err =>
         log.warn('Auto-start runTask failed', { taskId: task.id, error: String(err) }),
       );
     });
@@ -2438,11 +2872,13 @@ export class TaskService {
       if (!current || current.status !== 'review') return;
 
       if (result.approved) {
+        this.markReviewSettled(current, 'approved', task.reviewerId);
         this.updateTaskStatus(task.id, 'completed', task.reviewerId, false, false, 'human', 'Review approved');
       } else {
         const comment = result.comment ? ` — ${result.comment}` : '';
         task.notes = task.notes ?? [];
         task.notes.push(`[Review by human] Revision requested${comment}`);
+        this.markReviewSettled(current, 'revision', task.reviewerId);
         this.updateTaskStatus(task.id, 'in_progress', task.reviewerId, false, false, 'human', `Revision requested${comment}`);
       }
     }).catch(err => {
@@ -3499,12 +3935,20 @@ export class TaskService {
       return;
     }
 
-    // Prevent duplicate review sessions for the same task
-    if (this.activeReviews.has(task.id)) {
-      log.debug('Review notification already active for task, skipping duplicate', { taskId: task.id, reviewerId });
+    // P1 · 根因 #1：评审通知去重键**轮次化**为 `${taskId}:r${round}`。
+    // 旧实现 key 只有 taskId，且发送成功后立即删除 → 只能挡住「发送中」的并发重复，
+    // 重启 / 跨进程即失效，也会把新一轮通知误抑制。轮次化 + 成功不删（仅失败删）
+    // 后：同轮重复投递被抑制、新轮次自然放行。
+    const reviewRound = task.executionRound ?? 1;
+    const reviewKey = `${task.id}:r${reviewRound}`;
+    if (this.activeReviews.has(reviewKey)) {
+      log.info('Duplicate review notification suppressed for this round', {
+        event: 'review_request_suppressed',
+        taskId: task.id, round: reviewRound, reviewerId, reviewKey, count: 1,
+      });
       return;
     }
-    this.activeReviews.add(task.id);
+    this.activeReviews.add(reviewKey);
 
     try {
       const assigneeName = task.assignedAgentId
@@ -3580,20 +4024,29 @@ export class TaskService {
 
       const reviewMessage = parts.join('\n');
       const reviewerAgent = this.agentManager.getAgent(reviewerId);
+      // P1：透传 `round` → mailbox 据此计算**跨进程幂等键**
+      // `(agent_id, review_request, taskId, round)` 并做单播路由（只唤醒一个 waiter）。
       reviewerAgent.sendMessage(
         reviewMessage,
         task.assignedAgentId ?? 'system',
         { name: assigneeName, role: 'worker' },
-        { sourceType: 'review_request', taskId: task.id },
+        { sourceType: 'review_request', taskId: task.id, round: reviewRound },
       ).then(() => {
-        this.activeReviews.delete(task.id);
+        // 成功：**保留**去重键（本轮重复 / 迟到投递应继续被抑制）；
+        // 键在任务离开 review 时统一清理（见 cleanupOnLeaveStatus）。
       }).catch(err => {
-        this.activeReviews.delete(task.id);
+        // 仅失败时移除，允许后续重试（否则一次投递失败会让本轮永久静默）。
+        this.activeReviews.delete(reviewKey);
         log.warn('Failed to notify reviewer about review', { taskId: task.id, reviewerId, error: String(err) });
       });
-      log.info('Notified reviewer about review', { taskId: task.id, reviewerId });
+      log.info('Notified reviewer about review', {
+        event: 'review_request_dispatched',
+        taskId: task.id, reviewerId, round: reviewRound, reviewKey,
+        dedupKey: `review_request:${task.id}:${reviewRound}`,
+        channel: 'mailbox-unicast',
+      });
     } catch (err) {
-      this.activeReviews.delete(task.id);
+      this.activeReviews.delete(reviewKey);
       log.warn('Failed to notify reviewer about review', { taskId: task.id, reviewerId, error: String(err) });
     }
   }
@@ -3717,18 +4170,102 @@ export class TaskService {
     }
   }
 
+  // ─── P1 · 评审收口幂等（根因 #1）────────────────────────────────────────
+
+  /** 评审收口记录上限（FIFO 淘汰最旧），避免长期运行内存无界增长。 */
+  private static readonly REVIEW_SETTLEMENTS_MAX = 1000;
+
+  /**
+   * 进入 review 时登记本轮评审的幂等键（P1 · 根因 #1）。
+   * 无论评审人是 agent 还是 human 都登记，保证收口幂等判定的 round 语义一致。
+   */
+  private recordReviewEntry(task: Task, from: TaskStatus, to: TaskStatus): void {
+    if (to !== 'review' || from === 'review') return;
+    this.reviewSettlements.set(task.id, {
+      round: task.executionRound ?? 1,
+      verdict: 'pending',
+      at: new Date().toISOString(),
+    });
+    this.pruneReviewSettlements();
+  }
+
+  /**
+   * 登记某轮评审已收口（P1 · 根因 #1）。
+   *
+   * 必须在 `requestRevision` 自增 executionRound **之前**调用 —— 记录的 round
+   * 是「被评审的轮次」。
+   */
+  private markReviewSettled(task: Task, verdict: 'approved' | 'revision', by?: string): void {
+    this.reviewSettlements.set(task.id, {
+      round: task.executionRound ?? 1,
+      verdict,
+      at: new Date().toISOString(),
+      by,
+    });
+    this.pruneReviewSettlements();
+  }
+
+  private pruneReviewSettlements(): void {
+    if (this.reviewSettlements.size <= TaskService.REVIEW_SETTLEMENTS_MAX) return;
+    const entries = [...this.reviewSettlements.entries()]
+      .sort((a, b) => a[1].at.localeCompare(b[1].at));
+    const excess = this.reviewSettlements.size - TaskService.REVIEW_SETTLEMENTS_MAX;
+    for (let i = 0; i < excess; i++) this.reviewSettlements.delete(entries[i]![0]);
+  }
+
+  /**
+   * 判断本次收口请求是否为**已收口轮次的重复 / 迟到**调用。
+   *
+   * 返回 `undefined` = 不适用幂等短路 → 交给原有校验（抛错）处理，保持既有语义不变。
+   * 三条同时满足才判定为重复/迟到：
+   *   1. 任务当前**不在 review**（否则是正常评审路径）
+   *   2. 存在该任务的收口记录且 verdict 已定（approved / revision）
+   *   3. 记录轮次 <= 当前 executionRound（否则记录陈旧，不适用）
+   */
+  private resolveSettledReview(
+    taskId: string, currentStatus: TaskStatus,
+  ): { round: number; verdict: 'approved' | 'revision' } | undefined {
+    if (currentStatus === 'review') return undefined;
+    const s = this.reviewSettlements.get(taskId);
+    if (!s || s.verdict === 'pending') return undefined;
+    const currentRound = this.tasks.get(taskId)?.executionRound ?? 1;
+    if (s.round > currentRound) return undefined;
+    return { round: s.round, verdict: s.verdict };
+  }
+
+  /** 清理某任务的全部评审通知去重键（`${taskId}:r{n}`）。 */
+  private clearActiveReviews(taskId: string): void {
+    const prefix = `${taskId}:r`;
+    for (const key of [...this.activeReviews]) {
+      if (key === taskId || key.startsWith(prefix)) this.activeReviews.delete(key);
+    }
+  }
+
   acceptTask(taskId: string, reviewerId?: string, notes?: string): Task {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
-    if (task.status !== 'review') {
-      throw new Error(`Task ${taskId} is in ${task.status} status, cannot accept`);
-    }
 
+    // 授权校验**先于**幂等短路：非评审人不得因「已收口」而得到成功语义的返回。
     if (reviewerId && task.assignedAgentId && reviewerId === task.assignedAgentId) {
       throw new Error(`Agent ${reviewerId} cannot accept their own task.`);
     }
     if (reviewerId) {
       this.assertReviewerAllowed(reviewerId, task);
+    }
+
+    // P1 幂等（根因 #1）：重复 / 迟到的 approve —— 该 (taskId, round) 已收口 →
+    // 返回当前状态，**不产生第二次状态转移**（也不重复记 audit / 触发 reflection）。
+    const settled = this.resolveSettledReview(task.id, task.status);
+    if (settled) {
+      log.info('Duplicate/late review approval ignored — returning current state', {
+        event: 'review_settlement_idempotent', taskId: task.id, round: settled.round,
+        settledVerdict: settled.verdict, currentStatus: task.status, reviewerId, count: 1,
+      });
+      return task;
+    }
+
+    if (task.status !== 'review') {
+      throw new Error(`Task ${taskId} is in ${task.status} status, cannot accept`);
     }
 
     // approved_with_notes: persist notes, still complete (STATE-MACHINES Spec)
@@ -3744,6 +4281,10 @@ export class TaskService {
     } else {
       (task as { reviewVerdict?: string }).reviewVerdict = 'approved';
     }
+
+    // P1：先登记「本轮已按 approve 收口」再转移状态 —— 后续同 (taskId, round)
+    // 的重复 / 迟到 approve·revision 将被幂等短路（返回当前状态，不再转移）。
+    this.markReviewSettled(task, 'approved', reviewerId);
 
     // Transition to completed — updateTaskStatus handles all side effects
     this.updateTaskStatus(
@@ -3866,15 +4407,31 @@ export class TaskService {
   async requestRevision(taskId: string, reason: string, author?: string): Promise<Task> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
-    if (task.status !== 'review') {
-      throw new Error(`Task ${taskId} is in ${task.status} status, cannot request revision`);
-    }
 
+    // 授权校验**先于**幂等短路（非评审人仍被拒，不因已收口而获得成功语义）。
     if (author) {
       this.assertReviewerAllowed(author, task);
     }
 
+    // P1 幂等（根因 #1）：重复 / 迟到的 revision —— 该 (taskId, round) 已收口 →
+    // 返回当前状态。**关键：不得再次自增 executionRound**（否则一条迟到的
+    // revision 会凭空多开一轮执行，正是实测中「逐轮空转」的来源）。
+    const settled = this.resolveSettledReview(task.id, task.status);
+    if (settled) {
+      log.info('Duplicate/late revision request ignored — returning current state', {
+        event: 'review_settlement_idempotent', taskId: task.id, round: settled.round,
+        settledVerdict: settled.verdict, currentStatus: task.status, author, count: 1,
+      });
+      return task;
+    }
+
+    if (task.status !== 'review') {
+      throw new Error(`Task ${taskId} is in ${task.status} status, cannot request revision`);
+    }
+
     const by = author || 'Reviewer';
+    // P1：登记收口**必须在自增 executionRound 之前**（round = 被评审轮次）。
+    this.markReviewSettled(task, 'revision', by);
     const now = new Date();
     task.executionRound = (task.executionRound ?? 1) + 1;
     task.notes = task.notes ?? [];
@@ -4200,9 +4757,15 @@ export class TaskService {
       );
     }
 
-    // Cancel any running execution before transitioning
-    const existing = this.taskCancelTokens.get(taskIdStr);
-    if (existing) existing.cancelled = true;
+    // ── 修订轮（§8.4 #9）：**terminate-then-start**（取代 cancel-and-replace）───────
+    // 旧实现：先 `existing.cancelled = true` → 立即 `runTaskFresh`，而闸的判据正是
+    // `!token.cancelled` → 闸被**自身取消旁路** → 旧执行 drain 期照起新会话 =
+    // 第二个 worktree 写入方（CTO 裁定「仍保留 cancel-and-replace」的唯一存活路径）。
+    // 现有：仅**请求**协作式终止（token 只作取消信号，不再参与闸判定），随后以
+    // retry-fresh 意图走统一派发入口 —— 旧纪元未**实际 settle**则延后重放，
+    // settle（CAS）后由 re-arm 再过同一单飞闸触发，峰值并发恒为 1。
+    const liveExec = this.getLiveExecution(taskIdStr);
+    if (liveExec) liveExec.cancelToken.cancelled = true;
 
     // Purge queued informational status updates for this task before the fresh start
     if (task.assignedAgentId && this.agentManager) {
@@ -4226,13 +4789,13 @@ export class TaskService {
         .catch(err => log.warn('Failed to persist retry notes', { error: String(err) }));
     }
 
-    // Transition via updateTaskStatus (skip auto-start; we'll start runTaskFresh instead)
+    // Transition via updateTaskStatus (skip auto-start; the fresh start is requested below)
     this.updateTaskStatus(taskIdStr, 'in_progress', undefined, true, true, 'system', 'Retry (fresh start)');
 
-    // Start execution WITHOUT previous context
+    // Start execution WITHOUT previous context —— terminate-then-start：旧执行实际 settle 后才起。
     if (this.agentManager) {
       setImmediate(() => {
-        this.runTaskFresh(task.id).catch(err =>
+        this.runTaskFresh(task.id, 'retry-fresh').catch(err =>
           log.warn('Failed to start fresh retry', { taskId: task.id, error: String(err) })
         );
       });
@@ -4244,7 +4807,7 @@ export class TaskService {
    * Run a task without loading any previous execution context.
    * Only the task's own description, notes, and dependency context are included.
    */
-  private async runTaskFresh(taskId: string): Promise<void> {
+  private async runTaskFresh(taskId: string, intent: TaskDispatchIntent = 'retry-fresh'): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task not found: ${taskId}`);
     if (!task.assignedAgentId) throw new Error(`Task ${taskId} has no assigned agent`);
@@ -4257,11 +4820,26 @@ export class TaskService {
       return;
     }
 
+    // T2 · 派发侧实体独占（与 runTask 共用同一「在飞登记表」→ 跨入口生效；settle 语义同前）。
+    const liveOwnerFresh = this.getLiveExecution(taskId);
+    if (liveOwnerFresh) {
+      if (DEFERRABLE_DISPATCH_INTENTS.has(intent)) {
+        // 调度意图：旧执行 drain 期不得被拦 → 延后重放（fresh → re-arm 时走 runTaskFresh）。
+        this.deferTaskDispatch(taskId, intent, {
+          fresh: true, round: task.executionRound ?? 1,
+        }, liveOwnerFresh);
+        return;
+      }
+      this.logDuplicateDispatchRejected(taskId, task.assignedAgentId, liveOwnerFresh, intent);
+      return;
+    }
+
     const agent = this.agentManager.getAgent(task.assignedAgentId);
     const executionRound = task.executionRound ?? 1;
 
     const cancelToken = { cancelled: false };
     this.taskCancelTokens.set(taskId, cancelToken);
+    const executionRecordFresh = this.registerTaskExecution(taskId, executionRound, intent, cancelToken);
 
     // Build dependency context (same as runTask)
     let dependencyContext = '';
@@ -4456,7 +5034,7 @@ export class TaskService {
               setTimeout(() => {
                 const current = this.tasks.get(taskId);
                 if (!current || current.status !== 'in_progress') return;
-                this.runTask(taskId, 1, 'no_submit').catch(e =>
+                this.runTask(taskId, 1, 'no_submit', 'no_submit').catch(e =>
                   log.error('Fresh no-submit retry invocation failed', { taskId, error: String(e) })
                 );
               }, delayMs);
@@ -4470,10 +5048,8 @@ export class TaskService {
             setImmediate(() => {
               const current = this.tasks.get(taskId);
               if (!current || current.status !== 'in_progress') return;
-              const activeToken = this.taskCancelTokens.get(taskId);
-              if (activeToken && !activeToken.cancelled) return;
               log.info('Re-queuing preempted task (fresh)', { taskId });
-              this.runTask(taskId).catch(err =>
+              this.runTask(taskId, 0, undefined, 'preempted').catch(err =>
                 log.warn('Failed to re-queue preempted task', { taskId, error: String(err) })
               );
             });
@@ -4497,6 +5073,10 @@ export class TaskService {
           this.taskRetryErrors.delete(taskId);
           this.updateTaskStatus(taskId, 'failed');
         }
+      })
+      .finally(() => {
+        // T2 · settle 信号（来源①，fresh 路径；规则同 runTask.finally：无条件、token 判据之外）
+        this.settleTaskExecution(executionRecordFresh, 'finally');
       });
   }
 

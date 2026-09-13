@@ -17,6 +17,7 @@ import {
   MAILBOX_ITEM_MAX_RETRIES,
   hasCompletionMarker,
   MAILBOX_PROCESSING_TIMEOUT_MS,
+  BACKSTOP_CANCEL_GRACE_MS,
   MAILBOX_COALESCE_WINDOW_MS,
   APPROVAL_WAIT_TIMEOUT_MS,
   WATCHDOG_INTERVAL_MS,
@@ -25,7 +26,8 @@ import {
   isStrictStateItem,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
-import type { AgentMailbox } from './mailbox.js';
+import { MAILBOX_LEASE_RENEW_INTERVAL_MS, type AgentMailbox } from './mailbox.js';
+import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } from './session-workspace.js';
 
 // ─── Abnormal Completion Detection ──────────────────────────────────────────
 
@@ -80,12 +82,19 @@ export interface AttentionDelegate {
   onDecisionMade(decision: AttentionDecision): void;
   onFocusChanged(item: MailboxItem | undefined): void;
   /**
-   * Best-effort cancel of the in-flight processing for `item` — invoked when the
-   * backstop timeout fires so the orphaned turn stops before the item is requeued
+   * Cancel the in-flight processing for `item` — invoked when the backstop
+   * timeout fires so the orphaned turn stops before the item is requeued
    * (prevents duplicate tool side effects). Implementations abort the active LLM
    * stream and set the processing cancel flag. Optional for non-agent delegates.
+   *
+   * `workerId` is the worker that was **holding `item`** when the timeout fired
+   * (captured before the race — NOT re-derived from ALS). The call site is a
+   * timer callback, so implementations must use this to pick the target turn
+   * deterministically; inferring the target from AsyncLocalStorage would fall
+   * back to worker 1 and cancel the wrong worker. Handlers may return a promise;
+   * a rejection is logged, never fatal.
    */
-  cancelProcessing?(item: MailboxItem): void;
+  cancelProcessing?(item: MailboxItem, workerId?: number): void | Promise<void>;
   evaluateInterrupt(
     currentItem: MailboxItem,
     newItem: MailboxItem,
@@ -97,6 +106,26 @@ export interface AttentionDelegate {
   onDeliberationCompleted?(result: DeliberationResult | null): void;
   /** Apply memory updates from deliberation (working + longterm). */
   applyMemoryUpdates?(updates: Array<{ type: 'working' | 'longterm'; key: string; content: string }>): void;
+  /**
+   * Provide a per-worker SessionWorkspace in concurrent mode (workerId >= 1).
+   * Implementations should return a fresh, cached workspace per worker so each
+   * concurrent processing loop gets isolated session state. Undefined falls
+   * back to a fresh default workspace for that worker.
+   */
+  getWorkerWorkspace?(workerId: number): SessionWorkspace | undefined;
+  /**
+   * 并发交接钩子（P2c）：worker 处理 item 的关键生命周期事件。
+   * - 'declared'：worker 开始处理 item（声明意图，防重复动作）
+   * - 'done'：worker 处理完成（沉淀结论 + 遗留）
+   * - 'conflict'：worker 处理时检测到与实体锁冲突/目标已被占用
+   * Implementations 写入 ConcurrentHandoffLog（持久化），供其他 worker 的 prompt 注入。
+   */
+  onConcurrentHandoff?(
+    kind: 'declared' | 'done' | 'conflict',
+    workerId: number,
+    item: MailboxItem | undefined,
+    summary: string,
+  ): void;
 }
 
 export interface DecisionPersistence {
@@ -123,12 +152,48 @@ export type LLMDecisionJudge = (prompt: string) => Promise<DecisionType>;
  * There is NO polling. The agent's focus is broken only when an external
  * event (new mail) demands attention.
  */
+/** 单个并发 worker 的可变状态（workerCount=1 时不用，走实例单值字段）。 */
+interface AttentionWorkerState {
+  workerId: number;
+  state: AttentionState;
+  focus?: MailboxItem;
+  processingStartedAt?: number;
+  /** worker 定向的用户取消请求（并发模式承载；串行走实例字段）。 */
+  userCancelCurrent?: boolean;
+}
+
 export class AttentionController {
-  private state: AttentionState = 'idle';
-  private currentFocus: MailboxItem | undefined;
+  /** 串行模式单值状态（workerCount=1 时与旧行为完全一致）。 */
+  private stateStorage: AttentionState = 'idle';
+  /** 串行模式 focus 存储（workerCount=1 时 currentFocus 的承载）。 */
+  private focusStorage: MailboxItem | undefined;
+  /** 并发模式 worker 状态容器。 */
+  private workerStates = new Map<number, AttentionWorkerState>();
+  /** 并发 worker 数（默认 1 = 串行）。 */
+  private workerCount = 1;
+  private workerPromises: Promise<void>[] = [];
+  private activeWorkerIds = new Set<number>();
+  /**
+   * 在途处理登记：workerId → 正在执行的 `processMailboxItem` promise。
+   *
+   * 用途：backstop 超时后的 single-flight 判定 —— 必须先确认上一次尝试
+   * 真的结束，才允许把 item 重新入队重跑；否则重跑会与仍在执行的工具
+   * 产生重复副作用。键为 workerId（并发模式）或 1（串行模式）。
+   */
+  private inFlightProcessing = new Map<number, Promise<unknown>>();
+
   private interruptSignal = false;
-  /** Explicit user cancel of the focused item (Cancel button) — not a new-mail preempt. */
-  private userCancelCurrent = false;
+  /** Explicit user cancel of the focused item (Cancel button) — not a new-mail preempt.
+   * 并发模式按 worker 承载（每 worker 独立 userCancel），避免取消串到其他 worker。 */
+  private userCancelCurrentStorage = false;
+  private get userCancelCurrent(): boolean {
+    if (this.workerCount > 1) return !!this.workerState(this.currentWorkerId()).userCancelCurrent;
+    return this.userCancelCurrentStorage;
+  }
+  private set userCancelCurrent(v: boolean) {
+    if (this.workerCount > 1) this.workerState(this.currentWorkerId()).userCancelCurrent = v;
+    else this.userCancelCurrentStorage = v;
+  }
   private pendingInterruptItem: MailboxItem | undefined;
   private criticalInterruptResolve?: () => void;
   private running = false;
@@ -148,12 +213,21 @@ export class AttentionController {
   private lastYieldDecision?: DecisionType;
   private unsubscribeNewItem?: () => void;
   private decisions: AttentionDecision[] = [];
+  /** 冲突策略：auto=实体锁冲突时放回队列错开（默认）；report=冲突时上报并放回。 */
+  private conflictPolicy: 'auto' | 'report' = 'auto';
+  /** 判定"空闲"的处理 watchdog（ms）。 */
   private watchdogTimer?: ReturnType<typeof setInterval>;
   private watchdogLastTick = Date.now();
-  private processingStartedAt?: number;
+  /** 串行模式处理起始时间存储（并发模式走 workerStates）。 */
+  private processingStartedAtStorage?: number;
   private waitingForHumanApproval = false;
   /** Backstop timeout override (test/config); defaults to MAILBOX_PROCESSING_TIMEOUT_MS. */
   private processingTimeoutMs?: number;
+  /**
+   * Backstop 超时后等待「在途 turn 真正结束」的宽限期。
+   * 可用 setBackstopCancelGraceMs 覆盖（测试需要确定性短宽限期）。
+   */
+  private backstopCancelGraceMs = BACKSTOP_CANCEL_GRACE_MS;
 
   private static readonly MAX_RECENT_DECISIONS = 50;
 
@@ -161,6 +235,77 @@ export class AttentionController {
   private loopAlive = false;
   /** Bumped on each launchLoop so a superseded loop exits instead of double-consuming. */
   private loopGeneration = 0;
+
+  // ─── 并发 accessor ───────────────────────────────────────────────────────
+
+  /** 当前 workerId：ALS 上下文内从 SessionWorkspace 拿；否则 1（串行/外部）。 */
+  private currentWorkerId(): number {
+    return sessionWorkspaceStore.getStore()?.workerId ?? 1;
+  }
+
+  private get state(): AttentionState {
+    if (this.workerCount > 1) return this.workerState(this.currentWorkerId()).state;
+    return this.stateStorage;
+  }
+  private set state(v: AttentionState) {
+    if (this.workerCount > 1) this.workerState(this.currentWorkerId()).state = v;
+    else this.stateStorage = v;
+  }
+
+  private workerState(workerId: number): AttentionWorkerState {
+    let ws = this.workerStates.get(workerId);
+    if (!ws) {
+      ws = { workerId, state: 'idle' };
+      this.workerStates.set(workerId, ws);
+    }
+    return ws;
+  }
+
+  private get currentFocus(): MailboxItem | undefined {
+    if (this.workerCount > 1) return this.workerState(this.currentWorkerId()).focus;
+    return this.focusStorage;
+  }
+  private set currentFocus(v: MailboxItem | undefined) {
+    if (this.workerCount > 1) this.workerState(this.currentWorkerId()).focus = v;
+    else this.focusStorage = v;
+  }
+
+  private get processingStartedAt(): number | undefined {
+    if (this.workerCount > 1) return this.workerState(this.currentWorkerId()).processingStartedAt;
+    return this.processingStartedAtStorage;
+  }
+  private set processingStartedAt(v: number | undefined) {
+    if (this.workerCount > 1) this.workerState(this.currentWorkerId()).processingStartedAt = v;
+    else this.processingStartedAtStorage = v;
+  }
+
+  /** 任一活跃 worker 的处理起始时间（watchdog 用）。 */
+  private anyProcessingStartedAt(): number | undefined {
+    if (this.workerCount > 1) {
+      for (const st of this.workerStates.values()) if (st.processingStartedAt) return st.processingStartedAt;
+      return undefined;
+    }
+    return this.processingStartedAtStorage;
+  }
+
+  /** 活跃 worker 数（watchdog 重启判断 / agent 状态上报用）。 */
+  private activeWorkerCount(): number {
+    if (this.workerCount > 1) return this.activeWorkerIds.size;
+    return this.loopAlive ? 1 : 0;
+  }
+
+  /** 聚合状态（并发模式下任一 worker 非 idle 即非空闲）。 */
+  private aggregateState(): AttentionState {
+    if (this.workerCount > 1) {
+      let any = false;
+      for (const st of this.workerStates.values()) {
+        if (st.state !== 'idle') return 'focused';
+        any = true;
+      }
+      return any ? 'idle' : this.state;
+    }
+    return this.state;
+  }
 
   constructor(
     agentId: string,
@@ -190,6 +335,41 @@ export class AttentionController {
   }
 
   /**
+   * 覆盖 backstop 超时后的取消宽限期（毫秒）。0 表示不等待（立即判定为「未结束」）。
+   * 主要供测试使用；生产走 `BACKSTOP_CANCEL_GRACE_MS` 默认值。
+   */
+  setBackstopCancelGraceMs(ms: number): void {
+    this.backstopCancelGraceMs = Math.max(0, ms);
+  }
+  /**
+   * 设置并发 worker 数（1 = 串行，与旧行为完全一致）。
+   * 运行中调用会重启 attention 循环以应用新 worker 数。
+   */
+  setWorkerCount(n: number): void {
+    const count = Math.max(1, Math.min(10, Math.floor(n || 1)));
+    if (count === this.workerCount) return;
+    const wasRunning = this.running;
+    if (wasRunning) this.stop();
+    this.workerCount = count;
+    if (wasRunning) this.start();
+  }
+
+  /** 当前并发 worker 数。 */
+  getWorkerCount(): number {
+    return this.workerCount;
+  }
+
+  /** 设置冲突策略（auto=自动错开放回，report=冲突时上报）。 */
+  setConflictPolicy(policy: 'auto' | 'report'): void {
+    this.conflictPolicy = policy;
+  }
+
+  /** 当前冲突策略。 */
+  getConflictPolicy(): 'auto' | 'report' {
+    return this.conflictPolicy;
+  }
+
+  /**
    * Start the attention loop. Listens for mailbox events and processes items.
    */
   start(): void {
@@ -211,12 +391,15 @@ export class AttentionController {
   }
 
   /**
-   * Launch (or re-launch) the runLoop with auto-restart on unexpected exit.
-   * If the loop exits while `this.running` is true, it restarts after a
-   * brief delay — defense-in-depth against exceptions that escape the
-   * outer try-catch inside the loop body.
+   * Launch (or re-launch) the attention loops with auto-restart on unexpected exit.
+   * Serial mode (workerCount=1) launches the single runLoop; concurrent mode
+   * launches a pool of worker loops (see launchWorkerPool).
    */
   private launchLoop(): void {
+    if (this.workerCount > 1) {
+      this.launchWorkerPool();
+      return;
+    }
     const gen = ++this.loopGeneration;
     // Wake any prior waiter so a superseded loop can exit cleanly.
     this.mailbox.cancelWait();
@@ -232,6 +415,32 @@ export class AttentionController {
         }, 2000);
       }
     });
+  }
+
+  /** 并发模式：启动 N 个 worker 协程；任一异常退出则整体重启。 */
+  private launchWorkerPool(): void {
+    const gen = ++this.loopGeneration;
+    this.mailbox.cancelWait();
+    this.workerPromises = [];
+    this.activeWorkerIds.clear();
+    for (let w = 1; w <= this.workerCount; w++) {
+      this.workerState(w); // 预创建 worker 状态
+      const p = this.concurrentWorkerLoop(w, gen).catch(err => {
+        if (this.running && gen === this.loopGeneration) {
+          log.error(`Attention worker ${w} exited unexpectedly — restarting pool in 2 s`, {
+            agentId: this.agentId,
+            error: String(err),
+            stack: (err as Error)?.stack,
+          });
+          setTimeout(() => {
+            if (this.running && gen === this.loopGeneration) this.launchWorkerPool();
+          }, 2000);
+        }
+      });
+      this.workerPromises.push(p);
+    }
+    this.loopPromise = Promise.all(this.workerPromises).then(() => undefined);
+    log.info('Attention worker pool started', { agentId: this.agentId, workers: this.workerCount });
   }
 
   /**
@@ -256,26 +465,27 @@ export class AttentionController {
       this.watchdogLastTick = now;
 
       if (elapsed > WATCHDOG_INTERVAL_MS + WATCHDOG_DRIFT_THRESHOLD_MS) {
-        const focusedId = this.currentFocus?.id;
-        const processingFor = this.processingStartedAt
-          ? Math.round((now - this.processingStartedAt) / 1000)
+        const focusedId = this.getCurrentFocus()?.id;
+        const processingFor = this.anyProcessingStartedAt()
+          ? Math.round((now - this.anyProcessingStartedAt()!) / 1000)
           : 0;
         log.warn('System sleep/wake detected', {
           agentId: this.agentId,
           driftMs: elapsed,
-          state: this.state,
+          state: this.aggregateState(),
           focusedItemId: focusedId,
           processingForSec: processingFor,
         });
       }
 
-      // Self-heal: if the loop died while we're still supposed to be running,
-      // restart it.  The outer try-catch + launchLoop auto-restart should
+      // Self-heal: if the loops died while we're still supposed to be running,
+      // restart them.  The outer try-catch + launchLoop auto-restart should
       // prevent this, but this is a last-resort safety net.
-      if (this.running && !this.loopAlive) {
+      if (this.running && this.activeWorkerCount() === 0) {
         log.error('Watchdog: attention loop is dead — restarting', {
           agentId: this.agentId,
-          state: this.state,
+          state: this.aggregateState(),
+          workers: this.workerCount,
           queueDepth: this.mailbox.depth,
         });
         this.launchLoop();
@@ -287,13 +497,22 @@ export class AttentionController {
       // silently or the process was interrupted between activity end and
       // status update.  Also triggers during 'deciding' (triage/deliberation)
       // because no item is actively being processed at that point either.
-      if (this.running && !this.currentFocus && (this.state === 'idle' || this.state === 'deciding')) {
+      const aggregated = this.aggregateState();
+      if (this.running && this.activeWorkerCount() === 0 && (aggregated === 'idle' || aggregated === 'deciding')) {
         try {
           const cleaned = this.mailbox.cleanStaleProcessing();
           if (cleaned > 0) {
             log.warn('Watchdog: cleaned stale processing items from DB', {
               agentId: this.agentId,
               cleaned,
+            });
+          }
+          // P0 租约：回收过期租约（崩溃/超时的 worker 不永久占位），退回的项重新入队。
+          const reclaimed = this.mailbox.reclaimExpiredLeases();
+          if (reclaimed > 0) {
+            log.warn('Watchdog: reclaimed mailbox items with expired leases', {
+              agentId: this.agentId,
+              reclaimed,
             });
           }
           // Also age-out stale informational/callback ghosts while idle so the
@@ -309,7 +528,7 @@ export class AttentionController {
           }
           // Self-heal lost-wakeup: idle with a non-empty queue means the loop
           // is parked without having seen the enqueue signal — nudge it.
-          if (this.state === 'idle' && this.mailbox.depth > 0) {
+          if (aggregated === 'idle' && this.mailbox.depth > 0) {
             log.warn('Watchdog: idle with queued mail — nudging attention loop', {
               agentId: this.agentId,
               queueDepth: this.mailbox.depth,
@@ -378,9 +597,18 @@ export class AttentionController {
             const hasLiveCallback = item.sourceType === 'a2a_message' && !!item.metadata?.responsePromise;
             if (item.sourceType !== 'human_chat' && !hasLiveCallback) {
               try {
+                // P1.x (a)(R2)：**显式复用原行**回队（而不仅仅是重投）。
+                //
+                // 停机时 item 刚被本实例取走（持久行为 `processing` + `claimed_by` = 本实例），
+                // 而 P1 已给 review_request 打上非空幂等键：若无条件 `enqueue(resue)` 新 id，
+                // 唯一键会返 false → 该次投递被抑、原行永远停在 processing
+                // （重试 < 租约 TTL 延 15min，> TTL 被清成 dropped = 评审永久丢失）。
+                // 传 `reuseItemId` 后走 `resolveReinjectDecision` 的「复用原行回队」分支：
+                // 不新增行、无条件释放认领、刷新 `queued_at`，返回 `status='queued'`。
                 this.mailbox.enqueue(item.sourceType, item.payload, {
                   priority: item.priority,
                   metadata: item.metadata,
+                  reuseItemId: item.id,
                 });
               } catch (err) {
                 log.warn('Failed to re-enqueue item on shutdown', { itemId: item.id, error: String(err) });
@@ -542,12 +770,127 @@ export class AttentionController {
   }
 
   /**
+   * MailboxItem → 一句话摘要（用于并发交接记录）。
+   */
+  private describeItem(item: MailboxItem): string {
+    const task = item.payload.taskId ?? item.metadata?.taskId;
+    const label = `${item.sourceType}: "${item.payload.summary}"`;
+    return task ? `${label} [task ${task}]` : label;
+  }
+
+  /**
+   * 并发 worker 循环（workerCount > 1 时每个 worker 一个协程）。
+   *
+   * 按方案 A 设计——「并发不打断」：
+   * - 每个 worker 是纯消费者：dequeueAsync → 实体锁 → processMailboxItem → 解锁 → 循环；
+   * - 不做 triage/deliberation/中断抢占（这些保留给串行模式的 runLoop）；
+   * - 实体亲和锁保证同一任务/需求/会话/用户永不并发处理；
+   * - 每个 worker 用独立 SessionWorkspace 挂载处理链路（async_hooks 隔离）。
+   */
+  private async concurrentWorkerLoop(workerId: number, gen: number): Promise<void> {
+    this.activeWorkerIds.add(workerId);
+    const wsState = this.workerState(workerId);
+    try {
+      while (this.running && gen === this.loopGeneration) {
+        wsState.state = 'idle';
+        wsState.focus = undefined;
+        wsState.processingStartedAt = undefined;
+
+        let item: MailboxItem;
+        try {
+          item = await this.mailbox.dequeueAsync();
+        } catch {
+          // MailboxCancelledError（或任何错误）且非 running → 正常退出
+          if (!this.running || gen !== this.loopGeneration) break;
+          continue;
+        }
+
+        // 被更新的 pool 取代 → 放回，退出
+        if (gen !== this.loopGeneration) {
+          try { this.mailbox.putBack(item); } catch { /* ignore */ }
+          break;
+        }
+
+        // 实体亲和锁：取到即锁全部实体维度，处理完必释放（lockEntities 为全有或全无）。
+        const entityKeys = this.mailbox.entityKeysOf(item);
+        const entityKey = entityKeys[0];
+        const holder = item.id;
+        if (!this.mailbox.lockEntities(entityKeys, holder)) {
+          // 竞态：任一实体维度已被其他 worker 持有 → 放回队列，等锁释放唤醒。
+          try { this.mailbox.putBack(item); } catch { /* ignore */ }
+          this.delegate?.onConcurrentHandoff?.('conflict', workerId, item, `实体 ${entityKeys.join(', ')} 已被其他分身锁定，暂缓处理并放回队列`);
+          if (this.conflictPolicy === 'report') {
+            // report 策略：冲突不再静默——发事件让父级感知。
+            this.eventBus.emit('agent:entity-conflict', {
+              agentId: this.agentId,
+              entityKey,
+              holder,
+              itemId: item.id,
+              workerId,
+              summary: item.payload.summary.slice(0, 200),
+            });
+          }
+          // auto 与 report 都做轻量退避：避免两个 worker 反复竞抢同一被锁实体
+          // 造成忙循环（unlockEntity 的广播唤醒 + 重新入队会立刻再次触发竞态）。
+          await new Promise<void>(r => setTimeout(r, 250 + Math.min(item.retryCount ?? 0, 8) * 250));
+          continue;
+        }
+
+        const workspace = this.delegate?.getWorkerWorkspace?.(workerId) ?? createSessionWorkspace(workerId);
+        this.delegate?.onConcurrentHandoff?.('declared', workerId, item, this.describeItem(item));
+        let handoffWritten = false;
+        try {
+          await sessionWorkspaceStore.run(workspace, async () => {
+            wsState.state = 'focused';
+            wsState.focus = item;
+            wsState.processingStartedAt = Date.now();
+            this.delegate?.onFocusChanged(item);
+            await this.processFocusedItem(item);
+          });
+        } catch (err) {
+          const isUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(item.sourceType);
+          log.error(`Attention worker ${workerId} processing failed — ${isUserInteraction ? 'completing' : 'requeueing'} item`, {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            error: String(err),
+          });
+          if (isUserInteraction) {
+            try { this.mailbox.complete(item.id); } catch { /* ignore */ }
+          } else {
+            try { this.mailbox.requeue(item); } catch { /* ignore */ }
+          }
+          this.delegate?.onConcurrentHandoff?.('done', workerId, item, `处理失败（${isUserInteraction ? '已结束' : '已重新入队'}）：${String(err).slice(0, 200)}`);
+          handoffWritten = true;
+        } finally {
+          this.mailbox.unlockEntities(entityKeys, holder);
+          wsState.focus = undefined;
+          wsState.processingStartedAt = undefined;
+          wsState.state = 'idle';
+          this.delegate?.onFocusChanged(undefined);
+          if (!handoffWritten) {
+            this.delegate?.onConcurrentHandoff?.('done', workerId, item, `处理完成：${this.describeItem(item)}`);
+          }
+        }
+      }
+    } finally {
+      this.activeWorkerIds.delete(workerId);
+      wsState.state = 'idle';
+      wsState.focus = undefined;
+    }
+  }
+
+  /**
    * Process a single mailbox item with full focus.
    * After processing, validates the result; if the LLM produced an abnormal
    * reply (e.g. raw XML tool-call markup), the item is requeued for retry
    * up to `MAILBOX_ITEM_MAX_RETRIES` times.
    */
   private async processFocusedItem(item: MailboxItem): Promise<void> {
+    // 捕获「持有该 item 的 worker」，全程复用这个值（不再二次 currentWorkerId()）。
+    // 根因 2：ALS 漂移时重算会删错在途登记键，残留登记使
+    // awaitInFlightSettled 永远返回 false；根因 1：定向取消也必须用这个值。
+    const workerId = this.currentWorkerId();
     this.setState('focused');
     this.currentFocus = item;
     this.interruptSignal = false;
@@ -565,12 +908,29 @@ export class AttentionController {
 
     let reply: string | void = undefined;
     let timedOut = false;
+    /** backstop 超时后，上一次尝试在宽限期内仍未结束 → 禁止重排（防重复副作用）。 */
+    let orphanAbandoned = false;
+    // P0 租约续租：处理期间周期续租。不续租 → 租约到期后该项会被其它 worker
+    // （含其它实例）回收重认领 → 同一 item 被两个 worker 重复处理。
+    const leaseRenewTimer = setInterval(() => {
+      try {
+        if (!this.mailbox.renewLease(item.id)) {
+          log.warn('Mailbox lease renewal lost during processing', {
+            agentId: this.agentId, itemId: item.id, type: item.sourceType,
+          });
+        }
+      } catch (err) {
+        log.debug('Mailbox lease renewal threw', { itemId: item.id, error: String(err) });
+      }
+    }, MAILBOX_LEASE_RENEW_INTERVAL_MS);
+    if (typeof leaseRenewTimer.unref === 'function') leaseRenewTimer.unref();
     try {
       // The delegate's processMailboxItem makes LLM calls and shell commands,
       // each of which has its own transport-level timeout. This outer timeout
       // is a generous backstop — by the time it fires, all underlying I/O has
       // surely completed or failed, so requeuing is safe.
       const processing = this.delegate?.processMailboxItem(item, batchItems, batchContext);
+      if (processing) this.inFlightProcessing.set(workerId, processing);
       const backstopMs = this.waitingForHumanApproval
         ? APPROVAL_WAIT_TIMEOUT_MS
         : (this.processingTimeoutMs ?? MAILBOX_PROCESSING_TIMEOUT_MS);
@@ -585,21 +945,52 @@ export class AttentionController {
         reply = result.reply;
       } else {
         timedOut = true;
-        // Single-flight guard: cancel the orphaned in-flight processing before we
-        // requeue, so the timed-out turn cannot keep running tools and double the
-        // side effects once the requeued item is processed again. The late result
-        // of `processing` is already discarded by the Promise.race above.
+        // Single-flight guard. The backstop only stops us *waiting* — it must not
+        // let a second attempt start while the first may still be executing tools.
+        //   1. signal the orphan to abort (cooperative, via the delegate);
+        //   2. wait (bounded) for it to actually settle;
+        //   3. requeue ONLY if it settled — otherwise complete as `incomplete`,
+        //      so the item is never silently re-run on top of live side effects.
         try {
-          this.delegate?.cancelProcessing?.(item);
+          // 定向：把持有该 item 的 workerId 显式交给 delegate —— 不靠 ALS 推断。
+          const cancelled = this.delegate?.cancelProcessing?.(item, workerId);
+          if (cancelled && typeof (cancelled as Promise<void>).catch === 'function') {
+            void (cancelled as Promise<void>).catch(err => {
+              log.warn('cancelProcessing rejected on backstop timeout', {
+                agentId: this.agentId,
+                itemId: item.id,
+                workerId,
+                error: String(err),
+              });
+            });
+          }
         } catch (err) {
-          log.debug('cancelProcessing threw on backstop timeout', { itemId: item.id, error: String(err) });
+          // 根因 5：取消失败不再只留 debug —— 必须可见。
+          log.warn('cancelProcessing threw on backstop timeout', {
+            agentId: this.agentId,
+            itemId: item.id,
+            workerId,
+            error: String(err),
+          });
         }
-        log.error('Processing exceeded backstop timeout — cancelling in-flight and requeueing', {
-          agentId: this.agentId,
-          itemId: item.id,
-          type: item.sourceType,
-          timeoutMs: backstopMs,
-        });
+        const orphanSettled = await this.awaitInFlightSettled(workerId, this.backstopCancelGraceMs);
+        if (orphanSettled) {
+          log.error('Processing exceeded backstop timeout — orphan settled, requeueing', {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            timeoutMs: backstopMs,
+          });
+        } else {
+          orphanAbandoned = true;
+          log.error('Processing exceeded backstop timeout — orphan still running; completing as incomplete instead of requeueing', {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            timeoutMs: backstopMs,
+            graceMs: this.backstopCancelGraceMs,
+          });
+        }
       }
     } catch (err) {
       log.warn('Error processing mailbox item', {
@@ -608,13 +999,29 @@ export class AttentionController {
         type: item.sourceType,
         error: String(err),
       });
+    } finally {
+      clearInterval(leaseRenewTimer);
+      // Deregister the in-flight attempt for this worker (the promise may still be
+      // pending when abandoned — we simply stop waiting on it).
+      // 必须用开始时捕获的 workerId：重算 currentWorkerId() 在 ALS 漂移时会删错键。
+      this.inFlightProcessing.delete(workerId);
     }
 
     this.processingStartedAt = undefined;
 
     let statusResolved = false;
     if (timedOut) {
-      this.mailbox.requeue(item);
+      if (orphanAbandoned) {
+        // Visibility + no silent re-run: an orphan we could not stop is exactly
+        // the "completed but unfinished" terminal, not a retryable failure.
+        this.emitIncomplete(
+          item,
+          'backstop timeout — in-flight turn did not settle within grace; not requeued to avoid duplicate side effects',
+        );
+        this.mailbox.complete(item.id);
+      } else {
+        this.mailbox.requeue(item);
+      }
       statusResolved = true;
     } else if (reply === '[cancelled]' || this.lastYieldDecision === 'cancel') {
       // Permanently cancelled by an explicit cancel decision — the new incoming
@@ -742,8 +1149,16 @@ export class AttentionController {
    * If focused, registers an interrupt signal for the next yield point.
    * For critical user messages, also fires the critical-interrupt promise so that
    * long-running tool execution can be aborted early.
+   *
+   * 并发模式（workerCount > 1）：方案 A —— 不打断忙碌 worker。新邮件靠
+   * dequeueAsync 的广播唤醒被空闲 worker 取走；忙碌 worker 不被抢占。
    */
   private onNewMail(): void {
+    if (this.workerCount > 1) {
+      // 空闲 worker 会被 dequeueAsync 的广播唤醒取走新邮件；这里无需中断信号。
+      return;
+    }
+
     if (this.state === 'idle') {
       return;
     }
@@ -815,6 +1230,95 @@ export class AttentionController {
     });
   }
 
+  /** 并发模式：查找持有指定 mailbox item 的 workerId（串行始终返回 1）。 */
+  findWorkerByItemId(itemId: string): number | undefined {
+    if (this.workerCount <= 1) return 1;
+    for (const [wid, ws] of this.workerStates) {
+      if (ws.focus?.id === itemId) return wid;
+    }
+    return undefined;
+  }
+
+  /**
+   * 并发模式：按会话定位持有该会话的 workerId（串行始终返回 1）。
+   * 匹配 focus 的 metadata.sessionId / dbSessionId / payload.extra.sessionId。
+   * 用于外部 HTTP 线程按 session 定向取消，避免取消错对象。
+   */
+  findWorkerBySessionId(sessionId: string): number | undefined {
+    if (this.workerCount <= 1) return 1;
+    for (const [wid, ws] of this.workerStates) {
+      const f = ws.focus;
+      if (!f) continue;
+      if (f.metadata?.sessionId === sessionId
+        || f.metadata?.dbSessionId === sessionId
+        || f.payload?.extra?.sessionId === sessionId) return wid;
+    }
+    return undefined;
+  }
+
+  /**
+   * 诊断/测试：当前登记了在途处理 promise 的 workerId 列表。
+   * 正常收敛（无残留登记）时应为空 —— 用于回护根因 2（ALS 漂移删错键）。
+   */
+  getInFlightWorkerIds(): number[] {
+    return [...this.inFlightProcessing.keys()];
+  }
+
+  /**
+   * 诊断/测试：某 worker 当前的 focus item（并发模式不看 ALS 上下文）。
+   * 串行模式返回唯一的 focus。
+   */
+  getWorkerFocus(workerId: number): MailboxItem | undefined {
+    if (this.workerCount > 1) return this.workerStates.get(workerId)?.focus;
+    return this.focusStorage;
+  }
+
+  /**
+   * 诊断/测试：某 worker 的定向用户取消标志（并发模式不看 ALS 上下文）。
+   * 定向取消的断言就靠它 —— 「只置位目标 worker」必须可观测。
+   */
+  getWorkerUserCancel(workerId: number): boolean {
+    if (this.workerCount > 1) return !!this.workerStates.get(workerId)?.userCancelCurrent;
+    return this.userCancelCurrentStorage;
+  }
+
+  /**
+   * 诊断/测试：某 worker 的状态快照（state / focus item id / 定向取消标志）。
+   * 串行模式（workerCount=1）返回实例单值快照。
+   */
+  getWorkerSnapshot(workerId: number): { state: AttentionState; focusItemId?: string; userCancelCurrent: boolean } | undefined {
+    if (this.workerCount <= 1) {
+      return {
+        state: this.stateStorage,
+        focusItemId: this.focusStorage?.id,
+        userCancelCurrent: this.userCancelCurrentStorage,
+      };
+    }
+    const ws = this.workerStates.get(workerId);
+    if (!ws) return undefined;
+    return { state: ws.state, focusItemId: ws.focus?.id, userCancelCurrent: !!ws.userCancelCurrent };
+  }
+
+  /**
+   * 按 worker 定向取消（并发模式）。直接对该 worker 的取消状态置位，
+   * 不依赖 ALS 上下文——外部 HTTP 线程也能精确命中持有目标 item 的 worker。
+   * 返回是否命中（worker 存在且正在处理 focus）。
+   */
+  requestUserCancelForWorker(workerId: number): boolean {
+    const ws = this.workerCount > 1 ? this.workerStates.get(workerId) : undefined;
+    const focus = ws?.focus;
+    if (!focus) return false;
+    ws!.userCancelCurrent = true;
+    this.interruptSignal = true;
+    log.info('User cancel requested for worker', {
+      agentId: this.agentId,
+      workerId,
+      itemId: focus.id,
+      type: focus.sourceType,
+    });
+    return true;
+  }
+
   /** Clear a pending user-cancel flag (e.g. after the focused item finishes). */
   clearUserCancelCurrent(): void {
     this.userCancelCurrent = false;
@@ -830,7 +1334,45 @@ export class AttentionController {
    * without finishing cleanly (marker missing after continuation, or abnormal reply
    * accepted without retry). Visibility only — does not change retry semantics.
    */
+  /**
+   * 等待某 worker 的在途处理 promise 结束（有界等待）。
+   *
+   * 返回 `true` = 已在 `timeoutMs` 内结束（item 可安全重排重跑）；
+   * 返回 `false` = 仍在运行（**不可**重排，否则会重复副作用）。
+   * 无登记（无 delegate / 已结束）视为已结束。
+   */
+  private async awaitInFlightSettled(workerId: number, timeoutMs: number): Promise<boolean> {
+    const inFlight = this.inFlightProcessing.get(workerId);
+    if (!inFlight) return true;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<false>(resolve => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    });
+    try {
+      // 无论成功还是抛错，只要 settle 就算结束（异常路径不重排也没意义）。
+      return await Promise.race([
+        inFlight.then(() => true, () => true),
+        timeout,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   private emitIncomplete(item: MailboxItem, reason: string): void {
+    // 用户可见性：以前这里只发事件，而 human_chat 的 `agent:incomplete` 没有任何 UI
+    // 消费者（只有 CLI 恢复任务与 task-service 的特定 reason 在听），于是「一轮被超时
+    // 取消」对用户完全不可见——他只看得到半截回复，也不知道可以重试。这里先把事实明确
+    // 记到日志（哪条消息 / 哪个会话 / 什么原因），而不是只留一个没人听的 debug 事件。
+    log.warn('Mailbox item completed as incomplete', {
+      agentId: this.agentId,
+      itemId: item.id,
+      type: item.sourceType,
+      sessionId: (item.payload?.extra as { sessionId?: string } | undefined)?.sessionId,
+      taskId: item.payload?.taskId,
+      reason,
+    });
     try {
       this.eventBus.emit('agent:incomplete', {
         agentId: this.agentId,
@@ -840,7 +1382,8 @@ export class AttentionController {
         reason,
       });
     } catch (err) {
-      log.debug('Failed to emit agent:incomplete', { itemId: item.id, error: String(err) });
+      // 事件发不出去也要可见：静默吞掉这里会让「有轮失败了」彻底消失。
+      log.warn('Failed to emit agent:incomplete', { itemId: item.id, error: String(err) });
     }
   }
 
@@ -994,6 +1537,7 @@ export class AttentionController {
    * | Rule | Condition                                      | Decision  |
    * |------|------------------------------------------------|-----------|
    * | R0   | Same user, same session, both human_chat       | merge     |
+   * | R0x  | New human_chat is explicit NEW session          | continue  |
    * | R1   | New is human_chat, current is not              | preempt   |
    * | R1.5 | New is a2a_message, current is background      | preempt   |
    * | R2   | task_comment on same taskId as current          | merge     |
@@ -1014,6 +1558,15 @@ export class AttentionController {
     // so the agent processes them sequentially with correct context.
     // Skip merge when the current stream is being cancelled (user aborted) —
     // the new message should be processed as a fresh turn after cancellation.
+    // 显式新会话信号（extra.sessionRestore === null，即用户点了「新对话」）在任何情况
+    // 下都绝不 merge —— 该消息属于独立会话，必须排队等当前流完成后再单独处理。
+    if (
+      newItem.sourceType === 'human_chat' &&
+      currentItem.sourceType === 'human_chat' &&
+      (newItem.payload?.extra as { sessionRestore?: unknown } | undefined)?.sessionRestore === null
+    ) {
+      return 'continue';
+    }
     if (
       newItem.sourceType === 'human_chat' &&
       currentItem.sourceType === 'human_chat' &&
@@ -1334,9 +1887,14 @@ export class AttentionController {
   // ─── State & Queries ──────────────────────────────────────────────────────
 
   getState(): AttentionState {
+    if (this.workerCount > 1) return this.aggregateState();
     return this.state;
   }
 
+  /**
+   * 当前 focus。串行模式返回唯一的 focus；并发模式返回当前 worker
+   * （ALS 上下文）的 focus，外部调用无 ALS 上下文时返回 worker 1 的 focus。
+   */
   getCurrentFocus(): MailboxItem | undefined {
     return this.currentFocus;
   }
@@ -1347,8 +1905,9 @@ export class AttentionController {
 
   getMindState(): AgentMindState {
     const queued = this.mailbox.getQueuedItems();
+    const state = this.workerCount > 1 ? this.aggregateState() : this.state;
     return {
-      attentionState: this.state,
+      attentionState: state,
       isDeliberating: this.isDeliberating || undefined,
       currentFocus: this.currentFocus
         ? {
@@ -1425,6 +1984,8 @@ export class AttentionController {
   }
 
   hasInterruptPending(): boolean {
+    // 并发模式无中断信号（方案 A）。
+    if (this.workerCount > 1) return false;
     return this.interruptSignal;
   }
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useId, useSyncExternalStore } from 'react';
+import { useTranslation } from 'react-i18next';
 
 let mermaidPromise: Promise<typeof import('mermaid')> | null = null;
 
@@ -40,6 +41,7 @@ function useIsDarkMode(): boolean {
 }
 
 export function MermaidBlock({ code }: { code: string }) {
+  const { t } = useTranslation('common');
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -96,8 +98,15 @@ export function MermaidBlock({ code }: { code: string }) {
           <svg className="w-3.5 h-3.5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
           </svg>
-          <span className="text-[10px] font-medium text-red-400">Mermaid render error</span>
+          <span className="text-[10px] font-medium text-red-400">{t('markdown.mermaidRenderError')}</span>
         </div>
+        {/* Surface the parser's actual message so the user can fix the diagram —
+            a bare "render error" title without the reason is useless. */}
+        {error && (
+          <div className="px-3 py-2 bg-surface-secondary/60 text-[11px] font-mono text-red-300/90 whitespace-pre-wrap break-words border-b border-red-500/10 max-h-40 overflow-y-auto">
+            {error}
+          </div>
+        )}
         <pre className="p-3 bg-surface-secondary text-xs text-fg-secondary overflow-x-auto font-mono">{code}</pre>
       </div>
     );
@@ -108,7 +117,7 @@ export function MermaidBlock({ code }: { code: string }) {
       {loading && (
         <div className="flex items-center gap-2 text-xs text-fg-tertiary">
           <div className="w-4 h-4 border-2 border-fg-tertiary/30 border-t-fg-tertiary rounded-full animate-spin" />
-          Rendering diagram…
+          {t('markdown.renderingDiagram')}
         </div>
       )}
       <div

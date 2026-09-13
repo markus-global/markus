@@ -12,7 +12,7 @@
  */
 import type { ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import type { Agent } from '@markus/core';
+import type { Agent, TurnSessionHint } from '@markus/core';
 import { createLogger, stripCompletionMarkerLeak, SSE_DISCONNECT_FORCE_STOP_MS, type LLMStreamEvent } from '@markus/shared';
 import { SSEBuffer } from './sse-buffer.js';
 import type { ActiveStreamRegistry, ActiveStreamSession } from './active-stream-registry.js';
@@ -48,7 +48,9 @@ export interface SSEMessageHandlerOptions {
   messageId?: string;
   isResume?: boolean;
   /** Deferred session restore data — applied when the mailbox item is processed, not at HTTP request time */
-  sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean } | null;
+  sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null;
+  /** 会话身份契约（第 0 步）：入口可直接表态本轮是什么会话，优先生效。 */
+  sessionHint?: TurnSessionHint;
   /** Registry for refresh reattach (optional — when omitted, soft-disconnect still avoids cancel). */
   activeStreams?: ActiveStreamRegistry;
 }
@@ -202,6 +204,12 @@ export class SSEHandler {
         {
           ...(this.options.isResume ? { isResume: true } : {}),
           ...(this.options.sessionRestore !== undefined ? { sessionRestore: this.options.sessionRestore } : {}),
+          // 会话身份契约：入口直接给的 hint 优先（缺省时由 core 从旧字段归一）。
+          ...(this.options.sessionHint ? { sessionHint: this.options.sessionHint } : {}),
+          // Request DB session id: lets the worker that ends up processing this
+          // item resolve the memory session BOUND to this conversation instead of
+          // trusting its own (possibly stale) workspace pointer.
+          ...(this.sessionId ? { sessionId: this.sessionId } : {}),
         },
       );
 

@@ -6,6 +6,7 @@ import { MemoExecEntryRow, ThinkingDots, StreamingText, filterCompletedStarts, s
 import { taskLogToStreamEntry, activityLogToStreamEntry, type AgentActivityLogEntry } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer } from '../components/ContentRenderer.tsx';
+import { OfficePreviewer } from '../components/OfficePreviewer.tsx';
 import { Avatar } from '../components/Avatar.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
@@ -113,14 +114,16 @@ function useDropdownPosition(triggerRef: React.RefObject<HTMLDivElement | null>,
   return pos;
 }
 
-/* ── SearchableSelect: filterable dropdown for create modals ── */
-function SearchableSelect({ options, value, onChange, placeholder, noMatchesText, className }: {
+/* ── SearchableSelect: filterable dropdown (create modals + detail panels) ── */
+function SearchableSelect({ options, value, onChange, placeholder, noMatchesText, className, disabled, size }: {
   options: { value: string; label: string }[];
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   noMatchesText?: string;
   className?: string;
+  disabled?: boolean;
+  size?: 'sm' | 'md';
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -139,6 +142,7 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchesText
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
+  const sizeCls = size === 'sm' ? 'px-2 py-1.5 text-xs' : 'px-3 py-2 text-sm';
   const selectedLabel = options.find(o => o.value === value)?.label ?? '';
   const filtered = query
     ? options.filter(o => o.label.toLowerCase().includes(query.toLowerCase()))
@@ -148,8 +152,8 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchesText
     <div ref={ref} className={className ?? ''}>
       <div
         ref={triggerRef}
-        onClick={() => { setOpen(!open); setQuery(''); setTimeout(() => inputRef.current?.focus(), 0); }}
-        className="w-full px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus-within:border-brand-500 outline-none flex items-center cursor-pointer"
+        onClick={() => { if (disabled) return; setOpen(!open); setQuery(''); setTimeout(() => inputRef.current?.focus(), 0); }}
+        className={`w-full ${sizeCls} bg-surface-elevated border border-border-default rounded-lg focus-within:border-brand-500 outline-none flex items-center ${disabled ? 'opacity-50 cursor-not-allowed pointer-events-none' : 'cursor-pointer'}`}
       >
         {open ? (
           <input
@@ -157,7 +161,7 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchesText
             value={query}
             onChange={e => setQuery(e.target.value)}
             onClick={e => e.stopPropagation()}
-            className="w-full bg-transparent outline-none text-fg-primary text-sm"
+            className={`w-full bg-transparent outline-none text-fg-primary ${sizeCls.split(' ').slice(2).join(' ')}`}
             placeholder={selectedLabel || placeholder}
             autoFocus
           />
@@ -174,12 +178,12 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchesText
             ? { bottom: window.innerHeight - pos.top, left: pos.left, width: pos.width }
             : { top: pos.top, left: pos.left, width: pos.width }}>
           {filtered.length === 0 ? (
-            <div className="px-3 py-2 text-sm text-fg-tertiary">{noMatchesText ?? 'No matches'}</div>
+            <div className={`${sizeCls} text-fg-tertiary`}>{noMatchesText ?? 'No matches'}</div>
           ) : filtered.map(o => (
             <div
               key={o.value}
               onClick={() => { onChange(o.value); setOpen(false); setQuery(''); }}
-              className={`px-3 py-2 text-sm cursor-pointer hover:bg-brand-500/10 ${o.value === value ? 'bg-brand-500/10 text-brand-500 font-medium' : 'text-fg-primary'}`}
+              className={`${sizeCls} cursor-pointer hover:bg-brand-500/10 ${o.value === value ? 'bg-brand-500/10 text-brand-500 font-medium' : 'text-fg-primary'}`}
             >{o.label}</div>
           ))}
         </div>
@@ -1615,6 +1619,7 @@ const PREVIEWABLE_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg',
   '.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.opus',
   '.mp4', '.webm', '.mov', '.mkv', '.m4v',
+  '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt',
 ]);
 
 function fmtSize(bytes?: number): string {
@@ -1631,6 +1636,7 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
   const [data, setData] = useState<PreviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -1648,6 +1654,13 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
 
   const openInFinder = (p: string) => {
     api.files.reveal(p).catch(() => {});
+  };
+
+  const copyPath = () => {
+    navigator.clipboard?.writeText(currentPath).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
   };
 
   const handleEntryClick = (entry: DirEntry) => {
@@ -1692,6 +1705,9 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
             {isDir && data.entries && <span className="text-[10px] text-fg-tertiary shrink-0">({data.entries.length})</span>}
           </div>
           <div className="flex items-center gap-1 shrink-0 ml-3">
+            <button onClick={copyPath} className="text-fg-tertiary hover:text-fg-primary px-2 py-1.5 rounded hover:bg-surface-elevated/60 transition-colors text-xs" title={t('common:copyPath', { defaultValue: '复制路径' })}>
+              {copied ? `${t('common:copied', { defaultValue: '已复制' })} ✓` : t('common:copyPath', { defaultValue: '复制路径' })}
+            </button>
             <button onClick={() => onOpenExternal ? onOpenExternal() : openInFinder(currentPath)} className="text-fg-tertiary hover:text-fg-primary p-1.5 rounded hover:bg-surface-elevated/60 transition-colors" title={onOpenExternal ? t('work:task.openInDeliverables') : t('work:task.openInFinder')}>
               <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
             </button>
@@ -1736,7 +1752,18 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
           {/* File preview */}
           {data && data.type !== 'directory' && (
             <div className="p-5">
-              {data.type === 'image' && data.content ? (
+              {data.type === 'office' && data.streamUrl ? (
+                <OfficePreviewer
+                  data={{
+                    format: (data.extension || '').replace(/^\./, '') || 'pdf',
+                    streamUrl: data.streamUrl || (data.path ? api.files.streamUrl(data.path) : api.files.streamUrl(currentPath)),
+                    name: data.name,
+                    size: data.size,
+                  }}
+                  reference={data.path || currentPath}
+                  onFallback={() => openInFinder(currentPath)}
+                />
+              ) : data.type === 'image' && data.content ? (
                 <div className="flex justify-center">
                   <img src={`data:${data.mimeType};base64,${data.content}`} alt={data.name} className="max-w-full max-h-[60vh] rounded-lg" />
                 </div>
@@ -1824,12 +1851,22 @@ function TaskDetailPanel({
   const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'history'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
+  const [deliverablesPage, setDeliverablesPage] = useState(1);
+  const [unifiedDeliverables, setUnifiedDeliverables] = useState<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string }>>([]);
+  const loadUnifiedDeliverables = useCallback(async () => {
+    try {
+      const { results } = await api.deliverables.search({ taskId: task.id, limit: 200 });
+      setUnifiedDeliverables(results.filter((d: any) => d.status !== 'outdated'));
+    } catch { /* ok */ }
+  }, [task.id]);
   const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables' | 'history') => {
     setActiveTab(tab);
+    // 用户主动切到交付物页时拉取最新（覆盖任何未通过事件到达的更新）
+    if (tab === 'deliverables') void loadUnifiedDeliverables();
     requestAnimationFrame(() => {
       scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
     });
-  }, []);
+  }, [loadUnifiedDeliverables]);
   const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }, { id: 'history' as const }], []);
   const detailSwipe = useSwipeTabs(detailTabs, activeTab, switchTab);
 
@@ -1879,15 +1916,19 @@ function TaskDetailPanel({
   }, [editingDesc]);
   const [showRevision, setShowRevision] = useState(false);
   const [revisionReason, setRevisionReason] = useState('');
-  const [deliverablesPage, setDeliverablesPage] = useState(1);
-  const [unifiedDeliverables, setUnifiedDeliverables] = useState<Array<{ id: string; type: string; title: string; summary: string; reference: string; status: string }>>([]);
-  const loadUnifiedDeliverables = useCallback(async () => {
-    try {
-      const { results } = await api.deliverables.search({ taskId: task.id, limit: 200 });
-      setUnifiedDeliverables(results.filter((d: any) => d.status !== 'outdated'));
-    } catch { /* ok */ }
-  }, [task.id]);
-  useEffect(() => { void loadUnifiedDeliverables(); }, [loadUnifiedDeliverables]);
+  // 任务对象变化（状态更新/交付物提交，updatedAt 随之刷新）时重新拉取交付物
+  useEffect(() => { void loadUnifiedDeliverables(); }, [loadUnifiedDeliverables, task.updatedAt]);
+  // 交付物事件（创建/更新/删除）到达且属于当前任务时即时刷新
+  useEffect(() => {
+    const unsubs = (['created', 'updated', 'removed'] as const).map(action =>
+      wsClient.on(`deliverable:${action}` as never, (event: { payload?: Record<string, unknown> }) => {
+        const p = event.payload;
+        if (!p || (p.taskId as string) !== task.id) return;
+        void loadUnifiedDeliverables();
+      })
+    );
+    return () => { unsubs.forEach(u => u()); };
+  }, [task.id, loadUnifiedDeliverables]);
   const [descExpanded, setDescExpanded] = useState(false);
   const isMobile = useIsMobile();
   const PAGE_SIZE = 20;
@@ -1895,7 +1936,7 @@ function TaskDetailPanel({
     try { const d = await api.tasks.listSubtasks(task.id); setSubtasks(d.subtasks); } catch { /* ok */ }
   }, [task.id]);
 
-  useEffect(() => { void loadSubtasks(); }, [loadSubtasks]);
+  useEffect(() => { void loadSubtasks(); }, [loadSubtasks, task.updatedAt]);
 
   const doUpdate = async (fn: () => Promise<unknown>) => {
     if (actionInFlight) return; setActionInFlight(true);
@@ -1989,10 +2030,11 @@ function TaskDetailPanel({
       const p = event.payload as Record<string, unknown>;
       if ((p.taskId as string) !== task.id) return;
       void loadSubtasks();
+      void loadUnifiedDeliverables();
       onRefreshRef.current();
     });
     return unsub;
-  }, [task.id, loadSubtasks]);
+  }, [task.id, loadSubtasks, loadUnifiedDeliverables]);
 
   const completedCount = subtasks.filter(s => s.status === 'completed').length;
   const cancelledCount = subtasks.filter(s => s.status === 'cancelled').length;
@@ -2231,45 +2273,63 @@ function TaskDetailPanel({
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.projectLabel')}</label>
-                    <select value={task.projectId ?? ''} onChange={e => void updateProject(e.target.value)} disabled={actionInFlight}
-                      className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      <option value="">{t('work:task.noProject')}</option>
-                      {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
+                    <SearchableSelect
+                      size="sm"
+                      disabled={actionInFlight}
+                      options={[{ value: '', label: t('work:task.noProject') }, ...projects.map(p => ({ value: p.id, label: p.name }))]}
+                      value={task.projectId ?? ''}
+                      onChange={v => void updateProject(v)}
+                      placeholder={t('work:task.noProject')}
+                      noMatchesText={t('work:task.noMatches')}
+                    />
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.requirementLabel')}</label>
-                    <select value={task.requirementId ?? ''} onChange={e => doUpdate(() => api.tasks.update(task.id, { requirementId: e.target.value || null }))} disabled={actionInFlight}
-                      className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      <option value="">{t('work:task.noRequirement')}</option>
-                      {requirements.filter(r => !task.projectId || r.projectId === task.projectId).map(r => <option key={r.id} value={r.id}>{r.title}</option>)}
-                    </select>
+                    <SearchableSelect
+                      size="sm"
+                      disabled={actionInFlight}
+                      options={[{ value: '', label: t('work:task.noRequirement') }, ...requirements.filter(r => !task.projectId || r.projectId === task.projectId).map(r => ({ value: r.id, label: r.title }))]}
+                      value={task.requirementId ?? ''}
+                      onChange={v => doUpdate(() => api.tasks.update(task.id, { requirementId: v || null }))}
+                      placeholder={t('work:task.noRequirement')}
+                      noMatchesText={t('work:task.noMatches')}
+                    />
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-4">
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.assignee')}</label>
-                    <select value={task.assignedAgentId ?? ''} onChange={e => void assignAgent(e.target.value)} disabled={actionInFlight}
-                      className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      <option value="">{t('work:task.unassigned')}</option>
-                      {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.status})</option>)}
-                    </select>
+                    <SearchableSelect
+                      size="sm"
+                      disabled={actionInFlight}
+                      options={[{ value: '', label: t('work:task.unassigned') }, ...agents.map(a => ({ value: a.id, label: `${a.name} (${a.status})` }))]}
+                      value={task.assignedAgentId ?? ''}
+                      onChange={v => void assignAgent(v)}
+                      placeholder={t('work:task.unassigned')}
+                      noMatchesText={t('work:task.noMatches')}
+                    />
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.reviewer')}</label>
-                    <select value={`${task.reviewerType ?? 'agent'}:${task.reviewerId ?? ''}`} onChange={e => {
-                      const val = e.target.value;
-                      if (!val) return;
-                      const isHuman = val.startsWith('human:');
-                      const id = val.replace(/^(human|agent):/, '');
-                      if (id !== task.reviewerId || (isHuman ? 'human' : 'agent') !== (task.reviewerType ?? 'agent')) {
-                        void doUpdate(() => api.tasks.update(task.id, { reviewerId: id, reviewerType: isHuman ? 'human' : 'agent' }));
-                      }
-                    }} disabled={actionInFlight}
-                      className="w-full px-2 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-xs text-fg-primary focus:border-brand-500 outline-none disabled:opacity-50 cursor-pointer">
-                      {users.map(u => <option key={`human:${u.id}`} value={`human:${u.id}`}>{u.name}</option>)}
-                      {agents.map(a => <option key={`agent:${a.id}`} value={`agent:${a.id}`}>{a.name}</option>)}
-                    </select>
+                    <SearchableSelect
+                      size="sm"
+                      disabled={actionInFlight}
+                      options={[
+                        ...users.map(u => ({ value: `human:${u.id}`, label: u.name })),
+                        ...agents.map(a => ({ value: `agent:${a.id}`, label: `${a.name} (${a.status})` })),
+                      ]}
+                      value={`${task.reviewerType ?? 'agent'}:${task.reviewerId ?? ''}`}
+                      onChange={val => {
+                        if (!val) return;
+                        const isHuman = val.startsWith('human:');
+                        const id = val.replace(/^(human|agent):/, '');
+                        if (id !== task.reviewerId || (isHuman ? 'human' : 'agent') !== (task.reviewerType ?? 'agent')) {
+                          void doUpdate(() => api.tasks.update(task.id, { reviewerId: id, reviewerType: isHuman ? 'human' : 'agent' }));
+                        }
+                      }}
+                      placeholder={t('work:task.selectReviewer')}
+                      noMatchesText={t('work:task.noMatches')}
+                    />
                   </div>
                   <div>
                     <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('work:task.priority')}</label>
@@ -4306,14 +4366,13 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                       {p.required && <span className="text-red-400 ml-1">*</span>}
                     </label>
                     {p.type === 'enum' && p.options ? (
-                      <select
+                      <SearchableSelect
+                        options={[{ value: '', label: '—' }, ...p.options.map(opt => ({ value: opt, label: opt }))]}
                         value={runParams[p.name] ?? ''}
-                        onChange={e => setRunParams(prev => ({ ...prev, [p.name]: e.target.value }))}
-                        className="input-field text-xs w-full"
-                      >
-                        <option value="">—</option>
-                        {p.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                      </select>
+                        onChange={v => setRunParams(prev => ({ ...prev, [p.name]: v }))}
+                        placeholder="—"
+                        className="w-full"
+                      />
                     ) : (
                       <textarea
                         value={runParams[p.name] ?? ''}
@@ -4341,17 +4400,12 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                   {roleCandidates.map(rc => (
                     <div key={rc.role} className="flex items-center gap-2">
                       <span className="text-xs text-fg-secondary w-24 shrink-0 font-medium">{rc.role}</span>
-                      <select
+                      <SearchableSelect
+                        options={rc.candidates.map(c => ({ value: c.agentId, label: c.agentName + (c.agentId === rc.recommended ? ' ★' : '') }))}
                         value={roleOverrides[rc.role] ?? rc.recommended ?? ''}
-                        onChange={e => setRoleOverrides(prev => ({ ...prev, [rc.role]: e.target.value }))}
-                        className="input-field text-xs flex-1"
-                      >
-                        {rc.candidates.map(c => (
-                          <option key={c.agentId} value={c.agentId}>
-                            {c.agentName}{c.agentId === rc.recommended ? ' ★' : ''}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={v => setRoleOverrides(prev => ({ ...prev, [rc.role]: v }))}
+                        className="flex-1"
+                      />
                     </div>
                   ))}
                 </div>
@@ -4361,16 +4415,13 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
               <label className="block text-xs text-fg-secondary mb-1">
                 {t('work:task.workflowProject', 'Project')}
               </label>
-              <select
+              <SearchableSelect
+                options={[{ value: '', label: t('work:task.workflowSelectProject', '— Select a project —') }, ...projects.map(p => ({ value: p.id, label: p.name }))]}
                 value={runProjectId ?? ''}
-                onChange={e => { const v = e.target.value || null; setRunProjectId(v); setError(null); if (v) localStorage.setItem('markus_wf_project_last', v); }}
-                className="input-field text-xs w-full"
-              >
-                <option value="">{t('work:task.workflowSelectProject', '— Select a project —')}</option>
-                {projects.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
+                onChange={v => { const val = v || null; setRunProjectId(val); setError(null); if (val) localStorage.setItem('markus_wf_project_last', val); }}
+                placeholder={t('work:task.workflowSelectProject', '— Select a project —')}
+                className="w-full"
+              />
             </div>
             {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
             <div className="flex justify-end gap-2">

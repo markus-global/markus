@@ -187,6 +187,10 @@ export async function runSubagentLoop(
 
   const parentTools = ctx.getTools();
   const provider = ctx.getProvider();
+  // Cold-start fix: same bounded, never-throwing readiness wait as the main turn
+  // preflight. A subagent spawned on the very first turn must pack against real
+  // Hub values rather than the fallback window. O(1) no-op once warm.
+  await ctx.llmRouter.ensureMarkusCatalogLoaded?.({ timeoutMs: 3000 });
   const contextWindow = ctx.llmRouter.getModelContextWindow(provider);
 
   const toolMap = buildToolMap(parentTools, opts?.allowedTools);

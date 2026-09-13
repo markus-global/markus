@@ -322,6 +322,20 @@ export const MAILBOX_COALESCE_WINDOW_MS = 200;
  *  plus LLM turns, while still catching genuine hangs. */
 export const MAILBOX_PROCESSING_TIMEOUT_MS = 45 * 60 * 1000;
 
+/** Grace period (ms) after a backstop timeout during which the attention loop
+ *  waits for the orphaned in-flight turn to actually settle before deciding
+ *  whether the item may be safely requeued.
+ *
+ *  Single-flight rule: an item may only be re-processed once its previous
+ *  attempt has provably stopped — otherwise the re-run would duplicate the
+ *  side effects of tools the orphan may still be executing. If the orphan does
+ *  not settle within this grace, the item is completed as `incomplete`
+ *  (visible, resumable by the user) instead of being requeued.
+ *
+ *  Kept short: the backstop already means something is deeply wrong, and the
+ *  cancel signal is a cooperative abort that normally lands in milliseconds. */
+export const BACKSTOP_CANCEL_GRACE_MS = 10 * 1000;
+
 /** After the Chat SSE client disconnects (e.g. page refresh), keep the agent
  *  running this long before force-stopping. Matches mailbox long-tool budget
  *  so video generation is not killed by a refresh. */
@@ -578,6 +592,25 @@ export const SESSION_STORAGE_COMPACT_KEEP = 1_000;
 /** Shrink individual on-disk tool results above this size (chars). Does not
  *  drop turns — only trims pathological blobs. */
 export const SESSION_STORAGE_TOOL_SHRINK_CHARS = 100_000;
+
+// ─── Request-history window (prefix-cache safe) ──────────────────────────────
+// The LLM request replays the last N messages of a session. A raw "last N"
+// slice slides by 1–2 messages every turn, so message[0] changes on EVERY call
+// and the implicit prefix cache misses on the whole replayed history (~90k
+// tokens re-billed per call in long agent loops).
+//
+// Instead we keep at least MIN messages and move the window START only in
+// BLOCK-sized jumps, so the window head (and therefore the entire replayed
+// prefix) stays byte-identical for ~BLOCK/2 turns. Storage-level compaction
+// (SESSION_STORAGE_COMPACT_TRIGGER/KEEP) remains the deliberate, rare anchor
+// shift; per-call token packing still bounds the prompt via the budget path.
+
+/** Minimum number of recent messages replayed in an LLM request. */
+export const SESSION_REQUEST_HISTORY_MIN = 400;
+
+/** Granularity (messages) at which the request-window start may advance.
+ *  Larger = fewer prefix invalidations, more tokens replayed. */
+export const SESSION_REQUEST_HISTORY_BLOCK = 100;
 
 /** Per-request: only shrink a single message above this many chars before
  *  budget checks (pathological payloads). Normal history is left intact. */
