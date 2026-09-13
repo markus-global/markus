@@ -269,6 +269,11 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         finalizeIfDetached();
         return;
       }
+      // Throttle EVERY attempt, not only successful attaches. The idle path
+      // below (no active server stream) never reached the cooldown write, so a
+      // caller that re-invoked on render could hammer streamStatus at render
+      // speed — one of the two amplifiers of the idle CPU storm.
+      reattachCooldownRef.current.set(cooldownKey, Date.now());
 
       const status = await api.sessions.streamStatus(agentId, sessionId);
       const msgs = msgBuffers.get(convKey) ?? [];

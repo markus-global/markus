@@ -1684,12 +1684,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // Returning to Team after visiting another page: reattach if a generation is
   // still running (SSE may have been killed while the tab was hidden).
+  //
+  // The callback is held in a ref on purpose: it used to sit in the deps array
+  // while its own identity was unstable, so this effect re-fired on EVERY
+  // render. Combined with the unconditional stream-membership bump inside
+  // clearStreamSession that produced an infinite render loop (~120/s, no DOM
+  // change, 100%+ CPU) exactly while the UI was idle. Depend only on real keys.
+  const reattachRef = useRef(tryReattachActiveStream);
+  reattachRef.current = tryReattachActiveStream;
   useEffect(() => {
     if (!isActive || previewMode || chatMode !== 'direct' || !selectedAgent) return;
     const sid = activeSessionId;
     if (!sid || sid === NEW_CHAT_PLACEHOLDER_ID) return;
-    void tryReattachActiveStream(selectedAgent, sid, currentConvKeyRef.current);
-  }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, tryReattachActiveStream]);
+    void reattachRef.current(selectedAgent, sid, currentConvKeyRef.current);
+  }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId]);
 
   // Load older sessions (append to the list) — History panel "load more"
   const loadMoreSessions = useCallback(async () => {
