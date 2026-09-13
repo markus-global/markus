@@ -73,6 +73,42 @@ describe('HITLService', () => {
       expect(handler).toHaveBeenCalledWith(expect.objectContaining({ type: 'approval_request' }));
     });
 
+    it('marks approval notifications read by approvalId, not by guessing user ids', () => {
+      // Regression ("unread (1) over an empty list"): the old implementation
+      // enumerated 'all' + org human users and scanned at most 200 rows per user,
+      // so rows delivered to a user_id OUTSIDE that list (legacy ids such as
+      // 'jason' / 'owner') were never marked read — they advertised unread
+      // notifications that the UI hides indefinitely.
+      const markReadByApprovalId = vi.fn(() => 1);
+      const keyedRepo = { ...notificationRepo, markReadByApprovalId };
+      service.setNotificationRepo(keyedRepo as never);
+
+      const approval = service.requestApproval({
+        agentId: 'agent-1',
+        agentName: 'Bot',
+        type: 'custom',
+        title: 'Approve action',
+        description: 'Please review',
+        targetUserId: 'jason-legacy-id',
+      });
+      service.respondToApproval(approval.id, true, 'user-1');
+
+      expect(markReadByApprovalId).toHaveBeenCalledWith(approval.id);
+      // The keyed update short-circuits the user-id enumeration fallback.
+      expect(keyedRepo.list).not.toHaveBeenCalled();
+    });
+
+    it('self-heals stale unread approval notifications when the repo is attached', () => {
+      const reconcileResolvedApprovalNotifications = vi.fn(() => 3);
+      const fresh = new HITLService();
+      fresh.setNotificationRepo({
+        ...notificationRepo,
+        reconcileResolvedApprovalNotifications,
+      } as never);
+
+      expect(reconcileResolvedApprovalNotifications).toHaveBeenCalledTimes(1);
+    });
+
     it('responds to approval and resolves waiters', async () => {
       const waitPromise = service.requestApprovalAndWait({
         agentId: 'agent-1',

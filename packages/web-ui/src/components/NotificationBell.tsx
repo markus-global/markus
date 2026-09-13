@@ -423,11 +423,16 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     ? t('team:notifications.noUnread')
     : t('team:notifications.noNotifications');
 
-  // Count unread notifications excluding those that have matching pending approvals
-  // (pending approvals are counted separately to avoid double-counting)
+  // Every unread approval_request the list HIDES must also leave the count —
+  // otherwise the badge advertises unread rows the list cannot show. That is
+  // exactly the "未读 (1) over an empty list" bug: an approval_request whose
+  // approval was resolved (approved/rejected) is hidden by displayNotifications
+  // (matched on ALL approval ids), but subtracting only PENDING ones left it
+  // counted, so the unread view was empty while the badge read 1.
+  // Pending approvals are still added back separately via `pendingApprovals`.
   const hiddenUnreadApprovalCount = notifications.filter(n =>
     n.type === 'approval_request' && !n.read &&
-    n.metadata?.approvalId && pendingApprovalIds.has(n.metadata.approvalId as string)
+    n.metadata?.approvalId && allApprovalIds.has(n.metadata.approvalId as string)
   ).length;
   const adjustedUnreadCount = Math.max(0, unreadCount - hiddenUnreadApprovalCount);
   const pendingApprovals = pendingApprovalIds.size;

@@ -94,6 +94,10 @@ export interface NotificationRepo {
   count(userId: string, unreadOnly?: boolean): number;
   markRead(id: string): boolean;
   markAllRead(userId: string): number;
+  /** Mark read all unread approval_request rows for an approval, across every user_id. */
+  markReadByApprovalId?(approvalId: string): number;
+  /** One-time self-heal for unread rows whose approval is no longer pending. */
+  reconcileResolvedApprovalNotifications?(): number;
 }
 
 export interface ApprovalRepo {
@@ -189,6 +193,15 @@ export class HITLService {
 
   setNotificationRepo(repo: NotificationRepo): void {
     this.notificationRepo = repo;
+    // One-time self-heal. Rows left unread by the old user-enumeration approach
+    // (and approvals resolved before this fix) would otherwise advertise unread
+    // notifications that the list hides — the "unread (1) over an empty list" bug.
+    try {
+      const healed = repo.reconcileResolvedApprovalNotifications?.() ?? 0;
+      if (healed > 0) log.info(`Reconciled ${healed} stale unread approval notification(s)`);
+    } catch (err) {
+      log.warn('Failed to reconcile stale approval notifications', { error: String(err) });
+    }
   }
 
   setApprovalRepo(repo: ApprovalRepo): void {
@@ -539,9 +552,26 @@ export class HITLService {
     return notification;
   }
 
-  /** Mark unread approval_request rows for this approval across per-user and broadcast user_ids. */
+  /** Mark unread approval_request rows for this approval read, across every user_id. */
   private markApprovalNotificationsRead(approvalId: string): void {
     if (!this.notificationRepo) return;
+
+    // Preferred path: key straight on metadata.approvalId — exact, unbounded, and
+    // it cannot miss a user_id we forgot to enumerate.
+    if (this.notificationRepo.markReadByApprovalId) {
+      try {
+        this.notificationRepo.markReadByApprovalId(approvalId);
+        return;
+      } catch (err) {
+        log.warn('Failed to mark approval notifications read by approvalId', {
+          approvalId, error: String(err),
+        });
+      }
+    }
+
+    // Fallback for repos without the keyed update. NOTE: this can miss rows sent
+    // to user_ids outside the enumerated set and is capped at 200 rows per user —
+    // exactly the gap the keyed path above closes.
     const userIds = new Set<string>(['all']);
     if (this.orgService) {
       for (const h of this.orgService.listHumanUsers('default')) {
