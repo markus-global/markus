@@ -368,17 +368,47 @@ html[data-anim-paused='true'] *::after {
   animation-play-state: paused !important;
 }
 
-/* 2. Step the never-ending indicators. A stepped value is constant between
-      steps, so the compositor can skip those frames: ~120/s -> ~10-24/s, while
-      keeping the same soft look. Tune (or drop) these if a step looks harsh. */
+/* 2. The never-ending indicators are driven by the 4 Hz tick from
+      animationBudget.ts instead of by an infinite CSS animation.
+      Measured on the renderer: with these CSS animations running the main thread
+      does 120.0 style recalculations/s (one per frame, 12-16% of a core); driven
+      by the tick it is ~4/s. Quantising with steps() was tried and did NOT help
+      (95-107/s), so the animation is removed outright rather than slowed down.
+
+      The per-phase values live on :root as custom properties, so changing the tick
+      only invalidates the handful of elements that read them - not the whole tree. */
+
+html[data-anim-tick='0'] { --anim-pulse: 1;      --anim-bounce: -25%; --anim-spin: 0deg;   --anim-shimmer: 100%;  --anim-border: 0deg; }
+html[data-anim-tick='1'] { --anim-pulse: 0.875;  --anim-bounce: -13%; --anim-spin: 45deg;  --anim-shimmer: 71%;   --anim-border: 45deg; }
+html[data-anim-tick='2'] { --anim-pulse: 0.75;   --anim-bounce: 0%;   --anim-spin: 90deg;  --anim-shimmer: 43%;   --anim-border: 90deg; }
+html[data-anim-tick='3'] { --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 135deg; --anim-shimmer: 14%;   --anim-border: 135deg; }
+html[data-anim-tick='4'] { --anim-pulse: 0.5;    --anim-bounce: 0%;   --anim-spin: 180deg; --anim-shimmer: -14%;  --anim-border: 180deg; }
+html[data-anim-tick='5'] { --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 225deg; --anim-shimmer: -43%;  --anim-border: 225deg; }
+html[data-anim-tick='6'] { --anim-pulse: 0.75;   --anim-bounce: -13%; --anim-spin: 270deg; --anim-shimmer: -71%;  --anim-border: 270deg; }
+html[data-anim-tick='7'] { --anim-pulse: 0.875;  --anim-bounce: -25%; --anim-spin: 315deg; --anim-shimmer: -100%; --anim-border: 315deg; }
+
 .animate-pulse {
-  animation-timing-function: steps(10, end) !important;
+  animation: none !important;
+  opacity: var(--anim-pulse, 1);
+}
+.animate-bounce {
+  animation: none !important;
+  transform: translateY(var(--anim-bounce, 0%));
 }
 .animate-spin {
-  animation-timing-function: steps(24, end) !important;
+  animation: none !important;
+  transform: rotate(var(--anim-spin, 0deg));
 }
 .activity-text-shimmer {
-  animation-timing-function: steps(16, end) !important;
+  animation: none !important;
+  background-position: var(--anim-shimmer, 100%) center;
+}
+/* Active execution card: the rotating conic-gradient border used to animate a
+   registered custom property, which forces a style recalc + repaint every frame
+   while any agent is running. Drive it from the same tick. */
+.exec-card-active {
+  animation: none !important;
+  --border-angle: var(--anim-border, 0deg);
 }
 
 /* 3. Honour the OS "reduce motion" setting. */

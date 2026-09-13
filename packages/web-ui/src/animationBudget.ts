@@ -1,37 +1,76 @@
 /**
- * Animation budget guard.
+ * Animation budget guard — two jobs, both about *frame production*.
  *
- * Why this exists (measured on the desktop build, renderer process):
- *   idle, animations on = 3.5%   idle, animations off = 0%
- *   busy, animations on = 33%    busy, animations off = 3.1%
+ * Measured on the desktop build (renderer process, window visible, CDP attached):
  *
- * The renderer main thread is *idle* through all of it — a CPU profile showed
- * 79% idle with the top JS frame at 1.2%, and a 6s trace contained zero
- * Paint / Layout / UpdateLayerTree events. So the cost is not JavaScript and
- * not repainting: it is continuous frame production. Any running CSS animation
- * makes the compositor emit a frame every vsync, i.e. up to 120/s on a
- * ProMotion display, and on this DOM each frame is ~2ms.
+ *   ‣ JS is NOT the cost. A 20s V8 profile: 90% idle, largest JS frame 0.34%,
+ *     ScriptDuration ~0.2–1.7%. Layout is trivial (2 layouts / 15s).
+ *   ‣ But while the status indicators animate, the main thread runs a FULL STYLE
+ *     RECALCULATION every frame: RecalcStyleCount = 120.0/s — exactly the ProMotion
+ *     refresh rate. TaskDuration = 12–16% of one core. With those animations
+ *     stopped: RecalcStyleCount = 0.0/s, TaskDuration ~1%.
+ *     (Measured with the count-based metric, which is immune to CPU-sampling noise
+ *     and to whether agents happen to be busy.)
+ *   ‣ Quantising the CSS (`animation-timing-function: steps(…)`) does NOT help:
+ *     95–107 recalcs/s vs 115 baseline. Promoting to compositor layers does NOT
+ *     help either — will-change, contain:paint and backface-visibility all stayed
+ *     at 120/s. Only *not running a CSS animation* removes the per-frame recalc.
  *
- * Therefore: when the user cannot see the window, produce no frames at all.
- * Toggling `data-anim-paused` on <html> pauses every animation via CSS
- * (see index.css "Animation budget"). Measured: visible 33% -> hidden 0.4%.
+ * Conclusion: an always-on CSS animation costs a whole-frame style recalc forever,
+ * even when every animated property is transform/opacity, and even if the value only
+ * changes a few times per second. The only lever that works is to stop asking the
+ * compositor for frames at all.
  *
- * Note: Chromium's own occlusion throttling is disabled in this build
- * (--disable-features=MacWebContentsOcclusion), so we cannot rely on the
- * browser to do this for us — hence the explicit guard.
+ * Job 1 — no frames while the window is hidden or unfocused (`data-anim-paused`).
+ *         Measured: visible 33% -> hidden 0.4%. Required because this build disables
+ *         Chromium's own occlusion throttling (--disable-features=MacWebContentsOcclusion).
+ *
+ * Job 2 — for the *persistent* indicators (agent "thinking/running" labels, busy
+ *         dots, active execution cards), replace the infinite CSS animation with a
+ *         low-frequency discrete state driven from JS (`data-anim-tick`,
+ *         4 updates/sec). Same "it's alive" feel, ~4 restyles/sec instead of 120.
  */
 
 const PAUSED_ATTR = 'data-anim-paused';
+const TICK_ATTR = 'data-anim-tick';
+
+/** 8 phases x 250ms = a 2s cycle, 4 state updates per second. */
+const TICK_PHASES = 8;
+const TICK_INTERVAL_MS = 250;
 
 function shouldPause(): boolean {
   if (document.visibilityState !== 'visible' || document.hidden) return true;
   return !document.hasFocus();
 }
 
+let tickTimer: number | null = null;
+let tickPhase = 0;
+
+function startTicking(): void {
+  if (tickTimer !== null) return;
+  tickPhase = tickPhase % TICK_PHASES;
+  document.documentElement.setAttribute(TICK_ATTR, String(tickPhase));
+  tickTimer = window.setInterval(() => {
+    tickPhase = (tickPhase + 1) % TICK_PHASES;
+    document.documentElement.setAttribute(TICK_ATTR, String(tickPhase));
+  }, TICK_INTERVAL_MS);
+}
+
+function stopTicking(): void {
+  if (tickTimer === null) return;
+  window.clearInterval(tickTimer);
+  tickTimer = null;
+}
+
 function sync(): void {
   const root = document.documentElement;
-  if (shouldPause()) root.setAttribute(PAUSED_ATTR, 'true');
-  else root.removeAttribute(PAUSED_ATTR);
+  if (shouldPause()) {
+    root.setAttribute(PAUSED_ATTR, 'true');
+    stopTicking();
+  } else {
+    root.removeAttribute(PAUSED_ATTR);
+    startTicking();
+  }
 }
 
 let installed = false;
@@ -53,6 +92,16 @@ export function installAnimationBudget(): void {
 /** Exposed for tests / manual override. */
 export function __setPausedForTest(paused: boolean): void {
   const root = document.documentElement;
-  if (paused) root.setAttribute(PAUSED_ATTR, 'true');
-  else root.removeAttribute(PAUSED_ATTR);
+  if (paused) {
+    root.setAttribute(PAUSED_ATTR, 'true');
+    stopTicking();
+  } else {
+    root.removeAttribute(PAUSED_ATTR);
+    startTicking();
+  }
+}
+
+/** Exposed for tests / manual override. */
+export function __setTickForTest(phase: number): void {
+  document.documentElement.setAttribute(TICK_ATTR, String(phase % TICK_PHASES));
 }
