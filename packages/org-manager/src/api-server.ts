@@ -3064,7 +3064,10 @@ export class APIServer {
         return;
       }
 
-      // Verify Hub token against Hub API and use the response as authoritative source
+      // Verify Hub token against Hub API and use the response as authoritative source.
+      // SECURITY (P0-4 / T6): verification failure MUST reject — never trust the
+      // client-supplied hubUser. Otherwise a LAN device could submit another
+      // user's identity & be logged in as them.
       let verifiedUser: { id: string; username?: string; email?: string; displayName?: string; avatarUrl?: string } | null = null;
       try {
         const verifyRes = await this.hubFetch(`${this.hubUrl}/api/auth/me`, {
@@ -3081,12 +3084,11 @@ export class APIServer {
           log.warn('Hub /api/auth/me returned non-OK', { status: verifyRes.status, hubUrl: this.hubUrl });
         }
       } catch (e) {
-        log.warn('Hub token verification failed, proceeding with client-supplied data', { error: (e as Error).message, hubUrl: this.hubUrl });
+        log.warn('Hub token verification failed', { error: (e as Error).message, hubUrl: this.hubUrl });
       }
-      // If Hub verification failed, trust the client-supplied hubUser data
-      // (the token was already obtained via the Hub connect flow)
       if (!verifiedUser) {
-        verifiedUser = { id: hubUser.id, username: hubUser.username, email: hubUser.email, displayName: hubUser.displayName, avatarUrl: hubUser.avatarUrl };
+        this.json(res, 401, { error: 'Hub token verification failed. Please sign in to Markus Hub again.', code: 'HUB_VERIFY_FAILED' });
+        return;
       }
 
       // Prefer authoritative Hub /api/auth/me data, fall back to client-supplied hubUser
@@ -3135,7 +3137,7 @@ export class APIServer {
           userRow = this.storage.userRepo.findById(userId);
           isFirstLogin = true;
         } else {
-          // There's already an owner — try to adopt if single-user instance
+          // There's already an owner — try to adopt if single-user instance.
           const realOwners = allUsers.filter((u: any) =>
             u.role === 'owner' && (u.passwordHash || u.hubUserId) && u.email !== 'admin@markus.local'
           );
@@ -3146,8 +3148,25 @@ export class APIServer {
             this.storage.userRepo.updateHubUserId(existingOwner.id, hubUser.id, hubUser.username);
             userRow = this.storage.userRepo.findById(existingOwner.id);
             log.info('Hub login: adopted existing owner', { ownerId: existingOwner.id, hubUserId: hubUser.id });
+          } else if (this.licenseService?.canUse('multi_user') ?? false) {
+            // 需求 9：允许不同 Hub 用户登录同一实例（受 Enterprise multi_user 许可控制）。
+            // 第二个不同 Hub 用户注册为 member 角色本地用户，拥有独立 per-user hub token。
+            const userId = genUserId();
+            this.storage.userRepo.create({
+              id: userId, orgId: 'default', name, email: email || undefined,
+              role: 'member', hubUserId: hubUser.id, avatarUrl: avatarUrl ?? undefined,
+            });
+            this.storage.userRepo.updateHubUserId(userId, hubUser.id, hubUser.username);
+            userRow = this.storage.userRepo.findById(userId);
+            isFirstLogin = true;
+            log.info('Hub login: created member user for additional Hub user', { userId, hubUserId: hubUser.id });
           } else {
-            this.json(res, 403, { error: 'This instance already has an owner. Multi-user requires Enterprise license.' });
+            // No multi_user license — reject explicitly instead of silently
+            // inheriting the owner's identity (需求 9 / T6 root cause).
+            this.json(res, 403, {
+              error: 'This instance already has an owner. Multi-user requires Enterprise license.',
+              code: 'MULTI_USER_REQUIRED',
+            });
             return;
           }
         }
@@ -3175,11 +3194,17 @@ export class APIServer {
       // Sync in-memory identity
       this.orgService.syncHumanIdentity(userRow!.id, 'default', userRow!.name, userRow!.role, userRow!.email ?? undefined);
 
-      // Persist Hub token to ~/.markus/hub-token
+      // Persist Hub token per-user (SECURITY 需求 9): each account keeps its
+      // own Hub session — the instance no longer has a single shared token
+      // that any LAN browser can inherit. The owner additionally mirrors to
+      // the legacy global file so license/telemetry/MCP server reads still work.
       try {
-        const tokenPath = join(homedir(), '.markus', 'hub-token');
-        mkdirSync(dirname(tokenPath), { recursive: true });
-        writeFileSync(tokenPath, hubToken, 'utf-8');
+        this.storage.userRepo.setHubToken(userRow.id, hubToken);
+        if (userRow.role === 'owner') {
+          const tokenPath = join(homedir(), '.markus', 'hub-token');
+          mkdirSync(dirname(tokenPath), { recursive: true });
+          writeFileSync(tokenPath, hubToken, 'utf-8');
+        }
       } catch { /* non-critical */ }
 
       // Local onboarding may have stored a preferred org name before Hub connect.
@@ -7624,47 +7649,56 @@ EXPLANATION_END`;
       return;
     }
 
-    // Settings — Hub Token GET (frontend pulls saved token on init)
+    // Settings — Hub Token GET (frontend pulls saved token on init).
+    // SECURITY (需求 9 / T6): must be authenticated AND return only the
+    // current user's OWN per-user hub token — never the instance-global file.
     if (path === '/api/settings/hub-token' && req.method === 'GET') {
-      const token = this.readHubToken();
-      this.json(res, 200, { token: token ?? null });
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage) {
+        this.json(res, 200, { token: null });
+        return;
+      }
+      const token = this.storage.userRepo.getHubToken(authUser.userId) ?? null;
+      this.json(res, 200, { token });
       return;
     }
 
-    // Settings — Hub Token POST (frontend pushes token so MCP skill servers can read it)
+    // Settings — Hub Token POST (frontend pushes token so MCP skill servers can read it).
+    // SECURITY (需求 9 / T6): require auth; store per-user; only the owner may
+    // mirror the token to the instance-global file (used by license/telemetry).
     if (path === '/api/settings/hub-token' && req.method === 'POST') {
       const body = await this.readBody(req);
-      const authUser = await this.getAuthUser(req);
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const token = body['token'] as string | null;
-      const tokenPath = join(homedir(), '.markus', 'hub-token');
+      const next = token?.trim() ?? null;
       try {
-        const prev = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf-8').trim() : '';
-        const next = token?.trim() ?? '';
-        // Skip no-op writes — identical POSTs used to flood the event loop / audit log.
-        if (prev === next) {
-          this.json(res, 200, { ok: true, unchanged: true });
-          return;
+        // Always persist per-user so each account keeps its own Hub session.
+        this.storage?.userRepo.setHubToken(authUser.userId, next);
+        // Owner mirror to legacy global file (license/telemetry/MCP server reads).
+        if (authUser.role === 'owner') {
+          const tokenPath = join(homedir(), '.markus', 'hub-token');
+          if (next) {
+            mkdirSync(dirname(tokenPath), { recursive: true });
+            writeFileSync(tokenPath, next, 'utf-8');
+            process.env['MARKUS_HUB_TOKEN'] = next;
+          } else if (existsSync(tokenPath)) {
+            rmSync(tokenPath);
+            delete process.env['MARKUS_HUB_TOKEN'];
+            this.llmRouter?.setMarkusHubRemainingHint(null);
+          }
         }
-        if (token) {
-          mkdirSync(join(homedir(), '.markus'), { recursive: true });
-          writeFileSync(tokenPath, token, 'utf-8');
-          process.env['MARKUS_HUB_TOKEN'] = token;
-        } else if (existsSync(tokenPath)) {
-          rmSync(tokenPath);
-          delete process.env['MARKUS_HUB_TOKEN'];
-          // Disconnected Hub → search should not prefer Markus-hosted.
-          this.llmRouter?.setMarkusHubRemainingHint(null);
-        }
-        log.info(`Hub token ${token ? 'saved to' : 'cleared from'} ${tokenPath}`);
+        log.info(`Hub token saved per-user for ${authUser.userId}${authUser.role === 'owner' ? ' (+ owner global file)' : ''}`);
       } catch (err) {
-        log.error('Failed to write hub token file', { error: String(err) });
+        log.error('Failed to write hub token', { error: String(err) });
       }
       this.auditService?.record({
         orgId: 'system',
         type: 'settings_changed',
         action: 'hub_token',
         detail: token ? 'Hub token saved' : 'Hub token cleared',
-        userId: authUser?.userId,
+        userId: authUser.userId,
         success: true,
       });
       this.json(res, 200, { ok: true });

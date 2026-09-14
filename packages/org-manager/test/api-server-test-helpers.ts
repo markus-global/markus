@@ -273,6 +273,11 @@ export function createMockStorage(): StorageBridge {
       }),
       findByHubUserId: vi.fn(() => null),
       updateHubUserId: vi.fn(),
+      getHubToken: vi.fn((id: string) => (users.get(id) as { hubToken?: string | null } | undefined)?.hubToken ?? null),
+      setHubToken: vi.fn((id: string, token: string | null) => {
+        const u = users.get(id);
+        if (u) users.set(id, { ...u, hubToken: token });
+      }),
       listByOrg: vi.fn(async () => [...users.values()]),
       updateProfile: vi.fn((id: string, data: Record<string, unknown>) => {
         const existing = users.get(id);
@@ -462,6 +467,8 @@ export function createTestServer(): TestContext {
     refreshLicense: vi.fn(async () => ({ success: true })), activateLicense: vi.fn(async () => ({ success: true })),
     activateTrial: vi.fn(async () => ({ success: true })), importOfflineLicense: vi.fn(() => ({ success: true })),
     deactivate: vi.fn(async () => {}), getPlan: vi.fn(() => 'free'),
+    // Default: multi_user NOT licensed. Tests override via vi.mocked(...).mockReturnValue.
+    canUse: vi.fn(() => false),
   } as never);
   server.setTelemetryService({ isEnabled: vi.fn(() => false), setEnabled: vi.fn() } as never);
   server.setDeliverableService({
