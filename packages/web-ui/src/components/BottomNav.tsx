@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type PageId, PAGE, PAGE_ICONS, MOBILE_TABS } from '../routes.ts';
 import { api, type NotificationInfo } from '../api.ts';
-import { useUnreadCounts } from '../hooks/useUnreadCounts.ts';
+import { useUnreadCounts, sumTeamChatUnread } from '../hooks/useUnreadCounts.ts';
 
 interface Props {
   currentPage: PageId;
@@ -14,12 +14,10 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
   const { t } = useTranslation('nav');
   const [unreadCount, setUnreadCount] = useState(0);
 
-  const { counts: chatUnreadCounts } = useUnreadCounts({ enabled: true });
-  const teamUnread = useMemo(() => {
-    let total = 0;
-    for (const count of Object.values(chatUnreadCounts)) total += count;
-    return total;
-  }, [chatUnreadCounts]);
+  const { counts: chatUnreadCounts, sessionAgentMap } = useUnreadCounts({ enabled: true });
+  // 与 Team 页会话列表口径一致（agent 映射的 session + 所有 channel），
+  // 而不是全量 counts 求和——孤儿 session / 无映射会话不再污染徽标数字。
+  const teamUnread = useMemo(() => sumTeamChatUnread(chatUnreadCounts, sessionAgentMap), [chatUnreadCounts, sessionAgentMap]);
 
   const fetchUnread = useCallback(async () => {
     try {
