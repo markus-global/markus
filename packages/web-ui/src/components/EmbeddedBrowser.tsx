@@ -5,7 +5,14 @@ import {
   isNativeBrowserOverlayActive,
   isNativeBrowserPagePaintAllowed,
 } from '../lib/nativeBrowserOverlay.ts';
-import { normalizeBrowserUrl } from '../lib/browserUrl.ts';
+import {
+  resolveBrowserAddress,
+  SEARCH_ENGINE_IDS,
+  SEARCH_ENGINES,
+  getSearchEngine,
+  setSearchEngine,
+  type SearchEngineId,
+} from '../lib/browserUrl.ts';
 
 /**
  * Electron-only embedded browser host.
@@ -42,6 +49,7 @@ export function EmbeddedBrowser({
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [directoryPath, setDirectoryPath] = useState<string | null>(null);
+  const [searchEngine, setSearchEngineIdState] = useState<SearchEngineId>(() => getSearchEngine());
   const [openingFolder, setOpeningFolder] = useState(false);
   const api = typeof window !== 'undefined' ? window.markusDesktop?.browser : undefined;
   const platform = typeof window !== 'undefined' ? window.markusDesktop?.platform : undefined;
@@ -323,12 +331,13 @@ export function EmbeddedBrowser({
             )}
           </button>
           <form
-            className="flex-1 min-w-0"
+            className="flex-1 min-w-0 flex items-center gap-1"
             onSubmit={e => {
               e.preventDefault();
               let next = address.trim();
               if (!next) return;
-              next = normalizeBrowserUrl(next);
+              // Non-URL input (keywords) is routed to the configured search engine.
+              next = resolveBrowserAddress(next, searchEngine);
               setIsLoading(true);
               setLoadError(null);
               setDirectoryPath(null);
@@ -345,8 +354,23 @@ export function EmbeddedBrowser({
               autoCorrect="off"
               autoCapitalize="off"
               autoFocus={url === 'about:blank'}
-              className="w-full px-2 py-1 text-xs bg-surface-primary border border-border-default rounded-md text-fg-primary outline-none focus:border-brand-500"
+              className="flex-1 min-w-0 px-2 py-1 text-xs bg-surface-primary border border-border-default rounded-md text-fg-primary outline-none focus:border-brand-500"
             />
+            <select
+              value={searchEngine}
+              onChange={e => {
+                const id = e.target.value as SearchEngineId;
+                setSearchEngine(id);
+                setSearchEngineIdState(id);
+              }}
+              title={t('browserSearchEngineLabel')}
+              aria-label={t('browserSearchEngineLabel')}
+              className="shrink-0 text-[10px] bg-surface-primary border border-border-default rounded-md text-fg-tertiary outline-none"
+            >
+              {SEARCH_ENGINE_IDS.map(id => (
+                <option key={id} value={id}>{SEARCH_ENGINES[id].name}</option>
+              ))}
+            </select>
           </form>
           {isLoading && (
             <span className="shrink-0 text-[10px] text-fg-tertiary px-1 select-none">{t('browserLoading')}</span>
