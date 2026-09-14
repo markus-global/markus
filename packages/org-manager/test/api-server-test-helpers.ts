@@ -82,6 +82,23 @@ export class MockServerResponse {
 export const GW_AUTH = { authorization: 'Bearer gw-token' };
 export const TEST_PASSWORD_HASH = 'pbkdf2:100000:d1d65ae1304250defeac12036a3d9806:13354cc2a0df0bed13bbe804ab9059dfa8aa5aa3e267ad329b4799a094851870';
 
+/**
+ * Wait until the mock response has ended (async route handlers).
+ *
+ * `handleRequest` itself returns `void` — the route promise is fire-and-forget
+ * (`route(...).catch(...)`), so the ONLY reliable signal that a route finished
+ * is `res.ended` (set by `json()` → `res.end()`). A bare `setImmediate` pair is
+ * insufficient when the route awaits storage/network mocks; polling `res.ended`
+ * removes that race. On timeout we return anyway so streaming/SSE callers that
+ * never call `end()` are not blocked forever.
+ */
+export async function waitForResponse(res: MockServerResponse, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!res.ended && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 export async function request(
   server: APIServer,
   method: string,
@@ -100,8 +117,7 @@ export async function request(
   const res = new MockServerResponse();
   server.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   req._simulate();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await waitForResponse(res);
   let json: Record<string, unknown> = {};
   try {
     if (res.body) json = JSON.parse(res.body) as Record<string, unknown>;
@@ -129,8 +145,7 @@ export async function requestRaw(
   server.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   req.emit('data', bodyBuf);
   req.emit('end');
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  await waitForResponse(res);
   let json: Record<string, unknown> = {};
   try {
     if (res.body) json = JSON.parse(res.body) as Record<string, unknown>;
