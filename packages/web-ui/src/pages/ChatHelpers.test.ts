@@ -18,6 +18,8 @@ import {
   stripEmbeddedReplyQuote,
   stripNotifyContext,
   stripThinkingBlocks,
+  resolveTeamChatShortcut,
+  cycleSessionTabId,
   type ChatMsg,
 } from './ChatHelpers.ts';
 import type { ChatMessageInfo } from '../api.ts';
@@ -440,5 +442,68 @@ describe('formatSmartTime', () => {
   it('keeps seconds for older messages, prefixed with the date', () => {
     const res = formatSmartTime('', noonOn(3), { yesterday: 'Yesterday' });
     expect(res).toMatch(/\d{1,2}:\d{2}:\d{2}$/);
+  });
+});
+
+// ─── Team-chat keyboard shortcuts (需求 4+5) ───────────────────────────────────
+
+describe('resolveTeamChatShortcut', () => {
+  const ev = (partial: Partial<{ key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }>) => ({
+    key: '', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false,
+    ...partial,
+  });
+
+  it('Mac: Cmd+N → new-conversation; Ctrl+N alone → null', () => {
+    expect(resolveTeamChatShortcut(ev({ key: 'n', metaKey: true }), true)).toBe('new-conversation');
+    expect(resolveTeamChatShortcut(ev({ key: 'N', metaKey: true }), true)).toBe('new-conversation');
+    expect(resolveTeamChatShortcut(ev({ key: 'n', ctrlKey: true }), true)).toBeNull();
+  });
+
+  it('non-Mac: Ctrl+N → new-conversation; Meta+N alone → null', () => {
+    expect(resolveTeamChatShortcut(ev({ key: 'n', ctrlKey: true }), false)).toBe('new-conversation');
+    expect(resolveTeamChatShortcut(ev({ key: 'n', metaKey: true }), false)).toBeNull();
+  });
+
+  it('alt / shift modifiers suppress new-conversation', () => {
+    expect(resolveTeamChatShortcut(ev({ key: 'n', ctrlKey: true, altKey: true }), false)).toBeNull();
+    expect(resolveTeamChatShortcut(ev({ key: 'n', ctrlKey: true, shiftKey: true }), false)).toBeNull();
+  });
+
+  it('Ctrl+Tab → cycle forward; Ctrl+Shift+Tab → cycle backward (Ctrl on all platforms)', () => {
+    expect(resolveTeamChatShortcut(ev({ key: 'Tab', ctrlKey: true }), false)).toBe('cycle-session-next');
+    expect(resolveTeamChatShortcut(ev({ key: 'Tab', ctrlKey: true }), true)).toBe('cycle-session-next');
+    expect(resolveTeamChatShortcut(ev({ key: 'Tab', ctrlKey: true, shiftKey: true }), false)).toBe('cycle-session-prev');
+  });
+
+  it('plain Tab / other keys → null', () => {
+    expect(resolveTeamChatShortcut(ev({ key: 'Tab' }), false)).toBeNull();
+    expect(resolveTeamChatShortcut(ev({ key: 't', ctrlKey: true }), false)).toBeNull();
+    expect(resolveTeamChatShortcut(ev({ key: '' }), true)).toBeNull();
+  });
+});
+
+describe('cycleSessionTabId', () => {
+  const ids = ['a', 'b', 'c'];
+
+  it('moves forward and backward from the active tab', () => {
+    expect(cycleSessionTabId(ids, 'b', 1)).toBe('c');
+    expect(cycleSessionTabId(ids, 'b', -1)).toBe('a');
+  });
+
+  it('wraps around at both ends', () => {
+    expect(cycleSessionTabId(ids, 'c', 1)).toBe('a');
+    expect(cycleSessionTabId(ids, 'a', -1)).toBe('c');
+  });
+
+  it('falls back to first/last when the active id is unknown', () => {
+    expect(cycleSessionTabId(ids, null, 1)).toBe('a');
+    expect(cycleSessionTabId(ids, null, -1)).toBe('c');
+    expect(cycleSessionTabId(ids, 'zzz', 1)).toBe('a');
+    expect(cycleSessionTabId(ids, 'zzz', -1)).toBe('c');
+  });
+
+  it('returns null when there are fewer than two tabs', () => {
+    expect(cycleSessionTabId(['only'], 'only', 1)).toBeNull();
+    expect(cycleSessionTabId([], null, 1)).toBeNull();
   });
 });

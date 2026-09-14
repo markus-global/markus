@@ -330,6 +330,7 @@
     "newChat": "新对话",
     "newChatPlus": "+ 新建",
     "newChatButton": "+ 新对话",
+    "newChatKbdHint": "新建对话（{{kbd}}）",
     "historyTitle": "历史",
     "rightPanelToggle": "开关侧边栏",
     "sessionMain": "主会话",

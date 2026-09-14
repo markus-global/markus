@@ -51,7 +51,9 @@ import {
   dedupeAdjacentUserMessages,
   stopRunningTools, hasStreamingTail,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
+  resolveTeamChatShortcut, cycleSessionTabId,
 } from './ChatHelpers.ts';
+import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
 import {
   NotificationBadge, ChatAgentLink, AvatarPopover, MessageActions, RememberModal,
   AgentMessageBody, segmentsToStreamEntries, friendlyAgentError, isMarkusCreditError, dispatchCreditNotification,
@@ -105,6 +107,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [humans, setHumans] = useState<HumanUserInfo[]>(previewData?.humans ?? []);
   const [initialLoading, setInitialLoading] = useState(previewData ? false : true);
   const isMobile = useIsMobile();
+  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().includes('MAC');
 
   // Mobile: URL hash is the single source of truth for 3-layer navigation
   // L1 (roster): #team — sidebar list
@@ -2613,6 +2616,86 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   };
 
+  // ── 需求3：输入框自动聚焦（切换 agent / session tab / 从其他页面进入 Team chat）──
+  const focusComposer = useCallback(() => {
+    if (previewMode || !isActive) return;
+    if (mainTab !== 'chat') return;
+    if (renamingSessionId || editingHeaderName || editingHeaderDesc) return; // 内联编辑不抢焦点
+    if (mentionDropdown || slashDropdown) return; // 下拉导航不抢
+    if (retryConfirm || rememberTarget) return; // 模态打开不抢
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el && !el.disabled) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    });
+  }, [previewMode, isActive, mainTab, renamingSessionId, editingHeaderName, editingHeaderDesc, mentionDropdown, slashDropdown, retryConfirm, rememberTarget]);
+
+  const prevActiveForFocus = useRef(isActive);
+  const prevAgentForFocus = useRef(selectedAgent);
+  const prevSessionForFocus = useRef(activeSessionId);
+  useEffect(() => {
+    const entered = isActive && !prevActiveForFocus.current;
+    const agentChanged = selectedAgent !== prevAgentForFocus.current;
+    const sessionChanged = activeSessionId !== prevSessionForFocus.current;
+    prevActiveForFocus.current = isActive;
+    prevAgentForFocus.current = selectedAgent;
+    prevSessionForFocus.current = activeSessionId;
+    if (isMobile) return; // 移动端避免自动弹出虚拟键盘
+    if (entered || agentChanged || sessionChanged) focusComposer();
+  }, [isActive, selectedAgent, activeSessionId, isMobile, focusComposer]);
+
+  // ── 需求4+5：Cmd/Ctrl+N 新建对话；Ctrl+Tab / Ctrl+Shift+Tab 切换会话 tab ──
+  useEffect(() => {
+    if (previewMode || !isActive || isMobile) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (retryConfirm || rememberTarget) return;
+      if (mentionDropdown || slashDropdown) return; // 下拉打开时让 composer 处理 Ctrl+P/N/Tab
+      if (isXtermTarget(e.target)) return; // 终端内不劫持
+      const shortcut = resolveTeamChatShortcut(
+        { key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey },
+        isMac,
+      );
+      if (shortcut === 'new-conversation') {
+        if (chatMode !== 'direct' || !selectedAgent || mainTab !== 'chat') return;
+        const t = e.target as HTMLElement | null;
+        if (t && t !== textareaRef.current && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        e.preventDefault();
+        newConversation();
+        focusComposer();
+        return;
+      }
+      // cycle-session-next / cycle-session-prev
+      if (shortcut === 'cycle-session-next' || shortcut === 'cycle-session-prev') {
+        if (chatMode !== 'direct' || !selectedAgent || mainTab !== 'chat') return;
+        if (openSessionTabs.length < 2) return;
+        const dir = shortcut === 'cycle-session-prev' ? -1 : 1;
+        const nextId = cycleSessionTabId(openSessionTabs.map(s => s.id), activeSessionId, dir);
+        if (!nextId) return;
+        e.preventDefault();
+        const target = openSessionTabs.find(s => s.id === nextId);
+        if (!target) return;
+        if (target.id === NEW_CHAT_PLACEHOLDER_ID) {
+          setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
+          const key = currentConvKeyRef.current;
+          resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
+          setMessages([]);
+        } else {
+          void switchSession(target);
+        }
+        focusComposer();
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [
+    previewMode, isActive, isMobile, isMac, chatMode, selectedAgent, mainTab,
+    openSessionTabs, activeSessionId, mentionDropdown, slashDropdown,
+    retryConfirm, rememberTarget, newConversation, switchSession, focusComposer,
+    setActiveSessionId, resetConv, setMessages, currentConvKeyRef,
+  ]);
+
   const handleInputChange = (val: string) => {
     setInput(val);
 
@@ -3279,6 +3362,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   <>
                     <button
                       onClick={newConversation}
+                      title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
                       className="text-[11px] text-brand-500 px-2 py-1 rounded-md bg-brand-500/10 font-medium shrink-0"
                     >{t('page.newChatPlus')}</button>
                     <button
@@ -3473,6 +3557,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={newConversation}
+                        title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
                         className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
                       >
                         {t('page.newChatButton')}

@@ -44,6 +44,9 @@ export const KEYBOARD_SHORTCUTS: ShortcutDef[] = [
   { id: 'cycle-board', group: 'tasks', keys: ['Ctrl', 'Tab'], label: 'Cycle Tasks views', labelKey: 'shortcuts.cycleBoard', page: 'work', bare: true },
 
   // ── Team Chat (page-local Cmd) ───────────────────────────────────────────
+  { id: 'new-conversation', group: 'team', keys: ['N'], label: 'New conversation', labelKey: 'shortcuts.newConversation', page: 'team' },
+  { id: 'cycle-session-tab', group: 'team', keys: ['Ctrl', 'Tab'], label: 'Next conversation tab', labelKey: 'shortcuts.cycleSessionTab', page: 'team' },
+  { id: 'cycle-session-tab-prev', group: 'team', keys: ['Ctrl', 'Shift', 'Tab'], label: 'Previous conversation tab', labelKey: 'shortcuts.cycleSessionTabPrev', page: 'team' },
   { id: 'toggle-browser', group: 'team', keys: ['L'], label: 'Toggle right panel · Browser', labelKey: 'shortcuts.toggleBrowser', page: 'team' },
   { id: 'toggle-terminal', group: 'team', keys: ['J'], label: 'Toggle right panel · Terminal', labelKey: 'shortcuts.toggleTerminal', page: 'team' },
   { id: 'next-tab', group: 'rightPanel', keys: ['Shift', ']'], label: 'Next right-panel tab', labelKey: 'shortcuts.nextTab', page: 'team' },
