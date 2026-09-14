@@ -341,6 +341,87 @@ html {
   animation: activity-text-shimmer 1.6s ease-in-out infinite;
 }
 
+/* ─── Animation budget ──────────────────────────────────────────────────────
+   Any running CSS animation makes the compositor produce a frame every vsync
+   — up to 120/s on a ProMotion display. On this app's DOM a frame costs ~2ms,
+   so a handful of permanently-running status indicators pins the renderer at
+   25-35% CPU even when nothing is happening.
+
+   Measured on the desktop build (renderer process, window visible):
+     idle:  animations on 3.5%  ->  animations off 0%
+     busy:  animations on 33%   ->  animations off 3.1%
+   Injecting 30 extra animated elements added only +4.7%, i.e. the cost tracks
+   continuous frame production, NOT the number of animated DOM nodes.
+   (Also measured: swapping background-clip:text for an opacity breathe did
+   NOT help — +8.5% vs +4.7% — so the animated property is not the lever.)
+
+   Two levers, both below:
+     1. don't produce frames the user cannot see (data-anim-paused, set by JS)
+     2. step the endless sweeps so the compositor can skip frames in between
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* 1. Nothing animates while the window is hidden or unfocused. Agents run for
+      hours while the app sits in the background — this is the biggest win. */
+html[data-anim-paused='true'] *,
+html[data-anim-paused='true'] *::before,
+html[data-anim-paused='true'] *::after {
+  animation-play-state: paused !important;
+}
+
+/* 2. The never-ending indicators are driven by the 4 Hz tick from
+      animationBudget.ts instead of by an infinite CSS animation.
+      Measured on the renderer: with these CSS animations running the main thread
+      does 120.0 style recalculations/s (one per frame, 12-16% of a core); driven
+      by the tick it is ~4/s. Quantising with steps() was tried and did NOT help
+      (95-107/s), so the animation is removed outright rather than slowed down.
+
+      The per-phase values live on :root as custom properties, so changing the tick
+      only invalidates the handful of elements that read them - not the whole tree. */
+
+html[data-anim-tick='0'] { --anim-pulse: 1;      --anim-bounce: -25%; --anim-spin: 0deg;   --anim-shimmer: 100%;  --anim-border: 0deg; }
+html[data-anim-tick='1'] { --anim-pulse: 0.875;  --anim-bounce: -13%; --anim-spin: 45deg;  --anim-shimmer: 71%;   --anim-border: 45deg; }
+html[data-anim-tick='2'] { --anim-pulse: 0.75;   --anim-bounce: 0%;   --anim-spin: 90deg;  --anim-shimmer: 43%;   --anim-border: 90deg; }
+html[data-anim-tick='3'] { --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 135deg; --anim-shimmer: 14%;   --anim-border: 135deg; }
+html[data-anim-tick='4'] { --anim-pulse: 0.5;    --anim-bounce: 0%;   --anim-spin: 180deg; --anim-shimmer: -14%;  --anim-border: 180deg; }
+html[data-anim-tick='5'] { --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 225deg; --anim-shimmer: -43%;  --anim-border: 225deg; }
+html[data-anim-tick='6'] { --anim-pulse: 0.75;   --anim-bounce: -13%; --anim-spin: 270deg; --anim-shimmer: -71%;  --anim-border: 270deg; }
+html[data-anim-tick='7'] { --anim-pulse: 0.875;  --anim-bounce: -25%; --anim-spin: 315deg; --anim-shimmer: -100%; --anim-border: 315deg; }
+
+.animate-pulse {
+  animation: none !important;
+  opacity: var(--anim-pulse, 1);
+}
+.animate-bounce {
+  animation: none !important;
+  transform: translateY(var(--anim-bounce, 0%));
+}
+.animate-spin {
+  animation: none !important;
+  transform: rotate(var(--anim-spin, 0deg));
+}
+.activity-text-shimmer {
+  animation: none !important;
+  background-position: var(--anim-shimmer, 100%) center;
+}
+/* Active execution card: the rotating conic-gradient border used to animate a
+   registered custom property, which forces a style recalc + repaint every frame
+   while any agent is running. Drive it from the same tick. */
+.exec-card-active {
+  animation: none !important;
+  --border-angle: var(--anim-border, 0deg);
+}
+
+/* 3. Honour the OS "reduce motion" setting. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 /* Horizontal scroll rail with snap for discovery carousels */
 .rail {
   @apply flex gap-4 overflow-x-auto;

@@ -118,6 +118,43 @@ function actionHint(n: NotificationInfo, t: TFunction): string | null {
   }
 }
 
+/**
+ * 后端在生成通知时会附带结构化 i18n 元数据（titleKey/bodyKey + 参数），
+ * 这里据此用当前语言渲染标题/正文。旧通知（无 i18n 元数据）回落原文。
+ */
+interface NotifI18nMeta {
+  titleKey?: string;
+  titleParams?: Record<string, string>;
+  bodyKey?: string;
+  bodyParams?: Record<string, string>;
+}
+
+function notifI18n(n: NotificationInfo): NotifI18nMeta | undefined {
+  const meta = n.metadata as Record<string, unknown> | undefined;
+  if (!meta || typeof meta.i18n !== 'object' || !meta.i18n) return undefined;
+  return meta.i18n as NotifI18nMeta;
+}
+
+export function notifTitle(n: NotificationInfo, t: TFunction): string {
+  const i18n = notifI18n(n);
+  if (!i18n?.titleKey) return n.title;
+  const params = { ...(i18n.titleParams ?? {}) };
+  return t(`team:${i18n.titleKey}`, { ...params, defaultValue: n.title });
+}
+
+export function notifBody(n: NotificationInfo, t: TFunction): string {
+  const i18n = notifI18n(n);
+  if (!i18n?.bodyKey) return n.body;
+  const params: Record<string, string> = {};
+  for (const [k, v] of Object.entries(i18n.bodyParams ?? {})) {
+    // status 类参数用 common:status.* 本地化，其余（标题等用户内容）原样保留
+    params[k] = k === 'status' || k === 'statusKey'
+      ? t(`common:status.${v}`, { defaultValue: v })
+      : v;
+  }
+  return t(`team:${i18n.bodyKey}`, { ...params, defaultValue: n.body });
+}
+
 function playNotificationSound() {
   try {
     const ctx = new AudioContext();
@@ -151,6 +188,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
   const [unreadCount, setUnreadCount] = useState(0);
+  /**
+   * 「未读」视图的数据源：直接来自服务端的未读查询，而不是从最新一页里挑出来的未读。
+   * 之前是后者，导致未读行落在第二页之后时列表永远为空、数字却照常显示。
+   */
+  const [unreadNotifs, setUnreadNotifs] = useState<NotificationInfo[]>([]);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number; width: number; maxHeight: number }>({ top: 0, left: 0, width: 448, maxHeight: 576 });
@@ -161,19 +203,28 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const notifScrollRef = useRef<HTMLDivElement>(null);
   const lastTabRef = useRef<'approvals' | 'notifications'>('approvals');
   const [creditDialog, setCreditDialog] = useState(false);
+  /** 通知列表过滤：默认只看未读（Owner 诉求），可切到「全部」（未读 + 已读）。 */
+  const [notifFilter, setNotifFilter] = useState<'unread' | 'all'>('unread');
 
   const NOTIF_PAGE_SIZE = 30;
+  /**
+   * 未读视图一次取多少条。同时也是内嵌侧栏的渲染上限 —— 两者必须是同一个数，
+   * 否则「数字」和「列表条数」又会分叉。
+   */
+  const NOTIF_UNREAD_LIMIT = 100;
 
   const fetchData = useCallback(async () => {
     try {
       // Avoid GET dedup returning a stale empty approvals list right after HITL create.
       invalidateApiCache('/approvals');
       invalidateApiCache('/notifications');
-      const [n, a] = await Promise.all([
+      const [n, a, u] = await Promise.all([
         api.notifications.list(userId, false, { limit: NOTIF_PAGE_SIZE, offset: 0 }),
         api.approvals.list(),
+        api.notifications.list(userId, true, { limit: NOTIF_UNREAD_LIMIT, offset: 0 }),
       ]);
       setNotifications(n.notifications);
+      setUnreadNotifs(u.notifications);
       const serverUnread = n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length;
       setUnreadCount(serverUnread);
       setHasMoreNotifications(n.totalCount != null ? n.notifications.length < n.totalCount : n.notifications.length >= NOTIF_PAGE_SIZE);
@@ -213,6 +264,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       if (toMark.length === 0) return prev;
       for (const n of toMark) api.notifications.markRead(n.id).catch(() => {});
       setUnreadCount(c => Math.max(0, c - toMark.length));
+      const markedIds = new Set(toMark.map(m => m.id));
+      setUnreadNotifs(list => list.filter(x => !markedIds.has(x.id)));
       return prev.map(n => toMark.some(m => m.id === n.id) ? { ...n, read: true } : n);
     });
   }, []);
@@ -385,6 +438,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
 
   useEffect(() => {
     if (!open) return;
+    // 每次打开都回到「未读」默认视图（Owner 诉求：默认只显示未读）。
+    setNotifFilter('unread');
     const hasPending = approvals.some(a => a.status === 'pending');
     const hasUnread = notifications.some(n => !n.read);
     if (hasPending && !hasUnread) {
@@ -399,22 +454,44 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
 
   const pendingApprovalIds = new Set(approvals.filter(a => a.status === 'pending').map(a => a.id));
   const allApprovalIds = new Set(approvals.map(a => a.id));
-  const displayNotifications = notifications.filter(n => {
-    if (n.type === 'approval_request' && n.metadata?.approvalId && allApprovalIds.has(n.metadata.approvalId as string)) {
-      return false;
-    }
-    return true;
-  });
+  /** 审批类通知只要有对应审批（pending 或已裁决）就由「审批」标签页承载，通知列表不重复展示。 */
+  const isApprovalBackedNotification = (n: NotificationInfo) =>
+    n.type === 'approval_request' && !!n.metadata?.approvalId &&
+    allApprovalIds.has(n.metadata.approvalId as string);
 
-  // Count unread notifications excluding those that have matching pending approvals
-  // (pending approvals are counted separately to avoid double-counting)
-  const hiddenUnreadApprovalCount = notifications.filter(n =>
-    n.type === 'approval_request' && !n.read &&
-    n.metadata?.approvalId && pendingApprovalIds.has(n.metadata.approvalId as string)
-  ).length;
-  const adjustedUnreadCount = Math.max(0, unreadCount - hiddenUnreadApprovalCount);
+  // 统一按时间倒序。loadMore 会追加更旧的页、标记已读也会就地改 read，
+  // 显式排序保证「按时间」这条语义不依赖接口返回顺序。
+  const sortByTimeDesc = (list: NotificationInfo[]) =>
+    [...list].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  const displayNotifications = notifications.filter(n => !isApprovalBackedNotification(n));
+  /** 未读视图：服务端未读查询的结果，去掉已由审批页承载的行。 */
+  const displayUnreadNotifications = unreadNotifs.filter(n => !isApprovalBackedNotification(n));
+
+  const sortedNotifications = sortByTimeDesc(displayNotifications);
+  const sortedUnreadNotifications = sortByTimeDesc(displayUnreadNotifications);
+
+  /** 默认只显示未读；切到「全部」时显示未读 + 已读（同样按时间倒序）。 */
+  const visibleNotifications = notifFilter === 'all'
+    ? sortedNotifications
+    : sortedUnreadNotifications;
+  const emptyNotifText = notifFilter === 'unread'
+    ? t('team:notifications.noUnread')
+    : t('team:notifications.noNotifications');
+
+  /**
+   * 面板上所有「未读」数字的唯一来源 = 未读列表本身的长度。
+   *
+   * 之前数字取服务端 unreadCount（全表统计），列表却只装了最新一页，两者天然分叉：
+   * 未读行落在加载窗口之外时，数字显示 N 而列表是空的。实测 Owner 账号
+   * user_3cd21fb3205979a0ba7f8978：12389 条通知、2 条未读，分别位于按时间倒序的第 46 / 75 位
+   * —— 页大小 30，所以两条未读一条都不在首屏，数字却照常显示。
+   *
+   * 现在数字与列表同源，构造上不可能不一致；pending 审批由「审批」标签页承载，单独加回。
+   */
+  const unreadNotificationCount = sortedUnreadNotifications.length;
   const pendingApprovals = pendingApprovalIds.size;
-  const badgeCount = adjustedUnreadCount + pendingApprovals;
+  const badgeCount = unreadNotificationCount + pendingApprovals;
 
   useEffect(() => {
     if (prevPendingRef.current !== null && pendingApprovals > prevPendingRef.current) {
@@ -426,6 +503,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const handleMarkRead = async (id: string) => {
     await api.notifications.markRead(id);
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    setUnreadNotifs(prev => prev.filter(n => n.id !== id));
     setUnreadCount(prev => Math.max(0, prev - 1));
     window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
   };
@@ -614,6 +692,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       if (!userId) return;
       await api.notifications.markAllRead(userId);
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setUnreadNotifs([]);
       setUnreadCount(0);
       invalidateApiCache('/notifications');
       window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
@@ -621,6 +700,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       const unread = displayNotifications.filter(n => !n.read);
       await Promise.all(unread.map(n => api.notifications.markRead(n.id)));
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setUnreadNotifs([]);
       setUnreadCount(0);
       invalidateApiCache('/notifications');
       window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
@@ -637,6 +717,34 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     return null;
   };
 
+  /**
+   * 审批描述本地化：结构化审批（需求提出/重新提交/任务创建）的描述是后端生成的模板句，
+   * 根据 subType + 参数重建为当前语言；task_review 仅替换首行模板，保留活动详情/交付物等用户内容；
+   * 其余（自定义审批）保留原文。
+   */
+  const approvalDesc = (a: ApprovalInfo): string => {
+    const details = a.details ?? {};
+    const sub = details.subType as string | undefined;
+    const priorityKey = details.priority as string | undefined;
+    const priority = priorityKey ? t(`common:priority.${priorityKey}`, { defaultValue: priorityKey }) : '';
+    if (sub === 'requirement') {
+      return t('team:notifications.approvalDesc.requirementProposed', { agentName: a.agentName, title: a.title, priority, defaultValue: a.description });
+    }
+    if (sub === 'requirement_resubmit') {
+      return t('team:notifications.approvalDesc.requirementResubmitted', { agentName: a.agentName, title: a.title, priority, defaultValue: a.description });
+    }
+    if (sub === 'task') {
+      return t('team:notifications.approvalDesc.taskCreate', { agentName: a.agentName, title: a.title, priority, defaultValue: a.description });
+    }
+    if (sub === 'task_review') {
+      const first = `Task "${a.title}" has been submitted for your review.`;
+      if (a.description.startsWith(first)) {
+        return t('team:notifications.approvalDesc.taskReview', { title: a.title }) + a.description.slice(first.length);
+      }
+    }
+    return a.description;
+  };
+
   const approvalSourceLabel = (a: ApprovalInfo): string => {
     const parts: string[] = [];
     parts.push(a.agentName);
@@ -645,11 +753,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     if (taskTitle) {
       parts.push(taskTitle);
     } else if (taskId) {
-      parts.push(`Task ${taskId.slice(0, 8)}`);
+      parts.push(`${t('team:notifications.approvalType.task')} ${taskId.slice(0, 8)}`);
     }
     const reqId = a.details?.requirementId as string | undefined;
     if (reqId && !taskId) {
-      parts.push(`Req ${reqId.slice(0, 8)}`);
+      parts.push(`${t('team:notifications.approvalType.requirement')} ${reqId.slice(0, 8)}`);
     }
     return parts.join(' · ');
   };
@@ -697,6 +805,34 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     />
   ) : null;
 
+  /** 通知过滤条：左侧「未读 / 全部」切换（默认未读），右侧「全部标为已读」。 */
+  const notifFilterBar = (
+    <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-border-default/50 shrink-0">
+      <div className="flex items-center gap-0.5 rounded-md bg-surface-overlay/60 p-0.5">
+        {(['unread', 'all'] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setNotifFilter(f)}
+            aria-pressed={notifFilter === f}
+            title={f === 'unread' ? t('team:notifications.noUnread') : undefined}
+            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+              notifFilter === f ? 'bg-surface-base text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'
+            }`}
+          >
+            {f === 'unread'
+              ? t('team:notifications.filterUnread') + (unreadNotificationCount > 0 ? ` (${unreadNotificationCount})` : '')
+              : t('team:notifications.filterAll')}
+          </button>
+        ))}
+      </div>
+      {unreadCount > 0 && (
+        <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors shrink-0">
+          {t('team:notifications.markAllRead')}
+        </button>
+      )}
+    </div>
+  );
+
   const panelContent = (
     <>
       {/* Tabs + Close */}
@@ -715,7 +851,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
             tab === 'notifications' ? 'text-fg-primary border-b-2 border-brand-500' : 'text-fg-tertiary hover:text-fg-secondary'
           }`}
         >
-          {t('team:notifications.notifications')}{adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : ''}
+          {t('team:notifications.notifications')}{unreadNotificationCount > 0 ? ` (${unreadNotificationCount})` : ''}
         </button>
         <button
           onClick={closePanel}
@@ -729,11 +865,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       </div>
 
       {/* Actions bar */}
-      {tab === 'notifications' && unreadCount > 0 && (
-        <div className="flex justify-end px-3 py-1.5 border-b border-border-default/50 shrink-0">
-          <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">{t('team:notifications.markAllRead')}</button>
-        </div>
-      )}
+      {tab === 'notifications' && notifFilterBar}
 
       {/* Content */}
       <div ref={notifScrollRef} className="flex-1 overflow-y-auto" onScroll={(e) => {
@@ -748,7 +880,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                 <div className="divide-y divide-border-default/50">
                   {pendingList.map(a => {
                     const cmd = a.details?.command as string | undefined;
-                    const descClean = cmd ? a.description.replace(/\s*Command:.*$/, '') : a.description;
+                    const descClean = cmd ? approvalDesc(a).replace(/\s*Command:.*$/, '') : approvalDesc(a);
                     return (
                     <div key={a.id} className="px-3 py-3 space-y-2.5">
                       <div
@@ -783,7 +915,12 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                         const txt = (freeformTexts[a.id] ?? '').trim();
 
                         if (hasOptions) {
-                          return (
+                          const optionLabel = (opt: { id: string; label: string }): string => {
+                      if (opt.id === 'approve') return t('common:approve', { defaultValue: opt.label });
+                      if (opt.id === 'reject' || opt.id === 'request_changes') return t('team:notifications.optionLabels.requestChanges', { defaultValue: opt.label });
+                      return opt.label;
+                    };
+                    return (
                             <div className="space-y-1.5">
                               {a.options!.map((opt, idx) => (
                                 <button
@@ -800,7 +937,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                                   <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold shrink-0">
                                     {String.fromCharCode(65 + idx)}
                                   </span>
-                                  {opt.label}
+                                  {optionLabel(opt)}
                                 </button>
                               ))}
                               <div className="flex gap-1.5 mt-1">
@@ -946,11 +1083,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
             )}
 
             {tab === 'notifications' && (
-              displayNotifications.length === 0 ? (
-                <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noNotifications')}</div>
+              visibleNotifications.length === 0 ? (
+                <div className="p-6 text-center text-xs text-fg-tertiary">{emptyNotifText}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {displayNotifications.map(n => {
+                  {visibleNotifications.map(n => {
                     const typeColor = TYPE_COLOR[n.type] ?? 'text-fg-tertiary';
                     return (
                     <div
@@ -971,10 +1108,10 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
                           {!n.read && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_DOT[n.priority] ?? PRIORITY_DOT.normal}`} />}
-                          <span className="text-xs text-fg-primary font-medium truncate">{n.title}</span>
+                          <span className="text-xs text-fg-primary font-medium truncate">{notifTitle(n, t)}</span>
                         </div>
                         <div className="text-[11px] text-fg-tertiary mt-0.5 ">
-                          <MarkdownMessage content={n.body} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
+                          <MarkdownMessage content={notifBody(n, t)} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
                         </div>
                         <div className="flex items-center gap-2 mt-0.5">
                           <span className="text-[10px] text-fg-muted">{timeAgo(n.createdAt, t)}</span>
@@ -1071,18 +1208,14 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
             >
               {t_id === 'approvals'
                 ? <>{t('team:notifications.approvals')}{pendingApprovals > 0 ? ` (${pendingApprovals})` : ''}</>
-                : <>{t('team:notifications.notifications')}{adjustedUnreadCount > 0 ? ` (${adjustedUnreadCount})` : ''}</>
+                : <>{t('team:notifications.notifications')}{unreadNotificationCount > 0 ? ` (${unreadNotificationCount})` : ''}</>
               }
             </button>
           ))}
         </div>
 
         {/* Actions bar */}
-        {tab === 'notifications' && unreadCount > 0 && (
-          <div className="flex justify-end px-3 py-1.5 border-b border-border-default/50 shrink-0">
-            <button onClick={handleMarkAllRead} className="text-[10px] text-brand-500 hover:text-brand-400 transition-colors">{t('team:notifications.markAllRead')}</button>
-          </div>
-        )}
+        {tab === 'notifications' && notifFilterBar}
 
         {/* Swipeable content */}
         <div className="flex-1 overflow-hidden relative" {...handleSwipe}>
@@ -1097,7 +1230,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                 <div className="divide-y divide-border-default/50">
                   {pendingList.map(a => {
                     const cmd = a.details?.command as string | undefined;
-                    const descClean = cmd ? a.description.replace(/\s*Command:.*$/, '') : a.description;
+                    const descClean = cmd ? approvalDesc(a).replace(/\s*Command:.*$/, '') : approvalDesc(a);
                     return (
                       <div key={a.id} className="px-3 py-3 space-y-2.5">
                         <div className="cursor-pointer hover:bg-surface-overlay/50 -mx-3 -mt-3 px-3 pt-3 pb-1 rounded-t-md transition-colors" onClick={() => navigateForApproval(a)}>
@@ -1125,6 +1258,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           const txt = (freeformTexts[a.id] ?? '').trim();
 
                           if (hasOptions) {
+                            const optionLabel = (opt: { id: string; label: string }): string => {
+                              if (opt.id === 'approve') return t('common:approve', { defaultValue: opt.label });
+                              if (opt.id === 'reject' || opt.id === 'request_changes') return t('team:notifications.optionLabels.requestChanges', { defaultValue: opt.label });
+                              return opt.label;
+                            };
                             return (
                               <div className="space-y-1.5">
                                 {a.options!.map((opt, idx) => (
@@ -1142,7 +1280,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                                     <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold shrink-0">
                                       {String.fromCharCode(65 + idx)}
                                     </span>
-                                    {opt.label}
+                                    {optionLabel(opt)}
                                   </button>
                                 ))}
                                 <div className="flex gap-1.5 mt-1">
@@ -1277,11 +1415,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
               )}
             </div>
             <div className="w-full shrink-0 h-full overflow-y-auto scrollbar-thin">
-              {displayNotifications.length === 0 ? (
-                <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noNotifications')}</div>
+              {visibleNotifications.length === 0 ? (
+                <div className="p-6 text-center text-xs text-fg-tertiary">{emptyNotifText}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {displayNotifications.slice(0, 50).map(n => {
+                  {visibleNotifications.slice(0, notifFilter === 'unread' ? NOTIF_UNREAD_LIMIT : 50).map(n => {
                     const typeColor = TYPE_COLOR[n.type] ?? 'text-fg-tertiary';
                     return (
                       <button key={n.id} onClick={() => handleNotificationClick(n)} className={`w-full text-left px-3 py-2.5 flex gap-2.5 transition-colors ${n.read ? 'opacity-50 hover:opacity-70' : 'hover:bg-surface-overlay'}`}>
@@ -1291,10 +1429,10 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5">
                             {!n.read && <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${PRIORITY_DOT[n.priority] ?? PRIORITY_DOT.normal}`} />}
-                            <span className="text-xs text-fg-primary font-medium truncate">{n.title}</span>
+                            <span className="text-xs text-fg-primary font-medium truncate">{notifTitle(n, t)}</span>
                           </div>
                           <div className="text-[11px] text-fg-tertiary mt-0.5 ">
-                            <MarkdownMessage content={n.body} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
+                            <MarkdownMessage content={notifBody(n, t)} className="text-[11px] [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_p]:text-[11px] [&_li]:text-[11px] [&_p]:text-fg-tertiary" />
                           </div>
                           <div className="flex items-center gap-2 mt-0.5">
                             <span className="text-[10px] text-fg-muted">{timeAgo(n.createdAt, t)}</span>

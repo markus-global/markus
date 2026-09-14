@@ -4916,6 +4916,48 @@ export class SqliteNotificationRepo {
   }
 
   /**
+   * Mark read every unread approval_request row that references this approval,
+   * regardless of which user_id it was delivered to.
+   *
+   * Keying on metadata.approvalId is exact and unbounded. The previous approach
+   * enumerated a GUESSED user list ('all' + org human users) and scanned at most
+   * 200 rows per user, so rows delivered to a user_id outside that list (legacy
+   * ids such as 'jason'/'owner', per-user targets) were never marked read: they
+   * stayed "unread" forever, inflating the unread badge with rows the UI hides.
+   */
+  markReadByApprovalId(approvalId: string): number {
+    const info = this.db.prepare(
+      `UPDATE user_notifications
+          SET read = 1
+        WHERE read = 0
+          AND type = 'approval_request'
+          AND json_extract(metadata, '$.approvalId') = ?`
+    ).run(approvalId);
+    return Number(info.changes);
+  }
+
+  /**
+   * Self-heal for rows made stale before the keyed update existed: an unread
+   * approval_request whose approval is no longer pending (resolved / expired /
+   * cancelled / missing) can never be acted on and must not count as unread.
+   * Idempotent — safe to run once per boot.
+   */
+  reconcileResolvedApprovalNotifications(): number {
+    const info = this.db.prepare(
+      `UPDATE user_notifications
+          SET read = 1
+        WHERE read = 0
+          AND type = 'approval_request'
+          AND NOT EXISTS (
+            SELECT 1 FROM approvals a
+             WHERE a.id = json_extract(user_notifications.metadata, '$.approvalId')
+               AND a.status = 'pending'
+          )`
+    ).run();
+    return Number(info.changes);
+  }
+
+  /**
    * Migrate notifications with user_id = 'default' to the real owner userId.
    */
   migrateDefaultUserId(realOwnerId: string): number {

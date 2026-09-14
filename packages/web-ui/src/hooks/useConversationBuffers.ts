@@ -18,6 +18,14 @@ export { type ConvPhase } from '../lib/ConversationBufferManager.ts';
 export { makeConvKey } from '../lib/ConversationBufferManager.ts';
 export const NEW_CHAT_PLACEHOLDER_ID = ConversationBufferManager.NEW_CHAT_ID;
 
+/**
+ * Direct conversation keys are the agent id itself (see makeConvKey): `ch:*`
+ * (team/channel) and `dm:*` (human DM) never map to one agent. Pure function —
+ * hoisted to module scope so it can be used inside stable useCallbacks.
+ */
+const isAgentKey = (key: string): boolean =>
+  !!key && !key.startsWith('ch:') && !key.startsWith('dm:') && key !== '_direct';
+
 export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   const mgr = useRef(new ConversationBufferManager());
   const [messages, setMessages] = useState<ChatMsg[]>(initialMessages ?? []);
@@ -32,6 +40,35 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   // on some unrelated re-render — the membership Set itself is not reactive.
   const [, setStreamMembershipTick] = useState(0);
   const bumpStreamMembership = useCallback(() => setStreamMembershipTick(v => v + 1), []);
+
+  /**
+   * Stream-membership helpers with STABLE identity.
+   *
+   * These are consumed as useCallback deps by useChatStream (see
+   * tryReattachActiveStream). When they were inline arrow functions recreated on
+   * every render, that callback changed identity every render → Team's
+   * "reattach on return" effect re-fired on every render → clearStreamSession
+   * bumped stream-membership state unconditionally → infinite render loop
+   * (~120 renders/s, 0 DOM changes, 100%+ CPU while the UI was IDLE).
+   *
+   * Two independent guards now make that loop impossible:
+   *  1. identity is stable, so the effect only re-fires on real key changes;
+   *  2. the membership tick only bumps when the Set actually changed.
+   */
+  const getStreamSession = useCallback((k: string) => mgr.current.getStreamSessions(k), []);
+  const setStreamSession = useCallback((k: string, s: string) => {
+    const changed = mgr.current.addStreamSession(k, s);
+    // markAgentStreaming is internally idempotent (only emits on real change).
+    if (isAgentKey(k)) chatStore.markAgentStreaming(k, true);
+    if (changed) bumpStreamMembership();
+  }, [bumpStreamMembership]);
+  const clearStreamSession = useCallback((k: string, s?: string) => {
+    const changed = mgr.current.removeStreamSession(k, s);
+    if (isAgentKey(k)) chatStore.markAgentStreaming(k, false);
+    if (changed) bumpStreamMembership();
+  }, [bumpStreamMembership]);
+  const setActiveSession = useCallback((k: string, s: string) => mgr.current.setActiveSession(k, s), []);
+  const clearActiveSession = useCallback((k: string) => mgr.current.clearActiveSession(k), []);
 
   useEffect(() => () => { if (rafRef.current !== null) cancelAnimationFrame(rafRef.current); }, []);
 
@@ -62,9 +99,6 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   // pairing structural: every stream path (done, abort, stop, soft-disconnect
   // → reattach, session switch, retry) eventually calls clearStreamSession,
   // so the sidebar busy state cannot drift or leak.
-  const isAgentKey = (key: string): boolean =>
-    !!key && !key.startsWith('ch:') && !key.startsWith('dm:') && key !== '_direct';
-
   const getPhase = useCallback((key: string) => mgr.current.getPhase(key), []);
   const beginLoad = useCallback((key: string) => mgr.current.beginLoad(key), []);
   const beginStream = useCallback((key: string) => {
@@ -151,8 +185,8 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     // Route pinning (must mirror every setActiveSessionId transition so the
     // manager routes background streams to their own session cache — see
     // ConversationBufferManager.activeSession).
-    setActiveSession: (k: string, s: string) => mgr.current.setActiveSession(k, s),
-    clearActiveSession: (k: string) => mgr.current.clearActiveSession(k),
+    setActiveSession,
+    clearActiveSession,
     // Send counter helpers
     incrementSending: (k: string) => mgr.current.incrementSend(k),
     decrementSending: (k: string) => mgr.current.decrementSend(k),
@@ -162,17 +196,9 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     // sidebar busy signal: calling setStreamSession marks the agent busy,
     // calling clearStreamSession unmarks it. Every other stream cleanup path
     // in Team.tsx funnels through clearStreamSession.
-    setStreamSession: (k: string, s: string) => {
-      mgr.current.addStreamSession(k, s);
-      if (isAgentKey(k)) chatStore.markAgentStreaming(k, true);
-      bumpStreamMembership();
-    },
-    clearStreamSession: (k: string, s?: string) => {
-      mgr.current.removeStreamSession(k, s);
-      if (isAgentKey(k)) chatStore.markAgentStreaming(k, false);
-      bumpStreamMembership();
-    },
-    getStreamSession: (k: string) => mgr.current.getStreamSessions(k),
+    setStreamSession,
+    clearStreamSession,
+    getStreamSession,
     // Session switch helpers
     saveSessionToCache: (k: string, s: string) => mgr.current.saveToCache(k, s),
     restoreSessionFromCache: (k: string, s: string) => {

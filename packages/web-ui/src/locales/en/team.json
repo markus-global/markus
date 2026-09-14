@@ -181,6 +181,9 @@
     "noApprovals": "No approval requests",
     "noNotifications": "No notifications",
     "markAllRead": "Mark all read",
+    "filterUnread": "Unread",
+    "filterAll": "All",
+    "noUnread": "No unread notifications",
     "confirmReject": "Confirm Reject",
     "rejectReasonPlaceholder": "Reason for rejection (optional, Enter to submit)",
     "freeformPlaceholder": "Or type your opinion...",
@@ -196,6 +199,33 @@
       "viewAgent": "View agent →",
       "viewApproval": "View approval →"
     },
+    "titles": {
+      "taskCreated": "Task created: {{title}}",
+      "taskReadyForReview": "Task ready for review: {{title}}",
+      "taskCompleted": "Task completed: {{title}}",
+      "taskFailed": "Task failed: {{title}}",
+      "requirementApproved": "Requirement approved: {{title}}",
+      "requirementRejected": "Requirement rejected: {{title}}",
+      "mentionedYou": "{{authorName}} mentioned you",
+      "groupMessage": "{{senderName}} in {{groupName}}"
+    },
+    "bodies": {
+      "agentCreatedTask": "Agent created task \"{{title}}\"",
+      "taskStatusChanged": "Task \"{{title}}\" status changed to {{status}}",
+      "requirementApprovedBody": "Requirement \"{{title}}\" has been approved and is now in progress.",
+      "requirementRejectedBody": "Requirement \"{{title}}\" has been rejected.{{reason}}",
+      "mentionPreview": "{{itemTitle}}: {{preview}}"
+    },
+    "approvalDesc": {
+      "requirementProposed": "Agent \"{{agentName}}\" proposed requirement \"{{title}}\" (priority: {{priority}}).",
+      "requirementResubmitted": "Agent \"{{agentName}}\" resubmitted requirement \"{{title}}\" (priority: {{priority}}).",
+      "taskCreate": "Agent \"{{agentName}}\" wants to create task \"{{title}}\" (priority: {{priority}}).",
+      "taskReview": "Task \"{{title}}\" has been submitted for your review."
+    },
+    "optionLabels": {
+      "requestChanges": "Request Changes"
+    },
+    "badgeLabel": "Notification",
     "approvalType": {
       "task": "Task",
       "requirement": "Requirement",

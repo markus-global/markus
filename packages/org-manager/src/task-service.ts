@@ -759,6 +759,12 @@ export class TaskService {
         ...(context.requirementId ? { requirementId: context.requirementId } : {}),
         authorName,
         mentionType: 'comment',
+        i18n: {
+          titleKey: 'notifications.titles.mentionedYou',
+          titleParams: { authorName },
+          bodyKey: 'notifications.bodies.mentionPreview',
+          bodyParams: { itemTitle, preview },
+        },
       },
     });
   }
@@ -2425,7 +2431,16 @@ export class TaskService {
         body: `Agent created task "${task.title}"`,
         actionType: 'navigate',
         actionTarget: JSON.stringify({ path: `/work?openTask=${task.id}` }),
-        metadata: { taskId: task.id, agentId: task.assignedAgentId },
+        metadata: {
+          taskId: task.id,
+          agentId: task.assignedAgentId,
+          i18n: {
+            titleKey: 'notifications.titles.taskCreated',
+            titleParams: { title: task.title },
+            bodyKey: 'notifications.bodies.agentCreatedTask',
+            bodyParams: { title: task.title },
+          },
+        },
       });
     }
     log.info(`Task created: ${task.title}`, {
@@ -2858,7 +2873,7 @@ export class TaskService {
       agentId: task.assignedAgentId,
       agentName: assigneeName,
       type: 'custom',
-      title: `Review: ${task.title}`,
+      title: task.title,
       description,
       details: { taskId: task.id, taskTitle: task.title, subType: 'task_review' },
       targetUserId: task.reviewerId,
@@ -2976,7 +2991,19 @@ export class TaskService {
         priority,
         actionType: 'navigate',
         actionTarget: JSON.stringify({ path: `/work?openTask=${task.id}` }),
-        metadata: { taskId: task.id, status: to, agentId: task.assignedAgentId },
+        metadata: {
+          taskId: task.id,
+          status: to,
+          agentId: task.assignedAgentId,
+          i18n: {
+            titleKey: to === 'review' ? 'notifications.titles.taskReadyForReview'
+              : to === 'completed' ? 'notifications.titles.taskCompleted'
+              : 'notifications.titles.taskFailed',
+            titleParams: { title: task.title },
+            bodyKey: 'notifications.bodies.taskStatusChanged',
+            bodyParams: { title: task.title, status: to },
+          },
+        },
       });
     }
   }

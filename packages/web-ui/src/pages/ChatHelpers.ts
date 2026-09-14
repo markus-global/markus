@@ -321,12 +321,32 @@ export function storedSegmentsToMsgSegments(
   });
 }
 
+/**
+ * `Date#toLocaleTimeString` is an ICU round-trip and one of the most expensive calls in V8.
+ * The chat list formats a timestamp for EVERY message on EVERY render — a production CPU
+ * profile showed it as the single hottest JS function (6–15% self time, plus the GC churn
+ * from its throwaway temporaries). The same instant always formats to the same string, so
+ * memoize it. Bounded so a long session cannot grow without limit.
+ */
+const _localeTimeCache = new Map<string, string>();
+const LOCALE_TIME_CACHE_MAX = 2000;
+export function cachedLocaleTime(iso?: string): string {
+  if (!iso) return '';
+  const hit = _localeTimeCache.get(iso);
+  if (hit !== undefined) return hit;
+  const d = new Date(iso);
+  const out = isNaN(d.getTime()) ? '' : d.toLocaleTimeString();
+  if (_localeTimeCache.size >= LOCALE_TIME_CACHE_MAX) _localeTimeCache.clear();
+  _localeTimeCache.set(iso, out);
+  return out;
+}
+
 export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   const base: ChatMsg = {
     id: m.id,
     sender: m.role === 'user' ? 'user' : 'agent',
     text: m.content,
-    time: new Date(m.createdAt).toLocaleTimeString(),
+    time: cachedLocaleTime(m.createdAt),
     rawCreatedAt: m.createdAt,
     agentId: m.role !== 'user' ? m.agentId : undefined,
   };
@@ -472,7 +492,7 @@ export function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): Ch
     id: m.id,
     sender: isSelf ? 'user' : 'agent',
     text,
-    time: new Date(m.createdAt).toLocaleTimeString(),
+    time: cachedLocaleTime(m.createdAt),
     rawCreatedAt: m.createdAt,
     agentName: isSelf ? undefined : m.senderName,
     agentId: isSelf ? undefined : m.senderId,
@@ -512,17 +532,35 @@ export function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): Ch
   return base;
 }
 
+const _smartTimeCache = new Map<string, string>();
+const SMART_TIME_CACHE_MAX = 2000;
 export function formatSmartTime(isoOrLocale: string, rawCreatedAt?: string, labels?: { yesterday?: string }): string {
-  const d = rawCreatedAt ? new Date(rawCreatedAt) : new Date();
-  if (isNaN(d.getTime())) return isoOrLocale;
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  // Cacheable only when the caller pins the instant (otherwise the label depends on "now"),
+  // and the today/yesterday branch depends on the wall clock — so the day bucket is part of
+  // the key. Folding the day bucket in is what makes this safe across midnight.
+  const cacheKey = rawCreatedAt
+    ? `${rawCreatedAt}|${todayStart}|${isoOrLocale}|${labels?.yesterday ?? ''}`
+    : null;
+  if (cacheKey) {
+    const hit = _smartTimeCache.get(cacheKey);
+    if (hit !== undefined) return hit;
+  }
+  const d = rawCreatedAt ? new Date(rawCreatedAt) : now;
+  if (isNaN(d.getTime())) return isoOrLocale;
   const ts = d.getTime();
   // Include seconds so consecutive agent pushes within the same minute stay distinguishable.
   const hhmmss = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-  if (ts >= todayStart) return hhmmss;
-  if (ts >= todayStart - 86400000) return `${labels?.yesterday ?? 'Yesterday'} ${hhmmss}`;
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + hhmmss;
+  let out: string;
+  if (ts >= todayStart) out = hhmmss;
+  else if (ts >= todayStart - 86400000) out = `${labels?.yesterday ?? 'Yesterday'} ${hhmmss}`;
+  else out = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + hhmmss;
+  if (cacheKey) {
+    if (_smartTimeCache.size >= SMART_TIME_CACHE_MAX) _smartTimeCache.clear();
+    _smartTimeCache.set(cacheKey, out);
+  }
+  return out;
 }
 
 export function getDateKey(rawCreatedAt?: string): string {

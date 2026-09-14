@@ -343,22 +343,28 @@ export class ConversationBufferManager {
     return (this.sendCount.get(key) ?? 0) > 0;
   }
 
-  addStreamSession(key: string, sid: string): void {
+  /** Returns true when the membership actually changed (false = already present). */
+  addStreamSession(key: string, sid: string): boolean {
     const s = this.streamingSessions.get(key) ?? new Set();
+    if (s.has(sid)) {
+      this.streamingSessions.set(key, s);
+      return false;
+    }
     s.add(sid);
     this.streamingSessions.set(key, s);
+    return true;
   }
 
-  removeStreamSession(key: string, sid?: string): void {
+  /** Returns true when the membership actually changed (false = nothing to remove). */
+  removeStreamSession(key: string, sid?: string): boolean {
     if (sid) {
       const s = this.streamingSessions.get(key);
-      if (s) {
-        s.delete(sid);
-        if (s.size === 0) this.streamingSessions.delete(key);
-      }
-    } else {
-      this.streamingSessions.delete(key);
+      if (!s || !s.has(sid)) return false;
+      s.delete(sid);
+      if (s.size === 0) this.streamingSessions.delete(key);
+      return true;
     }
+    return this.streamingSessions.delete(key);
   }
 
   getStreamSessions(key: string): Set<string> | undefined {

@@ -13,6 +13,7 @@ import { MarkdownMessage, ImagePreviewModal } from '../components/MarkdownMessag
 import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
 import { UserInputModal } from '../components/UserInputModal.tsx';
 import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
+import { notifTitle, notifBody } from '../components/NotificationBell.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
   ToolCallRow, ExecEntryRow, ThinkingDots,
@@ -1684,12 +1685,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // Returning to Team after visiting another page: reattach if a generation is
   // still running (SSE may have been killed while the tab was hidden).
+  //
+  // The callback is held in a ref on purpose: it used to sit in the deps array
+  // while its own identity was unstable, so this effect re-fired on EVERY
+  // render. Combined with the unconditional stream-membership bump inside
+  // clearStreamSession that produced an infinite render loop (~120/s, no DOM
+  // change, 100%+ CPU) exactly while the UI was idle. Depend only on real keys.
+  const reattachRef = useRef(tryReattachActiveStream);
+  reattachRef.current = tryReattachActiveStream;
   useEffect(() => {
     if (!isActive || previewMode || chatMode !== 'direct' || !selectedAgent) return;
     const sid = activeSessionId;
     if (!sid || sid === NEW_CHAT_PLACEHOLDER_ID) return;
-    void tryReattachActiveStream(selectedAgent, sid, currentConvKeyRef.current);
-  }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, tryReattachActiveStream]);
+    void reattachRef.current(selectedAgent, sid, currentConvKeyRef.current);
+  }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId]);
 
   // Load older sessions (append to the list) — History panel "load more"
   const loadMoreSessions = useCallback(async () => {
@@ -4133,11 +4142,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     </span>
                     <span className="flex-1 min-w-0">
                       <span className="flex items-baseline gap-1.5 min-w-0">
-                        <span className="flex-1 text-sm font-medium text-fg-primary truncate">{n.title}</span>
+                        <span className="flex-1 text-sm font-medium text-fg-primary truncate">{notifTitle(n, t)}</span>
                         <span className="text-[10px] text-fg-tertiary shrink-0 whitespace-nowrap">{formatSmartTime(n.createdAt, n.createdAt, dateLabels)}</span>
                       </span>
                       <span className="block text-xs text-fg-tertiary truncate">
-                        {n.body?.replace(/\s+/g, ' ').trim() || t('page.notifyUserPrompt', { defaultValue: 'Agent notification awaiting your attention' })}
+                        {notifBody(n, t).replace(/\s+/g, ' ').trim() || t('page.notifyUserPrompt', { defaultValue: 'Agent notification awaiting your attention' })}
                       </span>
                     </span>
                     <span className={`text-xs font-medium shrink-0 inline-flex items-center gap-1 ${isHigh ? 'text-amber-500' : 'text-blue-500'}`}>
