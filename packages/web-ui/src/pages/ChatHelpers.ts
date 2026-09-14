@@ -581,6 +581,49 @@ export function formatDateLabel(rawCreatedAt: string, labels?: { today?: string;
   return d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 
+// ─── Team-chat keyboard shortcuts (需求 4+5) ───────────────────────────────────
+
+/** Team-chat shortcut actions resolved from a keydown. */
+export type TeamChatShortcut =
+  | 'new-conversation'       // Cmd/Ctrl+N
+  | 'cycle-session-next'     // Ctrl+Tab
+  | 'cycle-session-prev'     // Ctrl+Shift+Tab
+  | null;
+
+/**
+ * Map a raw keydown to a Team-chat shortcut action.
+ * `isMac` selects the platform modifier (⌘ vs Ctrl). Tab cycling always uses
+ * Ctrl (even on Mac), mirroring the Work page's Ctrl+Tab board cycling.
+ */
+export function resolveTeamChatShortcut(
+  e: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean },
+  isMac: boolean,
+): TeamChatShortcut {
+  const mod = isMac ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+  if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'n') return 'new-conversation';
+  if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Tab') {
+    return e.shiftKey ? 'cycle-session-prev' : 'cycle-session-next';
+  }
+  return null;
+}
+
+/**
+ * Next session-tab id when cycling `ids` from `activeId` by `dir` (1 fwd / -1 back).
+ * Returns null when there are fewer than 2 tabs (nothing to cycle).
+ * Falls back sensibly (fw → first, back → last) when `activeId` is not in the list.
+ */
+export function cycleSessionTabId(
+  ids: readonly string[],
+  activeId: string | null,
+  dir: 1 | -1,
+): string | null {
+  if (ids.length <= 1) return null;
+  const idx = activeId === null ? -1 : ids.indexOf(activeId);
+  const base = idx >= 0 ? idx : (dir === 1 ? -1 : 0);
+  const next = (base + dir + ids.length) % ids.length;
+  return ids[next] ?? null;
+}
+
 export function throttle<T extends (...args: unknown[]) => unknown>(fn: T, ms: number): T {
   let last = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;

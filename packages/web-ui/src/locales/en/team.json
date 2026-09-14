@@ -330,6 +330,7 @@
     "newChat": "New Chat",
     "newChatPlus": "+ New",
     "newChatButton": "+ New Chat",
+    "newChatKbdHint": "New conversation ({{kbd}})",
     "historyTitle": "History",
     "rightPanelToggle": "Toggle side panel",
     "sessionMain": "Main",
