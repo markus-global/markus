@@ -231,7 +231,7 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
         type="button"
         disabled={disabled}
         onClick={() => setOpen(v => !v)}
-        className="max-w-[180px] px-1.5 py-1 text-[12px] text-fg-secondary hover:text-fg-primary disabled:opacity-40 rounded-md hover:bg-surface-elevated transition-colors flex items-center gap-1"
+        className="max-w-[110px] md:max-w-[180px] px-1.5 py-1 text-[12px] text-fg-secondary hover:text-fg-primary disabled:opacity-40 rounded-md hover:bg-surface-elevated transition-colors flex items-center gap-1"
         title={effective ? `${effective.provider}: ${effective.model}` : t('chatModel.title', { defaultValue: 'Model' })}
       >
         <span className="truncate">{label}</span>

@@ -20,6 +20,9 @@ import {
   stripThinkingBlocks,
   resolveTeamChatShortcut,
   cycleSessionTabId,
+  COMPOSER_MAX_LINES,
+  composerMaxHeightPx,
+  composerStacked,
   type ChatMsg,
 } from './ChatHelpers.ts';
 import type { ChatMessageInfo } from '../api.ts';
@@ -505,5 +508,42 @@ describe('cycleSessionTabId', () => {
   it('returns null when there are fewer than two tabs', () => {
     expect(cycleSessionTabId(['only'], 'only', 1)).toBeNull();
     expect(cycleSessionTabId([], null, 1)).toBeNull();
+  });
+});
+
+// ─── Composer sizing & layout (需求 6+7) ──────────────────────────────────────
+
+describe('composerMaxHeightPx', () => {
+  it('budgets ~10 lines of input (max >= 10 × line-height + padding)', () => {
+    expect(COMPOSER_MAX_LINES).toBe(10);
+    // 23px/line × 10 + 24px expanded vertical padding = 254px
+    expect(composerMaxHeightPx(false)).toBe(254);
+    // compact variant uses tighter 12px padding → 242px
+    expect(composerMaxHeightPx(true)).toBe(242);
+  });
+
+  it('never returns a value below 10 full lines of readable text', () => {
+    const lineHeight = 23; // text-sm leading-relaxed ≈ 22.75
+    expect(composerMaxHeightPx(false) - 24).toBeGreaterThanOrEqual(10 * lineHeight);
+    expect(composerMaxHeightPx(true) - 12).toBeGreaterThanOrEqual(10 * lineHeight);
+  });
+
+  it('expanded allows strictly more height than compact', () => {
+    expect(composerMaxHeightPx(false)).toBeGreaterThan(composerMaxHeightPx(true));
+  });
+});
+
+describe('composerStacked', () => {
+  it('mobile narrow screens always stack controls under the input (模型选择器让位)', () => {
+    expect(composerStacked(true, false)).toBe(true);
+    expect(composerStacked(true, true)).toBe(true);
+  });
+
+  it('desktop keeps a single row while the composer is empty', () => {
+    expect(composerStacked(false, false)).toBe(false);
+  });
+
+  it('desktop stacks once the user starts composing (attach/text expands)', () => {
+    expect(composerStacked(false, true)).toBe(true);
   });
 });

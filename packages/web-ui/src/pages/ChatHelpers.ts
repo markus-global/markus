@@ -644,3 +644,31 @@ export function throttle<T extends (...args: unknown[]) => unknown>(fn: T, ms: n
     }
   }) as T;
 }
+
+// ─── Composer sizing & layout (需求 6+7) ──────────────────────────────────────
+
+/** Composer max height in "lines" (需求 6): allow ~10 lines of long input. */
+export const COMPOSER_MAX_LINES = 10;
+/** Measured line height of `text-sm` + `leading-relaxed` (14px × 1.625 ≈ 22.75px). */
+export const COMPOSER_LINE_HEIGHT_PX = 23;
+/** Textarea vertical padding: expanded px-4 py-3 (24px) vs compact py-1.5 (12px). */
+const COMPOSER_PADDING_PX = { expanded: 24, compact: 12 } as const;
+
+/**
+ * Max composer textarea height for ~10 lines, in px.
+ * `compact` mirrors the collapsed composer (messages visible) — tighter padding,
+ * `expanded` (new/empty chat & typing) gets the full 10-line budget.
+ */
+export function composerMaxHeightPx(compact: boolean): number {
+  const vPadding = compact ? COMPOSER_PADDING_PX.compact : COMPOSER_PADDING_PX.expanded;
+  return COMPOSER_MAX_LINES * COMPOSER_LINE_HEIGHT_PX + vPadding;
+}
+
+/**
+ * Whether the composer should stack input and controls on separate rows.
+ * Mobile always stacks so the model selector never steals textarea width
+ * (需求 7: 窄屏下模型选择器不再挤压输入框); desktop stacks once typing/attaching.
+ */
+export function composerStacked(isMobile: boolean, composing: boolean): boolean {
+  return isMobile || composing;
+}

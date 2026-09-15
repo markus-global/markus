@@ -52,6 +52,7 @@ import {
   stopRunningTools, hasStreamingTail,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
   resolveTeamChatShortcut, cycleSessionTabId,
+  composerMaxHeightPx, composerStacked,
 } from './ChatHelpers.ts';
 import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
 import {
@@ -697,7 +698,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (!el) return;
     const compact = compactComposerRef.current;
     const minH = compact ? 36 : 52;
-    const maxH = compact ? 160 : 120;
+    const maxH = composerMaxHeightPx(compact);
     el.style.height = 'auto';
     const h = Math.max(minH, Math.min(el.scrollHeight, maxH));
     el.style.height = `${h}px`;
@@ -4420,8 +4421,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </button>
             </div>
           )}
-          <div className={composerExpanded ? 'flex flex-col gap-2 min-w-0' : 'flex gap-2 items-end min-w-0'}>
-            <div className={composerExpanded ? 'flex gap-2 items-end min-w-0' : 'contents'}>
+          <div className={composerStacked(isMobile, composerExpanded) ? 'flex flex-col gap-2 min-w-0' : 'flex gap-2 items-end min-w-0'}>
+            <div className={composerStacked(isMobile, composerExpanded) ? 'flex gap-2 items-end min-w-0' : 'contents'}>
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
@@ -4490,7 +4491,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 }`}
                 style={{
                   minHeight: compactComposer ? '36px' : '52px',
-                  maxHeight: compactComposer ? '160px' : '120px',
+                  maxHeight: `${composerMaxHeightPx(compactComposer)}px`,
                 }}
               />
             </div>
