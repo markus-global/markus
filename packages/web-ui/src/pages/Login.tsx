@@ -99,7 +99,7 @@ export function Login({ onLogin, hasOwner }: HubLoginProps) {
       // identity choice. `force` clears any residual token from localStorage
       // (which could otherwise be another device's/injected credential) so
       // OAuth always opens instead of short-circuiting into an existing token.
-      await ensureHubAuth(method, { force: true });
+      await ensureHubAuth({ method, force: true });
       await finishHubLogin();
     } catch (e) {
       const msg = e instanceof Error ? e.message : '';
