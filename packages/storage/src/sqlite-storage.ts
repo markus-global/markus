@@ -741,6 +741,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'users', column: 'deleted_at', sql: 'ALTER TABLE users ADD COLUMN deleted_at TEXT' },
     { table: 'users', column: 'hub_user_id', sql: 'ALTER TABLE users ADD COLUMN hub_user_id TEXT' },
     { table: 'users', column: 'hub_username', sql: 'ALTER TABLE users ADD COLUMN hub_username TEXT' },
+    { table: 'users', column: 'hub_token', sql: 'ALTER TABLE users ADD COLUMN hub_token TEXT' },
     { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
     { table: 'agents', column: 'disabled', sql: 'ALTER TABLE agents ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
@@ -2964,6 +2965,19 @@ export class SqliteUserRepo {
     } else {
       this.db.prepare('UPDATE users SET hub_user_id = ? WHERE id = ?').run(hubUserId, id);
     }
+  }
+
+  /** Read the Hub token bound to a specific user (per-user credential storage). */
+  getHubToken(id: string): string | null {
+    const r = this.db.prepare('SELECT hub_token FROM users WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? (r['hub_token'] as string | null) ?? null : null;
+  }
+
+  /** Persist (or clear) the Hub token bound to a specific user. */
+  setHubToken(id: string, token: string | null) {
+    this.db.prepare('UPDATE users SET hub_token = ? WHERE id = ?').run(token, id);
   }
 
   findById(id: string) {

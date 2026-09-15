@@ -2675,12 +2675,18 @@ if (!(window as unknown as Record<string, boolean>).__MARKUS_PREVIEW__) {
         void refreshHubUserFromToken();
       } else {
         try {
+          // SECURITY (需求 9 / T6 P0-2): only restore a hub token from the
+          // backend when we already have a valid local session. The server now
+          // 401s this GET for unauthenticated clients, and the explicit
+          // api.auth.me() gate prevents the login page from ever pulling a
+          // server-side token into this browser's localStorage.
+          await api.auth.me();
           const saved = await request<{ token: string | null }>('/settings/hub-token');
           if (saved.token) {
             localStorage.setItem('markus_hub_token', saved.token);
             await refreshHubUserFromToken();
           }
-        } catch { /* backend may not support GET yet */ }
+        } catch { /* not logged in / backend denied — do not restore */ }
       }
     })
     .catch(() => {});
@@ -2768,12 +2774,22 @@ export function getHubToken(): string | null {
 }
 
 /**
- * Restore Hub JWT from the desktop backend (`~/.markus/hub-token`) into
+ * Restore Hub JWT from the backend (per-user, server requires auth) into
  * localStorage when the renderer cache is empty. Safe to call repeatedly.
+ *
+ * SECURITY (需求 9 / T6 P0-2): only restore when this browser already holds a
+ * valid local session — the server 401s unauthenticated reads anyway, and a
+ * local auth check here keeps the login page from ever pulling a token into
+ * this browser's localStorage.
  */
 export async function restoreHubTokenFromBackend(): Promise<string | null> {
   const existing = getHubToken();
   if (existing) return existing;
+  try {
+    await api.auth.me();
+  } catch {
+    return null;
+  }
   try {
     const saved = await request<{ token: string | null }>('/settings/hub-token');
     if (saved.token) {
@@ -2783,7 +2799,7 @@ export async function restoreHubTokenFromBackend(): Promise<string | null> {
       void refreshHubUserFromToken();
       return saved.token;
     }
-  } catch { /* backend unavailable */ }
+  } catch { /* backend unavailable / still unauthenticated */ }
   return null;
 }
 
