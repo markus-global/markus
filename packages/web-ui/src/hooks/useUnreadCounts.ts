@@ -162,6 +162,33 @@ export function useAgentUnread(
 }
 
 /**
+ * Compute the total "Team chat" unread badge count — the same number the Team page
+ * conversation list displays.
+ *
+ * This intentionally mirrors the Team page's roster derivation (unreadByAgent via
+ * useAgentUnread + unreadByChannel), NOT a blind sum of every conversation key:
+ *  - `session:*` keys count only when the session maps to an agent in
+ *    `sessionAgentMap` (orphan sessions / deleted agents are not visible in the roster)
+ *  - `channel:*` keys (group chats / DMs / notes channels) always count
+ * Anything outside those two prefixes is ignored.
+ */
+export function sumTeamChatUnread(
+  counts: Record<string, number>,
+  sessionAgentMap: Record<string, string>,
+): number {
+  let total = 0;
+  for (const [key, count] of Object.entries(counts)) {
+    if (key.startsWith('session:')) {
+      const sessionId = key.slice('session:'.length);
+      if (sessionAgentMap[sessionId]) total += count;
+    } else if (key.startsWith('channel:')) {
+      total += count;
+    }
+  }
+  return total;
+}
+
+/**
  * Get unread for a team by summing its team channel + all member agent sessions.
  */
 export function getTeamUnread(
