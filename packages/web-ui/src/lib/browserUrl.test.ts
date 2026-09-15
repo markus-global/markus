@@ -143,11 +143,31 @@ describe('search engine configuration', () => {
     vi.unstubAllGlobals();
   });
 
-  it('registers at least bing and google', () => {
+  it('registers the core engines', () => {
     expect(SEARCH_ENGINE_IDS).toContain('bing');
     expect(SEARCH_ENGINE_IDS).toContain('google');
+    expect(SEARCH_ENGINE_IDS).toContain('duckduckgo');
     expect(SEARCH_ENGINES.bing.searchUrl('x')).toBe('https://www.bing.com/search?q=x');
     expect(SEARCH_ENGINES.google.searchUrl('x')).toBe('https://www.google.com/search?q=x');
+    expect(SEARCH_ENGINES.duckduckgo.searchUrl('x')).toBe('https://duckduckgo.com/?q=x');
+  });
+
+  it('registers international engines (baidu / yandex / sogou / so360)', () => {
+    expect(SEARCH_ENGINE_IDS).toContain('baidu');
+    expect(SEARCH_ENGINE_IDS).toContain('yandex');
+    expect(SEARCH_ENGINE_IDS).toContain('sogou');
+    expect(SEARCH_ENGINE_IDS).toContain('so360');
+    expect(SEARCH_ENGINES.baidu.searchUrl('AI')).toBe('https://www.baidu.com/s?wd=AI');
+    expect(SEARCH_ENGINES.yandex.searchUrl('AI')).toBe('https://yandex.com/search/?text=AI');
+    expect(SEARCH_ENGINES.sogou.searchUrl('AI')).toBe('https://www.sogou.com/web?query=AI');
+    expect(SEARCH_ENGINES.so360.searchUrl('AI')).toBe('https://www.so.com/s?q=AI');
+  });
+
+  it('registers privacy engines (brave / ecosia)', () => {
+    expect(SEARCH_ENGINE_IDS).toContain('brave');
+    expect(SEARCH_ENGINE_IDS).toContain('ecosia');
+    expect(SEARCH_ENGINES.brave.searchUrl('AI')).toBe('https://search.brave.com/search?q=AI');
+    expect(SEARCH_ENGINES.ecosia.searchUrl('AI')).toBe('https://www.ecosia.org/search?q=AI');
   });
 
   it('defaults to bing when nothing is saved', () => {

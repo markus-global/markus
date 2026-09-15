@@ -6,7 +6,16 @@
  * (Bing/Google/DuckDuckGo) instead of being forced into a broken https:// URL.
  */
 
-export type SearchEngineId = 'bing' | 'google' | 'duckduckgo';
+export type SearchEngineId =
+  | 'bing'
+  | 'google'
+  | 'duckduckgo'
+  | 'baidu'
+  | 'yandex'
+  | 'brave'
+  | 'ecosia'
+  | 'sogou'
+  | 'so360';
 
 export interface SearchEngine {
   id: SearchEngineId;
@@ -30,6 +39,36 @@ export const SEARCH_ENGINES: Record<SearchEngineId, SearchEngine> = {
     id: 'duckduckgo',
     name: 'DuckDuckGo',
     searchUrl: (q) => `https://duckduckgo.com/?q=${encodeURIComponent(q)}`,
+  },
+  baidu: {
+    id: 'baidu',
+    name: 'Baidu',
+    searchUrl: (q) => `https://www.baidu.com/s?wd=${encodeURIComponent(q)}`,
+  },
+  yandex: {
+    id: 'yandex',
+    name: 'Yandex',
+    searchUrl: (q) => `https://yandex.com/search/?text=${encodeURIComponent(q)}`,
+  },
+  brave: {
+    id: 'brave',
+    name: 'Brave',
+    searchUrl: (q) => `https://search.brave.com/search?q=${encodeURIComponent(q)}`,
+  },
+  ecosia: {
+    id: 'ecosia',
+    name: 'Ecosia',
+    searchUrl: (q) => `https://www.ecosia.org/search?q=${encodeURIComponent(q)}`,
+  },
+  sogou: {
+    id: 'sogou',
+    name: 'Sogou',
+    searchUrl: (q) => `https://www.sogou.com/web?query=${encodeURIComponent(q)}`,
+  },
+  so360: {
+    id: 'so360',
+    name: '360 Search',
+    searchUrl: (q) => `https://www.so.com/s?q=${encodeURIComponent(q)}`,
   },
 };
 
