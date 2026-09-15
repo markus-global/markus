@@ -13,7 +13,6 @@ export type SearchEngineId =
   | 'baidu'
   | 'yandex'
   | 'brave'
-  | 'ecosia'
   | 'sogou'
   | 'so360';
 
@@ -54,11 +53,6 @@ export const SEARCH_ENGINES: Record<SearchEngineId, SearchEngine> = {
     id: 'brave',
     name: 'Brave',
     searchUrl: (q) => `https://search.brave.com/search?q=${encodeURIComponent(q)}`,
-  },
-  ecosia: {
-    id: 'ecosia',
-    name: 'Ecosia',
-    searchUrl: (q) => `https://www.ecosia.org/search?q=${encodeURIComponent(q)}`,
   },
   sogou: {
     id: 'sogou',

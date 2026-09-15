@@ -163,11 +163,9 @@ describe('search engine configuration', () => {
     expect(SEARCH_ENGINES.so360.searchUrl('AI')).toBe('https://www.so.com/s?q=AI');
   });
 
-  it('registers privacy engines (brave / ecosia)', () => {
+  it('registers privacy engines (brave)', () => {
     expect(SEARCH_ENGINE_IDS).toContain('brave');
-    expect(SEARCH_ENGINE_IDS).toContain('ecosia');
     expect(SEARCH_ENGINES.brave.searchUrl('AI')).toBe('https://search.brave.com/search?q=AI');
-    expect(SEARCH_ENGINES.ecosia.searchUrl('AI')).toBe('https://www.ecosia.org/search?q=AI');
   });
 
   it('defaults to bing when nothing is saved', () => {
