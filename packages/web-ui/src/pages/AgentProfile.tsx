@@ -7,7 +7,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
-import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, type OverviewSectionId } from '../lib/agentOverview.ts';
+import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -283,7 +283,7 @@ function SectionPanel({ children }: { children: React.ReactNode }) {
 
 /** 单条活动（心跳 / A2A 共用）。两个列表原先各自烤了一份完全一样的行标记。 */
 function ActivityRow({ agentId, act, dotClass, expanded, onToggle }: {
-  agentId: string; act: ActivitySummary; dotClass: string; expanded: boolean; onToggle: () => void;
+  agentId: string; act: ActivityRecord; dotClass: string; expanded: boolean; onToggle: () => void;
 }) {
   return (
     <div>
@@ -307,7 +307,8 @@ function ActivityRow({ agentId, act, dotClass, expanded, onToggle }: {
 
 function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highlightMailboxId, initialSection }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean; highlightMailboxId?: string; initialSection?: OverviewSectionId }) {
   const [usageInfo, setUsageInfo] = useState<AgentUsageInfo | null>(null);
-  const [recentActivities, setRecentActivities] = useState<ActivitySummary[]>([]);
+  // 持久化活动历史（SQLite），不是内存里的「此刻在跑」。类型见 api.ts 的 ActivityRecord。
+  const [recentActivities, setRecentActivities] = useState<ActivityRecord[]>([]);
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
   const [agentStorage, setAgentStorage] = useState<StorageAgentItem | null>(null);
   const [agentDataDir, setAgentDataDir] = useState('');
@@ -336,7 +337,12 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
       const info = d.agents.find(a => a.agentId === agent.id);
       if (info) setUsageInfo(info);
     }).catch(() => {});
-    api.agents.getRecentActivities(agent.id).then(d => setRecentActivities(d.activities)).catch(() => {});
+    // 【为什么不用 /recent-activities】该接口返回的是 liveActivities()——内存中
+    // 「此刻正在执行」的活动。它没有历史：agent 一空闲就返回空数组，于是标题写着
+    // 「最近活动」的卡片只在 agent 正在干活时才有内容。持久化历史一直在写
+    // （agent_activities 表），只是从来没被这个面板读过。
+    api.agents.getActivities(agent.id, { limit: RECENT_ACTIVITY_FETCH_LIMIT })
+      .then(d => setRecentActivities(d.activities)).catch(() => {});
     api.system.storage().then(info => {
       setAgentDataDir(info.dataDir + '/agents/' + agent.id);
       const match = info.agents.find(a => a.id === agent.id);
@@ -433,17 +439,21 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
     );
   }
 
-  // 活动列表：服务端 `liveActivities()` 按 startedAt **升序**返回（服务端自己的
-  // getCurrentActivity() 取的是最后一个元素），直接渲染会把最旧的排在「最近心跳」
-  // 卡片最上面。recentActivityRows 统一反转 + 截断，header 上的计数则是真实总数。
-  const heartbeats = recentActivityRows(recentActivities.filter(a => a.type === 'heartbeat'));
-  const chats = recentActivityRows(recentActivities.filter(a => a.type === 'chat'));
+  // 活动列表来自持久化历史（服务端按 started_at DESC 返回）。分组规则见
+  // splitRecentActivity——A2A 组只认 'a2a'，不认 'chat'（后者是人类会话，
+  // 在「聊天」tab 里有完整历史）。recentActivityRows 再统一排序 + 截断。
+  const { heartbeats: heartbeatRows, comms: commRows } = splitRecentActivity(recentActivities);
+  const heartbeats = recentActivityRows(heartbeatRows);
+  const comms = recentActivityRows(commRows);
   const activeN = agent.state.activeTaskIds?.length ?? 0;
   // 列表只显示前几条（OVERVIEW_ACTIVITY_LIMIT），所以「共多少次」要单独给出来，
   // 否则看到 5 行会以为只有 5 次。
+  // 计数是「窗口内」的条数，不是全历史总数——所以先把窗口说清楚，否则 N 会被
+  // 读成「这个 agent 一共跑过 N 次」。
   const recentCaption = [
+    recentActivities.length > 0 ? t('agent:profilePage.overview.recentWindow', { count: recentActivities.length }) : null,
     heartbeats.total > 0 ? t('agent:profilePage.overview.heartbeatRuns', { count: heartbeats.total }) : null,
-    chats.total > 0 ? t('agent:profilePage.overview.conversations', { count: chats.total }) : null,
+    comms.total > 0 ? t('agent:profilePage.overview.a2aRuns', { count: comms.total }) : null,
   ].filter(Boolean).join(' · ');
 
   return (
@@ -602,11 +612,11 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
               </div>
             </div>
           )}
-          {chats.total > 0 && (
+          {comms.total > 0 && (
             <div className="mt-3">
               <h4 className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-1">{t('agent:profilePage.overview.recentA2A')}</h4>
               <div className="divide-y divide-gray-800/50">
-                {chats.shown.map(act => (
+                {comms.shown.map(act => (
                   <ActivityRow key={act.id} agentId={agent.id} act={act} dotClass="bg-blue-400"
                     expanded={expandedActivityId === act.id}
                     onToggle={() => setExpandedActivityId(expandedActivityId === act.id ? null : act.id)} />
@@ -614,7 +624,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
               </div>
             </div>
           )}
-          {heartbeats.total === 0 && chats.total === 0 && (
+          {heartbeats.total === 0 && comms.total === 0 && (
             <p className="text-xs text-fg-tertiary">{t('agent:profilePage.overview.sections.recent.empty')}</p>
           )}
         </SectionPanel>

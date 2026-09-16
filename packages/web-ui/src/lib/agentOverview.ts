@@ -204,6 +204,34 @@ export function recentActivityRows<T extends { startedAt: string }>(
   return { shown: sorted.slice(0, Math.max(0, limit)), total: all.length };
 }
 
+// ─── Recent activity: which source, and which type means what ────────────────
+
+/**
+ * How many persisted activity rows the 最近活动 panel pulls before it splits them
+ * into groups. One fetch, then filter locally — asking the server once per type
+ * would make the two lists disagree about their window (two queries, two instants).
+ */
+export const RECENT_ACTIVITY_FETCH_LIMIT = 100;
+
+/**
+ * Split persisted activity history into the two groups the panel shows.
+ *
+ * 【为什么 A2A 组只认 'a2a'，不认 'chat'】旧实现在内存活动上过滤 `type === 'chat'`，
+ * 于是「最近 A2A 通信」这一栏列出的其实是**和人类的对话**（label 形如
+ * "Chat with …"），而真正 sourceType='a2a_message' 的活动（库里 331 条）被静默丢掉。
+ * 两个类型是不同的东西，不能互换：'chat' = 老板/人类发起，'a2a' = 同事 agent 发起。
+ * 人类会话在「聊天」tab 里有完整历史，这里重复列一遍只会让标题说谎。
+ */
+export function splitRecentActivity<T extends { type: string }>(
+  list: T[] | undefined | null,
+): { heartbeats: T[]; comms: T[] } {
+  const all = Array.isArray(list) ? list : [];
+  return {
+    heartbeats: all.filter(a => a.type === 'heartbeat'),
+    comms: all.filter(a => a.type === 'a2a'),
+  };
+}
+
 // ─── Overview sections (sub-tabs) ────────────────────────────────────────────
 
 /**

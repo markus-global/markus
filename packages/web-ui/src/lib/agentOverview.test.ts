@@ -15,6 +15,8 @@ import {
   storageBucketLabelKey,
   agentStatusPresentation,
   recentActivityRows,
+  splitRecentActivity,
+  RECENT_ACTIVITY_FETCH_LIMIT,
   OVERVIEW_ACTIVITY_LIMIT,
   OVERVIEW_SECTION_IDS,
   DEFAULT_OVERVIEW_SECTION,
@@ -219,6 +221,46 @@ describe('recentActivityRows', () => {
 type LocaleSections = Record<string, { title?: string; hint?: string; empty?: string }>;
 const zhSections = zhAgent.profilePage.overview.sections as unknown as LocaleSections;
 const enSections = enAgent.profilePage.overview.sections as unknown as LocaleSections;
+
+describe('splitRecentActivity', () => {
+  const rec = (type: string, id: string) => ({ id, type, startedAt: '2026-09-16T10:00:00.000Z' });
+
+  it('separates heartbeats from A2A exchanges', () => {
+    const out = splitRecentActivity([
+      rec('heartbeat', 'h1'),
+      rec('a2a', 'a1'),
+      rec('heartbeat', 'h2'),
+    ]);
+    expect(out.heartbeats.map(r => r.id)).toEqual(['h1', 'h2']);
+    expect(out.comms.map(r => r.id)).toEqual(['a1']);
+  });
+
+  // 这次的缺陷：旧代码把人类会话（type='chat'，label 形如 "Chat with Jason Carter"）
+  // 当成 A2A 列在「最近 A2A 通信」标题下，而真正的 a2a 活动被丢掉。两个类型不能互换。
+  it('does not count a human chat as an A2A exchange', () => {
+    const out = splitRecentActivity([rec('chat', 'c1'), rec('a2a', 'a1')]);
+    expect(out.comms.map(r => r.id)).toEqual(['a1']);
+  });
+
+  it('ignores activity types the panel does not show', () => {
+    const out = splitRecentActivity([rec('task', 't1'), rec('internal', 'i1'), rec('heartbeat', 'h1')]);
+    expect(out.heartbeats).toHaveLength(1);
+    expect(out.comms).toHaveLength(0);
+  });
+
+  // 接口失败或字段缺失时不能抛——否则整个概览 tab 白屏。
+  it('tolerates a missing list', () => {
+    for (const input of [undefined, null, [] as ReturnType<typeof rec>[]]) {
+      expect(splitRecentActivity(input)).toEqual({ heartbeats: [], comms: [] });
+    }
+  });
+
+  // 窗口必须比展示条数大：否则 caption 里的计数就等于「看得见的行数」，
+  // 那个数字又变回一句废话（这正是之前表头写过的问题）。
+  it('fetches a window larger than the display limit', () => {
+    expect(RECENT_ACTIVITY_FETCH_LIMIT).toBeGreaterThan(OVERVIEW_ACTIVITY_LIMIT);
+  });
+});
 
 describe('OVERVIEW_SECTION_IDS', () => {
   it('lists each group exactly once', () => {
