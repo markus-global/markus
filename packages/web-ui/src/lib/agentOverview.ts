@@ -214,20 +214,29 @@ export function recentActivityRows<T extends { startedAt: string }>(
  * 展开 B」：分组越多越痛，看第二组之前先做两次无意义操作，滚动位置还得重新找。
  * 子 tab 让每一组都在一次点击之外，且当前组始终出现在同一个位置。
  *
- * 顺序保持既有阅读顺序（先遥测、后运行细节），避免「同一份内容换了位置」的额外成本。
+ * 【顺序 = 信息意图的排序，不是遥测优先】首屏回答「这个 agent 是谁、在干什么」，
+ * 统计数字回答「它烧了多少」，后者是偶发好奇、不是每次打开都要看的东西——所以
+ * `files` 打头（人设 / 心跳 / 长期记忆 / 工作记忆：改人设、查记忆都会先来这里），
+ * `usage` 殿后。「用量」不是被删掉，是退到后面：首屏已经有一行紧凑的用量概览，
+ * 需要细节时多点一次即可。
  */
-export type OverviewSectionId = 'usage' | 'recent' | 'mind' | 'files' | 'tools' | 'memory';
+export type OverviewSectionId = 'files' | 'mind' | 'recent' | 'tools' | 'memory' | 'usage';
 
 /**
  * Canonical order of the overview sub-tabs. The page maps over this array, so the
  * bar and the panels cannot disagree about which groups exist — an i18n label that
  * is missing for one of these ids is a visible defect, not a silent omission.
+ *
+ * 【顺序即首屏】子 tab 栅按此数组渲染，所以「哪个是打开时的默认组」由
+ * `DEFAULT_OVERVIEW_SECTION`（= 第一项）决定，而不是另写一份顺序——两处顺序
+ * 一旦各写一遍，迟早会出现「默认高亮的是第 4 个」这类只有肉眼能发现的错位。
  */
 export const OVERVIEW_SECTION_IDS: readonly OverviewSectionId[] = [
-  'usage', 'recent', 'mind', 'files', 'tools', 'memory',
+  'files', 'mind', 'recent', 'tools', 'memory', 'usage',
 ];
 
-export const DEFAULT_OVERVIEW_SECTION: OverviewSectionId = 'usage';
+/** 打开概览时落在哪一组：与 `OVERVIEW_SECTION_IDS[0]` 同源，见上方注释。 */
+export const DEFAULT_OVERVIEW_SECTION: OverviewSectionId = OVERVIEW_SECTION_IDS[0];
 
 /**
  * Which overview sub-tab should be active.

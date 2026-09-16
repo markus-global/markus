@@ -151,12 +151,12 @@
       "lifetimeCaption": "Cumulative since the agent was created",
       "storageDepthLimited": "Directory tree is deep — actual usage may be higher",
       "sections": {
-        "usage": { "title": "Usage & Storage", "hint": "Lifetime tokens · requests · disk usage", "empty": "No usage data yet" },
-        "recent": { "title": "Recent Activity", "hint": "Heartbeat and A2A history", "empty": "No recent activity recorded" },
-        "mind": { "title": "Runtime & Attention", "hint": "Current focus · queue · recent decisions" },
         "files": { "title": "Files", "hint": "ROLE.md / HEARTBEAT.md / knowledge.md, etc." },
+        "mind": { "title": "Runtime & Attention", "hint": "Current focus · queue · recent decisions" },
+        "recent": { "title": "Recent Activity", "hint": "Heartbeat and A2A history", "empty": "No recent activity recorded" },
         "tools": { "title": "Capabilities", "hint": "Enabled skills and tools" },
-        "memory": { "title": "Memory & Heartbeat", "hint": "Long-term memory · sessions · heartbeat rhythm" }
+        "memory": { "title": "Memory & Heartbeat", "hint": "Long-term memory · sessions · heartbeat rhythm" },
+        "usage": { "title": "Usage & Storage", "hint": "Lifetime tokens · requests · disk usage", "empty": "No usage data yet" }
       },
       "storageBuckets": {
         "workspace": "Workspace",

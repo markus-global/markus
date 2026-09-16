@@ -229,6 +229,28 @@ describe('OVERVIEW_SECTION_IDS', () => {
     expect(OVERVIEW_SECTION_IDS).toContain(DEFAULT_OVERVIEW_SECTION);
   });
 
+  // 【为什么把默认组锁在第一项】概览打开时先看到什么，是产品决定，不该由
+  // 「数组顺序」和「DEFAULT 常量」两份定义各自漂移出来。曾经默认组是第 4 项
+  // （`usage` 打头、`DEFAULT` 写死 'usage'），于是任何人调顺序都会让默认高亮
+  // 落在中间某一格——只能靠肉眼发现。
+  it('defaults to the first group', () => {
+    expect(DEFAULT_OVERVIEW_SECTION).toBe(OVERVIEW_SECTION_IDS[0]);
+  });
+
+  // 打开概览先看到「这个 agent 是谁」（人设 / 心跳 / 记忆文件）；统计数字退到后面。
+  it('leads with files and keeps usage last', () => {
+    expect(OVERVIEW_SECTION_IDS[0]).toBe('files');
+    expect(OVERVIEW_SECTION_IDS[OVERVIEW_SECTION_IDS.length - 1]).toBe('usage');
+  });
+
+  // 两份 locale 的键顺序是给人看的文档（读者会按它推断 UI 顺序）。顺序不一致本身
+  // 不会报错，但会让下一个改顺序的人以为漏改了——所以与 UI 顺序显式对齐。
+  it('keeps both locale files in the same order as the UI', () => {
+    for (const [localeName, sections] of [['zh', zhSections], ['en', enSections]] as const) {
+      expect(Object.keys(sections), `${localeName} section order`).toEqual([...OVERVIEW_SECTION_IDS]);
+    }
+  });
+
   // The sub-tab bar builds its labels from a **dynamic** key
   // (`sections.${id}.title`). A missing key does not throw — i18next falls back to
   // rendering the raw key, so the user would see a tab literally labelled
