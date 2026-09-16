@@ -266,7 +266,21 @@ points:
   persistence under the agent's data dir. `O_APPEND` single writes make concurrent
   appends atomic — no interleaving, and history survives restart.
 - `inFlight()` reconstructs "who is doing what right now" from `declared`/`fact`
-  records that have no matching `done`/`conflict`.
+  records that have no matching `done`/`conflict`, paired by **(worker, entity)** — a
+  worker serving several entities keeps *all* of them visible (keying by `workerId`
+  alone silently dropped all but the last).
+- The JSONL file **compacts** once `HANDOFF_COMPACT_THRESHOLD = 512` lines accumulate:
+  the in-memory ring buffer is rewritten wholesale, so the file is bounded by
+  `HANDOFF_MAX_KEEP + threshold` instead of growing without limit for the process
+  lifetime. Records `id`s combine `Date.now()` + an instance token + a process-monotonic
+  counter, so ids stay unique across instances *and* within a single millisecond.
+- `clear()` **truncates** the file (`writeFileSync(path, '')`). The previous
+  `appendFileSync(path, '')` wrote zero bytes without truncating, so `load()` after a
+  restart resurrected records that had been "cleared".
+- The log's lifetime is synced to the worker count: `applyConcurrency()` calls
+  `syncHandoffLog()` (create + `load()` when crossing into worker > 1, drop when falling
+  back to serial). Previously a hot-update from serial → concurrent never created the
+  log, so `getConcurrentContext()` silently returned nothing.
 
 ### 4.2 Prompt injection — `packages/core/src/context-engine.ts`
 
@@ -284,12 +298,59 @@ The block is injected into the **volatile** segment only, so the stable prompt p
 it is one of several, knows what others finished, and can avoid contradictory or
 duplicate actions.
 
-### 4.3 Tool write lock — `packages/core/src/agent.ts`
+### 4.3 Tool write lock — `packages/core/src/agent.ts` + `packages/core/src/resource-locks.ts`
 
-`withToolWriteLock(fn)` is an **agent-level FIFO promise chain**. Tool calls that mutate
-state are serialised across workers; read-only tools are not blocked. The lock is
-released even when the wrapped call throws (no leak). This closes the most common
-intra-turn race — two workers mutating shared tool state simultaneously.
+> **History:** this section previously described `withToolWriteLock(fn)` as an
+> "agent-level FIFO promise chain". That was replaced by **resource-domain locks**;
+> the text below is the current truth.
+
+`Agent.executeTool` gates every write-semantic tool through
+`ResourceLockRegistry.withLocks()` (`resourceLocks.ts`). Read-only tools do not take a
+lock. The lock is released on the throw path too (no leak).
+
+**Domain table** — `Agent.WRITE_TOOL_DOMAINS` is the single source of truth
+(`agent.ts`). Each entry maps a tool to a mutual-exclusion domain, optionally keyed by an
+argument so that *different* resources run in parallel:
+
+| Domain | Keyed by | Examples |
+|---|---|---|
+| `'*'` | — (global exclusive) | `shell_execute`, `apply_patch`, `package_install`, `hub_install`, `background_exec`, `process` |
+| `fs` | normalized path | `file_write`, `file_edit`, `generate_image`, `office_generate` |
+| `task` / `requirement` / `workflow` / `project` / `deliverable` | entity id | `task_update`, `requirement_update_status`, `workflow_run`, `deliverable_update` |
+| `terminal` / `browser` | terminal id / page id | `exec_terminal`, `click`, `navigate_page` |
+| `a2a-out` | target agent / channel | `agent_send_message`, `feishu_send_message` |
+| `memory`, `notebook`, `working-memory`, `session`, `session-tools`, `schedule`, `llm-config`, `org`, `ui`, `deliberation`, `mailbox-admin`, `notify` | single resource or item id | `memory_save`, `session`, `discover_tools`, `team_update` |
+
+**Classification is closed and test-enforced.** `Agent.isWriteTool` is *default-deny*:
+
+1. name ∈ `WRITE_TOOL_DOMAINS` → write (fine-grained domain);
+2. name ∈ `TOOL_LOCK_FREE` → **never locked** (pure readers; see below);
+3. otherwise → write with domain `tool:<name>`.
+
+Two important subtleties:
+
+- **`TOOL_LOCK_FREE` must stay exempt.** `request_user_input` / `request_user_approval`
+  **block on a human**, and `spawn_subagent(s)` run for minutes. If they took `'*'`, the
+  entire agent's writes would freeze for the whole wait. This is asserted by a test.
+- **Unknown tools get `tool:<name>`, not `'*'`.** MCP/skill/dynamically-registered tools
+  are capability-unknown, but serialising *all* of them against *all* writes would break
+  the platform's "multiple tool calls in one turn run in parallel" contract and stall the
+  20 MCP tool families we ship. Per-name mutual exclusion keeps two concurrent calls to
+  the *same* tool serialised (the common intra-tool race) while different tools stay
+  parallel. The residual (an unknown tool writing the *same file* as a concurrent
+  `file_write` is not mutually excluded) is listed in §7.
+- **Nesting is fail-fast, not deadlock.** `LockNestingConflictError` is thrown when a
+  call chain requests a lock conflicting with one it already holds (`resource-locks.ts`).
+  The old `pump()` counted the chain's *own* locks as conflicts and would **hang
+  forever**; granting instead would silently weaken `'*'` exclusivity (another chain's
+  locks are not rolled back). A loud error is the only safe of the three.
+
+**Session persistence under concurrency.** `MemoryStore.saveDebounce` is keyed by
+`session.id` (`memory/store.ts`). A single instance-level timer meant worker B's save
+cancelled worker A's pending write, silently dropping A's session from disk until the
+next save. Session files, by contrast, are per-session (`sessions/<id>.json`), so
+cross-session writes do not race; `knowledge.md` writes are synchronous
+read-modify-write, which is atomic w.r.t. other in-process code.
 
 ## 5. Cancellation & streaming (Scheme B — directed cancel)
 
@@ -341,18 +402,32 @@ These are deliberate trade-offs, documented rather than hidden:
 
 2. **Tool write lock granularity.** `withToolWriteLock` serialises a *single tool call*,
    not an entire task/flow. It narrows but does not eliminate cross-tool interleaving.
+   Two further residuals are explicit:
+   - **Dynamic tools are capability-unknown.** A tool outside the builtin registry gets
+     domain `tool:<name>` (§4.3), so it is not mutually excluded from `file_write` /
+     `shell_execute` even if it mutates the same resources. Builtins are safe because a
+     test asserts every one of them is classified.
+   - **`background_exec` / `process` are protected at *dispatch*, not for the job's
+     lifetime.** The lock covers registering the job in the process table; the spawned
+     process then runs outside the lock and may write files concurrently with other
+     workers. Treat long background jobs as a handoff-log *fact*, not as lock-covered.
 
-3. **Backstop timeout cancellation is best-effort.** When `processFocusedItem`'s backstop
+3. **Write-lock nesting is fail-fast.** A call chain that requests a lock conflicting
+   with one it already holds raises `LockNestingConflictError` (§4.3) instead of
+   deadlocking. Channel that error into the model's tool result; do not retry the
+   identical call.
+
+4. **Backstop timeout cancellation is best-effort.** When `processFocusedItem`'s backstop
    timeout fires, it cancels the in-flight stream and requeues the item. If the underlying
    transport has already detached, an orphaned turn could still complete side effects
    before the requeued item runs — a small double-side-effect window. (Noted in the code
    comment in `attention.ts`.)
 
-4. **Conflict back-off.** Under `conflictPolicy: 'auto'`, a worker that loses the entity
+5. **Conflict back-off.** Under `conflictPolicy: 'auto'`, a worker that loses the entity
    lock backs off for `250ms × (1 + min(retryCount, 8))` before retrying, instead of
    busy-waiting. `report` additionally emits an `agent:entity-conflict` event.
 
-5. **Cost.** N workers can mean up to N concurrent LLM calls. `maxWorkers` (default 3)
+6. **Cost.** N workers can mean up to N concurrent LLM calls. `maxWorkers` (default 3)
    is the cost ceiling; low-value items can still be aggregated/merged by the mailbox.
 
 ## 8. Testing
@@ -364,7 +439,11 @@ Concurrency-specific suites under `packages/core/test/`:
 | `attention-concurrent.test.ts` | worker pool start/stop, directed cancel, conflict policy |
 | `mailbox-concurrent.test.ts` | broadcast wake-up, entity lock/unlock, key derivation |
 | `agent-concurrent-activity.test.ts` | per-worker `currentActivity` isolation |
-| `agent-write-lock.test.ts` | tool write lock serialisation + no-leak on throw |
+| `agent-write-lock.test.ts` | domain-lock serialisation, per-path/per-entity parallelism, no-leak on throw, **write-tool classification totality**, lock-free HITL tools, unknown-tool per-name domain |
+| `resource-locks.test.ts` | domain conflict matrix, FIFO fairness, reentrancy |
+| `resource-locks-chain.test.ts` | **nested conflicting acquisition fails fast (no self-deadlock)**, cross-chain exclusion not weakened, parallel siblings still serialised |
+| `concurrent-handoff.test.ts` | **`clear()` truncates disk**, `inFlight()` pairs by (worker, entity), **file compaction bound**, id uniqueness across instances, corrupt-line tolerance |
+| `memory-session-debounce.test.ts` | **per-session debounce isolation** (two workers' sessions both persist) |
 | `attention-directed-cancel.test.ts` | `cancelActiveStream(target)` routing |
 
 `worker = 1` equivalence is covered by the pre-existing attention/mailbox suites, which

@@ -9,6 +9,7 @@ import {
   isSkillOrMcpToolName,
   isWorkContextBoundTool,
   packToolDefBudget,
+  TASK_EXECUTION_EXTRA_TOOLS,
   TOOL_DEF_CORE_KEEP,
   TOOL_DEF_PROTECTED,
 } from './capability-packs.js';
@@ -255,6 +256,9 @@ export class ToolSelector {
         'subtask_create', 'subtask_complete', 'subtask_cancel', 'subtask_list',
         'task_submit_review',
         'requirement_get', 'requirement_update', 'requirement_resubmit',
+        // Prompt-mandated names that no keyword group can surface (see
+        // TASK_EXECUTION_EXTRA_TOOLS): background_exec / process / deliverable_create.
+        ...TASK_EXECUTION_EXTRA_TOOLS,
       ]) {
         if (opts.allTools.has(name)) selected.add(name);
       }

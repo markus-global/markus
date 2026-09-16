@@ -72,6 +72,9 @@ import {
   scenarioToPack,
   getReflexAllowlist,
   formatEvictedToolCatalog,
+  COMMENT_RESPONSE_ALLOWED_TOOLS,
+  REQUIREMENT_ACTION_ALLOWED_TOOLS,
+  WORKFLOW_ACTION_ALLOWED_TOOLS,
   type CapabilityPack,
 } from './capability-packs.js';
 import { ensureAffordablePromptPack } from './afford-guard.js';
@@ -644,6 +647,29 @@ export class Agent {
     const c = cfg ?? { enabled: true, maxWorkers: 3 };
     this.attentionController.setWorkerCount(this.effectiveWorkerCount(c));
     this.taskExecutor?.setMaxConcurrentTasks(this.unifiedTaskConcurrency(c));
+    // 交接日志的存活必须与 worker 数**同步**：`applyConcurrency` 是热更新入口，
+    // 旧实现只改闸不重建 handoffLog —— 「先串行后开并发」时日志永远为 undefined，
+    // 并发上下文静默失效（getConcurrentContext 直接 return）。
+    this.syncHandoffLog();
+  }
+
+  /**
+   * 按当前 worker 数创建 / 保留 / 丢弃 ConcurrentHandoffLog。
+   *
+   * - worker > 1 且首次进入并发 → 新建并从磁盘 load()（跨重启可追溯）
+   * - 已经是并发 → 保留既有实例（不清空，避免丢在途交接）
+   * - 降回串行 → 丢弃实例（并发上下文不再注入）
+   */
+  private syncHandoffLog(): void {
+    const concurrent = this.attentionController.getWorkerCount() > 1;
+    if (!concurrent) {
+      this.handoffLog = undefined;
+      return;
+    }
+    if (!this.dataDir || this.handoffLog) return;
+    const log = new ConcurrentHandoffLog(join(this.dataDir, 'concurrent-handoffs.jsonl'));
+    log.load();
+    this.handoffLog = log;
   }
 
   /** 诊断/测试：当前生效的任务并发闸上限（= 统一后的值）。 */
@@ -684,11 +710,7 @@ export class Agent {
     this.attentionController.setWorkerCount(this.effectiveWorkerCount(concurrentCfg));
     this.attentionController.setConflictPolicy(concurrentCfg.conflictPolicy ?? 'auto');
     // 并发交接记录（P2a）：仅并发模式下创建（worker>1），持久化到 agent dataDir。
-    if (this.attentionController.getWorkerCount() > 1 && options.dataDir) {
-      const log = new ConcurrentHandoffLog(join(options.dataDir, 'concurrent-handoffs.jsonl'));
-      log.load();
-      this.handoffLog = log;
-    }
+    this.syncHandoffLog();
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     // P1-9（M2 修订）：ContextEngine 必须复用**本 agent 的**计数器实例。
     // 之前这里 `new ContextEngine()` 不带 config → 其内部 `getDefaultTokenCounter()`
@@ -2047,7 +2069,11 @@ export class Agent {
               item.payload.content + COMPLETION_MARKER_INSTRUCTION,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ sessionId: `requirement_${reqId}_${ts}`, scenario: 'requirement_action' }),
+              buildHandleOpts({
+              sessionId: `requirement_${reqId}_${ts}`,
+              scenario: 'requirement_action',
+              allowedTools: new Set(REQUIREMENT_ACTION_ALLOWED_TOOLS),
+            }),
             );
             resolveResponse(reply);
             return reply;
@@ -2065,7 +2091,11 @@ export class Agent {
             item.payload.content + COMPLETION_MARKER_INSTRUCTION,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
+            buildHandleOpts({
+              sessionId: `comment_${reqId}_${ts}`,
+              scenario: 'comment_response',
+              allowedTools: new Set(COMMENT_RESPONSE_ALLOWED_TOOLS),
+            }),
           );
           resolveResponse(reply);
           return reply;
@@ -2078,7 +2108,11 @@ export class Agent {
               item.payload.content + COMPLETION_MARKER_INSTRUCTION,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ sessionId: `workflow_${wfEvent}_${ts}`, scenario: 'workflow_action' }),
+              buildHandleOpts({
+                sessionId: `workflow_${wfEvent}_${ts}`,
+                scenario: 'workflow_action',
+                allowedTools: new Set(WORKFLOW_ACTION_ALLOWED_TOOLS),
+              }),
             );
             resolveResponse(reply);
             return reply;
@@ -2102,7 +2136,11 @@ export class Agent {
               item.payload.content + COMPLETION_MARKER_INSTRUCTION,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ sessionId: `comment_${commentTaskId}_${ts}`, scenario: 'comment_response' }),
+              buildHandleOpts({
+                sessionId: `comment_${commentTaskId}_${ts}`,
+                scenario: 'comment_response',
+                allowedTools: new Set(COMMENT_RESPONSE_ALLOWED_TOOLS),
+              }),
             );
           }
           resolveResponse('');
@@ -7631,6 +7669,13 @@ export class Agent {
    * 新增写工具时必须在此登记；`agent-write-lock.test.ts` 会断言登记集合与预期一致，
    * 使漏登记成为测试失败而不是静默的并发竞态。
    */
+  /**
+   * 写工具的**互斥资源域**登记表（细分域 → 可并行；缺登记 → 全局独占）。
+   *
+   * 新增写工具时**必须**在此登记（细分域）或加入 `TOOL_LOCK_FREE`（纯读/免锁）；
+   * `agent-write-lock.test.ts` 会枚举全部内建工具断言「每个工具都被分类」，
+   * 使漏登记成为测试失败，而不是静默的并发竞态。
+   */
   private static readonly WRITE_TOOL_DOMAINS: Readonly<Record<string, { domain: string; arg?: readonly string[] }>> = {
     // ── 文件系统：按路径细分（不同文件可并行）；定位不到路径则全域串行
     file_write:       { domain: 'fs', arg: ['path', 'filePath'] },
@@ -7640,6 +7685,10 @@ export class Agent {
     apply_patch:      { domain: GLOBAL_LOCK_DOMAIN },
     package_install:  { domain: GLOBAL_LOCK_DOMAIN },
     hub_install:      { domain: GLOBAL_LOCK_DOMAIN },
+    // 后台作业：派发期登记进程表 + 生成后续会写盘/写库的进程。
+    // 注意：锁只覆盖**派发**，作业本身的执行期在锁外（见 docs/CONCURRENT-PROCESSING.md §3.3）。
+    background_exec:  { domain: GLOBAL_LOCK_DOMAIN },
+    process:          { domain: GLOBAL_LOCK_DOMAIN },
     // ── 单体状态资源
     memory_save:            { domain: 'memory' },
     memory_update:          { domain: 'memory' },
@@ -7649,51 +7698,167 @@ export class Agent {
     clear_notebook:         { domain: 'notebook' },
     update_working_memory:  { domain: 'working-memory' },
     clear_working_memory:   { domain: 'working-memory' },
+    // 会话自我管理：compact / pin / unpin / purge 都是会话状态变更
+    session:                { domain: 'session', arg: ['session_id', 'sessionId'] },
+    // discover_tools 会写入「本会话已激活工具」集合 —— 共享可变状态
+    discover_tools:         { domain: 'session-tools' },
     // ── 全局配置
-    llm_switch_model:           { domain: 'llm-config' },
-    llm_set_capability_routing: { domain: 'llm-config' },
-    llm_add_model:              { domain: 'llm-config' },
-    llm_add_provider:           { domain: 'llm-config' },
-    llm_edit_provider:          { domain: 'llm-config' },
-    schedule_wakeup:            { domain: 'schedule' },
-    set_heartbeat_interval:     { domain: 'schedule' },
-    // ── 任务 / 目标：按任务实体细分
-    task_create:        { domain: 'task', arg: ['task_id', 'taskId'] },
-    task_update:        { domain: 'task', arg: ['task_id', 'taskId'] },
-    task_comment:       { domain: 'task', arg: ['task_id', 'taskId'] },
-    task_submit_review: { domain: 'task', arg: ['task_id', 'taskId'] },
-    subtask_create:     { domain: 'task', arg: ['task_id', 'taskId'] },
-    subtask_update:     { domain: 'task', arg: ['task_id', 'taskId'] },
-    subtask_complete:   { domain: 'task', arg: ['task_id', 'taskId'] },
-    goal_create:        { domain: 'task', arg: ['task_id', 'taskId'] },
-    goal_update:        { domain: 'task', arg: ['task_id', 'taskId'] },
+    llm_switch_model:            { domain: 'llm-config' },
+    llm_set_capability_routing:  { domain: 'llm-config' },
+    llm_add_model:               { domain: 'llm-config' },
+    llm_add_provider:            { domain: 'llm-config' },
+    llm_edit_provider:           { domain: 'llm-config' },
+    llm_switch_default_provider: { domain: 'llm-config' },
+    agent_model_set_default:     { domain: 'llm-config' },
+    agent_model_reset_default:   { domain: 'llm-config' },
+    schedule_wakeup:             { domain: 'schedule' },
+    set_heartbeat_interval:      { domain: 'schedule' },
+    // ── 任务 / 目标：按任务实体细分（缺参 → 整域独占）
+    task_create:              { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_update:              { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_comment:             { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_note:                { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_assign:              { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_submit_review:       { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_cleanup_duplicates:  { domain: 'task' },
+    subtask_create:           { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_update:           { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_complete:         { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_cancel:           { domain: 'task', arg: ['task_id', 'taskId'] },
+    goal_create:              { domain: 'task', arg: ['task_id', 'taskId'] },
+    goal_update:              { domain: 'task', arg: ['task_id', 'taskId'] },
     // ── 需求：按需求实体细分
-    requirement_propose: { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
-    requirement_update:  { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
-    requirement_comment: { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_propose:        { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_update:         { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_update_status:  { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_resubmit:       { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_comment:        { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    // ── 项目 / 交付物
+    create_project:      { domain: 'project' },
+    update_project:      { domain: 'project', arg: ['project_id', 'projectId'] },
+    delete_project:      { domain: 'project', arg: ['project_id', 'projectId'] },
     deliverable_create:  { domain: 'deliverable' },
+    deliverable_update:  { domain: 'deliverable', arg: ['deliverable_id', 'deliverableId'] },
+    // ── 工作流
+    workflow_create:  { domain: 'workflow', arg: ['workflow_id', 'workflowId'] },
+    workflow_update:  { domain: 'workflow', arg: ['workflow_id', 'workflowId'] },
+    workflow_delete:  { domain: 'workflow', arg: ['workflow_id', 'workflowId'] },
+    workflow_run:     { domain: 'workflow', arg: ['workflow_id', 'workflowId'] },
+    workflow_cancel:  { domain: 'workflow', arg: ['workflow_id', 'workflowId'] },
+    // ── 生成类：产出文件，按输出路径细分
+    generate_image:  { domain: 'fs', arg: ['output_path', 'outputPath', 'path'] },
+    generate_video:  { domain: 'fs', arg: ['output_path', 'outputPath', 'path'] },
+    office_generate: { domain: 'fs', arg: ['output_path', 'outputPath', 'path'] },
+    text_to_speech:  { domain: 'fs', arg: ['output_path', 'outputPath', 'path'] },
+    // ── 浏览器：共享一个浏览器会话，按页面细分
+    navigate_page:    { domain: 'browser', arg: ['pageId', 'page_id'] },
+    new_page:         { domain: 'browser' },
+    open_page:        { domain: 'browser', arg: ['pageId', 'page_id'] },
+    close_page:       { domain: 'browser', arg: ['pageId', 'page_id'] },
+    select_page:      { domain: 'browser', arg: ['pageId', 'page_id'] },
+    resize_page:      { domain: 'browser', arg: ['pageId', 'page_id'] },
+    click:            { domain: 'browser', arg: ['pageId', 'page_id'] },
+    fill:             { domain: 'browser', arg: ['pageId', 'page_id'] },
+    fill_form:        { domain: 'browser', arg: ['pageId', 'page_id'] },
+    type_text:        { domain: 'browser', arg: ['pageId', 'page_id'] },
+    press_key:        { domain: 'browser', arg: ['pageId', 'page_id'] },
+    drag:             { domain: 'browser', arg: ['pageId', 'page_id'] },
+    handle_dialog:    { domain: 'browser', arg: ['pageId', 'page_id'] },
+    emulate:          { domain: 'browser', arg: ['pageId', 'page_id'] },
+    evaluate_script:  { domain: 'browser', arg: ['pageId', 'page_id'] },
+    upload_file:      { domain: 'browser', arg: ['pageId', 'page_id'] },
+    upload_reference: { domain: 'browser' },
+    // ── 持久终端：共享 PTY 注册表，按终端细分
+    new_terminal:    { domain: 'terminal' },
+    exec_terminal:   { domain: 'terminal', arg: ['terminal_id', 'terminalId', 'id'] },
+    write_terminal:  { domain: 'terminal', arg: ['terminal_id', 'terminalId', 'id'] },
+    close_terminal:  { domain: 'terminal', arg: ['terminal_id', 'terminalId', 'id'] },
+    select_terminal: { domain: 'terminal' },
     // ── 对外消息 / 通知：按目标细分
     agent_send_message:       { domain: 'a2a-out', arg: ['agent_id', 'agentId', 'to'] },
     agent_send_group_message: { domain: 'a2a-out', arg: ['channelKey', 'channel_key', 'group_id'] },
     agent_delegate_task:      { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
     agent_stop:               { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
+    agent_start:              { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
+    agent_update:             { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
     agent_create_group_chat:  { domain: 'a2a-out' },
     agent_broadcast_status:   { domain: 'a2a-out' },
+    delegate_message:         { domain: 'a2a-out', arg: ['agent_id', 'agentId', 'to'] },
+    feishu_send_message:      { domain: 'a2a-out', arg: ['chat_id', 'chatId', 'receive_id', 'receiveId'] },
+    feishu_send_image:        { domain: 'a2a-out', arg: ['chat_id', 'chatId', 'receive_id', 'receiveId'] },
     notify_user:              { domain: 'notify' },
+    // ── 团队 / 组织注册表（与 agent_stop 同源，不能只锁一个兄弟）
+    team_start:  { domain: 'org' },
+    team_stop:   { domain: 'org' },
+    team_update: { domain: 'org' },
     // ── 邮箱管理：按 item 细分
     defer_mailbox_item:      { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
     drop_mailbox_item:       { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
     prioritize_mailbox_item: { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
+    complete_deliberation:   { domain: 'deliberation' },
+    // ── Team Chat 右侧面板（UI 状态）
+    open_right_panel:     { domain: 'ui' },
+    collapse_right_panel: { domain: 'ui' },
   };
+
+  /**
+   * **免锁**工具：纯读取、HITL 阻塞、以及自带并发域的工具。
+   *
+   * 关键：`request_user_input` / `request_user_approval` 会**阻塞等待人类**，
+   * `spawn_subagent(s)` 会运行数分钟 —— 若让它们持有 `'*'` 全局独占锁，
+   * 整个 Agent 的所有写操作都会被冻结数分钟。它们必须免锁。
+   *
+   * 未在此表、也不在 `WRITE_TOOL_DOMAINS` 的工具（新内建工具 / 技能 / MCP）
+   * 一律按「能力未知」处理 → 取 `'*'` 全局独占（宁可串行，不可竞态）。
+   */
+  private static readonly TOOL_LOCK_FREE: ReadonlySet<string> = new Set([
+    // ── 纯读取：文件 / 代码 / 检索
+    'file_read', 'grep_search', 'glob_find', 'list_directory',
+    'web_search', 'web_fetch', 'web_extract', 'describe_image',
+    'knowledge_search', 'knowledge_list', 'knowledge_read',
+    'recall_activity', 'recall_context', 'check_mailbox',
+    // ── 纯读取：任务 / 需求 / 项目 / 团队
+    'task_list', 'task_get', 'task_board_health', 'task_check_duplicates',
+    'subtask_list', 'requirement_list', 'requirement_get',
+    'goal_status', 'list_projects', 'get_project', 'project_stats',
+    'deliverable_list', 'deliverable_search',
+    'team_list', 'team_status', 'list_teams',
+    // ── 纯读取：记忆 / 模型 / 包 / 工作流
+    'memory_search', 'memory_list',
+    'llm_list_providers', 'llm_get_capability_routing', 'agent_model_get',
+    'agent_model_test', 'agent_list_colleagues', 'agent_list_group_chats',
+    'package_list', 'hub_search',
+    'workflow_list', 'workflow_status',
+    // ── 纯读取：终端 / 浏览器观测
+    'list_terminals', 'read_terminal',
+    'list_pages', 'take_snapshot', 'take_screenshot', 'hover', 'wait_for',
+    'list_console_messages', 'get_console_message',
+    'list_network_requests', 'get_network_request', 'lighthouse_audit',
+    'speech_to_text',
+    // ── HITL 阻塞 / 长时任务：绝不能持锁（见上方说明）
+    'request_user_input', 'request_user_approval',
+    'spawn_subagent', 'spawn_subagents',
+  ]);
 
   /** 写语义工具集合（由 WRITE_TOOL_DOMAINS 推导 —— 单一真源）。 */
   private static readonly WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(
     Object.keys(Agent.WRITE_TOOL_DOMAINS),
   );
 
-  /** 工具是否具备写语义（需要跨 worker 互斥）。 */
+  /**
+   * 工具是否具备写语义（需要跨 worker 互斥）。
+   *
+   * 判定为**默认拒绝**：只有显式登记为「细分写域」或显式列入 `TOOL_LOCK_FREE`
+   * 的工具才会被豁免；其余（含新内建工具、技能/MCP 工具）一律视为写并取 `'*'`。
+   * 这使 `resourceLocksFor` 的 `'*'` 兜底分支真正可达 —— 旧实现用
+   * `WRITE_TOOL_NAMES.has(name)` 当闸门，未登记的写工具（`background_exec`、
+   * 生成类、项目/工作流/组织写等）**完全不取锁**，与 `resource-locks.ts`
+   * 「未分类的写工具落到 '*'」的声明相反。
+   */
   private static isWriteTool(name: string): boolean {
-    return Agent.WRITE_TOOL_NAMES.has(name);
+    if (Agent.WRITE_TOOL_NAMES.has(name)) return true;
+    if (Agent.TOOL_LOCK_FREE.has(name)) return false;
+    return true;
   }
 
   /**
@@ -7703,9 +7868,25 @@ export class Agent {
    * 拿到不同锁键；未登记的写工具（或缺少细分参数）退化为整域 / 全局独占 ——
    * 宁可串行，不可竞态。
    */
+  /**
+   * 推导一次写工具调用的互斥资源域。
+   *
+   * 文件路径做 `resolve` 归一化，避免 `/a/b`、`./b`、`/a/./b` 指向同一文件却
+   * 拿到不同锁键；缺少细分参数退化为整域独占。
+   *
+   * **未分类工具**（MCP / 技能 / 运行时注册的自定义工具）取**按工具名**的互斥域：
+   * 同一工具的并发调用被串行（保护该工具自身的状态），不同工具仍可并行。
+   *
+   * 这里刻意**不**退化为全局 `'*'`：平台契约允许「一轮内多个工具调用并行」
+   * （见 `agent-loop` 的并行执行测试），而 MCP/技能工具数量可观（chrome-devtools 26 个、
+   * feishu 28 个），全局独占会让它们与所有文件/任务/记忆写互相阻塞，代价远超收益。
+   * 代价（已知残余风险）：能力未知的工具若与 `file_write` 写同一文件，二者不互斥
+   * —— 内建工具由 `agent-write-lock.test.ts` 强制显式分类，因此该残余只影响
+   * 真正动态的工具，已在 `docs/CONCURRENT-PROCESSING.md` 记录。
+   */
   private static resourceLocksFor(toolCall: LLMToolCall): LockRequest[] {
     const spec = Agent.WRITE_TOOL_DOMAINS[toolCall.name];
-    if (!spec) return [{ domain: GLOBAL_LOCK_DOMAIN }];
+    if (!spec) return [{ domain: 'tool', sub: toolCall.name }];
 
     let sub: string | undefined;
     if (spec.arg) {

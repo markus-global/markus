@@ -1177,6 +1177,49 @@ group-channel and distillation cases fail.
 
 ---
 
+### 5.10 Scenario × Tool Face — prompts must not name tools the model doesn't have (2026-09-16)
+
+The matrix in §5.9 answers *what the model is told*. This section is its dual: *what the model can
+actually call*. A prompt that mandates a tool absent from the request's `tools` array is worse than
+a missing instruction — the model burns turns on `discover_tools` (or loops on validation errors)
+and the scenario silently fails.
+
+**The selection path.** `ToolSelector.selectTools` builds the schema from
+`BASE_TOOL_NAMES` ∪ keyword-matched `ToolGroup`s ∪ `recentToolNames` ∪ `discover_tools`
+activations, with `TOOL_DEF_CORE_KEEP` protected from eviction. A tool name that appears in **no**
+group and is not in the keep-set can therefore never reach the model by default — even when it is
+fully registered and the scenario's prompt demands it.
+
+**The authoritative-allow-list contract.** Scenarios whose prompt issues hard mandates carry an
+explicit `allowedTools` set. `agent.ts` applies it in two directions: it *filters* the selection
+**and** *unions in* any allowed tool that keyword selection missed (offering its live
+description/schema from the registry). The existing sets are
+`HEARTBEAT_ALLOWED_TOOLS`, `DELIBERATION_ALLOWED_TOOLS`, `DISTILLATION_EXTRA_TOOLS` and — added in
+this pass — `COMMENT_RESPONSE_ALLOWED_TOOLS`, `REQUIREMENT_ACTION_ALLOWED_TOOLS`,
+`WORKFLOW_ACTION_ALLOWED_TOOLS` (+ `TASK_EXECUTION_EXTRA_TOOLS` spliced into the `isTaskExecution`
+branch). `SCENARIO_ALLOWED_TOOLS` exposes the map.
+
+Why each one is load-bearing:
+
+| Scenario | Prompt mandate | Why default selection can't surface it |
+|---|---|---|
+| `requirement_action` | *"**MANDATORY**: before deciding, call `requirement_get`"*, *"`requirement_update_status`"* | neither is in `TOOL_DEF_CORE_KEEP`/`BASE_TOOL_NAMES`, and there is **no `requirement` or `workflow` tool group** |
+| `workflow_action` | *"use `workflow_status`"*, *"`workflow_cancel`"* | same — no group can ever select them |
+| `comment_response` | *"call `task_get`/`requirement_get` first"* | `requirement_get` is discover-only for `converse` |
+| `task_execution` | *"run builds and tests via `background_exec`"*, *"register key outputs via `deliverable_create`"* | the `shell` group carries only `shell_execute`; `background_exec` is in no group at all |
+
+**Invariant 14 — prompt-declared tools ⊆ scenario tool face.** Guard test
+`scenario-tool-face.test.ts` builds each scenario's prompt, asserts the prompt text actually
+mentions the mandated names, asserts those names are in the scenario's `allowedTools`, and asserts
+they are genuinely *absent* from the always-on keep-set (proving the allowance is load-bearing
+rather than redundant). It also asserts the action scenarios do **not** carry `shell_execute`,
+`apply_patch`, `package_install` or `hub_install`.
+
+**Invariant 14b — an allow-list may narrow, never widen, the capability boundary.** The union step
+in `agent.ts` only offers names the scenario's allow-list declares; it is not a bypass of
+`allowedTools` filtering.
+
+
 ## 6. Output Token Resolution
 
 The `LLMRouter` resolves `maxTokens` (output token limit) for every LLM call:

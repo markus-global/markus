@@ -215,7 +215,7 @@ export class MemoryStore implements IMemoryStore {
   private sessionAccessOrder: string[] = [];
   private sessionsDir: string;
   private logsDir: string;
-  private saveDebounce: ReturnType<typeof setTimeout> | null = null;
+  private saveDebounce: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private longTermFile: string;
 
   constructor(dataDir: string) {
@@ -1245,11 +1245,16 @@ export class MemoryStore implements IMemoryStore {
   }
 
   private debouncedSaveSession(session: ConversationSession): void {
-    if (this.saveDebounce) clearTimeout(this.saveDebounce);
-    this.saveDebounce = setTimeout(() => {
+    // 定时器必须**按会话**分开：并发模式下多个 worker 各有自己的会话，共用
+    // 一个实例级定时器时，后到的 worker 会 clearTimeout 掉先到者的待写 ——
+    // 前一个会话的变更被静默丢弃（进程重启即丢失）。按 session.id 键控修掉。
+    const key = session.id;
+    const existing = this.saveDebounce.get(key);
+    if (existing) clearTimeout(existing);
+    this.saveDebounce.set(key, setTimeout(() => {
+      this.saveDebounce.delete(key);
       this.saveSessionToDisk(session);
-      this.saveDebounce = null;
-    }, 1000);
+    }, 1000));
   }
 
   /** Compress knowledge.md — truncate oversized sections to prevent context bloat */

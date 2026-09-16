@@ -158,18 +158,92 @@ describe('P2-A Agent 工具写互斥', () => {
     const cls = Agent as unknown as {
       isWriteTool: (name: string) => boolean;
     };
-    // 写
+    // 写（含本轮补齐的「曾完全无锁」的写工具）
     for (const w of ['task_update', 'task_comment', 'task_create', 'subtask_complete',
-      'requirement_propose', 'memory_save', 'memory_update', 'notify_user',
+      'requirement_propose', 'requirement_update_status', 'requirement_resubmit',
+      'memory_save', 'memory_update', 'notify_user',
       'agent_send_message', 'file_write', 'shell_execute', 'apply_patch',
-      'deliverable_create', 'task_submit_review']) {
-      expect(cls.isWriteTool(w)).toBe(true);
+      'deliverable_create', 'deliverable_update', 'task_submit_review',
+      'background_exec', 'process', 'create_project', 'update_project', 'delete_project',
+      'workflow_run', 'workflow_cancel', 'team_update', 'agent_start', 'agent_update',
+      'generate_image', 'office_generate', 'task_note', 'task_assign',
+      // 共享可变状态：discover_tools 写「本会话已激活工具」集合
+      'discover_tools', 'session', 'complete_deliberation']) {
+      expect(cls.isWriteTool(w), `${w} 应判为写`).toBe(true);
     }
-    // 读 / 纯计算（即使带 task_ 前缀）
+    // 读 / 纯计算（即使带 task_/workflow_ 前缀）
     for (const r of ['task_list', 'task_get', 'requirement_list', 'requirement_get',
       'memory_search', 'list_projects', 'team_list', 'web_search',
-      'web_fetch', 'discover_tools', 'llm_list_providers']) {
-      expect(cls.isWriteTool(r)).toBe(false);
+      'web_fetch', 'llm_list_providers', 'check_mailbox', 'workflow_list', 'workflow_status',
+      'read_terminal', 'list_terminals', 'take_snapshot', 'knowledge_search']) {
+      expect(cls.isWriteTool(r), `${r} 应判为读`).toBe(false);
+    }
+  });
+
+  it('未知工具（MCP/技能/自定义）按工具名互斥：同工具串行、不同工具并行', () => {
+    const cls = Agent as unknown as {
+      isWriteTool: (name: string) => boolean;
+      resourceLocksFor: (tc: { name: string; arguments?: Record<string, unknown> }) => Array<{ domain: string; sub?: string }>;
+    };
+    // 未知能力 = 保守判为写（旧的 `WRITE_TOOL_NAMES.has(name)` 闸门会让它们零锁）
+    for (const unknown of ['some_new_write_tool', 'chrome-devtools__click', 'feishu_send_message_v2', 'mcp__x__y']) {
+      expect(cls.isWriteTool(unknown), `${unknown} 应保守判为写`).toBe(true);
+      // 按工具名细分 —— 不退化全局 '*'（否则 MCP/技能工具会与所有写互相阻塞）
+      expect(cls.resourceLocksFor({ name: unknown, arguments: {} }))
+        .toEqual([{ domain: 'tool', sub: unknown }]);
+    }
+    // 两个不同的未知工具 → 不同 sub → 可并行
+    const a = cls.resourceLocksFor({ name: 'mcp__a__x', arguments: {} })[0]!;
+    const b = cls.resourceLocksFor({ name: 'mcp__b__y', arguments: {} })[0]!;
+    expect(a.sub).not.toBe(b.sub);
+  });
+
+  it('未分类工具并行执行不得被串行化（平台「一轮多工具并行」契约）', async () => {
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    // 运行时注册的两个自定义工具（既不在写域表也不在免锁表）。
+    // 注意：观测计数器是**每实例**的，跨实例比较无效 —— 这里用**耗时**判并行。
+    const mk = (name: string) => makeObservedTool(name, { active: { max: 0 } });
+    a.tools.set('tool_a', mk('tool_a'));
+    a.tools.set('tool_b', mk('tool_b'));
+
+    const start = Date.now();
+    await Promise.all([
+      a.executeTool(makeToolCall('tool_a', {})),
+      a.executeTool(makeToolCall('tool_b', {})),
+    ]);
+    const elapsed = Date.now() - start;
+
+    // 并行 ≈ 单段耗时；串行（全局独占/同域）= 两段相加
+    expect(elapsed).toBeLessThan(SLEEP_MS * 2 - 30);
+  });
+
+  it('同一未知工具的并发调用被串行（保护该工具自身状态）', async () => {
+    const active = { max: 0 };
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
+      tools: Map<string, AgentToolHandler>;
+    };
+    a.tools.set('mcp__x__mutate', makeObservedTool('mcp__x__mutate', { active }));
+
+    await Promise.all([
+      a.executeTool(makeToolCall('mcp__x__mutate', {})),
+      a.executeTool(makeToolCall('mcp__x__mutate', {})),
+    ]);
+
+    expect(active.max).toBe(1);
+  });
+
+  it('HITL / 长时工具必须免锁（否则会冻结整个 Agent 的写操作）', () => {
+    const cls = Agent as unknown as { isWriteTool: (name: string) => boolean };
+    // request_user_input 阻塞等待人类；spawn_subagent(s) 运行数分钟。
+    // 若持 '*' 全局独占锁，期间该 Agent 的所有写工具都会被冻结。
+    for (const free of ['request_user_input', 'request_user_approval', 'spawn_subagent', 'spawn_subagents']) {
+      expect(cls.isWriteTool(free), `${free} 必须免锁`).toBe(false);
     }
   });
 
@@ -191,25 +265,51 @@ describe('P2-A Agent 工具写互斥', () => {
   });
 
   it('写工具必须显式登记：新增漏登记会被此清单拦下', () => {
-    const cls = Agent as unknown as { WRITE_TOOL_NAMES: ReadonlySet<string> };
-    // 这份清单就是「产品语义上的全部写工具」。新增写工具时必须同步登记其资源域。
-    const EXPECTED_WRITE_TOOLS = [
-      'task_create', 'task_update', 'task_comment', 'task_submit_review',
-      'subtask_create', 'subtask_update', 'subtask_complete',
-      'requirement_propose', 'requirement_update', 'requirement_comment',
-      'goal_create', 'goal_update', 'deliverable_create',
-      'memory_save', 'memory_update', 'memory_update_longterm', 'memory_delete',
-      'update_notebook', 'clear_notebook', 'update_working_memory', 'clear_working_memory',
-      'notify_user', 'agent_send_message', 'agent_send_group_message',
-      'agent_create_group_chat', 'agent_broadcast_status', 'agent_stop', 'agent_delegate_task',
-      'shell_execute', 'file_write', 'file_edit', 'apply_patch',
-      'package_install', 'hub_install',
-      'llm_switch_model', 'llm_set_capability_routing', 'llm_add_model',
-      'llm_add_provider', 'llm_edit_provider',
-      'schedule_wakeup', 'set_heartbeat_interval',
-      'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item',
-    ].sort();
-    expect([...cls.WRITE_TOOL_NAMES].sort()).toEqual(EXPECTED_WRITE_TOOLS);
+    const cls = Agent as unknown as {
+      WRITE_TOOL_NAMES: ReadonlySet<string>;
+      TOOL_LOCK_FREE: ReadonlySet<string>;
+    };
+    // 这份清单是「曾经**完全没有取锁**的写工具」回归护栏 —— 它们必须留在细分域表里
+    // （旧实现用 `WRITE_TOOL_NAMES.has(name)` 当闸门，这些名字不在表里 → 零锁并发写）。
+    const MUST_BE_REGISTERED = [
+      'background_exec', 'process',
+      'deliverable_update', 'task_note', 'task_assign', 'task_cleanup_duplicates',
+      'requirement_update_status', 'requirement_resubmit',
+      'create_project', 'update_project', 'delete_project',
+      'workflow_create', 'workflow_update', 'workflow_delete', 'workflow_run', 'workflow_cancel',
+      'agent_start', 'agent_update', 'team_start', 'team_stop', 'team_update',
+      'generate_image', 'generate_video', 'office_generate', 'text_to_speech',
+      'exec_terminal', 'write_terminal', 'new_terminal', 'close_terminal',
+      'discover_tools', 'session', 'complete_deliberation',
+    ];
+    for (const name of MUST_BE_REGISTERED) {
+      expect(cls.WRITE_TOOL_NAMES.has(name), `${name} 必须登记资源域`).toBe(true);
+    }
+
+    // 分类必须**完备且互斥**：任何工具要么在细分写域表、要么在免锁表。
+    // （未分类者运行时按「未知=写」取 '*'，这条断言把「忘记分类」变成测试失败。）
+    for (const name of cls.WRITE_TOOL_NAMES) {
+      expect(cls.TOOL_LOCK_FREE.has(name), `${name} 不应同时在两张表`).toBe(false);
+    }
+  });
+
+  it('内建工具必须显式分类（漏分类 = 测试失败，而不是静默的粗粒度锁）', async () => {
+    const cls = Agent as unknown as {
+      WRITE_TOOL_NAMES: ReadonlySet<string>;
+      TOOL_LOCK_FREE: ReadonlySet<string>;
+    };
+    const { createBuiltinTools } = await import('../src/tools/builtin.js');
+    const registered = createBuiltinTools({}).map(t => t.name);
+    // 护栏本身要有意义：必须真的枚举到一批内建工具
+    expect(registered.length).toBeGreaterThan(10);
+
+    const unclassified = registered.filter(
+      n => !cls.WRITE_TOOL_NAMES.has(n) && !cls.TOOL_LOCK_FREE.has(n),
+    );
+    // 未分类者运行时按「未知=写」取 `tool:<name>` 域 —— 对内建工具这是**降级保护**
+    // （丢失路径/实体级细分）。此断言把「新增内建工具忘记分类」变成测试失败。
+    expect(unclassified, `以下内建工具未分类（写域表 / 免锁表都没有）: ${unclassified.join(', ')}`)
+      .toEqual([]);
   });
 
   it('不同文件的 file_write 可并行（资源域细分 ≠ 全局串行）', async () => {

@@ -308,6 +308,11 @@ export {
   estimateToolDefTokens,
   evictToolsToBudget,
   formatEvictedToolCatalog,
+  TASK_EXECUTION_EXTRA_TOOLS,
+  COMMENT_RESPONSE_ALLOWED_TOOLS,
+  REQUIREMENT_ACTION_ALLOWED_TOOLS,
+  WORKFLOW_ACTION_ALLOWED_TOOLS,
+  SCENARIO_ALLOWED_TOOLS,
   type CapabilityPack,
   type PromptProfile,
 } from './capability-packs.js';

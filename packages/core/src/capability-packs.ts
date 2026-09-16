@@ -197,6 +197,84 @@ export function getDistillationAllowlist(isManager: boolean): Set<string> {
   return set;
 }
 
+/**
+ * Task-execution extras beyond the converse base (AGENT-RUNTIME §2.3).
+ *
+ * `task_execution` is the one scenario whose prompt *mandates* tools that the
+ * keyword-driven selector cannot be relied on to surface: `background_exec`
+ * ("run builds and tests via background_exec — continue other subtasks while
+ * waiting") is in no tool group (the `shell` group carries `shell_execute`
+ * only, and it is not in {@link TOOL_DEF_CORE_KEEP}), and `deliverable_create`
+ * ("register key outputs via deliverable_create") is discover-only for
+ * converse. Without this list the prompt tells the model to call tools that
+ * never reach its schema.
+ */
+export const TASK_EXECUTION_EXTRA_TOOLS = [
+  'background_exec',
+  'process',
+  'deliverable_create',
+  'goal_create',
+  'goal_status',
+  'goal_update',
+] as const;
+
+/**
+ * Tools an entity-bound **action** scenario is allowed to call.
+ *
+ * These scenarios are `converse` pack (so they do not get the execute pack's
+ * keyword-independent tool set) yet their prompt gives hard mandates —
+ * e.g. `requirement_action` says "**MANDATORY**: before deciding, call
+ * `requirement_get`" and "you MUST call at least one action tool" listing
+ * `requirement_update_status`; `workflow_action` says "use `workflow_status`"
+ * / "`workflow_cancel`". None of those names is in {@link BASE_TOOL_NAMES} or
+ * {@link TOOL_DEF_CORE_KEEP}, and there is no `requirement`/`workflow` tool
+ * group, so they were unreachable — the model had to burn a turn on
+ * `discover_tools` (or fail) before it could obey its own instructions.
+ *
+ * Same contract as `HEARTBEAT_ALLOWED_TOOLS` / `DELIBERATION_ALLOWED_TOOLS`:
+ * the set is authoritative, and `agent.ts` unions it into the selected schema.
+ */
+export const COMMENT_RESPONSE_ALLOWED_TOOLS: readonly string[] = [
+  'task_get', 'requirement_get', 'task_list', 'requirement_list',
+  'task_comment', 'requirement_comment',
+  'task_update', 'task_note', 'requirement_update', 'requirement_update_status',
+  'subtask_create', 'subtask_complete', 'subtask_cancel', 'subtask_list',
+  'task_submit_review',
+  'file_read', 'grep_search', 'glob_find', 'list_directory',
+  'deliverable_search', 'deliverable_create',
+  'memory_search', 'memory_save',
+  'notify_user', 'agent_send_message',
+];
+
+export const REQUIREMENT_ACTION_ALLOWED_TOOLS: readonly string[] = [
+  'requirement_get', 'requirement_list', 'requirement_comment',
+  'requirement_update', 'requirement_update_status', 'requirement_resubmit',
+  'task_create', 'task_list', 'task_get', 'task_update',
+  'subtask_create', 'subtask_complete', 'subtask_list',
+  'deliverable_search', 'deliverable_create',
+  'file_read', 'grep_search',
+  'memory_search', 'memory_save', 'update_notebook',
+  'notify_user', 'agent_send_message',
+];
+
+export const WORKFLOW_ACTION_ALLOWED_TOOLS: readonly string[] = [
+  'workflow_list', 'workflow_status', 'workflow_get',
+  'workflow_run', 'workflow_cancel', 'workflow_update', 'workflow_create',
+  'task_get', 'task_list', 'task_update', 'task_comment', 'task_note',
+  'subtask_list',
+  'deliverable_search', 'deliverable_list',
+  'file_read', 'grep_search',
+  'memory_search', 'memory_save',
+  'notify_user', 'agent_send_message',
+];
+
+/** Scenario → authoritative allowed-tool set (authoritative union in agent.ts). */
+export const SCENARIO_ALLOWED_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  comment_response: COMMENT_RESPONSE_ALLOWED_TOOLS,
+  requirement_action: REQUIREMENT_ACTION_ALLOWED_TOOLS,
+  workflow_action: WORKFLOW_ACTION_ALLOWED_TOOLS,
+};
+
 export type ToolDefLike = {
   name: string;
   description: string;
