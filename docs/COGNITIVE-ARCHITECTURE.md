@@ -129,7 +129,7 @@ The Notebook is the agent's **persistent cognitive workspace** — Baddeley's ce
 | `system` | Runtime (triage, deliberation, mechanical retrieval) | Triage decisions, fallback context |
 | `cpp` | Cognitive Preparation Pipeline | Appraisal, retrieval, reflection outputs |
 
-**Lifecycle**: Loaded at startup → updated in-process → debounced persist (2s) → survives restarts. Limits: 15 agent-managed entries, 6000 chars each.
+**Lifecycle**: Loaded at startup → updated in-process → debounced persist (2s) → survives restarts. Limits: 4 agent-managed entries, 6000 chars each.
 
 The Notebook holds *situational* state. Durable knowledge flows to `MEMORY.md` via `memory_save` / `memory_update`.
 
@@ -149,7 +149,7 @@ MEMORY.md
 
 | Layer | Role | Prompt |
 |-------|------|--------|
-| Curated sections | Distilled knowledge the agent maintains | Always injected as `## Your Knowledge` |
+| Curated sections | Distilled knowledge the agent maintains | Always injected as `## Your Knowledge` (via the volatile tail, not the byte-stable system prefix) |
 | `## _observations` | Raw observations from `memory_save` | Excluded from prompt; processed by dream cycle |
 
 The **dream cycle** (`memory_consolidation`) consolidates observations into curated sections, prunes stale content, and maintains MEMORY.md hygiene. This is the long-term learning path at the end of the cognitive cycle.
@@ -165,7 +165,7 @@ Three interlocking mechanisms drive agent attention and sustained work:
 Processes the **Mailbox** — the agent's unified stimulus queue. Responsibilities:
 
 - Priority ordering and preemption
-- LLM-driven triage (`performTriage`) and full-session deliberation
+- LLM-driven triage (`TriageJudge` + `onTriageCompleted`) and full-session deliberation
 - Triage decisions persisted to notebook (`triage-decision`)
 - Yields to higher-priority items (e.g., human chat during deliberation)
 

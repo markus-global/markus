@@ -638,6 +638,28 @@ export const CONTEXT_CRIT_RATIO = 0.95;
 /** Max chars for a single pinned slot value (session_pin). */
 export const CONTEXT_SLOT_MAX_CHARS = 1200;
 
+/**
+ * ContextOS v2 — volatile tail re-delivery policy.
+ *
+ * The volatile snapshot (knowledge / skills / team status / concurrency / task
+ * board / deferred tools …) is emitted in FULL on the first LLM call of every
+ * user turn, whenever a section's content actually changes, and at least once
+ * every REARM calls so no section can stay hidden for long. On every other
+ * tool-loop iteration only the context water-level hint plus a one-line digest
+ * naming the omitted sections is sent.
+ *
+ * Why: inside one user turn a tool loop can issue 60+ LLM calls. The legacy tail
+ * re-sent the whole blob verbatim each time, so a persistent fact (e.g. another
+ * clone working on the same topic) was re-delivered 66× and the model — reading
+ * it as the newest user input immediately before generating — re-announced it
+ * every iteration instead of acting. Measured 2026-09-16: blob 7 775 chars,
+ * consecutive-call similarity 0.9989, verbatim progress recaps ×4 in one turn.
+ *
+ * Completeness is preserved: any content change is always delivered, and a
+ * forced full refresh every REARM calls bounds information staleness.
+ */
+export const CONTEXT_VOLATILE_REARM_CALLS = 8;
+
 /** Max chat messages loaded from DB into memory on session restore. */
 export const SESSION_RESTORE_MAX_MESSAGES = 80;
 

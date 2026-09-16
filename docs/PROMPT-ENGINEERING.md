@@ -184,6 +184,74 @@ Guard tests: `cache-optimization.test.ts` → `C-cache-knowledge-body`, `C-cache
 (the latter asserts that a `memory_save` leaves `result.text` byte-identical while still reaching the
 model through `result.volatile`). Both were verified to FAIL against the old Tier-2 placement.
 
+### 2.1.2 ContextOS v2 — change-gated volatile delivery (2026-09-16)
+
+**Problem.** The volatile tail used to be re-sent **in full on every LLM call**.
+Inside a single user turn a tool loop can issue 60+ calls, so the blob
+(~7 800 chars) was re-delivered verbatim each time. Measured on
+`sess_1789536167018_dxnmco` (66 calls, one user turn, `inputTokens` 24 481 → 269 168):
+
+- consecutive-call similarity of the compiled tail: **0.9989**
+- one persistent fact (`worker 2 正在处理同一话题`) was re-delivered **66×**
+- the assistant went on to re-narrate that same fact in **3 separate iterations**
+  and re-emitted identical progress-recap lines **×4 / ×3 / ×2**
+
+Root cause: a tail message is read as the *newest user input immediately before
+generating*. Re-stating unchanged background therefore reads as the user
+repeating themselves — and the model answers by repeating itself.
+
+**Policy.** Placement is unchanged (still the last message, so the system +
+history prefix keeps hitting the prefix cache); only *what the tail carries*
+changed:
+
+| Situation | Tail content |
+|---|---|
+| First call of a user turn | water-level hint + **all** volatile sections (full) |
+| A section's content hash changed | hint + that section in full; the rest digested |
+| Nothing changed | hint + one-line digest naming the omitted sections |
+| ≥ `CONTEXT_VOLATILE_REARM_CALLS` (8) calls since the last full refresh | hint + **all** sections (forced re-arm) |
+
+Branch key: `isFirstCallOfTurn = !messages.slice(turnStart + 1).some(m => m.role === 'assistant')`.
+Section identity: `sha1(body).slice(0,8)`, held in the engine's bounded
+per-session map (`VOLATILE_SNAPSHOT_MAX_SESSIONS = 64`).
+
+**Completeness invariant (do not weaken).** Content is never *permanently*
+hidden: any hash change is delivered immediately, a full refresh is forced at
+least every `CONTEXT_VOLATILE_REARM_CALLS` calls, and every new user turn starts
+from a full snapshot. The digest names what was withheld, so the agent still
+knows the background exists and why it was omitted.
+
+**Transient harness prompts are deduped** (`dedupeTransientPrompts`).
+`[Continue from where you left off …]` and `[SYSTEM] Loop detected: …` are
+appended to *durable* memory by the agent loop, so they stack up (observed: 4
+copies of the continuation prompt plus a loop warning in one session). They are
+negative instructions ("do not repeat") — the pattern LLMs handle worst — and
+each copy counts as a `user` turn, corrupting `findCurrentTurnStart` and
+cache-breakpoint placement. `prepareMessages` now collapses each family to its
+latest copy. The transform is pure and deterministic, so the byte-identical
+prefix is unaffected.
+
+**Regression guard**: `packages/core/test/context-volatile-gating.test.ts`.
+
+**Known gap (not yet fixed).** One user turn can still run 60+ LLM calls with no
+mid-turn folding: `compactOldTurns()` only folds messages *before*
+`findCurrentTurnStart`, so a giant single turn is never compressed, and on very
+large windows (1311k) the percentage watermark never fires either. Closing this
+needs recency-preserving intra-turn folding — keep the newest tool blocks
+verbatim, fold the oldest, and never split an assistant tool-call from its tool
+results. It hooks into §3.2's pipeline, so it is not done as a side effect.
+
+**Sample-size caveat.** The similarity/repeat figures come from one 66-call
+session. Treat them as an existence proof of the failure mode, not as a
+population statistic.
+
+**References**
+- DeepSeek KV-cache guide — prefix must match from token 0; a mid-context rewrite
+  invalidates the suffix. <https://api-docs.deepseek.com/guides/kv_cache/>
+- Manus context engineering — keep the prefix stable, append-only, and do not
+  give the agent "a few-shot of itself". <https://manus.im/blog/Context-Engineering-for-AI-Agents-Lessons-from-Building-Manus>
+- Negation is the weakest instruction form in LLMs. <https://aclanthology.org/2023.starsem-1.10/>
+
 ### 2.2 Spec: injection-point ownership audit (C3)
 
 The tiering above is the intended design; this spec makes it an enforced invariant so a new
@@ -462,7 +530,7 @@ Placed in **Tier 1 (Stable)** (`## Error Recovery` + `## Autonomy & Escalation`)
 ```
 contextWindow        = model's context window (e.g. 200K for Claude Sonnet 4)
 maxOutput            = min(model.maxOutputTokens, contextWindow × 40%)
-safetyMargin         = min(contextWindow × 15%, 30000)
+safetyMargin         = ceil(min(contextWindow × 8%, 16000))
 messageBudget        = contextWindow − systemTokens − toolDefTokens − maxOutput − safetyMargin
 ```
 
@@ -475,8 +543,8 @@ Token estimates use tiktoken when available (model-specific encoding), falling b
 **Policy: budget-first (model window AND provider afford).** Markus packs against the
 real model window, then further clamps by any OpenRouter prompt-afford hint (from a prior
 `Prompt tokens limit exceeded: X > Y` 402). Compression runs when history exceeds
-`CONTEXT_PROACTIVE_COMPACT_RATIO` (55%) of the message budget — not only when the hard
-window overflows. Session restore also trims before the first LLM call
+`CONTEXT_PROACTIVE_COMPACT_RATIO` (75% — the history-occupancy water level, i.e. the history's
+share of `messageBudget`) — not only when the hard window overflows. Session restore also trims before the first LLM call
 (`SESSION_RESTORE_MAX_MESSAGES` / `SESSION_RESTORE_MAX_MESSAGE_TOKENS`).
 
 ```
@@ -491,7 +559,7 @@ Session Messages
    └─ sanitizeMessageSequence()
        │
        ▼
- (runs if totalTokens > messageBudget OR > proactive 55% threshold)
+ (runs if totalTokens > messageBudget OR > proactive 75% threshold)
        │
        ▼
  Stage 2: Token-budget-driven compression (progressive)
@@ -545,7 +613,9 @@ When available, `smartSummarizeAndTruncate()` uses an LLM call to summarize olde
 - The summarizer LLM call is cheap: truncates each message to 300 chars, total input capped at 8000 chars.
 - Output max 1024 tokens, temperature 0.2.
 - Fallback: `buildHeuristicSummary()` extracts key sentences from assistant messages.
-- Summary is persisted to daily-logs (keyed by `agentId`) for traceability.
+- The summary is **not** persisted to disk — `prepareMessages()` must stay pure (no `writeDailyLog`).
+  It is instead carried in-history as a `[SYSTEM] [Conversation history summary …]` message, and the
+  durable compaction summary lives in the fixed `[CONTEXT SUMMARY]` segment (the session's `summary` field).
 
 ### 3.6 Message Sanitization
 
@@ -594,7 +664,7 @@ the agent can actively manage long sessions instead of relying only on passive a
 **Context watermark (`[CONTEXT X% used …]`)** — the agent can observe its own pressure (no more
 silent truncation) and act:
 - `usedPct = (fixedTokens + variableTokens) / effectiveBudget`.
-- `[CONTEXT WARN]` at ≥85%: nudge to `session_compact` or `session_pin` an anchor.
+- `[CONTEXT WARN]` at ≥80%: nudge to `session_compact` or `session_pin` an anchor.
 - `[CONTEXT CRIT]` at ≥95%: warn that the system will hard-truncate oldest turns; instruct to
   immediately `session_compact` + `session_pin`.
 - Injected via the volatile `[SYSTEM] [Live context]` tail (see §2.1), never into the system prefix.
@@ -817,8 +887,8 @@ previous turn's context usage crossed a threshold (~75%) and this session has no
 yet, run `memoryFlush` once (deduplicated per session; the flush itself uses an independent
 `sys_` session so it cannot recurse into another flush). See the memory-flush spec in
 [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for the authoritative behavior, invariants, and
-tests. Status: planned (the `memoryFlush` method exists but is not yet wired into the turn
-preflight).
+tests. Status: implemented — `maybeMemoryFlushPreflight()` is wired into the three main turn paths
+(`handleMessage`, `handleMessageStream`, and task execution in `agent.ts`), deduplicated per session.
 
 ### 5.8 Dream Consolidation
 
@@ -933,7 +1003,7 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
 | [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Notebook + `knowledge.md` / `state.md` layers; `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
 | [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | CPP writes to Notebook via `notebookWriter`; cognitive depth levels (§4.2 step 0) |
-| `packages/core/src/agent.ts` | Implementation of all 7 LLM call scenarios and 4 harness variants |
+| `packages/core/src/agent.ts` | Implementation of all 8 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation; SLOT fixed segment, volatile tail, watermark |
 | `packages/core/src/context-slot.ts` | SLOT segment model: `SlotEntry` / `SlotsStore` / `buildSlotSegment()` — the never-compacted anchors (§3.7) |
 | `packages/core/src/tools/session.ts` | Session 9-op tool family (compact/pin/include/retrieve…) + `checkOwnership` (§3.7) |

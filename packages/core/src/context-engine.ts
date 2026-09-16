@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import type { AgentScenario } from './agent.js';
 import {
   createLogger,
@@ -21,6 +22,7 @@ import {
   SYSTEM_TEAM_PROJECT_DESC_CHARS,
   CONTEXT_ABSURD_MESSAGE_CHARS,
   CONTEXT_PROACTIVE_COMPACT_RATIO,
+  CONTEXT_VOLATILE_REARM_CALLS,
   CONTEXT_WARN_RATIO,
   CONTEXT_CRIT_RATIO,
   PROMPT_AFFORD_OUTPUT_RESERVE,
@@ -1994,6 +1996,9 @@ export class ContextEngine {
     // ── Stage 1: Pathological single-message shrink only ────────────────
     messages = this.shrinkOversizedMessages(messages, CONTEXT_ABSURD_MESSAGE_CHARS);
     messages = this.sanitizeMessageSequence(messages);
+    // ContextOS v2: transient harness prompts must never stack up in history
+    // (see dedupeTransientPrompts).
+    messages = this.dedupeTransientPrompts(messages);
 
     const currentTurnStart = this.findCurrentTurnStart(messages);
     let totalTokens = this.sumTokens(messages);
@@ -2108,13 +2113,69 @@ export class ContextEngine {
       messages[turnStart - 1] = { ...messages[turnStart - 1], cacheBreakpoint: true };
     }
 
-    // Scheme A: assemble the per-turn volatile snapshot (contextHint + volatileState)
-    // into ONE standalone [SYSTEM] message pinned at the TAIL of the history (just
-    // before the current user query). Keeping it out of the system message lets the
-    // implicit prefix cache (DeepSeek/OpenAI) keep hitting across system + history.
+    // ── Scheme A + ContextOS v2: change-gated volatile tail ────────────
+    //
+    // Placement is load-bearing for the prefix cache: the volatile snapshot MUST
+    // be the LAST message. (Do NOT "insert just before the last user message":
+    // inside an agent tool loop the last user message is the ORIGINAL task
+    // instruction at index 1 — that insertion point is actually the FRONT of the
+    // history. It re-wrote message[1] on every call, which broke the
+    // byte-identical prefix at the first message after `system` and re-billed the
+    // entire replayed history on every LLM call: measured 46% prefix reuse
+    // instead of 79%.)
+    //
+    // ContextOS v2 changes WHAT the tail carries, not where it sits. The legacy
+    // tail re-sent the whole volatile blob verbatim on every LLM call; inside one
+    // user turn a tool loop can issue 60+ calls, so a persistent fact (e.g.
+    // 「worker 2 正在处理同一话题」) was re-delivered 66× and the model — reading
+    // it as the newest user input immediately before generating — re-announced it
+    // on every iteration instead of acting on it once. Measured 2026-09-16:
+    // blob 7 775 chars, consecutive-call similarity 0.9989, the same concurrency
+    // fact re-narrated in three separate iterations of one turn.
+    //
+    // A section is therefore sent in full on the first call of a user turn,
+    // whenever its content hash changes, or at least once every
+    // CONTEXT_VOLATILE_REARM_CALLS calls; otherwise only the water-level hint and
+    // a digest naming the omitted sections is sent. Nothing is ever *permanently*
+    // hidden — any change is delivered immediately and staleness is bounded by
+    // the re-arm interval — while the tail stops working as a stream of "new"
+    // user statements that the model feels obliged to acknowledge.
+    const sections = volatileState ? this.splitVolatileSections(volatileState) : [];
+    const isFirstCallOfTurn = !messages.slice(turnStart + 1).some((m) => m.role === 'assistant');
+    const prevSnapshot = this.volatileSnapshot.get(opts.sessionId);
+    const callsSinceFull = prevSnapshot ? prevSnapshot.callsSinceFull : Number.POSITIVE_INFINITY;
+    const forceFull =
+      isFirstCallOfTurn || !prevSnapshot || callsSinceFull >= CONTEXT_VOLATILE_REARM_CALLS;
+
+    const freshBodies: string[] = [];
+    const omitted: string[] = [];
+    const nextHashes = new Map<string, string>();
+    for (const sec of sections) {
+      const h = ContextEngine.hashSection(sec.body);
+      nextHashes.set(sec.key, h);
+      // `forceFull` short-circuits, so `prevSnapshot!` is only dereferenced when
+      // a previous snapshot actually exists.
+      if (forceFull || prevSnapshot!.hashes.get(sec.key) !== h) freshBodies.push(sec.body);
+      else omitted.push(sec.key);
+    }
+    this.volatileSnapshot.set(opts.sessionId, {
+      hashes: nextHashes,
+      callsSinceFull: freshBodies.length > 0 ? 0 : callsSinceFull + 1,
+    });
+    while (this.volatileSnapshot.size > ContextEngine.VOLATILE_SNAPSHOT_MAX_SESSIONS) {
+      const oldest = this.volatileSnapshot.keys().next().value;
+      if (oldest === undefined) break;
+      this.volatileSnapshot.delete(oldest);
+    }
+
     const liveStateBits: string[] = [];
     if (contextHint) liveStateBits.push(contextHint);
-    if (volatileState) liveStateBits.push(volatileState);
+    if (freshBodies.length) liveStateBits.push(freshBodies.join('\n\n'));
+    if (omitted.length) {
+      liveStateBits.push(
+        `[Background state — ${omitted.join(', ')}: identical to what you already received earlier in this turn, omitted on purpose so it is not re-read as news. Act only on the sections shown above.]`,
+      );
+    }
     const liveStateMsg: LLMMessage | null = liveStateBits.length
       ? { role: 'user', content: `[SYSTEM] [Live context]\n${liveStateBits.join('\n\n')}` }
       : null;
@@ -2419,6 +2480,89 @@ export class ContextEngine {
    * Find where the current turn begins (last user message index).
    * Everything from here to the end is the "active" turn and should not be compacted.
    */
+  /**
+   * ContextOS v2 — per-session volatile re-delivery bookkeeping.
+   *
+   * Tracks, per session, the content hash of every volatile section as last
+   * delivered plus how many consecutive calls have been served from the
+   * "unchanged" fast path. Bounded so a long-lived engine cannot leak one entry
+   * per session it ever served.
+   */
+  private volatileSnapshot = new Map<
+    string,
+    { hashes: Map<string, string>; callsSinceFull: number }
+  >();
+
+  private static readonly VOLATILE_SNAPSHOT_MAX_SESSIONS = 64;
+
+  private static hashSection(body: string): string {
+    return createHash('sha1').update(body).digest('hex').slice(0, 8);
+  }
+
+  /**
+   * Split the volatile blob into `## Heading` sections. Any leading text before
+   * the first heading (the `---` / date-time line) is bucketed as `_preamble`
+   * so it keeps riding every call.
+   */
+  private splitVolatileSections(blob: string): Array<{ key: string; body: string }> {
+    const out: Array<{ key: string; body: string }> = [];
+    let curKey: string | null = null;
+    let buf: string[] = [];
+    const flush = () => {
+      const body = buf.join('\n').trim();
+      if (body) out.push({ key: curKey ?? '_preamble', body });
+      buf = [];
+    };
+    for (const line of blob.split('\n')) {
+      // `## X` starts a section; `### X` is a sub-heading inside one.
+      const m = /^##\s+(.+?)\s*$/.exec(line);
+      if (m) {
+        flush();
+        curKey = m[1]!;
+        buf = [line];
+      } else {
+        buf.push(line);
+      }
+    }
+    flush();
+    return out;
+  }
+
+  /**
+   * Collapse duplicate *transient* harness prompts.
+   *
+   * `[Continue from where you left off…]` (max-tokens continuation) and
+   * `[SYSTEM] Loop detected: …` are appended to DURABLE memory by the agent
+   * loop, so in a long tool loop they stack up: the observed session carried 4
+   * copies of the continuation prompt plus a loop warning on top of the original
+   * instruction. Two problems: (a) they are *negative* instructions ("do not
+   * repeat") and negation is what LLMs handle worst, so the stack acts as
+   * negative priming fired at the model on every call; (b) each copy counts as a
+   * `user` turn, corrupting turn/ownership accounting (findCurrentTurnStart,
+   * cache-breakpoint placement). Keep only the most recent copy of each family.
+   *
+   * Pure and deterministic — the same history always maps to the same output, so
+   * it does not disturb the byte-identical prefix.
+   */
+  private dedupeTransientPrompts(messages: LLMMessage[]): LLMMessage[] {
+    let lastContinuation = -1;
+    let lastLoopWarn = -1;
+    messages.forEach((m, i) => {
+      if (m.role !== 'user') return;
+      const t = getTextContent(m.content).trim();
+      if (t.startsWith('[Continue from where you left off')) lastContinuation = i;
+      else if (t.startsWith('[SYSTEM] Loop detected:')) lastLoopWarn = i;
+    });
+    if (lastContinuation < 0 && lastLoopWarn < 0) return messages;
+    return messages.filter((m, i) => {
+      if (m.role !== 'user') return true;
+      const t = getTextContent(m.content).trim();
+      if (t.startsWith('[Continue from where you left off')) return i === lastContinuation;
+      if (t.startsWith('[SYSTEM] Loop detected:')) return i === lastLoopWarn;
+      return true;
+    });
+  }
+
   private findCurrentTurnStart(messages: LLMMessage[]): number {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i]!.role === 'user') return i;
