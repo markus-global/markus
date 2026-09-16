@@ -8,7 +8,6 @@ import { getDefaultTokenCounter } from '../src/token-counter.js';
 function mockMemory(knowledge = '## Facts\nKnow things.\n'): IMemoryStore {
   return {
     getLongTermMemory: () => knowledge,
-    getStateMemory: () => '## Current\nQuiet day 1\nline2\nline3\nline4\nline5\nline6\n',
     getEntries: () => [],
     addEntry: () => {},
     search: () => [],

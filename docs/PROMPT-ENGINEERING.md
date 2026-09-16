@@ -133,7 +133,7 @@ dynamic content is moved **out of the system prompt entirely** into a volatile t
 ║   then SCOPE O/T: Org (CONTEXT.md) · Team Announcements  ║
 ║   & Norms · User Profiles · Env · Scenario (LAST) ·      ║
 ║   Team Data Directory · Activated-skills body            ║
-║   (agent-written memory — knowledge.md / state.md —      ║
+║   (agent-written memory — knowledge.md           —      ║
 ║    is NOT here: it rides the volatile tail, see §2.1.1)  ║
 ╚══════════════════════════════════════════════════════════╝
 ╔══════════════════════════════════════════════════════════╗
@@ -146,8 +146,8 @@ dynamic content is moved **out of the system prompt entirely** into a volatile t
 ║   & attention · Team Status · Working Memory ·           ║
 ║   Cognitive/Notebook context · task board · deliverables ║
 ║   · deferred-tool catalog (Afford.S2)                    ║
-║   · Your Knowledge (knowledge.md) · Current State        ║
-║     (state.md)  ← agent-written, see §2.1.1 inv. 5       ║
+║   · Your Knowledge (knowledge.md) · Working State        ║
+║     (notebook)  ← agent-written, see §2.1.1 inv. 5       ║
 ╚══════════════════════════════════════════════════════════╝
 ```
 
@@ -157,7 +157,7 @@ dynamic content is moved **out of the system prompt entirely** into a volatile t
 
 1. **Tier 1 (Stable)**: Role, policies, tool usage rules, communication rules, collaboration rules. Scenario-free — stay cached across ALL mode switches (chat ↔ heartbeat ↔ a2a ↔ deliberation). A cache breakpoint after this tier caches this prefix across all calls.
 
-2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, scenario instructions last. Change on org/config events (days–weeks), but stay stable within a session. Scenario placed last keeps the identity/org prefix stable across mode switches (OpenAI benefit). A breakpoint here caches the combined Tier 1+2 prefix. These two tiers together form the byte-stable system `text`. **Agent-written memory (knowledge.md, state.md) is deliberately NOT in this tier** — see §2.1.1 invariant 5.
+2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, scenario instructions last. Change on org/config events (days–weeks), but stay stable within a session. Scenario placed last keeps the identity/org prefix stable across mode switches (OpenAI benefit). A breakpoint here caches the combined Tier 1+2 prefix. These two tiers together form the byte-stable system `text`. **Agent-written memory (knowledge.md, NOTEBOOK.md) is deliberately NOT in this tier** — see §2.1.1 invariant 5.
 
 3. **Volatile tail (Scheme A)** — replaces the old Tier 3: Project/task board, system announcements, feedback, available skills (query-filtered), `## Notebook` (cognitive), relevant memories, team status, channel history, mailbox state, working memory, timestamps, deferred-tool catalog. These change per call and live **outside the system**: `prepareMessages()` assembles them (plus `contextHint`) into one `[SYSTEM] [Live context]` message appended as the **LAST message of the request**. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn. Sitting in the **history tail** rather than in the system message means changing it never invalidates the byte-stable system + history prefix (implicit prefix-cache on OpenAI-compatible providers).
 
@@ -193,7 +193,7 @@ guard test; break one and long sessions silently re-bill their whole history on 
 | 2 | The request-history window **slides in blocks**, not per message | `history-window.ts` (`requestHistoryStart`), used by every `Agent.requestHistory()` call | `history-window.test.ts` |
 | 3 | The deferred-tool catalog (Afford.S2) rides the **volatile tail**, never the system prompt | `Agent.consumeDeferredToolCatalog()` + `mergeVolatile()` | `agent-deep.test.ts` → `deferred-tool catalog placement` |
 | 4 | ContextOS `[SLOTS]` + `[CONTEXT SUMMARY]` are **derived in the engine**, so every prepare path carries them | `context-engine.prepareMessages` defaults from `(memory, sessionId)` | `context-engine.test.ts` → `ContextOS slots + summary ride EVERY prepare path` |
-| 5 | Agent-written knowledge / state (`## Your Knowledge`, `## Current State`) ride the **volatile tail**, never Tier 2 | write-frequency tier boundary, below | `cache-optimization.test.ts` → `C-cache-knowledge-body`, `C-cache-knowledge-write` |
+| 5 | Agent-written knowledge / state (`## Your Knowledge`, `## Notebook`) ride the **volatile tail**, never Tier 2 | write-frequency tier boundary, below | `cache-optimization.test.ts` → `C-cache-knowledge-body`, `C-cache-knowledge-write` |
 | 6 | The `tools` array is **byte-stable per session** — no per-turn counts, dynamic lists, or selection-derived content in any tool `description` / `inputSchema` | `tool-selector.ts` `buildDiscoverTool` (registry-derived, sorted) | `tool-selector.test.ts` → `CACHE: discover_tools description is byte-stable …` |
 | 7 | When volatile state **changes**, it is also persisted as a replayable `[SYSTEM] [State checkpoint]` (append-only ⇒ cache-extending) | `context-engine.prepareMessages` | `context-volatile-gating.test.ts` → checkpoint describe |
 | 8 | The system prompt is emitted in **scope order, widest first**: the universal (scope-U) block comes FIRST and is **byte-identical for every agent**; agent-private persona/policies are emitted *after* it | `context-engine.buildSystemPrompt` (`stable` vs `agentPersona` → head of `semiStable`) | `context-cache-scope.test.ts` → *two different agents produce a byte-identical scope-U segment* |
@@ -237,7 +237,7 @@ task/review/session scenarios silently dropped `session_pin` anchors **and** the
 for a new call site to forget them.
 
 **Invariant 5 — agent-written memory/knowledge belongs to the volatile tail.** `## Your Knowledge`
-(knowledge.md) and `## Current State (short)` (state.md) are **agent-written** and change far more
+(knowledge.md) and `## Notebook` (NOTEBOOK.md) are **agent-written** and change far more
 often than "semi-stable" implies: `memory_save` appends to `## _observations` on *every* call, and
 `memory_update` rewrites curated sections. While they sat in the byte-stable Tier 2, every one of
 those writes invalidated the cached prefix for the **entire replayed history** — a high-frequency
@@ -250,7 +250,7 @@ The tier boundary is therefore **write frequency, not subject matter**:
 | Block | Written by | Frequency | Tier |
 |-------|-----------|-----------|------|
 | `## Your Knowledge` (knowledge.md) | the agent (`memory_save`/`memory_update`) | many× per task | **volatile** |
-| `## Current State (short)` (state.md) | the agent | per task | **volatile** |
+| `## Notebook` (NOTEBOOK.md) | the agent | per task | **volatile** |
 | Relevant memories, notebook, mailbox, task board, team status | platform | per turn | volatile |
 | `## About the Owner` (USER.md), org/team context, workspace paths, team announcements/norms, `## Your Trust Level` | humans / org config | days–weeks | Tier 2 (cached) |
 | Role, policies, tool-usage rules, Learning Habits | repo/build | only on release | Tier 1 (cached) |
@@ -386,7 +386,7 @@ injection point cannot silently land in a stable tier and bust the cache prefix.
 - **Behavior**: every prompt injection point has an explicit owner. Identity, policies,
   tool-usage rules → **Tier 1 (stable)**. Org/workspace/scenario/announcements/norms/
   activated-skills/user-profile/trust → **Tier 2 (semi-stable; written on org/config events)**.
-  Agent-written memory (`## Your Knowledge`, `## Current State (short)`) → **volatile** (§2.1.1
+  Agent-written memory (`## Your Knowledge`, `## Notebook`) → **volatile** (§2.1.1
   invariant 5). All per-call situational meta (CPP output via
   `## Notebook`, triage decision, mailbox state, task board, timestamps, relevant memories, team
   status, query-filtered skills, working memory, contextHint) → **volatile tail (the `[Live
@@ -435,6 +435,19 @@ Source: `getDynamicContext()` — three sources:
 | `system` | Runtime (triage, mechanical retrieval) | `triage-decision`, `relevant-context` |
 | `cpp` | Cognitive Preparation Pipeline | `cognitive-context`, `relevant-context`, `reflection` |
 
+**Bounding ([MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §2).** The block is bounded on four independent axes, because each alone is insufficient:
+
+| Axis | Limit | Failure it prevents |
+|------|-------|---------------------|
+| Entry count | 16 total, 4 `agent` | "26 entries against a nominal cap of 4" — three of four writers bypassed the cap and the load path trimmed nothing |
+| Per-entry chars | 6000 (1500 for `relevant-context`, `NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS`) | one 9 475-char entry — more than the whole block budget — crowding every real note out |
+| Total block chars | 6000 | the block reaching 41 % of the volatile tail |
+| TTL | `agent` 96h / `system` 24h / `cpp` 6h | month-old situational state (`triage-decision`, `cognitive-context`) re-injected as current fact |
+
+Overflow is handled by **inline truncation**, not omission: an entry too large for the remaining budget is sliced with a `_[truncated]_` marker rather than dropped whole, and any entry that still cannot be shown appears in a sorted index line. So the agent always sees that a note exists (and can `file_read` NOTEBOOK.md) instead of it vanishing silently.
+
+**Ordering is deterministic**: `updatedAt` DESC with a `key` ASC tie-break. Ranking matters for staleness; determinism matters for caching — for the same logical state the block must serialize to the same bytes, or every assembly dirties the volatile tail and re-bills those tokens. (Map insertion order did neither: evict + re-insert permuted the block.)
+
 The context engine no longer injects separate `## Cognitive Context`, `## Retrieved Context`, `## Reflection`, or `## Relevant Memories` sections. Instead, `buildSystemPrompt()` accepts a `notebookWriter` callback; CPP outputs and relevance-matched memories are written to Notebook entries, centralizing cognitive state in one section. See [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) §3–4 and [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
 
 Legacy aliases `update_working_memory` / `clear_working_memory` remain for backward compatibility.
@@ -459,7 +472,7 @@ MUST: `buildSystemPrompt()` MUST accept `promptProfile: 'reflex' | 'converse' | 
 | ROLE | full (soft warn metric) | full | full |
 | Collaboration Rules (L0) | yes | yes | yes |
 | knowledge.md as `## Your Knowledge` | omitted | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE`) | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS`) |
-| state.md | ≤ `STATE_PROMPT_MAX_LINES_REFLEX` lines | optional short | optional short |
+| ~~state.md~~ | — | retired 2026-09-16 → notebook `system` tier | — |
 | L3 quality/git/error-recovery | omitted | omitted (incl. comments) | included |
 | Search Strategy | complete, concise | complete, concise | complete, concise |
 | Team announcements / norms | capped | 400 chars | 2000 chars |
@@ -475,7 +488,7 @@ MUST: knowledge injection MUST exclude observations buffer; converse uses a shor
 digest cap (full text via `memory_search` / files). Knowledge body headings `##`
 MUST be demoted to `###` under `## Your Knowledge` so they do not collide with
 system sections; stale fault/transcript sections are deprioritized when truncating.
-MUST NOT: Inject full `state.md` history into reflex.
+MUST NOT: Inject full history into reflex (the retired `state.md` block is gone — situational state rides `## Notebook`).
 MUST: Converse size is controlled by progressive disclosure + afford guard, **not**
 by post-assemble truncation of ROLE/L0/Collaboration Rules/mode/date.
 MUST NOT: Emit `_[ROLE truncated]_` / `_[system trimmed]_` markers.
@@ -896,7 +909,7 @@ cause rather than the symptom.
 |---|---|---|
 | O1 | **Tool schema drift (RC5).** Session-level monotonic toolset. | **DONE.** `Agent.stickyTools()` keeps `recent`/`activated` in a session-keyed record (`toolSticky`), monotonic within a session (freezes at `STICKY_RECENT_TOOLS_MAX` instead of evicting) and reset on session switch, so the *cross-session leak* is closed as well as the per-turn drift. Remaining (deferred): the call-site inconsistency where the stream/task/risk paths do not pass `extraRecentToolNames`, and `Mask, Don't Remove` decode-time placeholders (not applicable to closed APIs). |
 | O2 | **Reported usage as the single source of truth (RC6).** | **PARTIAL — calibration only.** `calibrateTokenCounter(response.usage.inputTokens)` is now wired on 8 paths, and `extractCacheReadTokens()` already parses DeepSeek's `prompt_cache_hit_tokens` **and** OpenAI/OpenRouter `prompt_tokens_details.cached_tokens`, feeding `cacheHitRateWindow` (reported-only denominator). Still open: using reported tokens to *drive* the budget/water level and marking it `src=reported\|estimated`. Deferred per Owner's call — do DeepSeek-first if pursued. |
-| O3 | **`## Notebook` size (RC3).** Largest single tail section (mean 9 163 chars, 41 % of tail). | **DONE (size).** Added a TOTAL cap (`NOTEBOOK_PROMPT_MAX_CHARS = 6000`) on top of the per-entry cap, keeping the most recent entries and naming any omitted keys — so the block can no longer dominate the tail. Relevance ranking deliberately NOT applied: the notebook is the agent's own workspace, and dropping a note it wrote itself is a correctness risk, not a token win. |
+| O3 | **`## Notebook` size (RC3).** Largest single tail section (mean 9 163 chars, 41 % of tail). | **DONE (size + lifecycle).** Added a TOTAL cap (`NOTEBOOK_PROMPT_MAX_CHARS = 6000`) on top of the per-entry cap, keeping the most recent entries and naming any omitted keys — so the block can no longer dominate the tail. Relevance ranking deliberately NOT applied: the notebook is the agent's own workspace, and dropping a note it wrote itself is a correctness risk, not a token win. Follow-up ([MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §2): the cap alone was not enough — entry count/TTL/single-writer were missing, so a real notebook reached 26 entries / 33 KB and an 18-day-old triage decision was re-injected as current fact. Now: single write path (`Agent.writeNotebookEntry`), per-tier TTL, cross-tier entry cap, normalize-on-load, deterministic ordering, and inline truncation instead of whole-entry omission. |
 | O4 | **`filterSkillsByRelevance` dead code.** | **DONE.** Deleted. It was never called, and the every-turn `## Available Skills` table is ORG context (scope O) — byte-stable for the whole org — so ranking it per query would convert a shared cached block into a per-call one. Rationale recorded in-code. |
 
 **Evidence provenance.** All measured figures come from
@@ -1358,7 +1371,7 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 | Document | Relationship |
 |----------|-------------|
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Notebook + `knowledge.md` / `state.md` layers; `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
+| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Notebook + `knowledge.md` layers (`state.md` retired 2026-09-16); `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
 | [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | CPP writes to Notebook via `notebookWriter`; cognitive depth levels (§4.2 step 0) |
 | `packages/core/src/agent.ts` | Implementation of all 8 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation; SLOT fixed segment, volatile tail, watermark |

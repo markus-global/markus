@@ -312,6 +312,25 @@ lock. The lock is released on the throw path too (no leak).
 (`agent.ts`). Each entry maps a tool to a mutual-exclusion domain, optionally keyed by an
 argument so that *different* resources run in parallel:
 
+> **Grain: resources, not tool names (2026-09-16).** A domain keyed by tool name lets one
+> resource have two non-conflicting write paths. Two real cases fixed:
+> ① `update_notebook` was registered under domain `notebook` while its alias
+> `update_working_memory` lived under `working-memory` — both write the **same** Map
+> (`Agent.writeNotebookEntry`), yet they were judged non-conflicting, so the lock did
+> nothing. ② `file_write knowledge.md` took `fs:<path>` while `memory_update` took
+> `memory` — the same file, two mutually non-exclusive paths, so a hand edit could be
+> **silently overwritten** by the next in-memory whole-file rewrite.
+> Both are fixed by resolving tools to a **resource key** via
+> `packages/core/src/lock-resources.ts` (`AGENT_MEMORY_RESOURCE_DOMAIN = 'agent-memory'`,
+> `memoryResourceForPath()`, `memoryResourceLock()`). Table entries for memory tools now
+> carry `{ domain: 'agent-memory', resource: 'knowledge' | 'notebook' }`, and
+> `Agent.resourceLocksFor(toolCall, dataDir)` rewrites an `fs`-domain lock into the memory
+> resource lock when the path names an agent memory file (`knowledge.md`, `NOTEBOOK.md`,
+> `state.md`, `role/ROLE.md`, `role/HEARTBEAT.md`).
+> Invariant pinned by `packages/core/test/lock-resource-keys.test.ts`: **同一资源 ⇒ 同一锁键**
+> (same resource ⇒ same lock key, incl. aliases and the `file_write` route), while distinct
+> resources still run in parallel.
+
 | Domain | Keyed by | Examples |
 |---|---|---|
 | `'*'` | — (global exclusive) | `shell_execute`, `apply_patch`, `package_install`, `hub_install`, `background_exec`, `process` |
@@ -319,7 +338,8 @@ argument so that *different* resources run in parallel:
 | `task` / `requirement` / `workflow` / `project` / `deliverable` | entity id | `task_update`, `requirement_update_status`, `workflow_run`, `deliverable_update` |
 | `terminal` / `browser` | terminal id / page id | `exec_terminal`, `click`, `navigate_page` |
 | `a2a-out` | target agent / channel | `agent_send_message`, `feishu_send_message` |
-| `memory`, `notebook`, `working-memory`, `session`, `session-tools`, `schedule`, `llm-config`, `org`, `ui`, `deliberation`, `mailbox-admin`, `notify` | single resource or item id | `memory_save`, `session`, `discover_tools`, `team_update` |
+| `agent-memory` | **resource key** (`knowledge` / `notebook` / `identity` / `state`) | `memory_save`, `memory_update`, `memory_update_longterm`, `memory_delete`, `update_notebook`, **`update_working_memory` / `clear_working_memory`** (alias → same key), `file_write` / `file_edit` on an agent memory file |
+| `session`, `session-tools`, `schedule`, `llm-config`, `org`, `ui`, `deliberation`, `mailbox-admin`, `notify` | single resource or item id | `session`, `discover_tools`, `team_update` |
 
 **Classification is closed and test-enforced.** `Agent.isWriteTool` is *default-deny*:
 
@@ -349,8 +369,68 @@ Two important subtleties:
 `session.id` (`memory/store.ts`). A single instance-level timer meant worker B's save
 cancelled worker A's pending write, silently dropping A's session from disk until the
 next save. Session files, by contrast, are per-session (`sessions/<id>.json`), so
-cross-session writes do not race; `knowledge.md` writes are synchronous
-read-modify-write, which is atomic w.r.t. other in-process code.
+cross-session writes do not race.
+
+**`knowledge.md` is NOT safe by "synchronous read-modify-write".** Each individual
+`readFileSync`/`writeFileSync` is synchronous, but a *logical* update is
+read → transform → write, and synchronous code still yields between those steps
+whenever the read-modify-write spans an `await` — which it does on the dream-cycle
+path. Concretely (see §4.9 defect registry):
+
+- Tool-path writes (`memory_save` / `memory_update` / `update_notebook`) take the
+  `agent-memory:<resource>` lock (`knowledge` / `notebook`), so they mutually exclude —
+  including the `update_working_memory` alias, which now resolves to the *same* key
+  instead of a separate `working-memory` domain.
+- The dream cycle (`consolidateMemory` → `dreamConsolidateMemory(entries)` →
+  `pruneMemoryMd()` → `compressLongTermMemory()`) runs from a timer, **outside any tool
+  call**, and therefore **outside any lock**. A concurrent `memory_update` could land
+  between the dream's read and write and lose one of the two updates.
+
+Fixed by wrapping the whole dream-critical section in
+`resourceLocks.withLock(memoryResourceLock('knowledge'), …)`, so the dream cycle and
+tool-path writes now share one exclusion key.
+
+**The notebook has a second, subtler concurrency hazard: normalization writes.**
+Once the notebook gained TTL + entry caps, "apply the invariants" became a
+**mutating** step (it evicts). Doing that at injection time — the obvious place,
+because that is where the entries are rendered — means *reading the prompt mutated
+agent state*, so two concurrent workers rendering their prompts could both evict and
+both persist, and the loser's write would resurrect entries the winner deleted.
+It is therefore applied only at two race-safe points: **after load** (before any
+worker starts) and **after every write** (already inside the writer, so serialized by
+construction). Injection is then a pure read of already-legal state.
+
+**Residual risk (backlog).** There is no *cross-process* mutex. Desktop and CLI
+running the same agent concurrently can still interleave on `NOTEBOOK.md` /
+`knowledge.md`. Fixing this needs a new process-coordination mechanism (file lock or
+single-instance IPC) and is listed in §7.
+
+### 4.9 Shared mutable state — inventory, defects, and their guards
+
+A single agent instance serves several workers. Entity locks keep *different entities* apart,
+but everything an agent holds **outside** an entity is shared. This inventory is the check-list
+to consult before adding a writer.
+
+| Shared state | Scope | Owner / write path | Protection |
+|---|---|---|---|
+| Notebook map + `NOTEBOOK.md` | per-agent | `Agent.writeNotebookEntry` (single write path), persist debounce w/ 10 s maxWait | `agent-memory:notebook` lock; normalize-on-load + on-write (never at render time) |
+| `knowledge.md` (curated + observations) | per-agent | `MemoryStore` (`addLongTermMemory`, `convergeLongTermToCap`, `removeLongTermSection`) | `agent-memory:knowledge` lock; atomic write |
+| Handoff log | per-agent | `ConcurrentHandoffLog` | debounced flush; bounded ring (64) |
+| Entity locks | per-agent | `mailbox.entityKeyOf` | in-process map — **not** cross-process |
+| `ResourceLockRegistry` | per-agent | `withLocks` | in-process map — **not** cross-process |
+| Activated skills | **per session/worker** | `SessionWorkspace.activatedSkills` | correct by construction — the model example to copy |
+
+Defect registry (found 2026-09-16; each row is a *fixed* bug kept as a regression anchor):
+
+| ID | Defect | Root cause | Fix | Guard |
+|---|---|---|---|---|
+| **P0-1** | `update_notebook` and its alias `update_working_memory` write the same Map yet never exclude each other | lock granularity was the **tool name**, and the alias was registered under a different domain (`working-memory`) | both resolve to `agent-memory:notebook` via `WRITE_TOOL_DOMAINS.resource` | `lock-resource-keys.test.ts` — alias key equality + live serialisation |
+| **P0-2** | a hand edit to `knowledge.md` / `NOTEBOOK.md` could be **silently overwritten** by the next in-memory whole-file rewrite | `file_write` took `fs:<path>` while `memory_update` took `memory` — same file, two non-exclusive paths | `Agent.resourceLocksFor(tc, dataDir)` rewrites an fs lock into the memory resource lock when the path names an agent memory file | same file — `file_write`/`file_edit` key equality |
+| **P0-3** | two OS processes (desktop + CLI) on the same agent have **no** mutual exclusion | `ResourceLockRegistry` and entity locks are in-process maps | **not fixed** — needs a process-level arbiter (file lock / single-instance election) | listed in §7 |
+
+Invariant to preserve when touching this area: **同一资源 ⇒ 同一锁键** — same resource ⇒ same
+lock key, *including aliases and the generic-file-tool route* — while distinct resources must
+stay parallel (a test asserts notebook∥knowledge concurrency is 2, not 1).
 
 ## 5. Cancellation & streaming (Scheme B — directed cancel)
 
@@ -429,6 +509,14 @@ These are deliberate trade-offs, documented rather than hidden:
 
 6. **Cost.** N workers can mean up to N concurrent LLM calls. `maxWorkers` (default 3)
    is the cost ceiling; low-value items can still be aggregated/merged by the mailbox.
+
+7. **Locking is in-process only (P0-3).** `ResourceLockRegistry` and the entity-lock map are
+   per-process structures. Two OS processes serving the same agent (desktop app + CLI) can
+   therefore both take the "same" lock and interleave writes to `knowledge.md` /
+   `NOTEBOOK.md` / the handoff log. Atomic file writes bound the damage (a torn file is never
+   parsed back) but do not prevent a lost update. Closing this needs an architecture-level
+   mechanism — file-based advisory locks or single-instance election — and is tracked as its
+   own piece of work; see [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §10.3.
 
 ## 8. Testing
 

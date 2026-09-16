@@ -36,7 +36,6 @@ import {
   KNOWLEDGE_PROMPT_MAX_TOKENS,
   KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE,
   KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX,
-  STATE_PROMPT_MAX_LINES_REFLEX,
   SYSTEM_PROMPT_BUDGET_CONVERSE,
   SYSTEM_ANNOUNCEMENTS_CHARS,
   SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE,
@@ -62,9 +61,31 @@ const log = createLogger('context-engine');
  */
 const DEFAULT_HANDBOOK_PATH = 'templates/roles/HANDBOOK.md';
 
-/** Section titles that are usually stale noise in knowledge.md digests. */
-const KNOWLEDGE_STALE_SECTION_RE =
-  /compact_\d+|deepseek\s*(api|json)|组织深度静默|静默期验证|故障模式|json\s*解析错误|timeout\s*diagnos/i;
+/**
+ * Structural signals that a knowledge.md section is stale noise rather than
+ * durable knowledge.
+ *
+ * The previous version hard-coded the vocabulary of ONE incident
+ * (`deepseek api`, `组织深度静默`, `静默期验证`, `故障模式`, `json 解析错误`). That
+ * overfits: the same class of junk with different wording ranked as first-class
+ * knowledge, and the list could only ever grow. Rank on STRUCTURE instead — the
+ * shapes below are what actually distinguish a scratch note from a lesson:
+ *   - machine artefacts:   `compact_12`, `summary_v3`
+ *   - completion stamps:   `✅ 修复完成：…`, `❌ …`, `done — …`, `Fix applied: …`
+ *   - commit/PR references: `（3a745f00）`, `#313`
+ *   - dated/session logs:  `2026-09-15 …`, `session-…`, `day 3 …`
+ * All are cheap, language-agnostic and do not need maintenance when wording drifts.
+ */
+const KNOWLEDGE_STALE_SECTION_RE = new RegExp([
+  'compact_\\d+',                        // compaction artefacts
+  '^#{0,6}\\s*[✅❌⚠️]',                 // completion / failure stamps
+  '^#{0,6}\\s*(?:fix|fixed|done|resolved)\\b',
+  '\\b[0-9a-f]{7,40}\\b',               // bare git SHA
+  '\\bpb?(?:r|ull)?\\s*#\\d+\\b',       // PR / issue number
+  '\\b\\d{4}-\\d{2}-\\d{2}\\b',          // date-stamped note
+  '\\b(?:session|day)[-_ ]\\d+',
+  '\\b(?:修复完成|已完成|临时记录|待办草稿)\\b',
+].join('|'), 'i');
 
 /**
  * Prepare knowledge.md body for system prompt injection:
@@ -865,16 +886,12 @@ export class ContextEngine {
         volatile.push(prepared.text);
       }
     } else if (isReflex) {
-      // Optional short state snapshot lines (state.md or notebook tip)
-      try {
-        const stateFn = (opts.memory as { getStateMemory?: () => string }).getStateMemory;
-        const stateText = typeof stateFn === 'function' ? stateFn.call(opts.memory) : '';
-        if (stateText?.trim()) {
-          const lines = stateText.trim().split('\n').slice(0, STATE_PROMPT_MAX_LINES_REFLEX);
-          volatile.push('\n## Current State (short)');
-          volatile.push(lines.join('\n'));
-        }
-      } catch { /* optional */ }
+      // Reflex (heartbeat) prompts used to inline a `## Current State (short)` snapshot
+      // from state.md. That store is retired: situational state is Working-layer data and
+      // already reaches the prompt through the `## Notebook` block (see
+      // `Agent.getDynamicContext`), which has a keyed structure, per-tier TTL and a hard
+      // entry cap — none of which state.md had.
+      // See docs/MEMORY-SYSTEM.md §10.2 (option A).
     }
 
     if (opts.projectContext) {

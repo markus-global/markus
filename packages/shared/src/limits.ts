@@ -205,6 +205,16 @@ export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
  *  keeps creating new sections.  15 000 chars ≈ 5 sections × 3 000. */
 export const MEMORY_MD_TOTAL_MAX_CHARS = 15_000;
 
+/** Max characters for a curated knowledge.md SECTION KEY.
+ *  Keys are headings of a durable knowledge base, not free text — see
+ *  `normalizeSectionKey` in packages/core/src/memory/store.ts. */
+export const KNOWLEDGE_SECTION_KEY_MAX_CHARS = 64;
+
+/** When total convergence has to shrink a curated section, it is reduced to a
+ *  stub of at most this many chars (the heading is always preserved, so the topic
+ *  stays discoverable via the knowledge index line and `memory_search`). */
+export const KNOWLEDGE_STUB_MAX_CHARS = 400;
+
 /** Hard cap on a single observation/top-level section body (chars).
  *  Kills runaway knowledge.md ballooning from nested-serialize feedback
  *  loops (observed: one split-block grew to 50MB). */
@@ -475,13 +485,58 @@ export function clampHeartbeatIntervalMs(ms: number): number {
 }
 
 // ─── Notebook Limits (formerly Working Memory) ──────────────────────────────
+// The notebook is a RESIDENT prompt region, so it needs all four of the
+// mechanisms that keep a resident region honest (see docs/MEMORY-SYSTEM.md §2):
+//   1. a hard entry cap           → NOTEBOOK_MAX_ENTRIES
+//   2. per-tier time-to-live      → NOTEBOOK_TTL_MS_*
+//   3. per-entry + total caps     → NOTEBOOK_MAX_CHARS_PER_ENTRY / NOTEBOOK_PROMPT_MAX_CHARS
+//   4. an agent-visible rewrite path → update_notebook / clear_notebook
+// Historically only (3) existed for per-entry, and the entry cap was applied on
+// ONE write path — the other three writers (triage / deliberation / CPP) bypassed
+// it and load-time never trimmed, so real notebooks reached 26 entries.
 
-/** Maximum number of agent-managed entries in the Notebook. System/CPP entries are unbounded. */
+/** Hard cap on TOTAL notebook entries (all tiers: agent + system + cpp).
+ *  Also the display cap in Team Chat → Agent overview. */
+export const NOTEBOOK_MAX_ENTRIES = 16;
+
 /** Max notebook entries kept per agent. */
 export const NOTEBOOK_MAX_AGENT_ENTRIES = 4;
 
 /** Maximum characters per notebook entry. */
 export const NOTEBOOK_MAX_CHARS_PER_ENTRY = 6000;
+
+/** Hard cap on the WHOLE injected `## Notebook` block (all entries together).
+ *  The per-entry cap alone does not bound the block: N entries × 6 000 chars can
+ *  still dominate the volatile tail (measured: the block reached 41 % of the tail).
+ *  SSOT here rather than private to Agent — it is quoted in the prompt sent to the
+ *  model and in the docs, so it must have exactly one definition. */
+export const NOTEBOOK_PROMPT_MAX_CHARS = 6000;
+
+/** Time-to-live per notebook tier. Resident content that nothing refreshed for
+ *  this long is stale by construction — the tiers expire at different rates
+ *  because they are refreshed by different producers:
+ *    agent  — the agent's own notes; refreshed on purpose, so the longest TTL.
+ *    system — machine-written situational state (triage/deliberation/retrieval);
+ *             meaningless once the situation has moved on.
+ *    cpp    — per-stimulus preparation output; shortest-lived by nature. */
+export const NOTEBOOK_TTL_MS_AGENT = 96 * 60 * 60 * 1000;  // 96h
+export const NOTEBOOK_TTL_MS_SYSTEM = 24 * 60 * 60 * 1000; // 24h
+export const NOTEBOOK_TTL_MS_CPP = 6 * 60 * 60 * 1000;     // 6h
+
+/** Max characters for a notebook entry KEY. Keys are labels, not sentences —
+ *  unbounded keys turned headings into paragraphs and let one topic spawn
+ *  many near-duplicate entries (the 23-agent-entry bloat). */
+export const NOTEBOOK_KEY_MAX_CHARS = 64;
+
+/** Max characters for the machine-written `relevant-context` entry. It
+ *  duplicates material already injected as `## Your Knowledge`, so it is held
+ *  well below the per-entry cap to stop it eating the whole prompt budget. */
+export const NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS = 1500;
+
+/** Force a notebook flush after this long even under continuous writes.
+ *  A pure debounce starves: each write resets the timer, so a chatty turn can
+ *  defer the disk write indefinitely (and lose it if the process exits). */
+export const NOTEBOOK_PERSIST_MAX_WAIT_MS = 10_000;
 
 /** @deprecated Use NOTEBOOK_MAX_AGENT_ENTRIES */
 export const WORKING_MEMORY_MAX_ENTRIES = NOTEBOOK_MAX_AGENT_ENTRIES;
@@ -733,10 +788,13 @@ export const KNOWLEDGE_PROMPT_MAX_TOKENS = 1_500;
 export const KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE = 1_200;
 /** knowledge.md injection for reflex (0 = omit full dump). */
 export const KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX = 0;
-/** Max state.md lines injected in reflex profile. */
-export const STATE_PROMPT_MAX_LINES_REFLEX = 5;
-/** Default TTL for state.md snapshot entries (days). */
-export const STATE_TTL_DAYS = 7;
+/**
+ * NOTE (2026-09-16): `STATE_PROMPT_MAX_LINES_REFLEX` / `STATE_TTL_DAYS` were removed
+ * together with the state.md store. Situational state is a **Working-layer** concern and
+ * lives in NOTEBOOK.md (keyed entries with per-tier TTL), so a second short-lived store
+ * with its own injection cap and its own TTL had no separate capability to offer.
+ * See docs/MEMORY-SYSTEM.md §10.2 (option A).
+ */
 
 /** Cold-start acceptance: converse system+toolDefs. */
 export const COLD_CONVERSE_FIXED_MAX = 28_000;

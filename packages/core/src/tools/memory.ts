@@ -16,7 +16,7 @@ function storeName(memory: IMemoryStore): string {
   return typeof memory.getStoreFileName === 'function' ? memory.getStoreFileName() : 'knowledge.md';
 }
 
-function normalizeWriteMode(raw: unknown): 'replace' | 'patch' | 'delete' | string {
+function normalizeWriteMode(raw: unknown): 'replace' | 'patch' | 'delete' | 'forget' | string {
   const mode = typeof raw === 'string' ? raw : 'replace';
   if (mode === 'append') return 'patch';
   return mode;
@@ -245,8 +245,11 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
       description:
         'Update a curated section in knowledge.md (injected as "## Your Knowledge" on later turns). ' +
         'Use for personal multi-step procedures / durable domain lessons — not one-off tips (use memory_save). ' +
-        'Args: { section, content, mode?: "replace"|"patch"|"append"|"delete" }. append≡patch. ' +
+        'Args: { section, content, mode?: "replace"|"patch"|"append"|"forget"|"delete" }. append≡patch. ' +
         'Prefer patch/append; replace only when rewriting the whole section. ' +
+        'mode="forget" removes the named curated section entirely (superseded knowledge must be ' +
+        'removable — the store is capped, so a write-only store would inflate until it fills up). ' +
+        'mode="delete" removes observation entries listed in "ids". ' +
         'Do not put ## headings in content (auto-downgraded to ###). ' +
         'Success: { status:"updated", store:"knowledge.md" }. On error, retry — never claim updated without status.',
       inputSchema: {
@@ -262,8 +265,8 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           },
           mode: {
             type: 'string',
-            enum: ['replace', 'patch', 'append', 'delete'],
-            description: 'replace (default): overwrite. patch/append: append to existing. delete: remove observations by ID (use "ids" parameter).',
+            enum: ['replace', 'patch', 'append', 'forget', 'delete'],
+            description: 'replace (default): overwrite. patch/append: append to existing. forget: remove the whole curated section (content not needed). delete: remove observations by ID (use "ids").',
           },
           ids: {
             type: 'array',
@@ -295,6 +298,26 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           }
           log.info('Agent deleted memories', { agentId: ctx.agentId, removed });
           return JSON.stringify({ status: 'deleted', removed, store });
+        }
+
+        if (mode === 'forget') {
+          if (!section?.trim()) {
+            return JSON.stringify({ status: 'error', error: 'Provide the section name to forget.', store });
+          }
+          const result = ctx.memory.removeLongTermSection(section);
+          if (!result.ok) {
+            return JSON.stringify({ status: 'error', error: result.reason ?? 'Failed to forget section.', store });
+          }
+          log.info('Agent forgot a curated section', {
+            agentId: ctx.agentId, section, removedChars: result.removedChars,
+          });
+          return JSON.stringify({
+            status: 'forgotten',
+            section,
+            removedChars: result.removedChars,
+            reason: `Section "${section}" removed from ${store}.`,
+            store,
+          });
         }
 
         if (!section?.trim()) {

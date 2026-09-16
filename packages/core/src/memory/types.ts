@@ -58,10 +58,17 @@ export interface IMemoryStore {
   getLongTermMemoryExcluding(sections: string[]): string;
   getLongTermSection(sectionName: string): string;
   compressLongTermMemory(): { charsBefore: number; charsAfter: number; sectionsBefore: number; sectionsAfter: number; truncatedChunks: number };
-  /** Optional state.md snapshot for reflex prompts (AGENT-RUNTIME memory taxonomy). */
-  getStateMemory?(): string;
-  /** Optional TTL prune for state.md (Dream librarian). */
-  pruneStateMemory?(): void;
+  /**
+   * Remove a curated section outright — the "forget" primitive.
+   * A write-only (or overwrite-only) store inflates until it hits its cap and stays there.
+   */
+  removeLongTermSection(sectionName: string): { ok: boolean; reason?: string; removedChars: number };
+  /**
+   * NOTE: `getStateMemory` / `pruneStateMemory` (the state.md half of the old
+   * "knowledge.md / state.md dual store") were removed on 2026-09-16. Situational
+   * short-lived state is Working-layer data and lives in NOTEBOOK.md. See
+   * docs/MEMORY-SYSTEM.md §10.2 (option A).
+   */
 
   // -- Episodic Memory: conversation sessions --
   getSession(sessionId: string): ConversationSession | undefined;

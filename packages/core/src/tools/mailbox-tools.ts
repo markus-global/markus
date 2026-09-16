@@ -1,5 +1,11 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { AgentMindState } from '@markus/shared';
+import {
+  NOTEBOOK_KEY_MAX_CHARS,
+  NOTEBOOK_MAX_AGENT_ENTRIES,
+  NOTEBOOK_MAX_CHARS_PER_ENTRY,
+  NOTEBOOK_MAX_ENTRIES,
+} from '@markus/shared';
 
 export interface MailboxToolContext {
   agentId: string;
@@ -7,7 +13,7 @@ export interface MailboxToolContext {
   deferItem: (itemId: string, reason: string, deferUntilMs?: number) => boolean;
   dropItem: (itemId: string, reason: string) => boolean;
   prioritizeItem: (itemId: string, newPriority: number) => boolean;
-  updateWorkingMemory: (key: string, content: string) => { status: string; key: string; evicted?: string };
+  updateWorkingMemory: (key: string, content: string) => { status: string; key: string; evicted?: string; expired?: string[] };
   clearWorkingMemory: (key?: string) => { status: string; cleared: number };
   getWorkingMemorySnapshot: () => Array<{ key: string; text: string; updatedAt: number }>;
 }
@@ -51,7 +57,12 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
 
     {
       name: 'update_notebook',
-      description: 'Upsert a keyed entry in your Notebook — your persistent cognitive workspace. Use to track priorities, context, decisions, blockers. Max 4 agent entries, 6000 chars each. Notebook persists across sessions and restarts. Choose keys wisely — only 4 slots available.',
+      description:
+        `Upsert a keyed entry in your Notebook — your persistent cognitive workspace. Use to track priorities, context, decisions, blockers. ` +
+        `Keys are short labels (≤${NOTEBOOK_KEY_MAX_CHARS} chars, e.g. "current-priorities", "blockers") — reuse a key to REPLACE it instead of creating a near-duplicate. ` +
+        `Capacity: ${NOTEBOOK_MAX_AGENT_ENTRIES} agent entries (oldest evicted), ${NOTEBOOK_MAX_CHARS_PER_ENTRY} chars each, ${NOTEBOOK_MAX_ENTRIES} entries total. ` +
+        `Entries expire on their own (agent ~4d, machine-written entries sooner), so anything you write here is working state, not durable knowledge — use memory_save/memory_update for that. ` +
+        `Delete entries you are done with via clear_notebook.`,
       inputSchema: {
         type: 'object',
         properties: {

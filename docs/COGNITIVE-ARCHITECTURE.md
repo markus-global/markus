@@ -1,8 +1,8 @@
 # Cognitive Architecture: Unified Agent Cognition
 
-This document describes the unified cognitive architecture that governs how Markus agents perceive stimuli, prepare context, deliberate, act, and learn. It replaces the previous model — mechanical prompt assembly plus volatile in-memory working memory — with a **continuous cognitive cycle** backed by persistent stores (`NOTEBOOK.md`, `knowledge.md` / `state.md`) and an optional **Cognitive Preparation Pipeline (CPP)** for deliberate context preparation.
+This document describes the unified cognitive architecture that governs how Markus agents perceive stimuli, prepare context, deliberate, act, and learn. It replaces the previous model — mechanical prompt assembly plus volatile in-memory working memory — with a **continuous cognitive cycle** backed by persistent stores (`NOTEBOOK.md`, `knowledge.md`) and an optional **Cognitive Preparation Pipeline (CPP)** for deliberate context preparation.
 
-> **Memory SSOT**: Prefer [`MEMORY-SYSTEM.md`](./MEMORY-SYSTEM.md) — durable knowledge is `knowledge.md`, short TTL state is `state.md`; legacy `MEMORY.md` migrates once. Below, historical “MEMORY.md” references mean that dual-store model.
+> **Memory SSOT**: Prefer [`MEMORY-SYSTEM.md`](./MEMORY-SYSTEM.md) — durable knowledge is `knowledge.md`, working (short-lived) state is `NOTEBOOK.md` (`system` tier). The old `state.md` store **retired 2026-09-16**; it had a reader and a TTL pruner but no write tool, while the notebook already owns the same capability. Below, historical “MEMORY.md” references mean the older dual-store model.
 >
 > **Implementation status**: Core cycle, Notebook, knowledge/state memory, Attention Controller, Goal/Loop heartbeat integration, A2A DM channels, and `PendingCallbackRegistry` are implemented. CPP (Phases 1–3, depth D0–D3) lives in `packages/core/src/cognitive.ts`. CPP is opt-in via `agent.cognitive.enabled` in `markus.json` (default `false` until explicitly enabled). D2+ retrieval requires a `RetrievalBackend` adapter.
 
@@ -118,20 +118,24 @@ The Notebook is the agent's **persistent cognitive workspace** — Baddeley's ce
 | Attribute | Value |
 |-----------|-------|
 | Storage | `~/.markus/agents/{id}/NOTEBOOK.md` |
-| Prompt injection | Always loaded as `## Notebook` |
+| Prompt injection | Always loaded as `## Notebook`, bounded to 16 entries / 6000 chars |
 | Format | `## key` headings with `<!-- managed: … -->` and `<!-- updated: … -->` metadata |
 
 ### Managed entry types
 
-| Tag | Writer | Purpose |
-|-----|--------|---------|
-| `agent` | Agent via `update_notebook` / `clear_notebook` | Explicit notes, priorities, blockers |
-| `system` | Runtime (triage, deliberation, mechanical retrieval) | Triage decisions, fallback context |
-| `cpp` | Cognitive Preparation Pipeline | Appraisal, retrieval, reflection outputs |
+| Tag | Writer | Purpose | TTL |
+|-----|--------|---------|-----|
+| `agent` | Agent via `update_notebook` / `clear_notebook` | Explicit notes, priorities, blockers | 96h |
+| `system` | Runtime (triage, deliberation, mechanical retrieval) | Triage decisions, fallback context | 24h |
+| `cpp` | Cognitive Preparation Pipeline | Appraisal, retrieval, reflection outputs | 6h |
 
-**Lifecycle**: Loaded at startup → updated in-process → debounced persist (2s) → survives restarts. Limits: 4 agent-managed entries, 6000 chars each.
+**Lifecycle**: Loaded at startup → **normalized** (TTL + caps, persisted) → updated in-process → persisted with a 2s debounce bounded by a 10s maxWait → survives restarts.
 
-The Notebook holds *situational* state. Durable knowledge flows to `MEMORY.md` via `memory_save` / `memory_update`.
+**Limits**: 16 entries total (4 of them `agent`-managed), 6000 chars each, 6000 chars for the whole injected block. TTL per tier as above. Eviction is oldest-first; the machine-written tiers (`cpp`, then `system`) are evicted **before** the `agent` tier, because situational state is cheaper to lose than the agent's own deliberate notes — and it expires on its own soon anyway.
+
+The Notebook holds *situational* state. Durable knowledge flows to `knowledge.md` via `memory_save` / `memory_update`.
+
+> **Why the notebook needs its own lifecycle** (see [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §2): the Notebook is a *resident* prompt region, unlike `## _observations` which is retrieved on demand. Resident regions must be bounded (count), decayed (TTL), deduplicated (key discipline), size-capped (per-entry + total), and made **single-writer** — otherwise every feature that writes to them accretes forever. All four were missing or partial here: three of four writers bypassed the entry cap, there was no TTL anywhere, and the load path trimmed nothing, so a real notebook grew to 26 entries / 33 KB including month-old situational state re-injected every turn.
 
 ---
 

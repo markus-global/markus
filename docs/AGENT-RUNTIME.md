@@ -124,8 +124,8 @@ Test IDs: `A-pack-converse-no-spawn`, `A-pack-execute-has-code`, `A-tooldef-stic
 | `KNOWLEDGE_PROMPT_MAX_TOKENS` | 1_500 | knowledge.md injection (`execute`/`govern`) |
 | `KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE` | 1_200 | knowledge.md injection (`converse`) |
 | `KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX` | 0 | reflex: no full knowledge dump |
-| `STATE_PROMPT_MAX_LINES_REFLEX` | 5 | state.md lines in reflex |
-| `STATE_TTL_DAYS` | 7 | state.md entry expiry |
+| ~~`STATE_PROMPT_MAX_LINES_REFLEX`~~ | — | **removed 2026-09-16**: retired with the state.md store — situational state now rides in the notebook's `system` tier |
+| ~~`STATE_TTL_DAYS`~~ | — | **removed 2026-09-16**: replaced by the notebook's per-tier TTL (`NOTEBOOK_TTL_MS_*`) |
 | `COLD_CONVERSE_FIXED_MAX` | 28_000 | Acceptance: system+tools |
 | `COLD_REFLEX_FIXED_MAX` | 8_000 | Acceptance: system+tools |
 | `SYSTEM_PROMPT_BUDGET_CONVERSE` | 16_000 | Soft size metric for converse system (observe/warn; never truncate ROLE/L0) |
@@ -153,7 +153,7 @@ Constants live in `@markus/shared` `limits.ts`.
 | L0 + Collaboration Rules | yes (complete, concise) | yes (complete, concise) | yes (complete, concise) |
 | Identity (roster) | manager + ≤3 active | capped (existing max) | capped |
 | knowledge.md | no | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE`) | capped (`KNOWLEDGE_PROMPT_MAX_TOKENS`) |
-| state.md | ≤5 lines | short/optional | short/optional |
+| ~~state.md~~ | — | retired 2026-09-16 → notebook `system` tier | — |
 | Skill L0 catalog | yes | yes | yes |
 | Skill full bodies | discover only | discover only | discover only |
 | L3 checklists (quality/git/error recovery) | no | **no** (incl. `comment_response`) | yes |
@@ -254,7 +254,7 @@ MUST: Persistent semantic storage MUST use:
 | File | Role |
 |------|------|
 | `knowledge.md` | Permanent curated knowledge |
-| `state.md` | Time-bounded snapshots (TTL) |
+| ~~`state.md`~~ | Retired 2026-09-16 — folded into the notebook's `system` tier via a one-time migration (key `legacy-state`). See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §2 |
 | `NOTEBOOK.md` | Situational workspace |
 | observations buffer | Raw insights; never fully injected |
 

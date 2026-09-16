@@ -134,7 +134,7 @@ MUST: Periodic dream/consolidation SHOULD also:
 1. Suggest archive for skills with `usage_count = 0` and age > 30 days
 2. Suggest revise when `success_count / usage_count < 0.5` (usage ≥ 3)
 3. Suggest merge when duplicate skill names/tags collide
-4. Expire `state.md` entries older than `STATE_TTL_DAYS`
+4. Expire notebook entries per tier TTL (`NOTEBOOK_TTL_MS_*`) — the `state.md` TTL prune was removed with that store (2026-09-16)
 5. Promote recurring observations (3+) into `knowledge.md`
 6. When negative feedback ≥ 3 on a skill, open/suggest a revision task
 7. When ≥ 3 agents independently record the same insight theme, suggest a team skill

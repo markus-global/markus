@@ -51,7 +51,13 @@ import {
   SESSION_REQUEST_HISTORY_MIN,
   SESSION_REQUEST_HISTORY_BLOCK,
   isStrictStateItem,
+  NOTEBOOK_MAX_ENTRIES,
+  NOTEBOOK_MAX_CHARS_PER_ENTRY,
+  NOTEBOOK_PROMPT_MAX_CHARS,
+  NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS,
+  NOTEBOOK_PERSIST_MAX_WAIT_MS,
 } from '@markus/shared';
+import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
@@ -60,7 +66,7 @@ import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-
 import { HeartbeatScheduler } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
 import { stripToolNoise } from './llm/provider-helpers.js';
-import { MemoryStore, loadNotebook, saveNotebook, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
+import { MemoryStore, loadNotebook, saveNotebook, pruneNotebookEntries, normalizeNotebookKey, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
@@ -524,11 +530,11 @@ export class Agent {
   private set lastInjectedActivityType(v: string | undefined) { this.workspace().lastInjectedActivityType = v; }
   /** Notebook — the single cognitive workspace. Persisted to NOTEBOOK.md. */
   private workingMemory: Map<string, NotebookEntry> = new Map();
-  private static readonly NOTEBOOK_MAX_AGENT_ENTRIES = 4;
-  private static readonly NOTEBOOK_MAX_CHARS_PER_ENTRY = 6000;
-  /** Total chars for the injected `## Notebook` block (all entries combined). */
-  private static readonly NOTEBOOK_PROMPT_MAX_CHARS = 6000;
+  /** Hard cap on injected entries — mirrors the storage cap and the UI cap. */
+  private static readonly NOTEBOOK_PROMPT_MAX_ENTRIES = NOTEBOOK_MAX_ENTRIES;
   private notebookSaveTimer?: ReturnType<typeof setTimeout>;
+  /** Earliest time the debounced notebook write may be deferred to (maxWait). */
+  private notebookSaveDeadline?: number;
   /** Cognitive Preparation Pipeline instance (null when CPP is disabled) */
   private cognitivePrep?: CognitivePreparation;
   private cognitiveConfig?: CognitiveConfig;
@@ -955,6 +961,16 @@ export class Agent {
       if (loaded.size > 0) {
         log.info(`Loaded ${loaded.size} notebook entries from NOTEBOOK.md`);
       }
+      // Normalize on load: a notebook that was written by an older build (or by a
+      // writer that bypassed the cap) must not be able to stay oversized. Persist
+      // the trimmed result immediately so disk and memory agree.
+      const normalization = this.enforceNotebookLimits();
+      if (normalization.changed) this.persistNotebookSync();
+      // One-time migration: the retired state.md store (situational short-lived state with
+      // no write tool) folds into the notebook's `system` tier — the layer that actually
+      // has a writer, per-tier TTL and an entry cap. Content is preserved rather than
+      // dropped; the old file is left behind as a tombstone so the migration is visible.
+      this.migrateRetiredStateFile();
     } catch (err) {
       log.warn('Failed to load NOTEBOOK.md', { error: String(err) });
     }
@@ -3401,11 +3417,7 @@ export class Agent {
       lines.push(`Dropped ${result.dropItemIds.length} item(s)`);
     }
     lines.push(`Reasoning: ${result.reasoning}`);
-    this.workingMemory.set('triage-decision', {
-      text: lines.join('\n'),
-      updatedAt: Date.now(),
-      managed: 'system',
-    });
+    this.writeNotebookEntry('triage-decision', lines.join('\n'), 'system');
   }
 
   private updateCognitionFromDeliberation(result: DeliberationResult): void {
@@ -3425,11 +3437,7 @@ export class Agent {
       }
       lines.push(`Reasoning: ${result.reasoning}`);
     }
-    this.workingMemory.set('deliberation', {
-      text: lines.join('\n'),
-      updatedAt: Date.now(),
-      managed: 'system',
-    });
+    this.writeNotebookEntry('deliberation', lines.join('\n'), 'system');
   }
 
   /**
@@ -3543,7 +3551,15 @@ export class Agent {
 
   private getNotebookWriter(): (key: string, text: string, managed: 'system' | 'cpp') => void {
     return (key: string, text: string, managed: 'system' | 'cpp') => {
-      this.workingMemory.set(key, { text, updatedAt: Date.now(), managed });
+      // `relevant-context` is a transcript of retrieved knowledge that is ALREADY
+      // injected as `## Your Knowledge`. One such entry measured 9 475 chars — more
+      // than the entire notebook prompt budget (6 000) — so it used to crowd every
+      // real note out of the injected block. Cap it hard; the full text remains
+      // retrievable via `memory_search`.
+      const capped = key === 'relevant-context'
+        ? text.slice(0, NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS)
+        : text;
+      this.writeNotebookEntry(key, capped, managed);
     };
   }
 
@@ -3562,11 +3578,35 @@ export class Agent {
   /** Notebook + other dynamic providers (NOT skill bodies — those are uncapped). */
   private getDynamicContext(): string | undefined {
     const parts = [...this.dynamicContextProviders.values()].map(p => p()).filter(Boolean);
+
+    // Expire before injecting: a stale situational entry is worse than a missing
+    // one, because the model reads it as current fact. (Measured on 2026-09-16: an
+    // 18-day-old triage decision and a 57-day-old CPP output were being re-sent
+    // every turn.)
+    const normalization = this.enforceNotebookLimits();
+    if (normalization.changed) this.scheduleNotebookPersist();
+
     if (this.workingMemory.size > 0) {
       const wmLines = ['## Notebook'];
-      wmLines.push('Your cognitive workspace (max 4 agent entries). Persists across sessions. Update via `update_notebook`. System entries are auto-managed. Choose keys wisely — oldest entry is evicted when full.');
+      wmLines.push(`Your cognitive workspace (max ${NOTEBOOK_MAX_ENTRIES} entries, ${Agent.NOTEBOOK_PROMPT_MAX_ENTRIES} shown). Persists across sessions. Update via \`update_notebook\`. System entries are auto-managed and expire on their own. Choose keys wisely — the oldest entry is evicted when full.`);
       wmLines.push('');
-      for (const [key, entry] of this.workingMemory) {
+
+      // Deterministic, most-recent-first order. Two properties matter here:
+      //   1. staleness ranking — the entries that matter most are read first;
+      //   2. byte stability — for the SAME logical state the block must serialize
+      //      identically, otherwise every assembly dirties the volatile tail and
+      //      re-bills those tokens (implicit prefix caching keys on exact bytes).
+      // Map insertion order satisfied neither (evict + re-insert permutes the block).
+      const ordered = [...this.workingMemory.entries()]
+        .sort((a, b) => (b[1].updatedAt - a[1].updatedAt) || a[0].localeCompare(b[0]))
+        .slice(0, Agent.NOTEBOOK_PROMPT_MAX_ENTRIES);
+
+      const header = `${wmLines.join('\n')}\n`;
+      let budget = NOTEBOOK_PROMPT_MAX_CHARS - header.length;
+      const dropped: string[] = [];
+      const blocks: string[] = [];
+
+      for (const [key, entry] of ordered) {
         const ageMs = Date.now() - entry.updatedAt;
         // Quantized age buckets to reduce prompt churn and improve cache hit rates.
         // Precise timestamps ("3s ago" vs "45s ago") change every call, preventing
@@ -3576,35 +3616,35 @@ export class Agent {
           : ageMs < 7_200_000 ? `~${Math.round(ageMs / 3_600_000)}h ago`
           : `${Math.round(ageMs / 3_600_000)}h ago`;
         const managedTag = entry.managed !== 'agent' ? ` [${entry.managed}]` : '';
-        wmLines.push(`### ${key} (${ageLabel})${managedTag}`);
-        wmLines.push(entry.text);
-        wmLines.push('');
-      }
-      // Per-entry cap alone is not enough: 4 entries × 6 000 chars made the
-      // notebook the largest single volatile section (measured mean 9 163 chars,
-      // 41% of the tail on 2026-09-16). Apply a TOTAL cap too, keeping the most
-      // recently updated entries and naming any that had to be dropped, so
-      // nothing is silently lost — the agent can still read NOTEBOOK.md.
-      let notebook = wmLines.join('\n');
-      if (notebook.length > Agent.NOTEBOOK_PROMPT_MAX_CHARS) {
-        const kept: string[] = ['## Notebook',
-          `Your cognitive workspace. Showing the ${Agent.NOTEBOOK_MAX_AGENT_ENTRIES} most recent entries — the rest are on ` +
-          'disk in `NOTEBOOK.md` (read it with `file_read` if needed).'];
-        const dropped: string[] = [];
-        for (const [key, entry] of this.workingMemory) {
-          const block = `### ${key}\n${entry.text}\n`;
-          if (kept.join('\n').length + block.length <= Agent.NOTEBOOK_PROMPT_MAX_CHARS) {
-            kept.push(block);
-          } else {
-            dropped.push(key);
-          }
+        const head = `### ${key} (${ageLabel})${managedTag}`;
+        const full = `${head}\n${entry.text}\n`;
+
+        if (full.length <= budget) {
+          blocks.push(full);
+          budget -= full.length;
+          continue;
         }
-        if (dropped.length > 0) {
-          kept.push(`_[notebook index — ${dropped.length} entr${dropped.length === 1 ? 'y' : 'ies'} not inlined: ${dropped.join(', ')}]_`);
+        // Forward progress: a single oversized entry must not buy zero inlining.
+        // Truncate it to the remaining budget instead of dropping it whole — the
+        // old behaviour let ONE 9 475-char entry (the retrieved-knowledge transcript)
+        // consume the entire block and push every real note into the index line.
+        const room = budget - head.length - 40;
+        if (room > 120) {
+          const slice = entry.text.slice(0, room);
+          blocks.push(`${head}\n${slice}\n_[truncated — full text in NOTEBOOK.md]\n`);
+          budget -= head.length + slice.length + 40;
+        } else {
+          dropped.push(key);
         }
-        notebook = kept.join('\n');
       }
-      parts.push(notebook);
+
+      if (dropped.length > 0) {
+        // Sorted index so the line is stable across assemblies.
+        const index = [...dropped].sort((a, b) => a.localeCompare(b)).join(', ');
+        blocks.push(`_[notebook index — ${dropped.length} entr${dropped.length === 1 ? 'y' : 'ies'} not inlined: ${index}]_`);
+      }
+
+      parts.push(wmLines[0]! + '\n' + wmLines[1] + '\n\n' + blocks.join(''));
     }
     return parts.length > 0 ? parts.join('\n\n') : undefined;
   }
@@ -6730,25 +6770,97 @@ export class Agent {
     });
   }
 
-  updateWorkingMemory(key: string, content: string, managed?: NotebookEntryManaged): { status: string; key: string; evicted?: string } {
-    const entryManaged = managed ?? 'agent';
-    let evicted: string | undefined;
-    // Only count agent-managed entries toward the limit
-    if (entryManaged === 'agent') {
-      const agentCount = [...this.workingMemory.values()].filter(v => v.managed === 'agent').length;
-      if (agentCount >= Agent.NOTEBOOK_MAX_AGENT_ENTRIES && !this.workingMemory.has(key)) {
-        let oldestKey: string | undefined;
-        let oldestTime = Infinity;
-        for (const [k, v] of this.workingMemory) {
-          if (v.managed === 'agent' && v.updatedAt < oldestTime) { oldestTime = v.updatedAt; oldestKey = k; }
-        }
-        if (oldestKey) { this.workingMemory.delete(oldestKey); evicted = oldestKey; }
-      }
-    }
-    const truncated = content.slice(0, Agent.NOTEBOOK_MAX_CHARS_PER_ENTRY);
-    this.workingMemory.set(key, { text: truncated, updatedAt: Date.now(), managed: entryManaged });
+  /**
+   * THE single notebook write path.
+   *
+   * Every writer — the `update_notebook` tool, triage, deliberation, and the CPP
+   * notebook writer — must go through here, because the entry cap and the TTL are
+   * only meaningful as an *invariant* (true after every write), not as a check on
+   * one code path. Three writers used to call `workingMemory.set()` directly and
+   * were never counted, so entries grew without bound (real notebook: 26 entries /
+   * 23 of them over the agent cap of 4).
+   *
+   * Returns what the write did, so tool output can tell the agent when something
+   * was dropped instead of silently losing it.
+   */
+  private writeNotebookEntry(
+    rawKey: string,
+    content: string,
+    managed: NotebookEntryManaged = 'agent',
+  ): { status: string; key: string; evicted?: string; expired?: string[] } {
+    const key = normalizeNotebookKey(rawKey);
+    if (!key) return { status: 'error', key: '' };
+
+    const truncated = content.slice(0, NOTEBOOK_MAX_CHARS_PER_ENTRY);
+    this.workingMemory.set(key, { text: truncated, updatedAt: Date.now(), managed });
+
+    // Re-establish the invariants (TTL + caps) after the write. `pruneNotebookEntries`
+    // never evicts the entry just written: it has the newest `updatedAt`, and
+    // eviction is oldest-first.
+    const pruned = pruneNotebookEntries(this.workingMemory);
     this.scheduleNotebookPersist();
-    return { status: 'updated', key, ...(evicted ? { evicted } : {}) };
+
+    return {
+      status: 'updated',
+      key,
+      ...(pruned.evicted.length > 0 ? { evicted: pruned.evicted.join(', ') } : {}),
+      ...(pruned.expired.length > 0 ? { expired: pruned.expired } : {}),
+    };
+  }
+
+  /**
+   * One-time migration: retired `state.md` → notebook `system` tier.
+   *
+   * `state.md` was the "short-lived situational state" half of the old
+   * knowledge.md/state.md dual store. It had a reader (reflex prompt) and a TTL pruner
+   * (dream cycle) but **no write tool at all**, so in practice it held one hand-written
+   * blob (or nothing) while every writer went to the notebook instead. By the
+   * `(scope × durability)` rule, situational state is Working-layer data — so its
+   * content folds into the notebook instead of being dropped on the floor.
+   *
+   * Idempotent: a successful run leaves a tombstone, and a tombstone carries no
+   * importable content.
+   */
+  private migrateRetiredStateFile(): void {
+    const marker = '<!-- retired 2026-09-16: state.md store removed; situational state lives in NOTEBOOK.md (system tier) -->';
+    try {
+      const stateFile = join(this.dataDir, 'state.md');
+      if (!existsSync(stateFile)) return;
+      const raw = readFileSync(stateFile, 'utf8');
+      if (raw.includes('retired 2026-09-16')) return; // already migrated
+      const body = raw
+        .split('\n')
+        .filter((line) => !/^#\s*State\s*$/i.test(line.trim()))
+        .join('\n')
+        .trim();
+      if (body) {
+        this.writeNotebookEntry('legacy-state', body, 'system');
+        log.info('Migrated retired state.md into notebook key `legacy-state`', { chars: body.length });
+      }
+      writeFileSync(stateFile, `${marker}\n`, 'utf8');
+    } catch (err) {
+      log.warn('state.md migration skipped', { error: String(err) });
+    }
+  }
+
+  /** Apply the notebook invariants to the in-memory map after load / on demand. */
+  private enforceNotebookLimits(): { expired: string[]; evicted: string[]; changed: boolean } {
+    const before = this.workingMemory.size;
+    const pruned = pruneNotebookEntries(this.workingMemory);
+    const changed = this.workingMemory.size !== before;
+    if (changed) {
+      log.info('Notebook normalized', {
+        agentId: this.id,
+        expired: pruned.expired.length,
+        evicted: pruned.evicted.length,
+        entriesAfter: this.workingMemory.size,
+      });
+    }
+    return { ...pruned, changed };
+  }
+
+  updateWorkingMemory(key: string, content: string, managed?: NotebookEntryManaged): { status: string; key: string; evicted?: string; expired?: string[] } {
+    return this.writeNotebookEntry(key, content, managed ?? 'agent');
   }
 
   clearWorkingMemory(key?: string): { status: string; cleared: number } {
@@ -6767,13 +6879,34 @@ export class Agent {
     return [...this.workingMemory.entries()].map(([key, v]) => ({ key, ...v }));
   }
 
-  /** Schedule a debounced write of NOTEBOOK.md (2s debounce). */
+  /**
+   * Debounced write of NOTEBOOK.md.
+   *
+   * Debounce alone STARVES: every write resets the timer, so a chatty turn can
+   * defer the disk write indefinitely and lose it if the process exits inside the
+   * window. A maxWait deadline bounds the staleness while still coalescing bursts.
+   */
   private scheduleNotebookPersist(): void {
+    const now = Date.now();
+    if (this.notebookSaveDeadline === undefined) {
+      this.notebookSaveDeadline = now + NOTEBOOK_PERSIST_MAX_WAIT_MS;
+    }
+    const delay = Math.max(0, Math.min(2000, (this.notebookSaveDeadline ?? now) - now));
     if (this.notebookSaveTimer) clearTimeout(this.notebookSaveTimer);
     this.notebookSaveTimer = setTimeout(() => {
-      this.persistNotebookSync();
       this.notebookSaveTimer = undefined;
-    }, 2000);
+      this.notebookSaveDeadline = undefined;
+      this.persistNotebookSync();
+    }, delay);
+  }
+
+  /** Flush any pending notebook write right now (shutdown / heartbeat safety net). */
+  flushNotebook(): void {
+    if (!this.notebookSaveTimer) return;
+    clearTimeout(this.notebookSaveTimer);
+    this.notebookSaveTimer = undefined;
+    this.notebookSaveDeadline = undefined;
+    this.persistNotebookSync();
   }
 
   /** Synchronous write of the notebook to disk. */
@@ -7727,7 +7860,7 @@ export class Agent {
    * `agent-write-lock.test.ts` 会枚举全部内建工具断言「每个工具都被分类」，
    * 使漏登记成为测试失败，而不是静默的并发竞态。
    */
-  private static readonly WRITE_TOOL_DOMAINS: Readonly<Record<string, { domain: string; arg?: readonly string[] }>> = {
+  private static readonly WRITE_TOOL_DOMAINS: Readonly<Record<string, { domain: string; arg?: readonly string[]; resource?: AgentMemoryResource }>> = {
     // ── 文件系统：按路径细分（不同文件可并行）；定位不到路径则全域串行
     file_write:       { domain: 'fs', arg: ['path', 'filePath'] },
     file_edit:        { domain: 'fs', arg: ['path', 'filePath'] },
@@ -7740,15 +7873,19 @@ export class Agent {
     // 注意：锁只覆盖**派发**，作业本身的执行期在锁外（见 docs/CONCURRENT-PROCESSING.md §3.3）。
     background_exec:  { domain: GLOBAL_LOCK_DOMAIN },
     process:          { domain: GLOBAL_LOCK_DOMAIN },
-    // ── 单体状态资源
-    memory_save:            { domain: 'memory' },
-    memory_update:          { domain: 'memory' },
-    memory_update_longterm: { domain: 'memory' },
-    memory_delete:          { domain: 'memory' },
-    update_notebook:        { domain: 'notebook' },
-    clear_notebook:         { domain: 'notebook' },
-    update_working_memory:  { domain: 'working-memory' },
-    clear_working_memory:   { domain: 'working-memory' },
+    // ── 单体状态资源：按**资源**而非工具名登记 ──────────────────────────
+    // `resource` 让「同一个可变状态」的所有工具（正式名 + 兼容别名）解析到同一个
+    // 锁键。曾经 `update_notebook` 记在域 `notebook`、别名 `update_working_memory`
+    // 记在域 `working-memory` —— 两者写同一个 Map，却因域名不同被判为不冲突，
+    // 锁形同虚设。现在二者都是 `agent-memory:notebook`。
+    memory_save:            { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
+    memory_update:          { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
+    memory_update_longterm: { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
+    memory_delete:          { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
+    update_notebook:        { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    clear_notebook:         { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    update_working_memory:  { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    clear_working_memory:   { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
     // 会话自我管理：compact / pin / unpin / purge 都是会话状态变更
     session:                { domain: 'session', arg: ['session_id', 'sessionId'] },
     // discover_tools 会写入「本会话已激活工具」集合 —— 共享可变状态
@@ -7935,9 +8072,12 @@ export class Agent {
    * —— 内建工具由 `agent-write-lock.test.ts` 强制显式分类，因此该残余只影响
    * 真正动态的工具，已在 `docs/CONCURRENT-PROCESSING.md` 记录。
    */
-  private static resourceLocksFor(toolCall: LLMToolCall): LockRequest[] {
+  private static resourceLocksFor(toolCall: LLMToolCall, dataDir?: string): LockRequest[] {
     const spec = Agent.WRITE_TOOL_DOMAINS[toolCall.name];
     if (!spec) return [{ domain: 'tool', sub: toolCall.name }];
+
+    // 固定资源键：同一个可变状态的不同工具/别名 → 同一个锁键。
+    if (spec.resource) return [memoryResourceLock(spec.resource)];
 
     let sub: string | undefined;
     if (spec.arg) {
@@ -7945,7 +8085,16 @@ export class Agent {
       for (const field of spec.arg) {
         const raw = args[field];
         if (typeof raw === 'string' && raw.length > 0) {
-          sub = spec.domain === 'fs' ? normalizeFsLockKey(raw) : raw;
+          if (spec.domain === 'fs') {
+            // 通用文件工具命中 agent 记忆文件时，改用它所属**记忆资源**的锁键。
+            // 否则 `file_write knowledge.md`（fs 域）与 `memory_update`（记忆资源）
+            // 互不互斥：外部编辑会被下一次内存模型的整文件重写静默覆盖。
+            const memory = memoryResourceForPath(raw, dataDir);
+            if (memory) return [memoryResourceLock(memory)];
+            sub = normalizeFsLockKey(raw);
+          } else {
+            sub = raw;
+          }
           break;
         }
       }
@@ -7960,7 +8109,7 @@ export class Agent {
    * 详见 `resource-locks.ts`。
    */
   private async withToolWriteLock<T>(toolCall: LLMToolCall, fn: () => Promise<T>): Promise<T> {
-    return this.resourceLocks.withLocks(Agent.resourceLocksFor(toolCall), fn);
+    return this.resourceLocks.withLocks(Agent.resourceLocksFor(toolCall, this.dataDir), fn);
   }
 
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
@@ -8992,12 +9141,17 @@ export class Agent {
         this.lastDreamDate = dreamKey;
         await Agent.acquireDreamSlot();
         try {
-          await this.dreamConsolidateMemory(entries);
-          this.pruneMemoryMd();
-          try {
-            const mem = this.memory as IMemoryStore;
-            mem.pruneStateMemory?.();
-          } catch { /* optional state.md TTL */ }
+          // The dream cycle rewrites knowledge.md directly (read → replace → write in
+          // `pruneMemoryMd` / `compressLongTermMemory`). Tool-path writes take the same
+          // lock key (`agent-memory:knowledge`) via `WRITE_TOOL_DOMAINS.resource`, and a
+          // heartbeat-triggered dream runs outside any tool call — so without this lock a
+          // dream and a concurrent `memory_update` could interleave and lose one write.
+          await this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () => {
+            await this.dreamConsolidateMemory(entries);
+            this.pruneMemoryMd();
+            // state.md TTL pruning removed with the store itself (2026-09-16): TTL now
+            // lives in the notebook's per-tier expiry, which runs on every write.
+          });
         } finally {
           Agent.releaseDreamSlot();
         }
