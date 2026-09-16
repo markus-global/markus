@@ -151,7 +151,8 @@
       "lifetimeCaption": "自 Agent 创建以来累计",
       "storageDepthLimited": "目录层级较深，实际占用可能高于此值",
       "sections": {
-        "recent": { "title": "最近活动" },
+        "usage": { "title": "用量与存储", "hint": "累计 Token · 请求数 · 磁盘占用", "empty": "暂无用量数据" },
+        "recent": { "title": "最近活动", "hint": "心跳与 A2A 通信记录", "empty": "暂无最近活动记录" },
         "mind": { "title": "运行与注意力", "hint": "当前焦点 · 待处理队列 · 最近决策" },
         "files": { "title": "文件", "hint": "ROLE.md / HEARTBEAT.md / knowledge.md 等" },
         "tools": { "title": "能力", "hint": "已启用的技能与工具" },

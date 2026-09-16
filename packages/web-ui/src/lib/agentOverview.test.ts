@@ -16,7 +16,13 @@ import {
   agentStatusPresentation,
   recentActivityRows,
   OVERVIEW_ACTIVITY_LIMIT,
+  OVERVIEW_SECTION_IDS,
+  DEFAULT_OVERVIEW_SECTION,
+  resolveOverviewSection,
+  deliverableClickTarget,
 } from './agentOverview.ts';
+import zhAgent from '../locales/zh-CN/agent.json';
+import enAgent from '../locales/en/agent.json';
 
 describe('resolveTokensToday', () => {
   it('prefers the usage counter over the agent-detail counter', () => {
@@ -205,5 +211,77 @@ describe('recentActivityRows', () => {
     const input = [at('2026-09-16T10:00:00Z', 'old'), at('2026-09-16T12:00:00Z', 'new')];
     recentActivityRows(input);
     expect(input.map(r => r.id)).toEqual(['old', 'new']);
+  });
+});
+
+// ─── Overview sub-tabs ───────────────────────────────────────────────────────
+
+type LocaleSections = Record<string, { title?: string; hint?: string; empty?: string }>;
+const zhSections = zhAgent.profilePage.overview.sections as unknown as LocaleSections;
+const enSections = enAgent.profilePage.overview.sections as unknown as LocaleSections;
+
+describe('OVERVIEW_SECTION_IDS', () => {
+  it('lists each group exactly once', () => {
+    expect(new Set(OVERVIEW_SECTION_IDS).size).toBe(OVERVIEW_SECTION_IDS.length);
+  });
+
+  it('contains the default section', () => {
+    expect(OVERVIEW_SECTION_IDS).toContain(DEFAULT_OVERVIEW_SECTION);
+  });
+
+  // The sub-tab bar builds its labels from a **dynamic** key
+  // (`sections.${id}.title`). A missing key does not throw — i18next falls back to
+  // rendering the raw key, so the user would see a tab literally labelled
+  // "sections.usage.title". Nothing else in the build catches that, and it is
+  // exactly what happened when the groups became sub-tabs, so it is locked here.
+  it('has a title in both locales for every section', () => {
+    for (const [localeName, sections] of [['zh', zhSections], ['en', enSections]] as const) {
+      for (const id of OVERVIEW_SECTION_IDS) {
+        expect(sections[id]?.title, `${localeName}:${id} has no title`).toBeTruthy();
+      }
+    }
+  });
+});
+
+describe('resolveOverviewSection', () => {
+  it('defaults to the first group', () => {
+    expect(resolveOverviewSection()).toBe(DEFAULT_OVERVIEW_SECTION);
+    expect(resolveOverviewSection(undefined, undefined)).toBe(DEFAULT_OVERVIEW_SECTION);
+  });
+
+  it('honours a known requested section', () => {
+    expect(resolveOverviewSection('files')).toBe('files');
+  });
+
+  // The mailbox highlight must win: it points at one item that only exists inside
+  // 运行与注意力, so landing on any other group hides the thing the link promised.
+  it('lets a mailbox highlight win over the requested section', () => {
+    expect(resolveOverviewSection('files', 'msg_abc')).toBe('mind');
+  });
+
+  // A stale/unknown link must not select a group that has no panel.
+  it('ignores an unknown section', () => {
+    expect(resolveOverviewSection('nope')).toBe(DEFAULT_OVERVIEW_SECTION);
+    expect(resolveOverviewSection('')).toBe(DEFAULT_OVERVIEW_SECTION);
+  });
+
+  // `''` is falsy — an empty highlight must not silently select 运行与注意力.
+  it('ignores an empty mailbox id', () => {
+    expect(resolveOverviewSection('files', '')).toBe('files');
+  });
+});
+
+describe('deliverableClickTarget', () => {
+  // The live defect: the 产出 tab gated on `layout.openRightPanel`, which always
+  // exists because it is a context constant. Mobile clicks therefore pushed a tab
+  // into a panel that no host renders — the click looked broken. `hostAvailable`
+  // is the real gate (`setHostAvailable(isActive && !isMobile)` on the Team page).
+  it('routes to the page when no right-panel host exists (mobile)', () => {
+    expect(deliverableClickTarget(false)).toBe('page');
+    expect(deliverableClickTarget(undefined)).toBe('page');
+  });
+
+  it('routes to the right panel when a host exists (desktop)', () => {
+    expect(deliverableClickTarget(true)).toBe('right-panel');
   });
 });

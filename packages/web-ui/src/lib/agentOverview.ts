@@ -203,3 +203,68 @@ export function recentActivityRows<T extends { startedAt: string }>(
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
   return { shown: sorted.slice(0, Math.max(0, limit)), total: all.length };
 }
+
+// ─── Overview sections (sub-tabs) ────────────────────────────────────────────
+
+/**
+ * The overview's grouped bodies. They render as **sub-tabs**, not collapsible
+ * blocks.
+ *
+ * 【为什么从折叠块改成子 tab】折叠块要求「展开 A → 看完 → 收起 A → 向下滚很远 →
+ * 展开 B」：分组越多越痛，看第二组之前先做两次无意义操作，滚动位置还得重新找。
+ * 子 tab 让每一组都在一次点击之外，且当前组始终出现在同一个位置。
+ *
+ * 顺序保持既有阅读顺序（先遥测、后运行细节），避免「同一份内容换了位置」的额外成本。
+ */
+export type OverviewSectionId = 'usage' | 'recent' | 'mind' | 'files' | 'tools' | 'memory';
+
+/**
+ * Canonical order of the overview sub-tabs. The page maps over this array, so the
+ * bar and the panels cannot disagree about which groups exist — an i18n label that
+ * is missing for one of these ids is a visible defect, not a silent omission.
+ */
+export const OVERVIEW_SECTION_IDS: readonly OverviewSectionId[] = [
+  'usage', 'recent', 'mind', 'files', 'tools', 'memory',
+];
+
+export const DEFAULT_OVERVIEW_SECTION: OverviewSectionId = 'usage';
+
+/**
+ * Which overview sub-tab should be active.
+ *
+ * - `highlightMailboxId` wins: the caller is deep-linking to one mailbox item,
+ *   which only exists inside 运行与注意力. Landing anywhere else would hide the very
+ *   thing the link promised.
+ * - `initialSection` (legacy `profileTab:'mind'` …) next — unknown ids are ignored
+ *   rather than trusted, so a stale link cannot render an empty panel.
+ * - otherwise the first group.
+ *
+ * 【为什么提成纯函数】旧实现把「落到哪一组」编码成折叠块的 `defaultOpen`，只在挂载
+ * 时生效，所以同一深链第二次点击毫无反应；而且优先级没有任何测试能锁住。
+ */
+export function resolveOverviewSection(
+  initialSection?: string | null,
+  highlightMailboxId?: string | null,
+): OverviewSectionId {
+  if (highlightMailboxId) return 'mind';
+  const known = OVERVIEW_SECTION_IDS.find(id => id === initialSection);
+  return known ?? DEFAULT_OVERVIEW_SECTION;
+}
+
+// ─── Deliverable click routing ───────────────────────────────────────────────
+
+/**
+ * Where a click on a deliverable in an agent's 产出 tab should land.
+ *
+ * 【为什么判据是 hostAvailable 而不是「openRightPanel 是否存在」】后者永远为真
+ * （它是 LayoutContext 上的常量），而「宿主页面此刻是否真的渲染右侧栏」是另一件事：
+ * Team 页在移动端把 `hostAvailable` 设成 false
+ * （`setHostAvailable(isActive && !isMobile)`）。旧的判断因此**总是**走右侧栏分支
+ * ——移动端点击只是往一个不存在的面板里塞了个 tab，表现就是「点了没反应」。
+ *
+ * 桌面端（有宿主）→ 'right-panel'：原地预览，不离开当前页。
+ * 移动端 / 无宿主 → 'page'：跳到该产出物自己的页面（那里有完整的详情与操作）。
+ */
+export function deliverableClickTarget(hostAvailable: boolean | undefined): 'right-panel' | 'page' {
+  return hostAvailable ? 'right-panel' : 'page';
+}

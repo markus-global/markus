@@ -7,14 +7,14 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
-import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows } from '../lib/agentOverview.ts';
+import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { friendlyAgentError } from './ChatComponents.tsx';
-import { DeliverableDetailModal, DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
+import { DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
 import { getToolMeta } from '../components/execution-utils.ts';
 import { categorizeTools } from '../lib/toolCategories.ts';
 import { NamedIcon } from '../lib/namedIcons.tsx';
@@ -27,8 +27,12 @@ interface Props { agentId: string; onBack: () => void; inline?: boolean; default
 
 export type ProfileTab = 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'deliverables';
 
-/** 概览页里的可折叠分组。原先 mind / files / tools / memory 是四个独立 tab。 */
-export type OverviewSectionId = 'recent' | 'mind' | 'files' | 'tools' | 'memory';
+/**
+ * 概览页分组标识（现在渲染为**子 tab**）。
+ * 规范定义在 `lib/agentOverview.ts`（`OVERVIEW_SECTION_IDS` 与之同源），此处只转发，
+ * 供 Team.tsx 沿用——避免「页面一份、测试一份」两处定义漂移。
+ */
+export type { OverviewSectionId };
 
 /** 旧的 tab 标识 → 概览分组：历史深链（如 Work 页的 profileTab:'mind'）继续有效。 */
 export const LEGACY_TAB_SECTION: Partial<Record<ProfileTab, OverviewSectionId>> = {
@@ -216,37 +220,64 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-// ─── Overview section shell ───────────────────────────────────────────────────
+// ─── Overview section shell (sub-tabs) ───────────────────────────────────────
 
 /**
- * 概览页的可折叠分组。
+ * 概览分组的子 tab 栏。
  *
- * 关键在于「展开才挂载子节点」而不是 CSS 隐藏：被收进来的四个区块（心智 / 文件 /
- * 能力 / 记忆）各自都会发请求，若一开始就全部挂载，打开概览就等于同时打四组接口
- * ——那样只是把「tab 太多」换成了「页面卡」。
+ * 【为什么从「折叠块」改成「子 tab」】折叠块要求「展开 A → 看完 → 收起 A → 向下滚很远
+ * → 展开 B」。分组越多越痛：看第二组之前先要做两次无意义操作，滚动位置还得重新找。
+ * 子 tab 让每一组都在一次点击之外，且当前组永远出现在同一个位置。
  *
- * defaultOpen 只用于深链直接落到某一组的情况（见 LEGACY_TAB_SECTION）。
+ * 【内容区依然「只挂载当前组」】被收进来的四组（心智 / 文件 / 能力 / 记忆）各自都会发
+ * 请求。若六组全部挂载、只用 CSS 隐藏，打开概览就等于同时打六组接口——那就把
+ * 「入口太多」换成了「页面卡」。所以只有 `section` 选中的那一组会被渲染。
+ *
+ * 窄屏横向滚动、不换行：行数固定，切换时内容区的位置才不会跳。
  */
-function CollapsibleSection({ id, title, hint, defaultOpen, children }: {
-  id: string; title: string; hint?: string; defaultOpen?: boolean; children: React.ReactNode;
+function OverviewSectionTabs({ section, onChange, t }: {
+  section: OverviewSectionId; onChange: (id: OverviewSectionId) => void; t: TFunction;
 }) {
-  const [open, setOpen] = useState(!!defaultOpen);
-  const panelId = `ov-section-${id}`;
   return (
-    <section className="border border-border-default rounded-xl overflow-hidden bg-surface-elevated/30">
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        aria-controls={panelId}
-        className="w-full flex items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-surface-elevated/60 cursor-pointer"
-      >
-        <span className="text-fg-tertiary text-[10px] shrink-0">{open ? '▾' : '▸'}</span>
-        <span className="text-xs font-medium text-fg-secondary shrink-0">{title}</span>
-        {hint && <span className="text-[10px] text-fg-tertiary truncate">{hint}</span>}
-      </button>
-      {open && <div id={panelId} className="border-t border-border-default/60 p-4">{children}</div>}
-    </section>
+    <div
+      role="tablist"
+      className="flex border-b border-border-default overflow-x-auto scrollbar-hide"
+      // 窄屏下这一栏要能横向滑动；而它位于「整页切 tab」滑动容器的内部，手势会冒泡上去
+      // ——于是想滑 tab 栅时会跳到「产出」。拦在这里：栅自己滚，页面不切。
+      onTouchStart={e => e.stopPropagation()}
+      onTouchEnd={e => e.stopPropagation()}
+    >
+      {OVERVIEW_SECTION_IDS.map(id => {
+        const active = id === section;
+        const hint = t(`agent:profilePage.overview.sections.${id}.hint`, { defaultValue: '' });
+        return (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            title={hint || undefined}
+            onClick={() => onChange(id)}
+            className={`px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors cursor-pointer ${
+              active
+                ? 'border-brand-500 text-fg-primary font-medium'
+                : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
+            }`}
+          >
+            {t(`agent:profilePage.overview.sections.${id}.title`)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 子 tab 的内容容器：六组共用同一外壳，保证切换时内容区位置不跳。 */
+function SectionPanel({ children }: { children: React.ReactNode }) {
+  return (
+    <div role="tabpanel" className="border border-border-default rounded-xl bg-surface-elevated/30 p-4">
+      {children}
+    </div>
   );
 }
 
@@ -283,6 +314,18 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
   const [activeTasks, setActiveTasks] = useState<TaskInfo[]>([]);
   // 排队消息数（mailbox 待处理）——用于 working 但无执行中任务时说明「在哪忙」
   const [queuedCount, setQueuedCount] = useState(0);
+
+  // 概览子 tab（原先是折叠块）。落组规则见 resolveOverviewSection：
+  // highlightMailboxId 优先（它指向的 mailbox 项只存在于「运行与注意力」），
+  // 其次旧深链的 initialSection（profileTab:'mind' 等），否则第一组。
+  const [section, setSection] = useState<OverviewSectionId>(
+    () => resolveOverviewSection(initialSection, highlightMailboxId),
+  );
+  // 组件已挂载后再跳同一个入口（例如从 Work 页再次点「查看心智」）也要切过去，
+  // 否则第二次点击不会有任何反应——这正是旧实现 defaultOpen 只在挂载时生效的毛病。
+  useEffect(() => {
+    setSection(resolveOverviewSection(initialSection, highlightMailboxId));
+  }, [initialSection, highlightMailboxId]);
 
   // `agent.state.activeTaskIds` 每次 reload 都是新数组，直接把它当依赖会让这个
   // effect（内含 5 个请求，包括整组织目录扫描）在每次父组件重渲染时重跑。按内容做 key。
@@ -396,6 +439,12 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
   const heartbeats = recentActivityRows(recentActivities.filter(a => a.type === 'heartbeat'));
   const chats = recentActivityRows(recentActivities.filter(a => a.type === 'chat'));
   const activeN = agent.state.activeTaskIds?.length ?? 0;
+  // 列表只显示前几条（OVERVIEW_ACTIVITY_LIMIT），所以「共多少次」要单独给出来，
+  // 否则看到 5 行会以为只有 5 次。
+  const recentCaption = [
+    heartbeats.total > 0 ? t('agent:profilePage.overview.heartbeatRuns', { count: heartbeats.total }) : null,
+    chats.total > 0 ? t('agent:profilePage.overview.conversations', { count: chats.total }) : null,
+  ].filter(Boolean).join(' · ');
 
   return (
     <div className="space-y-4">
@@ -483,19 +532,21 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
           </div>
         )}
 
-        {/* 用量与存储明细 —— 默认收起。
-            这里全是一次性/累计遥测：真要查的时候有用，一瞥面板时是噪音。
-            【为什么不显示 提示/补全 Token】这两个计数器加起来 ≠ 总数
-            （实测 3.03B vs 2.65B），因为 38,235 次请求里只有 590 次带过 provider
-            上报的 prompt 计数，且 getUsageStats() 在计数器为 0 时会用写死的
-            70/30 比例**编造**这两个值。一个加不起来的分解，看的人只会认为是面板
-            坏了。与其加免责说明，不如不显示。 */}
-        {(usageInfo || agentStorage) && (
-          <CollapsibleSection
-            id="usage"
-            title={t('agent:profilePage.overview.detailsToggle')}
-            hint={agentStorage ? fmtBytesLocal(agentStorage.size) : undefined}
-          >
+      </div>
+
+      {/* 概览分组改成了子 tab：切组只有一次点击，不需要「收起上一组 → 向下滚很远」。 */}
+      <OverviewSectionTabs section={section} onChange={setSection} t={t} />
+
+      {section === 'usage' && (
+        <SectionPanel>
+          {/* 用量与存储明细。
+              这里全是一次性/累计遥测：真要查的时候有用，一瞥面板时是噪音。
+              【为什么不显示 提示/补全 Token】这两个计数器加起来 ≠ 总数
+              （实测 3.03B vs 2.65B），因为 38,235 次请求里只有 590 次带过 provider
+              上报的 prompt 计数，且 getUsageStats() 在计数器为 0 时会用写死的
+              70/30 比例**编造**这两个值。一个加不起来的分解，看的人只会认为是面板
+              坏了。与其加免责说明，不如不显示。 */}
+          {(usageInfo || agentStorage) ? (
             <div className="space-y-2">
                 {usageInfo && (
                   <div className="space-y-1">
@@ -529,23 +580,16 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
                   </div>
                 )}
               </div>
-          </CollapsibleSection>
-        )}
-      </div>
+          ) : (
+            <p className="text-xs text-fg-tertiary">{t('agent:profilePage.overview.sections.usage.empty')}</p>
+          )}
+        </SectionPanel>
+      )}
 
-      {/* 最近活动 —— 心跳与 A2A 合并为一个默认收起的组。
-          原先它们是两张常驻卡片，在首屏占掉很大一块，而这两类信息属于「查得到就
-          够了」的遥测。折叠后的标题行仍然给出总数，所以不看也不丢信息。 */}
-      {(heartbeats.total > 0 || chats.total > 0) && (
-        <CollapsibleSection
-          id="recent"
-          title={t('agent:profilePage.overview.sections.recent.title')}
-          hint={[
-            heartbeats.total > 0 ? t('agent:profilePage.overview.heartbeatRuns', { count: heartbeats.total }) : null,
-            chats.total > 0 ? t('agent:profilePage.overview.conversations', { count: chats.total }) : null,
-          ].filter(Boolean).join(' · ')}
-          defaultOpen={initialSection === 'recent'}
-        >
+      {/* 最近活动 —— 心跳与 A2A 的遥测。 */}
+      {section === 'recent' && (
+        <SectionPanel>
+          {recentCaption && <p className="text-[10px] text-fg-tertiary mb-2">{recentCaption}</p>}
           {heartbeats.total > 0 && (
             <div>
               <h4 className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-1">{t('agent:profilePage.overview.recentHeartbeats')}</h4>
@@ -570,50 +614,41 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
               </div>
             </div>
           )}
-        </CollapsibleSection>
+          {heartbeats.total === 0 && chats.total === 0 && (
+            <p className="text-xs text-fg-tertiary">{t('agent:profilePage.overview.sections.recent.empty')}</p>
+          )}
+        </SectionPanel>
       )}
 
-      {/* ── 以下四组原先是独立 tab（心智 / 文件 / 能力 / 记忆与心跳），现在收进概览。
-          默认收起、且**展开才挂载**：它们各自都会发请求，若只是 CSS 隐藏，打开概览
-          就会把四个区块的数据全拉一遍——那就把「少入口」换成了「慢页面」。 */}
-      <CollapsibleSection
-        id="mind"
-        title={t('agent:profilePage.overview.sections.mind.title')}
-        hint={t('agent:profilePage.overview.sections.mind.hint')}
-        defaultOpen={initialSection === 'mind' || !!highlightMailboxId}
-      >
-        <MindTab agentId={agent.id} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />
-      </CollapsibleSection>
+      {/* ── 其余四组收进概览后依然「只挂载当前组」：它们各自都会发请求，若六组全部挂载、
+          只用 CSS 隐藏，打开概览就等于同时打六组接口——那就把「入口太多」换成了
+          「页面卡」。 */}
+      {section === 'mind' && (
+        <SectionPanel>
+          <MindTab agentId={agent.id} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />
+        </SectionPanel>
+      )}
 
-      <CollapsibleSection
-        id="files"
-        title={t('agent:profilePage.overview.sections.files.title')}
-        hint={t('agent:profilePage.overview.sections.files.hint')}
-        defaultOpen={initialSection === 'files'}
-      >
-        <FilesTab agentId={agent.id} />
-      </CollapsibleSection>
+      {section === 'files' && (
+        <SectionPanel>
+          <FilesTab agentId={agent.id} />
+        </SectionPanel>
+      )}
 
-      <CollapsibleSection
-        id="tools"
-        title={t('agent:profilePage.overview.sections.tools.title')}
-        hint={t('agent:profilePage.overview.sections.tools.hint')}
-        defaultOpen={initialSection === 'tools'}
-      >
-        <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />
-      </CollapsibleSection>
+      {section === 'tools' && (
+        <SectionPanel>
+          <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />
+        </SectionPanel>
+      )}
 
-      <CollapsibleSection
-        id="memory"
-        title={t('agent:profilePage.overview.sections.memory.title')}
-        hint={t('agent:profilePage.overview.sections.memory.hint')}
-        defaultOpen={initialSection === 'memory'}
-      >
-        <HeartbeatTab agentId={agent.id} initialData={agent.heartbeat} />
-        <div className="mt-6">
-          <MemoryTab agentId={agent.id} />
-        </div>
-      </CollapsibleSection>
+      {section === 'memory' && (
+        <SectionPanel>
+          <HeartbeatTab agentId={agent.id} initialData={agent.heartbeat} />
+          <div className="mt-6">
+            <MemoryTab agentId={agent.id} />
+          </div>
+        </SectionPanel>
+      )}
     </div>
   );
 }
@@ -2746,15 +2781,25 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
   const layout = useLayout();
   const [items, setItems] = useState<DeliverableInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<DeliverableInfo | null>(null);
 
-  /** 点击产出 → 直接在 Team Chat 右侧栏打开交付物预览（不再弹窗）。 */
-  const openInRightPanel = useCallback((item: DeliverableInfo) => {
-    if (layout?.openRightPanel) {
-      layout.openRightPanel({ kind: 'deliverable', deliverable: item });
-    } else {
-      setSelected(item); // fallback：无右侧栏宿主时退回弹窗
+  /**
+   * 点击产出：
+   *  - 桌面端（当前页确实渲染了右侧栏）→ 在右侧栏就地预览，不离开当前页；
+   *  - 移动端 / 无右侧栏宿主 → 跳到该产出物自己的页面（那里才是完整的详情与操作）。
+   *
+   * 【为什么判据是 hostAvailable 而不是「openRightPanel 是否存在」】后者永远为真
+   * （它是 LayoutContext 上的常量），而「宿主页面此刻是否真的渲染右侧栏」是另一件事：
+   * Team 页在移动端把 hostAvailable 设成 false
+   * （`setHostAvailable(isActive && !isMobile)`）。旧判断因此**总是**走右侧栏分支——
+   * 移动端点击只是往一个不存在的面板里塞了个 tab，表现就是「点了没反应」。
+   * 规则本体在 lib/agentOverview.ts，便于用测试锁住（纯函数测试，本包无 jsdom）。
+   */
+  const openDeliverable = useCallback((item: DeliverableInfo) => {
+    if (deliverableClickTarget(layout?.hostAvailable) === 'right-panel') {
+      layout?.openRightPanel({ kind: 'deliverable', deliverable: item });
+      return;
     }
+    navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: item.id });
   }, [layout]);
 
   const refresh = useCallback(async () => {
@@ -2810,7 +2855,7 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
           return (
             <button
               key={item.id}
-              onClick={() => openInRightPanel(item)}
+              onClick={() => openDeliverable(item)}
               className="w-full text-left rounded-xl border border-border-default bg-surface-elevated/30 overflow-hidden transition-colors hover:border-brand-500/40 hover:bg-surface-elevated/50 px-4 py-3 flex items-start gap-3"
             >
               <span className={`inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm shrink-0 ${typeMeta.color}`}>
@@ -2836,14 +2881,6 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
           );
         })}
       </div>
-
-      {selected && (
-        <DeliverableDetailModal
-          item={selected}
-          onClose={() => setSelected(null)}
-          onOpenInPage={(id) => { setSelected(null); navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: id }); }}
-        />
-      )}
     </>
   );
 }
