@@ -148,6 +148,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const layout = useLayout();
   const keyboardPane = layout?.keyboardPane ?? 'content';
   const [activeTab, setActiveTab] = useState<SettingsTab | null>(getSettingsTab);
+  // Mobile-only: sign-out lives at the bottom of the settings group list, where
+  // the desktop rail has its own entry via the account popover.
+  const [confirmLogout, setConfirmLogout] = useState(false);
 
   useEffect(() => {
     const onHashChange = () => setActiveTab(getSettingsTab());
@@ -1104,6 +1107,20 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </div>
               );
             })}
+            {onLogout && (
+              <>
+                <div className="border-t border-border-default my-2 mx-2" />
+                <button
+                  onClick={() => setConfirmLogout(true)}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm text-red-500 hover:bg-red-500/10 transition-colors"
+                >
+                  <span className="w-4 h-4 flex items-center justify-center shrink-0">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+                  </span>
+                  <span className="flex-1 text-left">{t('common:signOut')}</span>
+                </button>
+              </>
+            )}
           </nav>
         </div>
       )}
@@ -2802,6 +2819,16 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             void deleteProvider(name);
           }}
           onCancel={() => setProviderDeleteTarget(null)}
+        />
+      )}
+      {confirmLogout && onLogout && (
+        <ConfirmModal
+          title={t('common:signOutConfirmTitle')}
+          message={t('common:signOutConfirmMessage')}
+          confirmLabel={t('common:signOut')}
+          variant="primary"
+          onConfirm={() => { setConfirmLogout(false); onLogout(); }}
+          onCancel={() => setConfirmLogout(false)}
         />
       )}
       </div>

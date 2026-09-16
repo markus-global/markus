@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { type AuthUser, getHubUser, hubApi, validateHubSession } from '../api.ts';
+import { type AuthUser } from '../api.ts';
+import { useHubAccount } from '../hooks/useHubAccount.ts';
 import { PAGE, PAGE_ICONS } from '../routes.ts';
 import { navBus } from '../navBus.ts';
 import { Avatar, resolveUserAvatarSrc } from './Avatar.tsx';
@@ -42,58 +43,14 @@ export function UserAccountMenu({
   const { t } = useTranslation(['nav', 'common']);
   const [open, setOpen] = useState(false);
   const [confirmLogout, setConfirmLogout] = useState(false);
-  // Optimistic from cache; live-validated below so a stale token doesn't show green.
-  const [hubConnected, setHubConnected] = useState(() => hubApi.isAuthenticated());
-  const [hubUser, setHubUser] = useState(() => getHubUser());
-  const [credits, setCredits] = useState<number | null>(null);
   const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const refreshHub = useCallback((opts?: { validate?: boolean }) => {
-    setHubUser(getHubUser());
-    if (!hubApi.isAuthenticated()) {
-      setHubConnected(false);
-      setCredits(null);
-      return;
-    }
-    if (!opts?.validate) {
-      setHubConnected(true);
-      return;
-    }
-    void validateHubSession().then(ok => {
-      setHubConnected(ok);
-      setHubUser(getHubUser());
-    });
-  }, []);
-
-  useEffect(() => {
-    refreshHub({ validate: true });
-    // hub-auth already means local cache changed — read it; do not re-validate
-    // (validate → saveHubAuth → hub-auth was an infinite loop).
-    const onAuth = () => refreshHub();
-    const onFocus = () => refreshHub({ validate: true });
-    window.addEventListener('markus:hub-auth', onAuth);
-    window.addEventListener('focus', onFocus);
-    return () => {
-      window.removeEventListener('markus:hub-auth', onAuth);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, [refreshHub]);
-
-  // Live credit balance — fetch while the popover is open (cheap, no polling).
-  useEffect(() => {
-    if (!open || !hubApi.isAuthenticated()) return;
-    let cancelled = false;
-    hubApi.user.plan()
-      .then(p => {
-        if (cancelled) return;
-        const total = (p.monthlyQuotaCu ?? 0) + (p.bonusCu ?? 0) + (p.purchasedCu ?? 0);
-        setCredits(Math.max(0, total - (p.cuUsed ?? 0)));
-      })
-      .catch(() => { if (!cancelled) setCredits(null); });
-    return () => { cancelled = true; };
-  }, [open, hubConnected]);
+  // Shared with the mobile drawer. Previously this popover summed the
+  // monthly+bonus+purchased column while the overview bar used creditsBudgetCu,
+  // so the same account showed two different balances — see lib/hubCredits.ts.
+  const { connected: hubConnected, user: hubUser, credits, refresh: refreshHub } = useHubAccount(open);
 
   const reposition = useCallback(() => {
     if (!btnRef.current) return;
@@ -184,7 +141,7 @@ export function UserAccountMenu({
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
                 <polyline points="13 2 3 14 12 14 18 22 6 22 12 17" />
               </svg>
-              <span className="truncate">{t('common:creditBalance')}: {credits.toLocaleString()}</span>
+              <span className="truncate">{t('common:creditBalance')}: {credits.remaining.toLocaleString()}</span>
             </div>
           )}
         </div>

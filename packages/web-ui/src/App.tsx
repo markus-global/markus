@@ -933,7 +933,11 @@ export function App() {
 
       {/* Mobile drawer menu */}
       {isMobile && (
-        <MobileDrawer authUser={currentUser} onNavigate={navigate} />
+        <MobileDrawer
+          authUser={currentUser}
+          onNavigate={navigate}
+          onLogout={() => { api.auth.logout().catch(() => {}); clearHubAuth(); setAuthUser(null); }}
+        />
       )}
 
       {/* Global search modal (desktop) */}
