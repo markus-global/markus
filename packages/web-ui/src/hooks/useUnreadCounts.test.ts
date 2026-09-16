@@ -11,7 +11,7 @@ vi.hoisted(() => {
   return true;
 });
 
-import { sumTeamChatUnread } from './useUnreadCounts.ts';
+import { sumTeamChatUnread, isAgentOnlyConversationKey } from './useUnreadCounts.ts';
 
 describe('sumTeamChatUnread (BottomNav Team badge — matches Team roster derivation)', () => {
   const agentMap = { s1: 'agt-a', s2: 'agt-b' };
@@ -63,5 +63,40 @@ describe('sumTeamChatUnread (BottomNav Team badge — matches Team roster deriva
 
   it('handles undeclared session in map (mapping exists but no count) without throwing', () => {
     expect(sumTeamChatUnread({ 'channel:gc-team': 2 }, { s_missing: 'agt-x' })).toBe(2);
+  });
+
+  it('EXCLUDES agent-to-agent DM channels from the nav badge (regression: badge read 99+)', () => {
+    // Real data that produced a bogus "99+" on the Team tab: ~350 unread
+    // messages sitting in 10 agent-to-agent DM channels, none of which the
+    // human is party to, plus 3 messages that were genuinely theirs.
+    const counts = {
+      'channel:dm:a2a:agt_a:agt_b': 91,
+      'channel:dm:a2a:agt_c:agt_d': 61,
+      'channel:dm:a2a:agt_e:agt_f': 58,
+      'session:s1': 2,
+      'session:s2': 1,
+    };
+    expect(sumTeamChatUnread(counts, agentMap)).toBe(3);
+  });
+
+  it('still counts human DMs, notes and group channels (only a2a is excluded)', () => {
+    const counts = {
+      'channel:dm:a2a:agt_a:agt_b': 91,
+      'channel:dm:u1:u2': 4,
+      'channel:notes:u1': 2,
+      'channel:gc-team': 3,
+    };
+    expect(sumTeamChatUnread(counts, {})).toBe(9);
+  });
+
+  it('does not confuse a human DM key with an agent-only one', () => {
+    // The prefix test must require the full `channel:dm:a2a:` marker, so an
+    // agent id that merely starts with the letters a2a cannot slip through,
+    // and a human DM with an `a2a`-ish user id is still counted.
+    expect(isAgentOnlyConversationKey('channel:dm:a2a:a:b')).toBe(true);
+    expect(isAgentOnlyConversationKey('channel:dm:a2aX:a:b')).toBe(false);
+    expect(isAgentOnlyConversationKey('channel:dm:user:a2abc')).toBe(false);
+    expect(isAgentOnlyConversationKey('channel:group:team_1')).toBe(false);
+    expect(isAgentOnlyConversationKey('session:s1')).toBe(false);
   });
 });

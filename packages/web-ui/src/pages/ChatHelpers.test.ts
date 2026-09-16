@@ -23,6 +23,7 @@ import {
   COMPOSER_MAX_LINES,
   composerMaxHeightPx,
   composerStacked,
+  composerToolbarAlign,
   type ChatMsg,
 } from './ChatHelpers.ts';
 import type { ChatMessageInfo } from '../api.ts';
@@ -545,5 +546,32 @@ describe('composerStacked', () => {
 
   it('desktop stacks once the user starts composing (attach/text expands)', () => {
     expect(composerStacked(false, true)).toBe(true);
+  });
+});
+
+describe('composerToolbarAlign (model selector + send row)', () => {
+  it('right-aligns the control row whenever it is a full-width stacked row', () => {
+    expect(composerToolbarAlign(true)).toBe('justify-end');
+  });
+
+  it('adds no alignment when the row is content-sized inside a single flex row', () => {
+    // Un-stacked, the control row is the last child of a shared flex row, so it
+    // already rests at the right edge; adding justify-end there would be a no-op
+    // anyway, but keeping it empty documents that the layout does not depend on it.
+    expect(composerToolbarAlign(false)).toBe('');
+  });
+
+  it('right-aligns an EMPTY mobile composer (regression: buttons drifted bottom-left)', () => {
+    // The bug: alignment was keyed on `composerExpanded` (has content), but on
+    // mobile the composer is ALWAYS stacked. So an empty input produced a
+    // full-width row with no justify-end, and the model picker + send button
+    // hugged the left edge instead of the bottom-right corner.
+    const isMobile = true;
+    const isEmpty = false; // composerExpanded === false when the input is empty
+    expect(composerToolbarAlign(composerStacked(isMobile, isEmpty))).toBe('justify-end');
+  });
+
+  it('right-aligns on desktop too once the user starts typing', () => {
+    expect(composerToolbarAlign(composerStacked(false, true))).toBe('justify-end');
   });
 });

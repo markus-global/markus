@@ -162,14 +162,38 @@ export function useAgentUnread(
 }
 
 /**
- * Compute the total "Team chat" unread badge count — the same number the Team page
- * conversation list displays.
+ * Conversation keys that are not addressed to any human.
  *
- * This intentionally mirrors the Team page's roster derivation (unreadByAgent via
- * useAgentUnread + unreadByChannel), NOT a blind sum of every conversation key:
+ * `channel:dm:a2a:<agentA>:<agentB>` is the deterministic key for an
+ * agent-to-agent DM (see core/src/tools/a2a.ts). No human is a participant and
+ * no human will ever read it, so those messages must never inflate a badge that
+ * means "messages waiting for YOU".
+ *
+ * Measured on real data before this filter: one account's Team badge read
+ * "99+" while the human had 3 genuinely unread messages. The other ~350 came
+ * from 10 agent-to-agent DM channels, which accumulate forever precisely
+ * because nobody ever opens them to clear the counter.
+ *
+ * This only affects the AGGREGATE nav badge. Per-conversation badges (the
+ * sidebar's A2A DM section) still render their own counts - that is a
+ * deliberate monitoring view, not an inbox.
+ */
+export function isAgentOnlyConversationKey(key: string): boolean {
+  return key.startsWith('channel:dm:a2a:');
+}
+
+/**
+ * Compute the total "Team chat" unread badge count - the number shown as the
+ * unread pill on the Team tab of the mobile bottom nav.
+ *
+ * This mirrors the Team page's roster derivation (unreadByAgent via
+ * useAgentUnread + unreadByChannel) rather than blindly summing every
+ * conversation key:
  *  - `session:*` keys count only when the session maps to an agent in
- *    `sessionAgentMap` (orphan sessions / deleted agents are not visible in the roster)
- *  - `channel:*` keys (group chats / DMs / notes channels) always count
+ *    `sessionAgentMap` (orphan sessions / deleted agents are not visible in
+ *    the roster)
+ *  - `channel:*` keys (group chats / human DMs / notes channels) count, EXCEPT
+ *    agent-to-agent DMs - see isAgentOnlyConversationKey
  * Anything outside those two prefixes is ignored.
  */
 export function sumTeamChatUnread(
@@ -182,6 +206,9 @@ export function sumTeamChatUnread(
       const sessionId = key.slice('session:'.length);
       if (sessionAgentMap[sessionId]) total += count;
     } else if (key.startsWith('channel:')) {
+      // Agent-to-agent DMs are not addressed to any human; excluding them is
+      // what keeps the nav badge honest (see isAgentOnlyConversationKey).
+      if (isAgentOnlyConversationKey(key)) continue;
       total += count;
     }
   }

@@ -53,7 +53,7 @@ import {
   stopRunningTools, hasStreamingTail,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
   resolveTeamChatShortcut, cycleSessionTabId,
-  composerMaxHeightPx, composerStacked,
+  composerMaxHeightPx, composerStacked, composerToolbarAlign,
 } from './ChatHelpers.ts';
 import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
 import {
@@ -3111,8 +3111,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // Non-empty sessions: Cursor-style single-line composer that grows with content.
   const compactComposer = mainTab === 'chat' && visibleMessages.length > 0;
   compactComposerRef.current = compactComposer;
-  // Typed / attached content → full-width textarea; model + send on a dedicated bottom row.
+  // Typed / attached content -> full-width textarea; model + send on a dedicated bottom row.
   const composerExpanded = Boolean(input.trim() || pendingImages.length > 0);
+  // Computed once and reused by both rows so they can never disagree about
+  // whether the composer is stacked (mobile always is, even when empty).
+  const composerIsStacked = composerStacked(isMobile, composerExpanded);
 
   return (
     <div ref={teamContainerRef} className="flex-1 overflow-hidden flex relative">
@@ -4447,8 +4450,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </button>
             </div>
           )}
-          <div className={composerStacked(isMobile, composerExpanded) ? 'flex flex-col gap-2 min-w-0' : 'flex gap-2 items-end min-w-0'}>
-            <div className={composerStacked(isMobile, composerExpanded) ? 'flex gap-2 items-end min-w-0' : 'contents'}>
+          <div className={composerIsStacked ? 'flex flex-col gap-2 min-w-0' : 'flex gap-2 items-end min-w-0'}>
+            <div className={composerIsStacked ? 'flex gap-2 items-end min-w-0' : 'contents'}>
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
@@ -4521,7 +4524,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 }}
               />
             </div>
-            <div className={`flex items-center gap-1.5 shrink-0 ${composerExpanded ? 'justify-end' : ''}`}>
+            <div className={`flex items-center gap-1.5 shrink-0 ${composerToolbarAlign(composerIsStacked)}`}>
               {chatMode === 'direct' && (
                 <ChatModelMenu
                   value={agentBoundModel}

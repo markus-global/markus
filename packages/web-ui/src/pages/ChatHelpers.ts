@@ -672,3 +672,21 @@ export function composerMaxHeightPx(compact: boolean): number {
 export function composerStacked(isMobile: boolean, composing: boolean): boolean {
   return isMobile || composing;
 }
+
+/**
+ * Alignment class for the composer's control row (model selector + send/stop).
+ *
+ * Only needed once stacked. Un-stacked, the two rows are merged into a single
+ * flex row via `display: contents`, so the control row is content-sized and
+ * already rests at the right edge on its own. Stacked, it becomes a full-width
+ * block - and a full-width flex container defaults to the START edge, so
+ * without `justify-end` the buttons hug the LEFT.
+ *
+ * Keying this on `composerExpanded` ("has content") was the bug: on mobile the
+ * composer is always stacked, so an *empty* input - precisely the case with no
+ * content - produced a full-width row with left-aligned model + send buttons
+ * instead of the expected bottom-right corner.
+ */
+export function composerToolbarAlign(stacked: boolean): string {
+  return stacked ? 'justify-end' : '';
+}

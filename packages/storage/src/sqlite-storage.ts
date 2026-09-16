@@ -5452,6 +5452,19 @@ export class SqliteReadCursorRepo {
       const key = cursor.conversationKey;
       if (key.startsWith('session:')) {
         const sessionId = key.slice('session:'.length);
+        // Only count sessions this user owns.
+        //
+        // A cursor can outlive an ownership change, and an admin browsing
+        // another user's session creates a cursor for it. getSessionAgentMap()
+        // maps EVERY session, so the client-side "session maps to an agent"
+        // filter cannot catch this: it gladly maps somebody else's session and
+        // counts it toward the wrong person's badge. Measured on real data: one
+        // admin held 41 cursors for sessions owned by other users, surfacing
+        // 190 messages that were never theirs.
+        const owned = this.db
+          .prepare(`SELECT 1 AS ok FROM chat_sessions WHERE id = ? AND user_id = ?`)
+          .get(sessionId, userId);
+        if (!owned) continue;
         const row = this.db.prepare(
           `SELECT COUNT(*) as cnt FROM chat_messages
            WHERE session_id = ? AND created_at > ?`
