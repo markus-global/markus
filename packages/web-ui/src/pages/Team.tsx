@@ -1480,6 +1480,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // not-yet-measured items above the viewport stays stable.
   chatVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
     if (isVirtualScrollAdjustSuppressed()) return false;
+    // While the user is reading earlier content (scroll-intent detected, or
+    // already pinned away), do NOT let the virtualizer compensate scroll when
+    // a streaming bubble's height changes mid-flight. That compensation pulls
+    // the viewport back toward the growing bubble and fights the user's own
+    // scrolling — the "jitter/flicker" when scrolling up during streaming.
+    if (userScrollIntentRef.current || userPinnedAwayRef.current) return false;
     return item.start < (instance.scrollOffset ?? 0);
   };
 
@@ -1490,7 +1496,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'instant') => {
     // Never reclaim the viewport while the user is reading earlier content.
-    if (!userAtBottomRef.current || userPinnedAwayRef.current) return;
+    // Also honor the wheel/touch scroll-intent marker: during the window where
+    // the user is actively hand-scrolling (before the scroll event settles into
+    // userPinnedAway), programmatic snaps must not fight the gesture.
+    if (!userAtBottomRef.current || userPinnedAwayRef.current || userScrollIntentRef.current) return;
 
     const gen = ++scrollFollowGenRef.current;
     isProgrammaticScrollRef.current = true;
@@ -3090,7 +3099,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       : activeDmUser?.name) || t('page.loadingChat', { defaultValue: 'Loading conversation…' });
   }, [chatMode, sessions, activeSessionId, currentAgent?.name, activeChannel, activeDmUserId, activeGroupChat?.name, activeDmUser?.name, t]);
 
-  const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !sending && !loadingChat;
+  const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !loadingChat;
   // Non-empty sessions: Cursor-style single-line composer that grows with content.
   const compactComposer = mainTab === 'chat' && visibleMessages.length > 0;
   compactComposerRef.current = compactComposer;
@@ -3639,7 +3648,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               // Pre-`session_start` window: a brand-new chat streams before the
               // server assigns a real session id, so the active tab is the only
               // one that can be generating.
-              || (sending && s.id === activeSessionId);
+              || (sending && s.id === activeSessionId)
+              // Authoritative tail signal: even when the stream-session
+              // bookkeeping or the global `sending` flag momentarily lags
+              // (reattach window, session_start pre-window, streamingVisual
+              // min-display timer), a session whose latest bubble is STILL
+              // marked isStreaming must keep its pulsing dot — otherwise the
+              // dot disappears while the agent is visibly still typing.
+              || (s.id === activeSessionId && hasStreamingTail(messages));
             return (
             <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide">
               {openSessionTabs.map(s => (
@@ -4172,9 +4188,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         })()}
 
         {/* Empty state greeting (above input when no messages) */}
-        {isEmptyChat && emptyGreeting && (
+        {isEmptyChat && (emptyGreeting || placeholder) && (
           <div className="text-center mb-4">
-            <h2 className="text-xl font-semibold text-fg-primary">{emptyGreeting}</h2>
+            <h2 className="text-xl font-semibold text-fg-primary">{emptyGreeting || placeholder}</h2>
           </div>
         )}
 
