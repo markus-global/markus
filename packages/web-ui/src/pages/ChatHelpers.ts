@@ -690,3 +690,37 @@ export function composerStacked(isMobile: boolean, composing: boolean): boolean 
 export function composerToolbarAlign(stacked: boolean): string {
   return stacked ? 'justify-end' : '';
 }
+
+/** Which thing the mobile L2 (team detail) layer should render. */
+export type MobileTeamLayerState = 'detail' | 'loading' | 'missing';
+
+/**
+ * Resolve what the mobile L2 team-detail layer can actually show.
+ *
+ * Why this needs to exist: on mobile the Team page is a hash-driven 3-layer
+ * machine (`#team` roster / `#team/t/<id>` team detail / `#team/d` chat). The
+ * two other layers are mutually exclusive with L2 - the roster is `hidden` and
+ * the chat area is not rendered at all whenever `mobileLayer === 'team'`. So if
+ * L2 gives up and renders nothing, the ENTIRE page body is blank and the back
+ * button (which lived inside the same block) disappears with it. That is the
+ * "messages page is empty and then it is stuck" report: no content, no way back.
+ *
+ * The distinction that makes recovery safe is `teamsLoaded`. Until the team list
+ * request has actually SUCCEEDED we cannot tell "not fetched yet" from "does not
+ * exist any more", and healing the URL on a transient network failure would kick
+ * the user out of a perfectly valid deep link. So:
+ *   - team present                     -> 'detail'
+ *   - absent, list not loaded yet      -> 'loading'  (show spinner + retry/back)
+ *   - absent, list loaded successfully -> 'missing'  (definitively gone)
+ *
+ * `teamsLoaded` must be set only on a successful fetch, never in a `finally`.
+ */
+export function resolveMobileTeamLayerState(
+  teamId: string | null | undefined,
+  teamIds: readonly string[],
+  teamsLoaded: boolean,
+): MobileTeamLayerState {
+  if (!teamId) return 'missing';
+  if (teamIds.includes(teamId)) return 'detail';
+  return teamsLoaded ? 'missing' : 'loading';
+}

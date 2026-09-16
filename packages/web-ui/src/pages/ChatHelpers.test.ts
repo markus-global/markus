@@ -24,6 +24,7 @@ import {
   composerMaxHeightPx,
   composerStacked,
   composerToolbarAlign,
+  resolveMobileTeamLayerState,
   type ChatMsg,
 } from './ChatHelpers.ts';
 import type { ChatMessageInfo } from '../api.ts';
@@ -573,5 +574,56 @@ describe('composerToolbarAlign (model selector + send row)', () => {
 
   it('right-aligns on desktop too once the user starts typing', () => {
     expect(composerToolbarAlign(composerStacked(false, true))).toBe('justify-end');
+  });
+});
+
+describe('resolveMobileTeamLayerState (mobile L2 blank-page guard)', () => {
+  const teams = ['team_a', 'team_b'];
+
+  it('renders the detail when the team resolves', () => {
+    expect(resolveMobileTeamLayerState('team_a', teams, true)).toBe('detail');
+  });
+
+  it('reports loading - NOT missing - while the team list has not loaded', () => {
+    // The distinction is the whole point: `teams` starts as [] on a cold mount,
+    // so absent-while-unloaded must NOT be read as "this team is gone".
+    expect(resolveMobileTeamLayerState('team_a', [], false)).toBe('loading');
+  });
+
+  it('renders the detail whenever the team is present, even if the flag is unset', () => {
+    // Presence wins over the loaded flag: a team we can actually find is
+    // resolvable, so there is nothing to recover from.
+    expect(resolveMobileTeamLayerState('team_a', teams, false)).toBe('detail');
+  });
+
+  it('reports missing only after a successful load proves the id is unknown', () => {
+    expect(resolveMobileTeamLayerState('team_gone', teams, true)).toBe('missing');
+    // An empty but successful response is still a definitive answer.
+    expect(resolveMobileTeamLayerState('team_a', [], true)).toBe('missing');
+  });
+
+  it('treats a null/undefined id as missing rather than crashing the layer', () => {
+    expect(resolveMobileTeamLayerState(null, teams, true)).toBe('missing');
+    expect(resolveMobileTeamLayerState(undefined, teams, true)).toBe('missing');
+    expect(resolveMobileTeamLayerState('', teams, true)).toBe('missing');
+  });
+
+  it('never returns a state that leaves the page with nothing to render', () => {
+    // Regression: the L2 block used to `return null` when the team was absent.
+    // Because that layer also hides the roster and skips the chat area, the page
+    // body went completely blank AND the back button went with it - the user saw
+    // an empty Team page and could not get out. Every input must now map to a
+    // state the UI can draw.
+    const inputs: Array<[string | null | undefined, string[], boolean]> = [
+      ['team_a', teams, true],
+      ['team_x', teams, true],
+      ['team_x', [], false],
+      [null, [], false],
+      [undefined, teams, false],
+    ];
+    for (const [id, ids, loaded] of inputs) {
+      const state = resolveMobileTeamLayerState(id, ids, loaded);
+      expect(['detail', 'loading', 'missing']).toContain(state);
+    }
   });
 });

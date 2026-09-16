@@ -54,6 +54,7 @@ import {
   formatSmartTime, getDateKey, formatDateLabel, throttle,
   resolveTeamChatShortcut, cycleSessionTabId,
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
+  resolveMobileTeamLayerState,
 } from './ChatHelpers.ts';
 import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
 import {
@@ -807,6 +808,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // Teams
   const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
+  /**
+   * True once `/api/teams` has answered successfully at least once.
+   *
+   * Deliberately NOT derived from `initialLoading`: that flips to false in a
+   * `.finally()`, i.e. also when the request FAILED. Treating a failed fetch as
+   * "loaded" would let the mobile L2 layer conclude a perfectly valid team is
+   * gone and rewrite the URL on a transient network error. Only a successful
+   * (even if empty) response proves a team id is really unresolvable.
+   */
+  const [teamsLoaded, setTeamsLoaded] = useState(Boolean(previewData));
 
   // External agents (OpenClaw etc.)
   const [externalAgents, setExternalAgents] = useState<ExternalAgentInfo[]>([]);
@@ -1025,7 +1036,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // ── Data loading ─────────────────────────────────────────────────────────────
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
-  const refreshTeams = useCallback(() => api.teams.list().then(d => setTeams(d.teams)).catch(() => {}), []);
+  const refreshTeams = useCallback(() => api.teams.list().then(d => {
+    setTeams(d.teams);
+    // Success only — see the teamsLoaded declaration for why a failure must not
+    // count as "loaded".
+    setTeamsLoaded(true);
+  }).catch(() => {}), []);
   const refreshGroupChats = useCallback(() => api.groupChats.list().then(d => setGroupChats(d.chats)).catch(() => {}), []);
 
   // Throttled versions for WS-driven refreshes to prevent API spam
@@ -1035,6 +1051,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const refreshHumans = useCallback(() => {
     api.users.list(authUser?.orgId).then(d => setHumans(d.users)).catch(() => {});
   }, [authUser?.orgId]);
+
+  /**
+   * Self-heal the mobile L2 layer when its team id cannot be resolved.
+   *
+   * This is the state that produced a permanently blank Team page: `#team/t/<id>`
+   * hides the roster, skips the chat area, and the L2 block used to `return null`
+   * when the team was not in `teams` — taking its own back button down with it.
+   * A stale id is easy to hit: `navigate()` in App remembers a page's sub-hash and
+   * restores it when you tap that nav tab, `teams` starts empty on a cold mount,
+   * and the id survives a reload in the URL. Any of those, plus a deleted team,
+   * left the user with nothing to see and nothing to tap.
+   *
+   * Rewriting the hash back to the roster makes the blank state unreachable
+   * rather than merely survivable; the L2 block still renders a fallback frame
+   * for the single frame before this effect runs.
+   */
+  useEffect(() => {
+    if (!isMobile) return;
+    if (mobileLayer !== 'team' || !mobileTeamId) return;
+    if (resolveMobileTeamLayerState(mobileTeamId, teams.map(x => x.id), teamsLoaded) !== 'missing') return;
+    window.location.hash = PAGE.TEAM;
+  }, [isMobile, mobileLayer, mobileTeamId, teams, teamsLoaded]);
 
   useEffect(() => {
     if (previewMode) return;
@@ -3176,7 +3214,53 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       {/* ── L2: Mobile team detail view ── */}
       {isMobile && mobileLayer === 'team' && mobileTeamId && (() => {
         const l2Team = teams.find(t => t.id === mobileTeamId);
-        if (!l2Team) return null;
+        if (!l2Team) {
+          // Never `return null` here. This layer hides the roster and skips the
+          // chat area, so an empty L2 means an empty PAGE with no back button
+          // (the old back button lived below this point). Render an escapable
+          // frame instead, and state whether we are still loading or the team is
+          // genuinely gone - see resolveMobileTeamLayerState / the heal effect.
+          const l2State = resolveMobileTeamLayerState(mobileTeamId, teams.map(x => x.id), teamsLoaded);
+          const gone = l2State === 'missing';
+          return (
+            <div className="flex-1 overflow-hidden flex flex-col min-w-0">
+              <div className="flex items-center gap-2 px-3 h-12 shrink-0 border-b border-border-default">
+                <button
+                  onClick={() => { window.location.hash = PAGE.TEAM; }}
+                  className="p-1.5 -ml-1 rounded-lg hover:bg-surface-overlay transition-colors shrink-0 text-fg-secondary"
+                  title={t('common:back', { defaultValue: 'Back' })}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                </button>
+                <span className="text-sm font-semibold text-fg-primary truncate">
+                  {gone ? t('page.teamMissingTitle') : t('page.loadingTeam')}
+                </span>
+              </div>
+              <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center">
+                <p className="text-xs text-fg-tertiary max-w-[280px]">
+                  {gone ? t('page.teamMissingBody') : t('page.loadingTeamBody')}
+                </p>
+                <div className="flex items-center gap-2">
+                  {gone ? (
+                    <button
+                      onClick={() => { window.location.hash = PAGE.TEAM; }}
+                      className="px-3 py-1.5 text-xs font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 transition-colors"
+                    >
+                      {t('page.backToList')}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { void refreshTeams(); }}
+                      className="px-3 py-1.5 text-xs font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay transition-colors"
+                    >
+                      {t('common:retry', { defaultValue: 'Retry' })}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        }
         const l2Agents = agents.filter(a => a.teamId === mobileTeamId);
         const l2Gc = groupChats.find(gc => gc.type === 'team' && gc.teamId === mobileTeamId);
         return (
