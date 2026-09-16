@@ -271,7 +271,7 @@ export interface AgentOptions {
   handbookPath?: string;
 }
 
-import { createSessionWorkspace, sessionWorkspaceStore, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
+import { createSessionWorkspace, sessionWorkspaceStore, asAgentScenario, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
 // re-export 保持 agent.js 的既有导出契约（attention.ts 等从 agent.js 引用类型的地方无需改动）。
 export { createSessionWorkspace, sessionWorkspaceStore, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
 
@@ -592,6 +592,10 @@ export class Agent {
   private static readonly HEARTBEAT_MAX_TOOL_ITERATIONS = 30;
   /** Maps background_exec session IDs to the originating session that spawned them */
   private bgSessionOrigin = new Map<string, string>();
+  /** Scenario each background session was launched from (replayed on completion).
+   *  The completion fires *later*, outside any turn, so `activeScenario` is no
+   *  longer the launching scenario by then — it must be captured at registration. */
+  private bgSessionScenario = new Map<string, AgentScenario>();
   private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
   private _heartbeatUnsub?: () => void;
@@ -765,6 +769,8 @@ export class Agent {
       const originSession = this.bgSessionOrigin.get(notification.sessionId);
       if (!originSession) return;
       this.bgSessionOrigin.delete(notification.sessionId);
+      const originScenario = this.bgSessionScenario.get(notification.sessionId);
+      this.bgSessionScenario.delete(notification.sessionId);
 
       const status = notification.exitCode === 0 ? 'succeeded' : `failed (exit ${notification.exitCode})`;
       const parts = [
@@ -787,6 +793,7 @@ export class Agent {
         type: 'background_exec',
         deliveryMode: 'in_session',
         originSessionId: originSession,
+        originScenario,
         summary: `Background process ${status}: ${notification.command.slice(0, 80)}`,
         content: parts.join('\n'),
         exitCode: notification.exitCode,
@@ -1827,7 +1834,15 @@ export class Agent {
       if (ex.images !== undefined) opts.images = ex.images as string[];
       if (ex.fileNames !== undefined) opts.fileNames = ex.fileNames as string[];
       if (ex.imagePaths !== undefined) opts.imagePaths = ex.imagePaths as string[];
-      if (ex.scenario !== undefined) opts.scenario = ex.scenario as AgentScenario;
+      if (ex.scenario !== undefined) {
+        // VALIDATE — this override is applied *after* each branch's explicit
+        // `scenario:` default, so an unvalidated cast here silently becomes the
+        // turn's scenario. That turned every async completion into `heartbeat`
+        // (reflex pack ⇒ no work tools) and let any mailbox producer inject an
+        // arbitrary scenario string. Unknown values are ignored, not coerced.
+        const exScenario = asAgentScenario(ex.scenario);
+        if (exScenario !== undefined) opts.scenario = exScenario;
+      }
       if (ex.toolEventCollector !== undefined) opts.toolEventCollector = ex.toolEventCollector as HandleMessageOptions['toolEventCollector'];
       if (ex.waitForReply !== undefined) opts.waitForReply = ex.waitForReply as boolean;
       if (ex.allowedTools !== undefined) {
@@ -2179,11 +2194,18 @@ export class Agent {
         case 'system_event':
         case 'daily_report': {
           const sysSessionId = `sys_${this.id}_${ts}`;
+          // A callback delivered through the **mailbox** path arrives as a
+          // `system_event` and carries the scenario it was registered from
+          // (`deliverCallback`). Genuine system events (alerts, daily reports)
+          // carry no `callbackType` and stay `heartbeat`.
+          const sysScenario = (extra.callbackType !== undefined
+            ? asAgentScenario(extra.scenario)
+            : undefined) ?? 'heartbeat';
           let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             undefined,
             undefined,
-            buildHandleOpts({ sessionId: sysSessionId, scenario: 'heartbeat' }),
+            buildHandleOpts({ sessionId: sysSessionId, scenario: sysScenario }),
           );
           if (needsMarker) reply = await this.ensureCompletionMarker(reply, sysSessionId);
           resolveResponse(reply);
@@ -2228,11 +2250,19 @@ export class Agent {
           // Route to the originating session if known, otherwise a fresh system session
           const originSessionId = extra.originSessionId as string | undefined;
           const cbSessionId = originSessionId ?? `sys_${this.id}_${ts}`;
+          // Replay the scenario the callback was registered from (`deliverCallback`),
+          // defaulting to `heartbeat`. Hardcoding `heartbeat` for callbacks gave the
+          // turn the **reflex** pack — no `file_write` / `file_edit` / `shell_execute` /
+          // `task_note` / `subtask_*` — plus "your output is NOT visible, end with
+          // `HEARTBEAT_OK`". A background build started from a task session could
+          // therefore only *notify* on completion, never continue the task, which
+          // contradicts `background_exec`'s documented contract.
+          const cbScenario = asAgentScenario(extra.scenario) ?? 'heartbeat';
           let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             undefined,
             undefined,
-            buildHandleOpts({ sessionId: cbSessionId, scenario: 'heartbeat' }),
+            buildHandleOpts({ sessionId: cbSessionId, scenario: cbScenario }),
           );
           if (needsMarker) reply = await this.ensureCompletionMarker(reply, cbSessionId);
           resolveResponse(reply);
@@ -6776,6 +6806,9 @@ export class Agent {
     type: CallbackType;
     deliveryMode: CallbackDelivery;
     originSessionId?: string;
+    /** Scenario the callback was registered from — replayed on delivery (see
+     *  `PendingCallback.originScenario`). Falls back to `heartbeat` when absent. */
+    originScenario?: string;
     summary: string;
     content: string;
     exitCode?: number;
@@ -6789,6 +6822,7 @@ export class Agent {
           callbackId: cb.callbackId,
           callbackType: cb.type,
           correlationId: cb.correlationId,
+          scenario: cb.originScenario,
         },
       });
       return;
@@ -6802,6 +6836,7 @@ export class Agent {
         callbackType: cb.type,
         correlationId: cb.correlationId,
         exitCode: cb.exitCode,
+        scenario: cb.originScenario,
       },
     });
   }
@@ -6835,6 +6870,8 @@ export class Agent {
             originSessionId,
             args['command'] as string | undefined,
             registryTimeoutMs,
+            // Capture the LAUNCH scenario — the completion arrives outside a turn.
+            this.activeScenario,
           );
         }
       } catch { /* non-JSON tool result — nothing to register */ }
@@ -6852,6 +6889,7 @@ export class Agent {
             type: 'a2a_reply',
             deliveryMode: 'in_session',
             correlationId: parsed.conversation_id,
+            originScenario: this.activeScenario,
             note: `Awaiting reply from ${String(args['agent_id'] ?? 'peer')}`,
             registeredAt: Date.now(),
             // Cap so a never-answered delegate can't wedge the session forever;
@@ -6886,6 +6924,7 @@ export class Agent {
         type: 'wakeup',
         deliveryMode: cb.deliveryMode ?? 'mailbox',
         originSessionId: cb.originSessionId,
+        originScenario: asAgentScenario(cb.originScenario),
         summary: `Scheduled wakeup${cb.note ? `: ${cb.note.slice(0, 80)}` : ''}`,
         content: `[SCHEDULED WAKEUP] ${cb.note ?? 'Time-based check-in you registered earlier.'}\nScheduled for: ${new Date(cb.wakeAt).toISOString()}`,
         correlationId: cb.correlationId,
@@ -6896,14 +6935,22 @@ export class Agent {
     }
   }
 
-  registerBackgroundSession(bgSessionId: string, originSessionId: string, command?: string, timeoutMs = 10 * 60 * 1000): void {
+  registerBackgroundSession(
+    bgSessionId: string,
+    originSessionId: string,
+    command?: string,
+    timeoutMs = 10 * 60 * 1000,
+    originScenario?: AgentScenario,
+  ): void {
     this.bgSessionOrigin.set(bgSessionId, originSessionId);
+    if (originScenario) this.bgSessionScenario.set(bgSessionId, originScenario);
     pendingCallbackRegistry.register({
       id: bgSessionId,
       agentId: this.id,
       originSessionId,
       type: 'background_exec',
       command,
+      originScenario,
       registeredAt: Date.now(),
       timeoutMs,
     });
@@ -8056,6 +8103,7 @@ export class Agent {
         type: 'wakeup',
         deliveryMode: delivery,
         note,
+        originScenario: this.activeScenario,
         wakeAt,
         recurringMs: recurringSeconds && recurringSeconds > 0 ? Math.round(recurringSeconds * 1000) : undefined,
         registeredAt: Date.now(),

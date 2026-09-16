@@ -20,6 +20,32 @@ export type AgentScenario =
   | 'workflow_action'
   | 'deliberation';
 
+/** Runtime mirror of {@link AgentScenario} — the single authoritative list.
+ *  Used to validate scenario strings that cross a serialization boundary
+ *  (mailbox `extra.scenario`, persisted callbacks) instead of casting blindly. */
+export const AGENT_SCENARIOS: readonly AgentScenario[] = [
+  'chat',
+  'task_execution',
+  'heartbeat',
+  'a2a',
+  'group_chat',
+  'comment_response',
+  'memory_consolidation',
+  'distillation',
+  'review',
+  'requirement_action',
+  'workflow_action',
+  'deliberation',
+];
+
+/** Narrow an untrusted value to an `AgentScenario`, or `undefined`.
+ *  Unknown/legacy values must never silently become a scenario. */
+export function asAgentScenario(v: unknown): AgentScenario | undefined {
+  return typeof v === 'string' && (AGENT_SCENARIOS as readonly string[]).includes(v)
+    ? (v as AgentScenario)
+    : undefined;
+}
+
 /**
  * SessionWorkspace：单个分身（worker）处理一个会话/任务时独占的可变状态。
  *

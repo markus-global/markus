@@ -1219,6 +1219,47 @@ rather than redundant). It also asserts the action scenarios do **not** carry `s
 in `agent.ts` only offers names the scenario's allow-list declares; it is not a bypass of
 `allowedTools` filtering.
 
+---
+
+### 5.11 Async callbacks must replay their originating scenario (2026-09-16)
+
+`background_exec` is documented in the `task_execution` prompt as *"run builds and tests via
+`background_exec` — continue other subtasks while waiting"*. That contract is only meaningful if
+the **completion** turn can act. It could not.
+
+Both callback dispatch branches (`callback_result`, and the callback-typed `system_event` emitted
+by `deliverCallback`'s mailbox path) hardcoded `scenario: 'heartbeat'`. `heartbeat` maps to the
+**reflex** pack, and `REFLEX_CORE_TOOLS` contains **no work tools** — no `file_write`,
+`file_edit`, `shell_execute`, `apply_patch`, `task_note`, `subtask_complete`,
+`deliverable_create`, `task_submit_review`. The heartbeat prompt additionally says *"your text
+output is NOT visible … end with `HEARTBEAT_OK`"*. So a build launched from a task session could,
+on completion, only **notify** — never fix the failure, never record progress, never submit.
+
+**Mechanism.** The scenario is captured where it is still knowable and replayed where it is needed:
+
+| Step | Where | What |
+|---|---|---|
+| capture | `registerBackgroundSession(...)` / `a2a_reply` / `schedule_wakeup` registration | `this.activeScenario` → `PendingCallback.originScenario` |
+| carry | `deliverCallback` | writes it into the mailbox item's `payload.extra.scenario` (both delivery modes) |
+| replay | `callback_result` / callback-typed `system_event` dispatch | `asAgentScenario(extra.scenario) ?? 'heartbeat'` |
+
+Capture must happen at **registration**, not delivery: the completion fires later, outside any
+turn, when `activeScenario` no longer refers to the launching scenario. Both delivery modes carry
+it — `mailbox` surfaces a *new* attention cycle, but the work still needs work tools.
+
+**Invariant 15 — an untrusted scenario string is never cast.** `buildHandleOpts` used to do
+`opts.scenario = ex.scenario as AgentScenario`. Because that override runs **after** each branch's
+explicit default, it silently won: any mailbox producer could set an arbitrary scenario, and
+unknown/legacy values became the turn's scenario. It now goes through `asAgentScenario()` and is
+ignored when unrecognized, so the branch default (`heartbeat`) survives. `AGENT_SCENARIOS` is the
+runtime mirror of the `AgentScenario` union and the single validation authority.
+
+Guard test: `callback-scenario.test.ts` — asserts reflex has no work tools, that
+`registerBackgroundSession` records the launch scenario, that `deliverCallback` propagates it in
+both modes, that dispatch replays it, that a missing scenario falls back to `heartbeat`, and that
+invalid values (`'bogus-scenario'`) are rejected rather than passed through.
+
+
 
 ## 6. Output Token Resolution
 

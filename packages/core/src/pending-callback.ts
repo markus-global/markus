@@ -34,6 +34,21 @@ export interface PendingCallback {
   note?: string;
   /** Correlates an external event to this callback (taskId / conversation_id). */
   correlationId?: string;
+  /**
+   * Scenario the callback was **registered from** (`AgentScenario` string).
+   *
+   * Replayed when the completion is delivered. Without it, every completion was
+   * dispatched as `heartbeat` → **reflex pack** (see `REFLEX_CORE_TOOLS`, which has
+   * no `file_write` / `file_edit` / `shell_execute` / `task_note` / `subtask_*`), and
+   * the turn was told "your text output is NOT visible … end with `HEARTBEAT_OK`".
+   * A background build launched from a task session therefore could not continue
+   * the task on completion — it could only notify. Carrying the origin scenario
+   * keeps `background_exec`'s documented contract ("continue other subtasks while
+   * waiting") actually achievable.
+   *
+   * Kept as a loose `string` for the same decoupling reason as `type` above.
+   */
+  originScenario?: string;
   /** For scheduled wakeups: epoch ms at which the wakeup is due. */
   wakeAt?: number;
   /** For recurring wakeups: re-arm interval in ms after firing. */
@@ -66,6 +81,7 @@ export interface PersistedCallback {
   command?: string;
   note?: string;
   correlationId?: string;
+  originScenario?: string;
   wakeAt?: number;
   recurringMs?: number;
   registeredAt: number;
