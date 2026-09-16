@@ -132,6 +132,13 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [checklistReady, setChecklistReady] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
 
+  // 全局静默学习（App 层）完成全部教学项 → 实时刷新本页「快捷键教学」步骤完成态。
+  useEffect(() => {
+    const onLessonComplete = () => setShortcutLessonDone(true);
+    window.addEventListener('markus:shortcut-lesson-complete', onLessonComplete);
+    return () => window.removeEventListener('markus:shortcut-lesson-complete', onLessonComplete);
+  }, [setShortcutLessonDone]);
+
   const handleClaimed = useCallback(() => {
     setFreeCreditsClaimed(true);
     api.cu.status().then(setCuQuota).catch(() => {});

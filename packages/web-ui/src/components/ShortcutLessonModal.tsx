@@ -6,6 +6,7 @@ import {
   saveLessonChecked,
   isLessonComplete,
   shortcutLessonMatches,
+  markAllLessonsLearned,
   type LessonKeyEvent,
 } from '../lib/shortcut-lessons.ts';
 import { formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
@@ -18,7 +19,20 @@ interface Props {
   onCompleted: () => void;
 }
 
-const GROUP_ORDER = ['layout', 'navigation', 'search', 'help', 'team'] as const;
+const GROUP_ORDER: ReadonlyArray<string> = ['layout', 'navigation', 'search', 'help', 'team'];
+
+/** 按键键帽渲染：Mac 下 ⌘ 符号单独放大（用户反馈符号过小）。 */
+function renderKeyLabel(label: string, isMac: boolean) {
+  if (isMac && label.startsWith('⌘')) {
+    return (
+      <>
+        <span className="text-[15px] font-semibold leading-none">⌘</span>
+        <span className="text-[13px]">{label.slice(1)}</span>
+      </>
+    );
+  }
+  return <span className="text-[13px]">{label}</span>;
+}
 
 export function ShortcutLessonModal({ open, userId, onClose, onCompleted }: Props) {
   const { t } = useTranslation(['home', 'common']);
@@ -88,6 +102,14 @@ export function ShortcutLessonModal({ open, userId, onClose, onCompleted }: Prop
       saveLessonChecked(userId, [...next]);
       return next;
     });
+  };
+
+  // 一键「我已掌握全部」（体验优化 B）：跳过逐键练习，直接标记完成本步骤。
+  const handleMarkAllLearned = () => {
+    if (!userId) return;
+    markAllLessonsLearned(userId);
+    setChecked(new Set(SHORTCUT_LESSONS.map(l => l.id)));
+    onCompleted();
   };
 
   return (
@@ -160,11 +182,12 @@ export function ShortcutLessonModal({ open, userId, onClose, onCompleted }: Prop
                               )}
                             </span>
                             <span className={`text-sm min-w-0 ${done ? 'text-fg-tertiary line-through' : 'text-fg-primary'}`}>
-                              {t(s.labelKey ?? s.label, { defaultValue: s.label })}
+                              {/* i18n 防呆：labelKey 缺失翻译时显示 key 而非英文（避免静默回落英文） */}
+                              {t(s.labelKey)}
                             </span>
                           </span>
-                          <kbd className="shrink-0 px-1.5 py-0.5 rounded bg-surface-elevated border border-border-default text-[11px] font-medium text-fg-primary font-mono">
-                            {formatShortcutKeys(s.keys, isMac, s.bare)}
+                          <kbd className="shrink-0 px-2 py-1 rounded bg-surface-elevated border border-border-default font-medium leading-none text-fg-primary font-mono">
+                            {renderKeyLabel(formatShortcutKeys(s.keys, isMac, s.bare), isMac)}
                           </kbd>
                         </button>
                       </li>
@@ -176,7 +199,14 @@ export function ShortcutLessonModal({ open, userId, onClose, onCompleted }: Prop
           </div>
         </div>
 
-        <div className="sticky bottom-0 border-t border-border-default bg-surface-primary px-4 py-3 flex justify-end">
+        <div className="sticky bottom-0 border-t border-border-default bg-surface-primary px-4 py-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={handleMarkAllLearned}
+            className="px-3 py-2 text-sm rounded-xl border border-border-default text-fg-secondary hover:bg-surface-elevated hover:text-fg-primary transition-colors font-medium"
+          >
+            {t('checklist.shortcutLesson.markAllLearned')}
+          </button>
           <button
             type="button"
             onClick={onClose}

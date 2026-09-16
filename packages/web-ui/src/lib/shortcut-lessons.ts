@@ -25,6 +25,8 @@ export type LessonKeyEvent = {
 export interface ShortcutLessonItem extends ShortcutDef {
   /** 与注册表一致的 id 也作为勾选状态 key。 */
   id: string;
+  /** i18n key（教学清单强约束：每一项必须有翻译，禁止新增项不带 labelKey，避免静默回落英文）。 */
+  labelKey: string;
 }
 
 export const SHORTCUT_LESSONS: ShortcutLessonItem[] = [
@@ -75,6 +77,25 @@ export function saveLessonChecked(userId: string, checked: string[]): void {
 export function isLessonComplete(userId: string): boolean {
   const checked = new Set(loadLessonChecked(userId));
   return SHORTCUT_LESSONS.every((l) => checked.has(l.id));
+}
+
+/**
+ * 全局静默学习（体验优化 A）：在日常使用中真实按下某个教学快捷键即自动勾选。
+ * 纯函数、无副作用拦截（不 preventDefault / stopPropagation——让真实行为照常发生，
+ * 教学只是「记录」）。返回勾选后是否已全部完成。
+ */
+export function applyLessonKeyPress(e: LessonKeyEvent, userId: string, isMac: boolean): boolean {
+  const matched = SHORTCUT_LESSONS.find((l) => shortcutLessonMatches(e, l.id, isMac));
+  if (!matched) return isLessonComplete(userId);
+  const next = new Set(loadLessonChecked(userId));
+  next.add(matched.id);
+  saveLessonChecked(userId, [...next]);
+  return SHORTCUT_LESSONS.every((l) => next.has(l.id));
+}
+
+/** 一键「我已掌握全部」：跳过逐键练习，直接标记全部勾选（体验优化 B）。 */
+export function markAllLessonsLearned(userId: string): void {
+  saveLessonChecked(userId, SHORTCUT_LESSONS.map((l) => l.id));
 }
 
 /**

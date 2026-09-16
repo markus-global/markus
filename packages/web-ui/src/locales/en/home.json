@@ -99,7 +99,8 @@
       "title": "Keyboard Shortcut Lesson",
       "subtitle": "Press each shortcut below to check it off — complete all to finish this step.",
       "allDone": "Great! You've mastered all the shortcuts.",
-      "done": "Done"
+      "done": "Done",
+      "markAllLearned": "I already know these — mark complete"
     }
   },
   "heroBanner": {

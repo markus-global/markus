@@ -6,8 +6,12 @@ import {
   saveLessonChecked,
   isLessonComplete,
   shortcutLessonMatches,
+  applyLessonKeyPress,
+  markAllLessonsLearned,
   type LessonKeyEvent,
 } from './shortcut-lessons.ts';
+import enCommon from '../locales/en/common.json';
+import zhCommon from '../locales/zh-CN/common.json';
 
 const ALL_LESSON_IDS = SHORTCUT_LESSONS.map(l => l.id);
 
@@ -146,5 +150,64 @@ describe('per-user shortcut lesson state', () => {
     localStorage.setItem(shortcutLessonKey('user-a'), 'not-json{');
     expect(loadLessonChecked('user-a')).toEqual([]);
     expect(isLessonComplete('user-a')).toBe(false);
+  });
+});
+
+describe('i18n integrity (no silent English fallback)', () => {
+  it('every lesson item has a labelKey and it resolves in both en + zh-CN common.json', () => {
+    for (const item of SHORTCUT_LESSONS) {
+      expect(item.labelKey, `lesson ${item.id} must define labelKey`).toBeTruthy();
+      // labelKey 形如 "shortcuts.toggleLeft" → common.json.shortcuts.toggleLeft
+      const resolve = (root: unknown): unknown => {
+        let cur: unknown = root;
+        for (const seg of item.labelKey.split('.')) {
+          cur = (cur as Record<string, unknown> | undefined)?.[seg];
+        }
+        return cur;
+      };
+      expect(typeof resolve(enCommon), `en missing ${item.labelKey}`).toBe('string');
+      expect(typeof resolve(zhCommon), `zh-CN missing ${item.labelKey}`).toBe('string');
+    }
+  });
+});
+
+describe('applyLessonKeyPress (background silent learning)', () => {
+  installStorageShim();
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  it('ticks the matched lesson and persists', () => {
+    applyLessonKeyPress(ev({ key: 'b', metaKey: true }), 'user-a', true);
+    expect(loadLessonChecked('user-a')).toContain('toggle-left');
+    expect(isLessonComplete('user-a')).toBe(false);
+  });
+
+  it('ignores unrelated keys (no false positive)', () => {
+    applyLessonKeyPress(ev({ key: 'x', metaKey: true }), 'user-a', true);
+    expect(loadLessonChecked('user-a')).toEqual([]);
+  });
+
+  it('returns true once the last missing lesson is checked', () => {
+    saveLessonChecked('user-a', ALL_LESSON_IDS.filter(id => id !== 'toggle-left'));
+    const complete = applyLessonKeyPress(ev({ key: 'b', metaKey: true }), 'user-a', true);
+    expect(complete).toBe(true);
+    expect(isLessonComplete('user-a')).toBe(true);
+  });
+
+  it('is per-user isolated', () => {
+    applyLessonKeyPress(ev({ key: 'b', metaKey: true }), 'user-a', true);
+    expect(loadLessonChecked('user-b')).toEqual([]);
+  });
+});
+
+describe('markAllLessonsLearned (skip / already know)', () => {
+  installStorageShim();
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  it('marks every lesson checked for the target user', () => {
+    markAllLessonsLearned('user-a');
+    expect(isLessonComplete('user-a')).toBe(true);
+    expect(loadLessonChecked('user-b')).toEqual([]);
   });
 });
