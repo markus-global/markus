@@ -660,6 +660,27 @@ export const CONTEXT_SLOT_MAX_CHARS = 1200;
  */
 export const CONTEXT_VOLATILE_REARM_CALLS = 8;
 
+/**
+ * ContextOS v2.1 — absolute history ceilings.
+ *
+ * The percentage watermarks (CONTEXT_PROACTIVE_COMPACT_RATIO /
+ * CONTEXT_WARN_RATIO) are computed against the MODEL WINDOW, so on very large
+ * windows they effectively never fire. Markus runs 1311k windows: the observed
+ * session ended a single turn at 269k input tokens — roughly 12 % of the window
+ * — with compactStage === 'none' the whole way, i.e. zero maintenance
+ * compression ever ran. These absolute ceilings make it reachable regardless of
+ * window size.
+ */
+export const CONTEXT_ABS_HISTORY_TOKENS = 120_000;
+
+/**
+ * What the absolute ceiling compresses down to: once history passes
+ * CONTEXT_ABS_HISTORY_TOKENS it is folded to ~60 % of the ceiling, then grows
+ * back. The hysteresis keeps folding deterministic per size band, which matters
+ * because a fold rewrites history and therefore busts the prefix cache once.
+ */
+export const CONTEXT_ABS_HISTORY_TARGET_TOKENS = Math.floor(CONTEXT_ABS_HISTORY_TOKENS * 0.6);
+
 /** Max chat messages loaded from DB into memory on session restore. */
 export const SESSION_RESTORE_MAX_MESSAGES = 80;
 

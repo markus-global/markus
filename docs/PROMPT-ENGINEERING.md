@@ -233,13 +233,10 @@ prefix is unaffected.
 
 **Regression guard**: `packages/core/test/context-volatile-gating.test.ts`.
 
-**Known gap (not yet fixed).** One user turn can still run 60+ LLM calls with no
-mid-turn folding: `compactOldTurns()` only folds messages *before*
-`findCurrentTurnStart`, so a giant single turn is never compressed, and on very
-large windows (1311k) the percentage watermark never fires either. Closing this
-needs recency-preserving intra-turn folding — keep the newest tool blocks
-verbatim, fold the oldest, and never split an assistant tool-call from its tool
-results. It hooks into §3.2's pipeline, so it is not done as a side effect.
+**Resolved in v2.1** — see §3.8. A single turn issuing 60+ LLM calls is now
+folded in place: when the absolute history ceiling trips, the fold boundary is
+the END of history instead of the current turn start, so the same block-wise fold
+reaches inside the current turn. No separate intra-turn code path was needed.
 
 **Sample-size caveat.** The similarity/repeat figures come from one 66-call
 session. Treat them as an existence proof of the failure mode, not as a
@@ -675,6 +672,63 @@ With SLOT anchors locked in the fixed segment, a compressed/truncated history st
 goal/done/next every turn, so the agent resumes without re-reading — the trigger for the loop is gone.
 
 ---
+
+### 3.8 Compaction defects fixed in v2.1 (2026-09-16)
+
+Four defects were found by auditing the pipeline against the published designs
+(Anthropic compaction, DeepSeek V3.2 context management, fast-agent).
+
+**(a) Fold direction was inverted — `compactOldTurns()`.** It walked blocks
+oldest→newest, kept each verbatim while the budget allowed, then summarised *or
+dropped* the remainder. That preserves the **oldest** conversation and
+summarises/discards the **most recent** past turns — the opposite of "keep the
+recent window verbatim, summarise the distant past" — and it discarded exactly
+the context the model still needed. Now the recency walk accumulates from the END
+and keeps the newest blocks verbatim. Order is preserved, and folding is
+block-wise via `parseIntoBlocks()`, so an assistant tool-call is never separated
+from its tool results. Task prompts (`TASK EXECUTION` / `task_submit_review`) stay
+protected verbatim even though they are the oldest block.
+
+**(b) The watermarks could never fire on a large window.**
+`CONTEXT_PROACTIVE_COMPACT_RATIO` / `CONTEXT_WARN_RATIO` are relative to the model
+window, so on the 1311k window Markus runs, proactive compaction sits around
+~500k tokens. The observed session finished a single turn at 269k input tokens —
+~12 % of the window — with `compactStage === 'none'` throughout: **no maintenance
+compression ever ran.** Added an absolute ceiling:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `CONTEXT_ABS_HISTORY_TOKENS` | 120 000 | above this, maintenance compression fires regardless of window % |
+| `CONTEXT_ABS_HISTORY_TARGET_TOKENS` | 72 000 | what a fold compresses down to (hysteresis: grow to 120k, fold to 72k) |
+
+When the ceiling trips, `historyTarget` replaces the window-derived
+`messageBudget` (which would otherwise authorise keeping everything — a silent
+no-op) and the fold boundary becomes `messages.length`, which is what also covers
+the single-gigantic-turn case.
+
+**(c) `smartSummarizeAndTruncate()` reordered history.** Eligible messages were
+sorted by **priority**, and `retained` was then built straight from that sorted
+array — so the summariser received a priority-shuffled transcript and the kept
+older messages were replayed in importance order instead of time order. Both
+`older` and `promoted` are now re-sorted by original index. (Chronological input
+also produces a better summary, and restores determinism, which the prefix cache
+relies on.)
+
+**(d) `findCurrentTurnStart()` counted synthetic messages as user turns.**
+Engine-synthesised blocks — the compaction summary, the `[SYSTEM] [Live context]`
+tail, `[Continue from where you left off …]` and `[SYSTEM] Loop detected: …` —
+are `role: 'user'` but are not user turns. Since `findCurrentTurnStart()` decides
+both the turn boundary and the prefix-cache breakpoint, they were placed against
+the wrong boundary. `isSyntheticMessage()` now skips them.
+
+> **Why the synthetic blocks cannot simply become `role: 'system'`:** the
+> Anthropic adapter does `find(m => m.role === 'system')` and then
+> `filter(m => m.role !== 'system')`, so any non-first system message is silently
+> dropped there (the summary would vanish). Skipping them during accounting is the
+> provider-safe fix. Revisit only if every adapter is switched to multi-system
+> handling.
+
+**Regression guard**: `packages/core/test/context-compaction-v21.test.ts`.
 
 ## 4. Tool Loop Harness
 

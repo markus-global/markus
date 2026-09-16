@@ -22,6 +22,8 @@ import {
   SYSTEM_TEAM_PROJECT_DESC_CHARS,
   CONTEXT_ABSURD_MESSAGE_CHARS,
   CONTEXT_PROACTIVE_COMPACT_RATIO,
+  CONTEXT_ABS_HISTORY_TARGET_TOKENS,
+  CONTEXT_ABS_HISTORY_TOKENS,
   CONTEXT_VOLATILE_REARM_CALLS,
   CONTEXT_WARN_RATIO,
   CONTEXT_CRIT_RATIO,
@@ -134,7 +136,7 @@ export interface OrgContext {
   customContext?: string;
 }
 
-export type CompactStage = 'none' | 'proactive' | 'over_budget' | 'summarize' | 'trim';
+export type CompactStage = 'none' | 'proactive' | 'over_budget' | 'summarize' | 'trim' | 'intra_turn';
 
 export interface ContextUsageStats {
   contextWindow: number;
@@ -2012,21 +2014,43 @@ export class ContextEngine {
 
     // ── Stage 2: Proactive + over-budget compression ────────────────────
     let didCompress = false;
-    const needsCompress = totalTokens > messageBudget || totalTokens > proactiveThreshold;
+    // ContextOS v2.1: also fire on an ABSOLUTE history ceiling.
+    //
+    // The percentage watermarks are relative to the MODEL WINDOW, so on very
+    // large windows they never fire: the observed session finished a single turn
+    // at 269k input tokens — ~12 % of a 1311k window — with
+    // compactStage === 'none' the whole way, i.e. no maintenance compression ever
+    // ran and the turn's own early iterations kept piling up.
+    //
+    // Note this also fixes the "one gigantic turn" case without needing a
+    // separate intra-turn code path: when the absolute ceiling trips, the fold
+    // boundary is the END of history rather than the current turn start, so the
+    // same block-wise fold reaches inside the current turn.
+    const overAbsCeiling = totalTokens > CONTEXT_ABS_HISTORY_TOKENS;
+    const needsCompress =
+      totalTokens > messageBudget || totalTokens > proactiveThreshold || overAbsCeiling;
     if (needsCompress) {
       didCompress = true;
       compactStage = totalTokens > messageBudget ? 'over_budget' : 'proactive';
+      // When the absolute ceiling is what tripped, `messageBudget` is the window
+      // budget (~800k) and would authorise keeping everything — a silent no-op.
+      // Compress against a real target instead.
+      const historyTarget = overAbsCeiling
+        ? Math.max(MIN_MESSAGE_BUDGET, CONTEXT_ABS_HISTORY_TARGET_TOKENS)
+        : messageBudget;
       log.info('Triggering context compression', {
         stage: compactStage,
         totalTokens,
         messageBudget,
         proactiveThreshold,
+        overAbsCeiling,
+        historyTarget,
         promptAfford,
       });
       messages = this.shrinkOversizedMessages(messages, perMessageCap);
       messages = this.sanitizeMessageSequence(messages);
-      const compactBoundary = preCompressionPct > 80 ? messages.length : currentTurnStart;
-      messages = this.compactOldTurns(messages, compactBoundary, messageBudget);
+      const compactBoundary = preCompressionPct > 80 || overAbsCeiling ? messages.length : currentTurnStart;
+      messages = this.compactOldTurns(messages, compactBoundary, historyTarget);
       messages = this.sanitizeMessageSequence(messages);
       totalTokens = this.sumTokens(messages);
     }
@@ -2280,8 +2304,14 @@ export class ContextEngine {
     const toCompact = olderScored.filter(s => s.priority < highPriorityThreshold);
 
     // Rebuild: compact low-priority old messages, keep high-priority + recent
-    const older = toCompact.map(s => s.msg);
-    const promoted = promotedToRetain.map(s => s.msg);
+    // Restore chronological order. `olderScored` was sorted by PRIORITY above, so
+    // mapping it straight into `retained` reordered history: the summarizer
+    // received a priority-shuffled transcript, and the retained older messages
+    // were replayed in importance order rather than time order — corrupting the
+    // conversation sequence (and its determinism, which the prefix cache
+    // depends on).
+    const older = [...toCompact].sort((a, b) => a.idx - b.idx).map(s => s.msg);
+    const promoted = [...promotedToRetain].sort((a, b) => a.idx - b.idx).map(s => s.msg);
     const recent = compactableMessages.slice(-keepLast);
     const retained = [...promoted, ...recent];
 
@@ -2563,9 +2593,40 @@ export class ContextEngine {
     });
   }
 
+  /**
+   * Messages the engine itself synthesises into history (compaction summary,
+   * the per-call live-context tail, transient harness prompts). They are
+   * `role: 'user'` for provider-compatibility reasons, but they are NOT user
+   * turns.
+   *
+   * Why this matters: `findCurrentTurnStart()` decides both the turn boundary and
+   * where the prefix-cache breakpoint goes. Treating a synthetic message as the
+   * turn start pointed the breakpoint at the summary block and made the "current
+   * turn" include it, so the turn-length accounting and the re-arm / first-call
+   * detection were all measured against the wrong boundary.
+   *
+   * Note: promoting these to `role: 'system'` is NOT an option — the Anthropic
+   * adapter does `find(m => m.role === 'system')` and then
+   * `filter(m => m.role !== 'system')`, so any non-first system message is
+   * silently dropped there. Skipping them during accounting is the safe fix.
+   */
+  private static isSyntheticMessage(m: LLMMessage): boolean {
+    const t = getTextContent(m.content).trim();
+    return (
+      t.startsWith('[SYSTEM] [Live context]') ||
+      t.startsWith('[SYSTEM] [Conversation history summary') ||
+      t.startsWith('[SYSTEM] Loop detected:') ||
+      t.startsWith('[Continue from where you left off') ||
+      t.startsWith('[CONTEXT SUMMARY]')
+    );
+  }
+
   private findCurrentTurnStart(messages: LLMMessage[]): number {
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]!.role === 'user') return i;
+      const m = messages[i]!;
+      if (m.role !== 'user') continue;
+      if (ContextEngine.isSyntheticMessage(m)) continue;
+      return i;
     }
     return 0;
   }
@@ -2590,35 +2651,44 @@ export class ContextEngine {
 
     const blocks = this.parseIntoBlocks(history);
 
+    // Keep the NEWEST blocks verbatim and fold the OLDER ones.
+    //
+    // The previous implementation walked the blocks oldest→newest, keeping each
+    // one verbatim while the budget allowed and then summarizing — or outright
+    // dropping — the remainder. That preserves the OLDEST conversation and
+    // summarises/discards the most RECENT past turns: the exact opposite of every
+    // published compaction design (keep the recent window verbatim, summarise the
+    // distant past), and it threw away the context the model still needed.
+    const blockTokens = blocks.map((b) => this.sumTokens(b));
+    const keepVerbatim = new Set<number>();
+    for (let i = blocks.length - 1, acc = 0; i >= 0; i--) {
+      const t = blockTokens[i]!;
+      if (acc + t > historyBudget) break;
+      keepVerbatim.add(i);
+      acc += t;
+    }
+
+    // Task-prompt protection: the very first block carries the task instructions
+    // and is also the OLDEST, so the recency walk above would otherwise fold it
+    // away first.
+    if (blocks.length > 0 && blocks[0]!.length === 1 && blocks[0]![0]!.role === 'user') {
+      const text = getTextContent(blocks[0]![0]!.content);
+      if (text.includes('TASK EXECUTION') || text.includes('task_submit_review')) {
+        keepVerbatim.add(0);
+      }
+    }
+
     const compactedBlocks: LLMMessage[][] = [];
-    let usedTokens = 0;
-
-    for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
-      const block = blocks[blockIdx]!;
-      const blockTokens = this.sumTokens(block);
-
-      // Protect the first block if it's a task prompt
-      if (blockIdx === 0 && block.length === 1 && block[0]!.role === 'user') {
-        const text = getTextContent(block[0]!.content);
-        if (text.includes('TASK EXECUTION') || text.includes('task_submit_review')) {
-          compactedBlocks.push(block);
-          usedTokens += blockTokens;
-          continue;
-        }
-      }
-
-      if (usedTokens + blockTokens <= historyBudget) {
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i]!;
+      if (keepVerbatim.has(i)) {
         compactedBlocks.push(block);
-        usedTokens += blockTokens;
-      } else {
-        const summary = this.summarizeToolBlock(block);
-        const summaryTokens = estimateMessageTokens(summary, this.tokenCounter);
-        if (usedTokens + summaryTokens <= historyBudget) {
-          compactedBlocks.push([summary]);
-          usedTokens += summaryTokens;
-        }
-        // If even the summary doesn't fit, drop the block entirely
+        continue;
       }
+      // Only a tool block can collapse into a tool-block summary; a standalone
+      // user/assistant turn is kept as-is rather than silently dropped.
+      const isToolBlock = block[0]!.role === 'assistant' && (block[0]!.toolCalls?.length ?? 0) > 0;
+      compactedBlocks.push(isToolBlock ? [this.summarizeToolBlock(block)] : block);
     }
 
     return [...compactedBlocks.flat(), ...currentTurn];
