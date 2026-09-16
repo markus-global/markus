@@ -3163,6 +3163,10 @@ export class Agent {
         }
       } catch (err) { log.debug('Token counter calibration failed', { error: String(err) }); }
     }
+    // O2: the reported count is ALSO the authoritative water-level input. Every
+    // LLM response already funnels through here (9 call sites), so hooking it here
+    // covers chat / stream / task / review / reflection without touching them.
+    this.contextEngine.noteReportedInputTokens(this.currentSessionId, actualInputTokens);
     this.lastEstimatedInputTokens = 0;
   }
 

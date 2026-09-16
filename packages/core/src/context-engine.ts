@@ -182,6 +182,26 @@ export interface ContextUsageStats {
   /** Effective packing budget after OR-afford clamp (if any). */
   packingBudget: number;
   promptAffordTokens?: number;
+  /**
+   * O2: provider-reported prompt tokens for the **most recent** call in this
+   * session, when that number is still a valid proxy for the request being
+   * packed (see `usageSource`). `undefined` when nothing was reported yet.
+   */
+  reportedInputTokens?: number;
+  /**
+   * Which number `contextHint`'s water level is based on.
+   *
+   * - `reported` — the provider's own `usage.prompt_tokens` (authoritative;
+   *   DeepSeek returns it even on cache hits, OpenAI/OpenRouter via
+   *   `prompt_tokens_details`).
+   * - `estimated` — the local heuristic counter (`SmartTokenCounter`), which
+   *   `Agent.calibrateTokenCounter` continuously re-fits against reported values.
+   *
+   * Compaction thresholds deliberately stay on the **estimate** so a stale or
+   * mis-sized reported value can never make packing *less* conservative — the
+   * hint is the reporting surface, not the trigger.
+   */
+  usageSource: 'reported' | 'estimated';
 }
 
 export interface PreparedContext {
@@ -243,10 +263,41 @@ export class ContextEngine {
   private tokenCounter: TokenCounter;
   private semanticSearch?: SemanticMemorySearch;
   private llmSummarizer?: LLMSummarizer;
+  /**
+   * O2: last provider-reported input token count per session.
+   *
+   * The provider's own `usage.prompt_tokens` is authoritative (DeepSeek reports it
+   * on cache hits too; OpenAI/OpenRouter expose it via `prompt_tokens_details`),
+   * while our `SmartTokenCounter` only *estimates*. Keeping the reported number
+   * here — rather than as a `prepareMessages` argument — means all 15 call sites
+   * get it without any of them being able to forget it.
+   *
+   * Entries are dropped whenever a pack compresses (a post-compaction reported
+   * count describes a larger request that no longer exists and would overstate the
+   * water level).
+   */
+  private reportedInputBySession = new Map<string, number>();
 
   constructor(config?: Partial<ContextConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.tokenCounter = config?.tokenCounter ?? getDefaultTokenCounter();
+  }
+
+  /**
+   * Record the provider-reported prompt tokens for a session's most recent call.
+   * Called right after every LLM response (see `Agent.calibrateTokenCounter`).
+   * Non-positive/absent values are ignored rather than overwriting a good reading.
+   */
+  noteReportedInputTokens(sessionId: string | undefined, tokens: number | undefined): void {
+    if (!sessionId) return;
+    if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens <= 0) return;
+    this.reportedInputBySession.set(sessionId, tokens);
+  }
+
+  /** Drop a session's reported reading (compaction, session reset, tests). */
+  clearReportedInputTokens(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    this.reportedInputBySession.delete(sessionId);
   }
 
   setSemanticSearch(ss: SemanticMemorySearch): void {
@@ -1958,6 +2009,13 @@ export class ContextEngine {
     /** ContextOS: fixed段 C — durable compaction summary anchor, injected verbatim
      *  as its own [CONTEXT SUMMARY] block (semantically separate from slots). */
     summarySegment?: string;
+    /**
+     * O2: provider-reported input tokens from the previous call in this session.
+     * Only pass it when no compaction happened in between — a post-compaction
+     * value describes a larger, no-longer-existing request and would overstate the
+     * water level. Used for the `[CONTEXT …]` hint's `src=reported` reading.
+     */
+    reportedInputTokens?: number;
   }): Promise<PreparedContext> {
     // No silent defaults: a missing/zero context window is exactly what
     // silently drove the message budget negative and made the agent return
@@ -2168,8 +2226,24 @@ export class ContextEngine {
     // Three segments: fixed (system + tools + slots) vs variable (history).
     // Rendered as a compact one-liner + a WARN/CRIT escalation line.
     const fixedTokens = systemTokens + toolDefTokens + slotsTokens;
-    const usedPct = Math.round((totalUsed / effectiveBudget) * 1000) / 10;
-    let hintLines = `[CONTEXT ${usedPct}% used — window ${Math.round(contextWindow / 1000)}k · fixed ${fixedTokens} (system ${systemTokens} + tools ${toolDefTokens}${slotsTokens ? ` + slots ${slotsTokens}` : ''}) · variable ${totalTokens} · output reserve ${maxOutput}]`;
+    // O2: the water level prefers the provider's own count when one is available
+    // and still valid. `usage.totalUsed` keeps the estimate so every existing
+    // consumer (logs, calibration, memory-flush preflight) is unchanged.
+    //
+    // Derived from `(opts.reportedInputTokens ?? remembered)` rather than requiring
+    // the caller to pass it — the same rule as slots/summary above: there are 15
+    // `prepareMessages` call sites (stream, tool-loop continuations, task/review
+    // scenarios, reminders) and a new one must not be able to silently drop it.
+    const rememberedReported = opts.reportedInputTokens ?? this.reportedInputBySession.get(opts.sessionId);
+    const reportedInputTokens = rememberedReported && rememberedReported > 0 ? rememberedReported : undefined;
+    // Compaction invalidates the reading: the reported count described a bigger
+    // request than the one being packed now. Drop it *after* reading, so this
+    // pack still labels its (pre-invalidation) state honestly next turn is clean.
+    if (compactStage !== 'none') this.reportedInputBySession.delete(opts.sessionId);
+    const hintTotalUsed = reportedInputTokens ?? (systemTokens + toolDefTokens + slotsTokens + totalTokens);
+    const usedPct = Math.round((hintTotalUsed / effectiveBudget) * 1000) / 10;
+    const src = reportedInputTokens !== undefined ? 'reported' : 'est';
+    let hintLines = `[CONTEXT ${usedPct}% used — src=${src} · window ${Math.round(contextWindow / 1000)}k · fixed ${fixedTokens} (system ${systemTokens} + tools ${toolDefTokens}${slotsTokens ? ` + slots ${slotsTokens}` : ''}) · variable ${totalTokens} · output reserve ${maxOutput}]`;
     if (usedPct >= CONTEXT_CRIT_RATIO * 100) {
       hintLines += `\n[CONTEXT CRIT] at ${usedPct}%: system will hard-trim oldest turns. Run session_compact now, and session_pin a goal/done/next anchor to keep your position.`;
     } else if (usedPct >= CONTEXT_WARN_RATIO * 100) {
@@ -2367,6 +2441,8 @@ export class ContextEngine {
         compactStage,
         packingBudget: packingCeiling,
         promptAffordTokens: promptAfford,
+        reportedInputTokens,
+        usageSource: reportedInputTokens !== undefined ? 'reported' : 'estimated',
       },
       systemCacheSegments: opts.systemCacheSegments,
       contextHint,
