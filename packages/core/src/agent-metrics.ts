@@ -27,11 +27,42 @@ export interface HarnessHealthMetrics {
   compressionCount: number;
   /** Share of non-chat turns that finished without a completion marker (0-1). */
   markerFailureRate: number;
-  /** Prompt cache-hit rate from provider usage where reported (0-1). */
+  /**
+   * Cumulative prompt cache-hit rate from provider usage where reported (0-1).
+   * Kept as a plain number for API/type stability — it is 0 when no reported
+   * samples exist. Use `cacheHitRateWindow` to distinguish "0% hit" from
+   * "provider reported nothing".
+   */
   cacheHitRate: number;
+  /** Sliding-window cache-hit rate over reported samples, or null when none. */
+  cacheHitRateWindow: number | null;
+  /** Number of reported samples backing `cacheHitRateWindow` (0 ⇒ unknown). */
+  cacheHitRateSamples: number;
   /** USD cost attributed per completed turn (0 when no USD cost is reported). */
   perTurnCostUsd: number;
 }
+
+/**
+ * One LLM call captured for the per-session sliding cache window.
+ * `source` distinguishes a genuine provider report from a locally-derived
+ * compatibility value:
+ *  - 'reported': the provider actually returned `inputTokens` (prompt tokens);
+ *    only these samples feed the windowed hit-rate denominator.
+ *  - 'compat': the server did not report prompt tokens, so any tokens we hold
+ *    are a local fallback (e.g. 70/30 split). These never pollute the metric.
+ */
+export interface UsageWindowSample {
+  promptTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  provider?: string;
+  source: 'reported' | 'compat';
+}
+
+/** Hard cap on distinct sessions tracked in the sliding-window map. */
+export const MAX_CACHE_WINDOW_SESSIONS = 64;
+/** Hard cap on retained samples per session (ring buffer semantics). */
+export const MAX_CACHE_WINDOW_SAMPLES_PER_SESSION = 50;
 
 export interface AgentMetricsSnapshot {
   agentId: string;
@@ -78,6 +109,13 @@ interface AuditCounters {
   turnsCompleted: number;
   nonChatTurns: number;
   markerMissTurns: number;
+  /**
+   * Count of llm_request audits where the provider actually reported prompt
+   * tokens (i.e. `event.inputTokens` was present). Separates "server reported"
+   * from "local compatibility value", so downstream can tell a true 0 from
+   * missing data.
+   */
+  promptTokensReported: number;
 }
 
 function freshCounters(): AuditCounters {
@@ -92,6 +130,7 @@ function freshCounters(): AuditCounters {
     compressionCount: 0,
     cacheReadTokens: 0, cacheWriteTokens: 0,
     turnsCompleted: 0, nonChatTurns: 0, markerMissTurns: 0,
+    promptTokensReported: 0,
   };
 }
 
@@ -116,6 +155,12 @@ export class AgentMetricsCollector {
   private counters: AuditCounters = freshCounters();
   private taskEvents: TaskEvent[] = [];
   private heartbeatEvents: HeartbeatEvent[] = [];
+  /**
+   * Per-session sliding window of the most recent LLM calls. The Map preserves
+   * insertion order, so evicting the first key drops the oldest session when we
+   * exceed MAX_CACHE_WINDOW_SESSIONS — bounding memory for long-lived agents.
+   */
+  private sessionWindows = new Map<string, UsageWindowSample[]>();
   private startTime = Date.now();
   private lastErrorDetail: { message: string; timestamp: number } | null = null;
   private static readonly MAX_EVENTS = 10_000;
@@ -144,6 +189,9 @@ export class AgentMetricsCollector {
     cacheWriteTokens?: number;
     cost?: number;
     cuCost?: number;
+    provider?: string;
+    /** Conversation/session identifier; enables the per-session cache window. */
+    sessionId?: string;
     durationMs?: number;
     success: boolean;
     detail?: string;
@@ -183,6 +231,23 @@ export class AgentMetricsCollector {
       if (event.cacheReadTokens) c.cacheReadTokens += event.cacheReadTokens;
       if (event.cacheWriteTokens) c.cacheWriteTokens += event.cacheWriteTokens;
       if (event.durationMs) c.totalLlmDurationMs += event.durationMs;
+
+      // Distinguish a genuine provider report (`inputTokens` present) from a
+      // locally-derived compatibility value. Only the former counts as a
+      // sample; the cache-hit denominator below uses reported values only.
+      const reported = event.inputTokens !== undefined;
+      if (reported) c.promptTokensReported++;
+
+      // Per-session sliding window (only when a session id is supplied).
+      if (event.sessionId) {
+        this.recordSessionSample(event.sessionId, {
+          promptTokens: event.inputTokens ?? 0,
+          cacheReadTokens: event.cacheReadTokens ?? 0,
+          cacheWriteTokens: event.cacheWriteTokens ?? 0,
+          provider: event.provider,
+          source: reported ? 'reported' : 'compat',
+        });
+      }
     } else if (event.type === 'tool_call') {
       c.toolCalls++;
       c.toolCallsToday++;
@@ -270,25 +335,109 @@ export class AgentMetricsCollector {
 
   private computeHarnessMetrics(c: AuditCounters): HarnessHealthMetrics {
     const markerFailureRate = c.nonChatTurns > 0 ? c.markerMissTurns / c.nonChatTurns : 0;
-    // Cache-hit rate: cached reads over total prompt-side tokens (cached reads + writes +
-    // fresh prompt tokens). 0 when nothing cacheable has been reported.
-    // Cache-hit rate: cached reads over total prompt-side tokens served.
-    // For OpenAI-compatible providers (OpenRouter / DeepSeek, and the Markus gateway)
-    // `promptTokens` (= inputTokens) already INCLUDES the cached portion, so the
-    // denominator is just promptTokens. Clamped to [0,1].
+    // Cache-hit rate over *reported* prompt-side tokens served. `c.promptTokens`
+    // only accumulates `event.inputTokens ?? 0`, i.e. values the provider
+    // actually reported, so this is already reported-only. Kept as a plain
+    // number (0 when no reported samples) for backward compatibility;
+    // `cacheHitRateWindow` below carries the null-when-unknown signal.
+    //
+    // Provider semantics differ, which is why we normalize:
+    //  - OpenAI-compatible (OpenAI / OpenRouter / DeepSeek / Markus gateway):
+    //    `prompt_tokens` (= inputTokens) ALREADY INCLUDES the cached portion,
+    //    so the denominator is just promptTokens (cached reads are a subset).
+    //  - Anthropic: `input_tokens` EXCLUDES the cached portion; cached reads /
+    //    writes are reported separately (`cache_read_input_tokens` /
+    //    `cache_creation_input_tokens`), so the true prompt side is
+    //    inputTokens + cacheReadTokens + cacheWriteTokens.
+    // The cumulative field below keeps the historical OpenAI-shaped formula to
+    // avoid changing existing numbers; the windowed metric applies the
+    // provider-aware denominator.
     const cacheHitRate = c.promptTokens > 0 ? Math.min(1, c.cacheReadTokens / c.promptTokens) : 0;
+    const window = this.computeWindowStats();
     const perTurnCostUsd = c.turnsCompleted > 0 ? c.estimatedCost / c.turnsCompleted : 0;
     return {
       compressionCount: c.compressionCount,
       markerFailureRate,
       cacheHitRate,
+      cacheHitRateWindow: window.cacheHitRateWindow,
+      cacheHitRateSamples: window.cacheHitRateSamples,
       perTurnCostUsd,
+    };
+  }
+
+  /** Push a sample into the session's bounded ring, enforcing both caps. */
+  private recordSessionSample(sessionId: string, sample: UsageWindowSample): void {
+    let arr = this.sessionWindows.get(sessionId);
+    if (!arr) {
+      arr = [];
+      this.sessionWindows.set(sessionId, arr);
+      // Evict oldest sessions (Map keeps insertion order) to bound memory.
+      while (this.sessionWindows.size > MAX_CACHE_WINDOW_SESSIONS) {
+        const oldest = this.sessionWindows.keys().next().value;
+        if (oldest === undefined) break;
+        this.sessionWindows.delete(oldest);
+      }
+    }
+    arr.push(sample);
+    if (arr.length > MAX_CACHE_WINDOW_SAMPLES_PER_SESSION) {
+      arr.splice(0, arr.length - MAX_CACHE_WINDOW_SAMPLES_PER_SESSION);
+    }
+  }
+
+  /**
+   * Prompt-side denominator for one sample, normalized per provider.
+   * OpenAI-compatible providers already fold cached tokens into `promptTokens`,
+   * so the denominator is just that. Anthropic reports `input_tokens` WITHOUT
+   * the cached portion, so we add cache reads/writes back in.
+   *
+   * When no provider is carried on the event we assume the OpenAI-compatible
+   * shape ("already includes cached") — a deliberate, conservative choice:
+   * it never inflates the denominator, so a missing provider can only make the
+   * hit-rate look lower, never artificially higher.
+   */
+  private promptDenominator(sample: UsageWindowSample): number {
+    const p = (sample.provider ?? '').toLowerCase();
+    const anthropicLike = p.includes('anthropic') || p.includes('claude');
+    return anthropicLike
+      ? sample.promptTokens + sample.cacheReadTokens + sample.cacheWriteTokens
+      : sample.promptTokens;
+  }
+
+  /**
+   * Aggregate the per-session windows into a single cache-hit rate using only
+   * provider-reported samples. Returns null when no reported sample exists so
+   * that "unknown" is never confused with a real 0%.
+   */
+  private computeWindowStats(): { cacheHitRateWindow: number | null; cacheHitRateSamples: number } {
+    let read = 0;
+    let denominator = 0;
+    let samples = 0;
+    for (const arr of this.sessionWindows.values()) {
+      for (const s of arr) {
+        if (s.source !== 'reported') continue;
+        denominator += this.promptDenominator(s);
+        read += s.cacheReadTokens;
+        samples++;
+      }
+    }
+    if (samples === 0 || denominator <= 0) {
+      return { cacheHitRateWindow: null, cacheHitRateSamples: samples };
+    }
+    return {
+      cacheHitRateWindow: Math.min(1, read / denominator),
+      cacheHitRateSamples: samples,
     };
   }
 
   /**
    * Returns persistent usage stats for the Usage page.
    * Provides both all-time and today-only aggregates.
+   *
+   * Legacy fields (`promptTokens` / `completionTokens` / `cacheHitRate`) keep
+   * their original semantics: when the server never reported prompt tokens they
+   * fall back to a 70/30 split, so they must NOT be treated as a real
+   * measurement. The new `cacheHitRateWindow` / `cacheHitRateSamples` /
+   * `promptTokensReported` fields expose the reported-only view.
    */
   getUsageStats(): {
     totalTokens: number;
@@ -296,7 +445,13 @@ export class AgentMetricsCollector {
     completionTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
-    cacheHitRate: number; // 0..1
+    cacheHitRate: number; // 0..1 (legacy: uses 70/30 fallback denominator)
+    /** Reported-only windowed cache-hit rate; null when no reported samples. */
+    cacheHitRateWindow: number | null;
+    /** Reported samples backing `cacheHitRateWindow`; 0 ⇒ provider reported nothing. */
+    cacheHitRateSamples: number;
+    /** Count of llm_request audits where the provider reported prompt tokens. */
+    promptTokensReported: number;
     requestCount: number;
     toolCalls: number;
     tokensToday: number;
@@ -310,6 +465,7 @@ export class AgentMetricsCollector {
     const c = this.counters;
     const promptTokens = c.promptTokens || Math.round(c.totalTokens * 0.7);
     const cacheHitRate = promptTokens > 0 ? Math.min(1, c.cacheReadTokens / promptTokens) : 0;
+    const window = this.computeWindowStats();
 
     return {
       totalTokens: c.totalTokens,
@@ -318,6 +474,9 @@ export class AgentMetricsCollector {
       cacheReadTokens: c.cacheReadTokens,
       cacheWriteTokens: c.cacheWriteTokens,
       cacheHitRate,
+      cacheHitRateWindow: window.cacheHitRateWindow,
+      cacheHitRateSamples: window.cacheHitRateSamples,
+      promptTokensReported: c.promptTokensReported,
       requestCount: c.requestCount,
       toolCalls: c.toolCalls,
       tokensToday: c.tokensToday,

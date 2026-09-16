@@ -339,7 +339,7 @@ export class ToolSelector {
 
     const seen = new Set(result.map(t => t.name));
 
-    result.push(this.buildDiscoverTool(opts.allTools, selected, opts.skillCatalog));
+    result.push(this.buildDiscoverTool(opts.allTools, opts.skillCatalog));
     seen.add('discover_tools');
 
     const pushUnique = (tool: LLMTool) => {
@@ -654,17 +654,27 @@ export class ToolSelector {
 
   /**
    * Build the discover_tools meta-tool description.
-   * Lists inactive tools and available skills (prompt-based instruction packages).
+   * Lists optional tools and available skills (prompt-based instruction packages).
+   *
+   * CACHE CONTRACT (invariant I3, `docs/PROMPT-ENGINEERING.md` §2.1.1): this
+   * description MUST be a pure function of the tool REGISTRY and the skill
+   * catalog — never of the per-turn selection. The `tools` array serialises ahead
+   * of `system` + `messages` in the provider prompt, so one byte of drift here
+   * invalidates the whole cached prefix (system prompt + replayed history) on
+   * every subsequent turn.
+   *
+   * This used to take `alreadySelected` and advertise the *unloaded* remainder
+   * (`allTools − alreadySelected`), so the embedded sample names and the `… +N`
+   * tail tracked the per-turn keyword selection and drifted on nearly every call
+   * — the observed session carried a `… +57` whose N changed constantly. The set
+   * is now registry-derived (minus the always-LIVE core), which only changes when
+   * a tool/skill is genuinely installed or removed — a rare, legitimate cache reset.
    */
   private buildDiscoverTool(
     allTools: Map<string, { name: string; description: string }>,
-    alreadySelected: Set<string>,
     skillCatalog?: SkillManifest[],
   ): LLMTool {
     const parts: string[] = [];
-    // Cache-friendly: avoid embedding a per-turn count ("N tools active") in the
-    // schema — N changes every turn, which would shift the discover_tools
-    // schema prefix and break implicit prefix-cache across turns.
     parts.push('Discover and activate tools/skills by name (schemas for inactive ones are omitted here).');
 
     if (skillCatalog && skillCatalog.length > 0) {
@@ -683,38 +693,39 @@ export class ToolSelector {
       }
     }
 
-    // Progressive disclosure: aggregate skill/MCP namespaces; list lone tools briefly.
-    const unloaded: string[] = [];
-    for (const [name] of allTools) {
-      if (!alreadySelected.has(name)) unloaded.push(name);
-    }
-    if (unloaded.length > 0) {
-      const groups = new Map<string, string[]>();
-      const singles: string[] = [];
-      for (const name of unloaded) {
-        if (name.includes('__')) {
-          const ns = name.split('__')[0] + '__*';
-          const list = groups.get(ns) ?? [];
-          list.push(name);
-          groups.set(ns, list);
-        } else if (name.startsWith('feishu_')) {
-          const list = groups.get('feishu_*') ?? [];
-          list.push(name);
-          groups.set('feishu_*', list);
-        } else if (name.startsWith('chrome-devtools') || name.startsWith('chrome_')) {
-          const list = groups.get('chrome-devtools*') ?? [];
-          list.push(name);
-          groups.set('chrome-devtools*', list);
-        } else {
-          singles.push(name);
-        }
+    // Progressive disclosure: aggregate skill/MCP namespaces; list lone tools.
+    // Registry-derived (see the cache contract above) and deterministically
+    // sorted, so two calls against an identical registry produce identical bytes.
+    const groups = new Map<string, string[]>();
+    const singles: string[] = [];
+    for (const name of allTools.keys()) {
+      if (TOOL_DEF_CORE_KEEP.has(name)) continue;
+      if (name.includes('__')) {
+        const ns = name.split('__')[0] + '__*';
+        const list = groups.get(ns) ?? [];
+        list.push(name);
+        groups.set(ns, list);
+      } else if (name.startsWith('feishu_')) {
+        const list = groups.get('feishu_*') ?? [];
+        list.push(name);
+        groups.set('feishu_*', list);
+      } else if (name.startsWith('chrome-devtools') || name.startsWith('chrome_')) {
+        const list = groups.get('chrome-devtools*') ?? [];
+        list.push(name);
+        groups.set('chrome-devtools*', list);
+      } else {
+        singles.push(name);
       }
-      parts.push('\nOptional extras (not LIVE yet — core shell/file/task tools do not need this):');
-      for (const [ns, names] of groups) {
-        parts.push(`  ${ns} (${names.length}) e.g. ${names.slice(0, 2).join(', ')}`);
+    }
+    if (groups.size > 0 || singles.length > 0) {
+      parts.push('\nOptional extras (registered, not all LIVE — core shell/file/task tools do not need this):');
+      for (const [ns, names] of [...groups.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+        const sorted = [...names].sort();
+        parts.push(`  ${ns} (${sorted.length}) e.g. ${sorted.slice(0, 2).join(', ')}`);
       }
       if (singles.length > 0) {
-        parts.push(`  other: ${singles.slice(0, 15).join(', ')}${singles.length > 15 ? ` … +${singles.length - 15}` : ''}`);
+        const sorted = [...singles].sort();
+        parts.push(`  other: ${sorted.slice(0, 15).join(', ')}${sorted.length > 15 ? ` … +${sorted.length - 15}` : ''}`);
       }
     }
 

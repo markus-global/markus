@@ -119,11 +119,13 @@ describe('ContextEngine identity and trust', () => {
 });
 
 describe('ContextEngine task board and mailbox', () => {
-  it('partitions my vs team tasks with closed counts and limits', async () => {
+  it('partitions my vs team tasks by actionability (no closed-count noise)', async () => {
     const memory = new MemoryStore(tempDir);
     const engine = makeEngine();
     const assignedTasks = [];
 
+    // 16 active + 2 closed of my own tasks: the active ones are expanded up to
+    // the per-section limit, and the closed ones are NOT counted at all.
     for (let i = 0; i < 18; i++) {
       assignedTasks.push({
         id: `mine_${i}`,
@@ -134,12 +136,14 @@ describe('ContextEngine task board and mailbox', () => {
         assignedAgentId: 'agt_1',
       });
     }
+    // 10 team tasks owned by a peer, all expanded (they are real signal) but
+    // ranked so the actionable `review` ones come first.
     for (let i = 0; i < 10; i++) {
       assignedTasks.push({
         id: `other_${i}`,
         title: `Team task ${i}`,
         description: `Team desc ${i}`,
-        status: 'in_progress',
+        status: i < 2 ? 'review' : 'in_progress',
         priority: 'high',
         assignedAgentId: 'agt_peer',
         assignedAgentName: 'Peer Agent',
@@ -158,7 +162,8 @@ describe('ContextEngine task board and mailbox', () => {
     expect(result.volatile).toContain('Team Tasks');
     expect(result.volatile).toContain('Peer Agent');
     expect(result.volatile).toContain('more active tasks not shown');
-    expect(result.volatile).toContain('completed/closed tasks');
+    // Reverse guard: the byte-constant closed-task counters must be gone.
+    expect(result.volatile).not.toContain('completed/closed tasks');
   });
 
   it('omits empty task board stub in converse; shows it for execute', async () => {
@@ -186,6 +191,104 @@ describe('ContextEngine task board and mailbox', () => {
     });
     expect(execute.volatile).toContain('## Task Board');
     expect(execute.volatile).toContain('No tasks on the board');
+  });
+
+  it('lists all active team tasks but ranks actionable ones first', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    // 1 actionable (review) + 3 non-actionable (in_progress) tasks owned by a peer.
+    const assignedTasks = [
+      {
+        id: 'team_review',
+        title: 'Team review task',
+        description: 'needs your review',
+        status: 'review',
+        priority: 'high',
+        assignedAgentId: 'agt_peer',
+        assignedAgentName: 'Peer Agent',
+      },
+      {
+        id: 'team_p0', title: 'Team in-progress task 0', description: '',
+        status: 'in_progress', priority: 'medium',
+        assignedAgentId: 'agt_peer', assignedAgentName: 'Peer Agent',
+      },
+      {
+        id: 'team_p1', title: 'Team in-progress task 1', description: '',
+        status: 'in_progress', priority: 'medium',
+        assignedAgentId: 'agt_peer', assignedAgentName: 'Peer Agent',
+      },
+      {
+        id: 'team_p2', title: 'Team in-progress task 2', description: '',
+        status: 'in_progress', priority: 'medium',
+        assignedAgentId: 'agt_peer', assignedAgentName: 'Peer Agent',
+      },
+    ];
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'Agent',
+      role: MOCK_ROLE,
+      memory,
+      assignedTasks,
+      scenario: 'chat',
+    });
+
+    // Information preservation: every ACTIVE team task stays listed — collapsing
+    // them into a count bucket would hide real signal ("what is my team doing?")
+    // from a manager.
+    expect(result.volatile).toContain('Team review task');
+    expect(result.volatile).toContain('Team in-progress task 0');
+    expect(result.volatile).toContain('Team in-progress task 2');
+    // Ranking: the actionable review task is surfaced BEFORE the in-progress ones.
+    expect(result.volatile.indexOf('Team review task')).toBeLessThan(
+      result.volatile.indexOf('Team in-progress task 0'),
+    );
+    // Reverse guard: the old closed-task counters must be gone.
+    expect(result.volatile).not.toContain('other completed/closed tasks');
+    expect(result.volatile).not.toContain('completed/closed tasks');
+  });
+
+  it('omits the Task Board for converse when assigned tasks are all closed', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    // assignedTasks is NON-empty, but every task is closed => nothing actionable.
+    const assignedTasks = [
+      { id: 'done_0', title: 'Closed task 0', description: '', status: 'completed', priority: 'low', assignedAgentId: 'agt_1' },
+      { id: 'done_1', title: 'Closed task 1', description: '', status: 'cancelled', priority: 'low', assignedAgentId: 'agt_1' },
+      { id: 'done_2', title: 'Closed task 2', description: '', status: 'archived', priority: 'low', assignedAgentId: 'agt_peer', assignedAgentName: 'Peer Agent' },
+    ];
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'Agent',
+      role: MOCK_ROLE,
+      memory,
+      assignedTasks,
+      scenario: 'chat',
+    });
+
+    expect(result.volatile ?? '').not.toContain('## Task Board');
+  });
+
+  it('injects an explicit empty Task Board for execute when assigned tasks are all closed', async () => {
+    const memory = new MemoryStore(tempDir);
+    const engine = makeEngine();
+    const assignedTasks = [
+      { id: 'done_0', title: 'Closed task 0', description: '', status: 'completed', priority: 'low', assignedAgentId: 'agt_1' },
+      { id: 'done_1', title: 'Closed task 1', description: '', status: 'cancelled', priority: 'low', assignedAgentId: 'agt_1' },
+    ];
+
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_1',
+      agentName: 'Agent',
+      role: MOCK_ROLE,
+      memory,
+      assignedTasks,
+      scenario: 'task_execution',
+    });
+
+    expect(result.volatile).toContain('## Task Board');
+    expect(result.volatile).toContain('No tasks on the board.');
   });
 
   it('renders rich mailbox section with focus, queue, decisions, and merged content', async () => {

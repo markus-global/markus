@@ -449,6 +449,33 @@ describe('ToolSelector', () => {
     expect(discover!.description).not.toMatch(/You have \d+ tools active/);
   });
 
+  it('CACHE: discover_tools description is byte-stable regardless of per-turn recentToolNames', () => {
+    // The `tools` array serialises ahead of `system` + `messages`, so one byte of
+    // drift in discover_tools invalidates the whole cached prefix. Its description
+    // is registry-derived (never per-turn selection), so the SAME registry must
+    // yield IDENTICAL bytes even when recentToolNames changes turn-to-turn.
+    const selector = new ToolSelector();
+    const allTools = makeToolMap([
+      ...ALL_BUILTIN,
+      'feishu_calendar_list', 'feishu_chat_send',
+      'chrome-devtools__navigate', 'knowledge_search',
+    ]);
+    const skillCatalog = [
+      { name: 'test-skill', description: 'A test skill for discovery', instructions: 'Do things' } as never,
+    ];
+    const discoverFor = (recent: string[]) =>
+      selector
+        .selectTools({ allTools, userMessage: 'hello', skillCatalog, recentToolNames: recent })
+        .find((t) => t.name === 'discover_tools');
+
+    const a = discoverFor([]);
+    const b = discoverFor(['shell_execute', 'file_read']);
+
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    expect(JSON.stringify(b)).toEqual(JSON.stringify(a));
+  });
+
   it('T4: knowledge_* tools surface when the user asks about the knowledge base', () => {
     const selector = new ToolSelector();
     const allTools = makeToolMap([

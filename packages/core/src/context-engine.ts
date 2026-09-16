@@ -74,47 +74,77 @@ const KNOWLEDGE_STALE_SECTION_RE =
 export function prepareKnowledgeForPrompt(
   raw: string,
   maxChars: number,
+  query?: string,
 ): { text: string; truncated: boolean } {
   if (!raw.trim()) return { text: '', truncated: false };
 
   // Split on markdown ATX headings while keeping delimiters
   const parts = raw.split(/(?=^#{1,6}\s)/m).filter(p => p.length > 0);
-  const demoted = parts.map(part => {
+  const sections = parts.map((part, idx) => {
     // Only demote top-level ## (and lone #) so they nest under ## Your Knowledge
-    return part.replace(/^#{1,2}(?!#)\s/gm, '### ');
+    const section = part.replace(/^#{1,2}(?!#)\s/gm, '### ');
+    const title = (section.split('\n', 1)[0] ?? '').trim();
+    const stale =
+      KNOWLEDGE_STALE_SECTION_RE.test(title) ||
+      KNOWLEDGE_STALE_SECTION_RE.test(section.slice(0, 200));
+    return { section, title, idx, stale, score: 0 };
   });
 
-  const scored = demoted.map((section, idx) => {
-    const title = section.split('\n', 1)[0] ?? '';
-    const stale = KNOWLEDGE_STALE_SECTION_RE.test(title) || KNOWLEDGE_STALE_SECTION_RE.test(section.slice(0, 200));
-    return { section, idx, stale };
-  });
-
-  // Prefer non-stale sections first, preserve relative order within each group
-  const ordered = [
-    ...scored.filter(s => !s.stale),
-    ...scored.filter(s => s.stale),
-  ];
-
-  let text = '';
-  let truncated = false;
-  for (const { section } of ordered) {
-    if (text.length >= maxChars) {
-      truncated = true;
-      break;
-    }
-    const room = maxChars - text.length;
-    if (section.length <= room) {
-      text += section;
-    } else {
-      text += section.slice(0, room);
-      truncated = true;
-      break;
+  // ── Relevance ranking ───────────────────────────────────────────────────
+  // The header block used to be filled in DOCUMENT ORDER until the character cap
+  // ran out, and the cap was applied mid-section (`section.slice(0, room)`), so a
+  // long knowledge.md would cut a procedure in half and never surface a section
+  // further down that was the one actually needed. Two other helpers in this file
+  // (`filterSkillsByRelevance`, `retrieveRelevantMemories`) already do
+  // query → score → Top-K; the largest, every-turn block simply was not wired to
+  // any of them.
+  //
+  // Selection is now: stale last → relevance score → document order, and
+  // WHOLE sections only. Nothing is silently dropped: omitted sections are always
+  // named in an index line (see below), so the agent knows they exist and can
+  // fetch them with `memory_search`.
+  const keywords = (query ?? '')
+    .toLowerCase()
+    .split(/[\s\-_.,;:!?()[\]{}"'`/\\|]+/)
+    .filter(w => w.length > 2);
+  if (keywords.length > 0) {
+    for (const s of sections) {
+      const hay = `${s.title}\n${s.section}`.toLowerCase();
+      let score = 0;
+      for (const kw of keywords) if (hay.includes(kw)) score++;
+      s.score = score;
     }
   }
 
-  // If everything fit in preferred order but original was longer than max (edge), mark truncated
-  if (!truncated && raw.length > maxChars) truncated = true;
+  const ordered = [...sections].sort((a, b) => {
+    if (a.stale !== b.stale) return a.stale ? 1 : -1;
+    if (a.score !== b.score) return b.score - a.score;
+    return a.idx - b.idx;
+  });
+
+  let text = '';
+  const inlined = new Set<number>();
+  for (const s of ordered) {
+    if (text.length + s.section.length > maxChars) continue;
+    text += s.section;
+    inlined.add(s.idx);
+  }
+  // Forward progress: if even the top-ranked section is bigger than the cap,
+  // inline a bounded slice of it rather than returning an empty header.
+  if (inlined.size === 0 && ordered.length > 0) {
+    const first = ordered[0]!;
+    text = first.section.slice(0, maxChars);
+    inlined.add(first.idx);
+  }
+
+  const omitted = sections.filter(s => !inlined.has(s.idx));
+  const truncated = omitted.length > 0;
+  if (truncated) {
+    const index = omitted.map(s => s.title || '(untitled)').join(' · ');
+    text +=
+      `\n\n_[knowledge index — ${omitted.length} of ${sections.length} sections not inlined; `
+      + `none are discarded, fetch on demand with \`memory_search\` or by reading \`knowledge.md\`: ${index}]_`;
+  }
 
   return { text: text.trimEnd(), truncated };
 }
@@ -748,13 +778,13 @@ export class ContextEngine {
       if (longTermMem) {
         const knowledgeCapChars = Math.min(SYSTEM_KNOWLEDGE_CHARS, knowledgeTokCap * 4);
         volatile.push('\n## Your Knowledge');
-        const prepared = prepareKnowledgeForPrompt(longTermMem, knowledgeCapChars);
+        // Relevance-ranked, whole-section selection (see prepareKnowledgeForPrompt).
+        // `opts.currentQuery` is the in-flight user text, so which sections get
+        // inlined depends on what is actually being asked rather than on document
+        // order. Sections that do not fit are named in an index line, never dropped
+        // — the helper's own index line replaces the old separate "truncated" note.
+        const prepared = prepareKnowledgeForPrompt(longTermMem, knowledgeCapChars, opts.currentQuery);
         volatile.push(prepared.text);
-        if (prepared.truncated) {
-          volatile.push(
-            '_[knowledge truncated — use `memory_search` or read `knowledge.md` for the rest]_',
-          );
-        }
       }
     } else if (isReflex) {
       // Optional short state snapshot lines (state.md or notebook tip)
@@ -827,34 +857,59 @@ export class ContextEngine {
         const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
 
         const myActive = myTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
-        const myDone = myTasks.filter(t => CLOSED_STATUSES.has(t.status));
 
         const MY_TASK_LIMIT = SYSTEM_MY_TASKS_MAX;
         const TEAM_TASK_LIMIT = SYSTEM_TEAM_TASKS_MAX;
 
-        dynamic.push('\n## Task Board');
+        // Signal over volume — but do NOT trade away information.
+        //
+        // The closed-task counters (`_(66 completed/closed tasks)_`,
+        // `_(1370 other completed/closed tasks)_`) were observed byte-constant
+        // across an entire day in *every* volatile tail — 100 % of the cost,
+        // 0 % of the signal, re-sent on every single call. Those two lines are
+        // gone; the numbers stay available on demand via `task_list`.
+        //
+        // Team ACTIVE tasks stay listed in full (they are real signal, especially
+        // for a manager), but are ranked so the ones needing MY action
+        // (blocked / review / revision) surface first instead of being buried
+        // behind the priority sort.
+        //
+        // NOTE: the heading is emitted exactly once, inside the branches below —
+        // an unconditional push here produced an empty `## Task Board` shell for
+        // converse and a duplicated heading for execute.
+        const ACTIONABLE_TEAM_STATUSES = new Set(['blocked', 'review', 'revision']);
+        const otherActive = [...otherTasks.filter(t => !CLOSED_STATUSES.has(t.status))].sort((a, b) => {
+          const aAct = ACTIONABLE_TEAM_STATUSES.has(a.status) ? 0 : 1;
+          const bAct = ACTIONABLE_TEAM_STATUSES.has(b.status) ? 0 : 1;
+          if (aAct !== bAct) return aAct - bAct;
+          return byPriority(a, b);
+        });
+        const hasBoard = myActive.length > 0 || otherActive.length > 0;
 
-        dynamic.push('### My Tasks (assigned to you):');
-        if (myActive.length > 0) {
-          const shown = myActive.slice(0, MY_TASK_LIMIT);
-          for (const t of shown) {
-            dynamic.push(
-              `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
-            );
-          }
-          if (myActive.length > MY_TASK_LIMIT) {
-            dynamic.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
+        if (!hasBoard) {
+          // Empty board: the stub is only worth its tokens for execute/govern,
+          // which need the explicit "nothing assigned" signal. Converse skips it.
+          if (isExecuteLike) {
+            dynamic.push('\n## Task Board');
+            dynamic.push('No tasks on the board.');
           }
         } else {
-          dynamic.push('No active tasks assigned to you.');
-        }
-        if (myDone.length > 0) {
-          dynamic.push(`_(${myDone.length} completed/closed tasks)_`);
-        }
+          dynamic.push('\n## Task Board');
+          dynamic.push('### My Tasks (assigned to you):');
+          if (myActive.length > 0) {
+            const shown = myActive.slice(0, MY_TASK_LIMIT);
+            for (const t of shown) {
+              dynamic.push(
+                `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
+              );
+            }
+            if (myActive.length > MY_TASK_LIMIT) {
+              dynamic.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
+            }
+          } else {
+            dynamic.push('No active tasks assigned to you.');
+          }
 
-        if (otherTasks.length > 0) {
-          const otherActive = otherTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
-          const otherDone = otherTasks.filter(t => CLOSED_STATUSES.has(t.status));
           if (otherActive.length > 0) {
             dynamic.push('### Team Tasks (assigned to others):');
             const shown = otherActive.slice(0, TEAM_TASK_LIMIT);
@@ -867,9 +922,6 @@ export class ContextEngine {
             if (otherActive.length > TEAM_TASK_LIMIT) {
               dynamic.push(`_(${otherActive.length - TEAM_TASK_LIMIT} more team tasks not shown)_`);
             }
-          }
-          if (otherDone.length > 0) {
-            dynamic.push(`_(${otherDone.length} other completed/closed tasks)_`);
           }
         }
       } else if (isExecuteLike) {
@@ -2174,18 +2226,65 @@ export class ContextEngine {
     const freshBodies: string[] = [];
     const omitted: string[] = [];
     const nextHashes = new Map<string, string>();
+    let anyChanged = false;
     for (const sec of sections) {
       const h = ContextEngine.hashSection(sec.body);
       nextHashes.set(sec.key, h);
+      // A missing snapshot (first call of a session, or a snapshot evicted after
+      // CONTEXT_VOLATILE_SNAPSHOT_MAX_SESSIONS other sessions) counts as "changed"
+      // so the first delivery is also checkpointed.
+      const changed = !prevSnapshot || prevSnapshot.hashes.get(sec.key) !== h;
+      if (changed) anyChanged = true;
       // `forceFull` short-circuits, so `prevSnapshot!` is only dereferenced when
       // a previous snapshot actually exists.
-      if (forceFull || prevSnapshot!.hashes.get(sec.key) !== h) freshBodies.push(sec.body);
+      if (forceFull || changed) freshBodies.push(sec.body);
       else omitted.push(sec.key);
     }
     this.volatileSnapshot.set(opts.sessionId, {
       hashes: nextHashes,
       callsSinceFull: freshBodies.length > 0 ? 0 : callsSinceFull + 1,
     });
+
+    // ── Completeness guarantee: checkpoint delivered state into history ──
+    //
+    // The tail is EPHEMERAL: it is appended to the outgoing request but never
+    // written back to the session store, so it is absent from the next call's
+    // replayed history. (Verified: `[SYSTEM] [Live context]` is produced only
+    // here; `agent.ts` persists only real user text, assistant replies, tool
+    // results and continuation prompts.)
+    //
+    // That makes plain change-gating LOSSY: an LLM has no memory across calls
+    // beyond the replay, so an omitted section is genuinely gone from the model's
+    // context until the next re-arm — a completeness regression against the
+    // original re-send-everything design.
+    //
+    // Fix: whenever the state actually CHANGES, append it to durable history as a
+    // `[SYSTEM] [State checkpoint]` message. Old checkpoints are superseded by
+    // newer ones (last-write-wins) and are folded away by the normal compaction
+    // path, while the newest one is always replayed — so the agent keeps complete
+    // state AND the tail stops being the only carrier. Because this is
+    // append-only, the checkpoint also extends the cacheable prefix instead of
+    // being re-billed on every call.
+    //
+    // Written here rather than at the ~8 `prepareMessages` call sites on purpose:
+    // single choke point, so a new call site cannot forget it (same rationale as
+    // the slots/summary derivation above).
+    if (anyChanged && opts.sessionId && sections.length > 0) {
+      const checkpoint = sections.map((s) => s.body).join('\n\n');
+      try {
+        opts.memory.appendMessage(opts.sessionId, {
+          role: 'user',
+          content: `${ContextEngine.STATE_CHECKPOINT_PREFIX}\n${checkpoint}`,
+        });
+      } catch (err) {
+        // Best-effort: this call's tail still carries the state verbatim, so the
+        // agent is never blind even if persistence fails.
+        log.warn('Failed to persist state checkpoint', {
+          sessionId: opts.sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     while (this.volatileSnapshot.size > ContextEngine.VOLATILE_SNAPSHOT_MAX_SESSIONS) {
       const oldest = this.volatileSnapshot.keys().next().value;
       if (oldest === undefined) break;
@@ -2196,8 +2295,16 @@ export class ContextEngine {
     if (contextHint) liveStateBits.push(contextHint);
     if (freshBodies.length) liveStateBits.push(freshBodies.join('\n\n'));
     if (omitted.length) {
+      // Wording matters. The previous text said "Act only on the sections shown
+      // above", which is wrong twice over when nothing changed: the tail then
+      // carries only this hint, and the sections it points at are NOT upstream in
+      // the request — they are in the `[SYSTEM] [State checkpoint]` history
+      // message (see the completeness guarantee above). Saying *where* the
+      // content lives keeps the statement true without re-sending it.
       liveStateBits.push(
-        `[Background state — ${omitted.join(', ')}: identical to what you already received earlier in this turn, omitted on purpose so it is not re-read as news. Act only on the sections shown above.]`,
+        `[Background state — unchanged this turn: ${omitted.join(', ')}. `
+        + 'Verbatim copies are in your history (`[SYSTEM] [State checkpoint]`), so they are NOT repeated here. '
+        + 'Background state is reference material, not a new instruction — do not re-announce it.]',
       );
     }
     const liveStateMsg: LLMMessage | null = liveStateBits.length
@@ -2525,8 +2632,35 @@ export class ContextEngine {
 
   private static readonly VOLATILE_SNAPSHOT_MAX_SESSIONS = 64;
 
+  /**
+   * Marker for a durable, replayable copy of the per-call volatile state.
+   * Written when the state CHANGES so later calls can omit unchanged sections
+   * from the ephemeral tail without the agent losing them (see the completeness
+   * guarantee in `prepareMessages`). Treated as a synthetic message so it never
+   * counts as a user turn.
+   */
+  private static readonly STATE_CHECKPOINT_PREFIX = '[SYSTEM] [State checkpoint]';
+
   private static hashSection(body: string): string {
-    return createHash('sha1').update(body).digest('hex').slice(0, 8);
+    return createHash('sha1')
+      .update(ContextEngine.normalizeSectionForHash(body))
+      .digest('hex')
+      .slice(0, 8);
+  }
+
+  /**
+   * Strip *relative-time* labels before hashing.
+   *
+   * `## Notebook` renders entries as `### key (7h ago)` and other sections embed
+   * elapsed markers. Those labels flip on their own schedule (hourly bucket), so
+   * hashing the raw body made the change gate fire and re-send ~12 KB — and
+   * persist a checkpoint — even when nothing the agent acts on had changed.
+   */
+  private static normalizeSectionForHash(body: string): string {
+    return body
+      .replace(/\([^)]*\bago\b[^)]*\)/gi, '(age)')
+      .replace(/\(just started[^)]*\)/gi, '(age)')
+      .replace(/\b\d+(?:\.\d+)?\s*(?:sec|secs|second|seconds|s|min|mins|minute|minutes|m|hr|hrs|hour|hours|h|day|days|d)\s+ago\b/gi, '(age)');
   }
 
   /**
@@ -2614,6 +2748,7 @@ export class ContextEngine {
     const t = getTextContent(m.content).trim();
     return (
       t.startsWith('[SYSTEM] [Live context]') ||
+      t.startsWith('[SYSTEM] [State checkpoint]') ||
       t.startsWith('[SYSTEM] [Conversation history summary') ||
       t.startsWith('[SYSTEM] Loop detected:') ||
       t.startsWith('[Continue from where you left off') ||

@@ -58,7 +58,13 @@ context]` tail, keyed for rediscovery via `discover_tools`; name-only or name + 
 `DEFERRED_CATALOG_MAX_CHARS` ≈ 1500 chars).
 
 MUST NOT: Append the eviction catalog into `discover_tools.description` (inflates
-`toolDefTokens` and defeats the pack budget).
+`toolDefTokens` and defeats the pack budget). This is enforced as a *cache*
+invariant too: the description MUST be a pure function of the tool registry and
+the skill catalog — never of the per-turn selection — because `tools` serialises
+ahead of `system` + `messages`, so any per-turn drift there invalidates the whole
+cached prefix. Regression guard:
+`packages/core/test/tool-selector.test.ts` → `CACHE: discover_tools description is
+byte-stable regardless of per-turn recentToolNames`.
 
 MUST: Activated skill bodies inject as `## Activated Skills` (not under the converse
 `dynamicContext` 800-char cap).

@@ -162,3 +162,190 @@ describe('ContextOS v2 — change-gated volatile tail', () => {
     expect(warns).toHaveLength(1);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Change 1 (2026-09-13) — durable `[SYSTEM] [State checkpoint]` on volatile change.
+//
+// The volatile tail is EPHEMERAL (never written back to the session store), so
+// plain change-gating would be lossy. Whenever the state actually CHANGES the
+// engine now ALSO appends the full state to durable history, markered
+// `[SYSTEM] [State checkpoint]`, so the newest copy is replayed while unchanged
+// calls stop re-billing it. Unchanged state must NOT append (no unbounded pile-up).
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RecordedAppend {
+  sessionId: string;
+  msg: LLMMessage;
+}
+
+/** Memory stub that ALSO records `appendMessage` (the checkpoint sink). */
+function recordingMemory() {
+  const appended: RecordedAppend[] = [];
+  return {
+    appended,
+    serializeSlots: () => '',
+    serializeSummary: () => '',
+    appendMessage: (sessionId: string, msg: LLMMessage) => {
+      appended.push({ sessionId, msg });
+    },
+  };
+}
+
+type RecMemory = ReturnType<typeof recordingMemory>;
+
+async function prepWith(
+  mem: RecMemory,
+  sessionMessages: LLMMessage[],
+  opts: { sessionId: string; volatileState?: string },
+) {
+  return engine.prepareMessages({
+    systemPrompt: 'SYSTEM_PROMPT',
+    sessionMessages,
+    memory: mem as never,
+    sessionId: opts.sessionId,
+    modelContextWindow: WINDOW,
+    volatileState: opts.volatileState ?? volatileBlob(),
+  });
+}
+
+describe('ContextOS v2 — durable [State checkpoint] on volatile change', () => {
+  it('checkpoints the full volatile state on the first call (no snapshot)', async () => {
+    const mem = recordingMemory();
+    await prepWith(mem, turnHistory(0), { sessionId: 'sess_ckpt_first' });
+
+    expect(mem.appended).toHaveLength(1);
+    const content = String(mem.appended[0]!.msg.content);
+    expect(content.startsWith('[SYSTEM] [State checkpoint]')).toBe(true);
+    // …and it carries the full body of every section, so the ephemeral tail is
+    // not the only carrier of the state.
+    expect(content).toContain('KNOWLEDGE_BODY_v1');
+    expect(content).toContain('worker 2 → conv:cs_x');
+    expect(content).toContain('Secretary: idle');
+  });
+
+  it('does NOT append again while the volatile state is unchanged', async () => {
+    const mem = recordingMemory();
+    const sid = 'sess_ckpt_stable';
+    await prepWith(mem, turnHistory(0), { sessionId: sid });
+    await prepWith(mem, turnHistory(1), { sessionId: sid });
+    // Still exactly one checkpoint despite two calls.
+    expect(mem.appended).toHaveLength(1);
+  });
+
+  it('appends a fresh checkpoint carrying the new content when a section changes', async () => {
+    const mem = recordingMemory();
+    const sid = 'sess_ckpt_change';
+    await prepWith(mem, turnHistory(0), { sessionId: sid });
+    await prepWith(mem, turnHistory(1), { sessionId: sid });
+    await prepWith(mem, turnHistory(2), {
+      sessionId: sid,
+      volatileState: volatileBlob('Secretary: busy'),
+    });
+
+    expect(mem.appended).toHaveLength(2);
+    const second = String(mem.appended[1]!.msg.content);
+    expect(second.startsWith('[SYSTEM] [State checkpoint]')).toBe(true);
+    expect(second).toContain('Secretary: busy');
+    expect(second).not.toContain('Secretary: idle');
+  });
+
+  it('the checkpoint is synthetic: it never counts as a new user turn', async () => {
+    const mem = recordingMemory();
+    const sid = 'sess_ckpt_synthetic';
+    // Establish a snapshot for this session.
+    await prepWith(mem, turnHistory(1), { sessionId: sid });
+
+    // Replay a history that ENDS with a checkpoint user-message (as the session
+    // store would after the checkpoint above), with the volatile state unchanged.
+    // If `findCurrentTurnStart` counted the checkpoint as a user turn it would sit
+    // at the turn boundary with nothing after it → isFirstCallOfTurn → forceFull
+    // → the full body would be re-sent. Treated as synthetic, it is not.
+    const historyWithCheckpoint: LLMMessage[] = [
+      { role: 'user', content: 'real request' } as LLMMessage,
+      { role: 'assistant', content: 'a reply' } as LLMMessage,
+      { role: 'user', content: '[SYSTEM] [State checkpoint]\n(state snapshot)' } as LLMMessage,
+    ];
+    const t = tail(await prepWith(mem, historyWithCheckpoint, { sessionId: sid }));
+
+    expect(t).not.toContain('KNOWLEDGE_BODY_v1');
+    expect(t).toContain('Background state');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Change 2 (2026-09-13) — `hashSection` normalises relative-time labels first.
+//
+// `## Notebook` renders entries as `### key (7h ago)`; those labels flip on their
+// own hourly schedule, so hashing the raw body made the change gate fire and
+// persist a checkpoint even when nothing actionable had changed. Normalising
+// `(7h ago)` / `(23m ago)` / `(just started)` → `(age)` prevents that, while a real
+// content edit still fires.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function notebookBlob(age: string, word: string): string {
+  return [
+    '---',
+    'Current date and time: 2026-09-16 15:00',
+    '## Notebook',
+    `### note (${age})`,
+    `NOTE_BODY_${word.toUpperCase()}`,
+  ].join('\n');
+}
+
+describe('ContextOS v2 — relative-time labels are normalised before hashing', () => {
+  it('treats a bare age bump (7h ago → 8h ago) as UNCHANGED', async () => {
+    const mem = recordingMemory();
+    const sid = 'sess_age_norm';
+    await prepWith(mem, turnHistory(0), {
+      sessionId: sid,
+      volatileState: notebookBlob('7h ago', 'alpha'),
+    });
+    const t2 = tail(
+      await prepWith(mem, turnHistory(1), {
+        sessionId: sid,
+        volatileState: notebookBlob('8h ago', 'alpha'),
+      }),
+    );
+
+    // No new checkpoint was persisted…
+    expect(mem.appended).toHaveLength(1);
+    // …and the unchanged section is omitted from the fresh-tail bodies.
+    expect(t2).not.toContain('NOTE_BODY_ALPHA');
+    expect(t2).toContain('Background state');
+  });
+
+  it('normalises other relative-time forms (just started / 23m ago)', async () => {
+    const mem = recordingMemory();
+    const sid = 'sess_age_forms';
+    await prepWith(mem, turnHistory(0), {
+      sessionId: sid,
+      volatileState: notebookBlob('just started', 'alpha'),
+    });
+    await prepWith(mem, turnHistory(1), {
+      sessionId: sid,
+      volatileState: notebookBlob('23m ago', 'alpha'),
+    });
+    expect(mem.appended).toHaveLength(1);
+  });
+
+  it('still fires when a substantive word changes (alpha → beta)', async () => {
+    const mem = recordingMemory();
+    const sid = 'sess_word_change';
+    await prepWith(mem, turnHistory(0), {
+      sessionId: sid,
+      volatileState: notebookBlob('7h ago', 'alpha'),
+    });
+    const t2 = tail(
+      await prepWith(mem, turnHistory(1), {
+        sessionId: sid,
+        volatileState: notebookBlob('7h ago', 'beta'),
+      }),
+    );
+
+    // A real edit is still treated as a change: a new checkpoint + the section
+    // is delivered in full in this call's tail.
+    expect(mem.appended).toHaveLength(2);
+    expect(String(mem.appended[1]!.msg.content)).toContain('NOTE_BODY_BETA');
+    expect(t2).toContain('NOTE_BODY_BETA');
+  });
+});

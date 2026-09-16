@@ -137,6 +137,26 @@ guard test; break one and long sessions silently re-bill their whole history on 
 | 2 | The request-history window **slides in blocks**, not per message | `history-window.ts` (`requestHistoryStart`), used by every `Agent.requestHistory()` call | `history-window.test.ts` |
 | 3 | The deferred-tool catalog (Afford.S2) rides the **volatile tail**, never the system prompt | `Agent.consumeDeferredToolCatalog()` + `mergeVolatile()` | `agent-deep.test.ts` → `deferred-tool catalog placement` |
 | 4 | ContextOS `[SLOTS]` + `[CONTEXT SUMMARY]` are **derived in the engine**, so every prepare path carries them | `context-engine.prepareMessages` defaults from `(memory, sessionId)` | `context-engine.test.ts` → `ContextOS slots + summary ride EVERY prepare path` |
+| 5 | Agent-written knowledge / state (`## Your Knowledge`, `## Current State`) ride the **volatile tail**, never Tier 2 | write-frequency tier boundary, below | `cache-optimization.test.ts` → `C-cache-knowledge-body`, `C-cache-knowledge-write` |
+| 6 | The `tools` array is **byte-stable per session** — no per-turn counts, dynamic lists, or selection-derived content in any tool `description` / `inputSchema` | `tool-selector.ts` `buildDiscoverTool` (registry-derived, sorted) | `tool-selector.test.ts` → `CACHE: discover_tools description is byte-stable …` |
+| 7 | When volatile state **changes**, it is also persisted as a replayable `[SYSTEM] [State checkpoint]` (append-only ⇒ cache-extending) | `context-engine.prepareMessages` | `context-volatile-gating.test.ts` → checkpoint describe |
+
+**Invariant 6 — why tools dominate the risk.** Measured on a live agent tail:
+`fixed 19660 (system 8618 + tools 11042)` — the **tool schemas cost more than the
+entire system prompt**, and they serialise *ahead* of it, so one byte of drift
+there invalidates system + all replayed history. `discover_tools.description` used
+to embed the *unloaded* remainder (`allTools − alreadySelected`), so its sample
+names and its `… +N` tail tracked the per-turn keyword selection and changed on
+nearly every call — under a comment that claimed it was cache-friendly. It is now
+derived from the tool **registry** (minus `TOOL_DEF_CORE_KEEP`) and sorted, so it
+changes only when a tool or skill is genuinely installed or removed. This is also
+what `TOOL-SYSTEM.md` §1.0.1 already required (`MUST NOT` append a catalog to
+`discover_tools.description`); the code had been violating its own spec.
+
+**Invariant 7 — why a checkpoint and not just "re-send less".** See §2.1.2: the
+tail is ephemeral and is not replayed, so gating alone *lost* information. The
+checkpoint restores completeness while keeping the token saving, because an
+append-only message extends the cached prefix instead of being re-billed per call.
 
 **Invariant 2 — request-history window.** A raw `getRecentMessages(id, N)` returns the *last N*
 messages, so once a session is longer than N the window head moves by 1–2 messages **every turn**
@@ -215,11 +235,58 @@ Branch key: `isFirstCallOfTurn = !messages.slice(turnStart + 1).some(m => m.role
 Section identity: `sha1(body).slice(0,8)`, held in the engine's bounded
 per-session map (`VOLATILE_SNAPSHOT_MAX_SESSIONS = 64`).
 
-**Completeness invariant (do not weaken).** Content is never *permanently*
-hidden: any hash change is delivered immediately, a full refresh is forced at
-least every `CONTEXT_VOLATILE_REARM_CALLS` calls, and every new user turn starts
-from a full snapshot. The digest names what was withheld, so the agent still
-knows the background exists and why it was omitted.
+**Completeness invariant (v3, 2026-09-16 — supersedes the v2 wording).**
+`isFirstCallOfTurn` is kept *deliberately*: a turn boundary is a fresh decision
+point, and the tail is ephemeral (see below), so a full refresh there is a real
+guarantee rather than redundancy.
+
+The v2 note claimed "content is never *permanently* hidden: … every new user turn
+starts from a full snapshot". That reasoning was **wrong**, and the mechanism
+below is what makes the claim true now.
+
+> **The volatile tail is ephemeral and is never replayed.**
+> `[SYSTEM] [Live context]` is produced only in `context-engine.ts` and appended to
+> the *outgoing* request; it is **never written back to the session store**
+> (verified: `agent.ts` persists only real user text, assistant replies, tool
+> results and continuation prompts). It therefore **does not appear in the next
+> call's replayed history.** An LLM has no memory across calls beyond what is
+> replayed, so under pure change-gating an omitted section was genuinely *gone*
+> from the model's context until the next re-arm. Gating on its own was a
+> completeness **regression** against the original re-send-everything design.
+
+**Fix — durable state checkpoints.** Whenever the state actually changes (or on
+the first call of a session, when no snapshot exists yet), `prepareMessages`
+appends a `[SYSTEM] [State checkpoint]` message carrying the **full** current
+state to durable session history, in addition to putting the fresh sections in
+this call's tail:
+
+- **Complete** — the newest checkpoint is replayed on every later call, so
+  omitting an unchanged section from the tail no longer removes it from context.
+- **Cheap** — the checkpoint is *append-only*, so it extends the cacheable prefix
+  instead of being re-billed on every call. Older checkpoints are superseded
+  (last-write-wins) and are folded away by the normal compaction path.
+- **Single choke point** — written inside `prepareMessages`, not at the ~8 call
+  sites, so a new call site cannot forget it (same rationale as the
+  slots/summary derivation in §3.7).
+- **Best-effort** — a persistence failure logs a warning; that call's tail still
+  carries the state verbatim, so the agent is never blind.
+- Recognised by `isSyntheticMessage()`, so a checkpoint never counts as a user turn.
+
+**The digest must state where the content lives.** The v2 wording was "Act only on
+the sections shown above" — false whenever nothing changed, because the tail then
+carries *only* the digest and there is nothing shown above. The v3 text names the
+`[SYSTEM] [State checkpoint]` history message explicitly and labels the block as
+reference material that must not be re-announced.
+
+**Relative-time labels must not break the gate.** `hashSection()` hashes a
+*normalised* body: `(7h ago)`, `(23m ago)`, `(just started)`, `(2 days ago)` all
+collapse to `(age)`. `## Notebook` renders entry ages, so hashing the raw body
+made the gate fire — re-sending ~12 KB and persisting a redundant checkpoint —
+every time an age label rolled over its hour bucket.
+
+**Regression guards**: `context-volatile-gating.test.ts` (gating, checkpoint
+persistence, label normalisation), `context-engine-cache-v3.test.ts`
+(knowledge selection).
 
 **Transient harness prompts are deduped** (`dedupeTransientPrompts`).
 `[Continue from where you left off …]` and `[SYSTEM] Loop detected: …` are
@@ -729,6 +796,52 @@ the wrong boundary. `isSyntheticMessage()` now skips them.
 > handling.
 
 **Regression guard**: `packages/core/test/context-compaction-v21.test.ts`.
+
+### 3.9 Root cause analysis: why these defects keep returning (2026-09-16)
+
+Three rounds of auditing found six defect classes. They are **not six independent
+bugs** — they are six surfaces of four design gaps, which is why fixing one kept
+exposing the next. This section records the gaps so the next fix is aimed at the
+cause rather than the symptom.
+
+| # | Root cause | Design or implementation debt | Surfaces it produced |
+|---|---|---|---|
+| RC1 | **The fixed/variable split has no third tier.** Context was modelled as *fixed* (system + tools + slots) vs *variable* (history + volatile tail). Stable-but-large session state — knowledge, notebook, skills catalog, deferred tools, task board — has neither a home nor a delivery contract, so it was dumped into the *per-call* tail. | **Design** | Tail re-sent 66× in one turn; every "make the tail smaller" fix then risked losing the state outright (§2.1.2) |
+| RC2 | **No harness channel.** Providers accept only system/user/assistant/tool, so the engine synthesises `role:'user'` for state, `[Continue …]` and loop warnings. There is no explicit framing that marks a block as *telemetry, not instruction*. | **Design** | Turn accounting corrupted (`findCurrentTurnStart`); negative priming from stacked \"do not repeat\" prompts; state read as the newest user message and re-announced |
+| RC3 | **No context budget owner.** Each feature pushes into the dynamic array with its own cap; nobody owns the total, the priority order, or eviction. | **Design** | Byte-constant noise lines survive forever (`_(66 completed/closed tasks)_`); knowledge truncated by *document order* mid-sentence; `## Notebook` reached 41 % of the tail |
+| RC4 | **Cache-friendliness was a patch, not an invariant — and was unmeasurable.** Registration-order emission was fixed case-by-case; `discover_tools.description` still embedded per-turn counts *directly under a comment claiming cache-safety*; the documented MUST-NOT in `TOOL-SYSTEM.md` was violated by the code. No cache-hit telemetry and a 0.7 heuristic polluting the denominator meant regressions were **invisible**. | **Design (missing guard) + implementation** | Tool prefix silently busted every turn; the same class of bug reappeared across rounds |
+| RC5 | **The toolset is recomputed per turn, not accumulated per session.** `recentToolNames` is an instance-level LRU(10); `activatedExtraTools` is instance-level and never reset. Both drift within a turn **and leak across sessions**. | **Implementation** | Capability surface changes every turn (cache break); one session inherits tools activated in another |
+| RC6 | **Estimated vs reported usage is a dual rail.** Budget and `[CONTEXT x%]` come from the local `TokenCounter`; server-reported `inputTokens` is used only for the audit log, only calibrates the estimator, and is wired on *one* code path (`agent.ts:4373`). | **Implementation** | The displayed water level is an estimate; the cache-hit denominator was back-filled with `totalTokens*0.7` |
+
+#### What was fixed in this round
+
+| Root cause | Fix | Where |
+|---|---|---|
+| RC1 + RC2 | Durable `[SYSTEM] [State checkpoint]` history message on change (complete + append-only + cache-extending); tail digest names where the content lives; relative-time labels normalised out of the hash | §2.1.2, `context-engine.ts` |
+| RC3 | Closed-task counters deleted; **team active tasks kept in full** but ranked actionable-first; empty board skipped for converse; `prepareKnowledgeForPrompt(raw, maxChars, query?)` ranks by relevance, selects **whole** sections, and always emits a title index of what was omitted | §3.9.1, `context-engine.ts` |
+| RC4 | `discover_tools.description` is now a pure function of the **registry** (minus `TOOL_DEF_CORE_KEEP`), deterministically sorted; byte-stability guard test added; per-session cache-hit window + `cacheHitRateWindow` / `cacheHitRateSamples` telemetry that returns `null` (not 0) when nothing was reported | `tool-selector.ts`, `agent-metrics.ts` |
+
+> **A note on RC3's shape:** the first attempt at the task-board fix collapsed
+> *all* non-actionable team tasks into a count bucket. That was rejected on review
+> — it traded information away for tokens, hiding \"what is my team working on?\"
+> from a manager. Only the genuinely constant counters were removed. **Deleting
+> noise is a win; deleting signal is a regression**, and the two look identical in
+> a token-diff.
+
+#### 3.9.1 Still open (deliberately not done in this round)
+
+| # | Item | Why it was not bundled |
+|---|---|---|
+| O1 | **Tool schema drift (RC5).** Session-level monotonic toolset: per-session `recentToolNames` / `activatedExtraTools`, sticky keyword groups, one selection context for all call paths, `Mask, Don't Remove` placeholders. | Changes the capability surface of every agent. Needs its own change window + A/B on cache hit rate. The `discover_tools` freeze above removes the *per-turn* drift; the *cross-session leak* remains. |
+| O2 | **Reported usage as the single source of truth (RC6).** Feed server `inputTokens` back into the next call's budget and cell the water level `src=reported\|estimated`; the calibration is currently wired on one path only. | Touches every adapter + the compression trigger thresholds; needs a flag and a rollback path. |
+| O3 | **`## Notebook` relevance/size (RC3).** It is the single largest tail section (measured mean 9 163 chars, 41 % of tail). | Same treatment as knowledge (index + ranked selection) but a separate call site in `agent.ts`; kept out of an already large change. |
+| O4 | **`filterSkillsByRelevance` is dead code** — defined in `context-engine.ts`, never called, while the every-turn `## Available Skills` section is injected unfiltered. | Either wire it or delete it; needs a decision on skills-section ownership. |
+
+**Evidence provenance.** All measured figures come from
+`~/.markus/llm-logs/2026-09-16.jsonl` (66-call session; 377 tails) plus a
+read-only audit of `packages/core/src`. The 322 tails taken *before* the gating
+commit are a historical snapshot used to size the problem, **not** a description
+of current `HEAD`.
 
 ## 4. Tool Loop Harness
 

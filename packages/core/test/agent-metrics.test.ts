@@ -1,5 +1,28 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { AgentMetricsCollector } from '../src/agent-metrics.js';
+import {
+  AgentMetricsCollector,
+  MAX_CACHE_WINDOW_SESSIONS,
+  MAX_CACHE_WINDOW_SAMPLES_PER_SESSION,
+} from '../src/agent-metrics.js';
+
+/** Shorthand for a reported (or compat) llm_request audit. */
+function llmReport(opts: {
+  sessionId?: string;
+  provider?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  tokensUsed?: number;
+}) {
+  return {
+    type: 'llm_request',
+    action: 'chat',
+    success: true,
+    tokensUsed: opts.tokensUsed ?? (opts.inputTokens ?? 0) + (opts.outputTokens ?? 0),
+    ...opts,
+  } as const;
+}
 
 describe('AgentMetricsCollector', () => {
   let collector: AgentMetricsCollector;
@@ -280,6 +303,135 @@ describe('AgentMetricsCollector', () => {
       const h = collector.getMetrics('24h').harness;
       expect(h.compressionCount).toBe(1);
       expect(h.markerFailureRate).toBe(1);
+    });
+  });
+
+  describe('reported-only cache-hit window (per-session)', () => {
+    it('returns null window with 0 samples when the provider reports nothing', () => {
+      // No `inputTokens` ⇒ local compatibility value only, must NOT be a sample.
+      collector.recordAudit(
+        llmReport({ sessionId: 's1', tokensUsed: 1000, cacheReadTokens: 300 }),
+      );
+
+      const stats = collector.getUsageStats();
+      expect(stats.cacheHitRateWindow).toBeNull(); // unknown, not 0
+      expect(stats.cacheHitRateSamples).toBe(0);
+      expect(stats.promptTokensReported).toBe(0);
+
+      const h = collector.getMetrics('24h').harness;
+      expect(h.cacheHitRateWindow).toBeNull();
+      expect(h.cacheHitRateSamples).toBe(0);
+      // Legacy field stays a number (never null) for API stability.
+      expect(typeof h.cacheHitRate).toBe('number');
+    });
+
+    it('returns null window on a completely fresh collector', () => {
+      const stats = collector.getUsageStats();
+      expect(stats.cacheHitRateWindow).toBeNull();
+      expect(stats.cacheHitRateSamples).toBe(0);
+      expect(collector.getMetrics('24h').harness.cacheHitRateWindow).toBeNull();
+    });
+
+    it('computes the windowed rate from reported samples', () => {
+      collector.recordAudit(
+        llmReport({ sessionId: 's1', provider: 'openai', inputTokens: 1000, outputTokens: 100, cacheReadTokens: 800 }),
+      );
+      const stats = collector.getUsageStats();
+      expect(stats.cacheHitRateWindow).toBeCloseTo(0.8);
+      expect(stats.cacheHitRateSamples).toBe(1);
+      expect(stats.promptTokensReported).toBe(1);
+
+      // Aggregates across calls: (800 + 200) / (1000 + 1000) = 0.5
+      collector.recordAudit(
+        llmReport({ sessionId: 's1', provider: 'openai', inputTokens: 1000, outputTokens: 100, cacheReadTokens: 200 }),
+      );
+      expect(collector.getUsageStats().cacheHitRateWindow).toBeCloseTo(0.5);
+      expect(collector.getUsageStats().cacheHitRateSamples).toBe(2);
+      expect(collector.getMetrics('24h').harness.cacheHitRateWindow).toBeCloseTo(0.5);
+    });
+
+    it('normalizes the denominator per provider (Anthropic excludes cached)', () => {
+      // Anthropic: input_tokens excludes the cached portion, so prompt side =
+      // 500 (fresh) + 500 (cache read) = 1000 ⇒ hit rate 0.5.
+      collector.recordAudit(
+        llmReport({ sessionId: 's1', provider: 'anthropic', inputTokens: 500, outputTokens: 20, cacheReadTokens: 500 }),
+      );
+      expect(collector.getUsageStats().cacheHitRateWindow).toBeCloseTo(0.5);
+
+      // OpenAI-compatible: input_tokens already includes the cached portion ⇒ 1.0.
+      collector = new AgentMetricsCollector('agent-test-1');
+      collector.recordAudit(
+        llmReport({ sessionId: 's2', provider: 'openrouter', inputTokens: 500, outputTokens: 20, cacheReadTokens: 500 }),
+      );
+      expect(collector.getUsageStats().cacheHitRateWindow).toBeCloseTo(1);
+    });
+
+    it('keeps per-session windows isolated from each other', () => {
+      // Session A: a single reported sample with a perfect hit rate.
+      collector.recordAudit(
+        llmReport({ sessionId: 'A', provider: 'openai', inputTokens: 1000, outputTokens: 10, cacheReadTokens: 1000 }),
+      );
+      // Session B: overflow by 10 beyond the per-session cap with zero hits.
+      for (let i = 0; i < MAX_CACHE_WINDOW_SAMPLES_PER_SESSION + 10; i++) {
+        collector.recordAudit(
+          llmReport({ sessionId: 'B', provider: 'openai', inputTokens: 1000, outputTokens: 10, cacheReadTokens: 0 }),
+        );
+      }
+
+      const stats = collector.getUsageStats();
+      // A contributes 1, B is capped at exactly its own limit — A is NOT evicted
+      // by B's overflow (the caps are independent), so the total is 1 + 50.
+      expect(stats.cacheHitRateSamples).toBe(
+        1 + MAX_CACHE_WINDOW_SAMPLES_PER_SESSION,
+      );
+      // read = 1000 (A only); denominator = 51 * 1000 ⇒ rate ≈ 0.0196.
+      expect(stats.cacheHitRateWindow).toBeCloseTo(1000 / 51000, 6);
+    });
+
+    it('applies the sliding-window cap (drops oldest beyond the limit)', () => {
+      const N = MAX_CACHE_WINDOW_SAMPLES_PER_SESSION;
+      const sid = 'rolling';
+      // First 10 calls: full cache hits.
+      for (let i = 0; i < 10; i++) {
+        collector.recordAudit(
+          llmReport({ sessionId: sid, provider: 'openai', inputTokens: 1000, outputTokens: 10, cacheReadTokens: 1000 }),
+        );
+      }
+      // Next N calls: zero hits → together this pushes the 10 hits out of the window.
+      for (let i = 0; i < N; i++) {
+        collector.recordAudit(
+          llmReport({ sessionId: sid, provider: 'openai', inputTokens: 1000, outputTokens: 10, cacheReadTokens: 0 }),
+        );
+      }
+
+      const stats = collector.getUsageStats();
+      // Only the last N samples survive; all are zero-hit ⇒ rate 0, not 10/60.
+      expect(stats.cacheHitRateSamples).toBe(N);
+      expect(stats.cacheHitRateWindow).toBe(0);
+    });
+
+    it('bounds the number of tracked sessions (no unbounded memory growth)', () => {
+      for (let i = 0; i < MAX_CACHE_WINDOW_SESSIONS + 20; i++) {
+        collector.recordAudit(
+          llmReport({ sessionId: `sess-${i}`, provider: 'openai', inputTokens: 100, outputTokens: 10, cacheReadTokens: 0 }),
+        );
+      }
+      // Oldest sessions are evicted; only the most recent cap remains.
+      expect(collector.getUsageStats().cacheHitRateSamples).toBe(MAX_CACHE_WINDOW_SESSIONS);
+    });
+
+    it('does not mix compat samples into the reported denominator', () => {
+      // One reported sample (hit rate 0.5) + one compat sample that must be ignored.
+      collector.recordAudit(
+        llmReport({ sessionId: 's1', provider: 'openai', inputTokens: 1000, outputTokens: 10, cacheReadTokens: 500 }),
+      );
+      collector.recordAudit(
+        llmReport({ sessionId: 's1', tokensUsed: 5000, cacheReadTokens: 5000 }),
+      );
+      const stats = collector.getUsageStats();
+      expect(stats.cacheHitRateSamples).toBe(1);
+      expect(stats.cacheHitRateWindow).toBeCloseTo(0.5);
+      expect(stats.promptTokensReported).toBe(1);
     });
   });
 });
