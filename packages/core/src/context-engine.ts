@@ -94,10 +94,7 @@ export function prepareKnowledgeForPrompt(
   // The header block used to be filled in DOCUMENT ORDER until the character cap
   // ran out, and the cap was applied mid-section (`section.slice(0, room)`), so a
   // long knowledge.md would cut a procedure in half and never surface a section
-  // further down that was the one actually needed. Two other helpers in this file
-  // (`filterSkillsByRelevance`, `retrieveRelevantMemories`) already do
-  // query → score → Top-K; the largest, every-turn block simply was not wired to
-  // any of them.
+  // further down that was the one actually needed.
   //
   // Selection is now: stale last → relevance score → document order, and
   // WHOLE sections only. Nothing is silently dropped: omitted sections are always
@@ -384,7 +381,24 @@ export class ContextEngine {
     // Profile gates decide what is included; section caps decide how large.
     // Do NOT rely on post-assemble trim for normal sizing (Afford.S3).
     // ═══════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════
+    // TIER 1 — STABLE · SCOPE U (UNIVERSAL)
+    // Byte-identical for EVERY agent in the installation. Emitted FIRST so all
+    // agents share one prefix-cache entry (PROMPT-ENGINEERING §2.0).
+    //
+    // Agent-private content (ROLE.md persona + policies) is NOT universal and
+    // is collected into `agentPersona`, then emitted as the HEAD of Tier 2.
+    // Historically ROLE.md was pushed here FIRST, so the shared prefix forked
+    // at byte ~11 and cross-agent overlap measured ≈ 0.0% (2–3 chars of 30k+)
+    // across 30 agents / 901 calls on 2026-09-16.
+    //
+    // Profile gates decide what is included; section caps decide how large.
+    // Do NOT rely on post-assemble trim for normal sizing (Afford.S3).
+    // ═══════════════════════════════════════════════════════════════════
     const stable: string[] = [];
+
+    // ── SCOPE A (AGENT) — persona + policies, emitted at the head of Tier 2 ──
+    const agentPersona: string[] = [];
 
     // ROLE is always-on identity — never runtime-truncated.
     // Oversized ROLE.md content is an authoring/progressive-disclosure problem
@@ -399,15 +413,15 @@ export class ContextEngine {
           hint: 'Move long-tail API/reference docs into skills; keep ROLE identity + norms',
         });
       }
-      stable.push(roleText);
+      agentPersona.push(roleText);
     }
 
     if (opts.role.defaultPolicies.length > 0) {
-      stable.push('\n## Policies');
+      agentPersona.push('\n## Policies');
       for (const policy of opts.role.defaultPolicies) {
-        stable.push(`### ${policy.name}`);
+        agentPersona.push(`### ${policy.name}`);
         for (const rule of policy.rules) {
-          stable.push(`- ${rule}`);
+          agentPersona.push(`- ${rule}`);
         }
       }
     }
@@ -435,17 +449,16 @@ export class ContextEngine {
       stable.push('2. **Pattern search** (`grep_search`): Use for exact symbol names, error messages, configuration keys, or specific strings.');
       stable.push('3. **File browsing** (`file_read`, `list_directory`): Navigate directory structure and read specific files when you know the likely location.');
       stable.push('4. **External research** (`web_search`, `web_fetch`): Use for unfamiliar libraries, APIs, error codes, or best practices.');
-      const hasBrowserSkill = opts.availableSkills?.some(s => s.name === 'chrome-devtools');
-      if (hasBrowserSkill) {
-        stable.push('5. **Browser tools** (`browser_navigate`, `browser_snapshot`, `browser_click`): use when:');
-        stable.push('   - The page requires **login / authentication** (web_fetch gets a login wall)');
-        stable.push('   - The page is **JS-rendered** (SPA, React, Vue — web_fetch returns empty shell)');
-        stable.push('   - You need to **interact** (click buttons, fill forms, navigate between pages)');
-        stable.push('   - The page has **CAPTCHA / bot detection** that blocks programmatic access');
-        stable.push('   - Otherwise prefer `web_fetch` first — it is faster and cheaper.');
-      } else {
-        stable.push('If `web_search`/`web_fetch` fails, try alternative queries or URLs, or `web_fetch` a search-engine URL directly. The `chrome-devtools` skill adds browser tools for JS-rendered sites.');
-      }
+      // Must stay byte-identical for every agent (scope U). The old
+      // `hasBrowserSkill` branch was the FIRST divergence point of the
+      // universal block, forking the shared prefix mid-way.
+      stable.push('5. **Browser tools** (`browser_navigate`, `browser_snapshot`, `browser_click`) — available when the `chrome-devtools` skill is installed. Use when:');
+      stable.push('   - The page requires **login / authentication** (web_fetch gets a login wall)');
+      stable.push('   - The page is **JS-rendered** (SPA, React, Vue — web_fetch returns empty shell)');
+      stable.push('   - You need to **interact** (click buttons, fill forms, navigate between pages)');
+      stable.push('   - The page has **CAPTCHA / bot detection** that blocks programmatic access');
+      stable.push('   - Otherwise prefer `web_fetch` first — it is faster and cheaper.');
+      stable.push('   - If `web_search`/`web_fetch` fails and you have no browser tools, try alternative queries, or `web_fetch` a search-engine URL directly.');
       stable.push('Always check existing patterns in the codebase before introducing new conventions.');
 
       // Learning Habits — keep ≤1600 chars (LEARNING-LOOP §8)
@@ -601,7 +614,10 @@ export class ContextEngine {
     // thing. On Anthropic, Tier 2 is a single cache_control block so
     // internal ordering doesn't affect cache hits.
     // ═══════════════════════════════════════════════════════════════════════
-    const semiStable: string[] = [];
+    const semiStable: string[] = [
+      // ── SCOPE A (AGENT) head: persona + policies (see Tier 1 note above) ──
+      ...agentPersona,
+    ];
 
     semiStable.push(this.buildIdentitySection({
       agentId: opts.agentId,
@@ -1891,28 +1907,13 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private filterSkillsByRelevance(
-    skills: Array<{ name: string; description: string; category: string }>,
-    query?: string,
-    maxResults = 30,
-  ): Array<{ name: string; description: string; category: string }> {
-    if (!query || skills.length <= maxResults) return skills;
-
-    const keywords = query.toLowerCase().split(/[\s\-_.,;:!?()\[\]{}]+/).filter(w => w.length > 2);
-    if (keywords.length === 0) return skills.slice(0, maxResults);
-
-    const scored = skills.map(s => {
-      const haystack = `${s.name} ${s.description} ${s.category}`.toLowerCase();
-      let score = 0;
-      for (const kw of keywords) {
-        if (haystack.includes(kw)) score++;
-      }
-      return { skill: s, score };
-    });
-
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, maxResults).map(s => s.skill);
-  }
+  /**
+   * NOTE (deleted dead code): a `filterSkillsByRelevance` helper used to live in
+   * this class and was never called — the every-turn `## Available Skills` table
+   * is assembled as ORG context (scope O), byte-identical for the whole org, so
+   * ranking it per query would have converted a shared, cached block into a
+   * per-call one. See PROMPT-ENGINEERING §2.0 corollary 3.
+   */
 
   /**
    * Intelligent context assembly:
@@ -3112,8 +3113,14 @@ export class ContextEngine {
       lines.push(`- Package Managers: ${env.packageManagers.join(', ')}`);
     }
 
+    // Free disk is quantized to 10 GB bands on purpose: the raw MB figure
+    // changes on literally every write, so emitting it verbatim re-billed the
+    // whole cached prefix whenever anything was written to the disk. This is
+    // scope-S content inside a byte-stable tier — churn must not exceed the
+    // tier's cadence (PROMPT-ENGINEERING §2.0 corollary 4).
+    const diskFreeGb = Math.floor(env.resources.diskFreeMB / 1024 / 10) * 10;
     lines.push(
-      `- Resources: ${env.resources.cpuCores} CPU cores, ${env.resources.memoryMB} MB RAM, ${env.resources.diskFreeMB} MB free disk`
+      `- Resources: ${env.resources.cpuCores} CPU cores, ${env.resources.memoryMB} MB RAM, ~${diskFreeGb} GB free disk`
     );
 
     const missing = ['git', 'node', 'docker', 'python3', 'java'].filter(

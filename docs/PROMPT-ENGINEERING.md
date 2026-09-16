@@ -55,6 +55,57 @@ These are `handleMessage()` calls with `scenario: 'heartbeat'` and typed session
 
 ---
 
+### 2.0 Cache-Scope Layout Principle (design philosophy)
+
+**The rule.** Prefix caches are *byte prefixes*: the first byte that differs discards
+everything after it (Anthropic, OpenAI, DeepSeek, AWS, vLLM, SGLang all cache by leading
+token sequence; DeepSeek's unit is 64 tokens and it is automatic). Therefore the request
+must be ordered by **sharing scope, widest first** — content shared by more concurrent
+requests must physically precede content shared by fewer.
+
+Ordering by *stability alone* is not enough. Two agents can each be perfectly stable and
+still share **nothing**, because their divergence point sits at byte 0. Stability decides
+*when* a byte changes; scope decides *how many requests pay for it*.
+
+The request is laid out in five scopes:
+
+| Scope | Shared by | Content | Change cadence |
+|---|---|---|---|
+| **U** Universal | every agent in the installation | platform L0: Tool Usage, Search & Exploration, Learning Habits, Autonomy, Model Routing, Tool Error Recovery, Security, Referencing, User Language, Collaboration Rules, Task Workflow, Prompt Composition, Handbook | per release |
+| **O** Org | every agent in the org | org context (`CONTEXT.md`), `## About the Owner` (`USER.md`) | days–weeks |
+| **A** Agent | one agent | ROLE.md persona, policies, identity, workspace paths | per config |
+| **S** Session | one session | trust level, environment probe, scenario instructions | per session |
+| **V** Volatile | one LLM call | task board, knowledge, notebook, skills, team status, mailbox | per call (history tail) |
+
+**Corollary 1 — the divergence point is the design target.** The system `text` is emitted
+as two breakpoint segments. Segment 1 is **scope U only**; segment 2 carries A/S (and the
+org/team blocks). For N agents, segment 1 is then *one* shared cache entry plus N short
+agent-specific suffixes, instead of N fully independent entries.
+
+**Corollary 2 — tools are prefix too.** Tool schemas serialise ahead of the messages on
+OpenAI-compatible providers, so the `tools` array must also be *common-core-first* and
+byte-stable per session (§2.1.1 inv. 6, §7).
+
+**Corollary 3 — scope is decided by *who shares it*, not by subject matter.** `## About the
+Owner` reads like agent context but is org-scoped. `## Your Environment` is session-scoped
+even though most of it is machine-constant, because one field (free disk) churns.
+
+**Corollary 4 — a scope's churn must not exceed its tier.** Any byte that changes faster
+than its tier's cadence demotes the rest of that tier *and every later tier* to a cache
+miss. Two live leaks of this kind were measured on 2026-09-16 across 30 agents / 901 calls:
+
+| Leak | Effect |
+|---|---|
+| `ROLE.md` (agent-private) emitted as the **first bytes** of the system prompt, ahead of the ~19.7k-char universal L0 block | **cross-agent prefix overlap = 2–3 chars / 30k+ ≈ 0.0 %** |
+| `## Your Environment` carrying a live `diskFreeMB` figure, and `docker --version` probes that intermittently timed out | only **4 of 150** consecutive same-agent call pairs were byte-identical |
+
+**Corollary 5 — measure, or the invariant rots.** The only reason these survived four
+audit rounds is that no cache-hit telemetry existed to falsify the "cache-friendly"
+comments in the code. Every rule in §2.1.1 therefore ships with a guard test, and cache
+hit rate is recorded per session (§3.9, RC4).
+
+---
+
 ## 2. System Prompt Architecture
 
 The system prompt is built by `ContextEngine.buildSystemPrompt()`. Under **Scheme A**, the
@@ -67,15 +118,20 @@ dynamic content is moved **out of the system prompt entirely** into a volatile t
 ║  Identical byte-for-byte across turns for the same agent.║
 ║  This byte-stability IS the implicit prefix-cache key.   ║
 ║                                                          ║
-║  TIER 1 — STABLE  (cache_control: ephemeral ✓)           ║
-║   Role / Policies / Search / Learning / Autonomy /       ║
-║   Security (L0) / Resource refs / User Language /        ║
-║   Task Workflow summary / collaboration rules.           ║
+║  TIER 1 — STABLE · SCOPE U (UNIVERSAL)                   ║
+║   Byte-identical for EVERY agent (shared cache entry).   ║
+║   Tool Usage / Search & Exploration / Learning /         ║
+║   Autonomy / Model Routing / Tool Error Recovery /       ║
+║   Security / Referencing / User Language /               ║
+║   Collaboration Rules / Task Workflow / Prompt           ║
+║   Composition / Platform Handbook.                       ║
+║   ⟂ No agent-varying branch may appear here (§2.0 cor. 3)║
 ║                                                          ║
 ║  TIER 2 — SEMI-STABLE (cache_control: ephemeral ✓)       ║
-║   Identity · Org (CONTEXT.md) · Team Announcements &     ║
-║   Norms · Workspace · User Profiles · Trust · Env ·      ║
-║   Scenario (mode instructions, placed LAST) ·            ║
+║   SCOPE A (agent) FIRST: Role.md persona · Policies ·    ║
+║   Identity · Workspace · Trust                           ║
+║   then SCOPE O/T: Org (CONTEXT.md) · Team Announcements  ║
+║   & Norms · User Profiles · Env · Scenario (LAST) ·      ║
 ║   Team Data Directory · Activated-skills body            ║
 ║   (agent-written memory — knowledge.md / state.md —      ║
 ║    is NOT here: it rides the volatile tail, see §2.1.1)  ║
@@ -140,6 +196,10 @@ guard test; break one and long sessions silently re-bill their whole history on 
 | 5 | Agent-written knowledge / state (`## Your Knowledge`, `## Current State`) ride the **volatile tail**, never Tier 2 | write-frequency tier boundary, below | `cache-optimization.test.ts` → `C-cache-knowledge-body`, `C-cache-knowledge-write` |
 | 6 | The `tools` array is **byte-stable per session** — no per-turn counts, dynamic lists, or selection-derived content in any tool `description` / `inputSchema` | `tool-selector.ts` `buildDiscoverTool` (registry-derived, sorted) | `tool-selector.test.ts` → `CACHE: discover_tools description is byte-stable …` |
 | 7 | When volatile state **changes**, it is also persisted as a replayable `[SYSTEM] [State checkpoint]` (append-only ⇒ cache-extending) | `context-engine.prepareMessages` | `context-volatile-gating.test.ts` → checkpoint describe |
+| 8 | The system prompt is emitted in **scope order, widest first**: the universal (scope-U) block comes FIRST and is **byte-identical for every agent**; agent-private persona/policies are emitted *after* it | `context-engine.buildSystemPrompt` (`stable` vs `agentPersona` → head of `semiStable`) | `context-cache-scope.test.ts` → *two different agents produce a byte-identical scope-U segment* |
+| 9 | **No agent-varying branch may appear inside the universal block.** A condition on agent state (skills, team, config) is a divergence point for the whole install | `context-engine.buildSystemPrompt` (the old `hasBrowserSkill` branch was the counter-example) | `context-cache-scope.test.ts` → *a browser-skill difference does NOT fork the universal block* |
+| 10 | Session-scoped sticky tool state (`recent`/`activated`) is **monotonic within a session** (grows, never evicts) and **reset on session switch** — the emitted `tools` schema warms up and then stays byte-stable | `Agent.stickyTools()` (`toolSticky`, keyed by session) | `tool-selector.test.ts` (schema stability) + agent tool-loop tests |
+| 11 | Byte-stable tiers may only contain **quantized** values — anything that churns faster than its tier (free disk, precise timestamps, live counts) must be quantized, moved to the volatile tail, or removed | `buildEnvironmentSection` (disk → 10 GB bands), `environment-profile.ts` (probe retry) | `context-cache-scope.test.ts`; env drift measured at offset 30228 on 2026-09-16 |
 
 **Invariant 6 — why tools dominate the risk.** Measured on a live agent tail:
 `fixed 19660 (system 8618 + tools 11042)` — the **tool schemas cost more than the
@@ -828,14 +888,14 @@ cause rather than the symptom.
 > noise is a win; deleting signal is a regression**, and the two look identical in
 > a token-diff.
 
-#### 3.9.1 Still open (deliberately not done in this round)
+#### 3.9.1 Open items — status after the cache-scope round (2026-09-16, v4)
 
-| # | Item | Why it was not bundled |
+| # | Item | Status |
 |---|---|---|
-| O1 | **Tool schema drift (RC5).** Session-level monotonic toolset: per-session `recentToolNames` / `activatedExtraTools`, sticky keyword groups, one selection context for all call paths, `Mask, Don't Remove` placeholders. | Changes the capability surface of every agent. Needs its own change window + A/B on cache hit rate. The `discover_tools` freeze above removes the *per-turn* drift; the *cross-session leak* remains. |
-| O2 | **Reported usage as the single source of truth (RC6).** Feed server `inputTokens` back into the next call's budget and cell the water level `src=reported\|estimated`; the calibration is currently wired on one path only. | Touches every adapter + the compression trigger thresholds; needs a flag and a rollback path. |
-| O3 | **`## Notebook` relevance/size (RC3).** It is the single largest tail section (measured mean 9 163 chars, 41 % of tail). | Same treatment as knowledge (index + ranked selection) but a separate call site in `agent.ts`; kept out of an already large change. |
-| O4 | **`filterSkillsByRelevance` is dead code** — defined in `context-engine.ts`, never called, while the every-turn `## Available Skills` section is injected unfiltered. | Either wire it or delete it; needs a decision on skills-section ownership. |
+| O1 | **Tool schema drift (RC5).** Session-level monotonic toolset. | **DONE.** `Agent.stickyTools()` keeps `recent`/`activated` in a session-keyed record (`toolSticky`), monotonic within a session (freezes at `STICKY_RECENT_TOOLS_MAX` instead of evicting) and reset on session switch, so the *cross-session leak* is closed as well as the per-turn drift. Remaining (deferred): the call-site inconsistency where the stream/task/risk paths do not pass `extraRecentToolNames`, and `Mask, Don't Remove` decode-time placeholders (not applicable to closed APIs). |
+| O2 | **Reported usage as the single source of truth (RC6).** | **PARTIAL — calibration only.** `calibrateTokenCounter(response.usage.inputTokens)` is now wired on 8 paths, and `extractCacheReadTokens()` already parses DeepSeek's `prompt_cache_hit_tokens` **and** OpenAI/OpenRouter `prompt_tokens_details.cached_tokens`, feeding `cacheHitRateWindow` (reported-only denominator). Still open: using reported tokens to *drive* the budget/water level and marking it `src=reported\|estimated`. Deferred per Owner's call — do DeepSeek-first if pursued. |
+| O3 | **`## Notebook` size (RC3).** Largest single tail section (mean 9 163 chars, 41 % of tail). | **DONE (size).** Added a TOTAL cap (`NOTEBOOK_PROMPT_MAX_CHARS = 6000`) on top of the per-entry cap, keeping the most recent entries and naming any omitted keys — so the block can no longer dominate the tail. Relevance ranking deliberately NOT applied: the notebook is the agent's own workspace, and dropping a note it wrote itself is a correctness risk, not a token win. |
+| O4 | **`filterSkillsByRelevance` dead code.** | **DONE.** Deleted. It was never called, and the every-turn `## Available Skills` table is ORG context (scope O) — byte-stable for the whole org — so ranking it per query would convert a shared cached block into a per-call one. Rationale recorded in-code. |
 
 **Evidence provenance.** All measured figures come from
 `~/.markus/llm-logs/2026-09-16.jsonl` (66-call session; 377 tails) plus a

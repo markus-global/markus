@@ -39,11 +39,20 @@ export interface EnvironmentProfile {
 }
 
 function tryExec(cmd: string, timeoutMs = 5000): string | null {
-  try {
-    return execSync(cmd, { timeout: timeoutMs, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-  } catch {
-    return null;
+  // Two attempts, deliberately. Several probes — `docker --version` above all —
+  // intermittently exceed the timeout under load. A single flaky failure removed
+  // the tool from `## Your Environment`, which changed the system-prompt bytes
+  // and invalidated the prefix cache for the rest of the session. Measured
+  // 2026-09-16: only 4 of 150 consecutive same-agent calls were byte-identical,
+  // with the divergence point at the `Available Tools` line.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return execSync(cmd, { timeout: timeoutMs, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    } catch {
+      // fall through to retry
+    }
   }
+  return null;
 }
 
 function extractVersion(output: string | null): string {

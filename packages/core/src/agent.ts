@@ -383,8 +383,38 @@ export class Agent {
   private toolSelector: ToolSelector;
   private guardrails: GuardrailPipeline;
   private toolHooks: ToolHookRegistry;
-  private recentToolNames: string[] = [];
-  private activatedExtraTools = new Set<string>(); // tools activated via discover_tools
+  /**
+   * Session-scoped, MONOTONIC sticky-tool state (RC5 / O1).
+   *
+   * Both collections used to live on the Agent instance: `recentToolNames` was
+   * a FIFO(10) that shifted tools out as new ones arrived, and
+   * `activatedExtraTools` was a Set that was never reset. Consequences:
+   *  - the emitted `tools` schema changed on nearly every turn. Tool schemas
+   *    serialise AHEAD of the messages on OpenAI-compatible providers, so each
+   *    change invalidated the cache for the system prompt AND the entire
+   *    replayed history (measured: 11 055 tool-def tokens vs 8 618 system —
+   *    the largest single cache-buster in the request);
+   *  - a tool activated in one session stayed visible in every later session.
+   *
+   * Now keyed by session and only ever GROWING within a session ("Mask, Don't
+   * Remove"): once the schema has warmed up it is byte-stable, and switching
+   * sessions drops the old state instead of leaking it. The set freezes at the
+   * cap rather than evicting, because eviction is what caused the drift.
+   */
+  private static readonly STICKY_RECENT_TOOLS_MAX = 24;
+  private toolSticky: { sessionId: string | null; recent: string[]; activated: Set<string> } = {
+    sessionId: null,
+    recent: [],
+    activated: new Set(),
+  };
+
+  private stickyTools(sessionId?: string | null): { recent: string[]; activated: Set<string> } {
+    const sid = sessionId ?? this.currentSessionId ?? null;
+    if (this.toolSticky.sessionId !== sid) {
+      this.toolSticky = { sessionId: sid, recent: [], activated: new Set() };
+    }
+    return this.toolSticky;
+  }
   private activatedSkillInstructions = new Map<string, string>(); // skill instructions injected into context
   private availableSkillCatalog: Array<{ name: string; description: string; category: string }> = [];
   private skillMcpActivator?: (
@@ -482,6 +512,8 @@ export class Agent {
   private workingMemory: Map<string, NotebookEntry> = new Map();
   private static readonly NOTEBOOK_MAX_AGENT_ENTRIES = 4;
   private static readonly NOTEBOOK_MAX_CHARS_PER_ENTRY = 6000;
+  /** Total chars for the injected `## Notebook` block (all entries combined). */
+  private static readonly NOTEBOOK_PROMPT_MAX_CHARS = 6000;
   private notebookSaveTimer?: ReturnType<typeof setTimeout>;
   /** Cognitive Preparation Pipeline instance (null when CPP is disabled) */
   private cognitivePrep?: CognitivePreparation;
@@ -3459,7 +3491,31 @@ export class Agent {
         wmLines.push(entry.text);
         wmLines.push('');
       }
-      parts.push(wmLines.join('\n'));
+      // Per-entry cap alone is not enough: 4 entries × 6 000 chars made the
+      // notebook the largest single volatile section (measured mean 9 163 chars,
+      // 41% of the tail on 2026-09-16). Apply a TOTAL cap too, keeping the most
+      // recently updated entries and naming any that had to be dropped, so
+      // nothing is silently lost — the agent can still read NOTEBOOK.md.
+      let notebook = wmLines.join('\n');
+      if (notebook.length > Agent.NOTEBOOK_PROMPT_MAX_CHARS) {
+        const kept: string[] = ['## Notebook',
+          `Your cognitive workspace. Showing the ${Agent.NOTEBOOK_MAX_AGENT_ENTRIES} most recent entries — the rest are on ` +
+          'disk in `NOTEBOOK.md` (read it with `file_read` if needed).'];
+        const dropped: string[] = [];
+        for (const [key, entry] of this.workingMemory) {
+          const block = `### ${key}\n${entry.text}\n`;
+          if (kept.join('\n').length + block.length <= Agent.NOTEBOOK_PROMPT_MAX_CHARS) {
+            kept.push(block);
+          } else {
+            dropped.push(key);
+          }
+        }
+        if (dropped.length > 0) {
+          kept.push(`_[notebook index — ${dropped.length} entr${dropped.length === 1 ? 'y' : 'ies'} not inlined: ${dropped.join(', ')}]_`);
+        }
+        notebook = kept.join('\n');
+      }
+      parts.push(notebook);
     }
     return parts.length > 0 ? parts.join('\n\n') : undefined;
   }
@@ -6808,10 +6864,11 @@ export class Agent {
    * 因此激活必然可见，core 工具与激活工具都保持 LIVE。
    */
   activateTools(names: string[]): void {
+    const sticky = this.stickyTools();
     for (const name of names) {
       // Re-insert to refresh LRU order (most recently activated last).
-      this.activatedExtraTools.delete(name);
-      this.activatedExtraTools.add(name);
+      sticky.activated.delete(name);
+      sticky.activated.add(name);
     }
   }
 
@@ -7269,12 +7326,13 @@ export class Agent {
     const isManager = this.config.agentRole === 'manager';
     const isSecretary = this.role.name.toLowerCase() === 'secretary';
 
+    const sticky = this.stickyTools();
     // Include tools the agent explicitly requested via discover_tools
     const recentPlusActivated = context?.ignoreSticky
       ? [...(context?.extraRecentToolNames ?? [])]
       : [
-          ...this.recentToolNames,
-          ...this.activatedExtraTools,
+          ...sticky.recent,
+          ...sticky.activated,
           ...(context?.extraRecentToolNames ?? []),
         ];
 
@@ -7296,7 +7354,7 @@ export class Agent {
       pack,
       scenario: context?.scenario,
       // discover_tools activations — skill/MCP may LRU-defer under toolDef budget
-      activatedToolNames: context?.ignoreSticky ? undefined : this.activatedExtraTools,
+      activatedToolNames: context?.ignoreSticky ? undefined : sticky.activated,
     });
     this.pruneEvictedActivatedTools(this.toolSelector.consumeEvictedActivated());
 
@@ -7324,14 +7382,15 @@ export class Agent {
     },
   ): LLMTool[] {
     if (!toolCalls?.some((tc) => tc.name === 'discover_tools')) return current;
-    if (this.activatedExtraTools.size === 0) return current;
+    const activatedNow = this.stickyTools().activated;
+    if (activatedNow.size === 0) return current;
     const next = this.buildToolDefinitions(selectOpts);
     log.info('Refreshed LLM tool schemas after discover_tools', {
       agentId: this.id,
       before: current.length,
       after: next.length,
-      activated: [...this.activatedExtraTools],
-      newlyPresent: [...this.activatedExtraTools].filter((n) => next.some((t) => t.name === n)),
+      activated: [...activatedNow],
+      newlyPresent: [...activatedNow].filter((n) => next.some((t) => t.name === n)),
     });
     return next;
   }
@@ -7465,7 +7524,7 @@ export class Agent {
     for (const name of requested) {
       // 1. Check if it's an existing tool name on this agent
       if (this.tools.has(name)) {
-        this.activatedExtraTools.add(name);
+        this.stickyTools().activated.add(name);
         activated.push(name);
         continue;
       }
@@ -8068,10 +8127,20 @@ export class Agent {
       return JSON.stringify({ error: `Unknown tool: ${toolCall.name}` });
     }
 
-    // Track recently used tools so they stay active in subsequent turns
-    if (!this.recentToolNames.includes(toolCall.name)) {
-      this.recentToolNames.push(toolCall.name);
-      if (this.recentToolNames.length > 10) this.recentToolNames.shift();
+    // Track recently used tools so they stay active for the rest of THIS
+    // session. Monotonic (no eviction): the FIFO(10) that used to live here
+    // shifted tools out as new ones arrived, so the emitted schema changed on
+    // nearly every turn and busted the prefix cache (tools serialise ahead of
+    // the messages). The set now freezes at the cap instead of evicting.
+    {
+      const sticky = this.stickyTools();
+      if (
+        !sticky.recent.includes(toolCall.name) &&
+        !sticky.activated.has(toolCall.name) &&
+        sticky.recent.length < Agent.STICKY_RECENT_TOOLS_MAX
+      ) {
+        sticky.recent.push(toolCall.name);
+      }
     }
 
     // Run before-hooks (outside retry loop — hooks decide once)

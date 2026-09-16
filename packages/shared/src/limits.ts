@@ -477,6 +477,7 @@ export function clampHeartbeatIntervalMs(ms: number): number {
 // ─── Notebook Limits (formerly Working Memory) ──────────────────────────────
 
 /** Maximum number of agent-managed entries in the Notebook. System/CPP entries are unbounded. */
+/** Max notebook entries kept per agent. */
 export const NOTEBOOK_MAX_AGENT_ENTRIES = 4;
 
 /** Maximum characters per notebook entry. */
