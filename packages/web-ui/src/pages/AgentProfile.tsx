@@ -7,6 +7,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
+import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows } from '../lib/agentOverview.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -28,6 +29,7 @@ export type ProfileTab = 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'd
 
 export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'overview', icon: '▦' },
+  { key: 'mind', icon: '◉' },
   { key: 'files', icon: '📄' },
   { key: 'tools', icon: '⚒' },
   { key: 'memory', icon: '🧠' },
@@ -38,21 +40,18 @@ function taskStatusLabel(status: string, t: TFunction): string {
   return t(`agent:profilePage.taskStatus.${status}`, { defaultValue: status.replace(/_/g, ' ') });
 }
 
+/**
+ * Label for a process status, delegated to the shared presentation table so this
+ * page and the chat header badge cannot disagree about what "offline" means.
+ *
+ * The previous local map coloured `paused` (its dot map had the entry) but had no
+ * label for it, so a paused agent would have rendered the raw English token
+ * "paused" to the user.
+ */
 function agentRuntimeStatusLabel(status: string, t: TFunction): string {
-  const map: Record<string, string> = {
-    idle: 'common:status.idle',
-    working: 'common:status.working',
-    offline: 'common:status.offline',
-    error: 'common:status.error',
-  };
-  const key = map[status];
-  return key ? t(key) : status;
+  const { labelKey } = agentStatusPresentation(status);
+  return labelKey ? t(labelKey) : status;
 }
-
-const STATUS_DOT: Record<string, string> = {
-  idle: 'bg-green-400', working: 'bg-blue-400 animate-pulse',
-  paused: 'bg-amber-400', offline: 'bg-gray-500', error: 'bg-red-400',
-};
 
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -98,19 +97,25 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 
   if (!agent) return <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">{t('agent:profilePage.loadingAgent')}</div>;
 
-  const statusDot = STATUS_DOT[agent.state.status] ?? 'bg-gray-500';
+  const statusDot = agentStatusPresentation(agent.state.status).dotClass;
   const canManageAgents = authUser?.role === 'owner' || authUser?.role === 'admin';
+  // 「概览」与「心智」各自只渲染自己那一段。两者曾经被同一个条件一起渲染（根源是
+  // mind 从未出现在 TAB_DEF / AGENT_TABS 里），结果概览页上出现两颗停止按钮、
+  // 两个「空闲」。外部（网关）Agent 没有 mailbox/注意力循环，只有概览。
+  const bodyTab: ProfileTab = externalInfo ? 'overview' : effectiveTab;
 
   if (headless) {
     return (
       <div className="flex-1 overflow-y-auto bg-surface-primary">
         <div className="p-5">
-          {(effectiveTab === 'overview' || effectiveTab === 'mind') && (
+          {(bodyTab === 'overview' || bodyTab === 'mind') && (
             <>
-              <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-              <div className="mt-6">
-                <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-              </div>
+              {bodyTab === 'overview' && (
+                <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
+              )}
+              {bodyTab === 'mind' && (
+                <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />
+              )}
             </>
           )}
           {effectiveTab === 'files' && <FilesTab agentId={agentId} />}
@@ -174,7 +179,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
           </div>
         </div>
         <div ref={tabBarRef} className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto scrollbar-hide">
-          {tabs.filter(tabRow => !externalInfo || ['overview', 'mind'].includes(tabRow.key)).map(tabRow => (
+          {tabs.filter(tabRow => !externalInfo || tabRow.key === 'overview').map(tabRow => (
             <button key={tabRow.key} onClick={() => setTab(tabRow.key)} data-active={tab === tabRow.key}
               className={`px-3 py-1.5 text-xs rounded-t-lg border border-b-0 transition-colors whitespace-nowrap ${
                 tab === tabRow.key ? 'bg-surface-primary text-fg-primary border-border-default' : 'text-fg-tertiary border-transparent hover:text-fg-secondary hover:bg-surface-elevated/50'
@@ -184,13 +189,11 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
         </div>
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
-        {(tab === 'overview' || tab === 'mind') && (
-          <>
-            <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-            <div className="mt-6">
-              <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-            </div>
-          </>
+        {tab === 'overview' && (
+          <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
+        )}
+        {tab === 'mind' && (
+          <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />
         )}
         {tab === 'files' && <FilesTab agentId={agentId} />}
         {tab === 'tools' && <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />}
@@ -229,6 +232,12 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
   const [activeTasks, setActiveTasks] = useState<TaskInfo[]>([]);
   // 排队消息数（mailbox 待处理）——用于 working 但无执行中任务时说明「在哪忙」
   const [queuedCount, setQueuedCount] = useState(0);
+  // 用量/存储明细默认收起：这些是「查得到就够了」的累计遥测，不是一瞥面板要看的东西。
+  const [showDetails, setShowDetails] = useState(false);
+
+  // `agent.state.activeTaskIds` 每次 reload 都是新数组，直接把它当依赖会让这个
+  // effect（内含 5 个请求，包括整组织目录扫描）在每次父组件重渲染时重跑。按内容做 key。
+  const activeTaskIdsKey = (agent.state.activeTaskIds ?? []).join(',');
 
   useEffect(() => {
     api.usage.agents().then(d => {
@@ -250,7 +259,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
     api.agents.getMailbox(agent.id, { limit: 1 }).then(mb => {
       setQueuedCount(mb.queued?.length ?? 0);
     }).catch(() => {});
-  }, [agent.id, agent.state.activeTaskIds, agent.state.status]);
+  }, [agent.id, activeTaskIdsKey, agent.state.status]);
 
   const toggleAgent = () => {
     if (agent.state.status === 'offline') api.agents.start(agent.id).then(onUpdate);
@@ -332,8 +341,11 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
     );
   }
 
-  const hbCount = recentActivities.filter(a => a.type === 'heartbeat').length;
-  const chatCount = recentActivities.filter(a => a.type === 'chat').length;
+  // 活动列表：服务端 `liveActivities()` 按 startedAt **升序**返回（服务端自己的
+  // getCurrentActivity() 取的是最后一个元素），直接渲染会把最旧的排在「最近心跳」
+  // 卡片最上面。recentActivityRows 统一反转 + 截断，header 上的计数则是真实总数。
+  const heartbeats = recentActivityRows(recentActivities.filter(a => a.type === 'heartbeat'));
+  const chats = recentActivityRows(recentActivities.filter(a => a.type === 'chat'));
   const activeN = agent.state.activeTaskIds?.length ?? 0;
 
   return (
@@ -362,17 +374,18 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
 
       {/* Runtime + Usage + Storage in a single compact card */}
       <div className="bg-surface-elevated rounded-xl px-4 py-3 space-y-3">
-        {/* Runtime status row */}
+        {/* 运行时事实行。
+            【为什么不在这里再画一次状态】进程状态已经由 Team Chat 顶部那颗常驻徽标
+            展示（同页可见、不随滚动消失）。这里再画一遍，一页上就出现两个「空闲」；
+            而且两者来源不同、可能互相矛盾（徽标曾把 offline 画成绿色「空闲」）。
+            页面内这一行只回答三个问题：用了多少、手里有几个活、怎么启停。 */}
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-          <div className="flex items-center gap-1.5">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[agent.state.status] || 'bg-gray-500'}`} />
-            <span className={`text-sm font-semibold ${agent.state.status === 'idle' ? 'text-green-500' : agent.state.status === 'working' ? 'text-blue-400' : agent.state.status === 'error' ? 'text-red-400' : 'text-fg-secondary'}`}>
-              {agentRuntimeStatusLabel(agent.state.status, t)}
-            </span>
-          </div>
-          <StatBox label={t('agent:profilePage.overview.labels.tokensToday')} value={fmtNum(agent.state.tokensUsedToday)} />
+          <StatBox label={t('agent:profilePage.overview.labels.tokensToday')} value={fmtNum(resolveTokensToday(usageInfo, agent.state.tokensUsedToday))} />
           <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(activeN)} color={activeN > 0 ? 'blue' : undefined} />
-          <StatBox label={t('agent:profilePage.overview.labels.lastHeartbeat')} value={agent.state.lastHeartbeat ? new Date(agent.state.lastHeartbeat).toLocaleTimeString() : t('agent:profilePage.never')} />
+          {/* 「上次心跳」已从概览移除：它读的是 agent.state.lastHeartbeat（进程内、
+              重启即丢，因此常年显示「从未」，而该 agent 的 metrics 里有 2000 条心跳记录），
+              而「心跳」tab 用 /agents/:id/heartbeat 已经给出准确的上次心跳与下次唤醒。
+              同一个数字留两处、其中一处是错的，只会让人怀疑整个面板。 */}
           {canManageAgents && (
             <button onClick={toggleAgent} className="ml-auto px-3 py-1 text-xs border border-border-default rounded-lg hover:border-brand-500 transition-colors shrink-0">
               {agent.state.status === 'offline' ? t('agent:profilePage.overview.startAgent') : t('agent:profilePage.overview.stopAgent')}
@@ -421,41 +434,68 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
           </div>
         )}
 
-        {/* Usage row */}
-        {usageInfo && (
+        {/* 用量与存储明细 —— 默认收起。
+            这里全是一次性/累计遥测：真要查的时候有用，一瞥面板时是噪音。
+            【为什么不显示 提示/补全 Token】这两个计数器加起来 ≠ 总数
+            （实测 3.03B vs 2.65B），因为 38,235 次请求里只有 590 次带过 provider
+            上报的 prompt 计数，且 getUsageStats() 在计数器为 0 时会用写死的
+            70/30 比例**编造**这两个值。一个加不起来的分解，看的人只会认为是面板
+            坏了。与其加免责说明，不如不显示。 */}
+        {(usageInfo || agentStorage) && (
           <>
             <div className="border-t border-border-default/40" />
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-              <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
-              <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
-              <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
-              <StatBox label={t('agent:profilePage.overview.labels.promptTokens')} value={fmtNum(usageInfo.promptTokens)} />
-              <StatBox label={t('agent:profilePage.overview.labels.completionTokens')} value={fmtNum(usageInfo.completionTokens)} />
-            </div>
-          </>
-        )}
-
-        {/* Storage row */}
-        {agentStorage && (
-          <>
-            <div className="border-t border-border-default/40" />
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-              <StatBox label={t('agent:profilePage.overview.storage')} value={fmtBytesLocal(agentStorage.size)} />
-              {agentStorage.subItems.filter(s => s.size > 0).map(sub => (
-                <StatBox key={sub.name} label={sub.name} value={fmtBytesLocal(sub.size)} />
-              ))}
-              <button onClick={() => void api.system.openPath(agentDataDir)}
-                className="text-[10px] text-fg-tertiary hover:text-fg-secondary ml-auto">{t('agent:profilePage.overview.openFolder')} →</button>
-            </div>
+            <button
+              onClick={() => setShowDetails(v => !v)}
+              className="flex items-center gap-1.5 text-[11px] text-fg-tertiary hover:text-fg-secondary transition-colors"
+              aria-expanded={showDetails}
+            >
+              <span>{showDetails ? '▾' : '▸'}</span>
+              <span>{t('agent:profilePage.overview.detailsToggle')}</span>
+            </button>
+            {showDetails && (
+              <div className="space-y-2">
+                {usageInfo && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.lifetimeCaption')}</p>
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+                      <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
+                      <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
+                      <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
+                    </div>
+                  </div>
+                )}
+                {agentStorage && (
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+                      <StatBox label={t('agent:profilePage.overview.storage')} value={fmtBytesLocal(agentStorage.size)} />
+                      {visibleStorageBuckets(agentStorage.subItems).map(sub => {
+                        const labelKey = storageBucketLabelKey(sub.name);
+                        // 子项标题用真实目录名（服务端不再改写标签），已知的走 i18n，
+                        // 未知的直接显示目录名——新目录会以正确的名字出现，而不是被漏掉。
+                        return <StatBox key={sub.name} label={labelKey ? t(labelKey) : sub.name} value={fmtBytesLocal(sub.size)} />;
+                      })}
+                      <button onClick={() => void api.system.openPath(agentDataDir)}
+                        className="text-[10px] text-fg-tertiary hover:text-fg-secondary ml-auto">{t('agent:profilePage.overview.openFolder')} →</button>
+                    </div>
+                    {agentStorage.depthLimited && (
+                      // 目录遍历有深度上限（无上限的全量遍历在本机要 60s 以上），
+                      // 所以这是下界而非精确值。与其把有上限的估算当精确数字展示，
+                      // 不如说明它是什么。
+                      <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.storageDepthLimited')}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>
 
       {/* Recent Heartbeats */}
-      {hbCount > 0 && (
-        <Card title={t('agent:profilePage.overview.recentHeartbeats')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.heartbeatRuns', { count: hbCount })}</span>}>
+      {heartbeats.total > 0 && (
+        <Card title={t('agent:profilePage.overview.recentHeartbeats')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.heartbeatRuns', { count: heartbeats.total })}</span>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
-            {recentActivities.filter(a => a.type === 'heartbeat').map(act => {
+            {heartbeats.shown.map(act => {
               const isExpanded = expandedActivityId === act.id;
               return (
                 <div key={act.id}>
@@ -481,10 +521,10 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
       )}
 
       {/* Recent A2A Communications */}
-      {chatCount > 0 && (
-        <Card title={t('agent:profilePage.overview.recentA2A')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.conversations', { count: chatCount })}</span>}>
+      {chats.total > 0 && (
+        <Card title={t('agent:profilePage.overview.recentA2A')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.conversations', { count: chats.total })}</span>}>
           <div className="divide-y divide-gray-800/50 -mx-5">
-            {recentActivities.filter(a => a.type === 'chat').map(act => {
+            {chats.shown.map(act => {
               const isExpanded = expandedActivityId === act.id;
               return (
                 <div key={act.id}>
@@ -2111,7 +2151,7 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem, t:
   }
 }
 
-function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentStateChange }: { agentId: string; highlightId?: string; agentStatus?: string; canManageAgents?: boolean; onAgentStateChange?: () => void }) {
+function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agentId: string; highlightId?: string; agentStatus?: string; canManageAgents?: boolean }) {
   const { t } = useTranslation(['agent', 'common', 'team']);
   const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
   const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
@@ -2216,6 +2256,9 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
   if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">{t('agent:profilePage.mind.loading')}</div>;
 
   const queueDepth = mind?.mailboxDepth ?? mind?.queuedItems?.length ?? 0;
+  // 「心智」展示的是注意力循环的内部状态。进程停止时该循环不存在，因此所有派生
+  // 结论（等待新消息 / 队列应即将被接手 / 有项卡在 processing）都是假的。
+  const agentRunning = agentStatusPresentation(agentStatus).running;
   const effectiveAttentionState: string = (() => {
     const raw = mind?.attentionState ?? 'idle';
     if (raw === 'deciding') return 'deciding';
@@ -2236,10 +2279,21 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
       {/* ── Current State ── */}
       <section>
         <div className="flex items-center gap-3 mb-3">
-          <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[effectiveAttentionState] ?? 'bg-gray-500/20 text-gray-500'}`}>
-            {t(`agent:profilePage.mind.attention.${effectiveAttentionState}`)}
-          </span>
-          {mind?.currentFocus ? (() => {
+          {/* 注意力状态 ≠ 进程状态：`attention.idle` 的意思是「循环在等活」，而进程
+              停止时根本没有循环。它曾与进程状态共用「空闲」一词，于是概览页上出现两个
+              含义不同的「空闲」，停止后还会声称「等待新消息」。 */}
+          {!agentRunning ? (
+            <span className="px-2.5 py-1 text-xs font-medium rounded-full bg-gray-500/20 text-fg-tertiary">
+              {t('agent:profilePage.mind.agentStopped')}
+            </span>
+          ) : (
+            <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[effectiveAttentionState] ?? 'bg-gray-500/20 text-gray-500'}`}>
+              {t(`agent:profilePage.mind.attention.${effectiveAttentionState}`)}
+            </span>
+          )}
+          {!agentRunning ? (
+            <span className="text-sm text-fg-tertiary">{t('agent:profilePage.mind.stoppedHint')}</span>
+          ) : mind?.currentFocus ? (() => {
             const focusDisplay = getMailboxItemDisplay({
               id: mind.currentFocus.mailboxItemId,
               agentId,
@@ -2275,24 +2329,15 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
           ) : (
             <span className="text-sm text-fg-tertiary">{t('agent:profilePage.mind.idleWaiting')}</span>
           )}
+          {/* 【为什么不在这里放启停按钮】启停是 Agent 生命周期，归概览页那颗唯一
+              按钮管（OverviewTab）。mind 曾经也画一颗，而概览页把两个区块叠在一起
+              渲染，于是同一页出现两个「停止」。这里只留「刷新」。 */}
           <div className="ml-auto flex items-center gap-2">
-            {canManageAgents && agentStatus === 'offline' && (
-              <button onClick={() => { api.agents.start(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
-                className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-green-500/15 text-green-500 hover:bg-green-500/25 transition-colors">
-                ▶ {t('agent:profilePage.mind.continueBtn')}
-              </button>
-            )}
-            {canManageAgents && (agentStatus === 'working' || agentStatus === 'idle') && (
-              <button onClick={() => { api.agents.stop(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
-                className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 transition-colors">
-                ■ {t('team:contextMenu.stop')}
-              </button>
-            )}
             <button onClick={() => { load(); }} className="text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">{t('agent:profilePage.mind.refresh')}</button>
           </div>
         </div>
 
-        {hasStaleProcessingItems && (
+        {agentRunning && hasStaleProcessingItems && (
           <div className="mb-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center gap-2">
             <span className="text-amber-500 text-sm">⚠</span>
             <span className="text-[11px] text-amber-600">{t('agent:profilePage.mind.staleProcessingWarning')}</span>

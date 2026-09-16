@@ -30,6 +30,7 @@ import { RightPanel } from '../components/RightPanel.tsx';
 import { ChatSearchPanel, GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { AgentProfile, type ProfileTab } from './AgentProfile.tsx';
+import { agentStatusPresentation } from '../lib/agentOverview.ts';
 import { TeamProfile, type TeamTab } from './TeamProfile.tsx';
 import {
   type MainTab, AGENT_TABS, TEAM_TAB_SET, tabLabel, tabIcon, isProfileTab,
@@ -481,7 +482,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // Avatar popover in chat messages
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
 
-  const [profileDefaultTab, setProfileDefaultTab] = useState<'overview' | undefined>();
+  const [profileDefaultTab, setProfileDefaultTab] = useState<ProfileTab | undefined>();
   const [profileHighlightMailboxId, setProfileHighlightMailboxId] = useState<string | undefined>();
 
   // Inline editing for header name/description
@@ -492,7 +493,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const headerNameRef = useRef<HTMLInputElement>(null);
   const headerDescRef = useRef<HTMLInputElement>(null);
 
-  const switchToProfile = useCallback((defaultTab?: 'overview', highlightMailboxId?: string) => {
+  const switchToProfile = useCallback((defaultTab?: ProfileTab, highlightMailboxId?: string) => {
     setProfileDefaultTab(defaultTab);
     setProfileHighlightMailboxId(highlightMailboxId);
     if (isMobile) {
@@ -510,7 +511,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [switchToProfile]);
   const mainTabSwipe = useSwipeTabs(mainTabsList, mainTab, handleMainTabSwipe);
 
-  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'overview'; highlightMailboxId?: string }) => {
+  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: ProfileTab; highlightMailboxId?: string }) => {
     setChatMode('direct');
     setSelectedAgent(agentId);
     if (isMobile) enterMobileDetail();
@@ -1113,7 +1114,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (resolvePageId(detail.page) === PAGE.TEAM) {
         if (detail.params?.agentId) {
           if (detail.params.profileTab) {
-            handleViewProfile(detail.params.agentId, { tab: detail.params.profileTab as 'overview' });
+            handleViewProfile(detail.params.agentId, { tab: detail.params.profileTab as ProfileTab });
           } else {
             setChatMode('direct');
             setSelectedAgent(detail.params.agentId);
@@ -4649,8 +4650,14 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const isWorking = agent.status === 'working' || (!!streamActive && agent.status !== 'offline');
+  // 进程状态的呈现全部走共享表（与 Agent 资料页同一张）。原来的本地推导没有
+  // offline 分支，停止后的 agent 会落进默认的绿色「空闲」——状态说它空闲（即在跑），
+  // 可它已经被停掉了。
+  const status = agentStatusPresentation(agent.status);
+  const isWorking = status.running && (agent.status === 'working' || (!!streamActive && agent.status !== 'offline'));
   const isError = agent.status === 'error';
+  // 未在运行（offline / paused）：不能拿它去展示「当前活动」。
+  const isStopped = !status.running;
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
   const activity = agent.currentActivity;
 
@@ -4688,9 +4695,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
     }
   }, [open]);
 
-  const dotColor = isError ? 'bg-red-400 animate-pulse'
-    : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
-  const label = isError ? t('common:status.error') : isWorking ? t('common:status.working') : t('common:status.idle');
+  const label = status.labelKey ? t(status.labelKey) : (agent.status || '—');
 
   const activityLabel = activity
     ? activity.type === 'heartbeat' ? t('page.activityHeartbeat', { name: activity.heartbeatName ?? activity.label })
@@ -4703,14 +4708,10 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen(o => !o)}
-        className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full transition-colors ${
-          isWorking ? 'bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20'
-          : isError ? 'bg-red-500/10 border border-red-500/20 hover:bg-red-500/20'
-          : 'bg-green-500/10 border border-green-500/20 hover:bg-green-500/20'
-        }`}
+        className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full transition-colors hover:opacity-80 ${status.chipClass}`}
       >
-        <span className={`w-2 h-2 rounded-full ${dotColor}`} />
-        <span className={`text-xs ${isError ? 'text-red-500' : isWorking ? 'text-blue-500' : 'text-green-600'}`}>{label}</span>
+        <span className={`w-2 h-2 rounded-full ${status.dotClass}`} />
+        <span className={`text-xs ${status.textClass}`}>{label}</span>
         {agent.mailboxDepth != null && agent.mailboxDepth > 0 && (
           <span className="text-[9px] bg-fg-tertiary/20 text-fg-tertiary rounded-full px-1.5">{agent.mailboxDepth}</span>
         )}
@@ -4728,6 +4729,34 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
           <button
             onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
             className="w-full text-center text-[10px] text-red-500 hover:text-red-500 border border-red-500/30 hover:border-red-500/50 rounded-lg py-1 transition-colors"
+          >
+            {t('page.viewAgentProfileArrow')}
+          </button>
+        </div>
+      )}
+
+      {/* 未运行时也要有合理的展开：原来点「空闲」/「离线」徙标什么也不弹（两个
+          popover 分别是 isError 和 isWorking 条件），点下去像坏了。 */}
+      {open && isStopped && (
+        <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
+          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">{t('page.agentNotRunningTitle')}</p>
+          <p className="text-[11px] text-fg-secondary">{t('page.agentNotRunningHint')}</p>
+          <button
+            onClick={() => { setOpen(false); onViewProfile?.(agent.id, { tab: 'overview' }); }}
+            className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
+          >
+            {t('page.viewAgentProfileArrow')}
+          </button>
+        </div>
+      )}
+
+      {open && !isWorking && !isError && !isStopped && (
+        <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
+          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">{t('page.agentIdleTitle')}</p>
+          <p className="text-[11px] text-fg-secondary">{t('page.agentIdleHint')}</p>
+          <button
+            onClick={() => { setOpen(false); onViewProfile?.(agent.id, { tab: 'overview' }); }}
+            className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
             {t('page.viewAgentProfileArrow')}
           </button>

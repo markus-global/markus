@@ -42,6 +42,7 @@ import {
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import { persistChatImages } from './chat-attachments.js';
+import { bucketedDirUsage } from './storage-usage.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
@@ -86,6 +87,45 @@ import { evaluateDirtyState } from './agent-dirty.js';
 import { AgentDirtyReconciler, type AgentLiveView } from './agent-dirty-reconciler.js';
 
 const log = createLogger('api-server');
+
+/** One top-level entry of an agent directory, as reported to the storage panel. */
+interface AgentStorageSubItem {
+  /** Real top-level entry name (e.g. `sessions`, `workspace`) — never a relabel. */
+  name: string;
+  size: number;
+}
+
+interface AgentStorageEntry {
+  id: string;
+  name: string;
+  /** True total of the agent directory (breadth-complete, depth-bounded). */
+  size: number;
+  subItems: AgentStorageSubItem[];
+  /** True when the depth cap bit, i.e. `size` is a lower bound. */
+  depthLimited: boolean;
+}
+
+interface StorageScanResult {
+  dataDir: string;
+  totalSize: number;
+  breakdown: Array<{ name: string; path: string; size: number; description: string }>;
+  agents: AgentStorageEntry[];
+  database: { path: string; size: number };
+}
+
+/**
+ * Disk-usage scans walk every agent directory — 161k files at the default depth
+ * on the live org, ~4.5 s, run **synchronously** (readdirSync/lstatSync) inside
+ * the request handler. Uncached, that blocks the event loop for seconds on every
+ * agent-page, settings and home load — stalling unrelated requests, SSE chat
+ * streams included. The panel reports disk usage, where a few seconds of
+ * staleness is invisible, so a short TTL buys back the entire cost.
+ *
+ * Invalidation: orphan purge deletes directories, so it clears the entry; the
+ * TTL covers everything else.
+ */
+const STORAGE_SCAN_TTL_MS = 30_000;
+let storageScanCache: { key: string; at: number; value: StorageScanResult } | null = null;
 
 export class APIServer {
   static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -13283,7 +13323,12 @@ EXPLANATION_END`;
     return null;
   }
 
-  private collectStorageInfo(dataDir: string) {
+  private collectStorageInfo(dataDir: string): StorageScanResult {
+    const cached = storageScanCache;
+    if (cached && cached.key === dataDir && Date.now() - cached.at < STORAGE_SCAN_TTL_MS) {
+      return cached.value;
+    }
+
     const dirSize = (p: string, maxDepth = 3, depth = 0): number => {
       if (!existsSync(p)) return 0;
       try {
@@ -13321,7 +13366,7 @@ EXPLANATION_END`;
     }
 
     const agentsDir = join(dataDir, 'agents');
-    const agentInfos: Array<{ id: string; name: string; size: number; subItems: Array<{ name: string; size: number }> }> = [];
+    const agentInfos: AgentStorageEntry[] = [];
     const am = this.orgService.getAgentManager();
 
     if (existsSync(agentsDir)) {
@@ -13329,33 +13374,44 @@ EXPLANATION_END`;
         if (!entry.isDirectory() || entry.name === 'vector-store') continue;
         const agentDir = join(agentsDir, entry.name);
         const agent = (() => { try { return am.getAgent(entry.name); } catch { return null; } })();
-        const subItems = [
-          { name: 'workspace', size: dirSize(join(agentDir, 'workspace')) },
-          { name: 'memory', size: dirSize(join(agentDir, 'sessions')) + (existsSync(join(agentDir, 'memories.json')) ? statSync(join(agentDir, 'memories.json')).size : 0) + (existsSync(join(agentDir, 'knowledge.md')) ? statSync(join(agentDir, 'knowledge.md')).size : 0) + (existsSync(join(agentDir, 'MEMORY.md')) ? statSync(join(agentDir, 'MEMORY.md')).size : 0) },
-          { name: 'role', size: dirSize(join(agentDir, 'role')) },
-          { name: 'tool-outputs', size: dirSize(join(agentDir, 'tool-outputs')) },
-          { name: 'daily-logs', size: dirSize(join(agentDir, 'daily-logs')) },
-        ];
+        // One traversal bucketed by real top-level entry name. This replaces
+        // five hand-written `dirSize(...)` calls that produced three bugs: a
+        // sub-item labelled `memory` that actually held `sessions/`, a headline
+        // `size` that was only the sum of those five picks (22% of the agent
+        // directory missing) and a depth cap that bit silently. See
+        // storage-usage.ts for the measurements.
+        const usage = bucketedDirUsage(agentDir);
         agentInfos.push({
           id: entry.name,
           name: agent?.config?.name ?? entry.name,
-          size: subItems.reduce((s, i) => s + i.size, 0),
-          subItems,
+          size: usage.total,
+          subItems: usage.buckets,
+          depthLimited: usage.depthLimited,
         });
       }
     }
     agentInfos.sort((a, b) => b.size - a.size);
 
+    // Derive the org-level `Agents` figure from the per-agent totals we just
+    // computed. Two reasons: the parts now always add up to the whole (they
+    // previously came from a second, differently-bounded walker and disagreed),
+    // and it removes one full traversal of every agent directory from a handler
+    // that already blocks the event loop.
+    const agentsItem = topLevelItems.find(i => i.name === 'Agents');
+    if (agentsItem) agentsItem.size = agentInfos.reduce((s, a) => s + a.size, 0);
+
     const totalSize = topLevelItems.reduce((s, i) => s + i.size, 0);
     const dbItem = topLevelItems.find(i => i.name === 'Database')!;
 
-    return {
+    const value: StorageScanResult = {
       dataDir,
       totalSize,
       breakdown: topLevelItems,
       agents: agentInfos,
       database: { path: dbItem.path, size: dbItem.size },
     };
+    storageScanCache = { key: dataDir, at: Date.now(), value };
+    return value;
   }
 
   private detectOrphans() {
@@ -13412,6 +13468,8 @@ EXPLANATION_END`;
   }
 
   private purgeOrphans(ids?: string[]) {
+    // Deleting directories invalidates the disk-usage cache.
+    storageScanCache = null;
     const orphans = this.detectOrphans();
     const filter = ids && ids.length > 0 ? new Set(ids) : null;
     const purgedAgents: string[] = [];

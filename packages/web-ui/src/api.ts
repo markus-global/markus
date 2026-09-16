@@ -144,7 +144,16 @@ export interface AnnouncementInfo {
 }
 
 export interface StorageBreakdownItem { name: string; path: string; size: number; description: string }
-export interface StorageAgentItem { id: string; name: string; size: number; subItems: Array<{ name: string; size: number }> }
+export interface StorageAgentItem {
+  id: string;
+  name: string;
+  /** Total of the agent directory (breadth-complete; depth-bounded). */
+  size: number;
+  /** Top-level entries by their real directory name, largest first. */
+  subItems: Array<{ name: string; size: number }>;
+  /** True when the directory walk hit its depth cap, i.e. `size` is a lower bound. */
+  depthLimited?: boolean;
+}
 export interface StorageInfo {
   dataDir: string;
   totalSize: number;

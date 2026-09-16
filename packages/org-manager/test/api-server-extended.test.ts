@@ -61,7 +61,20 @@ vi.mock('node:fs', async (importOriginal) => {
         return [{ name: 'nested.md', isFile: () => true, isDirectory: () => false }];
       }
       if (s.includes('.markus/agents')) {
-        return [{ name: 'orphan-agent', isFile: () => false, isDirectory: () => true }];
+        // Honour `withFileTypes` instead of always returning Dirent-like objects.
+        // The old unconditional version only worked because every caller passed
+        // the flag; a caller that does not (storage-usage.ts walks with plain
+        // readdir + lstat, which is what lets it spot symlinks without following
+        // them) would be handed objects where it expects names and blow up on
+        // path.join. `isSymbolicLink` is included so the stub matches the real
+        // Dirent contract.
+        const dirent = {
+          name: 'orphan-agent',
+          isFile: () => false,
+          isDirectory: () => true,
+          isSymbolicLink: () => false,
+        };
+        return options?.withFileTypes ? [dirent] : ['orphan-agent'];
       }
       if (s.includes('.markus')) {
         return [];

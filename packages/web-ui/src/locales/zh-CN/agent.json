@@ -147,6 +147,18 @@
       "usage": "用量",
       "storage": "存储",
       "openFolder": "打开文件夹 →",
+      "detailsToggle": "用量与存储明细",
+      "lifetimeCaption": "自 Agent 创建以来累计",
+      "storageDepthLimited": "目录层级较深，实际占用可能高于此值",
+      "storageBuckets": {
+        "workspace": "工作区",
+        "sessions": "会话记录",
+        "tool-outputs": "工具输出",
+        "daily-logs": "日志",
+        "role": "人设",
+        "subagent-logs": "子智能体日志",
+        "worktrees": "代码工作树"
+      },
       "llmConfiguration": "LLM 配置",
       "recentHeartbeats": "最近心跳",
       "recentA2A": "最近 A2A 通信",
@@ -382,7 +394,9 @@
     },
     "mind": {
       "loading": "正在加载智能体心智状态…",
-      "idleWaiting": "空闲 — 等待新邮件",
+      "idleWaiting": "待命 — 等待新消息",
+      "agentStopped": "已停止",
+      "stoppedHint": "Agent 已停止，注意力循环未运行。在上方「概览」页可重新启动。",
       "queuedButIdle": "队列有 {{count}} 项待处理 — 注意力循环应即将接手…",
       "decidingWaiting": "决策中 — 正在分拣 {{count}} 个待处理项…",
       "deliberationInProgress": "正在深度分拣",
@@ -452,7 +466,7 @@
         "4": "后台"
       },
       "attention": {
-        "idle": "空闲",
+        "idle": "待命",
         "focused": "专注",
         "deciding": "决策中"
       },

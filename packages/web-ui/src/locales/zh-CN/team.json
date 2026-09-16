@@ -302,6 +302,10 @@
     "viewProfileArrow": "查看资料 →",
     "viewAgentProfileArrow": "查看智能体资料 →",
     "viewMindArrow": "查看 Mind →",
+    "agentNotRunningTitle": "Agent 未运行",
+    "agentNotRunningHint": "该 Agent 当前已停止，不会处理消息或任务。可在「概览」页重新启动。",
+    "agentIdleTitle": "当前空闲",
+    "agentIdleHint": "没有正在处理的活动，等待消息或任务。",
     "messageActions": {
       "resumeTitle": "继续",
       "reaskTitle": "重新提问",

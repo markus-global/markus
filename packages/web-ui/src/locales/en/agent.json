@@ -147,6 +147,18 @@
       "usage": "Usage",
       "storage": "Storage",
       "openFolder": "Open folder →",
+      "detailsToggle": "Usage & storage details",
+      "lifetimeCaption": "Cumulative since the agent was created",
+      "storageDepthLimited": "Directory tree is deep — actual usage may be higher",
+      "storageBuckets": {
+        "workspace": "Workspace",
+        "sessions": "Sessions",
+        "tool-outputs": "Tool outputs",
+        "daily-logs": "Logs",
+        "role": "Role",
+        "subagent-logs": "Subagent logs",
+        "worktrees": "Worktrees"
+      },
       "llmConfiguration": "LLM Configuration",
       "recentHeartbeats": "Recent Heartbeats",
       "recentA2A": "Recent A2A Communications",
@@ -382,7 +394,9 @@
     },
     "mind": {
       "loading": "Loading agent mind state...",
-      "idleWaiting": "Idle — waiting for new mail",
+      "idleWaiting": "Standing by — waiting for new messages",
+      "agentStopped": "STOPPED",
+      "stoppedHint": "Agent is stopped; the attention loop is not running. Restart it from the Overview tab above.",
       "queuedButIdle": "Queue has {{count}} item(s) — attention loop should pick them up…",
       "decidingWaiting": "Deciding which item to process ({{count}} queued)…",
       "deliberationInProgress": "Deliberation in progress",
@@ -452,7 +466,7 @@
         "4": "Background"
       },
       "attention": {
-        "idle": "IDLE",
+        "idle": "STANDBY",
         "focused": "FOCUSED",
         "deciding": "DECIDING"
       },

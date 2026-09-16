@@ -1,0 +1,209 @@
+/**
+ * Agent overview derivation rules (docs/PROMPT-ENGINEERING.md §prompt correctness
+ * sibling: the panel is a *display* surface, but a wrong number there is a wrong
+ * fact to the reader).
+ *
+ * Every case below corresponds to a defect observed on the live org, not a
+ * hypothetical. Pure-function tests only — this package has no jsdom /
+ * @testing-library/react, so React rendering is out of scope
+ * (see packages/web-ui/src/api.test.ts:3-4).
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  resolveTokensToday,
+  visibleStorageBuckets,
+  storageBucketLabelKey,
+  agentStatusPresentation,
+  recentActivityRows,
+  OVERVIEW_ACTIVITY_LIMIT,
+} from './agentOverview.ts';
+
+describe('resolveTokensToday', () => {
+  it('prefers the usage counter over the agent-detail counter', () => {
+    // The live failure: the agent detail carried 0 while the persisted daily
+    // counter held 104,450,959 for the same day. The panel rendered 0, which is
+    // indistinguishable from "this agent did nothing today".
+    expect(resolveTokensToday({ tokensUsedToday: 104_450_959 }, 0)).toBe(104_450_959);
+  });
+
+  it('falls back to the agent-detail counter when usage has not loaded', () => {
+    expect(resolveTokensToday(null, 1234)).toBe(1234);
+    expect(resolveTokensToday(undefined, 1234)).toBe(1234);
+  });
+
+  it('falls back when the usage payload omits the field', () => {
+    expect(resolveTokensToday({ totalTokens: 999 }, 42)).toBe(42);
+  });
+
+  it('prefers a real zero from usage over a stale non-zero from the detail', () => {
+    // A genuinely idle day must read 0, not yesterday's total. This is why the
+    // rule is "usage wins" rather than "use the larger of the two" — the latter
+    // would resurrect a stale figure every morning.
+    expect(resolveTokensToday({ tokensUsedToday: 0 }, 100_000_000)).toBe(0);
+  });
+
+  it('returns 0 rather than NaN or undefined when nothing is known', () => {
+    // An unguarded `a ?? b` here used to reach `fmtNum` as undefined and render
+    // the literal string "undefined" into the panel.
+    expect(resolveTokensToday(null, undefined)).toBe(0);
+    expect(resolveTokensToday({}, undefined)).toBe(0);
+  });
+
+  it('ignores non-finite values from either source', () => {
+    expect(resolveTokensToday({ tokensUsedToday: Number.NaN }, 7)).toBe(7);
+    expect(resolveTokensToday({ tokensUsedToday: Number.POSITIVE_INFINITY }, 7)).toBe(7);
+    expect(resolveTokensToday(null, Number.NaN)).toBe(0);
+  });
+});
+
+describe('visibleStorageBuckets', () => {
+  it('drops zero-byte buckets', () => {
+    // A never-run agent still has an empty role/ — a row of "0 B" informs nobody.
+    expect(
+      visibleStorageBuckets([
+        { name: 'workspace', size: 100 },
+        { name: 'role', size: 0 },
+      ]),
+    ).toEqual([{ name: 'workspace', size: 100 }]);
+  });
+
+  it('orders largest first with a deterministic tie-break', () => {
+    // Ordering is imposed here rather than inherited from the server so that a
+    // server-side ordering change cannot silently reshuffle the panel.
+    expect(
+      visibleStorageBuckets([
+        { name: 'sessions', size: 10 },
+        { name: 'workspace', size: 90 },
+        { name: 'daily-logs', size: 10 },
+      ]).map(b => b.name),
+    ).toEqual(['workspace', 'daily-logs', 'sessions']);
+  });
+
+  it('passes through buckets the old code never produced', () => {
+    // The regression this guards: the panel's sub-items were a hard-coded list
+    // of five names, so worktrees/ and subagent-logs/ (22.8 MB and 20.8 MB on
+    // one measured agent) were invisible. Buckets are now whatever the walk
+    // finds, so nothing can go missing by omission again.
+    expect(
+      visibleStorageBuckets([
+        { name: 'worktrees', size: 22 },
+        { name: 'subagent-logs', size: 20 },
+      ]).map(b => b.name),
+    ).toEqual(['worktrees', 'subagent-logs']);
+  });
+
+  it('tolerates a missing or malformed list', () => {
+    expect(visibleStorageBuckets(undefined)).toEqual([]);
+    expect(visibleStorageBuckets([])).toEqual([]);
+  });
+
+  it('does not mutate its input', () => {
+    const input = [
+      { name: 'a', size: 1 },
+      { name: 'b', size: 2 },
+    ];
+    visibleStorageBuckets(input);
+    expect(input.map(b => b.name)).toEqual(['a', 'b']);
+  });
+});
+
+describe('storageBucketLabelKey', () => {
+  it('maps known directories to translated labels', () => {
+    expect(storageBucketLabelKey('sessions')).toBe(
+      'agent:profilePage.overview.storageBuckets.sessions',
+    );
+  });
+
+  it('returns null for unknown directories so the real name is shown', () => {
+    // Falling back to the directory name is the point: mislabelling is what
+    // produced "memory 259 MB" for a `sessions/` directory holding 259 MB of
+    // session files while the actual memory files were 24 KB + 27 KB.
+    expect(storageBucketLabelKey('some-new-dir')).toBeNull();
+  });
+});
+
+describe('agentStatusPresentation', () => {
+  it('does not present a stopped agent as idle', () => {
+    // The live failure behind "I clicked Stop and the header still said 空闲".
+    // The badge derived its label locally with no `offline` branch, so a stopped
+    // agent fell through to the green idle default — a status that also claims
+    // the agent is running.
+    const stopped = agentStatusPresentation('offline');
+    expect(stopped.labelKey).toBe('common:status.offline');
+    expect(stopped.running).toBe(false);
+    expect(stopped.labelKey).not.toBe(agentStatusPresentation('idle').labelKey);
+  });
+
+  it('marks only running states as running', () => {
+    expect(agentStatusPresentation('idle').running).toBe(true);
+    expect(agentStatusPresentation('working').running).toBe(true);
+    expect(agentStatusPresentation('error').running).toBe(true);
+    expect(agentStatusPresentation('offline').running).toBe(false);
+    expect(agentStatusPresentation('paused').running).toBe(false);
+  });
+
+  it('gives every status a label, including paused', () => {
+    // The old local label map had no `paused` entry (its dot map did), so a
+    // paused agent would have rendered the raw English token "paused" as a label.
+    for (const s of ['idle', 'working', 'error', 'offline', 'paused']) {
+      expect(agentStatusPresentation(s).labelKey, s).toBeTruthy();
+    }
+  });
+
+  it('treats a missing or unknown status as not-running, without inventing a label', () => {
+    // Claiming "offline" for an unrecognised value would be a different lie;
+    // labelKey: null makes the caller render the raw value instead.
+    for (const s of [undefined, null, '', 'teleporting']) {
+      const p = agentStatusPresentation(s as string | undefined);
+      expect(p.labelKey).toBeNull();
+      expect(p.running).toBe(false);
+    }
+  });
+
+  it('keeps the dot/label classes in step with the tone', () => {
+    // Guards the "green dot next to 离线" half of the bug: the colour must come
+    // from the same table entry as the label.
+    expect(agentStatusPresentation('idle').dotClass).not.toBe(agentStatusPresentation('offline').dotClass);
+    expect(agentStatusPresentation('idle').textClass).not.toBe(agentStatusPresentation('offline').textClass);
+  });
+});
+
+describe('recentActivityRows', () => {
+  const at = (iso: string, id: string) => ({ id, startedAt: iso });
+
+  it('returns newest first', () => {
+    // The endpoint returns `liveActivities()`, which sorts ascending (the
+    // server's own getCurrentActivity() reads the last element). Rendering that
+    // array directly put the oldest entry at the top of a card titled
+    // "最近心跳" — the opposite of the title.
+    const rows = recentActivityRows([
+      at('2026-09-16T10:00:00Z', 'old'),
+      at('2026-09-16T12:00:00Z', 'new'),
+      at('2026-09-16T11:00:00Z', 'mid'),
+    ]);
+    expect(rows.shown.map(r => r.id)).toEqual(['new', 'mid', 'old']);
+  });
+
+  it('caps the body but reports the untruncated total', () => {
+    const many = Array.from({ length: 12 }, (_, i) =>
+      at(`2026-09-16T${String(i).padStart(2, '0')}:00:00Z`, `a${i}`),
+    );
+    const rows = recentActivityRows(many);
+    expect(rows.shown).toHaveLength(OVERVIEW_ACTIVITY_LIMIT);
+    expect(rows.total).toBe(12);
+    // The header label says "共 12 次"; the body must show the 5 most recent.
+    expect(rows.shown[0]!.id).toBe('a11');
+  });
+
+  it('tolerates missing input and a zero limit', () => {
+    expect(recentActivityRows(undefined)).toEqual({ shown: [], total: 0 });
+    expect(recentActivityRows(null).total).toBe(0);
+    expect(recentActivityRows([at('2026-09-16T10:00:00Z', 'x')], 0).shown).toEqual([]);
+  });
+
+  it('does not mutate its input', () => {
+    const input = [at('2026-09-16T10:00:00Z', 'old'), at('2026-09-16T12:00:00Z', 'new')];
+    recentActivityRows(input);
+    expect(input.map(r => r.id)).toEqual(['old', 'new']);
+  });
+});

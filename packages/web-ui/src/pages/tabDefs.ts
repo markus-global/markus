@@ -14,7 +14,7 @@ export type MainTab = 'chat' | 'profile'
   | 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'deliverables'
   | 'announcements' | 'norms' | 'settings';
 
-export const AGENT_TABS: MainTab[] = ['chat', 'overview', 'files', 'tools', 'memory', 'deliverables'];
+export const AGENT_TABS: MainTab[] = ['chat', 'overview', 'mind', 'files', 'tools', 'memory', 'deliverables'];
 export const TEAM_TAB_SET: MainTab[] = ['chat', 'overview', 'announcements', 'norms', 'settings'];
 
 export function tabLabel(tab: MainTab, t: TFunction): string {

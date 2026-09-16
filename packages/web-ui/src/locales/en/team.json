@@ -302,6 +302,10 @@
     "viewProfileArrow": "View Profile →",
     "viewAgentProfileArrow": "View Agent Profile →",
     "viewMindArrow": "View Mind →",
+    "agentNotRunningTitle": "Agent Not Running",
+    "agentNotRunningHint": "This agent is stopped and will not process messages or tasks. Restart it from the Overview tab.",
+    "agentIdleTitle": "Idle",
+    "agentIdleHint": "Nothing in progress — waiting for messages or tasks.",
     "messageActions": {
       "resumeTitle": "Resume",
       "reaskTitle": "Re-ask",
