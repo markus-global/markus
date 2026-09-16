@@ -180,6 +180,25 @@ into a per-worker `SessionWorkspace`:
 | `lastInjectedActivityType` | dedup hint for injected activities |
 | `turnModelOverride` | per-turn model pick |
 | `volatileState` / `pendingDeliberationResult` | per-turn transient state |
+| `toolSticky` | `Agent.toolSticky` (recent/activated tool schema names) |
+| `activatedSkills` | `Agent.activatedSkillInstructions` (skill instruction bodies) |
+
+The last two rows were found the hard way (2026-09-16). Both were **keyed by session but
+stored on the Agent instance** — an incoherent combination: with N workers handling N
+sessions, all workers share one object, so every session switch reset it. Consequences:
+the emitted `tools` schema drifted call-to-call (a cache-prefix break, since tool schemas
+serialise ahead of the system prompt), and a `discover_tools` activation could vanish
+mid-session — the documented `discover_tools → think → discover_tools` spiral. The skill
+map additionally leaked in **serial** mode, since it was neither keyed nor reset: a skill
+body activated in session A stayed in every later session's system prompt.
+
+**Rule:** assembly state that is keyed by session must also be stored per worker. The
+session key is retained (not dropped) so that, in serial mode with one root workspace,
+switching sessions still drops the previous session's state instead of leaking it.
+
+Guard test: `agent-worker-scoped-state.test.ts` — two workspaces on different sessions must
+not clobber each other's sticky tools in either order, and a skill activated in session A
+must be absent from session B in both serial and concurrent modes.
 
 The workspace is bound to the async call chain via a process-level
 `AsyncLocalStorage` (`sessionWorkspaceStore`). Code that previously read

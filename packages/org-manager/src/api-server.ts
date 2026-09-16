@@ -1737,7 +1737,13 @@ export class APIServer {
         messagePrefix = prefixLines.join('\n');
       }
 
-      const effectiveScenario = isDmReply ? 'a2a' as const : (isA2A ? 'a2a' as const : 'group_chat' as const);
+      // A group channel is ALWAYS 'group_chat', even when the trigger was a
+      // chained reply from a fellow agent (isA2A). The A2A nature of such a
+      // message is already carried by the injected [AGENT COLLABORATION] prefix;
+      // switching the scenario to 'a2a' would emit the A2A section ("humans do
+      // NOT see this conversation", "asynchronous, absorb silently"), which is
+      // false inside a group chat where the reply is auto-broadcast to humans.
+      const effectiveScenario = isDmReply ? 'a2a' as const : 'group_chat' as const;
       const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
       const reply = await agent.sendMessage(
         messagePrefix + userMessage,

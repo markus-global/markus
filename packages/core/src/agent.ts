@@ -396,26 +396,37 @@ export class Agent {
    *    the largest single cache-buster in the request);
    *  - a tool activated in one session stayed visible in every later session.
    *
-   * Now keyed by session and only ever GROWING within a session ("Mask, Don't
-   * Remove"): once the schema has warmed up it is byte-stable, and switching
-   * sessions drops the old state instead of leaking it. The set freezes at the
-   * cap rather than evicting, because eviction is what caused the drift.
+   * Now keyed by session, worker-scoped (SessionWorkspace.toolSticky), and only
+   * ever GROWING within a session ("Mask, Don't Remove"): once the schema has
+   * warmed up it is byte-stable, and switching sessions (or running the same
+   * agent concurrently across sessions) drops the old state instead of leaking
+   * it or thrashing. The set freezes at the cap rather than evicting, because
+   * eviction is what caused the drift.
    */
   private static readonly STICKY_RECENT_TOOLS_MAX = 24;
-  private toolSticky: { sessionId: string | null; recent: string[]; activated: Set<string> } = {
-    sessionId: null,
-    recent: [],
-    activated: new Set(),
-  };
 
   private stickyTools(sessionId?: string | null): { recent: string[]; activated: Set<string> } {
+    const ws = this.workspace();
     const sid = sessionId ?? this.currentSessionId ?? null;
-    if (this.toolSticky.sessionId !== sid) {
-      this.toolSticky = { sessionId: sid, recent: [], activated: new Set() };
+    if (!ws.toolSticky || ws.toolSticky.sessionId !== sid) {
+      ws.toolSticky = { sessionId: sid, recent: [], activated: new Set() };
     }
-    return this.toolSticky;
+    return ws.toolSticky;
   }
-  private activatedSkillInstructions = new Map<string, string>(); // skill instructions injected into context
+
+  /**
+   * Activated skill instruction bodies — session-keyed AND worker-scoped.
+   * See {@link ActivatedSkillState}: an Agent-instance Map leaked a skill body
+   * activated in one session into every later session's system prompt.
+   */
+  private activatedSkills(): Map<string, string> {
+    const ws = this.workspace();
+    const sid = this.currentSessionId ?? null;
+    if (!ws.activatedSkills || ws.activatedSkills.sessionId !== sid) {
+      ws.activatedSkills = { sessionId: sid, instructions: new Map() };
+    }
+    return ws.activatedSkills.instructions;
+  }
   private availableSkillCatalog: Array<{ name: string; description: string; category: string }> = [];
   private skillMcpActivator?: (
     skillName: string,
@@ -1894,7 +1905,12 @@ export class Agent {
               ? { sessionId: channelSessionId }
               : {};
           const opts = buildHandleOpts(defaults);
-          if (item.sourceType === 'a2a_message') opts.scenario = 'a2a';
+          // Only default to 'a2a' when the caller stayed silent. An explicit
+          // scenario (e.g. 'group_chat' for a group channel whose message
+          // happens to arrive as sourceType 'a2a_message') must win — clobbering
+          // it here handed group-chat agents the A2A "humans don't see this"
+          // section instead of the group-chat routing rules.
+          if (item.sourceType === 'a2a_message' && extra.scenario === undefined) opts.scenario = 'a2a';
           let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             item.metadata?.senderId,
@@ -3173,23 +3189,23 @@ export class Agent {
   }
 
   injectSkillInstructions(skillName: string, instructions: string): void {
-    this.activatedSkillInstructions.set(skillName, instructions);
+    this.activatedSkills().set(skillName, instructions);
   }
 
   hasSkillInstructions(skillName: string): boolean {
-    return this.activatedSkillInstructions.has(skillName);
+    return this.activatedSkills().has(skillName);
   }
 
   getActiveSkillNames(): string[] {
     const names = new Set(this.config.skills);
-    for (const name of this.activatedSkillInstructions.keys()) {
+    for (const name of this.activatedSkills().keys()) {
       names.add(name);
     }
     return [...names];
   }
 
   deactivateSkill(skillName: string): void {
-    this.activatedSkillInstructions.delete(skillName);
+    this.activatedSkills().delete(skillName);
   }
 
   setAvailableSkillCatalog(catalog: Array<{ name: string; description: string; category: string }>): void {
@@ -3461,11 +3477,12 @@ export class Agent {
 
   /** Activated skill bodies — injected as their own uncapped system section. */
   private getActivatedSkillContext(): string | undefined {
-    if (this.activatedSkillInstructions.size === 0) return undefined;
+    const instructions = this.activatedSkills();
+    if (instructions.size === 0) return undefined;
     const parts: string[] = ['\n## Activated Skills'];
     parts.push('Loaded via `discover_tools`. Follow these instructions while the skill is active.');
-    for (const [name, instructions] of this.activatedSkillInstructions) {
-      parts.push(`<skill name="${name}">\n${instructions}\n</skill>`);
+    for (const [name, body] of instructions) {
+      parts.push(`<skill name="${name}">\n${body}\n</skill>`);
     }
     return parts.join('\n');
   }
@@ -7534,7 +7551,7 @@ export class Agent {
         const skill = this.skillRegistry.get(name);
         if (skill) {
           if (skill.manifest.instructions) {
-            this.activatedSkillInstructions.set(name, skill.manifest.instructions);
+            this.activatedSkills().set(name, skill.manifest.instructions);
           }
           // Skill stats (LEARNING-LOOP §4) — does not affect trust score
           try {

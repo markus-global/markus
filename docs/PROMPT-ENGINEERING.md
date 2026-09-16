@@ -200,6 +200,8 @@ guard test; break one and long sessions silently re-bill their whole history on 
 | 9 | **No agent-varying branch may appear inside the universal block.** A condition on agent state (skills, team, config) is a divergence point for the whole install | `context-engine.buildSystemPrompt` (the old `hasBrowserSkill` branch was the counter-example) | `context-cache-scope.test.ts` → *a browser-skill difference does NOT fork the universal block* |
 | 10 | Session-scoped sticky tool state (`recent`/`activated`) is **monotonic within a session** (grows, never evicts) and **reset on session switch** — the emitted `tools` schema warms up and then stays byte-stable | `Agent.stickyTools()` (`toolSticky`, keyed by session) | `tool-selector.test.ts` (schema stability) + agent tool-loop tests |
 | 11 | Byte-stable tiers may only contain **quantized** values — anything that churns faster than its tier (free disk, precise timestamps, live counts) must be quantized, moved to the volatile tail, or removed | `buildEnvironmentSection` (disk → 10 GB bands), `environment-profile.ts` (probe retry) | `context-cache-scope.test.ts`; env drift measured at offset 30228 on 2026-09-16 |
+| 12 | Assembly state that is **keyed by session** must also be **stored per worker** (`SessionWorkspace`), never on the `Agent` instance | `Agent.stickyTools()`, `Agent.activatedSkills()` → `SessionWorkspace.toolSticky` / `.activatedSkills` | `agent-worker-scoped-state.test.ts` |
+| 13 | A scenario emitted by the caller is **authoritative**; the engine may *normalize* it (channel-derived) but must never clobber it. Every scenario block declares (a) output visibility, (b) the tool that reaches a human, (c) the silence rule | `context-engine.buildScenarioSection` + `prepareMessages` normalize; `agent.ts` `a2a_message` default | `context-scenario-matrix.test.ts` |
 
 **Invariant 6 — why tools dominate the risk.** Measured on a live agent tail:
 `fixed 19660 (system 8618 + tools 11042)` — the **tool schemas cost more than the
@@ -1128,6 +1130,50 @@ User: ## Memory Entries\n{id|timestamp|type|tags|content for each entry}
 ```
 
 Capped at 200 most recent entries. Output is parsed as JSON and applied programmatically (remove entries, merge duplicates). Vector index is synchronized post-consolidation.
+
+### 5.9 Scenario × Context Matrix (2026-09-16)
+
+Every `AgentScenario` must render a `## Current Interaction Mode` block answering three
+questions the model **cannot infer from history**: (a) *is my text output visible to anyone?*,
+(b) *which tool actually reaches a human?*, (c) *when must I stay silent?* Losing any of the
+three is a **completeness** regression, not a token saving — a model that does not know its
+output is invisible will end the turn with prose and accomplish nothing.
+
+| Scenario | Output visible? | Reaches a human via | Silence rule | Boundary guard |
+|---|---|---|---|---|
+| `chat` | yes (streamed) | direct text | — | stop when done, no check-in questions |
+| `task_execution` | no (logs only) | `notify_user` / `task_note` | — | `task_submit_review` mandatory |
+| `heartbeat` | **no** | `notify_user` (only path) | `HEARTBEAT_OK` | reflex pack only |
+| `a2a` (DM) | auto-sent to peer | — | `[NO_RESPONSE]` on ack/conclusion | DM dedup + loop guard |
+| `a2a` (group channel) | **normalized → `group_chat`** | — | `[NO_RESPONSE]` | see invariant below |
+| `group_chat` | auto-sent to channel | `notify_user` (private) | `[NO_RESPONSE]` (default) | @mention routing |
+| `comment_response` | no | `task_comment` / `requirement_comment` | `[NO_REPLY_NEEDED]` | context-first, no bare ack |
+| `requirement_action` | no | `requirement_comment` / `notify_user` | — | ≥1 action tool required |
+| `workflow_action` | no | `notify_user` | — | ≥1 action tool required |
+| `review` | no | `task_comment` / `notify_user` | — | reviewer ≠ assignee |
+| `deliberation` | no | `complete_deliberation` | — | strict-state items untouchable |
+| `distillation` | no | `notify_user` (rare) | stop with no tools if nothing durable | Learning Habits |
+| `memory_consolidation` | no | — (tools forbidden) | — | JSON-only output |
+
+**Invariant 13a — a caller-supplied scenario is authoritative.** `agent.ts` used to force
+`opts.scenario = 'a2a'` for every `sourceType: 'a2a_message'`, clobbering an explicit scenario
+from the caller. `a2a_message` is a *transport* (it is what a channel message looks like when it
+comes from an agent rather than a human), not a scenario. The engine now defaults to `'a2a'` only
+when the caller stayed silent.
+
+**Invariant 13b — channel-derived normalization.** `a2a` covered two physically different
+channels. A group-channel item rendered the 1:1 wording — *"Humans do NOT see this conversation …
+absorb silently"* — which is false in a group chat, where the reply is **auto-broadcast to
+humans**. `buildSystemPrompt` now normalizes `a2a` + `channelKey.startsWith('group:')` →
+`group_chat`, and `api-server.ts` stops downgrading a group channel to `'a2a'` for chained
+(agent-triggered) replies. The A2A-ness of such a message is carried by the caller's injected
+`[AGENT COLLABORATION]` prefix, not by switching the scenario.
+
+Guard test: `context-scenario-matrix.test.ts` — asserts all 12 scenarios render a non-trivial
+block, that each declares visibility/reachability, that `a2a`+group renders the group block and
+never the DM/"humans do NOT see this" wording, and that `distillation` (which previously said only
+"free-text is not a chat reply") states visibility explicitly. Run against the old code, the
+group-channel and distillation cases fail.
 
 ---
 

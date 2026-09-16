@@ -735,7 +735,18 @@ export class ContextEngine {
     // the volatile tail — see the MEMORY / KNOWLEDGE block below for the rationale
     // (their WRITE FREQUENCY, not their size, is what made Tier 2 wrong for them).
 
-    const scenario = opts.scenario ?? 'chat';
+    // ── Scenario normalization (single authority) ────────────────────────────
+    // `a2a` covers two physically different channels: a 1:1 DM, and a GROUP
+    // channel whose messages may also arrive as sourceType `a2a_message`
+    // (a chained reply from a fellow agent). The A2A section tells the agent
+    // "humans do NOT see this conversation … absorb silently" — factually wrong
+    // inside a group chat, where the reply IS auto-sent and human-visible. The
+    // A2A-ness of a group message is conveyed by the caller's injected
+    // `[AGENT COLLABORATION]` prefix, not by switching the scenario.
+    const rawScenario = opts.scenario ?? 'chat';
+    const isGroupChannel = !!opts.channelKey && opts.channelKey.startsWith('group:');
+    const scenario: AgentScenario =
+      rawScenario === 'a2a' && isGroupChannel ? 'group_chat' : rawScenario;
     semiStable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager, channelKey: opts.channelKey }));
 
     // L3 checklists: execute/govern only (AGENT-RUNTIME §4). Converse (incl.
@@ -1716,7 +1727,7 @@ export class ContextEngine {
       case 'distillation':
         lines.push('You are in **post-task distillation mode** — encode lessons from a **completed** task.');
         lines.push('');
-        lines.push('**Communication channel**: Background system session. Free-text is not a chat reply; tools have effect.');
+        lines.push('**Communication channel**: Background system session — your text output is **NOT visible** to any human or agent, and free-text is not a chat reply; only tool calls have effect. Use `notify_user` only if a human must act on what you found.');
         lines.push('');
         lines.push('Follow **Learning Habits**: personal lesson → memory tools; shareable playbook → `builder-artifacts/skills/` then `package_install` (low impact may install; high/omitted → `request_user_input` first).');
         lines.push('Never `hub_install` or auto-deploy agents/teams. If nothing durable → stop without tools.');
