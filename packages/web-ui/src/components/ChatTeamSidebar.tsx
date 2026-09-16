@@ -18,6 +18,7 @@ import {
 import { Avatar } from './Avatar.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import { teamChannelKey } from '../lib/mobileTeamNav.ts';
 import { useChatStore, chatStore } from '../pages/useChatStore.ts';
 import { stripThinkingBlocks } from '../pages/ChatHelpers.ts';
 
@@ -777,7 +778,13 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     const isSelected = selectedTeamId === tid;
     const agentUnread = unreadByAgent ? (agentsByTeam.byTeam.get(tid) ?? []).reduce((sum, a) => sum + (unreadByAgent.get(a.id) ?? 0), 0) : 0;
     const teamGc = groupChats.find(gc => gc.type === 'team' && gc.teamId === tid);
-    const channelUnread = teamGc && unreadByChannel ? (unreadByChannel[teamGc.channelKey] ?? 0) : 0;
+    // Count under the SAME key this row opens. Team channels are synthetic
+    // (`group:<teamId>`) and normally have no groupChats entry, so keying the
+    // unread lookup on `teamGc` alone silently dropped their counts from the row
+    // badge while the nav badge still counted them — the two numbers disagreed
+    // and the extra could not be found anywhere on screen.
+    const teamChKey = teamGc?.channelKey ?? teamChannelKey(tid);
+    const channelUnread = unreadByChannel ? (unreadByChannel[teamChKey] ?? 0) : 0;
     const teamUnread = agentUnread + channelUnread;
 
     const teamAgentList = agentsByTeam.byTeam.get(tid) ?? [];
@@ -885,7 +892,12 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     const teamGc = tid !== '_ungrouped' ? (groupChatsByTeam.byTeam.get(tid) ?? [])[0] : undefined;
     const isGcActive = teamGc && chatMode === 'channel' && activeChannel === teamGc.channelKey;
     const isHighlighted = highlightTeamId === tid;
-    const sectionUnread = unreadByAgent ? agentList.reduce((sum, a) => sum + (unreadByAgent.get(a.id) ?? 0), 0) : 0;
+    // Include the team channel, matching renderTeamRow and the nav badge — which
+    // counts `group:<teamId>` channels. Agent-only totals here would hide the
+    // channel's share of the badge.
+    const teamChKey = tid !== '_ungrouped' ? (teamGc?.channelKey ?? teamChannelKey(tid)) : undefined;
+    const sectionUnread = (unreadByAgent ? agentList.reduce((sum, a) => sum + (unreadByAgent.get(a.id) ?? 0), 0) : 0)
+      + (teamChKey && unreadByChannel ? (unreadByChannel[teamChKey] ?? 0) : 0);
 
     return (
       <div

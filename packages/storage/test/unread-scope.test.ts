@@ -9,6 +9,8 @@ import {
   SqliteAgentRepo,
   SqliteChatSessionRepo,
   SqliteReadCursorRepo,
+  SqliteChannelMessageRepo,
+  SqliteTeamRepo,
 } from '../src/sqlite-storage.js';
 
 /**
@@ -118,5 +120,73 @@ describe('SqliteReadCursorRepo.getUnreadCounts scoping', () => {
     expect(keys.length).toBe(1);
     // Exactly the caller's own session - none of user-2's.
     expect(cursorRepo.getUnreadCounts('user-1')).toEqual({});
+  });
+});
+
+/**
+ * Unread must also be scoped to conversations that still EXIST.
+ *
+ * Team channels are synthetic (`group:<teamId>` and, verified on the live DB,
+ * have no group_chats row). Deleting a team removes every handle on the
+ * conversation while leaving channel_messages and the read cursor behind, so the
+ * cursor reported unread forever for a channel no client could render or open to
+ * clear. The result was an aggregate that could never be driven to zero.
+ *
+ * Measured before this check: two deleted teams contributed 4 such messages, so
+ * the mobile Team badge read 8 while only 4 unread were visible as dots.
+ */
+describe('SqliteReadCursorRepo.getUnreadCounts conversation reachability', () => {
+  const appendChannel = (db: ReturnType<typeof openSqlite>, channel: string, text: string) =>
+    new SqliteChannelMessageRepo(db).append({
+      orgId: 'org-1',
+      channel,
+      senderId: 'agent-1',
+      senderType: 'agent',
+      senderName: 'Worker',
+      text,
+    });
+
+  it('drops unread for a team channel whose team no longer exists', async () => {
+    const db = openSqlite(dbPath);
+    seed(db);
+    const cursorRepo = new SqliteReadCursorRepo(db);
+
+    const channel = 'group:team_deleted';
+    await appendChannel(db, channel, 'orphaned message');
+    cursorRepo.setReadCursor('user-1', `channel:${channel}`, '2000-01-01T00:00:00Z');
+
+    expect(cursorRepo.getUnreadCounts('user-1')).toEqual({});
+  });
+
+  it('still counts unread for a team channel whose team exists (no over-correction)', async () => {
+    const db = openSqlite(dbPath);
+    seed(db);
+    new SqliteTeamRepo(db).create({ id: 'team_live', orgId: 'org-1', name: 'Live' });
+    const cursorRepo = new SqliteReadCursorRepo(db);
+
+    const channel = 'group:team_live';
+    await appendChannel(db, channel, 'hello');
+    cursorRepo.setReadCursor('user-1', `channel:${channel}`, '2000-01-01T00:00:00Z');
+
+    expect(cursorRepo.getUnreadCounts('user-1')[`channel:${channel}`]).toBe(1);
+  });
+
+  it('leaves channel types without a team handle alone', async () => {
+    const db = openSqlite(dbPath);
+    seed(db);
+    const cursorRepo = new SqliteReadCursorRepo(db);
+
+    // Custom group chats and agent DMs are not team channels; the team-existence
+    // check must not touch them.
+    const custom = 'group:custom:gc_1';
+    const a2a = 'dm:a2a:agt_a:agt_b';
+    await appendChannel(db, custom, 'x');
+    await appendChannel(db, a2a, 'y');
+    cursorRepo.setReadCursor('user-1', `channel:${custom}`, '2000-01-01T00:00:00Z');
+    cursorRepo.setReadCursor('user-1', `channel:${a2a}`, '2000-01-01T00:00:00Z');
+
+    const counts = cursorRepo.getUnreadCounts('user-1');
+    expect(counts[`channel:${custom}`]).toBe(1);
+    expect(counts[`channel:${a2a}`]).toBe(1);
   });
 });

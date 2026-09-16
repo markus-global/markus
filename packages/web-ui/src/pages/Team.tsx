@@ -30,6 +30,7 @@ import { RightPanel } from '../components/RightPanel.tsx';
 import { ChatSearchPanel, GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { AgentProfile, LEGACY_TAB_SECTION, type ProfileTab, type OverviewSectionId } from './AgentProfile.tsx';
+import { resolveMobileChatBackHash, teamChannelKey } from '../lib/mobileTeamNav.ts';
 import { agentStatusPresentation } from '../lib/agentOverview.ts';
 import { TeamProfile, type TeamTab } from './TeamProfile.tsx';
 import {
@@ -125,9 +126,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     : 'roster';
   const mobileTeamId = mobileTeamHash ? mobileTeamHash[1] : null;
 
-  const mobileBackHashRef = useRef<string>(PAGE.TEAM);
   const enterMobileDetail = useCallback(() => {
-    mobileBackHashRef.current = window.location.hash.slice(1) || PAGE.TEAM;
+    // Back from L3 is derived from the conversation's own team (see
+    // resolveMobileChatBackHash) rather than snapshotted from wherever the user
+    // came from — that snapshot is what sent Back to Notifications/Home and
+    // made the Team tab loop back into the same agent.
     window.location.hash = `${PAGE.TEAM}/d`;
   }, []);
 
@@ -3131,6 +3134,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // ── Render ────────────────────────────────────────────────────────────────────
   const showChatOnMobile = isMobile && mobileLayer === 'chat';
+  // Parent layer for the L3 back button: the conversation's team (L2) when that
+  // team is loaded, else the roster (L1). Never the previous page.
+  const mobileChatBackHash = useMemo(
+    () => resolveMobileChatBackHash({
+      chatMode,
+      agentTeamId: currentAgent?.teamId,
+      channelTeamId: activeGroupChat?.teamId,
+      knownTeamIds: teams.map(t => t.id),
+    }),
+    [chatMode, currentAgent?.teamId, activeGroupChat?.teamId, teams],
+  );
   // Loading label: name the conversation being loaded, instead of a generic
   // "Loading conversation…" (UX: switching to a session with history should
   // not look like a brand-new chat while the history loads).
@@ -3283,18 +3297,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </div>
             </div>
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
-              {l2Gc && (() => {
-                const gcUnread = unreadByChannel[l2Gc.channelKey] ?? 0;
+              {(() => {
+                // Team channels are synthetic (`group:<teamId>`) and normally have no
+                // groupChats entry, so keying this row on `l2Gc` alone hid the team
+                // channel - and its unread - from L2 while the nav badge still counted
+                // it. Use the same key the L1 team header opens.
+                const gcKey = l2Gc?.channelKey ?? teamChannelKey(mobileTeamId);
+                const gcUnread = unreadByChannel[gcKey] ?? 0;
                 return (
                   <button
-                    onClick={() => { setChatMode('channel'); setActiveChannel(l2Gc.channelKey); setMainTab('chat'); enterMobileDetail(); }}
+                    onClick={() => { setChatMode('channel'); setActiveChannel(gcKey); setMainTab('chat'); enterMobileDetail(); }}
                     className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors"
                   >
                     <div className="w-9 h-9 rounded-xl bg-brand-500/15 flex items-center justify-center shrink-0">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-brand-500"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
                     </div>
                     <div className="flex-1 min-w-0 text-left">
-                      <div className="text-sm font-medium text-fg-primary truncate">{l2Gc.name}</div>
+                      <div className="text-sm font-medium text-fg-primary truncate">{l2Gc?.name ?? l2Team.name}</div>
                       <div className="text-[10px] text-fg-tertiary">{t('chat.groupChat')}</div>
                     </div>
                     {gcUnread > 0 ? (
@@ -3421,7 +3440,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               {/* Mobile Row 1: back + name + status */}
               <div className="flex items-center px-3 h-11 gap-2">
                 <button
-                  onClick={() => { window.location.hash = mobileBackHashRef.current; }}
+                  onClick={() => { window.location.hash = mobileChatBackHash; }}
                   className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>

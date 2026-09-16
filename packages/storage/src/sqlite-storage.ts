@@ -5472,6 +5472,23 @@ export class SqliteReadCursorRepo {
         if (row && row.cnt > 0) result[key] = row.cnt;
       } else if (key.startsWith('channel:')) {
         const channel = key.slice('channel:'.length);
+        // Never report unread for a conversation that can no longer be opened.
+        //
+        // Team channels are *synthetic* (`group:<teamId>` — they have no
+        // group_chats row; verified on the live DB). Deleting a team therefore
+        // removes every handle on the conversation while leaving its
+        // channel_messages and this read cursor behind. The cursor then reports
+        // unread forever for a channel no client can render or open to clear,
+        // inflating aggregates with counts that have no row anywhere.
+        //
+        // Measured on real data before this check: two deleted teams contributed
+        // 4 such messages, so the mobile Team badge read 8 while only 4 unread
+        // were visible as dots — the badge could never be cleared by reading.
+        if (channel.startsWith('group:team_')) {
+          const teamId = channel.slice('group:'.length);
+          const team = this.db.prepare(`SELECT 1 AS ok FROM teams WHERE id = ?`).get(teamId);
+          if (!team) continue;
+        }
         const row = this.db.prepare(
           `SELECT COUNT(*) as cnt FROM channel_messages
            WHERE channel = ? AND created_at > ?`
