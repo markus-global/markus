@@ -23,16 +23,31 @@ import { useLayout } from '../contexts/LayoutContext.tsx';
 
 const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 
-interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser; headless?: boolean; activeTab?: ProfileTab }
+interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser; headless?: boolean; activeTab?: ProfileTab; initialSection?: OverviewSectionId }
 
 export type ProfileTab = 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'deliverables';
 
+/** 概览页里的可折叠分组。原先 mind / files / tools / memory 是四个独立 tab。 */
+export type OverviewSectionId = 'recent' | 'mind' | 'files' | 'tools' | 'memory';
+
+/** 旧的 tab 标识 → 概览分组：历史深链（如 Work 页的 profileTab:'mind'）继续有效。 */
+export const LEGACY_TAB_SECTION: Partial<Record<ProfileTab, OverviewSectionId>> = {
+  mind: 'mind',
+  files: 'files',
+  tools: 'tools',
+  memory: 'memory',
+};
+
+/**
+ * Tab 栅只保留少数入口（聊天在主区，见 Team.tsx 的 AGENT_TABS）。
+ *
+ * 【为什么下面的四组不是「搬到概览」而是「收进概览」】砍 tab 本身不减少内容，
+ * 只会把内容搬到一个更长的页面上——用户会从「选哪个 tab」变成「滚不完的一页」。
+ * 所以原 mind / files / tools / memory 的正文没有堆在概览里，而是变成概览页里
+ * **默认收起、展开才挂载**的折叠分组（见 OverviewTab 与 CollapsibleSection）。
+ */
 export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'overview', icon: '▦' },
-  { key: 'mind', icon: '◉' },
-  { key: 'files', icon: '📄' },
-  { key: 'tools', icon: '⚒' },
-  { key: 'memory', icon: '🧠' },
   { key: 'deliverables', icon: '📦' },
 ];
 
@@ -59,7 +74,7 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId, authUser, headless, activeTab: externalTab }: Props) {
+export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId, authUser, headless, activeTab: externalTab, initialSection }: Props) {
   const { t } = useTranslation(['agent', 'common']);
   const isMobile = useIsMobile();
   const [agent, setAgent] = useState<AgentDetail | null>(null);
@@ -102,33 +117,24 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   // 「概览」与「心智」各自只渲染自己那一段。两者曾经被同一个条件一起渲染（根源是
   // mind 从未出现在 TAB_DEF / AGENT_TABS 里），结果概览页上出现两颗停止按钮、
   // 两个「空闲」。外部（网关）Agent 没有 mailbox/注意力循环，只有概览。
-  const bodyTab: ProfileTab = externalInfo ? 'overview' : effectiveTab;
+  //
+  // 概览吸收了原 mind / files / tools / memory 四个 tab 的正文。旧深链（Work 页的
+  // profileTab:'mind' 等）依然有效：落到概览，并自动展开对应分组。
+  const sectionForTab = (tabId: ProfileTab): OverviewSectionId | undefined =>
+    initialSection ?? LEGACY_TAB_SECTION[tabId];
+  const bodyTabFor = (tabId: ProfileTab): ProfileTab =>
+    externalInfo || LEGACY_TAB_SECTION[tabId] ? 'overview' : tabId;
+  // 内联（非 headless）页自带的 tab 栅也会传入 defaultTab，同样需要归一。
+  const localLegacySection = LEGACY_TAB_SECTION[tab];
 
   if (headless) {
     return (
       <div className="flex-1 overflow-y-auto bg-surface-primary">
         <div className="p-5">
-          {(bodyTab === 'overview' || bodyTab === 'mind') && (
-            <>
-              {bodyTab === 'overview' && (
-                <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-              )}
-              {bodyTab === 'mind' && (
-                <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />
-              )}
-            </>
+          {bodyTabFor(effectiveTab) === 'overview' && (
+            <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
           )}
-          {effectiveTab === 'files' && <FilesTab agentId={agentId} />}
-          {effectiveTab === 'tools' && <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />}
-          {effectiveTab === 'memory' && (
-            <>
-              <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />
-              <div className="mt-6">
-                <MemoryTab agentId={agentId} />
-              </div>
-            </>
-          )}
-          {effectiveTab === 'deliverables' && <DeliverablesTab agentId={agentId} />}
+          {bodyTabFor(effectiveTab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
         </div>
       </div>
     );
@@ -189,23 +195,10 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
         </div>
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
-        {tab === 'overview' && (
-          <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
+        {bodyTabFor(tab) === 'overview' && (
+          <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={initialSection ?? localLegacySection} />
         )}
-        {tab === 'mind' && (
-          <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />
-        )}
-        {tab === 'files' && <FilesTab agentId={agentId} />}
-        {tab === 'tools' && <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />}
-        {tab === 'memory' && (
-          <>
-            <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />
-            <div className="mt-6">
-              <MemoryTab agentId={agentId} />
-            </div>
-          </>
-        )}
-        {tab === 'deliverables' && <DeliverablesTab agentId={agentId} />}
+        {bodyTabFor(tab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
       </div>
       {notice && (
         <ConfirmModal
@@ -223,7 +216,65 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean }) {
+// ─── Overview section shell ───────────────────────────────────────────────────
+
+/**
+ * 概览页的可折叠分组。
+ *
+ * 关键在于「展开才挂载子节点」而不是 CSS 隐藏：被收进来的四个区块（心智 / 文件 /
+ * 能力 / 记忆）各自都会发请求，若一开始就全部挂载，打开概览就等于同时打四组接口
+ * ——那样只是把「tab 太多」换成了「页面卡」。
+ *
+ * defaultOpen 只用于深链直接落到某一组的情况（见 LEGACY_TAB_SECTION）。
+ */
+function CollapsibleSection({ id, title, hint, defaultOpen, children }: {
+  id: string; title: string; hint?: string; defaultOpen?: boolean; children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  const panelId = `ov-section-${id}`;
+  return (
+    <section className="border border-border-default rounded-xl overflow-hidden bg-surface-elevated/30">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        aria-controls={panelId}
+        className="w-full flex items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-surface-elevated/60 cursor-pointer"
+      >
+        <span className="text-fg-tertiary text-[10px] shrink-0">{open ? '▾' : '▸'}</span>
+        <span className="text-xs font-medium text-fg-secondary shrink-0">{title}</span>
+        {hint && <span className="text-[10px] text-fg-tertiary truncate">{hint}</span>}
+      </button>
+      {open && <div id={panelId} className="border-t border-border-default/60 p-4">{children}</div>}
+    </section>
+  );
+}
+
+/** 单条活动（心跳 / A2A 共用）。两个列表原先各自烤了一份完全一样的行标记。 */
+function ActivityRow({ agentId, act, dotClass, expanded, onToggle }: {
+  agentId: string; act: ActivitySummary; dotClass: string; expanded: boolean; onToggle: () => void;
+}) {
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
+      >
+        <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />
+        <span className="text-xs text-fg-secondary flex-1 truncate">{act.label}</span>
+        <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
+        <span className="text-fg-tertiary text-[10px]">{expanded ? '▲' : '▼'}</span>
+      </button>
+      {expanded && (
+        <div className="border-t border-border-default/60 bg-surface-primary/40">
+          <ActivityLog agentId={agentId} activityId={act.id} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highlightMailboxId, initialSection }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean; highlightMailboxId?: string; initialSection?: OverviewSectionId }) {
   const [usageInfo, setUsageInfo] = useState<AgentUsageInfo | null>(null);
   const [recentActivities, setRecentActivities] = useState<ActivitySummary[]>([]);
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
@@ -232,8 +283,6 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
   const [activeTasks, setActiveTasks] = useState<TaskInfo[]>([]);
   // 排队消息数（mailbox 待处理）——用于 working 但无执行中任务时说明「在哪忙」
   const [queuedCount, setQueuedCount] = useState(0);
-  // 用量/存储明细默认收起：这些是「查得到就够了」的累计遥测，不是一瞥面板要看的东西。
-  const [showDetails, setShowDetails] = useState(false);
 
   // `agent.state.activeTaskIds` 每次 reload 都是新数组，直接把它当依赖会让这个
   // effect（内含 5 个请求，包括整组织目录扫描）在每次父组件重渲染时重跑。按内容做 key。
@@ -442,18 +491,12 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
             70/30 比例**编造**这两个值。一个加不起来的分解，看的人只会认为是面板
             坏了。与其加免责说明，不如不显示。 */}
         {(usageInfo || agentStorage) && (
-          <>
-            <div className="border-t border-border-default/40" />
-            <button
-              onClick={() => setShowDetails(v => !v)}
-              className="flex items-center gap-1.5 text-[11px] text-fg-tertiary hover:text-fg-secondary transition-colors"
-              aria-expanded={showDetails}
-            >
-              <span>{showDetails ? '▾' : '▸'}</span>
-              <span>{t('agent:profilePage.overview.detailsToggle')}</span>
-            </button>
-            {showDetails && (
-              <div className="space-y-2">
+          <CollapsibleSection
+            id="usage"
+            title={t('agent:profilePage.overview.detailsToggle')}
+            hint={agentStorage ? fmtBytesLocal(agentStorage.size) : undefined}
+          >
+            <div className="space-y-2">
                 {usageInfo && (
                   <div className="space-y-1">
                     <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.lifetimeCaption')}</p>
@@ -486,68 +529,91 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
                   </div>
                 )}
               </div>
-            )}
-          </>
+          </CollapsibleSection>
         )}
       </div>
 
-      {/* Recent Heartbeats */}
-      {heartbeats.total > 0 && (
-        <Card title={t('agent:profilePage.overview.recentHeartbeats')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.heartbeatRuns', { count: heartbeats.total })}</span>}>
-          <div className="divide-y divide-gray-800/50 -mx-5">
-            {heartbeats.shown.map(act => {
-              const isExpanded = expandedActivityId === act.id;
-              return (
-                <div key={act.id}>
-                  <button
-                    onClick={() => setExpandedActivityId(isExpanded ? null : act.id)}
-                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
-                  >
-                    <span className="w-2 h-2 rounded-full shrink-0 bg-green-400" />
-                    <span className="text-xs text-fg-secondary flex-1 truncate">{act.label}</span>
-                    <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
-                    <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>
-                  </button>
-                  {isExpanded && (
-                    <div className="border-t border-border-default/60 bg-surface-primary/40">
-                      <ActivityLog agentId={agent.id} activityId={act.id} />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </Card>
+      {/* 最近活动 —— 心跳与 A2A 合并为一个默认收起的组。
+          原先它们是两张常驻卡片，在首屏占掉很大一块，而这两类信息属于「查得到就
+          够了」的遥测。折叠后的标题行仍然给出总数，所以不看也不丢信息。 */}
+      {(heartbeats.total > 0 || chats.total > 0) && (
+        <CollapsibleSection
+          id="recent"
+          title={t('agent:profilePage.overview.sections.recent.title')}
+          hint={[
+            heartbeats.total > 0 ? t('agent:profilePage.overview.heartbeatRuns', { count: heartbeats.total }) : null,
+            chats.total > 0 ? t('agent:profilePage.overview.conversations', { count: chats.total }) : null,
+          ].filter(Boolean).join(' · ')}
+          defaultOpen={initialSection === 'recent'}
+        >
+          {heartbeats.total > 0 && (
+            <div>
+              <h4 className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-1">{t('agent:profilePage.overview.recentHeartbeats')}</h4>
+              <div className="divide-y divide-gray-800/50">
+                {heartbeats.shown.map(act => (
+                  <ActivityRow key={act.id} agentId={agent.id} act={act} dotClass="bg-green-400"
+                    expanded={expandedActivityId === act.id}
+                    onToggle={() => setExpandedActivityId(expandedActivityId === act.id ? null : act.id)} />
+                ))}
+              </div>
+            </div>
+          )}
+          {chats.total > 0 && (
+            <div className="mt-3">
+              <h4 className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-1">{t('agent:profilePage.overview.recentA2A')}</h4>
+              <div className="divide-y divide-gray-800/50">
+                {chats.shown.map(act => (
+                  <ActivityRow key={act.id} agentId={agent.id} act={act} dotClass="bg-blue-400"
+                    expanded={expandedActivityId === act.id}
+                    onToggle={() => setExpandedActivityId(expandedActivityId === act.id ? null : act.id)} />
+                ))}
+              </div>
+            </div>
+          )}
+        </CollapsibleSection>
       )}
 
-      {/* Recent A2A Communications */}
-      {chats.total > 0 && (
-        <Card title={t('agent:profilePage.overview.recentA2A')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.conversations', { count: chats.total })}</span>}>
-          <div className="divide-y divide-gray-800/50 -mx-5">
-            {chats.shown.map(act => {
-              const isExpanded = expandedActivityId === act.id;
-              return (
-                <div key={act.id}>
-                  <button
-                    onClick={() => setExpandedActivityId(isExpanded ? null : act.id)}
-                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
-                  >
-                    <span className="w-2 h-2 rounded-full shrink-0 bg-blue-400" />
-                    <span className="text-xs text-fg-secondary flex-1 truncate">{act.label}</span>
-                    <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
-                    <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>
-                  </button>
-                  {isExpanded && (
-                    <div className="border-t border-border-default/60 bg-surface-primary/40">
-                      <ActivityLog agentId={agent.id} activityId={act.id} />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      )}
+      {/* ── 以下四组原先是独立 tab（心智 / 文件 / 能力 / 记忆与心跳），现在收进概览。
+          默认收起、且**展开才挂载**：它们各自都会发请求，若只是 CSS 隐藏，打开概览
+          就会把四个区块的数据全拉一遍——那就把「少入口」换成了「慢页面」。 */}
+      <CollapsibleSection
+        id="mind"
+        title={t('agent:profilePage.overview.sections.mind.title')}
+        hint={t('agent:profilePage.overview.sections.mind.hint')}
+        defaultOpen={initialSection === 'mind' || !!highlightMailboxId}
+      >
+        <MindTab agentId={agent.id} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        id="files"
+        title={t('agent:profilePage.overview.sections.files.title')}
+        hint={t('agent:profilePage.overview.sections.files.hint')}
+        defaultOpen={initialSection === 'files'}
+      >
+        <FilesTab agentId={agent.id} />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        id="tools"
+        title={t('agent:profilePage.overview.sections.tools.title')}
+        hint={t('agent:profilePage.overview.sections.tools.hint')}
+        defaultOpen={initialSection === 'tools'}
+      >
+        <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        id="memory"
+        title={t('agent:profilePage.overview.sections.memory.title')}
+        hint={t('agent:profilePage.overview.sections.memory.hint')}
+        defaultOpen={initialSection === 'memory'}
+      >
+        <HeartbeatTab agentId={agent.id} initialData={agent.heartbeat} />
+        <div className="mt-6">
+          <MemoryTab agentId={agent.id} />
+        </div>
+      </CollapsibleSection>
     </div>
   );
 }

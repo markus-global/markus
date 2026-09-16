@@ -29,7 +29,7 @@ import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
 import { RightPanel } from '../components/RightPanel.tsx';
 import { ChatSearchPanel, GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
-import { AgentProfile, type ProfileTab } from './AgentProfile.tsx';
+import { AgentProfile, LEGACY_TAB_SECTION, type ProfileTab, type OverviewSectionId } from './AgentProfile.tsx';
 import { agentStatusPresentation } from '../lib/agentOverview.ts';
 import { TeamProfile, type TeamTab } from './TeamProfile.tsx';
 import {
@@ -483,6 +483,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
 
   const [profileDefaultTab, setProfileDefaultTab] = useState<ProfileTab | undefined>();
+  // 深链指向的分组（见 LEGACY_TAB_SECTION）：概览页会预先展开它。
+  const [profileSection, setProfileSection] = useState<OverviewSectionId | undefined>();
   const [profileHighlightMailboxId, setProfileHighlightMailboxId] = useState<string | undefined>();
 
   // Inline editing for header name/description
@@ -494,13 +496,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const headerDescRef = useRef<HTMLInputElement>(null);
 
   const switchToProfile = useCallback((defaultTab?: ProfileTab, highlightMailboxId?: string) => {
-    setProfileDefaultTab(defaultTab);
+    // 旧的深链（如 Work 页的 profileTab:'mind'）归一化：tab 只剩聊天/概览/产出，
+    // 所以落到「概览」并预先展开对应分组——否则 tab 栅会没有任何高亮。
+    const section = defaultTab ? LEGACY_TAB_SECTION[defaultTab] : undefined;
+    const normalizedTab = section ? 'overview' : defaultTab;
+    setProfileSection(section);
+    setProfileDefaultTab(normalizedTab);
     setProfileHighlightMailboxId(highlightMailboxId);
     if (isMobile) {
       setMainTab('profile');
       history.pushState({ mobileProfile: true }, '', window.location.hash);
     } else {
-      setMainTab(defaultTab ?? 'overview');
+      setMainTab(normalizedTab ?? 'overview');
     }
   }, [isMobile]);
 
@@ -3880,6 +3887,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               onBack={() => setMainTab('chat')}
               inline
               defaultTab={profileDefaultTab}
+              initialSection={profileSection}
               highlightMailboxId={profileHighlightMailboxId}
               onSwipeBack={() => { if (isProfileTab(mainTabRef.current)) history.back(); else setMainTab('chat'); }}
               authUser={authUser}
@@ -3906,6 +3914,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               inline
               headless
               activeTab={mainTab as ProfileTab}
+              initialSection={profileSection}
               highlightMailboxId={profileHighlightMailboxId}
               authUser={authUser}
             />

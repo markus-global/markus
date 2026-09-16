@@ -150,6 +150,13 @@
       "detailsToggle": "Usage & storage details",
       "lifetimeCaption": "Cumulative since the agent was created",
       "storageDepthLimited": "Directory tree is deep — actual usage may be higher",
+      "sections": {
+        "recent": { "title": "Recent Activity" },
+        "mind": { "title": "Runtime & Attention", "hint": "Current focus · queue · recent decisions" },
+        "files": { "title": "Files", "hint": "ROLE.md / HEARTBEAT.md / knowledge.md, etc." },
+        "tools": { "title": "Capabilities", "hint": "Enabled skills and tools" },
+        "memory": { "title": "Memory & Heartbeat", "hint": "Long-term memory · sessions · heartbeat rhythm" }
+      },
       "storageBuckets": {
         "workspace": "Workspace",
         "sessions": "Sessions",

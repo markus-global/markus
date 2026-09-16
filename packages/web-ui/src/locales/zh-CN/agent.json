@@ -150,6 +150,13 @@
       "detailsToggle": "用量与存储明细",
       "lifetimeCaption": "自 Agent 创建以来累计",
       "storageDepthLimited": "目录层级较深，实际占用可能高于此值",
+      "sections": {
+        "recent": { "title": "最近活动" },
+        "mind": { "title": "运行与注意力", "hint": "当前焦点 · 待处理队列 · 最近决策" },
+        "files": { "title": "文件", "hint": "ROLE.md / HEARTBEAT.md / knowledge.md 等" },
+        "tools": { "title": "能力", "hint": "已启用的技能与工具" },
+        "memory": { "title": "记忆与心跳", "hint": "长期记忆 · 会话 · 心跳节奏与唤醒" }
+      },
       "storageBuckets": {
         "workspace": "工作区",
         "sessions": "会话记录",
