@@ -116,7 +116,7 @@ export const PROVIDERS: ProviderModel[] = [
     modelEnv: 'OPENROUTER_MODEL',
     baseUrlEnv: 'OPENROUTER_BASE_URL',
     baseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'xiaomi/mimo-v2-pro:free',
+    defaultModel: 'google/gemini-3.8-flash',
   },
   {
     id: 'zai',

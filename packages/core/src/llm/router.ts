@@ -1,4 +1,4 @@
-import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelCapabilityType, type CostTier, type CapabilityRoutingConfig, type CapabilityModelAssignment, type ProviderCapabilities } from '@markus/shared';
+import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelCapabilityType, type CostTier, type CapabilityRoutingConfig, type CapabilityModelAssignment, type ProviderCapabilities, getProviderBootstrapModel } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import { DEFAULT_REQUEST_MAX_TOKENS, type LLMProviderInterface, type MultiModalProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -597,6 +597,26 @@ export class LLMRouter {
     }
     const customModels = this.customModelCatalog.get(providerName) ?? [];
     const merged = [...builtinModels, ...customModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
+    // The static table above carries only non-discoverable entries (media models
+    // and OAuth-only Codex), so a chat provider whose listing has not been
+    // fetched yet — no key, offline, or first run — would otherwise render an
+    // empty picker. Seed it with the registry's documented bootstrap model and
+    // label it 'builtin' so the UI says where it came from.
+    const hasChatModel = merged.some(m => (m.capabilities?.length ?? 0) === 0 && m.contextWindow > 0);
+    if (!hasChatModel) {
+      const bootstrapId = getProviderBootstrapModel(providerName);
+      if (bootstrapId && !merged.some(m => m.id === bootstrapId)) {
+        merged.push({
+          id: bootstrapId,
+          name: bootstrapId,
+          provider: providerName,
+          contextWindow: 0,
+          maxOutputTokens: 0,
+          cost: { input: 0, output: 0 },
+          source: 'builtin',
+        });
+      }
+    }
     // Offline / pre-discovery path: everything here comes from Markus' own
     // metadata table, so it is 'builtin'. The live listing is authoritative and
     // overrides this as soon as it has been fetched once.
@@ -994,22 +1014,38 @@ export class LLMRouter {
    * The catalog (from LiteLLM) is refreshed every 24h so prices stay current.
    */
   private enrichModelFromCatalog(model: ModelDefinition): ModelDefinition {
-    if (!this._modelCatalogService) return model;
+    const service = this._modelCatalogService;
+    if (!service) return model;
     // Try exact ID, then provider-prefixed ID
-    const catalogEntry = this._modelCatalogService.getModelInfo(model.id)
-      ?? this._modelCatalogService.getModelInfo(`${model.provider}/${model.id}`);
+    const catalogEntry = service.getModelInfo(model.id)
+      ?? service.getModelInfo(`${model.provider}/${model.id}`);
     if (!catalogEntry) return model;
-    if (catalogEntry.inputCostPer1MTokens <= 0 && catalogEntry.outputCostPer1MTokens <= 0) return model;
+
+    const hasPricing = catalogEntry.inputCostPer1MTokens > 0 || catalogEntry.outputCostPer1MTokens > 0;
+    // Capability flags come from the maintained catalog as well. The static
+    // metadata table no longer carries conversational models, so vision /
+    // reasoning support has to be resolved from here rather than from a
+    // hand-written id list that goes stale every release.
+    const caps = catalogEntry.capabilities;
+    const isChatModel = !model.capabilities || model.capabilities.length === 0;
+    const inputTypes = isChatModel && caps
+      ? (caps.vision ? (['text', 'image'] as Array<'text' | 'image'>) : (['text'] as Array<'text' | 'image'>))
+      : undefined;
+
+    if (!hasPricing && !inputTypes && !catalogEntry.maxInputTokens) return model;
+
     return {
       ...model,
       contextWindow: catalogEntry.maxInputTokens || model.contextWindow,
       maxOutputTokens: catalogEntry.maxOutputTokens || model.maxOutputTokens,
-      cost: {
+      reasoning: isChatModel ? (caps?.reasoning ?? model.reasoning) : model.reasoning,
+      inputTypes: inputTypes ?? model.inputTypes,
+      cost: hasPricing ? {
         input: catalogEntry.inputCostPer1MTokens || model.cost?.input || 0,
         output: catalogEntry.outputCostPer1MTokens || model.cost?.output || 0,
         cacheRead: catalogEntry.cacheReadCostPer1MTokens ?? model.cost?.cacheRead,
         cacheWrite: catalogEntry.cacheWriteCostPer1MTokens ?? model.cost?.cacheWrite,
-      },
+      } : model.cost,
     };
   }
 
@@ -2259,6 +2295,14 @@ export class LLMRouter {
     if (!provider) return undefined;
     const custom = this.customModelConfigs.get(name);
     if (custom?.cost) return custom.cost;
+
+    // Prefer the provider's own (enriched) entry: pricing now comes from the
+    // maintained catalog rather than the static table.
+    const discovered = this.getProviderModels(name).find(m => m.id === provider.model);
+    if (discovered?.cost && (discovered.cost.input > 0 || discovered.cost.output > 0)) {
+      return discovered.cost;
+    }
+
     const catalogEntry = findCatalogEntry(name, provider.model, {
       builtin: BUILTIN_MODEL_CATALOG,
       hub: this.customModelCatalog.get(name),
@@ -2283,17 +2327,25 @@ export class LLMRouter {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);
     if (!provider) return ['text'];
-    const catalogEntry = findCatalogEntry(name, modelId ?? provider.model, {
+    const effectiveId = modelId ?? provider.model;
+
+    // 1. The provider's own listing, enriched from the maintained catalog —
+    //    this is the primary source now that conversational models are no longer
+    //    hard-coded in the static table.
+    const discovered = this.getProviderModels(name).find(m => m.id === effectiveId);
+    if (discovered?.inputTypes && discovered.inputTypes.length > 0) return discovered.inputTypes;
+
+    // 2. Static metadata table (media models, OAuth-only Codex) plus any
+    //    user/Hub catalog entry.
+    const catalogEntry = findCatalogEntry(name, effectiveId, {
       builtin: BUILTIN_MODEL_CATALOG,
       hub: this.customModelCatalog.get(name),
     });
     if (catalogEntry?.inputTypes) return catalogEntry.inputTypes;
-    // No catalog entry for this model — be CONSERVATIVE and assume text-only.
+    // No metadata for this model — be CONSERVATIVE and assume text-only.
     // Previously this defaulted to ['text','image'], which made text-only models
-    // (e.g. deepseek-v4-flash) look vision-capable and caused upstream 404
-    // ("No endpoints found that support image input") when the agent pushed
-    // image_url parts to them. Text-only default is safe: vision-capable models
-    // are listed in the catalog with explicit inputTypes.
+    // look vision-capable and caused upstream 404 ("No endpoints found that
+    // support image input") when the agent pushed image_url parts to them.
     return ['text'];
   }
 
@@ -2307,13 +2359,17 @@ export class LLMRouter {
 
   /**
    * Check if the active provider supports Anthropic server-side compaction.
-   * Only Claude Opus 4.x and Sonnet 4.x models support the compact_20260112 beta.
+   * Claude Opus / Sonnet 4 and later expose the compact beta. Match the
+   * generation number instead of a fixed id list, which went stale the moment
+   * Anthropic shipped 5.x.
    */
   isCompactionSupported(providerName?: string): boolean {
     const name = providerName ?? this.defaultProvider;
     const provider = this.providers.get(name);
     if (!provider) return false;
-    return provider.model.startsWith('claude-opus-4') || provider.model.startsWith('claude-sonnet-4');
+    const m = provider.model.match(/^claude-(opus|sonnet)-(\d+)/);
+    if (!m) return false;
+    return Number(m[2]) >= 4;
   }
 
   private emitLog(providerName: string, model: string, request: LLMRequest, response: LLMResponse, durationMs: number): void {
@@ -2372,16 +2428,10 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 // - Google: https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini
 // - MiniMax: https://platform.minimax.io/docs/api-reference/api-overview
 const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
-  // Anthropic — https://docs.anthropic.com/claude/reference/input-and-output-sizes
-  { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'claude-sonnet-4-6-20260514', name: 'Claude Sonnet 4.6', provider: 'anthropic', contextWindow: 1000000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4 (legacy)', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'pro' },
-  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'pro' },
-  { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku (legacy)', provider: 'anthropic', contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'base' },
-  // OpenAI — https://developers.openai.com/api/docs/models
-  { id: 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'o4-mini', name: 'o4-mini', provider: 'openai', contextWindow: 200000, maxOutputTokens: 100000, cost: { input: 1.1, output: 4.4 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
+  // Anthropic conversational models: NOT listed here. `GET /v1/models` is
+  // authoritative and models are discovered at runtime (model-discovery.ts).
+  // OpenAI conversational models: NOT listed here — `GET /v1/models` is
+  // authoritative and they are discovered at runtime.
   // OpenAI Multimodal — image, TTS, STT
   { id: 'gpt-image-1', name: 'GPT Image 1', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
   { id: 'dall-e-3', name: 'DALL-E 3', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
@@ -2392,48 +2442,37 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   { id: 'gpt-5.5', name: 'GPT-5.5 (Codex)', provider: 'openai-codex', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max', description: 'Uses ChatGPT subscription via OAuth' },
   { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini (Codex)', provider: 'openai-codex', contextWindow: 512000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro', description: 'Uses ChatGPT subscription via OAuth — fast' },
   { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Spark (Codex)', provider: 'openai-codex', contextWindow: 128000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'base', description: 'Uses ChatGPT subscription via OAuth — Pro only, real-time' },
-  // Google — https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini
-  { id: 'gemini-3-1-pro', name: 'Gemini 3.1 Pro', provider: 'google', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'google', contextWindow: 1048576, maxOutputTokens: 65536, cost: { input: 0.30, output: 2.50 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
+  // Google conversational models: NOT listed here — `GET /v1beta/models` is
+  // authoritative and they are discovered at runtime.
   // Google Multimodal — image, video
   { id: 'imagen-3.0-generate-002', name: 'Imagen 3', provider: 'google', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
   { id: 'veo-2.0-generate-001', name: 'Veo 2', provider: 'google', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'max', capabilities: ['videoGeneration'] },
-  // MiniMax Global — https://platform.minimax.io
-  { id: 'MiniMax-M3', name: 'MiniMax M3', provider: 'minimax', contextWindow: 512000, maxOutputTokens: 128000, cost: { input: 0.6, output: 2.4, cacheRead: 0.12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', provider: 'minimax', contextWindow: 204800, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
-  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', provider: 'minimax', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 0.3, output: 1.2, cacheRead: 0.03, cacheWrite: 0.375 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
-  // MiniMax Multimodal — image, TTS, video
+  // MiniMax Global conversational models: NOT listed here — they are discovered
+  // from the provider's own model list at runtime.
+  // MiniMax Multimodal — image, TTS, video.
+  // Verified against https://platform.minimax.io/docs/api-reference/api-overview
+  // (2026-09): the Hailuo 2.3 video ids and bare `speech-02` are retired — the
+  // current families are MiniMax-H3 / H3-Max and speech-2.8 / 2.6 / 02.
   { id: 'image-01', name: 'MiniMax Image-01', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
-  { id: 'speech-02-hd', name: 'MiniMax Speech-02-HD', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['tts'] },
-  { id: 'speech-02', name: 'MiniMax Speech-02', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'base', capabilities: ['tts'] },
-  { id: 'MiniMax-Hailuo-2.3', name: 'Hailuo 2.3', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'max', capabilities: ['videoGeneration'] },
-  { id: 'MiniMax-Hailuo-2.3-Fast', name: 'Hailuo 2.3 Fast', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['videoGeneration'] },
+  { id: 'speech-2.8-hd', name: 'MiniMax Speech 2.8 HD', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['tts'] },
+  { id: 'speech-2.8-turbo', name: 'MiniMax Speech 2.8 Turbo', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['tts'] },
+  { id: 'speech-02-hd', name: 'MiniMax Speech-02-HD', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'base', capabilities: ['tts'] },
+  { id: 'MiniMax-H3', name: 'MiniMax H3', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'max', capabilities: ['videoGeneration'] },
+  { id: 'MiniMax-H3-Max', name: 'MiniMax H3 Max', provider: 'minimax', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['videoGeneration'] },
   // MiniMax China shares the same models as MiniMax Global (resolved via REGIONAL_PROVIDER_ALIASES)
-  // OpenRouter — https://openrouter.ai/models (pass-through pricing varies by upstream provider)
-  { id: 'xiaomi/mimo-v2-pro', name: 'MiMo-V2-Pro', provider: 'openrouter', contextWindow: 1048576, maxOutputTokens: 131072, cost: { input: 1, output: 3, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
-  { id: 'anthropic/claude-opus-4-6', name: 'Claude Opus 4.6 (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 128000, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'openai/gpt-5.4', name: 'GPT-5.4 (via OpenRouter)', provider: 'openrouter', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 2.5, output: 15, cacheRead: 0.25 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'google/gemini-3-1-pro', name: 'Gemini 3.1 Pro (via OpenRouter)', provider: 'openrouter', contextWindow: 1000000, maxOutputTokens: 65536, cost: { input: 2, output: 12 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
-  // DeepSeek — https://api-docs.deepseek.com/
-  { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
-  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.435, output: 0.87, cacheRead: 0.003625 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
-  { id: 'deepseek-chat', name: 'DeepSeek-Chat (legacy)', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
-  { id: 'deepseek-reasoner', name: 'DeepSeek-Reasoner (legacy)', provider: 'deepseek', contextWindow: 1000000, maxOutputTokens: 384000, cost: { input: 0.14, output: 0.28, cacheRead: 0.0028 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
-  // SiliconFlow China — https://docs.siliconflow.cn/docs/model-library
-  { id: 'Qwen/Qwen3.5-35B-A3B', name: 'Qwen3.5-35B-A3B', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.24, output: 1.80 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
-  { id: 'Qwen/Qwen3.5-122B-A10B', name: 'Qwen3.5-122B-A10B', provider: 'siliconflow', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.26, output: 2.08 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max' },
-  { id: 'Qwen/Qwen3.5-27B', name: 'Qwen3.5-27B', provider: 'siliconflow', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.25, output: 2.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
-  { id: 'Qwen/Qwen3.5-9B', name: 'Qwen3.5-9B', provider: 'siliconflow', contextWindow: 262144, maxOutputTokens: 262144, cost: { input: 0.10, output: 0.15 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
-  { id: 'deepseek-ai/DeepSeek-V3', name: 'DeepSeek-V3 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.25, output: 1.00 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
-  { id: 'deepseek-ai/DeepSeek-V3.2', name: 'DeepSeek-V3.2 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 163840, maxOutputTokens: 163840, cost: { input: 0.27, output: 0.42 }, reasoning: false, inputTypes: ['text'], tier: 'base' },
-  { id: 'moonshotai/Kimi-K2.5', name: 'Kimi-K2.5 (via SiliconFlow)', provider: 'siliconflow', contextWindow: 131072, maxOutputTokens: 8192, cost: { input: 0.60, output: 3.00 }, reasoning: true, inputTypes: ['text'], tier: 'pro' },
+  // OpenRouter conversational models: NOT listed here. `GET /api/v1/models` is
+  // public, authoritative and returns pricing/context directly — the previous
+  // hand-maintained entries (xiaomi/mimo-v2-pro, anthropic/claude-opus-4-6, …)
+  // had already drifted away from the live list.
+  // DeepSeek conversational models: NOT listed here. `GET /models` returns the
+  // live ids (deepseek-chat / deepseek-reasoner / …); pricing comes from the
+  // LiteLLM catalog used by enrichModelFromCatalog().
+  // SiliconFlow conversational models: NOT listed here — the provider's own
+  // model list (hundreds of re-hosted ids) is authoritative.
   // SiliconFlow Multimodal — STT
   { id: 'FunAudioLLM/SenseVoiceSmall', name: 'SenseVoice Small', provider: 'siliconflow', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['stt'] },
   // SiliconFlow Global shares the same models as SiliconFlow China (resolved via REGIONAL_PROVIDER_ALIASES)
-  // ZAI (Zhipu) — https://docs.z.ai/guides/overview/pricing
-  { id: 'glm-5.1', name: 'GLM-5.1', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 1.4, output: 4.4, cacheRead: 0.26 }, reasoning: true, inputTypes: ['text'], tier: 'max' },
-  { id: 'glm-5', name: 'GLM-5', provider: 'zai', contextWindow: 205000, maxOutputTokens: 16384, cost: { input: 1.0, output: 3.2, cacheRead: 0.2 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro' },
-  { id: 'glm-4.7-flashx', name: 'GLM-4.7 FlashX', provider: 'zai', contextWindow: 200000, maxOutputTokens: 16384, cost: { input: 0.07, output: 0.4 }, reasoning: true, inputTypes: ['text'], tier: 'base' },
+  // ZAI conversational models: NOT listed here — discovered from the provider.
   // Markus Cloud — model list is loaded dynamically from Hub
   // (`/api/models/live/markus` → original OpenRouter ids). No static aliases.
 ];
