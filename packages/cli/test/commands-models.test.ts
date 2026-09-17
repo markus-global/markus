@@ -9,10 +9,27 @@ describe('models command', () => {
   beforeEach(() => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     setGlobalJson(false);
+    // The command asks the provider for its model list. Stub it so the unit
+    // tests stay offline *and* deterministic — and so the ids line up with the
+    // registry defaults (that is what the `(default)` marker keys off).
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      const id = String(url).includes('anthropic')
+        ? 'claude-opus-4-6'
+        : String(url).includes('googleapis')
+          ? 'gemini-3-1-pro'
+          : 'gpt-5.4';
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id }, { id: `${id}-alt` }] }),
+        text: async () => '',
+      };
+    }));
   });
 
   afterEach(() => {
     logSpy.mockRestore();
+    vi.unstubAllGlobals();
     setGlobalJson(false);
   });
 

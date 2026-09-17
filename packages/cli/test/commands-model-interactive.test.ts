@@ -39,9 +39,23 @@ describe('model command interactive mode', () => {
       origSave(cfg, path ?? configPath),
     );
 
+    // Live model listing is exercised through this stub — it must answer `json()`
+    // because the CLI now asks the provider for its model list.
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' }),
+      vi.fn().mockImplementation(async (url: string) => {
+        const id = String(url).includes('anthropic')
+          ? 'claude-opus-4-6'
+          : String(url).includes('googleapis')
+            ? 'gemini-3-1-pro'
+            : 'gpt-5.4';
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '',
+          json: async () => ({ data: [{ id }, { id: `${id}-alt` }] }),
+        };
+      }),
     );
   });
 
@@ -63,7 +77,9 @@ describe('model command interactive mode', () => {
   it('configures a new provider through the interactive wizard', async () => {
     const { PROVIDERS } = await import('@markus/shared');
     const anthropicNum = String(PROVIDERS.findIndex(p => p.id === 'anthropic') + 1);
-    answerQueue.push('1', anthropicNum, '1', 'sk-anthropic1234567890', 'primary');
+    // Prompt order: menu → provider → API key → model → label.
+    // (The API key is asked before the model list, because listing models needs it.)
+    answerQueue.push('1', anthropicNum, 'sk-anthropic1234567890', '1', 'primary');
 
     await runInteractiveModel();
 
@@ -132,7 +148,8 @@ describe('model command interactive mode', () => {
   });
 
   it('skips provider setup when no api key is entered', async () => {
-    answerQueue.push('1', '1', '1', '', 'primary');
+    // menu → provider → (empty) API key
+    answerQueue.push('1', '1', '');
 
     await runInteractiveModel();
 

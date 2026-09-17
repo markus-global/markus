@@ -18,38 +18,23 @@
  * providers (Anthropic, Google, Ollama) have their own. We never guess ids.
  */
 
+import { PROVIDER_DEFAULT_BASE_URLS as REGISTRY_BASE_URLS } from '@markus/shared';
+
 /** Anthropic requires an explicit API version header on every request. */
 export const ANTHROPIC_VERSION = '2023-06-01';
 
 /**
- * Default base URLs per provider. This mirrors the official documentation of
- * each provider and is the fallback used when the user did not configure an
- * explicit `baseUrl`. Kept here (not in the UI) so every consumer agrees.
+ * Default base URLs per provider, derived from the canonical registry in
+ * `@markus/shared` (`PROVIDERS`). One place to update when a provider moves its
+ * endpoint — previously this table existed in three packages and drifted.
+ *
+ * The extra keys are historical id aliases: configs in the wild use both
+ * `together_ai` / `together-ai` and `fireworks_ai` / `fireworks`.
  */
 export const PROVIDER_DEFAULT_BASE_URLS: Record<string, string> = {
-  openai: 'https://api.openai.com/v1',
-  anthropic: 'https://api.anthropic.com',
-  google: 'https://generativelanguage.googleapis.com/v1beta',
-  deepseek: 'https://api.deepseek.com',
-  siliconflow: 'https://api.siliconflow.cn/v1',
-  'siliconflow-intl': 'https://api.siliconflow.com/v1',
-  minimax: 'https://api.minimax.io/v1',
-  'minimax-cn': 'https://api.minimaxi.com/v1',
-  openrouter: 'https://openrouter.ai/api/v1',
-  zai: 'https://api.z.ai/api/paas/v4',
-  xai: 'https://api.x.ai/v1',
-  mistral: 'https://api.mistral.ai/v1',
-  groq: 'https://api.groq.com/openai/v1',
-  perplexity: 'https://api.perplexity.ai',
-  cohere: 'https://api.cohere.ai/compatibility/v1',
-  together_ai: 'https://api.together.xyz/v1',
-  'together-ai': 'https://api.together.xyz/v1',
-  fireworks_ai: 'https://api.fireworks.ai/inference/v1',
-  fireworks: 'https://api.fireworks.ai/inference/v1',
-  moonshot: 'https://api.moonshot.cn/v1',
-  volcengine: 'https://ark.cn-beijing.volces.com/api/v3',
-  dashscope: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-  ollama: 'http://localhost:11434',
+  ...REGISTRY_BASE_URLS,
+  'together-ai': REGISTRY_BASE_URLS['together_ai']!,
+  fireworks: REGISTRY_BASE_URLS['fireworks_ai']!,
 };
 
 /** One model as reported by the provider's own model-list endpoint. */

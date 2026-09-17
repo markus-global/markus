@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -9799,6 +9799,15 @@ EXPLANATION_END`;
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
 
+      // Derived from the canonical registry in @markus/shared. Do NOT re-declare
+      // base URLs or model ids here — this table previously disagreed with the
+      // registry (e.g. OpenRouter's model suffix) and with the router.
+      // The id list below is only *policy*: which providers we auto-detect from
+      // the environment. It is not a model list.
+      const ENV_DETECT_PROVIDER_IDS = [
+        'anthropic', 'openai', 'google', 'siliconflow', 'siliconflow-intl',
+        'minimax', 'minimax-cn', 'openrouter', 'zai', 'deepseek',
+      ];
       const ENV_MODEL_MAP: Array<{
         provider: string;
         displayName: string;
@@ -9807,18 +9816,18 @@ EXPLANATION_END`;
         baseUrlEnv?: string;
         defaultModel: string;
         defaultBaseUrl?: string;
-      }> = [
-        { provider: 'anthropic', displayName: 'Anthropic', keyEnv: 'ANTHROPIC_API_KEY', defaultModel: 'claude-opus-4-6' },
-        { provider: 'openai', displayName: 'OpenAI', keyEnv: 'OPENAI_API_KEY', defaultModel: 'gpt-5.4' },
-        { provider: 'google', displayName: 'Google Gemini', keyEnv: 'GOOGLE_API_KEY', defaultModel: 'gemini-3-1-pro' },
-        { provider: 'siliconflow', displayName: 'SiliconFlow (中国)', keyEnv: 'SILICONFLOW_API_KEY', modelEnv: 'SILICONFLOW_MODEL', baseUrlEnv: 'SILICONFLOW_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api.siliconflow.cn/v1' },
-        { provider: 'siliconflow-intl', displayName: 'SiliconFlow (Global)', keyEnv: 'SILICONFLOW_INTL_API_KEY', modelEnv: 'SILICONFLOW_INTL_MODEL', baseUrlEnv: 'SILICONFLOW_INTL_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api.siliconflow.com/v1' },
-        { provider: 'minimax', displayName: 'MiniMax (Global)', keyEnv: 'MINIMAX_API_KEY', modelEnv: 'MINIMAX_MODEL', baseUrlEnv: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M3', defaultBaseUrl: 'https://api.minimax.io/v1' },
-        { provider: 'minimax-cn', displayName: 'MiniMax (中国)', keyEnv: 'MINIMAX_CN_API_KEY', modelEnv: 'MINIMAX_CN_MODEL', baseUrlEnv: 'MINIMAX_CN_BASE_URL', defaultModel: 'MiniMax-M3', defaultBaseUrl: 'https://api.minimaxi.com/v1' },
-        { provider: 'openrouter', displayName: 'OpenRouter', keyEnv: 'OPENROUTER_API_KEY', modelEnv: 'OPENROUTER_MODEL', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultModel: 'xiaomi/mimo-v2-pro', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
-        { provider: 'zai', displayName: 'ZAI', keyEnv: 'ZAI_API_KEY', modelEnv: 'ZAI_MODEL', baseUrlEnv: 'ZAI_BASE_URL', defaultModel: 'glm-5.1', defaultBaseUrl: 'https://api.z.ai/api/paas/v4' },
-        { provider: 'deepseek', displayName: 'DeepSeek', keyEnv: 'DEEPSEEK_API_KEY', modelEnv: 'DEEPSEEK_MODEL', baseUrlEnv: 'DEEPSEEK_BASE_URL', defaultModel: 'deepseek-v4-flash', defaultBaseUrl: 'https://api.deepseek.com' },
-      ];
+      }> = ENV_DETECT_PROVIDER_IDS
+        .map(id => PROVIDERS.find(p => p.id === id))
+        .filter((p): p is NonNullable<typeof p> => !!p)
+        .map(p => ({
+          provider: p.id,
+          displayName: p.label,
+          keyEnv: p.envKey,
+          modelEnv: p.modelEnv,
+          baseUrlEnv: p.baseUrlEnv,
+          defaultModel: p.defaultModel,
+          defaultBaseUrl: p.baseUrl,
+        }));
 
       const detected: Array<{
         provider: string;
