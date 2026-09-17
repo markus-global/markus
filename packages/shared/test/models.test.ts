@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PROVIDERS, isPlaceholder } from '../src/models.js';
+import { PROVIDERS, getProvider, getProviderBootstrapModel, resolveProviderBaseUrl, isPlaceholder } from '../src/models.js';
 
 describe('PROVIDERS', () => {
   it('is a non-empty array', () => {
@@ -11,15 +11,28 @@ describe('PROVIDERS', () => {
       expect(p.id).toBeTruthy();
       expect(p.label).toBeTruthy();
       expect(p.envKey).toBeTruthy();
-      // Hub-driven providers (e.g. markus) intentionally ship empty local catalogs.
-      if (p.id === 'markus') {
-        expect(p.models).toEqual([]);
-        expect(p.defaultModel).toBe('');
-        continue;
-      }
-      expect(p.defaultModel).toBeTruthy();
-      expect(p.models.length).toBeGreaterThan(0);
-      expect(p.models).toContain(p.defaultModel);
+      // `defaultModel` is a *bootstrap* value, not a curated catalog. It is
+      // deliberately empty for Hub-driven providers (e.g. `markus`), whose
+      // catalog only ever comes from the Hub.
+      expect(typeof p.defaultModel).toBe('string');
+    }
+  });
+
+  it('carries no hardcoded model catalog', () => {
+    // Regression guard for the single-source-of-truth rule: the authoritative
+    // model list MUST come from the provider's own listing endpoint
+    // (`discoverProviderModels()`). A `models` array here would shadow the live
+    // list and go stale silently. See the header note in src/models.ts.
+    for (const p of PROVIDERS) {
+      expect(p).not.toHaveProperty('models');
+    }
+  });
+
+  it('ships base URLs without a trailing slash', () => {
+    // URL building appends version segments (`/models`, `/chat/completions`),
+    // so a trailing slash here produces the `//` class of bugs.
+    for (const p of PROVIDERS) {
+      if (p.baseUrl) expect(p.baseUrl.endsWith('/')).toBe(false);
     }
   });
 
@@ -33,6 +46,29 @@ describe('PROVIDERS', () => {
     expect(ids).toContain('anthropic');
     expect(ids).toContain('openai');
     expect(ids).toContain('google');
+  });
+});
+
+describe('provider lookups', () => {
+  it('getProvider resolves a known id', () => {
+    expect(getProvider('anthropic')?.label).toBe('Anthropic');
+  });
+
+  it('getProvider returns undefined for unknown ids', () => {
+    expect(getProvider('definitely-not-a-provider')).toBeUndefined();
+  });
+
+  it('getProviderBootstrapModel returns the bootstrap value, empty when unknown', () => {
+    expect(getProviderBootstrapModel('anthropic')).toBe(getProvider('anthropic')?.defaultModel);
+    expect(getProviderBootstrapModel('nope')).toBe('');
+  });
+
+  it('resolveProviderBaseUrl honours the baseUrlEnv override', () => {
+    const p = getProvider('anthropic')!;
+    expect(resolveProviderBaseUrl('anthropic', {})).toBe(p.baseUrl);
+    expect(resolveProviderBaseUrl('anthropic', { ANTHROPIC_BASE_URL: 'https://proxy.local/' }))
+      .toBe('https://proxy.local');
+    expect(resolveProviderBaseUrl('nope', {})).toBeUndefined();
   });
 });
 
