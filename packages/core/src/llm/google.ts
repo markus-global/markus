@@ -237,6 +237,16 @@ export class GoogleProvider implements MultiModalProviderInterface {
     let systemInstruction: string | undefined;
     const contents: GeminiContent[] = [];
 
+    // Gemini's functionResponse carries the FUNCTION NAME, not the tool call id.
+    // Build the id → name map from the assistant turns that issued the calls;
+    // sending the id made upstream reject the follow-up turn.
+    const toolNameByCallId = new Map<string, string>();
+    for (const msg of messages) {
+      for (const tc of msg.toolCalls ?? []) {
+        if (tc.id && tc.name) toolNameByCallId.set(tc.id, tc.name);
+      }
+    }
+
     for (const msg of messages) {
       if (msg.role === 'system') {
         systemInstruction = (systemInstruction ? systemInstruction + '\n' : '') + getTextContent(msg.content);
@@ -248,7 +258,7 @@ export class GoogleProvider implements MultiModalProviderInterface {
           role: 'user',
           parts: [{
             functionResponse: {
-              name: msg.toolCallId ?? 'unknown',
+              name: toolNameByCallId.get(msg.toolCallId ?? '') ?? msg.toolCallId ?? 'unknown',
               response: { result: sanitizeForLLM(getTextContent(msg.content)) },
             },
           }],

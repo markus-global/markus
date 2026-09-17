@@ -255,4 +255,42 @@ describe('AnthropicProvider', () => {
     expect(messages[0].role).toBe('user');
     expect(messages[0].content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'toolu_abc' });
   });
+
+  it('merges parallel tool results into ONE user message (Anthropic requirement)', async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string);
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          content: [{ type: 'text', text: 'done' }],
+          usage: { input_tokens: 5, output_tokens: 2 },
+          stop_reason: 'end_turn',
+        }),
+      });
+    }));
+
+    await provider.chat({
+      messages: [
+        { role: 'user', content: 'do two things' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [
+            { id: 'toolu_1', name: 'search', arguments: { q: 'a' } },
+            { id: 'toolu_2', name: 'search', arguments: { q: 'b' } },
+          ],
+        },
+        { role: 'tool', content: 'result A', toolCallId: 'toolu_1' },
+        { role: 'tool', content: 'result B', toolCallId: 'toolu_2' },
+      ],
+    });
+
+    const messages = capturedBody?.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+    // user(text) → assistant(tool_use ×2) → user(tool_result ×2)
+    expect(messages).toHaveLength(3);
+    expect(messages[2]!.role).toBe('user');
+    expect(messages[2]!.content).toHaveLength(2);
+    expect(messages[2]!.content.map(b => b['tool_use_id'])).toEqual(['toolu_1', 'toolu_2']);
+  });
 });

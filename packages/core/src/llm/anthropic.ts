@@ -38,6 +38,42 @@ interface AnthropicResponse {
   stop_reason: string;
 }
 
+/**
+ * Anthropic requires all `tool_result` blocks answering one assistant turn to
+ * live in a SINGLE following user message:
+ *
+ *   assistant(tool_use, tool_use) → user(tool_result, tool_result)
+ *
+ * Our history stores one message per tool result, which converts into two
+ * consecutive user messages. The API rejects that, so any parallel tool call
+ * would fail the very next turn. Merge adjacent tool_result-only user messages
+ * here (and never merge a tool_result message with a real user text turn).
+ */
+function mergeConsecutiveToolResults(messages: AnthropicAPIMessage[]): AnthropicAPIMessage[] {
+  const isToolResultOnly = (m: AnthropicAPIMessage): boolean =>
+    m.role === 'user'
+    && Array.isArray(m.content)
+    && m.content.length > 0
+    && m.content.every((b) => b.type === 'tool_result');
+
+  const out: AnthropicAPIMessage[] = [];
+  for (const msg of messages) {
+    const prev = out[out.length - 1];
+    if (prev && isToolResultOnly(prev) && isToolResultOnly(msg)) {
+      out[out.length - 1] = {
+        role: 'user',
+        content: [
+          ...(prev.content as AnthropicContentBlock[]),
+          ...(msg.content as AnthropicContentBlock[]),
+        ],
+      };
+      continue;
+    }
+    out.push(msg);
+  }
+  return out;
+}
+
 export class AnthropicProvider implements LLMProviderInterface {
   name = 'anthropic';
   model: string;
@@ -346,7 +382,7 @@ export class AnthropicProvider implements LLMProviderInterface {
 
   private convertMessages(rawMessages: LLMMessage[]): AnthropicAPIMessage[] {
     const messages = sanitizeLLMMessages(rawMessages);
-    return messages.map((m) => {
+    const mapped = messages.map((m) => {
       const wantCache = !!(m as LLMMessage).cacheBreakpoint;
 
       if (m.role === 'tool') {
@@ -400,6 +436,8 @@ export class AnthropicProvider implements LLMProviderInterface {
         content: m.content,
       };
     });
+
+    return mergeConsecutiveToolResults(mapped);
   }
 
   private convertTools(tools: LLMTool[]): AnthropicToolDef[] {
