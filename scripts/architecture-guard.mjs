@@ -62,6 +62,15 @@ const listOnly = process.argv.includes('--list');
  *      · `CONSOLIDATION_PROTECTED_TYPES` 含 review_request（否则被预合并吞掉 → 评审永不执行）；
  *      · `UNICAST_WAKE_TYPES` 含 review_request（否则广播唤醒 N 个 worker 争抢同一 item）；
  *      · shared `isStrictStateItem()` 把 review_request 判为 strict-state（停机恢复不得误 drop）。
+ *   3. `dependency-engine` —— 依赖引擎判死语义（对应缺陷 tsk_e991647e313fbe9a3b07a64f / 2026-09-12）：
+ *      · 判定收敛到单一函数 `blockerVerdict()`，且区分「可恢复失败 / 终结失败」；
+ *      · 不得回归 `cascadeFailDependents`（blocker 一 failed 就无条件级联判死）；
+ *      · auto-fail 仅作用于 `blocked` 依赖方（写入前必须重读当前状态）；
+ *      · 每次进入 failed 的系统转移都必须带非空 reason；
+ *      · auto-fail 必须有自愈路径（依赖恢复后仅还原引擎自己判死的任务）。
+ *      **规则组 id 必须稳定为 `dependency-engine`**：报警日志按 id 打标签，一旦这 5 条
+ *      被挂到别的规则组（曾误挂 `review-request-protected`），定位时会把依赖缺陷误读成
+ *      「与 review_request 无关的报错」，定位成本陡增。
  *
  * 设计要点：这类规则**不可白名单豁免**（没有 `allowed` 通道，命中即红）—— 并发正确性
  * 的底线不是「可以写理由绕过」的风格问题。并且每条检测器都自带**自检夹具**：门禁每次
@@ -141,6 +150,12 @@ const INVARIANT_RULES = [
           bad: 'export function isStrictStateItem(item) { return item.sourceType === "task_execution"; }',
         },
       },
+    ],
+  },
+  {
+    id: 'dependency-engine',
+    title: '依赖引擎判死语义（禁「瞬时 failed 即判死」+ 可自愈 + reason 可追溯）',
+    checks: [
       {
         file: 'packages/org-manager/src/task-service.ts',
         label: '依赖判定收敛到单一函数 blockerVerdict（且区分可恢复/终结）',
@@ -513,8 +528,8 @@ if (invariantViolations.length) {
     console.error(`  ✗ [${v.rule}] ${v.file} —— ${v.label}`);
     console.error(`      ↳ ${v.hint}`);
   }
-  console.error('[guard]   这两类不变量（item 认领唯一性 / review_request 受保护）是并发正确性底线：');
-  console.error('[guard]   删掉它们会退回「同一评审被多分身重复收口 + 空转让位」的线上事故。\n');
+  console.error('[guard]   这三类不变量（item 认领唯一性 / review_request 受保护 / 依赖引擎判死语义）是正确性底线：');
+  console.error('[guard]   删掉它们会退回「同一评审被多分身重复收口 + 空转让位」「瞬时失败的 blocker 误杀依赖方且永不恢复」的线上事故。\n');
   process.exit(1);
 }
 
