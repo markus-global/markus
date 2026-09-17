@@ -97,6 +97,26 @@ describe('scenario matrix: every scenario renders its interaction-mode block', (
   });
 });
 
+describe('chat scenario carries the first-turn session-title contract', () => {
+  it('renders the MUST rule with the rename call shape', async () => {
+    const { text } = await build({ scenario: 'chat' });
+    // The tab bar / History list shows ONLY the session title, so naming the
+    // session must be a first-turn obligation, not a nice-to-have.
+    expect(text).toContain('**Session title (MUST — first turn)**');
+    expect(text).toContain('"operation": "rename"');
+    // …and it must survive the "understand first, then name" ordering.
+    expect(text).toMatch(/AFTER you understand what the user actually wants/i);
+  });
+
+  it('does not leak the title rule into non-chat scenarios', async () => {
+    for (const scenario of ['heartbeat', 'task_execution'] as AgentScenario[]) {
+      const { text } = await build({ scenario });
+      expect(text, `scenario='${scenario}' should not carry the chat-only title rule`)
+        .not.toContain('**Session title (MUST — first turn)**');
+    }
+  });
+});
+
 describe('group chat is never rendered with 1:1-A2A semantics', () => {
   it("scenario='a2a' + group channel renders the group-chat block", async () => {
     const { text } = await build({ scenario: 'a2a', channelKey: 'group:team_abc' });

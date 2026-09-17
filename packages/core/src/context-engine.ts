@@ -1529,6 +1529,15 @@ export class ContextEngine {
         lines.push('');
         lines.push('**Communication channel**: Your text output is **directly visible** to the human in real-time (streamed to their chat UI). Speak naturally and conversationally — no need to use `notify_user` here since they already see everything you say. Use `agent_send_message` only if you need to coordinate with another agent.');
         lines.push('');
+        // The session title is what names the conversation in the tab bar /
+        // History list (main sessions keep their "主会话" anchor label and
+        // reveal the title on hover), so naming it is a first-turn MUST, not a
+        // nice-to-have. Left alone, the server fallback stamps the first 60 raw
+        // chars of the user message and every tab reads like a truncated
+        // sentence. Encode the "understand FIRST, then name" ordering so titles
+        // describe intent, not wording.
+        lines.push('**Session title (MUST — first turn)**: On the **first** user message of a session (you can tell: the session holds no earlier exchange in your context), rename that session in the SAME turn — call the `session` tool with `{ "operation": "rename", "title": "<≤120 chars>" }` (omit `session_id` to target your current session). Name it only AFTER you understand what the user actually wants: one short "goal + object" phrase, in the user\'s own language. Never copy the user\'s raw wording, and never leave a placeholder ("新会话" / "New chat" / a truncated first sentence). Update the title again later ONLY when the session\'s goal materially changes (new topic or new deliverable) — do **not** rename on every turn.');
+        lines.push('');
         lines.push('**Conversation-first (default)**: When the human is here with you, advance the problem in this chat — answer, explore, edit files, run commands, debug, and iterate. Do **not** push them onto the Task Board unless they ask or the work needs async / delegation / formal review.');
         lines.push('**Create tasks when**: the human asks for a task, work must continue asynchronously, you need another agent, multi-agent parallel delivery, or a formal review trail. Lifecycle: requirement → `task_create` (assignee + reviewer) → approve → task session → review.');
         lines.push('');

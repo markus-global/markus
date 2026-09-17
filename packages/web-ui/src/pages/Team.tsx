@@ -82,6 +82,35 @@ function notifySessionId(n: NotificationInfo): string | undefined {
   return undefined;
 }
 
+/**
+ * 会话在 tab 栏 / 历史列表里的**默认**标签。
+ *
+ * 主会话（isMain）有特殊性：它是与当前 Agent 的一号对话，标签位是它的「身份
+ * 锚点」，因此**无论是否被重命名都一律显示「主会话」**，真实标题只在悬停时
+ * 露出（见 sessionTabTooltip）。其余会话显示自己的标题。
+ */
+function sessionTabTitle(s: ChatSessionInfo, t: TFunction): string {
+  if (s.id === NEW_CHAT_PLACEHOLDER_ID) return t('page.newChat');
+  if (s.isMain) return t('page.sessionMain');
+  return s.title?.trim() || t('page.sessionConversation');
+}
+
+/**
+ * hover tooltip —— 悬停时显示的完整信息。
+ *
+ * 两个来源都需要它：① 普通 tab 在 max-w-[180px] 处被截断；② 主会话的默认
+ * 标签根本不含真实标题。主会话一旦被命名，悬停显示「主会话 · 真实标题」，
+ * 既保留身份锚点又给出全名。
+ */
+function sessionTabTooltip(s: ChatSessionInfo, t: TFunction): string {
+  const titled = s.title?.trim();
+  const hasOwnTitle = !!titled && titled !== 'Main';
+  if (s.isMain) {
+    return hasOwnTitle ? `${t('page.sessionMain')} · ${titled}` : t('page.sessionMain');
+  }
+  return sessionTabTitle(s, t);
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 // ── Hash-based store: the URL is the single source of truth for mobile nav ────
@@ -3772,9 +3801,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               || (s.id === activeSessionId && hasStreamingTail(messages));
             return (
             <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide">
-              {openSessionTabs.map(s => (
+              {openSessionTabs.map(s => {
+                // 完整标题同时用作原生 hover tooltip：tab 自身在 max-w-[180px]
+                // 处截断，只有悬停才能看全。
+                const tabTitle = sessionTabTitle(s, t);
+                return (
                 <div
                   key={s.id}
+                  title={sessionTabTooltip(s, t)}
                   className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer rounded-md transition-colors shrink-0 max-w-[180px] ${
                     s.id === activeSessionId
                       ? 'text-brand-500 bg-brand-500/10'
@@ -3794,7 +3828,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   }}
                 >
                   {s.isMain && <span className="text-[10px] opacity-50 shrink-0">●</span>}
-                  <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? t('page.newChat') : (s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation')))}</span>
+                  <span className="truncate">{tabTitle}</span>
                   {isStreamingTab(s) && (
                     // Same "agent working" signal as the sidebar (L1) — a blue
                     // pulsing dot, shown only while this session is generating.
@@ -3814,7 +3848,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     </button>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
             );
           })()}
@@ -3945,11 +3980,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                           ) : (
                             <button
                               onClick={() => void switchSession(s)}
+                              title={sessionTabTooltip(s, t)}
                               className="w-full text-left group/session"
                             >
                               <div className="truncate font-medium flex items-center gap-1">
                                 {s.isMain && <span className="text-[10px] text-brand-500 opacity-80">●</span>}
-                                <span className="truncate">{s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation'))}</span>
+                                <span className="truncate">{sessionTabTitle(s, t)}</span>
                                 {!s.isMain && (
                                   <span
                                     role="button"
