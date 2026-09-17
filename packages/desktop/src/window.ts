@@ -120,20 +120,64 @@ export function getMainWindow(): BrowserWindow | null {
   return mainWindow;
 }
 
-export function restoreOrCreateWindow(url: string): void {
-  if (mainWindow) {
+export interface RestoreWindowOptions {
+  /**
+   * Navigate the existing window to `url` instead of only focusing it.
+   * Default `false`. The web UI is a hash-routed SPA (`#/work`, `#/chat/…`),
+   * so `loadURL(backendUrl)` would drop the hash, re-boot the whole app and
+   * dump the user back on the overview page. Bring-to-front must never reload
+   * an already-loaded window.
+   */
+  navigate?: boolean;
+}
+
+/**
+ * Same document (ignoring the `#route`) — i.e. comparing "the page the window
+ * has loaded" rather than the user's current SPA route.
+ *
+ * Must go through `URL`: `http://host:8056` and `http://host:8056/#/work`
+ * are the *same* document (Chromium normalises the bare URL to `…/`), while a
+ * naive string compare reports them as different and triggers a full reload.
+ */
+function sameDocument(a: string, b: string): boolean {
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    return ua.origin === ub.origin && ua.pathname === ub.pathname && ua.search === ub.search;
+  } catch {
+    const strip = (raw: string) => {
+      const i = raw.indexOf('#');
+      return i === -1 ? raw : raw.slice(0, i);
+    };
+    return strip(a) === strip(b);
+  }
+}
+
+/**
+ * Bring the main window to the foreground — dock icon click, tray click,
+ * second instance, `markus://` hand-off.
+ *
+ * Focus-only by default (see RestoreWindowOptions): an existing window keeps
+ * whatever page the user was on. The window is only *created* (and loaded)
+ * when none exists.
+ */
+export function restoreOrCreateWindow(url: string, opts: RestoreWindowOptions = {}): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
     // A window created for a hidden auto-start launch exists but was never
     // shown — reveal it before focusing.
     if (!mainWindow.isVisible()) mainWindow.show();
     if (mainWindow.isMinimized()) mainWindow.restore();
-    // Deep links (install/invite/open) must navigate, not only focus.
-    if (url) {
+    // Only an explicit navigation request (deep link) may change the page —
+    // and even then only when the loaded document really differs. A different
+    // hash (or a hash vs no hash) is the user's current route, not a reason to
+    // reload.
+    if (opts.navigate && url) {
       const current = mainWindow.webContents.getURL();
-      if (current !== url) void mainWindow.loadURL(url);
+      if (!sameDocument(current, url)) void mainWindow.loadURL(url);
     }
     mainWindow.focus();
   } else {
     const win = createMainWindow();
-    win.loadURL(url);
+    void win.loadURL(url);
   }
 }
