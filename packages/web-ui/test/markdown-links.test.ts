@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyMarkdownHref,
+  decodePercentEscapesToUnicode,
   dirnamePath,
   isLocalFilesystemPath,
   looksLikeFilePath,
@@ -139,5 +140,62 @@ describe('Windows local image path helpers', () => {
     expect(normalizeWindowsPathsInMarkdown(src)).toBe(
       '![Markus 展示海报](C:/Users/19684/.markus/generated/images/img-1.jpg)',
     );
+  });
+});
+
+/**
+ * Regression: markdown destinations with non-ASCII names arrive from
+ * `mdast-util-to-hast` (which runs `normalizeUri` on every image/link URL) already
+ * percent-encoded. Re-encoding that for `/api/files/image` produced a
+ * double-escaped path, so an existing file reported "Image not found".
+ */
+describe('decodePercentEscapesToUnicode', () => {
+  const CJK_DIR = '/Users/liuqian/mycode/vision_explosion/output/xhs-ootd-一周通勤穿搭';
+
+  it('round-trips a percent-encoded CJK path (encodeURI form)', () => {
+    const encoded = encodeURI(`${CJK_DIR}/01-封面图-v1.png`);
+    expect(encoded).toContain('%E4%B8%80%E5%91%A8');
+    expect(decodePercentEscapesToUnicode(encoded)).toBe(`${CJK_DIR}/01-封面图-v1.png`);
+  });
+
+  it('decodes mixed runs that contain ASCII escapes (e.g. %20 for a space)', () => {
+    const p = '/Users/me/一周 穿搭/图 1.png';
+    expect(decodePercentEscapesToUnicode(encodeURI(p))).toBe(p);
+  });
+
+  it('handles accented / Cyrillic / emoji file names', () => {
+    for (const p of ['/Users/me/Réunion/café.png', '/Users/me/отчёт/схема.png', '/Users/me/📁-x/图.png']) {
+      expect(decodePercentEscapesToUnicode(encodeURI(p))).toBe(p);
+    }
+  });
+
+  it('never mangles a literal percent sign', () => {
+    expect(decodePercentEscapesToUnicode('/Users/me/100%-done.png')).toBe('/Users/me/100%-done.png');
+    expect(decodePercentEscapesToUnicode('/Users/me/%41.png')).toBe('/Users/me/%41.png');
+    expect(decodePercentEscapesToUnicode('/Users/me/%E4.png')).toBe('/Users/me/%E4.png'); // incomplete UTF-8
+  });
+
+  it('is a no-op for plain ASCII (and cheap when there is no %)', () => {
+    expect(decodePercentEscapesToUnicode('/tmp/a.png')).toBe('/tmp/a.png');
+    expect(decodePercentEscapesToUnicode('https://example.com/%E4%B8%AD.png')).toBe('https://example.com/中.png');
+  });
+
+  it('normalizeLocalFilesystemPath decodes CJK and still normalizes Windows paths', () => {
+    expect(normalizeLocalFilesystemPath(encodeURI(`${CJK_DIR}/01-封面图-v1.png`)))
+      .toBe(`${CJK_DIR}/01-封面图-v1.png`);
+    expect(normalizeLocalFilesystemPath('file:///C:/Users/19684/.markus/img.jpg'))
+      .toBe('C:/Users/19684/.markus/img.jpg');
+  });
+});
+
+describe('classifyMarkdownHref with non-ASCII file names', () => {
+  it('decodes an encoded local markdown link back to the real path', () => {
+    const real = '/Users/liuqian/mycode/vision_explosion/prompts/xhs-ootd-一周5天通勤穿搭/方案与提示词_v3.md';
+    expect(classifyMarkdownHref(encodeURI(real))).toEqual({ kind: 'file', path: real, fragment: undefined });
+  });
+
+  it('keeps remote URLs untouched', () => {
+    expect(classifyMarkdownHref('https://zh.wikipedia.org/wiki/%E4%B8%AD%E6%96%87'))
+      .toEqual({ kind: 'external', url: 'https://zh.wikipedia.org/wiki/%E4%B8%AD%E6%96%87' });
   });
 });

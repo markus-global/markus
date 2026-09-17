@@ -14,6 +14,7 @@ import {
   autolinkBareUrls,
 } from './markdown-utils.ts';
 import {
+  decodePercentEscapesToUnicode,
   isLocalFilesystemPath,
   normalizeWindowsPathsInMarkdown,
   rehypeSlugifyHeadings,
@@ -38,9 +39,16 @@ const REHYPE_PLUGINS: any[] = [
 ];
 
 // URL transform: allow internal entity schemes + local filesystem paths
-function chatUrlTransform(url: string): string {
+//
+// Note the ordering trap: `mdast-util-to-hast` already ran `normalizeUri()` on this
+// destination, so non-ASCII characters arrive percent-encoded (`/…/%E4%B8%80%E5%91%A8…`).
+// Passing that straight through made MarkdownImage re-encode it into a double-escaped
+// path that no longer exists on disk. Decode it back to the real path first.
+export function chatUrlTransform(url: string): string {
   const CUSTOM_URI_SCHEME_RE = /^(deliverable|task|requirement|project|agent|team|workflow):/i;
-  if (CUSTOM_URI_SCHEME_RE.test(url) || isLocalFilesystemPath(url)) return url;
+  if (CUSTOM_URI_SCHEME_RE.test(url)) return url;
+  const decoded = decodePercentEscapesToUnicode(url);
+  if (isLocalFilesystemPath(decoded)) return decoded;
   return defaultUrlTransform(url);
 }
 

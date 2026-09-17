@@ -34,9 +34,43 @@ export function isLocalFilesystemPath(src: string): boolean {
 }
 
 /**
+ * Undo `encodeURI`-style percent-escaping of **non-ASCII** text, leaving every
+ * other character — and every literal `%` — untouched.
+ *
+ * Why this exists: `mdast-util-to-hast` runs `normalizeUri()` over every markdown
+ * image/link destination *before* our components see it. So
+ * `![封面](/…/一周通勤穿搭/01-封面图-v1.png)` reaches React as
+ * `/…/%E4%B8%80%E5%91%A8%E9%80%9A%E5%8B%A4%E7%A9%BF%E6%90%AD/01-%E5%B0%81%E9%9D%A2%E5%9B%BE-v1.png`.
+ * Re-encoding *that* for `/api/files/image` escapes it twice (`%25E4%25B8%2580…`),
+ * the server decodes only once, and an existing file reports "Image not found".
+ *
+ * Only escape *runs* that decode to valid UTF-8 containing at least one
+ * non-ASCII code point are rewritten, so `100%-done.png` or `%41.png` keep their
+ * literal characters instead of being silently mangled.
+ */
+const PCT_RUN_RE = /(?:%[0-9A-Fa-f]{2})+/g;
+
+export function decodePercentEscapesToUnicode(text: string): string {
+  if (!text.includes('%')) return text;
+  return text.replace(PCT_RUN_RE, (run) => {
+    const bytes = new Uint8Array(run.length / 3);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Number.parseInt(run.slice(i * 3 + 1, i * 3 + 3), 16);
+    }
+    try {
+      const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      return /[^\x00-\x7F]/.test(decoded) ? decoded : run;
+    } catch {
+      return run; // not valid UTF-8 — leave the literal text alone
+    }
+  });
+}
+
+/**
  * Normalize local filesystem URLs for `/api/files/image` and file preview.
  * - file:///C:/Users/... → C:/Users/...
  * - C:\\Users\\... or C:\Users\... → C:/Users/...
+ * - /…/%E4%B8%80%E5%91%A8…/图.png → /…/一周…/图.png (see decodePercentEscapesToUnicode)
  */
 export function normalizeLocalFilesystemPath(src: string): string {
   let p = src.trim();
@@ -49,6 +83,8 @@ export function normalizeLocalFilesystemPath(src: string): string {
     // file:///C:/Users → /C:/Users → C:/Users
     if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1);
   }
+  // Markdown destinations arrive percent-encoded (normalizeUri in mdast-util-to-hast).
+  p = decodePercentEscapesToUnicode(p);
   // Collapse markdown-escaped doubled backslashes, then prefer `/` for APIs.
   p = p.replace(/\\+/g, '/');
   return p;
@@ -166,7 +202,11 @@ export function classifyMarkdownHref(href: string | undefined, basePath?: string
     return { kind: 'passthrough' };
   }
 
-  const { path, fragment } = splitFragment(trimmed);
+  const rawSplit = splitFragment(trimmed);
+  // Decode CJK/accented characters that `normalizeUri` percent-escaped on the way
+  // in — otherwise file preview double-encodes the path and 404s.
+  const path = decodePercentEscapesToUnicode(rawSplit.path);
+  const fragment = rawSplit.fragment;
 
   // Absolute / home-relative / UNC paths
   if (ABS_FILE_RE.test(path)) {

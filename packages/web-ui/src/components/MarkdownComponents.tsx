@@ -199,6 +199,21 @@ function localImageUrl(filePath: string): string {
   return `/api/files/image?path=${encodeURIComponent(filePath)}`;
 }
 
+/**
+ * Map a markdown image reference to the local image API URL, or `null` when the
+ * reference is not a local image. Exported for tests: it is the single place where
+ * the path is percent-encoded, so the round-trip (markdown → API URL → file on
+ * disk) can be verified without a DOM.
+ *
+ * `src` may arrive already percent-encoded (mdast-util-to-hast's `normalizeUri`);
+ * `normalizeLocalFilesystemPath` inside resolveImagePath decodes it, which keeps
+ * this encoding step from doubling up on non-ASCII paths.
+ */
+export function localImageApiUrl(src: string, basePath?: string): string | null {
+  if (!isLocalImagePath(src)) return null;
+  return localImageUrl(resolveImagePath(src, basePath));
+}
+
 const loadedImageCache = new Map<string, string>();
 /**
  * Cache failed image loads by resolved src so a broken path is NOT re-fetched
@@ -208,10 +223,7 @@ const loadedImageCache = new Map<string, string>();
 const failedImageCache = new Map<string, string>();
 
 export const MarkdownImage = memo(function MarkdownImage({ src, alt, onPreview, basePath }: { src: string; alt?: string; onPreview?: (src: string) => void; basePath?: string }) {
-  const effectiveSrc = useMemo(() => {
-    if (!isLocalImagePath(src)) return src;
-    return localImageUrl(resolveImagePath(src, basePath));
-  }, [src, basePath]);
+  const effectiveSrc = useMemo(() => localImageApiUrl(src, basePath) ?? src, [src, basePath]);
 
   const isLocalApi = effectiveSrc.startsWith('/api/files/image?');
   const cached = loadedImageCache.get(effectiveSrc);
