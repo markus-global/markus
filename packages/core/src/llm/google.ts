@@ -337,7 +337,13 @@ export class GoogleProvider implements MultiModalProviderInterface {
     const map: Record<string, LLMResponse['finishReason']> = {
       STOP: 'end_turn',
       MAX_TOKENS: 'max_tokens',
-      SAFETY: 'end_turn',
+      // Everything Gemini reports when it refused to answer. These used to be
+      // mapped to 'end_turn', which made a blocked turn look like a normal one.
+      SAFETY: 'content_filter',
+      PROHIBITED_CONTENT: 'content_filter',
+      BLOCKLIST: 'content_filter',
+      SPII: 'content_filter',
+      RECITATION: 'content_filter',
     };
     return map[reason] ?? 'end_turn';
   }

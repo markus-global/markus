@@ -57,6 +57,9 @@ export const FINISH_REASON_MAP: Record<string, LLMResponse['finishReason']> = {
   function_call: 'tool_use',
   // Anthropic / some compatible gateways.
   stop_sequence: 'stop_sequence',
+  // Content moderation stopped the generation. Without this entry the reason
+  // fell through to 'end_turn', so a refused turn looked like a finished one.
+  content_filter: 'content_filter',
 };
 
 // ---------------------------------------------------------------------------

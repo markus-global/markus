@@ -492,6 +492,13 @@ export interface CatalogModel {
   capabilities: CatalogModelCapabilities;
   deprecationDate?: string;
   tier?: ModelTier;
+  /**
+   * Where the entry came from, as decided by the server:
+   * `custom` = added by the user, `live` = the provider's own model listing,
+   * `builtin` = Markus' static metadata table. The UI uses this instead of
+   * keeping its own hard-coded list of "known" model ids.
+   */
+  source?: 'custom' | 'live' | 'builtin';
 }
 
 export interface CatalogStatus {
@@ -1924,6 +1931,11 @@ export const api = {
       return request<{ models?: CatalogModel[]; providers?: Record<string, CatalogModel[]> }>(`/models/catalog${qs}`);
     },
     getStatus: () => request<CatalogStatus>('/models/catalog/status'),
+    /** Provider directory (id / label / envKey / baseUrl / default model) from the server. */
+    providerCatalog: () =>
+      request<{ providers: Array<{ id: string; label: string; envKey: string; baseUrl?: string; defaultModel: string }> }>(
+        '/llm/provider-catalog',
+      ),
     refresh: () => request<{ success: boolean; status: CatalogStatus }>('/models/catalog/refresh', { method: 'POST' }),
     validateKey: (provider: string, apiKey: string, baseUrl?: string) =>
       request<ValidateKeyResponse>('/models/validate-key', {

@@ -14,7 +14,7 @@ import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
 import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
 import { PerAgentModelSection } from '../components/PerAgentModelSection.tsx';
-import { PROVIDER_OPTIONS } from '../constants/providers.ts';
+import { useProviderCatalog } from '../constants/providers.ts';
 import { FeishuIntegrationSection } from '../components/FeishuIntegrationSection.tsx';
 // import { CodingToolsSettings } from './CodingToolsSettings.tsx'; // TEMP-HIDDEN (2026-08)
 import { WebSearchSettings } from './WebSearchSettings.tsx';
@@ -52,15 +52,6 @@ type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'searc
 interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
 
 /** Module-scoped — used by Settings page and CollapsibleAvailableModels. */
-const BUILTIN_MODEL_IDS = new Set([
-  'claude-opus-4-6', 'claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022',
-  'gpt-5.4', 'gpt-4o', 'o4-mini',
-  'gemini-3-1-pro', 'gemini-2.5-flash',
-  'MiniMax-M2.7', 'MiniMax-M2.5',
-  'xiaomi/mimo-v2-pro', 'anthropic/claude-opus-4-6', 'openai/gpt-5.4', 'google/gemini-3-1-pro',
-  'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner',
-]);
-
 const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'appearance', labelKey: 'nav.appearance' },
   { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
@@ -730,6 +721,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   // Add custom model state
   const [addingModelProvider, setAddingModelProvider] = useState<string | null>(null);
+  const providerOptions = useProviderCatalog();
   const [addModelForm, setAddModelForm] = useState({ id: '', name: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5, reasoning: false, vision: false });
   const [addModelSaving, setAddModelSaving] = useState(false);
 
@@ -737,7 +729,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     if (!providerName || providerName === '__custom__') return;
     setAddProviderValidating(true);
     setQuickSetupMsg(null);
-    const po = PROVIDER_OPTIONS.find(p => p.id === providerName);
+    const po = providerOptions.find(p => p.id === providerName);
     const baseUrl = addProviderForm.baseUrl || po?.baseUrl;
     try {
       if (apiKey) {
@@ -793,7 +785,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const quickSetupProvider = async (providerName: string, _info: ProviderInfo) => {
     if (!quickSetupKey.trim()) return;
     setQuickSetupSaving(true); setQuickSetupMsg(null);
-    const po = PROVIDER_OPTIONS.find(p => p.id === providerName);
+    const po = providerOptions.find(p => p.id === providerName);
     const defaultModel = po?.defaultModel ?? providerName;
     const baseUrl = po?.baseUrl;
     try {
@@ -1240,7 +1232,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             }
             seen.add(name);
           }
-          for (const po of PROVIDER_OPTIONS) {
+          for (const po of providerOptions) {
             if (!seen.has(po.id) && po.id !== 'markus') {
               unconfiguredEntries.push([po.id, {
                 name: po.id,
@@ -1672,7 +1664,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                                   name,
                                   model: modelId,
                                   apiKey: quickSetupKey.trim(),
-                                  baseUrl: PROVIDER_OPTIONS.find(p => p.id === name)?.baseUrl ?? '',
+                                  baseUrl: providerOptions.find(p => p.id === name)?.baseUrl ?? '',
                                   contextWindow: m?.maxInputTokens ?? f.contextWindow,
                                   maxOutputTokens: m?.maxOutputTokens ?? f.maxOutputTokens,
                                   costInput: m?.inputCostPer1MTokens ?? f.costInput,
@@ -3143,6 +3135,8 @@ function CollapsibleAvailableModels({
     inputTypes?: string[];
     contextWindow?: number;
     capabilities?: string[];
+    /** Server-decided provenance: `custom` models are user-added. */
+    source?: 'custom' | 'live' | 'builtin';
   }>;
   providerName: string;
   activeModelId?: string;
@@ -3192,7 +3186,10 @@ function CollapsibleAvailableModels({
       )}
       <div className={expanded && longList ? 'max-h-64 overflow-y-auto space-y-1 pr-0.5' : 'space-y-1'}>
         {visible.map(m => {
-          const isCustom = !BUILTIN_MODEL_IDS.has(m.id);
+          // `custom` = the user added this model themselves. Previously this
+          // compared against a hard-coded id list, which mislabelled every
+          // freshly discovered model as custom and offered to delete it.
+          const isCustom = m.source === 'custom';
           const caps = m.capabilities ?? [];
           const isActive = activeModelId === m.id;
           return (

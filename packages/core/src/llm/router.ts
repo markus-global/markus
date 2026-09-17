@@ -584,7 +584,7 @@ export class LLMRouter {
     if (this.liveModelProviders.has(providerName)) {
       const live = this.customModelCatalog.get(providerName);
       if (live && live.length > 0) {
-        return live.map(m => this.enrichModelFromCatalog(m));
+        return live.map(m => this.enrichModelFromCatalog({ ...m, source: 'live' as const }));
       }
     }
 
@@ -597,7 +597,10 @@ export class LLMRouter {
     }
     const customModels = this.customModelCatalog.get(providerName) ?? [];
     const merged = [...builtinModels, ...customModels.filter(cm => !builtinModels.some(bm => bm.id === cm.id))];
-    return merged.map(m => this.enrichModelFromCatalog(m));
+    // Offline / pre-discovery path: everything here comes from Markus' own
+    // metadata table, so it is 'builtin'. The live listing is authoritative and
+    // overrides this as soon as it has been fetched once.
+    return merged.map(m => this.enrichModelFromCatalog({ ...m, source: m.source ?? ('builtin' as const) }));
   }
 
   /**
@@ -937,7 +940,14 @@ export class LLMRouter {
     }
     for (const m of builtinFamily) {
       const isMediaOnly = (m.capabilities?.length ?? 0) > 0 && !(m.contextWindow > 0);
-      if (isMediaOnly && !byId.has(m.id)) byId.set(m.id, m);
+      // Media models (image / TTS / STT / video) are served from separate
+      // endpoints and never appear in a /models listing, so they remain
+      // 'builtin' — the one place where the static table is still the source.
+      if (isMediaOnly && !byId.has(m.id)) byId.set(m.id, { ...m, provider: providerName, source: 'builtin' });
+    }
+    // Everything else came from the provider's own listing.
+    for (const [id, m] of byId) {
+      if (!m.source) byId.set(id, { ...m, source: 'live' });
     }
     return [...byId.values()];
   }

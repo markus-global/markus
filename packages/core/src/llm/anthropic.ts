@@ -312,7 +312,7 @@ export class AnthropicProvider implements LLMProviderInterface {
             case 'message_delta':
               if (event.delta?.stop_reason) {
                 const finishMap: Record<string, LLMResponse['finishReason']> = {
-                  end_turn: 'end_turn', tool_use: 'tool_use', max_tokens: 'max_tokens', stop_sequence: 'stop_sequence',
+                  end_turn: 'end_turn', tool_use: 'tool_use', max_tokens: 'max_tokens', stop_sequence: 'stop_sequence', refusal: 'content_filter',
                 };
                 finishReason = finishMap[event.delta.stop_reason] ?? 'end_turn';
               }
@@ -514,6 +514,8 @@ export class AnthropicProvider implements LLMProviderInterface {
       tool_use: 'tool_use',
       max_tokens: 'max_tokens',
       stop_sequence: 'stop_sequence',
+      // Claude declined to answer (safety / policy).
+      refusal: 'content_filter',
     };
 
     return {

@@ -337,6 +337,34 @@ export class APIServer {
    * Ensure Markus OpenRouter-only config: Hub catalog URL + OR baseUrl/apiKey.
    * Strips legacy Worker fields (`proxyUrl` / `subscriptionKey` / `searchUrl`).
    */
+  /**
+   * Tag each model with where it came from, so the UI never needs its own
+   * hard-coded id list to decide what counts as "custom":
+   *   custom  — added by the user (`config.llm.customModels`)
+   *   live    — reported by the provider's own model-list endpoint
+   *   builtin — Markus' static metadata table (offline fallback / media models)
+   */
+  private tagModelSources<T extends { id: string; source?: string }>(
+    provider: string,
+    models: T[],
+  ): Array<T & { source: string }> {
+    let userModelIds = new Set<string>();
+    try {
+      const cfg = loadConfig(this.markusConfigPath) as {
+        llm?: { customModels?: Record<string, Array<{ id?: string }>> };
+      };
+      userModelIds = new Set(
+        (cfg.llm?.customModels?.[provider] ?? [])
+          .map(m => String(m.id ?? ''))
+          .filter(Boolean),
+      );
+    } catch { /* custom models are optional */ }
+    return models.map(m => ({
+      ...m,
+      source: userModelIds.has(m.id) ? 'custom' : (m.source ?? 'builtin'),
+    }));
+  }
+
   ensureMarkusDirectConfig(): string | undefined {
     try {
       const cfg = loadConfig();
@@ -7896,6 +7924,24 @@ EXPLANATION_END`;
       return;
     }
 
+    // Provider directory — derived from the canonical registry in @markus/shared.
+    // The UI used to keep its own copy (labels + default model ids); that copy
+    // drifted and was the last place in the frontend with hard-coded model ids.
+    if (path === '/api/llm/provider-catalog' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      this.json(res, 200, {
+        providers: PROVIDERS.map(p => ({
+          id: p.id,
+          label: p.label,
+          envKey: p.envKey,
+          baseUrl: p.baseUrl,
+          defaultModel: p.defaultModel,
+        })),
+      });
+      return;
+    }
+
     if (path.startsWith('/api/models/catalog/') && req.method === 'GET') {
       if (!this.modelCatalog) {
         this.json(res, 503, { error: 'Model catalog not available' });
@@ -7907,7 +7953,7 @@ EXPLANATION_END`;
         return;
       }
       const models = this.modelCatalog.getModelsByProvider(provider);
-      this.json(res, 200, { provider, models });
+      this.json(res, 200, { provider, models: this.tagModelSources(provider, models) });
       return;
     }
 
@@ -8038,16 +8084,16 @@ EXPLANATION_END`;
           // No key available, fallback to catalog (strip LiteLLM provider prefixes)
           const catalogModels = (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
             .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) }));
-          this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog' });
+          this.json(res, 200, { provider: providerName, models: this.tagModelSources(providerName, catalogModels), source: 'catalog' });
           return;
         }
 
         const result = await this.validateProviderKey(providerName, apiKey, baseUrl);
-        this.json(res, 200, { provider: providerName, models: result.models, source: result.valid ? 'live' : 'catalog' });
+        this.json(res, 200, { provider: providerName, models: this.tagModelSources(providerName, result.models as Array<{ id: string; source?: string }>), source: result.valid ? 'live' : 'catalog' });
       } catch (err) {
         const catalogModels = (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
           .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) }));
-        this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog', error: err instanceof Error ? err.message : String(err) });
+        this.json(res, 200, { provider: providerName, models: this.tagModelSources(providerName, catalogModels), source: 'catalog', error: err instanceof Error ? err.message : String(err) });
       }
       return;
     }

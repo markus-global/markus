@@ -93,6 +93,13 @@ export interface ModelDefinition {
   capabilities?: string[];
   /** Hub catalog route when present (always openrouter for Markus Provider). */
   route?: 'openrouter';
+  /**
+   * Where this entry came from: `live` = the provider's own model-list endpoint
+   * (authoritative), `builtin` = Markus' static metadata table (offline fallback,
+   * or media models which never appear in a /models listing). Consumers use this
+   * to label a model honestly instead of keeping their own hard-coded id list.
+   */
+  source?: 'live' | 'builtin';
 }
 
 export interface EnhancedProviderSettings {
@@ -190,7 +197,7 @@ export interface LLMResponse {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   };
-  finishReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
+  finishReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' | 'content_filter';
   /** Anthropic compaction summary (present when compaction triggers) */
   compactionContent?: string;
   /** Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning_content) that must be round-tripped. */
