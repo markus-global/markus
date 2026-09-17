@@ -63,6 +63,17 @@ export {
 export { AuthProfileStore } from './llm/auth-profiles.js';
 export { OAuthManager } from './llm/oauth-manager.js';
 export { ModelCatalogService } from './llm/model-catalog.js';
+export {
+  discoverProviderModels,
+  buildModelsEndpoint,
+  buildModelsAuthHeaders,
+  parseModelListPayload,
+  isUsableProviderModelId,
+  normalizeBaseUrl,
+  PROVIDER_DEFAULT_BASE_URLS,
+  ANTHROPIC_VERSION,
+  type DiscoveredModel,
+} from './llm/model-discovery.js';
 export { estimateQualityScore, tierFromQualityScore, costTierFromPrice } from './llm/router.js';
 export { MemoryStore, parseNotebook, serializeNotebook, loadNotebook, saveNotebook } from './memory/store.js';
 export type { NotebookEntry, NotebookEntryManaged } from './memory/store.js';

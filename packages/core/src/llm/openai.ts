@@ -52,7 +52,14 @@ export class OpenAIProvider implements MultiModalProviderInterface {
   constructor(config?: LLMProviderConfig, tokenResolver?: TokenResolver) {
     this.name = config?.provider ?? 'openai';
     this.model = config?.model ?? 'gpt-4o';
-    this.apiKey = config?.apiKey ?? process.env['OPENAI_API_KEY'] ?? '';
+    // Only the *native* OpenAI provider may borrow OPENAI_API_KEY from the
+    // environment. This same constructor backs every OpenAI-compatible provider
+    // (DeepSeek, Moonshot, a user's self-hosted gateway, …); silently sending an
+    // unrelated OpenAI key to a third-party base URL is a credential leak.
+    const isNativeOpenAI = !config?.provider || config.provider === 'openai';
+    this.apiKey = config?.apiKey
+      ?? (isNativeOpenAI ? process.env['OPENAI_API_KEY'] : undefined)
+      ?? '';
     this.baseUrl = config?.baseUrl ?? 'https://api.openai.com';
     this.maxTokens = config?.maxTokens ?? DEFAULT_REQUEST_MAX_TOKENS;
     this.chatTimeoutMs = config?.timeoutMs ?? 90_000;
@@ -84,6 +91,29 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     return this.name === 'openrouter' || this.baseUrl.includes('openrouter.ai');
   }
 
+  /**
+   * OpenAI's reasoning families reject the legacy `max_tokens` field with
+   * `400 Unsupported parameter: 'max_tokens' is not supported with this model.
+   * Use 'max_completion_tokens' instead.` Everything else — including OpenAI's
+   * own non-reasoning models and every OpenAI-compatible clone — still speaks
+   * `max_tokens`. Only the native endpoint is switched over; a compatible
+   * gateway advertises its own contract and may not know the new name.
+   */
+  private maxTokensField(): 'max_tokens' | 'max_completion_tokens' {
+    if (!this.isNativeOpenAI) return 'max_tokens';
+    return /^(o[1-9]|gpt-5)/i.test(this.model.trim()) ? 'max_completion_tokens' : 'max_tokens';
+  }
+
+  /**
+   * OpenAI's reasoning families accept only the default temperature (1);
+   * sending one returns a 400. Drop the field for them rather than failing the
+   * whole turn over an optional sampling knob.
+   */
+  private acceptsCustomTemperature(): boolean {
+    if (!this.isNativeOpenAI) return true;
+    return !/^(o[1-9]|gpt-5)/i.test(this.model.trim());
+  }
+
   protected async resolveAuthHeader(): Promise<string> {
     if (this.tokenResolver) {
       const token = await this.tokenResolver();
@@ -97,11 +127,11 @@ export class OpenAIProvider implements MultiModalProviderInterface {
 
     const body: Record<string, unknown> = {
       model: this.model,
-      max_tokens: request.maxTokens ?? this.maxTokens,
+      [this.maxTokensField()]: request.maxTokens ?? this.maxTokens,
       messages,
     };
 
-    if (request.temperature !== undefined) body['temperature'] = request.temperature;
+    if (request.temperature !== undefined && this.acceptsCustomTemperature()) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
 
@@ -167,11 +197,11 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     const messages = this.convertMessages(request.messages, request.systemCacheSegments);
     const body: Record<string, unknown> = {
       model: this.model,
-      max_tokens: request.maxTokens ?? this.maxTokens,
+      [this.maxTokensField()]: request.maxTokens ?? this.maxTokens,
       messages,
       stream: true,
     };
-    if (request.temperature !== undefined) body['temperature'] = request.temperature;
+    if (request.temperature !== undefined && this.acceptsCustomTemperature()) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop'] = request.stopSequences;
     if (request.tools?.length) body['tools'] = this.convertTools(request.tools);
 
@@ -184,6 +214,10 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       if (isOpenRouterReasoningModel(modelId)) {
         body['reasoning'] = { enabled: true, effort: 'high' };
       }
+    } else if (this.isNativeOpenAI) {
+      // Native OpenAI needs `stream_options.include_usage`; without it the final
+      // chunk carries no usage and the turn would be recorded as 0 tokens.
+      body['stream_options'] = { include_usage: true };
     }
 
     const endpoint = this.buildEndpoint('/chat/completions');

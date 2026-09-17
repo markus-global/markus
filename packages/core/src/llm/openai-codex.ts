@@ -47,27 +47,16 @@ export class CodexResponsesProvider implements LLMProviderInterface {
 
   /**
    * Codex backend is stream-only. Non-streaming chat collects the full SSE stream.
+   *
+   * We must return `chatStream()`'s own result: that is the only place tool
+   * calls are materialized (built from `function_call_arguments.*` deltas).
+   * Re-assembling the response from the callbacks alone silently dropped every
+   * tool call — the agent loop then saw an empty tool turn and stalled.
    */
   async chat(request: LLMRequest): Promise<LLMResponse> {
-    let content = '';
-    let reasoningContent = '';
-    const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
-    let usage = { inputTokens: 0, outputTokens: 0 };
-    let finishReason: LLMResponse['finishReason'] = 'end_turn';
-
-    await this.chatStream(request, (event) => {
-      if (event.type === 'text_delta' && event.text) content += event.text;
-      if (event.type === 'thinking_delta' && event.thinking) reasoningContent += event.thinking;
-      if (event.type === 'message_end') {
-        if (event.usage) usage = event.usage;
-        if (event.finishReason) finishReason = event.finishReason;
-      }
+    return this.chatStream(request, () => {
+      /* events are not consumed by a non-streaming call */
     });
-
-    // Collect tool calls from the accumulated state in chatStream
-    const result: LLMResponse = { content, toolCalls: toolCalls.length ? toolCalls : undefined, usage, finishReason };
-    if (reasoningContent) result.reasoningContent = reasoningContent;
-    return result;
   }
 
   async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, signal?: AbortSignal): Promise<LLMResponse> {

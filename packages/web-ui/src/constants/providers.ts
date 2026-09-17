@@ -1,9 +1,54 @@
+import { useEffect, useState } from 'react';
+import { api } from '../api.ts';
+
 export interface ProviderOption {
   id: string;
   label: string;
   envKey: string;
   baseUrl?: string;
   defaultModel: string;
+}
+
+/**
+ * The provider directory lives on the server (`@markus/shared` PROVIDERS) and is
+ * fetched once here. This file used to hard-code the whole table, including a
+ * default *model* per provider — those ids went stale and disagreed with the
+ * registry. The browser bundle cannot import `@markus/shared`, hence the fetch.
+ */
+let catalogCache: ProviderOption[] = [];
+let inflight: Promise<ProviderOption[]> | null = null;
+
+/** Fetch the provider directory (cached; never throws). */
+export async function fetchProviderCatalog(): Promise<ProviderOption[]> {
+  if (inflight) return inflight;
+  inflight = (async () => {
+    try {
+      const res = await api.modelCatalog.providerCatalog();
+      catalogCache = res.providers ?? [];
+    } catch {
+      catalogCache = [];
+    }
+    return catalogCache;
+  })();
+  return inflight;
+}
+
+/** Synchronous read of whatever has been fetched so far (may be empty). */
+export function getProviderCatalogSync(): ProviderOption[] {
+  return catalogCache;
+}
+
+/** React hook — returns [] until the catalog arrives, then the full list. */
+export function useProviderCatalog(): ProviderOption[] {
+  const [options, setOptions] = useState<ProviderOption[]>(catalogCache);
+  useEffect(() => {
+    let alive = true;
+    void fetchProviderCatalog().then(list => {
+      if (alive) setOptions(list);
+    });
+    return () => { alive = false; };
+  }, []);
+  return options;
 }
 
 export const PROVIDER_OPTIONS: ProviderOption[] = [
@@ -13,7 +58,7 @@ export const PROVIDER_OPTIONS: ProviderOption[] = [
   { id: 'google', label: 'Google Gemini', envKey: 'GOOGLE_API_KEY', defaultModel: 'gemini-3-1-pro' },
   { id: 'deepseek', label: 'DeepSeek', envKey: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com', defaultModel: 'deepseek-v4-flash' },
   { id: 'siliconflow', label: 'SiliconFlow (中国)', envKey: 'SILICONFLOW_API_KEY', baseUrl: 'https://api.siliconflow.cn/v1', defaultModel: 'Qwen/Qwen3.5-35B-A3B' },
-  { id: 'siliconflow-intl', label: 'SiliconFlow (Global)', envKey: 'SILICONFLOW_INTL_API_KEY', baseUrl: 'https://api-st.siliconflow.cn/v1', defaultModel: 'Qwen/Qwen3.5-35B-A3B' },
+  { id: 'siliconflow-intl', label: 'SiliconFlow (Global)', envKey: 'SILICONFLOW_INTL_API_KEY', baseUrl: 'https://api.siliconflow.com/v1', defaultModel: 'Qwen/Qwen3.5-35B-A3B' },
   { id: 'minimax', label: 'MiniMax (Global)', envKey: 'MINIMAX_API_KEY', baseUrl: 'https://api.minimax.io/v1', defaultModel: 'MiniMax-M3' },
   { id: 'minimax-cn', label: 'MiniMax (中国)', envKey: 'MINIMAX_CN_API_KEY', baseUrl: 'https://api.minimaxi.com/v1', defaultModel: 'MiniMax-M3' },
   { id: 'openrouter', label: 'OpenRouter', envKey: 'OPENROUTER_API_KEY', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: 'xiaomi/mimo-v2-pro:free' },
@@ -28,7 +73,7 @@ export const PROVIDER_OPTIONS: ProviderOption[] = [
   { id: 'moonshot', label: 'Moonshot (Kimi)', envKey: 'MOONSHOT_API_KEY', baseUrl: 'https://api.moonshot.cn/v1', defaultModel: 'moonshot-v1-auto' },
   { id: 'volcengine', label: 'Volcengine (Doubao)', envKey: 'VOLCENGINE_API_KEY', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', defaultModel: 'doubao-1.5-pro-32k' },
   { id: 'dashscope', label: 'DashScope (Qwen)', envKey: 'DASHSCOPE_API_KEY', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', defaultModel: 'qwen-max' },
-  { id: 'ollama', label: 'Ollama (Local)', envKey: 'OLLAMA_BASE_URL', baseUrl: 'http://localhost:11434/v1', defaultModel: 'llama3' },
+  { id: 'ollama', label: 'Ollama (Local)', envKey: 'OLLAMA_BASE_URL', baseUrl: 'http://localhost:11434', defaultModel: 'llama3' },
   // Full-modal aggregators
   { id: 'atlascloud', label: 'Atlas Cloud (Full-Modal)', envKey: 'ATLASCLOUD_API_KEY', baseUrl: 'https://api.atlascloud.ai/v1', defaultModel: 'claude-sonnet-4-6' },
   { id: 'strongly', label: 'Strongly.AI (Full-Modal)', envKey: 'STRONGLY_API_KEY', baseUrl: 'https://api.strongly.ai/v1', defaultModel: 'claude-sonnet-4-6' },

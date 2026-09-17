@@ -16,6 +16,18 @@ function registerUnlisted(router: LLMRouter, model = 'private/unknown-model:42')
   } as never);
 }
 
+/**
+ * Seed model metadata the way discovery/the model catalog does. Conversational
+ * models are no longer hard-coded in a static table, so window/output metadata
+ * has to be supplied here instead of being read from a builtin id list.
+ */
+function seedModel(router: LLMRouter, id: string, ctx: number, maxOut: number) {
+  router.addCustomModel('anthropic', {
+    id, name: id, provider: 'anthropic',
+    contextWindow: ctx, maxOutputTokens: maxOut, cost: { input: 1, output: 2 },
+  });
+}
+
 afterEach(() => {
   delete process.env['MARKUS_FALLBACK_CONTEXT_WINDOW'];
 });
@@ -48,9 +60,11 @@ describe('P1-7: catalog-miss fallback is conservative, never 1M', () => {
 describe('P1-8: window resolves for the effective model, not the provider default', () => {
   it('an explicit (smaller) effective model wins over the provider default window', () => {
     const router = new LLMRouter('anthropic');
+    seedModel(router, 'claude-opus-4-6', 1_000_000, 128_000);
+    seedModel(router, 'claude-3-5-haiku-20241022', 200_000, 64_000);
     router.registerProviderFromConfig('anthropic', {
       provider: 'anthropic' as never,
-      model: 'claude-opus-4-6', // builtin window 1,000,000
+      model: 'claude-opus-4-6', // window 1,000,000
       apiKey: 'sk-test',
     } as never);
 
@@ -64,6 +78,8 @@ describe('P1-8: window resolves for the effective model, not the provider defaul
 
   it('max output also follows the effective model', () => {
     const router = new LLMRouter('anthropic');
+    seedModel(router, 'claude-opus-4-6', 1_000_000, 128_000);
+    seedModel(router, 'claude-3-5-haiku-20241022', 200_000, 64_000);
     router.registerProviderFromConfig('anthropic', {
       provider: 'anthropic' as never,
       model: 'claude-opus-4-6', // maxOutputTokens 128,000

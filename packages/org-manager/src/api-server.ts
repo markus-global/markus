@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, getProviderBootstrapModel, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -38,6 +38,11 @@ import {
   isGreenfieldLlmConfig,
   markusCatalogUrlFromHub,
   isLegacyMarkusProxyBaseUrl,
+  discoverProviderModels,
+  buildModelsEndpoint,
+  buildModelsAuthHeaders,
+  isUsableProviderModelId,
+  PROVIDER_DEFAULT_BASE_URLS,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -332,6 +337,45 @@ export class APIServer {
    * Ensure Markus OpenRouter-only config: Hub catalog URL + OR baseUrl/apiKey.
    * Strips legacy Worker fields (`proxyUrl` / `subscriptionKey` / `searchUrl`).
    */
+  /**
+   * The model to preselect for a provider: its documented bootstrap model when
+   * the provider still serves it, otherwise the first id in the live listing.
+   * Preselecting a retired id would leave the saved provider failing on first use.
+   */
+  private pickRecommendedModelId(provider: string, models: Array<{ id: string }>): string {
+    const bootstrap = getProviderBootstrapModel(provider);
+    if (bootstrap && models.some(m => m.id === bootstrap)) return bootstrap;
+    return models[0]?.id ?? bootstrap ?? '';
+  }
+
+  /**
+   * Tag each model with where it came from, so the UI never needs its own
+   * hard-coded id list to decide what counts as "custom":
+   *   custom  — added by the user (`config.llm.customModels`)
+   *   live    — reported by the provider's own model-list endpoint
+   *   builtin — Markus' static metadata table (offline fallback / media models)
+   */
+  private tagModelSources<T extends { id: string; source?: string }>(
+    provider: string,
+    models: T[],
+  ): Array<T & { source: string }> {
+    let userModelIds = new Set<string>();
+    try {
+      const cfg = loadConfig(this.markusConfigPath) as {
+        llm?: { customModels?: Record<string, Array<{ id?: string }>> };
+      };
+      userModelIds = new Set(
+        (cfg.llm?.customModels?.[provider] ?? [])
+          .map(m => String(m.id ?? ''))
+          .filter(Boolean),
+      );
+    } catch { /* custom models are optional */ }
+    return models.map(m => ({
+      ...m,
+      source: userModelIds.has(m.id) ? 'custom' : (m.source ?? 'builtin'),
+    }));
+  }
+
   ensureMarkusDirectConfig(): string | undefined {
     try {
       const cfg = loadConfig();
@@ -7891,6 +7935,24 @@ EXPLANATION_END`;
       return;
     }
 
+    // Provider directory — derived from the canonical registry in @markus/shared.
+    // The UI used to keep its own copy (labels + default model ids); that copy
+    // drifted and was the last place in the frontend with hard-coded model ids.
+    if (path === '/api/llm/provider-catalog' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      this.json(res, 200, {
+        providers: PROVIDERS.map(p => ({
+          id: p.id,
+          label: p.label,
+          envKey: p.envKey,
+          baseUrl: p.baseUrl,
+          defaultModel: p.defaultModel,
+        })),
+      });
+      return;
+    }
+
     if (path.startsWith('/api/models/catalog/') && req.method === 'GET') {
       if (!this.modelCatalog) {
         this.json(res, 503, { error: 'Model catalog not available' });
@@ -7902,7 +7964,7 @@ EXPLANATION_END`;
         return;
       }
       const models = this.modelCatalog.getModelsByProvider(provider);
-      this.json(res, 200, { provider, models });
+      this.json(res, 200, { provider, models: this.tagModelSources(provider, models) });
       return;
     }
 
@@ -8031,18 +8093,19 @@ EXPLANATION_END`;
 
         if (!apiKey) {
           // No key available, fallback to catalog (strip LiteLLM provider prefixes)
-          const catalogModels = (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
-            .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) }));
-          this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog' });
+          const catalogModels = this.tagModelSources(providerName, (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
+            .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) })));
+          this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog', recommended: this.pickRecommendedModelId(providerName, catalogModels) });
           return;
         }
 
         const result = await this.validateProviderKey(providerName, apiKey, baseUrl);
-        this.json(res, 200, { provider: providerName, models: result.models, source: result.valid ? 'live' : 'catalog' });
+        const liveModels = this.tagModelSources(providerName, result.models as Array<{ id: string; source?: string }>);
+        this.json(res, 200, { provider: providerName, models: liveModels, source: result.valid ? 'live' : 'catalog', recommended: this.pickRecommendedModelId(providerName, liveModels) });
       } catch (err) {
         const catalogModels = (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
           .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) }));
-        this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog', error: err instanceof Error ? err.message : String(err) });
+        this.json(res, 200, { provider: providerName, models: this.tagModelSources(providerName, catalogModels), source: 'catalog', error: err instanceof Error ? err.message : String(err) });
       }
       return;
     }
@@ -9794,6 +9857,15 @@ EXPLANATION_END`;
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
 
+      // Derived from the canonical registry in @markus/shared. Do NOT re-declare
+      // base URLs or model ids here — this table previously disagreed with the
+      // registry (e.g. OpenRouter's model suffix) and with the router.
+      // The id list below is only *policy*: which providers we auto-detect from
+      // the environment. It is not a model list.
+      const ENV_DETECT_PROVIDER_IDS = [
+        'anthropic', 'openai', 'google', 'siliconflow', 'siliconflow-intl',
+        'minimax', 'minimax-cn', 'openrouter', 'zai', 'deepseek',
+      ];
       const ENV_MODEL_MAP: Array<{
         provider: string;
         displayName: string;
@@ -9802,18 +9874,18 @@ EXPLANATION_END`;
         baseUrlEnv?: string;
         defaultModel: string;
         defaultBaseUrl?: string;
-      }> = [
-        { provider: 'anthropic', displayName: 'Anthropic', keyEnv: 'ANTHROPIC_API_KEY', defaultModel: 'claude-opus-4-6' },
-        { provider: 'openai', displayName: 'OpenAI', keyEnv: 'OPENAI_API_KEY', defaultModel: 'gpt-5.4' },
-        { provider: 'google', displayName: 'Google Gemini', keyEnv: 'GOOGLE_API_KEY', defaultModel: 'gemini-3-1-pro' },
-        { provider: 'siliconflow', displayName: 'SiliconFlow (中国)', keyEnv: 'SILICONFLOW_API_KEY', modelEnv: 'SILICONFLOW_MODEL', baseUrlEnv: 'SILICONFLOW_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api.siliconflow.cn/v1' },
-        { provider: 'siliconflow-intl', displayName: 'SiliconFlow (Global)', keyEnv: 'SILICONFLOW_INTL_API_KEY', modelEnv: 'SILICONFLOW_INTL_MODEL', baseUrlEnv: 'SILICONFLOW_INTL_BASE_URL', defaultModel: 'Qwen/Qwen3.5-35B-A3B', defaultBaseUrl: 'https://api-st.siliconflow.cn/v1' },
-        { provider: 'minimax', displayName: 'MiniMax (Global)', keyEnv: 'MINIMAX_API_KEY', modelEnv: 'MINIMAX_MODEL', baseUrlEnv: 'MINIMAX_BASE_URL', defaultModel: 'MiniMax-M3', defaultBaseUrl: 'https://api.minimax.io/v1' },
-        { provider: 'minimax-cn', displayName: 'MiniMax (中国)', keyEnv: 'MINIMAX_CN_API_KEY', modelEnv: 'MINIMAX_CN_MODEL', baseUrlEnv: 'MINIMAX_CN_BASE_URL', defaultModel: 'MiniMax-M3', defaultBaseUrl: 'https://api.minimaxi.com/v1' },
-        { provider: 'openrouter', displayName: 'OpenRouter', keyEnv: 'OPENROUTER_API_KEY', modelEnv: 'OPENROUTER_MODEL', baseUrlEnv: 'OPENROUTER_BASE_URL', defaultModel: 'xiaomi/mimo-v2-pro', defaultBaseUrl: 'https://openrouter.ai/api/v1' },
-        { provider: 'zai', displayName: 'ZAI', keyEnv: 'ZAI_API_KEY', modelEnv: 'ZAI_MODEL', baseUrlEnv: 'ZAI_BASE_URL', defaultModel: 'glm-5.1', defaultBaseUrl: 'https://api.z.ai/api/paas/v4' },
-        { provider: 'deepseek', displayName: 'DeepSeek', keyEnv: 'DEEPSEEK_API_KEY', modelEnv: 'DEEPSEEK_MODEL', baseUrlEnv: 'DEEPSEEK_BASE_URL', defaultModel: 'deepseek-v4-flash', defaultBaseUrl: 'https://api.deepseek.com' },
-      ];
+      }> = ENV_DETECT_PROVIDER_IDS
+        .map(id => PROVIDERS.find(p => p.id === id))
+        .filter((p): p is NonNullable<typeof p> => !!p)
+        .map(p => ({
+          provider: p.id,
+          displayName: p.label,
+          keyEnv: p.envKey,
+          modelEnv: p.modelEnv,
+          baseUrlEnv: p.baseUrlEnv,
+          defaultModel: p.defaultModel,
+          defaultBaseUrl: p.baseUrl,
+        }));
 
       const detected: Array<{
         provider: string;
@@ -13525,31 +13597,9 @@ EXPLANATION_END`;
   }
 
   private async validateProviderKey(provider: string, apiKey: string, baseUrl?: string): Promise<{ valid: boolean; error?: string; models: unknown[] }> {
-    const PROVIDER_BASE_URLS: Record<string, string> = {
-      anthropic: 'https://api.anthropic.com',
-      openai: 'https://api.openai.com/v1',
-      google: 'https://generativelanguage.googleapis.com/v1beta',
-      deepseek: 'https://api.deepseek.com',
-      siliconflow: 'https://api.siliconflow.cn/v1',
-      minimax: 'https://api.minimax.io/v1',
-      'minimax-cn': 'https://api.minimaxi.com/v1',
-      'siliconflow-intl': 'https://api-st.siliconflow.cn/v1',
-      openrouter: 'https://openrouter.ai/api/v1',
-      zai: 'https://api.z.ai/api/paas/v4',
-      xai: 'https://api.x.ai/v1',
-      mistral: 'https://api.mistral.ai/v1',
-      groq: 'https://api.groq.com/openai/v1',
-      perplexity: 'https://api.perplexity.ai',
-      cohere: 'https://api.cohere.ai/compatibility/v1',
-      together_ai: 'https://api.together.xyz/v1',
-      fireworks_ai: 'https://api.fireworks.ai/inference/v1',
-      moonshot: 'https://api.moonshot.cn/v1',
-      volcengine: 'https://ark.cn-beijing.volces.com/api/v3',
-      dashscope: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      ollama: 'http://localhost:11434/v1',
-    };
-
-    const providerBaseUrl = baseUrl || PROVIDER_BASE_URLS[provider];
+    // Default base URLs live in @markus/core (`model-discovery`) so the router,
+    // the settings API and the CLI all agree on one table.
+    const providerBaseUrl = baseUrl || PROVIDER_DEFAULT_BASE_URLS[provider];
     if (!providerBaseUrl) {
       return { valid: false, error: `Unknown provider: ${provider}`, models: [] };
     }
@@ -13557,37 +13607,36 @@ EXPLANATION_END`;
     // For Anthropic, use a lightweight models list call
     if (provider === 'anthropic') {
       try {
-        const resp = await fetch('https://api.anthropic.com/v1/models', {
-          headers: {
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-          },
-          signal: AbortSignal.timeout(15000),
+        // Respect the configured baseUrl (self-hosted / proxy Anthropic-compatible
+        // endpoints) and use Anthropic's own x-api-key + anthropic-version headers.
+        const discovered = await discoverProviderModels({
+          provider: 'anthropic',
+          baseUrl: providerBaseUrl,
+          apiKey,
         });
-        if (!resp.ok) {
-          const errText = await resp.text().catch(() => '');
-          return { valid: false, error: `HTTP ${resp.status}: ${errText.slice(0, 200)}`, models: [] };
-        }
-        // Anthropic models endpoint returns { data: [...] }
-        const data = await resp.json() as { data?: Array<{ id: string }> };
-        const modelIds = (data.data ?? []).map((m: { id: string }) => m.id);
         // Cross-reference with catalog for enrichment (pricing, capabilities).
         // Only enrich models that the API actually returned — don't add extras.
-        const result = modelIds.map((id: string) => {
-          const match = this.modelCatalog?.getModelInfo(id) || this.modelCatalog?.getModelInfo(`anthropic/${id}`);
-          return match ? { ...match, id } : { id, provider: 'anthropic', mode: 'chat' };
+        const result = discovered.map(m => {
+          const match = this.modelCatalog?.getModelInfo(m.id) || this.modelCatalog?.getModelInfo(`anthropic/${m.id}`);
+          return match ? { ...match, id: m.id } : { id: m.id, provider: 'anthropic', mode: 'chat' };
         });
-        result.sort((a, b) => ((a as { id?: string }).id ?? '').localeCompare((b as { id?: string }).id ?? ''));
+        result.sort((a, b) => String((a as { id?: string }).id ?? '').localeCompare(String((b as { id?: string }).id ?? '')));
         return { valid: true, models: result };
       } catch (err) {
-        return { valid: false, error: err instanceof Error ? err.message : String(err), models: [] };
+        const reason = err instanceof Error ? err.message : String(err);
+        const catalogModels = this.modelCatalog?.getModelsByProvider('anthropic') ?? [];
+        // A model-list failure is not always a bad key (region / permission /
+        // gateway quirk) — surface the reason but still hand back the catalog.
+        return { valid: false, error: `${reason} — showing catalog models`, models: catalogModels };
       }
     }
 
-    // For Google Gemini, use key-based auth and different models endpoint
+    // For Google Gemini, use key-based auth and Gemini's own models endpoint
     if (provider === 'google') {
       try {
-        const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, {
+        // x-goog-api-key keeps the key out of the URL (and out of access logs).
+        const resp = await fetch(buildModelsEndpoint(providerBaseUrl, 'google'), {
+          headers: buildModelsAuthHeaders('google', apiKey),
           signal: AbortSignal.timeout(15000),
         });
         if (!resp.ok) {
@@ -13649,40 +13698,66 @@ EXPLANATION_END`;
       }
     }
 
-    // For OpenAI-compatible providers, call /v1/models (or /models)
+    // For OpenAI-compatible providers, ask the provider for its own model list.
+    // The endpoint is derived from the configured baseUrl by the shared helper
+    // (`buildModelsEndpoint`), so a base that already ends in a version segment
+    // (/v1, /v1beta, /api/v3, /compatible-mode/v1, …) is not doubled up.
     try {
       let modelsUrl: string;
-      if (providerBaseUrl.endsWith('/v1') || providerBaseUrl.endsWith('/v1/')) {
-        modelsUrl = providerBaseUrl.replace(/\/+$/, '') + '/models';
-      } else if (providerBaseUrl.includes('/v1/') || providerBaseUrl.includes('/v3') || providerBaseUrl.includes('/v4') || providerBaseUrl.includes('/compatible-mode')) {
-        modelsUrl = providerBaseUrl.replace(/\/+$/, '') + '/models';
-      } else {
-        modelsUrl = providerBaseUrl.replace(/\/+$/, '') + '/v1/models';
+      try {
+        modelsUrl = buildModelsEndpoint(providerBaseUrl, provider);
+      } catch {
+        return { valid: false, error: `Unknown provider: ${provider}`, models: [] };
       }
 
       const resp = await fetch(modelsUrl, {
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-        },
+        headers: buildModelsAuthHeaders(provider, apiKey),
         signal: AbortSignal.timeout(15000),
       });
 
       if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
+        // A non-2xx from /models does NOT prove the key is bad (some gateways do
+        // not implement the listing endpoint at all). Fall back to the catalog
+        // rather than handing the UI an empty model list.
+        const fallback = this.modelCatalog?.getModelsByProvider(provider) ?? [];
+        if (fallback.length > 0) {
+          const stripped = fallback.map(cm => {
+            const strippedId = cm.id.startsWith(`${provider}/`) ? cm.id.slice(provider.length + 1) : cm.id;
+            return { ...cm, id: strippedId };
+          });
+          return {
+            valid: false,
+            error: `HTTP ${resp.status}: ${errText.slice(0, 200)} — showing catalog models`,
+            models: stripped,
+          };
+        }
         return { valid: false, error: `HTTP ${resp.status}: ${errText.slice(0, 200)}`, models: [] };
       }
 
-      const data = await resp.json() as { data?: Array<Record<string, unknown>> };
-      const remoteModels = (data.data ?? []) as Array<Record<string, unknown>>;
+      // Accept the several wrapper shapes in the wild: { data: [...] } (OpenAI),
+      // { models: [...] } (Ollama/Gemini style gateways), a bare array, etc.
+      const listPayload = await resp.json() as Record<string, unknown>;
+      const rawList = (
+        Array.isArray(listPayload.data) ? listPayload.data
+          : Array.isArray(listPayload.models) ? listPayload.models
+            : Array.isArray(listPayload) ? listPayload as unknown[]
+              : []
+      ) as Array<Record<string, unknown>>;
+      const remoteModels: Array<Record<string, unknown>> = rawList
+        .map(m => {
+          if (typeof m === 'string') return { id: m };
+          const rawId = m?.id ?? m?.name ?? m?.model;
+          return { ...m, id: typeof rawId === 'string' ? rawId.replace(/^models\//, '') : '' };
+        })
+        .filter(m => String(m.id ?? '').length > 0);
 
-      // Filter out moderation/safety models and embedding/rerank models (not usable for chat or multimodal).
-      // Keep image/audio/video/tts/speech/whisper models since multimodal routing needs them.
-      const remoteFiltered = remoteModels.filter(m => {
-        const id = String(m.id ?? '').toLowerCase();
-        if (/\b(moderat)\b/i.test(id)) return false;
-        if (/\b(embed|rerank)\b/.test(id)) return false;
-        return true;
-      });
+      // Filter out moderation / embedding / rerank models (not usable for chat
+      // or multimodal). Image / audio / video / TTS / speech models are kept —
+      // multimodal routing needs them. Matching is substring-based on purpose:
+      // a `\b`-anchored regex silently misses real ids such as
+      // `text-embedding-3-small` and `bge-reranker-v2`.
+      const remoteFiltered = remoteModels.filter(m => isUsableProviderModelId(String(m.id)));
 
       // Build multiple lookup indices for catalog matching
       const catalogModels = this.modelCatalog?.getModelsByProvider(provider) ?? [];

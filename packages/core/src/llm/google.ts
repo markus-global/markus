@@ -7,6 +7,17 @@ type GeminiPart =
   | { functionCall: { name: string; args: Record<string, unknown> } }
   | { functionResponse: { name: string; response: { result: string } } };
 
+/**
+ * Response-side part. Kept as a single object type (not the `GeminiPart`
+ * union) so the streaming loop can read `.text` / `.functionCall` without
+ * manual narrowing. `thought: true` marks a Gemini 2.5 chain-of-thought part.
+ */
+interface GeminiResponsePart {
+  text?: string;
+  thought?: boolean;
+  functionCall?: { name: string; args: Record<string, unknown> };
+}
+
 interface GeminiContent {
   role: 'user' | 'model';
   parts: GeminiPart[];
@@ -19,11 +30,19 @@ interface GeminiFunctionDeclaration {
 }
 
 interface GeminiResponse {
-  candidates: Array<{
-    content: { parts: Array<{ text?: string; functionCall?: { name: string; args: Record<string, unknown> } }> };
-    finishReason: string;
+  candidates?: Array<{
+    /** Absent when the prompt was blocked by safety filters. */
+    content?: { parts: GeminiResponsePart[] };
+    finishReason?: string;
   }>;
-  usageMetadata?: { promptTokenCount: number; candidatesTokenCount: number };
+  /** Set when the prompt itself was blocked (e.g. SAFETY, RECITATION). */
+  promptFeedback?: { blockReason?: string };
+  usageMetadata?: {
+    promptTokenCount: number;
+    candidatesTokenCount: number;
+    /** Thinking tokens — billed as output but reported separately. */
+    thoughtsTokenCount?: number;
+  };
 }
 
 /**
@@ -152,6 +171,7 @@ export class GoogleProvider implements MultiModalProviderInterface {
     }
 
     let content = '';
+    let reasoningContent = '';
     const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
     let finishReason: LLMResponse['finishReason'] = 'end_turn';
     let promptTokens = 0;
@@ -182,15 +202,25 @@ export class GoogleProvider implements MultiModalProviderInterface {
 
           if (candidate?.content?.parts) {
             for (const part of candidate.content.parts) {
-              if (part.text) {
+              if (!part.text) {
+                if (part.functionCall) {
+                  const id = `call_${Date.now()}_${toolCalls.length}`;
+                  toolCalls.push({ id, name: part.functionCall.name, arguments: part.functionCall.args });
+                  onEvent({ type: 'tool_call_start', toolCall: { id, name: part.functionCall.name } });
+                  onEvent({ type: 'tool_call_end', toolCall: { id, name: part.functionCall.name } });
+                }
+                continue;
+              }
+              // Gemini 2.5 thinking models stream their chain-of-thought as regular
+              // text parts flagged `thought: true`. Emitting those as text_delta
+              // dumped raw reasoning into the visible reply; route them to the
+              // reasoning channel instead.
+              if (part.thought === true) {
+                reasoningContent += part.text;
+                onEvent({ type: 'thinking_delta', thinking: part.text });
+              } else {
                 content += part.text;
                 onEvent({ type: 'text_delta', text: part.text });
-              }
-              if (part.functionCall) {
-                const id = `call_${Date.now()}_${toolCalls.length}`;
-                toolCalls.push({ id, name: part.functionCall.name, arguments: part.functionCall.args });
-                onEvent({ type: 'tool_call_start', toolCall: { id, name: part.functionCall.name } });
-                onEvent({ type: 'tool_call_end', toolCall: { id, name: part.functionCall.name } });
               }
             }
           }
@@ -201,7 +231,10 @@ export class GoogleProvider implements MultiModalProviderInterface {
 
           if (chunk.usageMetadata) {
             promptTokens = chunk.usageMetadata.promptTokenCount ?? 0;
-            completionTokens = chunk.usageMetadata.candidatesTokenCount ?? 0;
+            // Thinking tokens are billed as output but reported separately, so a
+            // reasoning turn would otherwise be recorded far below its real cost.
+            completionTokens = (chunk.usageMetadata.candidatesTokenCount ?? 0)
+              + (chunk.usageMetadata.thoughtsTokenCount ?? 0);
           }
         } catch { /* skip unparseable */ }
       }
@@ -213,7 +246,9 @@ export class GoogleProvider implements MultiModalProviderInterface {
     const usage = { inputTokens: promptTokens, outputTokens: completionTokens };
     onEvent({ type: 'message_end', usage, finishReason });
 
-    return { content, toolCalls: toolCalls.length ? toolCalls : undefined, usage, finishReason };
+    const result: LLMResponse = { content, toolCalls: toolCalls.length ? toolCalls : undefined, usage, finishReason };
+    if (reasoningContent) result.reasoningContent = reasoningContent;
+    return result;
   }
 
   private convertContentParts(parts: LLMContentPart[]): GeminiPart[] {
@@ -237,6 +272,16 @@ export class GoogleProvider implements MultiModalProviderInterface {
     let systemInstruction: string | undefined;
     const contents: GeminiContent[] = [];
 
+    // Gemini's functionResponse carries the FUNCTION NAME, not the tool call id.
+    // Build the id → name map from the assistant turns that issued the calls;
+    // sending the id made upstream reject the follow-up turn.
+    const toolNameByCallId = new Map<string, string>();
+    for (const msg of messages) {
+      for (const tc of msg.toolCalls ?? []) {
+        if (tc.id && tc.name) toolNameByCallId.set(tc.id, tc.name);
+      }
+    }
+
     for (const msg of messages) {
       if (msg.role === 'system') {
         systemInstruction = (systemInstruction ? systemInstruction + '\n' : '') + getTextContent(msg.content);
@@ -248,7 +293,7 @@ export class GoogleProvider implements MultiModalProviderInterface {
           role: 'user',
           parts: [{
             functionResponse: {
-              name: msg.toolCallId ?? 'unknown',
+              name: toolNameByCallId.get(msg.toolCallId ?? '') ?? msg.toolCallId ?? 'unknown',
               response: { result: sanitizeForLLM(getTextContent(msg.content)) },
             },
           }],
@@ -292,7 +337,13 @@ export class GoogleProvider implements MultiModalProviderInterface {
     const map: Record<string, LLMResponse['finishReason']> = {
       STOP: 'end_turn',
       MAX_TOKENS: 'max_tokens',
-      SAFETY: 'end_turn',
+      // Everything Gemini reports when it refused to answer. These used to be
+      // mapped to 'end_turn', which made a blocked turn look like a normal one.
+      SAFETY: 'content_filter',
+      PROHIBITED_CONTENT: 'content_filter',
+      BLOCKLIST: 'content_filter',
+      SPII: 'content_filter',
+      RECITATION: 'content_filter',
     };
     return map[reason] ?? 'end_turn';
   }
@@ -300,12 +351,28 @@ export class GoogleProvider implements MultiModalProviderInterface {
   private convertResponse(data: GeminiResponse): LLMResponse {
     const candidate = data.candidates?.[0];
     if (!candidate) throw new Error('No response candidate from Gemini');
+    // A safety-blocked prompt comes back with a candidate that carries no
+    // `content` at all, only `finishReason` + a top-level `promptFeedback`.
+    // Reaching into `.parts` threw a TypeError that hid the real reason.
+    if (!candidate.content?.parts) {
+      const reason = data.promptFeedback?.blockReason ?? candidate.finishReason;
+      throw new Error(
+        reason
+          ? `Gemini returned no content (finishReason=${candidate.finishReason ?? 'n/a'}, blockReason=${reason})`
+          : 'Gemini returned no content (candidate has no parts)',
+      );
+    }
 
     let content = '';
+    let reasoningContent = '';
     const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
 
     for (const part of candidate.content.parts) {
-      if (part.text) content += part.text;
+      if (part.text) {
+        // `thought: true` parts are the chain-of-thought, not the answer.
+        if (part.thought === true) reasoningContent += part.text;
+        else content += part.text;
+      }
       if (part.functionCall) {
         toolCalls.push({
           id: `call_${Date.now()}_${toolCalls.length}`,
@@ -320,9 +387,11 @@ export class GoogleProvider implements MultiModalProviderInterface {
       toolCalls: toolCalls.length ? toolCalls : undefined,
       usage: {
         inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
-        outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+        // Thinking tokens are billed as output but reported separately.
+        outputTokens: (data.usageMetadata?.candidatesTokenCount ?? 0)
+          + (data.usageMetadata?.thoughtsTokenCount ?? 0),
       },
-      finishReason: this.mapFinishReason(candidate.finishReason),
+      finishReason: this.mapFinishReason(candidate.finishReason ?? ''),
     };
   }
 

@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 import * as readline from 'node:readline';
 import { loadConfig, saveConfig, APP_VERSION, PROVIDERS } from '@markus/shared';
+import { listProviderModels } from '../lib/provider-models.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -192,20 +193,7 @@ async function configureNewProvider(ask: (q: string, def?: string) => Promise<st
   }
 
   const pdef = PROVIDERS[idx];
-  console.log(`\n  Selected: ${pdef.label} (${pdef.defaultModel})`);
-
-  // Model selection
-  console.log(`\n  ${C.DIM}Available models:${C.RESET}`);
-  pdef.models.forEach((m, i) => {
-    const recommended = m === pdef.defaultModel ? ` ${C.GREEN}(recommended)${C.RESET}` : '';
-    console.log(`    ${i + 1}. ${m}${recommended}`);
-  });
-  console.log('');
-  const modelNum = await ask('Select model number', '1');
-  const modelIdx = parseInt(modelNum, 10) - 1;
-  const selectedModel = !isNaN(modelIdx) && modelIdx >= 0 && modelIdx < pdef.models.length
-    ? pdef.models[modelIdx]
-    : pdef.defaultModel;
+  console.log(`\n  Selected: ${pdef.label}`);
 
   // Base URL
   let baseUrl = pdef.baseUrl ?? '';
@@ -213,7 +201,7 @@ async function configureNewProvider(ask: (q: string, def?: string) => Promise<st
     baseUrl = await ask('Ollama base URL', baseUrl);
   }
 
-  // API Key
+  // API Key — asked before the model list because listing models needs the key.
   const envKey = process.env[pdef.envKey];
   let apiKey = envKey ?? '';
   const keyAnswer = await ask(
@@ -226,6 +214,31 @@ async function configureNewProvider(ask: (q: string, def?: string) => Promise<st
     console.log(`\n  ${C.YELLOW}Skipped — you can configure later with ${C.BOLD}markus model${C.RESET}`);
     return;
   }
+
+  // Model selection — ask the provider for its current list instead of trusting
+  // a static table: ids change, and a stale id only fails at request time.
+  console.log(`\n  ${C.DIM}Fetching model list from ${pdef.label}...${C.RESET}`);
+  const listed = await listProviderModels(pdef, { apiKey, baseUrl });
+  const choices = listed.models.length > 0
+    ? listed.models
+    : (pdef.defaultModel ? [pdef.defaultModel] : []);
+  if (listed.source === 'live') {
+    console.log(`  ${C.GREEN}✓${C.RESET}  ${choices.length} models reported by the provider`);
+  } else {
+    console.log(`  ${C.YELLOW}!${C.RESET}  Could not list models: ${listed.error ?? 'unknown error'}`);
+    console.log(`     ${C.DIM}Showing the default model instead.${C.RESET}`);
+  }
+  console.log(`\n  ${C.DIM}Available models:${C.RESET}`);
+  choices.forEach((m, i) => {
+    const recommended = m === pdef.defaultModel ? ` ${C.GREEN}(recommended)${C.RESET}` : '';
+    console.log(`    ${i + 1}. ${m}${recommended}`);
+  });
+  console.log('');
+  const modelNum = await ask('Select model number', '1');
+  const modelIdx = parseInt(modelNum, 10) - 1;
+  const selectedModel = !isNaN(modelIdx) && modelIdx >= 0 && modelIdx < choices.length
+    ? choices[modelIdx]!
+    : (choices[0] ?? pdef.defaultModel);
 
   // Optional label
   const label = await ask('Label for this key', 'primary');

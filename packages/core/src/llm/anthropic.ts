@@ -38,6 +38,42 @@ interface AnthropicResponse {
   stop_reason: string;
 }
 
+/**
+ * Anthropic requires all `tool_result` blocks answering one assistant turn to
+ * live in a SINGLE following user message:
+ *
+ *   assistant(tool_use, tool_use) → user(tool_result, tool_result)
+ *
+ * Our history stores one message per tool result, which converts into two
+ * consecutive user messages. The API rejects that, so any parallel tool call
+ * would fail the very next turn. Merge adjacent tool_result-only user messages
+ * here (and never merge a tool_result message with a real user text turn).
+ */
+function mergeConsecutiveToolResults(messages: AnthropicAPIMessage[]): AnthropicAPIMessage[] {
+  const isToolResultOnly = (m: AnthropicAPIMessage): boolean =>
+    m.role === 'user'
+    && Array.isArray(m.content)
+    && m.content.length > 0
+    && m.content.every((b) => b.type === 'tool_result');
+
+  const out: AnthropicAPIMessage[] = [];
+  for (const msg of messages) {
+    const prev = out[out.length - 1];
+    if (prev && isToolResultOnly(prev) && isToolResultOnly(msg)) {
+      out[out.length - 1] = {
+        role: 'user',
+        content: [
+          ...(prev.content as AnthropicContentBlock[]),
+          ...(msg.content as AnthropicContentBlock[]),
+        ],
+      };
+      continue;
+    }
+    out.push(msg);
+  }
+  return out;
+}
+
 export class AnthropicProvider implements LLMProviderInterface {
   name = 'anthropic';
   model: string;
@@ -211,6 +247,7 @@ export class AnthropicProvider implements LLMProviderInterface {
     let outputTokens = 0;
     let cacheReadTokens: number | undefined;
     let cacheWriteTokens: number | undefined;
+    let streamError: string | null = null;
 
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No response body reader');
@@ -239,6 +276,7 @@ export class AnthropicProvider implements LLMProviderInterface {
             content_block?: { type?: string; id?: string; name?: string };
             index?: number;
             usage?: { input_tokens?: number; output_tokens?: number };
+            error?: { type?: string; message?: string };
             message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
           };
 
@@ -274,16 +312,26 @@ export class AnthropicProvider implements LLMProviderInterface {
             case 'message_delta':
               if (event.delta?.stop_reason) {
                 const finishMap: Record<string, LLMResponse['finishReason']> = {
-                  end_turn: 'end_turn', tool_use: 'tool_use', max_tokens: 'max_tokens', stop_sequence: 'stop_sequence',
+                  end_turn: 'end_turn', tool_use: 'tool_use', max_tokens: 'max_tokens', stop_sequence: 'stop_sequence', refusal: 'content_filter',
                 };
                 finishReason = finishMap[event.delta.stop_reason] ?? 'end_turn';
               }
               if (event.usage?.output_tokens) outputTokens = event.usage.output_tokens;
               break;
+            case 'error':
+              // Mid-stream failures (overloaded_error, rate_limit_error, …) arrive
+              // as an `error` event. Ignoring it silently truncated the response:
+              // the caller saw a short, apparently successful answer.
+              streamError = `Anthropic stream error (${event.error?.type ?? 'unknown'}): ${event.error?.message ?? 'no message'}`;
+              break;
           }
         } catch { /* skip unparseable */ }
       }
+
+      if (streamError) break;
     }
+
+    if (streamError) throw new Error(streamError);
     } catch (err) {
       if (idleTimedOut || hardTimedOut) {
         // Graceful termination on stream stall: if we already emitted partial
@@ -346,7 +394,7 @@ export class AnthropicProvider implements LLMProviderInterface {
 
   private convertMessages(rawMessages: LLMMessage[]): AnthropicAPIMessage[] {
     const messages = sanitizeLLMMessages(rawMessages);
-    return messages.map((m) => {
+    const mapped = messages.map((m) => {
       const wantCache = !!(m as LLMMessage).cacheBreakpoint;
 
       if (m.role === 'tool') {
@@ -400,6 +448,8 @@ export class AnthropicProvider implements LLMProviderInterface {
         content: m.content,
       };
     });
+
+    return mergeConsecutiveToolResults(mapped);
   }
 
   private convertTools(tools: LLMTool[]): AnthropicToolDef[] {
@@ -464,6 +514,8 @@ export class AnthropicProvider implements LLMProviderInterface {
       tool_use: 'tool_use',
       max_tokens: 'max_tokens',
       stop_sequence: 'stop_sequence',
+      // Claude declined to answer (safety / policy).
+      refusal: 'content_filter',
     };
 
     return {

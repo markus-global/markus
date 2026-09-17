@@ -14,6 +14,33 @@ import { OpenAIProvider } from './openai.js';
  */
 export class MiniMaxProvider extends OpenAIProvider {
 
+  /**
+   * MiniMax's *own* API (image / TTS / video) additionally requires the account
+   * `GroupId` as a query parameter — it cannot be derived from the API key, and
+   * the OpenAI-compatible chat layer never needs it, which is why it was missing
+   * here. Set MINIMAX_GROUP_ID (or MINIMAX_CN_GROUP_ID for the China endpoint).
+   * When it is absent we still send the request, so accounts that do not need it
+   * keep working and the provider's error message is surfaced verbatim.
+   */
+  private get groupId(): string {
+    return (process.env['MINIMAX_GROUP_ID'] ?? process.env['MINIMAX_CN_GROUP_ID'] ?? '').trim();
+  }
+
+  /**
+   * Native MiniMax endpoint: base path plus `GroupId`, merging any extra query
+   * params correctly (the polling endpoints append `task_id` / `file_id`, so a
+   * naive `?GroupId=` concatenation would yield a malformed `...?GroupId=x?a=y`).
+   */
+  private nativeEndpoint(path: string, params: Record<string, string> = {}): string {
+    const url = this.buildEndpoint(path);
+    const query = new URLSearchParams();
+    const groupId = this.groupId;
+    if (groupId) query.set('GroupId', groupId);
+    for (const [key, value] of Object.entries(params)) query.set(key, value);
+    const qs = query.toString();
+    return qs ? `${url}?${qs}` : url;
+  }
+
   override getCapabilities(): ProviderCapabilities {
     return {
       chat: true,
@@ -60,12 +87,12 @@ export class MiniMaxProvider extends OpenAIProvider {
         },
       },
       generate_video: {
-        description: 'Generate video using MiniMax Hailuo. IMPORTANT: For text-to-video, you MUST set model to "MiniMax-Hailuo-2.3". The model "MiniMax-Hailuo-2.3-Fast" only supports image-to-video and will fail for text prompts.',
+        description: 'Generate video using MiniMax. Set model to "MiniMax-H3" (up to 2K; text / image / first-and-last-frame / reference input) or "MiniMax-H3-Max" (faster, 480P/768P; text / image / reference input).',
         inputSchema: {
           type: 'object',
           properties: {
             prompt: { type: 'string', description: 'Detailed description of the video to generate' },
-            model: { type: 'string', enum: ['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast'], description: 'Model to use. "MiniMax-Hailuo-2.3" for text-to-video, "MiniMax-Hailuo-2.3-Fast" for image-to-video only. Default from routing config if not specified.' },
+            model: { type: 'string', enum: ['MiniMax-H3', 'MiniMax-H3-Max'], description: 'Model to use. "MiniMax-H3" supports text / image / first-and-last-frame / reference input at up to 2K; "MiniMax-H3-Max" is faster (480P/768P, no 2K). Default from routing config if not specified.' },
             duration: { type: 'number', enum: [6, 10], description: 'Video duration in seconds (default: 6)' },
             resolution: { type: 'string', enum: ['768P', '1080P'], description: 'Video resolution (default: 768P)' },
           },
@@ -80,7 +107,7 @@ export class MiniMaxProvider extends OpenAIProvider {
   // ---------------------------------------------------------------------------
 
   override async generateImage(prompt: string, options?: ImageGenOptions): Promise<ImageResult[]> {
-    const endpoint = this.buildEndpoint('/image_generation');
+    const endpoint = this.nativeEndpoint('/image_generation');
     const authorization = await this.resolveAuthHeader();
 
     const body: Record<string, unknown> = {
@@ -130,7 +157,7 @@ export class MiniMaxProvider extends OpenAIProvider {
   // ---------------------------------------------------------------------------
 
   override async generateSpeech(text: string, options?: TTSOptions): Promise<AudioResult> {
-    const endpoint = this.buildEndpoint('/t2a_v2');
+    const endpoint = this.nativeEndpoint('/t2a_v2');
     const authorization = await this.resolveAuthHeader();
 
     const format = options?.responseFormat ?? 'mp3';
@@ -185,13 +212,13 @@ export class MiniMaxProvider extends OpenAIProvider {
     const authorization = await this.resolveAuthHeader();
 
     const body: Record<string, unknown> = {
-      model: options?.model ?? 'MiniMax-Hailuo-2.3',
+      model: options?.model ?? 'MiniMax-H3',
       prompt,
     };
     if (options?.duration) body['duration'] = options.duration;
     if (options?.size) body['resolution'] = sizeToResolution(options.size);
 
-    const createEndpoint = this.buildEndpoint('/video_generation');
+    const createEndpoint = this.nativeEndpoint('/video_generation');
     const createRes = await fetch(createEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
@@ -216,13 +243,13 @@ export class MiniMaxProvider extends OpenAIProvider {
       throw new Error('MiniMax video generation returned no task_id');
     }
 
-    const queryBase = this.buildEndpoint('/query/video_generation');
+    const queryBase = this.nativeEndpoint('/query/video_generation', { task_id: taskId });
     // Poll every 5s up to ~30 min for long video jobs.
     const maxAttempts = 360;
     for (let i = 0; i < maxAttempts; i++) {
       await sleep(5_000);
 
-      const queryRes = await fetch(`${queryBase}?task_id=${taskId}`, {
+      const queryRes = await fetch(queryBase, {
         method: 'GET',
         headers: { Authorization: authorization },
         signal: AbortSignal.timeout(15_000),
@@ -237,8 +264,8 @@ export class MiniMaxProvider extends OpenAIProvider {
       };
 
       if (queryData.status === 'Success' && queryData.file_id) {
-        const fileEndpoint = this.buildEndpoint('/files/retrieve');
-        const fileRes = await fetch(`${fileEndpoint}?file_id=${queryData.file_id}`, {
+        const fileEndpoint = this.nativeEndpoint('/files/retrieve', { file_id: queryData.file_id });
+        const fileRes = await fetch(fileEndpoint, {
           method: 'GET',
           headers: { Authorization: authorization },
           signal: AbortSignal.timeout(15_000),

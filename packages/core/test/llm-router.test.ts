@@ -505,6 +505,14 @@ describe('LLMRouter provider management', () => {
 
   it('modelSupportsVision and isCompactionSupported', () => {
     const router = new LLMRouter('anthropic');
+    // Capability metadata is resolved from the model catalog / provider listing
+    // now that conversational models are no longer hard-coded, so seed the entry
+    // the way discovery does.
+    router.addCustomModel('anthropic', {
+      id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic',
+      contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15 },
+      inputTypes: ['text', 'image'],
+    });
     router.registerProvider('anthropic', mockProvider('anthropic', 'claude-sonnet-4-20250514'));
     expect(router.modelSupportsVision('anthropic')).toBe(true);
     expect(router.isCompactionSupported('anthropic')).toBe(true);
@@ -514,6 +522,10 @@ describe('LLMRouter provider management', () => {
 
   it('getModelCost returns catalog pricing', () => {
     const router = new LLMRouter('anthropic');
+    router.addCustomModel('anthropic', {
+      id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic',
+      contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15 },
+    });
     router.registerProvider('anthropic', mockProvider('anthropic', 'claude-sonnet-4-20250514'));
     const cost = router.getModelCost('anthropic');
     expect(cost?.input).toBeGreaterThan(0);
@@ -702,6 +714,11 @@ describe('LLMRouter model metadata', () => {
 
   it('known vision model still reports vision support', () => {
     const router = new LLMRouter('anthropic');
+    router.addCustomModel('anthropic', {
+      id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', provider: 'anthropic',
+      contextWindow: 200000, maxOutputTokens: 64000, cost: { input: 3, output: 15 },
+      inputTypes: ['text', 'image'],
+    });
     router.registerProvider('anthropic', mockProvider('anthropic', 'claude-sonnet-4-20250514'));
     expect(router.modelSupportsVision('anthropic')).toBe(true);
     expect(router.getModelInputTypes('anthropic')).toEqual(['text', 'image']);
@@ -1033,6 +1050,11 @@ describe('LLMRouter settings and metadata', () => {
 
   it('modelSupportsVision uses catalog input types', () => {
     const router = new LLMRouter('openai');
+    router.addCustomModel('openai', {
+      id: 'gpt-4o', name: 'GPT-4o', provider: 'openai',
+      contextWindow: 128000, maxOutputTokens: 16384, cost: { input: 2.5, output: 10 },
+      inputTypes: ['text', 'image'],
+    });
     router.registerProvider('openai', mockProvider('openai', 'gpt-4o'));
     expect(router.modelSupportsVision('openai')).toBe(true);
   });
@@ -1258,14 +1280,18 @@ describe('LLMRouter local/live model sync', () => {
     expect(m?.reasoning).toBe(true);
   });
 
-  it('returns no models before any local sync (no builtin ollama catalog)', () => {
+  it('seeds the bootstrap model before any local sync (never an empty picker)', () => {
     const router = LLMRouter.createDefault({
       ollama: { provider: 'ollama', model: 'llama3.1', baseUrl: 'http://localhost:11434' },
     });
-    // Regression guard: builtin catalog has no ollama entries, so without the
-    // local sync the picker would show zero models (chat selector filters out
-    // providers with empty model lists — the "only markus" symptom).
-    expect(router.getProviderModels('ollama')).toHaveLength(0);
+    // Regression guard: the builtin catalog has no ollama entries and the local
+    // probe has not run yet. An empty list made the chat selector drop the
+    // provider entirely (the "only markus" symptom), so the registry's bootstrap
+    // model is seeded instead — labelled 'builtin' — and replaced by the real
+    // local listing once the probe succeeds.
+    const models = router.getProviderModels('ollama');
+    expect(models).toHaveLength(1);
+    expect(models[0]?.source).toBe('builtin');
   });
 
   it('keeps last-good local models when Ollama probe fails', async () => {
