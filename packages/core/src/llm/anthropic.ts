@@ -247,6 +247,7 @@ export class AnthropicProvider implements LLMProviderInterface {
     let outputTokens = 0;
     let cacheReadTokens: number | undefined;
     let cacheWriteTokens: number | undefined;
+    let streamError: string | null = null;
 
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No response body reader');
@@ -275,6 +276,7 @@ export class AnthropicProvider implements LLMProviderInterface {
             content_block?: { type?: string; id?: string; name?: string };
             index?: number;
             usage?: { input_tokens?: number; output_tokens?: number };
+            error?: { type?: string; message?: string };
             message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
           };
 
@@ -316,10 +318,20 @@ export class AnthropicProvider implements LLMProviderInterface {
               }
               if (event.usage?.output_tokens) outputTokens = event.usage.output_tokens;
               break;
+            case 'error':
+              // Mid-stream failures (overloaded_error, rate_limit_error, …) arrive
+              // as an `error` event. Ignoring it silently truncated the response:
+              // the caller saw a short, apparently successful answer.
+              streamError = `Anthropic stream error (${event.error?.type ?? 'unknown'}): ${event.error?.message ?? 'no message'}`;
+              break;
           }
         } catch { /* skip unparseable */ }
       }
+
+      if (streamError) break;
     }
+
+    if (streamError) throw new Error(streamError);
     } catch (err) {
       if (idleTimedOut || hardTimedOut) {
         // Graceful termination on stream stall: if we already emitted partial
