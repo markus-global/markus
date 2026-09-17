@@ -141,6 +141,67 @@ const INVARIANT_RULES = [
           bad: 'export function isStrictStateItem(item) { return item.sourceType === "task_execution"; }',
         },
       },
+      {
+        file: 'packages/org-manager/src/task-service.ts',
+        label: '依赖判定收敛到单一函数 blockerVerdict（且区分可恢复/终结）',
+        hint: '判定不再是单一函数、或不再区分 failed-recoverable / failed-terminal → 要么瞬时失败就误杀依赖方，要么永远不释放依赖方（本缺陷两端都会复发）',
+        detect: t => /private blockerVerdict\(blockerId: string[\s\S]{0,6000}?'failed-recoverable'[\s\S]{0,1200}?'failed-terminal'/.test(t),
+        fixtures: {
+          ok: "private blockerVerdict(blockerId: string, now = Date.now()) { const status = blocker.status; if (status !== 'failed') return { kind: 'waiting' }; if (failedForMs < grace) return { kind: 'failed-recoverable' }; return { kind: 'failed-terminal' }; }",
+          bad: "private blockerVerdict(blockerId: string) { return this.tasks.get(blockerId)?.status === 'failed' ? { kind: 'dead' } : { kind: 'waiting' }; }",
+        },
+      },
+      {
+        file: 'packages/org-manager/src/task-service.ts',
+        label: '无「blocker 一 failed 就级联判死」的路径（cascadeFailDependents 不得回归）',
+        hint: '无条件级联判死回归 → 瞬时 failed 的 blocker（provider/超时类）会立刻杀掉全部阻塞中的依赖方',
+        detect: t => !/cascadeFailDependents/.test(t),
+        fixtures: {
+          ok: "private checkDependentTasks(cause: Task) { if (task.status === 'blocked') this.evaluateBlockedDependent(task); }",
+          bad: "private checkDependentTasks(finishedTask: Task) { if (finishedTask.status === 'failed') { this.cascadeFailDependents(finishedTask); return; } }",
+        },
+      },
+      {
+        file: 'packages/org-manager/src/task-service.ts',
+        label: 'auto-fail 仅作用于 blocked 依赖方（写入前重读现状）',
+        hint: '缺少写入前的 status===\'blocked\' 重读 → 陈旧判定可能落在已 in_progress / review 的依赖方上（2026-09-12 事故的第二种形态）',
+        detect: t => /private autoFailBlockedDependent\(task: Task[\s\S]{0,4000}?current\.status !== 'blocked'/.test(t),
+        fixtures: {
+          ok: "private autoFailBlockedDependent(task: Task, verdict: BlockerVerdict) { const current = this.tasks.get(task.id); if (!current || current.status !== 'blocked') { return; } this.updateTaskStatus(task.id, 'failed', undefined, true, false, 'system', reason); }",
+          bad: "private autoFailBlockedDependent(task: Task) { this.updateTaskStatus(task.id, 'failed'); }",
+        },
+      },
+      {
+        file: 'packages/org-manager/src/task-service.ts',
+        label: '每次进入 failed 的系统转移都带非空 reason（可追溯）',
+        hint: '存在不传 reason 的 failed 转移 → 状态史 reason 为空，事后无法从记录复现因果（同一个坑已经踩过一次）',
+        detect: t => {
+          const slices = [];
+          let i = t.indexOf('this.updateTaskStatus(');
+          while (i >= 0) {
+            slices.push(t.slice(i, i + 420));
+            i = t.indexOf('this.updateTaskStatus(', i + 1);
+          }
+          return slices
+            .filter(s => /'failed'/.test(s))
+            .every(s => /'system',\s*[^)\s]/.test(s));
+        },
+        fixtures: {
+          ok: "this.updateTaskStatus(taskId, 'failed', undefined, false, false, 'system', `Execution failed: ${reason}`);",
+          bad: "this.updateTaskStatus(taskId, 'failed');",
+        },
+      },
+      {
+        file: 'packages/org-manager/src/task-service.ts',
+        label: 'auto-fail 可自愈（依赖恢复时自动还原，且仅还原引擎自己判死的任务）',
+        hint: '缺少自愈路径 → 依赖恢复后依赖方永久滞留 failed，必须人工裁决 + 重启（2026-09-12 的恢复链）',
+        detect: t => /recoverAutoFailedDependent\(task: Task\)[\s\S]{0,4000}?isDependencyAutoFailed\(task\)/.test(t)
+          && /DEPENDENCY_AUTO_FAIL_MARK[\s\S]{0,400}?DEPENDENCY_AUTO_RECOVER_MARK/.test(t),
+        fixtures: {
+          ok: "const DEPENDENCY_AUTO_FAIL_MARK = '[dependency-auto-fail]'; const DEPENDENCY_AUTO_RECOVER_MARK = '[dependency-auto-recover]'; private recoverAutoFailedDependent(task: Task) { if (!this.isDependencyAutoFailed(task)) return; }",
+          bad: "private recoverAutoFailedDependent(task: Task) { this.updateTaskStatus(task.id, 'in_progress'); }",
+        },
+      },
     ],
   },
 ];

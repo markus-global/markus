@@ -398,7 +398,7 @@ describe('TaskService - Dependencies & Timeouts', () => {
       expect(ts.getTask(a.id)!.status).toBe('in_progress');
     });
 
-    it('fails a blocked dependent when its blocker fails (no deadlock)', () => {
+    it('keeps a dependent blocked on a transient blocker failure, auto-fails only once the blocker is terminal', () => {
       const dep = createAndApprove({ title: 'Dep' });
       const a = ts.createTask(createDefaults({
         title: 'A',
@@ -408,14 +408,23 @@ describe('TaskService - Dependencies & Timeouts', () => {
       ts.approveTask(a.id, 'user-1');
       expect(ts.getTask(a.id)!.status).toBe('blocked');
 
-      // Blocker reaches terminal 'failed' → dependent must not wait forever.
+      // A transient `failed` blocker is recoverable → the dependent must keep
+      // waiting (it auto-heals if the blocker is retried and completes).
       ts.updateTaskStatus(dep.id, 'failed');
+      expect(ts.getTask(a.id)!.status).toBe('blocked');
+
+      // Once the blocker has stayed failed past the recovery window the
+      // dependency is unsatisfiable → auto-fail with a traceable note.
+      ts.setDependencyFailureGraceMs(0);
+      ts.reevaluateBlockedDependents();
       expect(ts.getTask(a.id)!.status).toBe('failed');
       const note = ts.getTask(a.id)!.notes?.join(' ') ?? '';
-      expect(note).toContain('Auto-failed');
+      expect(note).toContain('[dependency-auto-fail]');
+      expect(note).toContain(dep.id);
     });
 
-    it('cascade-fails a chain of blocked dependents on failed blocker', () => {
+    it('cascade-fails a chain of blocked dependents on terminally failed blocker', () => {
+      ts.setDependencyFailureGraceMs(0);
       const dep = createAndApprove({ title: 'Dep' });
       const a = ts.createTask(createDefaults({
         title: 'A',
