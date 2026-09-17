@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, getProviderBootstrapModel, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -337,6 +337,17 @@ export class APIServer {
    * Ensure Markus OpenRouter-only config: Hub catalog URL + OR baseUrl/apiKey.
    * Strips legacy Worker fields (`proxyUrl` / `subscriptionKey` / `searchUrl`).
    */
+  /**
+   * The model to preselect for a provider: its documented bootstrap model when
+   * the provider still serves it, otherwise the first id in the live listing.
+   * Preselecting a retired id would leave the saved provider failing on first use.
+   */
+  private pickRecommendedModelId(provider: string, models: Array<{ id: string }>): string {
+    const bootstrap = getProviderBootstrapModel(provider);
+    if (bootstrap && models.some(m => m.id === bootstrap)) return bootstrap;
+    return models[0]?.id ?? bootstrap ?? '';
+  }
+
   /**
    * Tag each model with where it came from, so the UI never needs its own
    * hard-coded id list to decide what counts as "custom":
@@ -8082,14 +8093,15 @@ EXPLANATION_END`;
 
         if (!apiKey) {
           // No key available, fallback to catalog (strip LiteLLM provider prefixes)
-          const catalogModels = (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
-            .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) }));
-          this.json(res, 200, { provider: providerName, models: this.tagModelSources(providerName, catalogModels), source: 'catalog' });
+          const catalogModels = this.tagModelSources(providerName, (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
+            .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) })));
+          this.json(res, 200, { provider: providerName, models: catalogModels, source: 'catalog', recommended: this.pickRecommendedModelId(providerName, catalogModels) });
           return;
         }
 
         const result = await this.validateProviderKey(providerName, apiKey, baseUrl);
-        this.json(res, 200, { provider: providerName, models: this.tagModelSources(providerName, result.models as Array<{ id: string; source?: string }>), source: result.valid ? 'live' : 'catalog' });
+        const liveModels = this.tagModelSources(providerName, result.models as Array<{ id: string; source?: string }>);
+        this.json(res, 200, { provider: providerName, models: liveModels, source: result.valid ? 'live' : 'catalog', recommended: this.pickRecommendedModelId(providerName, liveModels) });
       } catch (err) {
         const catalogModels = (this.modelCatalog?.getModelsByProvider(providerName) ?? [])
           .map(cm => ({ ...cm, id: stripProviderPrefix(cm.id) }));

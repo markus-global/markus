@@ -786,8 +786,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     if (!quickSetupKey.trim()) return;
     setQuickSetupSaving(true); setQuickSetupMsg(null);
     const po = providerOptions.find(p => p.id === providerName);
-    const defaultModel = po?.defaultModel ?? providerName;
     const baseUrl = po?.baseUrl;
+    // Ask the provider which model it actually serves instead of trusting the
+    // registry's bootstrap id, which drifts as new generations ship — saving a
+    // retired id leaves the freshly configured provider failing on first use.
+    let defaultModel = po?.defaultModel ?? providerName;
+    try {
+      const live = await api.modelCatalog.getLive(providerName);
+      if (live?.recommended) defaultModel = live.recommended;
+    } catch { /* keep the bootstrap id */ }
     try {
       const res = await fetch('/api/settings/llm/providers', {
         method: 'POST', headers: authHeaders(),

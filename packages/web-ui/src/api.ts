@@ -1925,7 +1925,7 @@ export const api = {
   },
   modelCatalog: {
     getByProvider: (provider: string) => request<{ provider: string; models: CatalogModel[] }>(`/models/catalog/${provider}`),
-    getLive: (provider: string) => request<{ provider: string; models: CatalogModel[]; source: string }>(`/models/live/${provider}`),
+    getLive: (provider: string) => request<{ provider: string; models: CatalogModel[]; source: string; recommended?: string }>(`/models/live/${provider}`),
     getAll: (provider?: string) => {
       const qs = provider ? `?provider=${provider}` : '';
       return request<{ models?: CatalogModel[]; providers?: Record<string, CatalogModel[]> }>(`/models/catalog${qs}`);

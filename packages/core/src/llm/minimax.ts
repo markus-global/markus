@@ -87,12 +87,12 @@ export class MiniMaxProvider extends OpenAIProvider {
         },
       },
       generate_video: {
-        description: 'Generate video using MiniMax Hailuo. IMPORTANT: For text-to-video, you MUST set model to "MiniMax-Hailuo-2.3". The model "MiniMax-Hailuo-2.3-Fast" only supports image-to-video and will fail for text prompts.',
+        description: 'Generate video using MiniMax. Set model to "MiniMax-H3" (up to 2K; text / image / first-and-last-frame / reference input) or "MiniMax-H3-Max" (faster, 480P/768P; text / image / reference input).',
         inputSchema: {
           type: 'object',
           properties: {
             prompt: { type: 'string', description: 'Detailed description of the video to generate' },
-            model: { type: 'string', enum: ['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast'], description: 'Model to use. "MiniMax-Hailuo-2.3" for text-to-video, "MiniMax-Hailuo-2.3-Fast" for image-to-video only. Default from routing config if not specified.' },
+            model: { type: 'string', enum: ['MiniMax-H3', 'MiniMax-H3-Max'], description: 'Model to use. "MiniMax-H3" supports text / image / first-and-last-frame / reference input at up to 2K; "MiniMax-H3-Max" is faster (480P/768P, no 2K). Default from routing config if not specified.' },
             duration: { type: 'number', enum: [6, 10], description: 'Video duration in seconds (default: 6)' },
             resolution: { type: 'string', enum: ['768P', '1080P'], description: 'Video resolution (default: 768P)' },
           },
@@ -212,7 +212,7 @@ export class MiniMaxProvider extends OpenAIProvider {
     const authorization = await this.resolveAuthHeader();
 
     const body: Record<string, unknown> = {
-      model: options?.model ?? 'MiniMax-Hailuo-2.3',
+      model: options?.model ?? 'MiniMax-H3',
       prompt,
     };
     if (options?.duration) body['duration'] = options.duration;

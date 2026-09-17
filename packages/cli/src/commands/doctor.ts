@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { loadConfig, PROVIDERS } from '@markus/shared';
+import { listProviderModels, pickRecommendedModel } from '../lib/provider-models.js';
 
 // ─── Color constants ──────────────────────────────────────────────────────────
 
@@ -203,9 +204,24 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<{ issuesFo
     let allOk = true;
     await Promise.all(
       keysToValidate.map(async ({ id, key, model, baseUrl }) => {
-        const result = await validateProviderKey(id, key, model, baseUrl);
         const pdef = PROVIDERS.find(p => p.id === id);
         const label = pdef?.label ?? id;
+
+        // Validate against a model the provider actually serves. The registry
+        // default is only a bootstrap hint and goes stale as new generations
+        // ship — validating a perfectly good key against a retired id would
+        // report the key as invalid. Ask the provider first.
+        let modelToUse = model;
+        if (pdef) {
+          const listing = await listProviderModels(pdef, { apiKey: key, baseUrl });
+          modelToUse = pickRecommendedModel(pdef, listing.models, model);
+          if (model && listing.source === 'live' && !listing.models.includes(model)) {
+            checkWarn(`${label} configured model "${model}" is no longer served`);
+            manualIssues.push(`Update ${label} model (not served any more): markus model`);
+          }
+        }
+
+        const result = await validateProviderKey(id, key, modelToUse, baseUrl);
         if (result.ok) {
           checkOk(`${label} API key`, '✓ API call succeeded');
         } else {

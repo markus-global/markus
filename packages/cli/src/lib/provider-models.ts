@@ -84,3 +84,26 @@ export async function listProviderModelsBatch(
 ): Promise<ProviderModelList[]> {
   return Promise.all(defs.map(p => listProviderModels(p, opts)));
 }
+
+/**
+ * Choose a model id for a one-shot call (validation, prefill, "recommended" tag).
+ *
+ * The registry `defaultModel` is only a hint and drifts as the provider ships
+ * new generations, so it is trusted only while the provider still lists it.
+ * Order of preference:
+ *   1. the model the user already configured, if still served,
+ *   2. the bootstrap default, if still served,
+ *   3. the first id from the live listing.
+ */
+export function pickRecommendedModel(
+  pdef: ProviderModel,
+  liveModels: string[],
+  configured?: string,
+): string {
+  const configuredId = (configured ?? '').trim();
+  if (configuredId && liveModels.includes(configuredId)) return configuredId;
+  if (pdef.defaultModel && liveModels.includes(pdef.defaultModel)) return pdef.defaultModel;
+  if (liveModels.length > 0) return liveModels[0];
+  // Nothing live (offline / no key): fall back to whatever we have.
+  return configuredId || pdef.defaultModel || '';
+}
