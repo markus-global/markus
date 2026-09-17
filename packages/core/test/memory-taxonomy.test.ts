@@ -2,50 +2,72 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'no
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  splitLegacyMemory,
-  ensureKnowledgeStateFiles,
-  pruneExpiredState,
   dreamArchiveSkillSuggestion,
+  ensureKnowledgeFile,
   knowledgePath,
-  statePath,
+  migrateLegacyMemory,
+  retiredStatePath,
 } from '../src/memory/taxonomy.js';
 
-describe('memory taxonomy (MEMORY-SYSTEM §1.1)', () => {
-  it('A-knowledge-cap helpers: split legacy MEMORY.md', () => {
-    const { knowledge, state } = splitLegacyMemory([
-      '## Stack',
-      'Use TypeScript.',
-      '',
-      '## Current progress 2026-01-01',
-      'Silent day 3 — waiting.',
-      '',
-      '## _observations',
-      '- note',
-    ].join('\n'));
-    expect(knowledge).toContain('## Stack');
-    expect(knowledge).toContain('## _observations');
-    expect(state).toMatch(/progress|Silent|silent/i);
-  });
-
-  it('migrates MEMORY.md to knowledge.md + state.md', () => {
+/**
+ * knowledge.md is now the **only** long-term store: the state.md half of the old
+ * "dual store" was retired (option A) because it had a reader and a TTL pruner but
+ * no write tool, while the notebook already owns "short-lived situational state".
+ * These tests pin the resulting invariants.
+ */
+describe('memory taxonomy — single knowledge store', () => {
+  it('creates knowledge.md and never creates state.md', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mem-tax-'));
     try {
-      writeFileSync(join(dir, 'MEMORY.md'), '# MEMORY\n\n## Norms\nBe kind.\n', 'utf8');
-      ensureKnowledgeStateFiles(dir);
+      ensureKnowledgeFile(dir);
       expect(existsSync(knowledgePath(dir))).toBe(true);
-      expect(existsSync(statePath(dir))).toBe(true);
-      expect(readFileSync(knowledgePath(dir), 'utf8')).toContain('Norms');
+      expect(existsSync(retiredStatePath(dir))).toBe(false);
+      expect(existsSync(join(dir, 'MEMORY.md'))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('C-dream-state-ttl: prunes dated state entries', () => {
-    const old = '## Snap\nupdatedAt: 2020-01-01\nold stuff\n';
-    const fresh = '## Now\nupdatedAt: 2099-01-01\nkeep\n';
-    const pruned = pruneExpiredState(old + fresh, Date.parse('2026-07-01'), 7);
-    expect(pruned).not.toContain('old stuff');
-    expect(pruned).toContain('keep');
+  it('migrates legacy MEMORY.md wholesale into knowledge.md (no state half)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mem-tax-'));
+    try {
+      writeFileSync(
+        join(dir, 'MEMORY.md'),
+        [
+          '# MEMORY',
+          '',
+          '## Norms',
+          'Be kind.',
+          '',
+          '## Current progress 2026-01-01',
+          'Silent day 3 — waiting.',
+        ].join('\n'),
+        'utf8',
+      );
+      const result = migrateLegacyMemory(dir);
+      expect(result.migrated).toBe(true);
+      const knowledge = readFileSync(knowledgePath(dir), 'utf8');
+      // Nothing is silently dropped: content that the old splitter would have filed
+      // under state.md now lands in the single store.
+      expect(knowledge).toContain('## Norms');
+      expect(knowledge).toContain('Silent day 3');
+      expect(existsSync(retiredStatePath(dir))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is idempotent — an existing knowledge.md is never overwritten by migration', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mem-tax-'));
+    try {
+      ensureKnowledgeFile(dir);
+      writeFileSync(knowledgePath(dir), '# Knowledge\n\n## Curated\nkeep me\n', 'utf8');
+      writeFileSync(join(dir, 'MEMORY.md'), '## Old\nstale\n', 'utf8');
+      expect(migrateLegacyMemory(dir).migrated).toBe(false);
+      expect(readFileSync(knowledgePath(dir), 'utf8')).toContain('keep me');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('C-dream-archive-suggest', () => {

@@ -148,7 +148,7 @@ Each Agent consists of:
 | `HEARTBEAT.md` | Scheduled proactive tasks (e.g. daily issue checks) |
 | `POLICIES.md` | Behavior rules and boundaries |
 | `NOTEBOOK.md` | Persistent cognitive workspace (situational state, CPP output) |
-| `knowledge.md` / `state.md` | Long-term knowledge + TTL state (legacy `MEMORY.md` migrates once) |
+| `knowledge.md` (+ `NOTEBOOK.md`) | Long-term knowledge + working state. `state.md` retired 2026-09-16 (legacy `MEMORY.md` migrates once into `knowledge.md`) |
 | `CONTEXT.md` | Organization context (shared knowledge base) |
 
 The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagent` / `spawn_subagents`) for delegated subtasks. Subagent limits (parallelism, retry policy, preview truncation) are centralized in `packages/shared/src/limits.ts` rather than hardcoded. The parent agent has a **configurable tool-use iteration limit** (`AgentOptions.maxToolIterations`, system settings; default 200, range 1–10000) on chat-style harnesses — task execution and subagent loops remain uncapped by default.

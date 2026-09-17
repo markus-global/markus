@@ -194,6 +194,56 @@ interface DeferredDispatch {
   coalescedCount: number;
 }
 
+/**
+ * Marker persisted in `task.notes` when the dependency engine auto-fails a
+ * dependent. Used (a) to make the auto-fail reversible — only tasks the engine
+ * itself failed may be auto-recovered — and (b) to survive a restart, since the
+ * note is the durable record while the in-memory map is not.
+ */
+const DEPENDENCY_AUTO_FAIL_MARK = '[dependency-auto-fail]';
+/** Marker appended when an auto-failed dependent is restored because its blockers recovered. */
+const DEPENDENCY_AUTO_RECOVER_MARK = '[dependency-auto-recover]';
+
+/**
+ * Default dependency recovery window: how long a blocker may stay `failed`
+ * before its dependents count as permanently unsatisfiable. See
+ * `TaskService.setDependencyFailureGraceMs`.
+ */
+const DEFAULT_DEPENDENCY_FAILURE_GRACE_MS = 30 * 60_000;
+
+/**
+ * How a blocker's **current** state relates to a dependent's ability to run.
+ *
+ * Computed fresh on every evaluation from the live task map — the dependency
+ * engine keeps **no persisted verdict cache**, which is what makes a stale
+ * judgement structurally impossible (defect: a blocker that failed at 06:29
+ * auto-failed its dependent at 09:00 even though it had completed at 07:32).
+ */
+type BlockerVerdictKind =
+  /** completed | archived — the dependency is met. */
+  | 'satisfied'
+  /** pending | in_progress | review | blocked | rejected | unknown — not decided yet. */
+  | 'waiting'
+  /** cancelled — terminal, non-recoverable outcome (cancel propagation). */
+  | 'dead'
+  /** failed, still inside the recovery window — may be retried / resumed. */
+  | 'failed-recoverable'
+  /** failed past the recovery window — no satisfiable path remains. */
+  | 'failed-terminal';
+
+interface BlockerVerdict {
+  blockerId: string;
+  blockerTitle: string;
+  /** The blocker's status **at the moment of evaluation** (never a cached one). */
+  blockerStatus: TaskStatus | 'missing';
+  kind: BlockerVerdictKind;
+  /** Non-empty, human-readable judgement basis — copied verbatim into the transition `reason`. */
+  basis: string;
+  recoverable: boolean;
+  /** Age of the blocker's current `failed` state in ms (only for `failed-*` kinds). */
+  failedForMs?: number;
+}
+
 /** Structured task error carrying a machine-readable code for the UI to i18n. */
 export class TaskServiceError extends Error {
   code: string;
@@ -278,6 +328,17 @@ export class TaskService {
   private tasksSubmittedForReview = new Set<string>();
   private webhooks: TaskWebhook[] = [];
   private timeoutCheckInterval?: ReturnType<typeof setInterval>;
+  /**
+   * How long a blocker may stay `failed` before its dependents count as
+   * permanently unsatisfiable.
+   *
+   * `failed` is **recoverable by default** (a human or the platform may retry /
+   * resume it), so a transient blocker failure must NOT kill its dependents.
+   * The window bounds the wait instead: a genuinely dead dependency does not
+   * deadlock its dependents forever — which is the reason cascade-fail existed
+   * in the first place (feedback #27/#28 "全部停了不会自己跑").
+   */
+  private dependencyFailureGraceMs = DEFAULT_DEPENDENCY_FAILURE_GRACE_MS;
   private projectService?: ProjectService;
   private requirementService?: RequirementService;
   private reviewService?: ReviewService;
@@ -785,7 +846,13 @@ export class TaskService {
 
   startTimeoutChecker(intervalMs = 30_000): void {
     if (this.timeoutCheckInterval) return;
-    this.timeoutCheckInterval = setInterval(() => this.checkTimeouts(), intervalMs);
+    this.timeoutCheckInterval = setInterval(() => {
+      this.checkTimeouts();
+      // Safety net: a blocker that stays `failed` long enough to leave the
+      // recovery window produces no further transition event of its own, so
+      // without this pass its dependents would stay `blocked` forever.
+      this.reevaluateBlockedDependents();
+    }, intervalMs);
   }
 
   stopTimeoutChecker(): void {
@@ -793,6 +860,20 @@ export class TaskService {
       clearInterval(this.timeoutCheckInterval);
       this.timeoutCheckInterval = undefined;
     }
+  }
+
+  /**
+   * Override the dependency recovery window (see `dependencyFailureGraceMs`).
+   * Exposed for tests and for operators who need a shorter/longer window than
+   * the 30-minute default. `0` means "treat any `failed` blocker as terminal".
+   */
+  setDependencyFailureGraceMs(ms: number): void {
+    this.dependencyFailureGraceMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+  }
+
+  /** Current dependency recovery window in ms (read-only helper). */
+  getDependencyFailureGraceMs(): number {
+    return this.dependencyFailureGraceMs;
   }
 
   private static readonly MAX_TASK_RETRIES = TASK_MAX_RETRIES;
@@ -2059,7 +2140,7 @@ export class TaskService {
               const failMsg = `Task failed after ${nextAttempt} attempts: ${retryDecision.reason}`;
               log.error(failMsg, { taskId });
               this.taskRetryErrors.delete(taskId);
-              this.updateTaskStatus(taskId, 'failed');
+              this.updateTaskStatus(taskId, 'failed', undefined, false, false, 'system', failMsg);
             }
             const agentState = agent.getState();
             ws?.broadcast({
@@ -2095,9 +2176,10 @@ export class TaskService {
               );
             }, delayMs);
           } else {
-            log.error(`Task failed permanently: ${retryDecision.reason}`, { taskId });
+            const failMsg = `Task failed permanently: ${retryDecision.reason}`;
+            log.error(failMsg, { taskId });
             this.taskRetryErrors.delete(taskId);
-            this.updateTaskStatus(taskId, 'failed');
+            this.updateTaskStatus(taskId, 'failed', undefined, false, false, 'system', failMsg);
           }
         }
       })
@@ -2255,7 +2337,10 @@ export class TaskService {
           title: task.title,
           error: String(err),
         });
-        this.updateTaskStatus(task.id, 'failed');
+        this.updateTaskStatus(
+          task.id, 'failed', undefined, false, false, 'system',
+          `Resume after restart failed: ${String(err)}`,
+        );
       }
     }
   }
@@ -3500,103 +3585,329 @@ export class TaskService {
   }
 
   /**
-   * When a task reaches a terminal state (completed / failed / cancelled),
-   * check blocked dependents:
-   *   - blockers resolved (completed/archived)         → unblock → in_progress
-   *   - blocker failed (dead dependency, non-retryable) → cascade-fail the
-   *     dependent with an explanatory note, so it never waits forever on a
-   *     dependency that will not succeed (feedback #27/#28: "全部停了不会自己跑").
-   *   - blocker cancelled                             → handled by cascadeCancelDependents.
+   * Dependency-engine entry point. Called whenever a task reaches a terminal
+   * state (completed / failed / cancelled / archived), and recursively as
+   * propagation changes other tasks' statuses.
+   *
+   * Every dependent is re-evaluated against its blockers' **current** state —
+   * the engine keeps no verdict cache, so an earlier conclusion can never be
+   * replayed later.
+   *
+   *   - all blockers satisfied (completed / archived)      → unblock → in_progress
+   *   - a blocker is terminally unsatisfiable              → auto-fail (non-empty reason)
+   *   - a blocker merely `failed` (still recoverable) or
+   *     still pending/in_progress/review/blocked           → stay `blocked`, no status change
+   *   - the dependent was auto-failed earlier by the engine
+   *     and its blockers are satisfiable again             → auto-recover → in_progress
+   *   - blocker cancelled                                  → handled by cancel propagation
+   *
+   * Invariants enforced here (regression anchors):
+   *   (1) auto-fail applies ONLY to `blocked` dependents — a dependent in
+   *       `in_progress` / `review` is never touched by dependency propagation;
+   *   (2) a blocker that is `completed` at evaluation time can never trigger an
+   *       auto-fail, no matter which event caused the evaluation;
+   *   (3) re-evaluation is idempotent — repeating it produces no extra status
+   *       transition and no duplicate note (blocker failed↔completed flapping
+   *       must not make the dependent flap).
    */
-  private checkDependentTasks(finishedTask: Task): void {
-    if (finishedTask.status === 'failed') {
-      this.cascadeFailDependents(finishedTask);
-      return;
-    }
+  private checkDependentTasks(cause: Task): void {
+    const dependents = [...this.tasks.values()]
+      .filter(t => t.id !== cause.id && (t.blockedBy ?? []).includes(cause.id));
 
-    for (const [, task] of this.tasks) {
-      if (task.status !== 'blocked' || !task.blockedBy?.length) continue;
-      if (!task.blockedBy.includes(finishedTask.id)) continue;
-
-      if (this.areBlockersSatisfied(task)) {
-        log.info(`Unblocking task ${task.id} (dependency ${finishedTask.id} resolved)`);
-        this.updateTaskStatus(task.id, 'in_progress', undefined, true);
+    for (const candidate of dependents) {
+      // Re-read: an earlier iteration in this loop (recursive propagation) may
+      // already have transitioned this dependent.
+      const task = this.tasks.get(candidate.id);
+      if (!task) continue;
+      if (task.status === 'blocked') {
+        this.evaluateBlockedDependent(task);
+      } else if (task.status === 'failed' && this.isDependencyAutoFailed(task)) {
+        this.recoverAutoFailedDependent(task);
       }
     }
   }
 
   /**
-   * Cascade-fail all blocked dependents of a failed task, recursively.
-   * A dependent waiting on a failed blocker can never satisfy its dependency,
-   * so leaving it 'blocked' would deadlock it forever. Mirror of
-   * cascadeCancelDependents for the failed terminal state.
+   * Re-evaluate every `blocked` task against its blockers' current state.
+   * Periodic safety net (see `startTimeoutChecker`) + restart reconciliation
+   * share this single code path so live and recovery semantics cannot drift.
    */
-  private cascadeFailDependents(failedTask: Task): void {
-    for (const [, task] of this.tasks) {
-      if (task.status !== 'blocked' || !task.blockedBy?.length) continue;
-      if (!task.blockedBy.includes(failedTask.id)) continue;
+  reevaluateBlockedDependents(): void {
+    const blocked = [...this.tasks.values()]
+      .filter(t => t.status === 'blocked' && t.blockedBy?.length);
+    for (const candidate of blocked) {
+      const task = this.tasks.get(candidate.id);
+      if (!task || task.status !== 'blocked') continue;
+      this.evaluateBlockedDependent(task);
+    }
+  }
 
-      log.info(`Cascade-failing task ${task.id} (dependency ${failedTask.id} failed)`);
-      task.notes = [
-        ...(task.notes ?? []),
-        `Auto-failed: dependency "${failedTask.title}" (${failedTask.id}) failed, task can never satisfy its blocker`,
-      ];
-      if (this.taskRepo) {
-        this.taskRepo.update(task.id, { notes: task.notes })
-          .catch(err => log.warn('Failed to persist cascade-fail notes', { error: String(err) }));
-      }
-      this.updateTaskStatus(task.id, 'failed', undefined, true);
-      this.cascadeFailDependents(task);
+  /**
+   * Decide what a single `blocked` dependent should do, from its blockers'
+   * **current** states. This is the only place that may unblock or auto-fail a
+   * dependent, which is what keeps the three invariants in `checkDependentTasks`
+   * enforceable by construction.
+   */
+  private evaluateBlockedDependent(task: Task): void {
+    if (!task.blockedBy?.length) return;
+    const verdicts = task.blockedBy.map(id => this.blockerVerdict(id));
+
+    // 0 · A cancelled blocker is terminally unsatisfiable → cancel the dependent
+    //     (mirrors the explicit cascade on `cancelTask`; keeps the whole engine
+    //     on one evaluation path so cancellation cannot be missed).
+    const dead = verdicts.find(v => v.kind === 'dead');
+    if (dead) {
+      this.cancelDependent(task, dead);
+      return;
+    }
+
+    // 1 · Every blocker met → unblock (auto-start handles the rest).
+    if (verdicts.every(v => v.kind === 'satisfied')) {
+      const basis = verdicts
+        .map(v => `${v.blockerId}='${v.blockerStatus}'`)
+        .join(', ');
+      log.info(`Unblocking task ${task.id} — all blockers satisfied`, { blockers: basis });
+      this.appendDependencyNote(
+        task,
+        `Dependency satisfied: all blockers resolved (${basis}).`,
+      );
+      this.updateTaskStatus(
+        task.id, 'in_progress', undefined, true, false, 'system',
+        `Dependency satisfied: all blockers resolved (${basis}); evaluated at ${new Date().toISOString()}`,
+      );
+      return;
+    }
+
+    // 2 · A blocker that can never satisfy → auto-fail, with a traceable reason.
+    //     Note this fires even when other blockers are still running: the
+    //     conjunction can never be met, so waiting would deadlock the dependent.
+    const terminal = verdicts.find(v => v.kind === 'failed-terminal');
+    if (terminal) {
+      this.autoFailBlockedDependent(task, terminal);
+      return;
+    }
+
+    // 3 · Otherwise the dependency is merely not-met-yet (or the blocker is a
+    //     recoverable failure). Stay `blocked`; change nothing. This is the
+    //     fix for the original defect — a transient blocker failure no longer
+    //     kills the dependent, and it auto-recovers when the blocker completes.
+  }
+
+  /**
+   * Single source of truth for "can this blocker ever satisfy a dependency?".
+   *
+   * Pure function of the live task map + the configured recovery window, so it
+   * is directly unit-testable and can never return a cached/stale conclusion.
+   * `failed` is recoverable unless it has outlived the recovery window — there
+   * is no other heuristic anywhere in the engine.
+   */
+  private blockerVerdict(blockerId: string, now = Date.now()): BlockerVerdict {
+    const blocker = this.tasks.get(blockerId);
+    if (!blocker) {
+      return {
+        blockerId,
+        blockerTitle: blockerId,
+        blockerStatus: 'missing',
+        kind: 'waiting',
+        recoverable: true,
+        basis: `blocker ${blockerId} is not in the task map — treated as not-yet-decidable, never as permanently unsatisfiable`,
+      };
+    }
+
+    const status = blocker.status;
+    const base = { blockerId, blockerTitle: blocker.title, blockerStatus: status };
+
+    if (status === 'completed' || status === 'archived') {
+      return { ...base, kind: 'satisfied', recoverable: true, basis: `blocker is '${status}'` };
+    }
+    if (status === 'cancelled') {
+      return {
+        ...base, kind: 'dead', recoverable: false,
+        basis: `blocker is 'cancelled' — a terminal, non-recoverable outcome`,
+      };
+    }
+    if (status !== 'failed') {
+      return {
+        ...base, kind: 'waiting', recoverable: true,
+        basis: `blocker is '${status}' — dependency not decided yet`,
+      };
+    }
+
+    const graceMs = this.dependencyFailureGraceMs;
+    const failedSinceIso = blocker.updatedAt ?? blocker.completedAt ?? new Date(now).toISOString();
+    const failedSince = new Date(failedSinceIso).getTime();
+    const failedForMs = Number.isFinite(failedSince) ? Math.max(0, now - failedSince) : graceMs;
+
+    if (failedForMs < graceMs) {
+      return {
+        ...base, kind: 'failed-recoverable', recoverable: true, failedForMs,
+        basis: `blocker 'failed' ${Math.round(failedForMs / 1000)}s ago and is still inside the `
+          + `${Math.round(graceMs / 1000)}s recovery window — it may still be retried or resumed`,
+      };
+    }
+    return {
+      ...base, kind: 'failed-terminal', recoverable: false, failedForMs,
+      basis: `blocker 'failed' ${Math.round(failedForMs / 1000)}s ago and has stayed failed past the `
+        + `${Math.round(graceMs / 1000)}s recovery window — no satisfiable path remains`,
+    };
+  }
+
+  /**
+   * Auto-fail a `blocked` dependent whose blocker is permanently unsatisfiable.
+   * Writes a **non-empty, traceable** reason (trigger source + judgement basis +
+   * evaluation time) into both the status history and the task notes, so the
+   * causality can be reconstructed from the record alone.
+   */
+  private autoFailBlockedDependent(task: Task, verdict: BlockerVerdict): void {
+    const evaluatedAt = new Date().toISOString();
+    const reason = `Dependency auto-fail: blocker "${verdict.blockerTitle}" (${verdict.blockerId}) `
+      + `is '${verdict.blockerStatus}' — ${verdict.basis}. Evaluated against the blocker's current `
+      + `state at ${evaluatedAt}; dependent is 'blocked' so it cannot proceed `
+      + `(recoverable=${verdict.recoverable}).`;
+
+    log.warn(`Auto-failing blocked task ${task.id} (dependency ${verdict.blockerId} unsatisfiable)`, {
+      taskId: task.id, blockerId: verdict.blockerId, verdict: verdict.kind, basis: verdict.basis,
+    });
+    this.appendDependencyNote(task, `${reason} ${DEPENDENCY_AUTO_FAIL_MARK}`);
+
+    // Guard (invariant 1): re-read right before the write — only a `blocked`
+    // dependent may be auto-failed, and only while its blocker is still
+    // unsatisfiable. Prevents a stale judgement from landing on a task that
+    // moved on in the meantime.
+    const current = this.tasks.get(task.id);
+    if (!current || current.status !== 'blocked') {
+      log.info(`Skipped dependency auto-fail for ${task.id} — status changed to '${current?.status}'`, {
+        taskId: task.id,
+      });
+      return;
+    }
+    if (this.blockerVerdict(verdict.blockerId).kind !== 'failed-terminal') {
+      log.info(`Skipped dependency auto-fail for ${task.id} — blocker ${verdict.blockerId} is no longer terminal`, {
+        taskId: task.id, blockerId: verdict.blockerId,
+      });
+      return;
+    }
+
+    this.updateTaskStatus(task.id, 'failed', undefined, true, false, 'system', reason);
+  }
+
+  /**
+   * Self-healing path: a dependent the dependency engine auto-failed may become
+   * runnable again once its blocker recovers (retry / resume / manual restart).
+   * Only tasks failed by the engine itself are eligible — a task that failed for
+   * its own reasons is never resurrected here.
+   */
+  private recoverAutoFailedDependent(task: Task): void {
+    if (!this.isDependencyAutoFailed(task)) return;
+    if (!task.blockedBy?.length) return;
+
+    const verdicts = task.blockedBy.map(id => this.blockerVerdict(id));
+    // Still unsatisfiable (or a dead blocker) → nothing to recover yet.
+    if (verdicts.some(v => v.kind === 'failed-terminal')) return;
+    if (verdicts.some(v => v.kind === 'dead')) return;
+    if (!verdicts.every(v => v.kind === 'satisfied')) {
+      log.info(`Dependency no longer terminal for ${task.id} but not yet satisfied — leaving failed`, {
+        taskId: task.id,
+        blockers: verdicts.map(v => `${v.blockerId}='${v.blockerStatus}'`).join(', '),
+      });
+      return;
+    }
+
+    const evaluatedAt = new Date().toISOString();
+    const basis = verdicts.map(v => `${v.blockerId}='${v.blockerStatus}'`).join(', ');
+    const reason = `Dependency recovered: all blockers resolved (${basis}) after this task was `
+      + `auto-failed by the dependency engine; restoring to in_progress. Evaluated at ${evaluatedAt}.`;
+
+    log.info(`Auto-recovering dependency-failed task ${task.id}`, { taskId: task.id, blockers: basis });
+    this.appendDependencyNote(task, `${reason} ${DEPENDENCY_AUTO_RECOVER_MARK}`);
+
+    const current = this.tasks.get(task.id);
+    if (!current || current.status !== 'failed') return;
+    this.updateTaskStatus(task.id, 'in_progress', undefined, true, false, 'system', reason);
+  }
+
+  /**
+   * True when the most recent dependency-engine verdict recorded on this task is
+   * an auto-fail (i.e. it has not been auto-recovered since). Ordering matters:
+   * a task auto-failed, recovered and later failed again must not be treated as
+   * "dependency auto-failed".
+   */
+  private isDependencyAutoFailed(task: Task): boolean {
+    let lastFail = -1;
+    let lastRecover = -1;
+    (task.notes ?? []).forEach((note, index) => {
+      if (note.includes(DEPENDENCY_AUTO_FAIL_MARK)) lastFail = index;
+      if (note.includes(DEPENDENCY_AUTO_RECOVER_MARK)) lastRecover = index;
+    });
+    return lastFail >= 0 && lastFail > lastRecover;
+  }
+
+  /** Append a dependency note (idempotent: identical consecutive text is not re-added). */
+  private appendDependencyNote(task: Task, note: string): void {
+    const notes = task.notes ?? [];
+    if (notes.includes(note)) return;
+    task.notes = [...notes, note];
+    if (this.taskRepo) {
+      this.taskRepo.update(task.id, { notes: task.notes })
+        .catch(err => log.warn('Failed to persist dependency note', { taskId: task.id, error: String(err) }));
     }
   }
 
   /**
    * Repair stuck 'blocked' tasks after loading from DB (restart / crash recovery).
-   * A 'blocked' task whose blockers are all satisfied should be running; a
-   * 'blocked' task whose blocker was cancelled should be cascade-cancelled.
+   * Delegates to the very same evaluation the live path uses, so recovery
+   * semantics cannot drift from live semantics — including the rule that a
+   * merely-`failed` (recoverable) blocker must NOT auto-fail its dependents.
+   * Also self-heals dependents the engine auto-failed before the restart.
    */
   private reconcileBlockedTaskStatuses(): void {
-    for (const [, task] of this.tasks) {
-      if (task.status !== 'blocked' || !task.blockedBy?.length) continue;
+    for (const candidate of [...this.tasks.values()].filter(t => t.status === 'blocked')) {
+      const task = this.tasks.get(candidate.id);
+      if (!task || task.status !== 'blocked' || !task.blockedBy?.length) continue;
 
-      if (this.areBlockersSatisfied(task)) {
-        log.info(`Reconciling stuck blocked task ${task.id} — dependencies satisfied, unblocking`);
-        this.updateTaskStatus(task.id, 'in_progress', undefined, true);
-      } else if (task.blockedBy.some(id => this.tasks.get(id)?.status === 'failed')) {
-        // A blocked task whose blocker has failed can never satisfy its
-        // dependency. Fail it explicitly at load-time instead of leaving it
-        // deadlocked forever (feedback #27/#28). cascadeFailDependents
-        // recurses, so we only need to seed it from the first failed blocker.
-        const firstFailed = task.blockedBy
-          .map(id => this.tasks.get(id))
-          .find(b => b?.status === 'failed');
-        log.info(`Reconciling stuck blocked task ${task.id} — dependency was failed, cascade-failing`);
-        this.cascadeFailDependents(this.tasks.get(firstFailed!.id)!);
-      } else if (task.blockedBy.some(id => this.tasks.get(id)?.status === 'cancelled')) {
+      const dead = task.blockedBy
+        .map(id => this.blockerVerdict(id))
+        .find(v => v.kind === 'dead');
+      if (dead) {
         log.info(`Reconciling stuck blocked task ${task.id} — dependency was cancelled, cascade-cancelling`);
-        this.updateTaskStatus(task.id, 'cancelled', undefined, true);
-        this.cascadeCancelDependents(task);
+        this.cancelDependent(task, dead);
+        continue;
       }
+      log.info(`Reconciling 'blocked' task ${task.id} against current blocker states`);
+      this.evaluateBlockedDependent(task);
     }
+
+    // Self-heal: dependents the engine auto-failed may have satisfied blockers
+    // by now (e.g. the blocker was retried and completed while we were down).
+    for (const candidate of [...this.tasks.values()].filter(t => t.status === 'failed')) {
+      const task = this.tasks.get(candidate.id);
+      if (task && this.isDependencyAutoFailed(task)) this.recoverAutoFailedDependent(task);
+    }
+  }
+
+  /** Cancel a `blocked` dependent whose blocker was cancelled (with a traceable reason). */
+  private cancelDependent(task: Task, verdict: BlockerVerdict): void {
+    const evaluatedAt = new Date().toISOString();
+    const reason = `Dependency cancelled: blocker "${verdict.blockerTitle}" (${verdict.blockerId}) `
+      + `is '${verdict.blockerStatus}' — ${verdict.basis}. Evaluated at ${evaluatedAt}.`;
+    log.info(`Cascade-cancelling task ${task.id} (dependency ${verdict.blockerId} was cancelled)`);
+    this.appendDependencyNote(task, `${reason} ${DEPENDENCY_AUTO_FAIL_MARK}`);
+    this.updateTaskStatus(task.id, 'cancelled', undefined, true, false, 'system', reason);
   }
 
   /**
    * Cascade-cancel all blocked dependents of a cancelled task, recursively.
    */
+  /**
+   * Cascade-cancel all blocked dependents of a cancelled task.
+   *
+   * Delegates to the shared evaluation so cancellation and failure propagation
+   * cannot drift: a `cancelled` blocker makes the dependency terminally
+   * unsatisfiable, which `evaluateBlockedDependent` turns into a cancellation of
+   * the dependent (recursively, via the normal transition pipeline).
+   */
   private cascadeCancelDependents(cancelledTask: Task): void {
-    for (const [, task] of this.tasks) {
-      if (task.status !== 'blocked' || !task.blockedBy?.length) continue;
-      if (!task.blockedBy.includes(cancelledTask.id)) continue;
-
-      log.info(`Cascade-cancelling task ${task.id} (dependency ${cancelledTask.id} was cancelled)`);
-      task.notes = [...(task.notes ?? []), `Auto-cancelled: dependency "${cancelledTask.title}" (${cancelledTask.id}) was cancelled`];
-      if (this.taskRepo) {
-        this.taskRepo.update(task.id, { notes: task.notes })
-          .catch(err => log.warn('Failed to persist cascade-cancel notes', { error: String(err) }));
-      }
-      this.updateTaskStatus(task.id, 'cancelled', undefined, true);
-      this.cascadeCancelDependents(task);
-    }
+    this.checkDependentTasks(cancelledTask);
   }
 
   /**
@@ -3659,7 +3970,10 @@ export class TaskService {
       const elapsed = now - new Date(task.startedAt).getTime();
       if (elapsed > task.timeoutMs) {
         log.warn(`Task ${task.id} timed out after ${elapsed}ms (limit: ${task.timeoutMs}ms)`);
-        this.updateTaskStatus(task.id, 'failed');
+        this.updateTaskStatus(
+          task.id, 'failed', undefined, false, false, 'system',
+          `Task timed out after ${elapsed}ms (limit: ${task.timeoutMs}ms)`,
+        );
         this.emitTaskEvent({
           type: 'timeout',
           taskId: task.id,
@@ -5084,7 +5398,10 @@ export class TaskService {
             const retryDecision = this.shouldRetryTask(taskId, entry.content, 0, cancelToken.cancelled);
             if (!retryDecision.shouldRetry && !cancelToken.cancelled) {
               this.taskRetryErrors.delete(taskId);
-              this.updateTaskStatus(taskId, 'failed');
+              this.updateTaskStatus(
+                taskId, 'failed', undefined, false, false, 'system',
+                `Execution failed: ${entry.content}`,
+              );
             }
           }
         },
@@ -5098,7 +5415,10 @@ export class TaskService {
         log.error('Fresh retry execution rejected', { taskId, error: String(err) });
         if (!cancelToken.cancelled) {
           this.taskRetryErrors.delete(taskId);
-          this.updateTaskStatus(taskId, 'failed');
+          this.updateTaskStatus(
+            taskId, 'failed', undefined, false, false, 'system',
+            `Execution rejected: ${String(err)}`,
+          );
         }
       })
       .finally(() => {

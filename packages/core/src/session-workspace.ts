@@ -20,6 +20,32 @@ export type AgentScenario =
   | 'workflow_action'
   | 'deliberation';
 
+/** Runtime mirror of {@link AgentScenario} — the single authoritative list.
+ *  Used to validate scenario strings that cross a serialization boundary
+ *  (mailbox `extra.scenario`, persisted callbacks) instead of casting blindly. */
+export const AGENT_SCENARIOS: readonly AgentScenario[] = [
+  'chat',
+  'task_execution',
+  'heartbeat',
+  'a2a',
+  'group_chat',
+  'comment_response',
+  'memory_consolidation',
+  'distillation',
+  'review',
+  'requirement_action',
+  'workflow_action',
+  'deliberation',
+];
+
+/** Narrow an untrusted value to an `AgentScenario`, or `undefined`.
+ *  Unknown/legacy values must never silently become a scenario. */
+export function asAgentScenario(v: unknown): AgentScenario | undefined {
+  return typeof v === 'string' && (AGENT_SCENARIOS as readonly string[]).includes(v)
+    ? (v as AgentScenario)
+    : undefined;
+}
+
 /**
  * SessionWorkspace：单个分身（worker）处理一个会话/任务时独占的可变状态。
  *
@@ -57,6 +83,41 @@ export interface SessionWorkspace {
    * 旧版 this.state.currentActivity 完全一致。
    */
   currentActivity?: AgentActivity;
+  /** Session-keyed sticky tool schema state — per worker (see Agent.stickyTools). */
+  toolSticky?: StickyToolState;
+  /** Session-keyed activated-skill instruction bodies — per worker. */
+  activatedSkills?: ActivatedSkillState;
+}
+
+/**
+ * Session-keyed sticky-tool state (RC5/O1).
+ *
+ * Lives inside the WORKER's workspace, not on the Agent instance. With N
+ * concurrent workers handling N sessions, an instance-level object meant each
+ * worker wiped the others' state on every session switch (keyed by session, but
+ * stored once per Agent), so `discover_tools` activations vanished and the
+ * emitted `tools` schema drifted call-to-call — a cache-prefix break, and the
+ * documented "discover_tools → think → discover_tools" spiral.
+ * The session key is retained so that in serial mode (one root workspace)
+ * switching sessions still drops the previous session's state instead of
+ * leaking it.
+ */
+export interface StickyToolState {
+  sessionId: string | null;
+  recent: string[];
+  activated: Set<string>;
+}
+
+/**
+ * Session-keyed activated-skill instruction bodies.
+ *
+ * Same reasoning as {@link StickyToolState}: an instance-level Map leaked a
+ * skill's full instruction body activated in session A into the system prompt
+ * of session B — in SERIAL mode too (the map was never keyed nor reset).
+ */
+export interface ActivatedSkillState {
+  sessionId: string | null;
+  instructions: Map<string, string>;
 }
 
 /** 创建一个全新的会话工作区（pendingInjections 为空 Map）。 */

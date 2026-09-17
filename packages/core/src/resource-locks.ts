@@ -69,8 +69,32 @@ interface Waiter {
   resolve: () => void;
 }
 
-/** 当前调用链已持有的锁键集合（可重入判定）。 */
-const heldLocksStore = new AsyncLocalStorage<ReadonlySet<string>>();
+/** 当前调用链已持有的锁请求（可重入判定 + 嵌套冲突检测）。 */
+interface HeldLocks {
+  held: readonly LockRequest[];
+}
+
+const heldLocksStore = new AsyncLocalStorage<HeldLocks>();
+
+/**
+ * 链内嵌套冲突：同一调用链已持有域 X，又申请与之冲突的域 Y。
+ *
+ * 这在旧实现里会**永久挂起**（`pump` 把调用链自己的锁也算作冲突，于是等自己）。
+ * 现在改为**快速失败**：抛出明确错误而不是静默死锁 —— 因为「放行」会削弱
+ * `'*'` 的独占语义（另一条链已持有的锁不会被回滚），而错误可以让开发者
+ * 立刻看到「工具内部不要嵌套调用冲突域」，是比挂起更安全、更可诊断的行为。
+ */
+export class LockNestingConflictError extends Error {
+  constructor(readonly held: LockRequest, readonly requested: LockRequest) {
+    super(
+      `Lock nesting conflict: this call chain already holds ${held.domain}`
+      + `${held.sub ? `:${held.sub}` : ''} and requested ${requested.domain}`
+      + `${requested.sub ? `:${requested.sub}` : ''}, which conflicts with it. `
+      + 'A tool must not nest a conflicting write-lock acquisition — this would self-deadlock.',
+    );
+    this.name = 'LockNestingConflictError';
+  }
+}
 
 export class ResourceLockRegistry {
   /** domain → 该域的 FIFO 等待队列。 */
@@ -81,6 +105,10 @@ export class ResourceLockRegistry {
   /**
    * 依次获取一组锁，执行 `fn`，然后逆序释放。
    * 请求按域键排序获取，保证全局一致的加锁顺序（无死锁）。
+   *
+   * 同一 worker 的两个并行工具调用（`Promise.all`）各自是独立的顶层
+   * `withLocks` → 各自独立的 ALS 上下文 → 仍被正确串行化；而工具内部**串行**
+   * 嵌套调用同域写工具会继承上下文 → 可重入放行。
    */
   async withLocks<T>(requests: readonly LockRequest[], fn: () => Promise<T>): Promise<T> {
     const sorted = dedupeRequests(requests).sort((a, b) => (lockKey(a) < lockKey(b) ? -1 : lockKey(a) > lockKey(b) ? 1 : 0));
@@ -106,16 +134,19 @@ export class ResourceLockRegistry {
 
     const req = requests[index];
     const key = lockKey(req);
-    const outerHeld = heldLocksStore.getStore();
+    const outer = heldLocksStore.getStore();
 
-    // 可重入：本调用链已持有该域 → 直接进入下一层。
-    if (outerHeld?.has(key)) {
+    // 可重入：本调用链已持有同域同细分键 → 直接进入下一层。
+    if (outer?.held.some(h => lockKey(h) === key)) {
       return this.acquireChain(requests, index + 1, fn);
     }
+    // 嵌套冲突：本链已持有与之冲突的锁。放行会削弱独占语义，挂起会自死锁
+    // —— 因此快速失败（见 LockNestingConflictError 的说明）。
+    const conflicting = outer?.held.find(h => locksConflict(h, req));
+    if (conflicting) throw new LockNestingConflictError(conflicting, req);
 
     await this.acquireOne(req);
-    const nextHeld = new Set(outerHeld ?? []);
-    nextHeld.add(key);
+    const nextHeld: HeldLocks = { held: [...(outer?.held ?? []), req] };
     try {
       return await heldLocksStore.run(nextHeld, () => this.acquireChain(requests, index + 1, fn));
     } finally {
@@ -142,6 +173,9 @@ export class ResourceLockRegistry {
   /**
    * 冲突感知的授予循环：只要某域队头不与当前持有集合冲突就授予它。
    * 域内 FIFO（队头未授予则后续等待），域间互不阻塞。
+   *
+   * 自死锁已由 `acquireChain` 的嵌套冲突检测（快速失败）排除，因此这里
+   * 可以安全地按「真实持有集合」判冲突，不需要链标识豁免。
    */
   private pump(): void {
     const emptied: string[] = [];

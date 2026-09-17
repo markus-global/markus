@@ -147,6 +147,26 @@
       "usage": "用量",
       "storage": "存储",
       "openFolder": "打开文件夹 →",
+      "detailsToggle": "用量与存储明细",
+      "lifetimeCaption": "自 Agent 创建以来累计",
+      "storageDepthLimited": "目录层级较深，实际占用可能高于此值",
+      "sections": {
+        "files": { "title": "文件", "hint": "ROLE.md / HEARTBEAT.md / knowledge.md 等" },
+        "mind": { "title": "运行与注意力", "hint": "当前焦点 · 待处理队列 · 最近决策" },
+        "recent": { "title": "最近活动", "hint": "心跳与 A2A 通信记录", "empty": "暂无最近活动记录" },
+        "tools": { "title": "能力", "hint": "已启用的技能与工具" },
+        "memory": { "title": "记忆与心跳", "hint": "长期记忆 · 会话 · 心跳节奏与唤醒" },
+        "usage": { "title": "用量与存储", "hint": "累计 Token · 请求数 · 磁盘占用", "empty": "暂无用量数据" }
+      },
+      "storageBuckets": {
+        "workspace": "工作区",
+        "sessions": "会话记录",
+        "tool-outputs": "工具输出",
+        "daily-logs": "日志",
+        "role": "人设",
+        "subagent-logs": "子智能体日志",
+        "worktrees": "代码工作树"
+      },
       "llmConfiguration": "LLM 配置",
       "recentHeartbeats": "最近心跳",
       "recentA2A": "最近 A2A 通信",
@@ -154,6 +174,9 @@
       "heartbeatRuns_other": "{{count}} 次运行",
       "conversations_one": "{{count}} 个会话",
       "conversations_other": "{{count}} 个会话",
+      "a2aRuns_one": "{{count}} 次 A2A 通信",
+      "a2aRuns_other": "{{count}} 次 A2A 通信",
+      "recentWindow": "最近 {{count}} 条活动记录",
       "labels": {
         "name": "名称",
         "agentRole": "智能体角色",
@@ -382,7 +405,9 @@
     },
     "mind": {
       "loading": "正在加载智能体心智状态…",
-      "idleWaiting": "空闲 — 等待新邮件",
+      "idleWaiting": "待命 — 等待新消息",
+      "agentStopped": "已停止",
+      "stoppedHint": "Agent 已停止，注意力循环未运行。在上方「概览」页可重新启动。",
       "queuedButIdle": "队列有 {{count}} 项待处理 — 注意力循环应即将接手…",
       "decidingWaiting": "决策中 — 正在分拣 {{count}} 个待处理项…",
       "deliberationInProgress": "正在深度分拣",
@@ -396,6 +421,10 @@
       "queue": "队列（{{count}}）",
       "expandQueue": "展开剩余 {{count}} 项…",
       "collapseQueue": "收起",
+      "notebook": "认知工作区",
+      "notebookEntries": "{{count}} 条",
+      "notebookHint": "Agent 的持久认知工作区。仅展示最近 {{count}} 条，完整内容存于 NOTEBOOK.md；条目会自动过期失效。",
+      "expandNotebook": "展开剩余 {{count}} 条…",
       "staleProcessingWarning": "存在异常处理中项目（Agent 已空闲）",
       "agentDetails": "Agent 详情",
       "triageDecision": "分拣决策",
@@ -448,7 +477,7 @@
         "4": "后台"
       },
       "attention": {
-        "idle": "空闲",
+        "idle": "待命",
         "focused": "专注",
         "deciding": "决策中"
       },

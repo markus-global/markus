@@ -658,7 +658,7 @@ agent stop
 | Event | Effect |
 |-------|--------|
 | Agent start | `loadNotebook(dataDir)` populates in-memory workspace; injected as `## Notebook` in every turn |
-| Entry upsert | `updateWorkingMemory(key, content, managed?)` — agent-managed entries capped at 15 keys / 6000 chars each |
+| Entry upsert | `updateWorkingMemory(key, content, managed?)` — agent-managed entries capped at 4 keys / 6000 chars each |
 | Entry clear | `clearWorkingMemory(key?)` — single key or all entries |
 | Debounced persist | 2s after last mutation → `saveNotebook()` |
 | Agent stop | Cancel debounce timer; synchronous final `persistNotebookSync()` |

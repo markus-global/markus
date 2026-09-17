@@ -42,6 +42,7 @@ import {
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import { persistChatImages } from './chat-attachments.js';
+import { bucketedDirUsage } from './storage-usage.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
@@ -86,6 +87,45 @@ import { evaluateDirtyState } from './agent-dirty.js';
 import { AgentDirtyReconciler, type AgentLiveView } from './agent-dirty-reconciler.js';
 
 const log = createLogger('api-server');
+
+/** One top-level entry of an agent directory, as reported to the storage panel. */
+interface AgentStorageSubItem {
+  /** Real top-level entry name (e.g. `sessions`, `workspace`) — never a relabel. */
+  name: string;
+  size: number;
+}
+
+interface AgentStorageEntry {
+  id: string;
+  name: string;
+  /** True total of the agent directory (breadth-complete, depth-bounded). */
+  size: number;
+  subItems: AgentStorageSubItem[];
+  /** True when the depth cap bit, i.e. `size` is a lower bound. */
+  depthLimited: boolean;
+}
+
+interface StorageScanResult {
+  dataDir: string;
+  totalSize: number;
+  breakdown: Array<{ name: string; path: string; size: number; description: string }>;
+  agents: AgentStorageEntry[];
+  database: { path: string; size: number };
+}
+
+/**
+ * Disk-usage scans walk every agent directory — 161k files at the default depth
+ * on the live org, ~4.5 s, run **synchronously** (readdirSync/lstatSync) inside
+ * the request handler. Uncached, that blocks the event loop for seconds on every
+ * agent-page, settings and home load — stalling unrelated requests, SSE chat
+ * streams included. The panel reports disk usage, where a few seconds of
+ * staleness is invisible, so a short TTL buys back the entire cost.
+ *
+ * Invalidation: orphan purge deletes directories, so it clears the entry; the
+ * TTL covers everything else.
+ */
+const STORAGE_SCAN_TTL_MS = 30_000;
+let storageScanCache: { key: string; at: number; value: StorageScanResult } | null = null;
 
 export class APIServer {
   static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -1737,7 +1777,13 @@ export class APIServer {
         messagePrefix = prefixLines.join('\n');
       }
 
-      const effectiveScenario = isDmReply ? 'a2a' as const : (isA2A ? 'a2a' as const : 'group_chat' as const);
+      // A group channel is ALWAYS 'group_chat', even when the trigger was a
+      // chained reply from a fellow agent (isA2A). The A2A nature of such a
+      // message is already carried by the injected [AGENT COLLABORATION] prefix;
+      // switching the scenario to 'a2a' would emit the A2A section ("humans do
+      // NOT see this conversation", "asynchronous, absorb silently"), which is
+      // false inside a group chat where the reply is auto-broadcast to humans.
+      const effectiveScenario = isDmReply ? 'a2a' as const : 'group_chat' as const;
       const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
       const reply = await agent.sendMessage(
         messagePrefix + userMessage,
@@ -3064,7 +3110,10 @@ export class APIServer {
         return;
       }
 
-      // Verify Hub token against Hub API and use the response as authoritative source
+      // Verify Hub token against Hub API and use the response as authoritative source.
+      // SECURITY (P0-4 / T6): verification failure MUST reject — never trust the
+      // client-supplied hubUser. Otherwise a LAN device could submit another
+      // user's identity & be logged in as them.
       let verifiedUser: { id: string; username?: string; email?: string; displayName?: string; avatarUrl?: string } | null = null;
       try {
         const verifyRes = await this.hubFetch(`${this.hubUrl}/api/auth/me`, {
@@ -3081,12 +3130,11 @@ export class APIServer {
           log.warn('Hub /api/auth/me returned non-OK', { status: verifyRes.status, hubUrl: this.hubUrl });
         }
       } catch (e) {
-        log.warn('Hub token verification failed, proceeding with client-supplied data', { error: (e as Error).message, hubUrl: this.hubUrl });
+        log.warn('Hub token verification failed', { error: (e as Error).message, hubUrl: this.hubUrl });
       }
-      // If Hub verification failed, trust the client-supplied hubUser data
-      // (the token was already obtained via the Hub connect flow)
       if (!verifiedUser) {
-        verifiedUser = { id: hubUser.id, username: hubUser.username, email: hubUser.email, displayName: hubUser.displayName, avatarUrl: hubUser.avatarUrl };
+        this.json(res, 401, { error: 'Hub token verification failed. Please sign in to Markus Hub again.', code: 'HUB_VERIFY_FAILED' });
+        return;
       }
 
       // Prefer authoritative Hub /api/auth/me data, fall back to client-supplied hubUser
@@ -3135,7 +3183,7 @@ export class APIServer {
           userRow = this.storage.userRepo.findById(userId);
           isFirstLogin = true;
         } else {
-          // There's already an owner — try to adopt if single-user instance
+          // There's already an owner — try to adopt if single-user instance.
           const realOwners = allUsers.filter((u: any) =>
             u.role === 'owner' && (u.passwordHash || u.hubUserId) && u.email !== 'admin@markus.local'
           );
@@ -3146,8 +3194,25 @@ export class APIServer {
             this.storage.userRepo.updateHubUserId(existingOwner.id, hubUser.id, hubUser.username);
             userRow = this.storage.userRepo.findById(existingOwner.id);
             log.info('Hub login: adopted existing owner', { ownerId: existingOwner.id, hubUserId: hubUser.id });
+          } else if (this.licenseService?.canUse('multi_user') ?? false) {
+            // 需求 9：允许不同 Hub 用户登录同一实例（受 Enterprise multi_user 许可控制）。
+            // 第二个不同 Hub 用户注册为 member 角色本地用户，拥有独立 per-user hub token。
+            const userId = genUserId();
+            this.storage.userRepo.create({
+              id: userId, orgId: 'default', name, email: email || undefined,
+              role: 'member', hubUserId: hubUser.id, avatarUrl: avatarUrl ?? undefined,
+            });
+            this.storage.userRepo.updateHubUserId(userId, hubUser.id, hubUser.username);
+            userRow = this.storage.userRepo.findById(userId);
+            isFirstLogin = true;
+            log.info('Hub login: created member user for additional Hub user', { userId, hubUserId: hubUser.id });
           } else {
-            this.json(res, 403, { error: 'This instance already has an owner. Multi-user requires Enterprise license.' });
+            // No multi_user license — reject explicitly instead of silently
+            // inheriting the owner's identity (需求 9 / T6 root cause).
+            this.json(res, 403, {
+              error: 'This instance already has an owner. Multi-user requires Enterprise license.',
+              code: 'MULTI_USER_REQUIRED',
+            });
             return;
           }
         }
@@ -3175,11 +3240,17 @@ export class APIServer {
       // Sync in-memory identity
       this.orgService.syncHumanIdentity(userRow!.id, 'default', userRow!.name, userRow!.role, userRow!.email ?? undefined);
 
-      // Persist Hub token to ~/.markus/hub-token
+      // Persist Hub token per-user (SECURITY 需求 9): each account keeps its
+      // own Hub session — the instance no longer has a single shared token
+      // that any LAN browser can inherit. The owner additionally mirrors to
+      // the legacy global file so license/telemetry/MCP server reads still work.
       try {
-        const tokenPath = join(homedir(), '.markus', 'hub-token');
-        mkdirSync(dirname(tokenPath), { recursive: true });
-        writeFileSync(tokenPath, hubToken, 'utf-8');
+        this.storage.userRepo.setHubToken(userRow.id, hubToken);
+        if (userRow.role === 'owner') {
+          const tokenPath = join(homedir(), '.markus', 'hub-token');
+          mkdirSync(dirname(tokenPath), { recursive: true });
+          writeFileSync(tokenPath, hubToken, 'utf-8');
+        }
       } catch { /* non-critical */ }
 
       // Local onboarding may have stored a preferred org name before Hub connect.
@@ -7624,47 +7695,56 @@ EXPLANATION_END`;
       return;
     }
 
-    // Settings — Hub Token GET (frontend pulls saved token on init)
+    // Settings — Hub Token GET (frontend pulls saved token on init).
+    // SECURITY (需求 9 / T6): must be authenticated AND return only the
+    // current user's OWN per-user hub token — never the instance-global file.
     if (path === '/api/settings/hub-token' && req.method === 'GET') {
-      const token = this.readHubToken();
-      this.json(res, 200, { token: token ?? null });
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (!this.storage) {
+        this.json(res, 200, { token: null });
+        return;
+      }
+      const token = this.storage.userRepo.getHubToken(authUser.userId) ?? null;
+      this.json(res, 200, { token });
       return;
     }
 
-    // Settings — Hub Token POST (frontend pushes token so MCP skill servers can read it)
+    // Settings — Hub Token POST (frontend pushes token so MCP skill servers can read it).
+    // SECURITY (需求 9 / T6): require auth; store per-user; only the owner may
+    // mirror the token to the instance-global file (used by license/telemetry).
     if (path === '/api/settings/hub-token' && req.method === 'POST') {
       const body = await this.readBody(req);
-      const authUser = await this.getAuthUser(req);
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
       const token = body['token'] as string | null;
-      const tokenPath = join(homedir(), '.markus', 'hub-token');
+      const next = token?.trim() ?? null;
       try {
-        const prev = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf-8').trim() : '';
-        const next = token?.trim() ?? '';
-        // Skip no-op writes — identical POSTs used to flood the event loop / audit log.
-        if (prev === next) {
-          this.json(res, 200, { ok: true, unchanged: true });
-          return;
+        // Always persist per-user so each account keeps its own Hub session.
+        this.storage?.userRepo.setHubToken(authUser.userId, next);
+        // Owner mirror to legacy global file (license/telemetry/MCP server reads).
+        if (authUser.role === 'owner') {
+          const tokenPath = join(homedir(), '.markus', 'hub-token');
+          if (next) {
+            mkdirSync(dirname(tokenPath), { recursive: true });
+            writeFileSync(tokenPath, next, 'utf-8');
+            process.env['MARKUS_HUB_TOKEN'] = next;
+          } else if (existsSync(tokenPath)) {
+            rmSync(tokenPath);
+            delete process.env['MARKUS_HUB_TOKEN'];
+            this.llmRouter?.setMarkusHubRemainingHint(null);
+          }
         }
-        if (token) {
-          mkdirSync(join(homedir(), '.markus'), { recursive: true });
-          writeFileSync(tokenPath, token, 'utf-8');
-          process.env['MARKUS_HUB_TOKEN'] = token;
-        } else if (existsSync(tokenPath)) {
-          rmSync(tokenPath);
-          delete process.env['MARKUS_HUB_TOKEN'];
-          // Disconnected Hub → search should not prefer Markus-hosted.
-          this.llmRouter?.setMarkusHubRemainingHint(null);
-        }
-        log.info(`Hub token ${token ? 'saved to' : 'cleared from'} ${tokenPath}`);
+        log.info(`Hub token saved per-user for ${authUser.userId}${authUser.role === 'owner' ? ' (+ owner global file)' : ''}`);
       } catch (err) {
-        log.error('Failed to write hub token file', { error: String(err) });
+        log.error('Failed to write hub token', { error: String(err) });
       }
       this.auditService?.record({
         orgId: 'system',
         type: 'settings_changed',
         action: 'hub_token',
         detail: token ? 'Hub token saved' : 'Hub token cleared',
-        userId: authUser?.userId,
+        userId: authUser.userId,
         success: true,
       });
       this.json(res, 200, { ok: true });
@@ -13243,7 +13323,12 @@ EXPLANATION_END`;
     return null;
   }
 
-  private collectStorageInfo(dataDir: string) {
+  private collectStorageInfo(dataDir: string): StorageScanResult {
+    const cached = storageScanCache;
+    if (cached && cached.key === dataDir && Date.now() - cached.at < STORAGE_SCAN_TTL_MS) {
+      return cached.value;
+    }
+
     const dirSize = (p: string, maxDepth = 3, depth = 0): number => {
       if (!existsSync(p)) return 0;
       try {
@@ -13281,7 +13366,7 @@ EXPLANATION_END`;
     }
 
     const agentsDir = join(dataDir, 'agents');
-    const agentInfos: Array<{ id: string; name: string; size: number; subItems: Array<{ name: string; size: number }> }> = [];
+    const agentInfos: AgentStorageEntry[] = [];
     const am = this.orgService.getAgentManager();
 
     if (existsSync(agentsDir)) {
@@ -13289,33 +13374,44 @@ EXPLANATION_END`;
         if (!entry.isDirectory() || entry.name === 'vector-store') continue;
         const agentDir = join(agentsDir, entry.name);
         const agent = (() => { try { return am.getAgent(entry.name); } catch { return null; } })();
-        const subItems = [
-          { name: 'workspace', size: dirSize(join(agentDir, 'workspace')) },
-          { name: 'memory', size: dirSize(join(agentDir, 'sessions')) + (existsSync(join(agentDir, 'memories.json')) ? statSync(join(agentDir, 'memories.json')).size : 0) + (existsSync(join(agentDir, 'knowledge.md')) ? statSync(join(agentDir, 'knowledge.md')).size : 0) + (existsSync(join(agentDir, 'MEMORY.md')) ? statSync(join(agentDir, 'MEMORY.md')).size : 0) },
-          { name: 'role', size: dirSize(join(agentDir, 'role')) },
-          { name: 'tool-outputs', size: dirSize(join(agentDir, 'tool-outputs')) },
-          { name: 'daily-logs', size: dirSize(join(agentDir, 'daily-logs')) },
-        ];
+        // One traversal bucketed by real top-level entry name. This replaces
+        // five hand-written `dirSize(...)` calls that produced three bugs: a
+        // sub-item labelled `memory` that actually held `sessions/`, a headline
+        // `size` that was only the sum of those five picks (22% of the agent
+        // directory missing) and a depth cap that bit silently. See
+        // storage-usage.ts for the measurements.
+        const usage = bucketedDirUsage(agentDir);
         agentInfos.push({
           id: entry.name,
           name: agent?.config?.name ?? entry.name,
-          size: subItems.reduce((s, i) => s + i.size, 0),
-          subItems,
+          size: usage.total,
+          subItems: usage.buckets,
+          depthLimited: usage.depthLimited,
         });
       }
     }
     agentInfos.sort((a, b) => b.size - a.size);
 
+    // Derive the org-level `Agents` figure from the per-agent totals we just
+    // computed. Two reasons: the parts now always add up to the whole (they
+    // previously came from a second, differently-bounded walker and disagreed),
+    // and it removes one full traversal of every agent directory from a handler
+    // that already blocks the event loop.
+    const agentsItem = topLevelItems.find(i => i.name === 'Agents');
+    if (agentsItem) agentsItem.size = agentInfos.reduce((s, a) => s + a.size, 0);
+
     const totalSize = topLevelItems.reduce((s, i) => s + i.size, 0);
     const dbItem = topLevelItems.find(i => i.name === 'Database')!;
 
-    return {
+    const value: StorageScanResult = {
       dataDir,
       totalSize,
       breakdown: topLevelItems,
       agents: agentInfos,
       database: { path: dbItem.path, size: dbItem.size },
     };
+    storageScanCache = { key: dataDir, at: Date.now(), value };
+    return value;
   }
 
   private detectOrphans() {
@@ -13372,6 +13468,8 @@ EXPLANATION_END`;
   }
 
   private purgeOrphans(ids?: string[]) {
+    // Deleting directories invalidates the disk-usage cache.
+    storageScanCache = null;
     const orphans = this.detectOrphans();
     const filter = ids && ids.length > 0 ? new Set(ids) : null;
     const purgedAgents: string[] = [];

@@ -92,7 +92,7 @@ export function ShortcutsHelpModal({
                       <span className="text-fg-secondary min-w-0">
                         {t(s.labelKey ?? s.label, { defaultValue: s.label })}
                       </span>
-                      <kbd className="shrink-0 px-1.5 py-0.5 rounded bg-surface-elevated border border-border-default text-[11px] font-medium text-fg-primary font-mono">
+                      <kbd className="shrink-0 px-2 py-1 rounded bg-surface-elevated border border-border-default text-[13px] font-medium leading-none text-fg-primary font-mono">
                         {formatShortcutKeys(s.keys, isMac, s.bare)}
                       </kbd>
                     </li>

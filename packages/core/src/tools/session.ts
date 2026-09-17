@@ -704,6 +704,7 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
       '• session_purge — permanently delete archived fragments for a session. Args: session_id.',
       '• session_status — read-only snapshot: message count, pinned slot keys, archived fragment count. Returns { status, sessionId, chatSessionId, isCurrent, messageCount, fragmentCount, slots: [key...] }. Args: session_id (optional — defaults to your CURRENT session).',
       '• session_rename — set the title of the CURRENT chat session (or any session you own) to a short summary of its purpose, so it is easy to find again in Team chat History or session_list. Args: session_id (or omit to target your current session), title (≤120 chars).',
+      '  MUST call this once, in the same turn, when you handle the FIRST user message of a new Team-chat conversation — you are the one who can name it after understanding the goal (the server fallback only copies the first 60 raw characters). Write a "goal + object" phrase in the user\'s language; do not copy their wording. Call it again only if the topic material changes.',
       '  Example: { "operation": "rename", "title": "修复 Team chat 历史列表不完整 + 新增 session_rename 工具" }',
       '',
       'Permissions: you may list sessions you own; get/status sessions you own OR participated in; compact/pin/unpin/include/purge/rename ONLY sessions you own.',

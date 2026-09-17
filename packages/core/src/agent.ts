@@ -51,7 +51,13 @@ import {
   SESSION_REQUEST_HISTORY_MIN,
   SESSION_REQUEST_HISTORY_BLOCK,
   isStrictStateItem,
+  NOTEBOOK_MAX_ENTRIES,
+  NOTEBOOK_MAX_CHARS_PER_ENTRY,
+  NOTEBOOK_PROMPT_MAX_CHARS,
+  NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS,
+  NOTEBOOK_PERSIST_MAX_WAIT_MS,
 } from '@markus/shared';
+import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
@@ -60,7 +66,7 @@ import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-
 import { HeartbeatScheduler } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
 import { stripToolNoise } from './llm/provider-helpers.js';
-import { MemoryStore, loadNotebook, saveNotebook, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
+import { MemoryStore, loadNotebook, saveNotebook, pruneNotebookEntries, normalizeNotebookKey, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
@@ -72,6 +78,9 @@ import {
   scenarioToPack,
   getReflexAllowlist,
   formatEvictedToolCatalog,
+  COMMENT_RESPONSE_ALLOWED_TOOLS,
+  REQUIREMENT_ACTION_ALLOWED_TOOLS,
+  WORKFLOW_ACTION_ALLOWED_TOOLS,
   type CapabilityPack,
 } from './capability-packs.js';
 import { ensureAffordablePromptPack } from './afford-guard.js';
@@ -268,7 +277,7 @@ export interface AgentOptions {
   handbookPath?: string;
 }
 
-import { createSessionWorkspace, sessionWorkspaceStore, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
+import { createSessionWorkspace, sessionWorkspaceStore, asAgentScenario, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
 // re-export 保持 agent.js 的既有导出契约（attention.ts 等从 agent.js 引用类型的地方无需改动）。
 export { createSessionWorkspace, sessionWorkspaceStore, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
 
@@ -383,9 +392,50 @@ export class Agent {
   private toolSelector: ToolSelector;
   private guardrails: GuardrailPipeline;
   private toolHooks: ToolHookRegistry;
-  private recentToolNames: string[] = [];
-  private activatedExtraTools = new Set<string>(); // tools activated via discover_tools
-  private activatedSkillInstructions = new Map<string, string>(); // skill instructions injected into context
+  /**
+   * Session-scoped, MONOTONIC sticky-tool state (RC5 / O1).
+   *
+   * Both collections used to live on the Agent instance: `recentToolNames` was
+   * a FIFO(10) that shifted tools out as new ones arrived, and
+   * `activatedExtraTools` was a Set that was never reset. Consequences:
+   *  - the emitted `tools` schema changed on nearly every turn. Tool schemas
+   *    serialise AHEAD of the messages on OpenAI-compatible providers, so each
+   *    change invalidated the cache for the system prompt AND the entire
+   *    replayed history (measured: 11 055 tool-def tokens vs 8 618 system —
+   *    the largest single cache-buster in the request);
+   *  - a tool activated in one session stayed visible in every later session.
+   *
+   * Now keyed by session, worker-scoped (SessionWorkspace.toolSticky), and only
+   * ever GROWING within a session ("Mask, Don't Remove"): once the schema has
+   * warmed up it is byte-stable, and switching sessions (or running the same
+   * agent concurrently across sessions) drops the old state instead of leaking
+   * it or thrashing. The set freezes at the cap rather than evicting, because
+   * eviction is what caused the drift.
+   */
+  private static readonly STICKY_RECENT_TOOLS_MAX = 24;
+
+  private stickyTools(sessionId?: string | null): { recent: string[]; activated: Set<string> } {
+    const ws = this.workspace();
+    const sid = sessionId ?? this.currentSessionId ?? null;
+    if (!ws.toolSticky || ws.toolSticky.sessionId !== sid) {
+      ws.toolSticky = { sessionId: sid, recent: [], activated: new Set() };
+    }
+    return ws.toolSticky;
+  }
+
+  /**
+   * Activated skill instruction bodies — session-keyed AND worker-scoped.
+   * See {@link ActivatedSkillState}: an Agent-instance Map leaked a skill body
+   * activated in one session into every later session's system prompt.
+   */
+  private activatedSkills(): Map<string, string> {
+    const ws = this.workspace();
+    const sid = this.currentSessionId ?? null;
+    if (!ws.activatedSkills || ws.activatedSkills.sessionId !== sid) {
+      ws.activatedSkills = { sessionId: sid, instructions: new Map() };
+    }
+    return ws.activatedSkills.instructions;
+  }
   private availableSkillCatalog: Array<{ name: string; description: string; category: string }> = [];
   private skillMcpActivator?: (
     skillName: string,
@@ -480,9 +530,11 @@ export class Agent {
   private set lastInjectedActivityType(v: string | undefined) { this.workspace().lastInjectedActivityType = v; }
   /** Notebook — the single cognitive workspace. Persisted to NOTEBOOK.md. */
   private workingMemory: Map<string, NotebookEntry> = new Map();
-  private static readonly NOTEBOOK_MAX_AGENT_ENTRIES = 4;
-  private static readonly NOTEBOOK_MAX_CHARS_PER_ENTRY = 6000;
+  /** Hard cap on injected entries — mirrors the storage cap and the UI cap. */
+  private static readonly NOTEBOOK_PROMPT_MAX_ENTRIES = NOTEBOOK_MAX_ENTRIES;
   private notebookSaveTimer?: ReturnType<typeof setTimeout>;
+  /** Earliest time the debounced notebook write may be deferred to (maxWait). */
+  private notebookSaveDeadline?: number;
   /** Cognitive Preparation Pipeline instance (null when CPP is disabled) */
   private cognitivePrep?: CognitivePreparation;
   private cognitiveConfig?: CognitiveConfig;
@@ -546,6 +598,10 @@ export class Agent {
   private static readonly HEARTBEAT_MAX_TOOL_ITERATIONS = 30;
   /** Maps background_exec session IDs to the originating session that spawned them */
   private bgSessionOrigin = new Map<string, string>();
+  /** Scenario each background session was launched from (replayed on completion).
+   *  The completion fires *later*, outside any turn, so `activeScenario` is no
+   *  longer the launching scenario by then — it must be captured at registration. */
+  private bgSessionScenario = new Map<string, AgentScenario>();
   private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
   private _heartbeatUnsub?: () => void;
@@ -601,6 +657,29 @@ export class Agent {
     const c = cfg ?? { enabled: true, maxWorkers: 3 };
     this.attentionController.setWorkerCount(this.effectiveWorkerCount(c));
     this.taskExecutor?.setMaxConcurrentTasks(this.unifiedTaskConcurrency(c));
+    // 交接日志的存活必须与 worker 数**同步**：`applyConcurrency` 是热更新入口，
+    // 旧实现只改闸不重建 handoffLog —— 「先串行后开并发」时日志永远为 undefined，
+    // 并发上下文静默失效（getConcurrentContext 直接 return）。
+    this.syncHandoffLog();
+  }
+
+  /**
+   * 按当前 worker 数创建 / 保留 / 丢弃 ConcurrentHandoffLog。
+   *
+   * - worker > 1 且首次进入并发 → 新建并从磁盘 load()（跨重启可追溯）
+   * - 已经是并发 → 保留既有实例（不清空，避免丢在途交接）
+   * - 降回串行 → 丢弃实例（并发上下文不再注入）
+   */
+  private syncHandoffLog(): void {
+    const concurrent = this.attentionController.getWorkerCount() > 1;
+    if (!concurrent) {
+      this.handoffLog = undefined;
+      return;
+    }
+    if (!this.dataDir || this.handoffLog) return;
+    const log = new ConcurrentHandoffLog(join(this.dataDir, 'concurrent-handoffs.jsonl'));
+    log.load();
+    this.handoffLog = log;
   }
 
   /** 诊断/测试：当前生效的任务并发闸上限（= 统一后的值）。 */
@@ -641,11 +720,7 @@ export class Agent {
     this.attentionController.setWorkerCount(this.effectiveWorkerCount(concurrentCfg));
     this.attentionController.setConflictPolicy(concurrentCfg.conflictPolicy ?? 'auto');
     // 并发交接记录（P2a）：仅并发模式下创建（worker>1），持久化到 agent dataDir。
-    if (this.attentionController.getWorkerCount() > 1 && options.dataDir) {
-      const log = new ConcurrentHandoffLog(join(options.dataDir, 'concurrent-handoffs.jsonl'));
-      log.load();
-      this.handoffLog = log;
-    }
+    this.syncHandoffLog();
     this.memory = options.memory ?? new MemoryStore(options.dataDir);
     // P1-9（M2 修订）：ContextEngine 必须复用**本 agent 的**计数器实例。
     // 之前这里 `new ContextEngine()` 不带 config → 其内部 `getDefaultTokenCounter()`
@@ -700,6 +775,8 @@ export class Agent {
       const originSession = this.bgSessionOrigin.get(notification.sessionId);
       if (!originSession) return;
       this.bgSessionOrigin.delete(notification.sessionId);
+      const originScenario = this.bgSessionScenario.get(notification.sessionId);
+      this.bgSessionScenario.delete(notification.sessionId);
 
       const status = notification.exitCode === 0 ? 'succeeded' : `failed (exit ${notification.exitCode})`;
       const parts = [
@@ -722,6 +799,7 @@ export class Agent {
         type: 'background_exec',
         deliveryMode: 'in_session',
         originSessionId: originSession,
+        originScenario,
         summary: `Background process ${status}: ${notification.command.slice(0, 80)}`,
         content: parts.join('\n'),
         exitCode: notification.exitCode,
@@ -883,6 +961,16 @@ export class Agent {
       if (loaded.size > 0) {
         log.info(`Loaded ${loaded.size} notebook entries from NOTEBOOK.md`);
       }
+      // Normalize on load: a notebook that was written by an older build (or by a
+      // writer that bypassed the cap) must not be able to stay oversized. Persist
+      // the trimmed result immediately so disk and memory agree.
+      const normalization = this.enforceNotebookLimits();
+      if (normalization.changed) this.persistNotebookSync();
+      // One-time migration: the retired state.md store (situational short-lived state with
+      // no write tool) folds into the notebook's `system` tier — the layer that actually
+      // has a writer, per-tier TTL and an entry cap. Content is preserved rather than
+      // dropped; the old file is left behind as a tombstone so the migration is visible.
+      this.migrateRetiredStateFile();
     } catch (err) {
       log.warn('Failed to load NOTEBOOK.md', { error: String(err) });
     }
@@ -1762,7 +1850,15 @@ export class Agent {
       if (ex.images !== undefined) opts.images = ex.images as string[];
       if (ex.fileNames !== undefined) opts.fileNames = ex.fileNames as string[];
       if (ex.imagePaths !== undefined) opts.imagePaths = ex.imagePaths as string[];
-      if (ex.scenario !== undefined) opts.scenario = ex.scenario as AgentScenario;
+      if (ex.scenario !== undefined) {
+        // VALIDATE — this override is applied *after* each branch's explicit
+        // `scenario:` default, so an unvalidated cast here silently becomes the
+        // turn's scenario. That turned every async completion into `heartbeat`
+        // (reflex pack ⇒ no work tools) and let any mailbox producer inject an
+        // arbitrary scenario string. Unknown values are ignored, not coerced.
+        const exScenario = asAgentScenario(ex.scenario);
+        if (exScenario !== undefined) opts.scenario = exScenario;
+      }
       if (ex.toolEventCollector !== undefined) opts.toolEventCollector = ex.toolEventCollector as HandleMessageOptions['toolEventCollector'];
       if (ex.waitForReply !== undefined) opts.waitForReply = ex.waitForReply as boolean;
       if (ex.allowedTools !== undefined) {
@@ -1862,7 +1958,12 @@ export class Agent {
               ? { sessionId: channelSessionId }
               : {};
           const opts = buildHandleOpts(defaults);
-          if (item.sourceType === 'a2a_message') opts.scenario = 'a2a';
+          // Only default to 'a2a' when the caller stayed silent. An explicit
+          // scenario (e.g. 'group_chat' for a group channel whose message
+          // happens to arrive as sourceType 'a2a_message') must win — clobbering
+          // it here handed group-chat agents the A2A "humans don't see this"
+          // section instead of the group-chat routing rules.
+          if (item.sourceType === 'a2a_message' && extra.scenario === undefined) opts.scenario = 'a2a';
           let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             item.metadata?.senderId,
@@ -1999,7 +2100,11 @@ export class Agent {
               item.payload.content + COMPLETION_MARKER_INSTRUCTION,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ sessionId: `requirement_${reqId}_${ts}`, scenario: 'requirement_action' }),
+              buildHandleOpts({
+              sessionId: `requirement_${reqId}_${ts}`,
+              scenario: 'requirement_action',
+              allowedTools: new Set(REQUIREMENT_ACTION_ALLOWED_TOOLS),
+            }),
             );
             resolveResponse(reply);
             return reply;
@@ -2017,7 +2122,11 @@ export class Agent {
             item.payload.content + COMPLETION_MARKER_INSTRUCTION,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts({ sessionId: `comment_${reqId}_${ts}`, scenario: 'comment_response' }),
+            buildHandleOpts({
+              sessionId: `comment_${reqId}_${ts}`,
+              scenario: 'comment_response',
+              allowedTools: new Set(COMMENT_RESPONSE_ALLOWED_TOOLS),
+            }),
           );
           resolveResponse(reply);
           return reply;
@@ -2030,7 +2139,11 @@ export class Agent {
               item.payload.content + COMPLETION_MARKER_INSTRUCTION,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ sessionId: `workflow_${wfEvent}_${ts}`, scenario: 'workflow_action' }),
+              buildHandleOpts({
+                sessionId: `workflow_${wfEvent}_${ts}`,
+                scenario: 'workflow_action',
+                allowedTools: new Set(WORKFLOW_ACTION_ALLOWED_TOOLS),
+              }),
             );
             resolveResponse(reply);
             return reply;
@@ -2054,7 +2167,11 @@ export class Agent {
               item.payload.content + COMPLETION_MARKER_INSTRUCTION,
               item.metadata?.senderId,
               senderInfo,
-              buildHandleOpts({ sessionId: `comment_${commentTaskId}_${ts}`, scenario: 'comment_response' }),
+              buildHandleOpts({
+                sessionId: `comment_${commentTaskId}_${ts}`,
+                scenario: 'comment_response',
+                allowedTools: new Set(COMMENT_RESPONSE_ALLOWED_TOOLS),
+              }),
             );
           }
           resolveResponse('');
@@ -2093,11 +2210,18 @@ export class Agent {
         case 'system_event':
         case 'daily_report': {
           const sysSessionId = `sys_${this.id}_${ts}`;
+          // A callback delivered through the **mailbox** path arrives as a
+          // `system_event` and carries the scenario it was registered from
+          // (`deliverCallback`). Genuine system events (alerts, daily reports)
+          // carry no `callbackType` and stay `heartbeat`.
+          const sysScenario = (extra.callbackType !== undefined
+            ? asAgentScenario(extra.scenario)
+            : undefined) ?? 'heartbeat';
           let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             undefined,
             undefined,
-            buildHandleOpts({ sessionId: sysSessionId, scenario: 'heartbeat' }),
+            buildHandleOpts({ sessionId: sysSessionId, scenario: sysScenario }),
           );
           if (needsMarker) reply = await this.ensureCompletionMarker(reply, sysSessionId);
           resolveResponse(reply);
@@ -2142,11 +2266,19 @@ export class Agent {
           // Route to the originating session if known, otherwise a fresh system session
           const originSessionId = extra.originSessionId as string | undefined;
           const cbSessionId = originSessionId ?? `sys_${this.id}_${ts}`;
+          // Replay the scenario the callback was registered from (`deliverCallback`),
+          // defaulting to `heartbeat`. Hardcoding `heartbeat` for callbacks gave the
+          // turn the **reflex** pack — no `file_write` / `file_edit` / `shell_execute` /
+          // `task_note` / `subtask_*` — plus "your output is NOT visible, end with
+          // `HEARTBEAT_OK`". A background build started from a task session could
+          // therefore only *notify* on completion, never continue the task, which
+          // contradicts `background_exec`'s documented contract.
+          const cbScenario = asAgentScenario(extra.scenario) ?? 'heartbeat';
           let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             undefined,
             undefined,
-            buildHandleOpts({ sessionId: cbSessionId, scenario: 'heartbeat' }),
+            buildHandleOpts({ sessionId: cbSessionId, scenario: cbScenario }),
           );
           if (needsMarker) reply = await this.ensureCompletionMarker(reply, cbSessionId);
           resolveResponse(reply);
@@ -3047,6 +3179,10 @@ export class Agent {
         }
       } catch (err) { log.debug('Token counter calibration failed', { error: String(err) }); }
     }
+    // O2: the reported count is ALSO the authoritative water-level input. Every
+    // LLM response already funnels through here (9 call sites), so hooking it here
+    // covers chat / stream / task / review / reflection without touching them.
+    this.contextEngine.noteReportedInputTokens(this.currentSessionId, actualInputTokens);
     this.lastEstimatedInputTokens = 0;
   }
 
@@ -3141,23 +3277,23 @@ export class Agent {
   }
 
   injectSkillInstructions(skillName: string, instructions: string): void {
-    this.activatedSkillInstructions.set(skillName, instructions);
+    this.activatedSkills().set(skillName, instructions);
   }
 
   hasSkillInstructions(skillName: string): boolean {
-    return this.activatedSkillInstructions.has(skillName);
+    return this.activatedSkills().has(skillName);
   }
 
   getActiveSkillNames(): string[] {
     const names = new Set(this.config.skills);
-    for (const name of this.activatedSkillInstructions.keys()) {
+    for (const name of this.activatedSkills().keys()) {
       names.add(name);
     }
     return [...names];
   }
 
   deactivateSkill(skillName: string): void {
-    this.activatedSkillInstructions.delete(skillName);
+    this.activatedSkills().delete(skillName);
   }
 
   setAvailableSkillCatalog(catalog: Array<{ name: string; description: string; category: string }>): void {
@@ -3281,11 +3417,7 @@ export class Agent {
       lines.push(`Dropped ${result.dropItemIds.length} item(s)`);
     }
     lines.push(`Reasoning: ${result.reasoning}`);
-    this.workingMemory.set('triage-decision', {
-      text: lines.join('\n'),
-      updatedAt: Date.now(),
-      managed: 'system',
-    });
+    this.writeNotebookEntry('triage-decision', lines.join('\n'), 'system');
   }
 
   private updateCognitionFromDeliberation(result: DeliberationResult): void {
@@ -3305,11 +3437,7 @@ export class Agent {
       }
       lines.push(`Reasoning: ${result.reasoning}`);
     }
-    this.workingMemory.set('deliberation', {
-      text: lines.join('\n'),
-      updatedAt: Date.now(),
-      managed: 'system',
-    });
+    this.writeNotebookEntry('deliberation', lines.join('\n'), 'system');
   }
 
   /**
@@ -3423,17 +3551,26 @@ export class Agent {
 
   private getNotebookWriter(): (key: string, text: string, managed: 'system' | 'cpp') => void {
     return (key: string, text: string, managed: 'system' | 'cpp') => {
-      this.workingMemory.set(key, { text, updatedAt: Date.now(), managed });
+      // `relevant-context` is a transcript of retrieved knowledge that is ALREADY
+      // injected as `## Your Knowledge`. One such entry measured 9 475 chars — more
+      // than the entire notebook prompt budget (6 000) — so it used to crowd every
+      // real note out of the injected block. Cap it hard; the full text remains
+      // retrievable via `memory_search`.
+      const capped = key === 'relevant-context'
+        ? text.slice(0, NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS)
+        : text;
+      this.writeNotebookEntry(key, capped, managed);
     };
   }
 
   /** Activated skill bodies — injected as their own uncapped system section. */
   private getActivatedSkillContext(): string | undefined {
-    if (this.activatedSkillInstructions.size === 0) return undefined;
+    const instructions = this.activatedSkills();
+    if (instructions.size === 0) return undefined;
     const parts: string[] = ['\n## Activated Skills'];
     parts.push('Loaded via `discover_tools`. Follow these instructions while the skill is active.');
-    for (const [name, instructions] of this.activatedSkillInstructions) {
-      parts.push(`<skill name="${name}">\n${instructions}\n</skill>`);
+    for (const [name, body] of instructions) {
+      parts.push(`<skill name="${name}">\n${body}\n</skill>`);
     }
     return parts.join('\n');
   }
@@ -3441,11 +3578,35 @@ export class Agent {
   /** Notebook + other dynamic providers (NOT skill bodies — those are uncapped). */
   private getDynamicContext(): string | undefined {
     const parts = [...this.dynamicContextProviders.values()].map(p => p()).filter(Boolean);
+
+    // Expire before injecting: a stale situational entry is worse than a missing
+    // one, because the model reads it as current fact. (Measured on 2026-09-16: an
+    // 18-day-old triage decision and a 57-day-old CPP output were being re-sent
+    // every turn.)
+    const normalization = this.enforceNotebookLimits();
+    if (normalization.changed) this.scheduleNotebookPersist();
+
     if (this.workingMemory.size > 0) {
       const wmLines = ['## Notebook'];
-      wmLines.push('Your cognitive workspace (max 4 agent entries). Persists across sessions. Update via `update_notebook`. System entries are auto-managed. Choose keys wisely — oldest entry is evicted when full.');
+      wmLines.push(`Your cognitive workspace (max ${NOTEBOOK_MAX_ENTRIES} entries, ${Agent.NOTEBOOK_PROMPT_MAX_ENTRIES} shown). Persists across sessions. Update via \`update_notebook\`. System entries are auto-managed and expire on their own. Choose keys wisely — the oldest entry is evicted when full.`);
       wmLines.push('');
-      for (const [key, entry] of this.workingMemory) {
+
+      // Deterministic, most-recent-first order. Two properties matter here:
+      //   1. staleness ranking — the entries that matter most are read first;
+      //   2. byte stability — for the SAME logical state the block must serialize
+      //      identically, otherwise every assembly dirties the volatile tail and
+      //      re-bills those tokens (implicit prefix caching keys on exact bytes).
+      // Map insertion order satisfied neither (evict + re-insert permutes the block).
+      const ordered = [...this.workingMemory.entries()]
+        .sort((a, b) => (b[1].updatedAt - a[1].updatedAt) || a[0].localeCompare(b[0]))
+        .slice(0, Agent.NOTEBOOK_PROMPT_MAX_ENTRIES);
+
+      const header = `${wmLines.join('\n')}\n`;
+      let budget = NOTEBOOK_PROMPT_MAX_CHARS - header.length;
+      const dropped: string[] = [];
+      const blocks: string[] = [];
+
+      for (const [key, entry] of ordered) {
         const ageMs = Date.now() - entry.updatedAt;
         // Quantized age buckets to reduce prompt churn and improve cache hit rates.
         // Precise timestamps ("3s ago" vs "45s ago") change every call, preventing
@@ -3455,11 +3616,35 @@ export class Agent {
           : ageMs < 7_200_000 ? `~${Math.round(ageMs / 3_600_000)}h ago`
           : `${Math.round(ageMs / 3_600_000)}h ago`;
         const managedTag = entry.managed !== 'agent' ? ` [${entry.managed}]` : '';
-        wmLines.push(`### ${key} (${ageLabel})${managedTag}`);
-        wmLines.push(entry.text);
-        wmLines.push('');
+        const head = `### ${key} (${ageLabel})${managedTag}`;
+        const full = `${head}\n${entry.text}\n`;
+
+        if (full.length <= budget) {
+          blocks.push(full);
+          budget -= full.length;
+          continue;
+        }
+        // Forward progress: a single oversized entry must not buy zero inlining.
+        // Truncate it to the remaining budget instead of dropping it whole — the
+        // old behaviour let ONE 9 475-char entry (the retrieved-knowledge transcript)
+        // consume the entire block and push every real note into the index line.
+        const room = budget - head.length - 40;
+        if (room > 120) {
+          const slice = entry.text.slice(0, room);
+          blocks.push(`${head}\n${slice}\n_[truncated — full text in NOTEBOOK.md]\n`);
+          budget -= head.length + slice.length + 40;
+        } else {
+          dropped.push(key);
+        }
       }
-      parts.push(wmLines.join('\n'));
+
+      if (dropped.length > 0) {
+        // Sorted index so the line is stable across assemblies.
+        const index = [...dropped].sort((a, b) => a.localeCompare(b)).join(', ');
+        blocks.push(`_[notebook index — ${dropped.length} entr${dropped.length === 1 ? 'y' : 'ies'} not inlined: ${index}]_`);
+      }
+
+      parts.push(wmLines[0]! + '\n' + wmLines[1] + '\n\n' + blocks.join(''));
     }
     return parts.length > 0 ? parts.join('\n\n') : undefined;
   }
@@ -6585,25 +6770,97 @@ export class Agent {
     });
   }
 
-  updateWorkingMemory(key: string, content: string, managed?: NotebookEntryManaged): { status: string; key: string; evicted?: string } {
-    const entryManaged = managed ?? 'agent';
-    let evicted: string | undefined;
-    // Only count agent-managed entries toward the limit
-    if (entryManaged === 'agent') {
-      const agentCount = [...this.workingMemory.values()].filter(v => v.managed === 'agent').length;
-      if (agentCount >= Agent.NOTEBOOK_MAX_AGENT_ENTRIES && !this.workingMemory.has(key)) {
-        let oldestKey: string | undefined;
-        let oldestTime = Infinity;
-        for (const [k, v] of this.workingMemory) {
-          if (v.managed === 'agent' && v.updatedAt < oldestTime) { oldestTime = v.updatedAt; oldestKey = k; }
-        }
-        if (oldestKey) { this.workingMemory.delete(oldestKey); evicted = oldestKey; }
-      }
-    }
-    const truncated = content.slice(0, Agent.NOTEBOOK_MAX_CHARS_PER_ENTRY);
-    this.workingMemory.set(key, { text: truncated, updatedAt: Date.now(), managed: entryManaged });
+  /**
+   * THE single notebook write path.
+   *
+   * Every writer — the `update_notebook` tool, triage, deliberation, and the CPP
+   * notebook writer — must go through here, because the entry cap and the TTL are
+   * only meaningful as an *invariant* (true after every write), not as a check on
+   * one code path. Three writers used to call `workingMemory.set()` directly and
+   * were never counted, so entries grew without bound (real notebook: 26 entries /
+   * 23 of them over the agent cap of 4).
+   *
+   * Returns what the write did, so tool output can tell the agent when something
+   * was dropped instead of silently losing it.
+   */
+  private writeNotebookEntry(
+    rawKey: string,
+    content: string,
+    managed: NotebookEntryManaged = 'agent',
+  ): { status: string; key: string; evicted?: string; expired?: string[] } {
+    const key = normalizeNotebookKey(rawKey);
+    if (!key) return { status: 'error', key: '' };
+
+    const truncated = content.slice(0, NOTEBOOK_MAX_CHARS_PER_ENTRY);
+    this.workingMemory.set(key, { text: truncated, updatedAt: Date.now(), managed });
+
+    // Re-establish the invariants (TTL + caps) after the write. `pruneNotebookEntries`
+    // never evicts the entry just written: it has the newest `updatedAt`, and
+    // eviction is oldest-first.
+    const pruned = pruneNotebookEntries(this.workingMemory);
     this.scheduleNotebookPersist();
-    return { status: 'updated', key, ...(evicted ? { evicted } : {}) };
+
+    return {
+      status: 'updated',
+      key,
+      ...(pruned.evicted.length > 0 ? { evicted: pruned.evicted.join(', ') } : {}),
+      ...(pruned.expired.length > 0 ? { expired: pruned.expired } : {}),
+    };
+  }
+
+  /**
+   * One-time migration: retired `state.md` → notebook `system` tier.
+   *
+   * `state.md` was the "short-lived situational state" half of the old
+   * knowledge.md/state.md dual store. It had a reader (reflex prompt) and a TTL pruner
+   * (dream cycle) but **no write tool at all**, so in practice it held one hand-written
+   * blob (or nothing) while every writer went to the notebook instead. By the
+   * `(scope × durability)` rule, situational state is Working-layer data — so its
+   * content folds into the notebook instead of being dropped on the floor.
+   *
+   * Idempotent: a successful run leaves a tombstone, and a tombstone carries no
+   * importable content.
+   */
+  private migrateRetiredStateFile(): void {
+    const marker = '<!-- retired 2026-09-16: state.md store removed; situational state lives in NOTEBOOK.md (system tier) -->';
+    try {
+      const stateFile = join(this.dataDir, 'state.md');
+      if (!existsSync(stateFile)) return;
+      const raw = readFileSync(stateFile, 'utf8');
+      if (raw.includes('retired 2026-09-16')) return; // already migrated
+      const body = raw
+        .split('\n')
+        .filter((line) => !/^#\s*State\s*$/i.test(line.trim()))
+        .join('\n')
+        .trim();
+      if (body) {
+        this.writeNotebookEntry('legacy-state', body, 'system');
+        log.info('Migrated retired state.md into notebook key `legacy-state`', { chars: body.length });
+      }
+      writeFileSync(stateFile, `${marker}\n`, 'utf8');
+    } catch (err) {
+      log.warn('state.md migration skipped', { error: String(err) });
+    }
+  }
+
+  /** Apply the notebook invariants to the in-memory map after load / on demand. */
+  private enforceNotebookLimits(): { expired: string[]; evicted: string[]; changed: boolean } {
+    const before = this.workingMemory.size;
+    const pruned = pruneNotebookEntries(this.workingMemory);
+    const changed = this.workingMemory.size !== before;
+    if (changed) {
+      log.info('Notebook normalized', {
+        agentId: this.id,
+        expired: pruned.expired.length,
+        evicted: pruned.evicted.length,
+        entriesAfter: this.workingMemory.size,
+      });
+    }
+    return { ...pruned, changed };
+  }
+
+  updateWorkingMemory(key: string, content: string, managed?: NotebookEntryManaged): { status: string; key: string; evicted?: string; expired?: string[] } {
+    return this.writeNotebookEntry(key, content, managed ?? 'agent');
   }
 
   clearWorkingMemory(key?: string): { status: string; cleared: number } {
@@ -6622,13 +6879,34 @@ export class Agent {
     return [...this.workingMemory.entries()].map(([key, v]) => ({ key, ...v }));
   }
 
-  /** Schedule a debounced write of NOTEBOOK.md (2s debounce). */
+  /**
+   * Debounced write of NOTEBOOK.md.
+   *
+   * Debounce alone STARVES: every write resets the timer, so a chatty turn can
+   * defer the disk write indefinitely and lose it if the process exits inside the
+   * window. A maxWait deadline bounds the staleness while still coalescing bursts.
+   */
   private scheduleNotebookPersist(): void {
+    const now = Date.now();
+    if (this.notebookSaveDeadline === undefined) {
+      this.notebookSaveDeadline = now + NOTEBOOK_PERSIST_MAX_WAIT_MS;
+    }
+    const delay = Math.max(0, Math.min(2000, (this.notebookSaveDeadline ?? now) - now));
     if (this.notebookSaveTimer) clearTimeout(this.notebookSaveTimer);
     this.notebookSaveTimer = setTimeout(() => {
-      this.persistNotebookSync();
       this.notebookSaveTimer = undefined;
-    }, 2000);
+      this.notebookSaveDeadline = undefined;
+      this.persistNotebookSync();
+    }, delay);
+  }
+
+  /** Flush any pending notebook write right now (shutdown / heartbeat safety net). */
+  flushNotebook(): void {
+    if (!this.notebookSaveTimer) return;
+    clearTimeout(this.notebookSaveTimer);
+    this.notebookSaveTimer = undefined;
+    this.notebookSaveDeadline = undefined;
+    this.persistNotebookSync();
   }
 
   /** Synchronous write of the notebook to disk. */
@@ -6665,6 +6943,9 @@ export class Agent {
     type: CallbackType;
     deliveryMode: CallbackDelivery;
     originSessionId?: string;
+    /** Scenario the callback was registered from — replayed on delivery (see
+     *  `PendingCallback.originScenario`). Falls back to `heartbeat` when absent. */
+    originScenario?: string;
     summary: string;
     content: string;
     exitCode?: number;
@@ -6678,6 +6959,7 @@ export class Agent {
           callbackId: cb.callbackId,
           callbackType: cb.type,
           correlationId: cb.correlationId,
+          scenario: cb.originScenario,
         },
       });
       return;
@@ -6691,6 +6973,7 @@ export class Agent {
         callbackType: cb.type,
         correlationId: cb.correlationId,
         exitCode: cb.exitCode,
+        scenario: cb.originScenario,
       },
     });
   }
@@ -6724,6 +7007,8 @@ export class Agent {
             originSessionId,
             args['command'] as string | undefined,
             registryTimeoutMs,
+            // Capture the LAUNCH scenario — the completion arrives outside a turn.
+            this.activeScenario,
           );
         }
       } catch { /* non-JSON tool result — nothing to register */ }
@@ -6741,6 +7026,7 @@ export class Agent {
             type: 'a2a_reply',
             deliveryMode: 'in_session',
             correlationId: parsed.conversation_id,
+            originScenario: this.activeScenario,
             note: `Awaiting reply from ${String(args['agent_id'] ?? 'peer')}`,
             registeredAt: Date.now(),
             // Cap so a never-answered delegate can't wedge the session forever;
@@ -6775,6 +7061,7 @@ export class Agent {
         type: 'wakeup',
         deliveryMode: cb.deliveryMode ?? 'mailbox',
         originSessionId: cb.originSessionId,
+        originScenario: asAgentScenario(cb.originScenario),
         summary: `Scheduled wakeup${cb.note ? `: ${cb.note.slice(0, 80)}` : ''}`,
         content: `[SCHEDULED WAKEUP] ${cb.note ?? 'Time-based check-in you registered earlier.'}\nScheduled for: ${new Date(cb.wakeAt).toISOString()}`,
         correlationId: cb.correlationId,
@@ -6785,14 +7072,22 @@ export class Agent {
     }
   }
 
-  registerBackgroundSession(bgSessionId: string, originSessionId: string, command?: string, timeoutMs = 10 * 60 * 1000): void {
+  registerBackgroundSession(
+    bgSessionId: string,
+    originSessionId: string,
+    command?: string,
+    timeoutMs = 10 * 60 * 1000,
+    originScenario?: AgentScenario,
+  ): void {
     this.bgSessionOrigin.set(bgSessionId, originSessionId);
+    if (originScenario) this.bgSessionScenario.set(bgSessionId, originScenario);
     pendingCallbackRegistry.register({
       id: bgSessionId,
       agentId: this.id,
       originSessionId,
       type: 'background_exec',
       command,
+      originScenario,
       registeredAt: Date.now(),
       timeoutMs,
     });
@@ -6808,10 +7103,11 @@ export class Agent {
    * 因此激活必然可见，core 工具与激活工具都保持 LIVE。
    */
   activateTools(names: string[]): void {
+    const sticky = this.stickyTools();
     for (const name of names) {
       // Re-insert to refresh LRU order (most recently activated last).
-      this.activatedExtraTools.delete(name);
-      this.activatedExtraTools.add(name);
+      sticky.activated.delete(name);
+      sticky.activated.add(name);
     }
   }
 
@@ -7269,12 +7565,13 @@ export class Agent {
     const isManager = this.config.agentRole === 'manager';
     const isSecretary = this.role.name.toLowerCase() === 'secretary';
 
+    const sticky = this.stickyTools();
     // Include tools the agent explicitly requested via discover_tools
     const recentPlusActivated = context?.ignoreSticky
       ? [...(context?.extraRecentToolNames ?? [])]
       : [
-          ...this.recentToolNames,
-          ...this.activatedExtraTools,
+          ...sticky.recent,
+          ...sticky.activated,
           ...(context?.extraRecentToolNames ?? []),
         ];
 
@@ -7296,7 +7593,7 @@ export class Agent {
       pack,
       scenario: context?.scenario,
       // discover_tools activations — skill/MCP may LRU-defer under toolDef budget
-      activatedToolNames: context?.ignoreSticky ? undefined : this.activatedExtraTools,
+      activatedToolNames: context?.ignoreSticky ? undefined : sticky.activated,
     });
     this.pruneEvictedActivatedTools(this.toolSelector.consumeEvictedActivated());
 
@@ -7324,14 +7621,15 @@ export class Agent {
     },
   ): LLMTool[] {
     if (!toolCalls?.some((tc) => tc.name === 'discover_tools')) return current;
-    if (this.activatedExtraTools.size === 0) return current;
+    const activatedNow = this.stickyTools().activated;
+    if (activatedNow.size === 0) return current;
     const next = this.buildToolDefinitions(selectOpts);
     log.info('Refreshed LLM tool schemas after discover_tools', {
       agentId: this.id,
       before: current.length,
       after: next.length,
-      activated: [...this.activatedExtraTools],
-      newlyPresent: [...this.activatedExtraTools].filter((n) => next.some((t) => t.name === n)),
+      activated: [...activatedNow],
+      newlyPresent: [...activatedNow].filter((n) => next.some((t) => t.name === n)),
     });
     return next;
   }
@@ -7465,7 +7763,7 @@ export class Agent {
     for (const name of requested) {
       // 1. Check if it's an existing tool name on this agent
       if (this.tools.has(name)) {
-        this.activatedExtraTools.add(name);
+        this.stickyTools().activated.add(name);
         activated.push(name);
         continue;
       }
@@ -7475,7 +7773,7 @@ export class Agent {
         const skill = this.skillRegistry.get(name);
         if (skill) {
           if (skill.manifest.instructions) {
-            this.activatedSkillInstructions.set(name, skill.manifest.instructions);
+            this.activatedSkills().set(name, skill.manifest.instructions);
           }
           // Skill stats (LEARNING-LOOP §4) — does not affect trust score
           try {
@@ -7555,7 +7853,14 @@ export class Agent {
    * 新增写工具时必须在此登记；`agent-write-lock.test.ts` 会断言登记集合与预期一致，
    * 使漏登记成为测试失败而不是静默的并发竞态。
    */
-  private static readonly WRITE_TOOL_DOMAINS: Readonly<Record<string, { domain: string; arg?: readonly string[] }>> = {
+  /**
+   * 写工具的**互斥资源域**登记表（细分域 → 可并行；缺登记 → 全局独占）。
+   *
+   * 新增写工具时**必须**在此登记（细分域）或加入 `TOOL_LOCK_FREE`（纯读/免锁）；
+   * `agent-write-lock.test.ts` 会枚举全部内建工具断言「每个工具都被分类」，
+   * 使漏登记成为测试失败，而不是静默的并发竞态。
+   */
+  private static readonly WRITE_TOOL_DOMAINS: Readonly<Record<string, { domain: string; arg?: readonly string[]; resource?: AgentMemoryResource }>> = {
     // ── 文件系统：按路径细分（不同文件可并行）；定位不到路径则全域串行
     file_write:       { domain: 'fs', arg: ['path', 'filePath'] },
     file_edit:        { domain: 'fs', arg: ['path', 'filePath'] },
@@ -7564,60 +7869,184 @@ export class Agent {
     apply_patch:      { domain: GLOBAL_LOCK_DOMAIN },
     package_install:  { domain: GLOBAL_LOCK_DOMAIN },
     hub_install:      { domain: GLOBAL_LOCK_DOMAIN },
-    // ── 单体状态资源
-    memory_save:            { domain: 'memory' },
-    memory_update:          { domain: 'memory' },
-    memory_update_longterm: { domain: 'memory' },
-    memory_delete:          { domain: 'memory' },
-    update_notebook:        { domain: 'notebook' },
-    clear_notebook:         { domain: 'notebook' },
-    update_working_memory:  { domain: 'working-memory' },
-    clear_working_memory:   { domain: 'working-memory' },
+    // 后台作业：派发期登记进程表 + 生成后续会写盘/写库的进程。
+    // 注意：锁只覆盖**派发**，作业本身的执行期在锁外（见 docs/CONCURRENT-PROCESSING.md §3.3）。
+    background_exec:  { domain: GLOBAL_LOCK_DOMAIN },
+    process:          { domain: GLOBAL_LOCK_DOMAIN },
+    // ── 单体状态资源：按**资源**而非工具名登记 ──────────────────────────
+    // `resource` 让「同一个可变状态」的所有工具（正式名 + 兼容别名）解析到同一个
+    // 锁键。曾经 `update_notebook` 记在域 `notebook`、别名 `update_working_memory`
+    // 记在域 `working-memory` —— 两者写同一个 Map，却因域名不同被判为不冲突，
+    // 锁形同虚设。现在二者都是 `agent-memory:notebook`。
+    memory_save:            { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
+    memory_update:          { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
+    memory_update_longterm: { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
+    memory_delete:          { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
+    update_notebook:        { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    clear_notebook:         { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    update_working_memory:  { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    clear_working_memory:   { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    // 会话自我管理：compact / pin / unpin / purge 都是会话状态变更
+    session:                { domain: 'session', arg: ['session_id', 'sessionId'] },
+    // discover_tools 会写入「本会话已激活工具」集合 —— 共享可变状态
+    discover_tools:         { domain: 'session-tools' },
     // ── 全局配置
-    llm_switch_model:           { domain: 'llm-config' },
-    llm_set_capability_routing: { domain: 'llm-config' },
-    llm_add_model:              { domain: 'llm-config' },
-    llm_add_provider:           { domain: 'llm-config' },
-    llm_edit_provider:          { domain: 'llm-config' },
-    schedule_wakeup:            { domain: 'schedule' },
-    set_heartbeat_interval:     { domain: 'schedule' },
-    // ── 任务 / 目标：按任务实体细分
-    task_create:        { domain: 'task', arg: ['task_id', 'taskId'] },
-    task_update:        { domain: 'task', arg: ['task_id', 'taskId'] },
-    task_comment:       { domain: 'task', arg: ['task_id', 'taskId'] },
-    task_submit_review: { domain: 'task', arg: ['task_id', 'taskId'] },
-    subtask_create:     { domain: 'task', arg: ['task_id', 'taskId'] },
-    subtask_update:     { domain: 'task', arg: ['task_id', 'taskId'] },
-    subtask_complete:   { domain: 'task', arg: ['task_id', 'taskId'] },
-    goal_create:        { domain: 'task', arg: ['task_id', 'taskId'] },
-    goal_update:        { domain: 'task', arg: ['task_id', 'taskId'] },
+    llm_switch_model:            { domain: 'llm-config' },
+    llm_set_capability_routing:  { domain: 'llm-config' },
+    llm_add_model:               { domain: 'llm-config' },
+    llm_add_provider:            { domain: 'llm-config' },
+    llm_edit_provider:           { domain: 'llm-config' },
+    llm_switch_default_provider: { domain: 'llm-config' },
+    agent_model_set_default:     { domain: 'llm-config' },
+    agent_model_reset_default:   { domain: 'llm-config' },
+    schedule_wakeup:             { domain: 'schedule' },
+    set_heartbeat_interval:      { domain: 'schedule' },
+    // ── 任务 / 目标：按任务实体细分（缺参 → 整域独占）
+    task_create:              { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_update:              { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_comment:             { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_note:                { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_assign:              { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_submit_review:       { domain: 'task', arg: ['task_id', 'taskId'] },
+    task_cleanup_duplicates:  { domain: 'task' },
+    subtask_create:           { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_update:           { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_complete:         { domain: 'task', arg: ['task_id', 'taskId'] },
+    subtask_cancel:           { domain: 'task', arg: ['task_id', 'taskId'] },
+    goal_create:              { domain: 'task', arg: ['task_id', 'taskId'] },
+    goal_update:              { domain: 'task', arg: ['task_id', 'taskId'] },
     // ── 需求：按需求实体细分
-    requirement_propose: { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
-    requirement_update:  { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
-    requirement_comment: { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_propose:        { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_update:         { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_update_status:  { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_resubmit:       { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    requirement_comment:        { domain: 'requirement', arg: ['requirement_id', 'requirementId'] },
+    // ── 项目 / 交付物
+    create_project:      { domain: 'project' },
+    update_project:      { domain: 'project', arg: ['project_id', 'projectId'] },
+    delete_project:      { domain: 'project', arg: ['project_id', 'projectId'] },
     deliverable_create:  { domain: 'deliverable' },
+    deliverable_update:  { domain: 'deliverable', arg: ['deliverable_id', 'deliverableId'] },
+    // ── 工作流
+    workflow_create:  { domain: 'workflow', arg: ['workflow_id', 'workflowId'] },
+    workflow_update:  { domain: 'workflow', arg: ['workflow_id', 'workflowId'] },
+    workflow_delete:  { domain: 'workflow', arg: ['workflow_id', 'workflowId'] },
+    workflow_run:     { domain: 'workflow', arg: ['workflow_id', 'workflowId'] },
+    workflow_cancel:  { domain: 'workflow', arg: ['workflow_id', 'workflowId'] },
+    // ── 生成类：产出文件，按输出路径细分
+    generate_image:  { domain: 'fs', arg: ['output_path', 'outputPath', 'path'] },
+    generate_video:  { domain: 'fs', arg: ['output_path', 'outputPath', 'path'] },
+    office_generate: { domain: 'fs', arg: ['output_path', 'outputPath', 'path'] },
+    text_to_speech:  { domain: 'fs', arg: ['output_path', 'outputPath', 'path'] },
+    // ── 浏览器：共享一个浏览器会话，按页面细分
+    navigate_page:    { domain: 'browser', arg: ['pageId', 'page_id'] },
+    new_page:         { domain: 'browser' },
+    open_page:        { domain: 'browser', arg: ['pageId', 'page_id'] },
+    close_page:       { domain: 'browser', arg: ['pageId', 'page_id'] },
+    select_page:      { domain: 'browser', arg: ['pageId', 'page_id'] },
+    resize_page:      { domain: 'browser', arg: ['pageId', 'page_id'] },
+    click:            { domain: 'browser', arg: ['pageId', 'page_id'] },
+    fill:             { domain: 'browser', arg: ['pageId', 'page_id'] },
+    fill_form:        { domain: 'browser', arg: ['pageId', 'page_id'] },
+    type_text:        { domain: 'browser', arg: ['pageId', 'page_id'] },
+    press_key:        { domain: 'browser', arg: ['pageId', 'page_id'] },
+    drag:             { domain: 'browser', arg: ['pageId', 'page_id'] },
+    handle_dialog:    { domain: 'browser', arg: ['pageId', 'page_id'] },
+    emulate:          { domain: 'browser', arg: ['pageId', 'page_id'] },
+    evaluate_script:  { domain: 'browser', arg: ['pageId', 'page_id'] },
+    upload_file:      { domain: 'browser', arg: ['pageId', 'page_id'] },
+    upload_reference: { domain: 'browser' },
+    // ── 持久终端：共享 PTY 注册表，按终端细分
+    new_terminal:    { domain: 'terminal' },
+    exec_terminal:   { domain: 'terminal', arg: ['terminal_id', 'terminalId', 'id'] },
+    write_terminal:  { domain: 'terminal', arg: ['terminal_id', 'terminalId', 'id'] },
+    close_terminal:  { domain: 'terminal', arg: ['terminal_id', 'terminalId', 'id'] },
+    select_terminal: { domain: 'terminal' },
     // ── 对外消息 / 通知：按目标细分
     agent_send_message:       { domain: 'a2a-out', arg: ['agent_id', 'agentId', 'to'] },
     agent_send_group_message: { domain: 'a2a-out', arg: ['channelKey', 'channel_key', 'group_id'] },
     agent_delegate_task:      { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
     agent_stop:               { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
+    agent_start:              { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
+    agent_update:             { domain: 'a2a-out', arg: ['agent_id', 'agentId'] },
     agent_create_group_chat:  { domain: 'a2a-out' },
     agent_broadcast_status:   { domain: 'a2a-out' },
+    delegate_message:         { domain: 'a2a-out', arg: ['agent_id', 'agentId', 'to'] },
+    feishu_send_message:      { domain: 'a2a-out', arg: ['chat_id', 'chatId', 'receive_id', 'receiveId'] },
+    feishu_send_image:        { domain: 'a2a-out', arg: ['chat_id', 'chatId', 'receive_id', 'receiveId'] },
     notify_user:              { domain: 'notify' },
+    // ── 团队 / 组织注册表（与 agent_stop 同源，不能只锁一个兄弟）
+    team_start:  { domain: 'org' },
+    team_stop:   { domain: 'org' },
+    team_update: { domain: 'org' },
     // ── 邮箱管理：按 item 细分
     defer_mailbox_item:      { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
     drop_mailbox_item:       { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
     prioritize_mailbox_item: { domain: 'mailbox-admin', arg: ['item_id', 'itemId'] },
+    complete_deliberation:   { domain: 'deliberation' },
+    // ── Team Chat 右侧面板（UI 状态）
+    open_right_panel:     { domain: 'ui' },
+    collapse_right_panel: { domain: 'ui' },
   };
+
+  /**
+   * **免锁**工具：纯读取、HITL 阻塞、以及自带并发域的工具。
+   *
+   * 关键：`request_user_input` / `request_user_approval` 会**阻塞等待人类**，
+   * `spawn_subagent(s)` 会运行数分钟 —— 若让它们持有 `'*'` 全局独占锁，
+   * 整个 Agent 的所有写操作都会被冻结数分钟。它们必须免锁。
+   *
+   * 未在此表、也不在 `WRITE_TOOL_DOMAINS` 的工具（新内建工具 / 技能 / MCP）
+   * 一律按「能力未知」处理 → 取 `'*'` 全局独占（宁可串行，不可竞态）。
+   */
+  private static readonly TOOL_LOCK_FREE: ReadonlySet<string> = new Set([
+    // ── 纯读取：文件 / 代码 / 检索
+    'file_read', 'grep_search', 'glob_find', 'list_directory',
+    'web_search', 'web_fetch', 'web_extract', 'describe_image',
+    'knowledge_search', 'knowledge_list', 'knowledge_read',
+    'recall_activity', 'recall_context', 'check_mailbox',
+    // ── 纯读取：任务 / 需求 / 项目 / 团队
+    'task_list', 'task_get', 'task_board_health', 'task_check_duplicates',
+    'subtask_list', 'requirement_list', 'requirement_get',
+    'goal_status', 'list_projects', 'get_project', 'project_stats',
+    'deliverable_list', 'deliverable_search',
+    'team_list', 'team_status', 'list_teams',
+    // ── 纯读取：记忆 / 模型 / 包 / 工作流
+    'memory_search', 'memory_list',
+    'llm_list_providers', 'llm_get_capability_routing', 'agent_model_get',
+    'agent_model_test', 'agent_list_colleagues', 'agent_list_group_chats',
+    'package_list', 'hub_search',
+    'workflow_list', 'workflow_status',
+    // ── 纯读取：终端 / 浏览器观测
+    'list_terminals', 'read_terminal',
+    'list_pages', 'take_snapshot', 'take_screenshot', 'hover', 'wait_for',
+    'list_console_messages', 'get_console_message',
+    'list_network_requests', 'get_network_request', 'lighthouse_audit',
+    'speech_to_text',
+    // ── HITL 阻塞 / 长时任务：绝不能持锁（见上方说明）
+    'request_user_input', 'request_user_approval',
+    'spawn_subagent', 'spawn_subagents',
+  ]);
 
   /** 写语义工具集合（由 WRITE_TOOL_DOMAINS 推导 —— 单一真源）。 */
   private static readonly WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(
     Object.keys(Agent.WRITE_TOOL_DOMAINS),
   );
 
-  /** 工具是否具备写语义（需要跨 worker 互斥）。 */
+  /**
+   * 工具是否具备写语义（需要跨 worker 互斥）。
+   *
+   * 判定为**默认拒绝**：只有显式登记为「细分写域」或显式列入 `TOOL_LOCK_FREE`
+   * 的工具才会被豁免；其余（含新内建工具、技能/MCP 工具）一律视为写并取 `'*'`。
+   * 这使 `resourceLocksFor` 的 `'*'` 兜底分支真正可达 —— 旧实现用
+   * `WRITE_TOOL_NAMES.has(name)` 当闸门，未登记的写工具（`background_exec`、
+   * 生成类、项目/工作流/组织写等）**完全不取锁**，与 `resource-locks.ts`
+   * 「未分类的写工具落到 '*'」的声明相反。
+   */
   private static isWriteTool(name: string): boolean {
-    return Agent.WRITE_TOOL_NAMES.has(name);
+    if (Agent.WRITE_TOOL_NAMES.has(name)) return true;
+    if (Agent.TOOL_LOCK_FREE.has(name)) return false;
+    return true;
   }
 
   /**
@@ -7627,9 +8056,28 @@ export class Agent {
    * 拿到不同锁键；未登记的写工具（或缺少细分参数）退化为整域 / 全局独占 ——
    * 宁可串行，不可竞态。
    */
-  private static resourceLocksFor(toolCall: LLMToolCall): LockRequest[] {
+  /**
+   * 推导一次写工具调用的互斥资源域。
+   *
+   * 文件路径做 `resolve` 归一化，避免 `/a/b`、`./b`、`/a/./b` 指向同一文件却
+   * 拿到不同锁键；缺少细分参数退化为整域独占。
+   *
+   * **未分类工具**（MCP / 技能 / 运行时注册的自定义工具）取**按工具名**的互斥域：
+   * 同一工具的并发调用被串行（保护该工具自身的状态），不同工具仍可并行。
+   *
+   * 这里刻意**不**退化为全局 `'*'`：平台契约允许「一轮内多个工具调用并行」
+   * （见 `agent-loop` 的并行执行测试），而 MCP/技能工具数量可观（chrome-devtools 26 个、
+   * feishu 28 个），全局独占会让它们与所有文件/任务/记忆写互相阻塞，代价远超收益。
+   * 代价（已知残余风险）：能力未知的工具若与 `file_write` 写同一文件，二者不互斥
+   * —— 内建工具由 `agent-write-lock.test.ts` 强制显式分类，因此该残余只影响
+   * 真正动态的工具，已在 `docs/CONCURRENT-PROCESSING.md` 记录。
+   */
+  private static resourceLocksFor(toolCall: LLMToolCall, dataDir?: string): LockRequest[] {
     const spec = Agent.WRITE_TOOL_DOMAINS[toolCall.name];
-    if (!spec) return [{ domain: GLOBAL_LOCK_DOMAIN }];
+    if (!spec) return [{ domain: 'tool', sub: toolCall.name }];
+
+    // 固定资源键：同一个可变状态的不同工具/别名 → 同一个锁键。
+    if (spec.resource) return [memoryResourceLock(spec.resource)];
 
     let sub: string | undefined;
     if (spec.arg) {
@@ -7637,7 +8085,16 @@ export class Agent {
       for (const field of spec.arg) {
         const raw = args[field];
         if (typeof raw === 'string' && raw.length > 0) {
-          sub = spec.domain === 'fs' ? normalizeFsLockKey(raw) : raw;
+          if (spec.domain === 'fs') {
+            // 通用文件工具命中 agent 记忆文件时，改用它所属**记忆资源**的锁键。
+            // 否则 `file_write knowledge.md`（fs 域）与 `memory_update`（记忆资源）
+            // 互不互斥：外部编辑会被下一次内存模型的整文件重写静默覆盖。
+            const memory = memoryResourceForPath(raw, dataDir);
+            if (memory) return [memoryResourceLock(memory)];
+            sub = normalizeFsLockKey(raw);
+          } else {
+            sub = raw;
+          }
           break;
         }
       }
@@ -7652,7 +8109,7 @@ export class Agent {
    * 详见 `resource-locks.ts`。
    */
   private async withToolWriteLock<T>(toolCall: LLMToolCall, fn: () => Promise<T>): Promise<T> {
-    return this.resourceLocks.withLocks(Agent.resourceLocksFor(toolCall), fn);
+    return this.resourceLocks.withLocks(Agent.resourceLocksFor(toolCall, this.dataDir), fn);
   }
 
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
@@ -7799,6 +8256,7 @@ export class Agent {
         type: 'wakeup',
         deliveryMode: delivery,
         note,
+        originScenario: this.activeScenario,
         wakeAt,
         recurringMs: recurringSeconds && recurringSeconds > 0 ? Math.round(recurringSeconds * 1000) : undefined,
         registeredAt: Date.now(),
@@ -8068,10 +8526,20 @@ export class Agent {
       return JSON.stringify({ error: `Unknown tool: ${toolCall.name}` });
     }
 
-    // Track recently used tools so they stay active in subsequent turns
-    if (!this.recentToolNames.includes(toolCall.name)) {
-      this.recentToolNames.push(toolCall.name);
-      if (this.recentToolNames.length > 10) this.recentToolNames.shift();
+    // Track recently used tools so they stay active for the rest of THIS
+    // session. Monotonic (no eviction): the FIFO(10) that used to live here
+    // shifted tools out as new ones arrived, so the emitted schema changed on
+    // nearly every turn and busted the prefix cache (tools serialise ahead of
+    // the messages). The set now freezes at the cap instead of evicting.
+    {
+      const sticky = this.stickyTools();
+      if (
+        !sticky.recent.includes(toolCall.name) &&
+        !sticky.activated.has(toolCall.name) &&
+        sticky.recent.length < Agent.STICKY_RECENT_TOOLS_MAX
+      ) {
+        sticky.recent.push(toolCall.name);
+      }
     }
 
     // Run before-hooks (outside retry loop — hooks decide once)
@@ -8673,12 +9141,17 @@ export class Agent {
         this.lastDreamDate = dreamKey;
         await Agent.acquireDreamSlot();
         try {
-          await this.dreamConsolidateMemory(entries);
-          this.pruneMemoryMd();
-          try {
-            const mem = this.memory as IMemoryStore;
-            mem.pruneStateMemory?.();
-          } catch { /* optional state.md TTL */ }
+          // The dream cycle rewrites knowledge.md directly (read → replace → write in
+          // `pruneMemoryMd` / `compressLongTermMemory`). Tool-path writes take the same
+          // lock key (`agent-memory:knowledge`) via `WRITE_TOOL_DOMAINS.resource`, and a
+          // heartbeat-triggered dream runs outside any tool call — so without this lock a
+          // dream and a concurrent `memory_update` could interleave and lose one write.
+          await this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () => {
+            await this.dreamConsolidateMemory(entries);
+            this.pruneMemoryMd();
+            // state.md TTL pruning removed with the store itself (2026-09-16): TTL now
+            // lives in the notebook's per-tier expiry, which runs on every write.
+          });
         } finally {
           Agent.releaseDreamSlot();
         }

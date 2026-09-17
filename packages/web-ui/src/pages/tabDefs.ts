@@ -14,7 +14,15 @@ export type MainTab = 'chat' | 'profile'
   | 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'deliverables'
   | 'announcements' | 'norms' | 'settings';
 
-export const AGENT_TABS: MainTab[] = ['chat', 'overview', 'files', 'tools', 'memory', 'deliverables'];
+/**
+ * Agent 的 tab 只有三个：聊天 / 概览 / 产出。
+ *
+ * 原先 mind / files / tools / memory 各自占一个 tab（共 7 个），把选择成本推给了
+ * 用户。它们现在都是概览页里默认收起的折叠分组（见 AgentProfile 的 OverviewTab
+ * 与 LEGACY_TAB_SECTION）——注意是「收进概览」而不是「堆进概览」：砍 tab 本身不
+ * 减少内容，只把内容换到一个更长的页面上，所以详情必须默认收起且展开才挂载。
+ */
+export const AGENT_TABS: MainTab[] = ['chat', 'overview', 'deliverables'];
 export const TEAM_TAB_SET: MainTab[] = ['chat', 'overview', 'announcements', 'norms', 'settings'];
 
 export function tabLabel(tab: MainTab, t: TFunction): string {

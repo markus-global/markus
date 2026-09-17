@@ -29,7 +29,9 @@ import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
 import { RightPanel } from '../components/RightPanel.tsx';
 import { ChatSearchPanel, GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
-import { AgentProfile, type ProfileTab } from './AgentProfile.tsx';
+import { AgentProfile, LEGACY_TAB_SECTION, type ProfileTab, type OverviewSectionId } from './AgentProfile.tsx';
+import { resolveMobileChatBackHash, teamChannelKey } from '../lib/mobileTeamNav.ts';
+import { agentStatusPresentation } from '../lib/agentOverview.ts';
 import { TeamProfile, type TeamTab } from './TeamProfile.tsx';
 import {
   type MainTab, AGENT_TABS, TEAM_TAB_SET, tabLabel, tabIcon, isProfileTab,
@@ -51,7 +53,11 @@ import {
   dedupeAdjacentUserMessages,
   stopRunningTools, hasStreamingTail,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
+  resolveTeamChatShortcut, cycleSessionTabId,
+  composerMaxHeightPx, composerStacked, composerToolbarAlign,
+  resolveMobileTeamLayerState,
 } from './ChatHelpers.ts';
+import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
 import {
   NotificationBadge, ChatAgentLink, AvatarPopover, MessageActions, RememberModal,
   AgentMessageBody, segmentsToStreamEntries, friendlyAgentError, isMarkusCreditError, dispatchCreditNotification,
@@ -74,6 +80,35 @@ function notifySessionId(n: NotificationInfo): string | undefined {
     } catch { /* ignore */ }
   }
   return undefined;
+}
+
+/**
+ * 会话在 tab 栏 / 历史列表里的**默认**标签。
+ *
+ * 主会话（isMain）有特殊性：它是与当前 Agent 的一号对话，标签位是它的「身份
+ * 锚点」，因此**无论是否被重命名都一律显示「主会话」**，真实标题只在悬停时
+ * 露出（见 sessionTabTooltip）。其余会话显示自己的标题。
+ */
+function sessionTabTitle(s: ChatSessionInfo, t: TFunction): string {
+  if (s.id === NEW_CHAT_PLACEHOLDER_ID) return t('page.newChat');
+  if (s.isMain) return t('page.sessionMain');
+  return s.title?.trim() || t('page.sessionConversation');
+}
+
+/**
+ * hover tooltip —— 悬停时显示的完整信息。
+ *
+ * 两个来源都需要它：① 普通 tab 在 max-w-[180px] 处被截断；② 主会话的默认
+ * 标签根本不含真实标题。主会话一旦被命名，悬停显示「主会话 · 真实标题」，
+ * 既保留身份锚点又给出全名。
+ */
+function sessionTabTooltip(s: ChatSessionInfo, t: TFunction): string {
+  const titled = s.title?.trim();
+  const hasOwnTitle = !!titled && titled !== 'Main';
+  if (s.isMain) {
+    return hasOwnTitle ? `${t('page.sessionMain')} · ${titled}` : t('page.sessionMain');
+  }
+  return sessionTabTitle(s, t);
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -105,6 +140,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [humans, setHumans] = useState<HumanUserInfo[]>(previewData?.humans ?? []);
   const [initialLoading, setInitialLoading] = useState(previewData ? false : true);
   const isMobile = useIsMobile();
+  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().includes('MAC');
 
   // Mobile: URL hash is the single source of truth for 3-layer navigation
   // L1 (roster): #team — sidebar list
@@ -119,9 +155,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     : 'roster';
   const mobileTeamId = mobileTeamHash ? mobileTeamHash[1] : null;
 
-  const mobileBackHashRef = useRef<string>(PAGE.TEAM);
   const enterMobileDetail = useCallback(() => {
-    mobileBackHashRef.current = window.location.hash.slice(1) || PAGE.TEAM;
+    // Back from L3 is derived from the conversation's own team (see
+    // resolveMobileChatBackHash) rather than snapshotted from wherever the user
+    // came from — that snapshot is what sent Back to Notifications/Home and
+    // made the Team tab loop back into the same agent.
     window.location.hash = `${PAGE.TEAM}/d`;
   }, []);
 
@@ -477,7 +515,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // Avatar popover in chat messages
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
 
-  const [profileDefaultTab, setProfileDefaultTab] = useState<'overview' | undefined>();
+  const [profileDefaultTab, setProfileDefaultTab] = useState<ProfileTab | undefined>();
+  // 深链指向的分组（见 LEGACY_TAB_SECTION）：概览页会预先展开它。
+  const [profileSection, setProfileSection] = useState<OverviewSectionId | undefined>();
   const [profileHighlightMailboxId, setProfileHighlightMailboxId] = useState<string | undefined>();
 
   // Inline editing for header name/description
@@ -488,14 +528,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const headerNameRef = useRef<HTMLInputElement>(null);
   const headerDescRef = useRef<HTMLInputElement>(null);
 
-  const switchToProfile = useCallback((defaultTab?: 'overview', highlightMailboxId?: string) => {
-    setProfileDefaultTab(defaultTab);
+  const switchToProfile = useCallback((defaultTab?: ProfileTab, highlightMailboxId?: string) => {
+    // 旧的深链（如 Work 页的 profileTab:'mind'）归一化：tab 只剩聊天/概览/产出，
+    // 所以落到「概览」并预先展开对应分组——否则 tab 栅会没有任何高亮。
+    const section = defaultTab ? LEGACY_TAB_SECTION[defaultTab] : undefined;
+    const normalizedTab = section ? 'overview' : defaultTab;
+    setProfileSection(section);
+    setProfileDefaultTab(normalizedTab);
     setProfileHighlightMailboxId(highlightMailboxId);
     if (isMobile) {
       setMainTab('profile');
       history.pushState({ mobileProfile: true }, '', window.location.hash);
     } else {
-      setMainTab(defaultTab ?? 'overview');
+      setMainTab(normalizedTab ?? 'overview');
     }
   }, [isMobile]);
 
@@ -506,7 +551,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [switchToProfile]);
   const mainTabSwipe = useSwipeTabs(mainTabsList, mainTab, handleMainTabSwipe);
 
-  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: 'overview'; highlightMailboxId?: string }) => {
+  const handleViewProfile = useCallback((agentId: string, opts?: { tab?: ProfileTab; highlightMailboxId?: string }) => {
     setChatMode('direct');
     setSelectedAgent(agentId);
     if (isMobile) enterMobileDetail();
@@ -694,7 +739,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (!el) return;
     const compact = compactComposerRef.current;
     const minH = compact ? 36 : 52;
-    const maxH = compact ? 160 : 120;
+    const maxH = composerMaxHeightPx(compact);
     el.style.height = 'auto';
     const h = Math.max(minH, Math.min(el.scrollHeight, maxH));
     el.style.height = `${h}px`;
@@ -795,6 +840,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // Teams
   const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
+  /**
+   * True once `/api/teams` has answered successfully at least once.
+   *
+   * Deliberately NOT derived from `initialLoading`: that flips to false in a
+   * `.finally()`, i.e. also when the request FAILED. Treating a failed fetch as
+   * "loaded" would let the mobile L2 layer conclude a perfectly valid team is
+   * gone and rewrite the URL on a transient network error. Only a successful
+   * (even if empty) response proves a team id is really unresolvable.
+   */
+  const [teamsLoaded, setTeamsLoaded] = useState(Boolean(previewData));
 
   // External agents (OpenClaw etc.)
   const [externalAgents, setExternalAgents] = useState<ExternalAgentInfo[]>([]);
@@ -1013,7 +1068,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // ── Data loading ─────────────────────────────────────────────────────────────
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
-  const refreshTeams = useCallback(() => api.teams.list().then(d => setTeams(d.teams)).catch(() => {}), []);
+  const refreshTeams = useCallback(() => api.teams.list().then(d => {
+    setTeams(d.teams);
+    // Success only — see the teamsLoaded declaration for why a failure must not
+    // count as "loaded".
+    setTeamsLoaded(true);
+  }).catch(() => {}), []);
   const refreshGroupChats = useCallback(() => api.groupChats.list().then(d => setGroupChats(d.chats)).catch(() => {}), []);
 
   // Throttled versions for WS-driven refreshes to prevent API spam
@@ -1023,6 +1083,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const refreshHumans = useCallback(() => {
     api.users.list(authUser?.orgId).then(d => setHumans(d.users)).catch(() => {});
   }, [authUser?.orgId]);
+
+  /**
+   * Self-heal the mobile L2 layer when its team id cannot be resolved.
+   *
+   * This is the state that produced a permanently blank Team page: `#team/t/<id>`
+   * hides the roster, skips the chat area, and the L2 block used to `return null`
+   * when the team was not in `teams` — taking its own back button down with it.
+   * A stale id is easy to hit: `navigate()` in App remembers a page's sub-hash and
+   * restores it when you tap that nav tab, `teams` starts empty on a cold mount,
+   * and the id survives a reload in the URL. Any of those, plus a deleted team,
+   * left the user with nothing to see and nothing to tap.
+   *
+   * Rewriting the hash back to the roster makes the blank state unreachable
+   * rather than merely survivable; the L2 block still renders a fallback frame
+   * for the single frame before this effect runs.
+   */
+  useEffect(() => {
+    if (!isMobile) return;
+    if (mobileLayer !== 'team' || !mobileTeamId) return;
+    if (resolveMobileTeamLayerState(mobileTeamId, teams.map(x => x.id), teamsLoaded) !== 'missing') return;
+    window.location.hash = PAGE.TEAM;
+  }, [isMobile, mobileLayer, mobileTeamId, teams, teamsLoaded]);
 
   useEffect(() => {
     if (previewMode) return;
@@ -1109,7 +1191,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (resolvePageId(detail.page) === PAGE.TEAM) {
         if (detail.params?.agentId) {
           if (detail.params.profileTab) {
-            handleViewProfile(detail.params.agentId, { tab: detail.params.profileTab as 'overview' });
+            handleViewProfile(detail.params.agentId, { tab: detail.params.profileTab as ProfileTab });
           } else {
             setChatMode('direct');
             setSelectedAgent(detail.params.agentId);
@@ -1476,6 +1558,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // not-yet-measured items above the viewport stays stable.
   chatVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
     if (isVirtualScrollAdjustSuppressed()) return false;
+    // While the user is reading earlier content (scroll-intent detected, or
+    // already pinned away), do NOT let the virtualizer compensate scroll when
+    // a streaming bubble's height changes mid-flight. That compensation pulls
+    // the viewport back toward the growing bubble and fights the user's own
+    // scrolling — the "jitter/flicker" when scrolling up during streaming.
+    if (userScrollIntentRef.current || userPinnedAwayRef.current) return false;
     return item.start < (instance.scrollOffset ?? 0);
   };
 
@@ -1486,7 +1574,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'instant') => {
     // Never reclaim the viewport while the user is reading earlier content.
-    if (!userAtBottomRef.current || userPinnedAwayRef.current) return;
+    // Also honor the wheel/touch scroll-intent marker: during the window where
+    // the user is actively hand-scrolling (before the scroll event settles into
+    // userPinnedAway), programmatic snaps must not fight the gesture.
+    if (!userAtBottomRef.current || userPinnedAwayRef.current || userScrollIntentRef.current) return;
 
     const gen = ++scrollFollowGenRef.current;
     isProgrammaticScrollRef.current = true;
@@ -2613,6 +2704,86 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   };
 
+  // ── 需求3：输入框自动聚焦（切换 agent / session tab / 从其他页面进入 Team chat）──
+  const focusComposer = useCallback(() => {
+    if (previewMode || !isActive) return;
+    if (mainTab !== 'chat') return;
+    if (renamingSessionId || editingHeaderName || editingHeaderDesc) return; // 内联编辑不抢焦点
+    if (mentionDropdown || slashDropdown) return; // 下拉导航不抢
+    if (retryConfirm || rememberTarget) return; // 模态打开不抢
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el && !el.disabled) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    });
+  }, [previewMode, isActive, mainTab, renamingSessionId, editingHeaderName, editingHeaderDesc, mentionDropdown, slashDropdown, retryConfirm, rememberTarget]);
+
+  const prevActiveForFocus = useRef(isActive);
+  const prevAgentForFocus = useRef(selectedAgent);
+  const prevSessionForFocus = useRef(activeSessionId);
+  useEffect(() => {
+    const entered = isActive && !prevActiveForFocus.current;
+    const agentChanged = selectedAgent !== prevAgentForFocus.current;
+    const sessionChanged = activeSessionId !== prevSessionForFocus.current;
+    prevActiveForFocus.current = isActive;
+    prevAgentForFocus.current = selectedAgent;
+    prevSessionForFocus.current = activeSessionId;
+    if (isMobile) return; // 移动端避免自动弹出虚拟键盘
+    if (entered || agentChanged || sessionChanged) focusComposer();
+  }, [isActive, selectedAgent, activeSessionId, isMobile, focusComposer]);
+
+  // ── 需求4+5：Cmd/Ctrl+N 新建对话；Ctrl+Tab / Ctrl+Shift+Tab 切换会话 tab ──
+  useEffect(() => {
+    if (previewMode || !isActive || isMobile) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (retryConfirm || rememberTarget) return;
+      if (mentionDropdown || slashDropdown) return; // 下拉打开时让 composer 处理 Ctrl+P/N/Tab
+      if (isXtermTarget(e.target)) return; // 终端内不劫持
+      const shortcut = resolveTeamChatShortcut(
+        { key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey },
+        isMac,
+      );
+      if (shortcut === 'new-conversation') {
+        if (chatMode !== 'direct' || !selectedAgent || mainTab !== 'chat') return;
+        const t = e.target as HTMLElement | null;
+        if (t && t !== textareaRef.current && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        e.preventDefault();
+        newConversation();
+        focusComposer();
+        return;
+      }
+      // cycle-session-next / cycle-session-prev
+      if (shortcut === 'cycle-session-next' || shortcut === 'cycle-session-prev') {
+        if (chatMode !== 'direct' || !selectedAgent || mainTab !== 'chat') return;
+        if (openSessionTabs.length < 2) return;
+        const dir = shortcut === 'cycle-session-prev' ? -1 : 1;
+        const nextId = cycleSessionTabId(openSessionTabs.map(s => s.id), activeSessionId, dir);
+        if (!nextId) return;
+        e.preventDefault();
+        const target = openSessionTabs.find(s => s.id === nextId);
+        if (!target) return;
+        if (target.id === NEW_CHAT_PLACEHOLDER_ID) {
+          setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
+          const key = currentConvKeyRef.current;
+          resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
+          setMessages([]);
+        } else {
+          void switchSession(target);
+        }
+        focusComposer();
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [
+    previewMode, isActive, isMobile, isMac, chatMode, selectedAgent, mainTab,
+    openSessionTabs, activeSessionId, mentionDropdown, slashDropdown,
+    retryConfirm, rememberTarget, newConversation, switchSession, focusComposer,
+    setActiveSessionId, resetConv, setMessages, currentConvKeyRef,
+  ]);
+
   const handleInputChange = (val: string) => {
     setInput(val);
 
@@ -2992,6 +3163,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // ── Render ────────────────────────────────────────────────────────────────────
   const showChatOnMobile = isMobile && mobileLayer === 'chat';
+  // Parent layer for the L3 back button: the conversation's team (L2) when that
+  // team is loaded, else the roster (L1). Never the previous page.
+  const mobileChatBackHash = useMemo(
+    () => resolveMobileChatBackHash({
+      chatMode,
+      agentTeamId: currentAgent?.teamId,
+      channelTeamId: activeGroupChat?.teamId,
+      knownTeamIds: teams.map(t => t.id),
+    }),
+    [chatMode, currentAgent?.teamId, activeGroupChat?.teamId, teams],
+  );
   // Loading label: name the conversation being loaded, instead of a generic
   // "Loading conversation…" (UX: switching to a session with history should
   // not look like a brand-new chat while the history loads).
@@ -3006,12 +3188,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       : activeDmUser?.name) || t('page.loadingChat', { defaultValue: 'Loading conversation…' });
   }, [chatMode, sessions, activeSessionId, currentAgent?.name, activeChannel, activeDmUserId, activeGroupChat?.name, activeDmUser?.name, t]);
 
-  const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !sending && !loadingChat;
+  const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !loadingChat;
   // Non-empty sessions: Cursor-style single-line composer that grows with content.
   const compactComposer = mainTab === 'chat' && visibleMessages.length > 0;
   compactComposerRef.current = compactComposer;
-  // Typed / attached content → full-width textarea; model + send on a dedicated bottom row.
+  // Typed / attached content -> full-width textarea; model + send on a dedicated bottom row.
   const composerExpanded = Boolean(input.trim() || pendingImages.length > 0);
+  // Computed once and reused by both rows so they can never disagree about
+  // whether the composer is stacked (mobile always is, even when empty).
+  const composerIsStacked = composerStacked(isMobile, composerExpanded);
 
   return (
     <div ref={teamContainerRef} className="flex-1 overflow-hidden flex relative">
@@ -3072,7 +3257,53 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       {/* ── L2: Mobile team detail view ── */}
       {isMobile && mobileLayer === 'team' && mobileTeamId && (() => {
         const l2Team = teams.find(t => t.id === mobileTeamId);
-        if (!l2Team) return null;
+        if (!l2Team) {
+          // Never `return null` here. This layer hides the roster and skips the
+          // chat area, so an empty L2 means an empty PAGE with no back button
+          // (the old back button lived below this point). Render an escapable
+          // frame instead, and state whether we are still loading or the team is
+          // genuinely gone - see resolveMobileTeamLayerState / the heal effect.
+          const l2State = resolveMobileTeamLayerState(mobileTeamId, teams.map(x => x.id), teamsLoaded);
+          const gone = l2State === 'missing';
+          return (
+            <div className="flex-1 overflow-hidden flex flex-col min-w-0">
+              <div className="flex items-center gap-2 px-3 h-12 shrink-0 border-b border-border-default">
+                <button
+                  onClick={() => { window.location.hash = PAGE.TEAM; }}
+                  className="p-1.5 -ml-1 rounded-lg hover:bg-surface-overlay transition-colors shrink-0 text-fg-secondary"
+                  title={t('common:back', { defaultValue: 'Back' })}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+                </button>
+                <span className="text-sm font-semibold text-fg-primary truncate">
+                  {gone ? t('page.teamMissingTitle') : t('page.loadingTeam')}
+                </span>
+              </div>
+              <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center">
+                <p className="text-xs text-fg-tertiary max-w-[280px]">
+                  {gone ? t('page.teamMissingBody') : t('page.loadingTeamBody')}
+                </p>
+                <div className="flex items-center gap-2">
+                  {gone ? (
+                    <button
+                      onClick={() => { window.location.hash = PAGE.TEAM; }}
+                      className="px-3 py-1.5 text-xs font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 transition-colors"
+                    >
+                      {t('page.backToList')}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { void refreshTeams(); }}
+                      className="px-3 py-1.5 text-xs font-medium border border-border-default text-fg-secondary rounded-md hover:bg-surface-overlay transition-colors"
+                    >
+                      {t('common:retry', { defaultValue: 'Retry' })}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        }
         const l2Agents = agents.filter(a => a.teamId === mobileTeamId);
         const l2Gc = groupChats.find(gc => gc.type === 'team' && gc.teamId === mobileTeamId);
         return (
@@ -3095,18 +3326,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </div>
             </div>
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
-              {l2Gc && (() => {
-                const gcUnread = unreadByChannel[l2Gc.channelKey] ?? 0;
+              {(() => {
+                // Team channels are synthetic (`group:<teamId>`) and normally have no
+                // groupChats entry, so keying this row on `l2Gc` alone hid the team
+                // channel - and its unread - from L2 while the nav badge still counted
+                // it. Use the same key the L1 team header opens.
+                const gcKey = l2Gc?.channelKey ?? teamChannelKey(mobileTeamId);
+                const gcUnread = unreadByChannel[gcKey] ?? 0;
                 return (
                   <button
-                    onClick={() => { setChatMode('channel'); setActiveChannel(l2Gc.channelKey); setMainTab('chat'); enterMobileDetail(); }}
+                    onClick={() => { setChatMode('channel'); setActiveChannel(gcKey); setMainTab('chat'); enterMobileDetail(); }}
                     className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay transition-colors"
                   >
                     <div className="w-9 h-9 rounded-xl bg-brand-500/15 flex items-center justify-center shrink-0">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-brand-500"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
                     </div>
                     <div className="flex-1 min-w-0 text-left">
-                      <div className="text-sm font-medium text-fg-primary truncate">{l2Gc.name}</div>
+                      <div className="text-sm font-medium text-fg-primary truncate">{l2Gc?.name ?? l2Team.name}</div>
                       <div className="text-[10px] text-fg-tertiary">{t('chat.groupChat')}</div>
                     </div>
                     {gcUnread > 0 ? (
@@ -3233,7 +3469,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               {/* Mobile Row 1: back + name + status */}
               <div className="flex items-center px-3 h-11 gap-2">
                 <button
-                  onClick={() => { window.location.hash = mobileBackHashRef.current; }}
+                  onClick={() => { window.location.hash = mobileChatBackHash; }}
                   className="text-fg-secondary hover:text-fg-primary transition-colors p-1 -ml-1 shrink-0"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
@@ -3279,6 +3515,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   <>
                     <button
                       onClick={newConversation}
+                      title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
                       className="text-[11px] text-brand-500 px-2 py-1 rounded-md bg-brand-500/10 font-medium shrink-0"
                     >{t('page.newChatPlus')}</button>
                     <button
@@ -3473,6 +3710,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={newConversation}
+                        title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
                         className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
                       >
                         {t('page.newChatButton')}
@@ -3553,12 +3791,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               // Pre-`session_start` window: a brand-new chat streams before the
               // server assigns a real session id, so the active tab is the only
               // one that can be generating.
-              || (sending && s.id === activeSessionId);
+              || (sending && s.id === activeSessionId)
+              // Authoritative tail signal: even when the stream-session
+              // bookkeeping or the global `sending` flag momentarily lags
+              // (reattach window, session_start pre-window, streamingVisual
+              // min-display timer), a session whose latest bubble is STILL
+              // marked isStreaming must keep its pulsing dot — otherwise the
+              // dot disappears while the agent is visibly still typing.
+              || (s.id === activeSessionId && hasStreamingTail(messages));
             return (
             <div className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide">
-              {openSessionTabs.map(s => (
+              {openSessionTabs.map(s => {
+                // 完整标题同时用作原生 hover tooltip：tab 自身在 max-w-[180px]
+                // 处截断，只有悬停才能看全。
+                const tabTitle = sessionTabTitle(s, t);
+                return (
                 <div
                   key={s.id}
+                  title={sessionTabTooltip(s, t)}
                   className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer rounded-md transition-colors shrink-0 max-w-[180px] ${
                     s.id === activeSessionId
                       ? 'text-brand-500 bg-brand-500/10'
@@ -3578,7 +3828,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   }}
                 >
                   {s.isMain && <span className="text-[10px] opacity-50 shrink-0">●</span>}
-                  <span className="truncate">{s.id === NEW_CHAT_PLACEHOLDER_ID ? t('page.newChat') : (s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation')))}</span>
+                  <span className="truncate">{tabTitle}</span>
                   {isStreamingTab(s) && (
                     // Same "agent working" signal as the sidebar (L1) — a blue
                     // pulsing dot, shown only while this session is generating.
@@ -3598,7 +3848,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     </button>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
             );
           })()}
@@ -3729,11 +3980,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                           ) : (
                             <button
                               onClick={() => void switchSession(s)}
+                              title={sessionTabTooltip(s, t)}
                               className="w-full text-left group/session"
                             >
                               <div className="truncate font-medium flex items-center gap-1">
                                 {s.isMain && <span className="text-[10px] text-brand-500 opacity-80">●</span>}
-                                <span className="truncate">{s.isMain ? t('page.sessionMain') : (s.title || t('page.sessionConversation'))}</span>
+                                <span className="truncate">{sessionTabTitle(s, t)}</span>
                                 {!s.isMain && (
                                   <span
                                     role="button"
@@ -3777,6 +4029,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               onBack={() => setMainTab('chat')}
               inline
               defaultTab={profileDefaultTab}
+              initialSection={profileSection}
               highlightMailboxId={profileHighlightMailboxId}
               onSwipeBack={() => { if (isProfileTab(mainTabRef.current)) history.back(); else setMainTab('chat'); }}
               authUser={authUser}
@@ -3803,6 +4056,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               inline
               headless
               activeTab={mainTab as ProfileTab}
+              initialSection={profileSection}
               highlightMailboxId={profileHighlightMailboxId}
               authUser={authUser}
             />
@@ -4086,9 +4340,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         })()}
 
         {/* Empty state greeting (above input when no messages) */}
-        {isEmptyChat && emptyGreeting && (
+        {isEmptyChat && (emptyGreeting || placeholder) && (
           <div className="text-center mb-4">
-            <h2 className="text-xl font-semibold text-fg-primary">{emptyGreeting}</h2>
+            <h2 className="text-xl font-semibold text-fg-primary">{emptyGreeting || placeholder}</h2>
           </div>
         )}
 
@@ -4335,8 +4589,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </button>
             </div>
           )}
-          <div className={composerExpanded ? 'flex flex-col gap-2 min-w-0' : 'flex gap-2 items-end min-w-0'}>
-            <div className={composerExpanded ? 'flex gap-2 items-end min-w-0' : 'contents'}>
+          <div className={composerIsStacked ? 'flex flex-col gap-2 min-w-0' : 'flex gap-2 items-end min-w-0'}>
+            <div className={composerIsStacked ? 'flex gap-2 items-end min-w-0' : 'contents'}>
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={chatMode === 'direct' && (!selectedAgent || isAgentOffline)}
@@ -4405,11 +4659,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 }`}
                 style={{
                   minHeight: compactComposer ? '36px' : '52px',
-                  maxHeight: compactComposer ? '160px' : '120px',
+                  maxHeight: `${composerMaxHeightPx(compactComposer)}px`,
                 }}
               />
             </div>
-            <div className={`flex items-center gap-1.5 shrink-0 ${composerExpanded ? 'justify-end' : ''}`}>
+            <div className={`flex items-center gap-1.5 shrink-0 ${composerToolbarAlign(composerIsStacked)}`}>
               {chatMode === 'direct' && (
                 <ChatModelMenu
                   value={agentBoundModel}
@@ -4547,8 +4801,14 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const isWorking = agent.status === 'working' || (!!streamActive && agent.status !== 'offline');
+  // 进程状态的呈现全部走共享表（与 Agent 资料页同一张）。原来的本地推导没有
+  // offline 分支，停止后的 agent 会落进默认的绿色「空闲」——状态说它空闲（即在跑），
+  // 可它已经被停掉了。
+  const status = agentStatusPresentation(agent.status);
+  const isWorking = status.running && (agent.status === 'working' || (!!streamActive && agent.status !== 'offline'));
   const isError = agent.status === 'error';
+  // 未在运行（offline / paused）：不能拿它去展示「当前活动」。
+  const isStopped = !status.running;
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;
   const activity = agent.currentActivity;
 
@@ -4586,9 +4846,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
     }
   }, [open]);
 
-  const dotColor = isError ? 'bg-red-400 animate-pulse'
-    : isWorking ? 'bg-blue-400 animate-pulse' : 'bg-green-400';
-  const label = isError ? t('common:status.error') : isWorking ? t('common:status.working') : t('common:status.idle');
+  const label = status.labelKey ? t(status.labelKey) : (agent.status || '—');
 
   const activityLabel = activity
     ? activity.type === 'heartbeat' ? t('page.activityHeartbeat', { name: activity.heartbeatName ?? activity.label })
@@ -4601,14 +4859,10 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen(o => !o)}
-        className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full transition-colors ${
-          isWorking ? 'bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20'
-          : isError ? 'bg-red-500/10 border border-red-500/20 hover:bg-red-500/20'
-          : 'bg-green-500/10 border border-green-500/20 hover:bg-green-500/20'
-        }`}
+        className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full transition-colors hover:opacity-80 ${status.chipClass}`}
       >
-        <span className={`w-2 h-2 rounded-full ${dotColor}`} />
-        <span className={`text-xs ${isError ? 'text-red-500' : isWorking ? 'text-blue-500' : 'text-green-600'}`}>{label}</span>
+        <span className={`w-2 h-2 rounded-full ${status.dotClass}`} />
+        <span className={`text-xs ${status.textClass}`}>{label}</span>
         {agent.mailboxDepth != null && agent.mailboxDepth > 0 && (
           <span className="text-[9px] bg-fg-tertiary/20 text-fg-tertiary rounded-full px-1.5">{agent.mailboxDepth}</span>
         )}
@@ -4626,6 +4880,34 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
           <button
             onClick={() => { setOpen(false); onViewProfile?.(agent.id); }}
             className="w-full text-center text-[10px] text-red-500 hover:text-red-500 border border-red-500/30 hover:border-red-500/50 rounded-lg py-1 transition-colors"
+          >
+            {t('page.viewAgentProfileArrow')}
+          </button>
+        </div>
+      )}
+
+      {/* 未运行时也要有合理的展开：原来点「空闲」/「离线」徙标什么也不弹（两个
+          popover 分别是 isError 和 isWorking 条件），点下去像坏了。 */}
+      {open && isStopped && (
+        <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
+          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">{t('page.agentNotRunningTitle')}</p>
+          <p className="text-[11px] text-fg-secondary">{t('page.agentNotRunningHint')}</p>
+          <button
+            onClick={() => { setOpen(false); onViewProfile?.(agent.id, { tab: 'overview' }); }}
+            className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
+          >
+            {t('page.viewAgentProfileArrow')}
+          </button>
+        </div>
+      )}
+
+      {open && !isWorking && !isError && !isStopped && (
+        <div ref={popoverRef} className="absolute top-full left-0 mt-1.5 bg-surface-secondary border border-border-default rounded-xl shadow-2xl z-30 w-80 max-w-[calc(100vw-1rem)] p-3 space-y-2">
+          <p className="text-[10px] text-fg-tertiary uppercase font-semibold">{t('page.agentIdleTitle')}</p>
+          <p className="text-[11px] text-fg-secondary">{t('page.agentIdleHint')}</p>
+          <button
+            onClick={() => { setOpen(false); onViewProfile?.(agent.id, { tab: 'overview' }); }}
+            className="w-full text-center text-[10px] text-brand-500 hover:text-brand-500 border border-border-default hover:border-gray-600 rounded-lg py-1 transition-colors"
           >
             {t('page.viewAgentProfileArrow')}
           </button>

@@ -31,6 +31,7 @@ import { SearchModal } from './components/SearchModal.tsx';
 import { ShortcutsHelpModal } from './components/ShortcutsHelpModal.tsx';
 import { EditProfileModal } from './components/EditProfileModal.tsx';
 import { isEditableTarget, isXtermTarget } from './lib/keyboard-shortcuts.ts';
+import { applyLessonKeyPress, type LessonKeyEvent } from './lib/shortcut-lessons.ts';
 import { knownTerminalIds, rememberTerminalId } from './lib/known-terminals.ts';
 import { isUserOnboarded, markUserOnboarded, clearUserOnboarded } from './lib/onboarding.ts';
 
@@ -708,6 +709,30 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 快捷键教学 · 全局静默学习（体验优化 A）：用户任何时刻真实使用快捷键即自动勾选，
+  // 不依赖教学弹窗打开。只记录、不拦截（不 preventDefault/stopPropagation），
+  // 避免影响快捷键真实行为；输入/编辑场景（isEditableTarget）不计入教学。
+  useEffect(() => {
+    const uid = authUser !== 'loading' && authUser !== null ? authUser.id : undefined;
+    if (!uid) return;
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const onKey = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+      const evt: LessonKeyEvent = {
+        key: e.key, code: e.code,
+        metaKey: e.metaKey, ctrlKey: e.ctrlKey,
+        altKey: e.altKey, shiftKey: e.shiftKey,
+      };
+      if (applyLessonKeyPress(evt, uid, isMac)) {
+        // 全部勾选完成 → 通知 Overview 引导清单刷新「快捷键教学」步骤完成态。
+        window.dispatchEvent(new CustomEvent('markus:shortcut-lesson-complete'));
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser]);
+
   const currentUser = authUser !== 'loading' && authUser !== null ? authUser : undefined;
   const pageElements = useMemo<Partial<Record<PageId, React.JSX.Element>>>(() => {
     if (isMobile) {
@@ -908,7 +933,11 @@ export function App() {
 
       {/* Mobile drawer menu */}
       {isMobile && (
-        <MobileDrawer authUser={currentUser} onNavigate={navigate} />
+        <MobileDrawer
+          authUser={currentUser}
+          onNavigate={navigate}
+          onLogout={() => { api.auth.logout().catch(() => {}); clearHubAuth(); setAuthUser(null); }}
+        />
       )}
 
       {/* Global search modal (desktop) */}

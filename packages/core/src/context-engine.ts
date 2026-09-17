@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import type { AgentScenario } from './agent.js';
 import {
   createLogger,
@@ -21,6 +22,9 @@ import {
   SYSTEM_TEAM_PROJECT_DESC_CHARS,
   CONTEXT_ABSURD_MESSAGE_CHARS,
   CONTEXT_PROACTIVE_COMPACT_RATIO,
+  CONTEXT_ABS_HISTORY_TARGET_TOKENS,
+  CONTEXT_ABS_HISTORY_TOKENS,
+  CONTEXT_VOLATILE_REARM_CALLS,
   CONTEXT_WARN_RATIO,
   CONTEXT_CRIT_RATIO,
   PROMPT_AFFORD_OUTPUT_RESERVE,
@@ -32,7 +36,6 @@ import {
   KNOWLEDGE_PROMPT_MAX_TOKENS,
   KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE,
   KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX,
-  STATE_PROMPT_MAX_LINES_REFLEX,
   SYSTEM_PROMPT_BUDGET_CONVERSE,
   SYSTEM_ANNOUNCEMENTS_CHARS,
   SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE,
@@ -58,9 +61,31 @@ const log = createLogger('context-engine');
  */
 const DEFAULT_HANDBOOK_PATH = 'templates/roles/HANDBOOK.md';
 
-/** Section titles that are usually stale noise in knowledge.md digests. */
-const KNOWLEDGE_STALE_SECTION_RE =
-  /compact_\d+|deepseek\s*(api|json)|组织深度静默|静默期验证|故障模式|json\s*解析错误|timeout\s*diagnos/i;
+/**
+ * Structural signals that a knowledge.md section is stale noise rather than
+ * durable knowledge.
+ *
+ * The previous version hard-coded the vocabulary of ONE incident
+ * (`deepseek api`, `组织深度静默`, `静默期验证`, `故障模式`, `json 解析错误`). That
+ * overfits: the same class of junk with different wording ranked as first-class
+ * knowledge, and the list could only ever grow. Rank on STRUCTURE instead — the
+ * shapes below are what actually distinguish a scratch note from a lesson:
+ *   - machine artefacts:   `compact_12`, `summary_v3`
+ *   - completion stamps:   `✅ 修复完成：…`, `❌ …`, `done — …`, `Fix applied: …`
+ *   - commit/PR references: `（3a745f00）`, `#313`
+ *   - dated/session logs:  `2026-09-15 …`, `session-…`, `day 3 …`
+ * All are cheap, language-agnostic and do not need maintenance when wording drifts.
+ */
+const KNOWLEDGE_STALE_SECTION_RE = new RegExp([
+  'compact_\\d+',                        // compaction artefacts
+  '^#{0,6}\\s*[✅❌⚠️]',                 // completion / failure stamps
+  '^#{0,6}\\s*(?:fix|fixed|done|resolved)\\b',
+  '\\b[0-9a-f]{7,40}\\b',               // bare git SHA
+  '\\bpb?(?:r|ull)?\\s*#\\d+\\b',       // PR / issue number
+  '\\b\\d{4}-\\d{2}-\\d{2}\\b',          // date-stamped note
+  '\\b(?:session|day)[-_ ]\\d+',
+  '\\b(?:修复完成|已完成|临时记录|待办草稿)\\b',
+].join('|'), 'i');
 
 /**
  * Prepare knowledge.md body for system prompt injection:
@@ -70,47 +95,74 @@ const KNOWLEDGE_STALE_SECTION_RE =
 export function prepareKnowledgeForPrompt(
   raw: string,
   maxChars: number,
+  query?: string,
 ): { text: string; truncated: boolean } {
   if (!raw.trim()) return { text: '', truncated: false };
 
   // Split on markdown ATX headings while keeping delimiters
   const parts = raw.split(/(?=^#{1,6}\s)/m).filter(p => p.length > 0);
-  const demoted = parts.map(part => {
+  const sections = parts.map((part, idx) => {
     // Only demote top-level ## (and lone #) so they nest under ## Your Knowledge
-    return part.replace(/^#{1,2}(?!#)\s/gm, '### ');
+    const section = part.replace(/^#{1,2}(?!#)\s/gm, '### ');
+    const title = (section.split('\n', 1)[0] ?? '').trim();
+    const stale =
+      KNOWLEDGE_STALE_SECTION_RE.test(title) ||
+      KNOWLEDGE_STALE_SECTION_RE.test(section.slice(0, 200));
+    return { section, title, idx, stale, score: 0 };
   });
 
-  const scored = demoted.map((section, idx) => {
-    const title = section.split('\n', 1)[0] ?? '';
-    const stale = KNOWLEDGE_STALE_SECTION_RE.test(title) || KNOWLEDGE_STALE_SECTION_RE.test(section.slice(0, 200));
-    return { section, idx, stale };
-  });
-
-  // Prefer non-stale sections first, preserve relative order within each group
-  const ordered = [
-    ...scored.filter(s => !s.stale),
-    ...scored.filter(s => s.stale),
-  ];
-
-  let text = '';
-  let truncated = false;
-  for (const { section } of ordered) {
-    if (text.length >= maxChars) {
-      truncated = true;
-      break;
-    }
-    const room = maxChars - text.length;
-    if (section.length <= room) {
-      text += section;
-    } else {
-      text += section.slice(0, room);
-      truncated = true;
-      break;
+  // ── Relevance ranking ───────────────────────────────────────────────────
+  // The header block used to be filled in DOCUMENT ORDER until the character cap
+  // ran out, and the cap was applied mid-section (`section.slice(0, room)`), so a
+  // long knowledge.md would cut a procedure in half and never surface a section
+  // further down that was the one actually needed.
+  //
+  // Selection is now: stale last → relevance score → document order, and
+  // WHOLE sections only. Nothing is silently dropped: omitted sections are always
+  // named in an index line (see below), so the agent knows they exist and can
+  // fetch them with `memory_search`.
+  const keywords = (query ?? '')
+    .toLowerCase()
+    .split(/[\s\-_.,;:!?()[\]{}"'`/\\|]+/)
+    .filter(w => w.length > 2);
+  if (keywords.length > 0) {
+    for (const s of sections) {
+      const hay = `${s.title}\n${s.section}`.toLowerCase();
+      let score = 0;
+      for (const kw of keywords) if (hay.includes(kw)) score++;
+      s.score = score;
     }
   }
 
-  // If everything fit in preferred order but original was longer than max (edge), mark truncated
-  if (!truncated && raw.length > maxChars) truncated = true;
+  const ordered = [...sections].sort((a, b) => {
+    if (a.stale !== b.stale) return a.stale ? 1 : -1;
+    if (a.score !== b.score) return b.score - a.score;
+    return a.idx - b.idx;
+  });
+
+  let text = '';
+  const inlined = new Set<number>();
+  for (const s of ordered) {
+    if (text.length + s.section.length > maxChars) continue;
+    text += s.section;
+    inlined.add(s.idx);
+  }
+  // Forward progress: if even the top-ranked section is bigger than the cap,
+  // inline a bounded slice of it rather than returning an empty header.
+  if (inlined.size === 0 && ordered.length > 0) {
+    const first = ordered[0]!;
+    text = first.section.slice(0, maxChars);
+    inlined.add(first.idx);
+  }
+
+  const omitted = sections.filter(s => !inlined.has(s.idx));
+  const truncated = omitted.length > 0;
+  if (truncated) {
+    const index = omitted.map(s => s.title || '(untitled)').join(' · ');
+    text +=
+      `\n\n_[knowledge index — ${omitted.length} of ${sections.length} sections not inlined; `
+      + `none are discarded, fetch on demand with \`memory_search\` or by reading \`knowledge.md\`: ${index}]_`;
+  }
 
   return { text: text.trimEnd(), truncated };
 }
@@ -132,7 +184,7 @@ export interface OrgContext {
   customContext?: string;
 }
 
-export type CompactStage = 'none' | 'proactive' | 'over_budget' | 'summarize' | 'trim';
+export type CompactStage = 'none' | 'proactive' | 'over_budget' | 'summarize' | 'trim' | 'intra_turn';
 
 export interface ContextUsageStats {
   contextWindow: number;
@@ -151,6 +203,26 @@ export interface ContextUsageStats {
   /** Effective packing budget after OR-afford clamp (if any). */
   packingBudget: number;
   promptAffordTokens?: number;
+  /**
+   * O2: provider-reported prompt tokens for the **most recent** call in this
+   * session, when that number is still a valid proxy for the request being
+   * packed (see `usageSource`). `undefined` when nothing was reported yet.
+   */
+  reportedInputTokens?: number;
+  /**
+   * Which number `contextHint`'s water level is based on.
+   *
+   * - `reported` — the provider's own `usage.prompt_tokens` (authoritative;
+   *   DeepSeek returns it even on cache hits, OpenAI/OpenRouter via
+   *   `prompt_tokens_details`).
+   * - `estimated` — the local heuristic counter (`SmartTokenCounter`), which
+   *   `Agent.calibrateTokenCounter` continuously re-fits against reported values.
+   *
+   * Compaction thresholds deliberately stay on the **estimate** so a stale or
+   * mis-sized reported value can never make packing *less* conservative — the
+   * hint is the reporting surface, not the trigger.
+   */
+  usageSource: 'reported' | 'estimated';
 }
 
 export interface PreparedContext {
@@ -212,10 +284,41 @@ export class ContextEngine {
   private tokenCounter: TokenCounter;
   private semanticSearch?: SemanticMemorySearch;
   private llmSummarizer?: LLMSummarizer;
+  /**
+   * O2: last provider-reported input token count per session.
+   *
+   * The provider's own `usage.prompt_tokens` is authoritative (DeepSeek reports it
+   * on cache hits too; OpenAI/OpenRouter expose it via `prompt_tokens_details`),
+   * while our `SmartTokenCounter` only *estimates*. Keeping the reported number
+   * here — rather than as a `prepareMessages` argument — means all 15 call sites
+   * get it without any of them being able to forget it.
+   *
+   * Entries are dropped whenever a pack compresses (a post-compaction reported
+   * count describes a larger request that no longer exists and would overstate the
+   * water level).
+   */
+  private reportedInputBySession = new Map<string, number>();
 
   constructor(config?: Partial<ContextConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.tokenCounter = config?.tokenCounter ?? getDefaultTokenCounter();
+  }
+
+  /**
+   * Record the provider-reported prompt tokens for a session's most recent call.
+   * Called right after every LLM response (see `Agent.calibrateTokenCounter`).
+   * Non-positive/absent values are ignored rather than overwriting a good reading.
+   */
+  noteReportedInputTokens(sessionId: string | undefined, tokens: number | undefined): void {
+    if (!sessionId) return;
+    if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens <= 0) return;
+    this.reportedInputBySession.set(sessionId, tokens);
+  }
+
+  /** Drop a session's reported reading (compaction, session reset, tests). */
+  clearReportedInputTokens(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    this.reportedInputBySession.delete(sessionId);
   }
 
   setSemanticSearch(ss: SemanticMemorySearch): void {
@@ -350,7 +453,24 @@ export class ContextEngine {
     // Profile gates decide what is included; section caps decide how large.
     // Do NOT rely on post-assemble trim for normal sizing (Afford.S3).
     // ═══════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════
+    // TIER 1 — STABLE · SCOPE U (UNIVERSAL)
+    // Byte-identical for EVERY agent in the installation. Emitted FIRST so all
+    // agents share one prefix-cache entry (PROMPT-ENGINEERING §2.0).
+    //
+    // Agent-private content (ROLE.md persona + policies) is NOT universal and
+    // is collected into `agentPersona`, then emitted as the HEAD of Tier 2.
+    // Historically ROLE.md was pushed here FIRST, so the shared prefix forked
+    // at byte ~11 and cross-agent overlap measured ≈ 0.0% (2–3 chars of 30k+)
+    // across 30 agents / 901 calls on 2026-09-16.
+    //
+    // Profile gates decide what is included; section caps decide how large.
+    // Do NOT rely on post-assemble trim for normal sizing (Afford.S3).
+    // ═══════════════════════════════════════════════════════════════════
     const stable: string[] = [];
+
+    // ── SCOPE A (AGENT) — persona + policies, emitted at the head of Tier 2 ──
+    const agentPersona: string[] = [];
 
     // ROLE is always-on identity — never runtime-truncated.
     // Oversized ROLE.md content is an authoring/progressive-disclosure problem
@@ -365,15 +485,15 @@ export class ContextEngine {
           hint: 'Move long-tail API/reference docs into skills; keep ROLE identity + norms',
         });
       }
-      stable.push(roleText);
+      agentPersona.push(roleText);
     }
 
     if (opts.role.defaultPolicies.length > 0) {
-      stable.push('\n## Policies');
+      agentPersona.push('\n## Policies');
       for (const policy of opts.role.defaultPolicies) {
-        stable.push(`### ${policy.name}`);
+        agentPersona.push(`### ${policy.name}`);
         for (const rule of policy.rules) {
-          stable.push(`- ${rule}`);
+          agentPersona.push(`- ${rule}`);
         }
       }
     }
@@ -401,17 +521,16 @@ export class ContextEngine {
       stable.push('2. **Pattern search** (`grep_search`): Use for exact symbol names, error messages, configuration keys, or specific strings.');
       stable.push('3. **File browsing** (`file_read`, `list_directory`): Navigate directory structure and read specific files when you know the likely location.');
       stable.push('4. **External research** (`web_search`, `web_fetch`): Use for unfamiliar libraries, APIs, error codes, or best practices.');
-      const hasBrowserSkill = opts.availableSkills?.some(s => s.name === 'chrome-devtools');
-      if (hasBrowserSkill) {
-        stable.push('5. **Browser tools** (`browser_navigate`, `browser_snapshot`, `browser_click`): use when:');
-        stable.push('   - The page requires **login / authentication** (web_fetch gets a login wall)');
-        stable.push('   - The page is **JS-rendered** (SPA, React, Vue — web_fetch returns empty shell)');
-        stable.push('   - You need to **interact** (click buttons, fill forms, navigate between pages)');
-        stable.push('   - The page has **CAPTCHA / bot detection** that blocks programmatic access');
-        stable.push('   - Otherwise prefer `web_fetch` first — it is faster and cheaper.');
-      } else {
-        stable.push('If `web_search`/`web_fetch` fails, try alternative queries or URLs, or `web_fetch` a search-engine URL directly. The `chrome-devtools` skill adds browser tools for JS-rendered sites.');
-      }
+      // Must stay byte-identical for every agent (scope U). The old
+      // `hasBrowserSkill` branch was the FIRST divergence point of the
+      // universal block, forking the shared prefix mid-way.
+      stable.push('5. **Browser tools** (`browser_navigate`, `browser_snapshot`, `browser_click`) — available when the `chrome-devtools` skill is installed. Use when:');
+      stable.push('   - The page requires **login / authentication** (web_fetch gets a login wall)');
+      stable.push('   - The page is **JS-rendered** (SPA, React, Vue — web_fetch returns empty shell)');
+      stable.push('   - You need to **interact** (click buttons, fill forms, navigate between pages)');
+      stable.push('   - The page has **CAPTCHA / bot detection** that blocks programmatic access');
+      stable.push('   - Otherwise prefer `web_fetch` first — it is faster and cheaper.');
+      stable.push('   - If `web_search`/`web_fetch` fails and you have no browser tools, try alternative queries, or `web_fetch` a search-engine URL directly.');
       stable.push('Always check existing patterns in the codebase before introducing new conventions.');
 
       // Learning Habits — keep ≤1600 chars (LEARNING-LOOP §8)
@@ -567,7 +686,10 @@ export class ContextEngine {
     // thing. On Anthropic, Tier 2 is a single cache_control block so
     // internal ordering doesn't affect cache hits.
     // ═══════════════════════════════════════════════════════════════════════
-    const semiStable: string[] = [];
+    const semiStable: string[] = [
+      // ── SCOPE A (AGENT) head: persona + policies (see Tier 1 note above) ──
+      ...agentPersona,
+    ];
 
     semiStable.push(this.buildIdentitySection({
       agentId: opts.agentId,
@@ -685,7 +807,18 @@ export class ContextEngine {
     // the volatile tail — see the MEMORY / KNOWLEDGE block below for the rationale
     // (their WRITE FREQUENCY, not their size, is what made Tier 2 wrong for them).
 
-    const scenario = opts.scenario ?? 'chat';
+    // ── Scenario normalization (single authority) ────────────────────────────
+    // `a2a` covers two physically different channels: a 1:1 DM, and a GROUP
+    // channel whose messages may also arrive as sourceType `a2a_message`
+    // (a chained reply from a fellow agent). The A2A section tells the agent
+    // "humans do NOT see this conversation … absorb silently" — factually wrong
+    // inside a group chat, where the reply IS auto-sent and human-visible. The
+    // A2A-ness of a group message is conveyed by the caller's injected
+    // `[AGENT COLLABORATION]` prefix, not by switching the scenario.
+    const rawScenario = opts.scenario ?? 'chat';
+    const isGroupChannel = !!opts.channelKey && opts.channelKey.startsWith('group:');
+    const scenario: AgentScenario =
+      rawScenario === 'a2a' && isGroupChannel ? 'group_chat' : rawScenario;
     semiStable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager, channelKey: opts.channelKey }));
 
     // L3 checklists: execute/govern only (AGENT-RUNTIME §4). Converse (incl.
@@ -744,25 +877,21 @@ export class ContextEngine {
       if (longTermMem) {
         const knowledgeCapChars = Math.min(SYSTEM_KNOWLEDGE_CHARS, knowledgeTokCap * 4);
         volatile.push('\n## Your Knowledge');
-        const prepared = prepareKnowledgeForPrompt(longTermMem, knowledgeCapChars);
+        // Relevance-ranked, whole-section selection (see prepareKnowledgeForPrompt).
+        // `opts.currentQuery` is the in-flight user text, so which sections get
+        // inlined depends on what is actually being asked rather than on document
+        // order. Sections that do not fit are named in an index line, never dropped
+        // — the helper's own index line replaces the old separate "truncated" note.
+        const prepared = prepareKnowledgeForPrompt(longTermMem, knowledgeCapChars, opts.currentQuery);
         volatile.push(prepared.text);
-        if (prepared.truncated) {
-          volatile.push(
-            '_[knowledge truncated — use `memory_search` or read `knowledge.md` for the rest]_',
-          );
-        }
       }
     } else if (isReflex) {
-      // Optional short state snapshot lines (state.md or notebook tip)
-      try {
-        const stateFn = (opts.memory as { getStateMemory?: () => string }).getStateMemory;
-        const stateText = typeof stateFn === 'function' ? stateFn.call(opts.memory) : '';
-        if (stateText?.trim()) {
-          const lines = stateText.trim().split('\n').slice(0, STATE_PROMPT_MAX_LINES_REFLEX);
-          volatile.push('\n## Current State (short)');
-          volatile.push(lines.join('\n'));
-        }
-      } catch { /* optional */ }
+      // Reflex (heartbeat) prompts used to inline a `## Current State (short)` snapshot
+      // from state.md. That store is retired: situational state is Working-layer data and
+      // already reaches the prompt through the `## Notebook` block (see
+      // `Agent.getDynamicContext`), which has a keyed structure, per-tier TTL and a hard
+      // entry cap — none of which state.md had.
+      // See docs/MEMORY-SYSTEM.md §10.2 (option A).
     }
 
     if (opts.projectContext) {
@@ -823,34 +952,59 @@ export class ContextEngine {
         const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
 
         const myActive = myTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
-        const myDone = myTasks.filter(t => CLOSED_STATUSES.has(t.status));
 
         const MY_TASK_LIMIT = SYSTEM_MY_TASKS_MAX;
         const TEAM_TASK_LIMIT = SYSTEM_TEAM_TASKS_MAX;
 
-        dynamic.push('\n## Task Board');
+        // Signal over volume — but do NOT trade away information.
+        //
+        // The closed-task counters (`_(66 completed/closed tasks)_`,
+        // `_(1370 other completed/closed tasks)_`) were observed byte-constant
+        // across an entire day in *every* volatile tail — 100 % of the cost,
+        // 0 % of the signal, re-sent on every single call. Those two lines are
+        // gone; the numbers stay available on demand via `task_list`.
+        //
+        // Team ACTIVE tasks stay listed in full (they are real signal, especially
+        // for a manager), but are ranked so the ones needing MY action
+        // (blocked / review / revision) surface first instead of being buried
+        // behind the priority sort.
+        //
+        // NOTE: the heading is emitted exactly once, inside the branches below —
+        // an unconditional push here produced an empty `## Task Board` shell for
+        // converse and a duplicated heading for execute.
+        const ACTIONABLE_TEAM_STATUSES = new Set(['blocked', 'review', 'revision']);
+        const otherActive = [...otherTasks.filter(t => !CLOSED_STATUSES.has(t.status))].sort((a, b) => {
+          const aAct = ACTIONABLE_TEAM_STATUSES.has(a.status) ? 0 : 1;
+          const bAct = ACTIONABLE_TEAM_STATUSES.has(b.status) ? 0 : 1;
+          if (aAct !== bAct) return aAct - bAct;
+          return byPriority(a, b);
+        });
+        const hasBoard = myActive.length > 0 || otherActive.length > 0;
 
-        dynamic.push('### My Tasks (assigned to you):');
-        if (myActive.length > 0) {
-          const shown = myActive.slice(0, MY_TASK_LIMIT);
-          for (const t of shown) {
-            dynamic.push(
-              `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
-            );
-          }
-          if (myActive.length > MY_TASK_LIMIT) {
-            dynamic.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
+        if (!hasBoard) {
+          // Empty board: the stub is only worth its tokens for execute/govern,
+          // which need the explicit "nothing assigned" signal. Converse skips it.
+          if (isExecuteLike) {
+            dynamic.push('\n## Task Board');
+            dynamic.push('No tasks on the board.');
           }
         } else {
-          dynamic.push('No active tasks assigned to you.');
-        }
-        if (myDone.length > 0) {
-          dynamic.push(`_(${myDone.length} completed/closed tasks)_`);
-        }
+          dynamic.push('\n## Task Board');
+          dynamic.push('### My Tasks (assigned to you):');
+          if (myActive.length > 0) {
+            const shown = myActive.slice(0, MY_TASK_LIMIT);
+            for (const t of shown) {
+              dynamic.push(
+                `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
+              );
+            }
+            if (myActive.length > MY_TASK_LIMIT) {
+              dynamic.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
+            }
+          } else {
+            dynamic.push('No active tasks assigned to you.');
+          }
 
-        if (otherTasks.length > 0) {
-          const otherActive = otherTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
-          const otherDone = otherTasks.filter(t => CLOSED_STATUSES.has(t.status));
           if (otherActive.length > 0) {
             dynamic.push('### Team Tasks (assigned to others):');
             const shown = otherActive.slice(0, TEAM_TASK_LIMIT);
@@ -863,9 +1017,6 @@ export class ContextEngine {
             if (otherActive.length > TEAM_TASK_LIMIT) {
               dynamic.push(`_(${otherActive.length - TEAM_TASK_LIMIT} more team tasks not shown)_`);
             }
-          }
-          if (otherDone.length > 0) {
-            dynamic.push(`_(${otherDone.length} other completed/closed tasks)_`);
           }
         }
       } else if (isExecuteLike) {
@@ -1378,6 +1529,15 @@ export class ContextEngine {
         lines.push('');
         lines.push('**Communication channel**: Your text output is **directly visible** to the human in real-time (streamed to their chat UI). Speak naturally and conversationally — no need to use `notify_user` here since they already see everything you say. Use `agent_send_message` only if you need to coordinate with another agent.');
         lines.push('');
+        // The session title is what names the conversation in the tab bar /
+        // History list (main sessions keep their "主会话" anchor label and
+        // reveal the title on hover), so naming it is a first-turn MUST, not a
+        // nice-to-have. Left alone, the server fallback stamps the first 60 raw
+        // chars of the user message and every tab reads like a truncated
+        // sentence. Encode the "understand FIRST, then name" ordering so titles
+        // describe intent, not wording.
+        lines.push('**Session title (MUST — first turn)**: On the **first** user message of a session (you can tell: the session holds no earlier exchange in your context), rename that session in the SAME turn — call the `session` tool with `{ "operation": "rename", "title": "<≤120 chars>" }` (omit `session_id` to target your current session). Name it only AFTER you understand what the user actually wants: one short "goal + object" phrase, in the user\'s own language. Never copy the user\'s raw wording, and never leave a placeholder ("新会话" / "New chat" / a truncated first sentence). Update the title again later ONLY when the session\'s goal materially changes (new topic or new deliverable) — do **not** rename on every turn.');
+        lines.push('');
         lines.push('**Conversation-first (default)**: When the human is here with you, advance the problem in this chat — answer, explore, edit files, run commands, debug, and iterate. Do **not** push them onto the Task Board unless they ask or the work needs async / delegation / formal review.');
         lines.push('**Create tasks when**: the human asks for a task, work must continue asynchronously, you need another agent, multi-agent parallel delivery, or a formal review trail. Lifecycle: requirement → `task_create` (assignee + reviewer) → approve → task session → review.');
         lines.push('');
@@ -1644,7 +1804,7 @@ export class ContextEngine {
       case 'distillation':
         lines.push('You are in **post-task distillation mode** — encode lessons from a **completed** task.');
         lines.push('');
-        lines.push('**Communication channel**: Background system session. Free-text is not a chat reply; tools have effect.');
+        lines.push('**Communication channel**: Background system session — your text output is **NOT visible** to any human or agent, and free-text is not a chat reply; only tool calls have effect. Use `notify_user` only if a human must act on what you found.');
         lines.push('');
         lines.push('Follow **Learning Habits**: personal lesson → memory tools; shareable playbook → `builder-artifacts/skills/` then `package_install` (low impact may install; high/omitted → `request_user_input` first).');
         lines.push('Never `hub_install` or auto-deploy agents/teams. If nothing durable → stop without tools.');
@@ -1835,28 +1995,13 @@ export class ContextEngine {
     return lines.join('\n');
   }
 
-  private filterSkillsByRelevance(
-    skills: Array<{ name: string; description: string; category: string }>,
-    query?: string,
-    maxResults = 30,
-  ): Array<{ name: string; description: string; category: string }> {
-    if (!query || skills.length <= maxResults) return skills;
-
-    const keywords = query.toLowerCase().split(/[\s\-_.,;:!?()\[\]{}]+/).filter(w => w.length > 2);
-    if (keywords.length === 0) return skills.slice(0, maxResults);
-
-    const scored = skills.map(s => {
-      const haystack = `${s.name} ${s.description} ${s.category}`.toLowerCase();
-      let score = 0;
-      for (const kw of keywords) {
-        if (haystack.includes(kw)) score++;
-      }
-      return { skill: s, score };
-    });
-
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, maxResults).map(s => s.skill);
-  }
+  /**
+   * NOTE (deleted dead code): a `filterSkillsByRelevance` helper used to live in
+   * this class and was never called — the every-turn `## Available Skills` table
+   * is assembled as ORG context (scope O), byte-identical for the whole org, so
+   * ranking it per query would have converted a shared, cached block into a
+   * per-call one. See PROMPT-ENGINEERING §2.0 corollary 3.
+   */
 
   /**
    * Intelligent context assembly:
@@ -1890,6 +2035,13 @@ export class ContextEngine {
     /** ContextOS: fixed段 C — durable compaction summary anchor, injected verbatim
      *  as its own [CONTEXT SUMMARY] block (semantically separate from slots). */
     summarySegment?: string;
+    /**
+     * O2: provider-reported input tokens from the previous call in this session.
+     * Only pass it when no compaction happened in between — a post-compaction
+     * value describes a larger, no-longer-existing request and would overstate the
+     * water level. Used for the `[CONTEXT …]` hint's `src=reported` reading.
+     */
+    reportedInputTokens?: number;
   }): Promise<PreparedContext> {
     // No silent defaults: a missing/zero context window is exactly what
     // silently drove the message budget negative and made the agent return
@@ -1994,6 +2146,9 @@ export class ContextEngine {
     // ── Stage 1: Pathological single-message shrink only ────────────────
     messages = this.shrinkOversizedMessages(messages, CONTEXT_ABSURD_MESSAGE_CHARS);
     messages = this.sanitizeMessageSequence(messages);
+    // ContextOS v2: transient harness prompts must never stack up in history
+    // (see dedupeTransientPrompts).
+    messages = this.dedupeTransientPrompts(messages);
 
     const currentTurnStart = this.findCurrentTurnStart(messages);
     let totalTokens = this.sumTokens(messages);
@@ -2007,21 +2162,43 @@ export class ContextEngine {
 
     // ── Stage 2: Proactive + over-budget compression ────────────────────
     let didCompress = false;
-    const needsCompress = totalTokens > messageBudget || totalTokens > proactiveThreshold;
+    // ContextOS v2.1: also fire on an ABSOLUTE history ceiling.
+    //
+    // The percentage watermarks are relative to the MODEL WINDOW, so on very
+    // large windows they never fire: the observed session finished a single turn
+    // at 269k input tokens — ~12 % of a 1311k window — with
+    // compactStage === 'none' the whole way, i.e. no maintenance compression ever
+    // ran and the turn's own early iterations kept piling up.
+    //
+    // Note this also fixes the "one gigantic turn" case without needing a
+    // separate intra-turn code path: when the absolute ceiling trips, the fold
+    // boundary is the END of history rather than the current turn start, so the
+    // same block-wise fold reaches inside the current turn.
+    const overAbsCeiling = totalTokens > CONTEXT_ABS_HISTORY_TOKENS;
+    const needsCompress =
+      totalTokens > messageBudget || totalTokens > proactiveThreshold || overAbsCeiling;
     if (needsCompress) {
       didCompress = true;
       compactStage = totalTokens > messageBudget ? 'over_budget' : 'proactive';
+      // When the absolute ceiling is what tripped, `messageBudget` is the window
+      // budget (~800k) and would authorise keeping everything — a silent no-op.
+      // Compress against a real target instead.
+      const historyTarget = overAbsCeiling
+        ? Math.max(MIN_MESSAGE_BUDGET, CONTEXT_ABS_HISTORY_TARGET_TOKENS)
+        : messageBudget;
       log.info('Triggering context compression', {
         stage: compactStage,
         totalTokens,
         messageBudget,
         proactiveThreshold,
+        overAbsCeiling,
+        historyTarget,
         promptAfford,
       });
       messages = this.shrinkOversizedMessages(messages, perMessageCap);
       messages = this.sanitizeMessageSequence(messages);
-      const compactBoundary = preCompressionPct > 80 ? messages.length : currentTurnStart;
-      messages = this.compactOldTurns(messages, compactBoundary, messageBudget);
+      const compactBoundary = preCompressionPct > 80 || overAbsCeiling ? messages.length : currentTurnStart;
+      messages = this.compactOldTurns(messages, compactBoundary, historyTarget);
       messages = this.sanitizeMessageSequence(messages);
       totalTokens = this.sumTokens(messages);
     }
@@ -2075,8 +2252,24 @@ export class ContextEngine {
     // Three segments: fixed (system + tools + slots) vs variable (history).
     // Rendered as a compact one-liner + a WARN/CRIT escalation line.
     const fixedTokens = systemTokens + toolDefTokens + slotsTokens;
-    const usedPct = Math.round((totalUsed / effectiveBudget) * 1000) / 10;
-    let hintLines = `[CONTEXT ${usedPct}% used — window ${Math.round(contextWindow / 1000)}k · fixed ${fixedTokens} (system ${systemTokens} + tools ${toolDefTokens}${slotsTokens ? ` + slots ${slotsTokens}` : ''}) · variable ${totalTokens} · output reserve ${maxOutput}]`;
+    // O2: the water level prefers the provider's own count when one is available
+    // and still valid. `usage.totalUsed` keeps the estimate so every existing
+    // consumer (logs, calibration, memory-flush preflight) is unchanged.
+    //
+    // Derived from `(opts.reportedInputTokens ?? remembered)` rather than requiring
+    // the caller to pass it — the same rule as slots/summary above: there are 15
+    // `prepareMessages` call sites (stream, tool-loop continuations, task/review
+    // scenarios, reminders) and a new one must not be able to silently drop it.
+    const rememberedReported = opts.reportedInputTokens ?? this.reportedInputBySession.get(opts.sessionId);
+    const reportedInputTokens = rememberedReported && rememberedReported > 0 ? rememberedReported : undefined;
+    // Compaction invalidates the reading: the reported count described a bigger
+    // request than the one being packed now. Drop it *after* reading, so this
+    // pack still labels its (pre-invalidation) state honestly next turn is clean.
+    if (compactStage !== 'none') this.reportedInputBySession.delete(opts.sessionId);
+    const hintTotalUsed = reportedInputTokens ?? (systemTokens + toolDefTokens + slotsTokens + totalTokens);
+    const usedPct = Math.round((hintTotalUsed / effectiveBudget) * 1000) / 10;
+    const src = reportedInputTokens !== undefined ? 'reported' : 'est';
+    let hintLines = `[CONTEXT ${usedPct}% used — src=${src} · window ${Math.round(contextWindow / 1000)}k · fixed ${fixedTokens} (system ${systemTokens} + tools ${toolDefTokens}${slotsTokens ? ` + slots ${slotsTokens}` : ''}) · variable ${totalTokens} · output reserve ${maxOutput}]`;
     if (usedPct >= CONTEXT_CRIT_RATIO * 100) {
       hintLines += `\n[CONTEXT CRIT] at ${usedPct}%: system will hard-trim oldest turns. Run session_compact now, and session_pin a goal/done/next anchor to keep your position.`;
     } else if (usedPct >= CONTEXT_WARN_RATIO * 100) {
@@ -2108,13 +2301,124 @@ export class ContextEngine {
       messages[turnStart - 1] = { ...messages[turnStart - 1], cacheBreakpoint: true };
     }
 
-    // Scheme A: assemble the per-turn volatile snapshot (contextHint + volatileState)
-    // into ONE standalone [SYSTEM] message pinned at the TAIL of the history (just
-    // before the current user query). Keeping it out of the system message lets the
-    // implicit prefix cache (DeepSeek/OpenAI) keep hitting across system + history.
+    // ── Scheme A + ContextOS v2: change-gated volatile tail ────────────
+    //
+    // Placement is load-bearing for the prefix cache: the volatile snapshot MUST
+    // be the LAST message. (Do NOT "insert just before the last user message":
+    // inside an agent tool loop the last user message is the ORIGINAL task
+    // instruction at index 1 — that insertion point is actually the FRONT of the
+    // history. It re-wrote message[1] on every call, which broke the
+    // byte-identical prefix at the first message after `system` and re-billed the
+    // entire replayed history on every LLM call: measured 46% prefix reuse
+    // instead of 79%.)
+    //
+    // ContextOS v2 changes WHAT the tail carries, not where it sits. The legacy
+    // tail re-sent the whole volatile blob verbatim on every LLM call; inside one
+    // user turn a tool loop can issue 60+ calls, so a persistent fact (e.g.
+    // 「worker 2 正在处理同一话题」) was re-delivered 66× and the model — reading
+    // it as the newest user input immediately before generating — re-announced it
+    // on every iteration instead of acting on it once. Measured 2026-09-16:
+    // blob 7 775 chars, consecutive-call similarity 0.9989, the same concurrency
+    // fact re-narrated in three separate iterations of one turn.
+    //
+    // A section is therefore sent in full on the first call of a user turn,
+    // whenever its content hash changes, or at least once every
+    // CONTEXT_VOLATILE_REARM_CALLS calls; otherwise only the water-level hint and
+    // a digest naming the omitted sections is sent. Nothing is ever *permanently*
+    // hidden — any change is delivered immediately and staleness is bounded by
+    // the re-arm interval — while the tail stops working as a stream of "new"
+    // user statements that the model feels obliged to acknowledge.
+    const sections = volatileState ? this.splitVolatileSections(volatileState) : [];
+    const isFirstCallOfTurn = !messages.slice(turnStart + 1).some((m) => m.role === 'assistant');
+    const prevSnapshot = this.volatileSnapshot.get(opts.sessionId);
+    const callsSinceFull = prevSnapshot ? prevSnapshot.callsSinceFull : Number.POSITIVE_INFINITY;
+    const forceFull =
+      isFirstCallOfTurn || !prevSnapshot || callsSinceFull >= CONTEXT_VOLATILE_REARM_CALLS;
+
+    const freshBodies: string[] = [];
+    const omitted: string[] = [];
+    const nextHashes = new Map<string, string>();
+    let anyChanged = false;
+    for (const sec of sections) {
+      const h = ContextEngine.hashSection(sec.body);
+      nextHashes.set(sec.key, h);
+      // A missing snapshot (first call of a session, or a snapshot evicted after
+      // CONTEXT_VOLATILE_SNAPSHOT_MAX_SESSIONS other sessions) counts as "changed"
+      // so the first delivery is also checkpointed.
+      const changed = !prevSnapshot || prevSnapshot.hashes.get(sec.key) !== h;
+      if (changed) anyChanged = true;
+      // `forceFull` short-circuits, so `prevSnapshot!` is only dereferenced when
+      // a previous snapshot actually exists.
+      if (forceFull || changed) freshBodies.push(sec.body);
+      else omitted.push(sec.key);
+    }
+    this.volatileSnapshot.set(opts.sessionId, {
+      hashes: nextHashes,
+      callsSinceFull: freshBodies.length > 0 ? 0 : callsSinceFull + 1,
+    });
+
+    // ── Completeness guarantee: checkpoint delivered state into history ──
+    //
+    // The tail is EPHEMERAL: it is appended to the outgoing request but never
+    // written back to the session store, so it is absent from the next call's
+    // replayed history. (Verified: `[SYSTEM] [Live context]` is produced only
+    // here; `agent.ts` persists only real user text, assistant replies, tool
+    // results and continuation prompts.)
+    //
+    // That makes plain change-gating LOSSY: an LLM has no memory across calls
+    // beyond the replay, so an omitted section is genuinely gone from the model's
+    // context until the next re-arm — a completeness regression against the
+    // original re-send-everything design.
+    //
+    // Fix: whenever the state actually CHANGES, append it to durable history as a
+    // `[SYSTEM] [State checkpoint]` message. Old checkpoints are superseded by
+    // newer ones (last-write-wins) and are folded away by the normal compaction
+    // path, while the newest one is always replayed — so the agent keeps complete
+    // state AND the tail stops being the only carrier. Because this is
+    // append-only, the checkpoint also extends the cacheable prefix instead of
+    // being re-billed on every call.
+    //
+    // Written here rather than at the ~8 `prepareMessages` call sites on purpose:
+    // single choke point, so a new call site cannot forget it (same rationale as
+    // the slots/summary derivation above).
+    if (anyChanged && opts.sessionId && sections.length > 0) {
+      const checkpoint = sections.map((s) => s.body).join('\n\n');
+      try {
+        opts.memory.appendMessage(opts.sessionId, {
+          role: 'user',
+          content: `${ContextEngine.STATE_CHECKPOINT_PREFIX}\n${checkpoint}`,
+        });
+      } catch (err) {
+        // Best-effort: this call's tail still carries the state verbatim, so the
+        // agent is never blind even if persistence fails.
+        log.warn('Failed to persist state checkpoint', {
+          sessionId: opts.sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    while (this.volatileSnapshot.size > ContextEngine.VOLATILE_SNAPSHOT_MAX_SESSIONS) {
+      const oldest = this.volatileSnapshot.keys().next().value;
+      if (oldest === undefined) break;
+      this.volatileSnapshot.delete(oldest);
+    }
+
     const liveStateBits: string[] = [];
     if (contextHint) liveStateBits.push(contextHint);
-    if (volatileState) liveStateBits.push(volatileState);
+    if (freshBodies.length) liveStateBits.push(freshBodies.join('\n\n'));
+    if (omitted.length) {
+      // Wording matters. The previous text said "Act only on the sections shown
+      // above", which is wrong twice over when nothing changed: the tail then
+      // carries only this hint, and the sections it points at are NOT upstream in
+      // the request — they are in the `[SYSTEM] [State checkpoint]` history
+      // message (see the completeness guarantee above). Saying *where* the
+      // content lives keeps the statement true without re-sending it.
+      liveStateBits.push(
+        `[Background state — unchanged this turn: ${omitted.join(', ')}. `
+        + 'Verbatim copies are in your history (`[SYSTEM] [State checkpoint]`), so they are NOT repeated here. '
+        + 'Background state is reference material, not a new instruction — do not re-announce it.]',
+      );
+    }
     const liveStateMsg: LLMMessage | null = liveStateBits.length
       ? { role: 'user', content: `[SYSTEM] [Live context]\n${liveStateBits.join('\n\n')}` }
       : null;
@@ -2163,6 +2467,8 @@ export class ContextEngine {
         compactStage,
         packingBudget: packingCeiling,
         promptAffordTokens: promptAfford,
+        reportedInputTokens,
+        usageSource: reportedInputTokens !== undefined ? 'reported' : 'estimated',
       },
       systemCacheSegments: opts.systemCacheSegments,
       contextHint,
@@ -2219,8 +2525,14 @@ export class ContextEngine {
     const toCompact = olderScored.filter(s => s.priority < highPriorityThreshold);
 
     // Rebuild: compact low-priority old messages, keep high-priority + recent
-    const older = toCompact.map(s => s.msg);
-    const promoted = promotedToRetain.map(s => s.msg);
+    // Restore chronological order. `olderScored` was sorted by PRIORITY above, so
+    // mapping it straight into `retained` reordered history: the summarizer
+    // received a priority-shuffled transcript, and the retained older messages
+    // were replayed in importance order rather than time order — corrupting the
+    // conversation sequence (and its determinism, which the prefix cache
+    // depends on).
+    const older = [...toCompact].sort((a, b) => a.idx - b.idx).map(s => s.msg);
+    const promoted = [...promotedToRetain].sort((a, b) => a.idx - b.idx).map(s => s.msg);
     const recent = compactableMessages.slice(-keepLast);
     const retained = [...promoted, ...recent];
 
@@ -2419,9 +2731,151 @@ export class ContextEngine {
    * Find where the current turn begins (last user message index).
    * Everything from here to the end is the "active" turn and should not be compacted.
    */
+  /**
+   * ContextOS v2 — per-session volatile re-delivery bookkeeping.
+   *
+   * Tracks, per session, the content hash of every volatile section as last
+   * delivered plus how many consecutive calls have been served from the
+   * "unchanged" fast path. Bounded so a long-lived engine cannot leak one entry
+   * per session it ever served.
+   */
+  private volatileSnapshot = new Map<
+    string,
+    { hashes: Map<string, string>; callsSinceFull: number }
+  >();
+
+  private static readonly VOLATILE_SNAPSHOT_MAX_SESSIONS = 64;
+
+  /**
+   * Marker for a durable, replayable copy of the per-call volatile state.
+   * Written when the state CHANGES so later calls can omit unchanged sections
+   * from the ephemeral tail without the agent losing them (see the completeness
+   * guarantee in `prepareMessages`). Treated as a synthetic message so it never
+   * counts as a user turn.
+   */
+  private static readonly STATE_CHECKPOINT_PREFIX = '[SYSTEM] [State checkpoint]';
+
+  private static hashSection(body: string): string {
+    return createHash('sha1')
+      .update(ContextEngine.normalizeSectionForHash(body))
+      .digest('hex')
+      .slice(0, 8);
+  }
+
+  /**
+   * Strip *relative-time* labels before hashing.
+   *
+   * `## Notebook` renders entries as `### key (7h ago)` and other sections embed
+   * elapsed markers. Those labels flip on their own schedule (hourly bucket), so
+   * hashing the raw body made the change gate fire and re-send ~12 KB — and
+   * persist a checkpoint — even when nothing the agent acts on had changed.
+   */
+  private static normalizeSectionForHash(body: string): string {
+    return body
+      .replace(/\([^)]*\bago\b[^)]*\)/gi, '(age)')
+      .replace(/\(just started[^)]*\)/gi, '(age)')
+      .replace(/\b\d+(?:\.\d+)?\s*(?:sec|secs|second|seconds|s|min|mins|minute|minutes|m|hr|hrs|hour|hours|h|day|days|d)\s+ago\b/gi, '(age)');
+  }
+
+  /**
+   * Split the volatile blob into `## Heading` sections. Any leading text before
+   * the first heading (the `---` / date-time line) is bucketed as `_preamble`
+   * so it keeps riding every call.
+   */
+  private splitVolatileSections(blob: string): Array<{ key: string; body: string }> {
+    const out: Array<{ key: string; body: string }> = [];
+    let curKey: string | null = null;
+    let buf: string[] = [];
+    const flush = () => {
+      const body = buf.join('\n').trim();
+      if (body) out.push({ key: curKey ?? '_preamble', body });
+      buf = [];
+    };
+    for (const line of blob.split('\n')) {
+      // `## X` starts a section; `### X` is a sub-heading inside one.
+      const m = /^##\s+(.+?)\s*$/.exec(line);
+      if (m) {
+        flush();
+        curKey = m[1]!;
+        buf = [line];
+      } else {
+        buf.push(line);
+      }
+    }
+    flush();
+    return out;
+  }
+
+  /**
+   * Collapse duplicate *transient* harness prompts.
+   *
+   * `[Continue from where you left off…]` (max-tokens continuation) and
+   * `[SYSTEM] Loop detected: …` are appended to DURABLE memory by the agent
+   * loop, so in a long tool loop they stack up: the observed session carried 4
+   * copies of the continuation prompt plus a loop warning on top of the original
+   * instruction. Two problems: (a) they are *negative* instructions ("do not
+   * repeat") and negation is what LLMs handle worst, so the stack acts as
+   * negative priming fired at the model on every call; (b) each copy counts as a
+   * `user` turn, corrupting turn/ownership accounting (findCurrentTurnStart,
+   * cache-breakpoint placement). Keep only the most recent copy of each family.
+   *
+   * Pure and deterministic — the same history always maps to the same output, so
+   * it does not disturb the byte-identical prefix.
+   */
+  private dedupeTransientPrompts(messages: LLMMessage[]): LLMMessage[] {
+    let lastContinuation = -1;
+    let lastLoopWarn = -1;
+    messages.forEach((m, i) => {
+      if (m.role !== 'user') return;
+      const t = getTextContent(m.content).trim();
+      if (t.startsWith('[Continue from where you left off')) lastContinuation = i;
+      else if (t.startsWith('[SYSTEM] Loop detected:')) lastLoopWarn = i;
+    });
+    if (lastContinuation < 0 && lastLoopWarn < 0) return messages;
+    return messages.filter((m, i) => {
+      if (m.role !== 'user') return true;
+      const t = getTextContent(m.content).trim();
+      if (t.startsWith('[Continue from where you left off')) return i === lastContinuation;
+      if (t.startsWith('[SYSTEM] Loop detected:')) return i === lastLoopWarn;
+      return true;
+    });
+  }
+
+  /**
+   * Messages the engine itself synthesises into history (compaction summary,
+   * the per-call live-context tail, transient harness prompts). They are
+   * `role: 'user'` for provider-compatibility reasons, but they are NOT user
+   * turns.
+   *
+   * Why this matters: `findCurrentTurnStart()` decides both the turn boundary and
+   * where the prefix-cache breakpoint goes. Treating a synthetic message as the
+   * turn start pointed the breakpoint at the summary block and made the "current
+   * turn" include it, so the turn-length accounting and the re-arm / first-call
+   * detection were all measured against the wrong boundary.
+   *
+   * Note: promoting these to `role: 'system'` is NOT an option — the Anthropic
+   * adapter does `find(m => m.role === 'system')` and then
+   * `filter(m => m.role !== 'system')`, so any non-first system message is
+   * silently dropped there. Skipping them during accounting is the safe fix.
+   */
+  private static isSyntheticMessage(m: LLMMessage): boolean {
+    const t = getTextContent(m.content).trim();
+    return (
+      t.startsWith('[SYSTEM] [Live context]') ||
+      t.startsWith('[SYSTEM] [State checkpoint]') ||
+      t.startsWith('[SYSTEM] [Conversation history summary') ||
+      t.startsWith('[SYSTEM] Loop detected:') ||
+      t.startsWith('[Continue from where you left off') ||
+      t.startsWith('[CONTEXT SUMMARY]')
+    );
+  }
+
   private findCurrentTurnStart(messages: LLMMessage[]): number {
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]!.role === 'user') return i;
+      const m = messages[i]!;
+      if (m.role !== 'user') continue;
+      if (ContextEngine.isSyntheticMessage(m)) continue;
+      return i;
     }
     return 0;
   }
@@ -2446,35 +2900,44 @@ export class ContextEngine {
 
     const blocks = this.parseIntoBlocks(history);
 
+    // Keep the NEWEST blocks verbatim and fold the OLDER ones.
+    //
+    // The previous implementation walked the blocks oldest→newest, keeping each
+    // one verbatim while the budget allowed and then summarizing — or outright
+    // dropping — the remainder. That preserves the OLDEST conversation and
+    // summarises/discards the most RECENT past turns: the exact opposite of every
+    // published compaction design (keep the recent window verbatim, summarise the
+    // distant past), and it threw away the context the model still needed.
+    const blockTokens = blocks.map((b) => this.sumTokens(b));
+    const keepVerbatim = new Set<number>();
+    for (let i = blocks.length - 1, acc = 0; i >= 0; i--) {
+      const t = blockTokens[i]!;
+      if (acc + t > historyBudget) break;
+      keepVerbatim.add(i);
+      acc += t;
+    }
+
+    // Task-prompt protection: the very first block carries the task instructions
+    // and is also the OLDEST, so the recency walk above would otherwise fold it
+    // away first.
+    if (blocks.length > 0 && blocks[0]!.length === 1 && blocks[0]![0]!.role === 'user') {
+      const text = getTextContent(blocks[0]![0]!.content);
+      if (text.includes('TASK EXECUTION') || text.includes('task_submit_review')) {
+        keepVerbatim.add(0);
+      }
+    }
+
     const compactedBlocks: LLMMessage[][] = [];
-    let usedTokens = 0;
-
-    for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
-      const block = blocks[blockIdx]!;
-      const blockTokens = this.sumTokens(block);
-
-      // Protect the first block if it's a task prompt
-      if (blockIdx === 0 && block.length === 1 && block[0]!.role === 'user') {
-        const text = getTextContent(block[0]!.content);
-        if (text.includes('TASK EXECUTION') || text.includes('task_submit_review')) {
-          compactedBlocks.push(block);
-          usedTokens += blockTokens;
-          continue;
-        }
-      }
-
-      if (usedTokens + blockTokens <= historyBudget) {
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i]!;
+      if (keepVerbatim.has(i)) {
         compactedBlocks.push(block);
-        usedTokens += blockTokens;
-      } else {
-        const summary = this.summarizeToolBlock(block);
-        const summaryTokens = estimateMessageTokens(summary, this.tokenCounter);
-        if (usedTokens + summaryTokens <= historyBudget) {
-          compactedBlocks.push([summary]);
-          usedTokens += summaryTokens;
-        }
-        // If even the summary doesn't fit, drop the block entirely
+        continue;
       }
+      // Only a tool block can collapse into a tool-block summary; a standalone
+      // user/assistant turn is kept as-is rather than silently dropped.
+      const isToolBlock = block[0]!.role === 'assistant' && (block[0]!.toolCalls?.length ?? 0) > 0;
+      compactedBlocks.push(isToolBlock ? [this.summarizeToolBlock(block)] : block);
     }
 
     return [...compactedBlocks.flat(), ...currentTurn];
@@ -2763,8 +3226,14 @@ export class ContextEngine {
       lines.push(`- Package Managers: ${env.packageManagers.join(', ')}`);
     }
 
+    // Free disk is quantized to 10 GB bands on purpose: the raw MB figure
+    // changes on literally every write, so emitting it verbatim re-billed the
+    // whole cached prefix whenever anything was written to the disk. This is
+    // scope-S content inside a byte-stable tier — churn must not exceed the
+    // tier's cadence (PROMPT-ENGINEERING §2.0 corollary 4).
+    const diskFreeGb = Math.floor(env.resources.diskFreeMB / 1024 / 10) * 10;
     lines.push(
-      `- Resources: ${env.resources.cpuCores} CPU cores, ${env.resources.memoryMB} MB RAM, ${env.resources.diskFreeMB} MB free disk`
+      `- Resources: ${env.resources.cpuCores} CPU cores, ${env.resources.memoryMB} MB RAM, ~${diskFreeGb} GB free disk`
     );
 
     const missing = ['git', 'node', 'docker', 'python3', 'java'].filter(

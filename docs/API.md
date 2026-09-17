@@ -153,10 +153,27 @@ interface NotebookEntry {
 | POST | `/api/system/pause-all` | Pause all agents |
 | POST | `/api/system/resume-all` | Resume all agents |
 | POST | `/api/system/emergency-stop` | Emergency stop |
+| GET | `/api/system/storage` | Disk usage: org breakdown + per-agent buckets (see note) |
+| GET | `/api/system/storage/orphans` | Detect orphaned agent/team directories |
+| DELETE | `/api/system/storage/orphans` | Purge orphaned directories (invalidates the storage cache) |
 | GET | `/api/system/announcements` | Get system announcements |
 | POST | `/api/system/announcements` | Create system announcement |
 | GET | `/api/governance/policy` | View governance policy |
 | PUT | `/api/governance/policy` | Update governance policy |
+
+> **Reading `/api/system/storage`.** Each `agents[].subItems` entry is a real
+> top-level directory of that agent's home, named as it exists on disk
+> (`sessions`, `workspace`, `tool-outputs`, …) — labels are never rewritten, so a
+> label cannot drift from what it measured. `agents[].size` is the total of the
+> directory, complete in breadth.
+>
+> `size` and every bucket are **depth-bounded** and therefore a **lower bound**,
+> not an exact figure: `agents[].depthLimited` is `true` when the walk hit its cap
+> and bytes were left uncounted. This is deliberate — an unbounded walk of the
+> live org (106 agents) exceeds 60 s, and the handler runs synchronously, so an
+> uncached call would block the event loop (and therefore chat SSE streams) for
+> seconds. Results are cached for 30 s. See `packages/org-manager/src/storage-usage.ts`
+> for the measurements behind the cap.
 
 ---
 

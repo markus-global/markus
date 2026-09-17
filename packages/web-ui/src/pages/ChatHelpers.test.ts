@@ -18,6 +18,13 @@ import {
   stripEmbeddedReplyQuote,
   stripNotifyContext,
   stripThinkingBlocks,
+  resolveTeamChatShortcut,
+  cycleSessionTabId,
+  COMPOSER_MAX_LINES,
+  composerMaxHeightPx,
+  composerStacked,
+  composerToolbarAlign,
+  resolveMobileTeamLayerState,
   type ChatMsg,
 } from './ChatHelpers.ts';
 import type { ChatMessageInfo } from '../api.ts';
@@ -440,5 +447,183 @@ describe('formatSmartTime', () => {
   it('keeps seconds for older messages, prefixed with the date', () => {
     const res = formatSmartTime('', noonOn(3), { yesterday: 'Yesterday' });
     expect(res).toMatch(/\d{1,2}:\d{2}:\d{2}$/);
+  });
+});
+
+// ─── Team-chat keyboard shortcuts (需求 4+5) ───────────────────────────────────
+
+describe('resolveTeamChatShortcut', () => {
+  const ev = (partial: Partial<{ key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }>) => ({
+    key: '', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false,
+    ...partial,
+  });
+
+  it('Mac: Cmd+N → new-conversation; Ctrl+N alone → null', () => {
+    expect(resolveTeamChatShortcut(ev({ key: 'n', metaKey: true }), true)).toBe('new-conversation');
+    expect(resolveTeamChatShortcut(ev({ key: 'N', metaKey: true }), true)).toBe('new-conversation');
+    expect(resolveTeamChatShortcut(ev({ key: 'n', ctrlKey: true }), true)).toBeNull();
+  });
+
+  it('non-Mac: Ctrl+N → new-conversation; Meta+N alone → null', () => {
+    expect(resolveTeamChatShortcut(ev({ key: 'n', ctrlKey: true }), false)).toBe('new-conversation');
+    expect(resolveTeamChatShortcut(ev({ key: 'n', metaKey: true }), false)).toBeNull();
+  });
+
+  it('alt / shift modifiers suppress new-conversation', () => {
+    expect(resolveTeamChatShortcut(ev({ key: 'n', ctrlKey: true, altKey: true }), false)).toBeNull();
+    expect(resolveTeamChatShortcut(ev({ key: 'n', ctrlKey: true, shiftKey: true }), false)).toBeNull();
+  });
+
+  it('Ctrl+Tab → cycle forward; Ctrl+Shift+Tab → cycle backward (Ctrl on all platforms)', () => {
+    expect(resolveTeamChatShortcut(ev({ key: 'Tab', ctrlKey: true }), false)).toBe('cycle-session-next');
+    expect(resolveTeamChatShortcut(ev({ key: 'Tab', ctrlKey: true }), true)).toBe('cycle-session-next');
+    expect(resolveTeamChatShortcut(ev({ key: 'Tab', ctrlKey: true, shiftKey: true }), false)).toBe('cycle-session-prev');
+  });
+
+  it('plain Tab / other keys → null', () => {
+    expect(resolveTeamChatShortcut(ev({ key: 'Tab' }), false)).toBeNull();
+    expect(resolveTeamChatShortcut(ev({ key: 't', ctrlKey: true }), false)).toBeNull();
+    expect(resolveTeamChatShortcut(ev({ key: '' }), true)).toBeNull();
+  });
+});
+
+describe('cycleSessionTabId', () => {
+  const ids = ['a', 'b', 'c'];
+
+  it('moves forward and backward from the active tab', () => {
+    expect(cycleSessionTabId(ids, 'b', 1)).toBe('c');
+    expect(cycleSessionTabId(ids, 'b', -1)).toBe('a');
+  });
+
+  it('wraps around at both ends', () => {
+    expect(cycleSessionTabId(ids, 'c', 1)).toBe('a');
+    expect(cycleSessionTabId(ids, 'a', -1)).toBe('c');
+  });
+
+  it('falls back to first/last when the active id is unknown', () => {
+    expect(cycleSessionTabId(ids, null, 1)).toBe('a');
+    expect(cycleSessionTabId(ids, null, -1)).toBe('c');
+    expect(cycleSessionTabId(ids, 'zzz', 1)).toBe('a');
+    expect(cycleSessionTabId(ids, 'zzz', -1)).toBe('c');
+  });
+
+  it('returns null when there are fewer than two tabs', () => {
+    expect(cycleSessionTabId(['only'], 'only', 1)).toBeNull();
+    expect(cycleSessionTabId([], null, 1)).toBeNull();
+  });
+});
+
+// ─── Composer sizing & layout (需求 6+7) ──────────────────────────────────────
+
+describe('composerMaxHeightPx', () => {
+  it('budgets ~10 lines of input (max >= 10 × line-height + padding)', () => {
+    expect(COMPOSER_MAX_LINES).toBe(10);
+    // 23px/line × 10 + 24px expanded vertical padding = 254px
+    expect(composerMaxHeightPx(false)).toBe(254);
+    // compact variant uses tighter 12px padding → 242px
+    expect(composerMaxHeightPx(true)).toBe(242);
+  });
+
+  it('never returns a value below 10 full lines of readable text', () => {
+    const lineHeight = 23; // text-sm leading-relaxed ≈ 22.75
+    expect(composerMaxHeightPx(false) - 24).toBeGreaterThanOrEqual(10 * lineHeight);
+    expect(composerMaxHeightPx(true) - 12).toBeGreaterThanOrEqual(10 * lineHeight);
+  });
+
+  it('expanded allows strictly more height than compact', () => {
+    expect(composerMaxHeightPx(false)).toBeGreaterThan(composerMaxHeightPx(true));
+  });
+});
+
+describe('composerStacked', () => {
+  it('mobile narrow screens always stack controls under the input (模型选择器让位)', () => {
+    expect(composerStacked(true, false)).toBe(true);
+    expect(composerStacked(true, true)).toBe(true);
+  });
+
+  it('desktop keeps a single row while the composer is empty', () => {
+    expect(composerStacked(false, false)).toBe(false);
+  });
+
+  it('desktop stacks once the user starts composing (attach/text expands)', () => {
+    expect(composerStacked(false, true)).toBe(true);
+  });
+});
+
+describe('composerToolbarAlign (model selector + send row)', () => {
+  it('right-aligns the control row whenever it is a full-width stacked row', () => {
+    expect(composerToolbarAlign(true)).toBe('justify-end');
+  });
+
+  it('adds no alignment when the row is content-sized inside a single flex row', () => {
+    // Un-stacked, the control row is the last child of a shared flex row, so it
+    // already rests at the right edge; adding justify-end there would be a no-op
+    // anyway, but keeping it empty documents that the layout does not depend on it.
+    expect(composerToolbarAlign(false)).toBe('');
+  });
+
+  it('right-aligns an EMPTY mobile composer (regression: buttons drifted bottom-left)', () => {
+    // The bug: alignment was keyed on `composerExpanded` (has content), but on
+    // mobile the composer is ALWAYS stacked. So an empty input produced a
+    // full-width row with no justify-end, and the model picker + send button
+    // hugged the left edge instead of the bottom-right corner.
+    const isMobile = true;
+    const isEmpty = false; // composerExpanded === false when the input is empty
+    expect(composerToolbarAlign(composerStacked(isMobile, isEmpty))).toBe('justify-end');
+  });
+
+  it('right-aligns on desktop too once the user starts typing', () => {
+    expect(composerToolbarAlign(composerStacked(false, true))).toBe('justify-end');
+  });
+});
+
+describe('resolveMobileTeamLayerState (mobile L2 blank-page guard)', () => {
+  const teams = ['team_a', 'team_b'];
+
+  it('renders the detail when the team resolves', () => {
+    expect(resolveMobileTeamLayerState('team_a', teams, true)).toBe('detail');
+  });
+
+  it('reports loading - NOT missing - while the team list has not loaded', () => {
+    // The distinction is the whole point: `teams` starts as [] on a cold mount,
+    // so absent-while-unloaded must NOT be read as "this team is gone".
+    expect(resolveMobileTeamLayerState('team_a', [], false)).toBe('loading');
+  });
+
+  it('renders the detail whenever the team is present, even if the flag is unset', () => {
+    // Presence wins over the loaded flag: a team we can actually find is
+    // resolvable, so there is nothing to recover from.
+    expect(resolveMobileTeamLayerState('team_a', teams, false)).toBe('detail');
+  });
+
+  it('reports missing only after a successful load proves the id is unknown', () => {
+    expect(resolveMobileTeamLayerState('team_gone', teams, true)).toBe('missing');
+    // An empty but successful response is still a definitive answer.
+    expect(resolveMobileTeamLayerState('team_a', [], true)).toBe('missing');
+  });
+
+  it('treats a null/undefined id as missing rather than crashing the layer', () => {
+    expect(resolveMobileTeamLayerState(null, teams, true)).toBe('missing');
+    expect(resolveMobileTeamLayerState(undefined, teams, true)).toBe('missing');
+    expect(resolveMobileTeamLayerState('', teams, true)).toBe('missing');
+  });
+
+  it('never returns a state that leaves the page with nothing to render', () => {
+    // Regression: the L2 block used to `return null` when the team was absent.
+    // Because that layer also hides the roster and skips the chat area, the page
+    // body went completely blank AND the back button went with it - the user saw
+    // an empty Team page and could not get out. Every input must now map to a
+    // state the UI can draw.
+    const inputs: Array<[string | null | undefined, string[], boolean]> = [
+      ['team_a', teams, true],
+      ['team_x', teams, true],
+      ['team_x', [], false],
+      [null, [], false],
+      [undefined, teams, false],
+    ];
+    for (const [id, ids, loaded] of inputs) {
+      const state = resolveMobileTeamLayerState(id, ids, loaded);
+      expect(['detail', 'loading', 'missing']).toContain(state);
+    }
   });
 });

@@ -7,7 +7,7 @@
  *
  * Additionally exports Notebook (NOTEBOOK.md) parse/serialize for the cognitive workspace.
  * Procedural Memory (ROLE.md + skills) is managed by RoleLoader and the skill system.
- * Legacy MEMORY.md is migrated once via ensureKnowledgeStateFiles and is never written.
+ * Legacy MEMORY.md is migrated once via `ensureKnowledgeFile` and is never written.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, statSync, unlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -21,12 +21,21 @@ import {
   MEMORY_MD_TOTAL_MAX_CHARS,
   MEMORY_ENTRY_MAX_CHARS,
   KNOWLEDGE_MD_SELF_HEAL_BYTES,
+  KNOWLEDGE_SECTION_KEY_MAX_CHARS,
+  KNOWLEDGE_STUB_MAX_CHARS,
+  NOTEBOOK_KEY_MAX_CHARS,
+  NOTEBOOK_MAX_ENTRIES,
+  NOTEBOOK_MAX_AGENT_ENTRIES,
+  NOTEBOOK_TTL_MS_AGENT,
+  NOTEBOOK_TTL_MS_SYSTEM,
+  NOTEBOOK_TTL_MS_CPP,
   SESSION_STORAGE_COMPACT_KEEP,
   SESSION_STORAGE_COMPACT_TRIGGER,
   CONTEXT_SLOT_MAX_CHARS,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
-import { ensureKnowledgeStateFiles, knowledgePath, readState, pruneExpiredState, writeState } from './taxonomy.js';
+import { ensureKnowledgeFile, knowledgePath } from './taxonomy.js';
+import { writeFileAtomic } from '../atomic-write.js';
 import { buildSlotSegment, buildSummarySegment, sanitizeSlotKey, type SlotEntry } from '../context-slot.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
@@ -38,6 +47,27 @@ const VALID_TYPES = new Set<string>(['conversation', 'fact', 'task_result', 'not
 /** Prevent section bodies from introducing sibling ## headings that split the store. */
 export function sanitizeSectionBody(content: string): string {
   return content.replace(/^## /gm, '### ');
+}
+
+/**
+ * Normalize a curated knowledge.md SECTION KEY.
+ *
+ * Section keys are headings of a durable knowledge base, not free text. Real
+ * knowledge.md accumulated headings copied verbatim from scratch notes
+ * (`## ✅ 修复完成：摘要锚点进固定段（3a745f00）`, `## 但这不必然阻塞`) — which both reads
+ * as junk and made one topic exist twice (once as a notebook key, once as a
+ * knowledge section). Reject line breaks and over-long keys outright; keep CJK
+ * and `-_` so existing legitimate Chinese section names keep working.
+ *
+ * Returns `null` when the key is unusable (caller refuses the write and says why).
+ */
+export function normalizeSectionKey(raw: string): string | null {
+  const flat = String(raw ?? '').replace(/[\r\n]+/g, ' ').trim();
+  if (!flat) return null;
+  // `## ` inside a key would split the section in two on the next parse.
+  if (flat.includes('##')) return null;
+  if (flat.length > KNOWLEDGE_SECTION_KEY_MAX_CHARS) return null;
+  return flat;
 }
 
 /** Reject objects that are clearly not MemoryEntry-shaped. */
@@ -176,6 +206,109 @@ export function serializeNotebook(entries: Map<string, NotebookEntry>): string {
 }
 
 /**
+ * Normalize a notebook KEY into a label.
+ *
+ * Keys are labels, not sentences. Real notebooks accumulated headings like
+ * `## ✅ 修复完成：摘要锚点进固定段（3a745f00）` and `## 但这不必然阻塞`, which
+ * (a) read as document sections rather than slots, and (b) let one topic spawn
+ * many near-duplicate entries instead of overwriting one — the main driver of
+ * the 23-agent-entry bloat. Normalization is deliberately lossless for CJK:
+ * only line breaks, leading `#`, and length are enforced.
+ */
+export function normalizeNotebookKey(raw: string): string {
+  const flattened = String(raw ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    // Strip heading markers AFTER trimming — a leading space would otherwise
+    // leave the `#` in place (`' ## x'` does not match `/^#+/`).
+    .replace(/^#+\s*/, '')
+    .trim();
+  if (flattened.length <= NOTEBOOK_KEY_MAX_CHARS) return flattened;
+  return flattened.slice(0, NOTEBOOK_KEY_MAX_CHARS).trimEnd();
+}
+
+/** Per-tier TTL lookup for a notebook entry. */
+export function notebookTtlMs(managed: NotebookEntryManaged): number {
+  if (managed === 'cpp') return NOTEBOOK_TTL_MS_CPP;
+  if (managed === 'system') return NOTEBOOK_TTL_MS_SYSTEM;
+  return NOTEBOOK_TTL_MS_AGENT;
+}
+
+export interface NotebookPruneResult {
+  /** Keys dropped because they exceeded their tier TTL. */
+  expired: string[];
+  /** Keys dropped to satisfy the hard entry cap. */
+  evicted: string[];
+}
+
+/**
+ * Enforce the notebook invariants IN PLACE: per-tier TTL, then the hard total
+ * entry cap (and the tighter agent-tier cap).
+ *
+ * This is the single authority for "notebook state is legal". It must be applied
+ * after load, after every write, and before prompt injection — the historical bug
+ * was that the cap lived on ONE write path (`updateWorkingMemory`) while three
+ * other writers called `workingMemory.set()` directly, and the load path trimmed
+ * nothing, so a notebook could only ever grow.
+ *
+ * Eviction order is oldest-`updatedAt`-first within a tier, and the machine-written
+ * tiers (`cpp`, then `system`) are evicted BEFORE the agent tier: situational state
+ * is cheaper to lose than the agent's own deliberate notes, and it expires on its
+ * own soon anyway.
+ */
+export function pruneNotebookEntries(
+  entries: Map<string, NotebookEntry>,
+  now: number = Date.now(),
+): NotebookPruneResult {
+  const result: NotebookPruneResult = { expired: [], evicted: [] };
+
+  // ── Pass 1: TTL ────────────────────────────────────────────────────────
+  for (const [key, entry] of [...entries]) {
+    const age = now - (entry.updatedAt ?? 0);
+    if (age > notebookTtlMs(entry.managed)) {
+      entries.delete(key);
+      result.expired.push(key);
+    }
+  }
+
+  // ── Pass 2: per-tier agent cap ─────────────────────────────────────────
+  const evictOldest = (predicate: (e: NotebookEntry) => boolean, keep: number): void => {
+    const candidates = [...entries.entries()]
+      .filter(([, e]) => predicate(e))
+      .sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+    for (let i = 0; i < candidates.length - keep; i++) {
+      const key = candidates[i]![0];
+      entries.delete(key);
+      result.evicted.push(key);
+    }
+  };
+  evictOldest(e => e.managed === 'agent', NOTEBOOK_MAX_AGENT_ENTRIES);
+
+  // ── Pass 3: hard total cap ─────────────────────────────────────────────
+  // Evict oldest-first, and among comparable ages drop the LOWER-durability tier
+  // first: cpp → system → agent. Machine-written situational state is cheaper to
+  // lose than the agent's own deliberate notes (and it would expire on its own
+  // soon anyway). Getting this order backwards silently ate the agent's own notes
+  // whenever the machine tiers filled the budget.
+  if (entries.size > NOTEBOOK_MAX_ENTRIES) {
+    const evictionRank = (e: NotebookEntry) => (e.managed === 'cpp' ? 0 : e.managed === 'system' ? 1 : 2);
+    const evictable = [...entries.entries()].sort((a, b) => {
+      const ra = evictionRank(a[1]); const rb = evictionRank(b[1]);
+      if (ra !== rb) return ra - rb;
+      return a[1].updatedAt - b[1].updatedAt;
+    });
+    for (let i = 0; i < evictable.length - NOTEBOOK_MAX_ENTRIES; i++) {
+      const key = evictable[i]![0];
+      entries.delete(key);
+      result.evicted.push(key);
+    }
+  }
+
+  return result;
+}
+
+/**
  * Load NOTEBOOK.md from disk, returning parsed entries.
  * Returns empty map if file doesn't exist.
  */
@@ -198,7 +331,7 @@ export function loadNotebook(dataDir: string): Map<string, NotebookEntry> {
 export function saveNotebook(dataDir: string, entries: Map<string, NotebookEntry>): void {
   const filePath = join(dataDir, 'NOTEBOOK.md');
   try {
-    writeFileSync(filePath, serializeNotebook(entries), 'utf-8');
+    writeFileAtomic(filePath, serializeNotebook(entries));
   } catch (err) {
     log.warn('Failed to save NOTEBOOK.md', { error: String(err) });
   }
@@ -215,7 +348,7 @@ export class MemoryStore implements IMemoryStore {
   private sessionAccessOrder: string[] = [];
   private sessionsDir: string;
   private logsDir: string;
-  private saveDebounce: ReturnType<typeof setTimeout> | null = null;
+  private saveDebounce: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private longTermFile: string;
 
   constructor(dataDir: string) {
@@ -225,7 +358,7 @@ export class MemoryStore implements IMemoryStore {
     mkdirSync(this.dataDir, { recursive: true });
     mkdirSync(this.sessionsDir, { recursive: true });
     mkdirSync(this.logsDir, { recursive: true });
-    ensureKnowledgeStateFiles(dataDir);
+    ensureKnowledgeFile(dataDir);
     // SSOT: always knowledge.md after ensure (never write legacy MEMORY.md).
     this.longTermFile = knowledgePath(dataDir);
     this.loadFromDisk();
@@ -236,24 +369,13 @@ export class MemoryStore implements IMemoryStore {
     return basename(this.longTermFile);
   }
 
-  /** state.md short snapshot for reflex prompts. */
-  getStateMemory(): string {
-    try {
-      return readState(this.dataDir);
-    } catch {
-      return '';
-    }
-  }
-
-  /** Expire TTL'd state.md entries (Dream librarian). */
-  pruneStateMemory(): void {
-    try {
-      const pruned = pruneExpiredState(readState(this.dataDir));
-      writeState(this.dataDir, pruned || '# State\n');
-    } catch (err) {
-      log.debug('pruneStateMemory failed', { error: String(err) });
-    }
-  }
+  /**
+   * NOTE (2026-09-16): `getStateMemory()` / `pruneStateMemory()` were removed together
+   * with the state.md store. Situational state is Working-layer data and lives in
+   * NOTEBOOK.md (`update_notebook`), which already has per-tier TTL — a second
+   * short-lived store added no capability, only a second place to look.
+   * See docs/MEMORY-SYSTEM.md §10.2 (option A).
+   */
 
   // --- Short-term: session messages ---
 
@@ -512,7 +634,16 @@ export class MemoryStore implements IMemoryStore {
    * `{ ok: false, reason }` when the write is refused (over the total cap even after
    * compression) or errors.
    */
-  addLongTermMemory(key: string, content: string): { ok: boolean; reason?: string } {
+  addLongTermMemory(rawKey: string, content: string): { ok: boolean; reason?: string } {
+    const sectionKey = normalizeSectionKey(rawKey);
+    if (sectionKey === null) {
+      return {
+        ok: false,
+        reason: `Invalid section key (${String(rawKey).length} chars). Keys are short headings: no line breaks, `
+          + `no "##", at most ${KNOWLEDGE_SECTION_KEY_MAX_CHARS} chars — e.g. "procedures", "定价与计费原则".`,
+      };
+    }
+    const key = sectionKey;
     let truncatedContent = sanitizeSectionBody(content);
     if (truncatedContent.length > MEMORY_MD_SECTION_MAX_CHARS) {
       log.warn('Section content exceeds limit, truncating', {
@@ -568,7 +699,7 @@ export class MemoryStore implements IMemoryStore {
         }
       }
 
-      writeFileSync(this.longTermFile, updated);
+      writeFileAtomic(this.longTermFile, updated);
       log.debug('Long-term memory updated', { key, sectionChars: truncatedContent.length, totalChars: updated.length, store: this.getStoreFileName() });
       return { ok: true };
     } catch (err) {
@@ -610,6 +741,54 @@ export class MemoryStore implements IMemoryStore {
     const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const match = content.match(new RegExp(`## ${escaped}\\n([\\s\\S]*?)(?=\\n## |$)`));
     return match?.[1]?.trim() ?? '';
+  }
+
+  /**
+   * Remove a curated section from knowledge.md — the missing "forget" primitive.
+   *
+   * A store you can only write to (and overwrite in place) but never remove from will
+   * inflate until it hits a cap and then stay there: this file was measured at 23 323
+   * chars against a 15 000 budget, and superseded topics had no way to disappear.
+   *
+   * `## _observations` is never accepted here — it is the observation buffer with its
+   * own cap and its own curation path; delete individual observations by id instead.
+   */
+  removeLongTermSection(sectionName: string): { ok: boolean; reason?: string; removedChars: number } {
+    const name = String(sectionName ?? '').trim().replace(/^#+\s*/, '');
+    if (!name) return { ok: false, reason: 'Section name is required.', removedChars: 0 };
+    if (/^_observations$/i.test(name)) {
+      return {
+        ok: false,
+        reason: 'The `_observations` buffer is not a curated section — delete individual observations by id instead.',
+        removedChars: 0,
+      };
+    }
+    if (!existsSync(this.longTermFile)) {
+      return { ok: false, reason: 'knowledge.md does not exist.', removedChars: 0 };
+    }
+    try {
+      const content = readFileSync(this.longTermFile, 'utf-8');
+      const curatedBefore = this.getLongTermMemory();
+      if (!curatedBefore.includes('## ' + name)) {
+        return { ok: false, reason: `Section "${name}" not found.`, removedChars: 0 };
+      }
+      // Reuse the existing, already-correct section stripper instead of duplicating its
+      // escaping rules here.
+      const curatedAfter = this.getLongTermMemoryExcluding([name]);
+      const obsIdx = content.indexOf('## _observations');
+      const obsPart = obsIdx >= 0 ? content.slice(obsIdx).trimStart() : '';
+      const updated = (curatedAfter.trimEnd() + (obsPart ? '\n\n' + obsPart : '')).trimEnd() + '\n';
+      writeFileAtomic(this.longTermFile, updated);
+      log.info('Curated section removed', {
+        name,
+        removedChars: curatedBefore.length - curatedAfter.length,
+        totalChars: updated.length,
+      });
+      return { ok: true, removedChars: curatedBefore.length - curatedAfter.length };
+    } catch (err) {
+      log.warn('Failed to remove curated section', { name, error: String(err) });
+      return { ok: false, reason: `Failed to remove section: ${String(err)}`, removedChars: 0 };
+    }
   }
 
   // --- Context compaction (OpenClawd pattern) ---
@@ -1013,6 +1192,44 @@ export class MemoryStore implements IMemoryStore {
     if (this.entries.length > 0) {
       log.info(`Loaded ${this.entries.length} observation entries from ${this.getStoreFileName()}`);
     }
+
+    // ── Boot-time TOTAL convergence ──────────────────────────────────────
+    // The total cap used to be enforced ONLY on the write path, where crossing it
+    // caused the write to be REFUSED. A refused write cannot shrink an oversized
+    // file, so an over-budget knowledge.md stayed over budget forever (measured:
+    // 23 323 chars against a 15 000 limit). Enforcing it at load makes the cap an
+    // actual invariant: "what was read is what fits".
+    this.convergeLongTermToCap();
+  }
+
+  /**
+   * Shrink knowledge.md to `MEMORY_MD_TOTAL_MAX_CHARS` if it is over budget.
+   *
+   * Idempotent and cheap when already within budget (one `statSync`). Delegates to
+   * `compressLongTermMemory` so the per-section cap, the stub marker and the
+   * `## _observations` carve-out all follow one implementation.
+   */
+  convergeLongTermToCap(): { converged: boolean; charsBefore: number; charsAfter: number } {
+    if (!existsSync(this.longTermFile)) {
+      return { converged: false, charsBefore: 0, charsAfter: 0 };
+    }
+    let size = 0;
+    try {
+      size = statSync(this.longTermFile).size;
+    } catch {
+      return { converged: false, charsBefore: 0, charsAfter: 0 };
+    }
+    if (size <= MEMORY_MD_TOTAL_MAX_CHARS) {
+      return { converged: false, charsBefore: size, charsAfter: size };
+    }
+    const result = this.compressLongTermMemory();
+    log.warn('knowledge.md over budget at load — converged', {
+      charsBefore: result.charsBefore,
+      charsAfter: result.charsAfter,
+      cap: MEMORY_MD_TOTAL_MAX_CHARS,
+      store: this.getStoreFileName(),
+    });
+    return { converged: true, charsBefore: result.charsBefore, charsAfter: result.charsAfter };
   }
 
   /**
@@ -1229,7 +1446,7 @@ export class MemoryStore implements IMemoryStore {
       } else {
         updated = (existing ? existing.trimEnd() + '\n\n' : '') + obsSection;
       }
-      writeFileSync(this.longTermFile, updated);
+      writeFileAtomic(this.longTermFile, updated);
     } catch (err) {
       log.warn('Failed to save observations to knowledge.md', { error: String(err) });
     }
@@ -1245,11 +1462,16 @@ export class MemoryStore implements IMemoryStore {
   }
 
   private debouncedSaveSession(session: ConversationSession): void {
-    if (this.saveDebounce) clearTimeout(this.saveDebounce);
-    this.saveDebounce = setTimeout(() => {
+    // 定时器必须**按会话**分开：并发模式下多个 worker 各有自己的会话，共用
+    // 一个实例级定时器时，后到的 worker 会 clearTimeout 掉先到者的待写 ——
+    // 前一个会话的变更被静默丢弃（进程重启即丢失）。按 session.id 键控修掉。
+    const key = session.id;
+    const existing = this.saveDebounce.get(key);
+    if (existing) clearTimeout(existing);
+    this.saveDebounce.set(key, setTimeout(() => {
+      this.saveDebounce.delete(key);
       this.saveSessionToDisk(session);
-      this.saveDebounce = null;
-    }, 1000);
+    }, 1000));
   }
 
   /** Compress knowledge.md — truncate oversized sections to prevent context bloat */
@@ -1270,19 +1492,23 @@ export class MemoryStore implements IMemoryStore {
       i++;
     }
 
-    // Sections as [headerLine, ...bodyLines]
-    const sections: { headerLine: string; body: string[] }[] = [];
+    // Sections as [headerLine, ...bodyLines]. `## _observations` is NOT a section
+    // we may touch: it is the observation buffer with its own cap and its own
+    // curation path (dream cycle). It is carried through verbatim.
+    const sections: { headerLine: string; body: string[]; observationBuffer: boolean }[] = [];
     let currentHeader = '';
     let currentBody: string[] = [];
+    let currentIsObs = false;
 
     while (i < lines.length) {
       const line = lines[i];
       if (line.startsWith('## ')) {
         if (currentHeader) {
-          sections.push({ headerLine: currentHeader, body: currentBody });
+          sections.push({ headerLine: currentHeader, body: currentBody, observationBuffer: currentIsObs });
         }
         currentHeader = line;
         currentBody = [];
+        currentIsObs = /^##\s+_observations\s*$/.test(line);
       } else {
         currentBody.push(line);
       }
@@ -1290,26 +1516,60 @@ export class MemoryStore implements IMemoryStore {
     }
     // Push last section
     if (currentHeader) {
-      sections.push({ headerLine: currentHeader, body: currentBody });
+      sections.push({ headerLine: currentHeader, body: currentBody, observationBuffer: currentIsObs });
     }
 
     const sectionsBefore = sections.length;
     let truncatedChunks = 0;
-    const outputLines: string[] = [...preambleLines];
 
+    // ── Phase 2: per-section cap ─────────────────────────────────────────
     for (const section of sections) {
+      if (section.observationBuffer) continue;
       const bodyStr = section.body.join('\n');
       if (bodyStr.length > MEMORY_MD_SECTION_MAX_CHARS) {
-        const truncatedBody = bodyStr.slice(0, MEMORY_MD_SECTION_MAX_CHARS);
-        outputLines.push(section.headerLine, truncatedBody);
+        // The explanatory footer counts AGAINST the cap, otherwise the "capped"
+        // section is limit+footer chars and the cap is not actually a cap.
+        const note = `\n_[section truncated to ${MEMORY_MD_SECTION_MAX_CHARS} chars]_`;
+        section.body = [bodyStr.slice(0, MEMORY_MD_SECTION_MAX_CHARS - note.length) + note];
         truncatedChunks++;
-      } else {
-        outputLines.push(section.headerLine, bodyStr);
       }
     }
 
+    // ── Phase 3: TOTAL convergence ───────────────────────────────────────
+    // The per-section cap alone does NOT bound the file: N sections × 3 000 chars
+    // can sit arbitrarily far above MEMORY_MD_TOTAL_MAX_CHARS, and the total was
+    // only ever checked on the WRITE path — where crossing it caused the write to
+    // be REFUSED. A refused write cannot shrink an oversized file, so once a
+    // knowledge.md was over budget it stayed over budget forever (measured: 23 323
+    // chars against a 15 000 limit). Converge here instead: shrink the largest
+    // curated sections to a stub until the file fits, preserving the heading (so
+    // the index line and `memory_search` still surface the topic) and never
+    // touching `## _observations`.
+    const size = () => preambleLines.length
+      + sections.reduce((n, s) => n + s.headerLine.length + s.body.join('\n').length + 2, 0);
+    if (size() > MEMORY_MD_TOTAL_MAX_CHARS) {
+      const shrinkable = sections
+        .filter(s => !s.observationBuffer)
+        .sort((a, b) => b.body.join('\n').length - a.body.join('\n').length);
+      for (const section of shrinkable) {
+        if (size() <= MEMORY_MD_TOTAL_MAX_CHARS) break;
+        const bodyStr = section.body.join('\n').trim();
+        if (bodyStr.length <= KNOWLEDGE_STUB_MAX_CHARS) continue;
+        section.body = [
+          `${bodyStr.slice(0, KNOWLEDGE_STUB_MAX_CHARS)}\n`
+          + `_[section condensed — knowledge.md was over its ${MEMORY_MD_TOTAL_MAX_CHARS}-char budget]_`,
+        ];
+        truncatedChunks++;
+      }
+    }
+
+    const outputLines: string[] = [...preambleLines];
+    for (const section of sections) {
+      outputLines.push(section.headerLine, section.body.join('\n'));
+    }
+
     const compressed = outputLines.join('\n');
-    writeFileSync(this.longTermFile, compressed);
+    writeFileAtomic(this.longTermFile, compressed);
 
     return {
       charsBefore,

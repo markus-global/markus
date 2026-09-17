@@ -138,7 +138,8 @@
   "browserFolderAppGeneric": "文件管理器",
   "browserLoading": "加载中…",
   "browserGuestDevTools": "调试此网页（内置浏览器 DevTools）",
-  "browserUrlPlaceholder": "输入网址或本地文件路径",
+  "browserUrlPlaceholder": "输入网址、关键词或本地文件路径",
+  "browserSearchEngineLabel": "搜索引擎",
   "signOutConfirmTitle": "确认登出？",
   "signOutConfirmMessage": "登出后需要重新登录才能继续使用 Markus。",
   "confirmDelete": "确认删除",
@@ -507,6 +508,9 @@
     "toggleLeft": "折叠/展开左侧栏（应用侧栏 + 页面 L1）",
     "toggleBrowser": "打开/切换右侧栏 · 浏览器",
     "toggleTerminal": "打开/切换右侧栏 · 终端",
+    "newConversation": "新建对话",
+    "cycleSessionTab": "下一个会话标签页",
+    "cycleSessionTabPrev": "上一个会话标签页",
     "toggleProjectDetail": "打开/切换项目详情",
     "toggleItemDetail": "打开/切换需求或任务详情",
     "cycleBoard": "切换待办列表 / 看板 / 依赖图 / 工作流",
@@ -538,5 +542,8 @@
   },
   "browserMode": "浏览器",
   "terminalMode": "终端",
-  "addRecentOutput": "将最近输出加入对话"
+  "addRecentOutput": "将最近输出加入对话",
+  "addFilePathToChat": "将文件路径加入对话",
+  "addDeliverableToChat": "将产出物加入对话",
+  "addedToChat": "已加入对话"
 }

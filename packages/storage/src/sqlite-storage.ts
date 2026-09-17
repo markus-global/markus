@@ -741,6 +741,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'users', column: 'deleted_at', sql: 'ALTER TABLE users ADD COLUMN deleted_at TEXT' },
     { table: 'users', column: 'hub_user_id', sql: 'ALTER TABLE users ADD COLUMN hub_user_id TEXT' },
     { table: 'users', column: 'hub_username', sql: 'ALTER TABLE users ADD COLUMN hub_username TEXT' },
+    { table: 'users', column: 'hub_token', sql: 'ALTER TABLE users ADD COLUMN hub_token TEXT' },
     { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
     { table: 'agents', column: 'disabled', sql: 'ALTER TABLE agents ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
@@ -2964,6 +2965,19 @@ export class SqliteUserRepo {
     } else {
       this.db.prepare('UPDATE users SET hub_user_id = ? WHERE id = ?').run(hubUserId, id);
     }
+  }
+
+  /** Read the Hub token bound to a specific user (per-user credential storage). */
+  getHubToken(id: string): string | null {
+    const r = this.db.prepare('SELECT hub_token FROM users WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? (r['hub_token'] as string | null) ?? null : null;
+  }
+
+  /** Persist (or clear) the Hub token bound to a specific user. */
+  setHubToken(id: string, token: string | null) {
+    this.db.prepare('UPDATE users SET hub_token = ? WHERE id = ?').run(token, id);
   }
 
   findById(id: string) {
@@ -5438,6 +5452,19 @@ export class SqliteReadCursorRepo {
       const key = cursor.conversationKey;
       if (key.startsWith('session:')) {
         const sessionId = key.slice('session:'.length);
+        // Only count sessions this user owns.
+        //
+        // A cursor can outlive an ownership change, and an admin browsing
+        // another user's session creates a cursor for it. getSessionAgentMap()
+        // maps EVERY session, so the client-side "session maps to an agent"
+        // filter cannot catch this: it gladly maps somebody else's session and
+        // counts it toward the wrong person's badge. Measured on real data: one
+        // admin held 41 cursors for sessions owned by other users, surfacing
+        // 190 messages that were never theirs.
+        const owned = this.db
+          .prepare(`SELECT 1 AS ok FROM chat_sessions WHERE id = ? AND user_id = ?`)
+          .get(sessionId, userId);
+        if (!owned) continue;
         const row = this.db.prepare(
           `SELECT COUNT(*) as cnt FROM chat_messages
            WHERE session_id = ? AND created_at > ?`
@@ -5445,6 +5472,23 @@ export class SqliteReadCursorRepo {
         if (row && row.cnt > 0) result[key] = row.cnt;
       } else if (key.startsWith('channel:')) {
         const channel = key.slice('channel:'.length);
+        // Never report unread for a conversation that can no longer be opened.
+        //
+        // Team channels are *synthetic* (`group:<teamId>` — they have no
+        // group_chats row; verified on the live DB). Deleting a team therefore
+        // removes every handle on the conversation while leaving its
+        // channel_messages and this read cursor behind. The cursor then reports
+        // unread forever for a channel no client can render or open to clear,
+        // inflating aggregates with counts that have no row anywhere.
+        //
+        // Measured on real data before this check: two deleted teams contributed
+        // 4 such messages, so the mobile Team badge read 8 while only 4 unread
+        // were visible as dots — the badge could never be cleared by reading.
+        if (channel.startsWith('group:team_')) {
+          const teamId = channel.slice('group:'.length);
+          const team = this.db.prepare(`SELECT 1 AS ok FROM teams WHERE id = ?`).get(teamId);
+          if (!team) continue;
+        }
         const row = this.db.prepare(
           `SELECT COUNT(*) as cnt FROM channel_messages
            WHERE channel = ? AND created_at > ?`

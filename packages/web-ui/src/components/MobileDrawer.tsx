@@ -2,16 +2,26 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Avatar } from './Avatar.tsx';
 import { PAGE, PAGE_ICONS, type PageId } from '../routes.ts';
-import type { AuthUser } from '../api.ts';
+import { hubApi, ensureHubAuth, type AuthUser } from '../api.ts';
+import { useHubAccount } from '../hooks/useHubAccount.ts';
+import { openExternal } from '../hooks/useElectron.ts';
+import { resolveHubCreditsAction, hubConnectionLabelKey } from '../lib/hubCredits.ts';
+import { navBus } from '../navBus.ts';
+import { ConfirmModal } from './ConfirmModal.tsx';
 
 interface MobileDrawerProps {
   authUser?: AuthUser;
   onNavigate: (page: PageId) => void;
+  onLogout?: () => void;
 }
 
-export function MobileDrawer({ authUser, onNavigate }: MobileDrawerProps) {
+export function MobileDrawer({ authUser, onNavigate, onLogout }: MobileDrawerProps) {
   const { t } = useTranslation(['settings', 'common', 'nav']);
   const [open, setOpen] = useState(false);
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  // Same hook the desktop account popover uses, so the two can never disagree
+  // about the balance (they used to — see lib/hubCredits.ts).
+  const { connected: hubConnected, user: hubUser, credits } = useHubAccount(open);
 
   useEffect(() => {
     const handler = () => setOpen(true);
@@ -37,7 +47,32 @@ export function MobileDrawer({ authUser, onNavigate }: MobileDrawerProps) {
     onNavigate(page as PageId);
   };
 
+  /**
+   * Not connected → start the Hub sign-in flow. Connected → open the Hub billing
+   * page, which is where credits are actually topped up (the drawer can only show
+   * the balance, not manage it). The choice lives in `lib/hubCredits.ts` so it is
+   * covered by tests and cannot drift from the popover.
+   */
+  const handleCredits = () => {
+    setOpen(false);
+    if (resolveHubCreditsAction(hubConnected) === 'login') {
+      void ensureHubAuth().catch(() => {});
+      return;
+    }
+    openExternal(`${hubApi.getUrl().replace(/\/$/, '')}/settings?tab=billing`);
+  };
+
+  /** Jump to Settings → Account, where the cap-aware credit breakdown lives. */
+  const handleHubAccount = () => {
+    setOpen(false);
+    navBus.navigate(PAGE.SETTINGS, { tab: 'account' });
+  };
+
   if (!open) return null;
+
+  const hubLabel = t(`nav:${hubConnectionLabelKey(hubConnected, !!hubUser?.username)}`, {
+    username: hubUser?.username ?? '',
+  });
 
   return (
     <div className="fixed inset-0 z-[100]">
@@ -67,6 +102,43 @@ export function MobileDrawer({ authUser, onNavigate }: MobileDrawerProps) {
           )}
         </div>
 
+        {/* Hub: credits + account — mirrors the desktop avatar popover */}
+        <div className="px-3 pt-3 pb-1 border-b border-border-default space-y-0.5">
+          <button
+            onClick={handleCredits}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-overlay transition-colors text-left"
+          >
+            <span className="w-[18px] h-[18px] flex items-center justify-center shrink-0 text-fg-tertiary">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="13 2 3 14 12 14 18 22 6 22 12 17" />
+              </svg>
+            </span>
+            <span className="flex-1 min-w-0 text-sm text-fg-secondary truncate">
+              {t('common:creditBalance')}
+            </span>
+            <span className="text-sm font-medium text-fg-primary shrink-0 tabular-nums">
+              {!hubConnected
+                ? t('nav:sidebar.hubLoginShort')
+                : credits !== null
+                  ? credits.remaining.toLocaleString()
+                  : '—'}
+            </span>
+          </button>
+
+          <button
+            onClick={handleHubAccount}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-overlay transition-colors text-left"
+          >
+            <span className="w-[18px] h-[18px] flex items-center justify-center shrink-0">
+              <span className={`w-2 h-2 rounded-full ${hubConnected ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
+            </span>
+            <span className="flex-1 min-w-0 text-sm text-fg-secondary truncate">{hubLabel}</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary shrink-0">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </button>
+        </div>
+
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-3 px-3 space-y-1">
           <DrawerNavItem
@@ -86,6 +158,21 @@ export function MobileDrawer({ authUser, onNavigate }: MobileDrawerProps) {
           />
         </nav>
       </aside>
+
+      {confirmLogout && onLogout && (
+        <ConfirmModal
+          title={t('common:signOutConfirmTitle')}
+          message={t('common:signOutConfirmMessage')}
+          confirmLabel={t('common:signOut')}
+          variant="primary"
+          onConfirm={() => {
+            setConfirmLogout(false);
+            setOpen(false);
+            onLogout();
+          }}
+          onCancel={() => setConfirmLogout(false)}
+        />
+      )}
     </div>
   );
 }

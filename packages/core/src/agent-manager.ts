@@ -1370,14 +1370,17 @@ export class AgentManager {
       ].join('\n'), 'utf-8');
     }
 
-    // Create memory system directories (sessions/, daily-logs/) and knowledge.md / state.md
-    // These are declared in system docs but not always created during initialization
+    // Create memory system directories (sessions/, daily-logs/) and knowledge.md.
+    // NOTE: state.md is intentionally NOT created any more — it was the "short-lived
+    // situational state" half of an old dual store that never got a write tool, and its
+    // job is covered by the notebook's `system` tier. Not creating it keeps new agents
+    // from inheriting a store nobody writes to.
+    // See docs/MEMORY-SYSTEM.md §10.2 (option A).
     const sessionsDir = join(agentDataDir, 'sessions');
     const dailyLogsDir = join(agentDataDir, 'daily-logs');
     mkdirSync(sessionsDir, { recursive: true });
     mkdirSync(dailyLogsDir, { recursive: true });
     const knowledgePath = join(agentDataDir, 'knowledge.md');
-    const statePath = join(agentDataDir, 'state.md');
     if (!existsSync(knowledgePath)) {
       writeFileSync(knowledgePath, [
         '# Knowledge',
@@ -1389,9 +1392,6 @@ export class AgentManager {
         '## lessons-learned',
         '',
       ].join('\n'), 'utf-8');
-    }
-    if (!existsSync(statePath)) {
-      writeFileSync(statePath, '# State\n', 'utf-8');
     }
 
     const config: AgentConfig = {

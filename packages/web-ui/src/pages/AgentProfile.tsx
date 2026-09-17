@@ -7,29 +7,51 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, CompactExecutionCard, FullExecutionLog, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
+import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { friendlyAgentError } from './ChatComponents.tsx';
-import { DeliverableDetailModal, DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
+import { DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
 import { getToolMeta } from '../components/execution-utils.ts';
 import { categorizeTools } from '../lib/toolCategories.ts';
 import { NamedIcon } from '../lib/namedIcons.tsx';
+import { sliceNotebookForDisplay, formatNotebookAge, NOTEBOOK_DISPLAY_LIMIT } from '../lib/notebookDisplay.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 
 const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 
-interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser; headless?: boolean; activeTab?: ProfileTab }
+interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser; headless?: boolean; activeTab?: ProfileTab; initialSection?: OverviewSectionId }
 
 export type ProfileTab = 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'deliverables';
 
+/**
+ * 概览页分组标识（现在渲染为**子 tab**）。
+ * 规范定义在 `lib/agentOverview.ts`（`OVERVIEW_SECTION_IDS` 与之同源），此处只转发，
+ * 供 Team.tsx 沿用——避免「页面一份、测试一份」两处定义漂移。
+ */
+export type { OverviewSectionId };
+
+/** 旧的 tab 标识 → 概览分组：历史深链（如 Work 页的 profileTab:'mind'）继续有效。 */
+export const LEGACY_TAB_SECTION: Partial<Record<ProfileTab, OverviewSectionId>> = {
+  mind: 'mind',
+  files: 'files',
+  tools: 'tools',
+  memory: 'memory',
+};
+
+/**
+ * Tab 栅只保留少数入口（聊天在主区，见 Team.tsx 的 AGENT_TABS）。
+ *
+ * 【为什么下面的四组不是「搬到概览」而是「收进概览」】砍 tab 本身不减少内容，
+ * 只会把内容搬到一个更长的页面上——用户会从「选哪个 tab」变成「滚不完的一页」。
+ * 所以原 mind / files / tools / memory 的正文没有堆在概览里，而是变成概览页里
+ * **默认收起、展开才挂载**的折叠分组（见 OverviewTab 与 CollapsibleSection）。
+ */
 export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'overview', icon: '▦' },
-  { key: 'files', icon: '📄' },
-  { key: 'tools', icon: '⚒' },
-  { key: 'memory', icon: '🧠' },
   { key: 'deliverables', icon: '📦' },
 ];
 
@@ -37,21 +59,18 @@ function taskStatusLabel(status: string, t: TFunction): string {
   return t(`agent:profilePage.taskStatus.${status}`, { defaultValue: status.replace(/_/g, ' ') });
 }
 
+/**
+ * Label for a process status, delegated to the shared presentation table so this
+ * page and the chat header badge cannot disagree about what "offline" means.
+ *
+ * The previous local map coloured `paused` (its dot map had the entry) but had no
+ * label for it, so a paused agent would have rendered the raw English token
+ * "paused" to the user.
+ */
 function agentRuntimeStatusLabel(status: string, t: TFunction): string {
-  const map: Record<string, string> = {
-    idle: 'common:status.idle',
-    working: 'common:status.working',
-    offline: 'common:status.offline',
-    error: 'common:status.error',
-  };
-  const key = map[status];
-  return key ? t(key) : status;
+  const { labelKey } = agentStatusPresentation(status);
+  return labelKey ? t(labelKey) : status;
 }
-
-const STATUS_DOT: Record<string, string> = {
-  idle: 'bg-green-400', working: 'bg-blue-400 animate-pulse',
-  paused: 'bg-amber-400', offline: 'bg-gray-500', error: 'bg-red-400',
-};
 
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -59,7 +78,7 @@ function fmtNum(n: number): string {
   return n.toLocaleString();
 }
 
-export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId, authUser, headless, activeTab: externalTab }: Props) {
+export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack, highlightMailboxId, authUser, headless, activeTab: externalTab, initialSection }: Props) {
   const { t } = useTranslation(['agent', 'common']);
   const isMobile = useIsMobile();
   const [agent, setAgent] = useState<AgentDetail | null>(null);
@@ -97,32 +116,29 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 
   if (!agent) return <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">{t('agent:profilePage.loadingAgent')}</div>;
 
-  const statusDot = STATUS_DOT[agent.state.status] ?? 'bg-gray-500';
+  const statusDot = agentStatusPresentation(agent.state.status).dotClass;
   const canManageAgents = authUser?.role === 'owner' || authUser?.role === 'admin';
+  // 「概览」与「心智」各自只渲染自己那一段。两者曾经被同一个条件一起渲染（根源是
+  // mind 从未出现在 TAB_DEF / AGENT_TABS 里），结果概览页上出现两颗停止按钮、
+  // 两个「空闲」。外部（网关）Agent 没有 mailbox/注意力循环，只有概览。
+  //
+  // 概览吸收了原 mind / files / tools / memory 四个 tab 的正文。旧深链（Work 页的
+  // profileTab:'mind' 等）依然有效：落到概览，并自动展开对应分组。
+  const sectionForTab = (tabId: ProfileTab): OverviewSectionId | undefined =>
+    initialSection ?? LEGACY_TAB_SECTION[tabId];
+  const bodyTabFor = (tabId: ProfileTab): ProfileTab =>
+    externalInfo || LEGACY_TAB_SECTION[tabId] ? 'overview' : tabId;
+  // 内联（非 headless）页自带的 tab 栅也会传入 defaultTab，同样需要归一。
+  const localLegacySection = LEGACY_TAB_SECTION[tab];
 
   if (headless) {
     return (
       <div className="flex-1 overflow-y-auto bg-surface-primary">
         <div className="p-5">
-          {(effectiveTab === 'overview' || effectiveTab === 'mind') && (
-            <>
-              <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-              <div className="mt-6">
-                <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-              </div>
-            </>
+          {bodyTabFor(effectiveTab) === 'overview' && (
+            <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
           )}
-          {effectiveTab === 'files' && <FilesTab agentId={agentId} />}
-          {effectiveTab === 'tools' && <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />}
-          {effectiveTab === 'memory' && (
-            <>
-              <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />
-              <div className="mt-6">
-                <MemoryTab agentId={agentId} />
-              </div>
-            </>
-          )}
-          {effectiveTab === 'deliverables' && <DeliverablesTab agentId={agentId} />}
+          {bodyTabFor(effectiveTab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
         </div>
       </div>
     );
@@ -173,7 +189,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
           </div>
         </div>
         <div ref={tabBarRef} className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto scrollbar-hide">
-          {tabs.filter(tabRow => !externalInfo || ['overview', 'mind'].includes(tabRow.key)).map(tabRow => (
+          {tabs.filter(tabRow => !externalInfo || tabRow.key === 'overview').map(tabRow => (
             <button key={tabRow.key} onClick={() => setTab(tabRow.key)} data-active={tab === tabRow.key}
               className={`px-3 py-1.5 text-xs rounded-t-lg border border-b-0 transition-colors whitespace-nowrap ${
                 tab === tabRow.key ? 'bg-surface-primary text-fg-primary border-border-default' : 'text-fg-tertiary border-transparent hover:text-fg-secondary hover:bg-surface-elevated/50'
@@ -183,25 +199,10 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
         </div>
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
-        {(tab === 'overview' || tab === 'mind') && (
-          <>
-            <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} />
-            <div className="mt-6">
-              <MindTab agentId={agentId} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} onAgentStateChange={reload} />
-            </div>
-          </>
+        {bodyTabFor(tab) === 'overview' && (
+          <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={initialSection ?? localLegacySection} />
         )}
-        {tab === 'files' && <FilesTab agentId={agentId} />}
-        {tab === 'tools' && <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />}
-        {tab === 'memory' && (
-          <>
-            <HeartbeatTab agentId={agentId} initialData={agent.heartbeat} />
-            <div className="mt-6">
-              <MemoryTab agentId={agentId} />
-            </div>
-          </>
-        )}
-        {tab === 'deliverables' && <DeliverablesTab agentId={agentId} />}
+        {bodyTabFor(tab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
       </div>
       {notice && (
         <ConfirmModal
@@ -219,9 +220,95 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean }) {
+// ─── Overview section shell (sub-tabs) ───────────────────────────────────────
+
+/**
+ * 概览分组的子 tab 栏。
+ *
+ * 【为什么从「折叠块」改成「子 tab」】折叠块要求「展开 A → 看完 → 收起 A → 向下滚很远
+ * → 展开 B」。分组越多越痛：看第二组之前先要做两次无意义操作，滚动位置还得重新找。
+ * 子 tab 让每一组都在一次点击之外，且当前组永远出现在同一个位置。
+ *
+ * 【内容区依然「只挂载当前组」】被收进来的四组（心智 / 文件 / 能力 / 记忆）各自都会发
+ * 请求。若六组全部挂载、只用 CSS 隐藏，打开概览就等于同时打六组接口——那就把
+ * 「入口太多」换成了「页面卡」。所以只有 `section` 选中的那一组会被渲染。
+ *
+ * 窄屏横向滚动、不换行：行数固定，切换时内容区的位置才不会跳。
+ */
+function OverviewSectionTabs({ section, onChange, t }: {
+  section: OverviewSectionId; onChange: (id: OverviewSectionId) => void; t: TFunction;
+}) {
+  return (
+    <div
+      role="tablist"
+      className="flex border-b border-border-default overflow-x-auto scrollbar-hide"
+      // 窄屏下这一栏要能横向滑动；而它位于「整页切 tab」滑动容器的内部，手势会冒泡上去
+      // ——于是想滑 tab 栅时会跳到「产出」。拦在这里：栅自己滚，页面不切。
+      onTouchStart={e => e.stopPropagation()}
+      onTouchEnd={e => e.stopPropagation()}
+    >
+      {OVERVIEW_SECTION_IDS.map(id => {
+        const active = id === section;
+        const hint = t(`agent:profilePage.overview.sections.${id}.hint`, { defaultValue: '' });
+        return (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            title={hint || undefined}
+            onClick={() => onChange(id)}
+            className={`px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors cursor-pointer ${
+              active
+                ? 'border-brand-500 text-fg-primary font-medium'
+                : 'border-transparent text-fg-tertiary hover:text-fg-secondary'
+            }`}
+          >
+            {t(`agent:profilePage.overview.sections.${id}.title`)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 子 tab 的内容容器：六组共用同一外壳，保证切换时内容区位置不跳。 */
+function SectionPanel({ children }: { children: React.ReactNode }) {
+  return (
+    <div role="tabpanel" className="border border-border-default rounded-xl bg-surface-elevated/30 p-4">
+      {children}
+    </div>
+  );
+}
+
+/** 单条活动（心跳 / A2A 共用）。两个列表原先各自烤了一份完全一样的行标记。 */
+function ActivityRow({ agentId, act, dotClass, expanded, onToggle }: {
+  agentId: string; act: ActivityRecord; dotClass: string; expanded: boolean; onToggle: () => void;
+}) {
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
+      >
+        <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />
+        <span className="text-xs text-fg-secondary flex-1 truncate">{act.label}</span>
+        <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
+        <span className="text-fg-tertiary text-[10px]">{expanded ? '▲' : '▼'}</span>
+      </button>
+      {expanded && (
+        <div className="border-t border-border-default/60 bg-surface-primary/40">
+          <ActivityLog agentId={agentId} activityId={act.id} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highlightMailboxId, initialSection }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean; highlightMailboxId?: string; initialSection?: OverviewSectionId }) {
   const [usageInfo, setUsageInfo] = useState<AgentUsageInfo | null>(null);
-  const [recentActivities, setRecentActivities] = useState<ActivitySummary[]>([]);
+  // 持久化活动历史（SQLite），不是内存里的「此刻在跑」。类型见 api.ts 的 ActivityRecord。
+  const [recentActivities, setRecentActivities] = useState<ActivityRecord[]>([]);
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
   const [agentStorage, setAgentStorage] = useState<StorageAgentItem | null>(null);
   const [agentDataDir, setAgentDataDir] = useState('');
@@ -229,12 +316,33 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
   // 排队消息数（mailbox 待处理）——用于 working 但无执行中任务时说明「在哪忙」
   const [queuedCount, setQueuedCount] = useState(0);
 
+  // 概览子 tab（原先是折叠块）。落组规则见 resolveOverviewSection：
+  // highlightMailboxId 优先（它指向的 mailbox 项只存在于「运行与注意力」），
+  // 其次旧深链的 initialSection（profileTab:'mind' 等），否则第一组。
+  const [section, setSection] = useState<OverviewSectionId>(
+    () => resolveOverviewSection(initialSection, highlightMailboxId),
+  );
+  // 组件已挂载后再跳同一个入口（例如从 Work 页再次点「查看心智」）也要切过去，
+  // 否则第二次点击不会有任何反应——这正是旧实现 defaultOpen 只在挂载时生效的毛病。
+  useEffect(() => {
+    setSection(resolveOverviewSection(initialSection, highlightMailboxId));
+  }, [initialSection, highlightMailboxId]);
+
+  // `agent.state.activeTaskIds` 每次 reload 都是新数组，直接把它当依赖会让这个
+  // effect（内含 5 个请求，包括整组织目录扫描）在每次父组件重渲染时重跑。按内容做 key。
+  const activeTaskIdsKey = (agent.state.activeTaskIds ?? []).join(',');
+
   useEffect(() => {
     api.usage.agents().then(d => {
       const info = d.agents.find(a => a.agentId === agent.id);
       if (info) setUsageInfo(info);
     }).catch(() => {});
-    api.agents.getRecentActivities(agent.id).then(d => setRecentActivities(d.activities)).catch(() => {});
+    // 【为什么不用 /recent-activities】该接口返回的是 liveActivities()——内存中
+    // 「此刻正在执行」的活动。它没有历史：agent 一空闲就返回空数组，于是标题写着
+    // 「最近活动」的卡片只在 agent 正在干活时才有内容。持久化历史一直在写
+    // （agent_activities 表），只是从来没被这个面板读过。
+    api.agents.getActivities(agent.id, { limit: RECENT_ACTIVITY_FETCH_LIMIT })
+      .then(d => setRecentActivities(d.activities)).catch(() => {});
     api.system.storage().then(info => {
       setAgentDataDir(info.dataDir + '/agents/' + agent.id);
       const match = info.agents.find(a => a.id === agent.id);
@@ -249,7 +357,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
     api.agents.getMailbox(agent.id, { limit: 1 }).then(mb => {
       setQueuedCount(mb.queued?.length ?? 0);
     }).catch(() => {});
-  }, [agent.id, agent.state.activeTaskIds, agent.state.status]);
+  }, [agent.id, activeTaskIdsKey, agent.state.status]);
 
   const toggleAgent = () => {
     if (agent.state.status === 'offline') api.agents.start(agent.id).then(onUpdate);
@@ -331,9 +439,22 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
     );
   }
 
-  const hbCount = recentActivities.filter(a => a.type === 'heartbeat').length;
-  const chatCount = recentActivities.filter(a => a.type === 'chat').length;
+  // 活动列表来自持久化历史（服务端按 started_at DESC 返回）。分组规则见
+  // splitRecentActivity——A2A 组只认 'a2a'，不认 'chat'（后者是人类会话，
+  // 在「聊天」tab 里有完整历史）。recentActivityRows 再统一排序 + 截断。
+  const { heartbeats: heartbeatRows, comms: commRows } = splitRecentActivity(recentActivities);
+  const heartbeats = recentActivityRows(heartbeatRows);
+  const comms = recentActivityRows(commRows);
   const activeN = agent.state.activeTaskIds?.length ?? 0;
+  // 列表只显示前几条（OVERVIEW_ACTIVITY_LIMIT），所以「共多少次」要单独给出来，
+  // 否则看到 5 行会以为只有 5 次。
+  // 计数是「窗口内」的条数，不是全历史总数——所以先把窗口说清楚，否则 N 会被
+  // 读成「这个 agent 一共跑过 N 次」。
+  const recentCaption = [
+    recentActivities.length > 0 ? t('agent:profilePage.overview.recentWindow', { count: recentActivities.length }) : null,
+    heartbeats.total > 0 ? t('agent:profilePage.overview.heartbeatRuns', { count: heartbeats.total }) : null,
+    comms.total > 0 ? t('agent:profilePage.overview.a2aRuns', { count: comms.total }) : null,
+  ].filter(Boolean).join(' · ');
 
   return (
     <div className="space-y-4">
@@ -361,17 +482,18 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
 
       {/* Runtime + Usage + Storage in a single compact card */}
       <div className="bg-surface-elevated rounded-xl px-4 py-3 space-y-3">
-        {/* Runtime status row */}
+        {/* 运行时事实行。
+            【为什么不在这里再画一次状态】进程状态已经由 Team Chat 顶部那颗常驻徽标
+            展示（同页可见、不随滚动消失）。这里再画一遍，一页上就出现两个「空闲」；
+            而且两者来源不同、可能互相矛盾（徽标曾把 offline 画成绿色「空闲」）。
+            页面内这一行只回答三个问题：用了多少、手里有几个活、怎么启停。 */}
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-          <div className="flex items-center gap-1.5">
-            <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[agent.state.status] || 'bg-gray-500'}`} />
-            <span className={`text-sm font-semibold ${agent.state.status === 'idle' ? 'text-green-500' : agent.state.status === 'working' ? 'text-blue-400' : agent.state.status === 'error' ? 'text-red-400' : 'text-fg-secondary'}`}>
-              {agentRuntimeStatusLabel(agent.state.status, t)}
-            </span>
-          </div>
-          <StatBox label={t('agent:profilePage.overview.labels.tokensToday')} value={fmtNum(agent.state.tokensUsedToday)} />
+          <StatBox label={t('agent:profilePage.overview.labels.tokensToday')} value={fmtNum(resolveTokensToday(usageInfo, agent.state.tokensUsedToday))} />
           <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(activeN)} color={activeN > 0 ? 'blue' : undefined} />
-          <StatBox label={t('agent:profilePage.overview.labels.lastHeartbeat')} value={agent.state.lastHeartbeat ? new Date(agent.state.lastHeartbeat).toLocaleTimeString() : t('agent:profilePage.never')} />
+          {/* 「上次心跳」已从概览移除：它读的是 agent.state.lastHeartbeat（进程内、
+              重启即丢，因此常年显示「从未」，而该 agent 的 metrics 里有 2000 条心跳记录），
+              而「心跳」tab 用 /agents/:id/heartbeat 已经给出准确的上次心跳与下次唤醒。
+              同一个数字留两处、其中一处是错的，只会让人怀疑整个面板。 */}
           {canManageAgents && (
             <button onClick={toggleAgent} className="ml-auto px-3 py-1 text-xs border border-border-default rounded-lg hover:border-brand-500 transition-colors shrink-0">
               {agent.state.status === 'offline' ? t('agent:profilePage.overview.startAgent') : t('agent:profilePage.overview.stopAgent')}
@@ -420,92 +542,122 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents }: { ag
           </div>
         )}
 
-        {/* Usage row */}
-        {usageInfo && (
-          <>
-            <div className="border-t border-border-default/40" />
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-              <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
-              <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
-              <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
-              <StatBox label={t('agent:profilePage.overview.labels.promptTokens')} value={fmtNum(usageInfo.promptTokens)} />
-              <StatBox label={t('agent:profilePage.overview.labels.completionTokens')} value={fmtNum(usageInfo.completionTokens)} />
-            </div>
-          </>
-        )}
-
-        {/* Storage row */}
-        {agentStorage && (
-          <>
-            <div className="border-t border-border-default/40" />
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-              <StatBox label={t('agent:profilePage.overview.storage')} value={fmtBytesLocal(agentStorage.size)} />
-              {agentStorage.subItems.filter(s => s.size > 0).map(sub => (
-                <StatBox key={sub.name} label={sub.name} value={fmtBytesLocal(sub.size)} />
-              ))}
-              <button onClick={() => void api.system.openPath(agentDataDir)}
-                className="text-[10px] text-fg-tertiary hover:text-fg-secondary ml-auto">{t('agent:profilePage.overview.openFolder')} →</button>
-            </div>
-          </>
-        )}
       </div>
 
-      {/* Recent Heartbeats */}
-      {hbCount > 0 && (
-        <Card title={t('agent:profilePage.overview.recentHeartbeats')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.heartbeatRuns', { count: hbCount })}</span>}>
-          <div className="divide-y divide-gray-800/50 -mx-5">
-            {recentActivities.filter(a => a.type === 'heartbeat').map(act => {
-              const isExpanded = expandedActivityId === act.id;
-              return (
-                <div key={act.id}>
-                  <button
-                    onClick={() => setExpandedActivityId(isExpanded ? null : act.id)}
-                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
-                  >
-                    <span className="w-2 h-2 rounded-full shrink-0 bg-green-400" />
-                    <span className="text-xs text-fg-secondary flex-1 truncate">{act.label}</span>
-                    <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
-                    <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>
-                  </button>
-                  {isExpanded && (
-                    <div className="border-t border-border-default/60 bg-surface-primary/40">
-                      <ActivityLog agentId={agent.id} activityId={act.id} />
+      {/* 概览分组改成了子 tab：切组只有一次点击，不需要「收起上一组 → 向下滚很远」。 */}
+      <OverviewSectionTabs section={section} onChange={setSection} t={t} />
+
+      {section === 'usage' && (
+        <SectionPanel>
+          {/* 用量与存储明细。
+              这里全是一次性/累计遥测：真要查的时候有用，一瞥面板时是噪音。
+              【为什么不显示 提示/补全 Token】这两个计数器加起来 ≠ 总数
+              （实测 3.03B vs 2.65B），因为 38,235 次请求里只有 590 次带过 provider
+              上报的 prompt 计数，且 getUsageStats() 在计数器为 0 时会用写死的
+              70/30 比例**编造**这两个值。一个加不起来的分解，看的人只会认为是面板
+              坏了。与其加免责说明，不如不显示。 */}
+          {(usageInfo || agentStorage) ? (
+            <div className="space-y-2">
+                {usageInfo && (
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.lifetimeCaption')}</p>
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+                      <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
+                      <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
+                      <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </Card>
+                  </div>
+                )}
+                {agentStorage && (
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+                      <StatBox label={t('agent:profilePage.overview.storage')} value={fmtBytesLocal(agentStorage.size)} />
+                      {visibleStorageBuckets(agentStorage.subItems).map(sub => {
+                        const labelKey = storageBucketLabelKey(sub.name);
+                        // 子项标题用真实目录名（服务端不再改写标签），已知的走 i18n，
+                        // 未知的直接显示目录名——新目录会以正确的名字出现，而不是被漏掉。
+                        return <StatBox key={sub.name} label={labelKey ? t(labelKey) : sub.name} value={fmtBytesLocal(sub.size)} />;
+                      })}
+                      <button onClick={() => void api.system.openPath(agentDataDir)}
+                        className="text-[10px] text-fg-tertiary hover:text-fg-secondary ml-auto">{t('agent:profilePage.overview.openFolder')} →</button>
+                    </div>
+                    {agentStorage.depthLimited && (
+                      // 目录遍历有深度上限（无上限的全量遍历在本机要 60s 以上），
+                      // 所以这是下界而非精确值。与其把有上限的估算当精确数字展示，
+                      // 不如说明它是什么。
+                      <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.storageDepthLimited')}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+          ) : (
+            <p className="text-xs text-fg-tertiary">{t('agent:profilePage.overview.sections.usage.empty')}</p>
+          )}
+        </SectionPanel>
       )}
 
-      {/* Recent A2A Communications */}
-      {chatCount > 0 && (
-        <Card title={t('agent:profilePage.overview.recentA2A')} action={<span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.conversations', { count: chatCount })}</span>}>
-          <div className="divide-y divide-gray-800/50 -mx-5">
-            {recentActivities.filter(a => a.type === 'chat').map(act => {
-              const isExpanded = expandedActivityId === act.id;
-              return (
-                <div key={act.id}>
-                  <button
-                    onClick={() => setExpandedActivityId(isExpanded ? null : act.id)}
-                    className="w-full flex items-center gap-2.5 px-5 py-2.5 text-left transition-colors hover:bg-surface-elevated/40 cursor-pointer"
-                  >
-                    <span className="w-2 h-2 rounded-full shrink-0 bg-blue-400" />
-                    <span className="text-xs text-fg-secondary flex-1 truncate">{act.label}</span>
-                    <span className="text-[10px] text-fg-tertiary shrink-0">{new Date(act.startedAt).toLocaleString()}</span>
-                    <span className="text-fg-tertiary text-[10px]">{isExpanded ? '▲' : '▼'}</span>
-                  </button>
-                  {isExpanded && (
-                    <div className="border-t border-border-default/60 bg-surface-primary/40">
-                      <ActivityLog agentId={agent.id} activityId={act.id} />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+      {/* 最近活动 —— 心跳与 A2A 的遥测。 */}
+      {section === 'recent' && (
+        <SectionPanel>
+          {recentCaption && <p className="text-[10px] text-fg-tertiary mb-2">{recentCaption}</p>}
+          {heartbeats.total > 0 && (
+            <div>
+              <h4 className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-1">{t('agent:profilePage.overview.recentHeartbeats')}</h4>
+              <div className="divide-y divide-gray-800/50">
+                {heartbeats.shown.map(act => (
+                  <ActivityRow key={act.id} agentId={agent.id} act={act} dotClass="bg-green-400"
+                    expanded={expandedActivityId === act.id}
+                    onToggle={() => setExpandedActivityId(expandedActivityId === act.id ? null : act.id)} />
+                ))}
+              </div>
+            </div>
+          )}
+          {comms.total > 0 && (
+            <div className="mt-3">
+              <h4 className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-1">{t('agent:profilePage.overview.recentA2A')}</h4>
+              <div className="divide-y divide-gray-800/50">
+                {comms.shown.map(act => (
+                  <ActivityRow key={act.id} agentId={agent.id} act={act} dotClass="bg-blue-400"
+                    expanded={expandedActivityId === act.id}
+                    onToggle={() => setExpandedActivityId(expandedActivityId === act.id ? null : act.id)} />
+                ))}
+              </div>
+            </div>
+          )}
+          {heartbeats.total === 0 && comms.total === 0 && (
+            <p className="text-xs text-fg-tertiary">{t('agent:profilePage.overview.sections.recent.empty')}</p>
+          )}
+        </SectionPanel>
+      )}
+
+      {/* ── 其余四组收进概览后依然「只挂载当前组」：它们各自都会发请求，若六组全部挂载、
+          只用 CSS 隐藏，打开概览就等于同时打六组接口——那就把「入口太多」换成了
+          「页面卡」。 */}
+      {section === 'mind' && (
+        <SectionPanel>
+          <MindTab agentId={agent.id} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />
+        </SectionPanel>
+      )}
+
+      {section === 'files' && (
+        <SectionPanel>
+          <FilesTab agentId={agent.id} />
+        </SectionPanel>
+      )}
+
+      {section === 'tools' && (
+        <SectionPanel>
+          <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />
+        </SectionPanel>
+      )}
+
+      {section === 'memory' && (
+        <SectionPanel>
+          <HeartbeatTab agentId={agent.id} initialData={agent.heartbeat} />
+          <div className="mt-6">
+            <MemoryTab agentId={agent.id} />
           </div>
-        </Card>
+        </SectionPanel>
       )}
     </div>
   );
@@ -2110,7 +2262,7 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem, t:
   }
 }
 
-function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentStateChange }: { agentId: string; highlightId?: string; agentStatus?: string; canManageAgents?: boolean; onAgentStateChange?: () => void }) {
+function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agentId: string; highlightId?: string; agentStatus?: string; canManageAgents?: boolean }) {
   const { t } = useTranslation(['agent', 'common', 'team']);
   const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
   const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
@@ -2120,6 +2272,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
   const [expandedId, setExpandedId] = useState<string | null>(highlightId ?? null);
   const [highlightedId, setHighlightedId] = useState<string | null>(highlightId ?? null);
   const [queueExpanded, setQueueExpanded] = useState(false);
+  const [notebookExpanded, setNotebookExpanded] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const PAGE = 50;
@@ -2214,6 +2367,9 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
   if (loading && !mind) return <div className="text-fg-tertiary text-sm animate-pulse">{t('agent:profilePage.mind.loading')}</div>;
 
   const queueDepth = mind?.mailboxDepth ?? mind?.queuedItems?.length ?? 0;
+  // 「心智」展示的是注意力循环的内部状态。进程停止时该循环不存在，因此所有派生
+  // 结论（等待新消息 / 队列应即将被接手 / 有项卡在 processing）都是假的。
+  const agentRunning = agentStatusPresentation(agentStatus).running;
   const effectiveAttentionState: string = (() => {
     const raw = mind?.attentionState ?? 'idle';
     if (raw === 'deciding') return 'deciding';
@@ -2234,10 +2390,21 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
       {/* ── Current State ── */}
       <section>
         <div className="flex items-center gap-3 mb-3">
-          <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[effectiveAttentionState] ?? 'bg-gray-500/20 text-gray-500'}`}>
-            {t(`agent:profilePage.mind.attention.${effectiveAttentionState}`)}
-          </span>
-          {mind?.currentFocus ? (() => {
+          {/* 注意力状态 ≠ 进程状态：`attention.idle` 的意思是「循环在等活」，而进程
+              停止时根本没有循环。它曾与进程状态共用「空闲」一词，于是概览页上出现两个
+              含义不同的「空闲」，停止后还会声称「等待新消息」。 */}
+          {!agentRunning ? (
+            <span className="px-2.5 py-1 text-xs font-medium rounded-full bg-gray-500/20 text-fg-tertiary">
+              {t('agent:profilePage.mind.agentStopped')}
+            </span>
+          ) : (
+            <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[effectiveAttentionState] ?? 'bg-gray-500/20 text-gray-500'}`}>
+              {t(`agent:profilePage.mind.attention.${effectiveAttentionState}`)}
+            </span>
+          )}
+          {!agentRunning ? (
+            <span className="text-sm text-fg-tertiary">{t('agent:profilePage.mind.stoppedHint')}</span>
+          ) : mind?.currentFocus ? (() => {
             const focusDisplay = getMailboxItemDisplay({
               id: mind.currentFocus.mailboxItemId,
               agentId,
@@ -2273,24 +2440,15 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
           ) : (
             <span className="text-sm text-fg-tertiary">{t('agent:profilePage.mind.idleWaiting')}</span>
           )}
+          {/* 【为什么不在这里放启停按钮】启停是 Agent 生命周期，归概览页那颗唯一
+              按钮管（OverviewTab）。mind 曾经也画一颗，而概览页把两个区块叠在一起
+              渲染，于是同一页出现两个「停止」。这里只留「刷新」。 */}
           <div className="ml-auto flex items-center gap-2">
-            {canManageAgents && agentStatus === 'offline' && (
-              <button onClick={() => { api.agents.start(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
-                className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-green-500/15 text-green-500 hover:bg-green-500/25 transition-colors">
-                ▶ {t('agent:profilePage.mind.continueBtn')}
-              </button>
-            )}
-            {canManageAgents && (agentStatus === 'working' || agentStatus === 'idle') && (
-              <button onClick={() => { api.agents.stop(agentId).then(() => { onAgentStateChange?.(); load(); }); }}
-                className="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 transition-colors">
-                ■ {t('team:contextMenu.stop')}
-              </button>
-            )}
             <button onClick={() => { load(); }} className="text-xs text-fg-tertiary hover:text-fg-secondary active:text-fg-primary transition-colors">{t('agent:profilePage.mind.refresh')}</button>
           </div>
         </div>
 
-        {hasStaleProcessingItems && (
+        {agentRunning && hasStaleProcessingItems && (
           <div className="mb-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center gap-2">
             <span className="text-amber-500 text-sm">⚠</span>
             <span className="text-[11px] text-amber-600">{t('agent:profilePage.mind.staleProcessingWarning')}</span>
@@ -2344,36 +2502,50 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents, onAgentSt
       </section>
 
       {/* ── Notebook (Cognitive Workspace) ── */}
-      {(mind?.notebook?.length ?? 0) > 0 && (
-        <section className="bg-surface-2 rounded-lg border border-border-subtle p-3">
-          <details open>
-            <summary className="flex items-center gap-2 cursor-pointer list-none">
-              <span className="text-sm">📓</span>
-              <h4 className="text-xs font-medium text-fg-secondary uppercase tracking-wider">Notebook</h4>
-              <span className="text-[10px] text-fg-quaternary ml-auto">{mind!.notebook!.length} {mind!.notebook!.length === 1 ? 'entry' : 'entries'}</span>
-            </summary>
-            <div className="mt-2 space-y-2">
-              {mind!.notebook!.map(entry => {
-                const ageMs = Date.now() - entry.updatedAt;
-                const ageLabel = ageMs < 60_000 ? `${Math.round(ageMs / 1000)}s ago`
-                  : ageMs < 3_600_000 ? `${Math.round(ageMs / 60_000)}min ago`
-                  : `${(ageMs / 3_600_000).toFixed(1)}h ago`;
-                const managedColor = entry.managed === 'system' ? 'text-blue-400' : entry.managed === 'cpp' ? 'text-purple-400' : 'text-emerald-400';
-                return (
-                  <div key={entry.key} className="px-3 py-2 rounded bg-surface-3 border border-border-subtle">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-medium text-fg-primary">{entry.key}</span>
-                      <span className={`text-[10px] ${managedColor}`}>[{entry.managed}]</span>
-                      <span className="text-[10px] text-fg-quaternary ml-auto">{ageLabel}</span>
+      {(mind?.notebook?.length ?? 0) > 0 && (() => {
+        const nb = sliceNotebookForDisplay(mind!.notebook, notebookExpanded);
+        return (
+          <section className="bg-surface-2 rounded-lg border border-border-subtle p-3">
+            <details>
+              <summary className="flex items-center gap-2 cursor-pointer list-none">
+                <span className="text-sm">📓</span>
+                <h4 className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('agent:profilePage.mind.notebook')}</h4>
+                <span className="text-[10px] text-fg-quaternary ml-auto">
+                  {t('agent:profilePage.mind.notebookEntries', { count: mind!.notebook!.length })}
+                </span>
+              </summary>
+              <p className="mt-2 text-[10px] text-fg-quaternary leading-relaxed">{t('agent:profilePage.mind.notebookHint', { count: NOTEBOOK_DISPLAY_LIMIT })}</p>
+              <div className="mt-2 space-y-2">
+                {nb.visible.map(entry => {
+                  const age = formatNotebookAge(entry.updatedAt);
+                  const ageLabel = t(`agent:profilePage.relative.${age.unit === 'seconds' ? 'secondsAgo' : age.unit === 'minutes' ? 'minutesAgo' : 'hoursAgo'}`, { count: age.count, hours: age.count });
+                  const managedColor = entry.managed === 'system' ? 'text-blue-400' : entry.managed === 'cpp' ? 'text-purple-400' : 'text-emerald-400';
+                  return (
+                    <div key={entry.key} className="px-3 py-2 rounded bg-surface-3 border border-border-subtle">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-medium text-fg-primary">{entry.key}</span>
+                        <span className={`text-[10px] ${managedColor}`}>[{entry.managed}]</span>
+                        <span className="text-[10px] text-fg-quaternary ml-auto">{ageLabel}</span>
+                      </div>
+                      <pre className="text-[11px] text-fg-secondary whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">{entry.text.length > 500 ? entry.text.slice(0, 500) + '…' : entry.text}</pre>
                     </div>
-                    <pre className="text-[11px] text-fg-secondary whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">{entry.text.length > 500 ? entry.text.slice(0, 500) + '…' : entry.text}</pre>
-                  </div>
-                );
-              })}
-            </div>
-          </details>
-        </section>
-      )}
+                  );
+                })}
+                {nb.collapsible && (
+                  <button
+                    onClick={() => setNotebookExpanded(!notebookExpanded)}
+                    className="w-full text-center text-[11px] text-accent-primary hover:opacity-80 py-1 transition-colors"
+                  >
+                    {notebookExpanded
+                      ? t('agent:profilePage.mind.collapseQueue')
+                      : t('agent:profilePage.mind.expandNotebook', { count: nb.hiddenCount })}
+                  </button>
+                )}
+              </div>
+            </details>
+          </section>
+        );
+      })()}
 
       {/* ── Live Deliberation Activity ── */}
       {mind?.deliberationActivity && (
@@ -2619,15 +2791,25 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
   const layout = useLayout();
   const [items, setItems] = useState<DeliverableInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<DeliverableInfo | null>(null);
 
-  /** 点击产出 → 直接在 Team Chat 右侧栏打开交付物预览（不再弹窗）。 */
-  const openInRightPanel = useCallback((item: DeliverableInfo) => {
-    if (layout?.openRightPanel) {
-      layout.openRightPanel({ kind: 'deliverable', deliverable: item });
-    } else {
-      setSelected(item); // fallback：无右侧栏宿主时退回弹窗
+  /**
+   * 点击产出：
+   *  - 桌面端（当前页确实渲染了右侧栏）→ 在右侧栏就地预览，不离开当前页；
+   *  - 移动端 / 无右侧栏宿主 → 跳到该产出物自己的页面（那里才是完整的详情与操作）。
+   *
+   * 【为什么判据是 hostAvailable 而不是「openRightPanel 是否存在」】后者永远为真
+   * （它是 LayoutContext 上的常量），而「宿主页面此刻是否真的渲染右侧栏」是另一件事：
+   * Team 页在移动端把 hostAvailable 设成 false
+   * （`setHostAvailable(isActive && !isMobile)`）。旧判断因此**总是**走右侧栏分支——
+   * 移动端点击只是往一个不存在的面板里塞了个 tab，表现就是「点了没反应」。
+   * 规则本体在 lib/agentOverview.ts，便于用测试锁住（纯函数测试，本包无 jsdom）。
+   */
+  const openDeliverable = useCallback((item: DeliverableInfo) => {
+    if (deliverableClickTarget(layout?.hostAvailable) === 'right-panel') {
+      layout?.openRightPanel({ kind: 'deliverable', deliverable: item });
+      return;
     }
+    navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: item.id });
   }, [layout]);
 
   const refresh = useCallback(async () => {
@@ -2683,7 +2865,7 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
           return (
             <button
               key={item.id}
-              onClick={() => openInRightPanel(item)}
+              onClick={() => openDeliverable(item)}
               className="w-full text-left rounded-xl border border-border-default bg-surface-elevated/30 overflow-hidden transition-colors hover:border-brand-500/40 hover:bg-surface-elevated/50 px-4 py-3 flex items-start gap-3"
             >
               <span className={`inline-flex items-center justify-center w-8 h-8 rounded-lg text-sm shrink-0 ${typeMeta.color}`}>
@@ -2709,14 +2891,6 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
           );
         })}
       </div>
-
-      {selected && (
-        <DeliverableDetailModal
-          item={selected}
-          onClose={() => setSelected(null)}
-          onOpenInPage={(id) => { setSelected(null); navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: id }); }}
-        />
-      )}
     </>
   );
 }

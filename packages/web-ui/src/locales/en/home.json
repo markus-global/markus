@@ -90,7 +90,17 @@
       "requirementsAction": "Ask Secretary",
       "team": "Create Tech Frontier Think Tank",
       "teamDesc": "Build an AI think tank with 4 tech visionary personas — Elon Musk, Steve Jobs, Sam Altman, and Jensen Huang — to analyze cutting-edge technology trends from different perspectives",
-      "teamAction": "Create Now"
+      "teamAction": "Create Now",
+      "shortcuts": "Learn Keyboard Shortcuts",
+      "shortcutsDesc": "Practice the essential shortcuts: navigation, toggle sidebars, new conversation and tab switching",
+      "shortcutsAction": "Open Shortcut List"
+    },
+    "shortcutLesson": {
+      "title": "Keyboard Shortcut Lesson",
+      "subtitle": "Press each shortcut below to check it off — complete all to finish this step.",
+      "allDone": "Great! You've mastered all the shortcuts.",
+      "done": "Done",
+      "markAllLearned": "I already know these — mark complete"
     }
   },
   "heroBanner": {

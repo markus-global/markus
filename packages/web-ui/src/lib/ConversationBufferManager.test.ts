@@ -100,6 +100,45 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
     expect(ids.indexOf('u1')).toBeLessThan(ids.indexOf('tail'));
     expect(ids).toEqual(['u1', 'tail']);
   });
+
+  it('allows a DB load for a session while ANOTHER session of the same agent is streaming (phase is per-convKey, guard is per-session)', () => {
+    // Multi-tab direct mode: session A is streaming (agent-wide phase becomes
+    // 'streaming'), user Ctrl+Tab switches to session B and its history loads
+    // from the DB. Previously the per-convKey `phase !== 'streaming'` gate
+    // rejected the write → B looked like a brand-new empty chat ("new chat"
+    // state) even though it has history. The guard must be the SESSION's own
+    // streaming membership, not the agent-wide phase.
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt_x';
+    mgr.setActiveSession('agt_x', 'sess_b');
+    mgr.loadingSession = 'sess_b';
+    mgr.beginStream('agt_x');               // agent-wide phase → streaming
+    mgr.addStreamSession('agt_x', 'sess_a'); // but the streaming SESSION is A
+
+    const dbMsgs = [
+      msg('u1', 'user', 'hello', '2026-08-02T07:04:00.000Z'),
+      msg('a1', 'agent', 'old reply', '2026-08-02T07:05:00.000Z'),
+    ];
+    const r = mgr.applyLoadResult('agt_x', 'sess_b', dbMsgs);
+    expect(r.displayChanged).toBe(true);
+    expect(r.newMessages!.map(m => m.id)).toEqual(['u1', 'a1']);
+  });
+
+  it('still blocks the DB load display for the SAME session that is streaming', () => {
+    // The original streaming-phase protection must stay: when loading the very
+    // session whose stream is in flight, DB rows go to cache only so the live
+    // stream content in the display buffer is never clobbered mid-flight.
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt_x';
+    mgr.setActiveSession('agt_x', 'sess_a');
+    mgr.loadingSession = 'sess_a';
+    mgr.beginStream('agt_x');
+    mgr.addStreamSession('agt_x', 'sess_a');
+
+    const dbMsgs = [msg('u1', 'user', 'hello', '2026-08-02T07:04:00.000Z')];
+    const r = mgr.applyLoadResult('agt_x', 'sess_a', dbMsgs);
+    expect(r.displayChanged).toBe(false);
+  });
 });
 
 describe('ConversationBufferManager multi-session stream isolation', () => {

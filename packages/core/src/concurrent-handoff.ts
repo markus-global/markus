@@ -17,7 +17,7 @@
  *   - attention concurrentWorkerLoop 的交接钩子（declared/done/conflict）
  */
 
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 /** 交接记录类型。 */
 export type ConcurrentHandoffKind = 'declared' | 'fact' | 'done' | 'conflict';
@@ -51,22 +51,42 @@ export const HANDOFF_MAX_KEEP = 64;
 /** 默认注入上下文的最大条数（受上下文预算约束）。 */
 export const HANDOFF_CONTEXT_LIMIT = 8;
 
-let seq = 0;
+/**
+ * 磁盘文件触发**压实（compaction）**的行数阈值。
+ *
+ * 旧实现纯 append、从不轮转 → `concurrent-handoffs.jsonl` 随运行时间**无界增长**
+ * （每个 mailbox item 至少 2 行：declared + done）。越线时把内存环形缓冲的最后
+ * `maxKeep` 条整体重写回文件，于是文件大小上有界、且内容与内存视图一致。
+ */
+export const HANDOFF_COMPACT_THRESHOLD = 512;
 
-/** 生成单调递增的记录 id。 */
-function nextId(): string {
-  seq += 1;
-  return `${Date.now()}-${seq}`;
-}
+/**
+ * 进程内单调计数器：与时间戳组合保证 id 唯一。
+ *
+ * 只靠 `Date.now()` 不够 —— 同一毫秒内创建的两个实例会用同一时间戳；
+ * 只用实例级计数器也不够 —— 两个实例都从 1 开始。二者相乘（时间戳 + 全局
+ * 单调 seq + 实例 token）才能既跨实例又跨毫秒唯一。
+ */
+let globalSeq = 0;
 
 export class ConcurrentHandoffLog {
   private items: ConcurrentHandoff[] = [];
   private readonly filePath?: string;
   private readonly maxKeep: number;
+  /** 实例 token：区分同一毫秒内创建的多个实例。 */
+  private readonly token = Math.random().toString(36).slice(2, 8);
+  /** 自上次压实以来追加的行数。 */
+  private appendedLines = 0;
 
   constructor(filePath?: string, maxKeep: number = HANDOFF_MAX_KEEP) {
     this.filePath = filePath;
     this.maxKeep = Math.max(8, maxKeep);
+  }
+
+  /** 生成进程内唯一的记录 id。 */
+  private nextId(): string {
+    globalSeq += 1;
+    return `${Date.now()}-${this.token}-${globalSeq}`;
   }
 
   /** 从磁盘加载既有记录（幂等；调用一次即可）。 */
@@ -74,7 +94,8 @@ export class ConcurrentHandoffLog {
     if (!this.filePath || !existsSync(this.filePath)) return;
     try {
       const raw = readFileSync(this.filePath, 'utf-8');
-      for (const line of raw.split('\n')) {
+      const lines = raw.split('\n');
+      for (const line of lines) {
         const t = line.trim();
         if (!t) continue;
         try {
@@ -84,6 +105,7 @@ export class ConcurrentHandoffLog {
           }
         } catch { /* 跳过损坏行 */ }
       }
+      this.appendedLines = lines.length;
       // 只保留最近 maxKeep 条
       if (this.items.length > this.maxKeep) {
         this.items = this.items.slice(this.items.length - this.maxKeep);
@@ -99,7 +121,7 @@ export class ConcurrentHandoffLog {
     summary: string,
   ): ConcurrentHandoff {
     const rec: ConcurrentHandoff = {
-      id: nextId(),
+      id: this.nextId(),
       workerId,
       ts: new Date().toISOString(),
       entityKey,
@@ -111,9 +133,21 @@ export class ConcurrentHandoffLog {
     if (this.filePath) {
       try {
         appendFileSync(this.filePath, JSON.stringify(rec) + '\n', 'utf-8');
+        this.appendedLines += 1;
+        if (this.appendedLines >= HANDOFF_COMPACT_THRESHOLD) this.compactFile();
       } catch { /* 持久化失败不阻塞处理 */ }
     }
     return rec;
+  }
+
+  /** 把内存中的最近记录整体重写回磁盘（有界化文件增长）。 */
+  private compactFile(): void {
+    if (!this.filePath) return;
+    try {
+      const body = this.items.map(r => JSON.stringify(r)).join('\n');
+      writeFileSync(this.filePath, body ? body + '\n' : '', 'utf-8');
+      this.appendedLines = this.items.length;
+    } catch { /* 压实失败下次再试 */ }
   }
 
   /** 最近 N 条（按时间升序返回；默认全部可用范围）。 */
@@ -128,31 +162,52 @@ export class ConcurrentHandoffLog {
     return this.items.filter(r => r.entityKey === entityKey);
   }
 
-  /** 当前进行中（declared 后未 done）的记录，按 workerId 去重取最新。 */
+  /**
+   * 当前**进行中**的记录：`declared`/`fact` 之后尚未 `done` 的 (worker, 实体) 组合。
+   *
+   * 旧实现只按 `workerId` 去重 —— 一个 worker 服务多个实体时只保留最后一条，
+   * 其余在途工作从并发上下文里消失；且环形缓冲挤出 `declared` 后，长任务会被
+   * 误判为「不在途」。现在按 `(workerId, entityKey)` 配对跟踪，并优先以实体为键
+   * 返回（同一实体永远只有一条在途记录）。
+   */
   inFlight(): ConcurrentHandoff[] {
-    const byWorker = new Map<number, ConcurrentHandoff>();
+    const open = new Map<string, ConcurrentHandoff>();
+    const closed = new Set<string>();
     for (const r of this.items) {
+      const key = `${r.workerId}\u0000${r.entityKey ?? ''}`;
       if (r.kind === 'declared' || r.kind === 'fact') {
-        byWorker.set(r.workerId, r);
-      }
-      if (r.kind === 'done' || r.kind === 'conflict') {
-        byWorker.delete(r.workerId);
+        open.set(key, r);
+      } else if (r.kind === 'done' || r.kind === 'conflict') {
+        // `done` 关闭该 (worker, 实体)；`conflict` 表示实体被他人占用、
+        // 本 worker 已放回队列 —— 同样不再「在途」。
+        closed.add(key);
+        open.delete(key);
       }
     }
-    return [...byWorker.values()];
+    return [...open.entries()]
+      .filter(([key]) => !closed.has(key))
+      .map(([, rec]) => rec);
   }
 
-  /** 清空（测试用 + 手动重置）。 */
+  /** 清空（测试用 + 手动重置）—— 内存与**磁盘**同时清空。 */
   clear(): void {
     this.items = [];
     if (this.filePath) {
-      try { appendFileSync(this.filePath, '', 'utf-8'); } catch { /* ignore */ }
+      // 旧实现是 `appendFileSync(path, '')`：只写 0 字节，**不截断文件**，
+      // 于是重启后 load() 会把「已清空」的记录全部读回来。
+      try { writeFileSync(this.filePath, '', 'utf-8'); } catch { /* ignore */ }
     }
+    this.appendedLines = 0;
   }
 
   /** 当前记录数。 */
   get size(): number {
     return this.items.length;
+  }
+
+  /** 磁盘已写入行数（观测/测试用）。 */
+  get diskLineCount(): number {
+    return this.appendedLines;
   }
 }
 

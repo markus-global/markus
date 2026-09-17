@@ -90,7 +90,17 @@
       "requirementsAction": "让秘书添加",
       "team": "创建科技前沿智库",
       "teamDesc": "组建由埃隆·马斯克、史蒂夫·乔布斯、山姆·奥特曼、黄仁勋 4 位科技领袖角色组成的 AI 智库，从不同视角分析科技前沿趋势",
-      "teamAction": "一键创建"
+      "teamAction": "一键创建",
+      "shortcuts": "快捷键教学",
+      "shortcutsDesc": "动手练习常用快捷键：导航、折叠/展开左侧栏、新建对话与会话切换",
+      "shortcutsAction": "打开快捷键清单"
+    },
+    "shortcutLesson": {
+      "title": "快捷键教学",
+      "subtitle": "按下下方快捷键即可自动勾选；全部勾选即完成本步骤。",
+      "allDone": "太棒！你已掌握所有快捷键。",
+      "done": "完成教学",
+      "markAllLearned": "我已掌握全部快捷键，直接完成"
     }
   },
   "heroBanner": {

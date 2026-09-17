@@ -8,6 +8,7 @@ import { usePageActive } from '../hooks/usePageActive.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { ClaimFreeCreditsModal } from '../components/ClaimFreeCreditsModal.tsx';
+import { ShortcutLessonModal } from '../components/ShortcutLessonModal.tsx';
 import {
   OverviewUsageTier,
   useOverviewUsageData,
@@ -19,6 +20,7 @@ import {
   markChecklistDismissed,
   markUserOnboarded,
 } from '../lib/onboarding.ts';
+import { isLessonComplete } from '../lib/shortcut-lessons.ts';
 
 const DONUT_COLORS: Record<string, string> = {
   completed: '#22c55e', in_progress: '#8b5cf6', review: '#3b82f6',
@@ -109,6 +111,12 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [showClaimModal, setShowClaimModal] = useState(false);
   const showClaimModalRef = useRef(false);
   showClaimModalRef.current = showClaimModal;
+  // 快捷键教学弹窗（需求 2）：done 由 per-user localStorage 判定（全部勾选即完成）。
+  const [showShortcutLesson, setShowShortcutLesson] = useState(false);
+  const [shortcutLessonDone, setShortcutLessonDone] = useState<boolean>(() => {
+    if (!authUser?.id) return false;
+    return isLessonComplete(authUser.id);
+  });
   // Per-user onboarding state（lib/onboarding.ts + 服务端 preferences.guideHidden）：
   //  - guideHidden：该用户是否已「不需要引导」（本地缓存 或 服务端标记，任一为 true 即隐藏）
   //  - checklistDismissed：该用户是否主动关闭过清单（仅当必做 setup 完成后才生效）
@@ -123,6 +131,13 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [secretaryHasChat, setSecretaryHasChat] = useState(false);
   const [checklistReady, setChecklistReady] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
+
+  // 全局静默学习（App 层）完成全部教学项 → 实时刷新本页「快捷键教学」步骤完成态。
+  useEffect(() => {
+    const onLessonComplete = () => setShortcutLessonDone(true);
+    window.addEventListener('markus:shortcut-lesson-complete', onLessonComplete);
+    return () => window.removeEventListener('markus:shortcut-lesson-complete', onLessonComplete);
+  }, [setShortcutLessonDone]);
 
   const handleClaimed = useCallback(() => {
     setFreeCreditsClaimed(true);
@@ -290,6 +305,8 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     { id: 'requirements', done: uid ? allRequirements.some(r => r.createdBy === uid) : allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
     // TeamInfo 无 createdBy 归属字段，保持全局存在性判定。
     { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary('帮我组建一个名为「科技前沿智库」的团队，成员包括4位科技领袖角色的智能体：埃隆·马斯克（关注太空、电动车、AI安全）、史蒂夫·乔布斯（关注产品设计与用户体验）、山姆·奥特曼（关注AGI与AI创业生态）、黄仁勋（关注GPU、AI算力与数据中心）。团队目标是从不同视角分析科技前沿趋势。') },
+    // 快捷键教学（需求 2）：done = 用户已全部勾选教学清单（per-user localStorage）。
+    { id: 'shortcuts', done: shortcutLessonDone, label: t('checklist.explore.shortcuts'), desc: t('checklist.explore.shortcutsDesc'), action: t('checklist.explore.shortcutsAction'), onClick: () => setShowShortcutLesson(true) },
   ] as Array<{ id: string; done: boolean; isSetup?: boolean; optional?: boolean; label: string; desc: string; action: string; onClick: () => void }>;
 
   const allSteps = [...setupSteps, ...exploreSteps];
@@ -907,6 +924,17 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           onClaimed={handleClaimed}
         />
       )}
+
+      {/* ── Shortcut Lesson Modal（需求 2：快捷键教学 checklist）── */}
+      <ShortcutLessonModal
+        open={showShortcutLesson}
+        userId={uid}
+        onClose={() => setShowShortcutLesson(false)}
+        onCompleted={() => {
+          setShortcutLessonDone(true);
+          setShowShortcutLesson(false);
+        }}
+      />
     </div>
   );
 }

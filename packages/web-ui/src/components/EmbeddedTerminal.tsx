@@ -290,8 +290,32 @@ export function EmbeddedTerminal({
         }
         const buf = await api.getBuffer(terminalId, { maxChars: 120_000 });
         if (disposed) return;
-        if (buf.ok && buf.content) {
-          term.write(buf.content);
+        const replay = buf.ok ? buf.content : undefined;
+        if (replay) {
+          // 回放历史输出时先不要订阅 term.onData。
+          // 历史输出里可能留着别的前台程序发过的终端探测序列（CSI 6n 光标位置、
+          // CSI >c 设备属性、OSC 10/11 颜色…），xterm 解析到它们会生成"应答"并经
+          // onData 外发；若此时订阅已就位，这些应答会被当成用户按键写进 PTY，
+          // 于是 shell 提示符上被自动塞进一串乱码（面板每次重开都复现、内容还不同）。
+          // 等这一整段回放的解析回调跑完再订阅，回放期间产生的应答就无人接收，直接丢弃。
+          // timeout 兜底：极端情况下回调不触发也不能把终端饿死（宁可漏几毫秒，不可永久无输入）。
+          await new Promise<void>((resolve) => {
+            let settled = false;
+            let timer: number | undefined;
+            const done = (): void => {
+              if (settled) return;
+              settled = true;
+              if (timer !== undefined) window.clearTimeout(timer);
+              resolve();
+            };
+            timer = window.setTimeout(done, 1500);
+            try {
+              term!.write(replay, done);
+            } catch {
+              done();
+            }
+          });
+          if (disposed) return;
         }
         // Do not call select() here — it used to re-emit events that stole panel mode.
         safeFit();

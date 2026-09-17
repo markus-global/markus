@@ -180,6 +180,21 @@ export class ConversationBufferManager {
     }
 
     const phase = this.getPhase(convKey);
+    // `streaming` is per-convKey (an agent-wide flag), while the in-flight
+    // stream belongs to a SPECIFIC session. A DB load for a DIFFERENT session
+    // must still be allowed to write the display buffer — otherwise switching
+    // tabs shows a misleading "new chat" empty state instead of real history.
+    //
+    // The bypass is only granted when a different owner is POSITIVELY known.
+    // `beginStream` flips the phase before the session mark is registered (and
+    // a brand-new chat may never register one), so an empty/unknown membership
+    // must NOT be read as "therefore it is not this session" — that window is
+    // exactly where a stale DB response clobbers the in-flight display.
+    const isStreamingPhase = phase === 'streaming';
+    const streamingSet = this.streamingSessions.get(convKey);
+    const otherSessionStreaming = isStreamingPhase
+      && (streamingSet?.size ?? 0) > 0
+      && !streamingSet!.has(sessionId);
     // Accept the result when this session is still the one being loaded OR the
     // one the user is viewing. Relying only on `loadingSession` drops the first
     // response when a second load for the same conversation races ahead.
@@ -187,7 +202,7 @@ export class ConversationBufferManager {
     const isCurrentView = this.currentConvKey === convKey
       && (this.loadingSession === sessionId || activeSessionId === sessionId);
 
-    if (isCurrentView && phase !== 'streaming') {
+    if (isCurrentView && (!isStreamingPhase || otherSessionStreaming)) {
       // DB rows are the ordering authority (user bubbles are persisted before
       // the assistant reply). A fresher cache may only add live-tail messages
       // that the DB does not have yet — it must never hide DB user messages,

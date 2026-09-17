@@ -61,7 +61,20 @@ vi.mock('node:fs', async (importOriginal) => {
         return [{ name: 'nested.md', isFile: () => true, isDirectory: () => false }];
       }
       if (s.includes('.markus/agents')) {
-        return [{ name: 'orphan-agent', isFile: () => false, isDirectory: () => true }];
+        // Honour `withFileTypes` instead of always returning Dirent-like objects.
+        // The old unconditional version only worked because every caller passed
+        // the flag; a caller that does not (storage-usage.ts walks with plain
+        // readdir + lstat, which is what lets it spot symlinks without following
+        // them) would be handed objects where it expects names and blow up on
+        // path.join. `isSymbolicLink` is included so the stub matches the real
+        // Dirent contract.
+        const dirent = {
+          name: 'orphan-agent',
+          isFile: () => false,
+          isDirectory: () => true,
+          isSymbolicLink: () => false,
+        };
+        return options?.withFileTypes ? [dirent] : ['orphan-agent'];
       }
       if (s.includes('.markus')) {
         return [];
@@ -176,21 +189,31 @@ describe('APIServer extended route coverage', () => {
 
     it('POST /api/auth/hub-login creates user when hub verifies', async () => {
       const unique = `hub-${Date.now()}@test.com`;
+      const hubUserId = `hub-user-${Date.now()}`;
+      // P0-4: verification must match the supplied hubUser.id — mock Hub
+      // /auth/me to echo the same id the server is trying to verify.
+      vi.mocked(mockFetch).mockResolvedValue({
+        status: 200,
+        ok: true,
+        text: async () => '',
+        json: async () => ({ user: { id: hubUserId, username: 'hubuser', email: unique, displayName: 'Hub User' } }),
+        headers: { get: () => null },
+      } as never);
       const res = await request(ctx.server, 'POST', '/api/auth/hub-login', {
         hubToken: 'hub-tok',
-        hubUser: { id: `hub-user-${Date.now()}`, username: 'hubuser', email: unique, displayName: 'Hub User' },
+        hubUser: { id: hubUserId, username: 'hubuser', email: unique, displayName: 'Hub User' },
       });
       expect(res.status).toBe(200);
       expect(res.json.user ?? res.json).toBeDefined();
     });
 
-    it('POST /api/auth/hub-login falls back when hub verification fails', async () => {
+    it('POST /api/auth/hub-login rejects when hub verification fails (P0-4, no client-supplied trust)', async () => {
       mockFetch.mockRejectedValueOnce(new Error('network down'));
       const res = await request(ctx.server, 'POST', '/api/auth/hub-login', {
         hubToken: 'hub-tok',
         hubUser: { id: 'hub-user-2', username: 'fallback', email: 'fallback@test.com' },
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(401);
     });
 
     it('GET /api/auth/invite-info with token param', async () => {

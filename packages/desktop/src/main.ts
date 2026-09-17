@@ -340,7 +340,16 @@ app.on('window-all-closed', () => {
   /* no-op */
 });
 
+// Dock icon click / Cmd-Tab activation (macOS). Bring the existing window
+// forward WITHOUT reloading it — a reload drops the SPA hash route (`#/work`,
+// `#/chat/…`) and bounces the user back to the overview page. The backendReady
+// guard only applies when no window exists at all (nothing to focus yet).
 app.on('activate', () => {
+  const win = getMainWindow();
+  if (win && !win.isDestroyed()) {
+    restoreOrCreateWindow(backendUrl);
+    return;
+  }
   if (backendReady) {
     restoreOrCreateWindow(backendUrl);
   }

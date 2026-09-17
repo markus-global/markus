@@ -581,6 +581,49 @@ export function formatDateLabel(rawCreatedAt: string, labels?: { today?: string;
   return d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 
+// ─── Team-chat keyboard shortcuts (需求 4+5) ───────────────────────────────────
+
+/** Team-chat shortcut actions resolved from a keydown. */
+export type TeamChatShortcut =
+  | 'new-conversation'       // Cmd/Ctrl+N
+  | 'cycle-session-next'     // Ctrl+Tab
+  | 'cycle-session-prev'     // Ctrl+Shift+Tab
+  | null;
+
+/**
+ * Map a raw keydown to a Team-chat shortcut action.
+ * `isMac` selects the platform modifier (⌘ vs Ctrl). Tab cycling always uses
+ * Ctrl (even on Mac), mirroring the Work page's Ctrl+Tab board cycling.
+ */
+export function resolveTeamChatShortcut(
+  e: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean },
+  isMac: boolean,
+): TeamChatShortcut {
+  const mod = isMac ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+  if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'n') return 'new-conversation';
+  if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === 'Tab') {
+    return e.shiftKey ? 'cycle-session-prev' : 'cycle-session-next';
+  }
+  return null;
+}
+
+/**
+ * Next session-tab id when cycling `ids` from `activeId` by `dir` (1 fwd / -1 back).
+ * Returns null when there are fewer than 2 tabs (nothing to cycle).
+ * Falls back sensibly (fw → first, back → last) when `activeId` is not in the list.
+ */
+export function cycleSessionTabId(
+  ids: readonly string[],
+  activeId: string | null,
+  dir: 1 | -1,
+): string | null {
+  if (ids.length <= 1) return null;
+  const idx = activeId === null ? -1 : ids.indexOf(activeId);
+  const base = idx >= 0 ? idx : (dir === 1 ? -1 : 0);
+  const next = (base + dir + ids.length) % ids.length;
+  return ids[next] ?? null;
+}
+
 export function throttle<T extends (...args: unknown[]) => unknown>(fn: T, ms: number): T {
   let last = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -600,4 +643,84 @@ export function throttle<T extends (...args: unknown[]) => unknown>(fn: T, ms: n
       }, remaining);
     }
   }) as T;
+}
+
+// ─── Composer sizing & layout (需求 6+7) ──────────────────────────────────────
+
+/** Composer max height in "lines" (需求 6): allow ~10 lines of long input. */
+export const COMPOSER_MAX_LINES = 10;
+/** Measured line height of `text-sm` + `leading-relaxed` (14px × 1.625 ≈ 22.75px). */
+export const COMPOSER_LINE_HEIGHT_PX = 23;
+/** Textarea vertical padding: expanded px-4 py-3 (24px) vs compact py-1.5 (12px). */
+const COMPOSER_PADDING_PX = { expanded: 24, compact: 12 } as const;
+
+/**
+ * Max composer textarea height for ~10 lines, in px.
+ * `compact` mirrors the collapsed composer (messages visible) — tighter padding,
+ * `expanded` (new/empty chat & typing) gets the full 10-line budget.
+ */
+export function composerMaxHeightPx(compact: boolean): number {
+  const vPadding = compact ? COMPOSER_PADDING_PX.compact : COMPOSER_PADDING_PX.expanded;
+  return COMPOSER_MAX_LINES * COMPOSER_LINE_HEIGHT_PX + vPadding;
+}
+
+/**
+ * Whether the composer should stack input and controls on separate rows.
+ * Mobile always stacks so the model selector never steals textarea width
+ * (需求 7: 窄屏下模型选择器不再挤压输入框); desktop stacks once typing/attaching.
+ */
+export function composerStacked(isMobile: boolean, composing: boolean): boolean {
+  return isMobile || composing;
+}
+
+/**
+ * Alignment class for the composer's control row (model selector + send/stop).
+ *
+ * Only needed once stacked. Un-stacked, the two rows are merged into a single
+ * flex row via `display: contents`, so the control row is content-sized and
+ * already rests at the right edge on its own. Stacked, it becomes a full-width
+ * block - and a full-width flex container defaults to the START edge, so
+ * without `justify-end` the buttons hug the LEFT.
+ *
+ * Keying this on `composerExpanded` ("has content") was the bug: on mobile the
+ * composer is always stacked, so an *empty* input - precisely the case with no
+ * content - produced a full-width row with left-aligned model + send buttons
+ * instead of the expected bottom-right corner.
+ */
+export function composerToolbarAlign(stacked: boolean): string {
+  return stacked ? 'justify-end' : '';
+}
+
+/** Which thing the mobile L2 (team detail) layer should render. */
+export type MobileTeamLayerState = 'detail' | 'loading' | 'missing';
+
+/**
+ * Resolve what the mobile L2 team-detail layer can actually show.
+ *
+ * Why this needs to exist: on mobile the Team page is a hash-driven 3-layer
+ * machine (`#team` roster / `#team/t/<id>` team detail / `#team/d` chat). The
+ * two other layers are mutually exclusive with L2 - the roster is `hidden` and
+ * the chat area is not rendered at all whenever `mobileLayer === 'team'`. So if
+ * L2 gives up and renders nothing, the ENTIRE page body is blank and the back
+ * button (which lived inside the same block) disappears with it. That is the
+ * "messages page is empty and then it is stuck" report: no content, no way back.
+ *
+ * The distinction that makes recovery safe is `teamsLoaded`. Until the team list
+ * request has actually SUCCEEDED we cannot tell "not fetched yet" from "does not
+ * exist any more", and healing the URL on a transient network failure would kick
+ * the user out of a perfectly valid deep link. So:
+ *   - team present                     -> 'detail'
+ *   - absent, list not loaded yet      -> 'loading'  (show spinner + retry/back)
+ *   - absent, list loaded successfully -> 'missing'  (definitively gone)
+ *
+ * `teamsLoaded` must be set only on a successful fetch, never in a `finally`.
+ */
+export function resolveMobileTeamLayerState(
+  teamId: string | null | undefined,
+  teamIds: readonly string[],
+  teamsLoaded: boolean,
+): MobileTeamLayerState {
+  if (!teamId) return 'missing';
+  if (teamIds.includes(teamId)) return 'detail';
+  return teamsLoaded ? 'missing' : 'loading';
 }
