@@ -2432,21 +2432,22 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   // authoritative and models are discovered at runtime (model-discovery.ts).
   // OpenAI conversational models: NOT listed here — `GET /v1/models` is
   // authoritative and they are discovered at runtime.
-  // OpenAI Multimodal — image, TTS, STT
-  { id: 'gpt-image-1', name: 'GPT Image 1', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
-  { id: 'dall-e-3', name: 'DALL-E 3', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
-  { id: 'tts-1-hd', name: 'TTS-1 HD', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['tts'] },
-  { id: 'tts-1', name: 'TTS-1', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'base', capabilities: ['tts'] },
-  { id: 'whisper-1', name: 'Whisper-1', provider: 'openai', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['stt'] },
-  // OpenAI Codex (OAuth — uses ChatGPT subscription)
-  { id: 'gpt-5.5', name: 'GPT-5.5 (Codex)', provider: 'openai-codex', contextWindow: 1100000, maxOutputTokens: 128000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'max', description: 'Uses ChatGPT subscription via OAuth' },
-  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini (Codex)', provider: 'openai-codex', contextWindow: 512000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: true, inputTypes: ['text', 'image'], tier: 'pro', description: 'Uses ChatGPT subscription via OAuth — fast' },
-  { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Spark (Codex)', provider: 'openai-codex', contextWindow: 128000, maxOutputTokens: 64000, cost: { input: 0, output: 0 }, reasoning: false, inputTypes: ['text', 'image'], tier: 'base', description: 'Uses ChatGPT subscription via OAuth — Pro only, real-time' },
+  // OpenAI multimodal (image / TTS / STT): NOT listed here. These ids could not
+  // be verified against OpenAI's docs from this environment (Cloudflare-blocked,
+  // and api.openai.com is unreachable without a key), and `GET /v1/models`
+  // returns them anyway — so they are discovered, not hard-coded. Guessing a
+  // retired id would hand the user a broken image/TTS/STT button.
+  // OpenAI Codex: NOT listed here. The Codex backend (ChatGPT subscription over
+  // OAuth) exposes no model-list endpoint, and the ids previously listed here
+  // could not be verified against any official source. Offering an unverified
+  // id would fail on first use, so the provider stays empty until the user adds
+  // a model explicitly — not providing is better than providing something wrong.
   // Google conversational models: NOT listed here — `GET /v1beta/models` is
   // authoritative and they are discovered at runtime.
-  // Google Multimodal — image, video
-  { id: 'imagen-3.0-generate-002', name: 'Imagen 3', provider: 'google', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['imageGeneration'] },
-  { id: 'veo-2.0-generate-001', name: 'Veo 2', provider: 'google', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'max', capabilities: ['videoGeneration'] },
+  // Google multimodal (image / video): NOT listed here. `GET /v1beta/models`
+  // lists the imagen-* / veo-* families, so they are discovered rather than
+  // hard-coded — the ids that used to live here (imagen-3.0-generate-002,
+  // veo-2.0-generate-001) could not be verified and are two generations behind.
   // MiniMax Global conversational models: NOT listed here — they are discovered
   // from the provider's own model list at runtime.
   // MiniMax Multimodal — image, TTS, video.
@@ -2469,8 +2470,8 @@ const BUILTIN_MODEL_CATALOG: ModelDefinition[] = [
   // LiteLLM catalog used by enrichModelFromCatalog().
   // SiliconFlow conversational models: NOT listed here — the provider's own
   // model list (hundreds of re-hosted ids) is authoritative.
-  // SiliconFlow Multimodal — STT
-  { id: 'FunAudioLLM/SenseVoiceSmall', name: 'SenseVoice Small', provider: 'siliconflow', contextWindow: 0, maxOutputTokens: 0, cost: { input: 0, output: 0 }, inputTypes: [], tier: 'pro', capabilities: ['stt'] },
+  // SiliconFlow multimodal (STT): NOT listed here — unverified id, dropped on
+  // purpose. SiliconFlow's own model list is authoritative.
   // SiliconFlow Global shares the same models as SiliconFlow China (resolved via REGIONAL_PROVIDER_ALIASES)
   // ZAI conversational models: NOT listed here — discovered from the provider.
   // Markus Cloud — model list is loaded dynamically from Hub
