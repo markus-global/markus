@@ -18,6 +18,7 @@ import { api } from '../api.ts';
 import {
   classifyMarkdownHref,
   isLocalFilesystemPath,
+  looksLikeFilePath,
   normalizeLocalFilesystemPath,
   scrollToMarkdownFragment,
 } from './markdown-links.ts';
@@ -27,7 +28,7 @@ import {
 import {
   EntityChip, EntityCard, looksLikeEntityId, chipTypeToEntityType, type EntityType,
 } from './EntityCard.tsx';
-import { FilePathLink, looksLikeFilePath } from './FilePathLink.tsx';
+import { FilePathLink } from './FilePathLink.tsx';
 import { CodeBlock } from './CodeBlock.tsx';
 import { MermaidBlock } from './MermaidBlock.tsx';
 import { PlantUMLBlock } from './PlantUMLBlock.tsx';

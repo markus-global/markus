@@ -128,13 +128,10 @@ function useFileInfo(path: string): FileInfo | undefined {
 }
 
 // ─── File path detection ─────────────────────────────────────────────────────
-
-const FILE_PATH_RE = /^(?:\/[\w.\-@+]+(?:\/[\w.\-@+ ]*)*|~\/[\w.\-@+]+(?:\/[\w.\-@+ ]*)*|[A-Za-z]:(?:\\|\/)[\w.\-@+ ]+(?:(?:\\|\/)[\w.\-@+ ]*)*|\.\.?\/[\w.\-@+]+(?:\/[\w.\-@+ ]*)*)$/;
-
-export function looksLikeFilePath(text: string): boolean {
-  if (text.length < 2 || text.length > 500) return false;
-  return FILE_PATH_RE.test(text);
-}
+// Rule lives in markdown-links.ts (pure module → unit-testable without React).
+// Re-exported here so existing `import { looksLikeFilePath } from './FilePathLink'`
+// call sites keep working.
+export { looksLikeFilePath } from './markdown-links.ts';
 
 function parentDir(p: string): string {
   const sep = p.includes('\\') ? '\\' : '/';
@@ -360,13 +357,17 @@ export function FilePathLink({ path: filePath }: { path: string }) {
     ? <svg className={iconCls} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" /></svg>
     : <svg className={iconCls} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" /></svg>;
 
+  // `data-file-path-link` marks every state of this component so tests (and
+  // devtools) can tell "routed to the file chip" apart from the plain-code
+  // fallback in MarkdownComponents — the two look alike before the async
+  // existence check resolves.
   if (!info) {
-    return <code className="bg-surface-secondary px-1.5 py-0.5 rounded text-xs font-mono text-fg-secondary break-all">{filePath}</code>;
+    return <code data-file-path-link="loading" className="bg-surface-secondary px-1.5 py-0.5 rounded text-xs font-mono text-fg-secondary break-all">{filePath}</code>;
   }
 
   if (!exists) {
     return (
-      <code className="bg-surface-secondary/50 px-1.5 py-0.5 rounded text-xs font-mono text-fg-tertiary border border-border-default/30 line-through decoration-fg-tertiary/30 break-all" title="File not found">
+      <code data-file-path-link="missing" className="bg-surface-secondary/50 px-1.5 py-0.5 rounded text-xs font-mono text-fg-tertiary border border-border-default/30 line-through decoration-fg-tertiary/30 break-all" title="File not found">
         {filePath}
       </code>
     );
@@ -375,6 +376,7 @@ export function FilePathLink({ path: filePath }: { path: string }) {
   return (
     <>
       <code
+        data-file-path-link="ready"
         className="bg-brand-500/10 px-1.5 py-0.5 rounded text-xs font-mono text-brand-500 cursor-pointer hover:bg-brand-500/20 transition-colors border border-brand-500/20 hover:border-brand-500/40 break-all"
         onClick={handleClick}
         title={isPreviewable ? 'Click to preview' : 'Click to reveal in file explorer'}

@@ -66,6 +66,24 @@ export function normalizeWindowsPathsInMarkdown(text: string): string {
   );
 }
 
+// ─── Bare filesystem-path detection (inline-code chips / preview) ────────────
+//
+// A path segment may contain **any** Unicode letter/number — Chinese file names
+// such as `/…/xhs-ootd-一周5天通勤穿搭/方案与提示词_v3.md` are perfectly valid.
+// The previous ASCII-only whitelist `[\w.\-@+]` silently rejected them, so the
+// renderer fell back to a plain `<code>` span: no preview, no reveal, no click.
+//
+// `u` flag is mandatory for `\p{…}`; it also keeps astral characters (emoji,
+// CJK ext-B) as one code point so the regex can never split a surrogate pair.
+const FILE_PATH_RE = /^(?:(?:\/|~\/|\.\.?\/)[\p{L}\p{N}\p{M}\w.@+\-\u3000-\u303f\uff00-\uffef]+(?:\/[\p{L}\p{N}\p{M}\w.@+\- \u3000-\u303f\uff00-\uffef]*)*|[A-Za-z]:[\\/][\p{L}\p{N}\p{M}\w.@+\- \u3000-\u303f\uff00-\uffef]+(?:(?:\\|\/)[\p{L}\p{N}\p{M}\w.@+\- \u3000-\u303f\uff00-\uffef]*)*)$/u;
+
+/** True when `text` is one bare filesystem path (POSIX abs / ~ / drive / ./ ../),
+ *  including non-ASCII (CJK, accented, Cyrillic…) file and directory names. */
+export function looksLikeFilePath(text: string): boolean {
+  if (text.length < 2 || text.length > 500) return false;
+  return FILE_PATH_RE.test(text);
+}
+
 /** GitHub-flavored-ish heading slug (unicode letters kept). */
 export function slugifyHeading(text: string): string {
   return text

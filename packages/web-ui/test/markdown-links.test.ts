@@ -3,6 +3,7 @@ import {
   classifyMarkdownHref,
   dirnamePath,
   isLocalFilesystemPath,
+  looksLikeFilePath,
   normalizeLocalFilesystemPath,
   normalizeWindowsPathsInMarkdown,
   resolvePathAgainstBase,
@@ -28,6 +29,43 @@ describe('resolvePathAgainstBase', () => {
 
   it('dirnamePath strips filename', () => {
     expect(dirnamePath('/a/b/c.md')).toBe('/a/b');
+  });
+});
+
+describe('looksLikeFilePath', () => {
+  it('accepts ASCII paths (unchanged behaviour)', () => {
+    expect(looksLikeFilePath('/tmp/a.md')).toBe(true);
+    expect(looksLikeFilePath('/usr/local/bin')).toBe(true);
+    expect(looksLikeFilePath('~/notes/todo.md')).toBe(true);
+    expect(looksLikeFilePath('./sib.md')).toBe(true);
+    expect(looksLikeFilePath('../up/x.md')).toBe(true);
+    expect(looksLikeFilePath('C:/Users/me/doc.md')).toBe(true);
+  });
+
+  it('accepts CJK / non-ASCII file and directory names', () => {
+    // The reported regression: a real file that rendered as dead <code> text.
+    expect(looksLikeFilePath(
+      '/Users/liuqian/mycode/vision_explosion/prompts/xhs-ootd-一周5天通勤穿搭/方案与提示词_v3.md',
+    )).toBe(true);
+    expect(looksLikeFilePath('~/文档/周报/2026年09月.md')).toBe(true);
+    expect(looksLikeFilePath('./子目录/文件.txt')).toBe(true);
+    expect(looksLikeFilePath('/tmp/方案（终版）.md')).toBe(true);
+    expect(looksLikeFilePath('/tmp/report_сводка.md')).toBe(true);
+  });
+
+  it('accepts CJK names in Windows-style paths', () => {
+    expect(looksLikeFilePath('C:\\Users\\19684\\.markus\\生成\\图.jpg')).toBe(true);
+    expect(looksLikeFilePath('C:/Users/19684/.markus/生成/图.jpg')).toBe(true);
+  });
+
+  it('rejects things that are not bare filesystem paths', () => {
+    expect(looksLikeFilePath('')).toBe(false);
+    expect(looksLikeFilePath('a')).toBe(false);
+    expect(looksLikeFilePath('hello world')).toBe(false);
+    expect(looksLikeFilePath('https://example.com/中文')).toBe(false);
+    expect(looksLikeFilePath('npm install')).toBe(false);
+    expect(looksLikeFilePath('一周5天通勤穿搭')).toBe(false);
+    expect(looksLikeFilePath('/' + 'x'.repeat(600))).toBe(false);
   });
 });
 
