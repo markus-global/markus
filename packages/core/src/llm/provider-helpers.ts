@@ -53,6 +53,10 @@ export const FINISH_REASON_MAP: Record<string, LLMResponse['finishReason']> = {
   stop: 'end_turn',
   tool_calls: 'tool_use',
   length: 'max_tokens',
+  // Legacy OpenAI (pre-`tool_calls`) and some older self-hosted gateways.
+  function_call: 'tool_use',
+  // Anthropic / some compatible gateways.
+  stop_sequence: 'stop_sequence',
 };
 
 // ---------------------------------------------------------------------------

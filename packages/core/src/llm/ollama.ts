@@ -14,8 +14,10 @@ interface OllamaTool {
 }
 
 interface OllamaChatResponse {
-  message: OllamaMessage;
+  message: OllamaMessage & { thinking?: string };
   done: boolean;
+  /** Why generation stopped: 'stop' | 'length' | 'load' | 'unload'. */
+  done_reason?: string;
   total_duration?: number;
   eval_count?: number;
   prompt_eval_count?: number;
@@ -138,9 +140,11 @@ export class OllamaProvider implements LLMProviderInterface {
     }
 
     let content = '';
+    let reasoningContent = '';
     const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
     let promptTokens = 0;
     let completionTokens = 0;
+    let doneReason: LLMResponse['finishReason'] | undefined;
 
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No response body reader');
@@ -169,6 +173,15 @@ export class OllamaProvider implements LLMProviderInterface {
             onEvent({ type: 'text_delta', text: chunk.message.content });
           }
 
+          // Reasoning models (deepseek-r1, qwen3, …) stream their chain-of-thought
+          // in `message.thinking`. It used to be dropped entirely, so the agent
+          // lost the reasoning trace it shows in the UI.
+          const thinking = chunk.message?.thinking;
+          if (thinking) {
+            reasoningContent += thinking;
+            onEvent({ type: 'thinking_delta', thinking });
+          }
+
           if (chunk.message?.tool_calls) {
             for (const tc of chunk.message.tool_calls) {
               const id = `call_${Date.now()}_${toolCalls.length}`;
@@ -181,6 +194,9 @@ export class OllamaProvider implements LLMProviderInterface {
           if (chunk.done) {
             promptTokens = chunk.prompt_eval_count ?? 0;
             completionTokens = chunk.eval_count ?? 0;
+            // 'length' means the reply hit num_predict and was cut off — say so
+            // instead of always reporting a clean end_turn.
+            if (chunk.done_reason === 'length') doneReason = 'max_tokens';
           }
         } catch { /* skip */ }
       }
@@ -189,11 +205,14 @@ export class OllamaProvider implements LLMProviderInterface {
     clearTimeout(hardTimer);
     if (idleTimer) clearTimeout(idleTimer);
 
-    const finishReason: LLMResponse['finishReason'] = toolCalls.length > 0 ? 'tool_use' : 'end_turn';
+    const finishReason: LLMResponse['finishReason'] =
+      toolCalls.length > 0 ? 'tool_use' : (doneReason ?? 'end_turn');
     const usage = { inputTokens: promptTokens, outputTokens: completionTokens };
     onEvent({ type: 'message_end', usage, finishReason });
 
-    return { content, toolCalls: toolCalls.length ? toolCalls : undefined, usage, finishReason };
+    const result: LLMResponse = { content, toolCalls: toolCalls.length ? toolCalls : undefined, usage, finishReason };
+    if (reasoningContent) result.reasoningContent = reasoningContent;
+    return result;
   }
 
   private convertMessages(rawMessages: LLMMessage[]): OllamaMessage[] {
