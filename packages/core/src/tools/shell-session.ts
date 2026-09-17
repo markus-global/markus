@@ -18,6 +18,7 @@ import {
   SHELL_SESSION_IDLE_TIMEOUT_MS,
   SHELL_SESSION_MAX_OUTPUT_BYTES,
 } from '@markus/shared';
+import { isIsolatedProcessGroup, killProcessTree } from './process-group.js';
 
 export interface ShellSession {
   id: string;
@@ -27,6 +28,11 @@ export interface ShellSession {
   createdAt: number;
   lastUsedAt: number;
   alive: boolean;
+  /**
+   * The shell leads its own POSIX process group, so killing the session also
+   * reaps whatever the agent launched through it.
+   */
+  isolatedGroup: boolean;
 }
 
 interface PendingCommand {
@@ -50,6 +56,7 @@ class ManagedSession {
   readonly id: string;
   readonly agentId: string;
   readonly process: ChildProcess;
+  readonly isolatedGroup: boolean;
   readonly createdAt = Date.now();
   lastUsedAt = Date.now();
   alive = true;
@@ -58,10 +65,11 @@ class ManagedSession {
   private dataBuffer = '';
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(id: string, agentId: string, proc: ChildProcess) {
+  constructor(id: string, agentId: string, proc: ChildProcess, isolatedGroup = false) {
     this.id = id;
     this.agentId = agentId;
     this.process = proc;
+    this.isolatedGroup = isolatedGroup;
 
     proc.stdout?.on('data', (chunk: Buffer) => this.onData(chunk.toString()));
     proc.stderr?.on('data', (chunk: Buffer) => this.onData(chunk.toString()));
@@ -203,12 +211,10 @@ class ManagedSession {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.alive = false;
     this.rejectPending('Session killed');
-    try {
-      this.process.kill('SIGTERM');
-      setTimeout(() => {
-        try { this.process.kill('SIGKILL'); } catch { /* already dead */ }
-      }, 1000);
-    } catch { /* already dead */ }
+    // SIGTERM → SIGKILL over the whole process group: anything the agent
+    // started through this session (dev servers, watchers, test runners) must
+    // die with it, otherwise it is reparented to PID 1 and leaks forever.
+    killProcessTree(this.process, this.process.pid ?? 0, this.isolatedGroup);
   }
 
   toInfo(): ShellSession {
@@ -220,6 +226,7 @@ class ManagedSession {
       createdAt: this.createdAt,
       lastUsedAt: this.lastUsedAt,
       alive: this.alive,
+      isolatedGroup: this.isolatedGroup,
     };
   }
 }
@@ -368,9 +375,16 @@ export class ShellSessionManager {
         ...(isWin ? {} : { PS1: '', PS2: '', PROMPT_COMMAND: '', TERM: 'dumb', ENV: '' }),
       },
       windowsHide: true,
+      // Own process group (setsid) → killSession() can reap descendants too.
+      detached: !isWin,
     });
 
-    const session = new ManagedSession(sessionId, agentId, child);
+    const session = new ManagedSession(
+      sessionId,
+      agentId,
+      child,
+      isIsolatedProcessGroup(child.pid),
+    );
     this.sessions.set(sessionId, session);
 
     const agentSet = this.agentSessions.get(agentId) ?? new Set();

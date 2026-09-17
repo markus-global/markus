@@ -2,6 +2,13 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
 import { platform } from 'node:os';
 import type { AgentToolHandler } from '../agent.js';
+import {
+  KILL_GRACE_MS,
+  isIsolatedProcessGroup,
+  isProcessGroupAlive,
+  killProcessTree,
+  type SignalDelivery,
+} from './process-group.js';
 
 interface BackgroundSession {
   id: string;
@@ -14,6 +21,18 @@ interface BackgroundSession {
   process: ChildProcess;
   /** Whether the completion has been consumed via drainCompletedNotifications */
   notified: boolean;
+  /**
+   * The wrapper leads its own POSIX process group (spawned `detached`), so
+   * `kill(-pid)` reaches every descendant instead of only the shell.
+   */
+  isolatedGroup: boolean;
+  /** How the last termination signal was delivered (for diagnostics). */
+  killDelivery?: SignalDelivery;
+}
+
+/** Wrapper already exited, yet members of its process group are still alive. */
+function hasLeakedDescendants(s: BackgroundSession): boolean {
+  return s.exitCode !== null && s.isolatedGroup && isProcessGroupAlive(s.pid);
 }
 
 const sessions = new Map<string, BackgroundSession>();
@@ -129,6 +148,10 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
           cwd: effectiveCwd,
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
+          // POSIX: give the wrapper its own process group (setsid) so that a
+          // timeout/kill can reach the grandchildren too. Without this the
+          // wrapper shares Markus' group and `kill(-pid)` would be unsafe.
+          detached: !isWin,
         },
       );
 
@@ -142,6 +165,7 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
         stderr: [],
         process: child,
         notified: false,
+        isolatedGroup: isIsolatedProcessGroup(child.pid),
       };
 
       child.stdout?.on('data', (chunk: Buffer) => {
@@ -160,7 +184,19 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
         }
       });
 
+      let autoKillTimer: ReturnType<typeof setTimeout> | null = null;
+      let cancelEscalation: (() => void) | null = null;
+      const releaseTimers = () => {
+        if (autoKillTimer) {
+          clearTimeout(autoKillTimer);
+          autoKillTimer = null;
+        }
+        cancelEscalation?.();
+        cancelEscalation = null;
+      };
+
       child.on('close', (code) => {
+        releaseTimers();
         session.exitCode = code ?? -1;
         notifyCompletion(session);
       });
@@ -171,11 +207,23 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
         }
       });
 
-      // Auto-kill timeout
+      // Auto-kill timeout. Kills the WHOLE process tree: signalling only the
+      // wrapper used to leave grandchildren (`vitest` fork workers, `tsx`
+      // watchers, …) alive and reparented to PID 1, where nothing could ever
+      // reach them again.
       if (timeoutSec > 0) {
-        setTimeout(() => {
+        autoKillTimer = setTimeout(() => {
+          if (session.exitCode !== null) return;
+          const handle = killProcessTree(child, session.pid, session.isolatedGroup, () => {
+            // SIGTERM was ignored, SIGKILL has now been sent.
+            if (session.exitCode === null) {
+              session.exitCode = -1;
+              notifyCompletion(session);
+            }
+          });
+          session.killDelivery = handle.delivered;
+          cancelEscalation = handle.cancelEscalation;
           if (session.exitCode === null) {
-            child.kill('SIGTERM');
             session.exitCode = -1;
             notifyCompletion(session);
           }
@@ -189,6 +237,7 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
         sessionId: id,
         pid: child.pid,
         command,
+        killsProcessTree: session.isolatedGroup,
       });
     },
   };
@@ -227,6 +276,9 @@ export function createProcessTool(): AgentToolHandler {
             exitCode: s.exitCode,
             uptime: s.exitCode === null ? Date.now() - s.startedAt : undefined,
             outputLines: s.stdout.length + s.stderr.length,
+            // Wrapper gone but descendants still burning CPU → use
+            // `process kill` on this session to reap them.
+            orphanedDescendants: hasLeakedDescendants(s) || undefined,
           }));
           return JSON.stringify({ status: 'success', sessions: list });
         }
@@ -244,6 +296,7 @@ export function createProcessTool(): AgentToolHandler {
             running: s.exitCode === null,
             exitCode: s.exitCode,
             uptimeMs: Date.now() - s.startedAt,
+            orphanedDescendants: hasLeakedDescendants(s) || undefined,
             stdout: recentStdout,
             stderr: recentStderr || undefined,
           });
@@ -267,21 +320,57 @@ export function createProcessTool(): AgentToolHandler {
           const s = sessions.get(sessionId);
           if (!s) return JSON.stringify({ status: 'error', error: `Session not found: ${sessionId}` });
           if (s.exitCode !== null) {
-            return JSON.stringify({ status: 'success', message: 'Process already exited', exitCode: s.exitCode });
+            if (!hasLeakedDescendants(s)) {
+              return JSON.stringify({ status: 'success', message: 'Process already exited', exitCode: s.exitCode });
+            }
+            // The wrapper is gone but its descendants survived; the signal is
+            // still delivered to the (possibly leaderless) group.
+            const reap = killProcessTree(s.process, s.pid, s.isolatedGroup);
+            s.killDelivery = reap.delivered;
+            return JSON.stringify({
+              status: 'success',
+              message: `Process already exited (exitCode ${s.exitCode}), but its descendants were still alive — SIGTERM sent to the process group of PID ${s.pid}; SIGKILL follows in ${KILL_GRACE_MS}ms if anything survives`,
+              reaped: true,
+            });
           }
-          s.process.kill('SIGKILL');
-          return JSON.stringify({ status: 'success', message: `SIGKILL sent to PID ${s.pid}` });
+          const kill = killProcessTree(s.process, s.pid, s.isolatedGroup, () => {
+            if (s.exitCode === null) {
+              s.exitCode = -1;
+              notifyCompletion(s);
+            }
+          });
+          s.killDelivery = kill.delivered;
+          return JSON.stringify({
+            status: 'success',
+            message: `SIGTERM sent to ${kill.delivered === 'group' ? `the process group of PID ${s.pid} (wrapper + all descendants)` : `PID ${s.pid}`}; SIGKILL follows in ${KILL_GRACE_MS}ms if anything survives`,
+          });
         }
 
         case 'clear': {
           const removed: string[] = [];
+          const keptOrphaned: string[] = [];
           for (const [id, s] of sessions) {
-            if (s.exitCode !== null) {
-              sessions.delete(id);
-              removed.push(id);
+            if (s.exitCode === null) continue;
+            if (hasLeakedDescendants(s)) {
+              // Dropping the entry would throw away the only handle able to
+              // kill those descendants — keep it and tell the caller why.
+              keptOrphaned.push(id);
+              continue;
             }
+            sessions.delete(id);
+            removed.push(id);
           }
-          return JSON.stringify({ status: 'success', cleared: removed.length, sessionIds: removed });
+          return JSON.stringify({
+            status: 'success',
+            cleared: removed.length,
+            sessionIds: removed,
+            ...(keptOrphaned.length > 0
+              ? {
+                  keptOrphaned,
+                  hint: 'These sessions finished but their descendants are still running. Call process kill on them to reap the process group.',
+                }
+              : {}),
+          });
         }
 
         default:
