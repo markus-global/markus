@@ -14,6 +14,33 @@ import { OpenAIProvider } from './openai.js';
  */
 export class MiniMaxProvider extends OpenAIProvider {
 
+  /**
+   * MiniMax's *own* API (image / TTS / video) additionally requires the account
+   * `GroupId` as a query parameter — it cannot be derived from the API key, and
+   * the OpenAI-compatible chat layer never needs it, which is why it was missing
+   * here. Set MINIMAX_GROUP_ID (or MINIMAX_CN_GROUP_ID for the China endpoint).
+   * When it is absent we still send the request, so accounts that do not need it
+   * keep working and the provider's error message is surfaced verbatim.
+   */
+  private get groupId(): string {
+    return (process.env['MINIMAX_GROUP_ID'] ?? process.env['MINIMAX_CN_GROUP_ID'] ?? '').trim();
+  }
+
+  /**
+   * Native MiniMax endpoint: base path plus `GroupId`, merging any extra query
+   * params correctly (the polling endpoints append `task_id` / `file_id`, so a
+   * naive `?GroupId=` concatenation would yield a malformed `...?GroupId=x?a=y`).
+   */
+  private nativeEndpoint(path: string, params: Record<string, string> = {}): string {
+    const url = this.buildEndpoint(path);
+    const query = new URLSearchParams();
+    const groupId = this.groupId;
+    if (groupId) query.set('GroupId', groupId);
+    for (const [key, value] of Object.entries(params)) query.set(key, value);
+    const qs = query.toString();
+    return qs ? `${url}?${qs}` : url;
+  }
+
   override getCapabilities(): ProviderCapabilities {
     return {
       chat: true,
@@ -80,7 +107,7 @@ export class MiniMaxProvider extends OpenAIProvider {
   // ---------------------------------------------------------------------------
 
   override async generateImage(prompt: string, options?: ImageGenOptions): Promise<ImageResult[]> {
-    const endpoint = this.buildEndpoint('/image_generation');
+    const endpoint = this.nativeEndpoint('/image_generation');
     const authorization = await this.resolveAuthHeader();
 
     const body: Record<string, unknown> = {
@@ -130,7 +157,7 @@ export class MiniMaxProvider extends OpenAIProvider {
   // ---------------------------------------------------------------------------
 
   override async generateSpeech(text: string, options?: TTSOptions): Promise<AudioResult> {
-    const endpoint = this.buildEndpoint('/t2a_v2');
+    const endpoint = this.nativeEndpoint('/t2a_v2');
     const authorization = await this.resolveAuthHeader();
 
     const format = options?.responseFormat ?? 'mp3';
@@ -191,7 +218,7 @@ export class MiniMaxProvider extends OpenAIProvider {
     if (options?.duration) body['duration'] = options.duration;
     if (options?.size) body['resolution'] = sizeToResolution(options.size);
 
-    const createEndpoint = this.buildEndpoint('/video_generation');
+    const createEndpoint = this.nativeEndpoint('/video_generation');
     const createRes = await fetch(createEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
@@ -216,13 +243,13 @@ export class MiniMaxProvider extends OpenAIProvider {
       throw new Error('MiniMax video generation returned no task_id');
     }
 
-    const queryBase = this.buildEndpoint('/query/video_generation');
+    const queryBase = this.nativeEndpoint('/query/video_generation', { task_id: taskId });
     // Poll every 5s up to ~30 min for long video jobs.
     const maxAttempts = 360;
     for (let i = 0; i < maxAttempts; i++) {
       await sleep(5_000);
 
-      const queryRes = await fetch(`${queryBase}?task_id=${taskId}`, {
+      const queryRes = await fetch(queryBase, {
         method: 'GET',
         headers: { Authorization: authorization },
         signal: AbortSignal.timeout(15_000),
@@ -237,8 +264,8 @@ export class MiniMaxProvider extends OpenAIProvider {
       };
 
       if (queryData.status === 'Success' && queryData.file_id) {
-        const fileEndpoint = this.buildEndpoint('/files/retrieve');
-        const fileRes = await fetch(`${fileEndpoint}?file_id=${queryData.file_id}`, {
+        const fileEndpoint = this.nativeEndpoint('/files/retrieve', { file_id: queryData.file_id });
+        const fileRes = await fetch(fileEndpoint, {
           method: 'GET',
           headers: { Authorization: authorization },
           signal: AbortSignal.timeout(15_000),
