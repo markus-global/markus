@@ -1,10 +1,10 @@
 import type { AgentToolHandler } from '../agent.js';
-import type { AgentMindState } from '@markus/shared';
 import {
   NOTEBOOK_KEY_MAX_CHARS,
   NOTEBOOK_MAX_AGENT_ENTRIES,
   NOTEBOOK_MAX_CHARS_PER_ENTRY,
   NOTEBOOK_MAX_ENTRIES,
+  type AgentMindState,
 } from '@markus/shared';
 
 export interface MailboxToolContext {

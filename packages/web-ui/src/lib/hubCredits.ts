@@ -101,7 +101,7 @@ export function isPersonalLimit(
   orgMeta?: HubOrgLike | null,
 ): boolean {
   const limit = plan?.memberCuLimit;
-  if (limit == null || limit <= 0) return false;
+  if (limit === null || limit === undefined || limit <= 0) return false;
   if (!orgMeta) return false;
   return orgMeta.role !== 'owner'
     && orgMeta.role !== 'admin'
@@ -123,7 +123,7 @@ export function resolveCreditSummary(
   if (!plan) return EMPTY;
 
   const personalLimit = isPersonalLimit(plan, orgMeta);
-  const hasMemberLimit = plan.memberCuLimit != null && plan.memberCuLimit > 0;
+  const hasMemberLimit = plan.memberCuLimit !== null && plan.memberCuLimit !== undefined && plan.memberCuLimit > 0;
   const columnQuota = num(plan.monthlyQuotaCu) + num(plan.bonusCu) + num(plan.purchasedCu);
 
   const total = personalLimit

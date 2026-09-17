@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as WindowModuleNs from './window.js';
 
 /**
  * Regression guard for the "click the dock icon → back to overview" bug.
@@ -67,7 +68,7 @@ vi.mock('electron', () => ({
   },
 }));
 
-type WindowModule = typeof import('./window.js');
+type WindowModule = typeof WindowModuleNs;
 let mod: WindowModule;
 
 /** Fresh module state per test (mainWindow is module-private). */
