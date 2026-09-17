@@ -12,6 +12,7 @@ import { OllamaProvider } from './ollama.js';
 import { MarkusProvider, clearMarkusModelListCache } from './markus-provider.js';
 import { findCatalogEntry } from './router-catalog-match.js';
 import { isObsoleteMarkusModel } from './hub-recommended-routing.js';
+import { discoverProviderModels, PROVIDER_DEFAULT_BASE_URLS } from './model-discovery.js';
 import { AuthProfileStore } from './auth-profiles.js';
 import { OAuthManager } from './oauth-manager.js';
 import type { ModelCatalogService } from './model-catalog.js';
@@ -76,6 +77,13 @@ const CAPABILITY_KEY_MAP: Partial<Record<ModelCapabilityType, keyof ProviderCapa
   audio_stt: 'stt',
   video_generation: 'videoGeneration',
 };
+
+/**
+ * How long a successful live model-list sync stays authoritative before we ask
+ * the provider again. Long enough to avoid hammering `/models` on every
+ * settings render, short enough that a new model release shows up on its own.
+ */
+export const LIVE_MODEL_SYNC_TTL_MS = 10 * 60 * 1000;
 
 const MINIMAX_NAMES = new Set(['minimax', 'minimax-cn']);
 const DASHSCOPE_NAMES = new Set(['dashscope']);
@@ -184,6 +192,16 @@ export class LLMRouter {
   private providerDegraded = new Map<string, { degraded: boolean; lastFailureAt: number; resetMs: number }>();
   private customModelConfigs = new Map<string, { contextWindow?: number; maxOutputTokens?: number; cost?: ModelCostConfig }>();
   private customModelCatalog = new Map<string, ModelDefinition[]>();
+  /**
+   * Providers whose `customModelCatalog` entry came from a live model-list
+   * discovery call. For those, the discovered list is authoritative for
+   * conversational models and the static BUILTIN_MODEL_CATALOG is only merged
+   * in for multimodal-only entries (image / TTS / STT / video) that the usual
+   * `/models` endpoint does not advertise.
+   */
+  private liveModelProviders = new Set<string>();
+  /** Last successful live discovery per provider (throttles repeat syncs). */
+  private liveModelSyncedAt = new Map<string, number>();
   private disabledProviders = new Set<string>();
 
   /** Per-provider in-flight request counter for concurrency-aware jitter */
@@ -560,6 +578,16 @@ export class LLMRouter {
       }
     }
 
+    // Live-discovered providers: the provider's own list is authoritative for
+    // conversational models, so we never fall back to the static catalog's
+    // guessed ids for them (that is the whole point of discovery).
+    if (this.liveModelProviders.has(providerName)) {
+      const live = this.customModelCatalog.get(providerName);
+      if (live && live.length > 0) {
+        return live.map(m => this.enrichModelFromCatalog(m));
+      }
+    }
+
     let builtinModels = BUILTIN_MODEL_CATALOG.filter(m => m.provider === providerName);
     // For regional aliases, inherit the parent provider's catalog with provider field swapped
     if (builtinModels.length === 0 && REGIONAL_PROVIDER_ALIASES[providerName]) {
@@ -808,82 +836,110 @@ export class LLMRouter {
    * (and therefore would otherwise show zero models in pickers). If the
    * provider already has a usable catalog (builtin/custom) we skip the call.
    */
-  async refreshProviderLiveModels(providerName: string, baseUrl?: string, apiKey?: string): Promise<number> {
-    // Already has a usable model list — nothing to do.
-    if (this.getProviderModels(providerName).length > 0) return 0;
+  async refreshProviderLiveModels(
+    providerName: string,
+    baseUrl?: string,
+    apiKey?: string,
+    opts?: { force?: boolean },
+  ): Promise<number> {
+    // Markus Cloud models come from the Hub catalog (Hub owns the upstream key
+    // and the geo filtering) — never from an OpenAI-compatible /models call.
+    if (providerName === 'markus') return 0;
+    // Ollama has no /v1/models; its own list is /api/tags (+ /api/show probing).
+    if (providerName === 'ollama') return this.refreshOllamaLocalModels(baseUrl);
+
     const provider = this.providers.get(providerName);
-    const effectiveBase =
+    const configuredBase =
       baseUrl
-      ?? (provider as any)?.baseUrl;
-    if (!effectiveBase) return 0;
-    const effectiveKey = apiKey ?? (provider as any)?.apiKey;
+      ?? (provider as any)?.baseUrl
+      ?? PROVIDER_DEFAULT_BASE_URLS[providerName];
+    if (!configuredBase) return 0;
+
+    // A recent successful sync is reused — unless the caller forces a refresh
+    // (settings "reload models"). Keeps every settings render from hitting the
+    // network while still letting a new model appear without a restart.
+    const lastSync = this.liveModelSyncedAt.get(providerName) ?? 0;
+    if (
+      !opts?.force
+      && this.liveModelProviders.has(providerName)
+      && Date.now() - lastSync < LIVE_MODEL_SYNC_TTL_MS
+    ) {
+      return this.customModelCatalog.get(providerName)?.length ?? 0;
+    }
+
+    // Only this provider's own credential is ever sent. The provider instance
+    // resolves its key from its own config (a user-supplied endpoint must never
+    // receive an unrelated env key such as OPENAI_API_KEY).
+    const effectiveKey = String(apiKey ?? (provider as any)?.apiKey ?? '').trim();
+
     try {
-      const headers: Record<string, string> = {};
-      if (effectiveKey) headers['Authorization'] = `Bearer ${effectiveKey}`;
-      const ctrl = new AbortController();
-      const tmr = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch(`${String(effectiveBase).replace(/\/+$/, '')}/v1/models`, {
-        headers,
-        signal: ctrl.signal,
+      const discovered = await discoverProviderModels({
+        provider: providerName,
+        baseUrl: configuredBase,
+        apiKey: effectiveKey,
       });
-      clearTimeout(tmr);
-      if (!res.ok) return 0;
-      const data = await res.json() as { data?: Array<Record<string, unknown> & { id?: string }> };
-      const ids = (data.data ?? []).map(m => m.id).filter((x): x is string => !!x);
-      if (ids.length === 0) return 0;
-      // Some OpenAI-compatible gateways expose capability hints in /v1/models
-      // (OpenRouter: architecture.input_modalities; others: capabilities[] /
-      // capabilities.{vision} / input_modalities / a bare `vision` flag).
-      // Read them defensively so multimodal self-hosted/custom providers are pickable.
-      const defs: ModelDefinition[] = (data.data ?? []).map(m => {
-        const id = m.id ?? '';
-        const raw = m as Record<string, unknown>;
-        const capsArr = Array.isArray(raw.capabilities) ? raw.capabilities as unknown[] : [];
-        const capsObj = (raw.capabilities ?? {}) as Record<string, unknown>;
-        const arch = (raw.architecture ?? {}) as Record<string, unknown>;
-        const modalities = (arch.input_modalities ?? raw.input_modalities ?? []) as unknown[];
-        const flagTrue = (key: string) => capsObj[key] === true || capsArr.includes(key) || raw[key] === true;
-        const hasVision = modalities.includes('image') || flagTrue('vision');
-        const hasReasoning = flagTrue('reasoning') || flagTrue('thinking');
-        // OpenAI-compatible gateways expose the real window under various keys:
-        // context_window / context_length / max_model_len / max_context_length.
-        // 128-char heuristic is fine — we only need >0 to avoid a bogus 0 that
-        // would send the budget planner down a fallback path and under-size a
-        // modern large-window model. If absent, keep 0 so the caller's fallback
-        // (now flagship-scale) still yields a usable budget instead of a 0.
-        const rawCtx = raw.context_window ?? raw.context_length
-          ?? raw.max_model_len ?? raw.max_context_length ?? raw.context;
-        const windowOrZero =
-          typeof rawCtx === 'number' && Number.isFinite(rawCtx) && rawCtx > 0
-            ? rawCtx
-            : typeof rawCtx === 'string'
-              ? (parseInt(String(rawCtx), 10) || 0)
-              : 0;
-        const maxOut = raw.max_output_tokens ?? raw.max_tokens ?? raw.max_tokens_out;
-        const maxOutVal =
-          typeof maxOut === 'number' && Number.isFinite(maxOut) && maxOut > 0
-            ? maxOut
-            : typeof maxOut === 'string'
-              ? (parseInt(String(maxOut), 10) || 0)
-              : 0;
-        return {
-          id,
-          name: id,
-          provider: providerName,
-          contextWindow: windowOrZero,
-          maxOutputTokens: maxOutVal,
-          cost: { input: 0, output: 0 },
-          reasoning: hasReasoning || undefined,
-          inputTypes: hasVision ? ['text', 'image'] as Array<'text' | 'image'> : ['text'] as Array<'text' | 'image'>,
-        };
-      }).filter(m => m.id.length > 0);
-      this.customModelCatalog.set(providerName, defs);
-      log.info(`Synced ${defs.length} live models for provider ${providerName}`, { baseUrl: effectiveBase });
+
+      if (discovered.length === 0) {
+        log.warn(`Live model list for ${providerName} returned no usable models — keeping previous list`, {
+          baseUrl: configuredBase,
+        });
+        return this.customModelCatalog.get(providerName)?.length ?? 0;
+      }
+
+      const defs: ModelDefinition[] = discovered.map(m => ({
+        id: m.id,
+        name: m.name ?? m.id,
+        provider: providerName,
+        contextWindow: m.contextWindow ?? 0,
+        maxOutputTokens: m.maxOutputTokens ?? 0,
+        cost: { input: 0, output: 0 },
+        reasoning: m.reasoning || undefined,
+        inputTypes: m.vision
+          ? (['text', 'image'] as Array<'text' | 'image'>)
+          : (['text'] as Array<'text' | 'image'>),
+      }));
+
+      this.customModelCatalog.set(providerName, this.withBuiltinMediaModels(providerName, defs));
+      this.liveModelProviders.add(providerName);
+      this.liveModelSyncedAt.set(providerName, Date.now());
+      log.info(`Synced ${defs.length} live models for provider ${providerName}`, {
+        baseUrl: configuredBase,
+      });
       return defs.length;
     } catch (err) {
-      log.warn(`Live model sync failed for provider ${providerName}`, { error: String(err), baseUrl: effectiveBase });
-      return 0;
+      // Keep the last-known-good list: an offline provider or a bad key must
+      // not empty the picker.
+      log.warn(`Live model sync failed for provider ${providerName}`, {
+        error: String(err),
+        baseUrl: configuredBase,
+      });
+      return this.customModelCatalog.get(providerName)?.length ?? 0;
     }
+  }
+
+  /**
+   * Merge the curated multimodal-only builtin entries (image / TTS / STT /
+   * video) into a live-discovered list.
+   *
+   * Those models are served from side endpoints and are usually absent from
+   * `/models`, but the builtin entries we ship for them are hand-checked, so
+   * keeping them alongside the live chat list preserves multimodal routing
+   * without resurrecting the guessed conversational ids.
+   */
+  private withBuiltinMediaModels(providerName: string, live: ModelDefinition[]): ModelDefinition[] {
+    const byId = new Map(live.map(m => [m.id, m]));
+    const builtinFamily = BUILTIN_MODEL_CATALOG.filter(m => m.provider === providerName);
+    const aliasParent = REGIONAL_PROVIDER_ALIASES[providerName];
+    if (aliasParent) {
+      for (const m of BUILTIN_MODEL_CATALOG.filter(x => x.provider === aliasParent)) {
+        builtinFamily.push({ ...m, provider: providerName });
+      }
+    }
+    for (const m of builtinFamily) {
+      const isMediaOnly = (m.capabilities?.length ?? 0) > 0 && !(m.contextWindow > 0);
+      if (isMediaOnly && !byId.has(m.id)) byId.set(m.id, m);
+    }
+    return [...byId.values()];
   }
 
   /**

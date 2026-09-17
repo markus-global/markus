@@ -67,7 +67,7 @@ export const PROVIDERS: ProviderModel[] = [
     id: 'siliconflow-intl',
     label: 'SiliconFlow (Global)',
     envKey: 'SILICONFLOW_INTL_API_KEY',
-    baseUrl: 'https://api-st.siliconflow.cn/v1',
+    baseUrl: 'https://api.siliconflow.com/v1',
     defaultModel: 'Qwen/Qwen3.5-35B-A3B',
     models: [
       'Qwen/Qwen3.5-35B-A3B',
@@ -110,7 +110,7 @@ export const PROVIDERS: ProviderModel[] = [
     id: 'ollama',
     label: 'Ollama',
     envKey: 'OLLAMA_BASE_URL',
-    baseUrl: 'http://localhost:11434/v1',
+    baseUrl: 'http://localhost:11434',
     defaultModel: 'llama3',
     models: ['llama3', 'llama3.1', 'llama3.2', 'mistral', 'qwen2.5', 'codellama'],
   },
