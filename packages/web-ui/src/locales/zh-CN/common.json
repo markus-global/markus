@@ -542,5 +542,8 @@
   },
   "browserMode": "浏览器",
   "terminalMode": "终端",
-  "addRecentOutput": "将最近输出加入对话"
+  "addRecentOutput": "将最近输出加入对话",
+  "addFilePathToChat": "将文件路径加入对话",
+  "addDeliverableToChat": "将产出物加入对话",
+  "addedToChat": "已加入对话"
 }

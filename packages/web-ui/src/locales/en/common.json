@@ -542,5 +542,8 @@
   },
   "browserMode": "Browser",
   "terminalMode": "Terminal",
-  "addRecentOutput": "Add recent output to chat"
+  "addRecentOutput": "Add recent output to chat",
+  "addFilePathToChat": "Add file path to chat",
+  "addDeliverableToChat": "Add deliverable to chat",
+  "addedToChat": "Added to chat"
 }

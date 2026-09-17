@@ -503,6 +503,57 @@ export function RightPanel({
     }).catch(() => {});
   };
 
+  /**
+   * 「发送给对话」上下文标签（右侧栏预览 → 聊天输入框顶部）。
+   * 与产出物页右下角 FAB 行为一致：把当前正在看的文件 / 产出物本身作为上下文，
+   * 让 agent 明确知道「现在讨论的是哪个文件」，而不是把正文塞进输入框。
+   * 仅在有真实本地路径时提供 —— URL 预览（网页）没有可引用的文件路径，不显示入口。
+   */
+  const chatContextChip = useMemo<ChatContextChip | null>(() => {
+    if (!onAddToChat) return null;
+    const path = activePath || reference;
+    if (payload.kind === 'deliverable') {
+      const d = payload.deliverable;
+      if (!d.id && !d.reference) return null;
+      const name = title || d.title || d.reference || d.id;
+      const short = name.length > 40 ? `${name.slice(0, 24)}…${name.slice(-12)}` : name;
+      return {
+        label: `📄 ${short}`,
+        content: [
+          '[deliverable]',
+          d.id ? `ID: ${d.id}` : '',
+          d.title ? `Title: ${d.title}` : '',
+          d.reference ? `Reference: ${d.reference}` : '',
+          d.taskId ? `Task: ${d.taskId}` : '',
+          d.projectId ? `Project: ${d.projectId}` : '',
+        ].filter(Boolean).join('\n'),
+      };
+    }
+    if (payload.kind === 'file') {
+      if (!path || isUrl(path)) return null;
+      const name = title || path.split(/[/\\]/).pop() || path;
+      const short = name.length > 40 ? `${name.slice(0, 24)}…${name.slice(-12)}` : name;
+      return {
+        label: `📄 ${short}`,
+        content: [
+          '[file]',
+          `Path: ${path}`,
+          preview.mode === 'content' && preview.format ? `Format: ${preview.format}` : '',
+        ].filter(Boolean).join('\n'),
+      };
+    }
+    return null;
+  }, [onAddToChat, payload, activePath, reference, title, preview]);
+
+  const [chipAdded, setChipAdded] = useState(false);
+  const addContextToChat = useCallback(() => {
+    if (!chatContextChip) return;
+    onAddToChat?.(chatContextChip);
+    // 轻量反馈：标签加在输入框上方（面板外），按钮自己变绿提示"已加入"。
+    setChipAdded(true);
+    setTimeout(() => setChipAdded(false), 1200);
+  }, [chatContextChip, onAddToChat]);
+
   /** One chrome action: deliverable → Output page; url/file → system browser (or default app). */
   const openExternally = useCallback(async () => {
     if (payload.kind === 'deliverable') {
@@ -826,6 +877,38 @@ export function RightPanel({
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                 </svg>
+              </button>
+            )}
+            {/* 发送给对话：把当前预览的文件路径 / 产出物作为上下文标签加入输入框 */}
+            {chatContextChip && (
+              <button
+                type="button"
+                onClick={addContextToChat}
+                title={chipAdded
+                  ? t('common:addedToChat', { defaultValue: 'Added to chat' })
+                  : payload.kind === 'deliverable'
+                    ? t('common:addDeliverableToChat', { defaultValue: 'Add deliverable to chat' })
+                    : t('common:addFilePathToChat', { defaultValue: 'Add file path to chat' })}
+                aria-label={payload.kind === 'deliverable'
+                  ? t('common:addDeliverableToChat', { defaultValue: 'Add deliverable to chat' })
+                  : t('common:addFilePathToChat', { defaultValue: 'Add file path to chat' })}
+                className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+                  chipAdded
+                    ? 'text-green-500 bg-green-500/10'
+                    : 'text-fg-tertiary hover:text-brand-500 hover:bg-brand-500/10'
+                }`}
+              >
+                {chipAdded ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h6" />
+                    <line x1="17" y1="3" x2="17" y2="9" />
+                    <line x1="14" y1="6" x2="20" y2="6" />
+                  </svg>
+                )}
               </button>
             )}
             {canShare && (
