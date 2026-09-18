@@ -8,10 +8,12 @@ import {
   shortcutLessonMatches,
   applyLessonKeyPress,
   markAllLessonsLearned,
+  lessonLabelKey,
   type LessonKeyEvent,
 } from './shortcut-lessons.ts';
 import enCommon from '../locales/en/common.json';
 import zhCommon from '../locales/zh-CN/common.json';
+import zhHome from '../locales/zh-CN/home.json';
 
 const ALL_LESSON_IDS = SHORTCUT_LESSONS.map(l => l.id);
 
@@ -154,19 +156,43 @@ describe('per-user shortcut lesson state', () => {
 });
 
 describe('i18n integrity (no silent English fallback)', () => {
+  const resolveIn = (root: unknown, key: string): unknown => {
+    let cur: unknown = root;
+    for (const seg of key.split('.')) {
+      cur = (cur as Record<string, unknown> | undefined)?.[seg];
+    }
+    return cur;
+  };
+
   it('every lesson item has a labelKey and it resolves in both en + zh-CN common.json', () => {
     for (const item of SHORTCUT_LESSONS) {
       expect(item.labelKey, `lesson ${item.id} must define labelKey`).toBeTruthy();
       // labelKey 形如 "shortcuts.toggleLeft" → common.json.shortcuts.toggleLeft
-      const resolve = (root: unknown): unknown => {
-        let cur: unknown = root;
-        for (const seg of item.labelKey.split('.')) {
-          cur = (cur as Record<string, unknown> | undefined)?.[seg];
-        }
-        return cur;
-      };
-      expect(typeof resolve(enCommon), `en missing ${item.labelKey}`).toBe('string');
-      expect(typeof resolve(zhCommon), `zh-CN missing ${item.labelKey}`).toBe('string');
+      expect(typeof resolveIn(enCommon, item.labelKey), `en missing ${item.labelKey}`).toBe('string');
+      expect(typeof resolveIn(zhCommon, item.labelKey), `zh-CN missing ${item.labelKey}`).toBe('string');
+    }
+  });
+
+  // 回归：Overview「快捷键教学」弹窗曾整列显示 `shortcuts.navL0Jk` 这类原始 key。
+  // 根因是 ShortcutLessonModal 的 `t` 绑定 ns[0]='home'（react-i18next 默认 nsMode
+  // 非 fallback，只绑定首个命名空间），而文案落在 common 命名空间。
+  it('lessonLabelKey always namespace-qualifies (guards the raw-key regression)', () => {
+    for (const item of SHORTCUT_LESSONS) {
+      expect(lessonLabelKey(item.labelKey)).toBe(`common:${item.labelKey}`);
+    }
+    // 已限定命名空间的 key 不应被二次加前缀
+    expect(lessonLabelKey('common:shortcuts.toggleLeft')).toBe('common:shortcuts.toggleLeft');
+    // 分组标题同样走同一入口
+    expect(lessonLabelKey('shortcuts.groups.layout')).toBe('common:shortcuts.groups.layout');
+  });
+
+  it('lesson文案只存在于 common —— 证明裸 key 在 ns[0]=home 下必然渲染成 key 本身', () => {
+    for (const item of SHORTCUT_LESSONS) {
+      // home 命名空间没有这些文案：一旦渲染时漏加 `common:` 前缀，i18next 原样回显 key
+      expect(resolveIn(zhHome, item.labelKey), `home 命名空间不应定义 ${item.labelKey}`).toBeUndefined();
+      // 加前缀后必须命中
+      const qualified = lessonLabelKey(item.labelKey).replace(/^common:/, '');
+      expect(typeof resolveIn(zhCommon, qualified)).toBe('string');
     }
   });
 });

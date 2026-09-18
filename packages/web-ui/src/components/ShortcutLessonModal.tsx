@@ -7,6 +7,7 @@ import {
   isLessonComplete,
   shortcutLessonMatches,
   markAllLessonsLearned,
+  lessonLabelKey,
   type LessonKeyEvent,
 } from '../lib/shortcut-lessons.ts';
 import { formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
@@ -161,7 +162,7 @@ export function ShortcutLessonModal({ open, userId, onClose, onCompleted }: Prop
             {grouped.map(({ group, items }) => (
               <section key={group}>
                 <h3 className="text-[11px] font-semibold uppercase tracking-wide text-fg-tertiary mb-2">
-                  {t(`common:shortcuts.groups.${group}`, { defaultValue: group })}
+                  {t(lessonLabelKey(`shortcuts.groups.${group}`), { defaultValue: group })}
                 </h3>
                 <ul className="space-y-1">
                   {items.map(s => {
@@ -182,8 +183,10 @@ export function ShortcutLessonModal({ open, userId, onClose, onCompleted }: Prop
                               )}
                             </span>
                             <span className={`text-sm min-w-0 ${done ? 'text-fg-tertiary line-through' : 'text-fg-primary'}`}>
-                              {/* i18n 防呆：labelKey 缺失翻译时显示 key 而非英文（避免静默回落英文） */}
-                              {t(s.labelKey)}
+                              {/* i18n 防呆：labelKey 缺失翻译时显示 key 而非英文（避免静默回落英文）。
+                                  注意必须走 lessonLabelKey 加 `common:` 前缀：本组件 ns[0] 是 home，
+                                  react-i18next 默认只绑定 ns[0]，裸 key 会把 `shortcuts.xxx` 原样渲染出来。 */}
+                              {t(lessonLabelKey(s.labelKey))}
                             </span>
                           </span>
                           <kbd className="shrink-0 px-2 py-1 rounded bg-surface-elevated border border-border-default font-medium leading-none text-fg-primary font-mono">

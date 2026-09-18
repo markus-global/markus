@@ -29,6 +29,19 @@ export interface ShortcutLessonItem extends ShortcutDef {
   labelKey: string;
 }
 
+/**
+ * 教学清单渲染用的「命名空间限定」i18n key。
+ *
+ * 全量缺陷回归防护（Overview 引导「快捷键教学」曾整列显示原始 key）：
+ * ShortcutLessonModal 用 `useTranslation(['home', 'common'])` 取文案，而 react-i18next
+ * 默认（nsMode !== 'fallback'）只把 `t` 绑定到 ns[0]（= 'home'）。因此 labelKey
+ * （`shortcuts.toggleLeft`）落在 common 命名空间时不会被命中，i18next 会原样回显 key。
+ * 渲染前必须显式加 `common:` 前缀；已带命名空间前缀的原样返回。
+ */
+export function lessonLabelKey(labelKey: string): string {
+  return labelKey.includes(':') ? labelKey : `common:${labelKey}`;
+}
+
 export const SHORTCUT_LESSONS: ShortcutLessonItem[] = [
   // ── 左侧边栏（L0 折叠/展开）─────────────────────────────────────────────
   { id: 'toggle-left', group: 'layout', keys: ['B'], label: 'Toggle left sidebar', labelKey: 'shortcuts.toggleLeft', page: 'any' },
