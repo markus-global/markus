@@ -92,7 +92,23 @@ describe('SqliteReadCursorRepo.getUnreadCounts scoping', () => {
 
     cursorRepo.setReadCursor('user-1', `session:${mine.id}`, '2000-01-01T00:00:00Z');
 
-    expect(cursorRepo.getUnreadCounts('user-1')[`session:${mine.id}`]).toBe(2);
+    // 1, not 2: the ownership scoping still reports the caller's own session,
+    // but the caller's own prompt is never unread to them (see the
+    // "reader's own messages" block below).
+    expect(cursorRepo.getUnreadCounts('user-1')[`session:${mine.id}`]).toBe(1);
+  });
+
+  it('drops a session conversation entirely when the reader only wrote to it', () => {
+    const db = openSqlite(dbPath);
+    seed(db);
+    const chatRepo = new SqliteChatSessionRepo(db);
+    const cursorRepo = new SqliteReadCursorRepo(db);
+
+    const mine = chatRepo.createSession('agent-1', 'user-1');
+    chatRepo.appendMessage(mine.id, 'agent-1', 'user', 'only my prompt');
+    cursorRepo.setReadCursor('user-1', `session:${mine.id}`, '2000-01-01T00:00:00Z');
+
+    expect(cursorRepo.getUnreadCounts('user-1')).toEqual({});
   });
 
   it('ignores a cursor whose session no longer exists (dangling cursor)', () => {
@@ -169,6 +185,42 @@ describe('SqliteReadCursorRepo.getUnreadCounts conversation reachability', () =>
     cursorRepo.setReadCursor('user-1', `channel:${channel}`, '2000-01-01T00:00:00Z');
 
     expect(cursorRepo.getUnreadCounts('user-1')[`channel:${channel}`]).toBe(1);
+  });
+
+  it('does not count the reader OWN channel messages', async () => {
+    const db = openSqlite(dbPath);
+    seed(db);
+    new SqliteTeamRepo(db).create({ id: 'team_live2', orgId: 'org-1', name: 'Live 2' });
+    const channelRepo = new SqliteChannelMessageRepo(db);
+    const cursorRepo = new SqliteReadCursorRepo(db);
+
+    const channel = 'group:team_live2';
+    // The reader posts into the team channel, an agent answers, another human
+    // posts. Only the two messages the reader did NOT write are unread to them.
+    await channelRepo.append({ orgId: 'org-1', channel, senderId: 'user-1', senderType: 'human', senderName: 'Me', text: 'mine' });
+    await channelRepo.append({ orgId: 'org-1', channel, senderId: 'agent-1', senderType: 'agent', senderName: 'Worker', text: 'agent reply' });
+    await channelRepo.append({ orgId: 'org-1', channel, senderId: 'user-2', senderType: 'human', senderName: 'Peer', text: 'peer reply' });
+
+    cursorRepo.setReadCursor('user-1', `channel:${channel}`, '2000-01-01T00:00:00Z');
+
+    expect(cursorRepo.getUnreadCounts('user-1')[`channel:${channel}`]).toBe(2); // agent + peer, NOT mine
+  });
+
+  it('drops a channel conversation entirely when the reader only wrote to it', async () => {
+    // The "clearable badge" case: a channel whose only message after the cursor
+    // is the reader's own post must report no unread at all (otherwise the badge
+    // is stuck until somebody else writes).
+    const db = openSqlite(dbPath);
+    seed(db);
+    new SqliteTeamRepo(db).create({ id: 'team_live3', orgId: 'org-1', name: 'Live 3' });
+    const channelRepo = new SqliteChannelMessageRepo(db);
+    const cursorRepo = new SqliteReadCursorRepo(db);
+
+    const channel = 'group:team_live3';
+    await channelRepo.append({ orgId: 'org-1', channel, senderId: 'user-1', senderType: 'human', senderName: 'Me', text: 'mine' });
+    cursorRepo.setReadCursor('user-1', `channel:${channel}`, '2000-01-01T00:00:00Z');
+
+    expect(cursorRepo.getUnreadCounts('user-1')).toEqual({});
   });
 
   it('leaves channel types without a team handle alone', async () => {

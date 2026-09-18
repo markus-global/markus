@@ -3,11 +3,23 @@ import { api, wsClient } from '../api.ts';
 
 const POLL_INTERVAL_MS = 60_000;
 
+/**
+ * Minimum spacing between two server-side cursor advances for the same
+ * conversation while it stays open.
+ *
+ * A streaming reply broadcasts one unread event per chunk; without a floor the
+ * client would POST a mark-read per token. The floor never affects what the
+ * reader sees (an open conversation is filtered out of the counts regardless),
+ * only how often we tell the server about it.
+ */
+const AUTO_READ_THROTTLE_MS = 2_000;
+
 let _globalCounts: Record<string, number> = {};
 let _globalSessionAgentMap: Record<string, string> = {};
 const _listeners = new Set<() => void>();
 const _activeKeys = new Set<string>();
 let _graceUntil = 0;
+const _lastAutoReadAt = new Map<string, number>();
 
 // Singleton polling: one interval regardless of how many hook instances
 let _pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -33,12 +45,63 @@ function sameRecord<T>(a: Record<string, T>, b: Record<string, T>): boolean {
   return true;
 }
 
+/**
+ * Fold server counts together with the conversations the reader has open right
+ * now. The server is the source of truth for everything EXCEPT the conversation
+ * on screen - it tracks a read cursor, it cannot know that a message is already
+ * rendered in front of the reader.
+ *
+ * Leaving that to the server produced the bug this locks down: you are sitting
+ * in an agent's chat, it replies, and the agent's row grows a red "1" (and the
+ * team row above it, and the nav badge) for a message you are looking at. The WS
+ * path suppressed the optimistic +1, but the 60s poll then overwrote the store
+ * with server truth, which still counted that message as unread.
+ *
+ * `staleActiveKeys` are active conversations the server still believes are
+ * unread: the caller advances those cursors so the next poll agrees with the
+ * screen instead of having to be masked again.
+ */
+export function reconcileServerCounts(
+  server: Record<string, number>,
+  activeKeys: ReadonlySet<string>,
+): { counts: Record<string, number>; staleActiveKeys: string[] } {
+  const counts: Record<string, number> = {};
+  const staleActiveKeys: string[] = [];
+  for (const [key, count] of Object.entries(server)) {
+    if (activeKeys.has(key)) {
+      if (count > 0) staleActiveKeys.push(key);
+      continue;
+    }
+    counts[key] = count;
+  }
+  return { counts, staleActiveKeys };
+}
+
+/**
+ * Tell the server that `key` has been read, at most once per
+ * AUTO_READ_THROTTLE_MS (unless forced - see clearActiveKey).
+ */
+function _advanceReadCursor(key: string, opts?: { force?: boolean }) {
+  const now = Date.now();
+  const last = _lastAutoReadAt.get(key) ?? 0;
+  if (!opts?.force && now - last < AUTO_READ_THROTTLE_MS) return;
+  _lastAutoReadAt.set(key, now);
+  if (key in _globalCounts) {
+    delete _globalCounts[key];
+    notify();
+  }
+  void api.unread.markRead(key, new Date().toISOString()).catch(() => { /* silent */ });
+}
+
 async function _fetchCounts() {
   try {
     const resp = await api.unread.getCounts();
-    _globalCounts = resp.counts ?? {};
+    const { counts, staleActiveKeys } = reconcileServerCounts(resp.counts ?? {}, _activeKeys);
+    _globalCounts = counts;
     _globalSessionAgentMap = resp.sessionAgentMap ?? {};
     notify();
+    // Converge the server on the screen state: an open conversation is read.
+    for (const key of staleActiveKeys) _advanceReadCursor(key);
   } catch { /* silent */ }
 }
 
@@ -48,7 +111,15 @@ function _startPolling() {
   _pollTimer = setInterval(_fetchCounts, POLL_INTERVAL_MS);
   _wsUnsub = wsClient.on('chat:unread_update', (event) => {
     const key = (event.payload as { conversationKey?: string })?.conversationKey;
-    if (key && !_activeKeys.has(key) && Date.now() > _graceUntil) {
+    if (!key) return;
+    // The reader is looking at this conversation right now, so the message is
+    // already on screen = read. Don't bump the badge; do advance the server
+    // cursor so the next poll does not resurrect it (see reconcileServerCounts).
+    if (_activeKeys.has(key)) {
+      _advanceReadCursor(key);
+      return;
+    }
+    if (Date.now() > _graceUntil) {
       _globalCounts[key] = (_globalCounts[key] ?? 0) + 1;
       notify();
     }
@@ -90,6 +161,12 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
   const clearActiveKey = useCallback((key: string) => {
     _activeKeys.delete(key);
     _graceUntil = Date.now() + 150;
+    // Leaving the conversation persists its read state. A message that arrived
+    // inside the throttle window was masked client-side but never confirmed to
+    // the server, so without this last write the badge would pop back on the
+    // next poll for a conversation the reader had open the whole time.
+    _lastAutoReadAt.delete(key);
+    _advanceReadCursor(key, { force: true });
   }, []);
 
   useEffect(() => {

@@ -11,7 +11,52 @@ vi.hoisted(() => {
   return true;
 });
 
-import { sumTeamChatUnread, isAgentOnlyConversationKey } from './useUnreadCounts.ts';
+import { sumTeamChatUnread, isAgentOnlyConversationKey, reconcileServerCounts } from './useUnreadCounts.ts';
+
+describe('reconcileServerCounts (an open conversation is read by definition)', () => {
+  it('drops the conversation the reader has open, keeps every other one', () => {
+    // The reported bug: sitting in agent A's chat, A replies -> A's row (and the
+    // team row above it, and the nav badge) grew a "1" for a message already on
+    // screen. The 60s poll re-synced from the server, which still counted it.
+    const server = { 'session:open': 1, 'session:other': 3, 'channel:group:team_x': 2 };
+    const { counts, staleActiveKeys } = reconcileServerCounts(server, new Set(['session:open']));
+
+    expect(counts).toEqual({ 'session:other': 3, 'channel:group:team_x': 2 });
+    expect(counts['session:open']).toBeUndefined();
+    // ...and the server is told, so the next poll agrees with the screen.
+    expect(staleActiveKeys).toEqual(['session:open']);
+  });
+
+  it('covers channels and DMs the same way (group chat open = its badge is read)', () => {
+    const server = { 'channel:group:team_x': 4, 'channel:dm:u1:u2': 1, 'channel:group:team_y': 2 };
+    const { counts, staleActiveKeys } = reconcileServerCounts(
+      server,
+      new Set(['channel:group:team_x', 'channel:dm:u1:u2']),
+    );
+
+    expect(counts).toEqual({ 'channel:group:team_y': 2 });
+    expect(staleActiveKeys.sort()).toEqual(['channel:dm:u1:u2', 'channel:group:team_x']);
+  });
+
+  it('does not ask for a cursor advance when the server already agrees (count 0)', () => {
+    const { counts, staleActiveKeys } = reconcileServerCounts({ 'session:open': 0 }, new Set(['session:open']));
+    expect(counts).toEqual({});
+    expect(staleActiveKeys).toEqual([]);
+  });
+
+  it('is a no-op when nothing is active (cold load / hidden page)', () => {
+    const server = { 'session:a': 2, 'channel:group:team_x': 5 };
+    const { counts, staleActiveKeys } = reconcileServerCounts(server, new Set());
+    expect(counts).toEqual(server);
+    expect(staleActiveKeys).toEqual([]);
+  });
+
+  it('never mutates the server payload it was handed', () => {
+    const server = { 'session:open': 1, 'session:other': 3 };
+    reconcileServerCounts(server, new Set(['session:open']));
+    expect(server).toEqual({ 'session:open': 1, 'session:other': 3 });
+  });
+});
 
 describe('sumTeamChatUnread (BottomNav Team badge — matches Team roster derivation)', () => {
   const agentMap = { s1: 'agt-a', s2: 'agt-b' };
