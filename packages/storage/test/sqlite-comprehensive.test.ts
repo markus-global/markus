@@ -1214,7 +1214,10 @@ describe('SqliteReadCursorRepo', () => {
     const cursorRepo = new SqliteReadCursorRepo(db);
 
     const session = chatRepo.createSession('agent-1', 'user-1');
-    chatRepo.appendMessage(session.id, 'agent-1', 'user', 'Unread message');
+    // One prompt from the reader + one agent reply: only the reply is unread to
+    // the reader (their own prompt is never unread to them - see unread-scope).
+    chatRepo.appendMessage(session.id, 'agent-1', 'user', 'My prompt');
+    chatRepo.appendMessage(session.id, 'agent-1', 'assistant', 'Unread message');
 
     const gc = groupRepo.create({
       orgId: 'org-1',

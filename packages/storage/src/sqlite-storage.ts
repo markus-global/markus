@@ -5465,9 +5465,17 @@ export class SqliteReadCursorRepo {
           .prepare(`SELECT 1 AS ok FROM chat_sessions WHERE id = ? AND user_id = ?`)
           .get(sessionId, userId);
         if (!owned) continue;
+        // The reader's own messages are never unread TO THEM.
+        //
+        // `role = 'user'` in a chat_sessions row is always the session owner's
+        // own prompt (a session has exactly one user_id). Counting those made
+        // the badge on the agent you just messaged grow by TWO per exchange
+        // (your prompt + their reply) - and it grew even while that very
+        // conversation was open on screen, which is the one place a "waiting for
+        // you" number can never be true.
         const row = this.db.prepare(
           `SELECT COUNT(*) as cnt FROM chat_messages
-           WHERE session_id = ? AND created_at > ?`
+           WHERE session_id = ? AND created_at > ? AND role != 'user'`
         ).get(sessionId, cursor.lastReadAt) as { cnt: number } | undefined;
         if (row && row.cnt > 0) result[key] = row.cnt;
       } else if (key.startsWith('channel:')) {
@@ -5489,10 +5497,15 @@ export class SqliteReadCursorRepo {
           const team = this.db.prepare(`SELECT 1 AS ok FROM teams WHERE id = ?`).get(teamId);
           if (!team) continue;
         }
+        // Same rule as sessions: a message the reader posted themselves is not
+        // unread for them. Other humans' messages in the same channel still
+        // count - only the exact `sender_id = <reader>` + `human` pair is
+        // skipped (agents post with sender_type 'agent', never as the reader).
         const row = this.db.prepare(
           `SELECT COUNT(*) as cnt FROM channel_messages
-           WHERE channel = ? AND created_at > ?`
-        ).get(channel, cursor.lastReadAt) as { cnt: number } | undefined;
+           WHERE channel = ? AND created_at > ?
+             AND NOT (sender_type = 'human' AND sender_id = ?)`
+        ).get(channel, cursor.lastReadAt, userId) as { cnt: number } | undefined;
         if (row && row.cnt > 0) result[key] = row.cnt;
       }
     }
