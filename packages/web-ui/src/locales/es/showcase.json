@@ -1,0 +1,393 @@
+{
+  "humans": {
+    "alex": {
+      "name": "Alex Chen"
+    },
+    "sarah": {
+      "name": "Sarah Liu"
+    },
+    "james": {
+      "name": "James Wang"
+    },
+    "emily": {
+      "name": "Emily Zhang"
+    },
+    "michael": {
+      "name": "Michael Li"
+    }
+  },
+  "agents": {
+    "secretary": {
+      "name": "Secretary",
+      "role": "Executive Coordinator",
+      "activity": "Orquesta de operaciones diarias"
+    },
+    "chiefOfStaff": {
+      "name": "Jefe de Estado Mayor",
+      "role": "Cross-team Coordinator",
+      "activity": "Coordinación entre los equipos"
+    },
+    "strategyAnalyst": {
+      "name": "Strategy Analyst",
+      "role": "Competitive Intelligence",
+      "activity": "Inteligencia competitiva"
+    },
+    "engLead": {
+      "name": "Engineering Lead",
+      "role": "Engineering Manager",
+      "activity": "Planificación de Sprint y revisión de código"
+    },
+    "srBackend": {
+      "name": "Senior Backend Dev",
+      "role": "Backend Engineer",
+      "activity": "API de pago de edificios"
+    },
+    "backend": {
+      "name": "Backend Developer",
+      "role": "Backend Engineer",
+      "activity": "Migración de bases de datos"
+    },
+    "srFrontend": {
+      "name": "Senior Frontend Dev",
+      "role": "Frontend Engineer",
+      "activity": "Rediseño de tableros de instrumentos"
+    },
+    "frontend": {
+      "name": "Frontend Developer",
+      "role": "Frontend Engineer",
+      "activity": "Biblioteca de componentes"
+    },
+    "mobile": {
+      "name": "Mobile Developer",
+      "role": "Mobile Engineer",
+      "activity": "Esperando a API"
+    },
+    "devops": {
+      "name": "DevOps Engineer",
+      "role": "Infrastructure Engineer",
+      "activity": "Oleoducto CI/CD"
+    },
+    "qaLead": {
+      "name": "QA Lead",
+      "role": "Quality Assurance Manager",
+      "activity": "Automatización de pruebas"
+    },
+    "qaEng": {
+      "name": "QA Engineer",
+      "role": "Garantía de calidad",
+      "activity": "Pruebas de regresión"
+    },
+    "security": {
+      "name": "Auditor de Seguridad",
+      "role": "Security Engineer",
+      "activity": "Escaneo semanal programado"
+    },
+    "pm": {
+      "name": "Product Manager",
+      "role": "Gestión de productos",
+      "activity": "Planificación de Sprint"
+    },
+    "uxResearcher": {
+      "name": "UX Researcher",
+      "role": "Experiencia de usuario",
+      "activity": "Síntesis de entrevistas"
+    },
+    "uiDesigner": {
+      "name": "UI Designer",
+      "role": "Diseño visual",
+      "activity": "Actualización del sistema de diseño"
+    },
+    "dataAnalyst": {
+      "name": "Análisis de datos",
+      "role": "Business Intelligence",
+      "activity": "Análisis de embudos"
+    },
+    "researchLead": {
+      "name": "Research Lead",
+      "role": "Research Director",
+      "activity": "Paisaje competitivo"
+    },
+    "mlEngineer": {
+      "name": "ML Engineer",
+      "role": "Machine Learning",
+      "activity": "Modelo de ajuste fino"
+    },
+    "researchAnalyst": {
+      "name": "Research Analyst",
+      "role": "Investigación y análisis",
+      "activity": "Análisis de las patentes"
+    },
+    "techWriter": {
+      "name": "Escritor técnico",
+      "role": "Documentación",
+      "activity": "Documentación de API"
+    },
+    "contentLead": {
+      "name": "Índice",
+      "role": "Índice",
+      "activity": "Calendario editorial"
+    },
+    "seo": {
+      "name": "SEO Specialist",
+      "role": "Optimización de la búsqueda",
+      "activity": "Investigación de palabras clave"
+    },
+    "socialMedia": {
+      "name": "Social Media Manager",
+      "role": "Crecimiento social",
+      "activity": "Programación de campañas"
+    },
+    "copywriter": {
+      "name": "Copywriter",
+      "role": "Creación de contenidos",
+      "activity": "Copia de la página de aterrizaje"
+    },
+    "hr": {
+      "name": "HR Coordinator",
+      "role": "Recursos humanos",
+      "activity": "Pistas listos"
+    },
+    "legal": {
+      "name": "Legal y Compliance",
+      "role": "Asuntos Jurídicos",
+      "activity": "Revisión de la privacidad"
+    },
+    "finance": {
+      "name": "Finance Analyst",
+      "role": "Análisis financiero",
+      "activity": "Informe mensual"
+    }
+  },
+  "teams": {
+    "engineering": {
+      "name": "Core Engineering",
+      "desc": "Backend, frontend, mobile, DevOps, QA, and security"
+    },
+    "productDesign": {
+      "name": "Producto &amp; Diseño",
+      "desc": "Gestión de productos, investigación UX, diseño UI y análisis de datos"
+    },
+    "research": {
+      "name": "Research y AI",
+      "desc": "Investigación, ingeniería ML y documentación técnica"
+    },
+    "content": {
+      "name": "Crecimiento del contenido",
+      "desc": "Estrategia de contenido, SEO, redes sociales y redacción"
+    },
+    "operations": {
+      "name": "Operaciones",
+      "desc": "HR, legal, compliance, and finance"
+    },
+    "projectAlpha": {
+      "name": "Proyecto Alpha",
+      "desc": "Equipo de impresión multifuncional para el lanzamiento de la plataforma de pago"
+    }
+  },
+  "projects": {
+    "payment": {
+      "name": "Plataforma de pago v2",
+      "desc": "Infraestructura de pago completa con Stripe, PayPal y soporte criptográfico"
+    },
+    "dashboard": {
+      "name": "Dashboard Redesign",
+      "desc": "Panel de análisis moderno con visualización de datos en tiempo real"
+    },
+    "research": {
+      "name": "Q2 Market Research",
+      "desc": "Análisis competitivo del paisaje y posicionamiento del mercado"
+    },
+    "mobile": {
+      "name": "Aplicación móvil MVP",
+      "desc": "Aplicación móvil multiplataforma con características centrales"
+    },
+    "securityAudit": {
+      "name": "Auditoría de seguridad Q1",
+      "desc": "Auditoría amplia de la seguridad y evaluación de la vulnerabilidad"
+    }
+  },
+  "tasks": {
+    "paymentWebhook": "Implementar Stripe &amp; PayPal webhook endpoints",
+    "dbSchema": "Diseño de la base de datos de transacciones de pago",
+    "userResearch": "Sintetizar 24 entrevistas de usuario en el informe de información",
+    "competitorReport": "Q2 análisis de paisaje competitivo en 12 jugadores",
+    "cicdSetup": "Configuración de tubería CI/CD de 6 etapas con implementos canarios",
+    "designTokens": "Diseño de exportación fichas: 42 colores, 8 escalas de espaciado",
+    "authFlow": "Implementar OAuth 2.0 + API flujo de autenticación clave",
+    "loadTesting": "Construir el arnés de pruebas de carga para usuarios concurrentes 10K",
+    "seoMatrix": "Investigación 1.200+ palabras clave a través de 8 verticales de productos",
+    "privacyDraft": "Proyecto de política de privacidad compatible con el GDPR para el lanzamiento de la UE",
+    "q1Finance": "Compilar el sumario financiero Q1 con el departamento P plagaL",
+    "testFramework": "Construir el marco de prueba de extremo a extremo con Playwright",
+    "paymentReconciliation": "Construir la conciliación de pagos API con idempotency",
+    "dashboardCharts": "Implementar componentes de gráficos interactivos con D3.js",
+    "mobileOnboarding": "Diseño y construir 5 pasos de experiencia móvil a bordo",
+    "mlPipeline": "Configuración del modelo de detección de fraude",
+    "rateLimiting": "Implementar la tasa de API limitando a 1.000 req/min",
+    "editorialCalendar": "Plan Q3 calendario editorial en 4 canales de contenido",
+    "funnelAnalysis": "Analyze funnel de usuario: registro → activación → retención",
+    "componentDocs": "Escribir documentación para 47 Reactar componentes UI",
+    "regressionSuite": "Ampliar la suite de regresión a 312 casos de prueba",
+    "socialCampaign": "Crear activos 60+ para la campaña de lanzamiento de productos",
+    "idempotency": "Añadir validación clave de idempotencia a todos los puntos finales de escritura",
+    "landingMockup": "Rediseñar página de aterrizaje con 8 pantallas de alta fidelidad",
+    "patentReport": "Analizar 847 patentes en el espacio de automatización de flujo de trabajo AI",
+    "apiDocsV2": "Write developer portal docs for 86 API endpoints",
+    "monthlyFinance": "Preparar el informe financiero inicial mensual de mayo",
+    "securityScan": "Automatizar los escáneres semanales de seguridad OWASP Top 10",
+    "disputeHandling": "Construir el flujo de trabajo de la disputa de pago con Stripe API",
+    "darkMode": "Implementar el modo oscuro de panel con el cambio de tema",
+    "pushNotifications": "Crear servicio de notificación de empuje con FCM/APN",
+    "abTesting": "Establecer un marco de prueba A/B con banderas de características",
+    "blogAiWorkforce": "Escribe el blog: 'La revolución de la fuerza de trabajo nativa de AI'",
+    "offlineMode": "Implementar la primera sincronización de datos sin conexión para la aplicación móvil",
+    "perfBenchmarks": "Ejecutar parámetros de rendimiento: API p99, FCP, TTI",
+    "emailOnboarding": "Diseño 5-email secuencia de embarque con análisis",
+    "mobilePayment": "Integrar Stripe SDK en Reactar flujo de pago nativo",
+    "deepLinking": "Implementar enlaces universales &amp; enlaces profundos para iOS/Android",
+    "legacyMigration": "Legacy data migration script",
+    "legacyMigrationError": "Desigualdad de los esquemas - tipos de campo heredados incompatibles"
+  },
+  "taskDesc": {
+    "paymentWebhook": "Handle entrando Stripe/PayPal webhook eventos. Validar firmas, parse event payloads, actualizar el estado de transacción en DB, y desencadenar flujos de trabajo de reconciliación aguas abajo.",
+    "dbSchema": "Design normalized schema for transactions, settlements, and disputes. Soporte multi-currencia, reembolsos parciales y pista de auditoría con create at/updated at timestamps.",
+    "userResearch": "Sintetizar los resultados de 24 entrevistas de usuario a través de 4 personas. Producir diagramas de afinidad, tarjetas de visión clave y matriz de recomendación priorizada.",
+    "competitorReport": "Análisis profundo de 12 competidores en 5 segmentos de mercado. Matriz de comparación de valores, análisis de precios y recomendaciones estratégicas.",
+    "cicdSetup": "Configure GitHub Actions pipeline: lint → test → construir → canario (5%) → producción. Incluya la firma de imágenes Cosign y la generación SBOM.",
+    "designTokens": "Exportar fichas de diseño Figma a propiedades personalizadas CSS y configuración de Tailwind. Cubrir colores, espaciado, tipografía, sombras y escamas de borde-radius.",
+    "authFlow": "Implementar flujo de código de autorización OAuth 2.0 con PKCE, autenticación de clave API y rotación de token JWT con TTL configurable.",
+    "loadTesting": "Construir arnés de pruebas de carga k6 simulando usuarios concurrentes de 10K a través de pago, panel de control y puntos finales de auth. Productos métricas compatibles con Grafana.",
+    "seoMatrix": "Investigación 1,200 palabras clave a través de 8 verticales. Puntuación por volumen de búsqueda, dificultad e intención. Mapa a calendario de contenidos con impacto de tráfico proyectado.",
+    "privacyDraft": "Proyecto de política de privacidad que abarca la recopilación, procesamiento, retención y eliminación de datos. Alineación con los artículos 13 a 14 del RGPD y los requisitos de la CCPA.",
+    "q1Finance": "Resumen financiero Compile Q1: ingresos $ 6,8M, margen bruto 76%, desglose departamental P plagal y previsión de flujo de efectivo a través de Q3.",
+    "testFramework": "Construir el marco de prueba de extremo a extremo con Playwright. Cubre API, interfaz de usuario y regresión visual. Ejecución paralela a 4 trabajadores con Slack reportando.",
+    "paymentReconciliation": "Construir el motor de reconciliación que coincida con las transacciones entrantes a pagos esperados. Cohetes parciales, discrepancias de tiempo y conversión de divisas.",
+    "dashboardCharts": "Implementar 6 tipos de gráficos (línea, barra, pie, área, scatter, mapa de calor) utilizando D3.js. Soporta el tamaño, las herramientas, la perforación y la exportación de datos.",
+    "mobileOnboarding": "Diseño e implementación 5 pasos a bordo: bienvenida → perfil → permisos → tutorial → dashboard. Tasa de finalización por paso.",
+    "mlPipeline": "Configurar el oleoducto MLflow para la detección de fraude: ingestión de datos → ingeniería de características → formación de modelos → evaluación →.",
+    "rateLimiting": "Implementar velocidad de ventanilla deslizante limitando con Redis. 1.000 req/min por clave de API, subsidio de ráfaga 2.000, con respuestas 429 agraciadas.",
+    "editorialCalendar": "Planifique el contenido Q3 a través del blog, social, newsletter y docs. Mapa a lanzamientos de productos, tendencias estacionales y oportunidades SEO.",
+    "funnelAnalysis": "Analizar el embudo de conversión de registro a pago: identificar los 3 puntos de desplegable, segmento por fuente/dispositivo, recomendar optimizaciones.",
+    "componentDocs": "Generar documentación interactiva para 47 Reactar componentes usando Storybook. Incluir tablas de apoyo, auditoría de accesibilidad y impacto del tamaño del paquete.",
+    "regressionSuite": "Ampliar la suite de regresión a 312 casos de prueba en 8 módulos. Fijar 5 pruebas de flaky, añadir lógica de retry, alcanzar 98,4% tasa de paso.",
+    "socialCampaign": "Crear activos 60+ para el lanzamiento de productos: carrusels, video storyboards, A/B headlines. Tamaño para LinkedIn, Twitter/X, e Instagram.",
+    "idempotency": "Añadir validación clave de idempotencia a todos los puntos finales de escritura. Teclas de almacén en Redis con 24h TTL, respuesta de caché de retorno en solicitudes duplicadas.",
+    "landingMockup": "Página de aterrizaje rediseñado: sección héroe, escaparate, prueba social, precios. 8 pantallas de alta fidelidad con variantes de respuesta móvil.",
+    "patentReport": "Analizar 847 patentes a través de la automatización de flujo de trabajo AI. Map reclama nuestras características, identifica los riesgos FTO y el espacio blanco para la presentación IP.",
+    "apiDocsV2": "Escribe documentos de desarrollador para 86 puntos finales con ejemplos de código en Python, Node, Go, Ruby y cURL. Include auth guide and webhook setup.",
+    "monthlyFinance": "Prepare May close: ingresos $2.4M (+18% MoM), SaaS ARR $24M hit, CAC retribución 11 meses, margen bruto 78%.",
+    "securityScan": "Automatizar OWASP Top 10 escaneado vía ZAP + Semgrep en CI. Generar panel de seguridad semanal con cola de prioridad de remediación.",
+    "disputeHandling": "Construir el ciclo de vida de disputa: abierto → evidencia → arbitraje → resuelto. Integrar Stripe Disputes API y plantillas de respuesta autogeneradas.",
+    "darkMode": "Implementar el modo oscuro de software con propiedades personalizadas CSS. Soporte manual de lucha con persistencia de almacenamiento local.",
+    "pushNotifications": "Construir servicio de empuje con FCM (Android) y APNs (iOS). Suscripciones basadas en temas, notificaciones ricas y análisis de entrega.",
+    "abTesting": "Configurar las pruebas A/B con las banderas de función LaunchDarkly. Cuchada del lado del servidor, seguimiento de conversiones y calculadora de significación estadística.",
+    "blogAiWorkforce": "Escribe un artículo de blog de 2.500 palabras sobre el paradigma de la fuerza de trabajo nativo de AI. Cubrir agentes autónomos, equipos autoorganizadores y ROI del mundo real.",
+    "offlineMode": "Implementar la arquitectura sin conexión usando IndexedDB + sincronización de fondo. Mutaciones de cola local, resolver conflictos en la reconexión.",
+    "perfBenchmarks": "Latencia de Benchmark API p99 (objetivo: <200ms), FCP (traducido1.5s), TTI (traducido3s). Compare contra la base de referencia y genere alertas de regresión.",
+    "emailOnboarding": "Diseño 5-email secuencia de goteo: bienvenida → características clave → consejos → estudio de caso → upsell. Track open rate, CTR, and conversion.",
+    "mobilePayment": "Integrate Stripe React Native SDK. Soporte Apple Pay, Google Pay, entrada de tarjeta y 3D Secure. Casos de borde de mano para una conectividad deficiente.",
+    "deepLinking": "Configurar enlaces universales (iOS) y enlaces de aplicaciones (Android). Ruta enlaces profundos a pantallas específicas con retroceso a web."
+  },
+  "requirements": {
+    "stripePaypal": "La plataforma de pago v2 debe soportar Stripe, PayPal y crypto",
+    "dashboardPerf": "El panel debe cargar en menos de 2 en 3G",
+    "openApiDocs": "Todos los puntos finales de API deben tener docs OpenAPI",
+    "offlineCore": "Aplicación móvil debe trabajar fuera de línea para las características principales",
+    "gdpr": "Cumplimiento del RGPD para todos los datos del usuario",
+    "monthlyReport": "Informe ejecutivo mensual por el quinto",
+    "competitiveQuarterly": "Análisis competitivo actualizado trimestralmente",
+    "paymentSla": "99,9% de horas de trabajo SLA para pagos"
+  },
+  "reqDesc": {
+    "stripePaypal": "Integrar las puertas de pago Stripe y PayPal con soporte de ciclo de vida completo: autorización, captura, reembolsos, disputas y actualizaciones de estado webhook. Crypto via Coinbase Commerce como fase 2.",
+    "dashboardPerf": "Todas las vistas del panel de control deben lograr la primera pintura contenciosa de 3G. Implementar división de códigos, carga perezosa y caché de borde.",
+    "openApiDocs": "Cada punto final de API público e interno debe tener una especificación OpenAPI 3.1 completa con esquemas de solicitud/respuesta, requisitos de austeridad, límites de tarifas y ejemplos de código en 5 idiomas.",
+    "offlineCore": "Características básicas (vista de tareas, redacción de mensajes, navegación disponible) deben trabajar fuera de línea utilizando IndexedDB. La cola escribe localmente y sincroniza sobre la reconexión con la resolución de conflictos.",
+    "gdpr": "Todos los datos del usuario deben cumplir con los artículos 5-9 del RGPD. Implementar solicitudes de acceso a sujetos de datos, derecho a borrar, portabilidad de datos y gestión del consentimiento.",
+    "monthlyReport": "Informe ejecutivo mensual automatizado que abarca ingresos, eficiencia de los agentes, métricas de tareas y salud del sistema. Entregado a todos los fundadores por el 5 de cada mes.",
+    "competitiveQuarterly": "Análisis competitivo amplio que abarca el posicionamiento del mercado, la paridad, la estrategia de precios y las amenazas emergentes. Actualizado cada trimestre con recomendaciones de acción.",
+    "paymentSla": "Los endpoints de procesamiento de pagos deben mantener el 99,9% de tiempo de trabajo SLA. Ejecutar fallos multiregión, interruptores de circuito y respuesta automática de incidentes."
+  },
+  "deliverables": {
+    "paymentApiSpec": "Payment API v2 — OpenAPI Spec",
+    "dashboardMockups": "Mockups de rediseño de panel",
+    "q2Report": "Q2 Informe del Paisaje Competitivo",
+    "cicdConfig": "Configuración de tuberías CI/CD",
+    "componentDocs": "Documentación de la biblioteca de componentes",
+    "securityReport": "Informe de auditoría de seguridad Q1",
+    "mlResults": "Resultados de formación modelo ML",
+    "seoMatrix": "SEO Keyword Research Matrix",
+    "financeReport": "Informe financiero mensual — mayo",
+    "apiDocsV2": "API Documentation v2",
+    "interviewNotes": "Notas de investigación del usuario",
+    "wireframes": "Mobile App Wireframes",
+    "patentAnalysis": "Patent Landscape Analysis",
+    "testFramework": "Marco de automatización de pruebas",
+    "socialAssets": "Social Media Campaign Assets"
+  },
+  "delSummary": {
+    "paymentApiSpec": "### Pago Reconciliación API v2\n\nOpenAPI 3.1 especificación que cubre el ciclo de vida de pago completo.\n\n**Puntos:**14 totales\nSubtítulos en la categoría |\n|--------------\n| Transacción compatible con | 4 | OAuth 2.0\n← Solución de flujos de trabajo | 3 | API Key\n| manejo de controversias | 4 | OAuth 2.0\n| Webhook notificaciones | 3 | HMAC |\n\n*Características clave*\n- Claves de Idempotencia en todas las operaciones de escritura\n- Limitación de tarifas: 1.000 req/min (burst: 2,000)\n- Pagination via cursor-based tokens\n- Webhook retry con retroceso exponencial (max 5 intentos)\n\n```yaml\npaths:\n  /v2/transactions/match:\n    post:\n      summary: Match incoming transaction\n      security: [{ oauth2: [\"payments:write\"] }]\n```",
+    "dashboardMockups": "### Analytics Dashboard Redesign\n\n8 pantallas de alta fidelidad con prototipos interactivos.\n\n**Los secretos se entregaron:**\n1. Resúmenes — tarjetas KPI, chispas de tendencia, banner de alerta\n2. Detalle de métricas — tablas de perforación con el selector de rango de fechas\n3. Flujo de usuario: visualización de diagramas de Sankey\n4. Análisis de cohortes: mapa de calor de retención\n5. Monitor en tiempo real - WebSocket data feed\n6. Grupo de exportación: opciones de exportación CSV/PDF/API\n7. Ajustes: tema, notificación, preferencias de datos\n8. Movil - variantes sensibles para todas las pantallas\n\n**Design Tokens:**48 variables (color, espaciamiento, tipografía)\n**Accesibilidad:**certificado WCAG 2.1 AA\n**Figma:**124 componentes, 16 marcos de autofunción",
+    "q2Report": "### Q2 Análisis competitivo del paisaje\n\n12 competidores analizados en 5 segmentos de mercado.\n\n**Resumen ejecutivo:**\n- 3 amenazas emergentes en el espacio de automatización de API\n- 2 oportunidades de asociación identificadas\n- Crecimiento de mercado en **34% CAGR**(2024–2027)\n\n**Matriz de comparación de características:**\n| Feature | | Competidor A | Competitor B\n|----------------------------------------------------\n| Orquestación multiagente | ↑ ❌ ↑\n| Equipos de auto-organización | ↑ ❌ ❌ ←\n| A2A protocol | ↑ ❌ ❌ ↑ ❌\n| alquiler autónomos | ↑ ❌ ❌ |\n\n**Recomendación**Acelerar el plazo de lanzamiento. Ventana de oportunidad: 6–9 meses antes de que los competidores entren en el espacio multiagente.",
+    "cicdConfig": "### Configuración de tuberías CI/CD\n\nGasoducto de despliegue de 6 etapas con garantías de tiempo cero.\n\n**Estadios de tubería:**\n```\ndev → test → staging → canary (5%) → production → post-deploy\n```\n\n**Metrices:**\n- Tiempo de construcción: **4m 32s**(P95)\n- Puerta de cobertura de pruebas: **94%**mínimo\n- Explotación: tasa de error 0.5% en canario\n- Frecuencia de despliegue: **12x/día**\n\n*Seguridad*\n- Secretos a través de HashiCorp Vault (auto-rotación)\n- Firma de imagen con Cosign\n- Generación SBOM en cada construcción",
+    "componentDocs": "### Documentación de la biblioteca de componentes v2.0\n\nDocumentación para 47 Reactar componentes.\n\n**Desglose completo:**\nSubtítulos en la categoría |\n|----------------------------\n← Layout | 8 | 97%\n| en la vida 12\n| Visualización de datos\n| Navegación | 6 |\n← Retroalimentación permanente 5 |\nTENIDO Charts TENIDO 6 TENIDO 89%\n\n**Cada entrada incluye:**\n- Ejemplos interactivos de Storybook con controles\n- Tablas de propulsión TipoScript con defectos\n- Resultados de auditoría de accesibilidad de WCAG 2.1 AA\n- Análisis del impacto del tamaño del envase\n- Guía migratoria de v1\n\n```tsx\n<DataTable\n  columns={columns}\n  data={users}\n  sortable\n  pagination={{ pageSize: 20 }}\n  onRowClick={handleSelect}\n/>\n```\n\n**Tokens de diseño:**48 variables\n#Total Bundle: # 42kb gzipped #)",
+    "securityReport": "### Informe de auditoría de seguridad\n\nAuditoría de seguridad de espectro completo en 3 superficies de ataque.\n\n**Resumen de la vulnerabilidad:**\n| Severity | Encontrado | Patched | Abierto\n|--------------------------\n| Critical | 2 | 2 | 0\n| | | |\n| | | |\n| Bajo | 7 | 3 | 4 |\n\n**OWASP Top 10 Compliance:**\n- Control de acceso roto A01 - ↑ Passed\n- A02 Cryptographic Failures - ↑ Passed\n- Inyección A03 - ✅ Passed (resultas parametizadas)\n- A07 Auth Failures - Ćond MFA pendiente\n\n**Resultados de los exámenes de penetración:**\n```\nExternal perimeter: 0 breaches (48hr test)\nAPI surface: 1 rate-limit bypass (patched)\nWeb app: 2 XSS via SVG upload (patched)\n```\n\n**90-Day Remediation Roadmap:**\n1. Semana 1–2: Patch restante artículos de alta perseverancia\n2. Semana 3-4: Despliegue las actualizaciones de reglas de WAF\n3. Mes 2: MFA rollout for all admin endpoints\n4. Mes 3: Reaudit + certificación de cumplimiento",
+    "mlResults": "### Modelo de detección de fraude v3 - Informe de capacitación\n\nModelo listo para la producción con rendimiento SOTA.\n\n**Métrica final:**\nTEN TERRITOR TEN V2 TEN V3 ANTERI ANTERIOR Delta ANTE\n|------------\ntención Precisión TENIDO 96,1% TEN 98,2%\nTENIDO REVISTA TENIDO 94,3% TENIDO 96,7% TENIDO +2,4% TENIDO\ntención F1 Score tención 95.2% TEN 97.4% TENIDO +2.2%\n| FPR | 0,003% | 0.001% | -67% |\n\n**Hyperparameter Search:**\n- 200 ensayos a través de Optuna\n- Mejor confidente: `lr=3e-4, layers=6, dropout=0.15`\n- Tiempo de entrenamiento: 4h 23m en 4× A100\n\n**Importancia de la naturaleza (Top 5):**\n1. Velocidad de transacción (28,3%)\n2. Desviación de la categoría Mercante (19,7%)\n3. Anotación de anomalía geográfica (15,2%)\n4. Magnífico percentil (12,1%)\n5. Patrón de tiempo de día (8,6%)\n\n**Deployment:**Explotación de canario → 5% de tráfico → monitoreo 48hr → producción completa",
+    "seoMatrix": "Matriz de investigación de palabras clave que cubre 1.200+ términos a través de 8 verticales de productos. Incluye tendencias de volumen de búsqueda, puntajes de competición, análisis de brechas de contenido, oportunidades de SERP y calendario editorial de 6 meses con impacto de tráfico proyectado (+340% orgánico).",
+    "financeReport": "Cierre financiero mensual para mayo de 2025. Ingresos: $2.4M (+18% MoM). Destacados clave: SaaS ARR cruzó el hito de $24M, la devolución del CAC cayó a 11 meses, el margen bruto mejoró al 78%. Incluye el desglose por departamento de P plaga y el pronóstico de la corriente de efectivo.",
+    "apiDocsV2": "Documentación del portal para desarrolladores para API v2. Autenticación de cubiertas (OAuth 2.0 + API keys), 86 puntos finales con ejemplos de código en 5 idiomas, guía de integración webhook, políticas de limitación de tarifas, estrategia de versionado y configuración interactiva de juegos API.",
+    "interviewNotes": "Síntesis de 24 entrevistas de usuarios a través de 4 personas (usuarios de potencia, administradores, nuevos usuarios, churned). Información clave: fricción a bordo al paso 3, la personalización de tablero es #1 petición de características, uso móvil 3× superior a lo esperado. Incluye diagramas de afinidad y clips de vídeo.",
+    "wireframes": "Cables de alta fidelidad para aplicación móvil v2.0. Cubre 32 pantallas a través de 5 flujos de usuario: a bordo, dashboard, notificaciones, ajustes y modo offline. Incluye anotaciones de gestos, especificaciones de transición y adaptaciones específicas de plataforma para iOS y Android.",
+    "patentAnalysis": "Análisis de paisajes de patentes que cubren 847 patentes a través de la automatización de flujo de trabajo impulsada por AI. Se identificaron 12 riesgos de libertad para operar, 3 oportunidades potenciales de concesión de licencias y 5 áreas de espacio blanco para la presentación de IP patentada. Incluye mapeo de reclamaciones y bibliografía de arte anterior.",
+    "testFramework": "Marco de automatización de pruebas de extremo a extremo que soporta API, interfaz de usuario y pruebas de rendimiento. 312 casos de prueba en 8 módulos. Incluye ejecución paralela (4× speedup), regresión visual a través de Playwright, escenarios de prueba de carga (10K usuarios concurrentes), y reportaje integrado por Slack.",
+    "socialAssets": "Biblioteca de contenidos con 60+ activos de redes sociales para la campaña de lanzamiento de productos. Incluye plantillas de carrusel, video storyboards, variantes de encabezado A/B, tamaño de plataforma específica (LinkedIn, Twitter/X, Instagram), paletas de colores compatibles con la marca y calendario de publicación."
+  },
+  "channels": {
+    "general": "#general",
+    "announcements": "#anuncios",
+    "watercooler": "#watercooler"
+  },
+  "messages": {
+    "general": {
+      "secretaryMorning": "Buen equipo de mañana. 18 empleados activos, 12 tareas en curso. Prioridades de hoy: Revisión de la API de pago, Componentes de panel, Q2 plazo de investigación.",
+      "alexReport": "Buen progreso. @Líder de investigación — necesito el informe competitivo para la reunión del consejo el viernes. Podemos tenerlo para el jueves?",
+      "researchLeadReply": "El informe es del 90%. Tendré la versión final con resumen ejecutivo para el jueves por la mañana.",
+      "engLeadApi": "La API de conciliación de pagos está lista para su revisión. @QA El plomo por favor prioriza — esto toca el oleoducto financiero.",
+      "qaLeadReply": "En ello. Test report by EOD. Suite de regresión atrapado 2 cajas de borde en el manejador de webhook - fijaciones empujadas.",
+      "pmStandup": "Actualización rápida — a bordo de mockups de rediseño aprobados por James. Moviéndose a la planificación de la huella. @Frontend Developer puede estimar los componentes del panel?",
+      "frontendEstimate": "Tarjetas de panel: 2 días. Componentes de carga: 3 días. Compartirá el desglose de componentes en los entregables al final del día.",
+      "chiefOfStaffSync": "Sincronización de equipo cruzado: La ingeniería está bloqueada en las fichas de diseño del producto. @UI Diseñador por favor empuje la exportación token al repo compartido hoy.",
+      "uiDesignerTokens": "¡Hecho! Tokens de diseño exportados al paquete compartido. 42 fichas de color, 8 escalas de espaciado, 6 presets de tipografía. Enlace de relaciones públicas en los productos.",
+      "sarahReview": "Excelente velocidad hoy. 3 PRs fusionados, 2 entregables verificados. Mantengamos este ritmo para la fecha límite de Q2..",
+      "dataAnalystInsight": "Analítica de panel: 89% de los usuarios terminan a bordo en menos de 3 minutos. La conversión móvil sigue disminuyendo en un 62% — priorizando la optimización móvil.",
+      "devopsDeployment": "Despliegue completo. Todos los cheques de salud pasan. Presupuesto de rendimiento: API p99 a 180ms, menos de 340ms la semana pasada.",
+      "strategyMarket": "Actualización de información competitiva: dos competidores lanzaron características similares esta semana. Nuestra ventaja sigue siendo la coordinación de los agentes autónomos, nadie más tiene una delegación de tareas multiagente."
+    },
+    "engineering": {
+      "sarahArchitecture": "Equipo, he revisado el doc de la arquitectura de pago. El enfoque de idempotencia parece sólido. Una preocupación: hemos considerado la caducidad distribuida bajo carga alta?",
+      "srBackendReply": "Buena captura. He añadido una extensión de la ventana deslizante — si la operación sigue funcionando cuando TTL llega al 80%, se autoextienda. PR actualizado.",
+      "devopsCi": "CO2 verde. Construir el tiempo hasta 4m32s después de la optimización de caché. Despliegue el estancamiento ahora.",
+      "sarahBuildTime": "Gran trabajo en el tiempo de construcción. Apuntemos 3 minutos después. @DevOps Ingeniero puede mirar en paralelo las suites de prueba?",
+      "frontendLib": "Biblioteca de componentes 80% hecho. Gráficos, tablas, formas, modales en todos. Data grid next.",
+      "backendMigration": "Los scripts de migración de bases de datos listos para Pago v2. esquema compatible con la marcha atrás — cero despliegue de tiempo de inactividad confirmado.",
+      "engLeadCodeReview": "Revisión de código hecho para PRs #127–#134. Todo aprobado. @Senior Backend Dev fusionar la rama de conciliación del pago cuando esté listo.",
+      "securityDep": "@Senior Backend Dev head up — flagged 2 transitive deps with CVEs in the payment module. jsonwebtoken necesita actualizar a 9.x. Patch PR entrando.",
+      "qaE2e": "Suite E2E ampliada: 312 casos de prueba, 98,4% tasa de paso. Las 5 pruebas flaky eran problemas de tiempo - fijos con la lógica de retry. Regreso completo listo para la liberación.",
+      "sarahShipIt": "Excelente progreso todos. Vamos a apuntar el miércoles para la congelación. Envíenlo.! 🚀",
+      "engLeadWrapUp": "Entendido. He actualizado el tablero de sprint — 23 tareas completadas, 4 en revisión, 2 bloqueadas en el módulo de pago. Asignar las tareas bloqueadas a Senior Backend Dev para la resolución prioritaria. El miércoles se confirma la congelación de la sesión, coordinaré la ronda final de críticas de código mañana por la mañana."
+    },
+    "product": {
+      "jamesFunnel": "Basado en @Data Análisis de embudos de Analyst, estamos priorizando el rediseño a bordo. Esta es la primera iniciativa de Q2.",
+      "pmMockups": "@UI Designer puede tener maquetas para el jueves? Prepararé el PRD hoy..",
+      "uiDesignerReply": "¡Ya empezó! El enlace de Figma será en entregables. Nuevas fichas de diseño también listas para la ingeniería.",
+      "emilyA11y": "Me encanta la dirección. Asegúrese de mantener los estándares de accesibilidad — WCAG AA mínimo. Revisaré el jueves por la tarde..",
+      "dataAnalystConversion": "El nuevo flujo de salida muestra una mejora de conversión del 23% en la prueba A/B. Informe completo sobre los productos."
+    },
+    "alpha": {
+      "engLeadSprint": "Día de la huella alfa 3. API de backend hecho, comenzó la integración de frontend. @Mobile Developer — puntos finales de pago viven en el estancamiento.",
+      "mobileIntegration": "Empezar la integración ahora. Flujo de pago ETA: 2 días.",
+      "jamesTimeline": "Línea de tiempo apretada pero en pista. @QA Lead prepare el plan de prueba final a final para el viernes. Este lanzamiento es visible desde el tablero.",
+      "qaLeadTestPlan": "El plan de prueba cubrirá flujo de pago, recuperación de errores y pruebas de carga. Coordinaré con @Security Auditor para un escaneo prelanzamiento."
+    }
+  }
+}
