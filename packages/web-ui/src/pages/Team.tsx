@@ -3153,7 +3153,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     t('page.chatTitle');
 
   const directGreetingIdx = useMemo(() => Math.floor(Math.random() * 5), [selectedAgent, activeSessionId]);
-  const emptyGreeting = selectedAgent ? t(`page.placeholder.directOptions.${directGreetingIdx}`) : '';
+  // 空态问候语必须跟随「当前会话对象」：与 Agent 对话才用「您有什么吩咐？」；
+  // 与人类（或自己）的 DM、团队频道不能用 Agent 口吻的提示语。
+  const dmGreetingIdx = useMemo(() => Math.floor(Math.random() * 3), [activeDmUserId, isSelfDm, activeSessionId]);
+  const emptyGreeting = useMemo(() => {
+    if (chatMode === 'dm') {
+      if (isSelfDm) return t(`page.placeholder.dmSelfOptions.${dmGreetingIdx}`);
+      // 对方（人类）名字还没加载出来时，退回到不含名字的问候语，避免出现「给  发消息」。
+      const name = activeDmUser?.name ?? '';
+      return name
+        ? t(`page.placeholder.dmOtherOptions.${dmGreetingIdx}`, { name })
+        : t('page.placeholder.dmOtherEmpty');
+    }
+    if (chatMode === 'direct' && selectedAgent) return t(`page.placeholder.directOptions.${directGreetingIdx}`);
+    return '';
+  }, [chatMode, isSelfDm, activeDmUser?.name, dmGreetingIdx, selectedAgent, directGreetingIdx, t]);
   const isAgentOffline = chatMode === 'direct' && !!currentAgent && currentAgent.status === 'offline';
   const placeholder =
     chatMode === 'channel' ? (activeGroupChat ? t('page.placeholder.channel', { name: activeGroupChat.name }) : t('page.placeholder.channelWithMention', { name: activeChannel })) :

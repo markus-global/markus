@@ -192,6 +192,223 @@ function SearchableSelect({ options, value, onChange, placeholder, noMatchesText
   );
 }
 
+/* ── Send to chat: 把「需求 / 任务」作为上下文标签发到某个智能体或成员的对话 ── */
+
+/** 可发送实体的最小结构（需求与任务的公共字段）。 */
+type ChatSendableEntity = {
+  id: string;
+  title: string;
+  status?: string;
+  priority?: string;
+  createdBy?: string;
+  projectId?: string | null;
+};
+
+/** 默认收件人 = 创建者（智能体或人类）；创建者解析不出来时退回第一个智能体。 */
+function resolveDefaultChatTarget(createdBy: string | undefined, agents: AgentInfo[], users: HumanUserInfo[]): string {
+  if (createdBy) {
+    if (agents.some(a => a.id === createdBy)) return `agent:${createdBy}`;
+    if (users.some(u => u.id === createdBy)) return `human:${createdBy}`;
+  }
+  if (agents[0]) return `agent:${agents[0].id}`;
+  if (users[0]) return `human:${users[0].id}`;
+  return '';
+}
+
+/** 详情面板头部的小按钮：打开「发送到对话」弹窗。 */
+function SendToChatButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border-default text-xs text-fg-secondary hover:text-brand-500 hover:border-brand-500/40 hover:bg-brand-500/10 transition-colors"
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        <line x1="12" y1="7" x2="12" y2="11" />
+        <line x1="10" y1="9" x2="14" y2="9" />
+      </svg>
+      <span className="hidden sm:inline">{label}</span>
+    </button>
+  );
+}
+
+/**
+ * 「发送到对话」弹窗：选一个智能体 / 成员，把当前需求或任务作为上下文标签
+ * 带到 Team Chat 的输入框上方（与产出物「发送到对话」、@ 提及的行为一致），
+ * 用户随后可自由补充说明再发送。
+ */
+function SendToChatModal({ kind, entity, agents, users, projects, onClose }: {
+  kind: 'requirement' | 'task';
+  entity: ChatSendableEntity;
+  agents: AgentInfo[];
+  users: HumanUserInfo[];
+  projects: ProjectInfo[];
+  onClose: () => void;
+}) {
+  const { t } = useTranslation(['work', 'common']);
+  const [target, setTarget] = useState(() => resolveDefaultChatTarget(entity.createdBy, agents, users));
+  const [query, setQuery] = useState('');
+
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const hit = (label: string) => !q || label.toLowerCase().includes(q);
+    return [
+      ...agents.filter(a => hit(a.name)).map(a => ({ value: `agent:${a.id}`, name: a.name, meta: a.status, isAgent: true })),
+      ...users.filter(u => hit(u.name)).map(u => ({ value: `human:${u.id}`, name: u.name, meta: '', isAgent: false })),
+    ];
+  }, [agents, users, query]);
+
+  const title = entity.title?.trim() || entity.id;
+  const short = title.length > 40 ? `${title.slice(0, 24)}…${title.slice(-12)}` : title;
+  const projectName = entity.projectId
+    ? (projects.find(p => p.id === entity.projectId)?.name ?? entity.projectId)
+    : '';
+  const chipLabel = `${kind === 'requirement' ? '📋' : '✅'} ${short}`;
+  const chipContent = [
+    `@[${title}](${kind}:${entity.id})`,
+    `[${kind}]`,
+    `ID: ${entity.id}`,
+    `Title: ${title}`,
+    entity.status ? `Status: ${entity.status}` : '',
+    entity.priority ? `Priority: ${entity.priority}` : '',
+    projectName ? `Project: ${projectName}` : '',
+  ].filter(Boolean).join('\n');
+
+  const [targetType, targetId] = target.split(':');
+  const targetName = targetType === 'agent'
+    ? (agents.find(a => a.id === targetId)?.name ?? '')
+    : (users.find(u => u.id === targetId)?.name ?? '');
+
+  const handleSend = () => {
+    if (!target) return;
+    const [type, id] = target.split(':');
+    const params: Record<string, string> = {
+      chatChips: JSON.stringify([{ label: chipLabel, content: chipContent }]),
+    };
+    if (type === 'agent') params.agentId = id;
+    else params.dm = id;
+    navBus.navigate(PAGE.TEAM, params);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md max-h-[85vh] flex flex-col bg-surface-primary border border-border-default rounded-2xl shadow-2xl overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 pt-4 pb-3 border-b border-border-default shrink-0">
+          <div className="flex items-start justify-between gap-3">
+            <h3 className="text-sm font-semibold text-fg-primary">
+              {t('work:task.sendToChatTitle', { defaultValue: '发送到对话' })}
+            </h3>
+            <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none -mt-1" aria-label={t('common:close')}>&times;</button>
+          </div>
+          <p className="mt-1 text-xs text-fg-tertiary leading-relaxed">
+            {t('work:task.sendToChatHint', { defaultValue: '选择要发送到的对话，它会作为上下文标签加入输入框，你可以接着补充说明。' })}
+          </p>
+        </div>
+
+        {/* Target picker */}
+        <div className="px-5 pt-3 pb-2 shrink-0">
+          <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">
+            {t('work:task.sendToChatTarget', { defaultValue: '发送给' })}
+          </label>
+          <div className="relative">
+            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder={t('work:task.sendToChatSearch', { defaultValue: '搜索智能体或成员…' })}
+              className="w-full pl-8 pr-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary outline-none focus:border-brand-500 placeholder:text-fg-tertiary"
+            />
+          </div>
+          <div className="mt-1.5 text-[11px] text-fg-tertiary truncate">
+            {targetName
+              ? `${t('work:task.sendToChatTarget', { defaultValue: '发送给' })}：${targetName}`
+              : t('work:task.sendToChatNoTarget', { defaultValue: '当前没有可发送的对象' })}
+          </div>
+        </div>
+
+        {/* Target list */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
+          {rows.length === 0 ? (
+            <div className="px-3 py-6 text-center text-xs text-fg-tertiary">
+              {t('work:task.sendToChatEmpty', { defaultValue: '没有匹配的对象' })}
+            </div>
+          ) : rows.map((r, i) => {
+            const newGroup = i === 0 || rows[i - 1].isAgent !== r.isAgent;
+            const selected = r.value === target;
+            return (
+              <div key={r.value}>
+                {newGroup && (
+                  <div className="px-3 pt-2 pb-1 text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">
+                    {r.isAgent
+                      ? t('work:task.sendToChatAgents', { defaultValue: '智能体' })
+                      : t('work:task.sendToChatHumans', { defaultValue: '成员' })}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setTarget(r.value)}
+                  className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 transition-colors ${
+                    selected ? 'bg-brand-500/15 text-brand-500 font-medium' : 'text-fg-secondary hover:bg-surface-elevated'
+                  }`}
+                >
+                  <span className="w-5 h-5 flex items-center justify-center text-sm shrink-0">{r.isAgent ? '🤖' : '👤'}</span>
+                  <span className="flex-1 min-w-0 truncate text-sm">{r.name}</span>
+                  {r.meta && <span className="text-[10px] text-fg-tertiary shrink-0">{r.meta}</span>}
+                  {selected && (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer: context preview + actions */}
+        <div className="px-5 py-3 border-t border-border-default bg-surface-secondary/40 shrink-0">
+          <span className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">
+            {t('work:task.sendToChatContext', { defaultValue: '将加入的上下文标签' })}
+          </span>
+          <span
+            className="inline-flex items-center gap-1 max-w-full pl-2 pr-2 py-1 rounded-lg bg-brand-500/10 text-brand-500 text-xs border border-brand-500/20"
+            title={chipContent}
+          >
+            <span className="truncate">{chipLabel}</span>
+          </span>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 text-xs rounded-lg border border-border-default text-fg-secondary hover:bg-surface-elevated transition-colors"
+            >
+              {t('common:cancel')}
+            </button>
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={!target}
+              className="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {t('work:task.sendToChatConfirm', { defaultValue: '发送到对话' })}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── MultiSearchableSelect: filterable dropdown for multi-value selection ── */
 function MultiSearchableSelect({ options, selected, onAdd, placeholder, noMatchesText, className }: {
   options: { value: string; label: string }[];
@@ -1848,6 +2065,7 @@ function TaskDetailPanel({
   const [scheduleCronDraft, setScheduleCronDraft] = useState('');
   const [scheduleMaxRunsDraft, setScheduleMaxRunsDraft] = useState('');
   const [actionInFlight, setActionInFlight] = useState(false);
+  const [sendToChatOpen, setSendToChatOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'history'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
@@ -2087,8 +2305,25 @@ function TaskDetailPanel({
             )}
           </h3>
         </div>
-        <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">×</button>
+        <div className="flex items-center gap-2 shrink-0">
+          <SendToChatButton
+            onClick={() => setSendToChatOpen(true)}
+            label={t('work:task.sendToChat', { defaultValue: '发送到对话' })}
+          />
+          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">×</button>
+        </div>
       </div>
+
+      {sendToChatOpen && (
+        <SendToChatModal
+          kind="task"
+          entity={task}
+          agents={agents}
+          users={users}
+          projects={projects}
+          onClose={() => setSendToChatOpen(false)}
+        />
+      )}
 
         {/* Tabs — fixed at top */}
         <div className="flex gap-1 px-6 pt-2 pb-0 shrink-0">
@@ -6937,6 +7172,7 @@ function RequirementDetailPanel({
   const [savingDesc, setSavingDesc] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [showWorkflowModal, setShowWorkflowModal] = useState(false);
+  const [sendToChatOpen, setSendToChatOpen] = useState(false);
   const reqScrollRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
   const descRef = useRef<HTMLDivElement>(null);
@@ -7015,9 +7251,25 @@ function RequirementDetailPanel({
             )}
           </h2>
         </div>
-        <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">&times;</button>
+        <div className="flex items-center gap-2 shrink-0 mb-4">
+          <SendToChatButton
+            onClick={() => setSendToChatOpen(true)}
+            label={t('work:task.sendToChat', { defaultValue: '发送到对话' })}
+          />
+          <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0">&times;</button>
+        </div>
       </div>
 
+      {sendToChatOpen && (
+        <SendToChatModal
+          kind="requirement"
+          entity={req}
+          agents={agents}
+          users={users}
+          projects={projects}
+          onClose={() => setSendToChatOpen(false)}
+        />
+      )}
       {/* Body */}
       <div className="flex-1 min-h-0 relative">
       <div ref={reqScrollRef} className="h-full overflow-y-auto p-5 space-y-4">

@@ -401,6 +401,17 @@
         "Ready when you are…",
         "Tell me what you need…"
       ],
+      "dmSelfOptions": [
+        "This is your private space",
+        "Jot something down…",
+        "What would you like to record?"
+      ],
+      "dmOtherEmpty": "Start the conversation",
+      "dmOtherOptions": [
+        "Start a conversation with {{name}}",
+        "Send {{name}} a message…",
+        "What would you like to talk about with {{name}}?"
+      ],
       "noAgent": "Select an agent to start chatting",
       "agentOffline": "Agent is offline. Start the agent to send messages."
     },
