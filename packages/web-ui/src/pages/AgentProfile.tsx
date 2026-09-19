@@ -1619,6 +1619,13 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
   const [triggerMsg, setTriggerMsg] = useState<string | null>(null);
+  /** 唤醒取消的反馈。此前失败被 `catch {}` 静默吞掉，按钮点下去毫无反应。 */
+  const [wakeupMsg, setWakeupMsg] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
+  const wakeupMsgTimer = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (wakeupMsgTimer.current !== null) window.clearTimeout(wakeupMsgTimer.current);
+  }, []);
 
   const refresh = useCallback(() => {
     return Promise.all([
@@ -1657,10 +1664,26 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
   };
 
   const handleCancelWakeup = async (wakeupId: string) => {
+    if (wakeupMsgTimer.current !== null) window.clearTimeout(wakeupMsgTimer.current);
+    setWakeupMsg(null);
     try {
       await api.agents.cancelWakeup(agentId, wakeupId);
-      refresh();
-    } catch { /* ignore — refresh will reflect actual state */ }
+      setWakeupMsg({ kind: 'ok', text: t('agent:profilePage.heartbeatTab.cancelWakeupOk') });
+      wakeupMsgTimer.current = window.setTimeout(() => setWakeupMsg(null), 4000);
+    } catch (err) {
+      // 失败必须可见：静默吞错会与「取消不了」无法区分（概览页取消的同类体验问题）。
+      // 404 是常见情形——该唤醒在别处已被触发/取消，此时更需要如实说明而非装作成功。
+      const raw = err instanceof Error ? err.message : String(err);
+      const gone = !raw || /no scheduled wakeup|404/i.test(raw);
+      setWakeupMsg({
+        kind: 'error',
+        text: gone
+          ? t('agent:profilePage.heartbeatTab.cancelWakeupGone')
+          : `${t('agent:profilePage.heartbeatTab.cancelWakeupFailed')}: ${raw}`,
+      });
+    }
+    // 无论成败都刷新：让 UI 回到真实状态，而不是停在用户以为的那个状态。
+    refresh();
   };
 
   if (loading) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.heartbeatTab.loading')}</div>;
@@ -1717,6 +1740,17 @@ function HeartbeatTab({ agentId, initialData }: { agentId: string; initialData?:
           </div>
         )}
       </Card>
+
+      {/* 唤醒取消的反馈 —— 失败也必须可见（此前这里是静默吞错） */}
+      {wakeupMsg && (
+        <div className={`text-[11px] rounded-lg px-3 py-2 border ${
+          wakeupMsg.kind === 'ok'
+            ? 'text-green-600 bg-green-500/10 border-green-500/20'
+            : 'text-red-500 bg-red-500/10 border-red-500/20'
+        }`}>
+          {wakeupMsg.text}
+        </div>
+      )}
 
       {/* Scheduled Wakeups */}
       {data.wakeups && data.wakeups.length > 0 && (
@@ -2764,8 +2798,16 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           message={t('agent:profilePage.mind.cancelConfirmMessage')}
           confirmLabel={t('agent:profilePage.mind.cancelCurrentBtn')}
           onConfirm={() => {
+            // 【为什么必须带上 itemId】cancelConfirmId 就是用户点的那一条 mailbox
+            // item。并发模式（workerCount > 1）下不带 target，后端
+            // resolveCancelTargetWorker() 第一行 `if (!target) return undefined`
+            // 会直接走 ALS 兼容路径；而取消是从 HTTP 请求线程发起的，那条线程
+            // 没有 ALS 上下文，于是取消落不到真正在跑该 item 的 worker 上 ——
+            // 表现就是「点了取消没反应，行一直停在处理中」。
+            // 同源问题见 core/test/agent-concurrent-cancel-isolation.test.ts「根因 1」。
+            const targetItemId = cancelConfirmId;
             setCancelConfirmId(null);
-            api.agents.cancelProcessing(agentId).then(() => {
+            api.agents.cancelProcessing(agentId, { itemId: targetItemId }).then(() => {
               // Cancel takes effect at the next yield — poll so the row leaves
               // "processing" / "思考中" instead of looking unchanged.
               let tries = 0;
