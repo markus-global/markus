@@ -16,6 +16,7 @@ import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
 import { PerAgentModelSection } from '../components/PerAgentModelSection.tsx';
 import { useProviderCatalog } from '../constants/providers.ts';
 import { FeishuIntegrationSection } from '../components/FeishuIntegrationSection.tsx';
+import { FilterableSelect } from '../components/FilterableSelect.tsx';
 // import { CodingToolsSettings } from './CodingToolsSettings.tsx'; // TEMP-HIDDEN (2026-08)
 import { WebSearchSettings } from './WebSearchSettings.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
@@ -1448,14 +1449,17 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                           <>
                           <div className="flex items-center gap-2">
                             <span className="text-[10px] text-fg-tertiary uppercase tracking-wider shrink-0">{t('modelProviders.testModel')}</span>
-                            <select
+                            <FilterableSelect
                               value={testModelFor[name] ?? ''}
-                              onChange={e => { e.stopPropagation(); setTestModelFor(prev => ({ ...prev, [name]: e.target.value })); }}
-                              className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary focus:border-brand-500 outline-none max-w-[240px]"
-                            >
-                              <option value="">{t('modelProviders.testDefaultModel')}</option>
-                              {getTestableModels(name).map(m => <option key={m} value={m}>{m}</option>)}
-                            </select>
+                              options={getTestableModels(name)}
+                              onChange={v => setTestModelFor(prev => ({ ...prev, [name]: v }))}
+                              placeholder={t('modelProviders.testDefaultModel')}
+                              filterPlaceholder={t('modelPicker.filterPlaceholder')}
+                              emptyText={t('modelPicker.empty')}
+                              customHint={t('modelPicker.useTyped')}
+                              ariaLabel={t('modelProviders.testModel')}
+                              className="w-[260px]"
+                            />
                           </div>
                           <div className="flex gap-2 mt-2">
                             <button onClick={e => { e.stopPropagation(); void testProvider(name); }}

@@ -159,6 +159,7 @@
     "perMillion": "每百万",
     "ctx": "上下文",
     "costFree": "免费",
+    "useTyped": "使用输入的值",
     "capabilities": {
       "tools": "工具",
       "vision": "视觉",

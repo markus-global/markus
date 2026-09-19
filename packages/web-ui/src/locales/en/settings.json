@@ -159,6 +159,7 @@
     "perMillion": "per 1M",
     "ctx": "ctx",
     "costFree": "Free",
+    "useTyped": "Use typed value",
     "capabilities": {
       "tools": "Tools",
       "vision": "Vision",
