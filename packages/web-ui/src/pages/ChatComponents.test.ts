@@ -203,8 +203,28 @@ describe('ProcessRun — 折叠行的状态判定', () => {
     expect(html).toContain('execution.processRun.state.error');
     // 失败次数写进标签：收起状态也必须看得见「这段里有东西挂了」。
     expect(html).toContain('execution.processRun.errors');
-    // 红色出现两次 = 图标 + 失败次数文字，两处都得提示。
-    expect((html.match(/text-red-500/g) ?? []).length).toBe(2);
+    // 失败态**不用红色**（老板 2026-09-20 明确要求）：这一行三种状态一律灰，
+    // 可辨性靠形状 + 文字。红色会把高频出现的收起行变成警报墙。
+    expect(html).not.toContain('text-red-500');
+    expect(html).not.toContain('text-red-');
+    // 但「有失败」必须仍然可辨：用三角形，绝不是表示完成的勾。
+    expect(html).toContain('10.29 3.86');
+    expect(html).not.toContain('M20 6.5');
+  });
+
+  it('三种状态的收起行都不用红色 —— 只有「执行中」有颜色（品牌色）', async () => {
+    for (const [status, streaming] of [
+      ['running', true],
+      ['done', false],
+      ['error', false],
+    ] as const) {
+      const html = await render(completedTurn(status), streaming);
+      expect(html, `${status} 态不该出现红色`).not.toContain('text-red-');
+    }
+    const runningHtml = await render(completedTurn('running'), true);
+    expect(runningHtml).toContain('text-brand-400');
+    const doneHtml = await render(completedTurn('done'), false);
+    expect(doneHtml).not.toContain('text-brand-400');
   });
 
   it('还在跑的时候不报错 —— 工具失败后 agent 往往还会重试', async () => {

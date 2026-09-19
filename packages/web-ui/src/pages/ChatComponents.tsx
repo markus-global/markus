@@ -672,18 +672,21 @@ function ProcessRun({
       })
     : null;
 
-  const parts: { text: string; tone?: 'error' }[] = [];
-  if (summary.thinkingCount > 0) parts.push({ text: t('execution.processRun.thinking') });
-  if (summary.toolCount > 0) parts.push({ text: t('execution.processRun.tools', { count: summary.toolCount }) });
-  if (summary.subagentCount > 0) parts.push({ text: t('execution.processRun.subagents', { count: summary.subagentCount }) });
+  const parts: string[] = [];
+  if (summary.thinkingCount > 0) parts.push(t('execution.processRun.thinking'));
+  if (summary.toolCount > 0) parts.push(t('execution.processRun.tools', { count: summary.toolCount }));
+  if (summary.subagentCount > 0) parts.push(t('execution.processRun.subagents', { count: summary.subagentCount }));
   // 失败次数直接写进这一行 —— 收起状态下也该看得见「这段里有东西挂了」。
-  if (summary.errorCount > 0) parts.push({ text: t('execution.processRun.errors', { count: summary.errorCount }), tone: 'error' });
+  // 但**不上色**：这一行的三种状态一律灰，靠形状（转圈 / 三角 / 对勾）和文字区分，
+  // 颜色只留给「执行中」的品牌色。收起行是高频出现的安静元素，红色会把整条时间线
+  // 染成警报墙，反而让人不再看它。
+  if (summary.errorCount > 0) parts.push(t('execution.processRun.errors', { count: summary.errorCount }));
   // 只有拿到真实时间戳且确实超过 1 秒才显示耗时，避免出现「0.0s」这种噪音。
-  if (summary.elapsedMs >= 1000) parts.push({ text: formatDuration(summary.elapsedMs) });
+  if (summary.elapsedMs >= 1000) parts.push(formatDuration(summary.elapsedMs));
 
   const labelText = running
     ? (liveLabel ?? t('execution.thinkingEllipsis'))
-    : (parts.map(p => p.text).join(' · ') || t('execution.processRun.label'));
+    : (parts.join(' · ') || t('execution.processRun.label'));
   const stateLabel = t(`execution.processRun.state.${state}`);
 
   return (
@@ -700,7 +703,7 @@ function ProcessRun({
         {running && <span className="process-run-sweep" aria-hidden="true" />}
         <span
           className={`relative shrink-0 flex items-center justify-center w-3 h-3 ${
-            state === 'running' ? 'text-brand-400' : state === 'error' ? 'text-red-500' : ''
+            state === 'running' ? 'text-brand-400' : ''
           }`}
         >
           <ProcessRunIcon state={state} />
@@ -710,8 +713,8 @@ function ProcessRun({
           {running ? labelText : (parts.length === 0
             ? labelText
             : parts.map((p, i) => (
-                <span key={p.text + i} className={p.tone === 'error' ? 'text-red-500' : undefined}>
-                  {i > 0 ? ' · ' : ''}{p.text}
+                <span key={p + i}>
+                  {i > 0 ? ' · ' : ''}{p}
                 </span>
               )))}
         </span>
