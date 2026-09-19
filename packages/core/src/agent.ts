@@ -359,6 +359,23 @@ export function needsMaxTokensContinuation(response: ToolLoopResponseShape): boo
   return response.finishReason === 'max_tokens' && !response.toolCalls?.length;
 }
 
+/**
+ * 心跳巡检会话 id —— **按天滚动**，同一天内的多次心跳复用同一个会话。
+ *
+ * 【为什么滚动，而不是每次新建】原实现是 `hb_${id}_${Date.now()}`：每次心跳都产生一个
+ * 全新 sessionId → `MemoryStore.saveSessionToDisk` 每次都新建并落盘一个独立会话文件。
+ * 实测单个 agent 累积了 3268 个 `hb_*.json`（占其全部会话的 76%，约 88 MiB），内容基本
+ * 只有一句 `HEARTBEAT_OK`；而且代码里**没有任何**会话文件清理逻辑，所以只增不减。
+ *
+ * 按天滚动把增长口径从「跟触发次数成正比」改成「跟日历天数成正比」：即使心跳被重复
+ * 触发、或某天密集巡检，一天最多也只有一个文件。agent 是长期常驻的，这个增长可控。
+ *
+ * 用 UTC 日期而非本地日期：服务器时区可变，UTC 能保证桶边界稳定且可测。
+ */
+export function heartbeatSessionId(agentId: string, now: number = Date.now()): string {
+  return `hb_${agentId}_${new Date(now).toISOString().slice(0, 10)}`;
+}
+
 export class Agent {
   readonly id: string;
   readonly config: AgentConfig;
@@ -8989,7 +9006,7 @@ export class Agent {
     for (let attempt = 0; attempt <= HEARTBEAT_MAX_RETRIES; attempt++) {
       try {
         const reply = await this.handleMessage(prompt, undefined, undefined, {
-          sessionId: `hb_${this.id}_${Date.now()}`,
+          sessionId: heartbeatSessionId(this.id),
           allowedTools: HEARTBEAT_ALLOWED_TOOLS,
           scenario: 'heartbeat',
           maxToolIterations: Agent.HEARTBEAT_MAX_TOOL_ITERATIONS,
