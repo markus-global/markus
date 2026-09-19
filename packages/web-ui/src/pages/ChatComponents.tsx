@@ -489,6 +489,11 @@ export interface ProcessRunSummary {
   tailIsThinking: boolean;
   /** 首末 entry 的真实时间跨度；拿不到真实时间戳时为 0。 */
   elapsedMs: number;
+  /**
+   * 这段过程里失败了几次：`error` 行 + `tool_end` 标记 success:false 的工具。
+   * 图标要用它区分「跑完了」和「跑完了但有失败」——后者不该给一个表示完成的勾。
+   */
+  errorCount: number;
 }
 
 export type ChatTimelineBlock =
@@ -505,6 +510,7 @@ export function summarizeProcessRun(entries: ExecutionStreamEntryUI[]): ProcessR
   let toolCount = 0;
   let subagentCount = 0;
   let pendingTool: string | null = null;
+  let errorCount = 0;
 
   for (const e of entries) {
     if (e.type === 'text' && e.metadata?.isThinking === true) { thinkingCount++; continue; }
@@ -513,8 +519,14 @@ export function summarizeProcessRun(entries: ExecutionStreamEntryUI[]): ProcessR
       pendingTool = e.content;
       continue;
     }
-    if (e.type === 'tool_end') { pendingTool = null; continue; }
+    if (e.type === 'tool_end') {
+      // 工具失败 = 失败一次（与 streamEntryToExecEntry 的 status:'error' 同一判据）。
+      if (e.metadata?.success === false) errorCount++;
+      pendingTool = null;
+      continue;
+    }
     if (e.type === 'subagent_start') subagentCount++;
+    if (e.type === 'error') errorCount++;
   }
 
   const first = Date.parse(entries[0]?.createdAt ?? '');
@@ -530,6 +542,7 @@ export function summarizeProcessRun(entries: ExecutionStreamEntryUI[]): ProcessR
     tailIsThinking: entries[entries.length - 1]?.type === 'text'
       && entries[entries.length - 1]?.metadata?.isThinking === true,
     elapsedMs,
+    errorCount,
   };
 }
 
@@ -568,6 +581,45 @@ export function groupProcessRuns(entries: ExecutionStreamEntryUI[]): ChatTimelin
 
 // ─── ProcessRun — 一段过程（思考 + 工具）的折叠行 ─────────────────────────────
 
+/** 折叠行开头那个图标的三态。三者轮廓各不相同，缩到 12px 也能一眼分开。 */
+export type ProcessRunState = 'running' | 'error' | 'done';
+
+/**
+ * 折叠行的状态图标 —— 三个状态给三种完全不同的形状，而不只是换颜色：
+ *
+ *   进行中：转圈的弧线（品牌色）—— 「在动」；旋转由 4Hz tick 驱动，不额外产帧
+ *   有失败：三角形惊叹号（红）  —— 「出事了」，跑完但没好结果时不能给勾
+ *   已完成：对勾（弱色）        —— 「办完了」
+ *
+ * 为什么不能只靠颜色：这行只有 11px 高，颜色差异在暗色主题下最容易被忽略，
+ * 而且对色觉障碍用户等于没有区分；形状差异才是真正可辨的。
+ */
+export function ProcessRunIcon({ state }: { state: ProcessRunState }) {
+  if (state === 'running') {
+    return (
+      <span className="animate-spin inline-flex">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+          <path d="M12 3a9 9 0 1 0 9 9" />
+        </svg>
+      </span>
+    );
+  }
+  if (state === 'error') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+        <path d="M12 9.5v4" />
+        <path d="M12 17.5h.01" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 6.5 9.5 17 4 11.5" />
+    </svg>
+  );
+}
+
 /**
  * 一段「过程」默认收成一行，点开才展开这段过程里的思考/工具明细；
  * 再点其中某一条，才是那一条的详情（复用 ExecEntryRow 既有行为）。
@@ -579,13 +631,16 @@ export function groupProcessRuns(entries: ExecutionStreamEntryUI[]): ChatTimelin
 function ProcessRun({
   entries,
   summary,
-  isActive,
+  isStreaming,
+  isLastBlock,
   hideApprovalCards,
 }: {
   entries: ExecutionStreamEntryUI[];
   summary: ProcessRunSummary;
-  /** 这轮回复还在流式输出（只有最后一块过程会是 true）。 */
-  isActive: boolean;
+  /** 这条消息整体还在流式输出。 */
+  isStreaming: boolean;
+  /** 这是时间线上的最后一块 —— 只有它可能以「思考中」收尾。 */
+  isLastBlock: boolean;
   hideApprovalCards?: boolean;
 }) {
   const { t } = useTranslation('common');
@@ -601,23 +656,35 @@ function ProcessRun({
   // 跑着的时候说「正在干什么」，跑完了说「干了多少」。
   // 「在跑」有两种：工具正在执行，或者这块以思考收尾 —— 后者说明 agent 此刻正在
   // 推理（流式思考中），同样该有活的反馈，否则气泡会看起来像卡住了。
-  const running = isActive && (summary.running || summary.tailIsThinking);
+  // 「在跑」有两种：工具真的还没结束（tool_start 没有配对的 tool_end），
+  // 或者这块以思考收尾（流式思考中）—— 后者同样该有活的反馈。
+  //
+  // 判据故意不依赖「是不是最后一块」：待结束的工具无论落在哪一块，
+  // 只要这轮还在流式，它就是在跑。只按位置判会让一个没收尾的工具显示成
+  // 绿勾（已跑完），这是错的。位置只用来回答「思考是不是还在进行」——
+  // 后面已经又出了正文，说明那段思考早就结束了。
+  const running = isStreaming && (summary.running || (isLastBlock && summary.tailIsThinking));
+  // 三个状态优先级：在跑 > 有失败 > 完成。跑着的时候先别急着报错（后面还会重试）。
+  const state: ProcessRunState = running ? 'running' : (summary.errorCount > 0 ? 'error' : 'done');
   const liveLabel = running && summary.runningTool
     ? t('execution.processRun.runningTool', {
         tool: t(`execution.tools.${summary.runningTool}`, { defaultValue: summary.runningTool }),
       })
     : null;
 
-  const parts: string[] = [];
-  if (summary.thinkingCount > 0) parts.push(t('execution.processRun.thinking'));
-  if (summary.toolCount > 0) parts.push(t('execution.processRun.tools', { count: summary.toolCount }));
-  if (summary.subagentCount > 0) parts.push(t('execution.processRun.subagents', { count: summary.subagentCount }));
+  const parts: { text: string; tone?: 'error' }[] = [];
+  if (summary.thinkingCount > 0) parts.push({ text: t('execution.processRun.thinking') });
+  if (summary.toolCount > 0) parts.push({ text: t('execution.processRun.tools', { count: summary.toolCount }) });
+  if (summary.subagentCount > 0) parts.push({ text: t('execution.processRun.subagents', { count: summary.subagentCount }) });
+  // 失败次数直接写进这一行 —— 收起状态下也该看得见「这段里有东西挂了」。
+  if (summary.errorCount > 0) parts.push({ text: t('execution.processRun.errors', { count: summary.errorCount }), tone: 'error' });
   // 只有拿到真实时间戳且确实超过 1 秒才显示耗时，避免出现「0.0s」这种噪音。
-  if (summary.elapsedMs >= 1000) parts.push(formatDuration(summary.elapsedMs));
+  if (summary.elapsedMs >= 1000) parts.push({ text: formatDuration(summary.elapsedMs) });
 
-  const label = running
+  const labelText = running
     ? (liveLabel ?? t('execution.thinkingEllipsis'))
-    : (parts.join(' · ') || t('execution.processRun.label'));
+    : (parts.map(p => p.text).join(' · ') || t('execution.processRun.label'));
+  const stateLabel = t(`execution.processRun.state.${state}`);
 
   return (
     <div className="min-w-0">
@@ -625,21 +692,29 @@ function ProcessRun({
         type="button"
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
-        title={label}
+        data-process-state={state}
+        title={labelText}
         className="group relative w-full flex items-center gap-2 px-2 py-1 rounded-lg text-left text-[11px] leading-tight text-fg-tertiary bg-surface-elevated/25 hover:bg-surface-elevated/45 border border-border-default/40 hover:border-border-default/70 overflow-hidden transition-colors cursor-pointer select-none"
       >
         {/* 运行中：一道扫光横穿整行 —— 「还活着」的最轻量表达 */}
         {running && <span className="process-run-sweep" aria-hidden="true" />}
-        <span className="relative shrink-0 flex items-center justify-center w-3 h-3" aria-hidden="true">
-          {running ? (
-            <span className="w-1.5 h-1.5 rounded-full bg-brand-400 process-run-pulse" />
-          ) : (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
-            </svg>
-          )}
+        <span
+          className={`relative shrink-0 flex items-center justify-center w-3 h-3 ${
+            state === 'running' ? 'text-brand-400' : state === 'error' ? 'text-red-500' : ''
+          }`}
+        >
+          <ProcessRunIcon state={state} />
         </span>
-        <span className={`relative min-w-0 truncate ${running && !liveLabel ? 'activity-text-shimmer' : ''}`}>{label}</span>
+        <span className="sr-only">{stateLabel}</span>
+        <span className={`relative min-w-0 truncate ${running && !liveLabel ? 'activity-text-shimmer' : ''}`}>
+          {running ? labelText : (parts.length === 0
+            ? labelText
+            : parts.map((p, i) => (
+                <span key={p.text + i} className={p.tone === 'error' ? 'text-red-500' : undefined}>
+                  {i > 0 ? ' · ' : ''}{p.text}
+                </span>
+              )))}
+        </span>
         <svg
           className={`relative ml-auto w-3 h-3 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
           viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
@@ -923,8 +998,8 @@ export const AgentMessageBody = memo(function AgentMessageBody({
             key={block.key}
             entries={block.entries}
             summary={block.summary}
-            // 只有最后一块过程可能真的还在跑，前面的必然已经结束
-            isActive={isStreaming && index === blocks.length - 1}
+            isStreaming={isStreaming}
+            isLastBlock={index === blocks.length - 1}
             hideApprovalCards
           />
         )))}

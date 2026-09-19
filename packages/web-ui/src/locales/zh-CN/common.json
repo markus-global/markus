@@ -187,7 +187,14 @@
       "tools_other": "{{count}} 个工具调用",
       "subagents_one": "{{count}} 个子智能体",
       "subagents_other": "{{count}} 个子智能体",
-      "runningTool": "正在运行 {{tool}}…"
+      "errors_one": "{{count}} 个失败",
+      "errors_other": "{{count}} 个失败",
+      "runningTool": "正在运行 {{tool}}…",
+      "state": {
+        "running": "执行中",
+        "error": "有失败",
+        "done": "已完成"
+      }
     },
     "tools": {
       "shell_execute": "执行命令",

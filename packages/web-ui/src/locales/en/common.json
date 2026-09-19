@@ -187,7 +187,14 @@
       "tools_other": "{{count}} tool calls",
       "subagents_one": "{{count}} sub-agent",
       "subagents_other": "{{count}} sub-agents",
-      "runningTool": "Running {{tool}}..."
+      "errors_one": "{{count}} failure",
+      "errors_other": "{{count}} failures",
+      "runningTool": "Running {{tool}}...",
+      "state": {
+        "running": "In progress",
+        "error": "Has failures",
+        "done": "Completed"
+      }
     },
     "tools": {
       "shell_execute": "Running command",
