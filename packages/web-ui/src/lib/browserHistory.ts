@@ -211,3 +211,45 @@ export function searchBrowserHistory(query: string, limit = 8): BrowserHistoryEn
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+/** Which way a navigation key moves the highlighted history row. */
+export type HistoryNavDirection = 'next' | 'prev';
+
+/**
+ * Emacs-style aliases for ↓/↑ in the address bar: Ctrl+N / Ctrl+P.
+ *
+ * Deliberately narrow — `Cmd+N` (new window) and `Cmd+P` (print) keep their
+ * platform meaning, and Alt/Ctrl+Alt chords are left alone. Returns `null`
+ * when the combo is not a history-navigation key. `key` is compared
+ * case-insensitively so Ctrl+Shift+N behaves the same as Ctrl+N.
+ */
+export function historyNavFromModifierKey(e: {
+  key: string;
+  ctrlKey: boolean;
+  metaKey?: boolean;
+  altKey?: boolean;
+}): HistoryNavDirection | null {
+  if (!e.ctrlKey || e.metaKey || e.altKey) return null;
+  const key = (e.key || '').toLowerCase();
+  if (key === 'n') return 'next';
+  if (key === 'p') return 'prev';
+  return null;
+}
+
+/**
+ * Highlight movement shared by ↑/↓ and Ctrl+P/Ctrl+N, with wrap-around.
+ *
+ * `current = -1` means "nothing highlighted yet": moving down starts at the
+ * first row, moving up jumps to the last one (matching browser address bars).
+ * Returns -1 for an empty list so callers can treat it as "none".
+ */
+export function stepHistoryIndex(
+  current: number,
+  count: number,
+  direction: HistoryNavDirection,
+): number {
+  if (count <= 0) return -1;
+  if (current < 0) return direction === 'next' ? 0 : count - 1;
+  const delta = direction === 'next' ? 1 : -1;
+  return (current + delta + count) % count;
+}

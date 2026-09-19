@@ -56,8 +56,14 @@ export function BrowserHistoryMenu({
       aria-label={heading}
       className="absolute left-0 right-0 top-full mt-1 z-50 rounded-lg border border-border-default bg-surface-elevated shadow-xl overflow-hidden"
     >
-      <div className="px-2.5 py-1.5 text-[10px] uppercase tracking-wide text-fg-muted border-b border-border-default/60 select-none">
-        {heading}
+      <div className="flex items-center gap-2 px-2.5 py-1.5 text-[10px] uppercase tracking-wide text-fg-muted border-b border-border-default/60 select-none">
+        <span>{heading}</span>
+        <span
+          className="ml-auto normal-case tracking-normal text-fg-tertiary/80 truncate"
+          title={t('browserHistoryKeyboardHint', { defaultValue: '↑↓ 或 Ctrl+N/P 选择 · Enter 打开' })}
+        >
+          {t('browserHistoryKeyboardHint', { defaultValue: '↑↓ 或 Ctrl+N/P 选择 · Enter 打开' })}
+        </span>
       </div>
       <ul className="max-h-72 overflow-y-auto scrollbar-thin py-0.5">
         {items.map((entry, index) => {

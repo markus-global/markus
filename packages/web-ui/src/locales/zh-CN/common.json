@@ -149,6 +149,7 @@
   "browserHistoryNone": "暂无浏览历史",
   "browserHistoryRemove": "从历史记录中移除",
   "browserHistoryClear": "清除全部历史记录",
+  "browserHistoryKeyboardHint": "↑↓ 或 Ctrl+N/P 选择 · Enter 打开",
   "signOutConfirmTitle": "确认登出？",
   "signOutConfirmMessage": "登出后需要重新登录才能继续使用 Markus。",
   "confirmDelete": "确认删除",

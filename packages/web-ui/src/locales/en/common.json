@@ -149,6 +149,7 @@
   "browserHistoryNone": "No browsing history yet",
   "browserHistoryRemove": "Remove from history",
   "browserHistoryClear": "Clear all history",
+  "browserHistoryKeyboardHint": "↑↓ or Ctrl+N/P to select · Enter to open",
   "signOutConfirmTitle": "Log out?",
   "signOutConfirmMessage": "You will need to sign in again to continue using Markus.",
   "confirmDelete": "Confirm Delete",

@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearBrowserHistory,
   displayHistoryUrl,
+  historyNavFromModifierKey,
   loadBrowserHistory,
   normalizeHistoryUrl,
   recordBrowserVisit,
   removeBrowserHistoryEntry,
   searchBrowserHistory,
+  stepHistoryIndex,
   subscribeBrowserHistory,
 } from './browserHistory.ts';
 
@@ -143,5 +145,68 @@ describe('browserHistory', () => {
     expect(loadBrowserHistory()).toEqual([]);
     recordBrowserVisit('https://a.example.com', undefined, 1000);
     expect(loadBrowserHistory()).toHaveLength(1);
+  });
+});
+
+/** Address-bar keyboard nav: Ctrl+N / Ctrl+P alias ↓ / ↑. */
+describe('historyNavFromModifierKey', () => {
+  const ev = (over: Partial<{ key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }> = {}) => ({
+    key: '',
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    ...over,
+  });
+
+  it('maps Ctrl+N to next and Ctrl+P to prev', () => {
+    expect(historyNavFromModifierKey(ev({ key: 'n', ctrlKey: true }))).toBe('next');
+    expect(historyNavFromModifierKey(ev({ key: 'p', ctrlKey: true }))).toBe('prev');
+  });
+
+  it('is case-insensitive (Ctrl+Shift+N / caps lock)', () => {
+    expect(historyNavFromModifierKey(ev({ key: 'N', ctrlKey: true }))).toBe('next');
+    expect(historyNavFromModifierKey(ev({ key: 'P', ctrlKey: true }))).toBe('prev');
+  });
+
+  it('leaves Cmd+N / Cmd+P and unbracketed letters alone', () => {
+    // Cmd+N = new window, Cmd+P = print on macOS — must not be hijacked.
+    expect(historyNavFromModifierKey(ev({ key: 'n', metaKey: true }))).toBeNull();
+    expect(historyNavFromModifierKey(ev({ key: 'p', metaKey: true }))).toBeNull();
+    // Both Cmd and Ctrl held (e.g. some Linux setups) → not ours.
+    expect(historyNavFromModifierKey(ev({ key: 'n', ctrlKey: true, metaKey: true }))).toBeNull();
+    expect(historyNavFromModifierKey(ev({ key: 'p', ctrlKey: true, metaKey: true }))).toBeNull();
+    expect(historyNavFromModifierKey(ev({ key: 'n' }))).toBeNull();
+    expect(historyNavFromModifierKey(ev({ key: 'p' }))).toBeNull();
+    // Plain typing of the letters must keep filtering the list.
+    expect(historyNavFromModifierKey(ev({ key: 'x', ctrlKey: true }))).toBeNull();
+  });
+
+  it('does not steal Alt/Option chords (macOS Alt+P types π)', () => {
+    expect(historyNavFromModifierKey(ev({ key: 'n', ctrlKey: true, altKey: true }))).toBeNull();
+    expect(historyNavFromModifierKey(ev({ key: 'p', ctrlKey: true, altKey: true }))).toBeNull();
+  });
+});
+
+describe('stepHistoryIndex', () => {
+  it('starts at the first row going down, last row going up', () => {
+    expect(stepHistoryIndex(-1, 3, 'next')).toBe(0);
+    expect(stepHistoryIndex(-1, 3, 'prev')).toBe(2);
+  });
+
+  it('walks down and wraps around', () => {
+    expect(stepHistoryIndex(0, 3, 'next')).toBe(1);
+    expect(stepHistoryIndex(1, 3, 'next')).toBe(2);
+    expect(stepHistoryIndex(2, 3, 'next')).toBe(0);
+  });
+
+  it('walks up and wraps around', () => {
+    expect(stepHistoryIndex(2, 3, 'prev')).toBe(1);
+    expect(stepHistoryIndex(1, 3, 'prev')).toBe(0);
+    expect(stepHistoryIndex(0, 3, 'prev')).toBe(2);
+  });
+
+  it('returns "nothing highlighted" for an empty list', () => {
+    expect(stepHistoryIndex(-1, 0, 'next')).toBe(-1);
+    expect(stepHistoryIndex(4, 0, 'prev')).toBe(-1);
   });
 });

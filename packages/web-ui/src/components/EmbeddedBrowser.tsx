@@ -16,9 +16,11 @@ import {
 } from '../lib/browserUrl.ts';
 import {
   clearBrowserHistory,
+  historyNavFromModifierKey,
   recordBrowserVisit,
   removeBrowserHistoryEntry,
   searchBrowserHistory,
+  stepHistoryIndex,
   subscribeBrowserHistory,
   type BrowserHistoryEntry,
 } from '../lib/browserHistory.ts';
@@ -430,20 +432,19 @@ export function EmbeddedBrowser({
               onFocus={() => openHistory(addressRef.current?.value ?? '')}
               onBlur={() => { window.setTimeout(closeHistory, 120); }}
               onKeyDown={e => {
-                // ↑/↓ walk the history list, Enter opens the highlighted row,
-                // Escape closes the list (a second Escape leaves the field).
-                if (e.key === 'ArrowDown') {
+                // ↑/↓ (and the Emacs-style Ctrl+P / Ctrl+N aliases) walk the
+                // history list, Enter opens the highlighted row, Escape closes
+                // the list (a second Escape leaves the field).
+                const modifierNav = historyNavFromModifierKey(e);
+                const nav =
+                  e.key === 'ArrowDown' ? 'next'
+                    : e.key === 'ArrowUp' ? 'prev'
+                      : modifierNav;
+                if (nav) {
                   e.preventDefault();
                   if (!historyItems.length) { openHistory(address); return; }
                   setHistoryOpen(true);
-                  setHistoryIndex(i => (i + 1) % historyItems.length);
-                  return;
-                }
-                if (e.key === 'ArrowUp') {
-                  e.preventDefault();
-                  if (!historyItems.length) { openHistory(address); return; }
-                  setHistoryOpen(true);
-                  setHistoryIndex(i => (i <= 0 ? historyItems.length - 1 : i - 1));
+                  setHistoryIndex(i => stepHistoryIndex(i, historyItems.length, nav));
                   return;
                 }
                 if (e.key === 'Enter') {
