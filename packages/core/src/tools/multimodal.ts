@@ -1178,6 +1178,11 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         'your code owns what is possible and must re-validate before acting — never turn model output ' +
         'straight into selectors or coordinates.\n' +
         '\n' +
+        'EVIDENCE: it sees ONLY what you send — it cannot observe anything. Read the source in your code, ' +
+        'put the OBSERVATION in `state` and the option list in `criteria`. A question whose evidence you ' +
+        'never supplied still comes back as a confident-looking number (measured: same question 0.30 ' +
+        'without the observed text, 0.97 with it; truth = yes).\n' +
+        '\n' +
         'BATCH: ask many questions in ONE call — they run in parallel and the state is paid for once ' +
         '(~10x cheaper and faster than N calls). Include questions you may not need and ignore the ' +
         'irrelevant ones. But questions are INDEPENDENT: one answer is never context for another, so a ' +
