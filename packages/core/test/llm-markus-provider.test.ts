@@ -1298,6 +1298,102 @@ describe('soft-stop when remaining credits are 0', () => {
     })).rejects.toThrow(/CU_EXCEEDED/);
   });
 
+  // ─── 防御性解析：不认识的响应体 = 同步失败，≠ 余额为零 ──────────────────────
+  //
+  // 守住的 bug：解析层曾写成 `Number(data.remainingCu ?? 0)`，于是**任何**非预期
+  // 响应体（字段改名、多包一层 data、网关返回 HTML、空的 200）都会被读成
+  // 「Hub 已确认余额为零」→ 命中 assertCreditsAvailable 的 halt 分支 →
+  // 触发 credit-exhausted 事件并硬停用户聊天。
+  //
+  // 语义边界：只有「字段存在且为 0」才是真的没钱；「字段根本不在 / 不是数字」
+  // 属于同步不可用，必须走 null 分支（该分支的本意就是清掉陈旧零值、不误拦截）。
+
+  it('does not hard-stop when cu/sync returns 200 with a renamed/unknown field', async () => {
+    const p = new MarkusProvider({
+      provider: 'markus',
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-chat',
+    });
+    p.setHubRemainingHint(0);
+
+    // Hub 把字段改名 / 多包了一层 —— 旧解析会读成 0，从而误判「余额确认为零」。
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ ok: true, data: { credits_left: 500 } }, 200)) // cu/sync
+      .mockResolvedValue(mockResponse(chatCompletionBody('ok'), 200)); // 真正的 chat 调用
+
+    const res = await p.chat({
+      messages: [{ role: 'user', content: 'hi' }],
+      model: 'deepseek/deepseek-chat',
+    });
+    expect(res.content).toBe('ok');
+  });
+
+  it('does not hard-stop when cu/sync returns 200 with a non-JSON gateway body', async () => {
+    const p = new MarkusProvider({
+      provider: 'markus',
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-chat',
+    });
+    p.setHubRemainingHint(0);
+
+    // 网关常见产物：200 + HTML / 空对象。res.json() 可能抛错，也可能给出 {}。
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({}, 200)) // cu/sync → 空对象
+      .mockResolvedValue(mockResponse(chatCompletionBody('ok'), 200));
+
+    const res = await p.chat({
+      messages: [{ role: 'user', content: 'hi' }],
+      model: 'deepseek/deepseek-chat',
+    });
+    expect(res.content).toBe('ok');
+  });
+
+  it('still hard-stops when the field is present and explicitly 0 (no over-correction)', async () => {
+    // 反向测试：确认上面的放宽没有把「真的没钱」也放过去。
+    const p = new MarkusProvider({
+      provider: 'markus',
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-chat',
+    });
+    p.setHubRemainingHint(0);
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse({ remainingCu: 0 }, 200));
+
+    await expect(p.chat({
+      messages: [{ role: 'user', content: 'hi' }],
+      model: 'deepseek/deepseek-chat',
+    })).rejects.toThrow(/CU_EXCEEDED/);
+  });
+
+  it('accepts a numeric string for remainingCu (Hub serialises it as text)', async () => {
+    const p = new MarkusProvider({
+      provider: 'markus',
+      apiKey: 'sk-or-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      hubUrl: 'http://hub.test',
+      hubToken: 'hub_jwt',
+      model: 'deepseek/deepseek-chat',
+    });
+    p.setHubRemainingHint(0);
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(mockResponse({ remainingCu: '250' }, 200))
+      .mockResolvedValue(mockResponse(chatCompletionBody('ok'), 200));
+
+    const res = await p.chat({
+      messages: [{ role: 'user', content: 'hi' }],
+      model: 'deepseek/deepseek-chat',
+    });
+    expect(res.content).toBe('ok');
+  });
+
   it('allows chat again after hint is cleared', async () => {
     vi.mocked(fetch).mockResolvedValue(mockResponse(chatCompletionBody('ok'), 200, {
       'x-cu-cost': '1',

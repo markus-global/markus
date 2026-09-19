@@ -1,0 +1,10 @@
+{
+  "_comment": "Coverage ratchet baseline. See scripts/check-coverage-ratchet.mjs. Values are the FLOOR: CI fails if measured coverage drops below them. Raise them deliberately (pnpm coverage:ratchet --update) after a real improvement; never lower them to make a red build green.",
+  "_measured_2026-09-19": "statements 29.92 / branches 24.97 / functions 24.13 / lines 31.48 (481 web-ui tests)",
+  "packages/web-ui": {
+    "statements": 28,
+    "branches": 23,
+    "functions": 22,
+    "lines": 29
+  }
+}

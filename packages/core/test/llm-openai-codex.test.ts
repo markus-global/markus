@@ -160,6 +160,59 @@ describe('CodexResponsesProvider', () => {
     expect(response.content).toBe('Done');
   });
 
+  // 回归护栏：`chat()` 必须原样返回 `chatStream()` 的结果。
+  //
+  // 守住的 bug：Codex 非流式 `chat()` 曾把回调里收到的增量自己重新拼装一遍再返回。
+  // 文本能拼对，但**工具调用拼不出来** —— tool call 只有在 `chatStream()` 内部才会
+  // 从 `function_call_arguments.*` 增量物化成 `toolCalls`。于是 agent 循环拿到一个
+  // 「没有任何工具调用」的空轮次：不报错，也不再继续，直接静默卡住。
+  //
+  // 注意：上面那条只断言 `content` 的用例，**有 bug 的旧实现同样能通过**。所以断言
+  // 必须落在 toolCalls / finishReason 上，否则这个文件看着在测 Codex，实际对本修复零保护。
+  it('chat preserves tool calls and finishReason (non-streaming must not drop them)', async () => {
+    const provider = new CodexResponsesProvider(
+      { provider: 'openai-codex', model: 'gpt-5.5' },
+      tokenResolver,
+    );
+
+    vi.mocked(proxyFetch).mockResolvedValue({
+      ok: true,
+      body: createSSEStream(sseLines([
+        { type: 'response.reasoning_summary_text.delta', delta: 'Need to search.' },
+        {
+          type: 'response.output_item.added',
+          item: { type: 'function_call', id: 'item-9', name: 'search', call_id: 'call-9' },
+        },
+        { type: 'response.function_call_arguments.delta', item_id: 'item-9', delta: '{"q":' },
+        { type: 'response.function_call_arguments.delta', item_id: 'item-9', delta: '"markus"}' },
+        {
+          type: 'response.output_item.done',
+          item: {
+            type: 'function_call',
+            id: 'item-9',
+            name: 'search',
+            call_id: 'call-9',
+            arguments: '{"q":"markus"}',
+          },
+        },
+        {
+          type: 'response.completed',
+          response: { status: 'completed', usage: { input_tokens: 7, output_tokens: 3 } },
+        },
+      ])),
+    } as Response);
+
+    const response = await provider.chat({
+      messages: [{ role: 'user', content: 'Search' }],
+      tools: [{ name: 'search', description: 'Search web', inputSchema: { type: 'object', properties: {} } }],
+    });
+
+    expect(response.toolCalls).toEqual([
+      { id: 'call-9', name: 'search', arguments: { q: 'markus' } },
+    ]);
+    expect(response.finishReason).toBe('tool_use');
+  });
+
   it('converts system, tool, assistant, and image messages', async () => {
     const provider = new CodexResponsesProvider(
       { provider: 'openai-codex', model: 'gpt-5.5' },

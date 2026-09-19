@@ -199,6 +199,22 @@ function clampInt(value: number | undefined, min: number, max: number, fallback:
 }
 
 /**
+ * Parse a Hub credit field, keeping "absent / unusable" distinct from a real `0`.
+ *
+ * Returns `null` when the field is missing or not a finite number. Callers MUST
+ * treat `null` as "sync unavailable", never as "zero balance" — collapsing the
+ * two is what let an unrecognised Hub response body hard-stop every user's chat.
+ */
+function parseCreditField(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/**
  * Parse OpenRouter / RFC7231 `Retry-After` (seconds or HTTP-date) to ms.
  * @see https://openrouter.ai/docs/api_reference/limits
  */
@@ -620,8 +636,30 @@ export class MarkusProvider implements MultiModalProviderInterface {
         remainingCu?: number;
         openrouter?: { remainingUsd?: number };
       };
-      const remainingCu = Math.max(0, Number(data.remainingCu ?? 0));
-      const remainingUsd = Math.max(0, Number(data.openrouter?.remainingUsd ?? 0));
+
+      // Distinguish "Hub says zero" from "Hub said something we don't understand".
+      //
+      // This used to be `Number(data.remainingCu ?? 0)`, which collapsed every
+      // unexpected body — a renamed field, an extra `data` wrapper, a gateway HTML
+      // page, an empty 200 — into "confirmed zero balance". Downstream that is
+      // indistinguishable from a genuine empty account, so `assertCreditsAvailable`
+      // would fire the credit-exhausted event and hard-stop the user's chat.
+      //
+      // A malformed body is a *sync failure*, not a statement about the balance.
+      // Return null so callers take their existing "sync unavailable" branch
+      // (which deliberately clears stale local zeros instead of false-blocking) —
+      // the same path a non-OK HTTP status already takes.
+      const cu = parseCreditField(data?.remainingCu);
+      const usd = parseCreditField(data?.openrouter?.remainingUsd);
+      if (cu === null && usd === null) {
+        log.warn('cu/sync returned no recognised credit field — treating as sync unavailable', {
+          keys: data && typeof data === 'object' ? Object.keys(data).slice(0, 8) : typeof data,
+        });
+        return null;
+      }
+
+      const remainingCu = Math.max(0, cu ?? 0);
+      const remainingUsd = Math.max(0, usd ?? 0);
       if (remainingCu > 0 || remainingUsd > 0) {
         this.hubRemainingHint = remainingCu > 0 ? remainingCu : null;
         if (this.lastQuotaInfo) {

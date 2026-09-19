@@ -99,7 +99,7 @@
 > 新增 5 个测试文件（`llm-router-budget-window` / `token-counter-p1-9-10` / `skill-loader-p1-13` / `mcp-client-p1-11` / **`wiring-contracts`**）+ 扩展 3 个（`events` / `active-stream-registry` / `mcp-client`）。
 > **未覆盖** cli / shared / storage / a2a / comms / gui 的独立套件（建议 CI `pnpm quality` 全量确认）。
 >
-> ⚠️ **回归口径限定（M4）**：上述「0 失败」仅覆盖 `packages/core` 与 `org-manager/test/session-continuity-http.test.ts`。**`packages/org-manager` 全量套件存在 1 个确定性失败**（`api-server-extended.test.ts > handleFeishuUserMessage routes to secretary agent`，L1302），已定性为**基线 `252bb935` 预存、非本任务引入**（依据见 §4.5）。故本报告不使用「全仓全绿」这种宽口径，只声明上述窄口径为绿。
+> ⚠️ **回归口径限定（M4）—— 2026-09-19 已解除**：原限定语基于「`packages/org-manager` 全量套件存在 1 个确定性失败」，该失败**已在本分支消除**（详见 §4.5，实测 163 例全绿）。故此处不再需要窄口径豁免。
 
 ---
 
@@ -117,17 +117,19 @@
 - 已修：MCP 管理器层的**清单变化信号**（退出→[]、连接→最新清单）+ 断连调用明确报错 + 可观测日志/事件。
 - 未接线：把该信号转换为「agent 工具表注销/重注册」的消费端。现有 `getToolHandlers*` 已从 `servers` 实时派生（故重新获取即正确），但已注册进 agent 的 handler 未被主动剔除。属后续小改动（消费 `agent:mcp-tools-changed`）。
 
-### 4.4 P1-14 / P1-15 残余：缺 jsdom hook 测试
-- 修复已落地（`useChatStream.ts`），web-ui 现有套件（纯函数 / 纯 manager）全绿；但**未新增 hook 级 jsdom 用例**（本仓库 web-ui 无 hook 测试夹具，搭建成本高）。评审建议的 jsdom 用例仍是缺口。
-- **映射表标注（记录项）**：§1 表已将 P1-14/P1-15 的「防回归测试」列标为 **无测试(例外)**，不再以「已修复（测试缺口）」模糊表述。
+### 4.4 P1-14 / P1-15 残余：缺 jsdom hook 测试 —— **已消除（2026-09-19）**
+- 当时情况：修复已落地（`useChatStream.ts`），web-ui 现有套件（纯函数 / 纯 manager）全绿；但**未新增 hook 级 jsdom 用例**（当时 web-ui 无 hook 测试夹具，且仓库未装 jsdom / `@testing-library/react`）。
+- **现状**：测试基础设施已补齐 —— 安装 `happy-dom` + `@testing-library/react` + `user-event` + `jest-dom`，并把 web-ui 拆成独立的 vitest project（`environment: 'happy-dom'`），同时打开 `.tsx` 测试通道（旧 `include` 只匹配 `.ts`，组件测试文件根本不会被收集）。缺口随之收口：
+  - `packages/web-ui/test/useHubAccount.test.tsx`（9 例，`renderHook`）—— 含多用户 token 隔离；
+  - `packages/web-ui/test/animationBudget.test.ts`（11 例，fake timers）—— Team 页 100% CPU 那个 P0 的落点。
+- **仍缺**：`useChatStream` 本体的 `renderHook` 用例（P1-14/P1-15 的 busy 门控与 reattach 平账）尚未补，属下一版项。
 
-### 4.5 M4 · `packages/org-manager` 全量套件 1 个**基线预存**失败（非本任务引入）
-- 现象：`packages/org-manager/test/api-server-extended.test.ts > APIServer extended route coverage > Deep coverage batch > handleFeishuUserMessage routes to secretary agent`（L1302）确定性失败：`expected "vi.fn()" to be called at least once`（`secretary.sendMessageStream` 未被调用）。隔离复跑 2 次均失败（163 例中 1 例红）。
-- 定性依据（判 pre-existing，非本任务引入）：
-  1. 该测试文件 `252bb935..HEAD` **逐字节未改动**（`git diff --stat` 空）；
-  2. 本分支在 `packages/org-manager` 内**仅**改 `src/active-stream-registry.ts`（P1-3 心跳，+29 行）与其测试，与飞书路由无调用关系；
-  3. QA round 3 已做归因实验：换回 base 版 `active-stream-registry.ts` 仍失败。
-- 处置：**不在本任务修复**（超范围：改动他人未授权逻辑）→ 在本报告如实登记 + §3 限定回归口径；建议由 `org-manager` owner 单独立项。
+### 4.5 M4 · `packages/org-manager` 基线预存失败 —— **已消除，勿再引用旧口径（2026-09-19 核实）**
+- 原记录：`api-server-extended.test.ts > … > handleFeishuUserMessage routes to secretary agent`（L1302）确定性失败（`secretary.sendMessageStream` 未被调用）。
+- **现状**：该文件在 `feat/ui-optimize-0917` 已被改写（L1302→L1309，+31 行）——`0781a997` 补 mock、`c794cb67` 引入 `waitForResponse` 轮询消除竞态。
+- **实测（2026-09-19，HEAD `d306ba7e`）**：`npx vitest run packages/org-manager/test/api-server-extended.test.ts` → **163 例全绿 / 0 失败**（首次即绿，非重试通过）。
+- **结论**：`org-manager` 不再带已知红灯。本报告 §3 原先那条「回归口径仅限 core」的限定语**作废**，可恢复全仓口径。
+
 
 ---
 
