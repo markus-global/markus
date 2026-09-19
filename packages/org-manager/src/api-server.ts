@@ -11651,6 +11651,42 @@ EXPLANATION_END`;
 
     // ── File preview ──────────────────────────────────────────────────────
 
+    // GET /api/files/stat?path=... — cheap metadata probe for the right-panel
+    // auto-refresh loop (mtime/size only; never reads the file body).
+    if (path === '/api/files/stat' && req.method === 'GET') {
+      const filePath = url.searchParams.get('path');
+      if (!filePath) {
+        this.json(res, 400, { error: 'Missing "path" query parameter' });
+        return;
+      }
+
+      try {
+        const { resolve } = await import('node:path');
+        const { existsSync, statSync } = await import('node:fs');
+        const { homedir } = await import('node:os');
+        const home = homedir();
+        const expanded = filePath.startsWith('~/') ? resolve(home, filePath.slice(2)) : filePath === '~' ? home : filePath;
+        const resolved = resolve(expanded);
+
+        if (!existsSync(resolved)) {
+          this.json(res, 200, { exists: false, path: resolved });
+          return;
+        }
+        const stat = statSync(resolved);
+        this.json(res, 200, {
+          exists: true,
+          path: resolved,
+          isFile: stat.isFile(),
+          isDirectory: stat.isDirectory(),
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+        });
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to stat file: ${String(err)}` });
+      }
+      return;
+    }
+
     if (path === '/api/files/preview' && req.method === 'GET') {
       const filePath = url.searchParams.get('path');
       if (!filePath) {
@@ -13107,6 +13143,7 @@ EXPLANATION_END`;
       // ── Files ────────────────────────────────────────────────────────────
       exact('/api/files/check', 'POST'),
       exact('/api/files/preview', 'GET'),
+      exact('/api/files/stat', 'GET'),
       exact('/api/files/stream', 'GET'),
       exact('/api/files/image', 'GET'),
       exact('/api/files/reveal', 'POST'),

@@ -1673,6 +1673,16 @@ export const api = {
       }>(`/files/preview?path=${encodeURIComponent(filePath)}`),
     streamUrl: (filePath: string) =>
       `${BASE}/files/stream?path=${encodeURIComponent(filePath)}`,
+    /** Cheap metadata probe (mtime/size) used by the right-panel auto-refresh. */
+    stat: (filePath: string) =>
+      request<{
+        exists: boolean;
+        path: string;
+        isFile?: boolean;
+        isDirectory?: boolean;
+        size?: number;
+        mtimeMs?: number;
+      }>(`/files/stat?path=${encodeURIComponent(filePath)}`),
     reveal: (filePath: string) =>
       request<{ ok: boolean; path: string }>('/files/reveal', { method: 'POST', body: JSON.stringify({ path: filePath }) }),
     check: (paths: string[]) =>

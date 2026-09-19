@@ -151,6 +151,16 @@ export function RightPanel({
   const [tabOwners, setTabOwners] = useState<Record<number, TabOwner>>({});
   const [termOwners, setTermOwners] = useState<Record<string, TabOwner>>({});
   const [editorDirty, setEditorDirty] = useState(false);
+  /** Bumped by the refresh button / auto-refresh poll to re-run the preview fetch. */
+  const [reloadNonce, setReloadNonce] = useState(0);
+  /** Auto-refresh is on by default: local files/deliverables are rewritten by agents behind our back. */
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  /**
+   * File stamp (mtime + size) of the content currently on screen. The poll only
+   * reloads when the on-disk stamp differs from this baseline, so our own saves
+   * and no-op polls never cause a pointless remount.
+   */
+  const loadedStampRef = useRef<{ path: string; mtimeMs: number; size: number } | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
   const activeTabBtnRef = useRef<HTMLButtonElement>(null);
@@ -245,6 +255,75 @@ export function RightPanel({
   // Show tabs in the chrome row when present (browser-style). Panel × collapses the panel.
   const showTabs = (tabs?.length ?? 0) >= 1;
   const contentKey = previewIdentity(payload, activeTabId);
+
+  /**
+   * Refresh affordances only apply to resources backed by a local path.
+   * URL tabs already have the browser's own reload; terminals stream live.
+   * Builder artifacts have no file body at all.
+   */
+  const canRefresh = (payload.kind === 'file' || payload.kind === 'deliverable')
+    && !!reference
+    && !isUrl(reference)
+    && !(payload.kind === 'deliverable' && !!payload.deliverable.artifactType);
+  /** Re-stat / re-read target — follows in-panel directory navigation. */
+  const refreshTarget = activePath || reference;
+
+  /** Manual refresh: re-read from disk (asks before dropping unsaved edits). */
+  const refreshPreview = useCallback(() => {
+    if (!confirmLeaveEditor()) return;
+    // Drop the baseline so the poll stays quiet until the new content lands.
+    loadedStampRef.current = null;
+    setReloadNonce(n => n + 1);
+  }, [confirmLeaveEditor]);
+
+  // Baseline the file stamp right after a preview lands, so the poll below only
+  // reacts to changes that happened AFTER what is currently on screen.
+  useEffect(() => {
+    if (!canRefresh || !refreshTarget || preview.mode === 'loading') return;
+    let cancelled = false;
+    void api.files.stat(refreshTarget).then((s) => {
+      if (cancelled || !s.exists) return;
+      loadedStampRef.current = {
+        path: s.path || refreshTarget,
+        mtimeMs: s.mtimeMs ?? 0,
+        size: s.size ?? 0,
+      };
+    }).catch(() => { /* stat is best-effort — endpoint may be unavailable */ });
+    return () => { cancelled = true; };
+  }, [canRefresh, refreshTarget, preview, reloadNonce]);
+
+  // Auto-refresh: agents rewrite deliverables / files behind our back while the
+  // panel stays open. Poll a cheap stat every few seconds, plus immediately when
+  // the app regains focus, and reload the preview when the file really changed.
+  // Paused while the file is being edited (never yank the buffer out from under).
+  useEffect(() => {
+    if (!autoRefresh || !canRefresh || !refreshTarget || editorDirty) return;
+    let cancelled = false;
+
+    const check = async () => {
+      const base = loadedStampRef.current;
+      if (!base || base.path !== refreshTarget) return;
+      try {
+        const s = await api.files.stat(refreshTarget);
+        if (cancelled || !s.exists) return;
+        if ((s.mtimeMs ?? 0) !== base.mtimeMs || (s.size ?? 0) !== base.size) {
+          setReloadNonce(n => n + 1);
+        }
+      } catch { /* offline / older server → keep showing current content */ }
+    };
+
+    const timer = window.setInterval(() => { void check(); }, 5000);
+    const onFocus = () => { void check(); };
+    const onVisibility = () => { if (document.visibilityState === 'visible') void check(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [autoRefresh, canRefresh, refreshTarget, editorDirty]);
 
   // Keep the active tab in view (new tabs open on the left; selecting an
   // off-screen tab also scrolls it into the strip).
@@ -376,7 +455,8 @@ export function RightPanel({
     return () => { cancelled = true; };
   // Reload whenever the active tab / preview identity changes — not just payload
   // object identity (which can be sticky across tab clicks in some open paths).
-  }, [contentKey, payload, activePath, reference, title]);
+  // reloadNonce forces an explicit re-read (refresh button / auto-refresh poll).
+  }, [contentKey, payload, activePath, reference, title, reloadNonce]);
 
   // Reset in-panel directory navigation when the payload / active tab changes.
   useEffect(() => { setDirNavPath(null); }, [contentKey]);
@@ -866,6 +946,49 @@ export function RightPanel({
           )}
 
           <div data-no-drag className="shrink-0 flex items-center gap-0.5 pl-1 border-l border-border-default/60">
+            {/* 本地文件 / 交付物：手动刷新（重新从磁盘读取） */}
+            {canRefresh && (
+              <button
+                type="button"
+                onClick={refreshPreview}
+                title={t('common:refreshPreview', { defaultValue: '刷新' })}
+                aria-label={t('common:refreshPreview', { defaultValue: '刷新' })}
+                className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
+              >
+                <svg
+                  className={preview.mode === 'loading' ? 'animate-spin' : ''}
+                  width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                  strokeLinecap="round" strokeLinejoin="round"
+                >
+                  <polyline points="23 4 23 10 17 10" />
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
+              </button>
+            )}
+            {/* 自动刷新开关：文件在磁盘上被改写时自动更新预览 */}
+            {canRefresh && (
+              <button
+                type="button"
+                onClick={() => setAutoRefresh(v => !v)}
+                aria-pressed={autoRefresh}
+                title={autoRefresh
+                  ? t('common:autoRefreshOn', { defaultValue: '自动刷新：已开启' })
+                  : t('common:autoRefreshOff', { defaultValue: '自动刷新：已关闭' })}
+                aria-label={autoRefresh
+                  ? t('common:autoRefreshOn', { defaultValue: '自动刷新：已开启' })
+                  : t('common:autoRefreshOff', { defaultValue: '自动刷新：已关闭' })}
+                className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+                  autoRefresh
+                    ? 'text-brand-500 bg-brand-500/10'
+                    : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                }`}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="9" />
+                  <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
+                </svg>
+              </button>
+            )}
             {payload.kind === 'terminal' && onAddToChat && (
               <button
                 type="button"
@@ -1017,7 +1140,7 @@ export function RightPanel({
         </header>
 
         <div
-          key={contentKey}
+          key={`${contentKey}#${reloadNonce}`}
           className={`flex-1 min-w-0 min-h-0 ${
             preview.mode === 'url' || preview.mode === 'terminal' || preview.mode === 'office' || preview.mode === 'directory'
               || (preview.mode === 'content' && ['code', 'json', 'text', 'markdown', 'html'].includes(preview.format))
