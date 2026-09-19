@@ -410,6 +410,7 @@ export class GoogleProvider implements MultiModalProviderInterface {
       embedding: false,
       reasoning: true,
       promptCaching: false,
+      decision: false,
     };
   }
 

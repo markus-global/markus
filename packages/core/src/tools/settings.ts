@@ -1,6 +1,6 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { LLMRouter } from '../llm/router.js';
-import { createLogger, type MarkusConfig, type ModelCapabilityType, type CapabilityModelAssignment, type LLMAssignment } from '@markus/shared';
+import { createLogger, MODEL_CAPABILITY_TYPES, type MarkusConfig, type ModelCapabilityType, type CapabilityModelAssignment, type LLMAssignment } from '@markus/shared';
 
 const log = createLogger('settings-tools');
 
@@ -409,7 +409,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
       name: 'llm_get_capability_routing',
       description:
         'Get current capability routing configuration AND the authoritative list of models you can actually use for each ' +
-        'non-text capability (image_generation, image_recognition, audio_tts, audio_stt, video_generation). ' +
+        'non-text capability (image_generation, image_recognition, audio_tts, audio_stt, video_generation, decision). ' +
         'Use this BEFORE any image/audio/video task instead of guessing model ids or probing models: `usable_models` ' +
         'only lists models from providers that are configured AND enabled, so anything here is safe to call. ' +
         'If a capability has an empty `usable_models` list, that capability is not available — do not attempt it.',
@@ -428,6 +428,8 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           audio_tts: 'tts',
           audio_stt: 'stt',
           video_generation: 'videoGeneration',
+          // Decision models (TypeSafe Jev & friends) advertise this tag.
+          decision: 'decision',
         };
 
         const usableModels: Record<string, Array<{ provider: string; model: string; name: string; tier?: string }>> = {};
@@ -456,9 +458,9 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         return JSON.stringify({
           routing_default_model: defaultModel ?? null,
           assignments: routing.assignments,
-          capability_types: ['text', 'image_recognition', 'image_generation', 'audio_tts', 'audio_stt', 'video_generation'],
+          capability_types: [...MODEL_CAPABILITY_TYPES],
           usable_models: usableModels,
-          note: 'usable_models lists only models from configured+enabled providers. You can pass model=... directly on generate_image / text_to_speech / speech_to_text / generate_video without calling llm_set_capability_routing. Routing assignments are only the default when model is omitted. An empty usable_models list means the capability is unavailable.',
+          note: 'usable_models lists only models from configured+enabled providers. You can pass model=... directly on generate_image / text_to_speech / speech_to_text / generate_video / decide without calling llm_set_capability_routing. Routing assignments are only the default when model is omitted. An empty usable_models list means the capability is unavailable.',
         });
       },
     },
@@ -466,7 +468,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
       name: 'llm_set_capability_routing',
       description:
         'Assign a specific provider+model to a capability type. Required arg name is capability_type ' +
-        '(values: text, image_recognition, image_generation, audio_tts, audio_stt, video_generation) — not "type". ' +
+        '(values: text, image_recognition, image_generation, audio_tts, audio_stt, video_generation, decision) — not "type". ' +
         'Pick model from llm_get_capability_routing.usable_models for that capability. ' +
         'Set provider and model to empty strings to clear an assignment.',
       inputSchema: {
@@ -474,7 +476,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         properties: {
           capability_type: {
             type: 'string',
-            enum: ['text', 'image_recognition', 'image_generation', 'audio_tts', 'audio_stt', 'video_generation'],
+            enum: [...MODEL_CAPABILITY_TYPES],
             description: 'The capability type to configure (required; use this exact key name)',
           },
           provider: {
@@ -497,10 +499,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         required: ['capability_type', 'provider', 'model'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const VALID: Set<string> = new Set([
-          'text', 'image_recognition', 'image_generation',
-          'audio_tts', 'audio_stt', 'video_generation',
-        ]);
+        const VALID: Set<string> = new Set<string>(MODEL_CAPABILITY_TYPES);
         const capabilityType = resolveCapabilityTypeArg(args, VALID);
         const provider = String(args['provider'] ?? '').trim();
         const model = String(args['model'] ?? '').trim();
@@ -573,6 +572,20 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
               [capabilityType]: assignment,
             },
           });
+
+          // Never report success for a write the router silently dropped. The
+          // router validates capability keys against the canonical list; if this
+          // capability is unknown there, the assignment is discarded — reporting
+          // "success" would be a lie the caller cannot detect.
+          if (!ctx.llmRouter.capabilityRouting.assignments[capabilityType]) {
+            return JSON.stringify({
+              status: 'error',
+              error:
+                `Capability "${capabilityType}" was rejected by the LLM router, so routing was NOT saved. ` +
+                'This usually means the capability is missing from MODEL_CAPABILITY_TYPES in @markus/shared ' +
+                '(the single source of truth).',
+            });
+          }
 
           if (ctx.persistConfig) {
             try {
@@ -788,6 +801,7 @@ const CAP_TAG_BY_TYPE: Partial<Record<ModelCapabilityType, string>> = {
   audio_tts: 'tts',
   audio_stt: 'stt',
   video_generation: 'videoGeneration',
+  decision: 'decision',
 };
 
 /** Accept capability_type plus common model typos (type / capability). */
@@ -847,6 +861,9 @@ const CAPABILITY_MODEL_PATTERNS: Record<string, RegExp> = {
   audio_tts: /\btts\b|cosy.?voice|bark|xtts|orpheus|aura-?\d|tts-1|text[-_.]?to[-_.]?speech/i,
   audio_stt: /\bstt\b|whisper|sense.?voice|paraformer|speech.?to.?text|transcribe|asr|voxtral|nova-?\d/i,
   video_generation: /\bvideo\b|hailuo|wan.*[ti]2v|sora|kling|gen-?[23]|cogvideo|vidu|seedance|veo/i,
+  // Decision models — a different *shape*, not a different modality: typed
+  // probability output instead of prose.
+  decision: /\bjev\b|typesafe|system.?one|\bdecisions?\b/i,
 };
 
 const TEXT_MODEL_PATTERN = /deepseek|qwen|gpt-[345]|gpt-5|claude|gemini|glm-[45]|llama|mistral|phi-|command|minimax-m/i;

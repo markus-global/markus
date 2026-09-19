@@ -1,4 +1,4 @@
-import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelCapabilityType, type CostTier, type CapabilityRoutingConfig, type CapabilityModelAssignment, type ProviderCapabilities, getProviderBootstrapModel } from '@markus/shared';
+import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelCapabilityType, type CostTier, type CapabilityRoutingConfig, type CapabilityModelAssignment, type ProviderCapabilities, getProviderBootstrapModel, MODEL_CAPABILITY_TYPES } from '@markus/shared';
 import { startSpan } from '../tracing.js';
 import { DEFAULT_REQUEST_MAX_TOKENS, type LLMProviderInterface, type MultiModalProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -76,6 +76,7 @@ const CAPABILITY_KEY_MAP: Partial<Record<ModelCapabilityType, keyof ProviderCapa
   audio_tts: 'tts',
   audio_stt: 'stt',
   video_generation: 'videoGeneration',
+  decision: 'decision',
 };
 
 /**
@@ -1260,10 +1261,10 @@ export class LLMRouter {
   get capabilityRouting(): CapabilityRoutingConfig { return this._capabilityRouting; }
 
   setCapabilityRouting(config: Partial<CapabilityRoutingConfig>): void {
-    const VALID_CAPABILITY_TYPES: Set<string> = new Set([
-      'text', 'image_recognition', 'image_generation',
-      'audio_tts', 'audio_stt', 'video_generation',
-    ]);
+    // Derived from the canonical list in @markus/shared. Do NOT re-list the
+    // capabilities here: this hardcoded copy previously omitted `decision`, so
+    // routing assignments for it were silently dropped on the floor.
+    const VALID_CAPABILITY_TYPES: ReadonlySet<string> = new Set<string>(MODEL_CAPABILITY_TYPES);
 
     // Drop already-persisted junk keys (e.g. literal "undefined" from bad tool calls).
     const base: CapabilityRoutingConfig['assignments'] = {};
@@ -1556,8 +1557,14 @@ export class LLMRouter {
 
     for (const [name, cfg] of Object.entries(configs ?? {})) {
       if (['anthropic', 'openai', 'google', 'ollama', 'markus'].includes(name)) continue;
-      if (cfg?.apiKey) {
+      if (!cfg?.apiKey) continue;
+      try {
         router.registerProvider(name, createOpenAICompatible(name, cfg));
+      } catch (err) {
+        // A single unusable provider (e.g. a custom one persisted without a
+        // baseUrl) must not abort router construction and brick startup.
+        // Skip it loudly; the provider stays absent until it is fixed.
+        log.warn(`Skipping provider "${name}" during startup registration`, { error: String(err) });
       }
     }
 

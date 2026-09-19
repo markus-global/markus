@@ -312,6 +312,7 @@ export interface MultiModalToolSchemas {
   text_to_speech?: ToolParamSchema;
   speech_to_text?: ToolParamSchema;
   generate_video?: ToolParamSchema;
+  decide?: ToolParamSchema;
 }
 
 /** Input for describing/recognizing the content of one or more images via a vision-capable model. */
@@ -324,6 +325,232 @@ export interface ImageRecognitionInput {
   model?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Decision models (TypeSafe "System One" / Jev style)
+// ---------------------------------------------------------------------------
+
+/**
+ * Question kinds a decision model understands.
+ *
+ * A decision model emits **no prose** — it returns one typed, calibrated answer
+ * per question. That is the whole point: it cannot hallucinate outside the
+ * option set you enumerated, and it always says how sure it is.
+ */
+export type DecisionQuestionType = 'noul' | 'score' | 'choice';
+
+/**
+ * A criteria/instruction entry.
+ *
+ * The upstream contract accepts `string | object | array | null` (TypeSafe calls
+ * it "EntryType"). Objects let you attach structured hints — `{ what, not_for,
+ * examples }` — instead of jamming everything into one sentence. Do not flatten
+ * these to strings: that silently throws away caller intent.
+ */
+export type DecisionEntry = string | Record<string, unknown> | readonly unknown[] | null;
+
+/** `choice` → keyed map; `score` → ordered array; `noul` → `{ true, false }`. */
+export type DecisionCriteria =
+  | Record<string, DecisionEntry | undefined>
+  | ReadonlyArray<DecisionEntry | undefined>;
+
+export interface DecisionQuestion {
+  type: DecisionQuestionType;
+  /** What to decide, in plain language. */
+  instructions: DecisionEntry;
+  /**
+   * - `choice` → keyed map `{ optionKey: description }` (max **255** options).
+   *   Option keys are what come back in `choice` / `probabilities`.
+   * - `score`  → ordered array, lowest → highest (**2–10** levels; index 0 = lowest).
+   * - `noul`   → **optional** `{ true: "…", false: "…" }` describing each pole.
+   *   Supplying it sharpens the judgment; omit for a bare yes/no.
+   */
+  criteria?: DecisionCriteria;
+}
+
+export interface DecisionRequest {
+  /**
+   * The situation to judge: free-form text, a structured object, or an array.
+   * Shared by every question in the call, so batching many questions against a
+   * large state is close to free (the state tokens are paid once).
+   */
+  state: string | Record<string, unknown> | readonly unknown[];
+  /** Question key → question. Keys are echoed back verbatim in `answers`. */
+  questions: Record<string, DecisionQuestion>;
+  /** Override model for this call (e.g. `typesafe/jev-1.13`). */
+  model?: string;
+}
+
+export interface DecisionAnswer {
+  type: DecisionQuestionType;
+  /** `noul`: calibrated probability that the answer is "yes" (0–1). */
+  noul?: number;
+  /**
+   * `score`: probability-weighted position on the criteria scale (0-indexed).
+   * Continuous — can land between levels.
+   */
+  score?: number;
+  /** `choice`: the winning option key. */
+  choice?: string;
+  /** `score`: scale index → criteria label, for reading `score`. */
+  legend?: Record<string, string>;
+  /** Full distribution — `choice` keys are option keys, `score` keys are scale indexes. */
+  probabilities?: Record<string, number>;
+  /**
+   * How sure the model is of its own distribution (0–1). **Choice/Score only —
+   * noul has no confidence.** A flat distribution means no clear winner, not a
+   * hedged answer.
+   */
+  confidence?: number;
+}
+
+export interface DecisionUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Actual billed cost in USD when the upstream reports it. */
+  cost?: number;
+}
+
+export interface DecisionResult {
+  /** Concrete model revision that served the call (may differ from what was asked). */
+  model?: string;
+  answers: Record<string, DecisionAnswer>;
+  usage?: DecisionUsage;
+  /** Upstream response id, useful for support / replay. */
+  id?: string;
+  /** Upstream provider label (e.g. "TypeSafe"). */
+  provider?: string;
+}
+
+/**
+ * Gateways that serve decision models, mapped to their path.
+ *
+ * Decision models are never on `/chat/completions`, and the path is **not**
+ * standardized across gateways — OpenRouter uses an alpha namespace while
+ * TypeSafe's native API uses `/v1/systemone`. Hardcoding either one would make
+ * the integration gateway-specific, so resolve by host and let a config
+ * override win for everything else.
+ */
+const DECISION_GATEWAY_PATHS: ReadonlyArray<{ host: RegExp; path: string }> = [
+  { host: /(^|\.)openrouter\.ai$/i, path: '/api/alpha/decisions' },
+  { host: /(^|\.)typesafe\.ai$/i, path: '/v1/systemone' },
+];
+
+/**
+ * Resolve the decisions endpoint for a provider.
+ *
+ * Precedence: explicit override → an already-decisions base URL → known gateway
+ * → OpenRouter-shaped `/api/vN` base (the dominant OpenAI-compatible layout).
+ *
+ * Anything else **throws** rather than guessing: silently posting to a
+ * plausible-but-wrong path produces a confusing 404 and hides the real fix
+ * (set `decisionsUrl`).
+ */
+export function resolveDecisionsEndpoint(baseUrl: string, override?: string): string {
+  const explicit = override?.trim();
+  if (explicit) return explicit;
+
+  const base = (baseUrl || '').trim().replace(/\/+$/, '');
+  if (!base) {
+    throw new Error(
+      'Cannot resolve a decisions endpoint: no baseUrl and no decisionsUrl configured. ' +
+        'Set the provider base URL or an explicit decisions URL.',
+    );
+  }
+
+  // Already pointing at a decisions path — use verbatim.
+  if (/\/(alpha\/decisions|systemone)$/i.test(base)) return base;
+
+  let host = '';
+  let origin = base;
+  try {
+    const parsed = new URL(base);
+    host = parsed.hostname;
+    origin = parsed.origin;
+  } catch {
+    // Not absolute — fall through to the shape heuristics below.
+  }
+
+  for (const gateway of DECISION_GATEWAY_PATHS) {
+    if (host && gateway.host.test(host)) return `${origin}${gateway.path}`;
+  }
+
+  // OpenRouter-compatible gateways normally mirror the chat base at `/api/vN`.
+  if (/\/api\/v\d+$/.test(base)) return `${base.replace(/\/api\/v\d+$/, '')}/api/alpha/decisions`;
+
+  throw new Error(
+    `Cannot determine the decisions endpoint for base URL "${base}". ` +
+      'Decision models are not served on /chat/completions and the path differs per gateway ' +
+      '(OpenRouter: /api/alpha/decisions; TypeSafe native: /v1/systemone). ' +
+      'Set `decisionsUrl` on this provider to use it.',
+  );
+}
+
+/** Non-throwing form of {@link resolveDecisionsEndpoint}, for capability checks. */
+export function canServeDecisions(baseUrl: string, override?: string): boolean {
+  try {
+    resolveDecisionsEndpoint(baseUrl, override);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Normalize a decision response into {@link DecisionResult}.
+ *
+ * Shape (OpenRouter alpha; TypeSafe native omits `id`/`provider`/`cost`):
+ * ```json
+ * { "model": "typesafe/jev-1.13-20260917",
+ *   "answers": { "is_injection": { "type": "noul", "noul": 0.99 },
+ *                "risk": { "type": "score", "score": 1.99,
+ *                          "legend": { "0": "ok", "1": "suspicious", "2": "attack" },
+ *                          "probabilities": { "0": 0, "1": 0.01, "2": 0.99 },
+ *                          "confidence": 0.99 } },
+ *   "usage": { "input_tokens": 444, "output_tokens": 70, "cost": 1.86e-5 },
+ *   "provider": "TypeSafe" }
+ * ```
+ * `score` is a **continuous** value on the criteria scale (probability-weighted;
+ * it can land between levels) — `legend` maps it back to a human label.
+ *
+ * Shared by every provider that can serve decisions so the two call sites
+ * cannot drift.
+ */
+export function parseDecisionResponse(raw: unknown): DecisionResult {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const rawAnswers = (r['answers'] ?? {}) as Record<string, unknown>;
+  const answers: Record<string, DecisionAnswer> = {};
+
+  for (const [key, value] of Object.entries(rawAnswers)) {
+    if (!value || typeof value !== 'object') continue;
+    const a = value as Record<string, unknown>;
+    const rawType = a['type'];
+    const type: DecisionQuestionType =
+      rawType === 'noul' || rawType === 'score' || rawType === 'choice' ? rawType : 'noul';
+    answers[key] = {
+      type,
+      noul: typeof a['noul'] === 'number' ? a['noul'] : undefined,
+      score: typeof a['score'] === 'number' ? a['score'] : undefined,
+      choice: typeof a['choice'] === 'string' ? a['choice'] : undefined,
+      legend: (a['legend'] as Record<string, string> | undefined) ?? undefined,
+      probabilities: (a['probabilities'] as Record<string, number> | undefined) ?? undefined,
+      confidence: typeof a['confidence'] === 'number' ? a['confidence'] : undefined,
+    };
+  }
+
+  const rawUsage = (r['usage'] ?? {}) as Record<string, unknown>;
+  return {
+    model: typeof r['model'] === 'string' ? r['model'] : undefined,
+    answers,
+    usage: {
+      inputTokens: typeof rawUsage['input_tokens'] === 'number' ? rawUsage['input_tokens'] : undefined,
+      outputTokens: typeof rawUsage['output_tokens'] === 'number' ? rawUsage['output_tokens'] : undefined,
+      cost: typeof rawUsage['cost'] === 'number' ? rawUsage['cost'] : undefined,
+    },
+    id: typeof r['id'] === 'string' ? r['id'] : undefined,
+    provider: typeof r['provider'] === 'string' ? r['provider'] : undefined,
+  };
+}
+
 export interface MultiModalProviderInterface extends LLMProviderInterface {
   getCapabilities?(): ProviderCapabilities;
   getToolSchemas?(): MultiModalToolSchemas;
@@ -331,4 +558,6 @@ export interface MultiModalProviderInterface extends LLMProviderInterface {
   generateSpeech?(text: string, options?: TTSOptions): Promise<AudioResult>;
   transcribeSpeech?(audio: Buffer, options?: STTOptions): Promise<string>;
   generateVideo?(prompt: string, options?: VideoGenOptions): Promise<VideoResult>;
+  /** Typed probability decisions (OpenRouter `/api/alpha/decisions`). */
+  decide?(request: DecisionRequest): Promise<DecisionResult>;
 }

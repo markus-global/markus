@@ -583,6 +583,8 @@ export class Agent {
   private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private browserCloseTabsHelper?: (sessionId: string) => string | null;
+  /** Injected by AgentManager; read at skill-activation time so Settings changes apply live. */
+  private browserElementSelectionProvider?: () => 'direct' | 'jev';
   private dynamicContextProviders = new Map<string, () => string>();
   /** 并发模式：workerId → 该 worker 独占的 SessionWorkspace（保持跨 item 会话状态隔离）。 */
   private workerWorkspaces = new Map<number, SessionWorkspace>();
@@ -3297,6 +3299,44 @@ export class Agent {
     this.activatedSkills().set(skillName, instructions);
   }
 
+  /**
+   * Append platform-level guidance to a skill body at activation time.
+   *
+   * Done here rather than by editing the skill's SKILL.md on purpose: the skill package stays the
+   * canonical SOP for every install, while the mode the user picked in Settings → Browser
+   * Automation is applied per-agent at load time.
+   */
+  private augmentSkillInstructions(skillName: string, body: string): string {
+    if (skillName !== 'chrome-devtools') return body;
+    if (this.browserElementSelectionProvider?.() !== 'jev') return body;
+    return (
+      body +
+      '\n\n---\n\n## ACTIVE MODE: Jev-assisted element selection\n\n' +
+      'The user selected this mode in Settings → Browser Automation. For every step where you must\n' +
+      'choose WHICH element to act on, run this loop instead of picking from the raw snapshot:\n\n' +
+      '1. Enumerate candidates with `evaluate_script`: return a compact NUMBERED list of interactive\n' +
+      '   elements, each tagged with a selector you can reuse (e.g. a generated `[data-jev-idx]`).\n' +
+      "   Scope it to the relevant DOM container — never the whole page.\n" +
+      '2. Call `decide` ONCE with the goal, the current stage, and that numbered list. Ask ONE\n' +
+      '   question — "which element should I operate on next" — plus any independent yes/no you need.\n' +
+      '3. Trust `confidence`: below 0.5 do NOT act — narrow the scope and re-ask, or stop and ask the\n' +
+      '   user. A near-tie in the distribution means unresolved, not "close enough".\n' +
+      '4. Act with the existing `click` / `fill` tool, using the selector you tagged in step 1.\n\n' +
+      'Three rules that came out of measurement — they are NOT optional:\n' +
+      '- Never ask "what action" and "which element" as two separate questions. The answers are\n' +
+      '  computed independently and can contradict each other (measured: action="type" with\n' +
+      '  target="none"). Ask only for the element and derive the action from its role in code.\n' +
+      '- Always state the current stage / next subgoal in the `state`. Without it the model latches\n' +
+      '  onto a word in the goal and picks an element with a matching NAME (measured: goal containing\n' +
+      '  "登录" → it clicked the link called "登录", confidence 0.88, wrong page region).\n' +
+      '- A `choice` question accepts at most 255 options. If the scope yields more, narrow it in code\n' +
+      '  first — do not split the whole page across parallel questions (measured: 609 elements →\n' +
+      '  HTTP 400 "Too many choices").\n\n' +
+      'Note: `decide` returns probabilities, not text. It can never emit a selector or a click —\n' +
+      'your code owns what is possible, and you must re-validate the element before acting.\n'
+    );
+  }
+
   hasSkillInstructions(skillName: string): boolean {
     return this.activatedSkills().has(skillName);
   }
@@ -3938,6 +3978,14 @@ export class Agent {
 
   setBrowserCloseTabsHelper(fn: (sessionId: string) => string | null): void {
     this.browserCloseTabsHelper = fn;
+  }
+
+  /**
+   * Injected by AgentManager. Read through a callback rather than a copied value so that flipping
+   * the setting in Settings → Browser Automation takes effect for already-running agents.
+   */
+  setBrowserElementSelectionProvider(fn: () => 'direct' | 'jev'): void {
+    this.browserElementSelectionProvider = fn;
   }
 
   /**
@@ -7790,7 +7838,7 @@ export class Agent {
         const skill = this.skillRegistry.get(name);
         if (skill) {
           if (skill.manifest.instructions) {
-            this.activatedSkills().set(name, skill.manifest.instructions);
+            this.activatedSkills().set(name, this.augmentSkillInstructions(name, skill.manifest.instructions));
           }
           // Skill stats (LEARNING-LOOP §4) — does not affect trust score
           try {

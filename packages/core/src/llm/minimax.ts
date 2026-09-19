@@ -52,6 +52,7 @@ export class MiniMaxProvider extends OpenAIProvider {
       embedding: false,
       reasoning: true,
       promptCaching: true,
+      decision: false,
     };
   }
 

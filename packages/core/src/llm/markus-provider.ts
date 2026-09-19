@@ -38,6 +38,10 @@ import {
   type STTOptions,
   type VideoGenOptions,
   type VideoResult,
+  parseDecisionResponse,
+  resolveDecisionsEndpoint,
+  type DecisionRequest,
+  type DecisionResult,
 } from './provider.js';
 import {
   buildOpenAICompatEndpoint,
@@ -293,11 +297,18 @@ export class MarkusProvider implements MultiModalProviderInterface {
   private maxRetries = DEFAULT_MAX_RETRIES;
   private retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS;
   private maxRetryAfterMs = DEFAULT_MAX_RETRY_AFTER_MS;
+  /**
+   * Explicit decisions endpoint. When unset it is resolved from the effective
+   * OpenRouter base (`/api/alpha/decisions`). Kept overridable so a different
+   * gateway never requires a code change.
+   */
+  private decisionsUrl?: string;
 
   constructor(config?: LLMProviderConfig) {
     this.model = config?.model ?? DEFAULT_MODEL;
     this.apiKey = config?.apiKey ?? '';
     this.baseUrl = config?.baseUrl ?? DEFAULT_OR_BASE_URL;
+    this.decisionsUrl = config?.decisionsUrl;
     this.maxTokens = config?.maxTokens;
     this.chatTimeoutMs = config?.timeoutMs ?? CHAT_TIMEOUT_MS;
     // Stream idle is independent of chat timeoutMs — never inherit a lower chat
@@ -1247,6 +1258,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
       embedding: false,
       reasoning: true,
       promptCaching: true,
+      // Decision models ride OpenRouter's alpha namespace with the same member key.
+      decision: or,
     };
   }
 
@@ -1390,6 +1403,34 @@ export class MarkusProvider implements MultiModalProviderInterface {
           required: ['prompt'],
         },
       },
+      decide: {
+        description:
+          'Typed probability decisions via OpenRouter /api/alpha/decisions (e.g. model "typesafe/jev-1.13"). ' +
+          'Use for classification, routing, scoring, triage and prompt-injection guardrails. ' +
+          'Returns calibrated probabilities per question — no prose, so it cannot invent an option.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            state: {
+              type: 'string',
+              description: 'Situation to judge — free-form text, or a JSON string for structured facts (REQUIRED)',
+            },
+            questions: {
+              type: 'object',
+              description:
+                'Question key → { type: "choice"|"score"|"noul", instructions, criteria }. ' +
+                'choice.criteria = { optionKey: meaning }; score.criteria = ["low", "mid", "high"]; ' +
+                'noul omits criteria and returns a 0–1 "yes" probability.',
+            },
+            provider: providerParam,
+            model: {
+              type: 'string',
+              description: 'Decision model for THIS call (e.g. "typesafe/jev-1.13"). Preferred over capability routing.',
+            },
+          },
+          required: ['state', 'questions'],
+        },
+      },
     };
   }
 
@@ -1434,6 +1475,57 @@ export class MarkusProvider implements MultiModalProviderInterface {
       mkdirSync(dir, { recursive: true });
       return dir;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Decision models (OpenRouter alpha /decisions — TypeSafe Jev style)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Typed probability decisions on `POST /api/alpha/decisions`.
+   *
+   * Uses the same Hub-issued member key as chat/media, but a different namespace:
+   * the OpenAI-compatible base is `/api/v1`, decisions live under `/api/alpha`.
+   * Posting a decisions model to `/chat/completions` is rejected upstream with
+   * `400 … is a decisions model and cannot be used with the chat/completions endpoint`.
+   */
+  async decide(request: DecisionRequest, _retried = false): Promise<DecisionResult> {
+    if (!this.hasOpenRouterCreds()) {
+      throw new Error('Decision models require Markus OpenRouter credentials (Hub connect)');
+    }
+    await this.assertCreditsAvailable();
+
+    const endpoint = resolveDecisionsEndpoint(this.effectiveOpenRouterBase(), this.decisionsUrl);
+    const body: Record<string, unknown> = {
+      model: stripMarkusNamespace(request.model ?? this.model),
+      state: request.state,
+      questions: request.questions,
+    };
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: this.bearerOpenRouter(),
+        'HTTP-Referer': 'https://markus.global',
+        'X-Title': 'Markus',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      // Same as media/chat: never claim CU_EXCEEDED from an OR 402 alone — Hub
+      // may still have budget (stale key / per-request reservation).
+      if (isCreditExhaustedHttp(res.status, errText)) {
+        const outcome = await this.resolveCreditHttpError(res.status, errText, _retried);
+        if (outcome.retry) return this.decide(request, true);
+      }
+      throw new Error(`Decision API error ${formatUpstreamMediaError(res.status, errText)}`);
+    }
+
+    return parseDecisionResponse(await res.json());
   }
 
   // ---------------------------------------------------------------------------

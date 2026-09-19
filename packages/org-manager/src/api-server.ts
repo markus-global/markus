@@ -8543,6 +8543,7 @@ EXPLANATION_END`;
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
         mode: browser.mode ?? 'embedded',
+        elementSelection: browser.elementSelection ?? 'direct',
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
@@ -8559,6 +8560,7 @@ EXPLANATION_END`;
       const body = await this.readBody(req);
       const updates: Record<string, unknown> = {};
       if (body['mode'] === 'embedded' || body['mode'] === 'system-chrome') updates.mode = body['mode'];
+      if (body['elementSelection'] === 'direct' || body['elementSelection'] === 'jev') updates.elementSelection = body['elementSelection'];
       if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
       if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
       if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
@@ -8568,6 +8570,9 @@ EXPLANATION_END`;
         const am = this.orgService.getAgentManager();
         if (updates.mode === 'embedded' || updates.mode === 'system-chrome') {
           am.setBrowserMode(updates.mode);
+        }
+        if (updates.elementSelection === 'direct' || updates.elementSelection === 'jev') {
+          am.setBrowserElementSelection(updates.elementSelection);
         }
         if (typeof updates.bringToFront === 'boolean') {
           am.setBrowserBringToFront(updates.bringToFront);
@@ -8601,6 +8606,7 @@ EXPLANATION_END`;
       const am2 = this.orgService.getAgentManager();
       this.json(res, 200, {
         mode: browser.mode ?? 'embedded',
+        elementSelection: browser.elementSelection ?? 'direct',
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,

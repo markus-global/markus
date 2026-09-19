@@ -251,6 +251,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   // Browser automation settings
   const [browserMode, setBrowserMode] = useState<'embedded' | 'system-chrome'>('embedded');
+  const [browserElementSelection, setBrowserElementSelection] = useState<'direct' | 'jev'>('direct');
   const [browserBringToFront, setBrowserBringToFront] = useState(false);
   const [browserRemotePort, setBrowserRemotePort] = useState(0);
   const [browserAutoClose, setBrowserAutoClose] = useState(true);
@@ -340,6 +341,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
       .then(d => {
         if (d) {
           setBrowserMode(d.mode ?? 'embedded');
+          setBrowserElementSelection(d.elementSelection ?? 'direct');
           setBrowserBringToFront(d.bringToFront ?? false);
           setBrowserRemotePort(d.remoteDebuggingPort ?? 0);
           setBrowserAutoClose(d.autoCloseTabs ?? true);
@@ -2364,6 +2366,55 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </button>
             </div>
             </div>
+
+          {/* ── Element selection: HOW the agent picks an element (orthogonal to the backend above) ── */}
+          <div className="bg-surface-elevated rounded-xl p-5 mb-4">
+            <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.elementSelectionTitle')}</div>
+            <div className="text-xs text-fg-tertiary mt-0.5 mb-3">{t('browserAutomation.elementSelectionDesc')}</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                onClick={async () => {
+                  setBrowserSaving(true); setBrowserMsg(null);
+                  try {
+                    const d = await api.settings.updateBrowser({ elementSelection: 'direct' });
+                    setBrowserElementSelection(d.elementSelection ?? 'direct');
+                    setBrowserMsg({ type: 'ok', text: t('browserAutomation.elementSelectionSwitchToDirect') });
+                  } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
+                  setBrowserSaving(false);
+                }}
+                disabled={browserSaving}
+                className={`text-left p-4 rounded-xl border transition-colors ${browserElementSelection === 'direct' ? 'border-brand-500/60 bg-brand-500/10' : 'border-border-default bg-surface-primary hover:border-brand-500/40'}`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-fg-primary">{t('browserAutomation.elementSelectionDirect')}</span>
+                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-brand-500/15 text-brand-500">{t('browserAutomation.modeRecommended')}</span>
+                  </div>
+                  <span className={`w-2.5 h-2.5 rounded-full ${browserElementSelection === 'direct' ? 'bg-brand-400' : 'bg-gray-500'}`} />
+                </div>
+                <div className="text-xs text-fg-tertiary mt-1">{t('browserAutomation.elementSelectionDirectDesc')}</div>
+              </button>
+              <button
+                onClick={async () => {
+                  setBrowserSaving(true); setBrowserMsg(null);
+                  try {
+                    const d = await api.settings.updateBrowser({ elementSelection: 'jev' });
+                    setBrowserElementSelection(d.elementSelection ?? 'jev');
+                    setBrowserMsg({ type: 'ok', text: t('browserAutomation.elementSelectionSwitchToJev') });
+                  } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
+                  setBrowserSaving(false);
+                }}
+                disabled={browserSaving}
+                className={`text-left p-4 rounded-xl border transition-colors ${browserElementSelection === 'jev' ? 'border-brand-500/60 bg-brand-500/10' : 'border-border-default bg-surface-primary hover:border-brand-500/40'}`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-semibold text-fg-primary">{t('browserAutomation.elementSelectionJev')}</div>
+                  <span className={`w-2.5 h-2.5 rounded-full ${browserElementSelection === 'jev' ? 'bg-brand-400' : 'bg-gray-500'}`} />
+                </div>
+                <div className="text-xs text-fg-tertiary mt-1">{t('browserAutomation.elementSelectionJevDesc')}</div>
+              </button>
+            </div>
+          </div>
 
           {/* ── Mode status: depends on selected backend ── */}
           {browserMode === 'embedded' ? (

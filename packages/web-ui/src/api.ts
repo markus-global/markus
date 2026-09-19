@@ -1804,9 +1804,9 @@ export const api = {
         cognitive: { enabled: boolean; maxDepth?: number; appraisalModel?: string; timeoutMs?: number };
         concurrent: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
       }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
-    getBrowser: () => request<{ mode: 'embedded' | 'system-chrome'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser'),
-    updateBrowser: (settings: { mode?: 'embedded' | 'system-chrome'; bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; autoClickAllowDialog?: boolean }) =>
-      request<{ mode: 'embedded' | 'system-chrome'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
+    getBrowser: () => request<{ mode: 'embedded' | 'system-chrome'; elementSelection: 'direct' | 'jev'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser'),
+    updateBrowser: (settings: { mode?: 'embedded' | 'system-chrome'; elementSelection?: 'direct' | 'jev'; bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; autoClickAllowDialog?: boolean }) =>
+      request<{ mode: 'embedded' | 'system-chrome'; elementSelection: 'direct' | 'jev'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser', { method: 'POST', body: JSON.stringify(settings) }),
     testAutoClick: () => request<{
       checkResult: { platform: string; supported: boolean; accessibilityPermission: boolean; chromeRunning: boolean; binaryAvailable: boolean };
       openedAccessibilitySettings: boolean;
