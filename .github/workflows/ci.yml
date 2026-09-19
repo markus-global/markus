@@ -90,6 +90,23 @@ jobs:
         continue-on-error: true
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ⚠️ backend-coverage 必须在跑测试**之前**构建一次（`pnpm build:ts` = `tsc -b`）。
+#
+# 别把这步当冗余删掉 —— 它不是"为了覆盖率"，而是让测试**能跑起来**：
+#   1. `dist/` 不入库（.gitignore 里排除），全新检出必然没有编译产物；
+#   2. 包与包之间是按**包名**互相引用的（`@markus/shared`、`@markus/core`），
+#      而它们的 package.json `main` 指向 `dist/index.js` —— dist 不存在时
+#      解析直接失败："Failed to resolve entry for package @markus/shared"。
+#      实测后果：343 个测试文件里 269 个级联失败（127 个用例），
+#      并夹带 `Cannot read properties of undefined (reading 'disconnectAll')`
+#      这类 afterEach 清理报错 —— 全都是"模块没加载起来"的下游噪音。
+#   3. `packages/shared/src/utils/crash.e2e.test.ts` 会 spawn 真实子进程去
+#      import `dist/utils/crash.js`，没有构建就只会在子进程里打出 Node 的
+#      启动报错横幅（`Unexpected token 'N', "Node.js v22…" is not valid JSON`）。
+#
+# quality job 之所以从没暴露这个问题，是因为它的 `pnpm typecheck` 里已经带了
+# `tsc -b`（顺带把 dist 建了出来），而本 job 直接 install → coverage，缺了这步。
+# ─────────────────────────────────────────────────────────────────────────────
 # 后端覆盖率刻意暂不阻塞。
 #
 #   `vitest run --project node --coverage` 跑不可靠 —— 实测超过 7 分钟仍未写出
@@ -112,6 +129,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # 见上方警告：这一步不是可选的。少了它，269 个测试文件会因为
+      # `@markus/shared` / `@markus/core` 的 dist 入口缺失而级联失败。
+      - name: Build TypeScript (tests import compiled dist)
+        run: pnpm build:ts
       - name: Backend coverage (informational)
         run: pnpm coverage:node
         timeout-minutes: 20

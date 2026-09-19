@@ -6,6 +6,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "pnpm -r build",
+    "build:ts": "tsc -b",
     "dev": "pnpm build && concurrently -n api,ui -c blue,green \"node packages/cli/dist/index.js start\" \"node scripts/wait-for-api.mjs && pnpm --filter @markus/web-ui dev\"",
     "dev:api": "node packages/cli/dist/index.js start",
     "dev:ui": "pnpm --filter @markus/web-ui dev",
