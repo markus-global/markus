@@ -76,6 +76,22 @@ const TOOL_GROUPS: ToolGroup[] = [
     toolNames: ['text_to_speech', 'speech_to_text', 'generate_video'],
   },
   {
+    name: 'decision',
+    // Domain terms only. Deliberately excludes high-frequency conversational
+    // words ("which one", "should i", "是否", "哪个") — those would surface
+    // `decide` on nearly every turn and burn the tool-def budget for nothing.
+    // `discover_tools` remains the escape hatch for unlisted phrasings.
+    keywords: ['classify', 'classification', 'categorize', 'categorise', 'triage', 'routing', 'route to',
+      'score', 'scoring', 'prioritize', 'prioritise', 'judgement', 'judgment', 'likelihood', 'probability',
+      'calibrated', 'confidence score',
+      'guardrail', 'safety check', 'prompt injection', 'jailbreak', 'manipulat', 'on-topic', 'intent',
+      'sentiment', 'decision model', 'jev', 'typesafe',
+      '分类', '归类', '打标签', '分诊', '路由', '分派', '打分', '评分', '优先级',
+      '判断', '判定', '概率', '置信度', '护栏', '安全检测', '注入', '越狱', '操控',
+      '意图识别', '情感分析', '决策模型'],
+    toolNames: ['decide'],
+  },
+  {
     name: 'a2a-extended',
     keywords: ['delegate', 'broadcast', 'group', 'channel', 'chat',
       '委派', '广播', '群聊', '频道', '群组'],

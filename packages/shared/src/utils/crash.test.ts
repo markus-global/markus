@@ -132,3 +132,36 @@ describe('memory watermark watchdog', () => {
     });
   });
 });
+
+describe('crash guard: must not take its hosting test runner down', () => {
+  // Regression test — audit-reports/test-hardening-2026-09-19.md §F2.
+  //
+  // installCrashGuard() used to arm `setTimeout(() => process.exit(1), 10)` in
+  // whatever process imported it. Five test files import the CLI start command,
+  // which calls installCrashGuard() — so the guard lived inside the vitest
+  // WORKER. One unrelated uncaught exception then killed the worker and the whole
+  // run died with "process.exit unexpectedly called with 1" (measured: the full
+  // suite never converged). A component that kills its host is unusable when
+  // embedded: the runner owns its own exit code.
+  it('reports an uncaughtException but leaves the exit to the host process', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit() called — the crash guard killed its host');
+    }) as never);
+
+    try {
+      crashMod.installCrashGuard();
+      expect(crashMod.isCrashGuardInstalled()).toBe(true);
+
+      // Emit synchronously: this exercises the real handler body without actually
+      // crashing the worker.
+      process.emit('uncaughtException', new Error('simulated-uncaught-in-worker'));
+
+      // The old behaviour fired on a 10 ms timer — wait well past it.
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+});

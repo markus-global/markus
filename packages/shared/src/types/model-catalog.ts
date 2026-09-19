@@ -6,13 +6,31 @@ export type ModelTier = 'base' | 'pro' | 'max';
 
 export type CostTier = '$' | '$$' | '$$$' | '$$$$';
 
-export type ModelCapabilityType =
-  | 'text'
-  | 'image_recognition'
-  | 'image_generation'
-  | 'audio_tts'
-  | 'audio_stt'
-  | 'video_generation';
+/**
+ * Canonical runtime list of capability types — the SINGLE SOURCE OF TRUTH.
+ *
+ * The union type below is derived from this array, and every consumer (LLM
+ * router routing validation, the capability-routing getter, tool schemas, …)
+ * MUST import this constant instead of re-listing the capabilities. Adding a
+ * capability is then a one-line change here — previously the list was copied
+ * into three places and the copies drifted (a new capability would be silently
+ * rejected by routing because one hardcoded allowlist had not been updated).
+ *
+ * `decision` = typed, calibrated decisions (classification / routing / scoring /
+ * judging) from "System One" style models (e.g. TypeSafe Jev). NOT a chat model:
+ * it answers enumerated questions with probabilities instead of prose.
+ */
+export const MODEL_CAPABILITY_TYPES = [
+  'text',
+  'image_recognition',
+  'image_generation',
+  'audio_tts',
+  'audio_stt',
+  'video_generation',
+  'decision',
+] as const;
+
+export type ModelCapabilityType = (typeof MODEL_CAPABILITY_TYPES)[number];
 
 /** @deprecated Use ModelCapabilityType instead */
 export type ModelTaskType = ModelCapabilityType;
@@ -47,6 +65,9 @@ export interface ProviderCapabilities {
   embedding: boolean;
   reasoning: boolean;
   promptCaching: boolean;
+  /** Serves the `decisions` endpoint (typed probability output, no prose).
+   *  Only OpenRouter-backed providers can do this today. */
+  decision: boolean;
 }
 
 // ---------------------------------------------------------------------------

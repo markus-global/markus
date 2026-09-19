@@ -920,31 +920,87 @@ export function purgeLeakedToolMarkup(db: DatabaseSync): void {
   if (total > 0) log.info('Leaked tool-markup purge complete', { total });
 }
 
+/** `runInTransaction` refuses async callbacks — see the doc comment below. */
+const ASYNC_TRANSACTION_MSG =
+  'runInTransaction 只接受同步函数：SQLite 事务挂在连接上，无法跨 await 保持。'
+  + '传入 async fn（或返回 Promise 的 fn）会让 await 之后的写入落在事务之外且永不回滚。'
+  + '请在事务内完成同步写入，或自行管理 BEGIN/COMMIT。';
+
 /**
- * Run a synchronous function inside a SQLite transaction (BEGIN/COMMIT/ROLLBACK).
+ * Run a **synchronous** function inside a SQLite transaction (BEGIN/COMMIT/ROLLBACK).
  * Supports nesting via SAVEPOINTs. If `fn` throws, changes are rolled back.
+ *
+ * ## Why the async guard is load-bearing
+ *
+ * `node:sqlite` transactions live on the connection, not on the call stack. If
+ * `fn` is `async`, its synchronous prefix runs inside the transaction but the
+ * `COMMIT` fires as soon as `fn` returns its (unresolved) promise — so every
+ * write after the first `await` lands in autocommit mode and is **never rolled
+ * back**, even though the caller sees a rejected promise and assumes otherwise.
+ * That is a silent data-integrity failure, so we refuse the call up front
+ * instead of running it with the wrong semantics.
+ *
+ * ## Why rollback is wrapped
+ *
+ * SQLite rolls the transaction back on its own for `RAISE(ROLLBACK)` triggers
+ * and for fatal errors such as `SQLITE_FULL` / `SQLITE_IOERR` / `SQLITE_BUSY` /
+ * `SQLITE_NOMEM`. In those cases a bare `ROLLBACK` throws
+ * `cannot rollback - no transaction is active` and replaces the original error,
+ * leaving the caller with no idea what actually went wrong. Swallowing that
+ * secondary failure keeps the first (real) error intact.
  */
 export function runInTransaction<T>(db: DatabaseSync, fn: () => T): T {
+  const finish = (result: T): T => {
+    // `fn` may be a non-`async` arrow that returns a promise (`() => doAsync()`);
+    // the constructor check below cannot see those, so inspect the value too.
+    if (
+      result !== null
+      && typeof result === 'object'
+      && typeof (result as { then?: unknown }).then === 'function'
+    ) {
+      throw new TypeError(ASYNC_TRANSACTION_MSG);
+    }
+    return result;
+  };
+
+  if (fn.constructor?.name === 'AsyncFunction') {
+    throw new TypeError(ASYNC_TRANSACTION_MSG);
+  }
+
+  /** Never let a secondary SQLite failure mask the error we are about to rethrow. */
+  const swallow = (sql: string): void => {
+    try {
+      db.exec(sql);
+    } catch {
+      // Already rolled back by SQLite, or the savepoint is gone — the original
+      // throw is the one that matters.
+    }
+  };
+
   const nested = db.isTransaction;
   if (nested) {
     const sp = `sp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     db.exec(`SAVEPOINT ${sp}`);
     try {
-      const result = fn();
+      const result = finish(fn());
       db.exec(`RELEASE ${sp}`);
       return result;
     } catch (err) {
-      db.exec(`ROLLBACK TO ${sp}`);
+      // `ROLLBACK TO` restores the data but does NOT remove the savepoint from
+      // the stack (SQLite semantics), so it has to be released explicitly or
+      // every failed nested call leaks one entry until the outer transaction ends.
+      swallow(`ROLLBACK TO ${sp}`);
+      swallow(`RELEASE ${sp}`);
       throw err;
     }
   }
   db.exec('BEGIN');
   try {
-    const result = fn();
+    const result = finish(fn());
     db.exec('COMMIT');
     return result;
   } catch (err) {
-    db.exec('ROLLBACK');
+    swallow('ROLLBACK');
     throw err;
   }
 }

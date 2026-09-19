@@ -103,3 +103,15 @@ export function useChatStore<T>(selector?: (version: number) => T) {
     () => sel(chatStore.getStreamingVersion()),
   );
 }
+
+/**
+ * Reactive "this agent has an in-flight streaming reply on this client".
+ *
+ * Reading `chatStore.getStreamingAgents()` during render is NOT reactive — the
+ * component only re-renders when something else happens to re-render it, so a
+ * status chip can keep saying "空闲" until an unrelated state change. Every
+ * status surface should use this hook instead.
+ */
+export function useAgentStreaming(agentId: string | null | undefined): boolean {
+  return useChatStore(() => chatStore.isAgentStreaming(agentId));
+}

@@ -89,6 +89,17 @@ function InlineEditable({ value, onChange, renderAs = 'span', className, editCla
   multiline?: boolean;
   readOnly?: boolean;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+
+  useEffect(() => { setDraft(value); }, [value]);
+  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+
+  // 【为什么放在 hooks 之后】hooks 必须无条件、每次渲染按同一顺序调用。原先 readOnly
+  // 的早退写在 hooks 之前：只要 readOnly 在同一个实例生命周期内发生变化（只读 ↔ 可编辑），
+  // hook 调用数量就会变，React 会直接抛 "Rendered fewer hooks than expected" 崩掉。
+  // 详见 eslint 规则 react-hooks/rules-of-hooks。
   if (readOnly) {
     const display = value || placeholder;
     const isEmpty = !value;
@@ -97,12 +108,6 @@ function InlineEditable({ value, onChange, renderAs = 'span', className, editCla
     if (renderAs === 'p') return <p className={cls}>{display}</p>;
     return <span className={cls}>{display}</span>;
   }
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
-
-  useEffect(() => { setDraft(value); }, [value]);
-  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
 
   const commit = () => {
     setEditing(false);
@@ -138,13 +143,15 @@ function InlineEditable({ value, onChange, renderAs = 'span', className, editCla
 function InlineSelect({ value, options, onChange, className, readOnly }: {
   value: string; options: string[]; onChange: (v: string) => void; className?: string; readOnly?: boolean;
 }) {
-  if (readOnly) return <span className={className}>{value}</span>;
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { if (open) { setInput(value); setTimeout(() => inputRef.current?.focus(), 0); } }, [open, value]);
+
+  // 早退必须在 hooks 之后 —— 理由同 InlineText：否则 readOnly 变化会改变 hook 数量。
+  if (readOnly) return <span className={className}>{value}</span>;
 
   const filtered = options.filter(o => o.toLowerCase().includes(input.toLowerCase()));
 
@@ -182,6 +189,14 @@ function InlineSelect({ value, options, onChange, className, readOnly }: {
 // InlineTags
 // ---------------------------------------------------------------------------
 function InlineTags({ tags, onChange, readOnly }: { tags: string[]; onChange: (tags: string[]) => void; readOnly?: boolean }) {
+  const { t } = useTranslation(['builder']);
+  const [editing, setEditing] = useState(false);
+  const [input, setInput] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+
+  // 早退必须在 hooks 之后 —— 理由同 InlineText：否则 readOnly 变化会改变 hook 数量。
   if (readOnly) {
     return (
       <div className="flex flex-wrap items-center gap-1.5 min-h-[24px]">
@@ -191,12 +206,6 @@ function InlineTags({ tags, onChange, readOnly }: { tags: string[]; onChange: (t
       </div>
     );
   }
-  const { t } = useTranslation(['builder']);
-  const [editing, setEditing] = useState(false);
-  const [input, setInput] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if ((e.key === 'Enter' || e.key === ',') && input.trim()) {

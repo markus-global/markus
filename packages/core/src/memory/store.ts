@@ -500,10 +500,16 @@ export class MemoryStore implements IMemoryStore {
     )[0];
   }
 
-  /** Get latest main session, excluding temporary A2A and channel sessions. */
+  /**
+   * Get latest main session, excluding temporary A2A / channel / heartbeat sessions.
+   *
+   * `hb_` 也必须排除：心跳会话每次巡检都会被写一次（按天滚动后更是如此），
+   * 容易成为「最近活跃」的那一个，从而在重启时被当成 agent 的主会话恢复
+   * （见 agent.ts 启动路径的 getLatestMainSession 调用）。巡检会话不是主对话。
+   */
   getLatestMainSession(agentId: string): ConversationSession | undefined {
     const agentSessions = this.listSessions(agentId)
-      .filter(s => !s.id.startsWith('a2a_') && !s.id.startsWith('channel_'));
+      .filter(s => !s.id.startsWith('a2a_') && !s.id.startsWith('channel_') && !s.id.startsWith('hb_'));
     if (agentSessions.length === 0) return undefined;
     return agentSessions.sort((a, b) =>
       new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime()

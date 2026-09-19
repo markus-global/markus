@@ -420,6 +420,11 @@ export class AgentManager {
   private chromeAutoClickRunning = false;
   /** Selected browser backend: 'embedded' (built-in Electron) or 'system-chrome' (Chrome extension). */
   private browserMode: 'embedded' | 'system-chrome' = 'embedded';
+  /**
+   * Element-selection strategy. Orthogonal to `browserMode`: that one picks WHICH browser runs,
+   * this one picks HOW the agent chooses the element to act on.
+   */
+  private browserElementSelection: 'direct' | 'jev' = 'direct';
   private browserBridge: MarkusBrowserBridge;
   /** Desktop-only: Electron WebContentsView CDP backend (preferred over npx when set). */
   private embeddedBrowserHost: EmbeddedBrowserHost | null = null;
@@ -850,6 +855,18 @@ export class AgentManager {
 
   setBrowserMode(mode: 'embedded' | 'system-chrome'): void {
     this.browserMode = mode;
+  }
+
+  /**
+   * 'direct' (default) = the model reads the a11y snapshot and picks the element itself.
+   * 'jev' = code enumerates candidates and a decision model ranks them.
+   */
+  setBrowserElementSelection(mode: 'direct' | 'jev'): void {
+    this.browserElementSelection = mode;
+  }
+
+  getBrowserElementSelection(): 'direct' | 'jev' {
+    return this.browserElementSelection;
   }
 
   /**
@@ -2218,6 +2235,8 @@ export class AgentManager {
     agent.setBrowserCloseTabsHelper((sessionId) =>
       this.browserSessionManager.consumeCloseTabsReminder(id, sessionId),
     );
+    // Callback, not a snapshot: the setting can change while agents are already running.
+    agent.setBrowserElementSelectionProvider(() => this.browserElementSelection);
     this.forwardAgentEvents(agent);
 
     if (config.teamId) {
@@ -3088,6 +3107,8 @@ export class AgentManager {
     agent.setBrowserCloseTabsHelper((sessionId) =>
       this.browserSessionManager.consumeCloseTabsReminder(id, sessionId),
     );
+    // Callback, not a snapshot: the setting can change while agents are already running.
+    agent.setBrowserElementSelectionProvider(() => this.browserElementSelection);
     this.forwardAgentEvents(agent);
 
     if (config.teamId) {

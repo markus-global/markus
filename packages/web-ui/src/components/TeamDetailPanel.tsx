@@ -8,6 +8,8 @@ import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { PAGE } from '../routes.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { ConfirmModal } from './ConfirmModal.tsx';
+import { resolveAgentStatus } from '../lib/agentOverview.ts';
+import { chatStore, useChatStore } from '../pages/useChatStore.ts';
 
 type ChatMode = 'channel' | 'direct' | 'dm';
 
@@ -281,10 +283,10 @@ export function TeamDetailPanel({
                 const isActive = chatMode === 'direct' && selectedAgent === a.id;
                 const isManager = team.managerId === a.id;
                 const isStopped = a.status === 'offline';
-                const statusColor = a.status === 'idle' ? 'bg-green-500'
-                  : a.status === 'working' ? 'bg-blue-500 animate-pulse'
-                  : a.status === 'error' ? 'bg-red-500'
-                  : 'bg-gray-600';
+                // Same resolver as L1 + the chat header — a stream can outlive
+                // `agent.status === 'working'`, and three local derivations is
+                // exactly how the three panels drifted apart.
+                const statusColor = resolveAgentStatus(a.status, chatStore.isAgentStreaming(a.id)).dotClass;
 
                 return (
                   <button

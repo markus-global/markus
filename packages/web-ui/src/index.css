@@ -341,6 +341,39 @@ html {
   animation: activity-text-shimmer 1.6s ease-in-out infinite;
 }
 
+/* ─── 过程折叠行（ProcessRun）的「运行中」动效 ────────────────────────────────
+   一道很淡的品牌色扫光横穿整行，外加一个呼吸的点。两者都只碰 transform /
+   opacity，走合成层，不触发布局；窗口失焦时由上面 data-anim-paused 那条规则
+   统一暂停（agents 常常在后台跑几个钟头，这正是那条规则要省的电）。 */
+
+@keyframes process-run-sweep {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(120%); }
+}
+
+.process-run-sweep {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--color-brand-400) 50%,
+    transparent 100%
+  );
+  opacity: 0.22;
+  animation: process-run-sweep 1.9s linear infinite;
+}
+
+@keyframes process-run-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.3; transform: scale(0.7); }
+}
+
+.process-run-pulse {
+  animation: process-run-pulse 1.4s ease-in-out infinite;
+}
+
 /* ─── Animation budget ──────────────────────────────────────────────────────
    Any running CSS animation makes the compositor produce a frame every vsync
    — up to 120/s on a ProMotion display. On this app's DOM a frame costs ~2ms,
@@ -543,6 +576,18 @@ html.electron-darwin .electron-mac-top-safe {
 /* Streaming chat bubble: no left accent bar (it looked like a quote). */
 .streaming-bubble {
   min-height: 2.5rem;
+}
+
+/* Find-in-conversation: the bubble the current hit landed on flashes so the eye
+   can pick it out of a long transcript. Applied imperatively (classList) because
+the target row is inside the virtualized list's React tree — see jumpToFindMatch. */
+@keyframes chatFindHit {
+  0% { background-color: rgb(250 204 21 / 0.28); box-shadow: 0 0 0 2px rgb(250 204 21 / 0.45); }
+  100% { background-color: transparent; box-shadow: 0 0 0 2px transparent; }
+}
+.chat-find-hit {
+  animation: chatFindHit 1.6s ease-out both;
+  border-radius: 0.5rem;
 }
 
 @keyframes fadeIn {

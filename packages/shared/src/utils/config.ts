@@ -82,6 +82,13 @@ export interface MarkusConfig {
   browser?: {
     /** Backend that drives agent browser automation: 'embedded' = built-in Electron WebContentsView (default), 'system-chrome' = Chrome extension bridge. */
     mode?: 'embedded' | 'system-chrome';
+    /**
+     * How agents choose WHICH element to act on.
+     * Orthogonal to `mode`: `mode` picks WHICH browser runs, this picks HOW the element is chosen.
+     * 'direct' (default) = the model reads the accessibility snapshot and picks the element itself.
+     * 'jev' = code enumerates candidate elements and a decision model ranks them.
+     */
+    elementSelection?: 'direct' | 'jev';
     /** Bring Chrome tabs/windows to foreground when agent navigates (default: false) */
     bringToFront?: boolean;
     /** Remote debugging port for persistent Chrome connection (avoids repeated permission dialogs). Set to e.g. 9222 to enable. */

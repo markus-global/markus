@@ -610,6 +610,45 @@ describe('APIServer targeted route coverage', () => {
     });
   });
 
+  describe('File stat route (right-panel auto-refresh probe)', () => {
+    it('rejects a missing path with 400', async () => {
+      const res = await requestAsync(ctx.server, 'GET', '/api/files/stat');
+      expect(res.status).toBe(400);
+    });
+
+    it('reports exists:false for a path that is not on disk', async () => {
+      const fs = await import('node:fs');
+      vi.mocked(fs.existsSync).mockImplementation((p: string) => String(p).includes('markus.json'));
+      const res = await requestAsync(ctx.server, 'GET', '/api/files/stat?path=/definitely/not/here.md');
+      expect(res.status).toBe(200);
+      expect(res.json.exists).toBe(false);
+    });
+
+    it('returns mtime + size for an existing file without reading its body', async () => {
+      const fs = await import('node:fs');
+      vi.mocked(fs.existsSync).mockImplementation(() => true);
+      vi.mocked(fs.statSync).mockImplementation(() => ({
+        isFile: () => true,
+        isDirectory: () => false,
+        size: 42,
+        mtimeMs: 1_700_000_000_123,
+      }) as unknown as ReturnType<typeof fs.statSync>);
+      const readSpy = vi.mocked(fs.readFileSync);
+
+      const res = await requestAsync(ctx.server, 'GET', '/api/files/stat?path=/tmp/doc.md');
+      expect(res.status).toBe(200);
+      expect(res.json).toMatchObject({
+        exists: true,
+        isFile: true,
+        isDirectory: false,
+        size: 42,
+        mtimeMs: 1_700_000_000_123,
+      });
+      // The probe must stay cheap: metadata only, never the file body.
+      expect(readSpy).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Chat resume guard', () => {
     it('rejects isResume without a sessionId (400) instead of starting a fresh session', async () => {
       const res = await requestAsync(ctx.server, 'POST', `/api/agents/${AGENT_A}/message`, {

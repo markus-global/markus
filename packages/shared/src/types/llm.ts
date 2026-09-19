@@ -56,6 +56,16 @@ export interface LLMProviderConfig {
    * Chat and hosted search use the OpenRouter member key (`apiKey` / `sk-or-…`).
    */
   modelsUrl?: string;
+  /**
+   * Endpoint serving TypeSafe-style decision models (`decide` tool).
+   *
+   * Decision models are NOT served on `/chat/completions`, and different
+   * gateways expose them at different paths (OpenRouter: `/api/alpha/decisions`;
+   * native TypeSafe: `/v1/systemone`). Known gateways are resolved
+   * automatically from `baseUrl`; set this for anything else so a new gateway
+   * never requires a code change.
+   */
+  decisionsUrl?: string;
   /** Hub API base (for POST /api/user/cu/sync on credit recovery). */
   hubUrl?: string;
   /** Hub JWT / session token for cu/sync. Falls back to MARKUS_HUB_TOKEN / ~/.markus/hub-token. */

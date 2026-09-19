@@ -342,6 +342,33 @@ export interface CrashGuardOptions {
 let installed = false;
 
 /**
+ * Is this process hosted by a test runner?
+ *
+ * A crash guard that calls `process.exit(1)` from a timer is correct for a
+ * supervised *server* — but hostile when this module is merely *embedded*.
+ * Vitest runs each test file inside a worker process, and five test files import
+ * the CLI start command, which calls `installCrashGuard()` — so the guard gets
+ * armed inside the WORKER. One unrelated uncaught exception anywhere in that
+ * worker then force-exits it 10ms later, and the runner reports
+ * "process.exit unexpectedly called with 1" instead of a test failure.
+ *
+ * Measured symptom (2026-09-19): the full suite never converged (>25 min, killed).
+ * The crash report is still written — that is the valuable part. Only the hard
+ * exit is suppressed: a test runner owns the lifetime of its own process.
+ * See audit-reports/test-hardening-2026-09-19.md §F2.
+ */
+function isTestRunner(): boolean {
+  // Detect the runner via its WORKER GLOBAL, not `process.env.VITEST`.
+  // Env vars are inherited by spawned children — crash.e2e.test.ts deliberately
+  // spawns real Node processes with `env: { ...process.env }` — so an env check
+  // would make a legitimately-crashing child suppress its own hard exit and break
+  // that test. Measured on vitest 4.0.18: the worker has `__vitest_worker__`
+  // (object); a spawned child still has `VITEST=true` but no worker global.
+  const g = globalThis as { __vitest_worker__?: unknown };
+  return typeof g.__vitest_worker__ !== 'undefined';
+}
+
+/**
  * Install in-process fault handlers that make an abnormal exit attributable:
  *  - uncaughtException  → write crash report then re-raise (do NOT swallow)
  *  - unhandledRejection → write crash report (rejection is usually not fatal,
@@ -376,8 +403,17 @@ export function installCrashGuard(opts: CrashGuardOptions = {}): void {
     // (If a user has explicitly requested recovery, they own the consequences.)
     process.stderr.write('\n' + stack + '\n');
     if (opts.exitOnUncaught !== false) {
-      // Allow the report I/O to flush, then exit non-zero.
-      setTimeout(() => process.exit(1), 10);
+      if (isTestRunner()) {
+        // Embedded in a test runner: report + print the stack, but do NOT kill
+        // the host. Otherwise a single stray throw silently takes down the whole
+        // worker (and with it the run) — the runner must decide the exit code.
+        process.stderr.write(
+          'crash guard: exit suppressed (hosted by a test runner; report still written)\n',
+        );
+      } else {
+        // Allow the report I/O to flush, then exit non-zero.
+        setTimeout(() => process.exit(1), 10);
+      }
     }
   });
 

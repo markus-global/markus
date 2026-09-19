@@ -62,6 +62,7 @@ const { MockAgent, mockAgentInstances } = vi.hoisted(() => {
     setStateChangeCallback = vi.fn();
     setActivityCallbacks = vi.fn();
     setBrowserCloseTabsHelper = vi.fn();
+    setBrowserElementSelectionProvider = vi.fn();
     setTeamDataDir = vi.fn();
     reloadRole = vi.fn();
     sendMessage = vi.fn(async () => 'ok');

@@ -401,6 +401,17 @@
         "Ready when you are…",
         "Tell me what you need…"
       ],
+      "dmSelfOptions": [
+        "This is your private space",
+        "Jot something down…",
+        "What would you like to record?"
+      ],
+      "dmOtherEmpty": "Start the conversation",
+      "dmOtherOptions": [
+        "Start a conversation with {{name}}",
+        "Send {{name}} a message…",
+        "What would you like to talk about with {{name}}?"
+      ],
       "noAgent": "Select an agent to start chatting",
       "agentOffline": "Agent is offline. Start the agent to send messages."
     },
@@ -424,7 +435,23 @@
     "searchMessages": "Search messages",
     "searchPlaceholder": "Search messages...",
     "searching": "Searching...",
-    "noSearchResults": "No messages found"
+    "noSearchResults": "No messages found",
+    "findInConversation": "Find in conversation",
+    "findInConversationHint": "Find in this session's chat history",
+    "findPlaceholder": "Find in this conversation…",
+    "findMatchCount": "{{current}}/{{total}}",
+    "findNoMatches": "No matches in this conversation",
+    "findScopeLoaded": "Searched {{count}} loaded message(s) in this session",
+    "findScopeHasMore": "Earlier messages are not loaded yet",
+    "findLoadEarlier": "Load earlier messages",
+    "findLoadingEarlier": "Loading…",
+    "findFieldText": "Message",
+    "findFieldThinking": "Thinking",
+    "findFieldTool": "Tool",
+    "findPrev": "Previous match (Shift+Enter)",
+    "findNext": "Next match (Enter)",
+    "findClose": "Close find",
+    "findTruncated": "Too many matches — showing the first {{count}}"
   },
   "chatModel": {
     "title": "Model",

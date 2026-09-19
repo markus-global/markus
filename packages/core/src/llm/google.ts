@@ -384,6 +384,10 @@ export class GoogleProvider implements MultiModalProviderInterface {
 
     return {
       content,
+      // Streaming already surfaces this (`chatStream` assigns `result.reasoningContent`);
+      // the non-streaming path used to accumulate it and then silently drop it, so
+      // Gemini 2.5 thinking was billed as output but never reached the caller.
+      ...(reasoningContent ? { reasoningContent } : {}),
       toolCalls: toolCalls.length ? toolCalls : undefined,
       usage: {
         inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
@@ -410,6 +414,7 @@ export class GoogleProvider implements MultiModalProviderInterface {
       embedding: false,
       reasoning: true,
       promptCaching: false,
+      decision: false,
     };
   }
 

@@ -1,8 +1,12 @@
 import { type LLMProviderConfig, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMMessage, type LLMTool, type ProviderCapabilities } from '@markus/shared';
+import { PROVIDER_DEFAULT_BASE_URLS } from './model-discovery.js';
 import {
   DEFAULT_REQUEST_MAX_TOKENS,
   defaultVoiceForModel,
   formatUpstreamMediaError,
+  resolveDecisionsEndpoint,
+  canServeDecisions,
+  parseDecisionResponse,
   type MultiModalProviderInterface,
   type MultiModalToolSchemas,
   type ImageGenOptions,
@@ -10,6 +14,8 @@ import {
   type TTSOptions,
   type AudioResult,
   type STTOptions,
+  type DecisionRequest,
+  type DecisionResult,
 } from './provider.js';
 import {
   buildOpenAICompatEndpoint,
@@ -39,6 +45,55 @@ interface OpenAIResponse {
 
 export type TokenResolver = () => Promise<string>;
 
+/**
+ * Decide a provider's base URL — the single place this is ever chosen.
+ *
+ * `baseUrl` is legitimately optional in every registration path (the settings
+ * tool, `POST /api/settings/llm/providers`, hot-registration, and the startup
+ * loop all treat it as optional, and a config persisted without it stays
+ * without it forever). So omission must resolve *correctly*, not silently:
+ *
+ *  - explicit `config.baseUrl` always wins;
+ *  - otherwise the provider registry decides, via
+ *    {@link PROVIDER_DEFAULT_BASE_URLS} — the canonical `PROVIDERS` table in
+ *    `@markus/shared` plus its historical id aliases (`together-ai`,
+ *    `fireworks`), which configs in the wild still use. This is the *derived*
+ *    table, not a second definition: it is spread from the registry, and the
+ *    router already resolves base URLs from it, so there is one source of truth;
+ *  - a *named* provider the registry does not know has no discoverable
+ *    endpoint: fail loudly rather than quietly posting a foreign credential
+ *    to api.openai.com;
+ *  - no name at all means the native OpenAI service.
+ */
+function resolveProviderBase(config?: LLMProviderConfig): string {
+  const explicit = config?.baseUrl?.trim();
+  if (explicit) return explicit;
+
+  const name = config?.provider;
+  if (!name) return 'https://api.openai.com';
+
+  const fromRegistry = PROVIDER_DEFAULT_BASE_URLS[name];
+  if (fromRegistry) return fromRegistry;
+
+  throw new Error(
+    `Provider "${name}" is not in the provider registry and no baseUrl was given. ` +
+      'Custom OpenAI-compatible endpoints must supply baseUrl explicitly.',
+  );
+}
+
+/**
+ * Parse an RFC7231 `Retry-After` header (delta-seconds or HTTP-date) to ms.
+ * Falls back to a short default so a missing/garbage header still backs off.
+ */
+function parseRetryAfterHeader(raw: string | null, fallbackMs = 1_000): number {
+  if (!raw) return fallbackMs;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+  const date = Date.parse(raw);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  return fallbackMs;
+}
+
 export class OpenAIProvider implements MultiModalProviderInterface {
   name: string;
   model: string;
@@ -48,6 +103,8 @@ export class OpenAIProvider implements MultiModalProviderInterface {
   protected chatTimeoutMs: number;
   protected streamTimeoutMs: number;
   protected tokenResolver?: TokenResolver;
+  /** Explicit decisions endpoint; when unset it is resolved from `baseUrl`. */
+  protected decisionsUrl?: string;
 
   constructor(config?: LLMProviderConfig, tokenResolver?: TokenResolver) {
     this.name = config?.provider ?? 'openai';
@@ -60,11 +117,12 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     this.apiKey = config?.apiKey
       ?? (isNativeOpenAI ? process.env['OPENAI_API_KEY'] : undefined)
       ?? '';
-    this.baseUrl = config?.baseUrl ?? 'https://api.openai.com';
+    this.baseUrl = resolveProviderBase(config);
     this.maxTokens = config?.maxTokens ?? DEFAULT_REQUEST_MAX_TOKENS;
     this.chatTimeoutMs = config?.timeoutMs ?? 90_000;
     // Idle gap between chunks (reset on data). Independent of chat timeoutMs.
     this.streamTimeoutMs = config?.streamTimeoutMs ?? 180_000;
+    this.decisionsUrl = config?.decisionsUrl;
     this.tokenResolver = tokenResolver;
   }
 
@@ -75,6 +133,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     if (config.maxTokens) this.maxTokens = config.maxTokens;
     if (config.timeoutMs) this.chatTimeoutMs = config.timeoutMs;
     if (config.streamTimeoutMs) this.streamTimeoutMs = config.streamTimeoutMs;
+    if (config.decisionsUrl) this.decisionsUrl = config.decisionsUrl;
   }
 
   setTokenResolver(resolver: TokenResolver): void {
@@ -424,6 +483,8 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       embedding: isOpenAI,
       reasoning: true,
       promptCaching: true,
+      // Any provider whose decisions endpoint resolves — not just OpenRouter.
+      decision: canServeDecisions(this.baseUrl, this.decisionsUrl),
     };
   }
 
@@ -473,7 +534,77 @@ export class OpenAIProvider implements MultiModalProviderInterface {
           required: ['audio_url'],
         },
       },
+      decide: {
+        description:
+          'Typed probability decisions via OpenRouter (/api/alpha/decisions) — e.g. typesafe/jev-1.13. ' +
+          'Answers enumerated questions with calibrated probabilities; emits no prose.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            state: { type: 'string', description: 'Situation to judge: free-form text or a JSON string.' },
+            questions: {
+              type: 'object',
+              description:
+                'Question key → { type: "choice" | "score" | "noul", instructions, criteria }. ' +
+                'choice.criteria = { optionKey: meaning }; score.criteria = ["low", "mid", "high"]; noul omits criteria.',
+            },
+            model: { type: 'string', description: 'Decision model (e.g. "typesafe/jev-1.13")' },
+          },
+          required: ['state', 'questions'],
+        },
+      },
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Decision models (OpenRouter alpha /decisions — TypeSafe Jev style)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Serve a `decide` call.
+   *
+   * Decision models are not chat models: they take a `state` plus typed
+   * `questions` and return calibrated probabilities instead of prose. They are
+   * never served on `/chat/completions` — posting one there is rejected with
+   *   `400 … is a decisions model and cannot be used with the chat/completions endpoint`
+   * — and the real path differs per gateway, so it is resolved (or explicitly
+   * configured) rather than assumed. See {@link resolveDecisionsEndpoint}.
+   */
+  async decide(request: DecisionRequest, _retried = false): Promise<DecisionResult> {
+    const endpoint = resolveDecisionsEndpoint(this.baseUrl, this.decisionsUrl);
+    const body: Record<string, unknown> = {
+      model: request.model ?? this.model,
+      state: request.state,
+      questions: request.questions,
+    };
+
+    const authorization = await this.resolveAuthHeader();
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: authorization,
+        'HTTP-Referer': 'https://markus.global',
+        'X-Title': 'Markus',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      // Decision models are rate limited (Jev 1.13: 1200 req/min, 250k tok/s).
+      // 429/529 mean "come back later", not "this is broken" — honour
+      // Retry-After once before failing the call.
+      if ((res.status === 429 || res.status === 529) && !_retried) {
+        const waitMs = Math.min(parseRetryAfterHeader(res.headers.get('retry-after')), 30_000);
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        return this.decide(request, true);
+      }
+      throw new Error(`Decision API error ${formatUpstreamMediaError(res.status, errText)}`);
+    }
+
+    return parseDecisionResponse(await res.json());
   }
 
   // ---------------------------------------------------------------------------

@@ -145,6 +145,61 @@ Chrome version **144+** is required (146+ recommended). Check with:
 | **Auto-Allow Debugging Dialog** | Off | Auto-click Chrome's "Allow remote debugging?" dialog via OS APIs. Only needed when extension is not installed. macOS requires Accessibility permission; Windows works out of the box; Linux not supported. |
 | **Remote Debugging Port** | 0 (auto-connect) | Set to a port number (e.g. 9222) to use a persistent debugging connection instead of auto-connect, eliminating repeated permission dialogs. |
 | **Extension Bridge Port** | 9333 | WebSocket port for communication between Markus and the Chrome extension. Change if 9333 conflicts with another service. |
+| **Element Selection** | Direct | How agents decide *which* element to act on. Independent of the backend above. See the section below. |
+
+## Element selection modes (Settings > Browser Automation)
+
+Two orthogonal axes are configured in this section. They combine freely:
+
+| Axis | Setting | Question it answers |
+|------|---------|---------------------|
+| **Browser backend** | `mode` | WHICH browser runs (built-in Electron vs system Chrome) |
+| **Element selection** | `elementSelection` | HOW the agent picks the element to act on |
+
+### Direct (default)
+
+You call `take_snapshot`, read the accessibility tree, and pick the element yourself. This is the
+normal flow described in this document. Nothing changes.
+
+### Jev-assisted
+
+When the user selects this mode, the platform appends an instruction block to this skill telling
+you to route element choice through the `decide` tool (a decision model — e.g. TypeSafe Jev).
+The loop is:
+
+1. **Enumerate in code** — `evaluate_script` returns a compact, numbered list of interactive
+elements, each tagged with a stable selector. Scope it to the relevant container, never the
+whole page.
+2. **Ask once** — call `decide` with the goal, the current stage, and that numbered list. Ask ONE
+question: which element should I operate on next.
+3. **Check `confidence`** — below 0.5, do not act; narrow the scope and re-ask, or stop and ask the
+user.
+4. **Act** — use the normal `click` / `fill` tool with the selector you tagged in step 1.
+
+The decision model emits **no text**: it cannot produce a selector, a coordinate, or a click. Your
+code owns what is possible, and you must re-validate the element before acting.
+
+Four rules, all from measurement — not optional:
+
+- **Put the evidence in the state — the model only knows what you send it.** It cannot see the page.
+  A question whose evidence is missing still returns a confident-looking number (measured: same
+  question, same model — 0.3 without the observed button text, 0.97 with it; truth = yes). Read the
+  DOM in code, pass the observation in `state`, and put the option list in `criteria`.
+
+- **Never split action and element into two questions.** The answers are computed independently and
+  can contradict each other (measured: `action="type"` together with `target="none"`). Ask only for
+  the element; derive the action from its role in code.
+- **Always state the current stage / next subgoal.** Without it, the model latches onto a word in the
+  goal and picks an element with a matching name (measured: a goal containing “登录” made it choose
+  the link *named* “登录”, confidence 0.88, wrong page region). Rewording the goal or adding a stage
+  line fixed it.
+- **A `choice` question accepts at most 255 options.** If the scope yields more, narrow it in code
+  first — do not spread the whole page across parallel questions (measured: 609 elements →
+  `HTTP 400 Too many choices`).
+
+Measured trade-off, so you can set expectations: on a small page, Jev-assisted is ~2x faster per
+step but roughly comparable in cost; on a dense page it is both cheaper and more accurate than
+reading the full snapshot. Use it where the page is large or repetitive.
 
 ## Tool reference
 

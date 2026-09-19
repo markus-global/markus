@@ -31,6 +31,7 @@ export class DashScopeProvider extends OpenAIProvider {
       embedding: true,
       reasoning: true,
       promptCaching: true,
+      decision: false,
     };
   }
 

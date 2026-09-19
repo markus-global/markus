@@ -612,6 +612,44 @@ export class AgentMailbox {
       return merged;
     }
 
+    // ── 心跳折叠（C）─────────────────────────────────────────────────────────
+    // 心跳是**幂等巡检**：队里已经有一条没被处理的巡检时，再来一条不产生任何新信息。
+    //
+    // 【为什么心跳特别容易造成并发空转】心跳项不带任何实体维度（没有 taskId /
+    // requirementId / senderId / sessionId / channelKey），`resolveEntityKeys` 会退化成
+    // `system:<agentId>` —— 这是**一把全局单键**。于是并发模式下所有 worker 抢同一把锁，
+    // 抢不到就 putBack + 退避重试（见 concurrentWorkerLoop 的 conflict 分支）。实测同一
+    // 分钟内堆 3 条心跳即产生 16 次 conflict；且每次成功处理都会**新开一个会话**。
+    //
+    // 【为什么是「折叠」而不是 tryMergeIntoExisting 的「合并」】合并会把
+    // "Heartbeat triggered at …" 追加进 content —— 对巡检毫无信息量，纯噪声还会
+    // 撑大上下文。这里直接保留既有那条、丢弃这次触发。
+    //
+    // 【安全阀】既有项若长期卡在 queued，会被 MAILBOX_QUEUED_TTL_MS（3 天）判死回收，
+    // 之后新心跳即可正常入队 —— 不会因为折叠而永久吞掉巡检。
+    //
+    // 注意只折叠 status === 'queued'：正在 processing 的那条持有实体锁，此时再入队一条
+    // 并不构成竞争（前者释放后后者才可能被取走），折叠它反而会丢一次本该发生的巡检。
+    //
+    // ⚠️ 必须同时判 `sourceType === 'heartbeat'`：漏了它就会在「队列里恰有一条心跳」时
+    // 把**任何**类型的飞来件都当成重复心跳折叠掉（含 human_chat 用户消息）—— 这会静默
+    // 吞消息，是本改动最危险的写法。测试 `心跳与其它类型共存时互不干扰` 专门守这条。
+    if (!reuseItemId && sourceType === 'heartbeat') {
+      const pendingHeartbeat = this.queue.find(
+        i => i.sourceType === 'heartbeat' && i.status === 'queued',
+      );
+      if (pendingHeartbeat) {
+        // 刻意 **不** emit 'mailbox:new-item'：队列内容没有任何变化，发「新项」事件会
+        // 误导 triage / 中断抢占判定。只推一下 idle waiter，确保这条巡检会被取走。
+        this.wakeIdleLoop();
+        log.debug('Mailbox enqueue-time heartbeat collapse: duplicate suppressed', {
+          agentId: this.agentId,
+          existingId: pendingHeartbeat.id,
+        });
+        return pendingHeartbeat;
+      }
+    }
+
     const item: MailboxItem = {
       id: reuseItemId ?? generateId('mbx'),
       agentId: this.agentId,

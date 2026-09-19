@@ -132,6 +132,88 @@ interface StorageScanResult {
 const STORAGE_SCAN_TTL_MS = 30_000;
 let storageScanCache: { key: string; at: number; value: StorageScanResult } | null = null;
 
+/**
+ * ── Canonical persisted-segment shape (shared by the streaming and non-streaming chat paths) ──
+ *
+ * The SSE path (`SSEHandler`, packages/org-manager/src/sse-handler.ts) appends to
+ * `segments[]` while a turn streams, and **every** entry it writes carries a
+ * `createdAt` ISO stamp. The non-streaming paths (POST /api/agents/:id/message and
+ * POST /api/message without `stream`) only ever see the finished reply plus a flat
+ * list of collected tool events, so they used to hand-roll their own segment array —
+ * structurally identical field-for-field *except* that it had no `createdAt`.
+ * Two paths writing a different row shape into the same column is a latent bug for
+ * any consumer that orders or timeline-renders segments by timestamp, so the
+ * non-streaming construction now lives here, in one place.
+ *
+ * Field-for-field parity with what SSEHandler persists:
+ *
+ *   • thinking → `{ type: 'text', content: '', thinking, createdAt }`
+ *   • tool     → `{ type: 'tool', tool, status, [arguments], [result], [error], [durationMs], createdAt }`
+ *   • prose    → `{ type: 'text', content, createdAt }`
+ *
+ * Ordering is thinking → tools… → prose because that is the closest approximation
+ * of chronology the non-streaming path can still recover; it must NOT be re-sorted.
+ * `createdAt` comes from a single clock read, advanced by 1 ms per segment, so the
+ * array is already monotonically ordered (and every stamp distinct) — a timeline
+ * view may sort by `createdAt` without reshuffling the rows.
+ *
+ * Optional fields are spread **conditionally** so an absent `result`/`error`/… never
+ * materialises as a key holding `undefined`. `JSON.stringify` would drop it on the
+ * way to SQLite anyway, but in-memory consumers (and tests) read the object itself,
+ * so `Object.keys()` has to match the authoritative shape on its own.
+ *
+ * Returns `undefined` — never `[]` — when there is nothing to persist, so callers
+ * keep their existing `meta = segments ? { segments } : undefined` behaviour.
+ */
+export interface NonStreamingToolEvent {
+  tool: string;
+  /** Same status vocabulary the streaming path persists. */
+  status: 'running' | 'done' | 'error' | 'stopped';
+  arguments?: unknown;
+  result?: string;
+  error?: string;
+  durationMs?: number;
+}
+
+export function buildNonStreamingSegments(params: {
+  /** `<thinking>` blocks extracted from the reply, in order; empty when there were none. */
+  thinking: readonly string[];
+  /** Tool events collected during the turn, in execution order. */
+  toolEvents: readonly NonStreamingToolEvent[];
+  /** The reply text with its thinking blocks stripped out. */
+  cleanReply: string;
+}): Array<Record<string, unknown>> | undefined {
+  const segments: Array<Record<string, unknown>> = [];
+  const base = Date.now();
+  const stamp = (offset: number): string => new Date(base + offset).toISOString();
+
+  if (params.thinking.length > 0) {
+    segments.push({
+      type: 'text',
+      content: '',
+      thinking: params.thinking.join('\n\n'),
+      createdAt: stamp(segments.length),
+    });
+  }
+  for (const te of params.toolEvents) {
+    segments.push({
+      type: 'tool',
+      tool: te.tool,
+      status: te.status,
+      ...(te.arguments !== undefined ? { arguments: te.arguments } : {}),
+      ...(te.result !== undefined ? { result: te.result } : {}),
+      ...(te.error !== undefined ? { error: te.error } : {}),
+      ...(te.durationMs !== undefined ? { durationMs: te.durationMs } : {}),
+      createdAt: stamp(segments.length),
+    });
+  }
+  if (segments.length > 0) {
+    segments.push({ type: 'text', content: params.cleanReply, createdAt: stamp(segments.length) });
+  }
+
+  return segments.length > 0 ? segments : undefined;
+}
+
 export class APIServer {
   static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
   /** Per-provider live key/model validation budget when a routing-candidates
@@ -4712,13 +4794,10 @@ export class APIServer {
           }
           this.json(res, 200, { reply, sessionId: persistedSessionId });
           const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
-          const segments: Array<Record<string, unknown>> = [];
-          if (thinking.length > 0) segments.push({ type: 'text', content: '', thinking: thinking.join('\n\n') });
-          for (const te of toolEvents) {
-            segments.push({ type: 'tool', tool: te.tool, status: te.status, arguments: te.arguments, result: te.result, durationMs: te.durationMs });
-          }
-          if (segments.length > 0) segments.push({ type: 'text', content: cleanReply });
-          const meta = segments.length > 0 ? { segments } : undefined;
+          // Single shared constructor — keeps this path's segments byte-identical in
+          // shape to what the SSE path persists (same fields, incl. `createdAt`).
+          const segments = buildNonStreamingSegments({ thinking, toolEvents, cleanReply });
+          const meta = segments ? { segments } : undefined;
           void this.persistAssistantMessage(
             persistedSessionId,
             agentId!,
@@ -6612,13 +6691,10 @@ EXPLANATION_END`;
         }
         this.json(res, 200, { reply, agentId: targetAgentId });
         const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
-        const segments: Array<Record<string, unknown>> = [];
-        if (thinking.length > 0) segments.push({ type: 'text', content: '', thinking: thinking.join('\n\n') });
-        for (const te of toolEvents) {
-          segments.push({ type: 'tool', tool: te.tool, status: te.status, arguments: te.arguments, result: te.result, durationMs: te.durationMs });
-        }
-        if (segments.length > 0) segments.push({ type: 'text', content: cleanReply });
-        const meta = segments.length > 0 ? { segments } : undefined;
+        // Same shared constructor as the agent-message path above (and the same
+        // segment shape the SSE path persists).
+        const segments = buildNonStreamingSegments({ thinking, toolEvents, cleanReply });
+        const meta = segments ? { segments } : undefined;
         void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta);
       }
       const _st2 = agent.getState();
@@ -8543,6 +8619,7 @@ EXPLANATION_END`;
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
         mode: browser.mode ?? 'embedded',
+        elementSelection: browser.elementSelection ?? 'direct',
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
@@ -8559,6 +8636,7 @@ EXPLANATION_END`;
       const body = await this.readBody(req);
       const updates: Record<string, unknown> = {};
       if (body['mode'] === 'embedded' || body['mode'] === 'system-chrome') updates.mode = body['mode'];
+      if (body['elementSelection'] === 'direct' || body['elementSelection'] === 'jev') updates.elementSelection = body['elementSelection'];
       if (typeof body['bringToFront'] === 'boolean') updates.bringToFront = body['bringToFront'];
       if (typeof body['remoteDebuggingPort'] === 'number') updates.remoteDebuggingPort = body['remoteDebuggingPort'];
       if (typeof body['autoCloseTabs'] === 'boolean') updates.autoCloseTabs = body['autoCloseTabs'];
@@ -8568,6 +8646,9 @@ EXPLANATION_END`;
         const am = this.orgService.getAgentManager();
         if (updates.mode === 'embedded' || updates.mode === 'system-chrome') {
           am.setBrowserMode(updates.mode);
+        }
+        if (updates.elementSelection === 'direct' || updates.elementSelection === 'jev') {
+          am.setBrowserElementSelection(updates.elementSelection);
         }
         if (typeof updates.bringToFront === 'boolean') {
           am.setBrowserBringToFront(updates.bringToFront);
@@ -8601,6 +8682,7 @@ EXPLANATION_END`;
       const am2 = this.orgService.getAgentManager();
       this.json(res, 200, {
         mode: browser.mode ?? 'embedded',
+        elementSelection: browser.elementSelection ?? 'direct',
         bringToFront: browser.bringToFront ?? false,
         remoteDebuggingPort: browser.remoteDebuggingPort ?? 0,
         autoCloseTabs: browser.autoCloseTabs ?? true,
@@ -11645,6 +11727,42 @@ EXPLANATION_END`;
 
     // ── File preview ──────────────────────────────────────────────────────
 
+    // GET /api/files/stat?path=... — cheap metadata probe for the right-panel
+    // auto-refresh loop (mtime/size only; never reads the file body).
+    if (path === '/api/files/stat' && req.method === 'GET') {
+      const filePath = url.searchParams.get('path');
+      if (!filePath) {
+        this.json(res, 400, { error: 'Missing "path" query parameter' });
+        return;
+      }
+
+      try {
+        const { resolve } = await import('node:path');
+        const { existsSync, statSync } = await import('node:fs');
+        const { homedir } = await import('node:os');
+        const home = homedir();
+        const expanded = filePath.startsWith('~/') ? resolve(home, filePath.slice(2)) : filePath === '~' ? home : filePath;
+        const resolved = resolve(expanded);
+
+        if (!existsSync(resolved)) {
+          this.json(res, 200, { exists: false, path: resolved });
+          return;
+        }
+        const stat = statSync(resolved);
+        this.json(res, 200, {
+          exists: true,
+          path: resolved,
+          isFile: stat.isFile(),
+          isDirectory: stat.isDirectory(),
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+        });
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to stat file: ${String(err)}` });
+      }
+      return;
+    }
+
     if (path === '/api/files/preview' && req.method === 'GET') {
       const filePath = url.searchParams.get('path');
       if (!filePath) {
@@ -13101,6 +13219,7 @@ EXPLANATION_END`;
       // ── Files ────────────────────────────────────────────────────────────
       exact('/api/files/check', 'POST'),
       exact('/api/files/preview', 'GET'),
+      exact('/api/files/stat', 'GET'),
       exact('/api/files/stream', 'GET'),
       exact('/api/files/image', 'GET'),
       exact('/api/files/reveal', 'POST'),

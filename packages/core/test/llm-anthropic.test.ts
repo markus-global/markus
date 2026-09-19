@@ -294,3 +294,105 @@ describe('AnthropicProvider', () => {
     expect(messages[2]!.content.map(b => b['tool_use_id'])).toEqual(['toolu_1', 'toolu_2']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 本轮适配器修复的回归护栏：SSE 流内 `error` 事件 + `refusal` 停止原因。
+// 每个用例都能在修复前的旧实现上失败（断言盯着根因，不是“有响应就算过”）。
+// ---------------------------------------------------------------------------
+describe('AnthropicProvider 回归护栏（流内 error 事件 / refusal）', () => {
+  let provider: AnthropicProvider;
+
+  beforeEach(() => {
+    provider = new AnthropicProvider({
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-20250514',
+      apiKey: 'ant-key',
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * 与文件内已有流式用例同一套 mock 手法：TextEncoder + ReadableStream.start
+   * 预先把 SSE 帧写进流，然后关闭。
+   */
+  function sseResponse(lines: string[]): { ok: true; body: ReadableStream<Uint8Array> } {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        for (const line of lines) c.enqueue(encoder.encode(line));
+        c.close();
+      },
+    });
+    return { ok: true, body };
+  }
+
+  it('流内 error 事件（overloaded_error）必须抛错，而不是把截断的半截回答当成功', async () => {
+    // 守住的 bug：SSE 里的 {"type":"error"} 事件曾被 switch 静默忽略。
+    // overloaded_error 造成的流中断因此被当成正常结束：调用方拿到一小段
+    // 看似成功的回答，既不知道被截断，也没有机会重试。
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":11,"output_tokens":0}}}\n\n',
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"我先查一下"}}\n\n',
+      'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n',
+    ])));
+
+    const onEvent = vi.fn();
+    await expect(provider.chatStream(
+      { messages: [{ role: 'user', content: 'Hi' }] },
+      onEvent,
+    )).rejects.toThrow(/overloaded_error/);
+
+    // 半截回答绝不能被当成一次正常收尾：message_end 不应发出。
+    expect(onEvent).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'message_end' }));
+  });
+
+  it('流内 error 事件缺少 type/message 时也要抛错（回退分支不能静默）', async () => {
+    // 守住的 bug：与上一个用例同根因，额外守住错误信息的回退分支 ——
+    // 即使上游只发了一个没有 error 体的 error 事件，也只能抛错，不能吞掉。
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}\n\n',
+      'data: {"type":"error"}\n\n',
+    ])));
+
+    await expect(provider.chatStream(
+      { messages: [{ role: 'user', content: 'Hi' }] },
+      () => {},
+    )).rejects.toThrow(/Anthropic stream error \(unknown\)/);
+  });
+
+  it('流式：stop_reason=refusal 映射为 content_filter', async () => {
+    // 守住的 bug：refusal（Claude 因安全/策略拒答）原本不在流式 finishMap 里，
+    // 落到 ?? 'end_turn' 默认分支 —— 拒答被上报为正常结束。
+    const events = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse([
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":8,"output_tokens":0}}}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"output_tokens":1}}\n\n',
+    ])));
+
+    const response = await provider.chatStream(
+      { messages: [{ role: 'user', content: 'Hi' }] },
+      events,
+    );
+
+    expect(response.finishReason).toBe('content_filter');
+    expect(events).toHaveBeenCalledWith(expect.objectContaining({ type: 'message_end', finishReason: 'content_filter' }));
+  });
+
+  it('非流式：stop_reason=refusal 映射为 content_filter', async () => {
+    // 守住的 bug：同上的非流式路径（convertResponse 的 finishMap 里也缺 refusal）。
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        content: [{ type: 'text', text: 'I refuse to answer that.' }],
+        usage: { input_tokens: 9, output_tokens: 4 },
+        stop_reason: 'refusal',
+      }),
+    }));
+
+    const response = await provider.chat({ messages: [{ role: 'user', content: 'Hi' }] });
+    expect(response.finishReason).toBe('content_filter');
+  });
+});

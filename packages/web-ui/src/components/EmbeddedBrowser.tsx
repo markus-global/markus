@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api as httpApi } from '../api.ts';
 import {
+  acquireNativeBrowserOverlay,
   isNativeBrowserOverlayActive,
   isNativeBrowserPagePaintAllowed,
 } from '../lib/nativeBrowserOverlay.ts';
@@ -13,6 +14,17 @@ import {
   setSearchEngine,
   type SearchEngineId,
 } from '../lib/browserUrl.ts';
+import {
+  clearBrowserHistory,
+  historyNavFromModifierKey,
+  recordBrowserVisit,
+  removeBrowserHistoryEntry,
+  searchBrowserHistory,
+  stepHistoryIndex,
+  subscribeBrowserHistory,
+  type BrowserHistoryEntry,
+} from '../lib/browserHistory.ts';
+import { BrowserHistoryMenu } from './BrowserHistoryMenu.tsx';
 
 /**
  * Electron-only embedded browser host.
@@ -51,6 +63,10 @@ export function EmbeddedBrowser({
   const [directoryPath, setDirectoryPath] = useState<string | null>(null);
   const [searchEngine, setSearchEngineIdState] = useState<SearchEngineId>(() => getSearchEngine());
   const [openingFolder, setOpeningFolder] = useState(false);
+  /** Address-bar history dropdown: visible / items / highlighted row (-1 = none). */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyItems, setHistoryItems] = useState<BrowserHistoryEntry[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
   const api = typeof window !== 'undefined' ? window.markusDesktop?.browser : undefined;
   const platform = typeof window !== 'undefined' ? window.markusDesktop?.platform : undefined;
   directoryPathRef.current = directoryPath;
@@ -59,6 +75,49 @@ export function EmbeddedBrowser({
     platform === 'darwin' ? t('browserFolderAppFinder')
       : platform === 'win32' ? t('browserFolderAppExplorer')
         : t('browserFolderAppGeneric');
+
+  /**
+   * Address-bar history helpers.
+   *
+   * The suggestion list is refreshed from localStorage on every keystroke.
+   * The menu is only opened when it actually has rows — an empty list must not
+   * hide the native page (opening the menu acquires the native-overlay lock,
+   * which hides the WebContentsView so the HTML list is visible at all).
+   */
+  const refreshHistory = (query: string): BrowserHistoryEntry[] => {
+    const items = searchBrowserHistory(query, 8);
+    setHistoryItems(items);
+    return items;
+  };
+
+  const closeHistory = () => {
+    setHistoryOpen(false);
+    setHistoryIndex(-1);
+  };
+
+  const openHistory = (query: string) => {
+    const items = refreshHistory(query);
+    setHistoryOpen(items.length > 0);
+    setHistoryIndex(-1);
+  };
+
+  /** Single navigation path for ⌨️ Enter, history picks and menu clicks. */
+  const navigateTo = (raw: string, title?: string) => {
+    const next = resolveBrowserAddress(raw, searchEngine);
+    if (!next) return;
+    closeHistory();
+    setIsLoading(true);
+    setLoadError(null);
+    setDirectoryPath(null);
+    setAddress(next);
+    void api?.navigate(browserId, next);
+    // Record optimistically so a failed/slow load still shows up in history.
+    recordBrowserVisit(next, title);
+  };
+
+  const pickHistory = (entry: BrowserHistoryEntry) => {
+    navigateTo(entry.url, entry.title);
+  };
 
   useEffect(() => {
     if (!api) return;
@@ -138,6 +197,29 @@ export function EmbeddedBrowser({
     };
   }, [url, browserId]);
 
+  // Reset the address-bar suggestion list when the tab / URL changes.
+  useEffect(() => {
+    setHistoryOpen(false);
+    setHistoryIndex(-1);
+  }, [url, browserId]);
+
+  // The native WebContentsView paints ABOVE the HTML layer, so an HTML dropdown
+  // would be invisible under the page. Reuse the platform overlay lock (the same
+  // mechanism modals use) to hide native paint while the list is open.
+  useEffect(() => {
+    if (!historyOpen) return;
+    const release = acquireNativeBrowserOverlay();
+    return release;
+  }, [historyOpen]);
+
+  // Another panel tab / window recording a visit should be visible immediately.
+  useEffect(() => {
+    if (!historyOpen) return;
+    return subscribeBrowserHistory(() => {
+      setHistoryItems(searchBrowserHistory(addressRef.current?.value ?? '', 8));
+    });
+  }, [historyOpen]);
+
   // Prefer page events for snappy loading UX (poll remains for back/forward).
   useEffect(() => {
     if (!api?.onPageEvent) return;
@@ -161,6 +243,8 @@ export function EmbeddedBrowser({
       if (event.type === 'loaded') {
         setIsLoading(false);
         if (directoryPathRef.current) return;
+        // Remember real page loads (title included when the page reports one).
+        if (event.url && event.url !== 'about:blank') recordBrowserVisit(event.url, event.title);
         if (event.url && document.activeElement !== addressRef.current) {
           setAddress(event.url === 'about:blank' ? '' : event.url);
         }
@@ -331,24 +415,57 @@ export function EmbeddedBrowser({
             )}
           </button>
           <form
-            className="flex-1 min-w-0 flex items-center gap-1"
+            className="flex-1 min-w-0 relative flex items-center gap-1"
             onSubmit={e => {
               e.preventDefault();
-              let next = address.trim();
-              if (!next) return;
               // Non-URL input (keywords) is routed to the configured search engine.
-              next = resolveBrowserAddress(next, searchEngine);
-              setIsLoading(true);
-              setLoadError(null);
-              setDirectoryPath(null);
-              void api.navigate(browserId, next);
-              setAddress(next);
+              navigateTo(address);
             }}
           >
             <input
               ref={addressRef}
               value={address}
-              onChange={e => setAddress(e.target.value)}
+              onChange={e => {
+                setAddress(e.target.value);
+                openHistory(e.target.value);
+              }}
+              onFocus={() => openHistory(addressRef.current?.value ?? '')}
+              onBlur={() => { window.setTimeout(closeHistory, 120); }}
+              onKeyDown={e => {
+                // ↑/↓ (and the Emacs-style Ctrl+P / Ctrl+N aliases) walk the
+                // history list, Enter opens the highlighted row, Escape closes
+                // the list (a second Escape leaves the field).
+                const modifierNav = historyNavFromModifierKey(e);
+                const nav =
+                  e.key === 'ArrowDown' ? 'next'
+                    : e.key === 'ArrowUp' ? 'prev'
+                      : modifierNav;
+                if (nav) {
+                  e.preventDefault();
+                  if (!historyItems.length) { openHistory(address); return; }
+                  setHistoryOpen(true);
+                  setHistoryIndex(i => stepHistoryIndex(i, historyItems.length, nav));
+                  return;
+                }
+                if (e.key === 'Enter') {
+                  const picked = historyOpen && historyIndex >= 0 ? historyItems[historyIndex] : undefined;
+                  if (picked) {
+                    e.preventDefault();
+                    pickHistory(picked);
+                  }
+                  return;
+                }
+                if (e.key === 'Escape') {
+                  // Swallow this Escape so the panel itself is not collapsed.
+                  if (historyOpen) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    closeHistory();
+                    return;
+                  }
+                  addressRef.current?.blur();
+                }
+              }}
               placeholder={t('browserUrlPlaceholder')}
               spellCheck={false}
               autoCorrect="off"
@@ -371,6 +488,17 @@ export function EmbeddedBrowser({
                 <option key={id} value={id}>{SEARCH_ENGINES[id].name}</option>
               ))}
             </select>
+            {historyOpen && (
+              <BrowserHistoryMenu
+                items={historyItems}
+                query={address}
+                activeIndex={historyIndex}
+                onHover={setHistoryIndex}
+                onPick={pickHistory}
+                onRemove={url => setHistoryItems(removeBrowserHistoryEntry(url))}
+                onClear={() => { clearBrowserHistory(); closeHistory(); }}
+              />
+            )}
           </form>
           {isLoading && (
             <span className="shrink-0 text-[10px] text-fg-tertiary px-1 select-none">{t('browserLoading')}</span>

@@ -39,6 +39,7 @@ describe('createMultiModalTools', () => {
       'text_to_speech',
       'speech_to_text',
       'generate_video',
+      'decide',
     ]);
     for (const tool of tools) {
       expect(tool.description).toBeTruthy();

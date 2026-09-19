@@ -6,9 +6,11 @@ import type { AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
-  FullExecutionLog,
+  MemoExecEntryRow,
   TaskApprovalCard, RequirementApprovalCard,
+  filterCompletedStarts, streamEntryToExecEntry, formatDuration,
   parseTaskApprovalFromResult, parseRequirementApprovalFromResult,
+  type ExecEntry,
   type ExecutionStreamEntryUI,
   type TaskApprovalInfo, type RequirementApprovalInfo,
 } from '../components/ExecutionTimeline.tsx';
@@ -384,6 +386,358 @@ export function RememberModal({
   );
 }
 
+// ─── sentence healing ────────────────────────────────────────────────────────
+//
+// 一轮回复里，正文经常被拆成多段（每个工具调用开始时就 flush 一次 textBuf，见
+// org-manager/src/sse-handler.ts），而模型分步输出时也确实会出现「这句话还没写完
+// 就先去调工具，下一步再接着写」。渲染层如果照原样平铺，就会出现用户看到的
+// 「正文半句 → 工具行 → 剩下半句」。
+//
+// 这里做的是**最小改动**的愈合，刻意不做「把所有正文合成一块」：
+//   • 过程行（思考 / 工具）一律保留、顺序不变 —— 用户仍能看到完整的
+//     思考 → 正文 → 执行 → 思考 过程；
+//   • 只有当一段正文**明显是上一句的续写**（上一段没有句末标点、本段也不是新
+//     段落/新块级元素的开头）时，才把这半句接回上一段，
+//     并把夹在中间的过程行整体挪到「这句话说完之后」。
+// 于是：`[正文A][工具][正文B:续写]` → `[正文A+B][工具]`；
+//      而 `[正文A。][工具][正文B]` 保持原样，句子之间照样看得见工具行。
+
+/** 句末标点 —— 以它结尾的正文视为「这句话已经说完」。 */
+const SENTENCE_END_RE = /[.!?。！？…:：]\s*$|["'”’)\]}】》]\s*$|\n\s*$/;
+/** 新段落 / 块级元素的起始标记 —— 这类片段不该被接回上一句。 */
+const NEW_BLOCK_RE = /^(?:\n|#{1,6}[ \t]|[-*+][ \t]|\d+[.)][ \t]|>|\||```|~~~|---)/;
+
+/** B 是否只是 A 的续写（同一句话被过程行切开）。 */
+export function isSentenceContinuation(a: string, b: string): boolean {
+  const prev = a.replace(/\s+$/, '');
+  if (!prev) return false;
+  if (SENTENCE_END_RE.test(a)) return false; // A 已经说完
+  if (!b.trim()) return false;
+  if (NEW_BLOCK_RE.test(b)) return false; // B 是新段落
+  return true;
+}
+
+/**
+ * 拼接两块正文 —— **只补原文确实存在的那个空格**。
+ *
+ * 上一版按「拉丁字母交界就补空格」去猜，把被切开的一个词接成了 `w ith`：
+ * 分段点是 token 边界，而 token 会在词中间断开（`w` + `ith`），此时两边都没有
+ * 空白，正确做法是**原样相接**。真正需要补空格只有一种情况：原文本来有空白，
+ * 但被 `emitText` 的 `trim()` 抹掉了 —— 那由 metadata 里的
+ * `trailingSpace` / `leadingSpace` 记账，不再靠字符类型猜。
+ */
+export function joinProse(a: string, b: string, opts?: { spaceNeeded?: boolean }): string {
+  if (/\s$/.test(a) || /^\s/.test(b)) return a + b;
+  return opts?.spaceNeeded ? `${a} ${b}` : a + b;
+}
+
+export function healSentenceSplits(entries: ExecutionStreamEntryUI[]): ExecutionStreamEntryUI[] {
+  const isProcess = (e: ExecutionStreamEntryUI) => e.type !== 'text' || e.metadata?.isThinking === true;
+  const out: ExecutionStreamEntryUI[] = [];
+  let pending: ExecutionStreamEntryUI[] = [];
+  let lastText = -1;
+
+  for (const entry of entries) {
+    if (isProcess(entry)) {
+      pending.push(entry);
+      continue;
+    }
+    const prev = lastText >= 0 ? out[lastText] : undefined;
+    if (
+      prev
+      && pending.length > 0
+      && entry.metadata?.paragraphBreak !== true
+      && prev.metadata?.paragraphAfter !== true
+      && isSentenceContinuation(prev.content, entry.content)
+    ) {
+      // 只有原文这里本来有空白时才补空格（trim() 抹掉的那个）。
+      prev.content = joinProse(prev.content, entry.content, {
+        spaceNeeded: prev.metadata?.trailingSpace === true || entry.metadata?.leadingSpace === true,
+      });
+      out.push(...pending); // 过程行挪到这句话说完之后
+      pending = [];
+      continue;
+    }
+    if (pending.length > 0) {
+      out.push(...pending);
+      pending = [];
+    }
+    out.push(entry);
+    lastText = out.length - 1;
+  }
+  if (pending.length > 0) out.push(...pending);
+  return out;
+}
+
+// ─── 过程成组：思考 + 工具默认折成一行 ─────────────────────────────────────────
+//
+// 为什么不是「把过程行全收进气泡底部」：用户要的是**顺序不变**的完整性 ——
+// 思考 → 正文 → 执行 → 思考，只是每一段过程默认折起来。所以这里只做分组，
+// 不搬运、不重排：连续的思考/工具行合成一个 process 块，正文行各自成块。
+
+export interface ProcessRunSummary {
+  /** 思考行数（同一段 reasoning 已被 emitThinking 合并成一行）。 */
+  thinkingCount: number;
+  /** 工具调用数（tool_start 的条数，一个工具算一次）。 */
+  toolCount: number;
+  subagentCount: number;
+  /** 仍在跑的工具名（收尾了就没有）。 */
+  runningTool?: string;
+  /** 最后一个、还没结束的工具仍在运行。 */
+  running: boolean;
+  /** 这段过程以「思考」收尾 → 折叠行显示「思考中…」。 */
+  tailIsThinking: boolean;
+  /** 首末 entry 的真实时间跨度；拿不到真实时间戳时为 0。 */
+  elapsedMs: number;
+  /**
+   * 这段过程里失败了几次：`error` 行 + `tool_end` 标记 success:false 的工具。
+   * 图标要用它区分「跑完了」和「跑完了但有失败」——后者不该给一个表示完成的勾。
+   */
+  errorCount: number;
+}
+
+export type ChatTimelineBlock =
+  | { kind: 'text'; key: string; entry: ExecutionStreamEntryUI }
+  | { kind: 'process'; key: string; entries: ExecutionStreamEntryUI[]; summary: ProcessRunSummary };
+
+/** 过程行 = 工具/状态/错误/子智能体，以及 metadata 标记为思考的正文行。 */
+export function isProcessEntry(entry: ExecutionStreamEntryUI): boolean {
+  return entry.type !== 'text' || entry.metadata?.isThinking === true;
+}
+
+export function summarizeProcessRun(entries: ExecutionStreamEntryUI[]): ProcessRunSummary {
+  let thinkingCount = 0;
+  let toolCount = 0;
+  let subagentCount = 0;
+  let pendingTool: string | null = null;
+  let errorCount = 0;
+
+  for (const e of entries) {
+    if (e.type === 'text' && e.metadata?.isThinking === true) { thinkingCount++; continue; }
+    if (e.type === 'tool_start') {
+      toolCount++;
+      pendingTool = e.content;
+      continue;
+    }
+    if (e.type === 'tool_end') {
+      // 工具失败 = 失败一次（与 streamEntryToExecEntry 的 status:'error' 同一判据）。
+      if (e.metadata?.success === false) errorCount++;
+      pendingTool = null;
+      continue;
+    }
+    if (e.type === 'subagent_start') subagentCount++;
+    if (e.type === 'error') errorCount++;
+  }
+
+  const first = Date.parse(entries[0]?.createdAt ?? '');
+  const last = Date.parse(entries[entries.length - 1]?.createdAt ?? '');
+  const elapsedMs = Number.isFinite(first) && Number.isFinite(last) && last > first ? last - first : 0;
+
+  return {
+    thinkingCount,
+    toolCount,
+    subagentCount,
+    running: pendingTool !== null,
+    ...(pendingTool ? { runningTool: pendingTool } : {}),
+    tailIsThinking: entries[entries.length - 1]?.type === 'text'
+      && entries[entries.length - 1]?.metadata?.isThinking === true,
+    elapsedMs,
+    errorCount,
+  };
+}
+
+/**
+ * 把时间线切成「正文块」与「过程块」（后者代表一段连续的思考/工具）。
+ * 空输入 → 空数组；过程块一定非空，调用方不必再判空。
+ */
+export function groupProcessRuns(entries: ExecutionStreamEntryUI[]): ChatTimelineBlock[] {
+  const blocks: ChatTimelineBlock[] = [];
+  let run: ExecutionStreamEntryUI[] = [];
+  let runStart = 0;
+
+  const flushRun = () => {
+    if (run.length === 0) return;
+    blocks.push({
+      kind: 'process',
+      key: `proc_${runStart}`,
+      entries: run,
+      summary: summarizeProcessRun(run),
+    });
+    run = [];
+  };
+
+  entries.forEach((entry, index) => {
+    if (isProcessEntry(entry)) {
+      if (run.length === 0) runStart = index;
+      run.push(entry);
+      return;
+    }
+    flushRun();
+    blocks.push({ kind: 'text', key: `text_${index}`, entry });
+  });
+  flushRun();
+  return blocks;
+}
+
+// ─── ProcessRun — 一段过程（思考 + 工具）的折叠行 ─────────────────────────────
+
+/** 折叠行开头那个图标的三态。三者轮廓各不相同，缩到 12px 也能一眼分开。 */
+export type ProcessRunState = 'running' | 'error' | 'done';
+
+/**
+ * 折叠行的状态图标 —— 三个状态给三种完全不同的形状，而不只是换颜色：
+ *
+ *   进行中：转圈的弧线（品牌色）—— 「在动」；旋转由 4Hz tick 驱动，不额外产帧
+ *   有失败：三角形惊叹号（红）  —— 「出事了」，跑完但没好结果时不能给勾
+ *   已完成：对勾（弱色）        —— 「办完了」
+ *
+ * 为什么不能只靠颜色：这行只有 11px 高，颜色差异在暗色主题下最容易被忽略，
+ * 而且对色觉障碍用户等于没有区分；形状差异才是真正可辨的。
+ */
+export function ProcessRunIcon({ state }: { state: ProcessRunState }) {
+  if (state === 'running') {
+    return (
+      <span className="animate-spin inline-flex">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+          <path d="M12 3a9 9 0 1 0 9 9" />
+        </svg>
+      </span>
+    );
+  }
+  if (state === 'error') {
+    return (
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+        <path d="M12 9.5v4" />
+        <path d="M12 17.5h.01" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 6.5 9.5 17 4 11.5" />
+    </svg>
+  );
+}
+
+/**
+ * 一段「过程」默认收成一行，点开才展开这段过程里的思考/工具明细；
+ * 再点其中某一条，才是那一条的详情（复用 ExecEntryRow 既有行为）。
+ *
+ * 为什么全程默认收起：流式时过程行会把气泡撑得很长，结束时又整块收掉，
+ * 前后不像同一条消息。全程折叠后，气泡在「生成中」和「生成完」基本等高，
+ * 信息一条没少 —— 想看随时点开。
+ */
+function ProcessRun({
+  entries,
+  summary,
+  isStreaming,
+  isLastBlock,
+  hideApprovalCards,
+}: {
+  entries: ExecutionStreamEntryUI[];
+  summary: ProcessRunSummary;
+  /** 这条消息整体还在流式输出。 */
+  isStreaming: boolean;
+  /** 这是时间线上的最后一块 —— 只有它可能以「思考中」收尾。 */
+  isLastBlock: boolean;
+  hideApprovalCards?: boolean;
+}) {
+  const { t } = useTranslation('common');
+  const [open, setOpen] = useState(false);
+
+  const rows = useMemo(
+    () => filterCompletedStarts(
+      entries.map(streamEntryToExecEntry).filter((e): e is ExecEntry => e !== null),
+    ),
+    [entries],
+  );
+
+  // 跑着的时候说「正在干什么」，跑完了说「干了多少」。
+  // 「在跑」有两种：工具正在执行，或者这块以思考收尾 —— 后者说明 agent 此刻正在
+  // 推理（流式思考中），同样该有活的反馈，否则气泡会看起来像卡住了。
+  // 「在跑」有两种：工具真的还没结束（tool_start 没有配对的 tool_end），
+  // 或者这块以思考收尾（流式思考中）—— 后者同样该有活的反馈。
+  //
+  // 判据故意不依赖「是不是最后一块」：待结束的工具无论落在哪一块，
+  // 只要这轮还在流式，它就是在跑。只按位置判会让一个没收尾的工具显示成
+  // 绿勾（已跑完），这是错的。位置只用来回答「思考是不是还在进行」——
+  // 后面已经又出了正文，说明那段思考早就结束了。
+  const running = isStreaming && (summary.running || (isLastBlock && summary.tailIsThinking));
+  // 三个状态优先级：在跑 > 有失败 > 完成。跑着的时候先别急着报错（后面还会重试）。
+  const state: ProcessRunState = running ? 'running' : (summary.errorCount > 0 ? 'error' : 'done');
+  const liveLabel = running && summary.runningTool
+    ? t('execution.processRun.runningTool', {
+        tool: t(`execution.tools.${summary.runningTool}`, { defaultValue: summary.runningTool }),
+      })
+    : null;
+
+  const parts: string[] = [];
+  if (summary.thinkingCount > 0) parts.push(t('execution.processRun.thinking'));
+  if (summary.toolCount > 0) parts.push(t('execution.processRun.tools', { count: summary.toolCount }));
+  if (summary.subagentCount > 0) parts.push(t('execution.processRun.subagents', { count: summary.subagentCount }));
+  // 失败次数直接写进这一行 —— 收起状态下也该看得见「这段里有东西挂了」。
+  // 但**不上色**：这一行的三种状态一律灰，靠形状（转圈 / 三角 / 对勾）和文字区分，
+  // 颜色只留给「执行中」的品牌色。收起行是高频出现的安静元素，红色会把整条时间线
+  // 染成警报墙，反而让人不再看它。
+  if (summary.errorCount > 0) parts.push(t('execution.processRun.errors', { count: summary.errorCount }));
+  // 只有拿到真实时间戳且确实超过 1 秒才显示耗时，避免出现「0.0s」这种噪音。
+  if (summary.elapsedMs >= 1000) parts.push(formatDuration(summary.elapsedMs));
+
+  const labelText = running
+    ? (liveLabel ?? t('execution.thinkingEllipsis'))
+    : (parts.join(' · ') || t('execution.processRun.label'));
+  const stateLabel = t(`execution.processRun.state.${state}`);
+
+  return (
+    <div className="min-w-0">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        data-process-state={state}
+        title={labelText}
+        className="group relative w-full flex items-center gap-2 px-2 py-1 rounded-lg text-left text-[11px] leading-tight text-fg-tertiary bg-surface-elevated/25 hover:bg-surface-elevated/45 border border-border-default/40 hover:border-border-default/70 overflow-hidden transition-colors cursor-pointer select-none"
+      >
+        {/* 运行中：一道扫光横穿整行 —— 「还活着」的最轻量表达 */}
+        {running && <span className="process-run-sweep" aria-hidden="true" />}
+        <span
+          className={`relative shrink-0 flex items-center justify-center w-3 h-3 ${
+            state === 'running' ? 'text-brand-400' : ''
+          }`}
+        >
+          <ProcessRunIcon state={state} />
+        </span>
+        <span className="sr-only">{stateLabel}</span>
+        <span className={`relative min-w-0 truncate ${running && !liveLabel ? 'activity-text-shimmer' : ''}`}>
+          {running ? labelText : (parts.length === 0
+            ? labelText
+            : parts.map((p, i) => (
+                <span key={p + i}>
+                  {i > 0 ? ' · ' : ''}{p}
+                </span>
+              )))}
+        </span>
+        <svg
+          className={`relative ml-auto w-3 h-3 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+        >
+          <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+        </svg>
+      </button>
+      {open && (
+        <div className="mt-1 ml-[7px] pl-3 border-l-2 border-border-default/50 space-y-2 min-w-0 overflow-hidden">
+          {rows.length > 0 ? rows.map((row, i) => (
+            <MemoExecEntryRow key={i} entry={row} showTime={false} hideApprovalCards={hideApprovalCards} />
+          )) : (
+            <div className="py-1 text-[11px] text-fg-tertiary">{t('execution.noToolDetail')}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── segmentsToStreamEntries ──────────────────────────────────────────────────
 
 export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string, msgTime?: string): ExecutionStreamEntryUI[] {
@@ -433,11 +787,24 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
   };
 
   const emitText = () => {
-    const t = textBuf.trim();
+    const raw = textBuf;
+    const t = raw.trim();
     if (t) {
+      // 原始分段首尾的空白/换行是「这句话是不是被过程行从中间切开」的唯一证据，
+      // 而 `trim()` 会把它抹掉。所以先记账，交给 healSentenceSplits 判断：
+      //   paragraphBreak —— 原文自己就是另起一段（以空行开头）
+      //   paragraphAfter —— 原文以空行收尾（这句说完了）
+      //   trailingSpace / leadingSpace —— 原文这里**本来有空白**，拼接时要补回来
+      // 反过来说：两个 flag 都没有 ⇒ 原文此处紧挨着，拼接绝不能凭空插空格。
+      const gaps: Record<string, boolean> = {};
+      if (/^\s*\n/.test(raw)) gaps.paragraphBreak = true;
+      if (/\n\s*\n\s*$/.test(raw)) gaps.paragraphAfter = true;
+      if (/\s$/.test(raw)) gaps.trailingSpace = true;
+      if (/^\s/.test(raw)) gaps.leadingSpace = true;
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
         seq: seq++, type: 'text', content: t, createdAt: currentSegTimestamp,
+        ...(Object.keys(gaps).length > 0 ? { metadata: gaps } : {}),
       });
     }
     textBuf = '';
@@ -528,7 +895,8 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
   // Always flush remaining plain text — even after a legacy unclosed marker,
   // the tail must not be dropped (the marker branch never feeds thinkBuf).
   emitText();
-  return entries;
+  // 最后一道：把被过程行切成两半的句子接回去（顺序、过程行都保留，见 healSentenceSplits）。
+  return healSentenceSplits(entries);
 }
 
 // ─── AgentMessageBody ─────────────────────────────────────────────────────────
@@ -547,10 +915,8 @@ export const AgentMessageBody = memo(function AgentMessageBody({
   const { t } = useTranslation(['team', 'common']);
   const segments = msg.segments;
   const isStopped = msg.isStopped;
-  // Tool-call timeline collapses to a single line once the turn completes so the
-  // natural-language answer is the visual focus. While streaming (or when the
-  // user manually expands) the full execution log is shown.
-  const [timelineExpanded, setTimelineExpanded] = useState(false);
+  // 过程（思考/工具）默认折成一行，流式中和结束后**同一套结构** ——
+  // 展开状态由每个过程块自己持有（见 ProcessRun），这里不再需要全局开关。
 
   // Include thinking length — thinking_delta updates seg.thinking without changing
   // content length, and a content-only key would freeze the timeline mid-stream.
@@ -586,8 +952,6 @@ export const AgentMessageBody = memo(function AgentMessageBody({
   );
 
   if (segments !== undefined && segments.length > 0) {
-    const hasTools = segments.some(s => s.type === 'tool');
-    const toolCount = segments.filter(s => s.type === 'tool').length;
     const textSegments = segments.filter(s => s.type === 'text');
     // Live segments are the source of truth while streaming too. Gating this on
     // `!isStreaming` left every tool-less reply with an EMPTY bubble mid-stream
@@ -601,18 +965,14 @@ export const AgentMessageBody = memo(function AgentMessageBody({
       .replace(/<\/?(invoke|function_calls|antml:\w+)[^>]*>/g, '')
       .trim() || null;
     const segmentText = allText ? stripMarkup(allText) : null;
-    // Fall back to the thinking block when the turn ended without visible prose
-    // (e.g. the model only reasoned). Without this the bubble renders as blank.
-    const thinkingText = !isStreaming && !segmentText
-      ? textSegments.map(s => s.thinking ?? '').filter(Boolean).join('\n\n').trim() || null
-      : null;
-    const displayText = segmentText
-      || thinkingText
-      || (msg.text ? stripMarkup(msg.text) : null);
-    // Collapse the tool timeline after the turn completes: keep the natural
-    // answer as the visual focus, with a one-line "N tool call(s)" summary that
-    // expands the full execution log on click. While streaming it stays open.
-    const showFullTimeline = isStreaming || timelineExpanded;
+    // 正文只来自正文分段；正文只存在于 msg.text 的历史消息走第二兜底。
+    // 不再拿「思考内容」当正文兜底：过程行现在默认折叠但**始终在**，气泡不会空，
+    // 再把 reasoning 当正文渲染一遍只会让同一段内容在气泡里出现两次。
+    const displayText = segmentText || (msg.text ? stripMarkup(msg.text) : null);
+    // 时间线切成「正文块 / 过程块」：过程块（思考 + 工具）默认折成一行，
+    // 顺序完全不动（思考 → 正文 → 执行 → 思考），只是每段过程收起。
+    const blocks = groupProcessRuns(fullLogEntries);
+    const hasTextBlock = blocks.some(b => b.kind === 'text');
 
     // Collect approval cards once for the bubble footer. The timeline hides its
     // mid-row copies via hideApprovalCards so the same card is not shown twice.
@@ -627,47 +987,35 @@ export const AgentMessageBody = memo(function AgentMessageBody({
 
     return (
       <div className="space-y-2 min-h-[1em] min-w-0 overflow-x-hidden">
-        {/* While streaming with only thinking (no tool rows and no visible text),
-            the timeline branch has no content to render — show the live activity
-            indicator ("thinking…") instead of a blank bubble. */}
-        {isStreaming && !hasTools && !segmentText && !(msg.text && msg.text.trim()) && (
+        {/* 按时间顺序渲染：正文块 = 正文本身；过程块 = 折叠起来的思考/工具。
+            顺序完全不重排，所以「思考 → 正文 → 执行 → 思考」照样看得见。 */}
+        {blocks.map((block, index) => (block.kind === 'text' ? (
+          <MarkdownMessage
+            key={block.key}
+            content={block.entry.content}
+            onMentionClick={onMentionClick}
+            knownNames={knownNames}
+          />
+        ) : (
+          <ProcessRun
+            key={block.key}
+            entries={block.entries}
+            summary={block.summary}
+            isStreaming={isStreaming}
+            isLastBlock={index === blocks.length - 1}
+            hideApprovalCards
+          />
+        )))}
+
+        {/* 刚开流、还没有任何 segment —— 别留一个空气泡。 */}
+        {blocks.length === 0 && isStreaming && (
           <ActivityIndicator activities={liveActivities} isActive />
         )}
-        {hasTools ? (
-          showFullTimeline ? (
-            <FullExecutionLog
-              entries={fullLogEntries}
-              isActive={isStreaming}
-              embedded
-              hideApprovalCards
-              // Allow collapsing back to the one-line summary — without this the
-              // expand was one-way (timelineExpanded never reset), leaving users
-              // stuck in the full log with no way back.
-              onCollapse={isStreaming ? undefined : () => setTimelineExpanded(false)}
-            />
-          ) : (
-            <>
-              {displayText && (
-                <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
-              )}
-              <button
-                onClick={() => setTimelineExpanded(true)}
-                className="inline-flex items-center gap-1.5 mt-1 px-2.5 py-1 rounded-lg text-[11px] text-fg-tertiary hover:bg-surface-elevated/50 hover:text-brand-500 transition-colors cursor-pointer select-none"
-              >
-                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M9 5l7 7-7 7" />
-                </svg>
-                <span>{t('common:execution.toolsSummary', { count: toolCount })}</span>
-                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M9 5l7 7-7 7" />
-                </svg>
-              </button>
-            </>
-          )
-        ) : (
-          displayText && (
-            <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
-          )
+
+        {/* 没有任何正文块时退回 msg.text（正文只存在 text 字段里的历史消息）。
+            有正文块时绝不重复输出 —— 正文由上面的块负责。 */}
+        {!hasTextBlock && displayText && (
+          <MarkdownMessage content={displayText} onMentionClick={onMentionClick} knownNames={knownNames} />
         )}
 
         {inlineCards.map(c => c.kind === 'task'
@@ -675,7 +1023,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           : <RequirementApprovalCard key={c.key} info={c.info} />
         )}
 
-        {!isStreaming && !displayText && !hasTools && inlineCards.length === 0 && !isStopped && (msg.emptyReply || !msg.isError) && (
+        {!isStreaming && !displayText && blocks.length === 0 && inlineCards.length === 0 && !isStopped && (msg.emptyReply || !msg.isError) && (
           <div className="flex items-start gap-1.5 text-[13px] text-fg-tertiary leading-relaxed">
             <span>{t('page.emptyReply')}</span>
           </div>
