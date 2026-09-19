@@ -17,7 +17,7 @@
     "test:watch": "vitest",
     "test:json": "vitest run --reporter=default --reporter=json --outputFile.json=coverage/vitest-report.json",
     "test:coverage": "vitest run --coverage --reporter=default --reporter=json --outputFile.json=coverage/vitest-report.json",
-    "test:coverage:web-ui": "vitest run --project web-ui --coverage --coverage.reportsDirectory=./coverage/web-ui --coverage.reporter=text-summary --coverage.reporter=json-summary",
+    "test:coverage:web-ui": "vitest run --config vitest.web-ui.coverage.config.ts",
     "coverage:node": "vitest run --project node --coverage --coverage.reporter=text-summary --coverage.reportsDirectory=./coverage/node",
     "test:skipped-audit": "node scripts/report-skipped-tests.mjs coverage/vitest-report.json",
     "coverage:ratchet": "node scripts/check-coverage-ratchet.mjs",

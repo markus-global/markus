@@ -20,37 +20,45 @@ import { defineConfig } from 'vitest/config';
  * Splitting the projects fixes all three at the root instead of per-file:
  *
  *   • `node`   — every backend package, environment `node`, strict coverage.
- *   • `web-ui` — the frontend, environment `happy-dom`, its own coverage budget.
+ *   • `web-ui` — the frontend, environment `happy-dom`.
  *
- * ⚠️ ── Coverage MUST live at the root, not inside a project ──────────────────
+ * ── Coverage precedence in Vitest 4 (measured, 2026-09-19) ───────────────────
  *
- * This is not a style choice — it is a Vitest 4 constraint that is easy to get
- * wrong, and getting it wrong produces a **silently decorative gate**:
+ * Read this before "simplifying" the layout — getting it wrong produces a
+ * **silently decorative gate**, which is worse than no gate at all.
  *
- *   Vitest resolves coverage from the ROOT `test.coverage` only. A `coverage`
- *   block nested inside `test.projects[].test` is **ignored without warning**.
- *   Measured symptom (this repo, 2026-09-19): with per-project `reportsDirectory`
- *   configured, `npx vitest run --project web-ui --coverage` still wrote its
- *   report to `./coverage/` (the root default) using the root default reporters
- *   (`text` + `html` + `clover` + `json`) — the project's `reporter:
- *   ['text-summary','json-summary','lcov']` never appeared. Thresholds set at
- *   project level therefore never fire, and `coverage-summary.json` (which the
- *   ratchet reads) is never written where you expect it.
+ *   1. The coverage block in *this* file (root) is the only one that survives a
+ *      `--project X --coverage` run. A `coverage` block nested inside
+ *      `test.projects[].test` is **ignored without warning**.
+ *   2. Therefore root `include`/`exclude` become the denominator for **every**
+ *      project run. That is fine for the backend (this root block is the backend
+ *      gate), but catastrophic for the frontend: root `exclude` drops
+ *      `packages/web-ui/**`, so `--project web-ui --coverage` used to report on
+ *      292 *backend* files, none of which the frontend tests execute.
+ *      Measured symptom: `0/49045 statements = 0.00%` while 481 frontend tests
+ *      passed. That number looked like "frontend coverage collapsed to zero" —
+ *      it was simply **the wrong denominator**.
+ *   3. CLI overrides (`--coverage.include=…`) do not reliably change this,
+ *      because `include`/`exclude` semantics interact with the root config.
  *
- * So: root `test.coverage` defines the BACKEND gate (the strict one, it can hold
- * 75/65/78/80). The FRONTEND gate is a second invocation with explicit CLI
- * overrides — see the `test:coverage:web-ui` script in package.json — because a
- * single root config cannot hold two different denominators without either
- * failing CI or dragging the backend floor down to meet the frontend.
+ * So the frontend gate lives in its **own config file**
+ * (`vitest.web-ui.coverage.config.ts`, run by `pnpm test:coverage:web-ui`),
+ * which has no root coverage block to fight with.
+ *
+ * ⚠️ Do NOT add a `coverage` block to the web-ui project below. It will be
+ * ignored, and it will look correct to every reviewer.
  *
  * ── Why the coverage floors are not simply "80 everywhere" ───────────────────
  *
  * The backend genuinely sits above 75/65/78/80. The frontend does not — it is a
- * ~40k-LOC app whose logic-heavy parts (hooks, managers, pure helpers) are
- * tested while its 2k-line render components are not (measured 2026-09-19:
- * 29.9 st / 25.0 br / 24.1 fn / 31.5 ln over 481 tests). The web-ui floor is
- * *ratcheted* up deliberately instead of being aspirational — see
- * `scripts/check-coverage-ratchet.mjs` and `coverage-baseline.json`.
+ * ~27k-statement app whose logic-heavy parts (hooks, managers, pure helpers) are
+ * tested while its 2k-line render components are not. Real measured frontend
+ * coverage (2026-09-19, 481 tests, whole `src` in the denominator):
+ *   6.06 st / 4.66 br / 4.69 fn / 6.60 ln
+ *
+ * Those numbers are low but *honest* — and the floor is *ratcheted* rather than
+ * aspirational, so it can only go up: see `scripts/check-coverage-ratchet.mjs`
+ * and `coverage-baseline.json`.
  */
 export default defineConfig({
   test: {
@@ -105,16 +113,8 @@ export default defineConfig({
           include: ['packages/web-ui/**/*.test.ts', 'packages/web-ui/**/*.test.tsx'],
           exclude: ['**/node_modules/**', '**/dist/**'],
           testTimeout: 10000,
-          // 前端覆盖率的分母必须在这里定义（而不是根级 coverage）。
-          // 根级 coverage.include/exclude 会同时套用到两个 project，而后端门禁
-          // 必须把 web-ui 排除在外；两种分母无法共用一个根级配置。
-          // 实测：把这段挪到根级后，web-ui 门禁收集到 0 个命中文件 → 0%（假绿）。
-          coverage: {
-            provider: 'v8',
-            include: ['packages/web-ui/src/**'],
-            exclude: ['**/*.test.ts', '**/*.test.tsx', '**/*.d.ts', '**/*.tsbuildinfo'],
-            all: true,
-          },
+          // 前端覆盖率**不在这里**配置 —— 见文件顶部的优先级说明。
+          // 前端门禁：vitest.web-ui.coverage.config.ts（pnpm test:coverage:web-ui）
         },
       },
     ],

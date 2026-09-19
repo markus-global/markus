@@ -11,7 +11,7 @@
 
 评估报告点出的缺口**已全部处理**：新增 108 个用例、修复 4 个真实缺陷、修掉 2 处「假绿」测试，
 并把 CI 从「门禁看起来在、其实没在」改成真正会拦人的门禁。
-**唯一没能落地的是「前端覆盖率作门槛」**——原因见 §4 遗留项 F1，已降级为非阻塞并加了防假绿保护。
+**前端覆盖率门槛也已落地** —— 此前报 0% 的真因是**分母装错**，不是收集坏了（见 §5 F1，含更正说明）。
 
 ---
 
@@ -84,19 +84,26 @@
 
 ## 5. 遗留项
 
-### F1（唯一未落地）前端覆盖率门槛
+### F1 ~~（唯一未落地）~~ **已解决**：前端覆盖率门槛已上线（阻塞）
 
-- **现象**：`vitest run --project web-ui --coverage` 在 481 个用例全绿的情况下报告
-  **0/49045 语句**——v8 provider 一个命中都没记录到。
-- **已尝试**：根级 coverage、project 级 coverage、专用配置文件、CLI 覆盖参数、
-  `include` 不加花括号 glob、显式 `enabled: true`。**均仍为 0%。**
-- **决策**：**不发布一个永远 0% 的门禁**。那比没有门禁更危险——它会把「坏掉」伪装成「绿色」。
-  因此该项降级为「测量中、不阻塞」，并且棘轮脚本在检测到 0% 收集时直接 exit 2，
-  让「坏掉」无法冒充「无回退」。
-- **下一步建议**（择一）：
-  1. 换 `coverage.provider: 'istanbul'` 验证是否为 v8 provider 的路径解析问题；
-  2. 把 web-ui 覆盖率单独放进一个不依赖 monorepo 解析的 workspace 跑；
-  3. 若短期不解决，就以「前端用例数 + 跳过审计」作为前端质量门禁（当前已生效）。
+- **表面现象**：`vitest run --project web-ui --coverage` 在 481 个用例全绿的情况下报告
+  **0/49045 语句**，看着像「v8 provider 一个命中都没记录到」。
+- **真因（当日定位；与我上一轮的初步判断不同，此处在更正自己）**：**不是收集坏了，是分母装错了。**
+  vitest 4 跑 `--project web-ui --coverage` 时生效的是**根级** coverage 的 `include`/`exclude`，
+  而根级 `exclude` 里排除了 `packages/web-ui/**` → 分母变成 **292 个后端文件**
+  （a2a / cli / comms / core / desktop / org-manager / shared / storage），前端测试当然一个都不执行 → 0%。
+  证据：覆盖率报告里的文件路径**全是后端**，`packages/web-ui` 一个都没有。
+  顺带发现：写在 project 里的那段 `coverage` 是**死配置**——被静默忽略，看着对、其实完全无效。
+- **修法**：前端这一跑改用独立配置文件 `vitest.web-ui.coverage.config.ts`（没有根级 coverage 来打架），
+  `pnpm test:coverage:web-ui` → `vitest run --config vitest.web-ui.coverage.config.ts`。
+- **结果**：真实前端覆盖率 = **6.06 st / 4.66 br / 4.69 fn / 6.60 ln**（481 用例；分母 = 整个 `src`）。
+  已提升为**阻塞**门禁：config 阈值 6/4/4/6 + 棘轮地板（`coverage-baseline.json`）。
+- **另一个必须记下的更正**：早先记录的 `29.92 / 24.97 / 24.13 / 31.48` 是**假数字** ——
+  那次分母口径不同（偏小）导致比例虚高。真实值比它低得多，但它是**诚实**的。
+- **附带修掉的隐患**：棘轮脚本读 `baseline['web-ui']`，而 baseline 文件里的 key 是 `packages/web-ui`
+  → floor 取不到 → **棘轮静默失效**（又一个「看着在、其实不在」的门禁）。
+  已对齐 key 并实测验证：现在会逐项打印地板比较（实测 6.06% ≥ 地板 6.00% ✔），低于地板即失败。
+- **仍未做的部分**：把 6% 抬上去（真实原因是 2k 行渲染组件没有测试）。地板只会随实际改善上抬。
 
 ### F2 后端覆盖率暂不阻塞
 
@@ -114,12 +121,13 @@
 
 **新增**
 - `vitest.setup.ts`、`vitest.web-ui.setup.ts`
+- `vitest.web-ui.coverage.config.ts`（前端覆盖率门禁的独立配置）
 - `scripts/report-skipped-tests.mjs`、`scripts/check-coverage-ratchet.mjs`
 - `coverage-baseline.json`
 - 4 个测试文件（适配器 / storage 事务 / 接线行为 / 边界）
 
 **修改**
-- `vitest.config.ts`（拆 project）
+- `vitest.config.ts`（拆 project；移除被静默忽略的 project 级 coverage 死配置，并更正注释里关于覆盖率的错误结论）
 - `package.json`（scripts）
 - `.github/workflows/ci.yml`（门禁重写）
 - `packages/core/src/llm/google.ts`、`packages/core/src/llm/markus-provider.ts`
@@ -133,6 +141,8 @@
 ## 7. 发版建议
 
 - 后端（core / storage / org-manager）：**够硬**，可以发版。
-- 前端：`.`tsx` 通道打开 + 480 用例是真进步，但**覆盖率仍不可度量** →
-  发版可以，但要如实说明前端质量证据当前是「用例数 + 跳过审计」，不是覆盖率数字。
-- 建议：F1 在下一个迭代专门排一次（半天量级），在此之前不要对外声称前端有覆盖率门槛。
+- 前端：`.tsx` 通道已打开（481 用例），覆盖率**已可度量且已设门槛** →
+  可以对外说「前端有覆盖率门槛」，但必须同时说清地板只有 ~6%：
+  这是诚实数字（分母是整个 `src`），且棘轮保证只升不降。不要包装成「覆盖率良好」。
+- 建议下一个迭代专门抬前端覆盖率 —— 真实原因很明确：2k 行渲染组件没有测试。
+  补完后跑 `pnpm coverage:ratchet --update` 抬地板即可。

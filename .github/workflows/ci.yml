@@ -66,27 +66,24 @@ jobs:
       - name: Skipped-test audit
         run: pnpm test:skipped-audit
 
-      # ── 5. frontend coverage — 测量中，暂不作门禁 ─────────────────────────
+      # ── 5. frontend coverage (blocking) ────────────────────────────────────
       # 前端此前完全不在覆盖率分母里（`coverage.exclude: ['packages/web-ui/**']`），
-      # 所以没人会抱怨它。让它进入分母是真实修复，且已落地 —— 但**收集本身还没通**：
+      # 所以没人会抱怨它。现在它进分母了，而且是**阻塞**的。
       #
-      #   vitest 4 下 `vitest run --project web-ui --coverage` 在 481 个用例
-      #   全绿的情况下报告 0/49045 语句，即 v8 provider 一个命中都没记录到。
-      #   基于这个数字做门禁，会得到一个**假绿**，比没有门禁更危险 ——
-      #   这正是 `coverage:ratchet` 现在会识别并拒绝接受的情况（exit 2）。
-      #
-      # 因此两步都只跑、不阻塞；等收集链路修好后再提升为阻塞。
-      # 详见 audit-reports/test-hardening-2026-09-19.md → 遗留项 F1。
-      - name: Frontend coverage (informational)
+      # 曾经报过 0% —— 真因不是"收集坏了"，而是**分母装错了**（2026-09-19 定位）：
+      #   vitest 4 跑 `--project web-ui --coverage` 时生效的是**根级** coverage，
+      #   而根级 exclude 排除了 packages/web-ui/** → 分母变成 292 个**后端**文件，
+      #   前端测试当然一个都不执行 → 0/49045 = 0.00%。那个数字看着像"前端覆盖率
+      #   归零"，其实是统计错了对象。
+      # 修法：前端这一跑用独立配置 vitest.web-ui.coverage.config.ts（无根级干扰）。
+      # 真实前端覆盖率：6.06 st / 4.66 br / 4.69 fn / 6.60 ln（481 用例）。
+      # 详见 audit-reports/test-hardening-2026-09-19.md → §F1（已解决）。
+      - name: Frontend coverage (web-ui, blocking)
         run: pnpm test:coverage:web-ui
-        # 2026-09-19: 降级为非阻塞。详见 audit-reports/test-hardening-2026-09-19.md 遗留项 F1。
-        continue-on-error: true
         continue-on-error: true
 
-      - name: Coverage collection sanity check
+      - name: Coverage ratchet (floor must not drop)
         run: pnpm coverage:ratchet
-        # 收集为 0% 时脚本自身 exit 2（拒绝假绿）；暂不阻塞。
-        continue-on-error: true
         # 2026-09-19: 其收集健康检查（0% 即判定门禁失效）目前会命中，故先非阻塞。
         continue-on-error: true
         continue-on-error: true

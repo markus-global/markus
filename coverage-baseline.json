@@ -1,10 +1,12 @@
 {
   "_comment": "Coverage ratchet baseline. See scripts/check-coverage-ratchet.mjs. Values are the FLOOR: CI fails if measured coverage drops below them. Raise them deliberately (pnpm coverage:ratchet --update) after a real improvement; never lower them to make a red build green.",
-  "_measured_2026-09-19": "statements 29.92 / branches 24.97 / functions 24.13 / lines 31.48 (481 web-ui tests)",
-  "packages/web-ui": {
-    "statements": 28,
-    "branches": 23,
-    "functions": 22,
-    "lines": 29
+  "_measured_2026-09-19": "statements 6.06 / branches 4.66 / functions 4.69 / lines 6.60 (481 web-ui tests; whole packages/web-ui/src in the denominator, all:true)",
+  "_correction_2026-09-19": "早先记录的 29.92/24.97/24.13/31.48 是**分母错误**造成的假数字：那次跑 --project web-ui --coverage 时生效的是根级 include（统计了 292 个后端文件），再加上 all 语义不同，分母偏小 → 比例虚高。真实前端覆盖率见上。详见 audit-reports/test-hardening-2026-09-19.md §F1。",
+  "_note_key": "键名必须与 scripts/check-coverage-ratchet.mjs 读取的 'web-ui' 一致；写成 'packages/web-ui' 会导致 floor 取不到 → 棘轮静默失效。",
+  "web-ui": {
+    "statements": 6,
+    "branches": 4,
+    "functions": 4,
+    "lines": 6
   }
 }
