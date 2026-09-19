@@ -21,6 +21,23 @@ import {
   type ExecEntry, type ExecutionStreamEntryUI,
 } from '../components/ExecutionTimeline.tsx';
 import { isVirtualScrollAdjustSuppressed } from '../components/execution-utils.ts';
+import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import {
+  AT_BOTTOM_EPSILON,
+  GESTURE_WINDOW_MS,
+  SETTLE_MAX_FRAMES,
+  SMOOTH_JUMP_MS,
+  canFollow,
+  decideScrollFollow,
+  distanceFromBottom,
+  gestureTakesOver,
+  isAtBottom,
+  isScrollable,
+  keyDirection,
+  touchDirection,
+  wheelDirection,
+  type GestureDirection,
+} from '../lib/chatScrollFollow.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { renderMentionText } from '../components/CommentInput.tsx';
@@ -28,10 +45,12 @@ import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
 import { RightPanel } from '../components/RightPanel.tsx';
 import { ChatSearchPanel, GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
+import { ChatHistorySearch } from '../components/ChatHistorySearch.tsx';
+import { searchChatHistory } from '../lib/chatSearch.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { AgentProfile, LEGACY_TAB_SECTION, type ProfileTab, type OverviewSectionId } from './AgentProfile.tsx';
 import { resolveMobileChatBackHash, teamChannelKey } from '../lib/mobileTeamNav.ts';
-import { agentStatusPresentation } from '../lib/agentOverview.ts';
+import { agentStatusPresentation, resolveAgentStatus } from '../lib/agentOverview.ts';
 import { TeamProfile, type TeamTab } from './TeamProfile.tsx';
 import {
   type MainTab, AGENT_TABS, TEAM_TAB_SET, tabLabel, tabIcon, isProfileTab,
@@ -43,7 +62,7 @@ import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
 import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStream.ts';
-import { chatStore } from './useChatStore.ts';
+import { chatStore, useAgentStreaming, useChatStore } from './useChatStore.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
@@ -647,6 +666,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // isStreaming) — extracted to hasStreamingTail in ChatHelpers.
   const chatStreamActive = sending || streamingVisual || hasStreamingTail(messages);
 
+  // Subscribe to the streaming-agent set so the L2 agent rows (and anything else
+  // reading chatStore during render) re-render the moment a stream opens/closes.
+  // Without this, `chatStore.isAgentStreaming()` is read once per render and its
+  // dot can disagree with L1 / the header until an unrelated state change lands.
+  useChatStore(() => chatStore.getStreamingVersion());
+
   // Preview mode: typewriter streaming effect for the last agent message
   const previewStreamRef = useRef<{ fullText: string; timers: ReturnType<typeof setTimeout>[] }>({ fullText: '', timers: [] });
   useEffect(() => {
@@ -838,6 +863,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [searchLoading, setSearchLoading] = useState(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  // Find-in-conversation (this session's transcript only). Separate from the
+  // header's global search: that one queries the server across all conversations,
+  // this one is instant, local, and jumps the virtualized list to the hit.
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState('');
+  const [findCursor, setFindCursor] = useState(-1);
+
   // Teams
   const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
   /**
@@ -944,8 +976,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [setActiveSessionId, bufMgr]);
   /** When true, the next scroll-to-bottom effect is suppressed (used by loadMore) */
   const skipScrollRef = useRef(false);
-  /** Tracks whether user is at/near the bottom of the chat scroll container */
-  const userAtBottomRef = useRef(true);
   /** Stable ref to loadMore for use in IntersectionObserver callback */
   const loadMoreRef = useRef<() => Promise<void>>(undefined);
   // Close history panel on click outside
@@ -1409,111 +1439,173 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   }, [agents, selectedAgent]);
 
-  // Sticky-bottom follow: auto-scroll while the user is at/near the bottom.
-  // During streaming, programmatic follow must not override a manual scroll-away;
-  // once the user scrolls back to the latest output, follow resumes.
+  // ── Sticky-bottom follow (intent-driven) ─────────────────────────────────
+  // Contract: the system keeps the viewport glued to the newest output ONLY
+  // while the user has not taken control. The instant the user gestures upward we
+  // hand the viewport over completely — no more programmatic snaps until they come
+  // back to the bottom (or press the jump button).
+  //
+  // Position alone cannot express that: during a streaming reply the content grows
+  // every frame, so a slow scroll-up keeps `distance` small for many frames and a
+  // "distance < threshold" test keeps re-claiming the viewport — the jitter users
+  // reported. Decisions therefore come from intent (gesture direction) plus a
+  // sticky takeover flag; position only answers "did the user really arrive back at
+  // the bottom?". All of it lives in lib/chatScrollFollow.ts (pure, unit-tested).
+  //
+  // Second, hard-won lesson: never drive per-frame stick-to-bottom through
+  // virtualizer `scrollToIndex()`. In @tanstack/virtual-core it arms a *persistent*
+  // `scrollState` and starts an internal rAF `reconcileScroll()` loop that re-pushes
+  // the viewport at the target for up to 5s; a streaming bubble moves the target
+  // every frame, so the loop never goes stable and the library force-scrolls to the
+  // bottom on its own. That loop is not a rAF id we hold, so no flag of ours can
+  // cancel it — which is precisely "can't scroll up". The follow loop below scrolls
+  // the DOM element directly and leaves no library state behind.
   const isProgrammaticScrollRef = useRef(false);
-  /** True after an explicit user scroll-away until they return to the bottom. */
-  const userPinnedAwayRef = useRef(false);
-  /** Wheel / touch / scrollbar drag — honored even while a programmatic scroll is in flight. */
-  const userScrollIntentRef = useRef(false);
+  /** True from the moment the user takes control until they return to the bottom. */
+  const userTakeoverRef = useRef(false);
+  /** Until this timestamp (performance.now()) programmatic follow stays frozen. */
+  const gestureUntilRef = useRef(0);
+  /** Direction of the most recent gesture; a downward drag re-arms follow. */
+  const gestureDirectionRef = useRef<GestureDirection>('none');
   const lastChatScrollTopRef = useRef(0);
-  /** Bumped to cancel in-flight scrollChatToBottom rAF chains. */
+  /** Bumped to cancel the in-flight follow rAF chain. */
   const scrollFollowGenRef = useRef(0);
+  /** Coalesces follow requests so at most one settle chain runs at a time. */
+  const followRafRef = useRef<number | null>(null);
+  /** Suppresses instant follow while an explicit smooth jump is animating. */
+  const smoothUntilRef = useRef(0);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const newMsgCountRef = useRef(0);
   const [newMsgCount, setNewMsgCount] = useState(0);
+
+  const gestureActive = useCallback(() => performance.now() < gestureUntilRef.current, []);
+  const mayFollow = useCallback(
+    () => canFollow({ takeover: userTakeoverRef.current, gestureActive: gestureActive() }),
+    [gestureActive],
+  );
+
+  /** Take the viewport back: send / session switch / the jump button. */
   const resumeChatScrollFollow = useCallback(() => {
-    userPinnedAwayRef.current = false;
-    userScrollIntentRef.current = false;
-    userAtBottomRef.current = true;
-  }, []);
-  const pinChatScrollAway = useCallback(() => {
-    userPinnedAwayRef.current = true;
-    userAtBottomRef.current = false;
-    // Cancel any in-flight programmatic follow so streaming cannot yank the viewport.
+    userTakeoverRef.current = false;
+    gestureUntilRef.current = 0;
+    gestureDirectionRef.current = 'none';
+    smoothUntilRef.current = 0;
+    // Cancel any in-flight chain so a stale snap can't land on top of the user.
     scrollFollowGenRef.current += 1;
     isProgrammaticScrollRef.current = false;
+    setShowScrollBtn(false);
+    newMsgCountRef.current = 0;
+    setNewMsgCount(0);
+  }, []);
+
+  /** Hand the viewport over to the user. */
+  const pinChatScrollAway = useCallback(() => {
+    if (userTakeoverRef.current) return;
+    userTakeoverRef.current = true;
+    scrollFollowGenRef.current += 1;
+    isProgrammaticScrollRef.current = false;
+    if (followRafRef.current !== null) {
+      cancelAnimationFrame(followRafRef.current);
+      followRafRef.current = null;
+    }
     setShowScrollBtn(true);
   }, []);
-  const syncChatBottomState = useCallback((opts?: { fromProgrammatic?: boolean }) => {
+
+  /** Record a user gesture; an upward one is an immediate, unconditional takeover. */
+  const noteScrollGesture = useCallback((direction: GestureDirection) => {
+    gestureUntilRef.current = performance.now() + GESTURE_WINDOW_MS;
+    if (direction !== 'none') gestureDirectionRef.current = direction;
+    const el = chatScrollRef.current;
+    if (gestureTakesOver(direction, !!el && isScrollable(el))) pinChatScrollAway();
+  }, [pinChatScrollAway]);
+
+  /** The single place follow state changes — one scroll event on the container. */
+  const syncChatBottomState = useCallback((opts?: { programmatic?: boolean }) => {
     const el = chatScrollRef.current;
     if (!el) return;
-    // Virtualizer totalSize is estimate-based; keep a looser threshold so the
-    // jump button doesn't stick on when the last bubble is already in view.
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const nearBottom = distance < 160;
-    // Require getting closer than this before reclaiming follow after a pin-away,
-    // so a tiny slack gap doesn't immediately re-stick while the user is reading.
-    const resumeBottom = distance < 48;
-    const prevTop = lastChatScrollTopRef.current;
-    const scrollingUp = el.scrollTop < prevTop - 2;
+    const deltaScrollTop = el.scrollTop - lastChatScrollTopRef.current;
     lastChatScrollTopRef.current = el.scrollTop;
-
-    // Upward movement during follow = user taking over (wheel/touch/scrollbar),
-    // even while a programmatic snap is in flight and even inside the near-bottom
-    // slack zone (otherwise a small scroll-up keeps getting yanked back).
-    if (scrollingUp && distance > 20) {
-      userScrollIntentRef.current = true;
+    const decision = decideScrollFollow({
+      takeover: userTakeoverRef.current,
+      gestureActive: gestureActive(),
+      gestureDirection: gestureDirectionRef.current,
+      scrollable: isScrollable(el),
+      distance: distanceFromBottom(el),
+      deltaScrollTop,
+      programmatic: opts?.programmatic ?? isProgrammaticScrollRef.current,
+    });
+    if (decision === 'handover') {
       pinChatScrollAway();
-      return;
-    }
-
-    if (userScrollIntentRef.current) {
-      if (resumeBottom) {
-        resumeChatScrollFollow();
-        setShowScrollBtn(false);
-        newMsgCountRef.current = 0;
-        setNewMsgCount(0);
-      } else {
-        pinChatScrollAway();
-      }
-      return;
-    }
-
-    if (nearBottom && !userPinnedAwayRef.current) {
+    } else if (decision === 'resume') {
       resumeChatScrollFollow();
+    } else if (decision === 'follow') {
+      // Content growth alone must never re-show the affordance.
       setShowScrollBtn(false);
       newMsgCountRef.current = 0;
       setNewMsgCount(0);
-      return;
-    }
-
-    // During programmatic snap-to-bottom, ignore transient mid-scroll gaps.
-    if (opts?.fromProgrammatic || isProgrammaticScrollRef.current) return;
-    // Streaming/layout growth can push distance past the threshold without any
-    // user gesture. Keep following in that case; only show the jump control once
-    // the user has actually pinned away.
-    if (!userPinnedAwayRef.current && userAtBottomRef.current) return;
-    if (userPinnedAwayRef.current) {
-      userAtBottomRef.current = false;
+    } else if (userTakeoverRef.current) {
       setShowScrollBtn(true);
     }
-  }, [pinChatScrollAway, resumeChatScrollFollow]);
+  }, [gestureActive, pinChatScrollAway, resumeChatScrollFollow]);
+  // Gesture sources. Direction matters, not just "something happened": an
+  // upward gesture is an immediate, unconditional takeover, while a downward one
+  // is what re-arms follow once the user reaches the bottom again. Scrollbar
+  // drags are the one gesture whose direction we cannot read, so they only arm
+  // the window — the scrollTop-delta fallback detects the real upward move.
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
-    const markUserScrollIntent = () => {
-      userScrollIntentRef.current = true;
+    let touchLastY: number | null = null;
+    const onWheel = (e: WheelEvent) => { noteScrollGesture(wheelDirection(e.deltaX, e.deltaY)); };
+    const onTouchStart = (e: TouchEvent) => {
+      touchLastY = e.touches[0]?.clientY ?? null;
+      gestureUntilRef.current = performance.now() + GESTURE_WINDOW_MS;
     };
-    const onScroll = () => {
-      syncChatBottomState({ fromProgrammatic: isProgrammaticScrollRef.current });
+    const onTouchMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY;
+      if (y == null) return;
+      const dir = touchDirection(touchLastY, y);
+      touchLastY = y;
+      noteScrollGesture(dir);
     };
-    el.addEventListener('wheel', markUserScrollIntent, { passive: true });
-    el.addEventListener('touchmove', markUserScrollIntent, { passive: true });
+    const onTouchEnd = () => { touchLastY = null; };
+    // Bound on document: the scroll container itself is not focusable, so a
+    // container-level keydown would never fire — PageUp/Home are exactly the
+    // keys a keyboard user scrolls the transcript with.
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+      noteScrollGesture(keyDirection(e.key));
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      const rect = el.getBoundingClientRect();
+      if (e.clientX - rect.left < el.clientWidth) return; // content, not the gutter
+      gestureUntilRef.current = performance.now() + GESTURE_WINDOW_MS;
+    };
+    const onScroll = () => { syncChatBottomState(); };
+    el.addEventListener('wheel', onWheel, { passive: true });
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: true });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('pointerdown', onPointerDown, { passive: true });
     el.addEventListener('scroll', onScroll, { passive: true });
-    // Virtualizer totalSize / streaming height changes don't always fire scroll.
+    document.addEventListener('keydown', onKeyDown);
+    // The container's own box changes when the jump-button row appears/disappears
+    // or the right panel resizes the column — re-evaluate state rather than assume.
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => syncChatBottomState()) : null;
     ro?.observe(el);
     lastChatScrollTopRef.current = el.scrollTop;
     syncChatBottomState();
     return () => {
-      el.removeEventListener('wheel', markUserScrollIntent);
-      el.removeEventListener('touchmove', markUserScrollIntent);
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('pointerdown', onPointerDown);
       el.removeEventListener('scroll', onScroll);
+      document.removeEventListener('keydown', onKeyDown);
       ro?.disconnect();
     };
-  }, [mobileLayer, syncChatBottomState]);
+  }, [mobileLayer, syncChatBottomState, noteScrollGesture]);
 
   // visibleMessages + virtualizer must be declared before scrollChatToBottom.
   // Unread notify_user items are shown as bottom cards — suppress the duplicate bubble
@@ -1558,12 +1650,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // not-yet-measured items above the viewport stays stable.
   chatVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
     if (isVirtualScrollAdjustSuppressed()) return false;
-    // While the user is reading earlier content (scroll-intent detected, or
-    // already pinned away), do NOT let the virtualizer compensate scroll when
-    // a streaming bubble's height changes mid-flight. That compensation pulls
-    // the viewport back toward the growing bubble and fights the user's own
-    // scrolling — the "jitter/flicker" when scrolling up during streaming.
-    if (userScrollIntentRef.current || userPinnedAwayRef.current) return false;
+    // While the user owns the viewport (taken over, or mid-gesture), do NOT let
+    // the virtualizer compensate scroll when a streaming bubble's height changes
+    // mid-flight. That compensation is a second, independent force pulling the
+    // viewport back toward the growing bubble and fighting the user's gesture.
+    // Keyed on the *takeover* flag (sticky) rather than a per-event intent flag
+    // (which any programmatic path could clear) so the suppression cannot lapse
+    // for a frame in the middle of a drag.
+    if (userTakeoverRef.current || gestureActive()) return false;
     return item.start < (instance.scrollOffset ?? 0);
   };
 
@@ -1573,64 +1667,101 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // cached sizes back to estimateSize(72px), causing severe overlap artifacts.
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'instant') => {
-    // Never reclaim the viewport while the user is reading earlier content.
-    // Also honor the wheel/touch scroll-intent marker: during the window where
-    // the user is actively hand-scrolling (before the scroll event settles into
-    // userPinnedAway), programmatic snaps must not fight the gesture.
-    if (!userAtBottomRef.current || userPinnedAwayRef.current || userScrollIntentRef.current) return;
+    // Never reclaim the viewport while the user owns it, nor while an explicit
+    // smooth jump is still animating (the per-frame instant follow would cut it
+    // short on the very next streamed token).
+    if (!mayFollow()) return;
+    if (performance.now() < smoothUntilRef.current) return;
+    const el = chatScrollRef.current;
+    if (!el) return;
 
     const gen = ++scrollFollowGenRef.current;
-    isProgrammaticScrollRef.current = true;
-    const stillFollowing = () =>
-      gen === scrollFollowGenRef.current
-      && userAtBottomRef.current
-      && !userPinnedAwayRef.current;
+    const stillFollowing = () => gen === scrollFollowGenRef.current && mayFollow();
 
-    const finish = () => {
-      if (gen !== scrollFollowGenRef.current) return;
-      isProgrammaticScrollRef.current = false;
+    if (behavior === 'smooth') {
+      smoothUntilRef.current = performance.now() + SMOOTH_JUMP_MS;
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      return;
+    }
+
+    if (followRafRef.current !== null) {
+      cancelAnimationFrame(followRafRef.current);
+      followRafRef.current = null;
+    }
+    isProgrammaticScrollRef.current = true;
+    let frames = 0;
+    // Deliberately a direct DOM write, NOT chatVirtualizer.scrollToIndex(): a
+    // scrollToIndex arms virtual-core's own persistent reconcile loop, which
+    // then force-scrolls to the bottom every frame while a reply streams and
+    // cannot be cancelled from here. See the block comment above the follow refs.
+    const settle = () => {
+      followRafRef.current = null;
       if (!stillFollowing()) {
-        syncChatBottomState();
+        isProgrammaticScrollRef.current = false;
         return;
       }
-      // Confirm from DOM instead of forcing stickiness — residual virtualizer
-      // gaps shouldn't re-pin the user if they already scrolled away.
-      const el = chatScrollRef.current;
-      if (el) {
-        lastChatScrollTopRef.current = el.scrollTop;
-        const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-        if (distance < 160 && !userPinnedAwayRef.current) {
-          resumeChatScrollFollow();
-          setShowScrollBtn(false);
-          newMsgCountRef.current = 0;
-          setNewMsgCount(0);
-        }
+      el.scrollTop = el.scrollHeight;
+      frames += 1;
+      if (frames < SETTLE_MAX_FRAMES && distanceFromBottom(el) > 1) {
+        followRafRef.current = requestAnimationFrame(settle);
+        return;
       }
-      requestAnimationFrame(() => {
-        if (gen === scrollFollowGenRef.current) {
-          syncChatBottomState({ fromProgrammatic: true });
-        }
-      });
+      isProgrammaticScrollRef.current = false;
     };
-    if (visibleMessages.length > 0) {
-      chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior });
-      // Re-scroll after virtualizer measures actual item sizes
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (!stillFollowing()) {
-            if (gen === scrollFollowGenRef.current) isProgrammaticScrollRef.current = false;
-            return;
-          }
-          chatVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: 'end', behavior: 'instant' });
-          requestAnimationFrame(finish);
-        });
-      });
-    } else {
-      const el = chatScrollRef.current;
-      if (el) el.scrollTo({ top: el.scrollHeight, behavior });
-      requestAnimationFrame(finish);
-    }
-  }, [visibleMessages.length, chatVirtualizer, syncChatBottomState, resumeChatScrollFollow]);
+    el.scrollTop = el.scrollHeight;
+    followRafRef.current = requestAnimationFrame(settle);
+  }, [mayFollow]);
+
+  // ── Find in this conversation ────────────────────────────────────────────
+  // Instant, client-side, over the loaded transcript of the OPEN session. See
+  // lib/chatSearch.ts for why this is deliberately not the server-side search.
+  const findOutcome = useMemo(
+    () => searchChatHistory(visibleMessages, findQuery),
+    [visibleMessages, findQuery],
+  );
+
+  // A new query is a new result set — don't leave a stale cursor pointing at an
+  // unrelated hit (the arrow keys would then "continue" from the wrong place).
+  useEffect(() => { setFindCursor(-1); }, [findQuery]);
+
+  const jumpToFindMatch = useCallback((index: number) => {
+    const match = findOutcome.matches[index];
+    if (!match) return;
+    setFindCursor(index);
+    // Jumping somewhere else IS the user taking control: without this the
+    // streaming follow would immediately snap back to the bottom and the hit
+    // would scroll away again.
+    pinChatScrollAway();
+    chatVirtualizer.scrollToIndex(match.messageIndex, { align: 'center' });
+    // The row may not be mounted yet (virtualized), so give the flash a few
+    // frames to find it before giving up — a miss just means no highlight.
+    let tries = 0;
+    const flash = () => {
+      const node = document.getElementById(`msg-${match.messageId}`);
+      if (node) {
+        node.classList.add('chat-find-hit');
+        window.setTimeout(() => node.classList.remove('chat-find-hit'), 1600);
+        return;
+      }
+      if (tries < 8) { tries += 1; requestAnimationFrame(flash); }
+    };
+    requestAnimationFrame(flash);
+  }, [findOutcome.matches, chatVirtualizer, pinChatScrollAway]);
+
+  // Ctrl/Cmd+F opens find-in-conversation while the chat tab is showing — the
+  // convention in every chat client, and the only discoverable entry point on
+  // mobile. Native browser find is not useful inside the Electron shell here.
+  useEffect(() => {
+    if (mainTab !== 'chat' || previewMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== 'f') return;
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      e.preventDefault();
+      setFindOpen(true);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [mainTab, previewMode]);
 
   // ── Preserve scroll position across page-level navigation ──
   // PageSlot now uses visibility:hidden + position:absolute instead of
@@ -1654,12 +1785,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       return;
     }
     if (!isActiveRef.current) return;
-    if (!userAtBottomRef.current || userPinnedAwayRef.current) return;
+    if (!mayFollow()) return;
     // Expanding/collapsing a tool row temporarily owns scroll anchoring —
     // don't yank back to bottom while that suppression window is open.
     if (isVirtualScrollAdjustSuppressed()) return;
     scrollChatToBottom();
-  }, [messages, scrollChatToBottom, chatVirtualizer]);
+  }, [messages, scrollChatToBottom, mayFollow]);
 
   const prevMainTabRef = useRef(mainTab);
   useEffect(() => {
@@ -1674,7 +1805,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // visible container and brings the in-progress message back into view.
     // Only reclaim the viewport if the user was already following the latest
     // output — don't override a deliberate scroll-away while streaming.
-    if (mainTab === 'chat' && wasProfile && userAtBottomRef.current && !userPinnedAwayRef.current) {
+    if (mainTab === 'chat' && wasProfile && mayFollow()) {
       const timers: Array<ReturnType<typeof setTimeout>> = [];
       const raf = requestAnimationFrame(() => scrollChatToBottom('instant'));
       for (const delay of [60, 160, 320]) {
@@ -1682,7 +1813,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       }
       return () => { cancelAnimationFrame(raf); for (const t of timers) clearTimeout(t); };
     }
-  }, [mainTab, sending, scrollChatToBottom]);
+  }, [mainTab, sending, scrollChatToBottom, mayFollow]);
 
   // 右侧栏（chatRightReserve）开/关导致聊天区宽度变化：若用户本就在底部，
   // 重新贴底，避免因宽度变化导致内容上下跳动。
@@ -1692,14 +1823,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     prevChatRightReserveRef.current = chatRightReserve;
     if (mainTab !== 'chat') return;
     if (visibleMessages.length === 0 || sending || loadingChat) return;
-    if (!userAtBottomRef.current || userPinnedAwayRef.current) return;
+    if (!mayFollow()) return;
     const timers: Array<ReturnType<typeof setTimeout>> = [];
     const raf = requestAnimationFrame(() => scrollChatToBottom('instant'));
     for (const delay of [60, 160, 320]) {
       timers.push(setTimeout(() => scrollChatToBottom('instant'), delay));
     }
     return () => { cancelAnimationFrame(raf); for (const t of timers) clearTimeout(t); };
-  }, [chatRightReserve, mainTab, visibleMessages.length, sending, loadingChat, scrollChatToBottom]);
+  }, [chatRightReserve, mainTab, visibleMessages.length, sending, loadingChat, scrollChatToBottom, mayFollow]);
 
   // Load channel messages from DB → store in buffer + update display
   // `quiet` skips the loading spinner — used by the WS reconnect catch-up so
@@ -1910,6 +2041,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setShowScrollBtn(false);
       newMsgCountRef.current = 0;
       setNewMsgCount(0);
+      // A different conversation means a different transcript — the previous
+      // session's hits must not linger as a stale result set.
+      setFindOpen(false);
+      setFindQuery('');
+      setFindCursor(-1);
     }
 
     // Restore displayed state from this conv's buffer
@@ -2117,8 +2253,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       // (reconnect catch-up + late WS events must not duplicate history).
       updateConvMsgs(key, prev => insertChatMsgByCreatedAt(prev, newMsg));
 
-      // Track new messages arriving while user is scrolled up
-      if (key === currentConvKeyRef.current && !userAtBottomRef.current) {
+      // Track new messages arriving while the user owns the viewport
+      if (key === currentConvKeyRef.current && userTakeoverRef.current) {
         newMsgCountRef.current += 1;
         setNewMsgCount(newMsgCountRef.current);
         setShowScrollBtn(true);
@@ -3390,7 +3526,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         {agentUnread > 0 ? (
                           <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{agentUnread}</span>
                         ) : (
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${agent.status === 'idle' ? 'bg-green-500' : agent.status === 'working' ? 'bg-blue-500' : 'bg-gray-400'}`} />
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${resolveAgentStatus(agent.status, chatStore.isAgentStreaming(agent.id)).dotClass}`} />
                         )}
                       </button>
                     );
@@ -3698,6 +3834,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
                 {/* Right side buttons */}
                 <div data-no-drag className="ml-auto flex items-center gap-2 shrink-0">
+                  {/* Find in THIS session (local, instant, jumps the transcript).
+                      Separate from the global search below, which queries the
+                      server across every conversation. */}
+                  <button
+                    onClick={() => { setFindOpen(o => !o); if (findOpen) setFindCursor(-1); }}
+                    className={`p-1.5 rounded-md transition-colors ${findOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
+                    title={`${t('page.findInConversationHint')} (${formatShortcutKeys(['F'], isMac)})`}
+                    data-testid="find-in-conversation-btn"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M8 6h11M8 12h11M8 18h6" />
+                      <circle cx="17.5" cy="17.5" r="3.5" />
+                      <path strokeLinecap="round" d="M20.5 20.5L22 22" />
+                    </svg>
+                  </button>
                   <button
                     onClick={() => { setSearchOpen(!searchOpen); if (!searchOpen) { setSearchQuery(''); setSearchResults([]); } }}
                     className={`p-1.5 rounded-md transition-colors ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
@@ -3867,6 +4018,31 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
             );
           })()}
+
+          {/* Find-in-conversation — sits directly above the transcript so it owns
+              the list the user is searching. */}
+          {findOpen && mainTab === 'chat' && (
+            <ChatHistorySearch
+              query={findQuery}
+              onQueryChange={setFindQuery}
+              matches={findOutcome.matches}
+              cursor={findCursor}
+              scanned={findOutcome.scanned}
+              truncated={findOutcome.truncated}
+              hasMore={hasMore}
+              loadingMore={loadingMore}
+              onLoadEarlier={() => { void loadMore(); }}
+              onJump={jumpToFindMatch}
+              onClose={() => { setFindOpen(false); setFindCursor(-1); }}
+              labelFor={(m) => {
+                const msg = visibleMessages[m.messageIndex];
+                if (!msg) return '';
+                const who = msg.sender === 'user' ? t('page.you', { defaultValue: '你' }) : (msg.agentName ?? '');
+                const when = msg.rawCreatedAt ? formatSmartTime(msg.time, msg.rawCreatedAt, dateLabels) : msg.time;
+                return [who, when].filter(Boolean).join(' · ');
+              }}
+            />
+          )}
           {chatMode === 'direct' && mainTab === 'chat'
             && (openSessionTabs.find(s => s.id === activeSessionId) ?? sessions.find(s => s.id === activeSessionId))
               ?.metadata?.kind === 'evolution' && (
@@ -4322,11 +4498,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex justify-center`}>
                 <button
                   onClick={() => {
+                    // Explicit jump = the user handing the viewport back.
                     resumeChatScrollFollow();
                     scrollChatToBottom('smooth');
-                    setShowScrollBtn(false);
-                    newMsgCountRef.current = 0;
-                    setNewMsgCount(0);
                   }}
                   className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/95 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary"
                 >
@@ -4818,9 +4992,16 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
   // 进程状态的呈现全部走共享表（与 Agent 资料页同一张）。原来的本地推导没有
   // offline 分支，停止后的 agent 会落进默认的绿色「空闲」——状态说它空闲（即在跑），
   // 可它已经被停掉了。
-  const status = agentStatusPresentation(agent.status);
-  const isWorking = status.running && (agent.status === 'working' || (!!streamActive && agent.status !== 'offline'));
-  const isError = agent.status === 'error';
+  //
+  // 第二个坑：`agent.status` 与「此刻是否正在流式回复」是两个时钟。服务端只在它
+  // 自己认识的长期任务上才把进程状态翻到 working，聊天回复期间往往一直是 idle；
+  // 客户端却立刻知道流已经打开（chatStore）。所以只按 agent.status 推导时，同一个
+  // agent 在同一瞬间会出现「L1 侧栏说工作中、聊天头部说空闲」。这里统一走
+  // resolveAgentStatus，把本地流式标记也算进去——头部与侧栏从此同一个判据。
+  const streamingHere = useAgentStreaming(agent.id);
+  const status = resolveAgentStatus(agent.status, streamingHere || !!streamActive);
+  const isWorking = status.tone === 'busy';
+  const isError = status.tone === 'danger';
   // 未在运行（offline / paused）：不能拿它去展示「当前活动」。
   const isStopped = !status.running;
   const currentTask = isWorking ? tasks.find(t => t.assignedAgentId === agent.id && t.status === 'in_progress') : null;

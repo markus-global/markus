@@ -172,6 +172,36 @@ export function agentStatusPresentation(status: string | null | undefined): Agen
   return { ...STATUS_TABLE.offline!, labelKey: null };
 }
 
+/** The presentation shown while an agent is actively producing output. */
+export const WORKING_STATUS: AgentStatusPresentation = STATUS_TABLE.working!;
+
+/**
+ * Effective presentation for an agent, folding in a *streaming* signal.
+ *
+ * `agent.status` and "is this agent streaming a reply right now" are two
+ * different clocks. The server only flips the process status to `working` for
+ * long-running work it knows about, and it lags a chat reply (often staying
+ * `idle` for the whole answer); the client, meanwhile, knows the instant a
+ * stream opens (chatStore). Deriving the chat-header chip from `agent.status`
+ * alone therefore made the header claim "空闲" while the L1 sidebar — which did
+ * fold in the streaming set — said "工作中", for the same agent at the same
+ * instant. Every surface now goes through this one resolver.
+ *
+ * Authoritative stop still wins: an offline / paused agent can never be busy,
+ * even if a stale streaming mark survived a missed endStream. Likewise an agent
+ * in `error` keeps its red chip — "it crashed" is more useful than "it's busy".
+ */
+export function resolveAgentStatus(
+  status: string | null | undefined,
+  streaming: boolean,
+): AgentStatusPresentation {
+  const base = agentStatusPresentation(status);
+  if (!streaming) return base;
+  // Not running (offline / paused), or already carrying a stronger signal.
+  if (!base.running || base.tone === 'danger' || base.tone === 'busy') return base;
+  return WORKING_STATUS;
+}
+
 // ─── Recent activity rows ────────────────────────────────────────────────────
 
 /**

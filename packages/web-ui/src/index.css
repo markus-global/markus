@@ -578,6 +578,18 @@ html.electron-darwin .electron-mac-top-safe {
   min-height: 2.5rem;
 }
 
+/* Find-in-conversation: the bubble the current hit landed on flashes so the eye
+   can pick it out of a long transcript. Applied imperatively (classList) because
+the target row is inside the virtualized list's React tree — see jumpToFindMatch. */
+@keyframes chatFindHit {
+  0% { background-color: rgb(250 204 21 / 0.28); box-shadow: 0 0 0 2px rgb(250 204 21 / 0.45); }
+  100% { background-color: transparent; box-shadow: 0 0 0 2px transparent; }
+}
+.chat-find-hit {
+  animation: chatFindHit 1.6s ease-out both;
+  border-radius: 0.5rem;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }

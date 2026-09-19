@@ -14,6 +14,7 @@ import {
   visibleStorageBuckets,
   storageBucketLabelKey,
   agentStatusPresentation,
+  resolveAgentStatus,
   recentActivityRows,
   splitRecentActivity,
   RECENT_ACTIVITY_FETCH_LIMIT,
@@ -347,5 +348,42 @@ describe('deliverableClickTarget', () => {
 
   it('routes to the right panel when a host exists (desktop)', () => {
     expect(deliverableClickTarget(true)).toBe('right-panel');
+  });
+});
+
+describe('resolveAgentStatus', () => {
+  it('reports an agent that is streaming as working even when the process says idle', () => {
+    // The reported defect: the chat header chip said 空闲 while L1 said 工作中 for
+    // the same agent at the same instant. `agent.status` lags a chat reply (the
+    // server often keeps it `idle` for the whole answer) while the client knows
+    // the stream is open — so the chip must fold the streaming signal in.
+    const streaming = resolveAgentStatus('idle', true);
+    expect(streaming.tone).toBe('busy');
+    expect(streaming.labelKey).toBe('common:status.working');
+    expect(streaming).toEqual(agentStatusPresentation('working'));
+  });
+
+  it('never lets a stale streaming mark override an authoritative stop', () => {
+    // A missed endStream pair used to be able to leave the frontend refcount set.
+    // "stopped" is the server's answer and must win.
+    expect(resolveAgentStatus('offline', true).labelKey).toBe('common:status.offline');
+    expect(resolveAgentStatus('offline', true).running).toBe(false);
+    expect(resolveAgentStatus('paused', true).labelKey).toBe('common:status.paused');
+  });
+
+  it('keeps the red error chip: a crash outranks "busy"', () => {
+    expect(resolveAgentStatus('error', true).tone).toBe('danger');
+    expect(resolveAgentStatus('error', true).labelKey).toBe('common:status.error');
+  });
+
+  it('is a no-op when nothing is streaming', () => {
+    for (const s of ['idle', 'working', 'error', 'offline', 'paused', undefined]) {
+      expect(resolveAgentStatus(s, false), String(s)).toEqual(agentStatusPresentation(s));
+    }
+  });
+
+  it('keeps an already-working agent working (no flicker back to idle)', () => {
+    expect(resolveAgentStatus('working', true)).toEqual(agentStatusPresentation('working'));
+    expect(resolveAgentStatus('working', false).tone).toBe('busy');
   });
 });

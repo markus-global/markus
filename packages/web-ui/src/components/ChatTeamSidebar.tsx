@@ -20,6 +20,7 @@ import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { teamChannelKey } from '../lib/mobileTeamNav.ts';
 import { useChatStore, chatStore } from '../pages/useChatStore.ts';
+import { resolveAgentStatus } from '../lib/agentOverview.ts';
 import { stripThinkingBlocks } from '../pages/ChatHelpers.ts';
 
 // Module-level cache so last-message previews survive unmount/remount cycles on mobile
@@ -665,14 +666,14 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     const isStopped = a.status === 'offline';
     // Busy = backend says working, OR this client has an in-flight streaming
     // reply for the agent (a streamed response can outlive status → idle).
-    // Matches AgentStatusBadge's streamActive logic so header + sidebar agree.
+    // Routed through the SAME resolver the chat header badge uses — two local
+    // derivations is exactly how the header ended up saying 空闲 while this
+    // sidebar said 工作中 for the same agent at the same instant.
     // NOTE: an agent that is offline CANNOT be streaming — authoritative stop
     // must always win over a stale frontend refcount (missed endStream pair).
-    const isBusy = !isStopped && (streamingAgents.has(a.id) || a.status === 'working');
-    const statusColor = isBusy ? 'bg-blue-500 animate-pulse'
-      : a.status === 'error' ? 'bg-red-500'
-      : isStopped ? 'bg-gray-600'
-      : 'bg-green-500';
+    const statusPres = resolveAgentStatus(a.status, !isStopped && streamingAgents.has(a.id));
+    const isBusy = statusPres.tone === 'busy';
+    const statusColor = statusPres.dotClass;
 
     const team = teamId ? teamMap.get(teamId) : undefined;
     const isManager = team?.managerId === a.id;
