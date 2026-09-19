@@ -384,6 +384,77 @@ export function RememberModal({
   );
 }
 
+// ─── sentence healing ────────────────────────────────────────────────────────
+//
+// 一轮回复里，正文经常被拆成多段（每个工具调用开始时就 flush 一次 textBuf，见
+// org-manager/src/sse-handler.ts），而模型分步输出时也确实会出现「这句话还没写完
+// 就先去调工具，下一步再接着写」。渲染层如果照原样平铺，就会出现用户看到的
+// 「正文半句 → 工具行 → 剩下半句」。
+//
+// 这里做的是**最小改动**的愈合，刻意不做「把所有正文合成一块」：
+//   • 过程行（思考 / 工具）一律保留、顺序不变 —— 用户仍能看到完整的
+//     思考 → 正文 → 执行 → 思考 过程；
+//   • 只有当一段正文**明显是上一句的续写**（上一段没有句末标点、本段也不是新
+//     段落/新块级元素的开头）时，才把这半句接回上一段，
+//     并把夹在中间的过程行整体挪到「这句话说完之后」。
+// 于是：`[正文A][工具][正文B:续写]` → `[正文A+B][工具]`；
+//      而 `[正文A。][工具][正文B]` 保持原样，句子之间照样看得见工具行。
+
+/** 句末标点 —— 以它结尾的正文视为「这句话已经说完」。 */
+const SENTENCE_END_RE = /[.!?。！？…:：]\s*$|["'”’)\]}】》]\s*$|\n\s*$/;
+/** 新段落 / 块级元素的起始标记 —— 这类片段不该被接回上一句。 */
+const NEW_BLOCK_RE = /^(?:\n|#{1,6}[ \t]|[-*+][ \t]|\d+[.)][ \t]|>|\||```|~~~|---)/;
+
+/** B 是否只是 A 的续写（同一句话被过程行切开）。 */
+export function isSentenceContinuation(a: string, b: string): boolean {
+  const prev = a.replace(/\s+$/, '');
+  if (!prev) return false;
+  if (SENTENCE_END_RE.test(a)) return false; // A 已经说完
+  if (!b.trim()) return false;
+  if (NEW_BLOCK_RE.test(b)) return false; // B 是新段落
+  return true;
+}
+
+/** 拼接两块正文：尊重已有的空白；拉丁字母交界补空格，中日韩交界不补。 */
+export function joinProse(a: string, b: string): string {
+  if (/\s$/.test(a) || /^\s/.test(b)) return a + b;
+  return /[A-Za-z0-9]$/.test(a) && /^[A-Za-z0-9]/.test(b) ? `${a} ${b}` : a + b;
+}
+
+export function healSentenceSplits(entries: ExecutionStreamEntryUI[]): ExecutionStreamEntryUI[] {
+  const isProcess = (e: ExecutionStreamEntryUI) => e.type !== 'text' || e.metadata?.isThinking === true;
+  const out: ExecutionStreamEntryUI[] = [];
+  let pending: ExecutionStreamEntryUI[] = [];
+  let lastText = -1;
+
+  for (const entry of entries) {
+    if (isProcess(entry)) {
+      pending.push(entry);
+      continue;
+    }
+    const prev = lastText >= 0 ? out[lastText] : undefined;
+    if (
+      prev
+      && pending.length > 0
+      && entry.metadata?.paragraphBreak !== true
+      && isSentenceContinuation(prev.content, entry.content)
+    ) {
+      prev.content = joinProse(prev.content, entry.content);
+      out.push(...pending); // 过程行挪到这句话说完之后
+      pending = [];
+      continue;
+    }
+    if (pending.length > 0) {
+      out.push(...pending);
+      pending = [];
+    }
+    out.push(entry);
+    lastText = out.length - 1;
+  }
+  if (pending.length > 0) out.push(...pending);
+  return out;
+}
+
 // ─── segmentsToStreamEntries ──────────────────────────────────────────────────
 
 export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?: string, msgTime?: string): ExecutionStreamEntryUI[] {
@@ -433,11 +504,15 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
   };
 
   const emitText = () => {
-    const t = textBuf.trim();
+    const raw = textBuf;
+    const t = raw.trim();
     if (t) {
       entries.push({
         id: `cseg_${seq}`, sourceType: 'chat', sourceId: '', agentId: aid,
         seq: seq++, type: 'text', content: t, createdAt: currentSegTimestamp,
+        // 原始分段以空行开头 = 模型自己就是另起一段。`trim()` 会把这个信号抹掉，
+        // 所以在这里先记下来：healSentenceSplits 靠它决定这段能不能接上一句。
+        ...(/^\s*\n/.test(raw) ? { metadata: { paragraphBreak: true } } : {}),
       });
     }
     textBuf = '';
@@ -528,7 +603,8 @@ export function segmentsToStreamEntries(segments: ChatMsg['segments'], agentId?:
   // Always flush remaining plain text — even after a legacy unclosed marker,
   // the tail must not be dropped (the marker branch never feeds thinkBuf).
   emitText();
-  return entries;
+  // 最后一道：把被过程行切成两半的句子接回去（顺序、过程行都保留，见 healSentenceSplits）。
+  return healSentenceSplits(entries);
 }
 
 // ─── AgentMessageBody ─────────────────────────────────────────────────────────
