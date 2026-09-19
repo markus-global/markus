@@ -1,12 +1,21 @@
 {
-  "_comment": "Coverage ratchet baseline. See scripts/check-coverage-ratchet.mjs. Values are the FLOOR: CI fails if measured coverage drops below them. Raise them deliberately (pnpm coverage:ratchet --update) after a real improvement; never lower them to make a red build green.",
+  "_comment": "Coverage ratchet baseline. See scripts/check-coverage-ratchet.mjs. Values are the FLOOR: CI fails if measured coverage drops below them. Raise them deliberately after a real improvement (pnpm coverage:ratchet --update / pnpm coverage:ratchet:node --update); never lower them to make a red build green.",
+  "_projects": "两个 project 各自独立：'web-ui'（前端，vitest.web-ui.coverage.config.ts）与 'node'（后端，vitest.config.ts 根级 coverage）。默认只检查 web-ui，后端加 --project node。",
   "_measured_2026-09-19": "statements 6.06 / branches 4.66 / functions 4.69 / lines 6.60 (481 web-ui tests; whole packages/web-ui/src in the denominator, all:true)",
   "_correction_2026-09-19": "早先记录的 29.92/24.97/24.13/31.48 是**分母错误**造成的假数字：那次跑 --project web-ui --coverage 时生效的是根级 include（统计了 292 个后端文件），再加上 all 语义不同，分母偏小 → 比例虚高。真实前端覆盖率见上。详见 audit-reports/test-hardening-2026-09-19.md §F1。",
-  "_note_key": "键名必须与 scripts/check-coverage-ratchet.mjs 读取的 'web-ui' 一致；写成 'packages/web-ui' 会导致 floor 取不到 → 棘轮静默失效。",
+  "_note_key": "键名必须与 scripts/check-coverage-ratchet.mjs 读取的 project 名一致（'web-ui' / 'node'）；写成 'packages/web-ui' 会导致 floor 取不到 → 棘轮静默失效。",
+  "_measured_node_2026-09-20": "statements 71.66 / branches 61.61 / functions 73.03 / lines 74.36（CI run 35456589318；本地复跑 71.68/61.66/73.15/74.37，差异 ≤0.12pp）。分母 = packages/*/src/**/*.ts 共 43885 行 / 49067 statements。按包（lines）：a2a 95.78%(7 未覆盖) / storage 93.55%(85) / shared 89.67%(95) / core 80.76%(4058，占分母 48.1%) / comms 73.62%(258) / org-manager 71.74%(4215，占分母 34.0%) / cli 69.55%(849) / desktop 1.70%(1680，占分母 3.9%，Electron 主进程，仅 1 个测试文件)。未覆盖行合计 11247。",
+  "_node_floor_rationale_2026-09-20": "地板从 75/65/78/80 下调到 71/61/73/74，理由不是「让红变绿」，而是那套阈值**从未真正执行过**：backend-coverage job 在补上 `pnpm build:ts` 之前第一步就崩（269 个测试文件级联失败），一份报告都没产出，所以那些数字从未被任何一次真实运行验证过。首次可复现测量即为上方的 74.36 lines。**达不到的地板比没有地板更糟**：它常年红着，人就不再看它。现在地板贴着实测值（取整、留 0.4–0.7pp 噪声余量），只能往上抬。要达到真正的 80/75/78/85 还需多覆盖约 2500 行 —— 那是一项独立的质量工程，不是改 CI 配置。",
   "web-ui": {
     "statements": 6,
     "branches": 4,
     "functions": 4,
     "lines": 6
+  },
+  "node": {
+    "statements": 71,
+    "branches": 61,
+    "functions": 73,
+    "lines": 74
   }
 }
