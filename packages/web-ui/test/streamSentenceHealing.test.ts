@@ -118,10 +118,14 @@ describe('句子愈合：正文不被过程行切开', () => {
     }
   });
 
-  it('中日韩续写不补空格，拉丁字母交界补空格', async () => {
+  it('拼接只补原文确实存在的空白，不按字符类型猜', async () => {
     const { joinProse, isSentenceContinuation } = await import('../src/pages/ChatComponents.tsx');
     expect(joinProse('我先看一下代码', '找到问题了')).toBe('我先看一下代码找到问题了');
-    expect(joinProse('correcting my', 'test expectations.')).toBe('correcting my test expectations.');
+    // 原文此处没有空白 → 原样相接。（曾被误接成 "w ith" 的就是这一类：分段点在
+    // token 边界，而 token 会在词中间断开。）
+    expect(joinProse('correcting my', 'test expectations.')).toBe('correcting mytest expectations.');
+    // 原文本来有空白、被 trim() 抹掉了 → 补回来（靠 metadata 记账，不靠猜）
+    expect(joinProse('correcting my', 'test expectations.', { spaceNeeded: true })).toBe('correcting my test expectations.');
     expect(joinProse('correcting my ', 'test')).toBe('correcting my test');
     expect(isSentenceContinuation('已经写完了。', '下一句')).toBe(false);
     expect(isSentenceContinuation('还没写', '完的半句')).toBe(true);

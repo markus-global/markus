@@ -89,7 +89,7 @@ describe('AgentMessageBody live streaming bubble', () => {
     expect(html).not.toContain('内心独白内容');
   });
 
-  it('surfaces reasoning as a thinking row once a tool row exists', async () => {
+  it('reasoning + tools collapse into one process row; details are behind a click', async () => {
     const html = await render(
       {
         text: '答案',
@@ -101,8 +101,13 @@ describe('AgentMessageBody live streaming bubble', () => {
       },
       true,
     );
-    // The timeline renders a (collapsed) thinking row labelled execution.thinking.
-    expect(html).toContain('execution.thinking');
+    // 折叠行在，而且是个可展开的按钮（默认 aria-expanded=false）。
+    expect(html).toContain('execution.processRun.thinking');
+    expect(html).toContain('aria-expanded="false"');
+    // 默认收起：思考/工具明细不铺在气泡里，想看的人点开 —— 这正是「生成中与生成完
+    // 气泡一样长」的前提。明细本身由 groupProcessRuns 的单测保证不丢。
+    expect(html).not.toContain('内心独白内容');
+    // 正文照常显示。
     expect(html).toContain('答案');
   });
 });

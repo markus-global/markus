@@ -180,6 +180,15 @@
     "rejectionReasonPlaceholder": "拒绝原因…",
     "idPrefix": "ID：{{id}}…",
     "errorPrefix": "错误：",
+    "processRun": {
+      "label": "执行过程",
+      "thinking": "思考",
+      "tools_one": "{{count}} 个工具调用",
+      "tools_other": "{{count}} 个工具调用",
+      "subagents_one": "{{count}} 个子智能体",
+      "subagents_other": "{{count}} 个子智能体",
+      "runningTool": "正在运行 {{tool}}…"
+    },
     "tools": {
       "shell_execute": "执行命令",
       "file_read": "读取文件",

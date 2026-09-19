@@ -180,6 +180,15 @@
     "rejectionReasonPlaceholder": "Rejection reason...",
     "idPrefix": "ID: {{id}}...",
     "errorPrefix": "Error:",
+    "processRun": {
+      "label": "Process",
+      "thinking": "Thinking",
+      "tools_one": "{{count}} tool call",
+      "tools_other": "{{count}} tool calls",
+      "subagents_one": "{{count}} sub-agent",
+      "subagents_other": "{{count}} sub-agents",
+      "runningTool": "Running {{tool}}..."
+    },
     "tools": {
       "shell_execute": "Running command",
       "file_read": "Reading file",
