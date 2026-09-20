@@ -419,7 +419,18 @@
     "projectsCountLabel_one": "{{count}} Proyecto",
     "projectsCountLabel_other": "{{count}} Proyectos",
     "noMatches": "No hay coincidencias",
-    "searchPlaceholder": "Tipo de búsqueda…"
+    "searchPlaceholder": "Tipo de búsqueda…",
+    "sendToChat": "Enviar al chat",
+    "sendToChatTitle": "Enviar al chat",
+    "sendToChatHint": "Elige una conversación: el requisito / tarea se añade como etiqueta de contexto sobre la entrada, y puedes añadir más antes de enviar.",
+    "sendToChatTarget": "Enviar a",
+    "sendToChatSearch": "Buscar agentes o miembros…",
+    "sendToChatAgents": "Agentes",
+    "sendToChatHumans": "Miembros",
+    "sendToChatContext": "Etiqueta de contexto a añadir",
+    "sendToChatEmpty": "Sin coincidencias",
+    "sendToChatNoTarget": "No hay nada disponible para enviar",
+    "sendToChatConfirm": "Enviar al chat"
   },
   "requirement": {
     "requirements": "Requisitos",

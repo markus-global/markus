@@ -165,7 +165,8 @@
       "reasoning": "Razonamiento",
       "caching": "Caching",
       "search": "Buscar"
-    }
+    },
+    "useTyped": "Usar valor escrito"
   },
   "modelProviders": {
     "title": "Modelo Proveedores &amp; Precios",
@@ -515,7 +516,15 @@
     "extensionStep3": "Prórroga de carga",
     "extensionStep3Desc": "Activar \"Modo desarrollador\" (top right toggle), haga clic en \"Cargar desempaquetado\", y seleccione la carpeta extraída en el paso 1",
     "extensionDownloadError": "Failed para descargar extensión",
-    "extensionOpenError": "Failed para abrir Chrome extensiones página"
+    "extensionOpenError": "Failed para abrir Chrome extensiones página",
+    "elementSelectionTitle": "Selección de elementos",
+    "elementSelectionDesc": "Elige cómo deciden los agentes SOBRE QUÉ elemento actuar. Independiente del backend del navegador de arriba: ambos se combinan libremente.",
+    "elementSelectionDirect": "Directa",
+    "elementSelectionDirectDesc": "El modelo lee la instantánea de accesibilidad y elige el elemento por sí mismo. Opción por defecto; sirve para la mayoría de páginas.",
+    "elementSelectionJev": "Asistido por Jev",
+    "elementSelectionJevDesc": "El código enumera los elementos candidatos y un modelo de decisión los ordena. Más preciso y barato en páginas densas; se detiene a confirmar cuando duda en lugar de adivinar.",
+    "elementSelectionSwitchToDirect": "Cambiado a selección directa de elementos",
+    "elementSelectionSwitchToJev": "Cambiado a selección de elementos asistida por Jev"
   },
   "dataStorage": {
     "title": "Almacenamiento de datos",
@@ -909,5 +918,19 @@
     "modelGuidanceCursor": "Modelos disponibles en el Cursor CLI. Seleccione 'auto' para permitir que Cursor elija el mejor modelo automáticamente.",
     "modelGuidanceClaude": "Modelos estándar mostrados. Los modelos personalizados se pueden escribir manualmente.",
     "modelGuidanceCodex": "Modelos estándar mostrados. Los modelos personalizados se pueden escribir manualmente."
+  },
+  "concurrent": {
+    "title": "Procesamiento concurrente",
+    "description": "Permite que tu agente gestione varias conversaciones, tareas y mensajes a la vez con sesiones de trabajo aisladas. Cuando está desactivado, procesa estrictamente un elemento a la vez (serie).",
+    "enabled": "Activar procesamiento concurrente",
+    "enabledDesc": "Recomendado. Los agentes pueden procesar varios elementos independientes en paralelo; cada worker tiene estado de sesión aislado.",
+    "maxWorkers": "Máximo de workers",
+    "maxWorkersDesc": "De 1 (serie) a 10. Por defecto 3. Cada worker concurrente ejecuta su propio bucle de procesamiento, y este mismo número limita cuántas tareas pueden ejecutarse en paralelo (concurrencia de tareas = min(workers, límite de tareas por agente)). Valores más altos implican más llamadas a modelos en curso y mayor costo.",
+    "conflictPolicy": "Política de conflictos",
+    "conflictPolicyDesc": "Cómo gestiona el agente las situaciones de bloqueo de entidad solapadas/fallidas.",
+    "policyAuto": "Auto (recolocar en cola y reintentar)",
+    "policyReport": "Reportar al superior (escalar)",
+    "saved": "Guardado",
+    "failedToSave": "Error al guardar"
   }
 }

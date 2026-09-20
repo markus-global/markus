@@ -90,7 +90,17 @@
       "requirementsAction": "Pregunta al Secretario",
       "team": "Crear Tech Frontier Think Tank",
       "teamDesc": "Construir un think tank con 4 personas visionarias tecnológicas — Elon Musk, Steve Jobs, Sam Altman y Jensen Huang— para analizar las tendencias tecnológicas de vanguardia desde diferentes perspectivas",
-      "teamAction": "Crear ahora"
+      "teamAction": "Crear ahora",
+      "shortcuts": "Aprender atajos de teclado",
+      "shortcutsDesc": "Practica los atajos esenciales: navegación, alternar barras laterales, nueva conversación y cambio de pestañas",
+      "shortcutsAction": "Abrir lista de atajos"
+    },
+    "shortcutLesson": {
+      "title": "Lección de atajos de teclado",
+      "subtitle": "Pulsa cada atajo para marcarlo: complétalos todos para terminar este paso.",
+      "allDone": "¡Genial! Dominaste todos los atajos.",
+      "done": "Hecho",
+      "markAllLearned": "Ya los conozco — marcar como completados"
     }
   },
   "heroBanner": {
