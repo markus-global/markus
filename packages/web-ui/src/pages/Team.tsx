@@ -38,6 +38,16 @@ import {
   wheelDirection,
   type GestureDirection,
 } from '../lib/chatScrollFollow.ts';
+import {
+  captureChatScrollAnchor,
+  chatScrollMemory,
+  findRowTopInViewport,
+  readRenderedRowOffsets,
+  rowCorrection,
+  scrollMemoryKey,
+  isRestoreIntentStale,
+  type ScrollAnchor,
+} from '../lib/chatScrollRestore.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { renderMentionText } from '../components/CommentInput.tsx';
@@ -974,8 +984,38 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       bufMgr.setActiveSession(key, id);
     }
   }, [setActiveSessionId, bufMgr]);
-  /** When true, the next scroll-to-bottom effect is suppressed (used by loadMore) */
+  /**
+   * When true, the next scroll-to-bottom effect is suppressed (used by loadMore)
+   */
   const skipScrollRef = useRef(false);
+
+  // ── Per-view scroll memory wiring ──────────────────────────────────────────
+  // See lib/chatScrollRestore.ts for the contract. `activeScrollKeyRef` is the
+  // key of the view currently on screen — computed during render (not in an
+  // effect) so the restore chain can never compare against a key that is one
+  // commit stale during a switch.
+  const activeConvKey = useMemo(
+    () => makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId),
+    [chatMode, selectedAgent, activeChannel, activeDmUserId],
+  );
+  const activeScrollKey = useMemo(
+    () => scrollMemoryKey(activeConvKey, activeSessionId),
+    [activeConvKey, activeSessionId],
+  );
+  const activeScrollKeyRef = useRef(activeScrollKey);
+  activeScrollKeyRef.current = activeScrollKey;
+  /**
+   * Set while a view switch is waiting to be re-positioned. Held until the
+   * restore is honoured (or a user gesture / another switch supersedes it), so a
+   * slow DB load that outlives the retry window still lands correctly.
+   */
+  const pendingRestoreRef = useRef<{ key: string; anchor: ScrollAnchor; at: number } | null>(null);
+  /** Bumped to cancel an in-flight restore chain. */
+  const restoreGenRef = useRef(0);
+  const restoreTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const scrollCaptureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const visibleMessagesRef = useRef<ChatMsg[]>([]);
+  const loadingChatRef = useRef(false);
   /** Stable ref to loadMore for use in IntersectionObserver callback */
   const loadMoreRef = useRef<() => Promise<void>>(undefined);
   // Close history panel on click outside
@@ -1712,6 +1752,166 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     followRafRef.current = requestAnimationFrame(settle);
   }, [mayFollow]);
 
+  // ── Per-view scroll restore ──────────────────────────────────────────────
+  // One scroll container serves EVERY conversation and EVERY session tab, so
+  // entering a view has to put the viewport where that view was left. Two facts
+  // make that more than a single assignment:
+  //   • rows are measured lazily, so the target keeps moving for a few hundred ms
+  //     after a history loads (a one-shot write lands short of the real spot);
+  //   • the transcript can arrive after a DB round-trip — i.e. long after the
+  //     switch that asked for the restore.
+  // So a switch records an *intent* (`pendingRestoreRef`) which is re-applied
+  // across a short chain of passes, and the layout effect below re-kicks that
+  // chain whenever fresh content lands. A user gesture always cancels it.
+  // The decision logic lives in lib/chatScrollRestore.ts (pure, unit-tested).
+  const rememberScrollPosition = useCallback((key: string) => {
+    const el = chatScrollRef.current;
+    if (!el || !key) return;
+    // Nothing to remember for a transcript that already fits (and a detached or
+    // hidden container reports 0/0 — never record an anchor from those).
+    if (el.scrollHeight <= el.clientHeight) return;
+    chatScrollMemory.save(key, captureChatScrollAnchor(readRenderedRowOffsets(el), el));
+  }, []);
+
+  const cancelScrollRestore = useCallback(() => {
+    restoreGenRef.current += 1;
+    for (const timer of restoreTimersRef.current) clearTimeout(timer);
+    restoreTimersRef.current = [];
+  }, []);
+
+  /** One restore pass. `finalPass` releases the intent once the chain ends. */
+  const applyScrollRestore = useCallback((key: string, finalPass: boolean): boolean => {
+    const pending = pendingRestoreRef.current;
+    if (!pending || pending.key !== key) return true;
+    // The user moved the viewport, or we are no longer looking at this view:
+    // drop the intent rather than fight either of them.
+    if (gestureActive() || activeScrollKeyRef.current !== key) {
+      pendingRestoreRef.current = null;
+      return true;
+    }
+    if (isRestoreIntentStale(pending.at, performance.now())) {
+      pendingRestoreRef.current = null;
+      return true;
+    }
+    const el = chatScrollRef.current;
+    if (!el) return true;
+    const msgs = visibleMessagesRef.current;
+    // Transcript not here yet — stay pending; the layout effect re-kicks the
+    // chain the moment messages land.
+    if (msgs.length === 0 && loadingChatRef.current) return false;
+    // A row the user just expanded owns the anchoring window (see
+    // execution-utils.suppressVirtualScrollAdjust): never fight it, and release
+    // the intent once the chain is over so it cannot resurface later.
+    if (isVirtualScrollAdjustSuppressed()) {
+      if (finalPass) pendingRestoreRef.current = null;
+      return finalPass;
+    }
+
+    const { anchor } = pending;
+    if (anchor.kind === 'bottom' || msgs.length === 0) {
+      // No record for this view (first visit in this process) or the user left it
+      // glued to the newest output: hand the viewport back to the follow loop.
+      resumeChatScrollFollow();
+      el.scrollTop = el.scrollHeight;
+      if (finalPass) pendingRestoreRef.current = null;
+      return finalPass;
+    }
+
+    // A parked position means the user was NOT following: pin the viewport away
+    // so neither the follow loop nor a streaming bubble's height change drags it
+    // back down (and the jump affordance stays available).
+    pinChatScrollAway();
+    const top = findRowTopInViewport(el, anchor.id);
+    if (top !== null) {
+      const correction = rowCorrection(top, anchor.delta);
+      if (Math.abs(correction) > 1) el.scrollTop += correction;
+      if (finalPass) pendingRestoreRef.current = null;
+      return finalPass;
+    }
+    // The anchored row is not mounted yet: jump to the virtualizer's idea of its
+    // offset and let a later pass do the exact correction once it renders.
+    const index = msgs.findIndex(m => m.id === anchor.id);
+    if (index < 0) {
+      // Gone from this transcript (trimmed history / different revision) — the
+      // bottom beats guessing where the user was.
+      if (loadingChatRef.current) return false;
+      pendingRestoreRef.current = null;
+      resumeChatScrollFollow();
+      el.scrollTop = el.scrollHeight;
+      return true;
+    }
+    const offset = chatVirtualizer.getOffsetForIndex(index, 'start');
+    if (offset) el.scrollTop = offset[0] + anchor.delta;
+    return false;
+  }, [chatVirtualizer, gestureActive, pinChatScrollAway, resumeChatScrollFollow]);
+
+  /**
+   * Run the restore chain for the pending intent: a frame, then a widening set
+   * of delays. Cheap and idempotent — every pass re-derives the target from the
+   * anchor, so measurement drift is corrected instead of amplified.
+   */
+  const kickScrollRestore = useCallback(() => {
+    const pending = pendingRestoreRef.current;
+    if (!pending) return;
+    const key = pending.key;
+    cancelScrollRestore();
+    const gen = restoreGenRef.current;
+    const passes = [0, 60, 160, 320, 560, 900];
+    passes.forEach((delay, i) => {
+      const isLast = i === passes.length - 1;
+      const run = () => {
+        if (gen !== restoreGenRef.current) return;
+        applyScrollRestore(key, isLast);
+      };
+      if (delay === 0) requestAnimationFrame(run);
+      else restoreTimersRef.current.push(setTimeout(run, delay));
+    });
+  }, [applyScrollRestore, cancelScrollRestore]);
+
+  /**
+   * Point the next restore at `key`: the remembered position, or the bottom when
+   * this process holds no record for the view (the product rule — and the only
+   * thing that can happen after a restart, since the store is in-memory).
+   */
+  const scheduleScrollRestore = useCallback((key: string) => {
+    if (!key) return;
+    pendingRestoreRef.current = {
+      key,
+      anchor: chatScrollMemory.get(key) ?? { kind: 'bottom' },
+      at: performance.now(),
+    };
+    kickScrollRestore();
+  }, [kickScrollRestore]);
+
+  /**
+   * Debounced snapshot while the user scrolls. Switch paths capture exactly, but
+   * paths that merely HIDE the transcript (Profile tab, page navigation) have no
+   * such moment — and `display:none` clamps the container's scrollTop to 0, so
+   * the anchor has to already be stored when that happens.
+   */
+  const noteScrollPosition = useCallback(() => {
+    // Mid-restore positions are transient — recording them would overwrite the
+    // anchor we are still driving towards.
+    if (pendingRestoreRef.current) return;
+    if (scrollCaptureTimerRef.current !== null) clearTimeout(scrollCaptureTimerRef.current);
+    scrollCaptureTimerRef.current = setTimeout(() => {
+      scrollCaptureTimerRef.current = null;
+      rememberScrollPosition(activeScrollKeyRef.current);
+    }, 200);
+  }, [rememberScrollPosition]);
+
+  // Latest render values, read by the restore chain (which runs out of band).
+  visibleMessagesRef.current = visibleMessages;
+  loadingChatRef.current = loadingChat;
+
+  // On teardown: flush this view's position (the DOM is still mounted during a
+  // layout-effect cleanup) and stop any timer from firing against a dead tree.
+  useLayoutEffect(() => () => {
+    rememberScrollPosition(activeScrollKeyRef.current);
+    cancelScrollRestore();
+    if (scrollCaptureTimerRef.current !== null) clearTimeout(scrollCaptureTimerRef.current);
+  }, [rememberScrollPosition, cancelScrollRestore]);
+
   // ── Find in this conversation ────────────────────────────────────────────
   // Instant, client-side, over the loaded transcript of the OPEN session. See
   // lib/chatSearch.ts for why this is deliberately not the server-side search.
@@ -1785,12 +1985,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       return;
     }
     if (!isActiveRef.current) return;
+    // A view restore owns the viewport until it settles. Re-kick it here so
+    // content that arrives after the timer chain (a slow DB load) still lands on
+    // the remembered row instead of falling through to the bottom snap.
+    if (pendingRestoreRef.current) { kickScrollRestore(); return; }
     if (!mayFollow()) return;
     // Expanding/collapsing a tool row temporarily owns scroll anchoring —
     // don't yank back to bottom while that suppression window is open.
     if (isVirtualScrollAdjustSuppressed()) return;
     scrollChatToBottom();
-  }, [messages, scrollChatToBottom, mayFollow]);
+  }, [messages, scrollChatToBottom, mayFollow, kickScrollRestore]);
 
   const prevMainTabRef = useRef(mainTab);
   useEffect(() => {
@@ -1805,15 +2009,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // visible container and brings the in-progress message back into view.
     // Only reclaim the viewport if the user was already following the latest
     // output — don't override a deliberate scroll-away while streaming.
-    if (mainTab === 'chat' && wasProfile && mayFollow()) {
-      const timers: Array<ReturnType<typeof setTimeout>> = [];
-      const raf = requestAnimationFrame(() => scrollChatToBottom('instant'));
-      for (const delay of [60, 160, 320]) {
-        timers.push(setTimeout(() => scrollChatToBottom('instant'), delay));
-      }
-      return () => { cancelAnimationFrame(raf); for (const t of timers) clearTimeout(t); };
+    if (mainTab === 'chat' && wasProfile) {
+      // Coming back to the transcript: it was display:none while off-tab, which
+      // clamps the container's scrollTop to 0 — so the browser cannot preserve
+      // the position for us here. The remembered anchor is what puts the user
+      // back where they were (bottom when they left it at the bottom).
+      scheduleScrollRestore(activeScrollKeyRef.current);
     }
-  }, [mainTab, sending, scrollChatToBottom, mayFollow]);
+  }, [mainTab, sending, scrollChatToBottom, mayFollow, scheduleScrollRestore]);
 
   // 右侧栏（chatRightReserve）开/关导致聊天区宽度变化：若用户本就在底部，
   // 重新贴底，避免因宽度变化导致内容上下跳动。
@@ -2011,6 +2214,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // on mobile where the chat container is conditionally mounted.
   const scrollTickingRef = useRef(false);
   const handleChatScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    // Keep the per-view scroll memory warm (coalesced internally).
+    noteScrollPosition();
     if (scrollTickingRef.current) return;
     scrollTickingRef.current = true;
     requestAnimationFrame(() => {
@@ -2034,6 +2239,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (prevKey && prevKey !== newKey) {
       sessionTabsBuffer.set(prevKey, openSessionTabs);
       if (activeSessionId) activeSessionBuffer.set(prevKey, activeSessionId);
+      // …and where the user actually was in it, per session tab. The transcript
+      // of the outgoing view is still on screen at this point, so the anchor is
+      // exact (see lib/chatScrollRestore.ts).
+      rememberScrollPosition(scrollMemoryKey(prevKey, activeSessionId));
     }
     // Snap to bottom when entering a NEW conversation (or first mount)
     if (prevKey !== newKey) {
@@ -2090,6 +2299,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setHasMore(false);
       if (savedActiveSession !== undefined) {
         changeActiveSession(newKey, savedActiveSession);
+        scheduleScrollRestore(scrollMemoryKey(newKey, savedActiveSession));
       }
       if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
       // Refresh from server in background to catch anything we missed while away
@@ -2162,6 +2372,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             // of this agent cannot land chunks in this buffer (same bug family
             // as switchSession).
             changeActiveSession(newKey, validId);
+            scheduleScrollRestore(scrollMemoryKey(newKey, validId));
             setStoredActiveSession(selectedAgent!, validId);
             setOpenSessionTabs(initialTabs);
             void loadSessionMessages(validId!, newKey).then(() => {
@@ -2669,6 +2880,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const switchSeq = ++sessionSwitchSeqRef.current;
     const prevSessionId = activeSessionId;
     const key = currentConvKeyRef.current;
+    // Leaving this view: remember where the user was, so coming back to it (now
+    // or later in this process) restores that spot instead of inheriting the
+    // next view's scrollTop.
+    rememberScrollPosition(scrollMemoryKey(key, prevSessionId));
     // Single entry point: updates view state + manager routing gate together.
     // Without the gate pin the gate stays on whatever resetConv pinned last
     // (new-chat placeholder) or undefined, so `updateMessages` judges every
@@ -2677,6 +2892,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // tab (user bubble lands below a streaming agent bubble / blank bubble
     // until refresh — the multi-tab direct-mode corruption family).
     changeActiveSession(key, s.id);
+    // Restore this session's own position — bottom when it has no record yet.
+    scheduleScrollRestore(scrollMemoryKey(key, s.id));
     setShowSessions(false);
     setHasMore(false);
     oldestMsgId.current = null;
@@ -2782,6 +2999,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, []);
 
   const newConversation = () => {
+    // A brand-new session has no transcript to come back to: remember the view we
+    // are leaving and drop any restore still in flight.
+    rememberScrollPosition(activeScrollKeyRef.current);
+    cancelScrollRestore();
+    pendingRestoreRef.current = null;
     setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
     // No model state to reset: the composer's label follows the AGENT (its own
     // bound model, else global routing), never the session — so a fresh chat
