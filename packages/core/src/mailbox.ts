@@ -662,6 +662,18 @@ export class AgentMailbox {
         // 刻意 **不** emit 'mailbox:new-item'：队列内容没有任何变化，发「新项」事件会
         // 误导 triage / 中断抢占判定。只推一下 idle waiter，确保这条巡检会被取走。
         this.wakeIdleLoop();
+        // 折叠时了结 incoming 的 responsePromise：投递方可能在 await（如测试的
+        // processViaMailbox / 调度器的 triggerHeartbeat 返回值）。折叠 = 本次触发
+        // 被在跑的巡检吸收，语义等价于「这次巡检不产生新结果」，必须显式 resolve，
+        // 否则调用方永久挂起（参考 suppressDuplicateDelivery 的 Promise 了结约定；
+        // 实测路径：HB 处理完 resolve 后、complete() 清 _processingHeartbeatId 前的
+        // 窗口内再入队 HB → 被折叠 → 原实现让其 promise 悬挂 → 测试 10s 超时）。
+        const foldedPromise = pendingHeartbeat.id === this._processingHeartbeatId
+          ? options?.metadata?.responsePromise
+          : undefined;
+        if (foldedPromise) {
+          try { foldedPromise.resolve('[heartbeat-collapsed]'); } catch { /* caller gone */ }
+        }
         log.debug('Mailbox enqueue-time heartbeat collapse: duplicate suppressed', {
           agentId: this.agentId,
           existingId: pendingHeartbeat.id,
