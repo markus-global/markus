@@ -1,6 +1,6 @@
 # Streaming & Reattach
 
-> Last updated: 2026-07
+> Last updated: 2026-09
 
 How Markus streams an agent turn to the browser over SSE, how a **client refresh or
 navigation reattaches** to an in-flight generation without killing it, and how the agent
@@ -151,3 +151,42 @@ cancel API is therefore **directed**:
 - **Status**: implemented (`packages/core/test/attention-directed-cancel.test.ts`,
   `agent-concurrent-activity.test.ts`). In serial mode `target` is optional and cancel falls
   back to the instance-level stream token.
+
+---
+
+## 5. Client-Side Streaming Resilience
+
+How the **web frontend** consumes the stream and keeps a long-lived turn alive across
+flaky networks. (Long-lived audit → distilled design contract, 2026-09.)
+
+### 5.1 Consumption model
+
+- The client consumes the SSE stream via **`fetch` + `ReadableStream`** (not `EventSource`) —
+  this is what allows structured lifecycle events and controlled reconnection.
+- The server **must send a heartbeat frame every 15 s**; the client watchdog relies on it.
+
+### 5.2 Watchdog & dead-loop prevention
+
+- Client-side **idle watchdog default 60 s** (>4× the 15 s server heartbeat). If no bytes
+  arrive within the window, the client considers the stream stalled and tears down.
+- Combined with poll fallback so a stalled stream never looks like an infinite spinner.
+
+### 5.3 Reconnect & retry
+
+- **Exponential backoff reconnect** for disconnect + **25 s reconnect heartbeat** +
+  `since`-incremental resume (replay only what was missed).
+- **1.5 s reattach debounce** — bursts of navigation/refresh collapse into one reattach.
+- `pollForReply` backoff: **2 s → 8 s, 5 attempts** before falling back to an explicit
+  stop/retry path. This bounds worst-case waiting without hammering the server.
+
+### 5.4 Design invariants
+
+- A client refresh or a brief network blip **never kills the agent turn** (see §2).
+- Every long-lived request has a **bounded worst case** (watchdog + poll cap + backstop),
+  so no user-facing hang is unbounded.
+- Reattach always recovers state from **snapshot + tail**, never from lossy ring replay (§3.1).
+
+### 5.5 Remaining roadmap items
+
+- Provider single-timer consolidation; fallback-failure alerting; visible stall indicator
+  in the chat UI (when to show "still working" vs "connection lost").
