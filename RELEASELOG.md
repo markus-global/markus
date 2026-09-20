@@ -1,5 +1,41 @@
 # Release Log
 
+## v0.10.0-rc.0
+
+**候选发布（RC）**——从 `v0.9.9` 起的首个候选版，涵盖并发基础设施、ContextOS 上下文引擎、Team Chat 状态机重构、LLM 模型发现统一等大块工作：
+
+### Features
+
+- **Decision 能力** — Agent 新增 `decision` 能力与 `decide` 工具（TypeSafe Jev 等决策模型），decide 描述补入 EVIDENCE 铁律（证据必须放进 state）
+- **LLM 模型发现统一** — provider 元数据收敛为单一注册表，模型发现统一走官方 `/models` 接口，删除核对不了的内置模型条目；MiniMax 原生多模态端点补 GroupId；模型来源标记使前端不再硬编码模型清单
+- **Team Chat 重构落地** — 状态收敛为单一事实源（chatStore 瘦身，S2–S6）；会话历史分页加载 + `session_rename` 工具 + 标题编辑；会话标题首轮 MUST 更新；流编排迁移 useChatStream + 结构化 thinking 事件
+- **并发处理基础设施** — SessionWorkspace 状态下放 + mailbox 广播唤醒 + Attention worker 池；工具写互斥、锁健壮性、新对话 merge 修复；多 session tab 并发串台根治（原子 re-pin）
+- **ContextOS 引擎** — v2–v5：尾块变更门控投递、压缩管线四处缺陷修复、cache-scope layout + session-scoped tools、完备性检查点 + 工具前缀冻结 + 缓存遥测；动态 context 移出 system 至 volatile tail 提升 prompt-cache 命中
+- **Web UI 优化** — 快捷键教学（概览引导清单新步骤 + i18n）；浏览历史下拉 Ctrl+N/Ctrl+P；内置浏览器多搜索引擎（Baidu/Yandex/Brave/Ecosia/Sogou/360，移除 Ecosia）；通知铃铛「未读/全部」过滤；消息时间精确到秒；交付物目录型预览与子目录导航；右侧栏预览「发送给对话」；需求/任务详情「发送到对话」
+- **移动端** — 抽屉增加积分与 Hub 账号入口、设置增加登出；输入框控件错位修复；消息页空白卡死修复
+
+### Bug Fixes
+
+- LLM 适配器高严重度缺陷：Codex 丢工具调用 / Gemini functionResponse.name 用错 / Anthropic 并行 tool_result 被拒 / Gemini 思维链泄漏为正文 / Ollama 思维链丢弃（done_reason 忽略）/ 安全拦截崩溃 / Anthropic 流内 error 事件被吞
+- 心跳：折叠覆盖 processing 状态消除 7~12s 背靠背重复心跳；折叠时了结 incoming responsePromise 修调用方永久挂起；去重与会话按天滚动
+- 安全/审计：shell 重定向静态拦截 + 单一写门禁；事件转发白名单补 agent:incomplete / entity-conflict；mailbox P0 原子认领/租约 + review_request 单播投递与 (task_id,round) 幂等
+- 未读口径统一：列表与数字同源（服务端未读接口）、自己消息/正在查看会话不计未读、Team 徽标不再误算 A2A 消息
+- 后台进程终止整组击杀（修子孙进程孤儿泄漏）；崩溃守卫不再杀死宿主进程
+- markdown 中文路径二次编码 404、货币符号误判数学公式、GFM autolink 吞中文/全角字符等渲染修复
+
+### Refactor / Docs / CI
+
+- 移动端/概览：agent tab 精简为聊天/概览/产出，概览子 tab「文件」置首；状态介质收敛四层、锁按资源键归一
+- 分支整顿归类分析文档 + 审计集中修复报告（问题→提交→测试映射表）；删除误提交的覆盖率备份目录与 audit-reports 工作记录
+- CI 修复批：pnpm 版本声明、ci.yml 重复 continue-on-error、前端/后端覆盖率门禁（实测地板 + 棘轮守护）、backend-coverage 缺构建步骤
+- 测试加固：0.9.9 后测试覆盖补齐、并发默认值对齐、隔离外部环境变量污染、会话不变量真链路冒烟门禁
+
+### Stats
+
+- 175 commits（含合入），156 个非合并提交，334 files changed
+
+---
+
 ## v0.9.9
 
 **正式版发布**——从 `v0.9.9-rc.0` → `rc.1` → `rc.2` 三轮验证后提升稳定版。功能与修复详见下方 `v0.9.9-rc.0` 条目，并包含 rc.1 / rc.2 的增量修复：
