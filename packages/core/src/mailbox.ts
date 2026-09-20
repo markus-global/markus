@@ -278,6 +278,12 @@ export class AgentMailbox {
    * so spurious broadcast wakes that lose the item race keep waiting.
    */
   private cancelPending = false;
+  /**
+   * 追踪当前正在被 worker 处理的心跳 item id（dequeue 后该项不在 this.queue 里了，
+   * 无法用 queue.find 找到）。用于入队时折叠"正在跑的心跳还没结束就又触发"的
+   * 场景——否则两条心跳会背靠背执行（间隔仅数秒），浪费 token + 垃圾会话。
+   */
+  private _processingHeartbeatId: string | undefined;
 
   constructor(agentId: string, eventBus: EventBus, persistence?: MailboxPersistence) {
     this.agentId = agentId;
@@ -628,16 +634,30 @@ export class AgentMailbox {
     // 【安全阀】既有项若长期卡在 queued，会被 MAILBOX_QUEUED_TTL_MS（3 天）判死回收，
     // 之后新心跳即可正常入队 —— 不会因为折叠而永久吞掉巡检。
     //
-    // 注意只折叠 status === 'queued'：正在 processing 的那条持有实体锁，此时再入队一条
-    // 并不构成竞争（前者释放后后者才可能被取走），折叠它反而会丢一次本该发生的巡检。
+    // 折叠 queued 队列中的心跳 + 正在 processing 的心跳：
+    //   · queued   —— 队列里已有一条等着的，再入队纯浪费。
+    //   · processing—— 有一个 worker 正在跑 LLM 心跳巡检；若此刻再入队，
+    //                该 worker 一结束就会立刻取走新的一条 → 两条心跳背靠背执行
+    //                （实测间隔仅 7~12 秒），白白消耗 token 且产生垃圾会话。
+    //                丢失的这一次巡检会在下一个正常调度周期（小时级）自动补回，
+    //                相比密集触发的 token 浪费完全可以接受。
+    //
+    // 注意：dequeue() 会把项从 this.queue 中 splice 掉，所以 processing 状态的项
+    // 无法用 queue.find 找到。改用 _processingHeartbeatId 字段追踪。
+    //
+    // 【安全阀】既有项若长期卡在 processing/queued，会被 MAILBOX_QUEUED_TTL_MS
+    // （3 天）判死回收，之后新心跳即可正常入队 —— 不会因为折叠而永久吞掉巡检。
     //
     // ⚠️ 必须同时判 `sourceType === 'heartbeat'`：漏了它就会在「队列里恰有一条心跳」时
     // 把**任何**类型的飞来件都当成重复心跳折叠掉（含 human_chat 用户消息）—— 这会静默
     // 吞消息，是本改动最危险的写法。测试 `心跳与其它类型共存时互不干扰` 专门守这条。
     if (!reuseItemId && sourceType === 'heartbeat') {
-      const pendingHeartbeat = this.queue.find(
+      const queuedHb = this.queue.find(
         i => i.sourceType === 'heartbeat' && i.status === 'queued',
       );
+      const pendingHeartbeat = queuedHb ?? (this._processingHeartbeatId
+        ? { id: this._processingHeartbeatId } as MailboxItem
+        : undefined);
       if (pendingHeartbeat) {
         // 刻意 **不** emit 'mailbox:new-item'：队列内容没有任何变化，发「新项」事件会
         // 误导 triage / 中断抢占判定。只推一下 idle waiter，确保这条巡检会被取走。
@@ -976,6 +996,7 @@ export class AgentMailbox {
         item!.status = 'processing';
         item!.startedAt = new Date().toISOString();
         this.persistence?.updateStatus(item!.id, 'processing', { startedAt: item!.startedAt });
+        if (item!.sourceType === 'heartbeat') this._processingHeartbeatId = item!.id;
         return item;
       }
 
@@ -999,6 +1020,7 @@ export class AgentMailbox {
       const [item] = this.queue.splice(idx, 1);
       item!.status = 'processing';
       // claimItem 已在 DB 内一并写入 processing + started_at + claimed_by + lease_until。
+      if (item!.sourceType === 'heartbeat') this._processingHeartbeatId = item!.id;
       return item;
     }
   }
@@ -1078,6 +1100,7 @@ export class AgentMailbox {
    * Mark an item as completed and remove from in-memory queue if still present.
    */
   complete(itemId: string): void {
+    if (itemId === this._processingHeartbeatId) this._processingHeartbeatId = undefined;
     const idx = this.queue.findIndex(i => i.id === itemId);
     if (idx !== -1) {
       const [item] = this.queue.splice(idx, 1);
@@ -1180,6 +1203,7 @@ export class AgentMailbox {
    * at its original priority position.
    */
   requeue(item: MailboxItem): void {
+    if (item.id === this._processingHeartbeatId) this._processingHeartbeatId = undefined;
     item.retryCount = (item.retryCount ?? 0) + 1;
     item.status = 'queued';
     item.startedAt = undefined;
