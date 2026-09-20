@@ -1577,3 +1577,45 @@ This collapses what would have been 5 separate triage+process cycles into a sing
 - **Working memory persistence**: Persist keyed working memory across agent restarts (currently volatile).
 - **Adaptive deliberation model selection**: Use cheaper models for simple 2-item queues; reserve fuller budgets for genuinely complex triage.
 - **Recursive deliberation**: Allow deliberation to trigger sub-deliberation for complex multi-step planning (with depth limits).
+
+---
+
+## 27. Scheduling-Link Blocking Protection
+
+> Last updated: 2026-09. Distilled from the scheduler-blocking audit (feat/context-os).
+> Question the audit answered: **can a single provider call permanently block the agent
+> main loop / event queue / scheduling chain?** Answer: no for errors, bounded for hangs,
+> with a small set of known no-timeout gaps.
+
+### 27.1 Layered protection (error → hang → blocking)
+
+| Layer | Mechanism | Bound |
+|-------|-----------|-------|
+| Error isolation | Multi-layer `try/catch` around every provider call; a thrown error never stalls the loop | immediate |
+| Hang backstop | In-flight work watchdog — longest possible stall is **45 min** (bounded outage) | 45 min |
+| Retry cap | Provider retries capped at **2 attempts** | finite |
+| Watchdog sweep | Attention/watchdog sweeps at **30 s** granularity | 30 s |
+
+### 27.2 Known gaps (no-timeout awaits)
+
+- **GAP-A — triage deliberation is NOT inside the backstop**: `deliberate` (Tier-2 full
+  deliberation) can await the model with no timeout — the **closest existing path to a
+  permanent block**. Mitigation today: only reachable with a non-empty queue; still, it
+  deserves a timeout + fail-loud.
+- **GAP-B — task-queue has no per-task timeout**: a task execution waiting on the model
+  is bounded only by the global backstop, not by per-task limits.
+- **GAP-C — dream semaphore may leak**: the dream/concurrency semaphore lacks a
+  release-on-error guarantee in all exit paths (double-check & harden).
+
+### 27.3 Fail-loud chain (the intended design)
+
+Provider errors propagate **loudly** (no silent swallow): error → `requeue` (with retry
+count) → exhausted → `emitIncomplete` (visible structured event). This is the same
+visibility-first invariant as §4.1 — a failure must never look like success.
+
+### 27.4 Design intent
+
+The chain is allowed to **stall (bounded) but never to block silently forever**. Any new
+`await` inserted into the main loop or attention/triage path must be either (a) bounded by
+a timeout/backstop, or (b) explicitly justified as blocking by design. Watchdog + backstop
+values are single-source constants in `packages/core/src/` — do not fork them per caller.

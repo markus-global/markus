@@ -67,15 +67,36 @@ describe('C · 心跳入队折叠（消除并发 worker 抢 system 锁空转）'
     expect(mailbox.depth).toBe(1);
   });
 
-  it('已有心跳被取走后（processing），新心跳照常入队 —— 不会永久吞掉巡检', () => {
+  it('正在 processing 的心跳也会折叠新触发（防止背靠背执行浪费 token）', () => {
     const mailbox = makeMailbox();
     mailbox.enqueue('heartbeat', HB());
 
     const taken = mailbox.dequeue();
     expect(taken?.sourceType).toBe('heartbeat');
 
-    mailbox.enqueue('heartbeat', HB('next patrol'));
+    // processing 状态的心跳也应该折叠新的触发——否则 worker 一结束就立刻
+    // 取走第二条，导致两条心跳间隔仅数秒（实测 7~12s）。
+    const collapsed = mailbox.enqueue('heartbeat', HB('next patrol'));
+    // 队列深度为 0：新触发被折叠到正在处理的那条上，不新增队列项
+    expect(mailbox.depth).toBe(0);
+    // 返回的是既有那条的引用（_processingHeartbeatId 追踪）
+    expect(collapsed.id).toBe(taken.id);
+  });
+
+  it('心跳处理完成（complete）后，新心跳正常入队 —— 不永久吞掉巡检', () => {
+    const mailbox = makeMailbox();
+    mailbox.enqueue('heartbeat', HB());
+
+    const taken = mailbox.dequeue();
+    expect(taken?.sourceType).toBe('heartbeat');
+
+    // 模拟处理完成：手动 complete
+    mailbox.complete(taken.id);
+
+    // processing 的已经结束，新心跳应正常入队
+    const next = mailbox.enqueue('heartbeat', HB('next patrol'));
     expect(mailbox.depth).toBe(1);
+    expect(next.id).not.toBe(taken.id);  // 全新的一条
   });
 
   it('折叠只作用于 heartbeat：同类型的其他来件不受影响', () => {

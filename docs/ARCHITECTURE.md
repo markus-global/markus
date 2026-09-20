@@ -21,7 +21,8 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 | [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
 | [TOOL-SYSTEM.md](./TOOL-SYSTEM.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
-| [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events |
+| [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience |
+| [LLM-PROVIDER-TIMEOUTS.md](./LLM-PROVIDER-TIMEOUTS.md) | Per-provider LLM timeout/retry governance matrix, known risk inventory, target design |
 | [CODING-TOOLS.md](./CODING-TOOLS.md) | External coding CLI integration (Claude Code / Codex / Cursor Agent) |
 | [API.md](./API.md) | REST / WebSocket API reference |
 | [GUIDE.md](./GUIDE.md) | Setup, deployment, and usage guide |

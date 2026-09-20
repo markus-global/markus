@@ -9,6 +9,10 @@ dist/
 .DS_Store
 coverage/
 coverage-*/
+# 覆盖率报告备份/旧版目录（如 coverage.bak.77854 / coverage.old.78432）——
+# 带点号命名不匹配上面的 coverage-*/，曾于 8202574b 误提交 158 个文件
+coverage.bak.*/
+coverage.old.*/
 .turbo/
 .markus/
 .cursor/
