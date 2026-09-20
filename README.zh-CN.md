@@ -5,9 +5,10 @@
 <h1 align="center">Markus</h1>
 
 <p align="center">
-  <strong>开源 AI 员工平台。</strong><br />
-  单个 AI Agent 就像一个聪明但健忘的实习生，还总爱提前说“做完了”。<br />
-  Markus 给 Agent 装上记忆、同事、审查和 24/7 心跳 — 让工作真正交付。
+  <strong>开源的 AI 团队，你睡觉它干活。</strong><br />
+  给它一句话目标，它组队、拆活、并行开干、每份产出都过审，<br />
+  你合上电脑它还在推进。<br />
+  <em>而且没错——它是被它自己开发出来的。</em>
 </p>
 
 <p align="center">
@@ -29,148 +30,77 @@
 </p>
 
 <p align="center">
-  <a href="https://www.markus.global"><strong>官网</strong></a> ·
-  <a href="https://markus.global/blog">博客</a> ·
-  <a href="docs/GUIDE.md">文档</a> ·
-  <a href="https://github.com/markus-global/markus/discussions">讨论区</a> ·
-  <a href="CONTRIBUTING.md">参与贡献</a> ·
-  <a href="docs/COMMUNITY.md">社区</a>
-</p>
-
-<p align="center">
   <a href="README.md">English</a> | <strong>中文</strong>
 </p>
 
 <p align="center">
-  <img src="docs/images/dashboard-preview.gif" alt="Markus 实况 — AI Agent 规划、执行、互审、交付，一个看板全部搞定" width="840" />
+  <img src="docs/images/dashboard-preview.gif" alt="Markus 实战 — AI 团队在一个面板里规划、执行、审查、交付" width="840" />
 </p>
 
 ---
 
-## 60 秒看懂
-
-**Markus 是单 Agent 助手缺失的那一层「组织」。**
-
-你了解单 Agent 副驾：单任务很强，一旦变成组织就垮掉。它们跨会话忘记你的决策、卡在阻塞点上没人可问；最糟的是，它们向自己汇报「做完了」。
-
-Markus 改变了运行模型。你用自然语言描述目标；Markus 组建一支分角色 Agent 团队（调研、开发、审查、写作、运维），把工作拆成任务、让专家并行执行、所有交付先经过同行评审再送到你手上。你睡觉时，团队还在干活。
-
-- **是团队，不是包装壳** — 内置完整 Agent 运行时。每个员工直接对接 LLM API，使用内置工具：shell、文件读写、git、网页搜索、代码分析、GUI 与浏览器自动化、任意 MCP 服务。不靠外部 CLI 转包。
-- **零配置启动** — SQLite 存储、内置 Web UI、一条命令。从安装到跑起一个 AI 团队，大约 **10 分钟**。
-- **7×24 自主运转** — 心跳调度器让 Agent 持续推进、审查、升级，不需要人一直在场。
-- **随处可跑** — 你的笔记本、一台小云服务器或你的数据中心。macOS / Windows / Linux 桌面应用，手机也能用响应式控制台。
+> **🪞 我们自己用自己。** Markus 就是跑在 Markus 上的：issue、任务、代码、
+> 审查、发布，整个闭环都是我们自己的 agent 团队在 Markus 上完成的。
+> 它能把自己做出来，就能把你做的东西做出来。
 
 ---
 
-## 🚀 快速开始 — 10 分钟跑起一个 AI 团队
+## 三句话看懂
 
-**1. 安装** — 选最顺手的方式：
+- **不是套壳** — agent 直连各家 LLM API，用真实工具干活：shell、文件、git、联网搜索、代码分析、GUI / 浏览器自动化、任意 MCP 服务。
+- **7×24 干活** — 心跳机制让团队自动推进任务、处理异步完成、上报阻塞。你睡觉，它交付。
+- **越用越聪明** — 三层持久记忆自动沉淀，团队跑得越久，越好用。
+
+**数据在自己手里** — 完全自托管，默认 SQLite（支持 PostgreSQL），不上云、不锁定。
+
+---
+
+## 一个人，还是一支团队
+
+单个 copilot 像个聪明的实习生：单点任务很强，睡一觉就忘光，还爱自报"搞定了"。但一个人撑不起一家公司。
+
+| | 单个 AI agent | Markus 团队 |
+|---|---|---|
+| **规模** | 一次一件事 | 多角色并行推进 |
+| **记忆** | 会话结束就蒸发 | 持久记忆，自动沉淀 |
+| **主动性** | 每次等你发话 | 心跳 24/7 巡检 |
+| **质量** | 自报"完成" | 队友审查，每份交付把关 |
+| **可见性** | N 个窗口来回切 | 一个面板、一份审计轨迹 |
+
+---
+
+## 🚀 10 分钟跑起来
 
 ```bash
 # 桌面应用（macOS / Windows / Linux）
-#   → 从 https://github.com/markus-global/markus/releases/latest 下载
+#   → https://github.com/markus-global/markus/releases/latest
 
-# npm（需要 Node.js 22+）
-npm install -g @markus-global/cli
-
-# Linux 一键安装（无需 Node.js）
-curl -fsSL https://markus.global/install.sh | bash
-```
-
-**2. 启动**
-
-```bash
+npm install -g @markus-global/cli   # 需要 Node.js 22+；或用免 Node 的 Linux 一键脚本
 markus start
 ```
 
-**3. 打开** [http://localhost:8056](http://localhost:8056) — 引导向导帮你设置账号（初始登录：`admin@markus.local` / `markus123`）。
+打开 [http://localhost:8056](http://localhost:8056) — 引导向导会帮你建账号（初始登录：`admin@markus.local` / `markus123`）。然后对你的 Secretary 说：
 
-**4. 告诉你的 Secretary 你要什么**
+> *"搭一个调研团队：扫一遍竞品，写份竞品分析，再起草一份 Go-to-Market 策略。"*
 
-> *「我需要一个调研团队：扫描竞品、写竞争分析、再起草一份进入市场的策略。」*
+Markus 会组队、拆任务、开始执行 — 专才并行，每份交付都过审。
 
-Markus 会组建团队、把目标拆成任务，然后开始执行 — 专家并行干活，每个交付都经过审查。
-
-**就这样。** SQLite 数据库、内置 Web UI、零外部依赖。从源码跑：`git clone` → `pnpm install && pnpm build && pnpm dev`。
+**就这些。** SQLite + 内置 Web UI，零外部依赖。源码方式：`git clone` → `pnpm install && pnpm build && pnpm dev`。
 
 ---
 
-## 💼 可以用 Markus 做什么
+## 里面有什么
 
-| 领域 | 示例 |
-|------|---------|
-| **调研与分析** | 扫描竞品、输出竞争分析报告、起草进入市场策略 |
-| **软件工程** | 从需求到代码到测试完整交付一个功能，内置同行评审 |
-| **内容与发布** | 起草、编辑、评审、排期发布文章、报告和社媒内容 |
-| **运营** | 每日简报、问题分流、定时监控、阻塞升级 |
-| **数据与报告** | 拉取数据、分析、定时交付成品报告 |
-| **个人研究** | 深挖任意主题，拿回结构化、带引用的交付物 |
+- 🧠 **三层记忆** — 程序性、语义性、情景性。知识跨会话积累，自动沉淀，不用你管。
+- ⏰ **心跳自驱** — 没人盯着，任务也在推进；异步完成和阻塞照常处理。
+- 🔀 **真并发** — 多个会话在互相隔离的工作区并行跑，同一聊天里开多线也不串台。
+- 🧬 **ContextOS 上下文引擎** — 结构锚点固定、上下文预算稳定、压缩不丢决策。长会话又快又稳。
+- 🛡️ **信任与门禁** — 渐进信任级别，正式的提交 → 审查 → 合并闭环，完整审计轨迹，随时紧急暂停。
+- 🔌 **技能生态** — 从 skills.sh / Claude Code、SkillHub、OpenClaw、AgentScope、MCP 服务器导入技能，也能把你最好的技能导回社区。
+- 🤖 **任意 LLM** — Anthropic、OpenAI、Google、DeepSeek、MiniMax、Ollama、OpenRouter 等 — 模型统一自动发现，故障自动切换。
+- 🔒 **自带密钥** — 凭证只存在你的部署里，绝不上第三方云。
 
-你合上电脑，团队仍在工作 — 心跳机制让 Agent 在你睡觉时持续推进。
-
----
-
-## 为什么团队胜过单个 Copilot
-
-单个 Agent — Claude Code、Codex、ChatGPT 或任意 copilot — 擅长一次执行一个任务。但一个员工撑不起一家公司。
-
-| | 单个 AI Agent | Markus AI 团队 |
-|---|---|---|
-| **规模** | 一次一个任务 | 多个专家角色并行工作 |
-| **记忆** | 会话结束上下文就蒸发 | 三层持久记忆，跨会话自动整理沉淀 |
-| **主动性** | 每次都等你下指令 | 心跳 24/7 巡检任务 — 你睡觉也在干 |
-| **质量** | “做完了”是自说自话 | 同事审查、互相纠错、把关每个交付 |
-| **可见性** | 10 个 Agent = 10 个窗口 | 一个看板 + 一条审计轨迹 |
-| **问责** | 没有护栏 | 渐进信任级别、提交-审查-合并、紧急暂停 |
-
-你管理的是一个团队，而不是一堆零散的 Prompt。
-
----
-
-## 🏛️ 为什么它是「组织」，不是「脚本」
-
-- **🧠 三层记忆** — 程序性（怎么做事）、语义性（知道什么）、情景性（发生过什么）。知识跨会话积累并自动沉淀 — 团队跑得越久越聪明。
-- **⏰ 心跳自驱** — Agent 不会干等指令。心跳调度器自动巡检待办、处理异步完成、上报阻塞 — 你合上电脑，工作继续推进。
-- **🛡️ 渐进信任级别** — 试用 → 标准 → 信任 → 资深。Agent 用可靠表现换取权限与授权范围。
-- **✅ 质量门禁** — 正式的提交 → 审查 → 合并交付闭环。没有评审过的产出到不了你手上；同行能抓到自报「完成」漏掉的问题。
-- **📜 完整审计轨迹** — 每个动作都有日志：谁、做了什么、什么时候、为什么。复现结果、排查事故，都不用靠猜。
-
----
-
-## 🔒 安全与数据主权
-
-- **自托管，数据在你的手里** — 完全运行在你的基础设施上。默认 SQLite，支持 PostgreSQL。没有强制云依赖；除非你主动开启远程访问，数据不出你的网络。
-- **隔离工作区** — 每个 Agent 在自己的沙箱工作区、独立 git 分支上作业，运行之间互不串扰。
-- **最小权限** — 信任级别决定 Agent 能做什么；导入的技能把声明的权限（`allowed-tools` → `requiredPermissions`）映射为实际能力，而不是一把梭。
-- **审计与控制** — 全量操作日志、紧急暂停、高风险步骤的人工审批关卡。
-- **密钥自持** — 接入任意 LLM 供应商，凭据只存在于你的部署环境，第三方云不可见。
-- **可选远程访问** — Cloudflare Tunnel、Tailscale、FRP 或 ngrok，随时随地在手机管理团队。
-
----
-
-## 🌍 不是又一个封闭生态
-
-Markus 与你在用的 AI 生态良好共处 — 不需要推倒重来。
-
-- **8 万+ 社区技能，即插即用** — `markus skill import <path>` 自动识别并归一化来自 **skills.sh / Claude Code、SkillHub / ClawHub、OpenClaw、SOUL.md、AgentScope、MCP 服务器**的技能为标准 Markus 技能。不用改写，没有锁定。
-- **反向导出** — `markus skill export <name> --format claude` 把你的最佳技能渲染成外部标准格式，发布回 skills.sh、SkillHub、OpenClaw 等社区。
-- **对话内导入** — Agent 在对话里通过 `discover_tools({ mode: "import" })` 直接加载本地技能包，即刻生效，无需重启。
-- **任意 MCP 服务** — 标准 MCP 服务端直接接入 Agent 工具层。
-- **任意 LLM 供应商** — Anthropic、OpenAI、Google、DeepSeek、MiniMax、Ollama、OpenRouter、SiliconFlow、Moonshot — 自动故障切换、按任务路由。
-
-> 完整说明：[技能生态适配器](docs/SKILL-ECOSYSTEM.md)
-
----
-
-## 🏆 真实团队在用 Markus
-
-### 案例：我们用 Markus 造 Markus
-
-Markus 项目本身就是跑在 Markus 上的。技能生态适配器、双授权迁移、乃至你现在读的这份 README，都走的是我们交付给你的同一条流水线：需求 → 任务 → 并行 Agent → 同行审查 → 合并，每一步都可审计。发布节奏再快，纪律来自平台，而不是靠记性。
-
-### 你的故事可以出现在这里
-
-用 Markus 交付过产品、跑过调研冲刺、或者自动化了某项运营？到 [讨论区](https://github.com/markus-global/markus/discussions) 告诉我们 — 优秀案例会收录进这份 README 和我们的[博客](https://markus.global/blog)。带引语的用户证言一律先征得同意。
+> 技能生态完整说明：[技能生态适配器](docs/SKILL-ECOSYSTEM.md)
 
 ---
 
@@ -189,7 +119,8 @@ Markus 项目本身就是跑在 Markus 上的。技能生态适配器、双授�
                        │
 ┌──────────────────────┴──────────────────────────────────┐
 │                  Agent Runtime (Core)                   │
-│  Agent · LLM Router · Tools · Skills · Memory · A2A     │
+│  Agent · LLM Router · ContextOS · Tools · Skills ·      │
+│  Memory · A2A · Concurrency · Decision · Heartbeat      │
 └──────────┬────────────────────────────┬─────────────────┘
            │                            │
 ┌──────────┴──────────┐    ┌────────────┴─────────────────┐
@@ -202,7 +133,7 @@ TypeScript monorepo，模块化包结构：
 
 | 包 | 职责 |
 |---------|------|
-| **core** | Agent 运行时 — LLM 路由、工具、技能、记忆、心跳、工作区隔离 |
+| **core** | Agent 运行时 — LLM 路由、ContextOS、工具、技能、记忆、并发、心跳、工作区隔离 |
 | **org-manager** | REST API、WebSocket、治理、任务生命周期 |
 | **web-ui** | React + Vite + Tailwind 控制台 |
 | **desktop** | Electron 桌面应用（macOS / Windows / Linux） |
@@ -231,6 +162,8 @@ TypeScript monorepo，模块化包结构：
 | [邮箱系统](docs/MAILBOX-SYSTEM.md) | Agent 注意力模型、优先级队列、分诊 |
 | [提示词工程](docs/PROMPT-ENGINEERING.md) | 系统提示词组装、工具循环、压缩 |
 | [状态机](docs/STATE-MACHINES.md) | 任务与需求 FSM 规范 |
+| [并发处理](docs/CONCURRENT-PROCESSING.md) | 单个 Agent 并行处理多个邮箱项 / 会话 |
+| [流式与重连](docs/STREAMING-AND-REATTACH.md) | 流式事件、断连重连、工具循环完整性 |
 | [API 参考](docs/API.md) | REST API 端点与 WebSocket 事件 |
 | [编码工具](docs/CODING-TOOLS.md) | Claude Code / Codex / Cursor 集成 |
 | [学习循环](docs/LEARNING-LOOP.md) | Agent 自我改进与记忆沉淀 |
@@ -242,12 +175,12 @@ TypeScript monorepo，模块化包结构：
 
 ## 💬 社区
 
-- **GitHub Discussions** — 提问、Show & Tell、案例分享：<https://github.com/markus-global/markus/discussions>
+- **GitHub Discussions** — 提问、晒成果、案例分享：<https://github.com/markus-global/markus/discussions>
 - **博客** — 教程与产品更新：<https://markus.global/blog>
-- **Discord** — 英文/全球实时交流（建设中）
-- **微信群** — 中文用户交流群，获取帮助、内测资格与贡献指引（建设中）
+- **Discord** — 全球英文用户实时交流 — *即将上线*
+- **微信群** — 中文用户交流群，获取帮助、内测与贡献支持（建设中）
 
-渠道规划、加入方式与运营规则见 [docs/COMMUNITY.md](docs/COMMUNITY.md)。所有渠道均遵循我们的 [行为准则](CODE_OF_CONDUCT.md)。
+加入方式、频道地图与贡献者升级路径见 [docs/COMMUNITY.md](docs/COMMUNITY.md)。所有频道遵守我们的 [行为准则](CODE_OF_CONDUCT.md)。
 
 ---
 
@@ -261,24 +194,22 @@ pnpm typecheck    # TypeScript 检查
 pnpm lint         # ESLint
 ```
 
-想贡献一份力量？
-
-- [第一个好 issue](https://github.com/markus-global/markus/labels/good%20first%20issue) — 适合新手的任务
-- [Help wanted](https://github.com/markus-global/markus/labels/help%20wanted) — 社区需要的功能
+- [新手友好任务](https://github.com/markus-global/markus/labels/good%20first%20issue) — 入门级任务
+- [社区急需功能](https://github.com/markus-global/markus/labels/help%20wanted) — 社区需要的功能
 - [Bug 反馈](https://github.com/markus-global/markus/issues) — 帮我们修问题
 
-完整指南见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+完整指引见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
 ## 许可协议
 
-Markus 采用双许可证：
+Markus 采用双授权：
 
-- **开源版**：[Apache-2.0](LICENSE) — 可自由使用、修改、分发与自托管，包括商用
-- **商业版**：[另行提供](LICENSE-COMMERCIAL.md) — 适用于需要企业级支持、法律保障、OEM 嵌入与定制条款的团队
+- **开源版**: [Apache-2.0](LICENSE) — 可自由使用、修改、分发、自托管，含商用
+- **商业版**: [可获取](LICENSE-COMMERCIAL.md) — 面向需要企业支持、赔偿、OEM 嵌入或定制条款的团队
 
-市场共享的技能可采用各自的许可证（通常为 MIT）。
+通过市场共享的技能通常使用各自许可（一般为 MIT）。
 
 ---
 
@@ -290,5 +221,6 @@ Markus 采用双许可证：
 </p>
 
 <p align="center">
-  <sub>Markus — Where AI Agents Work as a Team</sub>
+  <sub>Markus — 让 AI Agent 像一支团队一样协作</sub>
 </p>
+
