@@ -203,7 +203,37 @@
       "taskReview": "Revisión de la tarea",
       "toolExecution": "Ejecución de la herramienta"
     },
-    "approvalHistory": "Historia"
+    "approvalHistory": "Historia",
+    "filterUnread": "No leídas",
+    "filterAll": "Todas",
+    "noUnread": "No hay notificaciones no leídas",
+    "titles": {
+      "taskCreated": "Tarea creada: {{title}}",
+      "taskReadyForReview": "Tarea lista para revisión: {{title}}",
+      "taskCompleted": "Tarea completada: {{title}}",
+      "taskFailed": "Tarea fallida: {{title}}",
+      "requirementApproved": "Requisito aprobado: {{title}}",
+      "requirementRejected": "Requisito rechazado: {{title}}",
+      "mentionedYou": "{{authorName}} te mencionó",
+      "groupMessage": "{{senderName}} en {{groupName}}"
+    },
+    "bodies": {
+      "agentCreatedTask": "El agente creó la tarea \"{{title}}\"",
+      "taskStatusChanged": "La tarea \"{{title}}\" cambió de estado a {{status}}",
+      "requirementApprovedBody": "El requisito \"{{title}}\" fue aprobado y ahora está en curso.",
+      "requirementRejectedBody": "El requisito \"{{title}}\" fue rechazado.{{reason}}",
+      "mentionPreview": "{{itemTitle}}: {{preview}}"
+    },
+    "approvalDesc": {
+      "requirementProposed": "El agente \"{{agentName}}\" propuso el requisito \"{{title}}\" (prioridad: {{priority}}).",
+      "requirementResubmitted": "El agente \"{{agentName}}\" reenvió el requisito \"{{title}}\" (prioridad: {{priority}}).",
+      "taskCreate": "El agente \"{{agentName}}\" quiere crear la tarea \"{{title}}\" (prioridad: {{priority}}).",
+      "taskReview": "La tarea \"{{title}}\" fue enviada para tu revisión."
+    },
+    "optionLabels": {
+      "requestChanges": "Solicitar cambios"
+    },
+    "badgeLabel": "Notificación"
   },
   "userInput": {
     "respond": "Responder",
@@ -360,7 +390,10 @@
         "Dime lo que necesitas.…"
       ],
       "noAgent": "Seleccione un agente para empezar a chatear",
-      "agentOffline": "El agente está fuera de línea. Iniciar el agente para enviar mensajes."
+      "agentOffline": "El agente está fuera de línea. Iniciar el agente para enviar mensajes.",
+      "dmSelfOptions": "[\"Este es tu espacio privado\", \"Anota algo…\", \"¿Qué te gustaría registrar?\"]",
+      "dmOtherEmpty": "Inicia la conversación",
+      "dmOtherOptions": "[\"Inicia una conversación con {{name}}\", \"Envía un mensaje a {{name}}…\", \"¿De qué te gustaría hablar con {{name}}?\"]"
     },
     "newTaskTitle": "New Conversation Task",
     "taskFromChat": "Creado desde chat con {{name}}",
@@ -382,7 +415,35 @@
     "searchMessages": "Buscar mensajes",
     "searchPlaceholder": "Buscar mensajes...",
     "searching": "Búsqueda...",
-    "noSearchResults": "No se han encontrado mensajes"
+    "noSearchResults": "No se han encontrado mensajes",
+    "agentNotRunningTitle": "Agente no en ejecución",
+    "agentNotRunningHint": "Este agente está detenido y no procesará mensajes ni tareas. Reinícialo desde la pestaña Resumen.",
+    "agentIdleTitle": "Inactivo",
+    "agentIdleHint": "Nada en curso: esperando mensajes o tareas.",
+    "backToList": "Volver a la lista",
+    "teamMissingTitle": "Este equipo ya no está disponible",
+    "teamMissingBody": "Pudo haber sido eliminado o renombrado. Vuelve a la lista para seguir viendo tus conversaciones.",
+    "loadingTeam": "Cargando equipo…",
+    "loadingTeamBody": "Obteniendo los detalles del equipo. Si tarda demasiado, puedes reintentar.",
+    "newChatKbdHint": "Nueva conversación ({{kbd}})",
+    "renameSession": "Renombrar",
+    "loadMoreSessions": "Cargar más sesiones",
+    "findInConversation": "Buscar en la conversación",
+    "findInConversationHint": "Buscar en el historial de chat de esta sesión",
+    "findPlaceholder": "Buscar en esta conversación…",
+    "findMatchCount": "{{current}}/{{total}}",
+    "findNoMatches": "Sin coincidencias en esta conversación",
+    "findScopeLoaded": "Se buscó en {{count}} mensaje(s) cargado(s) de esta sesión",
+    "findScopeHasMore": "Los mensajes anteriores aún no están cargados",
+    "findLoadEarlier": "Cargar mensajes anteriores",
+    "findLoadingEarlier": "Cargando…",
+    "findFieldText": "Mensaje",
+    "findFieldThinking": "Pensando",
+    "findFieldTool": "Herramienta",
+    "findPrev": "Coincidencia anterior (Shift+Enter)",
+    "findNext": "Coincidencia siguiente (Enter)",
+    "findClose": "Cerrar búsqueda",
+    "findTruncated": "Demasiadas coincidencias: mostrando las primeras {{count}}"
   },
   "chatModel": {
     "title": "Modelo",

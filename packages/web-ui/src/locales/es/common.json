@@ -371,6 +371,23 @@
       "completed": "Completado",
       "resumed": "Continuación",
       "execution_finished": "Completado"
+    },
+    "toolsSummary": "{{count}} llamada(s) a herramienta · clic para ver la ejecución",
+    "processRun": {
+      "label": "Proceso",
+      "thinking": "Pensando",
+      "tools_one": "{{count}} llamada a herramienta",
+      "tools_other": "{{count}} llamadas a herramientas",
+      "subagents_one": "{{count}} subagente",
+      "subagents_other": "{{count}} subagentes",
+      "errors_one": "{{count}} fallo",
+      "errors_other": "{{count}} fallos",
+      "runningTool": "Ejecutando {{tool}}…",
+      "state": {
+        "running": "En curso",
+        "error": "Tiene fallos",
+        "done": "Completado"
+      }
     }
   },
   "taskDag": {
@@ -448,7 +465,10 @@
     "scaleStandard": "Estándar",
     "scaleLarge": "Grande",
     "typographySettings": "Ajustes de tipografía",
-    "typographyDesc": "Ajuste la fuente y el tamaño de la salida HTML copiada"
+    "typographyDesc": "Ajuste la fuente y el tamaño de la salida HTML copiada",
+    "renderingDiagram": "Renderizando diagrama…",
+    "mermaidRenderError": "Error al renderizar Mermaid",
+    "plantumlRenderError": "Error al renderizar PlantUML"
   },
   "activity": {
     "step_one": "{{count}} paso",
@@ -529,9 +549,26 @@
     "newTab": "Nueva pestaña del navegador / shell",
     "help": "Mostrar atajos de teclado",
     "termSearch": "Búsqueda en terminal",
-    "termToChat": "Añadir la selección terminal a chat"
+    "termToChat": "Añadir la selección terminal a chat",
+    "newConversation": "Nueva conversación",
+    "cycleSessionTab": "Siguiente pestaña de conversación",
+    "cycleSessionTabPrev": "Pestaña de conversación anterior"
   },
   "browserMode": "Navegador",
   "terminalMode": "Terminal",
-  "addRecentOutput": "Añadir salida reciente a chat"
+  "addRecentOutput": "Añadir salida reciente a chat",
+  "browserSearchEngineLabel": "Motor de búsqueda",
+  "refreshPreview": "Actualizar (volver a leer del disco)",
+  "autoRefreshOn": "Auto-actualizar: activado (clic para desactivar)",
+  "autoRefreshOff": "Auto-actualizar: desactivado (clic para activar)",
+  "browserHistoryRecent": "Recientes",
+  "browserHistoryMatches": "Historial",
+  "browserHistoryEmpty": "No hay historial que coincida",
+  "browserHistoryNone": "Aún no hay historial de navegación",
+  "browserHistoryRemove": "Quitar del historial",
+  "browserHistoryClear": "Borrar todo el historial",
+  "browserHistoryKeyboardHint": "↑↓ o Ctrl+N/P para seleccionar · Enter para abrir",
+  "addFilePathToChat": "Añadir ruta de archivo al chat",
+  "addDeliverableToChat": "Añadir entrega al chat",
+  "addedToChat": "Añadido al chat"
 }

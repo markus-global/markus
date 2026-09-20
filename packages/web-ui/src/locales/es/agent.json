@@ -210,7 +210,50 @@
       "mailboxQueued": "{{count}} mensaje(s) queued in mailbox",
       "startAgent": "▶ Comienzo",
       "stopAgent": "⏹ Detener",
-      "openClaw": "OpenClaw"
+      "openClaw": "OpenClaw",
+      "detailsToggle": "Detalles de uso y almacenamiento",
+      "lifetimeCaption": "Acumulado desde que se creó el agente",
+      "storageDepthLimited": "El árbol de directorios es profundo: el uso real puede ser mayor",
+      "sections": {
+        "files": {
+          "title": "Archivos",
+          "hint": "ROLE.md / HEARTBEAT.md / knowledge.md, etc."
+        },
+        "mind": {
+          "title": "Runtime y Atención",
+          "hint": "Enfoque actual · cola · decisiones recientes"
+        },
+        "recent": {
+          "title": "Actividad reciente",
+          "hint": "Historial de latido y A2A",
+          "empty": "No se registró actividad reciente"
+        },
+        "tools": {
+          "title": "Capacidades",
+          "hint": "Habilidades y herramientas habilitadas"
+        },
+        "memory": {
+          "title": "Memoria y latido",
+          "hint": "Memoria a largo plazo · sesiones · ritmo de latido"
+        },
+        "usage": {
+          "title": "Uso y almacenamiento",
+          "hint": "Tokens de por vida · solicitudes · uso de disco",
+          "empty": "Aún no hay datos de uso"
+        }
+      },
+      "storageBuckets": {
+        "workspace": "Espacio de trabajo",
+        "sessions": "Sesiones",
+        "tool-outputs": "Salidas de herramientas",
+        "daily-logs": "Registros",
+        "role": "Rol",
+        "subagent-logs": "Registros de subagentes",
+        "worktrees": "Árboles de trabajo"
+      },
+      "a2aRuns_one": "{{count}} intercambio A2A",
+      "a2aRuns_other": "{{count}} intercambios A2A",
+      "recentWindow": "las {{count}} actividades más recientes"
     },
     "syncContext": {
       "assignedTasks": "Tareas con requisitos y trazabilidad de proyectos",
@@ -362,7 +405,10 @@
       "firstHeartbeatSoon": "El primer latido del corazón se activará ~{{when}}.",
       "schedulerStopped": "El programador Heartbeat se detiene.",
       "runFirstNow": "Corre el primer latido de corazón ahora",
-      "soon": "pronto"
+      "soon": "pronto",
+      "cancelWakeupOk": "Despertador cancelado.",
+      "cancelWakeupFailed": "Error al cancelar el despertador",
+      "cancelWakeupGone": "Ese despertador ya no existe (ya se disparó o se canceló en otro lugar). La lista se ha actualizado."
     },
     "relative": {
       "inSeconds": "dentro {{count}}s",
@@ -471,7 +517,13 @@
         "systemAnnouncement": "Anuncio del sistema",
         "systemEvent": "Evento del sistema",
         "statusArrow": "{{from}} → {{to}}"
-      }
+      },
+      "agentStopped": "DETENIDO",
+      "stoppedHint": "El agente está detenido; el bucle de atención no está en ejecución. Reinícialo desde la pestaña Resumen de arriba.",
+      "notebook": "Cuaderno",
+      "notebookEntries": "{{count}} entradas",
+      "notebookHint": "El espacio de trabajo cognitivo persistente del agente. Mostrando las {{count}} más recientes; el resto vive en NOTEBOOK.md. Las entradas expiran automáticamente.",
+      "expandNotebook": "Mostrar {{count}} más…"
     }
   },
   "deliverables": {
