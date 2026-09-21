@@ -126,7 +126,7 @@ export class MiniMaxProvider extends OpenAIProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(this.imageGenerationTimeoutMs),
     });
 
     if (!res.ok) {
@@ -177,7 +177,7 @@ export class MiniMaxProvider extends OpenAIProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(this.ttsTimeoutMs),
     });
 
     if (!res.ok) {
@@ -224,7 +224,7 @@ export class MiniMaxProvider extends OpenAIProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(this.videoGenerationTimeoutMs),
     });
 
     if (!createRes.ok) {

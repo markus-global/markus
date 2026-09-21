@@ -437,6 +437,7 @@
     "findScopeHasMore": "Los mensajes anteriores aún no están cargados",
     "findLoadEarlier": "Cargar mensajes anteriores",
     "findLoadingEarlier": "Cargando…",
+    "findServerResultsTitle": "Todo el historial",
     "findFieldText": "Mensaje",
     "findFieldThinking": "Pensando",
     "findFieldTool": "Herramienta",

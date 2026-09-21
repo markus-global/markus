@@ -54,7 +54,7 @@ import { renderMentionText } from '../components/CommentInput.tsx';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
 import { RightPanel } from '../components/RightPanel.tsx';
-import { ChatSearchPanel, GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
+import { GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
 import { ChatHistorySearch } from '../components/ChatHistorySearch.tsx';
 import { searchChatHistory } from '../lib/chatSearch.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
@@ -866,19 +866,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const pendingSelectTeamRef = useRef<string | null>(null);
   const [showMemberPanel, setShowMemberPanel] = useState(false);
 
-  // Message search
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<import('../api.ts').SearchResult[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const searchDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-
-  // Find-in-conversation (this session's transcript only). Separate from the
-  // header's global search: that one queries the server across all conversations,
-  // this one is instant, local, and jumps the virtualized list to the hit.
+  // Find + full-history search share ONE panel: instant local matches over the
+  // loaded transcript PLUS server FTS5 results across the whole chat history.
+  // (The two search UIs were merged to avoid two overlapping search entry
+  // points with the same keyboard shortcut.)
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState('');
   const [findCursor, setFindCursor] = useState(-1);
+  const [findServerResults, setFindServerResults] = useState<import('../api.ts').SearchResult[]>([]);
+  const [findServerLoading, setFindServerLoading] = useState(false);
+  const findServerDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Teams
   const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
@@ -1948,20 +1945,25 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     requestAnimationFrame(flash);
   }, [findOutcome.matches, chatVirtualizer, pinChatScrollAway]);
 
-  // Ctrl/Cmd+F opens find-in-conversation while the chat tab is showing — the
-  // convention in every chat client, and the only discoverable entry point on
-  // mobile. Native browser find is not useful inside the Electron shell here.
+  // Cmd+F (Mac) / Ctrl+F (Win/Linux) opens find-in-conversation while the chat
+  // tab is showing — the convention in every chat client, and the only
+  // discoverable entry point on mobile. Native browser find is not useful
+  // inside the Electron shell here.
+  // NOTE: on macOS, Ctrl+F is the native "cursor forward" shortcut, so only
+  // ⌘F is hijacked there; Ctrl+F falls through to the platform default.
   useEffect(() => {
     if (mainTab !== 'chat' || previewMode) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== 'f') return;
-      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      if (e.altKey || e.shiftKey) return;
+      const isFindShortcut = isMac ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
+      if (!isFindShortcut) return;
       e.preventDefault();
       setFindOpen(true);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [mainTab, previewMode]);
+  }, [mainTab, previewMode, isMac]);
 
   // ── Preserve scroll position across page-level navigation ──
   // PageSlot now uses visibility:hidden + position:absolute instead of
@@ -2959,28 +2961,32 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   };
 
-  const executeSearch = useCallback(async (q: string) => {
-    if (q.length < 2) { setSearchResults([]); return; }
-    setSearchLoading(true);
+  // ── Full-history search (merged into the find panel) ──────────────────────
+  // The find-in-conversation bar now ALSO queries the server FTS5 index so the
+  // same panel covers the loaded transcript (instant, local) AND the whole
+  // history (server). This replaces the old separate ChatSearchPanel.
+  const runFindServerSearch = useCallback(async (q: string) => {
+    if (q.trim().length < 2) { setFindServerResults([]); return; }
+    setFindServerLoading(true);
     try {
       const scope = chatMode === 'channel' ? 'channel' : chatMode === 'direct' ? 'direct' : 'all';
       const channel = chatMode === 'channel' ? activeChannel : undefined;
       const { results } = await api.messages.search(q, { scope, channel, limit: 30 });
-      setSearchResults(results);
-    } catch { setSearchResults([]); }
-    setSearchLoading(false);
+      setFindServerResults(results);
+    } catch { setFindServerResults([]); }
+    setFindServerLoading(false);
   }, [chatMode, activeChannel]);
 
-  const handleSearchInput = useCallback((q: string) => {
-    setSearchQuery(q);
-    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-    searchDebounceRef.current = setTimeout(() => executeSearch(q), 300);
-  }, [executeSearch]);
+  const handleFindInput = useCallback((q: string) => {
+    setFindQuery(q);
+    if (findServerDebounceRef.current) clearTimeout(findServerDebounceRef.current);
+    findServerDebounceRef.current = setTimeout(() => void runFindServerSearch(q), 300);
+  }, [runFindServerSearch]);
 
-  const handleSearchResultClick = useCallback((result: import('../api.ts').SearchResult) => {
-    setSearchOpen(false);
-    setSearchQuery('');
-    setSearchResults([]);
+  const handleFindServerResultClick = useCallback((result: import('../api.ts').SearchResult) => {
+    setFindOpen(false);
+    setFindQuery('');
+    setFindServerResults([]);
     if (result.source === 'channel' && result.channel) {
       setChatMode('channel');
       setActiveChannel(result.channel);
@@ -3867,8 +3873,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 >{chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}</button>
                 <div className="flex-1" />
                 <button
-                  onClick={() => { setSearchOpen(!searchOpen); if (!searchOpen) { setSearchQuery(''); setSearchResults([]); } }}
-                  className={`p-1 rounded-md transition-colors shrink-0 ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'}`}
+                  onClick={() => { setFindOpen(o => !o); if (findOpen) setFindCursor(-1); }}
+                  className={`p-1 rounded-md transition-colors shrink-0 ${findOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'}`}
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
                 </button>
@@ -4071,15 +4077,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       <path strokeLinecap="round" d="M20.5 20.5L22 22" />
                     </svg>
                   </button>
-                  <button
-                    onClick={() => { setSearchOpen(!searchOpen); if (!searchOpen) { setSearchQuery(''); setSearchResults([]); } }}
-                    className={`p-1.5 rounded-md transition-colors ${searchOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
-                    title={t('page.searchMessages')}
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-                    </svg>
-                  </button>
                   {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
                     <button
                       onClick={() => setShowMemberPanel(!showMemberPanel)}
@@ -4151,18 +4148,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
             );
           })()
-          )}
-
-          {/* Search panel */}
-          {searchOpen && (
-            <ChatSearchPanel
-              searchQuery={searchQuery}
-              searchLoading={searchLoading}
-              searchResults={searchResults}
-              onInputChange={handleSearchInput}
-              onResultClick={handleSearchResultClick}
-              onClose={() => { setSearchOpen(false); setSearchQuery(''); setSearchResults([]); }}
-            />
           )}
 
           {/* Session tab bar (direct mode, chat tab) — hide when only 1 session */}
@@ -4246,7 +4231,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           {findOpen && mainTab === 'chat' && (
             <ChatHistorySearch
               query={findQuery}
-              onQueryChange={setFindQuery}
+              onQueryChange={handleFindInput}
               matches={findOutcome.matches}
               cursor={findCursor}
               scanned={findOutcome.scanned}
@@ -4256,6 +4241,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               onLoadEarlier={() => { void loadMore(); }}
               onJump={jumpToFindMatch}
               onClose={() => { setFindOpen(false); setFindCursor(-1); }}
+              serverResults={findServerResults}
+              serverLoading={findServerLoading}
+              onServerResultClick={handleFindServerResultClick}
               labelFor={(m) => {
                 const msg = visibleMessages[m.messageIndex];
                 if (!msg) return '';

@@ -102,6 +102,11 @@ export class OpenAIProvider implements MultiModalProviderInterface {
   protected maxTokens: number;
   protected chatTimeoutMs: number;
   protected streamTimeoutMs: number;
+  protected imageGenerationTimeoutMs: number;
+  protected ttsTimeoutMs: number;
+  protected sttTimeoutMs: number;
+  protected videoGenerationTimeoutMs: number;
+  protected decisionTimeoutMs: number;
   protected tokenResolver?: TokenResolver;
   /** Explicit decisions endpoint; when unset it is resolved from `baseUrl`. */
   protected decisionsUrl?: string;
@@ -122,6 +127,16 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     this.chatTimeoutMs = config?.timeoutMs ?? 90_000;
     // Idle gap between chunks (reset on data). Independent of chat timeoutMs.
     this.streamTimeoutMs = config?.streamTimeoutMs ?? 180_000;
+    // Generative media (image/video/audio) is naturally slower than chat and
+    // each costs real compute — give every modality an independently configured
+    // client timeout (per provider), instead of one hardcoded ceiling for all.
+    // Default: generous 10min — local/self-hosted servers (diffusers, vLLM)
+    // must cold-load weights on the first request and can take minutes.
+    this.imageGenerationTimeoutMs = config?.imageGenerationTimeoutMs ?? 600_000;
+    this.ttsTimeoutMs = config?.ttsTimeoutMs ?? 600_000;
+    this.sttTimeoutMs = config?.sttTimeoutMs ?? 600_000;
+    this.videoGenerationTimeoutMs = config?.videoGenerationTimeoutMs ?? 600_000;
+    this.decisionTimeoutMs = config?.decisionTimeoutMs ?? 60_000;
     this.decisionsUrl = config?.decisionsUrl;
     this.tokenResolver = tokenResolver;
   }
@@ -133,6 +148,11 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     if (config.maxTokens) this.maxTokens = config.maxTokens;
     if (config.timeoutMs) this.chatTimeoutMs = config.timeoutMs;
     if (config.streamTimeoutMs) this.streamTimeoutMs = config.streamTimeoutMs;
+    if (config.imageGenerationTimeoutMs !== undefined) this.imageGenerationTimeoutMs = config.imageGenerationTimeoutMs;
+    if (config.ttsTimeoutMs !== undefined) this.ttsTimeoutMs = config.ttsTimeoutMs;
+    if (config.sttTimeoutMs !== undefined) this.sttTimeoutMs = config.sttTimeoutMs;
+    if (config.videoGenerationTimeoutMs !== undefined) this.videoGenerationTimeoutMs = config.videoGenerationTimeoutMs;
+    if (config.decisionTimeoutMs !== undefined) this.decisionTimeoutMs = config.decisionTimeoutMs;
     if (config.decisionsUrl) this.decisionsUrl = config.decisionsUrl;
   }
 
@@ -588,7 +608,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
         'X-Title': 'Markus',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(this.decisionTimeoutMs),
     });
 
     if (!res.ok) {
@@ -630,7 +650,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(this.imageGenerationTimeoutMs),
     });
 
     if (!res.ok) {
@@ -675,7 +695,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(this.ttsTimeoutMs),
     });
 
     if (!res.ok) {
@@ -707,7 +727,7 @@ export class OpenAIProvider implements MultiModalProviderInterface {
       method: 'POST',
       headers: { Authorization: authorization },
       body: formData,
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(this.sttTimeoutMs),
     });
 
     if (!res.ok) {

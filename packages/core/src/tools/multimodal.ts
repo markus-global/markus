@@ -238,6 +238,24 @@ function resolveEffectiveCandidates(
     };
   }
   if (agentModel) {
+    // Qualified "provider/model" ids (e.g. "openai/gpt-image-1") must NOT be
+    // blindly stamped onto every candidate model — if the caller passes a
+    // chat id like "deepseek/deepseek-v4-flash-0731" for image_generation, we
+    // would otherwise POST a text model to an image endpoint and surface a
+    // confusing upstream 404 ("model not found"). Split the prefix into an
+    // explicit provider so the modality-support check below applies and the
+    // error names the real problem (provider does not serve this capability).
+    const slash = agentModel.indexOf('/');
+    if (slash > 0) {
+      const prefix = agentModel.slice(0, slash);
+      const bare = agentModel.slice(slash + 1);
+      if (
+        bare
+        && (ctx.resolveProvider?.(prefix) || candidates.some(c => c.name === prefix))
+      ) {
+        return resolveEffectiveCandidates(candidates, prefix, bare, ctx, method);
+      }
+    }
     return { candidates: candidates.map(c => ({ ...c, model: agentModel })) };
   }
   return { candidates };
@@ -865,7 +883,13 @@ export function createMultiModalTools(ctx: MultiModalToolsContext): AgentToolHan
         log.error(`Image generation failed on all ${candidates.length} provider(s)`);
         return toolErr(
           `Image generation failed (tried: ${tried}): ${lastError instanceof Error ? lastError.message : String(lastError)}`,
-          { hint: ROUTING_HINT, tried_models: candidates.map(c => c.model).filter(Boolean) },
+          {
+            hint:
+              `${ROUTING_HINT} ` +
+              `If the error mentions "model not found" / "not served for this capability", the selected model is a ` +
+              `text/chat model, not an image model — pick from llm_get_capability_routing.usable_models.image_generation.`,
+            tried_models: candidates.map(c => c.model).filter(Boolean),
+          },
         );
       },
     },

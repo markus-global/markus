@@ -112,7 +112,7 @@ export class DashScopeProvider extends OpenAIProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(this.imageGenerationTimeoutMs),
     });
 
     if (!res.ok) {
@@ -169,7 +169,7 @@ export class DashScopeProvider extends OpenAIProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authorization },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(this.ttsTimeoutMs),
     });
 
     if (!res.ok) {

@@ -36,6 +36,25 @@ describe('OpenAIProvider', () => {
     expect(provider.model).toBe('gpt-4o');
   });
 
+  it('defaults generative-media timeouts to 10 minutes', () => {
+    const p = new OpenAIProvider({
+      provider: 'openai',
+      model: 'gpt-4o',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com',
+    });
+    const media = p as unknown as {
+      imageGenerationTimeoutMs: number;
+      ttsTimeoutMs: number;
+      sttTimeoutMs: number;
+      videoGenerationTimeoutMs: number;
+    };
+    expect(media.imageGenerationTimeoutMs).toBe(600_000);
+    expect(media.ttsTimeoutMs).toBe(600_000);
+    expect(media.sttTimeoutMs).toBe(600_000);
+    expect(media.videoGenerationTimeoutMs).toBe(600_000);
+  });
+
   it('configure updates settings', () => {
     provider.configure({
       provider: 'openai',
@@ -46,6 +65,41 @@ describe('OpenAIProvider', () => {
       timeoutMs: 30_000,
     });
     expect(provider.model).toBe('gpt-5.4');
+  });
+
+  it('honors per-modality media timeouts from config', async () => {
+    const p = new OpenAIProvider({
+      provider: 'openai',
+      model: 'gpt-4o',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com',
+      imageGenerationTimeoutMs: 240_000,
+      ttsTimeoutMs: 300_000,
+      sttTimeoutMs: 200_000,
+    });
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ data: [{ url: 'https://cdn.example/img.png' }] }),
+    }));
+    await p.generateImage('a cat');
+    expect(timeoutSpy).toHaveBeenCalledWith(240_000);
+
+    timeoutSpy.mockClear();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new Uint8Array([1, 2, 3]).buffer),
+    }));
+    await p.generateSpeech('hello');
+    expect(timeoutSpy).toHaveBeenCalledWith(300_000);
+
+    timeoutSpy.mockClear();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve('transcribed'),
+    }));
+    await p.transcribeSpeech(new Uint8Array([1, 2, 3]));
+    expect(timeoutSpy).toHaveBeenCalledWith(200_000);
   });
 
   it('chat returns success response', async () => {
