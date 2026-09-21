@@ -1,5 +1,31 @@
 # Release Log
 
+## v0.10.1-rc.0
+
+**候选发布（RC）**——从 `v0.10.0` 起的首个候选版，聚焦 LLM 多模态与本地自托管推理方向的修复与增强：
+
+### Bug Fixes
+
+- **Qwen-Image-2.1 本地接入复盘四大问题修复**（P0-1）模型能力声明缺失 → 本地/自托管模型无法路由到多模态能力：`llm_add_model` 新增 `capabilities` 参数（显式声明优先于模型 id 命名启发式并持久化到 customModels）；`llm_set_capability_routing` 新增 `force` 开关绕过命名启发式；`llm_list_providers` 输出 capabilities 元数据；image_generation 命名模式扩展本地模型家族（qwen-image/hunyuan/stable-diffusion/nano-banana 等）
+- **媒体超时硬编码 → 慢速本地推理被误杀**（P0-2）：`LLMProviderConfig` 新增 `imageGenerationTimeoutMs/ttsTimeoutMs/sttTimeoutMs/videoGenerationTimeoutMs/decisionTimeoutMs`，OpenAI/MiniMax/DashScope/Fireworks/Markus Provider 全部接入（默认值与历史硬编码一致，可覆盖）；`llm_add_provider/llm_edit_provider` 支持 `*_timeout_ms` 参数并持久化
+- **多模态 fallback 携带文本模型 id → 图像接口 404**（P1-3）：`router.resolveModalityProvider` 非文本能力不再复用全局文本路由默认模型 id；qualified provider/model id 拆分为显式 provider 走能力校验；`generate_image` 失败提示点明"文本模型不是图像模型"
+- **usable_models 与路由校验能力判定口径统一**（P1-4）：单一查找入口 `findModelDeclaredCapabilities` 供校验与展示共用
+- **Team chat 搜索**：find-in-conversation 同时查询服务端 FTS5 索引并列出全历史结果，移除重复的 ChatSearchPanel 入口；macOS 上 Team chat find 仅触发 Cmd+F，Ctrl+F 回落浏览器原生光标移动（Win/Linux 保持 Ctrl+F）
+
+### Features
+
+- **多模态默认超时统一放宽至 10 分钟** — OpenAI/MiniMax/DashScope/Fireworks/Markus 五 Provider 的图像生成、TTS、STT、视频生成四类媒体请求默认超时从 120s/180s 统一提高到 600s，覆盖本地/自托管推理服务器（diffusers、vLLM 等）首次请求需冷加载权重的场景；decide（决策模型）非多模态，保持 60s 默认不变
+
+### Tests
+
+- 新增 5 个测试文件 174+ 用例：capabilities 声明优先 / force 强制路由 / 媒体超时默认值 & 覆盖 / qualified-id 拆分 / 路由模型能力判定，全部通过
+
+### Stats
+
+- 3 个提交（自 `v0.10.0`），20 files changed, 676 insertions(+), 81 deletions(-)
+
+---
+
 ## v0.10.0
 
 **正式版发布**——从 `v0.10.0-rc.0` 候选版提升稳定版，rc.0 全量功能与修复见下方条目，并包含候选期之后的增量：
