@@ -196,6 +196,93 @@ describe('createSettingsTools', () => {
       }));
       expect(result.status).toBe('success');
     });
+
+    it('trusts explicit capabilities declaration over the name heuristic', async () => {
+      // A local model whose id contains a text-model family name ("qwen")
+      // previously failed the regex gate. Once it carries an explicit
+      // imageGeneration declaration, routing must trust that declaration.
+      const router = createMockRouter();
+      (router.getEnhancedSettings as ReturnType<typeof vi.fn>).mockReturnValue({
+        defaultProvider: 'localfn',
+        providers: {
+          localfn: {
+            displayName: 'Local vLLM',
+            model: 'qwen-image-2.1',
+            configured: true,
+            enabled: true,
+            models: [
+              {
+                id: 'qwen-image-2.1',
+                name: 'Qwen Image 2.1',
+                contextWindow: 0,
+                maxOutputTokens: 0,
+                cost: { input: 0, output: 0 },
+                inputTypes: ['text'],
+                capabilities: ['imageGeneration'],
+              },
+            ],
+          },
+        },
+      });
+      const tool = findTool(router, 'llm_set_capability_routing');
+      const result = JSON.parse(await tool.execute({
+        capability_type: 'image_generation',
+        provider: 'localfn',
+        model: 'qwen-image-2.1',
+      }));
+      expect(result.status).toBe('success');
+      expect(result.model).toBe('qwen-image-2.1');
+    });
+
+    it('force bypasses the name heuristic for undeclared models', async () => {
+      const router = createMockRouter();
+      const tool = findTool(router, 'llm_set_capability_routing');
+      const result = JSON.parse(await tool.execute({
+        capability_type: 'image_generation',
+        provider: 'openai',
+        model: 'gpt-4o',
+        force: true,
+      }));
+      expect(result.status).toBe('success');
+      expect(result.model).toBe('gpt-4o');
+    });
+
+    it('force does not bypass an explicit catalog capability mismatch', async () => {
+      // A catalog entry that DECLARES capabilities but lacks the required tag
+      // is a hard contradiction — force is only an escape hatch for the name
+      // heuristic, not for the declared truth.
+      const router = createMockRouter();
+      (router.getEnhancedSettings as ReturnType<typeof vi.fn>).mockReturnValue({
+        defaultProvider: 'markus',
+        providers: {
+          markus: {
+            displayName: 'Markus',
+            model: 'openai/gpt-audio',
+            configured: true,
+            enabled: true,
+            models: [
+              {
+                id: 'openai/gpt-audio',
+                name: 'GPT Audio',
+                contextWindow: 0,
+                maxOutputTokens: 0,
+                cost: { input: 0, output: 0 },
+                capabilities: ['audioOutput', 'audioInput'],
+              },
+            ],
+          },
+        },
+      });
+      const tool = findTool(router, 'llm_set_capability_routing');
+      const result = JSON.parse(await tool.execute({
+        capability_type: 'audio_tts',
+        provider: 'markus',
+        model: 'openai/gpt-audio',
+        force: true,
+      }));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('not tagged');
+    });
   });
 
   describe('llm_set_capability_routing validation', () => {

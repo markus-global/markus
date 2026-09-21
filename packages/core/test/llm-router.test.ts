@@ -880,6 +880,21 @@ describe('LLMRouter resolveModalityProvider fallbacks', () => {
     expect(resolved?.model).toBe('image-01');
   });
 
+  it('does NOT carry a text routing-default model id into a non-text fallback', () => {
+    // Regression for P1-3: when the global routing default is a chat model
+    // (gpt-4o), a media capability that has no assignment must resolve to the
+    // provider WITHOUT that text id — POSTing "gpt-4o" to an images endpoint
+    // yields a confusing upstream 404 ("model not found for this capability").
+    const router = new LLMRouter('openai');
+    const openai = mockProvider('openai', 'gpt-4o') as MultiModalProviderInterface;
+    router.registerProvider('openai', openai);
+    router.setRoutingDefaultModel({ provider: 'openai', model: 'gpt-4o' });
+
+    const resolved = router.resolveModalityProvider('image_generation');
+    expect(resolved?.provider).toBe(openai);
+    expect(resolved?.model).toBeUndefined();
+  });
+
   it('returns undefined when no providers are available', () => {
     const router = new LLMRouter('openai');
     router.registerProvider('openai', mockProvider('openai', 'gpt-4o'));

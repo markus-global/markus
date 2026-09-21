@@ -256,6 +256,56 @@ describe('createMultiModalTools', () => {
       expect(result.error).toContain('openai');
     });
 
+    it('splits a qualified provider/model id so a chat model never hits the image endpoint', async () => {
+      // Regression for P1-3: passing model="deepseek/deepseek-v4-flash-0731"
+      // (a chat id) with NO provider used to stamp that id onto every image
+      // candidate and POST it to the images endpoint (404 "model not found").
+      // The qualified prefix must instead route through the explicit-provider
+      // path, where the modality-support check names the real problem.
+      const imageProvider = createMockProvider({ generateImage: vi.fn().mockResolvedValue([]), name: 'markus' });
+      const chatProvider = createMockProvider({ name: 'deepseek', model: 'deepseek-v4-flash-0731' });
+      const tools = createMultiModalTools(
+        createContext(
+          { image_generation: [{ provider: imageProvider, name: 'markus', model: 'openai/gpt-image-1' }] },
+          {
+            resolveProvider: (name) =>
+              name === 'deepseek' ? { provider: chatProvider, name: 'deepseek' } : undefined,
+            listProviderNames: () => ['markus', 'deepseek'],
+          },
+        ),
+      );
+      const result = JSON.parse(await img(tools).execute({
+        prompt: 'a cat',
+        model: 'deepseek/deepseek-v4-flash-0731',
+      }));
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('does not support this modality');
+      expect(result.error).toContain('deepseek');
+      expect(imageProvider.generateImage).not.toHaveBeenCalled();
+    });
+
+    it('splits a qualified model id into its provider when that provider is capable', async () => {
+      const generateImage = vi.fn().mockResolvedValue([]);
+      const openai = createMockProvider({ generateImage, name: 'openai', model: 'gpt-image-1' });
+      const tools = createMultiModalTools(
+        createContext(
+          { image_generation: [{ provider: openai, name: 'openai', model: 'gpt-image-1' }] },
+          {
+            resolveProvider: (name) => (name === 'openai' ? { provider: openai, name: 'openai' } : undefined),
+            listProviderNames: () => ['openai'],
+          },
+        ),
+      );
+      const result = JSON.parse(await img(tools).execute({
+        prompt: 'a cat',
+        model: 'openai/gpt-image-1',
+      }));
+      expect(result.status).toBe('success');
+      // The provider prefix is consumed for routing; the bare model id is what
+      // reaches the upstream (same as provider="openai" model="gpt-image-1").
+      expect(generateImage).toHaveBeenCalledWith('a cat', expect.objectContaining({ model: 'gpt-image-1' }));
+    });
+
     it('rejects disabled provider with an explicit disabled error', async () => {
       const generateImage = vi.fn();
       const tools = createMultiModalTools(

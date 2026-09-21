@@ -1333,8 +1333,16 @@ export class LLMRouter {
    * Resolve a provider instance for a non-text modality (image_generation, audio_tts, etc.).
    * Returns the provider and the assigned model name WITHOUT mutating provider state.
    * The caller is responsible for passing `model` into the API call options.
+   *
+   * For non-text capabilities this NEVER falls back to the global text routing
+   * default model id (deepseek/gpt-4o/…): posting a chat id to an image/tts/stt
+   * endpoint yields a confusing upstream 404 ("model not found" / "not served for
+   * this capability"). Unassigned capabilities resolve to the provider only; the
+   * provider's own modality-appropriate default (or an explicit per-call model)
+   * is used instead.
    */
   resolveModalityProvider(capabilityType: ModelCapabilityType): { provider: MultiModalProviderInterface; model?: string } | undefined {
+    const isText = capabilityType === 'text';
     const assignment = this._capabilityRouting.assignments[capabilityType];
     if (assignment) {
       const provider = this.providers.get(assignment.provider);
@@ -1349,15 +1357,49 @@ export class LLMRouter {
       }
     }
 
-    // Fallback: try routingDefaultModel, then defaultProvider
+    // Fallback: try routingDefaultModel, then defaultProvider. Only text routing
+    // carries the default text model id; non-text capabilities must NOT reuse it
+    // (see class doc above) — except when the routing default model provably
+    // serves the capability (declared in its catalog entry), so a sensible
+    // media default like "image-01" still resolves instead of posting a chat id
+    // like "deepseek/deepseek-v4-flash-0731" to an image endpoint (upstream 404).
     if (this._routingDefaultModel) {
       const p = this.providers.get(this._routingDefaultModel.provider);
       if (p && this.isAvailable(this._routingDefaultModel.provider)) {
-        return { provider: p as MultiModalProviderInterface, model: this._routingDefaultModel.model };
+        const model = isText || this.routingDefaultModelServesCapability(capabilityType)
+          ? this._routingDefaultModel.model
+          : undefined;
+        return { provider: p as MultiModalProviderInterface, ...(model ? { model } : {}) };
       }
     }
     const p = this.providers.get(this.defaultProvider);
     return p && this.isAvailable(this.defaultProvider) ? { provider: p as MultiModalProviderInterface } : undefined;
+  }
+
+  /**
+   * True when the routing default model's catalog entry declares the requested
+   * capability. Used to decide whether a non-text fallback may carry the model
+   * id — a text/chat model must never be POSTed to a media endpoint.
+   */
+  private routingDefaultModelServesCapability(capabilityType: ModelCapabilityType): boolean {
+    const r = this._routingDefaultModel;
+    if (!r) return false;
+    try {
+      const entry = this.getProviderModels(r.provider).find(m => m.id === r.model);
+      if (!entry) return false;
+      switch (capabilityType) {
+        case 'image_generation': return !!entry.capabilities?.includes('imageGeneration');
+        case 'audio_tts': return !!entry.capabilities?.includes('tts');
+        case 'audio_stt': return !!entry.capabilities?.includes('stt');
+        case 'video_generation': return !!entry.capabilities?.includes('videoGeneration');
+        case 'decision': return !!entry.capabilities?.includes('decision');
+        case 'image_recognition':
+          return !!entry.inputTypes?.includes('image') || !!entry.capabilities?.includes('vision');
+        default: return false;
+      }
+    } catch {
+      return false;
+    }
   }
 
   /**

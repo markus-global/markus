@@ -85,6 +85,10 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
                 cost: m.cost,
                 reasoning: m.reasoning,
                 vision: m.inputTypes?.includes('image'),
+                // Explicit capability declaration (imageGeneration/tts/stt/…).
+                // Lets agents see at a glance which non-chat models a provider
+                // can actually serve — no id-guessing needed.
+                capabilities: m.capabilities ?? [],
               })) ?? [],
             };
           });
@@ -212,6 +216,26 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
             type: 'string',
             description: 'Default model ID (e.g. "deepseek-v4-flash")',
           },
+          image_generation_timeout_ms: {
+            type: 'number',
+            description: 'Optional timeout in ms for image generation calls (default 120000; raise to 180000+ for local/self-hosted model servers)',
+          },
+          tts_timeout_ms: {
+            type: 'number',
+            description: 'Optional timeout in ms for text-to-speech calls (default 180000)',
+          },
+          stt_timeout_ms: {
+            type: 'number',
+            description: 'Optional timeout in ms for speech-to-text calls (default 120000)',
+          },
+          video_generation_timeout_ms: {
+            type: 'number',
+            description: 'Optional timeout in ms for video generation calls (default 180000)',
+          },
+          decision_timeout_ms: {
+            type: 'number',
+            description: 'Optional timeout in ms for decision calls (default 60000)',
+          },
         },
         required: ['name', 'model'],
       },
@@ -220,12 +244,14 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         const apiKey = args['api_key'] as string | undefined;
         const baseUrl = args['base_url'] as string | undefined;
         const model = args['model'] as string;
+        const mediaTimeouts = pickMediaTimeoutFields(args);
         try {
           ctx.llmRouter.registerProviderFromConfig(name, {
             provider: name as any,
             model,
             apiKey,
             baseUrl,
+            ...mediaTimeouts,
           });
 
           if (ctx.persistConfig) {
@@ -237,6 +263,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
                       ...(apiKey ? { apiKey } : {}),
                       model,
                       ...(baseUrl ? { baseUrl } : {}),
+                      ...mediaTimeouts,
                       enabled: true,
                     },
                   },
@@ -280,6 +307,26 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
             type: 'string',
             description: 'New model ID (optional)',
           },
+          image_generation_timeout_ms: {
+            type: 'number',
+            description: 'Optional timeout in ms for image generation calls (default 120000)',
+          },
+          tts_timeout_ms: {
+            type: 'number',
+            description: 'Optional timeout in ms for text-to-speech calls (default 180000)',
+          },
+          stt_timeout_ms: {
+            type: 'number',
+            description: 'Optional timeout in ms for speech-to-text calls (default 120000)',
+          },
+          video_generation_timeout_ms: {
+            type: 'number',
+            description: 'Optional timeout in ms for video generation calls (default 180000)',
+          },
+          decision_timeout_ms: {
+            type: 'number',
+            description: 'Optional timeout in ms for decision calls (default 60000)',
+          },
         },
         required: ['provider'],
       },
@@ -288,6 +335,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         const apiKey = args['api_key'] as string | undefined;
         const baseUrl = args['base_url'] as string | undefined;
         const model = args['model'] as string | undefined;
+        const mediaTimeouts = pickMediaTimeoutFields(args);
         try {
           const provider = ctx.llmRouter.getProvider(providerName);
           if (!provider) {
@@ -297,6 +345,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           if (model) configUpdate.model = model;
           if (apiKey) configUpdate.apiKey = apiKey;
           if (baseUrl !== undefined) configUpdate.baseUrl = baseUrl;
+          Object.assign(configUpdate, mediaTimeouts);
           provider.configure(configUpdate);
 
           if (ctx.persistConfig) {
@@ -305,6 +354,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
               if (apiKey) updates.apiKey = apiKey;
               if (model) updates.model = model;
               if (baseUrl !== undefined) updates.baseUrl = baseUrl || undefined;
+              Object.assign(updates, mediaTimeouts);
               ctx.persistConfig({ llm: { providers: { [providerName]: updates } } } as any);
             } catch (e) {
               log.warn('Failed to persist provider edit', { error: String(e) });
@@ -363,11 +413,27 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
             type: 'boolean',
             description: 'Whether the model supports image input (optional)',
           },
+          capabilities: {
+            type: 'array',
+            items: {
+              type: 'string',
+              enum: ['imageGeneration', 'vision', 'tts', 'stt', 'videoGeneration', 'decision'],
+            },
+            description:
+              'Explicit capability declaration for this model (OPTIONAL but recommended for non-chat models). ' +
+              'Values: imageGeneration (text-to-image), vision (image input), tts, stt, videoGeneration, decision. ' +
+              'When declared, capability routing trusts this list instead of guessing from the model id — ' +
+              'use this for local/self-hosted models (Ollama, vLLM, diffusers servers) whose names do not match ' +
+              'known commercial naming patterns.',
+          },
         },
         required: ['provider', 'id', 'name', 'context_window', 'max_output_tokens', 'cost_input', 'cost_output'],
       },
       async execute(args: Record<string, unknown>): Promise<string> {
         const providerName = args['provider'] as string;
+        const declaredCaps = Array.isArray(args['capabilities'])
+          ? (args['capabilities'] as unknown[]).filter((c): c is string => typeof c === 'string')
+          : [];
         const modelDef = {
           id: args['id'] as string,
           name: args['name'] as string,
@@ -380,6 +446,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           },
           ...(args['reasoning'] ? { reasoning: true } : {}),
           ...(args['vision'] ? { inputTypes: ['text' as const, 'image' as const] } : { inputTypes: ['text' as const] }),
+          ...(declaredCaps.length > 0 ? { capabilities: declaredCaps } : {}),
         };
         try {
           ctx.llmRouter.addCustomModel(providerName, modelDef);
@@ -495,6 +562,13 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
             type: 'string',
             description: 'Optional fallback model',
           },
+          force: {
+            type: 'boolean',
+            description:
+              'When true, bypass the model-name heuristic gate (e.g. a self-hosted image model whose id does not look ' +
+              'like a commercial image model). Explicit capability declarations on the model (via llm_add_model ' +
+              'capabilities=...) are still honored and preferred. Default false.',
+          },
         },
         required: ['capability_type', 'provider', 'model'],
       },
@@ -503,6 +577,7 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
         const capabilityType = resolveCapabilityTypeArg(args, VALID);
         const provider = String(args['provider'] ?? '').trim();
         const model = String(args['model'] ?? '').trim();
+        const force = args['force'] === true;
 
         try {
           if (!capabilityType) {
@@ -549,13 +624,24 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
                 hint: `Call llm_get_capability_routing and pick from usable_models.${capabilityType}.`,
               });
             }
-            const mismatch = detectModelCapabilityMismatch(model, capabilityType);
-            if (mismatch) {
-              return JSON.stringify({
-                status: 'error',
-                error: mismatch,
-                hint: `Use llm_get_capability_routing.usable_models.${capabilityType} to find a suitable model.`,
-              });
+            // Explicit capability declaration (via llm_add_model capabilities=)
+            // is authoritative: if the model advertises the tag, skip the name
+            // heuristic entirely — local/self-hosted ids (qwen-image-2.1,
+            // stable-diffusion-server, …) must not be judged by commercial
+            // naming patterns. Only fall back to the regex gate when (a) the
+            // model carries no declaration AND (b) the caller did not force.
+            const declared = findModelDeclaredCapabilities(ctx.llmRouter, provider, model);
+            if (!force && !declared) {
+              const mismatch = detectModelCapabilityMismatch(model, capabilityType);
+              if (mismatch) {
+                return JSON.stringify({
+                  status: 'error',
+                  error: mismatch,
+                  hint: `Use llm_get_capability_routing.usable_models.${capabilityType} to find a suitable model, ` +
+                    `or declare capabilities on this model via llm_add_model (capabilities: ["${CAP_TAG_BY_TYPE[capabilityType] ?? 'imageGeneration'}"]), ` +
+                    'or pass force:true to override the name heuristic.',
+                });
+              }
             }
           }
 
@@ -804,6 +890,52 @@ const CAP_TAG_BY_TYPE: Partial<Record<ModelCapabilityType, string>> = {
   decision: 'decision',
 };
 
+/**
+ * Return the declared capability tags for a provider/model, or undefined when
+ * the model carries no explicit capability declaration. Model-level
+ * declarations (llm_add_model capabilities=...) are authoritative over the
+ * id-based naming heuristic — this is the single lookup used both for routing
+ * validation and for the usable_models listing, keeping the two in sync.
+ */
+function findModelDeclaredCapabilities(
+  router: LLMRouter,
+  provider: string,
+  model: string,
+): string[] | undefined {
+  const settings = router.getEnhancedSettings();
+  const p = settings.providers[provider];
+  if (!p?.models?.length) return undefined;
+  const entry = p.models.find(m => m.id === model);
+  if (!entry?.capabilities?.length) return undefined;
+  return entry.capabilities;
+}
+
+/** Map the snake_case media-timeout args (llm_add_provider / llm_edit_provider)
+ *  to their LLMProviderConfig camelCase fields, keeping only provided values. */
+function pickMediaTimeoutFields(
+  args: Record<string, unknown>,
+): Partial<{
+  imageGenerationTimeoutMs: number;
+  ttsTimeoutMs: number;
+  sttTimeoutMs: number;
+  videoGenerationTimeoutMs: number;
+  decisionTimeoutMs: number;
+}> {
+  const out: Record<string, number> = {};
+  const pairs: Array<[string, string]> = [
+    ['image_generation_timeout_ms', 'imageGenerationTimeoutMs'],
+    ['tts_timeout_ms', 'ttsTimeoutMs'],
+    ['stt_timeout_ms', 'sttTimeoutMs'],
+    ['video_generation_timeout_ms', 'videoGenerationTimeoutMs'],
+    ['decision_timeout_ms', 'decisionTimeoutMs'],
+  ];
+  for (const [argKey, cfgKey] of pairs) {
+    const v = args[argKey];
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) out[cfgKey] = v;
+  }
+  return out;
+}
+
 /** Accept capability_type plus common model typos (type / capability). */
 function resolveCapabilityTypeArg(
   args: Record<string, unknown>,
@@ -855,7 +987,9 @@ function validateModelAgainstCatalog(
 }
 
 const CAPABILITY_MODEL_PATTERNS: Record<string, RegExp> = {
-  image_generation: /\bdall-?e\b|gpt-image|flux|stable.?diffusion|sdxl|imagen|wanx|wan[.-]?ai|kolors|playground|cogview|glm-image|seedream|grok-imagine|image-01/i,
+  // Include common local / self-hosted diffusion families so undeclared ids
+  // (qwen-image-2.1, hunyuan-image, nano-banana, …) route without being told.
+  image_generation: /\bdall-?e\b|gpt-image|flux|stable.?diffusion|sdxl|imagen|qwen[.-]?image|hunyuan|nano.?banana|ideogram|recraft|grok.?image|playground|cogview|glm-image|seedream|wanx|wan[.-]?ai|kolors|image-01/i,
   image_recognition: /\bvl\b|vision|visual|eye|gpt-4o|gemini|claude/i,
   // Dedicated TTS ids only — do NOT match bare "speech"/"voice" (too broad) or music models.
   audio_tts: /\btts\b|cosy.?voice|bark|xtts|orpheus|aura-?\d|tts-1|text[-_.]?to[-_.]?speech/i,

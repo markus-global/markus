@@ -128,4 +128,89 @@ describe('settings tools extended coverage', () => {
     expect(result.status).toBe('success');
     expect(router.addCustomModel).toHaveBeenCalled();
   });
+
+  it('llm_add_model forwards capabilities declaration', async () => {
+    const router = createMockRouter();
+    const persistConfig = vi.fn();
+    const tool = findTool(router, 'llm_add_model', persistConfig);
+    const result = JSON.parse(await tool.execute({
+      provider: 'localfn',
+      id: 'qwen-image-2.1',
+      name: 'Qwen Image 2.1 (local)',
+      context_window: 0,
+      max_output_tokens: 0,
+      cost_input: 0,
+      cost_output: 0,
+      capabilities: ['imageGeneration'],
+    }));
+    expect(result.status).toBe('success');
+    expect(router.addCustomModel).toHaveBeenCalledWith(
+      'localfn',
+      expect.objectContaining({
+        id: 'qwen-image-2.1',
+        capabilities: ['imageGeneration'],
+      }),
+    );
+  });
+
+  it('llm_add_model persists capabilities', async () => {
+    const router = createMockRouter();
+    const persistConfig = vi.fn();
+    const tool = findTool(router, 'llm_add_model', persistConfig);
+    await tool.execute({
+      provider: 'openai',
+      id: 'custom-tts',
+      name: 'Custom TTS',
+      context_window: 0,
+      max_output_tokens: 0,
+      cost_input: 0,
+      cost_output: 0,
+      capabilities: ['tts'],
+    });
+    const persisted = persistConfig.mock.calls[0][0];
+    const model = persisted.llm.customModels.openai[0];
+    expect(model.capabilities).toEqual(['tts']);
+  });
+
+  it('llm_add_provider forwards media timeout config and persists it', async () => {
+    const router = createMockRouter();
+    const persistConfig = vi.fn();
+    const tool = findTool(router, 'llm_add_provider', persistConfig);
+    const result = JSON.parse(await tool.execute({
+      name: 'local-image',
+      model: 'qwen-image-2.1',
+      api_key: 'local',
+      base_url: 'http://127.0.0.1:8391/v1',
+      image_generation_timeout_ms: 300000,
+      tts_timeout_ms: 240000,
+    }));
+    expect(result.status).toBe('success');
+    expect(router.registerProviderFromConfig).toHaveBeenCalledWith(
+      'local-image',
+      expect.objectContaining({
+        imageGenerationTimeoutMs: 300000,
+        ttsTimeoutMs: 240000,
+      }),
+    );
+    const persisted = persistConfig.mock.calls[0][0];
+    expect(persisted.llm.providers['local-image'].imageGenerationTimeoutMs).toBe(300000);
+  });
+
+  it('llm_edit_provider forwards media timeout config to configure and persist', async () => {
+    const router = createMockRouter();
+    const persistConfig = vi.fn();
+    const tool = findTool(router, 'llm_edit_provider', persistConfig);
+    const result = JSON.parse(await tool.execute({
+      provider: 'openai',
+      image_generation_timeout_ms: 240000,
+      decision_timeout_ms: 90000,
+    }));
+    expect(result.status).toBe('success');
+    const provider = router.getProvider('openai') as { configure: ReturnType<typeof vi.fn> };
+    expect(provider.configure).toHaveBeenCalledWith(
+      expect.objectContaining({ imageGenerationTimeoutMs: 240000, decisionTimeoutMs: 90000 }),
+    );
+    const persisted = persistConfig.mock.calls[0][0];
+    expect(persisted.llm.providers.openai.imageGenerationTimeoutMs).toBe(240000);
+  });
 });

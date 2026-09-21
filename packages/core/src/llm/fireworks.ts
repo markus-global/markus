@@ -64,7 +64,7 @@ export class FireworksProvider extends OpenAIProvider {
         Authorization: authorization,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(this.imageGenerationTimeoutMs),
     });
 
     if (!res.ok) {

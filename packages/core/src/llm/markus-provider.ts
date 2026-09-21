@@ -303,6 +303,13 @@ export class MarkusProvider implements MultiModalProviderInterface {
   private maxTokens?: number;
   private chatTimeoutMs: number;
   private streamTimeoutMs: number;
+  /** Generative-media client timeouts; each independently configurable per
+   *  provider (defaults match the historical hardcoded ceilings). */
+  private imageGenerationTimeoutMs: number;
+  private ttsTimeoutMs: number;
+  private sttTimeoutMs: number;
+  private videoGenerationTimeoutMs: number;
+  private decisionTimeoutMs: number;
   private cuCache = new CUCache();
   /** Hub-served geo-aware model catalog URL. */
   private modelsUrl = '';
@@ -330,6 +337,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
     // Stream idle is independent of chat timeoutMs — never inherit a lower chat
     // timeout (e.g. 90s) or long reasoning / sparse SSE gaps abort mid-reply.
     this.streamTimeoutMs = config?.streamTimeoutMs ?? STREAM_TIMEOUT_MS;
+    this.imageGenerationTimeoutMs = config?.imageGenerationTimeoutMs ?? 180_000;
+    this.ttsTimeoutMs = config?.ttsTimeoutMs ?? 180_000;
+    this.sttTimeoutMs = config?.sttTimeoutMs ?? 120_000;
+    this.videoGenerationTimeoutMs = config?.videoGenerationTimeoutMs ?? 180_000;
+    this.decisionTimeoutMs = config?.decisionTimeoutMs ?? 60_000;
     this.applyRetryConfig(config);
     this.modelsUrl = config?.modelsUrl ?? process.env['MARKUS_MODELS_URL'] ?? '';
     this.hubUrl = config?.hubUrl ?? process.env['MARKUS_HUB_URL'] ?? '';
@@ -361,6 +373,11 @@ export class MarkusProvider implements MultiModalProviderInterface {
     if (config.hubToken !== undefined) this.hubToken = config.hubToken;
     if (config.timeoutMs) this.chatTimeoutMs = config.timeoutMs;
     if (config.streamTimeoutMs) this.streamTimeoutMs = config.streamTimeoutMs;
+    if (config.imageGenerationTimeoutMs !== undefined) this.imageGenerationTimeoutMs = config.imageGenerationTimeoutMs;
+    if (config.ttsTimeoutMs !== undefined) this.ttsTimeoutMs = config.ttsTimeoutMs;
+    if (config.sttTimeoutMs !== undefined) this.sttTimeoutMs = config.sttTimeoutMs;
+    if (config.videoGenerationTimeoutMs !== undefined) this.videoGenerationTimeoutMs = config.videoGenerationTimeoutMs;
+    if (config.decisionTimeoutMs !== undefined) this.decisionTimeoutMs = config.decisionTimeoutMs;
     // Retry knobs follow the same precedence on re-configure (env re-read too).
     this.applyRetryConfig(config);
   }
@@ -1549,7 +1566,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
         'X-Title': 'Markus',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(this.decisionTimeoutMs),
     });
 
     if (!res.ok) {
@@ -1608,7 +1625,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: this.bearerOpenRouter() },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(this.imageGenerationTimeoutMs),
     });
     if (!res.ok) {
       const errText = await res.text();
@@ -1705,7 +1722,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
       headers: { 'Content-Type': 'application/json', Authorization: this.bearerOpenRouter() },
       body: JSON.stringify(body),
       // Long narration + MiniMax/Deepgram synthesis often exceeds 60s.
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(this.ttsTimeoutMs),
     });
     if (!res.ok) {
       const errText = await res.text();
@@ -1758,7 +1775,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: this.bearerOpenRouter() },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(this.sttTimeoutMs),
     });
     if (!res.ok) {
       const errText = await res.text();
@@ -1823,7 +1840,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: this.bearerOpenRouter() },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(this.videoGenerationTimeoutMs),
     });
     if (!createRes.ok) {
       const errText = await createRes.text();
