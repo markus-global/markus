@@ -44,17 +44,17 @@ export interface LLMProviderConfig {
   /** Max idle gap between stream chunks in milliseconds (default: 180s). Independent of timeoutMs. */
   streamTimeoutMs?: number;
   /**
-   * Image generation request timeout in milliseconds (default: 120s).
-   * Generative media (diffusion) is naturally slower than chat, so this is
-   * independently configurable per provider — e.g. 180s+ for local/self-hosted
-   * model servers that must cold-load weights on first request.
+   * Image generation request timeout in milliseconds (default: 600s / 10min).
+   * Generative media (diffusion) is naturally slower than chat; the default is
+   * deliberately generous so local/self-hosted model servers (diffusers, vLLM)
+   * that cold-load weights on the first request do not abort mid-generation.
    */
   imageGenerationTimeoutMs?: number;
-  /** Text-to-speech request timeout in milliseconds (default: 180s). */
+  /** Text-to-speech request timeout in milliseconds (default: 600s / 10min). */
   ttsTimeoutMs?: number;
-  /** Speech-to-text request timeout in milliseconds (default: 120s). */
+  /** Speech-to-text request timeout in milliseconds (default: 600s / 10min). */
   sttTimeoutMs?: number;
-  /** Video generation request timeout in milliseconds (default: 180s). */
+  /** Video generation request timeout in milliseconds (default: 600s / 10min). */
   videoGenerationTimeoutMs?: number;
   /** Typed-probability decision request timeout in milliseconds (default: 60s). */
   decisionTimeoutMs?: number;

@@ -36,6 +36,25 @@ describe('OpenAIProvider', () => {
     expect(provider.model).toBe('gpt-4o');
   });
 
+  it('defaults generative-media timeouts to 10 minutes', () => {
+    const p = new OpenAIProvider({
+      provider: 'openai',
+      model: 'gpt-4o',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com',
+    });
+    const media = p as unknown as {
+      imageGenerationTimeoutMs: number;
+      ttsTimeoutMs: number;
+      sttTimeoutMs: number;
+      videoGenerationTimeoutMs: number;
+    };
+    expect(media.imageGenerationTimeoutMs).toBe(600_000);
+    expect(media.ttsTimeoutMs).toBe(600_000);
+    expect(media.sttTimeoutMs).toBe(600_000);
+    expect(media.videoGenerationTimeoutMs).toBe(600_000);
+  });
+
   it('configure updates settings', () => {
     provider.configure({
       provider: 'openai',

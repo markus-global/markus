@@ -337,10 +337,13 @@ export class MarkusProvider implements MultiModalProviderInterface {
     // Stream idle is independent of chat timeoutMs — never inherit a lower chat
     // timeout (e.g. 90s) or long reasoning / sparse SSE gaps abort mid-reply.
     this.streamTimeoutMs = config?.streamTimeoutMs ?? STREAM_TIMEOUT_MS;
-    this.imageGenerationTimeoutMs = config?.imageGenerationTimeoutMs ?? 180_000;
-    this.ttsTimeoutMs = config?.ttsTimeoutMs ?? 180_000;
-    this.sttTimeoutMs = config?.sttTimeoutMs ?? 120_000;
-    this.videoGenerationTimeoutMs = config?.videoGenerationTimeoutMs ?? 180_000;
+    // Generative-media client timeouts; each independently configurable per
+    // provider. Default: generous 10min — media synthesis through OpenRouter
+    // and self-hosted servers can take minutes on first use.
+    this.imageGenerationTimeoutMs = config?.imageGenerationTimeoutMs ?? 600_000;
+    this.ttsTimeoutMs = config?.ttsTimeoutMs ?? 600_000;
+    this.sttTimeoutMs = config?.sttTimeoutMs ?? 600_000;
+    this.videoGenerationTimeoutMs = config?.videoGenerationTimeoutMs ?? 600_000;
     this.decisionTimeoutMs = config?.decisionTimeoutMs ?? 60_000;
     this.applyRetryConfig(config);
     this.modelsUrl = config?.modelsUrl ?? process.env['MARKUS_MODELS_URL'] ?? '';

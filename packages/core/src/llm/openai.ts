@@ -130,10 +130,12 @@ export class OpenAIProvider implements MultiModalProviderInterface {
     // Generative media (image/video/audio) is naturally slower than chat and
     // each costs real compute — give every modality an independently configured
     // client timeout (per provider), instead of one hardcoded ceiling for all.
-    this.imageGenerationTimeoutMs = config?.imageGenerationTimeoutMs ?? 120_000;
-    this.ttsTimeoutMs = config?.ttsTimeoutMs ?? 180_000;
-    this.sttTimeoutMs = config?.sttTimeoutMs ?? 120_000;
-    this.videoGenerationTimeoutMs = config?.videoGenerationTimeoutMs ?? 180_000;
+    // Default: generous 10min — local/self-hosted servers (diffusers, vLLM)
+    // must cold-load weights on the first request and can take minutes.
+    this.imageGenerationTimeoutMs = config?.imageGenerationTimeoutMs ?? 600_000;
+    this.ttsTimeoutMs = config?.ttsTimeoutMs ?? 600_000;
+    this.sttTimeoutMs = config?.sttTimeoutMs ?? 600_000;
+    this.videoGenerationTimeoutMs = config?.videoGenerationTimeoutMs ?? 600_000;
     this.decisionTimeoutMs = config?.decisionTimeoutMs ?? 60_000;
     this.decisionsUrl = config?.decisionsUrl;
     this.tokenResolver = tokenResolver;

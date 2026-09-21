@@ -218,19 +218,19 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           },
           image_generation_timeout_ms: {
             type: 'number',
-            description: 'Optional timeout in ms for image generation calls (default 120000; raise to 180000+ for local/self-hosted model servers)',
+            description: 'Optional timeout in ms for image generation calls (default 600000 = 10min; raise for very slow local/self-hosted servers)',
           },
           tts_timeout_ms: {
             type: 'number',
-            description: 'Optional timeout in ms for text-to-speech calls (default 180000)',
+            description: 'Optional timeout in ms for text-to-speech calls (default 600000 = 10min)',
           },
           stt_timeout_ms: {
             type: 'number',
-            description: 'Optional timeout in ms for speech-to-text calls (default 120000)',
+            description: 'Optional timeout in ms for speech-to-text calls (default 600000 = 10min)',
           },
           video_generation_timeout_ms: {
             type: 'number',
-            description: 'Optional timeout in ms for video generation calls (default 180000)',
+            description: 'Optional timeout in ms for video generation calls (default 600000 = 10min)',
           },
           decision_timeout_ms: {
             type: 'number',
@@ -309,19 +309,19 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
           },
           image_generation_timeout_ms: {
             type: 'number',
-            description: 'Optional timeout in ms for image generation calls (default 120000)',
+            description: 'Optional timeout in ms for image generation calls (default 600000 = 10min)',
           },
           tts_timeout_ms: {
             type: 'number',
-            description: 'Optional timeout in ms for text-to-speech calls (default 180000)',
+            description: 'Optional timeout in ms for text-to-speech calls (default 600000 = 10min)',
           },
           stt_timeout_ms: {
             type: 'number',
-            description: 'Optional timeout in ms for speech-to-text calls (default 120000)',
+            description: 'Optional timeout in ms for speech-to-text calls (default 600000 = 10min)',
           },
           video_generation_timeout_ms: {
             type: 'number',
-            description: 'Optional timeout in ms for video generation calls (default 180000)',
+            description: 'Optional timeout in ms for video generation calls (default 600000 = 10min)',
           },
           decision_timeout_ms: {
             type: 'number',

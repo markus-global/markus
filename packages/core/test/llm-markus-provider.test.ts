@@ -557,6 +557,24 @@ describe('MarkusProvider CU tracking', () => {
     expect((p as unknown as { chatTimeoutMs: number }).chatTimeoutMs).toBe(30_000);
   });
 
+  it('defaults generative-media timeouts to 10 minutes', () => {
+    const p = new MarkusProvider({
+      provider: 'markus',
+      model: 'test',
+      apiKey: 'sk-or-test',
+    });
+    const media = p as unknown as {
+      imageGenerationTimeoutMs: number;
+      ttsTimeoutMs: number;
+      sttTimeoutMs: number;
+      videoGenerationTimeoutMs: number;
+    };
+    expect(media.imageGenerationTimeoutMs).toBe(600_000);
+    expect(media.ttsTimeoutMs).toBe(600_000);
+    expect(media.sttTimeoutMs).toBe(600_000);
+    expect(media.videoGenerationTimeoutMs).toBe(600_000);
+  });
+
   it('returns max_tokens on idle timeout when partial content already streamed', async () => {
     const encoder = new TextEncoder();
     // Mock body is not tied to fetch AbortSignal; error it shortly after the
