@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ChatSearchMatch } from '../lib/chatSearch.ts';
+import type { SearchResult } from '../api.ts';
 
 /**
  * Find-in-conversation bar.
@@ -27,6 +28,10 @@ export interface ChatHistorySearchProps {
   onClose: () => void;
   /** Optional per-message label (sender / time) shown next to each hit. */
   labelFor?: (match: ChatSearchMatch) => string;
+  /** Full-history results from the server FTS5 index (the merged second search). */
+  serverResults?: readonly SearchResult[];
+  serverLoading?: boolean;
+  onServerResultClick?: (result: SearchResult) => void;
 }
 
 const FIELD_KEY: Record<ChatSearchMatch['field'], string> = {
@@ -58,6 +63,7 @@ function Snippet({ match }: { match: ChatSearchMatch }) {
 export function ChatHistorySearch({
   query, onQueryChange, matches, cursor, scanned, hasMore, loadingMore, truncated,
   onLoadEarlier, onJump, onClose, labelFor,
+  serverResults, serverLoading, onServerResultClick,
 }: ChatHistorySearchProps) {
   const { t } = useTranslation(['team', 'common']);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -172,6 +178,40 @@ export function ChatHistorySearch({
               </div>
             </button>
           ))}
+        </div>
+      )}
+
+      {/* Full-history server results (merged with find-in-conversation): when the
+          local transcript scan is exhausted or the user wants older messages,
+          the same panel also lists matches from the server FTS5 index. */}
+      {hasQuery && (serverLoading || (serverResults && serverResults.length > 0)) && (
+        <div className="border-t border-border-default/60 mt-1 px-1">
+          <div className="text-[10px] text-fg-tertiary font-medium py-0.5">{t('page.findServerResultsTitle')}</div>
+          {serverLoading && (
+            <div className="text-xs text-fg-tertiary px-2.5 py-1">{t('page.searching')}</div>
+          )}
+          {serverResults && serverResults.length > 0 && (
+            <div className="max-h-40 overflow-y-auto scrollbar-thin space-y-0.5">
+              {serverResults.map(r => (
+                <button
+                  key={r.id}
+                  onClick={() => onServerResultClick?.(r)}
+                  className="w-full text-left px-2.5 py-1.5 rounded-lg transition-colors hover:bg-surface-elevated"
+                >
+                  <div className="flex items-center gap-2 text-[11px] text-fg-tertiary mb-0.5">
+                    <span className={`px-1.5 py-0 rounded text-[9px] font-medium shrink-0 ${r.source === 'channel' ? 'bg-blue-500/10 text-blue-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
+                      {r.source === 'channel' ? '#' : '1:1'}
+                    </span>
+                    {r.senderName && <span>{r.senderName}</span>}
+                    <span>{new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                  </div>
+                  <div className="text-xs text-fg-secondary line-clamp-2 break-words">
+                    {r.text.length > 200 ? r.text.slice(0, 200) + '…' : r.text}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

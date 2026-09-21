@@ -445,6 +445,7 @@
     "findScopeHasMore": "更早的消息还未加载",
     "findLoadEarlier": "加载更早的消息",
     "findLoadingEarlier": "正在加载…",
+    "findServerResultsTitle": "全部历史",
     "findFieldText": "正文",
     "findFieldThinking": "思考",
     "findFieldTool": "工具",

@@ -445,6 +445,7 @@
     "findScopeHasMore": "Earlier messages are not loaded yet",
     "findLoadEarlier": "Load earlier messages",
     "findLoadingEarlier": "Loading…",
+    "findServerResultsTitle": "All history",
     "findFieldText": "Message",
     "findFieldThinking": "Thinking",
     "findFieldTool": "Tool",
