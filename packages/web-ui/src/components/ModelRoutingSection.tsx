@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { CapabilityRoutingConfigDTO, ModelCapabilityTypeDTO, CapabilityModelAssignmentDTO } from '../api';
 import { ModelSelect, type ModelOption } from './ModelSelect';
 import { ConfirmModal } from './ConfirmModal.tsx';
+import { isChatCapableModel } from '../lib/modelCapabilities';
 
 interface Props {
   onSave: (data: { capabilityRouting?: Partial<CapabilityRoutingConfigDTO>; routingDefaultModel?: { provider: string; model: string } | null }) => Promise<void>;
@@ -573,15 +574,12 @@ function TierBadge({ tier }: { tier: string }) {
   );
 }
 
-const NON_TEXT_CAPABILITIES = new Set(['imageGeneration', 'tts', 'stt', 'videoGeneration', 'audioOutput', 'audioInput']);
-
 function filterModelsForCapability(models: ModelOption[], capabilityType: ModelCapabilityTypeDTO): ModelOption[] {
   if (capabilityType === 'text') {
-    return models.filter(m => {
-      if (m.capabilities && m.capabilities.some(c => NON_TEXT_CAPABILITIES.has(c))) return false;
-      if (m.mode && m.mode !== 'chat') return false;
-      return true;
-    });
+    // Chat-capable = explicit 'chat' tag, or no media tag. Shared rule: a model
+    // may advertise image generation AND chat (e.g. a local diffusion server
+    // that also serves /chat/completions) — see lib/modelCapabilities.
+    return models.filter(m => isChatCapableModel(m));
   }
 
   const modeMap: Record<string, string[]> = {

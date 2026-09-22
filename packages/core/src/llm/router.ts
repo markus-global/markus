@@ -16,6 +16,7 @@ import { discoverProviderModels, PROVIDER_DEFAULT_BASE_URLS } from './model-disc
 import { AuthProfileStore } from './auth-profiles.js';
 import { OAuthManager } from './oauth-manager.js';
 import type { ModelCatalogService } from './model-catalog.js';
+import { isChatCapableModel } from './model-capabilities.js';
 
 
 const log = createLogger('llm-router');
@@ -603,7 +604,7 @@ export class LLMRouter {
     // fetched yet — no key, offline, or first run — would otherwise render an
     // empty picker. Seed it with the registry's documented bootstrap model and
     // label it 'builtin' so the UI says where it came from.
-    const hasChatModel = merged.some(m => (m.capabilities?.length ?? 0) === 0 && m.contextWindow > 0);
+    const hasChatModel = merged.some(m => isChatCapableModel(m) && m.contextWindow > 0);
     if (!hasChatModel) {
       const bootstrapId = getProviderBootstrapModel(providerName);
       if (bootstrapId && !merged.some(m => m.id === bootstrapId)) {
@@ -1028,7 +1029,7 @@ export class LLMRouter {
     // reasoning support has to be resolved from here rather than from a
     // hand-written id list that goes stale every release.
     const caps = catalogEntry.capabilities;
-    const isChatModel = !model.capabilities || model.capabilities.length === 0;
+    const isChatModel = isChatCapableModel(model);
     const inputTypes = isChatModel && caps
       ? (caps.vision ? (['text', 'image'] as Array<'text' | 'image'>) : (['text'] as Array<'text' | 'image'>))
       : undefined;

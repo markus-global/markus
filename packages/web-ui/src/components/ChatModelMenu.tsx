@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { isChatCapableModel } from '../lib/modelCapabilities';
 
 export interface ChatModelSelection {
   provider: string;
@@ -10,8 +11,16 @@ export interface ChatModelSelection {
 interface ProviderModels {
   provider: string;
   displayName: string;
-  models: Array<{ id: string; name?: string }>;
+  models: Array<{ id: string; name?: string; mode?: string; capabilities?: string[] }>;
 }
+
+/**
+ * Media-only endpoints must never reach this picker: binding one (e.g. the local
+ * `qwen-image-2.1`, which serves `POST /v1/images/generations` but has no chat
+ * route) made EVERY later turn die at the upstream API with
+ * `404 not found: /v1/chat/completions`. The rule lives in lib/modelCapabilities
+ * so the composer, Settings routing, and the server agree on one definition.
+ */
 
 /** Optional modifiers for a global-scope selection. */
 export interface GlobalScopeOptions {
@@ -69,7 +78,7 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
           enabled?: boolean;
           configured?: boolean;
           model?: string;
-          models?: Array<{ id: string; name?: string }>;
+          models?: Array<{ id: string; name?: string; mode?: string; capabilities?: string[] }>;
         }>;
       };
 
@@ -94,7 +103,11 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
       for (const [name, info] of Object.entries(data.providers ?? {})) {
         // Only providers that are configured and switched on (same rule as Settings routing).
         if (!info.configured || info.enabled === false) continue;
-        const models = (info.models ?? []).map(m => ({ id: m.id, name: m.name }));
+        // ...and only models that can actually serve chat — media-only endpoints
+        // (image/speech/video) belong to capability routing, not to the composer.
+        const models = (info.models ?? [])
+          .filter(isChatCapableModel)
+          .map(m => ({ id: m.id, name: m.name }));
         if (models.length === 0) continue;
         list.push({
           provider: name,
@@ -294,6 +307,11 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
             {!loading && filtered.length === 0 && (
               <div className="px-3 py-4 text-xs text-fg-tertiary">
                 {t('chatModel.empty', { defaultValue: 'No enabled providers / models' })}
+              </div>
+            )}
+            {!loading && filtered.length > 0 && (
+              <div className="px-3 pb-1 text-[10px] text-fg-tertiary">
+                {t('chatModel.chatOnlyHint', { defaultValue: 'Only models with a chat interface are listed' })}
               </div>
             )}
             {!loading && filtered.map(p => (

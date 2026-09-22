@@ -42,6 +42,7 @@ import {
   buildModelsEndpoint,
   buildModelsAuthHeaders,
   isUsableProviderModelId,
+  isChatCapableModel,
   PROVIDER_DEFAULT_BASE_URLS,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
@@ -8417,12 +8418,12 @@ EXPLANATION_END`;
       for (const capabilityType of ALL_CAPABILITY_TYPES) {
         let candidates: CandidateModel[];
 
-        const NON_TEXT_CAPS = new Set(['imageGeneration', 'tts', 'stt', 'videoGeneration', 'audioOutput', 'audioInput']);
         if (TEXT_CAPABILITIES.has(capabilityType)) {
-          candidates = allCandidates.filter(m => {
-            if (m.capabilities && m.capabilities.some(c => NON_TEXT_CAPS.has(c))) return false;
-            return true;
-          });
+          // A model carrying the explicit 'chat' tag stays a chat candidate even
+          // when it also advertises media capabilities (an image endpoint that
+          // does serve /chat/completions), so the suggestion is not limited to
+          // models with no declared capabilities at all.
+          candidates = allCandidates.filter(m => isChatCapableModel(m));
         } else {
           const requiredCaps = CAP_MAP[capabilityType] ?? [];
           candidates = allCandidates.filter(m =>
