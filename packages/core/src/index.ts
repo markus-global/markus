@@ -35,6 +35,12 @@ export {
 } from './environment-profile.js';
 export { ToolSelector, type ToolGroup } from './tool-selector.js';
 export { LLMRouter } from './llm/router.js';
+export {
+  CHAT_CAPABILITY,
+  NON_CHAT_CAPABILITIES,
+  isChatCapableModel,
+  type ChatCapabilityShape,
+} from './llm/model-capabilities.js';
 export type { ChatOptions } from './llm/router.js';
 export { LLMLogger, type LLMLogEntry } from './llm/llm-logger.js';
 export { AnthropicProvider } from './llm/anthropic.js';

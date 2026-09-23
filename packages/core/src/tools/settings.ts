@@ -417,14 +417,16 @@ export function createSettingsTools(ctx: SettingsToolsContext): AgentToolHandler
             type: 'array',
             items: {
               type: 'string',
-              enum: ['imageGeneration', 'vision', 'tts', 'stt', 'videoGeneration', 'decision'],
+              enum: ['chat', 'imageGeneration', 'vision', 'tts', 'stt', 'videoGeneration', 'decision'],
             },
             description:
               'Explicit capability declaration for this model (OPTIONAL but recommended for non-chat models). ' +
-              'Values: imageGeneration (text-to-image), vision (image input), tts, stt, videoGeneration, decision. ' +
+              'Values: imageGeneration (text-to-image), vision (image input), tts, stt, videoGeneration, decision, chat. ' +
               'When declared, capability routing trusts this list instead of guessing from the model id — ' +
               'use this for local/self-hosted models (Ollama, vLLM, diffusers servers) whose names do not match ' +
-              'known commercial naming patterns.',
+              'known commercial naming patterns. Add "chat" when the model ALSO serves /chat/completions ' +
+              '(e.g. ["imageGeneration","chat"]): declaring it keeps the model in the chat pickers and text ' +
+              'routing, which a media-only declaration otherwise removes it from.',
           },
         },
         required: ['provider', 'id', 'name', 'context_window', 'max_output_tokens', 'cost_input', 'cost_output'],
