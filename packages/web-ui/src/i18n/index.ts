@@ -117,6 +117,13 @@ void i18n
     fallbackLng: 'en',
     defaultNS: DEFAULT_NS,
     ns: [...NAMESPACES],
+    // react-i18next 把 `t` 绑定到 namespaces[0]，除非 nsMode==='fallback'：
+    //   useTranslation.js: getFixedT(lng, nsMode === 'fallback' ? namespaces : namespaces[0])
+    // 也就是说 useTranslation(['team','common']) 里的 t **只能**查到 team 的 key，
+    // 第二个 ns 里的 key 会原样渲染成 key 字符串（曾把「已工作 N 秒」显示成
+    // execution.workedForMinutes）。打开 fallback 后 ns 数组才真正成为回退链：
+    // ns[0] 命中即用 ns[0]，找不到才继续往下找 —— 纯增量，不影响已命中的文案。
+    react: { nsMode: 'fallback' },
     interpolation: {
       escapeValue: false,
     },

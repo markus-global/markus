@@ -505,6 +505,13 @@ export function isProcessEntry(entry: ExecutionStreamEntryUI): boolean {
   return entry.type !== 'text' || entry.metadata?.isThinking === true;
 }
 
+/** 首末 entry 的真实时间跨度；拿不到真实时间戳时为 0。过程块与顶部「已工作」行共用。 */
+export function entriesElapsedMs(entries: ExecutionStreamEntryUI[]): number {
+  const first = Date.parse(entries[0]?.createdAt ?? '');
+  const last = Date.parse(entries[entries.length - 1]?.createdAt ?? '');
+  return Number.isFinite(first) && Number.isFinite(last) && last > first ? last - first : 0;
+}
+
 export function summarizeProcessRun(entries: ExecutionStreamEntryUI[]): ProcessRunSummary {
   let thinkingCount = 0;
   let toolCount = 0;
@@ -529,9 +536,7 @@ export function summarizeProcessRun(entries: ExecutionStreamEntryUI[]): ProcessR
     if (e.type === 'error') errorCount++;
   }
 
-  const first = Date.parse(entries[0]?.createdAt ?? '');
-  const last = Date.parse(entries[entries.length - 1]?.createdAt ?? '');
-  const elapsedMs = Number.isFinite(first) && Number.isFinite(last) && last > first ? last - first : 0;
+  const elapsedMs = entriesElapsedMs(entries);
 
   return {
     thinkingCount,
@@ -579,17 +584,67 @@ export function groupProcessRuns(entries: ExecutionStreamEntryUI[]): ChatTimelin
   return blocks;
 }
 
-// ─── ProcessRun — 一段过程（思考 + 工具）的折叠行 ─────────────────────────────
-
-/** 折叠行开头那个图标的三态。三者轮廓各不相同，缩到 12px 也能一眼分开。 */
-export type ProcessRunState = 'running' | 'error' | 'done';
+/**
+ * 最后一个正文块的索引；没有正文块 → -1。**「最终结果」= 最后一个正文块。**
+ *
+ * 为什么是「最后一个」而不是「唯一一个」：一轮里正文会被工具切开好几段
+ * （每个工具开始就 flush 一次 textBuf），中间那些是过程旁白，只有末尾那段
+ * 才是真正交付给用户的结论。
+ */
+export function lastTextBlockIndex(blocks: ChatTimelineBlock[]): number {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks[i]!.kind === 'text') return i;
+  }
+  return -1;
+}
 
 /**
- * 折叠行的状态图标 —— 三个状态给三种完全不同的形状，而不只是换颜色：
+ * 完成后要折进顶部一行的块数（= 最终结果之前的全部块）。0 = 没什么可折，
+ * 此时不显示顶部行 —— 一条纯正文的简单回复不该平白多出一行。
+ *
+ * 只在**这轮已经结束**时才折：流式期间逐段展开正是「生成中与生成完气泡等高」的
+ * 前提；中途把已经产出的内容收走，会让用户正在盯的东西突然消失。
+ */
+export function collapsibleBlockCount(blocks: ChatTimelineBlock[], isStreaming: boolean): number {
+  if (isStreaming) return 0;
+  const idx = lastTextBlockIndex(blocks);
+  return idx > 0 ? idx : 0;
+}
+
+/**
+ * 「已工作 N 秒 / N 分 N 秒」。秒级不写「0 分」；分钟级保留余秒 ——
+ * 「2 分 13 秒」比「2 分钟」更能说明这轮到底有多重。
+ *
+ * 不复用 execution-utils 的 formatDuration：那个产出 `1.2s` 这种工程口径，
+ * 混在正文里很突兀。
+ */
+export function formatWorkedFor(ms: number, t: TFunction): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  // 显式写死 `common:` 前缀。这里的 `t` 由调用方传入，而调用方（AgentMessageBody）
+  // 用的是 useTranslation(['team','common']) —— react-i18next 会把 t 绑到
+  // namespaces[0]（即 'team'），于是 `execution.*` 这类只存在于 common 的 key
+  // 会原样渲染成 "execution.workedForMinutes"。前缀让这个 helper 不依赖调用方绑了哪个 ns。
+  if (total < 60) return t('common:execution.workedForSeconds', { seconds: total });
+  return t('common:execution.workedForMinutes', {
+    minutes: Math.floor(total / 60),
+    seconds: total % 60,
+  });
+}
+
+// ─── ProcessRun — 一段过程（思考 + 工具）的折叠行 ─────────────────────────────
+
+/** 折叠行开头那个图标的两种形态。轮廓不同，缩到 12px 也能一眼分开。 */
+export type ProcessRunState = 'running' | 'done';
+
+/**
+ * 折叠行的状态图标 —— 两种形状，而不只是换颜色：
  *
  *   进行中：转圈的弧线（品牌色）—— 「在动」；旋转由 4Hz tick 驱动，不额外产帧
- *   有失败：三角形惊叹号（红）  —— 「出事了」，跑完但没好结果时不能给勾
  *   已完成：对勾（弱色）        —— 「办完了」
+ *
+ * **工具失败不再单独出一种图标**（老板 2026-09-23 明确要求）：agent 调工具踩坑是
+ * 常态，失败后往往自己重试并继续，给它一个惊叹号等于把「正常干活」画成「出事故」。
+ * 失败次数照旧写在文字里（见 summary.errorCount），信息没丢，只是不再抢焦点。
  *
  * 为什么不能只靠颜色：这行只有 11px 高，颜色差异在暗色主题下最容易被忽略，
  * 而且对色觉障碍用户等于没有区分；形状差异才是真正可辨的。
@@ -602,15 +657,6 @@ export function ProcessRunIcon({ state }: { state: ProcessRunState }) {
           <path d="M12 3a9 9 0 1 0 9 9" />
         </svg>
       </span>
-    );
-  }
-  if (state === 'error') {
-    return (
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-        <path d="M12 9.5v4" />
-        <path d="M12 17.5h.01" />
-      </svg>
     );
   }
   return (
@@ -665,7 +711,8 @@ function ProcessRun({
   // 后面已经又出了正文，说明那段思考早就结束了。
   const running = isStreaming && (summary.running || (isLastBlock && summary.tailIsThinking));
   // 三个状态优先级：在跑 > 有失败 > 完成。跑着的时候先别急着报错（后面还会重试）。
-  const state: ProcessRunState = running ? 'running' : (summary.errorCount > 0 ? 'error' : 'done');
+  // 只有「在跑 / 跑完」两态：工具失败不再单独出一种图标（失败次数仍写在 label 里）。
+  const state: ProcessRunState = running ? 'running' : 'done';
   const liveLabel = running && summary.runningTool
     ? t('execution.processRun.runningTool', {
         tool: t(`execution.tools.${summary.runningTool}`, { defaultValue: summary.runningTool }),
@@ -916,7 +963,10 @@ export const AgentMessageBody = memo(function AgentMessageBody({
   const segments = msg.segments;
   const isStopped = msg.isStopped;
   // 过程（思考/工具）默认折成一行，流式中和结束后**同一套结构** ——
-  // 展开状态由每个过程块自己持有（见 ProcessRun），这里不再需要全局开关。
+  // 展开状态由每个过程块自己持有（见 ProcessRun）。
+  // 这轮结束后，最终结果之前的一切还会再整体折进顶部一行
+  // （见 collapsibleBlockCount），这里持的就是那一行的展开开关。
+  const [showFullHistory, setShowFullHistory] = useState(false);
 
   // Include thinking length — thinking_delta updates seg.thinking without changing
   // content length, and a content-only key would freeze the timeline mid-stream.
@@ -973,6 +1023,11 @@ export const AgentMessageBody = memo(function AgentMessageBody({
     // 顺序完全不动（思考 → 正文 → 执行 → 思考），只是每段过程收起。
     const blocks = groupProcessRuns(fullLogEntries);
     const hasTextBlock = blocks.some(b => b.kind === 'text');
+    // 这轮结束后，最终结果（最后一个正文块）之前的全部块整体折进顶部一行，
+    // 气泡只剩「已工作 X 秒」+ 最终结论 —— 这就是「降低气泡高度」的来源。
+    const hideCount = collapsibleBlockCount(blocks, isStreaming);
+    const offset = hideCount > 0 && !showFullHistory ? hideCount : 0;
+    const workedLabel = formatWorkedFor(entriesElapsedMs(fullLogEntries), t);
 
     // Collect approval cards once for the bubble footer. The timeline hides its
     // mid-row copies via hideApprovalCards so the same card is not shown twice.
@@ -989,23 +1044,51 @@ export const AgentMessageBody = memo(function AgentMessageBody({
       <div className="space-y-2 min-h-[1em] min-w-0 overflow-x-hidden">
         {/* 按时间顺序渲染：正文块 = 正文本身；过程块 = 折叠起来的思考/工具。
             顺序完全不重排，所以「思考 → 正文 → 执行 → 思考」照样看得见。 */}
-        {blocks.map((block, index) => (block.kind === 'text' ? (
-          <MarkdownMessage
-            key={block.key}
-            content={block.entry.content}
-            onMentionClick={onMentionClick}
-            knownNames={knownNames}
-          />
-        ) : (
-          <ProcessRun
-            key={block.key}
-            entries={block.entries}
-            summary={block.summary}
-            isStreaming={isStreaming}
-            isLastBlock={index === blocks.length - 1}
-            hideApprovalCards
-          />
-        )))}
+        {/* 顶部一行：这轮干了多久，点开回到完整时间线。默认收起 ——
+            气泡只在「已工作 N 秒」与最终结论之间。 */}
+        {hideCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowFullHistory(v => !v)}
+            aria-expanded={showFullHistory}
+            data-worked-summary="true"
+            title={workedLabel}
+            className="group relative w-full flex items-center gap-2 px-2 py-1 rounded-lg text-left text-[11px] leading-tight text-fg-tertiary bg-surface-elevated/25 hover:bg-surface-elevated/45 border border-border-default/40 hover:border-border-default/70 overflow-hidden transition-colors cursor-pointer select-none"
+          >
+            <span className="relative shrink-0 flex items-center justify-center w-3 h-3">
+              <ProcessRunIcon state="done" />
+            </span>
+            <span className="relative min-w-0 truncate">{workedLabel}</span>
+            <svg
+              className={`relative ml-auto w-3 h-3 shrink-0 transition-transform ${showFullHistory ? 'rotate-180' : ''}`}
+              viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+            >
+              <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+            </svg>
+          </button>
+        )}
+
+        {blocks.slice(offset).map((block, i) => {
+          // isLastBlock 必须按**整条时间线**判：切片之后 index 0 并不是首块。
+          const globalIndex = i + offset;
+          return block.kind === 'text' ? (
+            <MarkdownMessage
+              key={block.key}
+              content={block.entry.content}
+              onMentionClick={onMentionClick}
+              knownNames={knownNames}
+            />
+          ) : (
+            <ProcessRun
+              key={block.key}
+              entries={block.entries}
+              summary={block.summary}
+              isStreaming={isStreaming}
+              isLastBlock={globalIndex === blocks.length - 1}
+              hideApprovalCards
+            />
+          );
+        })}
 
         {/* 刚开流、还没有任何 segment —— 别留一个空气泡。 */}
         {blocks.length === 0 && isStreaming && (

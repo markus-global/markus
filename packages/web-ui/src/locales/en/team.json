@@ -365,6 +365,7 @@
     "agentThinking": "Agent is thinking…",
     "scrollToBottom": "Scroll to bottom",
     "toggleSidebar": "Toggle sidebar",
+    "editAgentAvatar": "Set avatar",
     "newMessages": "{{count}} new message(s)",
     "mentionAgent": "Mention an agent",
     "slashSkill": "Skills",

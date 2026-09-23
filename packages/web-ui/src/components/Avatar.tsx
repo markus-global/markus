@@ -159,7 +159,8 @@ export function AvatarUpload({ currentUrl, name, size = 64, targetType = 'user',
         onClick={() => fileRef.current?.click()}
         className="relative rounded-full overflow-hidden focus:outline-none focus:ring-2 focus:ring-brand-500/50"
         style={{ width: size, height: size }}
-        title="Click to set avatar"
+        title={t('clickToSetAvatar', { defaultValue: 'Click to set avatar' })}
+        aria-busy={uploading}
       >
         {showImage ? (
           <img
@@ -171,7 +172,16 @@ export function AvatarUpload({ currentUrl, name, size = 64, targetType = 'user',
         ) : (
           <DefaultUserIcon size={size} />
         )}
-        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+        {/*
+          上传中必须「常显」转圈，而不是只在 hover 时出现。
+          上面那张 <img> 用的是 FileReader 的本地预览，文件一选就换了 ——
+          若不强制盖一层遮罩，用户会以为已经传完，而请求其实还在飞。
+        */}
+        <div
+          className={`absolute inset-0 bg-black/45 flex items-center justify-center transition-opacity ${
+            uploading ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
+        >
           {uploading ? (
             <div className="w-5 h-5 border-2 border-white/60 border-t-white rounded-full animate-spin" />
           ) : (

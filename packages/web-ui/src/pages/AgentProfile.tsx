@@ -11,7 +11,7 @@ import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agent
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
-import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
+import { Avatar } from '../components/Avatar.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { friendlyAgentError } from './ChatComponents.tsx';
 import { DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';

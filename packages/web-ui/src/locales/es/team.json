@@ -353,6 +353,7 @@
     "agentThinking": "El agente está pensando…",
     "scrollToBottom": "Pergamino a fondo",
     "toggleSidebar": "Toggle sidebar",
+    "editAgentAvatar": "Establecer avatar",
     "newMessages": "{{count}} nuevo mensaje(s))",
     "mentionAgent": "Mención a un agente",
     "slashSkill": "Habilidades",

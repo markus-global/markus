@@ -365,6 +365,7 @@
     "agentThinking": "智能体思考中…",
     "scrollToBottom": "回到底部",
     "toggleSidebar": "展开侧边栏",
+    "editAgentAvatar": "设置头像",
     "newMessages": "{{count}} 条新消息",
     "mentionAgent": "提及智能体",
     "slashSkill": "技能",

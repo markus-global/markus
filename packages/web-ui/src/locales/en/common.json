@@ -10,6 +10,7 @@
   "ok": "OK",
   "error": "Error",
   "imageTooLarge": "Image must be under 2MB",
+  "clickToSetAvatar": "Click to set avatar",
   "delete": "Delete",
   "remove": "Remove",
   "edit": "Edit",
@@ -180,6 +181,8 @@
     "rejectionReasonPlaceholder": "Rejection reason...",
     "idPrefix": "ID: {{id}}...",
     "errorPrefix": "Error:",
+    "workedForSeconds": "Worked for {{seconds}}s",
+    "workedForMinutes": "Worked for {{minutes}}m {{seconds}}s",
     "processRun": {
       "label": "Process",
       "thinking": "Thinking",
@@ -192,7 +195,6 @@
       "runningTool": "Running {{tool}}...",
       "state": {
         "running": "In progress",
-        "error": "Has failures",
         "done": "Completed"
       }
     },

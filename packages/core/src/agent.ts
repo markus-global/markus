@@ -2282,9 +2282,13 @@ export class Agent {
         }
 
         case 'callback_result': {
-          // Route to the originating session if known, otherwise a fresh system session
+          // 会话身份由契约解析（`resolveTurnSession` 读 `extra.sessionHint`，
+          // 见 `deliverCallback`——它把发起轮的 `originSessionId` 表态为 `memory`）。
+          // 旧实现写的是 `originSessionId ?? `sys_${this.id}_${ts}``：**一旦 origin
+          // 缺失，每完成一次就新建一个会话**，把后台结果从原会话里孤立出去（磁盘上
+          // 实测累计 200+ 个 `sys_*` 空壳会话）。契约规定「推不出来就保持当前会话，
+          // 绝不静默新建」，所以这里不再兜底造 id。
           const originSessionId = extra.originSessionId as string | undefined;
-          const cbSessionId = originSessionId ?? `sys_${this.id}_${ts}`;
           // Replay the scenario the callback was registered from (`deliverCallback`),
           // defaulting to `heartbeat`. Hardcoding `heartbeat` for callbacks gave the
           // turn the **reflex** pack — no `file_write` / `file_edit` / `shell_execute` /
@@ -2293,13 +2297,17 @@ export class Agent {
           // therefore only *notify* on completion, never continue the task, which
           // contradicts `background_exec`'s documented contract.
           const cbScenario = asAgentScenario(extra.scenario) ?? 'heartbeat';
+          const cbOpts = buildHandleOpts({ scenario: cbScenario });
+          // origin 已知 → 显式回到发起轮；未知 → 不传，交由 resolveTurnSession
+          // 的「保持当前会话」纪律处理。
+          if (originSessionId) cbOpts.sessionId = originSessionId;
           let reply = await this.handleMessage(
             item.payload.content + markerSuffix,
             undefined,
             undefined,
-            buildHandleOpts({ sessionId: cbSessionId, scenario: cbScenario }),
+            cbOpts,
           );
-          if (needsMarker) reply = await this.ensureCompletionMarker(reply, cbSessionId);
+          if (needsMarker) reply = await this.ensureCompletionMarker(reply, cbOpts.sessionId ?? this.currentSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -2428,6 +2436,7 @@ export class Agent {
    *   - new      ：显式新对话（用户点了「新对话」）
    *   - system   ：系统/内部会话（heartbeat / task / report / announce / a2a / channel）—— 保持既有语义，
    *                 不动当前会话（各分支自己决定系统、任务、频道的会话 id）
+   *   - memory   ：继续指定的**内存会话**（异步回调回到发起它的那一轮）
    *   - unknown  ：入口没表态 → **告警**并保持当前会话（不新建、不静默）
    *
    * 另外：只要 hint 带 DB 身份，就顺手在**处理该 item 的工作区**里写 DB→内存绑定。
@@ -2446,6 +2455,22 @@ export class Agent {
         break;
       case 'system':
         // 系统/内部会话由各自分支决定 sessionId，这里不干预当前会话。
+        break;
+      case 'memory':
+        // 继续指定的内存会话（`sess_*`）——异步回调回到发起它的那一轮。
+        // MemoryStore 会按 id 惰性从磁盘加载，所以会话冷掉也能重接。
+        // 解析不到（已被清理）则告警并保持当前会话：与 `unknown` 同一条纪律，
+        // **绝不静默新建**（旧行为就是在这里上游造 `sys_*` 空壳会话）。
+        if (this.memory.getSession(hint.memorySessionId)) {
+          this.currentSessionId = hint.memorySessionId;
+        } else {
+          log.warn('Turn names a memory session that is no longer resolvable — keeping the current session', {
+            agentId: this.id,
+            itemId: item.id,
+            sourceType: item.sourceType,
+            memorySessionId: hint.memorySessionId,
+          });
+        }
         break;
       case 'unknown':
         log.warn('Turn has NO session identity — keeping the current session (never silently starting a new one)', {
@@ -7035,6 +7060,12 @@ export class Agent {
       extra: {
         callbackId: cb.callbackId,
         originSessionId: cb.originSessionId,
+        // 会话身份契约：回调属于**发起它的那一轮**。显式表态为 `memory`，
+        // 否则该轮会落到 `unknown`（每条回调都告警、且不写 DB→内存绑定），
+        // 消费端只能自己拼兜底会话 id——后台结果因此被孤立到独立会话。
+        sessionHint: cb.originSessionId
+          ? { kind: 'memory' as const, memorySessionId: cb.originSessionId }
+          : undefined,
         callbackType: cb.type,
         correlationId: cb.correlationId,
         exitCode: cb.exitCode,

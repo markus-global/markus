@@ -119,6 +119,13 @@ export interface AgentProfile {
   requireApprovalFor?: string[];
   /** Working directory constraint — agent tools restricted to this path */
   workspacePath?: string;
+  /**
+   * 显示用头衔覆盖 —— 用户在 Team Chat 头部点改的那一行。
+   *
+   * 留空时用角色模板自带的 `role.name`。**不写回角色模板**：模板是多个 Agent
+   * 共享的，改模板会串到其它 Agent，所以只在本 Agent 的 `agents.profile` JSON 里存。
+   */
+  displayTitle?: string;
 }
 
 /** 并发处理配置（智能体设置 → 并发处理）。默认开启 = 智能体并发处理消息。 */
