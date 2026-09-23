@@ -6,9 +6,10 @@
  * channelKey / 什么都不传）决定的；一旦某个入口漏传，agent 就会静默开一个新会话
  * ——「同一会话后续请求看不到历史」反复出现，根因就在这里。
  *
- * 契约：**每个入口都必须显式表态这一轮是什么会话**，四种可能：
+ * 契约：**每个入口都必须显式表态这一轮是什么会话**，五种可能：
  *   - new      显式新对话（用户点了「新对话」）
  *   - existing 继续一个已存在的 DB 会话（带 DB 身份，可带绑定内存会话与历史）
+ *   - memory   继续一个**内存会话**（`sess_*`）——异步回调回到发起它的那一轮
  *   - system   系统/内部会话（heartbeat / task / report / announce / a2a / channel）
  *   - unknown  入口没表态 → **必须告警**，并按「不改变当前会话」处理，绝不静默新建
  *
@@ -31,6 +32,13 @@ export type TurnSessionHint =
       messages?: Array<{ role: string; content: string }>;
       isRetry?: boolean;
     }
+  /**
+   * 继续一个**内存会话**（`sess_*`）。用于「本会话里发出的东西必须由本会话处理」
+   * 的异步场景：`background_exec` / `a2a_reply` 等回调携带发起轮的 `originSessionId`，
+   * 就是这一种。没有它，回调会落到 `unknown`（告警且不写 DB→内存绑定），消费端
+   * 只能自己拼一个兜底会话 id —— 那正是「后台结果被孤立到独立会话」的根因。
+   */
+  | { kind: 'memory'; memorySessionId: string }
   | {
       kind: 'system';
       role: 'heartbeat' | 'task' | 'report' | 'announce' | 'a2a' | 'channel' | 'workflow' | 'federation';
@@ -124,6 +132,7 @@ export function describeTurnSessionHint(hint: TurnSessionHint): string {
   switch (hint.kind) {
     case 'new': return `new(db=${hint.dbSessionId ?? '-'})`;
     case 'existing': return `existing(db=${hint.dbSessionId}, preferred=${hint.preferredMemorySessionId ?? '-'})`;
+    case 'memory': return `memory(${hint.memorySessionId})`;
     case 'system': return `system(${hint.role}${hint.key ? `,key=${hint.key}` : ''})`;
     case 'unknown': return `unknown(${hint.reason})`;
   }

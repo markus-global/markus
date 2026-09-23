@@ -259,6 +259,46 @@ describe('APIServer extended route coverage', () => {
       const res = await request(ctx.server, 'GET', avatarUrl);
       expect([200, 404]).toContain(res.status);
     });
+
+    // 回归：头像文件名是稳定的（agent_<id>.<ext>），若 URL 不随内容变化，
+    // 浏览器会长期命中旧缓存 → 换头像后顶部头像与 L1/L2 列表仍是旧图。
+    it('avatar upload returns a versioned URL so a re-upload is not masked by cache', async () => {
+      const first = await request(ctx.server, 'POST', '/api/avatars/upload', {
+        type: 'agent',
+        id: AGENT_A,
+        image: 'data:image/png;base64,iVBORw0KGgo=',
+      });
+      expect(first.status).toBe(200);
+      const firstUrl = String(first.json.avatarUrl);
+      expect(firstUrl).toMatch(/^\/api\/avatars\/[^?]+\?v=\d+$/);
+
+      await new Promise(resolve => setTimeout(resolve, 3));
+      const second = await request(ctx.server, 'POST', '/api/avatars/upload', {
+        type: 'agent',
+        id: AGENT_A,
+        image: 'data:image/png;base64,iVBORw0KGgo=',
+      });
+      const secondUrl = String(second.json.avatarUrl);
+      // 文件路径不变（稳定文件名），但 URL 必须变，否则前端拿不到新图。
+      expect(secondUrl.split('?')[0]).toBe(firstUrl.split('?')[0]);
+      expect(secondUrl).not.toBe(firstUrl);
+    });
+
+    // 回归：头像绝不能走静态资源的 immutable 长缓存（max-age=1y）。
+    it('avatar responses are revalidated instead of immutably cached', async () => {
+      const upload = await request(ctx.server, 'POST', '/api/avatars/upload', {
+        type: 'agent',
+        id: AGENT_A,
+        image: 'data:image/png;base64,iVBORw0KGgo=',
+      });
+      // 带 ?v= 的新 URL 与历史遗留的不带版本号 URL，都必须可重验证。
+      for (const url of [String(upload.json.avatarUrl), '/api/avatars/agent_legacy.png']) {
+        const res = await request(ctx.server, 'GET', url);
+        expect(res.status).toBe(200);
+        expect(res.headers['Cache-Control']).toBe('no-cache');
+        expect(res.headers['Cache-Control']).not.toContain('immutable');
+      }
+    });
   });
 
   describe('Uploads and sessions', () => {

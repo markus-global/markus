@@ -1169,7 +1169,7 @@ export class SqliteAgentRepo {
     this.db.prepare('UPDATE agents SET avatar_url = ?, updated_at = ? WHERE id = ?').run(avatarUrl, now(), id);
   }
 
-  updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number }) {
+  updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number; profile?: unknown }) {
     const sets: string[] = ['updated_at = ?'];
     const vals: SqlParams = [now()];
     if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name); }
@@ -1178,6 +1178,7 @@ export class SqliteAgentRepo {
     if (data.llmConfig !== undefined) { sets.push('llm_config = ?'); vals.push(toJson(data.llmConfig)); }
     if (data.computeConfig !== undefined) { sets.push('compute_config = ?'); vals.push(toJson(data.computeConfig)); }
     if (data.heartbeatIntervalMs !== undefined) { sets.push('heartbeat_interval_ms = ?'); vals.push(data.heartbeatIntervalMs); }
+    if (data.profile !== undefined) { sets.push('profile = ?'); vals.push(toJson(data.profile)); }
     vals.push(id);
     this.db.prepare(`UPDATE agents SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   }

@@ -10,6 +10,7 @@
   "ok": "OK",
   "error": "Error: {{message}}",
   "imageTooLarge": "Imagen debe ser inferior a 2 MB",
+  "clickToSetAvatar": "Haz clic para definir el avatar",
   "delete": "Eliminar",
   "remove": "Retirar",
   "edit": "Editar",
@@ -373,6 +374,8 @@
       "execution_finished": "Completado"
     },
     "toolsSummary": "{{count}} llamada(s) a herramienta · clic para ver la ejecución",
+    "workedForSeconds": "Trabajó {{seconds}} s",
+    "workedForMinutes": "Trabajó {{minutes}} min {{seconds}} s",
     "processRun": {
       "label": "Proceso",
       "thinking": "Pensando",
@@ -385,7 +388,6 @@
       "runningTool": "Ejecutando {{tool}}…",
       "state": {
         "running": "En curso",
-        "error": "Tiene fallos",
         "done": "Completado"
       }
     }

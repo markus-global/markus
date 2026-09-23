@@ -10,6 +10,7 @@
   "ok": "确定",
   "error": "错误",
   "imageTooLarge": "图片大小不能超过 2MB",
+  "clickToSetAvatar": "点击设置头像",
   "delete": "删除",
   "remove": "移除",
   "edit": "编辑",
@@ -180,6 +181,8 @@
     "rejectionReasonPlaceholder": "拒绝原因…",
     "idPrefix": "ID：{{id}}…",
     "errorPrefix": "错误：",
+    "workedForSeconds": "已工作 {{seconds}} 秒",
+    "workedForMinutes": "已工作 {{minutes}} 分 {{seconds}} 秒",
     "processRun": {
       "label": "执行过程",
       "thinking": "思考",
@@ -192,7 +195,6 @@
       "runningTool": "正在运行 {{tool}}…",
       "state": {
         "running": "执行中",
-        "error": "有失败",
         "done": "已完成"
       }
     },

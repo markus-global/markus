@@ -219,4 +219,51 @@ describe('异步回调的场景回放', () => {
 
     expect(scen).toEqual(['task_execution', 'heartbeat']);
   });
+
+  // ── 会话身份契约：本会话里发出的东西，必须由本会话处理 ────────────────────
+  // 旧实现消费端写的是 `originSessionId ?? `sys_${this.id}_${ts}``：一旦 origin
+  // 缺失就**每完成一次新建一个会话**，把后台结果从原会话里孤立出去（磁盘上实测
+  // 累计 200+ 个 `sys_*` 空壳会话）。契约规定「推不出来就保持当前会话」。
+  it('会话身份：deliverCallback 把发起会话表态为 memory 契约（否则落到 unknown：告警且不绑定）', () => {
+    const agent = createTestAgent();
+    const seen: Array<Record<string, unknown>> = [];
+    vi.spyOn(agent as unknown as {
+      enqueueToMailbox: (type: string, p: { extra?: Record<string, unknown> }) => void;
+    }, 'enqueueToMailbox').mockImplementation((_t, p) => { seen.push(p.extra ?? {}); });
+
+    agent.deliverCallback({
+      callbackId: 'cb1', type: 'background_exec', deliveryMode: 'in_session',
+      originSessionId: 'sess_origin_1', summary: 's', content: 'c',
+    });
+    // mailbox 分支是「新注意力周期」，没有发起会话 —— 不得表态 memory。
+    agent.deliverCallback({
+      callbackId: 'cb2', type: 'wakeup', deliveryMode: 'mailbox', summary: 's', content: 'c',
+    });
+
+    expect(seen[0]!.sessionHint).toEqual({ kind: 'memory', memorySessionId: 'sess_origin_1' });
+    expect(seen[1]!.sessionHint).toBeUndefined();
+  });
+
+  it('会话身份：回调回到发起会话；无 origin 时保持当前会话，绝不新建 sys_* 空壳', async () => {
+    const agent = createTestAgent();
+    const seen: Array<string | undefined> = [];
+    vi.spyOn(agent as unknown as {
+      handleMessage: (c: string, s?: string, si?: unknown, o?: { sessionId?: string }) => Promise<string>;
+    }, 'handleMessage').mockImplementation(async (_c, _s, _si, o) => { seen.push(o?.sessionId); return 'done'; });
+
+    const core = agent as unknown as { processMailboxItemCore: (i: MailboxItem) => Promise<unknown> };
+
+    // ① 契约表态 memory → 回到发起轮
+    await core.processMailboxItemCore(cbItem({
+      originSessionId: 'sess_origin_1',
+      sessionHint: { kind: 'memory', memorySessionId: 'sess_origin_1' },
+      callbackType: 'background_exec',
+    }));
+    // ② origin 缺失 → 保持当前会话（不传 sessionId），不得兜底造 id
+    await core.processMailboxItemCore(cbItem({ callbackType: 'background_exec' }));
+
+    expect(seen[0]).toBe('sess_origin_1');
+    expect(seen[1]).toBeUndefined();
+    for (const sid of seen) expect(String(sid ?? '')).not.toMatch(/^sys_/);
+  });
 });

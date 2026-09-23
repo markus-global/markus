@@ -73,7 +73,7 @@ import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
 import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStream.ts';
 import { chatStore, useAgentStreaming, useChatStore } from './useChatStore.ts';
-import { Avatar } from '../components/Avatar.tsx';
+import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
@@ -543,6 +543,27 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // Avatar popover in chat messages
   const [avatarPopover, setAvatarPopover] = useState<{ agentId: string; top: number; left: number } | null>(null);
+  // 顶部 Agent 头像可点：展开头像设置浮层（复用 AvatarUpload，type='agent'）。
+  const [agentAvatarEditing, setAgentAvatarEditing] = useState(false);
+  const agentAvatarRef = useRef<HTMLDivElement>(null);
+
+  // 浮层点击外部 / Esc 关闭。锚点容器同时包住触发按钮与浮层，
+  // 故点击按钮本身不算「外部」，不会出现「关了又立刻开」的抖动。
+  useEffect(() => {
+    if (!agentAvatarEditing) return;
+    const onDown = (e: MouseEvent) => {
+      if (agentAvatarRef.current && !agentAvatarRef.current.contains(e.target as Node)) {
+        setAgentAvatarEditing(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setAgentAvatarEditing(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [agentAvatarEditing]);
 
   const [profileDefaultTab, setProfileDefaultTab] = useState<ProfileTab | undefined>();
   // 深链指向的分组（见 LEGACY_TAB_SECTION）：概览页会预先展开它。
@@ -1135,6 +1156,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // ── Data loading ─────────────────────────────────────────────────────────────
   const refreshAgents = useCallback(() => api.agents.list().then(d => setAgents(d.agents)).catch(() => {}), []);
+
+  /**
+   * 头像上传成功后立即把新 URL 写进本地 agents，不等全量 GET /api/agents。
+   *
+   * 那个接口要为每个 Agent 派生运行时信息（buildAgentRuntimeInfo + task / gateway
+   * 查询），80+ 个 Agent 就是好几秒；头像若等它回来才换，用户得盯着旧头像发呆。
+   * 乐观写入后，顶部头像与 L1 / L2 名册同帧更新（三者都从这份 agents 派生，
+   * 且 L1 / L2 不自行拉列表）；全量刷新照旧在后台跑，用于对齐其它字段。
+   */
+  const patchAgentAvatar = useCallback((agentId: string | undefined, avatarUrl: string) => {
+    if (!agentId) return;
+    setAgents(prev => prev.map(a => (a.id === agentId ? { ...a, avatarUrl } : a)));
+  }, []);
   const refreshTeams = useCallback(() => api.teams.list().then(d => {
     setTeams(d.teams);
     // Success only — see the teamsLoaded declaration for why a failure must not
@@ -3937,7 +3971,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const handleSaveHeaderDesc = async () => {
               try {
                 if (chatMode === 'direct' && selectedAgent) {
-                  await api.agents.updateConfig(selectedAgent, { roleDescription: headerDescDraft });
+                  await api.agents.updateConfig(selectedAgent, { title: headerDescDraft });
                   refreshAgents();
                 } else if (chatMode === 'channel' && activeTeamId) {
                   await api.teams.update(activeTeamId, { description: headerDescDraft });
@@ -3994,7 +4028,38 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                     </div>
                   ) : (
-                    <Avatar name={headerAvatarName} avatarUrl={headerAvatarUrl} size={36} className="rounded-xl shrink-0" />
+                    <div className="relative" ref={agentAvatarRef}>
+                      <button
+                        type="button"
+                        onClick={() => setAgentAvatarEditing(v => !v)}
+                        className="block rounded-xl shrink-0 transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                        title={t('page.editAgentAvatar')}
+                        aria-label={t('page.editAgentAvatar')}
+                        aria-expanded={agentAvatarEditing}
+                      >
+                        <Avatar name={headerAvatarName} avatarUrl={headerAvatarUrl} size={36} className="rounded-xl shrink-0 pointer-events-none" />
+                      </button>
+                      {agentAvatarEditing && (
+                        <div
+                          data-no-drag
+                          className="absolute z-50 top-full left-0 mt-1.5 p-3 rounded-xl bg-surface-secondary border border-border-default shadow-2xl"
+                        >
+                          <AvatarUpload
+                            currentUrl={headerAvatarUrl}
+                            name={headerAvatarName}
+                            size={64}
+                            targetType="agent"
+                            targetId={currentAgent?.id}
+                            onUploaded={(url) => {
+                              // 乐观路径在前：关掉浮层、当场换图；全量刷新只用于后台对齐。
+                              setAgentAvatarEditing(false);
+                              patchAgentAvatar(currentAgent?.id, url);
+                              refreshAgents();
+                            }}
+                          />
+                        </div>
+                      )}
+                    </div>
                   )}
                   </div>
                 )}
@@ -4035,16 +4100,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                           onBlur={handleSaveHeaderDesc}
                           onKeyDown={e => { if (e.key === 'Enter') handleSaveHeaderDesc(); if (e.key === 'Escape') setEditingHeaderDesc(false); }}
                           className="text-[11px] text-fg-tertiary bg-transparent border-b border-brand-500/50 outline-none py-0 px-0 w-full max-w-[400px] mt-0.5"
-                          placeholder="Add description..."
+                          placeholder="Add title..."
                           autoFocus
                         />
                       ) : (
                         <div
                           className="text-[11px] text-fg-tertiary truncate cursor-pointer hover:text-fg-secondary transition-colors mt-0.5"
                           onClick={() => { setHeaderDescDraft(headerDesc); setEditingHeaderDesc(true); }}
-                          title="Click to edit description"
+                          title="Click to edit title"
                         >
-                          {headerDesc || 'No description'}
+                          {headerDesc || 'No title'}
                         </div>
                       )
                     )}

@@ -3697,8 +3697,11 @@ export class APIServer {
       const avatarDir = join(homedir(), '.markus', 'avatars');
       mkdirSync(avatarDir, { recursive: true });
       const filename = `${targetType}_${targetId}.${ext}`;
-      writeFileSync(join(avatarDir, filename), buf);
-      const avatarUrl = `/api/avatars/${filename}`;
+      const savedPath = join(avatarDir, filename);
+      writeFileSync(savedPath, buf);
+      // 文件名是稳定的（agent_<id>.<ext>），换了图 URL 却不变 → 浏览器会命中旧缓存。
+      // 追加版本号，保证每次上传都得到一个新 URL（GET 路由按 pathname 匹配，忽略 query）。
+      const avatarUrl = `/api/avatars/${filename}?v=${Date.now()}`;
       if (targetType === 'user' && this.storage) {
         this.storage.userRepo.updateAvatarUrl(targetId, avatarUrl);
         const human = this.orgService.getHumanUser(targetId);
@@ -3718,7 +3721,9 @@ export class APIServer {
       }
       const filePath = join(homedir(), '.markus', 'avatars', filename);
       if (existsSync(filePath) && statSync(filePath).isFile()) {
-        this.serveStaticFile(res, filePath);
+        // 头像可被覆盖，绝不能进 immutable 长缓存（否则换头像后前端仍显示旧图）。
+        // 兼容历史未带 ?v= 的存量 URL，统一走重验证。
+        this.serveStaticFile(res, filePath, req, { cacheControl: 'no-cache' });
       } else {
         this.json(res, 404, { error: 'Avatar not found' });
       }
@@ -4342,10 +4347,18 @@ export class APIServer {
       if (this.storage) {
         const dbAgents = this.storage.agentRepo.listAll();
         const avatarMap = new Map(dbAgents.filter((a: any) => a.avatarUrl).map((a: any) => [a.id, a.avatarUrl]));
-        if (avatarMap.size > 0) {
+        // 显示用头衔覆盖（与 avatarUrl 同一套合并方式）：Team Chat 头部点改的那一行。
+        // 列表接口的 role 原本直接来自角色模板，这里用本 Agent 的 profile 覆盖它。
+        const titleMap = new Map<string, string>();
+        for (const row of dbAgents as Array<{ id: string; profile?: { displayTitle?: string } | null }>) {
+          const t = row.profile?.displayTitle;
+          if (t) titleMap.set(row.id, t);
+        }
+        if (avatarMap.size > 0 || titleMap.size > 0) {
           agents = agents.map(a => {
             const av = avatarMap.get(a.id as string);
-            return av ? { ...a, avatarUrl: av } : a;
+            const t = titleMap.get(a.id as string);
+            return av || t ? { ...a, ...(av ? { avatarUrl: av } : {}), ...(t ? { role: t } : {}) } : a;
           });
         }
       }
@@ -5662,6 +5675,18 @@ export class APIServer {
           effectiveHeartbeatMs = agent.setHeartbeatInterval(Number(body['heartbeatIntervalMs']));
         }
 
+        // 显示用头衔（Team Chat 头部点改的那一行）。写入本 Agent 的 profile JSON，
+        // 不改角色模板 —— 模板由多个 Agent 共享，改了会串到别的 Agent。
+        const titleProvided = body['title'] !== undefined;
+        if (titleProvided) {
+          const title = stripHtmlTags(String(body['title'])).trim();
+          if (title.length > 60) {
+            this.json(res, 400, { error: 'title must be 60 characters or fewer' });
+            return;
+          }
+          cfg.profile = { ...((cfg.profile as Record<string, unknown>) ?? {}), displayTitle: title || undefined };
+        }
+
         // Persist config changes to DB
         if (this.storage) {
           try {
@@ -5671,6 +5696,7 @@ export class APIServer {
               skills: body['skills'] as unknown,
               llmConfig: cfg.llmConfig,
               heartbeatIntervalMs: effectiveHeartbeatMs,
+              profile: titleProvided ? cfg.profile : undefined,
             });
           } catch (persistErr) {
             log.warn('Failed to persist agent config to DB', { agentId, error: String(persistErr) });
@@ -6348,7 +6374,7 @@ EXPLANATION_END`;
         this.json(res, 200, {
           id: agent.id,
           name: agent.config.name,
-          role: agent.role.name,
+          role: (storedAgent?.profile as { displayTitle?: string } | null | undefined)?.displayTitle || agent.role.name,
           roleDescription: agent.role.description,
           agentRole: agent.config.agentRole,
           avatarUrl: storedAgent?.avatarUrl ?? undefined,
@@ -13246,7 +13272,12 @@ EXPLANATION_END`;
     return null;
   }
 
-  private serveStaticFile(res: ServerResponse, filePath: string, req?: IncomingMessage): void {
+  private serveStaticFile(
+    res: ServerResponse,
+    filePath: string,
+    req?: IncomingMessage,
+    opts?: { cacheControl?: string },
+  ): void {
     const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
     const MIME: Record<string, string> = {
       html: 'text/html; charset=utf-8',
@@ -13267,7 +13298,9 @@ EXPLANATION_END`;
     };
     const contentType = MIME[ext] ?? 'application/octet-stream';
     const body = readFileSync(filePath);
-    const cacheControl = ext === 'html' ? 'no-cache' : 'public, max-age=31536000, immutable';
+    // 调用方可覆盖缓存策略：内容会变的资源（如用户/Agent 头像）文件路径稳定，
+    // 沿用 immutable 长缓存会导致浏览器一直显示旧图，必须改为可重验证。
+    const cacheControl = opts?.cacheControl ?? (ext === 'html' ? 'no-cache' : 'public, max-age=31536000, immutable');
 
     const COMPRESSIBLE = new Set(['html', 'js', 'mjs', 'css', 'json', 'svg', 'map']);
     const acceptEncoding = req?.headers?.['accept-encoding'] ?? '';

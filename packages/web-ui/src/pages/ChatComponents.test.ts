@@ -1,13 +1,31 @@
 import { describe, expect, it, vi } from 'vitest';
 
 // ChatComponents.tsx transitively imports api.ts which reads `window` at module
-// load. jsdom is not installed in this repo, so provide a minimal window stub
-// BEFORE the component module is imported. vi.hoisted runs before imports.
+// load. Provide the properties it needs BEFORE the component module is imported.
+// vi.hoisted runs before imports.
+//
+// 注意：这段桩是**就地补属性**，不是把 window 整个换掉 —— 早期这里是
+// `window = { … }` 直接覆盖，服务端渲染（不跑 effect）看不出问题，一旦用
+// RTL 做客户端渲染就会炸在 `window.matchMedia is not a function`
+// （MarkdownMessage 的窄屏监听要用它）。补全比覆盖更安全。
 const _stub = vi.hoisted(() => {
-  (globalThis as unknown as { window: unknown }).window = {
-    __MARKUS_HUB_BASE_URL__: '',
-    location: { origin: 'http://localhost' },
-  } as unknown as Window & typeof globalThis;
+  const win = ((globalThis as unknown as { window?: Record<string, unknown> }).window
+    ?? {}) as Record<string, unknown>;
+  win['__MARKUS_HUB_BASE_URL__'] = '';
+  win['location'] = { origin: 'http://localhost' };
+  if (typeof win['innerWidth'] !== 'number') win['innerWidth'] = 1024;
+  if (typeof win['matchMedia'] !== 'function') {
+    win['matchMedia'] = (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    });
+  }
+  (globalThis as unknown as { window: unknown }).window = win;
   return true;
 });
 
@@ -117,23 +135,21 @@ describe('AgentMessageBody live streaming bubble', () => {
 });
 
 // ─── ProcessRun 折叠行的状态图标 ─────────────────────────────────────────────
-// 收起状态下，开头那个小图标是用户唯一的进度线索：还在跑？跑完了？还是跑挂了？
-// 所以三个状态必须给三种**形状不同**的图标 —— 只换颜色在 11px 高的一行里等于没换，
-// 对色觉障碍用户更是完全无感。
+// 收起状态下，开头那个小图标是用户唯一的进度线索：还在跑？还是跑完了？
+// 两种形态必须**形状不同** —— 只换颜色在 11px 高的一行里等于没换，对色觉障碍
+// 用户更是完全无感。
 
-describe('ProcessRunIcon — 三态图标', () => {
-  const render = async (state: 'running' | 'error' | 'done') => {
+describe('ProcessRunIcon — 两态图标', () => {
+  const render = async (state: string) => {
     const { ProcessRunIcon } = await import('./ChatComponents.tsx');
     const { renderToStaticMarkup } = await import('react-dom/server');
     const React = await import('react');
     return renderToStaticMarkup(React.createElement(ProcessRunIcon, { state } as never));
   };
 
-  it('三种状态两两不同（不是只换颜色的同一个图形）', async () => {
-    const [running, done, error] = await Promise.all([
-      render('running'), render('done'), render('error'),
-    ]);
-    expect(new Set([running, done, error]).size).toBe(3);
+  it('两种状态形状不同（不是只换颜色的同一个图形）', async () => {
+    const [running, done] = await Promise.all([render('running'), render('done')]);
+    expect(new Set([running, done]).size).toBe(2);
   });
 
   it('执行中 = 转圈的弧线，走 tick 驱动的 animate-spin（不额外产帧）', async () => {
@@ -148,10 +164,14 @@ describe('ProcessRunIcon — 三态图标', () => {
     expect(done).not.toContain('animate-spin');
   });
 
-  it('有失败 = 三角形惊叹号，绝不显示成表示完成的勾', async () => {
-    const error = await render('error');
-    expect(error).toContain('10.29 3.86');
-    expect(error).not.toContain('M20 6.5');
+  it('工具失败不再有专属的警告图标（老板 2026-09-23 明确要求）', async () => {
+    // 状态类型里已经删掉 'error' 了。这里故意硬塞一个进去，钉死「就算有人把它
+    // 加回来，也只画勾、绝不画三角」——失败信息改由文字（N 个失败）承载。
+    const forced = await render('error');
+    const done = await render('done');
+    expect(forced).toBe(done);
+    // 三角形惊叹号的路径必须彻底消失。
+    expect(forced).not.toContain('10.29 3.86');
   });
 });
 
@@ -189,40 +209,29 @@ describe('ProcessRun — 折叠行的状态判定', () => {
     expect(html).toContain('execution.processRun.state.running');
   });
 
-  it('这轮结束、工具成功 → done', async () => {
+  it('这轮结束后整条时间线折进顶部一行，气泡里不再有过程行', async () => {
     const html = await render(completedTurn('done'), false);
-    expect(html).toContain('data-process-state="done"');
-    expect(html).toContain('execution.processRun.state.done');
-    // 跑完了就没理由报警，收起行里不该出现任何红色。
-    expect(html).not.toContain('text-red-500');
-  });
-
-  it('这轮结束、工具有失败 → error，并在收起行里直接报出失败次数', async () => {
-    const html = await render(completedTurn('error'), false);
-    expect(html).toContain('data-process-state="error"');
-    expect(html).toContain('execution.processRun.state.error');
-    // 失败次数写进标签：收起状态也必须看得见「这段里有东西挂了」。
-    expect(html).toContain('execution.processRun.errors');
-    // 失败态**不用红色**（老板 2026-09-20 明确要求）：这一行三种状态一律灰，
-    // 可辨性靠形状 + 文字。红色会把高频出现的收起行变成警报墙。
-    expect(html).not.toContain('text-red-500');
+    // 顶部一行在（可点开），过程行已被折走 —— 这正是「降低气泡高度」。
+    expect(html).toContain('data-worked-summary="true"');
+    expect(html).not.toContain('data-process-state');
+    // 最终结论照常显示。
+    expect(html).toContain('答案');
+    // 跑完了就没理由报警，收起状态里不该出现任何红色。
     expect(html).not.toContain('text-red-');
-    // 但「有失败」必须仍然可辨：用三角形，绝不是表示完成的勾。
-    expect(html).toContain('10.29 3.86');
-    expect(html).not.toContain('M20 6.5');
   });
 
-  it('三种状态的收起行都不用红色 —— 只有「执行中」有颜色（品牌色）', async () => {
-    for (const [status, streaming] of [
-      ['running', true],
-      ['done', false],
-      ['error', false],
-    ] as const) {
-      const html = await render(completedTurn(status), streaming);
-      expect(html, `${status} 态不该出现红色`).not.toContain('text-red-');
-    }
+  it('这轮结束时同样不因为工具有失败而报警 —— 顶部一行照旧是对勾', async () => {
+    const html = await render(completedTurn('error'), false);
+    expect(html).toContain('data-worked-summary="true"');
+    // 失败不再产生警告图标/红色；次数改由文字承载（展开后才看得到）。
+    expect(html).not.toContain('10.29 3.86');
+    expect(html).not.toContain('text-red-');
+  });
+
+  it('「执行中」是这一行唯一的颜色（品牌色）', async () => {
     const runningHtml = await render(completedTurn('running'), true);
     expect(runningHtml).toContain('text-brand-400');
+    expect(runningHtml).not.toContain('text-red-');
     const doneHtml = await render(completedTurn('done'), false);
     expect(doneHtml).not.toContain('text-brand-400');
   });
@@ -281,5 +290,138 @@ describe('summarizeProcessRun — errorCount', () => {
     expect(s.toolCount).toBe(1);
     expect(s.running).toBe(false);
     expect(s.tailIsThinking).toBe(true);
+  });
+});
+
+// ─── 完成后整体折叠成一行 ─────────────────────────────────────────────────────
+// 老板 2026-09-23：「流式输出完成后，非最终结果的正文和思考及工具调用行，整体
+// 折叠成一行……顶部有一行，显示已工作 xx 秒，点击可以展开……这样是为了减少气泡
+// 的高度。」下面是这条要求的护栏。
+
+describe('lastTextBlockIndex / collapsibleBlockCount — 折叠边界', () => {
+  const block = (kind: 'text' | 'process', key: string) => kind === 'text'
+    ? { kind, key, entry: { content: 'x' } }
+    : { kind, key, entries: [], summary: {} };
+
+  it('「最终结果」= 最后一个正文块，不是第一个', async () => {
+    const { lastTextBlockIndex } = await import('./ChatComponents.tsx');
+    expect(lastTextBlockIndex([
+      block('text', 'a'), block('process', 'p'), block('text', 'b'),
+    ] as never)).toBe(2);
+  });
+
+  it('没有正文块 → -1（无处可折，也不该硬折成空气泡）', async () => {
+    const { lastTextBlockIndex } = await import('./ChatComponents.tsx');
+    expect(lastTextBlockIndex([block('process', 'p')] as never)).toBe(-1);
+  });
+
+  it('流式期间绝不折叠 —— 正在产出的内容不能被收走', async () => {
+    const { collapsibleBlockCount } = await import('./ChatComponents.tsx');
+    expect(collapsibleBlockCount([
+      block('process', 'p'), block('text', 'a'),
+    ] as never, true)).toBe(0);
+  });
+
+  it('只有一条正文的简单回复不折叠（不给它平白加一行）', async () => {
+    const { collapsibleBlockCount } = await import('./ChatComponents.tsx');
+    expect(collapsibleBlockCount([block('text', 'a')] as never, false)).toBe(0);
+  });
+
+  it('思考/工具 + 最终结论 → 折 1 块，气泡只剩结论', async () => {
+    const { collapsibleBlockCount } = await import('./ChatComponents.tsx');
+    expect(collapsibleBlockCount([
+      block('process', 'p'), block('text', 'a'),
+    ] as never, false)).toBe(1);
+  });
+});
+
+describe('formatWorkedFor — 「已工作」文案', () => {
+  // 回显 key + 参数的假 t：只用来断言「选了哪个分支 / 传了哪些参数」。
+  // 真正的「能不能翻译出来」由 test/workedLabelI18n.test.ts 用真实语言包验证 ——
+  // 这里若也用假 t 去断言 key，就永远发现不了 key 渲染不出来。
+  const t = ((key: string, opts?: Record<string, unknown>) => `${key}|${JSON.stringify(opts ?? {})}`) as never;
+
+  it('不足 1 分钟 → 只写秒，不出现「0 分」', async () => {
+    const { formatWorkedFor } = await import('./ChatComponents.tsx');
+    const out = formatWorkedFor(45_400, t);
+    expect(out).toContain('common:execution.workedForSeconds');
+    expect(out).not.toContain('workedForMinutes');
+    expect(out).toContain('45');
+  });
+
+  it('超过 1 分钟 → 分 + 余秒（「2 分 13 秒」比「2 分钟」说明力强得多）', async () => {
+    const { formatWorkedFor } = await import('./ChatComponents.tsx');
+    const out = formatWorkedFor(133_000, t);
+    expect(out).toContain('common:execution.workedForMinutes');
+    expect(out).toContain('"minutes":2');
+    expect(out).toContain('"seconds":13');
+  });
+});
+
+describe('AgentMessageBody — 顶部一行的展开 / 收起', () => {
+  const finishedTurn = {
+    text: '最终结论',
+    segments: [
+      // 中间正文必须是**完整句子**（以句号收尾）：否则会被 healSentenceSplits
+      // 判定成「被工具行从中间切开的一句话」而拼进最终结论，夹具就失真了
+      // —— 那样「最终结果」会落在 index 0，压根没有可折叠的内容。
+      { type: 'text', content: '先说说思路。', createdAt: '2026-09-11T00:00:00.000Z' },
+      { type: 'text', content: '', thinking: '内心独白', createdAt: '2026-09-11T00:00:05.000Z' },
+      { type: 'tool', key: 't1', tool: 'file_edit', status: 'error', createdAt: '2026-09-11T00:00:10.000Z' },
+      { type: 'text', content: '最终结论', createdAt: '2026-09-11T00:00:20.000Z' },
+    ],
+  };
+
+  const renderBody = async (msg: Record<string, unknown>, isStreaming = false) => {
+    const React = await import('react');
+    const { render } = await import('@testing-library/react');
+    const { AgentMessageBody } = await import('./ChatComponents.tsx');
+    return render(
+      React.createElement(AgentMessageBody, {
+        msg: {
+          id: 'm', sender: 'agent', time: '',
+          rawCreatedAt: '2026-09-11T00:00:00.000Z',
+          isStreaming,
+          ...msg,
+        },
+        isStreaming,
+        liveActivities: [],
+      } as never),
+    );
+  };
+
+  it('默认收起：只剩顶部一行 + 最终结论，中间正文/思考/工具全部不见', async () => {
+    const { container } = await renderBody(finishedTurn);
+    expect(container.querySelector('[data-worked-summary]')).toBeTruthy();
+    expect(container.textContent).toContain('最终结论');
+    expect(container.textContent).not.toContain('先说说思路');
+    expect(container.textContent).not.toContain('内心独白');
+  });
+
+  it('点开 → 完整时间线回来（含失败计数），再点 → 收起', async () => {
+    const { container } = await renderBody(finishedTurn);
+    const { fireEvent } = await import('@testing-library/react');
+    const btn = () => container.querySelector('[data-worked-summary]')!;
+
+    expect(btn().getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(btn());
+    expect(container.textContent).toContain('先说说思路');
+    expect(btn().getAttribute('aria-expanded')).toBe('true');
+    // 展开后过程行回来，失败次数写在文字里；但**绝不出现警告三角**。
+    expect(container.textContent).toContain('execution.processRun.errors');
+    expect(container.innerHTML).not.toContain('10.29 3.86');
+    // 两级展开：展开顶部行返回的是过程行的**收起态**，思考正文要再点一次过程行
+    // 才出来。这里钉死「展开顶部行不等于把所有明细一次性铺满」。
+    expect(container.textContent).not.toContain('内心独白');
+
+    fireEvent.click(btn());
+    expect(container.textContent).not.toContain('先说说思路');
+  });
+
+  it('流式进行中不折叠 —— 不把用户正盯着的内容收走', async () => {
+    const { container } = await renderBody(finishedTurn, true);
+    expect(container.querySelector('[data-worked-summary]')).toBeNull();
+    expect(container.textContent).toContain('先说说思路');
   });
 });
