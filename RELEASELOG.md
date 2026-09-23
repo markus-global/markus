@@ -1,5 +1,20 @@
 # Release Log
 
+## v0.10.1
+
+**正式版发布**——从 `v0.10.1-rc.0` 候选版提升为稳定版。rc.0 的全部内容见下方条目；候选期后追加一项修复：
+
+### Bug Fixes
+
+- **聊天模型判定改为显式能力标签**——此前「是否聊天模型」靠 `capabilities` 为空反推，导致声明了 `imageGeneration` 等媒体能力的模型被聊天选择器静默排除，二者不可兼得：`qwen-image-2.1` 因此无法在对话中选择；反过来若强行绑定，则每轮对话都请求 `/v1/chat/completions` 并 404 中断会话。新增 `packages/core/src/llm/model-capabilities.ts` 作为规则唯一权威实现：**聊天能力 = `capabilities` 含 `chat` || （无媒体标签 && mode 非媒体）**——媒体模型可同时声明 `chat`，既参与对话又可作图像端点；`router` 两处旧反推、`settings`（`llm_add_model` 的 enum 与文档）、`api-server` 能力建议、`ChatModelMenu` / `ModelRoutingSection` 全部改用新谓词（web-ui bundle 不能 import core，新增镜像 `modelCapabilities.ts`）。**向后兼容**：未声明 `capabilities` 的历史数据行为不变。
+
+### Stats
+
+- 候选期后 1 个提交（`v0.10.1-rc.0` → `v0.10.1`），9 files changed, 192 insertions(+), 20 deletions(-)
+- 累计自 `v0.10.0`：42 files changed, 1256 insertions(+), 173 deletions(-)
+
+---
+
 ## v0.10.1-rc.0
 
 **候选发布（RC）**——从 `v0.10.0` 起的首个候选版，聚焦 LLM 多模态与本地自托管推理方向的修复与增强：
