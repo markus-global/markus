@@ -76,7 +76,6 @@ import { detectEnvironment, type EnvironmentProfile } from './environment-profil
 import { ToolSelector } from './tool-selector.js';
 import {
   scenarioToPack,
-  getReflexAllowlist,
   formatEvictedToolCatalog,
   COMMENT_RESPONSE_ALLOWED_TOOLS,
   REQUIREMENT_ACTION_ALLOWED_TOOLS,
@@ -564,7 +563,7 @@ export class Agent {
   private stateManager?: AgentStateManager;
   private stateChangeCallback?: (
     agentId: string,
-    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
+    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity; lastHeartbeat?: string }
   ) => void;
   private memoryConsolidationTimer?: ReturnType<typeof setInterval>;
   private loopDetector = new ToolLoopDetector();
@@ -3972,7 +3971,7 @@ export class Agent {
   setStateChangeCallback(
     cb: (
       agentId: string,
-      state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
+      state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity; lastHeartbeat?: string }
     ) => void
   ): void {
     this.stateChangeCallback = cb;
@@ -3987,6 +3986,7 @@ export class Agent {
         lastError: this.state.lastError,
         lastErrorAt: this.state.lastErrorAt,
         currentActivity: this.getCurrentActivity(),
+        lastHeartbeat: this.state.lastHeartbeat,
       });
     }
   }
@@ -8865,6 +8865,7 @@ export class Agent {
       this.endActivity(skipActivityId, { success: true });
       this.state.lastHeartbeat = new Date().toISOString();
       this.metricsCollector.recordHeartbeat(true, true);
+      this.notifyStateChange(); // 心跳也是存活证明：落库 last_heartbeat，供所有观察者读取
       return;
     }
 
@@ -8910,6 +8911,7 @@ export class Agent {
       this.endActivity(skipActivityId, { success: true });
       this.state.lastHeartbeat = new Date().toISOString();
       this.metricsCollector.recordHeartbeat(true, true);
+      this.notifyStateChange(); // 心跳存活证明落库
       if (deepSleep) {
         try {
           const cur = (this as unknown as { heartbeatIntervalMs?: number }).heartbeatIntervalMs ?? 6 * 3600_000;
@@ -9063,10 +9065,10 @@ export class Agent {
       selfEvolutionSection,
       '',
       '## Patrol Reminder',
-      'This is a lightweight patrol (reflex pack), not a work session.',
-      '- **Do**: `task_list`/`task_get` triage, `memory_save` one-line insights, `notify_user` / `request_user_input` when humans must act, `schedule_wakeup` for precise follow-ups.',
-      '- **Don\'t**: `task_create`, `requirement_propose`, write code, refactor, or deep analysis. Escalate or wake into a chat/task session instead.',
-      '- Use `set_heartbeat_interval` only if the patrol cadence itself is wrong.',
+      'You have the same toolset as a normal session — use it with the same judgement, scoped to patrol.',
+      '- **Scope**: follow YOUR HEARTBEAT.md checklist. Triage with `task_list`/`task_get`; leave one-line insights via `memory_save`; escalate decisions to humans via `notify_user`/`request_user_input`; use `schedule_wakeup` for precise follow-ups.',
+      '- **Don\u2019t drift into deep work in a routine heartbeat**: writing code / refactoring / editing files is allowed only for small, low-risk fixes the patrol genuinely requires; otherwise wake a proper chat/task session instead of doing heavy work here.',
+      '- **Cadence**: if the patrol interval itself is wrong, ASK THE HUMAN FIRST (e.g. `request_user_input` / `notify_user`), and only with their consent call `set_heartbeat_interval`.',
       '',
       '## Finishing Up',
       '- Compare against your last heartbeat summary above. Skip unchanged items.',
@@ -9075,9 +9077,9 @@ export class Agent {
       '- If nothing needs attention and no daily report is due, respond with exactly: HEARTBEAT_OK',
     ].join('\n');
 
-    // Reflex pack allowlist (AGENT-RUNTIME §2.2) — no package/goal/spawn fat.
-    const HEARTBEAT_ALLOWED_TOOLS = getReflexAllowlist(isManager);
-
+    // 工具集：与普通 session 同级（scenario 'heartbeat' → converse 包）。
+    // 不再传入 reflex 白名单锁死能力 —— 约束由 HEARTBEAT.md（巡检范围/红线）
+    // 与心跳间隔（成本）承担。工具迭代上限仍保留，作为单次巡检的成本护栏。
     const HEARTBEAT_MAX_RETRIES = 3;
     const HEARTBEAT_RETRY_BASE_MS = 3000;
     let lastError: unknown;
@@ -9086,7 +9088,6 @@ export class Agent {
       try {
         const reply = await this.handleMessage(prompt, undefined, undefined, {
           sessionId: heartbeatSessionId(this.id),
-          allowedTools: HEARTBEAT_ALLOWED_TOOLS,
           scenario: 'heartbeat',
           maxToolIterations: Agent.HEARTBEAT_MAX_TOOL_ITERATIONS,
         });
@@ -9101,6 +9102,7 @@ export class Agent {
 
         this.state.lastHeartbeat = new Date().toISOString();
         this.metricsCollector.recordHeartbeat(true);
+        this.notifyStateChange(); // 心跳完成=存活证明：落库 last_heartbeat
 
         if (dailyReportSection) {
           this.memory.addEntry({

@@ -135,6 +135,10 @@ export function allowsWorkContextBoundTools(
 export function scenarioToPack(scenario: string | undefined): CapabilityPack {
   switch (scenario) {
     case 'heartbeat':
+      // 心跳与普通 session 同级的能力（converse）。不再用小工具 reflex 包锁死——
+      // 约束回归「心跳描述文件（HEARTBEAT.md）+ 心跳间隔」：HEARTBEAT.md 定义巡检
+      // 范围与行为红线，间隔控制成本。见 docs/agent-liveness-redesign.md §三.2。
+      return 'converse';
     case 'memory_consolidation':
     case 'memory_flush':
     case 'distillation':

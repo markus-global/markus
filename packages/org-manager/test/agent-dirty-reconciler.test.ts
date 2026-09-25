@@ -100,4 +100,45 @@ describe('AgentDirtyReconciler — 脏态周期兜底（OB-3）', () => {
     expect(out).toEqual([]);
     expect(recover).not.toHaveBeenCalled();
   });
+
+  it('回归：stuck-working 心跳风暴 —— 心跳宽限期内不释放重试 key，连续 N 次后升级 human-review', async () => {
+    const recover = vi.fn();
+    const onNeedsHuman = vi.fn();
+    const { reconciler } = make({ recover, onNeedsHuman });
+
+    // 模拟被顶死的 working：无活动、无任务、心跳每轮触发后短暂新鲜 2 分钟又变旧（宽限窗口）。
+    const stuckWorking = (heartbeatAgeMs: number): AgentLiveView => ({
+      agentId: 'storm',
+      status: 'working',
+      currentActivity: null,
+      activeTaskIds: [],
+      lastHeartbeat: new Date(NOW - heartbeatAgeMs).toISOString(),
+    });
+    const HBEAT_FRESH_MS = 60_000; // < 2min 宽限 → busy 判定新鲜
+
+    // t0：心跳已旧 → 判脏 → 触发恢复心跳（第 1 次）
+    await reconciler.scan([stuckWorking(3 * 60_000)], NOW);
+    expect(recover).toHaveBeenCalledTimes(1);
+
+    // t0+30s：心跳刚被触发 → 新鲜 → 不脏，但 status 仍是 working → key 不得释放
+    await reconciler.scan([stuckWorking(HBEAT_FRESH_MS)], NOW + 30_000);
+    // t0+2.5min：心跳再次变旧 → 又判脏，但距上次仅 2.5min < RETRY_AFTER_MS(5min) → 不重复触发
+    await reconciler.scan([stuckWorking(3 * 60_000)], NOW + 2.5 * 60_000);
+    expect(recover).toHaveBeenCalledTimes(1);
+
+    // t0+5min、+10min：超窗重试（第 2、3 次）
+    await reconciler.scan([stuckWorking(3 * 60_000)], NOW + 5 * 60_000);
+    await reconciler.scan([stuckWorking(3 * 60_000)], NOW + 10 * 60_000);
+    // 第 4 次越窗时仍未见效 → 升级 human-review，不再自动触发心跳
+    await reconciler.scan([stuckWorking(3 * 60_000)], NOW + 15 * 60_000);
+    expect(onNeedsHuman).toHaveBeenCalledTimes(1);
+
+    // 全程没有出现「每 2 分钟一次」的密集触发（对照修复前：每次宽限窗口过后都会立即重触发）
+    expect(recover.mock.calls.filter(([v]: any) => v.recovery === 'trigger-heartbeat')).toHaveLength(3);
+
+    // agent 真正恢复 idle 后 key 释放 → 未来再变脏可重新兜底
+    await reconciler.scan([{ ...stuckWorking(3 * 60_000), status: 'idle' }], NOW + 20 * 60_000);
+    await reconciler.scan([stuckWorking(3 * 60_000)], NOW + 21 * 60_000);
+    expect(recover).toHaveBeenCalledTimes(4);
+  });
 });

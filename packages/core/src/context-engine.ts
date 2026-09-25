@@ -1609,9 +1609,7 @@ export class ContextEngine {
         lines.push('');
         lines.push('The runtime skips heartbeat LLM turns while a human chat is focused or queued — you should not see a heartbeat mid-conversation. If you do run, keep it brief.');
         lines.push('');
-        lines.push('**Tools (reflex pack only)**: `task_list`, `task_get`, `memory_save`/`memory_search`, `notify_user`, `request_user_input`, `schedule_wakeup`/`cancel_wakeup`, `set_heartbeat_interval`, `discover_tools`, `check_mailbox`, `file_read`, `agent_send_message`, `update_notebook`'
-          + (extra?.isManager ? ', `team_status`' : '')
-          + '. Do **not** call `task_create`, `requirement_propose`, `package_install`, or other execute-pack tools here.');
+        lines.push('**Tools (full session capability)**: heartbeat runs with the same toolset as a normal session — the boundaries come from your HEARTBEAT.md checklist (scope) and the heartbeat interval (cost), not a hardcoded tool subset. Triage and follow-up are welcome; for deep work, wake a real chat/task session instead of doing it inside a routine patrol. If the patrol cadence itself is wrong, ask the human first (`request_user_input` / `notify_user`) and only with their consent call `set_heartbeat_interval`.');
         lines.push('');
         lines.push('**Priority actions (in order):**');
         lines.push('1. **Patrol board**: `task_list` / `task_get` for reviews due, failed, or stuck items. Note blockers; `notify_user` if a human must act.');

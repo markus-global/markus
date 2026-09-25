@@ -1147,6 +1147,11 @@ export class SqliteAgentRepo {
       .run(status, containerId ?? null, now(), id);
   }
 
+  /** 记录 agent 最近一次心跳完成时间（存活证明的持久化事实源）。 */
+  updateLastHeartbeat(id: string, ts: string) {
+    this.db.prepare('UPDATE agents SET last_heartbeat = ?, updated_at = ? WHERE id = ?').run(ts, now(), id);
+  }
+
   updateTokens(id: string, tokensUsed: number) {
     this.db
       .prepare('UPDATE agents SET tokens_used_today = ?, updated_at = ? WHERE id = ?')

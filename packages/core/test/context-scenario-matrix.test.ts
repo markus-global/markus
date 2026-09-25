@@ -149,10 +149,11 @@ describe('group chat is never rendered with 1:1-A2A semantics', () => {
 });
 
 describe('reflex scenarios restrict tools in the prompt (and the runtime enforces it)', () => {
-  it('heartbeat names the reflex pack and forbids execute-pack tools', async () => {
+  it('heartbeat runs with full session capability (boundaries via HEARTBEAT.md + interval)', async () => {
     const { text } = await build({ scenario: 'heartbeat' });
-    expect(text).toContain('reflex pack only');
-    expect(text).toContain('task_create');
+    expect(text).toContain('full session capability');
+    expect(text).not.toContain('reflex pack only');
+    expect(text).not.toContain('Do **not** call `task_create`');
     expect(text).toContain('HEARTBEAT_OK');
   });
 
