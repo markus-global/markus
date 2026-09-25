@@ -1586,6 +1586,9 @@ async function startServerCore(
           agentId,
           state.status as 'idle' | 'working' | 'offline' | 'error'
         );
+        if (state.lastHeartbeat) {
+          await storage.agentRepo.updateLastHeartbeat(agentId, state.lastHeartbeat);
+        }
       } catch (err) {
         log.warn('Failed to persist agent state', { agentId, error: String(err) });
       }

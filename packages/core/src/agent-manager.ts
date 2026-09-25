@@ -472,7 +472,7 @@ export class AgentManager {
   ) => Promise<{ approved: boolean; comment?: string }>;
   private stateChangeHandler?: (
     agentId: string,
-    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
+    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity; lastHeartbeat?: string }
   ) => void;
   private disabledChangeHandler?: (agentId: string, disabled: boolean) => void;
   /** Grace timers for releasing scoped MCP processes after agent goes idle */
@@ -3335,7 +3335,7 @@ export class AgentManager {
    */
   private buildStateChangeCallback(): (
     agentId: string,
-    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
+    state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity; lastHeartbeat?: string }
   ) => void {
     return (agentId, state) => {
       if (state.status === 'idle' && state.activeTaskIds.length === 0) {
@@ -3374,7 +3374,7 @@ export class AgentManager {
   setStateChangeHandler(
     handler: (
       agentId: string,
-      state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity }
+      state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity; lastHeartbeat?: string }
     ) => void
   ): void {
     this.stateChangeHandler = handler;

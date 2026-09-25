@@ -24,6 +24,19 @@ const log = createLogger('agent-dirty-reconciler');
 /** 同一脏态两次兜底尝试的最短间隔：失败后 5 分钟再试，给 agent 自愈时间又不会永久放弃。 */
 export const RETRY_AFTER_MS = 5 * 60_000;
 
+/**
+ * trigger-heartbeat 连续兜底次数的上限：达到后仍未见效（agent 仍处 processing-like）
+ * 就停止自动触发并升级为 human-review。
+ *
+ * 背景（心跳风暴回归）：stuck-working 的 agent 被触发一次心跳后，lastHeartbeat 会在
+ * heartbeatGraceMs（2 分钟）内保持新鲜 → 判定为「不脏」→ 重试 key 被释放；宽限一过又判脏 →
+ * 立刻再触发（绕过 RETRY_AFTER_MS）。结果：每 2 分钟触发一次恢复心跳、每个心跳跑一轮完整
+ * LLM 巡检并产生一条「定时心跳签到」记录 —— 一天数百条，属于自愈机制的反馈回路 bug。
+ * 修复双重保险：① 仅当 agent 真正脱离 processing-like 才释放重试状态；② 连续 N 次触发仍
+ * 未解决则放弃自动兜底、升级人工介入，杜绝无限心跳风暴。
+ */
+export const MAX_TRIGGER_HEARTBEAT_ATTEMPTS = 3;
+
 /** 扫描所需的最小 agent live-state 视图（对应 agentManager.listAgents() 的字段）。 */
 export interface AgentLiveView {
   agentId: string;
@@ -67,6 +80,8 @@ export class AgentDirtyReconciler {
   private timer?: ReturnType<typeof setInterval>;
   /** 已兜底过的脏 key（agentId:recovery）→ 最近一次尝试时间。 */
   private attempted = new Map<string, number>();
+  /** 同一脏 key 的连续兜底次数（用于 trigger-heartbeat 升级阈值）。 */
+  private consecutive = new Map<string, number>();
 
   constructor(private opts: DirtyReconcilerOptions) {
     this.cfg = { ...DEFAULT_DIRTY_CONFIG, ...opts.cfg };
@@ -77,6 +92,7 @@ export class AgentDirtyReconciler {
     if (!this.cfg.enabled) return [];
     const done: DirtyVerdict[] = [];
     const seenKeys = new Set<string>();
+    const viewById = new Map(agents.map((a) => [a.agentId, a] as const));
 
     for (const a of agents) {
       const v = evaluateDirtyState(
@@ -104,21 +120,48 @@ export class AgentDirtyReconciler {
       if (lastAt !== undefined && now - lastAt < RETRY_AFTER_MS) continue;
       this.attempted.set(key, now);
 
-      // 可观测：写一条执行流事件（谁/何时/为何/建议）。
-      this.observe(a, v);
+      let effective = v;
+      if (v.recovery === 'trigger-heartbeat') {
+        const n = (this.consecutive.get(key) ?? 0) + 1;
+        this.consecutive.set(key, n);
+        if (n > MAX_TRIGGER_HEARTBEAT_ATTEMPTS) {
+          // 连续多次心跳仍未见效 → 说明自愈对该 agent 无效，停止自动触发，升级人工介入。
+          effective = {
+            ...v,
+            recovery: 'human-review',
+            reason: `${v.reason}（已连续 ${n - 1} 次触发恢复心跳仍未脱离 stuck-busy，停止自动兜底）`,
+            suggestions: [
+              '在 Agent 设置中手动重置/重启该 agent 以清除卡死的 working 状态',
+              '检查其真实任务是否早已结束，status 是否被错误钉在 working',
+            ],
+          };
+          this.consecutive.delete(key);
+        }
+      }
 
-      if (v.recovery === 'human-review') {
-        if (this.opts.onNeedsHuman) void this.opts.onNeedsHuman(v);
-        else log.warn('Dirty agent needs human review', { agentId: a.agentId, verdict: v });
+      // 可观测：写一条执行流事件（谁/何时/为何/建议）。
+      this.observe(a, effective);
+
+      if (effective.recovery === 'human-review') {
+        if (this.opts.onNeedsHuman) void this.opts.onNeedsHuman(effective);
+        else log.warn('Dirty agent needs human review', { agentId: a.agentId, verdict: effective });
       } else if (this.opts.recover) {
-        await this.opts.recover(v);
+        await this.opts.recover(effective);
       }
       // recover 默认无动作（纯观察 + 事件）——安全默认。
     }
 
     // 释放已恢复（不再脏）的 key，允许再次变脏时立即重新兜底。
+    // 注意：仅当 agent 真正脱离 processing-like（status != working 且无活动痕迹）才释放。
+    // 不能只凭「本次不脏」就释放 —— 心跳宽限窗口（heartbeatGraceMs=2min）内的暂时新鲜会
+    // 让 key 被提前释放，宽限一过又立刻重触发，绕过 RETRY_AFTER_MS 形成 2 分钟心跳风暴。
     for (const k of [...this.attempted.keys()]) {
-      if (!seenKeys.has(k)) this.attempted.delete(k);
+      if (seenKeys.has(k)) continue;
+      const agentId = k.slice(0, k.lastIndexOf(':'));
+      const view = viewById.get(agentId);
+      if (view && (view.status === 'working' || view.currentActivity)) continue; // 仍 processing-like，非真恢复
+      this.attempted.delete(k);
+      this.consecutive.delete(k);
     }
     return done;
   }

@@ -43,7 +43,8 @@ describe('capability packs (AGENT-RUNTIME §2)', () => {
   });
 
   it('maps heartbeat/review scenarios', () => {
-    expect(scenarioToPack('heartbeat')).toBe('reflex');
+    // 心跳与普通 session 同级能力（converse）——约束由 HEARTBEAT.md + 间隔承担
+    expect(scenarioToPack('heartbeat')).toBe('converse');
     expect(scenarioToPack('review')).toBe('govern');
     expect(packToolDefBudget('reflex')).toBe(TOOL_DEF_BUDGET_REFLEX);
     expect(packToolDefBudget('converse')).toBe(TOOL_DEF_BUDGET_CONVERSE);
