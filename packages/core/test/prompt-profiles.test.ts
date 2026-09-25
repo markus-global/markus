@@ -151,7 +151,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     expect(tight.truncated).toBe(true);
   });
 
-  it('A-heartbeat-no-task-create-prompt: heartbeat mode omits create/propose tools', async () => {
+  it('A-heartbeat-full-capability-prompt: heartbeat runs with full session toolset, no reflex lock', async () => {
     const engine = new ContextEngine();
     const { text } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
@@ -162,7 +162,9 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       promptProfile: 'reflex',
     });
     expect(text).toContain('heartbeat mode');
-    expect(text).toMatch(/Do \*\*not\*\* call `task_create`/);
+    expect(text).toContain('full session capability');
+    expect(text).not.toContain('reflex pack only');
+    expect(text).not.toContain('Do **not** call `task_create`');
     expect(text).not.toContain('You MAY create tasks via `task_create`');
     expect(text).not.toContain('## Self-Evolution');
   });
