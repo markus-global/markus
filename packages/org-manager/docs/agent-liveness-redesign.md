@@ -3,6 +3,10 @@
 > 日期：2026-09-25 · 作者：CTO（技术联合创始人）
 > 起因：刘利（agt_4e6ddf338eef9077c6ad8e92）在数小时内产生 600+ 条「定时心跳签到」记录（每 2 分钟一次）。
 > 本质：不是单个 bug，而是「存活/自愈机制」在演进中叠了一堆相互打架的补丁，缺少一个清晰的主线设计。
+> **审计记录状态（2026-09-26）：重构 1–4 已全部完成并入库**。本文件作为审计记录保留；
+> 现行设计已并入 [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)（§3.10 Agent 存活 / 自愈机制）。
+> 旧独立模块（`agent-dirty.ts` / `agent-stall.ts` / `agent-dirty-reconciler.ts`）已于重构 4 删除，
+> 判定原语内联进单一组件 `agent-conservator.ts`。
 
 ---
 
@@ -68,8 +72,16 @@
    - **残留逻辑依赖清零**：`shouldEnterDeepSleep` 的 `hasActiveTasks: false` / `hasPendingReviews: false` 硬编码改为实时状态（`activeTasks.size > 0` + queued `review_request`），有活跃任务/待审邮件绝不深睡翻倍间隔；
    - **收口确认**：所有触发心跳路径（HeartbeatScheduler.tick/trigger、Agent.triggerHeartbeat、agent-manager/api-server 侧 triggerAgentHeartbeat → Conservator recover）都只 emit `heartbeat:trigger` → `agent.ts` 唯一 handler → `mailbox.enqueue('heartbeat')` → 单条折叠处理；邮箱邮件由 mailbox worker 独立消费，心跳不重复巡检邮件；
    - **回归测试**：`core/test/heartbeat-liveness.test.ts` 新增 9 用例（指纹纯函数 5 例：stuck 邮件不变/新邮件变/心跳自排除/任务增减；skip 纯时间戳：连续心跳仅首次巡检 + lastHeartbeat 刷新；stuck-working 宽限多触发不增 LLM；邮件独立消费后仍 skip；Conservator triggerHeartbeat 收口不产生多余巡检），core 全量相关 156 用例 + 全包 tsc 绿。
-3. **状态机收敛**（setStatus 单一化；高风险，需全量 agent 单测回归）——§三.4
-4. 全部完成后：删除旧 dirty/stall 独立模块，整理文档（本文档并入 ARCHITECTURE）。
+3. **状态机收敛**（**✅ 2026-09-26 已完成**，`packages/core/src/agent.ts`）——setStatus 单一化、消除竞态覆盖：
+   - 27 处散落 `setStatus` 调用点全部收敛为意图化 `transitionStatus` + 落地 `applyStatus`（L953-1015 区域）：错误粘性（error 后 idle 不覆盖）+ 聚合状态守卫（activeTasks>0 / 并发 worker 忙碌 → idle 被拒）+ force 强制兜底 + reset 清错 + offline 无条件；
+   - 心跳巡检 / 保守仲裁（reconcileToIdle→reset）/ Normal 转换（error→working 清 lastError）统一走单一派生函数；
+   - 回归测试：`core/test/agent-status-machine.test.ts` 15 用例（生命周期/error 粘性/并行 error/idle 不覆盖/working 中 idle 被拒/并发 worker 聚合/force/reset/reconcileToIdle）；core 全量 3041 用例 0 failed + 全包 tsc 绿。
+4. **收尾：删除旧 dirty/stall 独立模块，文档并入 ARCHITECTURE**（**✅ 2026-09-26 已完成**）——本重构项：
+   - 删除旧独立模块 `agent-dirty.ts`（evaluateDirtyState）/ `agent-stall.ts`（evaluateStall）/ `agent-dirty-reconciler.ts`（AgentDirtyReconciler）及其 3 个旧单测（`agent-dirty.test.ts` / `agent-stall.test.ts` / `agent-dirty-reconciler.test.ts`）；
+   - 判定原语内联进单一组件 `agent-conservator.ts`（组件彻底自包含，对外仅暴露 Conservator 系列符号）；`api-server.ts` 中旧日志字符串同步清理；
+   - 保留 `test/agent-stall-api.test.ts`（API 展示契约测试：`runtime.stall` 形状经 evaluateConservator 展示路径透出，不依赖旧模块）；
+   - 回归覆盖：旧单测场景（stuck-working 心跳风暴/心跳宽限/degraded/dead-dependency/disabled）已被 `agent-conservator.test.ts` 19 用例吸收；
+   - 验证：org-manager 全量测试绿（含 19 conservator + 5 stall-api）+ 全包 `tsc -b` exit 0；本文档并入 `docs/ARCHITECTURE.md` §3.10，本文件保留为审计记录。
 
 ## 六、生效条件
 

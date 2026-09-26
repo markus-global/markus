@@ -2623,7 +2623,7 @@ export class APIServer {
       }, 30_000);
       log.info('Agent Conservator started');
     } catch (err) {
-      log.warn('Failed to init dirty reconciler', { error: String(err) });
+      log.warn('Failed to init Conservator', { error: String(err) });
     }
   }
 

@@ -28,6 +28,7 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 | [GUIDE.md](./GUIDE.md) | Setup, deployment, and usage guide |
 | [REMOTE-ACCESS.md](./REMOTE-ACCESS.md) | Remote access configuration |
 | [RELEASE-AND-DISTRIBUTION.md](./RELEASE-AND-DISTRIBUTION.md) | Release process and distribution |
+| [agent-liveness-redesign.md](../packages/org-manager/docs/agent-liveness-redesign.md) | 存活/自愈机制审计记录（心跳风暴根因 + 重构 1–4 完成状态）；现行设计并入本文件 §3.10 |
 
 ### 0.2 Relationship Graph
 
@@ -426,6 +427,24 @@ Client touchpoints:
 | OverviewUsage / claim UI | Reads `GET /api/user/plan`; Free claim deep-links to Hub `?claim=1` |
 
 Frozen response-field contract (keep in sync with Hub handlers): [`packages/core/test/hub-billing-contract.test.ts`](../packages/core/test/hub-billing-contract.test.ts) — mirrors Hub `billing-crossflows` plan + `cu/sync` keys (`remainingCu`, `openrouter.remainingUsd`, `planSource`, buckets, etc.).
+
+### 3.10 Agent 存活 / 自愈机制（Liveness SSOT + Conservator 统一仲裁）
+
+**设计主线一句话：单一存活事实源 + 一条有界安全网 + 收敛式状态机，其余全部去重。**
+
+背景（审计记录：[agent-liveness-redesign.md](../packages/org-manager/docs/agent-liveness-redesign.md)）：dirty / stale / stall 三个独立判定器各自为政、兜底回路没有统一仲裁和上限，曾导致「每 2 分钟一次」的心跳风暴（单 agent 数小时 600+ 条定时心跳签到）。重构 1–4 将机制收敛如下：
+
+1. **Liveness SSOT**：`agents.last_heartbeat` 由 core 单向写入（每轮心跳完成/跳过时，含 skip 路径），所有观察者统一读它（实时读 live-view，落列供跨进程/诊断）。心跳时间戳是唯一「活着」的证据。
+2. **心跳语义收紧**：心跳 = 存活上报 + 低频巡检（默认 6h）；**skip 路径（human-chat defer / idle / deep-sleep）收敛为纯时间戳**（`recordHeartbeatSkip()`，永不调用 LLM），LLM 巡检仅在状态实际变化时发生（`heartbeatStateFingerprint()` 指纹：队列内容签名 + activeTaskIds 签名）。所有触发心跳路径都收口到 `heartbeat:trigger` → `agent.ts` 唯一 handler → `mailbox.enqueue('heartbeat')` → 单条折叠处理。
+3. **单一安全网仲裁器（Conservator）**：`packages/org-manager/src/agent-conservator.ts` 把 dirty / stale / stall 三种判定**收敛为单一组件**（重构 4 起判定原语内联，组件彻底自包含）：
+   - `evaluateConservator`（纯函数）融合脏判定 + 卡死判定（dead-dependency、stale-heartbeat）+ 过期判定（心跳/活动新鲜度），输出**唯一动作阶梯**：`ok → observe → wake → reconcile → human-review`；
+   - `AgentConservator`（周期仲裁引擎，30s 轮询，守卫启动）施加**指数退避**（base·2^(n−1)，封顶 8h）+ **单 episode 总次数上限** + **收敛证明**（未脱离 processing-like 不复位 episode；human-review 每 episode 只通知一次并停止自动动作）；
+   - Fix A 合流：连续 3 次 trigger-heartbeat 无果 → 升级 human-review（`CONSERVATOR_MAX_WAKE_ATTEMPTS=3`），从机制上排除「每 2 分钟一次」周期解；
+   - 展示路径经 `evaluateConservator` 透出 `runtime.stall` / `runtime.dirty`（形状与旧前端完全兼容），只读派生不回写。
+4. **收敛式状态机**：core 中 27 处散落 `setStatus` 写入点全部收敛为单一意图化派生函数 `transitionStatus` + 落地 `applyStatus`（`packages/core/src/agent.ts`）——error 粘性（error 后 idle 不覆盖）、聚合状态守卫（activeTasks>0 / 并发 worker 忙碌 → idle 被拒）、force 强制兜底、reset 清错、offline 无条件；心跳巡检 / 保守仲裁 / Normal 转换统一走该函数，消除竞态覆盖。
+5. **持久化通路补全**：状态 payload 携带全部权威字段（status / lastHeartbeat / activeTaskIds / currentActivity / lastError），一次回调写全；`SqliteAgentRepo.updateLastHeartbeat` 落库。
+
+旧独立模块（`agent-dirty.ts` / `agent-stall.ts` / `agent-dirty-reconciler.ts`）已于重构 4 删除，判定逻辑全部收敛进 Conservator / core 状态机。相关回归测试：`packages/org-manager/test/agent-conservator.test.ts`（19 用例：stuck-working 心跳风暴、心跳宽限、指数退避、上限收敛、degraded/dead-dependency）、`packages/org-manager/test/agent-stall-api.test.ts`（API 展示契约）、`packages/core/test/heartbeat-liveness.test.ts`（skip 纯时间戳 + 指纹巡检）、`packages/core/test/agent-status-machine.test.ts`（状态机收敛）。
 
 ---
 

@@ -5,9 +5,12 @@
  * 的根因之一，是 dirty / stale / stall 三个独立判定器各自为政、兜底回路没有统一仲裁和上限，
  * 形成「每 2 分钟一次」的周期解。本文档把三者收敛为**单一仲裁组件**：
  *
- *   1. 脏判定   —— 无任务却标记 processing（agent-dirty.ts・evaluateDirtyState）
- *   2. 过期判定 —— 心跳 / 活动停滞（agent-stall.ts・evaluateStall：stale-heartbeat）
- *   3. 卡死判定 —— 心跳停摆 / 依赖已死（agent-stall.ts・evaluateStall：dead-dependency）
+ *   1. 脏判定   —— 无任务却标记 processing（内置原语 evaluateDirtyState，原 agent-dirty.ts）
+ *   2. 过期判定 —— 心跳 / 活动停滞（内置原语 evaluateStall：stale-heartbeat，原 agent-stall.ts）
+ *   3. 卡死判定 —— 心跳停摆 / 依赖已死（内置原语 evaluateStall：dead-dependency）
+ *
+ * 自包含（重构 4）：判定原语（dirty/stall）已由旧独立模块内联至本文件，组件彻底自包含；
+ * 旧模块（agent-dirty.ts / agent-stall.ts / agent-dirty-reconciler.ts）已删除。
  *
  * 统一输出唯一动作阶梯（对应设计文档 §三.3）：
  *   ok          → 不动作（健康：idle / 有存活任务 / 显式失败态）
@@ -32,14 +35,6 @@ import {
   type AgentRuntimeInfo,
   type MinimalTask,
 } from './agent-runtime.js';
-import {
-  evaluateDirtyState,
-  type AgentDirtyVerdict,
-} from './agent-dirty.js';
-import {
-  evaluateStall,
-  type AgentStallVerdict,
-} from './agent-stall.js';
 
 const log = createLogger('agent-conservator');
 
@@ -59,6 +54,321 @@ export const CONSERVATOR_MAX_TOTAL_ATTEMPTS = 6;
 
 /** 退避上限（8 小时）：指数退避不会无限发散。 */
 export const CONSERVATOR_BACKOFF_MAX_MS = 8 * 60 * 60 * 1000;
+
+// ─── 判定原语（重构 4 内联：原 agent-dirty.ts / agent-stall.ts 收敛为本组件内部实现）──
+// OB-3 脏判定 + OB-2 卡死判定曾被独立成模块（agent-dirty.ts / agent-stall.ts），各自为政、
+// 无仲裁上限，是 2 分钟心跳风暴的结构性来源。重构 1 以 evaluateConservator 统一仲裁后，
+// 重构 4 将判定原语内联至此 —— 单一组件彻底自包含（对外仅暴露 Conservator 系列符号）。
+
+/** 脏态恢复动作（原 agent-dirty.ts・AgentDirtyRecovery） */
+type AgentDirtyRecovery = 'reconcile-idle' | 'trigger-heartbeat' | 'human-review';
+
+/** 脏判定配置（原 agent-dirty.ts・AgentDirtyConfig，语义被 ConservatorConfig 吸收） */
+interface AgentDirtyConfig {
+  /** 总开关（feature flag）。false 时 evaluate 恒返回 not-dirty（兜底完全关闭）。 */
+  enabled: boolean;
+  /** 一段「processing 痕迹」无任何真实任务支撑、持续超过该时长，才判定为脏态。 */
+  staleAfterMs: number;
+  /** lastHeartbeat 距今小于该值视为 agent 存活中（自巡检未停）——不判脏，避免误杀。 */
+  heartbeatGraceMs: number;
+}
+
+const DEFAULT_DIRTY_CONFIG: AgentDirtyConfig = {
+  enabled: true,
+  staleAfterMs: 5 * 60_000, // 5 分钟无进展
+  heartbeatGraceMs: 2 * 60_000, // 心跳 2 分钟内视为存活
+};
+
+interface AgentDirtyInput {
+  agentId: string;
+  /** 原始 AgentStatus（idle / working / offline / error） */
+  status: string;
+  /** 当前活动痕迹（thinking / running 的可读标记） */
+  currentActivity?: AgentActivity | null;
+  /** 加载中的任务 id 列表 */
+  activeTaskIds?: string[];
+  /** 最后心跳时间（ISO，可能缺失） */
+  lastHeartbeat?: string;
+  /** 最近一次错误时间（ISO，degraded 风险提示用） */
+  lastErrorAt?: string;
+}
+
+interface MinimalTaskForDirty {
+  id: string;
+  status: string;
+  title?: string;
+  blockedBy?: string[];
+}
+
+/** 判定结果。not-dirty 时也带 reason（便于可观测日志说明为什么不算脏）。 */
+type AgentDirtyVerdict =
+  | { dirty: false; reason: string }
+  | {
+      dirty: true;
+      /** 命中的 agent（reconcile 可据此定位恢复目标） */
+      agentId: string;
+      reason: string;
+      /** 判定命中的判据标签（事件/前端定位用） */
+      criterion: 'no-live-task' | 'stale-activity' | 'no-heartbeat';
+      /** 建议的兜底恢复动作 */
+      recovery: AgentDirtyRecovery;
+      /** 给前端/人工的可读建议动作 */
+      suggestions: string[];
+    };
+
+/**
+ * 派生某 agent 的脏态判定（原 agent-dirty.ts・evaluateDirtyState，OB-3）。
+ * 纯函数：只读 live state + 任务查询，无副作用，确定性可测；幂等（对非脏态永远 not-dirty）。
+ */
+function evaluateDirtyState(
+  input: AgentDirtyInput,
+  lookupTask: (taskId: string) => MinimalTaskForDirty | undefined = () => undefined,
+  now: number = Date.now(),
+  cfg: AgentDirtyConfig = DEFAULT_DIRTY_CONFIG,
+): AgentDirtyVerdict {
+  const status = input.status;
+  const hasActivity = !!input.currentActivity;
+  const agentId = input.agentId;
+
+  // 总开关关闭 → 不判脏。
+  if (!cfg.enabled) return { dirty: false, reason: 'dirty-state cleanup disabled by config' };
+
+  // 非「processing 系」：idle 无活动、offline、error 显式失败态 → 不算脏。
+  const processingLike = status === 'working' || hasActivity;
+  if (!processingLike) {
+    return { dirty: false, reason: `not processing-like (status=${status}, no activity)` };
+  }
+  if (status === 'offline') {
+    return { dirty: false, reason: 'agent offline (session liveness concern, not a stuck dirty state)' };
+  }
+  if (status === 'error') {
+    return { dirty: false, reason: 'explicit error state — surfaces error UI, not a silent stuck dirty state' };
+  }
+
+  const nowMs = Number.isFinite(now) ? now : Date.now();
+
+  // ① 有存活任务 → 真在干活 / 真阻塞在依赖，剔除（防误杀正常 running/blocked）。
+  const activeTaskIds = input.activeTaskIds ?? [];
+  const aliveTasks = activeTaskIds.filter((tid) => {
+    const t = lookupTask(tid);
+    if (!t) return false;
+    return LIVE_TASK_STATUSES.has(t.status);
+  });
+  if (aliveTasks.length > 0) {
+    return { dirty: false, reason: `has ${aliveTasks.length} live task(s) — genuinely processing` };
+  }
+
+  // ② 心跳新鲜 → agent 活着在自巡检，给它自愈机会，再等等。
+  const lh = parseTs(input.lastHeartbeat);
+  const hbFresh = !Number.isNaN(lh) && nowMs - lh < cfg.heartbeatGraceMs;
+  if (hbFresh) {
+    return { dirty: false, reason: 'heartbeat fresh — agent still self-patrolling' };
+  }
+
+  // ③ 当前活动刚启动（未超 staleAfterMs）→ 给时间，先别动。
+  const actStartedTs = input.currentActivity?.startedAt ? parseTs(input.currentActivity.startedAt) : NaN;
+  const activityStale = Number.isNaN(actStartedTs) || nowMs - actStartedTs >= cfg.staleAfterMs;
+
+  if (hasActivity && !activityStale) {
+    return { dirty: false, reason: 'activity just started — within stale window' };
+  }
+
+  // 已通过 ①② 且活动超时（或缺失）→ 命中脏态，下面细分恢复动作。
+  const nosoActivity = hasActivity && activityStale;
+  const blockedUnresolved = activeTaskIds.some((tid) => lookupTask(tid)?.status === 'blocked');
+
+  // 近期报错（degraded 风险）或依赖状态可疑 → 无法安全自动回收，给人工提示。
+  const lastErrAt = parseTs(input.lastErrorAt);
+  const degradedRecent = !Number.isNaN(lastErrAt) && nowMs - lastErrAt < 5 * 60_000;
+
+  if (degradedRecent || blockedUnresolved) {
+    return {
+      dirty: true,
+      agentId,
+      criterion: 'no-live-task',
+      recovery: 'human-review',
+      reason: `agent marked processing but has no live task${degradedRecent ? ' and recently errored' : ''}${blockedUnresolved ? ' (stale blocked dependency)' : ''}`,
+      suggestions: degradedRecent
+        ? ['核对最近一次错误信息，确认模型/工具是否卡死', '必要时在 Agent 设置中手动重置该 agent 的容器/进程', '恢复正常后应自动回到 idle']
+        : ['检查该任务为何处于 blocked 且未被清理', '若为遗留依赖，可解除或取消以释放该 agent'],
+    };
+  }
+
+  // 有残留活动痕迹（已超时）→ 可安全清掉该活动痕迹并回收至 idle。
+  if (nosoActivity) {
+    return {
+      dirty: true,
+      agentId,
+      criterion: 'stale-activity',
+      recovery: 'reconcile-idle',
+      reason: `activity "${input.currentActivity?.label ?? input.currentActivity?.type}" stale for ${Math.round((nowMs - actStartedTs) / 1000)}s with no live task — leftover processing marker`,
+      suggestions: ['自动清除该残留活动并回收至 idle', '若 agent 继续异常，可人工停止或重启'],
+    };
+  }
+
+  // 仅 working 但无活动、无任务、无心跳 → 引导触发一次恢复心跳，让 agent 自愈。
+  return {
+    dirty: true,
+    agentId,
+    criterion: 'no-heartbeat',
+    recovery: 'trigger-heartbeat',
+    reason: 'status=working but no activity, no live task, no fresh heartbeat — stuck busy flag',
+    suggestions: ['触发一次恢复心跳，让 agent 自行核对并回到 idle', '若持续如此，可人工重启该 agent'],
+  };
+}
+
+// ─── 卡死判定原语（原 agent-stall.ts・evaluateStall，OB-2）──────────────────────
+interface StallConfig {
+  /**
+   * 无「最近实质进展（工具/LLM 事件）/ 心跳 / 错误」超过该时长，phase 仍为干活系
+   * （running/thinking/waiting-dependency/blocked/degraded）→ 判 stale-heartbeat，
+   * 提示「长时间无活动」。默认 30 分钟（覆盖单次长 LLM 调用窗口，避免误杀）。
+   */
+  stallAfterMs: number;
+}
+
+const DEFAULT_STALL_CONFIG: StallConfig = {
+  stallAfterMs: 30 * 60_000, // 30 分钟无任何活动进展（工具/LLM 事件）才提示长时间无活动
+};
+
+type AgentStallKind =
+  | 'stale-heartbeat'
+  | 'dead-dependency';
+
+type AgentStallVerdict =
+  | { stalled: false; reason: string }
+  | {
+      stalled: true;
+      /** 命中哪条判据 */
+      stallKind: AgentStallKind;
+      /** 卡住的任务/依赖 id（stale-heartbeat=当前任务；dead-dependency=已死依赖） */
+      stuckOnTaskId: string;
+      /** 卡住的定位标题 */
+      stuckOnTitle: string;
+      /** 当前（被卡）任务 id */
+      currentTaskId?: string;
+      /** 最后活动时间（ISO） */
+      lastActivityAt?: string;
+      /** 最后活动距今分钟数 */
+      lastActivityAgoMin?: number;
+      /** 最近一次错误概要（如有） */
+      lastError?: string;
+      /** 给前端/人工的可读定位 + 建议动作 */
+      stuckReason: string;
+      suggestions: string[];
+    };
+
+/** 被依赖任务视为「已死」的终态失败集合 */
+const DEAD_DEP_STATUSES = new Set(['failed', 'cancelled', 'archived']);
+
+/** 心跳停滞判定适用的 phase —— 「应该在动但没动」的集合 */
+const ACTIVITY_PHASES = new Set<string>([
+  'running',
+  'thinking',
+  'waiting-dependency',
+  'blocked',
+  'degraded',
+]);
+
+function firstDefined(...xs: Array<string | undefined | null>): string | undefined {
+  for (const x of xs) if (x) return x;
+  return undefined;
+}
+
+/**
+ * 派生「最后活动时间 + 距今分钟数」。
+ * 顺序：lastActivityAt（OB-1 已取 lastHeartbeat 或 activity.startedAt）> lastHeartbeat > lastErrorAt > startedAt。
+ */
+function lastActivityInfo(runtime: AgentRuntimeInfo, nowMs: number): { at?: string; agoMin?: number } {
+  const last = firstDefined(runtime.lastActivityAt, runtime.lastHeartbeat, runtime.lastErrorAt, runtime.startedAt);
+  if (!last) return {};
+  const t = parseTs(last);
+  if (Number.isNaN(t) || nowMs < t) return { at: last, agoMin: 0 };
+  return { at: last, agoMin: Math.floor((nowMs - t) / 60_000) };
+}
+
+/**
+ * 判定某 agent 是否「疑似卡死」，给出可定位归因（原 agent-stall.ts・evaluateStall，OB-2）。
+ * 纯函数：不写状态、不自动清理（自动兜底由本组件仲裁引擎执行），只负责「定位+提示」。
+ */
+function evaluateStall(
+  input: { runtime: AgentRuntimeInfo },
+  now: number = Date.now(),
+  cfg: StallConfig = DEFAULT_STALL_CONFIG,
+): AgentStallVerdict {
+  const r = input.runtime;
+  const nowMs = Number.isFinite(now) ? now : Date.now();
+
+  // ── 判据 1：依赖已死仍等待（dead-dependency）—— 优先级最高，最明确「卡在这」。──
+  const waitPhase = r.phase === 'waiting-dependency' || r.phase === 'blocked';
+  if (waitPhase && r.blockedBy && r.blockedBy.length > 0) {
+    const deadDep = r.blockedBy.find((b) => DEAD_DEP_STATUSES.has(b.status));
+    if (deadDep) {
+      return {
+        stalled: true,
+        stallKind: 'dead-dependency',
+        stuckOnTaskId: deadDep.taskId,
+        stuckOnTitle: deadDep.title,
+        currentTaskId: r.currentTaskId,
+        lastError: r.lastError,
+        stuckReason: `依赖任务「${deadDep.title}」已 ${deadDep.status}，但仍被当作未完成依赖无限等待`,
+        suggestions: [
+          '检查该依赖为何 failed/cancelled/archived，必要时重跑该依赖',
+          '若依赖无法恢复，可解除当前任务的 blockedBy 或取消当前任务释放 agent',
+          `查看被卡任务 ${r.currentTaskId ?? '(未知)'} 的最近事件确认无其他异常`,
+        ],
+      };
+    }
+    // 依赖信息齐全但都在正常状态 → 明确在「等依赖」，不算卡死（正常等待推进）。
+    // 说明：waiting/blocked 且依赖存活时，心跳停滞是「等待」而非「卡死在原地」，
+    // 故不落到 stale-heartbeat，避免误报。
+    return {
+      stalled: false,
+      reason: `waiting on dependency but all deps are alive (statuses: ${r.blockedBy.map((b) => b.status).join(',')}) — normal wait, not stalled`,
+    };
+  }
+
+  // ── 判据 2：拥有行为的 phase 但最后活动长期停滞（stale-heartbeat）── ─┐
+  if (ACTIVITY_PHASES.has(r.phase)) {
+    const info = lastActivityInfo(r, nowMs);
+    if (!info.at) {
+      return {
+        stalled: true,
+        stallKind: 'stale-heartbeat',
+        stuckOnTaskId: firstDefined(r.currentTaskId, r.activeTaskIds[0]) ?? '',
+        stuckOnTitle: firstDefined(r.activityLabel, r.currentTaskId) ?? '(未知任务)',
+        currentTaskId: r.currentTaskId,
+        lastError: r.lastError,
+        stuckReason: `phase=${r.phase} 但无任何最近进展时间戳，无法判断是否仍在行进`,
+        suggestions: ['查看该 agent 的最近事件流，确认其是否还在行进', '若无进展，可人工停止该 agent 或重启其容器'],
+      };
+    }
+    // 距今超过阈值 → 提示长时间无活动；仍在阈值内 → 正常（给了合理 Grace）
+    const agoMin = info.agoMin ?? 0;
+    if (nowMs - parseTs(info.at) >= cfg.stallAfterMs) {
+      return {
+        stalled: true,
+        stallKind: 'stale-heartbeat',
+        stuckOnTaskId: firstDefined(r.currentTaskId, r.activeTaskIds[0]) ?? '',
+        stuckOnTitle: firstDefined(r.activityLabel, r.currentTaskId) ?? '(未知任务)',
+        currentTaskId: r.currentTaskId,
+        lastError: r.lastError,
+        lastActivityAt: info.at,
+        lastActivityAgoMin: agoMin,
+        stuckReason: `已超 ${Math.round(cfg.stallAfterMs / 60_000)} 分钟无任何进展事件（最后进展于 ${agoMin} 分钟前），phase=${r.phase} — 可能是超长任务，也可能卡住`,
+        suggestions: [
+          '查看该 agent 的最近事件流：有持续工具/输出事件即为长任务，请耐心等待',
+          '若确认无任何进展（网络/模型超时），可在 Agent 设置中重试或重置该任务',
+          '恢复正常后 agent 应返回 idle；持续异常建议人工介入',
+        ],
+      };
+    }
+    // 未超阈值 → 正常；
+  }
+
+  // 其余情况——正常进展 / 空闲 / 已显式失败：不判卡死。
+  return { stalled: false, reason: 'no stall signal — activity is fresh or phase does not imply stuck processing' };
+}
 
 // ─── 配置 ────────────────────────────────────────────────────────────────────
 
