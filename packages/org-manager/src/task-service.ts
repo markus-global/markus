@@ -2095,6 +2095,28 @@ export class TaskService {
                   log.warn('Failed to re-queue preempted task', { taskId, error: String(err) })
                 );
               }, PREEMPT_REQUEUE_DELAY_MS);
+            } else if (entry.content === 'cancelled') {
+              // 外部取消（邮箱项「取消」/ cancel-processing / 注意力 yield 决出 cancel）：
+              // agent 发出 status 'cancelled'，但**并没有**显式取消任务本体（显式取消走
+              // POST /api/tasks/:id/cancel → cancelTask → status='cancelled'）。
+              // 旧行为：无此分支 → 任务停在 in_progress 且不再调度 = 永久卡死（老板反馈
+              // 「执行中显示 cancelled 然后就停了，不合理」）。
+              // 新行为：视同可恢复中断（类 preempted），延后自动重放；若期间任务被显式
+              // 取消（status!=='in_progress'）则不再拉起。给用户一次观察窗口，避免
+              // 无限紧循环：PREEMPT_REQUEUE_DELAY 与抢占一致。
+              const cancelReason = (entry.metadata as Record<string, unknown> | undefined)?.reason ?? 'unknown';
+              this.addTaskNote(taskId,
+                `[System] Task execution cancelled externally (${cancelReason}). Will auto-resume.`,
+                'system'
+              );
+              setTimeout(() => {
+                const current = this.tasks.get(taskId);
+                if (!current || current.status !== 'in_progress') return;
+                log.info('Recovering externally-cancelled task', { taskId });
+                this.runTask(taskId, 0, undefined, 'recover').catch(err =>
+                  log.warn('Failed to recover cancelled task', { taskId, error: String(err) })
+                );
+              }, PREEMPT_REQUEUE_DELAY_MS);
             }
           } else if (entry.type === 'error') {
             const nextAttempt = _retryAttempt + 1;

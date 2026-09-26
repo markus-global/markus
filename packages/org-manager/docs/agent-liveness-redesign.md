@@ -1,0 +1,81 @@
+# Agent 存活 / 自愈机制：审计结论与重新设计
+
+> 日期：2026-09-25 · 作者：CTO（技术联合创始人）
+> 起因：刘利（agt_4e6ddf338eef9077c6ad8e92）在数小时内产生 600+ 条「定时心跳签到」记录（每 2 分钟一次）。
+> 本质：不是单个 bug，而是「存活/自愈机制」在演进中叠了一堆相互打架的补丁，缺少一个清晰的主线设计。
+
+---
+
+## 一、症状 → 病根
+
+| 症状 | 病根 |
+|---|---|
+| 心跳每 2 分钟一次、600+ 条记录刷屏 | 脏态兜底器（Dirty Reconciler）反馈回路：stuck-working 的 agent 被周期性触发心跳，心跳 2 分钟宽限窗口一过又判脏 → 再触发 |
+| agent 的 `last_heartbeat` 永远为空（600+ 次心跳都不写） | 状态回调（stateChangeCallback）根本没带 `lastHeartbeat` 字段 → 列存在但无人认领 |
+| agent 状态卡死 `working` 不回归 idle | `setStatus('idle')` 散布在 ~25 处、各自用 `activeTasks.size === 0` 守卫，无双状态机、无收敛保证 |
+| 重启后风暴复现 | 兜底机制与状态源分离：core 内存状态 / DB / org-manager live view 三方不一致 |
+
+## 二、审计发现：6 个设计层面缺陷
+
+1. **无单一存活事实源（Liveness SSOT）**。`agents.last_heartbeat` 列存在但无写入方；core 内存 `state.lastHeartbeat` 每轮心跳更新但从不持久化、不广播。所有「agent 死没死」的判断（dirty/stale/stall/UI）各自派生，必然打架。
+
+2. **心跳被塞了三个互相冲突的职责**：①LLM 巡检（每天每 agent 是一次大模型调用！）②存活证明 ③自愈手段（被兜底器触发）。安全网应 O(1) 廉价，结果它是全场最贵的操作，且无总次数上限 → 一失配就烧 token。
+
+3. **多个兜底观察者无仲裁、无协调**：Dirty Reconciler（30s 扫描，2min 宽限，5min 重试）、MCP release timer、stall detector、stale detector、deep-sleep、schedule_wakeup 各自为政，对「agent 是否被监督」没有统一裁决 → 出现反馈回路时没有任何一个机制能收敛。
+
+4. **自愈动作无幂等、无终止条件**：`trigger-heartbeat` 会重复触发，而它并不解决根因（stuck status）；只有靠「宽限窗口」临时压制，窗口一过再犯 → 2 分钟风暴（已修复见 §四）。
+
+5. **状态机靠补丁堆叠**：core 里 25+ 处 `setStatus('idle')` 守卫式调用、加上并发 worker 的分支（`attentionController`），多路径并发改状态存在竞态覆盖风险（task 完成置 idle vs 心跳置 working 的顺序不保证）。
+
+6. **持久化通路缺字段**：`stateChangeCallback(id, state)` 的 state 类型漏了 `lastHeartbeat`，导致「想写但没有数据可写」。
+
+## 三、目标设计（重新设计）
+
+**一句话：单一存活事实源 + 一条有界安全网 + 收敛式状态机，其余全部去重。**
+
+1. **Liveness SSOT**：`agents.last_heartbeat` 由 core 单向写入（每轮心跳完成/跳过时，含 skip），所有观察者统一读它（实时读 live-view，落列供跨进程/诊断）。心跳时间戳是唯一「活着」的证据。
+
+2. **心跳语义收紧**：心跳 = 存活上报 + 低频巡检（默认 6h，配置落库）；**存活上报与 LLM 巡检解耦**——skip 路径不上报 LLM，只写时间戳；LLM 巡检只在有实际变化时发生。平台级硬速率下限（已有 clamp 5min）+ 任何触发心跳的路径（含兜底器）都必须走同一收口、受同一速率/总量限制。
+
+3. **单一安全网仲裁器（暂名 Conservator）**：把 dirty/stale/stall 的判定收敛为一个组件，输出唯一动作序列：
+   `idle ✓ → 不动作`
+   `可疑（working 无任务）→ 查 lastHeartbeat 新鲜度 → 短窗口观察`
+   `→ 触发一次廉价唤醒（非 LLM 巡检）→ 仍无进展 → reconcile-idle → human-review`
+   每步带**指数退避 + 总次数上限 + 收敛证明**（要求动作导致状态迁移，否则不得进入下一轮），从机制上排除「每 2 分钟一次」这类周期解。
+
+4. **收敛式状态机**：散布的 setStatus 收敛为单一 `setStatus()` + 唯一派生函数（由 activeTasks / focus / worker count / currentActivity 计算期望状态），串行化状态迁移，杜绝竞态覆盖。
+
+5. **持久化通路补全**：状态 payload 带上全部权威字段（status/lastHeartbeat/activeTaskIds/currentActivity/lastError），一次回调写全，不再丢字段。
+
+## 四、本次已修复（代码已改、测试已绿，待构建生效）
+
+| 修复 | 文件 | 验证 |
+|---|---|---|
+| A. 兜底器重试释放条件 + 连续触发升级（切断 2 分钟风暴） | `packages/org-manager/src/agent-dirty-reconciler.ts` | 17 测试绿 + 新增风暴回归测试 + tsc |
+| B. `lastHeartbeat` 落库（状态 payload 补字段 + 3 处心跳落点上报 + repo 写入） | `core/src/agent.ts`、`core/src/agent-manager.ts`、`storage/src/sqlite-storage.ts`、`cli/src/commands/start.ts` | 30 个心跳测试绿 + 全包 tsc 通过 |
+
+## 五、待执行的重构（建议排期，按风险从低到高）
+
+1. **Conservator 统一仲裁**（**✅ 2026-09-25 已完成**，`packages/org-manager/src/agent-conservator.ts`）——dirty/stale/stall 收敛为单一组件：
+   - `evaluateConservator`（纯函数）：融合 dirty 判据 + stall 判据 + 心跳/活动新鲜度，输出唯一动作阶梯 `ok → observe → wake → reconcile → human-review`；
+   - `AgentConservator`（仲裁引擎）：指数退避（base·2^(n−1)，封顶 8h）+ 单 episode 总次数上限 + 收敛证明（未脱离 processing-like 不复位 episode；human-review 每 episode 通知一次）；
+   - Fix A 合流：连续 3 次 trigger-heartbeat 无果 → 升级 human-review（`CONSERVATOR_MAX_WAKE_ATTEMPTS=3`）；
+   - 接线：`api-server.ts` 从 `AgentDirtyReconciler` 切换为 `AgentConservator`；display path 改用 `evaluateConservator`（`runtime.stall`/`runtime.dirty` 形状兼容不变）；
+   - 回归测试：`test/agent-conservator.test.ts` 19 用例（stuck-working 心跳风暴 + 心跳宽限 + 指数退避 + 上限收敛 + degraded/dead-dependency）；olde dirty-reconciler 测试保留（重构 4 删除旧模块时再移除）。
+2. **Liveness 解耦心跳**（skip 路径降为纯时间戳，LLM 巡检仅在变化时发生；小改动、收益大）——§三.2
+3. **状态机收敛**（setStatus 单一化；高风险，需全量 agent 单测回归）——§三.4
+4. 全部完成后：删除旧 dirty/stall 独立模块，整理文档（本文档并入 ARCHITECTURE）。
+
+## 六、生效条件
+
+- 本次修复（A/B）代码需**重新构建并重启桌面应用**才生效。
+- 重启后验证：刘利 `last_heartbeat` 应开始写入；stuck-working 的 agent 在连续 3 次触发无果后升级人工介入，不再出现高频心跳。
+
+## 七、2026-09-25 补充：心跳能力模型调整（Owner 指令）
+
+产品级决定：**心跳会话的能力与普通 session 一致**，不再用小工具包（reflex）锁死。
+
+- `scenarioToPack('heartbeat')`：reflex → **converse**（`capability-packs.ts`）。
+- 移除 `agent.ts` 心跳路径的 `HEARTBEAT_ALLOWED_TOOLS=getReflexAllowlist()` 白名单传参；提示词重写为「范围由 HEARTBEAT.md 定义、成本由心跳间隔承担、不做深度工作」的纪律声明。
+- 间隔调整：Agent 需**先征询人类**（`request_user_input` / `notify_user`），获同意后才调用 `set_heartbeat_interval`（clamp 5min–24h）。
+- 硬性护栏仅保留：工具迭代上限（单次心跳）、心跳间隔 clamp（成本）、HEARTBEAT.md（行为范围）——不再有硬编码工具子集。

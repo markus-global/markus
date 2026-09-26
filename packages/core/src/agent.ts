@@ -63,7 +63,7 @@ import { EventBus } from './events.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
 import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
-import { HeartbeatScheduler } from './heartbeat.js';
+import { HeartbeatScheduler, heartbeatStateFingerprint } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
 import { stripToolNoise } from './llm/provider-helpers.js';
 import { MemoryStore, loadNotebook, saveNotebook, pruneNotebookEntries, normalizeNotebookKey, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
@@ -942,9 +942,66 @@ export class Agent {
   }
 
   /**
-   * Set agent status and emit status change event
+   * 单一状态转换意图（状态机收敛）——调用点只表达「发生了什么」，
+   * 不自行判断守卫；终态由 transitionStatus 内部按聚合状态 + 优先级裁定。
+   *   - working ：某个工作单元开始（幂等；可从 error 恢复并清错）
+   *   - idle    ：某个工作单元结束，请求回空闲（仅聚合空闲时落地；error 粘性：不被覆盖）
+   *   - error   ：工作单元失败（记录错误；仅无活跃任务时落地，避免部分失败污染全局状态）
+   *   - offline ：生命周期 stop（无条件）
+   *   - reset   ：生命周期 start / reconcile 兜底（无条件回 idle 并清错误）
    */
-  private setStatus(status: AgentState['status'], errorMessage?: string): void {
+  private transitionStatus(
+    intent:
+      | { to: 'working' }
+      | { to: 'idle' }
+      | { to: 'error'; message: string }
+      | { to: 'offline' }
+      | { to: 'reset' },
+    opts?: { force?: boolean },
+  ): void {
+    const oldStatus = this.state.status;
+    const force = opts?.force === true;
+
+    // 生命周期/兜底：无条件落地（start / stop / reconcile）。
+    if (intent.to === 'reset') {
+      this.applyStatus('idle');
+      return;
+    }
+    if (intent.to === 'offline') {
+      this.applyStatus('offline');
+      return;
+    }
+
+    // working：幂等；新工作开始视为恢复，允许覆盖 error 并清错。
+    if (intent.to === 'working') {
+      if (oldStatus === 'working') return;
+      this.applyStatus('working');
+      return;
+    }
+
+    // error：仅在无活跃任务时落地（与历史语义一致：部分失败不污染全局状态）。
+    if (intent.to === 'error') {
+      if (!force && this.activeTasks.size > 0) return;
+      this.applyStatus('error', intent.message);
+      return;
+    }
+
+    // idle：error 粘性 —— 一旦进入 error，后续 idle 意图不得覆盖（需 reset / 新 working 恢复）；
+    // 且仅当聚合空闲（无活跃任务；并发模式下各 worker 均空闲）才落地，避免与并行工作互相覆盖。
+    if (oldStatus === 'error' && !force) return;
+    if (!force && this.activeTasks.size > 0) return;
+    if (
+      !force &&
+      this.attentionController.getWorkerCount() > 1 &&
+      this.attentionController.getState() !== 'idle'
+    ) {
+      return;
+    }
+    this.applyStatus('idle');
+  }
+
+  /** 状态落地的唯一写入点：维护 lastError/lastErrorAt + stateManager + 状态通知。 */
+  private applyStatus(status: AgentState['status'], errorMessage?: string): void {
     const oldStatus = this.state.status;
     if (oldStatus === status && status !== 'error') return;
 
@@ -967,7 +1024,8 @@ export class Agent {
   }
 
   async start(options?: { initialHeartbeatDelayMs?: number }): Promise<void> {
-    this.setStatus('idle');
+    // start 是生命周期重置：无条件回 idle 并清错误。
+    this.transitionStatus({ to: 'reset' });
     this.stopReason = undefined;
 
     // Load persistent notebook (NOTEBOOK.md)
@@ -1092,7 +1150,7 @@ export class Agent {
     }
     this.metricsCollector.flush();
     this.stopReason = reason;
-    this.setStatus('offline');
+    this.transitionStatus({ to: 'offline' });
     this.eventBus.emit('agent:stopped', { agentId: this.id });
     log.info(`Agent stopped: ${this.config.name}`, { reason });
   }
@@ -1511,15 +1569,10 @@ export class Agent {
           mailboxDepth: this.mailbox.depth,
         });
         if (item) {
-          this.setStatus('working');
-        } else if (this.attentionController.getWorkerCount() > 1) {
-          // 并发模式：单个 worker 结束不代表 agent 空闲 —— 只有所有 worker
-          // 都空闲（聚合状态 idle）才恢复 idle，避免状态抖动。
-          if (this.attentionController.getState() === 'idle' && this.activeTasks.size === 0) {
-            this.setStatus('idle');
-          }
-        } else if (this.activeTasks.size === 0) {
-          this.setStatus('idle');
+          this.transitionStatus({ to: 'working' });
+        } else {
+          // 空闲判定统一收敛到 transitionStatus（活跃任务 + 并发 worker 聚合判断在函数内完成）。
+          this.transitionStatus({ to: 'idle' });
         }
       },
       getWorkerWorkspace: (workerId: number) => {
@@ -4415,13 +4468,11 @@ export class Agent {
     // User Cancel on a non-stream turn (heartbeat etc.) — stop before spending an LLM call.
     if (this.isUserProcessingCancelled()) {
       log.info('handleMessage cancelled by user before start', { agentId: this.id, scenario: options?.scenario });
-      if (this.activeTasks.size === 0) this.setStatus('idle');
+      this.transitionStatus({ to: 'idle' });
       return '[cancelled]';
     }
 
-    if (this.activeTasks.size === 0) {
-      this.setStatus('working');
-    }
+    this.transitionStatus({ to: 'working' });
 
     const scenario = options?.scenario ?? 'chat';
     const isLightweight = scenario !== 'chat' && scenario !== 'task_execution' && scenario !== 'review';
@@ -5127,7 +5178,7 @@ export class Agent {
         this.emitActivityLog(chatActivityId, 'text', displayReply);
       }
       if (chatActivityId) this.endActivity(chatActivityId);
-      if (this.activeTasks.size === 0) this.setStatus('idle');
+      this.transitionStatus({ to: 'idle' });
 
       this.eventBus.emit('agent:message', {
         agentId: this.id,
@@ -5149,7 +5200,7 @@ export class Agent {
         });
       } catch { /* avoid masking the original error */ }
 
-      if (this.activeTasks.size === 0) this.setStatus('error', String(error));
+      this.transitionStatus({ to: 'error', message: String(error) });
       this.emitAudit({
         type: 'error',
         action: 'handle_message',
@@ -5193,16 +5244,14 @@ export class Agent {
     // onEvent callback is already a no-op when the connection is gone.
     if (cancelToken?.cancelled && cancelToken.userStopped) {
       log.info('Stream cancelled by user before processing started', { agentId: this.id });
-      if (this.activeTasks.size === 0) this.setStatus('idle');
+      this.transitionStatus({ to: 'idle' });
       return '[cancelled]';
     }
     if (cancelToken?.cancelled && !cancelToken.userStopped) {
       log.info('SSE disconnected before processing started — continuing without streaming', { agentId: this.id });
     }
 
-    if (this.activeTasks.size === 0) {
-      this.setStatus('working');
-    }
+    this.transitionStatus({ to: 'working' });
 
     // Track chat activity for streaming
     let streamChatActivityId: string | undefined;
@@ -5455,7 +5504,7 @@ export class Agent {
             });
           }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
-          if (this.activeTasks.size === 0) this.setStatus('idle');
+          this.transitionStatus({ to: 'idle' });
           return '[cancelled]';
         }
 
@@ -5479,7 +5528,7 @@ export class Agent {
               reasoningContent: response.reasoningContent,
             });
             if (streamChatActivityId) this.endActivity(streamChatActivityId);
-            if (this.activeTasks.size === 0) this.setStatus('idle');
+            this.transitionStatus({ to: 'idle' });
             return '[cancelled]';
           }
 
@@ -5566,7 +5615,7 @@ export class Agent {
               });
             }
             if (streamChatActivityId) this.endActivity(streamChatActivityId);
-            if (this.activeTasks.size === 0) this.setStatus('idle');
+            this.transitionStatus({ to: 'idle' });
             return '[cancelled]';
           }
 
@@ -5612,7 +5661,7 @@ export class Agent {
             });
           }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
-          if (this.activeTasks.size === 0) this.setStatus('idle');
+          this.transitionStatus({ to: 'idle' });
           return '[cancelled]';
         } else if (streamYield.decision === 'preempt') {
           // A human is awaiting this streamed reply (chat is non-preemptable by design;
@@ -5650,7 +5699,7 @@ export class Agent {
             });
           }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
-          if (this.activeTasks.size === 0) this.setStatus('idle');
+          this.transitionStatus({ to: 'idle' });
           return lastResponseContent || '';
         }
 
@@ -5693,7 +5742,7 @@ export class Agent {
           });
         }
         if (streamChatActivityId) this.endActivity(streamChatActivityId);
-        if (this.activeTasks.size === 0) this.setStatus('idle');
+        this.transitionStatus({ to: 'idle' });
         return '[cancelled]';
       }
       const rawReply = sanitizeLLMReply(response.content);
@@ -5712,7 +5761,7 @@ export class Agent {
         this.emitActivityLog(streamChatActivityId, 'text', displayReply);
       }
       if (streamChatActivityId) this.endActivity(streamChatActivityId);
-      if (this.activeTasks.size === 0) this.setStatus('idle');
+      this.transitionStatus({ to: 'idle' });
 
       this.eventBus.emit('agent:message', {
         agentId: this.id,
@@ -5738,7 +5787,7 @@ export class Agent {
           } catch { /* avoid masking */ }
         }
         if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: false });
-        if (this.activeTasks.size === 0) this.setStatus('idle');
+        this.transitionStatus({ to: 'idle' });
         return truncated + COMPLETION_MARKER;
       }
       if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: !cancelToken?.userStopped });
@@ -5754,7 +5803,7 @@ export class Agent {
             });
           } catch { /* avoid masking */ }
         }
-        if (this.activeTasks.size === 0) this.setStatus('idle');
+        this.transitionStatus({ to: 'idle' });
         return '[cancelled]';
       }
 
@@ -5771,7 +5820,7 @@ export class Agent {
         } catch { /* avoid masking the original error */ }
       }
 
-      if (this.activeTasks.size === 0) this.setStatus('error', String(error));
+      this.transitionStatus({ to: 'error', message: String(error) });
       this.emitAudit({
         type: 'error',
         action: 'handle_message_stream',
@@ -5900,7 +5949,7 @@ export class Agent {
         `Agent has reached maximum concurrent tasks (${taskConcurrencyLimit})`,
       );
     }
-    this.setStatus('working');
+    this.transitionStatus({ to: 'working' });
     this.activeTasks.add(taskId);
     const execGen = (this.activeTaskGen.get(taskId) ?? 0) + 1;
     this.activeTaskGen.set(taskId, execGen);
@@ -6549,12 +6598,11 @@ export class Agent {
       this.endActivity(taskActId);
       this.notifyStateChange();
 
-      if (this.activeTasks.size === 0) {
-        if (taskFailed) {
-          this.setStatus('error', taskFailed);
-        } else {
-          this.setStatus('idle');
-        }
+      // 终态裁定统一收敛到 transitionStatus（内部按聚合状态 + 优先级判定）。
+      if (taskFailed) {
+        this.transitionStatus({ to: 'error', message: taskFailed });
+      } else {
+        this.transitionStatus({ to: 'idle' });
       }
     }
   }
@@ -6580,7 +6628,7 @@ export class Agent {
       persist: boolean;
     }) => void,
   ): Promise<string> {
-    this.setStatus('working');
+    this.transitionStatus({ to: 'working' });
     const risLabel = userMessage.replace(/^[\s#*[\]]+/g, '').slice(0, 80) || 'Session response';
     const actId = this.startActivity('respond_in_session', risLabel);
 
@@ -6829,7 +6877,7 @@ export class Agent {
       throw error;
     } finally {
       this.endActivity(actId);
-      if (this.activeTasks.size === 0) this.setStatus('idle');
+      this.transitionStatus({ to: 'idle' });
       await this.finalizeBrowserSession(sessionId);
     }
   }
@@ -7280,7 +7328,7 @@ export class Agent {
       if (!fresh) this.state.currentActivity = undefined;
     }
 
-    if (this.state.status !== 'idle') this.setStatus('idle');
+    if (this.state.status !== 'idle') this.transitionStatus({ to: 'reset' });
     if (cleared) {
       this.notifyStateChange();
       this.eventBus.emit('agent:reconciled-idle', { agentId: this.id, clearedActivity: true });
@@ -8848,6 +8896,30 @@ export class Agent {
     }
   }
 
+  /**
+   * 重构 2：心跳 skip 的唯一出口 —— 纯时间戳存活上报（不触发 LLM）。
+   *
+   * 所有 skip 分支（human-chat defer / idle / deep-sleep）都必须走这里：统一负责
+   * 活动记录 + lastHeartbeat 落库（notifyStateChange → Fix B 链路写入 DB）+ 指标，
+   * 以及可选的 deep-sleep 间隔延长。保证「skip 路径永不调用 LLM」成为结构性事实，
+   * 且任何 skip 都刷新存活时间戳（列存在有人写）。
+   */
+  private recordHeartbeatSkip(label: string, note: string, opts?: { deepSleep?: boolean }): void {
+    const skipActivityId = this.startActivity('heartbeat', label, {});
+    this.emitActivityLog(skipActivityId, 'text', note);
+    this.endActivity(skipActivityId, { success: true });
+    this.state.lastHeartbeat = new Date().toISOString();
+    this.metricsCollector.recordHeartbeat(true, true);
+    this.notifyStateChange(); // 心跳也是存活证明：落库 last_heartbeat，供所有观察者读取
+    if (opts?.deepSleep) {
+      try {
+        const cur = (this as unknown as { heartbeatIntervalMs?: number }).heartbeatIntervalMs ?? 6 * 3600_000;
+        const next = nextDeepSleepIntervalMs(cur);
+        this.heartbeat?.updateInterval?.(next);
+      } catch { /* optional */ }
+    }
+  }
+
   private async handleHeartbeat(ctx: {
     agentId: string;
     triggeredAt: string;
@@ -8856,41 +8928,43 @@ export class Agent {
 
     if (this.shouldDeferHeartbeatForHumanChat()) {
       log.info('Heartbeat: skipping LLM (human chat focused/queued)', { agentId: this.id });
-      const skipActivityId = this.startActivity('heartbeat', 'Heartbeat check-in (deferred for human chat)', {});
-      this.emitActivityLog(
-        skipActivityId,
-        'text',
+      this.recordHeartbeatSkip(
+        'Heartbeat check-in (deferred for human chat)',
         'Human chat is active or queued — skipping heartbeat LLM. Will patrol on the next trigger when chat is idle.',
       );
-      this.endActivity(skipActivityId, { success: true });
-      this.state.lastHeartbeat = new Date().toISOString();
-      this.metricsCollector.recordHeartbeat(true, true);
-      this.notifyStateChange(); // 心跳也是存活证明：落库 last_heartbeat，供所有观察者读取
       return;
     }
 
     // Deep sleep / idle skip — AGENT-RUNTIME deep sleep Spec.
-    const queuedNonHeartbeat = this.mailbox.getQueuedItems().filter(
+    const queuedAll = this.mailbox.getQueuedItems();
+    const queuedNonHeartbeat = queuedAll.filter(
       i => i.sourceType !== 'heartbeat' && i.status === 'queued'
-    ).length;
-    const humanOrTaskMail = this.mailbox.getQueuedItems().some(
+    );
+    const humanOrTaskMail = queuedAll.some(
       i => i.status === 'queued' && (
         i.sourceType === 'human_chat'
         || i.sourceType === 'task_status_update'
         || i.sourceType === 'task_comment'
       ),
     );
-    const fingerprint = `q:${queuedNonHeartbeat}`;
-    const unchanged = fingerprint === this.lastHeartbeatFingerprint && queuedNonHeartbeat === 0;
+    // 重构 2：巡检状态指纹 —— 队列内容（sourceType+id，含 stuck 邮件与队列空）+ 活跃任务集合。
+    // 仅当状态**实际变化**才巡检（新邮件/新任务出现 → 指纹变 → 巡检一次）；
+    // 无变化（含同一邮件一直卡在队列）→ skip LLM 只写时间戳，不空转 LLM。
+    const fingerprint = heartbeatStateFingerprint(queuedNonHeartbeat, this.activeTasks);
+    const unchanged = fingerprint === this.lastHeartbeatFingerprint;
     if (unchanged) this.consecutiveIdleHeartbeats++;
     else this.consecutiveIdleHeartbeats = resetIdleOnWake();
     this.lastHeartbeatFingerprint = fingerprint;
 
+    // 重构 2：深睡判定使用实时状态，不再硬编码 false —— 有活跃任务/待审邮件绝不深睡
+    // （否则长任务期间间隔被翻倍，存活证明变稀）。
     const deepSleep = shouldEnterDeepSleep({
       consecutiveIdleHeartbeats: this.consecutiveIdleHeartbeats,
-      hasActiveTasks: false,
-      hasPendingReviews: false,
-      hasHumanOrTaskMailbox: humanOrTaskMail || queuedNonHeartbeat > 0,
+      hasActiveTasks: this.activeTasks.size > 0,
+      hasPendingReviews: queuedAll.some(
+        i => i.status === 'queued' && i.sourceType === 'review_request',
+      ),
+      hasHumanOrTaskMailbox: humanOrTaskMail || queuedNonHeartbeat.length > 0,
     });
 
     // Skip LLM while unchanged (including deep sleep). No forced patrol when org is quiet —
@@ -8900,25 +8974,13 @@ export class Agent {
         consecutiveIdle: this.consecutiveIdleHeartbeats,
         deepSleep,
       });
-      const skipActivityId = this.startActivity('heartbeat', 'Heartbeat check-in (idle skip)', {});
-      this.emitActivityLog(
-        skipActivityId,
-        'text',
+      this.recordHeartbeatSkip(
+        'Heartbeat check-in (idle skip)',
         deepSleep
           ? `Deep sleep (idle ${this.consecutiveIdleHeartbeats}). No LLM call; interval may extend.`
           : `No changes detected (idle ${this.consecutiveIdleHeartbeats}). Skipping LLM.`,
+        { deepSleep },
       );
-      this.endActivity(skipActivityId, { success: true });
-      this.state.lastHeartbeat = new Date().toISOString();
-      this.metricsCollector.recordHeartbeat(true, true);
-      this.notifyStateChange(); // 心跳存活证明落库
-      if (deepSleep) {
-        try {
-          const cur = (this as unknown as { heartbeatIntervalMs?: number }).heartbeatIntervalMs ?? 6 * 3600_000;
-          const next = nextDeepSleepIntervalMs(cur);
-          this.heartbeat?.updateInterval?.(next);
-        } catch { /* optional */ }
-      }
       return;
     }
     this.consecutiveIdleHeartbeats = 0;
