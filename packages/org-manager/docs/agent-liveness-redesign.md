@@ -62,7 +62,12 @@
    - Fix A 合流：连续 3 次 trigger-heartbeat 无果 → 升级 human-review（`CONSERVATOR_MAX_WAKE_ATTEMPTS=3`）；
    - 接线：`api-server.ts` 从 `AgentDirtyReconciler` 切换为 `AgentConservator`；display path 改用 `evaluateConservator`（`runtime.stall`/`runtime.dirty` 形状兼容不变）；
    - 回归测试：`test/agent-conservator.test.ts` 19 用例（stuck-working 心跳风暴 + 心跳宽限 + 指数退避 + 上限收敛 + degraded/dead-dependency）；olde dirty-reconciler 测试保留（重构 4 删除旧模块时再移除）。
-2. **Liveness 解耦心跳**（skip 路径降为纯时间戳，LLM 巡检仅在变化时发生；小改动、收益大）——§三.2
+2. **Liveness 解耦心跳**（**✅ 2026-09-26 已完成**，`packages/core/src/agent.ts` + `packages/core/src/heartbeat.ts`）——skip 路径降为纯时间戳，LLM 巡检仅在状态实际变化时发生：
+   - **skip 路径收口**：新增 `recordHeartbeatSkip()` 为心跳 skip 的唯一出口（human-chat defer / idle / deep-sleep 三分支统一走它）——活动记录 + `state.lastHeartbeat` 落库（notifyStateChange → Fix B 链路）+ 指标 + 可选 deep-sleep 间隔延长。「skip=纯时间戳、永不调用 LLM」成为结构性事实；
+   - **巡检指纹升级**：`heartbeatStateFingerprint()`（纯函数，可单测）——指纹从旧「队列深度 `q:N`」升级为「队列内容（sourceType+id 签名）+ 活跃任务 id 集合」。仅当状态**实际变化**（新邮件/任务增减）才巡检一次；同一邮件卡在队列（stuck）指纹不变 → 不空转 LLM；
+   - **残留逻辑依赖清零**：`shouldEnterDeepSleep` 的 `hasActiveTasks: false` / `hasPendingReviews: false` 硬编码改为实时状态（`activeTasks.size > 0` + queued `review_request`），有活跃任务/待审邮件绝不深睡翻倍间隔；
+   - **收口确认**：所有触发心跳路径（HeartbeatScheduler.tick/trigger、Agent.triggerHeartbeat、agent-manager/api-server 侧 triggerAgentHeartbeat → Conservator recover）都只 emit `heartbeat:trigger` → `agent.ts` 唯一 handler → `mailbox.enqueue('heartbeat')` → 单条折叠处理；邮箱邮件由 mailbox worker 独立消费，心跳不重复巡检邮件；
+   - **回归测试**：`core/test/heartbeat-liveness.test.ts` 新增 9 用例（指纹纯函数 5 例：stuck 邮件不变/新邮件变/心跳自排除/任务增减；skip 纯时间戳：连续心跳仅首次巡检 + lastHeartbeat 刷新；stuck-working 宽限多触发不增 LLM；邮件独立消费后仍 skip；Conservator triggerHeartbeat 收口不产生多余巡检），core 全量相关 156 用例 + 全包 tsc 绿。
 3. **状态机收敛**（setStatus 单一化；高风险，需全量 agent 单测回归）——§三.4
 4. 全部完成后：删除旧 dirty/stall 独立模块，整理文档（本文档并入 ARCHITECTURE）。
 
