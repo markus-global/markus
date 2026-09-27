@@ -4740,27 +4740,6 @@ export class SqliteMailboxRepo {
     this.db.prepare(`UPDATE mailbox_items SET ${parts.join(', ')} WHERE id = ?`).run(...params);
   }
 
-  markStaleProcessingAsCompleted(agentId: string, ownerId?: string): number {
-    const ts = now();
-    if (!ownerId) {
-      // 未指定认领者 → 保持旧契约（清理全部 processing 行），兼容既有调用与测试。
-      // 生产路径（mailbox.cleanStaleProcessing）始终传 ownerId，走下面的租约感知分支。
-      const legacy = this.db
-        .prepare("UPDATE mailbox_items SET status = 'completed', completed_at = ? WHERE agent_id = ? AND status = 'processing'")
-        .run(ts, agentId);
-      return (legacy as { changes?: number }).changes ?? 0;
-    }
-    // 租约感知：只清「无认领 / 租约已过期 / 本实例持有」的行 → 不误杀其它实例在飞项。
-    const result = this.db
-      .prepare(
-        "UPDATE mailbox_items SET status = 'completed', completed_at = ? "
-        + "WHERE agent_id = ? AND status = 'processing' "
-        + "AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ? OR claimed_by = ?)"
-      )
-      .run(ts, agentId, ts, ownerId);
-    return (result as { changes?: number }).changes ?? 0;
-  }
-
   getByAgent(agentId: string, options?: { status?: string; limit?: number }): MailboxItemRow[] {
     let sql = 'SELECT * FROM mailbox_items WHERE agent_id = ?';
     const params: (string | number | null)[] = [agentId];

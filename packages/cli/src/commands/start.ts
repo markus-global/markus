@@ -1724,7 +1724,6 @@ async function startServerCore(
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
           markStaleProcessingAsDropped: (aid: string) => mbRepo.markStaleProcessingAsDropped(aid),
-          markStaleProcessingAsCompleted: (aid: string, ownerId?: string) => mbRepo.markStaleProcessingAsCompleted(aid, ownerId),
           loadQueued: (aid: string) => {
             const rows = mbRepo.getByAgent(aid, { status: 'queued' });
             return rows.map((r: any) => ({

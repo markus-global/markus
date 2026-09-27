@@ -138,13 +138,6 @@ export interface MailboxPersistence {
   updateStatus(itemId: string, status: MailboxItemStatus, extra?: Partial<MailboxItem>): void;
   /** Mark all items stuck in 'processing' as 'dropped' (stale after restart). */
   markStaleProcessingAsDropped?(agentId: string): number;
-  /**
-   * Mark stuck 'processing' items as 'completed' (runtime self-healing).
-   *
-   * `ownerId` = 本实例认领者标识。传入后，持久层只清理「无认领 / 租约已过期 /
-   * **本实例自己持有**」的行，从而**不误杀其它实例仍在有效租约内处理**的项（跨实例互踩）。
-   */
-  markStaleProcessingAsCompleted?(agentId: string, ownerId?: string): number;
   /** Load persisted queued items for this agent (for recovery on restart). */
   loadQueued?(agentId: string): MailboxItem[];
   /** Load persisted deferred items for this agent (for auto-resurface). */
@@ -366,16 +359,18 @@ export class AgentMailbox {
   }
 
   /**
-   * Runtime self-healing: mark DB items stuck in 'processing' as 'completed'.
+   * Runtime self-healing: mark DB items stuck in 'processing' as 'dropped'.
    * Called by the watchdog when no item is being processed in memory.
-   * Unlike recoverStaleItems (startup-only, marks as 'dropped'), this uses
-   * 'completed' because the processing likely did finish — the DB update
-   * just failed silently or was interrupted.
+   *
+   * 语义修正（不再标 'completed'）：completed = 「Agent 明确正常结束」——
+   * 卡住/被打断/超时的工作**不属于完成**，且 completed 会让 resolveReinjectDecision
+   * 判定为 settled（抑制同键补偿重投），等于把未完成工作静默吞掉。
+   * 改标 'dropped'：异常可见（UI 红色）+ 允许后续补偿重投（dropped → reuse）。
+   * storage 的 markStaleProcessingAsDropped 本身租约感知（仅碰「无认领/租约空/
+   * 租约过期」的行，不误杀其它实例在飞项），strict-state 项会回队重试。
    */
   cleanStaleProcessing(): number {
-    // 传 ownerId：只清理「无认领 / 租约过期 / 本实例持有」的行，
-    // 避免把其它实例仍有效租约内的 processing 项误标为 completed（跨实例互踩）。
-    return this.persistence?.markStaleProcessingAsCompleted?.(this.agentId, this.ownerId) ?? 0;
+    return this.persistence?.markStaleProcessingAsDropped?.(this.agentId) ?? 0;
   }
 
   /**
