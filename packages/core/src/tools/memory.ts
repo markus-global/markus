@@ -1,7 +1,7 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { IMemoryStore, MemoryEntry } from '../memory/types.js';
 import type { SemanticMemorySearch } from '../memory/semantic-search.js';
-import { createLogger } from '@markus/shared';
+import { createLogger, MEMORY_MD_TOTAL_MAX_CHARS } from '@markus/shared';
 
 const log = createLogger('memory-tools');
 
@@ -419,6 +419,158 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           return JSON.stringify({ status: 'error', ok: false, error: writeResult.reason ?? 'knowledge.md write refused', section, mode, store });
         }
         return JSON.stringify({ status: 'updated', section, mode, store });
+      },
+    },
+
+    {
+      name: 'memory_stats',
+      description:
+        'Inspect your memory health: knowledge.md size vs budget, observation count, curated section count. ' +
+        'Use periodically (or when memory feels bloated) to decide whether to run memory_organize. ' +
+        'Returns JSON with budget usage percent. No args.',
+      inputSchema: { type: 'object', properties: {} },
+      async execute(): Promise<string> {
+        const store = storeName(ctx.memory);
+        const curated = ctx.memory.getLongTermMemory();
+        const obs = ctx.memory.getObservations();
+        const sectionNames = [...curated.matchAll(/^## (.+)$/gm)]
+          .map((m) => m[1]!)
+          .filter((n) => n !== '_observations');
+        const obsChars = obs.reduce((s, e) => s + (e.content?.length ?? 0), 0);
+        const totalChars = curated.length + obsChars;
+        const usable = Math.max(MEMORY_MD_TOTAL_MAX_CHARS, 1);
+        const usedPercent = Math.round((totalChars / usable) * 100);
+        return JSON.stringify({
+          status: 'ok',
+          store,
+          budget: {
+            totalChars,
+            limit: MEMORY_MD_TOTAL_MAX_CHARS,
+            usedPercent,
+          },
+          observations: { count: obs.length, chars: obsChars },
+          curatedSections: { count: sectionNames.length, names: sectionNames.slice(0, 20) },
+          hint: usedPercent > 80
+            ? 'Approaching budget — run memory_organize to merge observations into curated sections, or memory_update mode="forget" on superseded knowledge.'
+            : undefined,
+        });
+      },
+    },
+
+    {
+      name: 'memory_organize',
+      description:
+        'Merge matching observations from ## _observations into a curated section and archive them. ' +
+        'Args: { target_section: string (required), query?: string, ids?: string[], limit?: number }. ' +
+        'Selects observations whose content matches `query` keywords OR whose ids are listed, appends them as bullet lines ' +
+        'under target_section (budget-aware), then removes them from _observations. ' +
+        'Returns { status, moved, archived, section }. Use to consolidate scattered observations into durable knowledge ' +
+        '(the manual counterpart of dream-cycle consolidation).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          target_section: {
+            type: 'string',
+            description: 'Curated section to append the merged observations into (e.g. "procedures", "conventions").',
+          },
+          query: {
+            type: 'string',
+            description: 'Keyword filter — observations whose content contains any of these tokens (OR-match) get merged. Omit to use ids only.',
+          },
+          ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Explicit observation entry IDs to merge (from memory_search / memory_list).',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max observations to merge in one call (default 20, max 50).',
+          },
+        },
+        required: ['target_section'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const store = storeName(ctx.memory);
+        const target = String(args['target_section'] ?? '').trim();
+        if (!target) {
+          return JSON.stringify({ status: 'error', error: 'target_section is required.', store });
+        }
+        if (/^_observations$/i.test(target)) {
+          return JSON.stringify({
+            status: 'error',
+            error: 'The `_observations` buffer is not a curated section — merge INTO a named section (e.g. "procedures").',
+            store,
+          });
+        }
+        const query = String(args['query'] ?? '').trim().toLowerCase();
+        const ids = Array.isArray(args['ids']) ? args['ids'].map(String) : [];
+        const limit = Math.min(Math.max(Number(args['limit']) || 20, 1), 50);
+
+        const all = ctx.memory.getObservations();
+        let matches = all;
+        if (ids.length > 0) {
+          const idSet = new Set(ids);
+          matches = matches.filter((e) => idSet.has(e.id));
+        }
+        if (query) {
+          matches = matches.filter(
+            (e) =>
+              (e.content ?? '').toLowerCase().includes(query) ||
+              JSON.stringify(e.metadata ?? {}).toLowerCase().includes(query),
+          );
+        }
+        if (matches.length === 0) {
+          return JSON.stringify({
+            status: 'ok',
+            moved: 0,
+            archived: 0,
+            section: target,
+            message: 'No matching observations found.',
+            store,
+          });
+        }
+
+        const selected = matches.slice(-limit);
+        const existing = ctx.memory.getLongTermSection(target);
+        const newLines = selected.map(
+          (e) =>
+            `- [${e.type}] (${(e.timestamp ?? '').slice(0, 10)}) ${e.content}`,
+        );
+        const merged = existing ? `${existing}\n${newLines.join('\n')}` : newLines.join('\n');
+        const writeResult = ctx.memory.addLongTermMemory(target, merged);
+        if (!writeResult.ok) {
+          log.warn('memory_organize write refused', {
+            agentId: ctx.agentId, target, reason: writeResult.reason,
+          });
+          return JSON.stringify({
+            status: 'error',
+            error: writeResult.reason ?? 'knowledge.md write refused',
+            moved: 0,
+            section: target,
+            store,
+          });
+        }
+
+        const archived = ctx.memory.removeEntries(selected.map((e) => e.id));
+        if (ctx.semanticSearch?.isEnabled()) {
+          for (const e of selected) {
+            ctx.semanticSearch.deleteMemory(e.id).catch((err) => {
+              log.warn('Failed to remove from semantic index', { error: String(err) });
+            });
+          }
+        }
+
+        log.info('Agent organized memory', {
+          agentId: ctx.agentId, target, moved: selected.length, archived,
+        });
+        return JSON.stringify({
+          status: 'organized',
+          moved: selected.length,
+          archived,
+          section: target,
+          message: `Merged ${selected.length} observation(s) into "${target}" and archived them.`,
+          store,
+        });
       },
     },
   ];

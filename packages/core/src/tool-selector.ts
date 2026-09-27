@@ -9,6 +9,7 @@ import {
   isSkillOrMcpToolName,
   isWorkContextBoundTool,
   packToolDefBudget,
+  SCHEMA_INJECTED_TOOLS,
   TASK_EXECUTION_EXTRA_TOOLS,
   TOOL_DEF_CORE_KEEP,
   TOOL_DEF_PROTECTED,
@@ -636,7 +637,10 @@ export class ToolSelector {
     // discover_tools 空烧 token。未激活的 skill/MCP 仍按渐进披露（catalog）延迟。
     const protectedNames = new Set<string>([...TOOL_DEF_PROTECTED, ...TOOL_DEF_CORE_KEEP]);
     for (const name of activated) {
-      if (opts.allTools.has(name)) protectedNames.add(name);
+      // registered handler OR schema-injected (pushUnique) tool — both must be
+      // eviction-immune once explicitly activated via discover_tools, otherwise
+      // activation is a no-op after budget eviction (P0-1 self-management fix).
+      if (opts.allTools.has(name) || SCHEMA_INJECTED_TOOLS.has(name)) protectedNames.add(name);
     }
     const { tools: capped, evicted } = evictToolsToBudget(
       result,

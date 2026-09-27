@@ -80,6 +80,7 @@ import {
   COMMENT_RESPONSE_ALLOWED_TOOLS,
   REQUIREMENT_ACTION_ALLOWED_TOOLS,
   WORKFLOW_ACTION_ALLOWED_TOOLS,
+  SCHEMA_INJECTED_TOOLS,
   type CapabilityPack,
 } from './capability-packs.js';
 import { ensureAffordablePromptPack } from './afford-guard.js';
@@ -3884,12 +3885,19 @@ export class Agent {
     workerId: number;
     workerCount: number;
     handoffs: Array<{ workerId: number; kind: 'declared' | 'fact' | 'done' | 'conflict'; entityKey?: string; summary: string }>;
+    notebook?: Array<{ key: string; text: string; updatedAt: number; managed?: string }>;
   } | undefined {
     const log = this.handoffLog;
     const workerCount = this.attentionController.getWorkerCount();
     if (!log || workerCount <= 1) return undefined;
     const workerId = this.workspace().workerId;
-    return {
+    const ctx: {
+      enabled: boolean;
+      workerId: number;
+      workerCount: number;
+      handoffs: Array<{ workerId: number; kind: 'declared' | 'fact' | 'done' | 'conflict'; entityKey?: string; summary: string }>;
+      notebook?: Array<{ key: string; text: string; updatedAt: number; managed?: string }>;
+    } = {
       enabled: true,
       workerId,
       workerCount,
@@ -3900,6 +3908,12 @@ export class Agent {
         summary: h.summary,
       })),
     };
+    // P1-2：分身共享工作记忆 —— notebook 是 agent 级共享的（每个分身写的是同一
+    // 个 NOTEBOOK.md），但上下文默认不注入，分身之间互不知晓。并发模式下把快照
+    // 一起带上，让每个 worker 感知其他分身的 working-memory 状态。
+    const nb = this.getWorkingMemorySnapshot();
+    if (nb.length > 0) ctx.notebook = nb;
+    return ctx;
   }
 
   setAuditCallback(
@@ -7905,6 +7919,17 @@ export class Agent {
     const skillToolNames: string[] = [];
 
     for (const name of requested) {
+      // 0. Schema-injected tools (ToolSelector.pushUnique) have no registerTool
+      // handler — they dispatch through if-branches in agent.ts. They must still
+      // be activate-able, or budget eviction + discover_tools dead-locks them
+      // (the P0-1 self-management bug: schedule_wakeup etc. listed as Deferred
+      // but discover_tools returned unknown). Activation = sticky + protected.
+      if (SCHEMA_INJECTED_TOOLS.has(name)) {
+        this.stickyTools().activated.add(name);
+        activated.push(name);
+        continue;
+      }
+
       // 1. Check if it's an existing tool name on this agent
       if (this.tools.has(name)) {
         this.stickyTools().activated.add(name);

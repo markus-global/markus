@@ -46,6 +46,27 @@ export const TOOL_DEF_PROTECTED = new Set([
 ]);
 
 /**
+ * Tools whose schemas are unconditionally injected by ToolSelector.pushUnique
+ * (schedule_wakeup / cancel_wakeup / set_heartbeat_interval / recall_activity /
+ * complete_deliberation / update_working_memory / clear_working_memory) but whose
+ * handlers are NOT registered via `registerTool` — they dispatch through if-branches
+ * in agent.ts. discover_tools must therefore treat them as activate-able (sticky
+ * activated → protected from eviction), or they dead-lock once budget pressure
+ * moves them into the Deferred catalog.
+ *
+ * MUST stay in sync with ToolSelector.selectTools() pushUnique calls.
+ */
+export const SCHEMA_INJECTED_TOOLS = new Set([
+  'schedule_wakeup',
+  'cancel_wakeup',
+  'set_heartbeat_interval',
+  'recall_activity',
+  'complete_deliberation',
+  'update_working_memory',
+  'clear_working_memory',
+]);
+
+/**
  * Core Markus tools that should survive budget pressure before MCP/skill tools.
  * Prefer deferring chrome-devtools__* / feishu_* over shell_execute / file_read.
  */

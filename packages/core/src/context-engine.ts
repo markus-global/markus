@@ -436,6 +436,13 @@ export class ContextEngine {
       workerId: number;
       workerCount: number;
       handoffs: ConcurrentHandoffLite[];
+      /**
+       * 分身共享工作记忆快照（agent 级 NOTEBOOK.md）。notebook 是 agent 级共享的，
+       * 但上下文默认不注入 → 分身 B 不知道分身 A 写了什么（P1-2「我不知道另一个
+       * 我在干嘛」）。注入最近更新条目（限量、截断），让每个 worker 感知彼此的
+       * working-memory 状态。只有并发模式才注入，且必须限量避免 token 膨胀。
+       */
+      notebook?: Array<{ key: string; text: string; updatedAt: number; managed?: string }>;
     };
   }): Promise<SystemPromptResult> {
     const isDream = opts.scenario === 'memory_consolidation';
@@ -1263,6 +1270,20 @@ export class ContextEngine {
         '  2. 同一任务/需求/对话串同时只能有一个分身处理——发现实体已被占用，不要强行开做，如实说明。',
         '  3. 发现事实冲突时（你的认知与交接记录矛盾），优先报告差异并请求合并决策，不静默覆盖。'
       );
+
+      // P1-2：分身共享工作记忆快照（agent 级 NOTEBOOK）。让每个 worker 感知
+      // 其他分身写下的 working-memory 条目（限量 + 截断，避免 token 膨胀）。
+      const nb = cc.notebook ?? [];
+      if (nb.length > 0) {
+        const sorted = [...nb].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 5);
+        lines.push('- 分身共享工作记忆（其他 worker 最近写入 NOTEBOOK.md，勿重复写入同类条目，如需更新请覆盖同 key）：');
+        for (const e of sorted) {
+          const text = (e.text ?? '').replace(/\s+/g, ' ').slice(0, 140);
+          const when = e.updatedAt ? new Date(e.updatedAt).toISOString().slice(5, 16) : '';
+          lines.push(`  - [${e.key}]${when ? ` (${when})` : ''} ${text}`);
+        }
+      }
+
       volatile.push(lines.join('\n'));
     }
 
