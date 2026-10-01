@@ -60,6 +60,17 @@ function readPgid(pid: number): number | null {
  * Call this *after* spawning with `detached: true`; only then is it safe to
  * use `kill(-pid)`.
  */
+/**
+ * Verify that `pid` really leads its own process group right now.
+ *
+ * ⚠️ NOT for gating kills at spawn time. `spawn(detached:true)` only makes the
+ * child call `setsid()` *after* the JS `spawn()` call returns, so probing `ps`
+ * at that instant races with `setsid()`: the probe usually observes the child
+ * still sitting in Markus' own group, reports "not isolated", and the kill path
+ * then degrades to signalling the wrapper alone — leaking every descendant
+ * (observed: `sleep` grandchildren surviving long after a timeout fired).
+ * Trust the spawn contract instead; use this only for diagnostics.
+ */
 export function isIsolatedProcessGroup(pid: number | undefined): boolean {
   if (isWindows() || !pid || pid <= 1) return false;
   const pgid = readPgid(pid);
@@ -116,7 +127,7 @@ export function signalTree(
     }
   }
 
-  if (isolatedGroup && pid > 1) {
+  if (isolatedGroup && pid > 1 && pid !== process.pid) {
     try {
       process.kill(-pid, signal);
       return 'group';
