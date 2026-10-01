@@ -474,9 +474,11 @@ export class ShellSessionManager {
       agentId,
       child,
       // Trust the spawn contract (`detached: !isWin` ⇒ POSIX setsid ⇒ pgid === pid).
-      // Do NOT re-derive this with a `ps` probe: at this instant the child usually
-      // has not called setsid() yet, so the probe reports false and the kill path
-      // degrades to "kill the wrapper only", leaking every descendant.
+      // Do NOT re-derive this with a `ps` probe: that reports the process's CURRENT
+      // state, not the spawn contract. Measured failure (2026-10-01): 0/25 wrong
+      // while the wrapper is alive, but 100% wrong once the wrapper has exited
+      // (self-daemonizing commands) → the kill path degrades to "kill the wrapper
+      // only" and every descendant leaks. See process-group.ts for the full note.
       !isWin,
     );
     this.sessions.set(sessionId, session);
