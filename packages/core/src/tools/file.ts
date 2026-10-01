@@ -3,7 +3,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { type PathAccessPolicy, validateManifest } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
-import { matchedDenyWritePath } from '../write-guard.js';
+import { assertWriteAllowed } from '../write-guard.js';
 
 const MANIFEST_FILENAMES = new Set(['agent.json', 'team.json', 'skill.json']);
 
@@ -32,13 +32,15 @@ function resolveAndCheckAccess(
   rawPath: string,
   workspacePath: string | undefined,
   policy: PathAccessPolicy | undefined,
-): { resolved: string; access: AccessLevel } {
+): { resolved: string; access: AccessLevel; reason?: string } {
   const resolved = workspacePath ? resolve(workspacePath, rawPath) : resolve(rawPath);
 
-  // 判定收口到 write-guard（单一门禁，审计 P0-2 / G1），并用边界感知匹配，
-  // 避免 `/agents/agt_a` 误伤同前缀目录 `/agents/agt_ab`。
-  if (matchedDenyWritePath(resolved, policy?.denyWritePaths)) {
-    return { resolved, access: 'denied' };
+  // 判定收口到 write-guard（单一门禁，审计 P0-2 / G1），覆盖三类拒绝：
+  // denyWritePaths（其他 agent 工作区）、系统敏感文件、**单一写入者记忆文件**
+  // （knowledge.md / NOTEBOOK.md — 审计 P-01：禁止绕过记忆服务直写）。
+  const decision = assertWriteAllowed(resolved, { policy, workspacePath });
+  if (!decision.allowed) {
+    return { resolved, access: 'denied', reason: decision.reason };
   }
 
   return { resolved, access: 'readwrite' };
@@ -156,10 +158,10 @@ export function createFileWriteTool(security?: SecurityGuard, workspacePath?: st
 
     async execute(args: Record<string, unknown>): Promise<string> {
       const rawPath = (args['path'] ?? args['file'] ?? args['file_path'] ?? args['filePath']) as string;
-      const { resolved: path, access } = resolveAndCheckAccess(rawPath, workspacePath, policy);
+      const { resolved: path, access, reason } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
       if (access === 'denied') {
-        return JSON.stringify({ status: 'denied', error: 'Write denied: this path belongs to another agent\'s workspace. Create your own worktree or copy the files to your workspace.' });
+        return JSON.stringify({ status: 'denied', error: reason ?? 'Write denied: this path belongs to another agent\'s workspace. Create your own worktree or copy the files to your workspace.' });
       }
 
       const content = args['content'] as string;
@@ -207,10 +209,10 @@ export function createFileEditTool(security?: SecurityGuard, workspacePath?: str
 
     async execute(args: Record<string, unknown>): Promise<string> {
       const rawPath = (args['path'] ?? args['file'] ?? args['file_path'] ?? args['filePath']) as string;
-      const { resolved: path, access } = resolveAndCheckAccess(rawPath, workspacePath, policy);
+      const { resolved: path, access, reason } = resolveAndCheckAccess(rawPath, workspacePath, policy);
 
       if (access === 'denied') {
-        return JSON.stringify({ status: 'denied', error: 'Edit denied: this path belongs to another agent\'s workspace. Create your own worktree or copy the files to your workspace.' });
+        return JSON.stringify({ status: 'denied', error: reason ?? 'Edit denied: this path belongs to another agent\'s workspace. Create your own worktree or copy the files to your workspace.' });
       }
 
       const oldStr = args['old_string'] as string;

@@ -924,7 +924,7 @@ export class APIServer {
         }
 
         // Reject raw tool commands and slash commands — agent should use the actual tool.
-        const TOOL_CMD_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|update_notebook|clear_notebook|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
+        const TOOL_CMD_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|notebook_upsert|notebook_clear|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
         const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
         const blockedLines = cleanText.split('\n').filter(line => TOOL_CMD_RE.test(line) || SLASH_CMD_RE.test(line));
         if (blockedLines.length > 0) {
@@ -1977,7 +1977,7 @@ export class APIServer {
       //   1. Known Markus tool names — slash is optional (agent may write "recall_context" or "/recall_context")
       //   2. Generic slash commands from other platforms — slash is REQUIRED to avoid false positives
       //      (e.g. "/history 30" is a command, but "List the points" is normal text)
-      const KNOWN_TOOL_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|update_notebook|clear_notebook|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
+      const KNOWN_TOOL_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|notebook_upsert|notebook_clear|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
       const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
       const cleanReply = noResponseStripped.split('\n')
         .filter(line => !KNOWN_TOOL_RE.test(line) && !SLASH_CMD_RE.test(line))
@@ -5733,6 +5733,25 @@ export class APIServer {
         const dailyLog = mem.getDailyLog();
         const recentDailyLogs = mem.getRecentDailyLogs(7);
         const longTermMemory = mem.getLongTermMemory();
+        // 审计 P-12/§9.1：暴露记忆健康可观测字段（前端 MemoryTab 可视化）。
+        const health = (() => {
+          try {
+            const h = (mem as unknown as { getMemoryHealth?: () => { percent: number; totalChars: number; cap: number; observations: number; curatedSections: number; archiveChars: number; lastConsolidatedAt: string | null } }).getMemoryHealth?.();
+            return h
+              ? {
+                  usedPercent: h.percent,
+                  budgetChars: h.totalChars,
+                  budgetLimit: h.cap,
+                  observationCount: h.observations,
+                  curatedCount: h.curatedSections,
+                  archivedChars: h.archiveChars,
+                  lastConsolidatedAt: h.lastConsolidatedAt,
+                }
+              : {};
+          } catch {
+            return {};
+          }
+        })();
         this.json(res, 200, {
           entries: entries.map(e => ({
             type: e.type,
@@ -5754,6 +5773,7 @@ export class APIServer {
           dailyLog: dailyLog ?? null,
           recentDailyLogs: recentDailyLogs ?? null,
           longTermMemory: longTermMemory ?? null,
+          ...health,
         });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
@@ -5824,8 +5844,8 @@ export class APIServer {
         const body = await this.readBody(req);
         const key = (body['key'] as string) ?? '';
         const content = (body['content'] as string) ?? '';
-        agent.getMemory().addLongTermMemory(key, content);
-        this.json(res, 200, { ok: true });
+        const writeResult = await agent.updateLongTermMemory(key, content);
+        this.json(res, 200, { ok: writeResult.ok, reason: writeResult.reason });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }

@@ -205,6 +205,11 @@ export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
  *  keeps creating new sections.  15 000 chars ≈ 5 sections × 3 000. */
 export const MEMORY_MD_TOTAL_MAX_CHARS = 15_000;
 
+/** Hard cap on the `## _observations` buffer size (chars).
+ *  审计 P-10：观察缓冲区有自己的上限与整理路径；超限时最旧的观察被**无损归档**
+ *  （写入 knowledge-archive.md），而不是让文件无限膨胀。 */
+export const MEMORY_OBSERVATIONS_MAX_CHARS = 30_000;
+
 /** Max characters for a curated knowledge.md SECTION KEY.
  *  Keys are headings of a durable knowledge base, not free text — see
  *  `normalizeSectionKey` in packages/core/src/memory/store.ts. */
@@ -449,7 +454,7 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   // Mailbox management
   'check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item',
   // Notebook (cognitive workspace)
-  'update_notebook', 'clear_notebook', 'update_working_memory', 'clear_working_memory',
+  'notebook_upsert', 'notebook_clear', 'notebook_read',
   // Memory (observations + curated knowledge)
   'memory_save', 'memory_update', 'memory_update_longterm',
   // Inline action (lightweight communication)
@@ -490,7 +495,7 @@ export function clampHeartbeatIntervalMs(ms: number): number {
 //   1. a hard entry cap           → NOTEBOOK_MAX_ENTRIES
 //   2. per-tier time-to-live      → NOTEBOOK_TTL_MS_*
 //   3. per-entry + total caps     → NOTEBOOK_MAX_CHARS_PER_ENTRY / NOTEBOOK_PROMPT_MAX_CHARS
-//   4. an agent-visible rewrite path → update_notebook / clear_notebook
+//   4. an agent-visible rewrite path → notebook_upsert / notebook_clear
 // Historically only (3) existed for per-entry, and the entry cap was applied on
 // ONE write path — the other three writers (triage / deliberation / CPP) bypassed
 // it and load-time never trimmed, so real notebooks reached 26 entries.
@@ -517,11 +522,9 @@ export const NOTEBOOK_PROMPT_MAX_CHARS = 6000;
  *  because they are refreshed by different producers:
  *    agent  — the agent's own notes; refreshed on purpose, so the longest TTL.
  *    system — machine-written situational state (triage/deliberation/retrieval);
- *             meaningless once the situation has moved on.
- *    cpp    — per-stimulus preparation output; shortest-lived by nature. */
+ *             meaningless once the situation has moved on. */
 export const NOTEBOOK_TTL_MS_AGENT = 96 * 60 * 60 * 1000;  // 96h
 export const NOTEBOOK_TTL_MS_SYSTEM = 24 * 60 * 60 * 1000; // 24h
-export const NOTEBOOK_TTL_MS_CPP = 6 * 60 * 60 * 1000;     // 6h
 
 /** Max characters for a notebook entry KEY. Keys are labels, not sentences —
  *  unbounded keys turned headings into paragraphs and let one topic spawn

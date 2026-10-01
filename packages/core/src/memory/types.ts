@@ -36,6 +36,25 @@ export interface ConversationSession {
 }
 
 /**
+ * Result of a session compaction.
+ *
+ * `found` distinguishes a *genuine failure* (no such session in memory nor on
+ * disk) from a *valid no-op* (session already within `keep_last`) — the caller
+ * must be able to tell them apart, otherwise a silent no-op masquerades as
+ * success. This was the root of the 2026-09-30 刘利 P0 report ("compaction API
+ * reports ok but does nothing").
+ */
+export interface CompactResult {
+  summary: string;
+  /** Number of messages paged out into the anchor summary / fragment archive. */
+  flushedCount: number;
+  /** Messages retained in the session after compaction (<= keep_last). */
+  remaining: number;
+  /** false when the session does not exist (in memory or on disk). */
+  found: boolean;
+}
+
+/**
  * Unified memory interface for Agent and ContextEngine.
  * MemoryStore is the primary implementation.
  */
@@ -53,6 +72,19 @@ export interface IMemoryStore {
   // -- Semantic Memory: curated knowledge (knowledge.md SSOT) --
   /** Basename of the on-disk semantic store (normally "knowledge.md"). */
   getStoreFileName(): string;
+  /** Memory budget health (audit P-12) — powers the in-prompt health signal. */
+  getMemoryHealth(): {
+    totalChars: number;
+    cap: number;
+    percent: number;
+    observations: number;
+    curatedSections: number;
+    archiveChars: number;
+    lastConsolidatedAt: string | null;
+  };
+  /** 审计 P-11：整理时间可观测（可选，便于 mock）。 */
+  getLastConsolidatedAt?(): string | null;
+  markConsolidated?(at?: Date): void;
   addLongTermMemory(key: string, content: string): { ok: boolean; reason?: string };
   getLongTermMemory(): string;
   getLongTermMemoryExcluding(sections: string[]): string;
@@ -83,7 +115,7 @@ export interface IMemoryStore {
   renameSession?(sessionId: string, title: string): void;
   appendMessage(sessionId: string, message: LLMMessage): void;
   getRecentMessages(sessionId: string, limit: number): LLMMessage[];
-  compactSession(sessionId: string, keepLast?: number): { summary: string; flushedCount: number };
+  compactSession(sessionId: string, keepLast?: number): CompactResult;
   summarizeAndTruncate(sessionId: string, keepLast: number): LLMMessage[];
 
   // -- ContextOS: session slots (agent-managed fixed段) + fragment archive --

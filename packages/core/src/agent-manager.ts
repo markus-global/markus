@@ -599,7 +599,7 @@ export class AgentManager {
           // A project with NO bound knowledge roots has nothing to read — the
           // unbound case must not silently open arbitrary files.
           if (roots.length === 0) {
-            log.warn('knowledge_read rejected: project has no knowledge base paths', { projectId });
+            log.warn('kb_read rejected: project has no knowledge base paths', { projectId });
             return null;
           }
           const resolvedRef = resolve(reference);

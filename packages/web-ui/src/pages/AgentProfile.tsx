@@ -1434,7 +1434,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
   if (!data) return <div className="text-xs text-fg-tertiary py-8 text-center">{t('agent:profilePage.memoryTab.loadFailed')}</div>;
 
   const sectionTabs = [
-    { key: 'longterm' as const, label: 'MEMORY.md' },
+    { key: 'longterm' as const, label: 'knowledge.md' },
     { key: 'entries' as const, label: `Observations (${data.entries.length})` },
     { key: 'sessions' as const, label: t('agent:profilePage.memoryTab.sessions', { count: data.sessions.length }) },
     { key: 'daily' as const, label: t('agent:profilePage.memoryTab.dailyLogs') },
@@ -1442,6 +1442,35 @@ function MemoryTab({ agentId }: { agentId: string }) {
 
   return (
     <div className="space-y-4">
+      {data.usedPercent != null && (
+        <Card title={t('agent:profilePage.memoryTab.healthTitle', '记忆健康（knowledge.md）')}>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-fg-secondary">{data.budgetChars ?? 0} / {data.budgetLimit ?? 0} 字符</span>
+              <span className={data.usedPercent >= 90 ? 'text-red-500 font-medium' : data.usedPercent >= 70 ? 'text-amber-600 font-medium' : 'text-fg-tertiary'}>
+                {data.usedPercent}%
+              </span>
+            </div>
+            <div className="h-1.5 rounded-full bg-surface-overlay overflow-hidden">
+              <div
+                className={`h-full rounded-full ${data.usedPercent >= 90 ? 'bg-red-500' : data.usedPercent >= 70 ? 'bg-amber-500' : 'bg-brand-500'}`}
+                style={{ width: `${Math.min(100, data.usedPercent)}%` }}
+              />
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-fg-tertiary">
+              <span>{t('agent:profilePage.memoryTab.observationsCount', '观察')} {data.observationCount ?? 0}</span>
+              <span>{t('agent:profilePage.memoryTab.curatedCount', '知识段')} {data.curatedCount ?? 0}</span>
+              {(data.archivedChars ?? 0) > 0 && <span>{t('agent:profilePage.memoryTab.archivedChars', '已归档')} {data.archivedChars} 字符（可检索）</span>}
+              {data.lastConsolidatedAt && <span>{t('agent:profilePage.memoryTab.lastConsolidated', '上次整理')} {new Date(data.lastConsolidatedAt).toLocaleDateString()}</span>}
+            </div>
+            {data.usedPercent >= 70 && (
+              <div className="text-[10px] text-amber-600">
+                {t('agent:profilePage.memoryTab.overBudgetHint', '超预算的旧知识会被无损归档（不再注入）。可让 Agent 运行 memory_organize 整理。')}
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
       <div className="flex gap-2">
         {sectionTabs.map(s => (
           <button key={s.key} onClick={() => setSection(s.key)}
@@ -2553,7 +2582,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                 {nb.visible.map(entry => {
                   const age = formatNotebookAge(entry.updatedAt);
                   const ageLabel = t(`agent:profilePage.relative.${age.unit === 'seconds' ? 'secondsAgo' : age.unit === 'minutes' ? 'minutesAgo' : 'hoursAgo'}`, { count: age.count, hours: age.count });
-                  const managedColor = entry.managed === 'system' ? 'text-blue-400' : entry.managed === 'cpp' ? 'text-purple-400' : 'text-emerald-400';
+                  const managedColor = entry.managed === 'system' ? 'text-blue-400' : 'text-emerald-400';
                   return (
                     <div key={entry.key} className="px-3 py-2 rounded bg-surface-3 border border-border-subtle">
                       <div className="flex items-center gap-2 mb-1">

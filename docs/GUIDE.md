@@ -348,7 +348,7 @@ A: This depends on the governance policy. By default, standard tasks need Manage
 A: Human-created tasks start in `pending` status. You will not receive a self-notification or approval request. Click "Start Execution" in the task detail page to begin execution. This differs from agent-created tasks, which show an "Approve" button and go through the HITL approval flow.
 
 **Q: How do Agents share knowledge?**  
-A: Agents contribute via the `knowledge_contribute` tool to the project knowledge base; other Agents search with `knowledge_search`. Humans can view and manage entries on the Knowledge page.
+A: Agents contribute via the `knowledge_contribute` tool to the project knowledge base; other Agents search with `kb_search`. Humans can view and manage entries on the Knowledge page.
 
 **Q: How do I assign Agents to different projects?**  
 A: Create projects on the Projects page and link them to Teams. When Agents are assigned to tasks within a project, they automatically get project context and isolated workspaces.

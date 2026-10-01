@@ -56,13 +56,13 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
     },
 
     {
-      name: 'update_notebook',
+      name: 'notebook_upsert',
       description:
         `Upsert a keyed entry in your Notebook — your persistent cognitive workspace. Use to track priorities, context, decisions, blockers. ` +
         `Keys are short labels (≤${NOTEBOOK_KEY_MAX_CHARS} chars, e.g. "current-priorities", "blockers") — reuse a key to REPLACE it instead of creating a near-duplicate. ` +
         `Capacity: ${NOTEBOOK_MAX_AGENT_ENTRIES} agent entries (oldest evicted), ${NOTEBOOK_MAX_CHARS_PER_ENTRY} chars each, ${NOTEBOOK_MAX_ENTRIES} entries total. ` +
         `Entries expire on their own (agent ~4d, machine-written entries sooner), so anything you write here is working state, not durable knowledge — use memory_save/memory_update for that. ` +
-        `Delete entries you are done with via clear_notebook.`,
+        `Delete entries you are done with via notebook_clear.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -86,7 +86,7 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
     },
 
     {
-      name: 'clear_notebook',
+      name: 'notebook_clear',
       description: 'Remove a Notebook entry by key, or clear all agent-managed entries.',
       inputSchema: {
         type: 'object',
@@ -98,45 +98,31 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
       async execute(args: Record<string, unknown>): Promise<string> {
         const key = args['key'] as string | undefined;
         const all = args['all'] as boolean | undefined;
-        if (all) {
-          return JSON.stringify(ctx.clearWorkingMemory());
-        }
-        return JSON.stringify(ctx.clearWorkingMemory(key));
+        return JSON.stringify(ctx.clearWorkingMemory(all ? undefined : key));
       },
     },
 
-    // Backward compatibility aliases (hidden from discovery)
+    // 审计 §6：notebook 只读视图（原 update/clear_working_memory 别名已删除，名字归一）。
     {
-      name: 'update_working_memory',
-      description: '[Alias for update_notebook] Upsert a keyed entry in your Notebook.',
+      name: 'notebook_read',
+      description:
+        'Read your Notebook (working memory) — all entries, or a single key. Read-only. ' +
+        'Entries are agent-written (your priorities/context) and machine-written (triage/deliberation), each with a TTL.',
       inputSchema: {
         type: 'object',
         properties: {
-          key: { type: 'string', description: 'Label for this entry' },
-          content: { type: 'string', description: 'The content to store' },
-        },
-        required: ['key', 'content'],
-      },
-      async execute(args: Record<string, unknown>): Promise<string> {
-        const key = args['key'] as string;
-        const content = args['content'] as string;
-        if (!key || !content) return JSON.stringify({ status: 'error', error: 'key and content required' });
-        return JSON.stringify(ctx.updateWorkingMemory(key, content));
-      },
-    },
-    {
-      name: 'clear_working_memory',
-      description: '[Alias for clear_notebook] Remove a Notebook entry by key.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          key: { type: 'string', description: 'Key to clear. Omit to clear all.' },
-          all: { type: 'boolean', description: 'Set true to clear all entries' },
+          key: { type: 'string', description: 'Read a single entry by key. Omit to list all entries.' },
         },
       },
       async execute(args: Record<string, unknown>): Promise<string> {
-        const key = args['key'] as string | undefined;
-        return JSON.stringify(ctx.clearWorkingMemory(args['all'] ? undefined : key));
+        const key = (args['key'] as string | undefined)?.trim();
+        const snapshot = ctx.getWorkingMemorySnapshot();
+        const entries = key ? snapshot.filter((e) => e.key === key) : snapshot;
+        return JSON.stringify({
+          status: 'ok',
+          count: entries.length,
+          entries: entries.map((e) => ({ key: e.key, text: e.text, updatedAt: new Date(e.updatedAt).toISOString() })),
+        });
       },
     },
 

@@ -22,13 +22,12 @@ describe('Notebook persistence — parseNotebook / serializeNotebook', () => {
     const entries = new Map<string, NotebookEntry>([
       ['current-task', { text: 'Working on feature X', managed: 'agent', updatedAt: 1000 }],
       ['triage-decision', { text: 'Processing user message', managed: 'system', updatedAt: 2000 }],
-      ['cognitive-context', { text: 'This is about refactoring', managed: 'cpp', updatedAt: 3000 }],
+      ['cognitive-context', { text: 'This is about refactoring', managed: 'system', updatedAt: 3000 }],
     ]);
     const md = serializeNotebook(entries);
     expect(md).toContain('## current-task');
     expect(md).toContain('<!-- managed: agent -->');
     expect(md).toContain('<!-- managed: system -->');
-    expect(md).toContain('<!-- managed: cpp -->');
     expect(md).toContain('Working on feature X');
 
     const parsed = parseNotebook(md);
@@ -36,7 +35,7 @@ describe('Notebook persistence — parseNotebook / serializeNotebook', () => {
     expect(parsed.get('current-task')?.managed).toBe('agent');
     expect(parsed.get('current-task')?.text).toContain('Working on feature X');
     expect(parsed.get('triage-decision')?.managed).toBe('system');
-    expect(parsed.get('cognitive-context')?.managed).toBe('cpp');
+    expect(parsed.get('cognitive-context')?.managed).toBe('system');
   });
 
   it('defaults to agent managed when no tag present', () => {

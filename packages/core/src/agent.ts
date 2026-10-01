@@ -24,8 +24,7 @@ import {
   type TriageResult,
   type DeliberationResult,
   type CognitiveConfig,
-  type CognitiveStimulus,
-  type CognitiveAgentContext,
+  CognitiveDepth,
   type PreparedCognitiveContext,
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
@@ -54,7 +53,6 @@ import {
   NOTEBOOK_MAX_ENTRIES,
   NOTEBOOK_MAX_CHARS_PER_ENTRY,
   NOTEBOOK_PROMPT_MAX_CHARS,
-  NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS,
   NOTEBOOK_PERSIST_MAX_WAIT_MS,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
@@ -71,7 +69,6 @@ import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
 import { ContextEngine, type OrgContext, type LLMSummarizer, type SystemPromptSegment } from './context-engine.js';
-import { CognitivePreparation, selectCognitiveDepth } from './cognitive.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
 import {
@@ -552,8 +549,7 @@ export class Agent {
   private notebookSaveTimer?: ReturnType<typeof setTimeout>;
   /** Earliest time the debounced notebook write may be deferred to (maxWait). */
   private notebookSaveDeadline?: number;
-  /** Cognitive Preparation Pipeline instance (null when CPP is disabled) */
-  private cognitivePrep?: CognitivePreparation;
+  /** 审计 §8.1：CPP 的 LLM 管道已移除；仅保留配置（决定是否注入确定性情境块）。 */
   private cognitiveConfig?: CognitiveConfig;
   /** Ring buffer of recent activity summaries for triage context. */
   private recentActivityRing: string[] = [];
@@ -753,7 +749,6 @@ export class Agent {
     this.toolHooks = new ToolHookRegistry();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
     if (options.cognitive?.enabled) {
-      this.cognitivePrep = new CognitivePreparation(options.cognitive);
       this.cognitiveConfig = options.cognitive;
     }
     this.heartbeat = new HeartbeatScheduler(this.id, this.eventBus, {
@@ -3684,20 +3679,6 @@ export class Agent {
     }
   }
 
-  private getNotebookWriter(): (key: string, text: string, managed: 'system' | 'cpp') => void {
-    return (key: string, text: string, managed: 'system' | 'cpp') => {
-      // `relevant-context` is a transcript of retrieved knowledge that is ALREADY
-      // injected as `## Your Knowledge`. One such entry measured 9 475 chars — more
-      // than the entire notebook prompt budget (6 000) — so it used to crowd every
-      // real note out of the injected block. Cap it hard; the full text remains
-      // retrievable via `memory_search`.
-      const capped = key === 'relevant-context'
-        ? text.slice(0, NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS)
-        : text;
-      this.writeNotebookEntry(key, capped, managed);
-    };
-  }
-
   /** Activated skill bodies — injected as their own uncapped system section. */
   private getActivatedSkillContext(): string | undefined {
     const instructions = this.activatedSkills();
@@ -3723,7 +3704,7 @@ export class Agent {
 
     if (this.workingMemory.size > 0) {
       const wmLines = ['## Notebook'];
-      wmLines.push(`Your cognitive workspace (max ${NOTEBOOK_MAX_ENTRIES} entries, ${Agent.NOTEBOOK_PROMPT_MAX_ENTRIES} shown). Persists across sessions. Update via \`update_notebook\`. System entries are auto-managed and expire on their own. Choose keys wisely — the oldest entry is evicted when full.`);
+      wmLines.push(`Your cognitive workspace (max ${NOTEBOOK_MAX_ENTRIES} entries, ${Agent.NOTEBOOK_PROMPT_MAX_ENTRIES} shown). Persists across sessions. Update via \`notebook_upsert\`. System entries are auto-managed and expire on their own. Choose keys wisely — the oldest entry is evicted when full.`);
       wmLines.push('');
 
       // Deterministic, most-recent-first order. Two properties matter here:
@@ -3785,60 +3766,34 @@ export class Agent {
   }
 
   /**
-   * Run the Cognitive Preparation Pipeline (appraisal phase) before the main LLM call.
-   * Returns undefined when CPP is disabled or on error (caller falls back to mechanical retrieval).
+   * 审计 §8.1：确定性情境准备（原 CPP 的 LLM 多阶段管道已移除）。
+   *
+   * 旧 CPP 在主调用前跑 0–3 次 LLM（appraise / reflect），带来额外时延与成本，
+   * 且与上下文引擎自身「有界的相关记忆检索」重复。现改为**纯确定性**装配一小段
+   * 情境块（近期活动 + 工作记忆键）；更深的跨域召回由 Agent 按场景提示主动调
+   * `memory_search` / `kb_search` 承担。返回 undefined 表示无情境可注入。
    */
   private async prepareCognitiveContext(
-    scenario: string,
-    message: string,
-    sender?: string,
+    _scenario: string,
+    _message: string,
+    _sender?: string,
   ): Promise<PreparedCognitiveContext | undefined> {
-    if (!this.cognitivePrep) return undefined;
-
-    const stimulus: CognitiveStimulus = {
-      type: scenario,
-      summary: message.slice(0, 200),
-      content: message,
-      sender,
-      scenario,
-    };
-
-    const agentCtx: CognitiveAgentContext = {
-      id: this.id,
-      name: this.config.name,
-      roleDescription: this.role.systemPrompt.slice(0, 300),
-      status: this.state.status,
-      currentTask: this.currentTaskId,
-      recentActivity: [
-        ...this.recentActivityRing.slice(-5),
-        ...(this.workingMemory.size > 0
-          ? [`[working_memory] ${this.workingMemory.size} entries: ${[...this.workingMemory.keys()].join(', ')}`]
-          : []),
-      ],
-    };
-
-    const tasks = this.tasksFetcher?.();
-    const hasFailedTasks = tasks?.some(t => t.status === 'failed') ?? false;
-    const hasBlockers = tasks?.some(t => t.status === 'blocked') ?? false;
-
-    const depth = selectCognitiveDepth(scenario, { hasFailedTasks, hasBlockers }, message.length);
-
-    try {
-      const startMs = Date.now();
-      const timeoutMs = this.cognitiveConfig?.timeoutMs ?? 15_000;
-      const result = await Promise.race([
-        this.cognitivePrep.prepare(stimulus, agentCtx, depth, this.llmRouter),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`CPP timed out after ${timeoutMs}ms`)), timeoutMs),
-        ),
-      ]);
-      const elapsedMs = Date.now() - startMs;
-      log.info('CPP completed', { depth: result.depth, isEmpty: result.isEmpty, elapsedMs });
-      return result;
-    } catch (err) {
-      log.warn('CPP failed, falling back to mechanical retrieval', { error: String(err) });
-      return undefined;
+    if (!this.cognitiveConfig?.enabled) return undefined;
+    const parts: string[] = [];
+    const activity = this.recentActivityRing.slice(-3);
+    if (activity.length > 0) {
+      parts.push('Recent activity:', ...activity.map((a) => `- ${a}`));
     }
+    if (this.workingMemory.size > 0) {
+      const keys = [...this.workingMemory.keys()].slice(0, 8).join(', ');
+      parts.push(`Working memory: ${this.workingMemory.size} entries (${keys})`);
+    }
+    if (parts.length === 0) return undefined;
+    return {
+      depth: CognitiveDepth.D1_Reactive,
+      cognitiveContext: parts.join('\n'),
+      isEmpty: false,
+    };
   }
 
   private getMailboxContext(): {
@@ -4610,7 +4565,6 @@ export class Agent {
       concurrentContext: this.getConcurrentContext(),
       workflowContext: isLightweight ? undefined : this.workflowContextFetcher?.(),
       cognitiveContext,
-      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
     const { volatile } = systemPromptBuild;
@@ -5355,7 +5309,6 @@ export class Agent {
       concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
-      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
     const { volatile: volatileState } = systemPromptBuild;
@@ -6128,7 +6081,6 @@ export class Agent {
       concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
-      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
     const { volatile: volatileState } = systemPromptBuild;
@@ -6690,7 +6642,6 @@ export class Agent {
       concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
-      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
     const { volatile: volatileState } = systemPromptBuild;
@@ -6925,7 +6876,7 @@ export class Agent {
   /**
    * THE single notebook write path.
    *
-   * Every writer — the `update_notebook` tool, triage, deliberation, and the CPP
+   * Every writer — the `notebook_upsert` tool, triage, deliberation, and the CPP
    * notebook writer — must go through here, because the entry cap and the TTL are
    * only meaningful as an *invariant* (true after every write), not as a check on
    * one code path. Three writers used to call `workingMemory.set()` directly and
@@ -7406,6 +7357,16 @@ export class Agent {
     return this.memory;
   }
 
+  /**
+   * 受锁写入长期记忆（审计 P-15）——admin API 等**非工具**路径也必须走统一的
+   * `agent-memory:knowledge` 资源锁，否则会与 dream cycle / 工具写入交错而丢写。
+   */
+  async updateLongTermMemory(key: string, content: string): Promise<{ ok: boolean; reason?: string }> {
+    return this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () =>
+      this.memory.addLongTermMemory(key, content),
+    );
+  }
+
   getContextEngine(): ContextEngine {
     return this.contextEngine;
   }
@@ -7549,7 +7510,6 @@ export class Agent {
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
       concurrentContext: this.getConcurrentContext(),
-      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
     const tools = this.buildToolDefinitions({
@@ -8044,17 +8004,15 @@ export class Agent {
     process:          { domain: GLOBAL_LOCK_DOMAIN },
     // ── 单体状态资源：按**资源**而非工具名登记 ──────────────────────────
     // `resource` 让「同一个可变状态」的所有工具（正式名 + 兼容别名）解析到同一个
-    // 锁键。曾经 `update_notebook` 记在域 `notebook`、别名 `update_working_memory`
-    // 记在域 `working-memory` —— 两者写同一个 Map，却因域名不同被判为不冲突，
-    // 锁形同虚设。现在二者都是 `agent-memory:notebook`。
+    // 锁键。曾经 notebook 工具有「正式名 + 兼容别名」两套登记；别名现已删除，
+    // 名字归一为 notebook_upsert / notebook_clear。二者与其它写工具共享
+    // `agent-memory:notebook` 锁域，保证写同一个 Map 的工具有互斥。
     memory_save:            { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
     memory_update:          { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
     memory_update_longterm: { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
     memory_delete:          { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
-    update_notebook:        { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
-    clear_notebook:         { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
-    update_working_memory:  { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
-    clear_working_memory:   { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    notebook_upsert:        { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    notebook_clear:         { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
     // 会话自我管理：compact / pin / unpin / purge 都是会话状态变更
     session:                { domain: 'session', arg: ['session_id', 'sessionId'] },
     // discover_tools 会写入「本会话已激活工具」集合 —— 共享可变状态
@@ -8172,7 +8130,7 @@ export class Agent {
     // ── 纯读取：文件 / 代码 / 检索
     'file_read', 'grep_search', 'glob_find', 'list_directory',
     'web_search', 'web_fetch', 'web_extract', 'describe_image',
-    'knowledge_search', 'knowledge_list', 'knowledge_read',
+    'kb_search', 'kb_list', 'kb_read',
     'recall_activity', 'recall_context', 'check_mailbox',
     // ── 纯读取：任务 / 需求 / 项目 / 团队
     'task_list', 'task_get', 'task_board_health', 'task_check_duplicates',
@@ -9285,7 +9243,7 @@ export class Agent {
         '- Technical details that would be costly to rediscover',
         '',
         'Call shape: `{ content, type?, tags? }` — never an array. Verify `{ status:"saved", store:"knowledge.md" }`.',
-        'Also use `update_notebook` for current working state.',
+        'Also use `notebook_upsert` for current working state.',
         '',
         'Only save genuinely important information. Skip routine exchanges.',
         'If nothing important needs saving, just respond with "No important information to save."',
@@ -9334,6 +9292,10 @@ export class Agent {
           await this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () => {
             await this.dreamConsolidateMemory(entries);
             this.pruneMemoryMd();
+            // 审计 P-11：上报整理时刻，使「陈旧」信号真实可用。
+            // （此前只有手动 memory_organize 会写 lastConsolidatedAt，自动 dream 周期不写 →
+            // 信号实际是死的。dream 定时器与 organize 原语共用同一时刻语义。）
+            this.memory.markConsolidated?.();
             // state.md TTL pruning removed with the store itself (2026-09-16): TTL now
             // lives in the notebook's per-tier expiry, which runs on every write.
           });

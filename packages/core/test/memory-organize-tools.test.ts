@@ -9,6 +9,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createMemoryTools } from '../src/tools/memory.js';
 import type { IMemoryStore, MemoryEntry } from '../src/memory/types.js';
 import type { SemanticMemorySearch } from '../src/memory/semantic-search.js';
+import { MEMORY_MD_TOTAL_MAX_CHARS } from '@markus/shared';
 
 function makeObs(id: string, content: string, type: MemoryEntry['type'] = 'fact'): MemoryEntry {
   return { id, timestamp: '2026-09-27T00:00:00.000Z', type, content };
@@ -50,6 +51,20 @@ function createStatefulMemory(entries: MemoryEntry[], initialLtm = ''): IMemoryS
     removeEntriesByTag: vi.fn(() => 0),
     replaceEntries: vi.fn(),
     getStoreFileName: vi.fn(() => 'knowledge.md'),
+    // 预算 SSOT：真实 MemoryStore 以「文件原始大小」为准（与提示词横幅 / 写入端强制归档一致）。
+    getMemoryHealth: vi.fn(() => {
+      const totalChars = state.ltm.length;
+      const cap = MEMORY_MD_TOTAL_MAX_CHARS;
+      return {
+        totalChars,
+        cap,
+        percent: Math.round((totalChars / cap) * 100),
+        observations: data.length,
+        curatedSections: (state.ltm.match(/^## /gm) ?? []).length,
+        archiveChars: 0,
+        lastConsolidatedAt: null,
+      };
+    }),
     addLongTermMemory: vi.fn((key: string, content: string) => {
       setSection(key, content);
       return { ok: true };
@@ -96,6 +111,21 @@ describe('memory_stats（P1-1 记忆健康度）', () => {
     expect(res.budget.limit).toBeGreaterThan(0);
     expect(res.budget.usedPercent).toBeGreaterThanOrEqual(0);
     expect(res.curatedSections.count).toBe(1); // procedures
+  });
+
+  it('预算口径与 getMemoryHealth 完全一致（SSOT 对齐，审计 P-16）', async () => {
+    // 回归：曾出现 memory_stats 自算一套（仅内容字符）而横幅/强制归档用文件大小，
+    // 导致同一指标给出 95% vs 122% 的自相矛盾。预算必须只有一个来源。
+    const mem = createStatefulMemory([makeObs('o1', 'x'.repeat(30))], '## a\n' + 'y'.repeat(200));
+    const tools = toolsWith(mem);
+    const tool = tools.find(t => t.name === 'memory_stats')!;
+    const res = JSON.parse(await tool.execute({}));
+    const h = mem.getMemoryHealth();
+    expect(res.budget.totalChars).toBe(h.totalChars);
+    expect(res.budget.limit).toBe(h.cap);
+    expect(res.budget.usedPercent).toBe(h.percent);
+    expect(res.archivedChars).toBe(h.archiveChars);
+    expect(res.lastConsolidatedAt).toBe(h.lastConsolidatedAt);
   });
 
   it('超过 80% 预算时给出整理提示', async () => {

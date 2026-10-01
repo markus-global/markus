@@ -1124,6 +1124,14 @@ export interface AgentMemorySummary {
   dailyLog: string | null;
   recentDailyLogs: string | null;
   longTermMemory: string | null;
+  // 审计 P-12/§9.1：记忆健康可观测字段（由 /agents/:id/memory 返回）
+  usedPercent?: number;
+  budgetChars?: number;
+  budgetLimit?: number;
+  observationCount?: number;
+  curatedCount?: number;
+  archivedChars?: number;
+  lastConsolidatedAt?: string | null;
 }
 
 export interface AvailableSkillInfo {

@@ -17,8 +17,9 @@
  *   - 只在目标命中 denyWritePaths / 敏感文件时才拒绝 —— 因此即使解析误判，也不会误伤正常写入。
  *   - 边界感知匹配（`p === d || p.startsWith(d + '/')`），避免 `/agents/agt_a` 误伤 `/agents/agt_ab`。
  */
-import { resolve, sep } from 'node:path';
+import { basename, resolve, sep } from 'node:path';
 import type { PathAccessPolicy } from '@markus/shared';
+import { isSingleWriterMemoryFile } from './lock-resources.js';
 
 export interface WriteAllowed {
   allowed: true;
@@ -86,6 +87,21 @@ export function assertWriteAllowed(
         reason: `Write denied: sensitive path (${sensitive})`,
       };
     }
+  }
+
+  // 单一写入者记忆文件（审计 P-01）：knowledge.md / NOTEBOOK.md 由记忆服务独占；
+  // 直写会与内存模型分叉并被静默覆盖 —— 拒绝并引导改用记忆 / 笔记本工具。
+  if (isSingleWriterMemoryFile(resolved, opts.workspacePath)) {
+    return {
+      allowed: false,
+      matchedPath: resolved,
+      reason:
+        `Write denied: "${basename(resolved)}" is managed memory with a single writer (the memory service). `
+        + 'A direct file write would be silently overwritten by the next in-memory flush. '
+        + 'Use the memory tools instead: memory_save / memory_update / memory_organize for knowledge.md, '
+        + 'notebook_upsert / notebook_clear for NOTEBOOK.md. '
+        + '(An unrelated file with the same name is fine — keep it inside your workspace.)',
+    };
   }
 
   return { allowed: true };
@@ -236,7 +252,7 @@ export function assertShellWriteAllowed(
   const base = opts.cwd ?? opts.workspacePath ?? process.cwd();
   for (const target of targets) {
     const resolved = resolve(base, target);
-    const decision = assertWriteAllowed(resolved, { policy: opts.policy });
+    const decision = assertWriteAllowed(resolved, { policy: opts.policy, workspacePath: opts.workspacePath });
     if (!decision.allowed) {
       return {
         allowed: false,

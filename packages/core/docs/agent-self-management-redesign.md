@@ -25,7 +25,7 @@
 - `schedule_wakeup` / `cancel_wakeup` / `set_heartbeat_interval` （L483-521）
 - `recall_activity` （L523-547）
 - `complete_deliberation` （L549-579）
-- `update_working_memory` / `clear_working_memory` （L586-609）
+- `notebook_upsert` / `notebook_clear`（原 `update_working_memory` / `clear_working_memory`，L586-609）
 
 但这些工具的**执行路径不是 `registerTool()` 注册的 handler**，而是 `agent.ts` 里的 `if (toolCall.name === '...')` 分支 dispatch（L8376-8444）。
 
@@ -49,7 +49,7 @@ discover_tools({name:["schedule_wakeup","set_heartbeat_interval","cancel_wakeup"
 → { status:"ok", activated:[], unknown:[...全部 4 个], hint:"not found as tools or skills" }
 ```
 
-**对照成功案例：** `recall_activity` / `update_working_memory` / `clear_working_memory` 能激活成功——因为它们分别注册在 `createRecallTool`（agent-manager L1732）与 `createMailboxTools`（L1728）里。证明：**「注册进 this.tools」是 discover 可激活的充要条件**。
+**对照成功案例：** `recall_activity` / `notebook_upsert` / `notebook_clear` 能激活成功——因为它们分别注册在 `createRecallTool`（agent-manager L1732）与 `createMailboxTools`（L1728）里。证明：**「注册进 this.tools」是 discover 可激活的充要条件**。
 
 ### P0-2 自我闹钟：后端已完整，只差「工具可达」
 
@@ -86,7 +86,7 @@ discover_tools({name:["schedule_wakeup","set_heartbeat_interval","cancel_wakeup"
 - `attention.ts` worker 机制：`workerStates` 按 workerId 隔离状态，`getWorkerWorkspace(workerId)` 返回各分身独立 workspace（`session-workspace.ts`）。
 
 **缺口：**
-1. Handoff 只有「一句话摘要」，不含**工作记忆（notebook）内容**；分身 A 的 `update_working_memory` 内容，分身 B 的并发上下文里**看不到**；
+1. Handoff 只有「一句话摘要」，不含**工作记忆（notebook）内容**；分身 A 的 `notebook_upsert` 内容，分身 B 的并发上下文里**看不到**；
 2. 超过 8 条/64 条即被挤出，长任务中途换分身会丢上下文；
 3. 没有「主动读其他分身工作记忆」的工具。
 
@@ -100,7 +100,7 @@ discover_tools({name:["schedule_wakeup","set_heartbeat_interval","cancel_wakeup"
 
 **实现：**
 1. `capability-packs.ts` 新增导出 `SCHEMA_INJECTED_TOOLS`（常量集合，与 `tool-selector.ts` pushUnique 注入清单同源）：
-   `schedule_wakeup, cancel_wakeup, set_heartbeat_interval, recall_activity, complete_deliberation, update_working_memory, clear_working_memory`；
+   `schedule_wakeup, cancel_wakeup, set_heartbeat_interval, recall_activity, complete_deliberation, notebook_upsert, notebook_clear`；
 2. `agent.ts handleDiscoverTools` 激活分支**优先判定**：name 命中 `SCHEMA_INJECTED_TOOLS` → `stickyTools().activated.add(name)` 并返回 `activated`（这些工具 schema 由 selectTools 注入，激活后晋升 protected 永不被驱逐——P0-3 审计已保证）；
 3. 若后续某工具改为 `registerTool` 注册，命中 `this.tools` 的自然走原路径，两路兼容；
 4. 测试：`discover_tools({name:['schedule_wakeup']})` 返回 activated；此后 selectTools 输出包含 `schedule_wakeup`，且系统提示不再把它列为「需 discover」的 deferred 项。
@@ -127,7 +127,7 @@ discover_tools({name:["schedule_wakeup","set_heartbeat_interval","cancel_wakeup"
 
 1. `context-engine.ts` 并发上下文段**增加工作记忆快照**：注入当前 agent 的 notebook（`getWorkingMemorySnapshot()`）中**其他 worker 最近写入/更新的条目**（带 workerId 标注），与 handoff 摘要并列；
 2. `ConcurrentHandoffLog` 新增 `kind='fact'` 语义强化：允许写入「影响全局的工作记忆」摘要，`byEntity`/`inFlight` 已支持；
-3. 提供 `shared_working_memory`（或复用 `update_working_memory` + 注入）：分身的 `update_working_memory` 写入的 key 在并发上下文可见（标注 workerId）——让分身 B 知道「分身 A 正在/刚在做什么」；
+3. 提供 `shared_working_memory`（或复用 `notebook_upsert` + 注入）：分身的 `notebook_upsert` 写入的 key 在并发上下文可见（标注 workerId）——让分身 B 知道「分身 A 正在/刚在做什么」；
 4. 上限控制：快照条数 ≤ 8、每条约 200 字符（防预算膨胀），只增改并发段、不动 stable 前缀。
 
 ---

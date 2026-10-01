@@ -3,7 +3,7 @@
  *
  * 根因（agent-self-management-redesign.md §二 P0-1）：schedule_wakeup /
  * cancel_wakeup / set_heartbeat_interval / recall_activity /
- * complete_deliberation / update_working_memory / clear_working_memory 由
+ * complete_deliberation / notebook_upsert / notebook_clear 由
  * ToolSelector.pushUnique 无条件注入 schema，但 handler 未经过 registerTool
  * 注册（走 agent.ts if-branch dispatch）。预算压力下被驱逐进 Deferred catalog
  * 后，discover_tools 只认注册表 + skillRegistry → 激活永远失败（unknown）。
@@ -79,8 +79,8 @@ describe('P0-1 · SCHEMA_INJECTED_TOOLS 集合', () => {
       'set_heartbeat_interval',
       'recall_activity',
       'complete_deliberation',
-      'update_working_memory',
-      'clear_working_memory',
+      'notebook_upsert',
+      'notebook_clear',
     ]) {
       expect(SCHEMA_INJECTED_TOOLS.has(name), `missing ${name}`).toBe(true);
     }

@@ -11,8 +11,8 @@ import {
  * 锁的粒度必须是**资源**，不是工具名。
  *
  * 回归背景（P0-1 / P0-2，见 docs/CONCURRENT-PROCESSING.md §4.9）：
- *   - `update_notebook` 记在域 `notebook`，别名 `update_working_memory` 记在域
- *     `working-memory` —— 写**同一个 Map**，却因域名不同被判「不冲突」，锁形同虚设；
+ *   - notebook 写工具曾按「正式名 + 别名」分登记到不同的域（`notebook` /
+ *     `working-memory`）—— 写**同一个 Map**，却因域名不同被判「不冲突」，锁形同虚设；
  *   - `file_write knowledge.md` 走 `fs:<path>`，而 `memory_update` 走 `memory` ——
  *     同一个文件有两条互不互斥的写入路径，外部编辑会被下一次内存落盘静默覆盖。
  *
@@ -59,13 +59,11 @@ describe('锁资源键解析（lock-resources）', () => {
 });
 
 describe('同一资源 ⇒ 同一锁键（P0-1 / P0-2 回归守卫）', () => {
-  it('notebook 正式名与兼容别名不再分裂成两个域', () => {
-    const a = lockKey('update_notebook');
-    const b = lockKey('update_working_memory');
-    const c = lockKey('clear_working_memory');
+  it('notebook 工具族共用一个锁键（别名已删除，名字归一）', () => {
+    const a = lockKey('notebook_upsert');
+    const b = lockKey('notebook_clear');
     expect(a).toBe(`${AGENT_MEMORY_RESOURCE_DOMAIN}:notebook`);
     expect(b).toBe(a);
-    expect(c).toBe(a);
   });
 
   it('knowledge 工具族共用一个锁键', () => {
@@ -82,7 +80,7 @@ describe('同一资源 ⇒ 同一锁键（P0-1 / P0-2 回归守卫）', () => {
     expect(viaFileWrite).toBe(viaMemoryTool);
 
     const viaEdit = lockKey('file_edit', { path: `${root}/NOTEBOOK.md` }, root);
-    expect(viaEdit).toBe(lockKey('update_notebook'));
+    expect(viaEdit).toBe(lockKey('notebook_upsert'));
 
     // 非记忆文件仍是普通 fs 锁，不被误并入记忆资源
     const other = lockKey('file_write', { path: `${root}/src/app.ts` }, root);
@@ -90,7 +88,7 @@ describe('同一资源 ⇒ 同一锁键（P0-1 / P0-2 回归守卫）', () => {
   });
 
   it('不同资源互不冲突（并发度不被无谓牺牲）', () => {
-    expect(lockKey('update_notebook')).not.toBe(lockKey('memory_update'));
+    expect(lockKey('notebook_upsert')).not.toBe(lockKey('memory_update'));
   });
 
   it('写域表不变式：resource 与 domain 至少有一个，fs 域必须声明路径参数', () => {
@@ -108,7 +106,7 @@ describe('同一资源 ⇒ 同一锁键（P0-1 / P0-2 回归守卫）', () => {
 });
 
 describe('别名互斥实际生效（并发）', () => {
-  it('update_notebook 与 update_working_memory 并发时严格串行', async () => {
+  it('notebook_upsert 与 notebook_clear 并发时严格串行', async () => {
     const registry = new ResourceLockRegistry();
     let active = 0;
     let max = 0;
@@ -119,7 +117,7 @@ describe('别名互斥实际生效（并发）', () => {
         await new Promise((r) => setTimeout(r, 30));
         active--;
       });
-    await Promise.all([run('update_notebook'), run('update_working_memory')]);
+    await Promise.all([run('notebook_upsert'), run('notebook_clear')]);
     expect(max).toBe(1);
   });
 
@@ -134,7 +132,7 @@ describe('别名互斥实际生效（并发）', () => {
         await new Promise((r) => setTimeout(r, 30));
         active--;
       });
-    await Promise.all([run('update_notebook'), run('memory_update')]);
+    await Promise.all([run('notebook_upsert'), run('memory_update')]);
     expect(max).toBe(2);
   });
 });

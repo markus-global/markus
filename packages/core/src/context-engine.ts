@@ -424,7 +424,6 @@ export class ContextEngine {
       }>;
     };
     cognitiveContext?: PreparedCognitiveContext;
-    notebookWriter?: (key: string, text: string, managed: 'system' | 'cpp') => void;
     channelContext?: Array<{ role: string; content: string }>;
     /** Prompt profile (AGENT-RUNTIME §4). Defaults from scenario pack. */
     promptProfile?: PromptProfile;
@@ -884,6 +883,22 @@ export class ContextEngine {
       if (longTermMem) {
         const knowledgeCapChars = Math.min(SYSTEM_KNOWLEDGE_CHARS, knowledgeTokCap * 4);
         volatile.push('\n## Your Knowledge');
+        // 审计 P-12：记忆健康信号 —— 让 Agent「知道」何时该主动整理（否则永不自知）。
+        try {
+          const h = opts.memory.getMemoryHealth();
+          const staleDays = h.lastConsolidatedAt
+            ? Math.max(0, Math.floor((Date.now() - Date.parse(h.lastConsolidatedAt)) / 86_400_000))
+            : null;
+          if (h.percent >= 70 || (staleDays !== null && staleDays >= 14)) {
+            const staleness = staleDays !== null && staleDays >= 14
+              ? ` · 上次整理 ${staleDays} 天前`
+              : '';
+            volatile.push(
+              `> ${h.percent >= 90 ? '🔴' : '⚠️'} **记忆健康 ${h.percent}%**（${h.totalChars}/${h.cap} 字符 · ${h.curatedSections} 个知识段 · ${h.observations} 条观察${h.archiveChars > 0 ? ` · 已归档 ${h.archiveChars} 字符` : ''}${staleness}）。`
+              + '超预算时旧知识会被**无损归档**（不再注入）。建议用 `memory_organize` 合并观察、或 `memory_update`（mode:"delete"）删除过时条目。',
+            );
+          }
+        } catch { /* health signal is best-effort */ }
         // Relevance-ranked, whole-section selection (see prepareKnowledgeForPrompt).
         // `opts.currentQuery` is the in-flight user text, so which sections get
         // inlined depends on what is actually being asked rather than on document
@@ -1082,39 +1097,29 @@ export class ContextEngine {
     const alreadyShownIds = new Set<string>();
     const cpp = opts.cognitiveContext;
     if (cpp && !cpp.isEmpty) {
-      if (opts.notebookWriter) {
-        if (cpp.cognitiveContext) opts.notebookWriter('cognitive-context', cpp.cognitiveContext, 'cpp');
-        if (cpp.retrievedContext) opts.notebookWriter('relevant-context', cpp.retrievedContext, 'cpp');
-        if (cpp.reflection) opts.notebookWriter('reflection', cpp.reflection, 'cpp');
-      } else {
-        if (cpp.cognitiveContext) {
-          dynamic.push('\n## Cognitive Context');
-          dynamic.push(cpp.cognitiveContext);
-        }
-        if (cpp.retrievedContext) {
-          dynamic.push('\n## Retrieved Context');
-          dynamic.push(cpp.retrievedContext);
-        }
-        if (cpp.reflection) {
-          dynamic.push('\n## Reflection');
-          dynamic.push(cpp.reflection);
-        }
+      // 审计 P-03：CPP 产出有**唯一目的地**——本轮 prompt。以前它写进共享 NOTEBOOK
+      // （并因此**不注入当轮 prompt**），与 `## Your Knowledge` 重复、还把瞬时检索
+      // 记录沉淀成持久笔记。现在只注入，不落盘。
+      if (cpp.cognitiveContext) {
+        dynamic.push('\n## Cognitive Context');
+        dynamic.push(cpp.cognitiveContext);
+      }
+      if (cpp.retrievedContext) {
+        dynamic.push('\n## Retrieved Context');
+        dynamic.push(cpp.retrievedContext);
+      }
+      if (cpp.reflection) {
+        dynamic.push('\n## Reflection');
+        dynamic.push(cpp.reflection);
       }
     } else if (!isDream) {
       const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId, alreadyShownIds);
       if (relevantMemories.length > 0) {
-        if (opts.notebookWriter) {
-          const lines = relevantMemories.map(mem => {
-            const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
-            return `- [${ts}] ${mem.content}`;
-          });
-          opts.notebookWriter('relevant-context', lines.join('\n'), 'system');
-        } else {
-          volatile.push('\n## Relevant Memories');
-          for (const mem of relevantMemories) {
-            const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
-            volatile.push(`- [${ts}] ${mem.content}`);
-          }
+        // 审计 P-03：检索结果只注入本轮，不写共享 NOTEBOOK。
+        volatile.push('\n## Relevant Memories');
+        for (const mem of relevantMemories) {
+          const ts = mem.timestamp ? new Date(mem.timestamp).toLocaleDateString() : '';
+          volatile.push(`- [${ts}] ${mem.content}`);
         }
       }
     }
@@ -1416,7 +1421,7 @@ export class ContextEngine {
       lines.push('2. **Clean**: `drop_mailbox_item` for stale informational items (old heartbeats, outdated status updates, superseded notifications).');
       lines.push('3. **Group**: Items sharing a taskId / requirementId / channel → plan to handle together.');
       lines.push('4. **Inline**: Handle trivial items now (quick ack via `notify_user`, one-line `task_comment`). Mark as inline_completed.');
-      lines.push('5. **Assess**: `update_working_memory` with your situational summary — priorities, blockers, what you plan to do.');
+      lines.push('5. **Assess**: `notebook_upsert` with your situational summary — priorities, blockers, what you plan to do.');
       lines.push('6. **Focus**: `complete_deliberation` — choose the most important remaining item.');
       lines.push('');
       lines.push('### Per-Type Processing');
@@ -1447,7 +1452,7 @@ export class ContextEngine {
       lines.push('- [ ] Does this affect your current work or priorities?');
       lines.push('- [ ] Does it unblock something you were waiting for?');
       lines.push('- [ ] Usually no response needed — absorb into awareness.');
-      lines.push('- [ ] If it changes your priorities → `update_working_memory`.');
+      lines.push('- [ ] If it changes your priorities → `notebook_upsert`.');
       lines.push('');
       lines.push('**review_request**:');
       lines.push('- [ ] Call `task_get` — read task description, deliverables, notes.');
@@ -1462,9 +1467,9 @@ export class ContextEngine {
       lines.push('- [ ] If nothing needs attention → HEARTBEAT_OK.');
       lines.push('');
       lines.push('### Notebook Guidelines');
-      lines.push('- **Save**: current priorities, ongoing context, key decisions, blockers via `update_notebook`.');
+      lines.push('- **Save**: current priorities, ongoing context, key decisions, blockers via `notebook_upsert`.');
       lines.push('- **Update**: when situation changes — new task, resolved blocker, shifted priority.');
-      lines.push('- **Clear**: when a task completes, when context becomes irrelevant via `clear_notebook`.');
+      lines.push('- **Clear**: when a task completes, when context becomes irrelevant via `notebook_clear`.');
       lines.push('- **Do NOT save**: raw message content, large data — use `memory_save` for durable observations.');
       lines.push('');
       lines.push('### Mailbox Management Guidelines');
@@ -1839,7 +1844,7 @@ export class ContextEngine {
         lines.push('2. **Gather context**: `recall_activity`, `task_get`, `memory_search` — understand history.');
         lines.push('3. **Manage queue**: `defer_mailbox_item` — postpone items; `drop_mailbox_item` — discard stale ones.');
         lines.push('4. **Handle inline**: `notify_user`, `task_comment`, `agent_send_message` — handle trivial items now.');
-        lines.push('5. **Record awareness**: `update_working_memory` — persist your situational assessment.');
+        lines.push('5. **Record awareness**: `notebook_upsert` — persist your situational assessment.');
         lines.push('');
         lines.push('**Rules**:');
         lines.push('- Human messages and comments are ALWAYS highest priority.');

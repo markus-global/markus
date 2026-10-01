@@ -398,6 +398,25 @@ describe('session tool — Memory-backed repo (ContextOS split-brain regression)
     const after = JSON.parse(await tool.execute({ operation: 'status', session_id: sessionId }));
     expect(after.fragmentCount).toBeGreaterThan(0);
   });
+
+  // 刘利 P0 回归（2026-09-30）：会话被 LRU 逐出内存后 compact 仍须真实生效。
+  // 旧行为：checkOwnership（repo → mem.getSession 有磁盘回退）通过，但
+  // compactSession 只读内存 Map → 静默空转并报 ok（flushedCount:0）。
+  it('compact 对已被 LRU 逐出内存的会话仍真实压缩（不再静默空转）', async () => {
+    const { tool, store, sessionId } = memWiredTool();
+    // 把目标会话挤出 20 槽内存 Map（逐出时同步落盘）。
+    for (let i = 0; i < 25; i++) {
+      const filler = store.createSession('agt-A');
+      for (let j = 0; j < 3; j++) store.appendMessage(filler.id, { role: 'user', content: `f${i}-${j}` } as never);
+    }
+
+    const res = JSON.parse(await tool.execute({ operation: 'compact', session_id: sessionId, keep_last: 5 }));
+    expect(res.status).toBe('ok');
+    expect(res.flushedCount).toBeGreaterThan(0); // was 0 — silent no-op when memory-evicted
+    // 保留的会话必须真的变短（否则只是报了数但没做事）。
+    const stats = JSON.parse(await tool.execute({ operation: 'status', session_id: sessionId }));
+    expect(stats.messageCount).toBeLessThanOrEqual(5);
+  });
 });
 
 // =============================================================================

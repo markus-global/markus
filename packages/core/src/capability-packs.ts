@@ -27,7 +27,7 @@ export const REFLEX_CORE_TOOLS = [
   'check_mailbox',
   'file_read',
   'agent_send_message',
-  'update_notebook',
+  'notebook_upsert',
 ] as const;
 
 export const REFLEX_MANAGER_EXTRA_TOOLS = ['team_status'] as const;
@@ -48,11 +48,9 @@ export const TOOL_DEF_PROTECTED = new Set([
 /**
  * Tools whose schemas are unconditionally injected by ToolSelector.pushUnique
  * (schedule_wakeup / cancel_wakeup / set_heartbeat_interval / recall_activity /
- * complete_deliberation / update_working_memory / clear_working_memory) but whose
- * handlers are NOT registered via `registerTool` — they dispatch through if-branches
- * in agent.ts. discover_tools must therefore treat them as activate-able (sticky
- * activated → protected from eviction), or they dead-lock once budget pressure
- * moves them into the Deferred catalog.
+ * complete_deliberation / notebook_upsert / notebook_clear). discover_tools must
+ * treat them as activate-able (sticky activated → protected from eviction), or
+ * they dead-lock once budget pressure moves them into the Deferred catalog.
  *
  * MUST stay in sync with ToolSelector.selectTools() pushUnique calls.
  */
@@ -62,8 +60,8 @@ export const SCHEMA_INJECTED_TOOLS = new Set([
   'set_heartbeat_interval',
   'recall_activity',
   'complete_deliberation',
-  'update_working_memory',
-  'clear_working_memory',
+  'notebook_upsert',
+  'notebook_clear',
 ]);
 
 /**
@@ -278,7 +276,7 @@ export const REQUIREMENT_ACTION_ALLOWED_TOOLS: readonly string[] = [
   'subtask_create', 'subtask_complete', 'subtask_list',
   'deliverable_search', 'deliverable_create',
   'file_read', 'grep_search',
-  'memory_search', 'memory_save', 'update_notebook',
+  'memory_search', 'memory_save', 'notebook_upsert',
   'notify_user', 'agent_send_message',
 ];
 

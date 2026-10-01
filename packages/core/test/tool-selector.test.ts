@@ -77,7 +77,7 @@ describe('ToolSelector', () => {
       ...ALL_BUILTIN,
       'package_install', 'goal_create', 'discover_tools', 'notify_user',
       'request_user_input', 'schedule_wakeup', 'set_heartbeat_interval',
-      'check_mailbox', 'update_notebook', 'task_get',
+      'check_mailbox', 'notebook_upsert', 'task_get',
     ]);
     const names = selector.selectTools({
       allTools,
@@ -458,7 +458,7 @@ describe('ToolSelector', () => {
     const allTools = makeToolMap([
       ...ALL_BUILTIN,
       'feishu_calendar_list', 'feishu_chat_send',
-      'chrome-devtools__navigate', 'knowledge_search',
+      'chrome-devtools__navigate', 'kb_search',
     ]);
     const skillCatalog = [
       { name: 'test-skill', description: 'A test skill for discovery', instructions: 'Do things' } as never,
@@ -476,12 +476,12 @@ describe('ToolSelector', () => {
     expect(JSON.stringify(b)).toEqual(JSON.stringify(a));
   });
 
-  it('T4: knowledge_* tools surface when the user asks about the knowledge base', () => {
+  it('T4: kb_* tools surface when the user asks about the knowledge base', () => {
     const selector = new ToolSelector();
     const allTools = makeToolMap([
       ...ALL_BUILTIN,
       'deliverable_list', 'deliverable_update',
-      'knowledge_search', 'knowledge_list', 'knowledge_read',
+      'kb_search', 'kb_list', 'kb_read',
     ]);
     const selected = selector.selectTools({
       allTools,
@@ -490,22 +490,22 @@ describe('ToolSelector', () => {
     }).map((t) => t.name);
 
     // 中文关键词「知识库」命中 deliverables 组 → 知识工具对 Agent 可见可调
-    expect(selected).toContain('knowledge_search');
-    expect(selected).toContain('knowledge_list');
-    expect(selected).toContain('knowledge_read');
+    expect(selected).toContain('kb_search');
+    expect(selected).toContain('kb_list');
+    expect(selected).toContain('kb_read');
   });
 
   it('T4: English "knowledge base" keyword also surfaces knowledge tools', () => {
     const selector = new ToolSelector();
     const allTools = makeToolMap([
       ...ALL_BUILTIN,
-      'knowledge_search', 'knowledge_list', 'knowledge_read',
+      'kb_search', 'kb_list', 'kb_read',
     ]);
     const selected = selector.selectTools({
       allTools,
       userMessage: 'Search the knowledge base for onboarding docs',
       pack: 'converse',
     }).map((t) => t.name);
-    expect(selected).toContain('knowledge_search');
+    expect(selected).toContain('kb_search');
   });
 });

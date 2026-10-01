@@ -56,13 +56,26 @@ export interface SessionRepo {
 
 /** 可选注入：让 agent 通过 session 工具主动压缩自己的历史上下文（0.9.7 context-root-fix）。 */
 export interface SessionCompactor {
-  compactOnDemand(sessionId: string, keepLast: number): { summary: string; flushedCount: number };
+  compactOnDemand(sessionId: string, keepLast: number): {
+    summary: string;
+    flushedCount: number;
+    /** Messages retained after compaction. Optional — mocks may omit. */
+    remaining?: number;
+    /** false when the session does not exist (memory + disk). Optional — mocks may omit. */
+    found?: boolean;
+  };
   /** ContextOS: compact with an explicit structured anchor (goal/done/next). */
   compactWithAnchor?(
     sessionId: string,
     keepLast: number,
     anchor: { goal?: string; done?: string; next?: string },
-  ): { summary: string; flushedCount: number; anchorKey: string };
+  ): {
+    summary: string;
+    flushedCount: number;
+    remaining?: number;
+    found?: boolean;
+    anchorKey: string;
+  };
 }
 
 /** ContextOS: agent-managed slot store — pin/unpin facts that survive compaction. */
@@ -437,7 +450,7 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
     const keepLast = Math.max(5, Math.min(200, Math.trunc(Number(n.keepLast) || 40) || 40));
     try {
       const hasAnchor = n.goal || n.done || n.next;
-      let res: { summary: string; flushedCount: number; anchorKey?: string };
+      let res: { summary: string; flushedCount: number; remaining?: number; found?: boolean; anchorKey?: string };
       if (hasAnchor && ctx.compactor.compactWithAnchor) {
         res = ctx.compactor.compactWithAnchor(n.sessionId, keepLast, {
           goal: n.goal, done: n.done, next: n.next,
@@ -445,15 +458,34 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
       } else {
         res = ctx.compactor.compactOnDemand(n.sessionId, keepLast);
       }
+      // Distinguish a genuine failure from a valid no-op. The 2026-09-30 刘利
+      // P0 report: a session evicted from the in-memory LRU made compact() a
+      // silent no-op that still returned status:'ok', so the agent could not
+      // tell "nothing to compact" from "compaction failed" and never recovered.
+      if (res.found === false) {
+        return JSON.stringify({
+          status: 'error',
+          message: `No session with id "${n.sessionId}" (not in memory nor on disk). Use session_list to find the correct id.`,
+        });
+      }
+      const noop = res.flushedCount === 0;
       return JSON.stringify({
         status: 'ok',
         flushedCount: res.flushedCount,
-        remaining: res.summary.length,
+        remaining: res.remaining ?? 0,
         summary: res.summary,
         ...(res.anchorKey ? { anchored_as: res.anchorKey } : {}),
-        note: hasAnchor
-          ? 'As a pinch: pin a goal/done/next anchor keeps your position alive even after compaction. Use session_pin to persist them as durable slots.'
-          : 'Earlier messages were compacted into the anchor summary above. Continue the work from this point; you do NOT need to re-read the flushed messages.',
+        ...(noop
+          ? {
+              skipped: true,
+              reason: 'within_keep_last',
+              note: `Nothing to compact: the session holds <= keep_last (${keepLast}) messages, so no history was dropped and no token was freed. This is a valid no-op, not a failure.`,
+            }
+          : {
+              note: hasAnchor
+                ? 'As a pinch: pin a goal/done/next anchor keeps your position alive even after compaction. Use session_pin to persist them as durable slots.'
+                : 'Earlier messages were compacted into the anchor summary above. Continue the work from this point; you do NOT need to re-read the flushed messages.',
+            }),
       });
     } catch (err) {
       log.error('session compact failed', { error: String(err) });
@@ -693,7 +725,7 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
       '  Example: { "operation": "list", "since": "2026-08-01", "page": 1, "page_size": 20 }',
       '• session_get — get one session + its messages. Args: session_id, since/until, page, page_size. Returns { status, sessionId, messages: [{role, content}], total, page }.',
       '  Example: { "operation": "get", "session_id": "sess_...", "page_size": 50 }',
-      '• session_compact — collapse stale history into an anchor summary so future turns stop re-reading it. Atomic: an assistant tool-call and its tool results are NEVER split. Optionally pass goal/done/next to anchor your position. Use when earlier tool results are obsolete or context feels bloated. Returns { status, flushedCount, remaining, summary } — summary is a [SYSTEM]-prefixed anchor injected into the session; the raw flushed messages are archived and recoverable via session_retrieve.',
+      '• session_compact — collapse stale history into an anchor summary so future turns stop re-reading it. Atomic: an assistant tool-call and its tool results are NEVER split. Optionally pass goal/done/next to anchor your position. Use when earlier tool results are obsolete or context feels bloated. Returns { status, flushedCount, remaining, summary } — flushedCount = messages paged out (0 means nothing was compacted), remaining = messages kept, summary = a [SYSTEM]-prefixed anchor injected into the session; the raw flushed messages are archived and recoverable via session_retrieve. If the session already fits within keep_last you get flushedCount:0, skipped:true, reason:"within_keep_last" (a valid no-op, NOT a failure); an unknown session_id returns status:"error".',
       '  Args: session_id (required), keep_last (5-200, default 40), goal/done/next (optional anchors).',
       '  Example: { "operation": "compact", "session_id": "sess_...", "keep_last": 40 }',
       '• session_pin — write a durable slot into the fixed [SLOTS] segment: persisted per session and injected every turn, NEVER compacted until you unpin it. Best for your current goal / what is done / what is next (use key=goal/done/next). Returns { status, pinned: {key: content} }.',

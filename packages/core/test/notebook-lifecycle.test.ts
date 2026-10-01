@@ -25,7 +25,6 @@ import {
   NOTEBOOK_MAX_AGENT_ENTRIES,
   NOTEBOOK_TTL_MS_AGENT,
   NOTEBOOK_TTL_MS_SYSTEM,
-  NOTEBOOK_TTL_MS_CPP,
   NOTEBOOK_PERSIST_MAX_WAIT_MS,
 } from '@markus/shared';
 
@@ -63,26 +62,23 @@ describe('notebook — key normalization (N-5)', () => {
 describe('notebook — per-tier TTL (N-2)', () => {
   it('assigns a shorter TTL the more machine-generated the tier is', () => {
     expect(notebookTtlMs('agent')).toBeGreaterThan(notebookTtlMs('system'));
-    expect(notebookTtlMs('system')).toBeGreaterThan(notebookTtlMs('cpp'));
   });
 
   it('expires entries past their tier TTL and keeps fresh ones', () => {
     const entries = nb([
-      ['cpp-fresh', entry('cpp', NOTEBOOK_TTL_MS_CPP - 60_000)],
-      ['cpp-stale', entry('cpp', NOTEBOOK_TTL_MS_CPP + 60_000)],
       ['sys-stale', entry('system', NOTEBOOK_TTL_MS_SYSTEM + 60_000)],
       ['sys-fresh', entry('system', NOTEBOOK_TTL_MS_SYSTEM - 60_000)],
       ['agent-fresh', entry('agent', NOTEBOOK_TTL_MS_AGENT - 60_000)],
     ]);
     const result = pruneNotebookEntries(entries, NOW);
 
-    expect(result.expired.sort()).toEqual(['cpp-stale', 'sys-stale']);
-    expect([...entries.keys()].sort()).toEqual(['agent-fresh', 'cpp-fresh', 'sys-fresh']);
+    expect(result.expired.sort()).toEqual(['sys-stale']);
+    expect([...entries.keys()].sort()).toEqual(['agent-fresh', 'sys-fresh']);
   });
 
-  it('drops the real-world 57-day-old CPP entry on load', () => {
+  it('drops a stale legacy machine-written entry on load (cpp tier retired)', () => {
     const entries = nb([
-      ['cognitive-context', { text: 'Incoming chat: 看看最近的交付产出', updatedAt: Date.UTC(2026, 6, 21), managed: 'cpp' }],
+      ['cognitive-context', { text: 'Incoming chat: 看看最近的交付产出', updatedAt: Date.UTC(2026, 6, 21), managed: 'agent' }],
     ]);
     const result = pruneNotebookEntries(entries, NOW);
     expect(result.expired).toEqual(['cognitive-context']);
@@ -101,10 +97,9 @@ describe('notebook — per-tier TTL (N-2)', () => {
 describe('notebook — hard caps (N-1)', () => {
   it('bounds the TOTAL entry count, not just the agent tier', () => {
     const pairs: Array<[string, NotebookEntry]> = [];
-    // 10 agent + 10 system + 5 cpp = 25 live entries, all fresh.
-    for (let i = 0; i < 10; i++) pairs.push([`agent-${i}`, entry('agent', i * 1000)]);
-    for (let i = 0; i < 10; i++) pairs.push([`sys-${i}`, entry('system', i * 1000)]);
-    for (let i = 0; i < 5; i++) pairs.push([`cpp-${i}`, entry('cpp', i * 1000)]);
+    // 13 agent + 12 system = 25 live entries, all fresh (exceeds both caps).
+    for (let i = 0; i < 13; i++) pairs.push([`agent-${i}`, entry('agent', i * 1000)]);
+    for (let i = 0; i < 12; i++) pairs.push([`sys-${i}`, entry('system', i * 1000)]);
     const entries = nb(pairs);
 
     pruneNotebookEntries(entries, NOW);

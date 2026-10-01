@@ -892,32 +892,23 @@ describe('performDeliberation and cognitive pipeline', () => {
     expect(result!.reasoning).toContain('Focus');
   });
 
-  it('runs cognitive appraisal when cognitive config is enabled', async () => {
+  it('makes NO CPP LLM calls — the multi-stage pipeline is removed (审计 §8.1)', async () => {
     const router = makeMockRouter({
-      chatFn: async (req: unknown) => {
-        const meta = (req as { metadata?: { purpose?: string } }).metadata;
-        if (meta?.purpose === 'cognitive_appraisal') {
-          return {
-            content: JSON.stringify({
-              intent: 'User wants deployment help',
-              relevance: 'Matches current sprint work',
-              confidence: 'high',
-              retrievalPlan: { memoryQueries: ['deploy'], activityQueries: [], taskQueries: [] },
-              reflectionNeeded: false,
-              cognitiveContext: 'User needs help deploying the service.',
-            }),
-            finishReason: 'end_turn',
-            usage: { inputTokens: 30, outputTokens: 15 },
-          };
-        }
-        return makeResponse('Deployment guidance provided.', 'end_turn');
-      },
+      chatFn: async () => makeResponse('Deployment guidance provided.', 'end_turn'),
     });
     const agent = createAgent(router, { cognitive: { enabled: true } });
+    agent.updateWorkingMemory('current-task', 'deploy the latest build');
     await agent.handleMessage('Help me deploy the latest build');
+    // 主调用照常发生…
+    expect(router.chat).toHaveBeenCalled();
+    // …但不再有任何 CPP 的 LLM 多阶段调用（appraisal / reflection）——
+    // 旧的 LLM 准备管道已移除，改为确定性情境装配（agent.prepareCognitiveContext）。
     expect(router.chat.mock.calls.some(
       c => (c[0] as { metadata?: { purpose?: string } }).metadata?.purpose === 'cognitive_appraisal',
-    )).toBe(true);
+    )).toBe(false);
+    expect(router.chat.mock.calls.some(
+      c => (c[0] as { metadata?: { purpose?: string } }).metadata?.purpose === 'cognitive_reflection',
+    )).toBe(false);
   });
 
   it('includes working memory in dynamic context during chat', async () => {

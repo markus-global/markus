@@ -175,7 +175,7 @@ describe('P2-A Agent 工具写互斥', () => {
     for (const r of ['task_list', 'task_get', 'requirement_list', 'requirement_get',
       'memory_search', 'list_projects', 'team_list', 'web_search',
       'web_fetch', 'llm_list_providers', 'check_mailbox', 'workflow_list', 'workflow_status',
-      'read_terminal', 'list_terminals', 'take_snapshot', 'knowledge_search']) {
+      'read_terminal', 'list_terminals', 'take_snapshot', 'kb_search']) {
       expect(cls.isWriteTool(r), `${r} 应判为读`).toBe(false);
     }
   });

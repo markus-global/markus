@@ -10,13 +10,13 @@ This document specifies how Markus constructs prompts, manages context, and orch
 
 LLM calls are organized in two tiers:
 
-**Tier 1 -- Cognitive Preparation Calls**: Lightweight LLM calls that prepare context for the main call. These use persona-aware prompts and the cheapest available model. See [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for theoretical foundations and full design.
+**Tier 1 -- (retired)**: the former Cognitive Preparation calls (Appraisal / Reflection / Evaluation) were **removed** — they were extra LLM calls before the main call. Context preparation is now **deterministic (no LLM)**: a small bounded block (recent activity + working-memory keys) plus the ContextEngine's own relevant-memory retrieval. Deeper recall is agent-driven via `memory_search` / `kb_search`.
 
-| # | Phase | Purpose | Model | Tools | Max Output |
-|---|-------|---------|-------|-------|-----------|
-| P1 | **Appraisal** | Assess situation, plan context retrieval | Cheapest tier | No | 512 tokens |
-| P3 | **Reflection** | Extract persona-specific patterns and insights from retrieved context | Cheapest tier | No | 512 tokens |
-| P5 | **Evaluation** (D3 only) | Post-response assessment of context adequacy | Cheapest tier | No | 256 tokens |
+| # | Phase | Status |
+|---|-------|--------|
+| P1 | **Appraisal** | **removed** — replaced by deterministic assembly |
+| P3 | **Reflection** | **removed** |
+| P5 | **Evaluation** (D3) | **removed** |
 
 P2 (Directed Retrieval) and P4 (Assembly) are code-only phases with no LLM call.
 
@@ -431,9 +431,8 @@ Source: `getDynamicContext()` — three sources:
 
 | Tag | Writer | Typical keys |
 |-----|--------|--------------|
-| `agent` | `update_notebook` / `clear_notebook` | Agent-chosen keys (priorities, blockers, decisions) |
+| `agent` | `notebook_upsert` / `notebook_clear` | Agent-chosen keys (priorities, blockers, decisions) |
 | `system` | Runtime (triage, mechanical retrieval) | `triage-decision`, `relevant-context` |
-| `cpp` | Cognitive Preparation Pipeline | `cognitive-context`, `relevant-context`, `reflection` |
 
 **Bounding ([MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §2).** The block is bounded on four independent axes, because each alone is insufficient:
 
@@ -442,15 +441,15 @@ Source: `getDynamicContext()` — three sources:
 | Entry count | 16 total, 4 `agent` | "26 entries against a nominal cap of 4" — three of four writers bypassed the cap and the load path trimmed nothing |
 | Per-entry chars | 6000 (1500 for `relevant-context`, `NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS`) | one 9 475-char entry — more than the whole block budget — crowding every real note out |
 | Total block chars | 6000 | the block reaching 41 % of the volatile tail |
-| TTL | `agent` 96h / `system` 24h / `cpp` 6h | month-old situational state (`triage-decision`, `cognitive-context`) re-injected as current fact |
+| TTL | `agent` 96h / `system` 24h | month-old situational state (`triage-decision`) re-injected as current fact |
 
 Overflow is handled by **inline truncation**, not omission: an entry too large for the remaining budget is sliced with a `_[truncated]_` marker rather than dropped whole, and any entry that still cannot be shown appears in a sorted index line. So the agent always sees that a note exists (and can `file_read` NOTEBOOK.md) instead of it vanishing silently.
 
 **Ordering is deterministic**: `updatedAt` DESC with a `key` ASC tie-break. Ranking matters for staleness; determinism matters for caching — for the same logical state the block must serialize to the same bytes, or every assembly dirties the volatile tail and re-bills those tokens. (Map insertion order did neither: evict + re-insert permuted the block.)
 
-The context engine no longer injects separate `## Cognitive Context`, `## Retrieved Context`, `## Reflection`, or `## Relevant Memories` sections. Instead, `buildSystemPrompt()` accepts a `notebookWriter` callback; CPP outputs and relevance-matched memories are written to Notebook entries, centralizing cognitive state in one section. See [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) §3–4 and [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
+The `notebookWriter` dual-destination was **removed**: relevance-matched memories are injected **only** for the current turn as `## Relevant Memories`, and a small deterministic `## Cognitive Context` block (recent activity + working-memory keys) may be injected — neither is written to Notebook. Notebook holds only deliberate working state. See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
 
-Legacy aliases `update_working_memory` / `clear_working_memory` remain for backward compatibility.
+The legacy notebook aliases `update_working_memory` / `clear_working_memory` were **removed** — use `notebook_upsert` / `notebook_clear`.
 
 #### Content layers (availability tiers: which content is always on vs on-demand)
 
@@ -936,13 +935,10 @@ The "harness" is the while-loop that drives agentic tool use: LLM → tool calls
 ### 4.2 Common Harness Flow
 
 ```
-0. Cognitive Preparation (when CPP enabled, depth D1+):
-   0a. Appraisal — persona-aware LLM call → context plan (D1+)
-   0b. Directed Retrieval — execute plan against indexed stores (D2+)
-   0c. Reflection — persona-aware LLM call → insights (D2+)
-   0d. Assembly — merge prepared context (code only)
-1. Build system prompt (contextEngine.buildSystemPrompt + PreparedContext)
-   CPP/retrieval outputs → notebookWriter → ## Notebook (not separate sections)
+0. Deterministic context assembly (no LLM): read recent activity + working-memory
+   keys; ContextEngine retrieves relevance-matched memories (bounded).
+1. Build system prompt (contextEngine.buildSystemPrompt)
+   → injects ## Relevant Memories (this turn only) + a deterministic ## Cognitive Context
 2. Build tool definitions (toolSelector.selectTools)
 3. Prepare messages (contextEngine.prepareMessages — compress to fit budget)
 4. LLM call (llmRouter.chat / chatStream, wrapped in withNetworkRetry)
@@ -951,10 +947,9 @@ The "harness" is the while-loop that drives agentic tool use: LLM → tool calls
    b. If max_tokens: append continuation prompt → re-prepare messages → LLM call
 6. Output guardrail check
 7. Persist final reply to session
-8. Post-response evaluation (D3 only) — LLM assesses context adequacy
 ```
 
-Step 0 is the Cognitive Preparation Pipeline. It runs once before the main harness loop (steps 1-7) begins. The preparation prompts are persona-aware: they include the agent's role description, current state, and recent activity, so different agents produce different context preparation plans for the same stimulus. See [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for the full design.
+Step 0 is **deterministic** — there is no Cognitive Preparation Pipeline and no pre-call LLM. The ContextEngine assembles a small, bounded situational block from recent activity and working-memory keys, and performs its own bounded relevant-memory retrieval. Deeper cross-domain recall is agent-driven via `memory_search` / `kb_search`.
 
 ### 4.3 Tool Execution
 
@@ -1044,12 +1039,12 @@ The heartbeat user prompt is assembled inline; the system prompt still comes fro
 
 **Deduplication note**: earlier versions of the inline prompt restated `## Communication Channels`, `## Core Principle: Patrol, Don't Build`, `## Prefer Scheduled Wakeups`, `## What You CAN/MUST NOT Do`, and `## Conditional Actions`. These duplicated the cached `heartbeat` scenario section (§5.3 / `buildScenarioSection`) and Tier-1 rules, so they were removed from the (uncached) inline user prompt to cut per-heartbeat token cost. The `heartbeat` scenario section is now the single source of truth for comms/priorities.
 
-**Notebook Guidelines** (in mailbox checklists / system prompt when queue context is present): use `update_notebook` to save priorities, context, decisions, and blockers; `clear_notebook` when context becomes irrelevant. Do not store raw message content — use `memory_save` for durable observations.
+**Notebook Guidelines** (in mailbox checklists / system prompt when queue context is present): use `notebook_upsert` to save priorities, context, decisions, and blockers; `notebook_clear` when context becomes irrelevant. Do not store raw message content — use `memory_save` for durable observations.
 
 Tool whitelist = **reflex allowlist** (`REFLEX_CORE_TOOLS` + manager `team_status`):
 `task_list`, `task_get`, `memory_save`, `memory_search`, `notify_user`, `request_user_input`,
 `schedule_wakeup`, `cancel_wakeup`, `set_heartbeat_interval`, `discover_tools`, `check_mailbox`,
-`file_read`, `agent_send_message`, `update_notebook`. MUST NOT imply `task_create` /
+`file_read`, `agent_send_message`, `notebook_upsert`. MUST NOT imply `task_create` /
 `requirement_propose` / `package_install` / `goal_*` in heartbeat (see Interaction Mode).
 
 **Heartbeat cadence & configurability**: the periodic heartbeat is a coarse safety-net (`DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h) behind the event-driven `schedule_wakeup` mechanism — it is NOT the primary timing mechanism. The interval is configurable at three levels: (a) the user via `PATCH /api/agents/:id/config` (`heartbeatIntervalMs`) or the Agent Profile → Heartbeat tab; (b) the agent itself via the `set_heartbeat_interval` tool (clamped to `MIN_HEARTBEAT_INTERVAL_MS`–`MAX_HEARTBEAT_INTERVAL_MS`, i.e. 5min–24h). Both apply **live** via `Agent.setHeartbeatInterval()` (restarts the scheduler) and persist (agent-driven changes flow through the `agent:heartbeat-interval-changed` event → `agentRepo.updateConfig`). A one-time SQLite migration (gated by `PRAGMA user_version`) bumps agents still on the legacy 30-min default to the 6h safety-net without clobbering any interval a user or agent set deliberately.
@@ -1294,19 +1289,19 @@ Five primary memory tools (down from seven); legacy aliases preserved:
 
 | Tool | Purpose |
 |------|---------|
-| `update_notebook` | Upsert a keyed entry in `NOTEBOOK.md` (situational workspace) |
-| `clear_notebook` | Remove one entry or all agent-managed entries |
+| `notebook_upsert` | Upsert a keyed entry in `NOTEBOOK.md` (situational workspace) |
+| `notebook_clear` | Remove one entry or all agent-managed entries |
 | `memory_save` | Append one observation to `## _observations` in `knowledge.md` |
 | `memory_update` | Edit curated `knowledge.md` sections (always in `## Your Knowledge`) |
 | `memory_search` | Search observations and curated knowledge |
 
-**Legacy aliases** (same handlers): `update_working_memory`, `clear_working_memory`, `memory_list`, `memory_delete`, `memory_update_longterm`, `memory_search_longterm`.
+**Legacy memory aliases** (same handlers): `memory_list`, `memory_delete`, `memory_update_longterm`. (The notebook aliases `update_working_memory` / `clear_working_memory` were removed — use `notebook_upsert` / `notebook_clear`.)
 
 Goal tools (`goal_create`, `goal_update`, `goal_status`) are available during **heartbeat** and **deliberation** for standing-goal management.
 
 `ToolSelector.selectTools()` determines which tools appear in each LLM call:
 
-1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `memory_update`, `update_notebook`, `clear_notebook`, `file_read`, `file_write`, `task_create`, `task_list`, `spawn_subagent`, `spawn_subagents`, `check_mailbox`, etc.)
+1. **Always-on tools**: Core set always included (e.g., `memory_save`, `memory_search`, `memory_update`, `notebook_upsert`, `notebook_clear`, `file_read`, `file_write`, `task_create`, `task_list`, `spawn_subagent`, `spawn_subagents`, `check_mailbox`, etc.)
 2. **Manager-only tools**: Added when `isManager=true` (e.g., `task_assign`, `team_status`, `delegate_message`)
 3. **Package tools**: Available to all agents, activated by keyword (e.g., `package_list`, `package_install`, `hub_search`, `hub_install`)
 4. **Task-execution tools**: Added when `isTaskExecution=true` (e.g., `task_submit_review`, `subtask_create`)

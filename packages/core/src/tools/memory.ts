@@ -1,7 +1,7 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { IMemoryStore, MemoryEntry } from '../memory/types.js';
 import type { SemanticMemorySearch } from '../memory/semantic-search.js';
-import { createLogger, MEMORY_MD_TOTAL_MAX_CHARS } from '@markus/shared';
+import { createLogger } from '@markus/shared';
 
 const log = createLogger('memory-tools');
 
@@ -431,26 +431,28 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
       inputSchema: { type: 'object', properties: {} },
       async execute(): Promise<string> {
         const store = storeName(ctx.memory);
+        // SSOT：预算口径必须与提示词横幅 / 写入端强制归档（getMemoryHealth = 文件原始大小）完全一致，
+        // 否则会出现「横幅说 122%、工具说 95%」的自相矛盾（审计 P-12/P-16）。
+        const health = ctx.memory.getMemoryHealth();
         const curated = ctx.memory.getLongTermMemory();
         const obs = ctx.memory.getObservations();
         const sectionNames = [...curated.matchAll(/^## (.+)$/gm)]
           .map((m) => m[1]!)
           .filter((n) => n !== '_observations');
         const obsChars = obs.reduce((s, e) => s + (e.content?.length ?? 0), 0);
-        const totalChars = curated.length + obsChars;
-        const usable = Math.max(MEMORY_MD_TOTAL_MAX_CHARS, 1);
-        const usedPercent = Math.round((totalChars / usable) * 100);
         return JSON.stringify({
           status: 'ok',
           store,
           budget: {
-            totalChars,
-            limit: MEMORY_MD_TOTAL_MAX_CHARS,
-            usedPercent,
+            totalChars: health.totalChars,
+            limit: health.cap,
+            usedPercent: health.percent,
           },
           observations: { count: obs.length, chars: obsChars },
           curatedSections: { count: sectionNames.length, names: sectionNames.slice(0, 20) },
-          hint: usedPercent > 80
+          archivedChars: health.archiveChars,
+          lastConsolidatedAt: health.lastConsolidatedAt,
+          hint: health.percent > 80
             ? 'Approaching budget — run memory_organize to merge observations into curated sections, or memory_update mode="forget" on superseded knowledge.'
             : undefined,
         });
@@ -552,6 +554,7 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         }
 
         const archived = ctx.memory.removeEntries(selected.map((e) => e.id));
+        ctx.memory.markConsolidated?.();
         if (ctx.semanticSearch?.isEnabled()) {
           for (const e of selected) {
             ctx.semanticSearch.deleteMemory(e.id).catch((err) => {

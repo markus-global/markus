@@ -574,8 +574,7 @@ describe('ContextEngine — cache optimization', () => {
       expect(after.volatile).toContain('## Your Knowledge');
     });
 
-    it('routes CPP output to the notebook (Tier 3) rather than a new stable section when a writer is provided', async () => {
-      const writes: Array<{ key: string; managed: string }> = [];
+    it('injects CPP output into the volatile tail — single destination, never the notebook (P-03)', async () => {
       const result = await engine.buildSystemPrompt({
         agentId: 'test-agent',
         agentName: 'TestAgent',
@@ -587,10 +586,11 @@ describe('ContextEngine — cache optimization', () => {
           isEmpty: false,
           cognitiveContext: 'situational note',
         },
-        notebookWriter: (key, _text, managed) => { writes.push({ key, managed }); },
       });
-      // CPP was handed to the notebook writer, not injected as a stable "## Cognitive Context".
-      expect(writes.some(w => w.managed === 'cpp')).toBe(true);
+      // 审计 P-03：CPP 产出只注入本轮 volatile tail（不再写 NOTEBOOK），
+      // 且绝不进入可缓存的 stable 前缀。
+      expect(result.volatile).toContain('## Cognitive Context');
+      expect(result.volatile).toContain('situational note');
       const stablePrefix = result.segments
         .filter(s => s.cacheBreakpoint)
         .map(s => s.content)

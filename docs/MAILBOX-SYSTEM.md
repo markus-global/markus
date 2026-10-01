@@ -1336,7 +1336,7 @@ Defined by `DELIBERATION_ALLOWED_TOOLS` in `@markus/shared`:
 | Context gathering | `task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`, `team_status`, `recall_activity`, `memory_search`, `memory_search_longterm` |
 | Inline communication | `notify_user`, `task_comment`, `requirement_comment`, `agent_send_message`, `agent_send_group_message`, `agent_create_group_chat`, `agent_list_group_chats` |
 | Mailbox management | `check_mailbox`, `defer_mailbox_item`, `drop_mailbox_item`, `prioritize_mailbox_item` |
-| Working memory | `update_working_memory`, `clear_working_memory` |
+| Working memory | `notebook_upsert`, `notebook_clear`, `notebook_read` |
 | Decision output | `complete_deliberation` |
 
 **Excluded**: `task_create`, `task_update`, `requirement_propose`, code/shell tools, `spawn_subagent`. These are heavy side-effect tools that belong in the processing phase.
@@ -1352,8 +1352,8 @@ individual mailbox items using dedicated tools:
 | `defer_mailbox_item` | Deliberation + focused processing | Postpone an item |
 | `drop_mailbox_item` | Deliberation + focused processing | Discard stale item |
 | `prioritize_mailbox_item` | Deliberation only | Re-prioritize item |
-| `update_working_memory` | All scenarios | Update situational awareness |
-| `clear_working_memory` | All scenarios | Clear stale awareness |
+| `notebook_upsert` | All scenarios | Update situational awareness |
+| `notebook_clear` | All scenarios | Clear stale awareness |
 
 **Safety**: `human_chat` items are protected — they cannot be deferred, dropped,
 or reprioritized by tool calls. **Strict state items**（正式任务执行 / 评审 / 需求·工作流收尾动作，
@@ -1413,7 +1413,7 @@ replaces the former `currentCognition` string. Each entry has:
 Working memory is populated from three sources:
 1. **Deliberation**: `situationalAwareness` → key `"deliberation"`
 2. **Triage**: reasoning → key `"triage-decision"`
-3. **Agent tools**: `update_working_memory` / `clear_working_memory`
+3. **Agent tools**: `notebook_upsert` / `notebook_clear`
 
 All entries are injected into every system prompt as `## Working Memory` with
 age labels per entry. The agent decides what to keep, update, or expire.

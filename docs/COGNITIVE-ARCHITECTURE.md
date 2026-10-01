@@ -1,10 +1,10 @@
 # Cognitive Architecture: Unified Agent Cognition
 
-This document describes the unified cognitive architecture that governs how Markus agents perceive stimuli, prepare context, deliberate, act, and learn. It replaces the previous model — mechanical prompt assembly plus volatile in-memory working memory — with a **continuous cognitive cycle** backed by persistent stores (`NOTEBOOK.md`, `knowledge.md`) and an optional **Cognitive Preparation Pipeline (CPP)** for deliberate context preparation.
+This document describes the unified cognitive architecture that governs how Markus agents perceive stimuli, prepare context, deliberate, act, and learn. It is a **continuous cognitive cycle** backed by persistent stores (`NOTEBOOK.md`, `knowledge.md`). Context preparation is **deterministic** — the former optional **Cognitive Preparation Pipeline (CPP)** was removed (see §3).
 
-> **Memory SSOT**: Prefer [`MEMORY-SYSTEM.md`](./MEMORY-SYSTEM.md) — durable knowledge is `knowledge.md`, working (short-lived) state is `NOTEBOOK.md` (`system` tier). The old `state.md` store **retired 2026-09-16**; it had a reader and a TTL pruner but no write tool, while the notebook already owns the same capability. Below, historical “MEMORY.md” references mean the older dual-store model.
+> **Memory SSOT**: Prefer [`MEMORY-SYSTEM.md`](./MEMORY-SYSTEM.md) — durable knowledge is `knowledge.md`, working (short-lived) state is `NOTEBOOK.md` (`system` tier). Writing is **single-writer**: `knowledge.md` / `NOTEBOOK.md` are written only through memory tools. `MEMORY.md` / `memories.json` / `state.md` are **legacy read-only sources**, read and migrated on load (see MEMORY-SYSTEM.md → “Migration-read”). Below, historical “MEMORY.md” references mean the older dual-store model.
 >
-> **Implementation status**: Core cycle, Notebook, knowledge/state memory, Attention Controller, Goal/Loop heartbeat integration, A2A DM channels, and `PendingCallbackRegistry` are implemented. CPP (Phases 1–3, depth D0–D3) lives in `packages/core/src/cognitive.ts`. CPP is opt-in via `agent.cognitive.enabled` in `markus.json` (default `false` until explicitly enabled). D2+ retrieval requires a `RetrievalBackend` adapter.
+> **Implementation status**: Core cycle, Notebook, knowledge memory, Attention Controller, Goal/Loop heartbeat integration, A2A DM channels, and `PendingCallbackRegistry` are implemented. **CPP was removed** — `packages/core/src/cognitive.ts` no longer exists and no pre-call LLM runs (§3).
 
 ---
 
@@ -15,22 +15,22 @@ Every agent interaction follows the same loop. Heartbeat checks keep the cycle r
 ```
                     ┌─────────────────────────────────────┐
                     │         Heartbeat (patrol)          │
-                    │  goals · callbacks · failed tasks │
+                    │  goals · callbacks · failed tasks   │
                     └──────────────┬──────────────────────┘
                                    │
 Stimulus ──► Triage / Appraisal ──► Context Assembly ──► Deliberation ──► Action ──► Reflection / Update
 (Mailbox)    (AttentionController   (NOTEBOOK.md +         (main LLM +      (tools)    (memory_save,
-              + optional CPP)        MEMORY.md)             tools)                      notebook, dream)
+              deterministic)         knowledge.md)           tools)                     notebook, dream)
 ```
 
 | Stage | What happens | Primary components |
 |-------|--------------|-------------------|
 | **Stimulus** | Message, task, heartbeat, A2A, callback result enters the mailbox | `Mailbox`, `AttentionController` |
-| **Triage / Appraisal** | Decide what to focus on; optionally run CPP appraisal | `AttentionController`, `CognitivePreparation` |
-| **Context Assembly** | Load procedural identity, curated knowledge, notebook workspace, mailbox state | `ContextEngine`, `NOTEBOOK.md`, `MEMORY.md` |
+| **Triage / Appraisal** | Decide what to focus on | `AttentionController` |
+| **Context Assembly** | Load procedural identity, curated knowledge, notebook workspace, mailbox state | `ContextEngine`, `NOTEBOOK.md`, `knowledge.md` |
 | **Deliberation** | Main LLM reasons with assembled context and available tools | `Agent`, tool loop |
 | **Action** | Execute tool calls (tasks, files, A2A, memory writes) | Tool handlers |
-| **Reflection / Update** | Persist observations, update notebook, consolidate via dream cycle | `memory_save`, `update_notebook`, dream cycle |
+| **Reflection / Update** | Persist observations, update notebook, consolidate via dream cycle | `memory_save`, `notebook_upsert`, dream cycle |
 
 The cycle is **continuous**: heartbeat patrols re-enter the loop, checking active goals, timed-out callbacks, and stalled work even when the mailbox is quiet.
 
@@ -44,70 +44,63 @@ The architecture maps directly to established cognitive models:
 
 | Model | Concept | Markus mapping |
 |-------|---------|----------------|
-| **Baddeley — Working Memory** | Central executive coordinates subsidiary systems; episodic buffer integrates sources | `NOTEBOOK.md` = central executive + visuospatial sketchpad (active workspace); `MEMORY.md` = episodic buffer (integrates curated knowledge with experience) |
-| **Cowan — Embedded Processes** | Focus of attention (4±1 chunks) within activated long-term memory | `## _observations` buffer = focus of attention (raw, not in prompt); curated `MEMORY.md` sections = activated LTM (always injected) |
-| **Kahneman — Dual Process** | System 1 (fast, automatic) vs System 2 (slow, deliberate) | System 1 = triage, fast `memory_search`, mechanical retrieval fallback; System 2 = CPP (appraisal → retrieval → reflection) |
-| **Boyd — OODA Loop** | Observe → Orient → Decide → Act | **Observe**: mailbox items; **Orient**: CPP + notebook updates; **Decide**: main LLM deliberation; **Act**: tool execution |
+| **Baddeley — Working Memory** | Central executive coordinates subsidiary systems; episodic buffer integrates sources | `NOTEBOOK.md` = central executive + visuospatial sketchpad (active workspace); `knowledge.md` = episodic buffer (integrates curated knowledge with experience) |
+| **Cowan — Embedded Processes** | Focus of attention (4±1 chunks) within activated long-term memory | `## _observations` buffer = focus of attention (raw, not in prompt); curated `knowledge.md` sections = activated LTM (always injected) |
+| **Kahneman — Dual Process** | System 1 (fast, automatic) vs System 2 (slow, deliberate) | System 1 = triage, mechanical retrieval, bounded auto-recall; System 2 = the main LLM's deliberation plus agent-driven `memory_search` / `kb_search` |
+| **Boyd — OODA Loop** | Observe → Orient → Decide → Act | **Observe**: mailbox items; **Orient**: deterministic context assembly + notebook updates; **Decide**: main LLM deliberation; **Act**: tool execution |
 
 Additional influences preserved from earlier design:
 
-- **Tulving's memory systems**: Procedural (ROLE.md + skills), Semantic (MEMORY.md), Episodic (sessions + activity index).
-- **Metacognition (Flavell)**: CPP appraisal asks "do I know enough?" before acting.
+- **Tulving's memory systems**: Procedural (ROLE.md + skills), Semantic (`knowledge.md`), Episodic (sessions + activity index).
+- **Metacognition (Flavell)**: the agent asks "do I know enough?" — now answered by active `memory_search` / `kb_search` rather than a pre-call appraisal LLM.
 - **Global Workspace Theory (Baars)**: Notebook is the broadcast workspace — selected context competes for limited prompt capacity.
 
 See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for storage-layer detail.
 
 ---
 
-## 3. Cognitive Preparation Pipeline (CPP)
+## 3. Deterministic Context Assembly (CPP removed)
 
-CPP is the System 2 layer. It runs **between triage and the main LLM call**, using 0–3 lightweight LLM calls to prepare persona-aware context before deliberation.
+> **CPP removed.** The former Cognitive Preparation Pipeline — 0–3 pre-call LLM phases
+> (Appraisal / Retrieval / Reflection), `packages/core/src/cognitive.ts`,
+> `CognitivePreparation`, `selectCognitiveDepth`, the `CognitiveDepth` levels D0–D3 and the
+> `agent.cognitive` depth/model fields — has been **removed**. It cost extra LLM calls per turn
+> and duplicated the ContextEngine's own retrieval.
+
+Context preparation is now **deterministic (no LLM)**: between triage and the main call the
+ContextEngine assembles a small, bounded situational block.
 
 ```
-Stimulus → Triage → CPP (optional) → Context Assembly → Main LLM
-                         │
-                         ├─ Phase 1: Appraisal      ("What is this? What do I need?")
-                         ├─ Phase 2: Retrieval      (directed queries — no LLM)
-                         └─ Phase 3: Reflection     ("What does this mean for me?")
+Stimulus → Triage → Deterministic Context Assembly → Main LLM
+                        │
+                        ├─ situational block: recent activity + working-memory keys
+                        ├─ bounded relevant-memory retrieval (## Relevant Memories)
+                        └─ optional deterministic ## Cognitive Context block
 ```
 
-### Output destination: Notebook, not prompt sections
+### Output destination: prompt only (the notebook dual-write was removed)
 
-When the notebook writer is active (normal agent runtime), CPP output is written directly to **`NOTEBOOK.md`** entries rather than injected as separate system-prompt sections:
+CPP output used to be written to **`NOTEBOOK.md`** entries (via a `notebookWriter` callback). That
+**dual-destination was removed**: relevance-matched memories are injected **for the current turn only**
+as `## Relevant Memories`, and the deterministic situational block is injected as `## Cognitive Context`.
+Neither is persisted as a notebook entry.
 
-| CPP phase | Notebook key | Managed tag |
-|-----------|--------------|-------------|
-| Appraisal | `cognitive-context` | `cpp` |
-| Retrieval | `relevant-context` | `cpp` |
-| Reflection | `reflection` | `cpp` |
+Prompt sections produced today: `## Cognitive Context` (deterministic) and `## Relevant Memories`
+(`## Retrieved Context` / `## Reflection` are no longer produced).
 
-Mechanical memory retrieval (when CPP is off or at D0) writes `relevant-context` with managed tag `system`. Triage decisions write `triage-decision` (`system`).
+Triage decisions still write `triage-decision` (managed tag `system`) — that is runtime state, not CPP output.
 
-### Cognitive depth levels
+### Cognitive depth levels (retired)
 
-| Level | Name | Phases | When | Extra LLM calls |
-|-------|------|--------|------|-----------------|
-| D0 | Reflexive | None | Heartbeat OK, memory consolidation | 0 |
-| D1 | Reactive | Appraisal | Most chats, A2A, comments | 0–1 |
-| D2 | Deliberative | Appraisal + Retrieval + Reflection | Task execution, complex questions | 2 |
-| D3 | Meta-cognitive | Full pipeline + post-response eval (future) | High-stakes, blockers, novel situations | 2–3 |
-
-Depth is selected by scenario (`selectCognitiveDepth`) and clamped by `maxDepth` config. Triage outcome influences the effective depth (e.g., failed tasks upgrade heartbeat from D0 → D1).
+The D0–D3 depth ladder (`selectCognitiveDepth`) was part of CPP and is **gone**. There is no
+depth selection and no per-scenario LLM budget anymore — assembly is always the same cheap,
+deterministic step. Any residual `CognitiveDepth` enum value in shared types is inert.
 
 ### Configuration
 
-Opt-in via settings (`markus.json` → `agent.cognitive`, REST `/api/settings/agent`):
-
-```typescript
-interface CognitiveConfig {
-  enabled: boolean;           // master switch (default: false)
-  maxDepth?: CognitiveDepth;  // cap depth during rollout (default allows D1)
-  appraisalModel?: string;    // model for appraisal/reflection (defaults to cheapest)
-  timeoutMs?: number;         // CPP timeout (default: 15000)
-}
-```
-
-When CPP times out or errors, the agent falls back to mechanical retrieval without blocking the cycle.
+The `agent.cognitive.enabled` flag (`markus.json` → `agent.cognitive`, REST `/api/settings/agent`)
+survives and gates whether the deterministic situational block is assembled. The pipeline's
+depth / appraisal-model fields are inert — no LLM phase runs, so there is nothing to time out.
 
 ---
 
@@ -125,26 +118,25 @@ The Notebook is the agent's **persistent cognitive workspace** — Baddeley's ce
 
 | Tag | Writer | Purpose | TTL |
 |-----|--------|---------|-----|
-| `agent` | Agent via `update_notebook` / `clear_notebook` | Explicit notes, priorities, blockers | 96h |
+| `agent` | Agent via `notebook_upsert` / `notebook_clear` | Explicit notes, priorities, blockers | 96h |
 | `system` | Runtime (triage, deliberation, mechanical retrieval) | Triage decisions, fallback context | 24h |
-| `cpp` | Cognitive Preparation Pipeline | Appraisal, retrieval, reflection outputs | 6h |
 
 **Lifecycle**: Loaded at startup → **normalized** (TTL + caps, persisted) → updated in-process → persisted with a 2s debounce bounded by a 10s maxWait → survives restarts.
 
-**Limits**: 16 entries total (4 of them `agent`-managed), 6000 chars each, 6000 chars for the whole injected block. TTL per tier as above. Eviction is oldest-first; the machine-written tiers (`cpp`, then `system`) are evicted **before** the `agent` tier, because situational state is cheaper to lose than the agent's own deliberate notes — and it expires on its own soon anyway.
+**Limits**: 16 entries total (4 of them `agent`-managed), 6000 chars each, 6000 chars for the whole injected block. TTL per tier as above. Eviction is oldest-first; the machine-written `system` tier is evicted **before** the `agent` tier, because situational state is cheaper to lose than the agent's own deliberate notes — and it expires on its own soon anyway.
 
-The Notebook holds *situational* state. Durable knowledge flows to `knowledge.md` via `memory_save` / `memory_update`.
+The Notebook holds *situational* state. Durable knowledge flows to `knowledge.md` via `memory_save` / `memory_update` (`notebook_read` is the read-only view).
 
 > **Why the notebook needs its own lifecycle** (see [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §2): the Notebook is a *resident* prompt region, unlike `## _observations` which is retrieved on demand. Resident regions must be bounded (count), decayed (TTL), deduplicated (key discipline), size-capped (per-entry + total), and made **single-writer** — otherwise every feature that writes to them accretes forever. All four were missing or partial here: three of four writers bypassed the entry cap, there was no TTL anywhere, and the load path trimmed nothing, so a real notebook grew to 26 entries / 33 KB including month-old situational state re-injected every turn.
 
 ---
 
-## 5. Memory (MEMORY.md)
+## 5. Memory (knowledge.md)
 
 Unified long-term store for curated knowledge plus a raw observation buffer — Cowan's activated LTM plus focus-of-attention staging area.
 
 ```
-MEMORY.md
+knowledge.md
 ├── ## conventions          ← agent-organized curated sections (in prompt)
 ├── ## procedures
 ├── ...
@@ -156,7 +148,11 @@ MEMORY.md
 | Curated sections | Distilled knowledge the agent maintains | Always injected as `## Your Knowledge` (via the volatile tail, not the byte-stable system prefix) |
 | `## _observations` | Raw observations from `memory_save` | Excluded from prompt; processed by dream cycle |
 
-The **dream cycle** (`memory_consolidation`) consolidates observations into curated sections, prunes stale content, and maintains MEMORY.md hygiene. This is the long-term learning path at the end of the cognitive cycle.
+The **dream cycle** (`memory_consolidation`) consolidates observations into curated sections, prunes stale content, and maintains `knowledge.md` hygiene. This is the long-term learning path at the end of the cognitive cycle.
+
+**Budget is lossless.** When curated sections exceed the character budget, the overflow is **archived** (moved verbatim into `knowledge-archive.md`, still retrievable via `memory_search`) rather than truncated or refused. The budget is an invariant — the file converges to ≤100% at load. The injected `## Your Knowledge` block carries a **health banner** when usage ≥70% (budget %, observation count, section count, archived count, last consolidation time).
+
+**Migration-read.** `MEMORY.md` / `memories.json` / `state.md` are legacy read-only sources, read and migrated on load; only `knowledge.md` is written, and observation metadata is emitted as a single `<!-- type: X, data-meta: {…} -->` line (the old `, tags: a, b` form is read but converged on write). See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
 
 ---
 
@@ -173,19 +169,19 @@ Processes the **Mailbox** — the agent's unified stimulus queue. Responsibiliti
 - Triage decisions persisted to notebook (`triage-decision`)
 - Yields to higher-priority items (e.g., human chat during deliberation)
 
-Triage decides **what** to process; CPP decides **how to prepare** for processing.
+Triage decides **what** to process. How context is prepared for processing is now deterministic (§3), not a second LLM stage.
 
 ### Heartbeat
 
 Periodic patrol re-enters the cognitive cycle without external stimulus. Each heartbeat checks:
 
-- Active goals (Goal/Loop — see §7)
+- Active goals (Goal/Loop — see below)
 - Timed-out `PendingCallbackRegistry` entries
 - Failed tasks and requirement monitoring
 - Background operation completions
 - Self-evolution and quality signals
 
-Heartbeat uses D0 (reflexive) depth unless failed tasks or blockers upgrade it.
+There is no depth ladder anymore — every path, heartbeat included, uses the same deterministic assembly.
 
 #### Spec: active-hours timezone (C1)
 
@@ -259,33 +255,32 @@ Implementation: `packages/core/src/pending-callback.ts`, persisted via `SqlitePe
 ## 8. Integration Map
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Agent Runtime                              │
-│  ┌─────────────┐   ┌──────────────┐   ┌─────────────────────┐  │
-│  │  Mailbox    │──►│  Attention   │──►│  CPP (optional)     │  │
-│  │             │   │  Controller  │   │  cognitive.ts       │  │
-│  └─────────────┘   └──────────────┘   └──────────┬──────────┘  │
-│                                                   │               │
-│  ┌────────────────────────────────────────────────▼──────────┐  │
-│  │                    ContextEngine                             │  │
-│  │  ROLE.md · MEMORY.md · NOTEBOOK.md · mailbox · goals       │  │
-│  └──────────────────────────────┬───────────────────────────────┘  │
-│                                 ▼                                  │
-│                          Main LLM + Tools                          │
-└──────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                      Agent Runtime                         │
+│  ┌───────────┐   ┌──────────────┐                          │
+│  │  Mailbox  │──►│  Attention   │───► ContextEngine        │
+│  └───────────┘   │  Controller  │     (deterministic       │
+│                  └──────────────┘      assembly, no LLM)   │
+│                                            │               │
+│  ┌──────────────────────────────────────────▼────────────┐ │
+│  │  ContextEngine reads: ROLE.md · knowledge.md ·         │ │
+│  │  NOTEBOOK.md · mailbox · goals · activity              │ │
+│  └───────────────────────────┬───────────────────────────┘ │
+│                              ▼                             │
+│                       Main LLM + Tools                     │
+└───────────────────────────────────────────────────────────┘
 ```
 
 | Component | Location | Role in cycle |
 |-----------|----------|---------------|
 | `AttentionController` | `packages/core/src/attention.ts` | Triage, deliberation, focus management |
-| `CognitivePreparation` | `packages/core/src/cognitive.ts` | CPP orchestration |
-| `ContextEngine` | `packages/core/src/context-engine.ts` | Context assembly, notebook writer |
+| `ContextEngine` | `packages/core/src/context-engine.ts` | Deterministic context assembly, relevant-memory injection |
 | `Agent` | `packages/core/src/agent.ts` | Cycle orchestration, heartbeat, notebook persistence |
-| `MemoryStore` | `packages/core/src/memory/store.ts` | MEMORY.md + NOTEBOOK.md I/O |
+| `MemoryStore` | `packages/core/src/memory/store.ts` | knowledge.md + NOTEBOOK.md I/O, migration-read |
 | `PendingCallbackRegistry` | `packages/core/src/pending-callback.ts` | Async callback tracking |
 | `AgentManager` | `packages/core/src/agent-manager.ts` | A2A DM routing, cognitive config |
 
-Types: `packages/shared/src/types/cognitive.ts`, `requirement.ts` (`GoalConfig`).
+Types: `packages/shared/src/types/cognitive.ts` (`CognitiveConfig`; the depth types are inert), `requirement.ts` (`GoalConfig`).
 
 ---
 
@@ -293,7 +288,7 @@ Types: `packages/shared/src/types/cognitive.ts`, `requirement.ts` (`GoalConfig`)
 
 | Document | Relationship |
 |----------|-------------|
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Two-file model detail, dream cycle, tool reference |
+| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Storage model detail, dream cycle, tool reference, migration-read |
 | [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Mailbox types, priority, triage protocol |
 | [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) | Prompt section taxonomy |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | System-wide component overview |
@@ -304,24 +299,22 @@ Types: `packages/shared/src/types/cognitive.ts`, `requirement.ts` (`GoalConfig`)
 
 ### Completed
 
-- Unified cognitive cycle with persistent Notebook and MEMORY.md
-- CPP Phases 1–3 with depth selection (D0–D3) and notebook output path
+- Unified cognitive cycle with persistent Notebook and `knowledge.md`
+- **Deterministic context assembly** (no pre-call LLM) — CPP removed
 - Attention Controller triage + deliberation with notebook persistence
 - Goal/Loop heartbeat integration with `GoalConfig` on requirements
 - A2A DM channels (`dm:a2a:{sorted_ids}`) with group-chat persistence
 - `PendingCallbackRegistry` with SQLite persistence
-- Mechanical retrieval fallback writes `relevant-context` to notebook
-- Unit tests in `packages/core/test/cognitive-enhancement.test.ts`
+- Lossless memory budget (archive, not truncate) + health banner + migration-read
 
-### In Progress / Not Yet Built
+### Retired
 
-- `RetrievalBackend` adapter for D2+ directed retrieval (interface defined, no adapter)
-- D2/D3 blocked by `maxDepth` default until retrieval backend exists
-- D3 post-response evaluation (meta-cognitive feedback loop)
-- Dream cycle integration with CPP activity index
+- **CPP (Cognitive Preparation Pipeline)** — the Appraisal / Retrieval / Reflection LLM phases, `cognitive.ts`, `CognitivePreparation`, `selectCognitiveDepth`, depth levels D0–D3, and the `notebookWriter` dual-destination. Replaced by §3.
+- `state.md` store (Working-layer state now lives in `NOTEBOOK.md`; legacy content migrated on load).
+- Notebook `cpp` managed tier and `NOTEBOOK_TTL_MS_CPP`.
 
 ### Future Work
 
-- Enable D2 by default once `RetrievalBackend` ships
-- Tune depth heuristics and appraisal prompts from production data
-- Simplify compression pipeline (thinner sessions reduce pressure)
+- Prompt-matrix guidance for agent-driven `memory_search` / `kb_search` (replacing the old depth heuristics).
+- Simplify the compression pipeline (thinner sessions reduce pressure).
+

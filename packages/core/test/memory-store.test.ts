@@ -32,19 +32,17 @@ describe('MemoryStore — addLongTermMemory result (B1)', () => {
     expect(res).toEqual({ ok: true });
   });
 
-  it('returns { ok: false, reason } when knowledge.md is full (refused write)', () => {
-    // Each section is capped at 3000 chars; total cap is 15000. Fill past the total
-    // so a later write is refused (compression cannot free capped sections).
+  it('never refuses on a full knowledge.md — it rebalances losslessly (audit P-04/P-05)', () => {
+    // Each section body is ≤ the per-section cap, so every write is accepted;
+    // when the TOTAL exceeds the budget the store ARCHIVES bodies (lossless),
+    // it never refuses and never silently truncates.
     const big = 'x'.repeat(3000);
-    let refused: { ok: boolean; reason?: string } | undefined;
     for (let i = 0; i < 12; i++) {
-      const res = store.addLongTermMemory(`Section ${i}`, big);
-      if (!res.ok) { refused = res; break; }
+      expect(store.addLongTermMemory(`Section ${i}`, big).ok).toBe(true);
     }
-    expect(refused).toBeDefined();
-    expect(refused!.ok).toBe(false);
-    expect(typeof refused!.reason).toBe('string');
-    expect(refused!.reason!.length).toBeGreaterThan(0);
+    expect(store.getLongTermMemory().length).toBeLessThanOrEqual(15000);
+    // Archived bodies live in knowledge-archive.md (retrievable, not injected).
+    expect(fs.existsSync(path.join(tmp, 'knowledge-archive.md'))).toBe(true);
   });
 });
 
@@ -254,21 +252,22 @@ describe('MemoryStore — Semantic: knowledge.md', () => {
     expect(filtered).not.toContain('not needed');
   });
 
-  it('truncates section content exceeding limit', () => {
+  it('rejects a section body over the per-section limit instead of truncating (no silent loss)', () => {
     const longContent = 'x'.repeat(5000);
-    store.addLongTermMemory('big', longContent);
-    const section = store.getLongTermSection('big');
-    expect(section.length).toBeLessThanOrEqual(3000);
+    const res = store.addLongTermMemory('big', longContent);
+    expect(res.ok).toBe(false);
+    expect(res.reason ?? '').toContain('per-section limit');
+    // Nothing partial was written.
+    expect(store.getLongTermSection('big')).toBe('');
   });
 
-  it('refuses write when total knowledge.md exceeds limit', () => {
+  it('rebalances (archives) instead of refusing when the total exceeds the limit', () => {
     for (let i = 0; i < 6; i++) {
       store.addLongTermMemory(`section-${i}`, 'a'.repeat(2500));
     }
-    const before = store.getLongTermMemory();
-    store.addLongTermMemory('overflow', 'b'.repeat(2500));
-    const after = store.getLongTermMemory();
-    expect(after).toBe(before);
+    const res = store.addLongTermMemory('overflow', 'b'.repeat(2500));
+    expect(res.ok).toBe(true);
+    expect(store.getLongTermMemory().length).toBeLessThanOrEqual(15000);
   });
 
   it('persists knowledge.md to disk', () => {
@@ -335,16 +334,18 @@ describe('MemoryStore — Semantic: knowledge.md', () => {
     expect(result.charsBefore).toBe(result.charsAfter);
   });
 
-  it('compressLongTermMemory truncates oversized sections to per-section limit', () => {
-    const bigContent = 'a'.repeat(3500);
-    store.addLongTermMemory('oversized', bigContent);
+  it('compressLongTermMemory archives oversized section bodies (lossless)', () => {
+    // Can't create an oversized section via the API (writes are rejected), so
+    // simulate a legacy/oversized file directly.
+    fs.writeFileSync(path.join(tmp, 'knowledge.md'), `## oversized\n${'a'.repeat(3500)}\n`, 'utf8');
 
     const result = store.compressLongTermMemory();
     expect(result.truncatedChunks).toBeGreaterThan(0);
 
-    const section = store.getLongTermSection('oversized');
-    expect(section!.length).toBeLessThanOrEqual(3000);
-    expect(section!.length).toBe(3000);
+    const section = store.getLongTermSection('oversized') ?? '';
+    expect(section.length).toBeLessThanOrEqual(3000);
+    // The full body is preserved (searchable) in the archive — nothing lost.
+    expect(fs.readFileSync(path.join(tmp, 'knowledge-archive.md'), 'utf8')).toContain('a'.repeat(3500));
   });
 
   it('compressLongTermMemory trims from bottom when total exceeds limit', () => {
@@ -357,19 +358,15 @@ describe('MemoryStore — Semantic: knowledge.md', () => {
     expect(contentAfter.length).toBeLessThanOrEqual(15000);
   });
 
-  it('addLongTermMemory auto-compresses before refusing write', () => {
+  it('addLongTermMemory rebalances losslessly when a write pushes it over budget', () => {
     for (let i = 0; i < 6; i++) {
-      // 2483 chars × 6 sections = 14988 total (under 15000 limit);
-      // only the 'overflow' push takes it over the edge
       store.addLongTermMemory(`section-${i}`, 'c'.repeat(2483));
     }
-
-    const contentBefore = store.getLongTermMemory();
-    expect(contentBefore.length).toBeGreaterThanOrEqual(14000);
-
-    store.addLongTermMemory('overflow', 'extra content');
-    const section0 = store.getLongTermSection('section-0');
-    expect(section0!.length).toBeGreaterThan(0);
+    const res = store.addLongTermMemory('overflow', 'extra content');
+    expect(res.ok).toBe(true);
+    // Never refused, never silently dropped: within budget, new section discoverable.
+    expect(store.getLongTermMemory().length).toBeLessThanOrEqual(15000);
+    expect(store.getLongTermMemory()).toContain('## overflow');
   });
 });
 
@@ -490,6 +487,40 @@ describe('MemoryStore — Episodic: sessions', () => {
     const result = store.compactSession(session.id, 10);
     expect(result.flushedCount).toBe(0);
     expect(result.summary).toBe('');
+    // A valid no-op still reports found:true so callers can tell it apart from
+    // "session missing" (see 刘利 P0 2026-09-30).
+    expect(result.found).toBe(true);
+    expect(result.remaining).toBe(1);
+  });
+
+  it('compactSession falls back to disk for a session evicted from the in-memory LRU (刘利 P0 regression)', () => {
+    const session = store.createSession('agent-1');
+    for (let i = 0; i < 30; i++) {
+      store.appendMessage(session.id, { role: 'user', content: `message ${i}` });
+    }
+    // LRU: only the 20 most recent sessions stay in memory. Creating 25 more
+    // forces `session` out of the in-memory map (eviction persists it to disk).
+    for (let i = 0; i < 25; i++) {
+      const filler = store.createSession('agent-1');
+      store.appendMessage(filler.id, { role: 'user', content: `filler ${i}` });
+    }
+
+    // Before the fix this returned { flushedCount: 0, summary: '' } (a silent
+    // no-op) because compactSession read ONLY the in-memory map. It must now
+    // load the disk copy and really compact.
+    const res = store.compactSession(session.id, 10);
+    expect(res.found).toBe(true);
+    expect(res.flushedCount).toBe(20);
+    expect(res.remaining).toBe(10);
+    expect(res.summary).toBeTruthy();
+  });
+
+  it('compactSession reports found:false for an unknown session (no false success)', () => {
+    const res = store.compactSession('sess_does_not_exist', 10);
+    expect(res.found).toBe(false);
+    expect(res.flushedCount).toBe(0);
+    expect(res.remaining).toBe(0);
+    expect(res.summary).toBe('');
   });
 
   it('sessions persist to disk and reload', async () => {

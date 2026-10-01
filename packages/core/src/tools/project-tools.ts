@@ -724,7 +724,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
     ...(ctx.deliverableSearch
       ? [
           {
-            name: 'knowledge_search',
+            name: 'kb_search',
             description:
               'Search the project knowledge base (documents synced from bound knowledge directories). ' +
               'Thin wrapper over deliverable_search with source forced to "knowledge". ' +
@@ -769,7 +769,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
     ...(ctx.deliverableList
       ? [
           {
-            name: 'knowledge_list',
+            name: 'kb_list',
             description:
               'List knowledge-base documents (source="knowledge") with optional project filter. ' +
               'Thin wrapper over deliverable_list with source forced to "knowledge".',
@@ -809,10 +809,10 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
     ...(ctx.deliverableRead
       ? [
           {
-            name: 'knowledge_read',
+            name: 'kb_read',
             description:
               'Read the text content of a knowledge-base document by its file path (reference). ' +
-              'Use the "reference" from knowledge_search / knowledge_list results. ' +
+              'Use the "reference" from kb_search / kb_list results. ' +
               'When project_id is provided, the read is scoped to that project\'s bound knowledge directories. ' +
               'Thin wrapper that returns the extracted plain-text content for context.',
             inputSchema: {
