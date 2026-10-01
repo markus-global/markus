@@ -709,7 +709,10 @@ function ProcessRun({
   // 只要这轮还在流式，它就是在跑。只按位置判会让一个没收尾的工具显示成
   // 绿勾（已跑完），这是错的。位置只用来回答「思考是不是还在进行」——
   // 后面已经又出了正文，说明那段思考早就结束了。
-  const running = isStreaming && (summary.running || (isLastBlock && summary.tailIsThinking));
+  // 只要仍在流式输出且这是最后一块，就保持「输出中」的活动反馈。
+// 这覆盖了「LLM 首 token 还没返回、气泡里暂时什么都没有」的空窗
+// —— 否则用户会误以为 Agent 卡住。流结束（isStreaming=false）后自动收束。
+const running = isStreaming && (isLastBlock || summary.running);
   // 三个状态优先级：在跑 > 有失败 > 完成。跑着的时候先别急着报错（后面还会重试）。
   // 只有「在跑 / 跑完」两态：工具失败不再单独出一种图标（失败次数仍写在 label 里）。
   const state: ProcessRunState = running ? 'running' : 'done';

@@ -1419,7 +1419,7 @@ export const api = {
       text: string,
       handlers: ChatStreamHandlers,
       options?: MessageStreamOptions,
-    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean }> => {
+    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean; messageId?: string }> => {
       return new Promise(async (resolve, reject) => {
         const {
           signal, images, sessionId, isRetry, isResume, fileNames, replyTo,
@@ -1427,6 +1427,11 @@ export const api = {
         let fullContent = '';
         let resultSessionId: string | undefined;
         let resultSegments: StoredSegment[] | undefined;
+        // Server-side id of the persisted assistant message. Threaded back to the
+        // caller so the optimistic bubble can adopt the real id — that id is what
+        // the session GET returns, and without it the reload path cannot collapse
+        // the optimistic row with the persisted one (duplicate bubble).
+        let resultMessageId: string | undefined;
         let watchdog: ReturnType<typeof createStreamWatchdog> | null = null;
         try {
           const res = await fetch(`${BASE}/agents/${id}/message`, {
@@ -1490,6 +1495,12 @@ export const api = {
                 } else if (event.type === 'done') {
                   fullContent = event.content || fullContent;
                   if (event.sessionId) resultSessionId = event.sessionId;
+                  {
+                    const mid = (event as Record<string, unknown>).messageId
+                      ?? (event as Record<string, unknown>).assistantMessageId
+                      ?? (event as Record<string, unknown>).agentMessageId;
+                    if (typeof mid === 'string' && mid) resultMessageId = mid;
+                  }
                   const doneSegments = (event as Record<string, unknown>).segments as StoredSegment[] | undefined;
                   // Keep empty arrays too — distinguishes a real terminal `done` from soft disconnect.
                   if (doneSegments) resultSegments = doneSegments;
@@ -1503,6 +1514,7 @@ export const api = {
                     merged,
                     cancelled,
                     emptyReply,
+                    messageId: resultMessageId,
                   });
                   reader.cancel().catch(() => {});
                   watchdog?.stop();
@@ -1536,10 +1548,10 @@ export const api = {
             }
           }
           watchdog?.stop();
-          resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments });
+          resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, messageId: resultMessageId });
         } catch (err) {
           watchdog?.stop();
-          if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments }); }
+          if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, messageId: resultMessageId }); }
           else { reject(err); }
         }
       });

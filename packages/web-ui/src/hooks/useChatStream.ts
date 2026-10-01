@@ -1197,6 +1197,20 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             }, streamSessionId);
           }
 
+          // 身份对齐（重复气泡根因修复）：把本地流式气泡的 id 换成服务端持久化 id。
+          // 前端此前忽略 done 事件里的 messageId，气泡一直用客户端生成的 agentMsgId，
+          // 而 DB 里那行消息用的是另一个 id；一旦列表重载 / WS 推送把 DB 消息取回，
+          // 同一 条回复就会以两个 id 各渲染一个气泡。这里统一为服务端 id。
+          if (!streamResult.merged && streamResult.messageId && streamResult.messageId !== agentMsgId) {
+            updateConvMsgs(sendKey, prev => {
+              if (prev.some(m => m.id === streamResult.messageId)) {
+                // DB 版本已在列表里 → 丢掉本地流式副本，避免一分为二。
+                return prev.filter(m => m.id !== agentMsgId);
+              }
+              return prev.map(m => (m.id === agentMsgId ? { ...m, id: streamResult.messageId! } : m));
+            }, streamSessionId);
+          }
+
           if (streamResult.sessionId) {
             // Only update active session if user hasn't switched to a different session
             setActiveSessionId(prev => {
