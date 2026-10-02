@@ -17,7 +17,15 @@ import { createBackgroundExecTool, createProcessTool } from '../src/tools/proces
 
 const MARK = '777812';
 const sleepMarker = `sleep ${MARK}`;
-const pgrep = `pgrep -f "${sleepMarker}" || true`;
+// Self-match-proof pattern: bracket the first digit so the literal string
+// `sleep 777812` does NOT appear in the search command's own argv. `execSync`
+// runs through `sh -c 'pgrep -f "sleep 777812" || true'`, whose command line
+// literally contains `sleep 777812` — so a plain `pgrep -f` matched that
+// wrapper and reported a phantom survivor on Linux/CI ("expected 1 to be +0"),
+// while macOS happened not to. `sleep [7]77812` still matches the real process
+// but not the shell that spells the pattern out. Measured 2026-10-02.
+const markerPattern = `sleep [${MARK[0]}]${MARK.slice(1)}`;
+const pgrep = `pgrep -f "${markerPattern}" || true`;
 
 function survivors(): number {
   const out = execSync(pgrep, { encoding: 'utf8' }).trim();
@@ -30,7 +38,7 @@ describe('background exec: reap descendants after the wrapper exits', () => {
 
   afterAll(() => {
     try {
-      execSync(`pkill -f "${sleepMarker}" || true`);
+      execSync(`pkill -f "${markerPattern}" || true`);
     } catch {
       /* nothing left to clean up */
     }

@@ -1424,12 +1424,12 @@ export const api = {
         const {
           signal, images, sessionId, isRetry, isResume, fileNames, replyTo,
         } = options ?? {};
-        // True when the stream ended WITHOUT a terminal `done` event — i.e. the
-        // browser dropped the SSE (page teardown / dead socket) while the agent
-        // kept running server-side. The caller uses this to reattach or reload
-        // instead of freezing a truncated bubble.
-        let softDisconnected = false;
-        // Set only once we actually saw the terminal `done` event.
+        // Set only once we actually saw the terminal `done` event. Its absence is
+        // exactly the soft-disconnect signal: the browser dropped the SSE (page
+        // teardown / dead socket) while the agent kept running server-side. The
+        // caller uses it to reattach or reload instead of freezing a truncated
+        // bubble. (Kept as the single source of truth — a second boolean that was
+        // never assigned used to shadow this and drift from it.)
         let sawTerminal = false;
         let fullContent = '';
         let resultSessionId: string | undefined;
@@ -1561,7 +1561,7 @@ export const api = {
             sessionId: resultSessionId,
             segments: resultSegments,
             messageId: resultMessageId,
-            softDisconnected: softDisconnected || !sawTerminal,
+            softDisconnected: !sawTerminal,
           });
         } catch (err) {
           watchdog?.stop();

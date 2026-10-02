@@ -19,7 +19,7 @@ import {
   SHELL_SESSION_MAX_OUTPUT_BYTES,
 } from '@markus/shared';
 import { existsSync } from 'node:fs';
-import { isIsolatedProcessGroup, killProcessTree } from './process-group.js';
+import { killProcessTree } from './process-group.js';
 
 /**
  * Pick the shell used for persistent sessions.
@@ -457,14 +457,30 @@ export class ShellSessionManager {
       detached: !isWin,
     });
 
-    // Job control MUST stay off. `bash -i` turns on monitor mode (`set -m`), which
-    // puts every command — including `cmd &` — in its OWN process group. The
-    // session group then no longer contains the real work, so `kill(-pgid)` reaps
-    // only the shell and the actual command keeps running (observed: `sleep`
-    // grandchildren alive minutes after a timeout fired). `set +m` keeps every
-    // descendant inside the session's group, where the group kill can reach it.
+    // Two interactive-mode behaviours must be neutralised at session start.
+    //
+    // 1. Job control (`set +m`). `bash -i` turns on monitor mode (`set -m`),
+    //    which puts every command — including `cmd &` — in its OWN process
+    //    group. The session group then no longer contains the real work, so
+    //    `kill(-pgid)` reaps only the shell and the actual command keeps running
+    //    (observed: `sleep` grandchildren alive minutes after a timeout fired).
+    //    `set +m` keeps every descendant inside the session's group.
+    //
+    // 2. Input echo (`set +o emacs`). GNU bash 5 — the version on Linux/CI —
+    //    ECHOES every command it reads back to **stderr** when interactive with
+    //    a non-tty stdin (bash 3.2 on macOS does not). ManagedSession merges
+    //    stderr into the sentinel-parsing buffer (see the stderr handler in the
+    //    constructor), so the echoed command leaked into the result `stdout` —
+    //    e.g. `echo $X` came back as "echo $X\n<value>\n" instead of "<value>".
+    //    Disabling emacs readline mode (neither emacs nor vi active) makes bash
+    //    read plainly and stop echoing. Reproduced 2026-10-02 on bash 5.2;
+    //    absent on bash 3.2.
+    //
+    // Both are written before any user command; their own echo and bash's
+    // startup banners arrive before the first `pending` command exists, so
+    // `onData` (which returns early when nothing is pending) drops them.
     try {
-      child.stdin?.write('set +m 2>/dev/null\n');
+      child.stdin?.write('set +m 2>/dev/null; set +o emacs 2>/dev/null\n');
     } catch {
       /* best effort: worst case we fall back to the per-process kill */
     }

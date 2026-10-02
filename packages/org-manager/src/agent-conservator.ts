@@ -28,8 +28,7 @@
  *     agent 真恢复（status 离开 working 且无活动痕迹）后 episode 释放，可开始新 episode；
  *     心跳宽限内的暂时新鲜【绝不】释放 episode（Fix A：否则 2 分钟风暴）。
  */
-import { createLogger } from '@markus/shared';
-import type { AgentActivity } from '@markus/shared';
+import { createLogger, type AgentActivity } from '@markus/shared';
 import {
   buildAgentRuntimeInfo,
   type AgentRuntimeInfo,
