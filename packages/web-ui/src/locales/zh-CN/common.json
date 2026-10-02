@@ -183,6 +183,7 @@
     "errorPrefix": "错误：",
     "workedForSeconds": "已工作 {{seconds}} 秒",
     "workedForMinutes": "已工作 {{minutes}} 分 {{seconds}} 秒",
+    "reconnecting": "连接中断，正在重连…",
     "processRun": {
       "label": "执行过程",
       "thinking": "思考",

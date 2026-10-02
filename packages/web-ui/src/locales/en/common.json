@@ -183,6 +183,7 @@
     "errorPrefix": "Error:",
     "workedForSeconds": "Worked for {{seconds}}s",
     "workedForMinutes": "Worked for {{minutes}}m {{seconds}}s",
+    "reconnecting": "Connection lost — reconnecting…",
     "processRun": {
       "label": "Process",
       "thinking": "Thinking",

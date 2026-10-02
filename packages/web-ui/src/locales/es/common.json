@@ -378,6 +378,7 @@
     "toolsSummary": "{{count}} llamada(s) a herramienta · clic para ver la ejecución",
     "workedForSeconds": "Trabajó {{seconds}} s",
     "workedForMinutes": "Trabajó {{minutes}} min {{seconds}} s",
+    "reconnecting": "Conexión perdida — reconectando…",
     "processRun": {
       "label": "Proceso",
       "thinking": "Pensando",

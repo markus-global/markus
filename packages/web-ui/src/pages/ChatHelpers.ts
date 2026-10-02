@@ -24,6 +24,13 @@ export interface ChatMsg {
   emptyReply?: boolean;
   /** True when the assistant turn is still generating (survives refresh via reattach). */
   isStreaming?: boolean;
+  /**
+   * True while the SSE transport dropped mid-turn and we are re-attaching.
+   * The turn is STILL running server-side — the bubble must keep its live
+   * "working" feedback (never look finished) until a terminal event arrives.
+   * See the attach supervisor in useChatStream (2026-10-01 half-rendered-reply fix).
+   */
+  reconnecting?: boolean;
   images?: string[];
   replyToId?: string;
   replyToSender?: string;
@@ -421,34 +428,78 @@ export function stripEmbeddedReplyQuote(
   return content;
 }
 
+export interface ReattachTargetOptions {
+  /**
+   * Persisted id of the assistant message the server is currently generating
+   * (from `/agents/:id/sessions/:sid/stream/status`). An exact match is the
+   * authoritative "this IS the in-flight message" signal.
+   */
+  expectedMessageId?: string;
+  /**
+   * True while the server still reports the turn as streaming.
+   *
+   * Required to recognise the CURRENT turn's partially-persisted reply: after a
+   * page refresh (or a soft-disconnect persist) the current turn's bubble is
+   * loaded from the DB, so it has text/segments but `isStreaming === false` —
+   * indistinguishable, on its own, from a previous turn's finished reply. Only
+   * the server's streaming status plus turn ordering can tell them apart.
+   */
+  allowCurrentTurnPartial?: boolean;
+}
+
 /**
  * Pick the agent bubble a stream-reattach should (re)attach into.
  *
  * MUST only ever return the in-flight bubble:
+ *   - the message whose id the server reports as in flight, or
  *   - a message still marked `isStreaming`, or
- *   - an empty placeholder (no text / no content segments) that is still mid-turn.
+ *   - an empty placeholder (no text / no content segments) that is still mid-turn, or
+ *   - the CURRENT turn's partially-persisted reply (content present but not
+ *     `isStreaming`, appearing AFTER the last user message) — but only when the
+ *     caller confirms the server is still streaming for this session.
  *
- * It MUST NEVER return a *completed* agent reply. Reusing a previous turn's
- * finished reply caused a real regression: after a user clicked "stop" on a
- * new turn that had no content yet (empty bubble removed), the reattach logic
- * fell back to the LAST agent message in the list — which was the *previous*
- * turn's reply — streamed the new reply into that bubble, and pushed the user's
- * own question below it (history became [A, D-streaming, C]).
+ * It MUST NEVER return a *previous* turn's completed reply. Reusing one caused a
+ * real regression: after a user clicked "stop" on a new turn that had no content
+ * yet (empty bubble removed), the reattach logic fell back to the LAST agent
+ * message in the list — the *previous* turn's reply — streamed the new reply into
+ * it, and pushed the user's own question below it (history became [A, D, C]).
+ *
+ * Symmetrically, treating a partially-persisted CURRENT-turn reply as "finished"
+ * created a *duplicate* bubble on every refresh: the DB bubble kept the prefix
+ * while a brand-new bubble streamed the tail. Turn ordering fixes both directions.
  */
-export function pickStreamReattachTarget(msgs: ChatMsg[]): ChatMsg | undefined {
-  // Scan from the tail: only the most recent agent message can be in-flight.
+export function pickStreamReattachTarget(
+  msgs: ChatMsg[],
+  opts: ReattachTargetOptions = {},
+): ChatMsg | undefined {
+  // (1) Exact id match — the server named the in-flight assistant message.
+  if (opts.expectedMessageId) {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]!;
+      if (m.id === opts.expectedMessageId && m.sender === 'agent' && !m.isError) return m;
+    }
+  }
+
+  // (2) Turn-aware tail scan: only the most recent agent message can be in-flight.
+  let lastUserIdx = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]!.sender === 'user') { lastUserIdx = i; break; }
+  }
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]!;
     if (m.sender !== 'agent') continue;
     if (m.isStreaming) return m; // live streaming bubble
+    if (m.isError) return undefined; // error replies are terminal — never reused
     const hasContent = m.text?.trim()
       || (m.segments ?? []).some(s =>
         (s.type === 'text' && (((s as { content?: string }).content ?? '').trim() || (s as { thinking?: string }).thinking))
         || s.type === 'tool',
       );
     if (!hasContent) return m; // empty in-flight placeholder
-    // It has committed content but is not streaming → a finished reply.
-    // Never reuse it as a reattach target.
+    // Content-bearing and not streaming: either the CURRENT turn's partial reply
+    // (continue in place) or the PREVIOUS turn's finished reply (never reuse).
+    // A message appearing AFTER the last user message belongs to this turn.
+    if (opts.allowCurrentTurnPartial && lastUserIdx >= 0 && i > lastUserIdx) return m;
     return undefined;
   }
   return undefined;

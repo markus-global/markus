@@ -277,14 +277,20 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
 
       const status = await api.sessions.streamStatus(agentId, sessionId);
       const msgs = msgBuffers.get(convKey) ?? [];
-      // Reattach must only ever continue the IN-FLIGHT bubble. Never reuse a
-      // previous turn's completed reply — that overwrote history when the empty
-      // in-flight bubble had already been removed (see pickStreamReattachTarget).
-      const last = pickStreamReattachTarget(msgs);
-      // `active` stays true for ~90s after done/error so late refresh can drain
+      const serverStreaming = status.status === 'streaming';
+      // Reattach must only ever continue the IN-FLIGHT bubble. Two signals:
+      //  · `expectedMessageId` — the server names the in-flight assistant message;
+      //  · `allowCurrentTurnPartial` — while streaming, the current turn's reply may
+      //    already be persisted (refresh / soft-disconnect persist), so it carries
+      //    content but is NOT `isStreaming`. Without this it looked like a finished
+      //    reply and reattach spawned a SECOND bubble beside it.
+      const last = pickStreamReattachTarget(msgs, {
+        expectedMessageId: status.messageId,
+        allowCurrentTurnPartial: serverStreaming,
+      });
+      // `active` stays true for ~90s after done/error so a late refresh can drain
       // the terminal event — only attach when still streaming, or when the UI
       // bubble is still marked in-flight and needs the final `done`.
-      const serverStreaming = status.status === 'streaming';
       const lateTerminal = !!status.active
         && (status.status === 'done' || status.status === 'error')
         && !!last?.isStreaming;
@@ -542,47 +548,88 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         }
       };
 
-      // Prefer server snapshot (tools + text). Falls back to ring replay if older server.
-      const result = await api.sessions.reattachStream(
-        agentId,
-        sessionId,
-        {
-          onChunk: appendTextChunk,
-          onThinking: appendThinkingChunk,
-          onActivity: handleToolEvent,
-          onCommit: handleCommitEvent,
-          onSnapshot: handleSnapshot,
-        },
-        abortCtrl.signal,
-        0,
-      );
+      // ── Attach supervisor ─────────────────────────────────────────────────
+      // 结构性修复（2026-10-01 报告）：**传输结束 ≠ 回合结束**。
+      //
+      // 旧实现只 attach 一次，并把 `attached: true` 无条件当成「回合完成」去定型气泡。
+      // 于是 socket 再次被切断时（页面 teardown / 代理抖动 / 看门狗触发），气泡会被
+      // 定型成「已结束」，而服务端其实仍在跑 —— 用户刷新才又看到流式输出。
+      //
+      // 现在：只有真正的终态（terminal=done）才允许定型；任何非终态结束都按退避重连，
+      // 并保持气泡处于「进行中」。服务端确认无活跃流后，以 DB 里的完整回复重建气泡，
+      // 绝不把半截内容冒充「已完成」。
+      const MAX_ATTACH_ATTEMPTS = 8;
+      type AttachResult = Awaited<ReturnType<typeof api.sessions.reattachStream>>;
+      let result: AttachResult | null = null;
 
-      if (!result.attached) {
-        // No live stream to reattach — clear stuck「思考中」locally (DB heal
-        // runs on message load / process start; this covers the current view).
+      const markReconnecting = (on: boolean) => {
+        if (currentConvKeyRef.current !== convKey) return;
+        updateConvMsgs(convKey, prev => {
+          const idx = prev.map((m, j) => ({ m, j })).reverse()
+            .find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
+          if (idx < 0 || prev[idx]!.reconnecting === on) return prev;
+          const u = [...prev];
+          u[idx] = { ...u[idx]!, reconnecting: on };
+          return u;
+        }, sessionId);
+      };
+
+      for (let attempt = 1; attempt <= MAX_ATTACH_ATTEMPTS; attempt++) {
+        if (abortCtrl.signal.aborted) return;
+        try {
+          // Prefer server snapshot (tools + text). Falls back to ring replay if older server.
+          result = await api.sessions.reattachStream(
+            agentId,
+            sessionId,
+            {
+              onChunk: appendTextChunk,
+              onThinking: appendThinkingChunk,
+              onActivity: handleToolEvent,
+              onCommit: handleCommitEvent,
+              onSnapshot: handleSnapshot,
+            },
+            abortCtrl.signal,
+            // afterSeq=0 → the server sends its authoritative UI snapshot (full text
+            // + tool cards) instead of only events after `lastSeq`. Passing
+            // `status.lastSeq` made `useSnapshot` false server-side, so a reattached
+            // bubble could only ever show the TAIL of the reply.
+            0,
+          );
+        } catch (e) {
+          // A real abort must propagate (stop button / newer reattach / navigation).
+          if (abortCtrl.signal.aborted) throw e;
+          result = null;
+        }
+        if (!result || !result.attached) { result = null; break; }  // 204: nothing live
+        if (result.terminal) break;                                 // 真终态：done
+
+        // 传输中途断了 —— 问服务端到底还在不在跑，再决定是否继续接。
+        markReconnecting(true);
+        const st = await api.sessions.streamStatus(agentId, sessionId).catch(() => null);
+        if (!st || !st.active || st.status === 'not_found' || st.status === 'idle') {
+          markReconnecting(false);
+          result = null;
+          break;
+        }
+        await new Promise(r => setTimeout(r, Math.min(800 * attempt, 4000)));
+        markReconnecting(false);
+      }
+
+      if (!result) {
+        // 服务端已无活跃流 —— 本回合确实结束（或已无法再续接）。
         endStream(convKey);
         // Reattach added this session to the streaming set; it is not coming
         // back — release the session so the sidebar busy mark is removed.
         clearStreamSession(convKey, sessionId);
         if (currentConvKeyRef.current === convKey) {
-          updateConvMsgs(convKey, prev => {
-            const u = [...prev];
-            const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
-            const i = idx >= 0
-              ? idx
-              : u.map((m, j) => ({ m, j })).reverse().find(x => x.m.sender === 'agent' && x.m.isStreaming)?.j ?? -1;
-            if (i < 0) return prev;
-            const msg = u[i]!;
-            if (!msg.isStreaming) return prev;
-            u[i] = {
-              ...msg,
-              isStreaming: false,
-              isStopped: msg.isError ? msg.isStopped : true,
-            };
-            return u;
-          }, sessionId);
           setSending(false);
+          // 以持久化的完整回复为准重建气泡（DB heal），而不是把当前这半截内容
+          // 定型成「已完成」。DB 读取失败时才退回本地定型，避免永久「思考中」。
+          void loadSessionMessages(sessionId, convKey).catch(() => {
+            updateConvMsgs(convKey, prev => finalizeLastStreamingBubble(prev), sessionId);
+          });
         }
+        if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
         return;
       }
 
@@ -596,14 +643,15 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           // Only a still-in-flight bubble may be finalized here — never a
           // previous turn's completed reply.
           if (!msg.isStreaming) return prev;
-          const finalSegs = result.segments?.length
-            ? storedSegmentsToMsgSegments(result.segments, msg.segments)
+          const finalSegs = result!.segments?.length
+            ? storedSegmentsToMsgSegments(result!.segments, msg.segments)
             : undefined;
           u[i] = {
             ...msg,
-            text: result.content || msg.text,
+            text: result!.content || msg.text,
             isStreaming: false,
             isStopped: false,
+            reconnecting: false,
             ...(finalSegs
               ? { segments: finalSegs, committedSegments: finalSegs }
               : {}),
@@ -1260,42 +1308,69 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           if (
             !abortCtrl.signal.aborted
             && !streamResult.merged
-            // `segments === undefined` means the SSE closed without a terminal `done`.
-            && streamResult.segments === undefined
+            // Soft disconnect: the transport ended without a terminal `done`
+            // (explicit flag, with the legacy `segments === undefined` as fallback).
+            && (streamResult.softDisconnected ?? (streamResult.segments === undefined))
             && volatile.chatMode === 'direct'
             && volatile.selectedAgent
             && resumeSessionId
           ) {
-            try {
-              const st = await api.sessions.streamStatus(volatile.selectedAgent, resumeSessionId);
-              // `active` stays true briefly after done/error (TTL) — only resume mid-run.
-              if (st.status === 'streaming') {
-                updateConvMsgs(sendKey, prev => prev.map(m =>
-                  m.id === agentMsgId
-                    ? {
-                        ...m,
-                        isStreaming: true,
-                        isStopped: false,
-                        segments: (m.segments ?? []).map(s =>
-                          s.type === 'tool' && (s.status === 'stopped' || s.status === 'running')
-                            ? { ...s, status: 'running' as const }
-                            : s,
-                        ),
-                      }
-                    : m,
-                ), resumeSessionId);
-                decrementSending(sendKey);
-                if (abortControllerRef.current === abortCtrl) abortControllerRef.current = null;
-                setStreamSession(sendKey, resumeSessionId);
-                // Balance OUR beginStream(sendKey) above before handing over to
-                // reattach — tryReattachActiveStream marks the agent streaming
-                // itself and will endStream it. Without this the refcount leaks
-                // +1 and the sidebar pins the agent to "working" after it stops.
-                endStream(sendKey);
-                void tryReattachActiveStream(volatile.selectedAgent, resumeSessionId, sendKey);
-                return;
-              }
-            } catch { /* fall through to normal cleanup */ }
+            const resumeAgent = volatile.selectedAgent;
+            // The server can be mid-transition when we ask, so retry a few times
+            // with light backoff instead of giving up on the first answer.
+            let attached = false;
+            for (let attempt = 0; attempt < 4 && !attached; attempt += 1) {
+              if (attempt > 0) await new Promise(r => setTimeout(r, 350 * attempt));
+              if (abortCtrl.signal.aborted) break;
+              try {
+                const st = await api.sessions.streamStatus(resumeAgent, resumeSessionId);
+                // `active` stays true briefly after done/error (TTL) — only resume mid-run.
+                if (st.status === 'streaming') {
+                  updateConvMsgs(sendKey, prev => prev.map(m =>
+                    m.id === agentMsgId
+                      ? {
+                          ...m,
+                          isStreaming: true,
+                          isStopped: false,
+                          segments: (m.segments ?? []).map(s =>
+                            s.type === 'tool' && (s.status === 'stopped' || s.status === 'running')
+                              ? { ...s, status: 'running' as const }
+                              : s,
+                          ),
+                        }
+                      : m,
+                  ), resumeSessionId);
+                  decrementSending(sendKey);
+                  if (abortControllerRef.current === abortCtrl) abortControllerRef.current = null;
+                  setStreamSession(sendKey, resumeSessionId);
+                  // Balance OUR beginStream(sendKey) above before handing over to
+                  // reattach — tryReattachActiveStream marks the agent streaming
+                  // itself and will endStream it. Without this the refcount leaks
+                  // +1 and the sidebar pins the agent to "working" after it stops.
+                  endStream(sendKey);
+                  void tryReattachActiveStream(resumeAgent, resumeSessionId, sendKey);
+                  attached = true;
+                  return;
+                }
+                // Turn already finished server-side while we were detached — the
+                // persisted message is the source of truth, so stop retrying.
+                if (st.status === 'done' || st.status === 'error' || st.status === 'stopped') break;
+              } catch { /* keep retrying */ }
+            }
+            if (!attached && !abortCtrl.signal.aborted) {
+              // Could not reattach. Reload the session so the bubble shows the
+              // COMPLETE result instead of a truncated prefix — this automates the
+              // "just refresh the page and it's fine" workaround.
+              try {
+                const loaded = await loadSessionMessages(resumeSessionId, sendKey);
+                if (loaded > 0) {
+                  decrementSending(sendKey);
+                  if (abortControllerRef.current === abortCtrl) abortControllerRef.current = null;
+                  endStream(sendKey);
+                  return;
+                }
+              } catch { /* fall through to normal cleanup */ }
+            }
           }
         }
       } catch (e) {
