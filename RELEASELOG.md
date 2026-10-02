@@ -1,5 +1,48 @@
 # Release Log
 
+## v0.11.0-rc.0
+
+**候选发布（RC）**——自 `v0.10.1` 起的首个候选版。本版主题是 **Agent 自愈 / 自我管理机制的重构** 与 **Team Chat 流式交互可靠性**，包含一次架构级重构（存活仲裁、记忆与认知机制）和多项 P0 稳定性修复。
+
+### Bug Fixes
+
+- **心跳风暴根治（A/B/C）** — 单个 Agent 曾出现单日 600+ 次心跳的循环。根因：兜底器在「心跳暂时新鲜」时提前释放重试状态、`lastHeartbeat` 从未落库、心跳能力被错误放开。修复：心跳只在**状态或队列真正变化**时才触发巡检（纯时间戳 skip）、`lastHeartbeat` 随每次心跳落库、心跳路径统一收口。
+- **shell 工具超时失效根治** — 设 120s 超时但到点后命令仍在跑。实为三层叠加缺陷：超时定时器只 resolve Promise 而**从不终止进程**；进程组判定在 spawn 后用 `ps` 竞态探测而失败，退化成「只杀 wrapper」；`bash -i` 的 job control 让工作进程逃出会话进程组。修复：超时后按**负 PID 做权威进程组 kill**、会话启动关闭 monitor mode（`set +m`），超时真正终止整棵进程树。
+- **后台执行子孙进程泄漏** — 自我守护型命令（`sh -c 'cmd & exit 0'`）的子孙在 wrapper 退出后被漏杀。修复：`isolatedGroup` 改由 spawn 契约（`detached` ⇒ `setsid` ⇒ `pgid === pid`）决定，不再用 `ps` 反推。
+- **并发实体锁粒度修正** — 设了 5 并发却仍在排队：邮箱实体亲和锁把同一需求下的所有任务连坐串行。修复：实体锁去掉 `requirement` 维度，同需求多任务可并行。
+- **任务被 cancelled 后停滞** — 外部取消后任务既不恢复也不收尾，永久卡在 in_progress。修复：补 `cancelled` 分支，视同可恢复中断延后重放。
+- **Agent 终态语义修正** — 此前「卡死自愈」「超时孤儿」「一次取消」「重试耗尽」都被错标为 completed（绿点），既假装成功又抑制补偿重投。修复：**只有明确正常完成才 completed**，异常一律 dropped（异常可见 + 允许重投）。
+- **会话上下文压缩失效（P0）** — 长会话被内存 LRU 逐出后调用 compact 返回假成功（`flushedCount:0`），下一轮仍超限并被硬裁剪腰斩任务。修复：`compactSession` 补磁盘回退，并区分「未找到 / 无需压缩 / 已压缩」。
+- **Team Chat 流式断连误判为回合结束** — 浏览器断流后气泡被当成「答完了」而收起，需手动刷新才看到仍在输出。修复：仅收到终止事件才算回合结束，断线自动重连并在**同一气泡**续写、拉取权威快照。
+- **Team Chat 重复气泡** — 同一条回复渲染出两个气泡（前端本地 id 与服务端持久化 id 不一致）。修复：流结束后把气泡 id 对齐服务端 `messageId`。
+- **流式「输出中」无反馈** — LLM 首 token 未返回的空窗期气泡看起来像卡死。修复：只要仍在流式且是最后一块就持续显示活动反馈，输出完成自动收束。
+- **Agent 头像 / 头衔编辑、回调会话路由修复、消息气泡折叠与 i18n 回退** 等 UI 修复。
+
+### Features
+
+- **Agent 自我管理机制（P0/P1）** — 修复「工具声明了却激活不了」的深层缺陷（`schedule_wakeup` / `set_heartbeat_interval` 等 schema 注入型工具激活即失败）；新增 `memory_stats` / `memory_organize`，让 Agent 能主动整理记忆；并发分身之间共享工作记忆，不再互相失明。
+- **Agent 记忆与认知机制彻底重构** — 单一写入者（禁止直接改写记忆文件，拒绝并引导改用记忆工具）、超预算**无损归档**（不再截断、不再拒绝写入）、预算单位统一为字符、损坏自愈先备份、摘要改为追加式多代锚点、观察与压缩碎片分池、`## Your Knowledge` 顶部新增**记忆健康横幅**、`knowledge_*` 重命名为 `kb_*` 去歧、notebook 工具归一、旧数据**迁移读取层**（读旧格式、只写新格式）。
+
+### Refactor
+
+- **存活机制重新设计** — 以 **Conservator 统一存活仲裁**取代三套互相打架的兜底器；**删除** `agent-dirty` / `agent-stall` / `agent-dirty-reconciler` 三个旧模块及全部对应测试。
+- **状态机收敛** — 全部状态写入收敛到单一派生函数 `transitionStatus`（error 粘性、并行不覆盖、聚合守卫、force/reset 语义集中）。
+- **移除认知准备管道（CPP）** — 删除 `cognitive.ts` 的多阶段 LLM 管线，改为确定性情境装配；深层召回交给 Agent 主动检索（更快、更省）。
+
+### Docs
+
+- 9 篇机制文档对齐（`MEMORY-SYSTEM` / `COGNITIVE-ARCHITECTURE` / `STATE-MACHINES` / `MAILBOX-SYSTEM` / `CONCURRENT-PROCESSING` / `PROMPT-ENGINEERING` / `AGENT-RUNTIME` / `ARCHITECTURE` / `GUIDE`）；新增 3 篇设计文档（记忆与认知重构、自我管理、存活机制），历史叙述中的旧名保留并标注「removed」便于追溯。
+
+### Tests
+
+- 新增回归：状态机收敛、心跳存活、记忆健康 / 迁移 / 观察顺序 / 整理工具、写入门禁、schema 工具激活、shell 超时终止进程树、后台执行子孙回收、Team Chat 重连等。**删除**被新架构取代的旧测试（`cognitive*.test.ts`、`agent-dirty*` / `agent-stall` 测试）。
+
+### Stats
+
+- 自 `v0.10.1`：19 个提交（PR #331 / #332 / #333），113 files changed, 6232 insertions(+), 2985 deletions(-)；净删除旧兜底模块 3 个、认知管道 1 个。
+
+---
+
 ## v0.10.1
 
 **正式版发布**——从 `v0.10.1-rc.0` 候选版提升为稳定版。rc.0 的全部内容见下方条目；候选期后追加一项修复：
