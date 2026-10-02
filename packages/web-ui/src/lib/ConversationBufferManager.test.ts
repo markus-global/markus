@@ -41,64 +41,122 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
     expect(ids).toEqual(['u1', 'a2']);
   });
 
-  it('merges cache-only streaming tail after DB loads', () => {
+  it('does NOT touch the display while THIS session is streaming (in-flight bubble preserved)', () => {
+    // While this session's stream runs, the stream owns the view: a DB snapshot
+    // arriving mid-stream must not clobber the live bubble. This is why the merge
+    // (and its tail handling) is deliberately not reached in that state.
     const mgr = new ConversationBufferManager();
     mgr.currentConvKey = 'conv';
     mgr.setActiveSession('conv', 'sess_1');
     mgr.loadingSession = 'sess_1';
+    mgr.beginStream('conv');
+    mgr.addStreamSession('conv', 'sess_1');
 
     mgr.updateMessages(
       'conv',
       () => [
         msg('u1', 'user', 'hello', '2026-08-02T07:04:00.000Z'),
-        { ...msg('tail', 'agent', 'streaming tail not yet in DB', '2026-08-02T07:06:00.000Z'), isStreaming: true },
+        { ...msg('live', 'agent', 'streaming…', '2026-08-02T07:04:00.000Z'), isStreaming: true },
       ],
       'sess_1',
     );
 
-    const dbMsgs = [
+    const r = mgr.applyLoadResult('conv', 'sess_1', [
       msg('u1', 'user', 'hello', '2026-08-02T07:04:00.000Z'),
-      msg('a2', 'agent', 'committed reply', '2026-08-02T07:05:00.000Z'),
-    ];
-
-    const r = mgr.applyLoadResult('conv', 'sess_1', dbMsgs);
-    const ids = r.newMessages!.map(m => m.id);
-    expect(ids).toEqual(['u1', 'a2', 'tail']);
+    ]);
+    // No display write → the in-flight bubble in the display buffer is untouched.
+    expect(r.displayChanged).toBe(false);
   });
 
-  it('regression: streaming tail with optimistic (earlier) timestamp never lands above the user message', () => {
-    // Multi-tab direct mode: user sends M in tab A, switches to tab B, then back
-    // to A while the agent is still streaming. On return the DB already persisted
-    // M (server time LATER than the optimistic send-time), but the agent reply is
-    // cache-only with an OPTIMISTIC rawCreatedAt (earlier). Chronological merge
-    // previously inserted the streaming agent bubble BEFORE the persisted user
-    // message — "user bubble appears below the agent streaming bubble".
+  it('regression: a STALE streaming bubble (no live stream) is dropped, not appended after the newest message', () => {
+    // 2026-10-02 report: an OLD reply bubble re-appeared AFTER the newest
+    // message. Mechanism: the stream for an earlier turn had already finished
+    // and its reply was persisted (DB row cm_real), but the local copy kept
+    // `isStreaming: true` in the session cache under a DIFFERENT (optimistic)
+    // id. The merge appended it as a "live tail" — a duplicate of an OLD reply
+    // at the bottom of the thread — and because that extra row also made the
+    // cache look "fresher", the authoritative DB list could never replace it
+    // (self-perpetuating). With no stream in flight the DB is the sole
+    // authority, so the stale row must be dropped.
     const mgr = new ConversationBufferManager();
     mgr.currentConvKey = 'conv';
     mgr.setActiveSession('conv', 'sess_1');
     mgr.loadingSession = 'sess_1';
+    // NOTE: no beginStream/addStreamSession — the stream is long over.
 
-    // Cache: user M (server id) + still-streaming agent tail. The tail's
-    // rawCreatedAt is the optimistic send-time (EARLIER than DB persist time).
+    // Stale cache: the optimistic in-flight bubble of an ALREADY-FINISHED turn.
+    // Its rawCreatedAt is the optimistic send-time (OLDER than the DB row), so it
+    // can never be ordered correctly either.
     mgr.updateMessages(
       'conv',
       () => [
-        msg('u1', 'user', 'hello', '2026-08-02T07:05:00.000Z'),
-        { ...msg('tail', 'agent', 'partial stream', '2026-08-02T07:04:30.000Z'), isStreaming: true },
+        msg('u1', 'user', '盘一下改动', '2026-08-02T07:04:00.000Z'),
+        { ...msg('agent_optimistic', 'agent', '老板，盘完了。可以发——', '2026-08-02T07:04:00.000Z'), isStreaming: true },
       ],
       'sess_1',
     );
 
-    // DB only has the persisted user message (agent reply not flushed yet).
+    // DB: the authoritative, correctly ordered rows — the reply IS persisted.
     const dbMsgs = [
-      msg('u1', 'user', 'hello', '2026-08-02T07:05:00.000Z'),
+      msg('u1', 'user', '盘一下改动', '2026-08-02T07:04:00.000Z'),
+      msg('cm_real', 'agent', '老板，盘完了。可以发——', '2026-08-02T07:05:00.000Z'),
     ];
 
     const r = mgr.applyLoadResult('conv', 'sess_1', dbMsgs);
     const ids = r.newMessages!.map(m => m.id);
-    // User bubble MUST come before the streaming agent tail.
-    expect(ids.indexOf('u1')).toBeLessThan(ids.indexOf('tail'));
-    expect(ids).toEqual(['u1', 'tail']);
+    // Exactly the DB rows, in DB order — the stale streaming copy is gone.
+    expect(ids).toEqual(['u1', 'cm_real']);
+    expect(ids).not.toContain('agent_optimistic');
+  });
+
+  it('regression: restoreFromCache never resurrects a stale streaming bubble into the view', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'conv';
+    mgr.setActiveSession('conv', 'sess_1');
+    // No stream in flight.
+    mgr.updateMessages(
+      'conv',
+      () => [
+        msg('u1', 'user', 'hi', '2026-08-02T07:04:00.000Z'),
+        { ...msg('agent_stale', 'agent', 'old streaming ghost', '2026-08-02T07:04:00.000Z'), isStreaming: true },
+      ],
+      'sess_1',
+    );
+
+    const restored = mgr.restoreFromCache('conv', 'sess_1')!;
+    expect(restored.map(m => m.id)).toEqual(['u1']);
+    // And the display buffer must not carry the ghost either.
+    expect(mgr.msgBuffers.get('conv')!.some(m => m.id === 'agent_stale')).toBe(false);
+  });
+
+  it('regression: when ANOTHER session streams, this session\u2019s stale streaming ghost is dropped, not appended', () => {
+    // Multi-tab direct mode: session A streams (phase is per-convKey → 'streaming'),
+    // the user loads session B. B's OWN cache carries a leftover isStreaming bubble
+    // from a stream that already ended. It must never be appended as a "live tail":
+    // the DB is the authority for B, whose stream is NOT running.
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'conv';
+    mgr.beginStream('conv');
+    mgr.addStreamSession('conv', 'sess_a');
+    mgr.setActiveSession('conv', 'sess_b');
+    mgr.loadingSession = 'sess_b';
+
+    mgr.updateMessages(
+      'conv',
+      () => [
+        msg('u1', 'user', 'hello', '2026-08-02T07:05:00.000Z'),
+        { ...msg('ghost', 'agent', 'stale tail', '2026-08-02T07:04:30.000Z'), isStreaming: true },
+      ],
+      'sess_b',
+    );
+
+    const r = mgr.applyLoadResult('conv', 'sess_b', [
+      msg('u1', 'user', 'hello', '2026-08-02T07:05:00.000Z'),
+      msg('a1', 'agent', 'committed reply', '2026-08-02T07:06:00.000Z'),
+    ]);
+    const ids = r.newMessages!.map(m => m.id);
+    expect(ids).toEqual(['u1', 'a1']);
+    expect(ids).not.toContain('ghost');
   });
 
   it('allows a DB load for a session while ANOTHER session of the same agent is streaming (phase is per-convKey, guard is per-session)', () => {
