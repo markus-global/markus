@@ -1013,26 +1013,29 @@ export class AttentionController {
     if (timedOut) {
       if (orphanAbandoned) {
         // Visibility + no silent re-run: an orphan we could not stop is exactly
-        // the "completed but unfinished" terminal, not a retryable failure.
+        // the "finished but unfinished" terminal, not a retryable failure.
+        // 语义修正：超时未完成 ≠ 完成，标 dropped（异常可见 + 允许补偿重投），
+        // 绝不标 completed。
         this.emitIncomplete(
           item,
           'backstop timeout — in-flight turn did not settle within grace; not requeued to avoid duplicate side effects',
         );
-        this.mailbox.complete(item.id);
+        this.mailbox.drop(item.id);
       } else {
         this.mailbox.requeue(item);
       }
       statusResolved = true;
     } else if (reply === '[cancelled]' || this.lastYieldDecision === 'cancel') {
-      // Permanently cancelled by an explicit cancel decision — the new incoming
-      // message contradicts or revokes this work.  Drop the item; it will NOT
-      // be resumed.
-      log.info('Item cancelled — dropping permanently', {
+      // 取消（用户显式取消按钮 / 新消息 revoke 当前工作）。
+      // 语义修正：被取消 = **异常终态**，标 dropped（红色可见 + 允许补偿重投），
+      // 绝不标 completed —— completed 会被 resolveReinjectDecision 判为 settled
+      // 而抑制后续同键重投，等于把被取消的工作静默吞掉。
+      log.info('Item cancelled — marking dropped (not completed)', {
         agentId: this.agentId,
         itemId: item.id,
         type: item.sourceType,
       });
-      this.mailbox.complete(item.id);
+      this.mailbox.drop(item.id);
       statusResolved = true;
     } else if (reply === '[preempted]' || this.lastYieldDecision === 'preempt') {
       // Paused by a higher-priority item — defer so it can be resumed later.
@@ -1064,27 +1067,27 @@ export class AttentionController {
         if (abnormalReason === 'completion marker missing from reply') {
           // In-session continuation was already attempted by the agent upstream.
           // Requeuing would restart from scratch and duplicate all side effects.
-          log.warn('Completion marker still missing after in-session continuation — completing without retry', {
+          // 语义修正：缺完成标记 = 未明确正常结束，标 dropped（异常可见），不标 completed。
+          log.warn('Completion marker still missing after in-session continuation — marking dropped without retry', {
             agentId: this.agentId,
             itemId: item.id,
             type: item.sourceType,
           });
-          // A3: make the near-silent "completed but unfinished" terminal visible.
-          // Visibility only — retry semantics are unchanged.
           this.emitIncomplete(item, abnormalReason);
-          this.mailbox.complete(item.id);
+          this.mailbox.drop(item.id);
         } else if (isUserInteraction) {
           // Empty reply / error for user-facing item — the user already saw
           // partial results and tool calls may have produced side effects.
           // Don't restart; the user can manually retry if needed.
-          log.warn('Abnormal completion for user interaction — completing without retry', {
+          // 语义修正：一次异常 ≠ 完成，标 dropped（红点可见），用户可手动重试。
+          log.warn('Abnormal completion for user interaction — marking dropped without retry', {
             agentId: this.agentId,
             itemId: item.id,
             type: item.sourceType,
             reason: abnormalReason,
           });
           this.emitIncomplete(item, abnormalReason);
-          this.mailbox.complete(item.id);
+          this.mailbox.drop(item.id);
         } else {
           // Empty reply for background type — transient errors may self-correct.
           log.warn('Abnormal completion detected, requeueing for retry', {
@@ -1096,17 +1099,20 @@ export class AttentionController {
           });
           this.mailbox.requeue(item);
         }
+      } else if (abnormalReason) {
+        // 重试耗尽后仍异常：异常终态，标 dropped（红点可见 + 允许补偿重投），
+        // 不标 completed —— 未明确正常结束的工作没有资格标记为「完成」。
+        log.error('Abnormal completion persisted after max retries — marking dropped', {
+          agentId: this.agentId,
+          itemId: item.id,
+          type: item.sourceType,
+          retryCount: retries,
+          reason: abnormalReason,
+        });
+        this.emitIncomplete(item, abnormalReason);
+        this.mailbox.drop(item.id);
       } else {
-        if (abnormalReason) {
-          log.error('Abnormal completion persisted after max retries, completing anyway', {
-            agentId: this.agentId,
-            itemId: item.id,
-            type: item.sourceType,
-            retryCount: retries,
-            reason: abnormalReason,
-          });
-          this.emitIncomplete(item, abnormalReason);
-        }
+        // 正常完成（reply 有效、无异常、agent 明确结束）→ completed 是唯一合法终态。
         this.mailbox.complete(item.id);
       }
       statusResolved = true;

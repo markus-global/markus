@@ -40,10 +40,9 @@ describe('createMailboxTools', () => {
     const tools = createMailboxTools(createContext());
     expect(tools.map(t => t.name)).toEqual([
       'check_mailbox',
-      'update_notebook',
-      'clear_notebook',
-      'update_working_memory',
-      'clear_working_memory',
+      'notebook_upsert',
+      'notebook_clear',
+      'notebook_read',
       'defer_mailbox_item',
       'drop_mailbox_item',
       'prioritize_mailbox_item',
@@ -209,9 +208,9 @@ describe('createMailboxTools', () => {
     });
   });
 
-  describe('working memory tools', () => {
-    it('update_working_memory validates inputs', async () => {
-      const tool = createMailboxTools(createContext()).find(t => t.name === 'update_working_memory')!;
+  describe('notebook tools', () => {
+    it('notebook_upsert validates inputs', async () => {
+      const tool = createMailboxTools(createContext()).find(t => t.name === 'notebook_upsert')!;
       const missing = JSON.parse(await tool.execute({ key: 'k' }));
       expect(missing.status).toBe('error');
 
@@ -220,10 +219,10 @@ describe('createMailboxTools', () => {
       expect(ok.status).toBe('updated');
     });
 
-    it('clear_working_memory clears all when all=true', async () => {
+    it('notebook_clear clears all when all=true', async () => {
       const clearWorkingMemory = vi.fn(() => ({ status: 'cleared', cleared: 3 }));
       const ctx = createContext({ clearWorkingMemory });
-      const tool = createMailboxTools(ctx).find(t => t.name === 'clear_working_memory')!;
+      const tool = createMailboxTools(ctx).find(t => t.name === 'notebook_clear')!;
       const result = JSON.parse(await tool.execute({ all: true }));
       expect(result.cleared).toBe(3);
       expect(clearWorkingMemory).toHaveBeenCalledWith(undefined);

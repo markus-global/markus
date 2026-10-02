@@ -1124,6 +1124,14 @@ export interface AgentMemorySummary {
   dailyLog: string | null;
   recentDailyLogs: string | null;
   longTermMemory: string | null;
+  // 审计 P-12/§9.1：记忆健康可观测字段（由 /agents/:id/memory 返回）
+  usedPercent?: number;
+  budgetChars?: number;
+  budgetLimit?: number;
+  observationCount?: number;
+  curatedCount?: number;
+  archivedChars?: number;
+  lastConsolidatedAt?: string | null;
 }
 
 export interface AvailableSkillInfo {
@@ -1411,14 +1419,26 @@ export const api = {
       text: string,
       handlers: ChatStreamHandlers,
       options?: MessageStreamOptions,
-    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean }> => {
+    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean; messageId?: string; softDisconnected?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         const {
           signal, images, sessionId, isRetry, isResume, fileNames, replyTo,
         } = options ?? {};
+        // Set only once we actually saw the terminal `done` event. Its absence is
+        // exactly the soft-disconnect signal: the browser dropped the SSE (page
+        // teardown / dead socket) while the agent kept running server-side. The
+        // caller uses it to reattach or reload instead of freezing a truncated
+        // bubble. (Kept as the single source of truth — a second boolean that was
+        // never assigned used to shadow this and drift from it.)
+        let sawTerminal = false;
         let fullContent = '';
         let resultSessionId: string | undefined;
         let resultSegments: StoredSegment[] | undefined;
+        // Server-side id of the persisted assistant message. Threaded back to the
+        // caller so the optimistic bubble can adopt the real id — that id is what
+        // the session GET returns, and without it the reload path cannot collapse
+        // the optimistic row with the persisted one (duplicate bubble).
+        let resultMessageId: string | undefined;
         let watchdog: ReturnType<typeof createStreamWatchdog> | null = null;
         try {
           const res = await fetch(`${BASE}/agents/${id}/message`, {
@@ -1480,8 +1500,15 @@ export const api = {
                 } else if (event.type === 'thinking_delta' && event.thinking) {
                   dispatchThinkingDelta(handlers, event.thinking);
                 } else if (event.type === 'done') {
+                  sawTerminal = true;
                   fullContent = event.content || fullContent;
                   if (event.sessionId) resultSessionId = event.sessionId;
+                  {
+                    const mid = (event as Record<string, unknown>).messageId
+                      ?? (event as Record<string, unknown>).assistantMessageId
+                      ?? (event as Record<string, unknown>).agentMessageId;
+                    if (typeof mid === 'string' && mid) resultMessageId = mid;
+                  }
                   const doneSegments = (event as Record<string, unknown>).segments as StoredSegment[] | undefined;
                   // Keep empty arrays too — distinguishes a real terminal `done` from soft disconnect.
                   if (doneSegments) resultSegments = doneSegments;
@@ -1495,6 +1522,7 @@ export const api = {
                     merged,
                     cancelled,
                     emptyReply,
+                    messageId: resultMessageId,
                   });
                   reader.cancel().catch(() => {});
                   watchdog?.stop();
@@ -1528,10 +1556,24 @@ export const api = {
             }
           }
           watchdog?.stop();
-          resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments });
+          resolve({
+            content: fullContent,
+            sessionId: resultSessionId,
+            segments: resultSegments,
+            messageId: resultMessageId,
+            softDisconnected: !sawTerminal,
+          });
         } catch (err) {
           watchdog?.stop();
-          if (err instanceof Error && err.name === 'AbortError') { resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments }); }
+          if (err instanceof Error && err.name === 'AbortError') {
+            resolve({
+              content: fullContent,
+              sessionId: resultSessionId,
+              segments: resultSegments,
+              messageId: resultMessageId,
+              softDisconnected: !sawTerminal,
+            });
+          }
           else { reject(err); }
         }
       });
@@ -2128,7 +2170,7 @@ export const api = {
       handlers: ChatStreamHandlers,
       signal?: AbortSignal,
       afterSeq = 0,
-    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; attached: boolean }> => {
+    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; attached: boolean; terminal: boolean }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined = sessionId;
@@ -2140,7 +2182,7 @@ export const api = {
             { method: 'GET', credentials: 'include', signal },
           );
           if (res.status === 204) {
-            resolve({ content: '', sessionId, attached: false });
+            resolve({ content: '', sessionId, attached: false, terminal: false });
             return;
           }
           if (!res.ok) {
@@ -2154,6 +2196,9 @@ export const api = {
           }
           const decoder = new TextDecoder();
           let buffer = '';
+          // 只有真正收到服务端终态（done）才算「回合结束」。socket 被切断时这里保持
+          // false —— 调用方据此重连，而不是把半截回复定型成「已完成」。
+          let sawTerminal = false;
           // 空转看门狗：重连时若连接再次死亡（无任何数据 60s），取消 reader，
           // 结束本次 attach（调用方据此清掉「思考中」），避免永久挂起。见 lib/streamResilience.ts。
           if (signal) {
@@ -2194,7 +2239,9 @@ export const api = {
                   if (typeof event.sessionId === 'string') resultSessionId = event.sessionId;
                   const doneSegments = event.segments as StoredSegment[] | undefined;
                   if (doneSegments) resultSegments = doneSegments;
-                  resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true });
+                  // 真·回合终态 —— 只有这里才允许调用方定型气泡。
+                  sawTerminal = true;
+                  resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true, terminal: true });
                   reader.cancel().catch(() => {});
                   watchdog?.stop();
                   return;
@@ -2233,9 +2280,11 @@ export const api = {
               } catch { /* skip */ }
             }
           }
-          // Stream ended without a terminal done/error (e.g. server closed early).
+          // Stream ended WITHOUT a terminal `done` — a TRANSPORT end, not a TURN end
+          // (socket cut / proxy stall / watchdog). Report it as such so the caller
+          // re-attaches instead of finalizing a half-rendered reply as "complete".
           watchdog?.stop();
-          resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true });
+          resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true, terminal: sawTerminal });
         } catch (err) {
           watchdog?.stop();
           // Abort is not a successful attach — caller must not finalize the turn.

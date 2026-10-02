@@ -126,17 +126,17 @@ afterEach(() => {
 });
 
 describe('Knowledge tools E2E (real Agent, tool surface)', () => {
-  it('registers knowledge_search/list/read on the real Agent tool surface', async () => {
+  it('registers kb_search/list/read on the real Agent tool surface', async () => {
     const { agent } = await createE2EAgent();
     const tools = agent.getTools();
-    expect(tools.has('knowledge_search')).toBe(true);
-    expect(tools.has('knowledge_list')).toBe(true);
-    expect(tools.has('knowledge_read')).toBe(true);
+    expect(tools.has('kb_search')).toBe(true);
+    expect(tools.has('kb_list')).toBe(true);
+    expect(tools.has('kb_read')).toBe(true);
   });
 
-  it('knowledge_search returns KB docs with updatedAt and forces source=knowledge', async () => {
+  it('kb_search returns KB docs with updatedAt and forces source=knowledge', async () => {
     const { agent, ds } = await createE2EAgent();
-    const raw = await agent.getTools().get('knowledge_search')!.execute({
+    const raw = await agent.getTools().get('kb_search')!.execute({
       query: 'onboarding',
       project_id: 'proj_kb',
     });
@@ -152,9 +152,9 @@ describe('Knowledge tools E2E (real Agent, tool surface)', () => {
     }));
   });
 
-  it('knowledge_list returns KB docs for a project', async () => {
+  it('kb_list returns KB docs for a project', async () => {
     const { agent, ds } = await createE2EAgent();
-    const raw = await agent.getTools().get('knowledge_list')!.execute({ project_id: 'proj_kb' });
+    const raw = await agent.getTools().get('kb_list')!.execute({ project_id: 'proj_kb' });
     const res = JSON.parse(raw);
     expect(res.status).toBe('success');
     expect(res.source).toBe('knowledge');
@@ -165,10 +165,10 @@ describe('Knowledge tools E2E (real Agent, tool surface)', () => {
     }));
   });
 
-  it('knowledge_read reads a doc inside the project knowledge root (prefix guard passes)', async () => {
+  it('kb_read reads a doc inside the project knowledge root (prefix guard passes)', async () => {
     const { agent } = await createE2EAgent();
     const target = join(kbDir, 'guide.md');
-    const raw = await agent.getTools().get('knowledge_read')!.execute({
+    const raw = await agent.getTools().get('kb_read')!.execute({
       path: target,
       project_id: 'proj_kb',
     });
@@ -178,10 +178,10 @@ describe('Knowledge tools E2E (real Agent, tool surface)', () => {
     expect(res.content).toContain('入门指南');
   });
 
-  it('knowledge_read reads a Chinese-filename doc inside the knowledge root', async () => {
+  it('kb_read reads a Chinese-filename doc inside the knowledge root', async () => {
     const { agent } = await createE2EAgent();
     const target = join(kbDir, 'docs', '中文文档.md');
-    const raw = await agent.getTools().get('knowledge_read')!.execute({
+    const raw = await agent.getTools().get('kb_read')!.execute({
       path: target,
       project_id: 'proj_kb',
     });
@@ -190,10 +190,10 @@ describe('Knowledge tools E2E (real Agent, tool surface)', () => {
     expect(res.content).toContain('中文内容');
   });
 
-  it('knowledge_read rejects files outside the bound knowledge roots (prefix guard)', async () => {
+  it('kb_read rejects files outside the bound knowledge roots (prefix guard)', async () => {
     const { agent } = await createE2EAgent();
     const target = join(outsideDir, 'secret.md');
-    const raw = await agent.getTools().get('knowledge_read')!.execute({
+    const raw = await agent.getTools().get('kb_read')!.execute({
       path: target,
       project_id: 'proj_kb',
     });
@@ -201,19 +201,19 @@ describe('Knowledge tools E2E (real Agent, tool surface)', () => {
     expect(res.status).toBe('error');
   });
 
-  it('knowledge_read still works without project_id (no scope enforcement)', async () => {
+  it('kb_read still works without project_id (no scope enforcement)', async () => {
     const { agent } = await createE2EAgent();
     const target = join(outsideDir, 'secret.md');
-    const raw = await agent.getTools().get('knowledge_read')!.execute({ path: target });
+    const raw = await agent.getTools().get('kb_read')!.execute({ path: target });
     const res = JSON.parse(raw);
     // No project scoping → bridge does not enforce roots and reads directly.
     expect(res.status).toBe('success');
     expect(res.content).toContain('不该被读的内容');
   });
 
-  it('knowledge_read returns a friendly error for a missing document', async () => {
+  it('kb_read returns a friendly error for a missing document', async () => {
     const { agent } = await createE2EAgent();
-    const raw = await agent.getTools().get('knowledge_read')!.execute({
+    const raw = await agent.getTools().get('kb_read')!.execute({
       path: join(kbDir, 'missing.md'),
       project_id: 'proj_kb',
     });
@@ -222,14 +222,14 @@ describe('Knowledge tools E2E (real Agent, tool surface)', () => {
     expect(res.error).toMatch(/not readable/i);
   });
 
-  it('knowledge_search returns success with zero count for empty results', async () => {
+  it('kb_search returns success with zero count for empty results', async () => {
     const manager = createManager();
     const ds = makeDeliverableService();
     ds.search.mockReturnValue({ results: [], total: 0 });
     manager.setDeliverableService(ds);
     manager.setProjectService(makeProjectService() as never);
     const agent = await manager.createAgent({ name: 'KB Worker 2', roleName: 'custom', orgId: 'org_e2e', tools: [] });
-    const raw = await agent.getTools().get('knowledge_search')!.execute({ query: 'nothing' });
+    const raw = await agent.getTools().get('kb_search')!.execute({ query: 'nothing' });
     const res = JSON.parse(raw);
     expect(res.status).toBe('success');
     expect(res.count).toBe(0);

@@ -649,9 +649,8 @@ agent stop
 
 | Tag | Writer | Purpose |
 |-----|--------|---------|
-| `agent` | `update_notebook` / `clear_notebook` | Agent-chosen keys (priorities, blockers, decisions) |
-| `system` | Triage, mechanical retrieval | `triage-decision`, `relevant-context` when CPP off |
-| `cpp` | Cognitive Preparation Pipeline | `cognitive-context`, `relevant-context`, `reflection` |
+| `agent` | `notebook_upsert` / `notebook_clear` / `notebook_read` | Agent-chosen keys (priorities, blockers, decisions) |
+| `system` | Triage, mechanical retrieval | `triage-decision`, `relevant-context` |
 
 ### Transitions
 

@@ -20,6 +20,14 @@ export { ReportService } from './report-service.js';
 export { TrustService } from './trust-service.js';
 export { ArchiveService } from './archive-service.js';
 export { StaleDetector } from './stale-detector.js';
+export {
+  AgentConservator,
+  evaluateConservator,
+  DEFAULT_CONSERVATOR_CONFIG,
+  type ConservatorConfig,
+  type ConservatorVerdict,
+  type ConservatorAgentView,
+} from './agent-conservator.js';
 export { ScheduledTaskRunner } from './scheduled-task-runner.js';
 export { initStorage, type StorageBridge } from './storage-bridge.js';
 export { searchRegistries, installSkill, importSkillFromDirectory, exportSkillToFormat, type SkillSearchResult, type SkillInstallRequest, type SkillInstallResult, type SkillImportFromDirOptions, type SkillImportFromDirResult } from './skill-service.js';

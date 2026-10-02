@@ -205,6 +205,63 @@ describe('session_compact', () => {
     await createSessionTool(ctx).execute({ operation: 'compact', session_id: 'cs-1', keep_last: 9999 });
     expect(compactor.compactOnDemand).toHaveBeenCalledWith('cs-1', 200);
   });
+
+  // ---- 刘利 P0 回归（2026-09-30）：compact 假成功 / 语义不可区分 ----
+
+  it('no-op（已在 keep_last 内）返回 ok + skipped:true + reason，而非含糊的 ok', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ agentId: 'agt-A' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    const compactor = {
+      compactOnDemand: vi.fn(() => ({ summary: '', flushedCount: 0, remaining: 8, found: true })),
+    };
+    const ctx = makeCtx({ chatSessionRepo: repo as never, compactor });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'compact', session_id: 'cs-1' }));
+    expect(res.status).toBe('ok');
+    expect(res.flushedCount).toBe(0);
+    expect(res.skipped).toBe(true);
+    expect(res.reason).toBe('within_keep_last');
+    expect(res.remaining).toBe(8); // messages kept, NOT summary.length
+    expect(res.summary).toBe('');
+  });
+
+  it('repo 找到会话但 compactor 报 found:false → status:error（区分「失败」与「无需压缩」）', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ agentId: 'agt-A' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    const compactor = {
+      compactOnDemand: vi.fn(() => ({ summary: '', flushedCount: 0, remaining: 0, found: false })),
+    };
+    const ctx = makeCtx({ chatSessionRepo: repo as never, compactor });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'compact', session_id: 'sess_ghost' }));
+    expect(res.status).toBe('error');
+    expect(res.message).toContain('No session');
+    // The old behaviour was status:'ok', flushedCount:0 — indistinguishable from success.
+    expect(res.flushedCount).toBeUndefined();
+  });
+
+  it('成功压缩时 remaining 反映保留消息数（不再是 summary 字符长度）', async () => {
+    const repo = {
+      getSession: vi.fn(() => makeSession({ agentId: 'agt-A' })),
+      listSessionsPaginated: vi.fn(() => ({ sessions: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
+      countMessagesByAgent: vi.fn(() => 0),
+    };
+    const compactor = {
+      compactOnDemand: vi.fn(() => ({
+        summary: 'Latest user intent: build the tool', flushedCount: 30, remaining: 10, found: true,
+      })),
+    };
+    const ctx = makeCtx({ chatSessionRepo: repo as never, compactor });
+    const res = JSON.parse(await createSessionTool(ctx).execute({ operation: 'compact', session_id: 'cs-1', keep_last: 10 }));
+    expect(res.status).toBe('ok');
+    expect(res.flushedCount).toBe(30);
+    expect(res.remaining).toBe(10);
+    expect(res.skipped).toBeUndefined();
+  });
 });
 
 describe('ContextOS output contract & robustness (phase-2 hardening)', () => {

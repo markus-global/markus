@@ -9,6 +9,7 @@ import {
   isSkillOrMcpToolName,
   isWorkContextBoundTool,
   packToolDefBudget,
+  SCHEMA_INJECTED_TOOLS,
   TASK_EXECUTION_EXTRA_TOOLS,
   TOOL_DEF_CORE_KEEP,
   TOOL_DEF_PROTECTED,
@@ -118,7 +119,7 @@ const TOOL_GROUPS: ToolGroup[] = [
       'knowledge base', 'knowledge', 'kb', 'synced document',
       '产出物', '产出', '交付物', '知识', '知识库', '贡献', '约定', '架构决策', '最佳实践', '经验'],
     toolNames: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update',
-      'knowledge_search', 'knowledge_list', 'knowledge_read'],
+      'kb_search', 'kb_list', 'kb_read'],
   },
   {
     name: 'office',
@@ -303,7 +304,7 @@ export class ToolSelector {
         // Only skip keyword activation when the WHOLE group is already in — a
         // partially-present group must still be able to add the rest (e.g.
         // deliverable_search is base-always-on, so a keyword hit must still
-        // surface knowledge_search/list/read).
+        // surface kb_search/list/read).
         if (group.toolNames.length > 0 && group.toolNames.every(n => selected.has(n))) continue;
         const matched = group.keywords.some(kw => contextLower.includes(kw));
         if (matched) {
@@ -584,8 +585,8 @@ export class ToolSelector {
     // current item.
 
     pushUnique({
-      name: 'update_working_memory',
-      description: 'Upsert a keyed entry in your working memory. Use to track priorities, context, decisions.',
+      name: 'notebook_upsert',
+      description: 'Upsert a keyed entry in your notebook (working memory). Use to track priorities, context, decisions.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -597,8 +598,8 @@ export class ToolSelector {
     });
 
     pushUnique({
-      name: 'clear_working_memory',
-      description: 'Remove a working memory entry by key, or clear all entries.',
+      name: 'notebook_clear',
+      description: 'Remove a notebook entry by key, or clear all agent entries.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -636,7 +637,10 @@ export class ToolSelector {
     // discover_tools 空烧 token。未激活的 skill/MCP 仍按渐进披露（catalog）延迟。
     const protectedNames = new Set<string>([...TOOL_DEF_PROTECTED, ...TOOL_DEF_CORE_KEEP]);
     for (const name of activated) {
-      if (opts.allTools.has(name)) protectedNames.add(name);
+      // registered handler OR schema-injected (pushUnique) tool — both must be
+      // eviction-immune once explicitly activated via discover_tools, otherwise
+      // activation is a no-op after budget eviction (P0-1 self-management fix).
+      if (opts.allTools.has(name) || SCHEMA_INJECTED_TOOLS.has(name)) protectedNames.add(name);
     }
     const { tools: capped, evicted } = evictToolsToBudget(
       result,

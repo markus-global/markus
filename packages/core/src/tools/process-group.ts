@@ -56,9 +56,23 @@ function readPgid(pid: number): number | null {
 }
 
 /**
- * True when `pid` leads its own process group and that group is not ours.
- * Call this *after* spawning with `detached: true`; only then is it safe to
- * use `kill(-pid)`.
+ * Verify that `pid` really leads its own process group right now.
+ *
+ * ⚠️ NOT for gating kills at spawn time. It reports on the process's CURRENT
+ * state, which stops matching the spawn contract the moment the wrapper exits:
+ *
+ *   • While the wrapper is alive the probe is fine. Measured 25/25 correct for
+ *     `spawn(..., {detached:true})` probed immediately afterwards — the older
+ *     "setsid() races the ps probe" theory does NOT reproduce (the setsid runs
+ *     in the child long before a forked `ps` can be observed).
+ *   • Once the wrapper exits (self-daemonizing commands such as
+ *     `sh -c 'sleep N & exit 0'`), `ps -p <pid>` returns nothing → this returns
+ *     false even though the group still has live members. A kill gated on that
+ *     false degrades to signalling the dead wrapper alone and EVERY descendant
+ *     leaks (measured: 100% leak).
+ *
+ * Callers that spawned with `detached: true` must pass the spawn contract
+ * (`!isWin`) instead. Keep this for diagnostics only.
  */
 export function isIsolatedProcessGroup(pid: number | undefined): boolean {
   if (isWindows() || !pid || pid <= 1) return false;
@@ -116,7 +130,7 @@ export function signalTree(
     }
   }
 
-  if (isolatedGroup && pid > 1) {
+  if (isolatedGroup && pid > 1 && pid !== process.pid) {
     try {
       process.kill(-pid, signal);
       return 'group';

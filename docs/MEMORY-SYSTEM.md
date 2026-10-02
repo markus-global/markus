@@ -4,7 +4,8 @@ Architecture and data flows for the Markus agent memory system. Persistent cogni
 **NOTEBOOK.md** (cognitive workspace) plus **`knowledge.md`** as the single long-term store
 (permanent curated knowledge + the observation buffer). The former second half of the old
 "dual store", `state.md`, has **retired** — its situational state now lives in the notebook's
-`system` tier (see §2 / §3). A legacy `MEMORY.md` still migrates once.
+`system` tier (see §2 / §3). Legacy `MEMORY.md` / `memories.json` / `state.md` files are still
+read once on load and migrate into `knowledge.md` (migration-read layer: read old, write new only).
 Grounded in Tulving-style procedural / semantic / episodic persistence plus cognitive-science
 working-memory models.
 
@@ -17,7 +18,7 @@ working-memory models.
    `knowledge.md` holds permanent curated knowledge plus the observation buffer. Situational
    ("current") state lives in the notebook's `system` tier rather than a second file — the old
    `state.md` half **retired** (see §2). Observations buffer is never fully prompt-injected.
-   Legacy `MEMORY.md` MUST migrate on first load.
+   Legacy `MEMORY.md` / `memories.json` / `state.md` MUST migrate into `knowledge.md` on first load (read old, write new only).
 2. **Tulving mapping + notebook**: Persistent layers align with Tulving-style cognition — **Procedural** (ROLE.md), **Semantic** (`knowledge.md`), **Episodic** (sessions + activities). The **Notebook** replaces volatile in-memory working memory with a persistent scratchpad always injected (via the volatile `[Live context]` tail by Scheme A — not as a system-prompt segment).
 3. **SQLite for history**: Activity history lives in SQLite — indexed, searchable, and queryable via tools.
 4. **Context is currency**: Every byte in the LLM prompt competes for limited context window. Retrieval must maximize signal-to-noise.
@@ -37,11 +38,15 @@ MUST: On first load, if only legacy `MEMORY.md` exists, migrate it into `knowled
 MUST: Prompt injection of knowledge MUST honor `KNOWLEDGE_PROMPT_MAX_TOKENS`
 (`0` for reflex profile — omit full dump).
 MUST: `MEMORY_MD_TOTAL_MAX_CHARS` MUST be enforced as a **load-time invariant**, not only a
-write-time guard: `MemoryStore.convergeLongTermToCap()` runs on construction/load and condenses
-the largest curated section(s) to a stub **keeping the heading** (so the index line and
-`memory_search` still surface the topic), never touching `## _observations`. Rationale: a
-write-time refusal cannot shrink an already-oversized file, so an over-budget file used to stay
-over budget forever (measured 23 323 chars against a 15 000 limit).
+write-time guard: `MemoryStore.convergeLongTermToCap()` runs on construction/load and
+**losslessly archives** the largest curated section(s)' bodies to `knowledge-archive.md`
+**keeping the heading + a pointer line** (so the index line and `memory_search` still surface
+the topic), never touching `## _observations`. Rationale: writes are no longer refused at the
+total cap, so over-budget content would otherwise be dropped; archiving keeps the whole text
+retrievable (via `memory_search`) while the in-prompt file converges to ≤ 100% (measured
+23 323 chars against a 15 000 limit).
+MUST: `knowledge-archive.md` is archive-only — searchable via `memory_search`, but **never
+prompt-injected**.
 MUST: `memory_update mode="forget"` (`MemoryStore.removeLongTermSection`) is the curated-section
 **forget primitive**; forgetting `## _observations` is refused (delete observations by id instead).
 MUST: `knowledge.md` / `NOTEBOOK.md` MUST be persisted with `writeFileAtomic` (tmp + rename) so a
@@ -50,7 +55,7 @@ MUST: `memory_update_longterm` / curated updates write `knowledge.md`.
 MUST: `memory_save` → `## _observations`; `memory_update` → named curated section.
 
 Test IDs: `A-knowledge-cap`.
-| **Kahneman — Dual Process** | System 1 = fast retrieval (`memory_search`, prompt injection); System 2 = CPP deliberative processing writes `cpp`-managed notebook entries |
+| **Kahneman — Dual Process** | System 1 = fast retrieval (`memory_search`, prompt injection); System 2 = slow, deliberate recall the agent triggers explicitly (`memory_search` / `kb_search`) — the old pre-call CPP pipeline is gone |
 
 ## 2. Four-Layer Architecture
 
@@ -75,8 +80,8 @@ Test IDs: `A-knowledge-cap`.
 │  Tools: recall_activity (list / search / get)                 │
 ├───────────────────────────────────────────────────────────────┤
 │  Notebook — persistent cognitive workspace                    │
-│  NOTEBOOK.md — keyed entries (agent / system / cpp managed)   │
-│  Tools: update_notebook, clear_notebook                       │
+│  NOTEBOOK.md — keyed entries (agent / system managed)         │
+│  Tools: notebook_upsert, notebook_clear, notebook_read        │
 │  Code: Agent + MemoryStore (loadNotebook / saveNotebook)     │
 └───────────────────────────────────────────────────────────────┘
 
@@ -92,31 +97,30 @@ Persistent markdown replacing the former volatile in-memory working memory.
 |-----------|-------|
 | Storage | `~/.markus/agents/{id}/NOTEBOOK.md` |
 | Format | `## key` headings with metadata comments + body text |
-| Entry fields | `key`, `text`, `managed` (`agent` \| `system` \| `cpp`), `updatedAt` |
+| Entry fields | `key`, `text`, `managed` (`agent` \| `system`), `updatedAt` |
 | Prompt injection | Always loaded as `## Notebook`, bounded to `NOTEBOOK_MAX_ENTRIES` (16) entries / `NOTEBOOK_PROMPT_MAX_CHARS` (6000) chars. Oversized entries are truncated inline (never dropped whole). |
 | Limits | **16 total** entries (`NOTEBOOK_MAX_ENTRIES`) — the CROSS-TIER cap; **4 agent** entries (`NOTEBOOK_MAX_AGENT_ENTRIES`); `NOTEBOOK_MAX_CHARS_PER_ENTRY` (6000) per entry; key ≤ `NOTEBOOK_KEY_MAX_CHARS` (64). |
-| TTL | Per tier: `agent` 96h, `system` 24h, `cpp` 6h (`NOTEBOOK_TTL_MS_*`). Entries past their TTL are dropped on load, after every write, and again before injection. |
-| Eviction | Oldest-`updatedAt`-first. Tier order: `cpp` → `system` → `agent` — the agent's own notes are the **last** to go. |
+| TTL | Per tier: `agent` 96h, `system` 24h (`NOTEBOOK_TTL_MS_AGENT` / `NOTEBOOK_TTL_MS_SYSTEM`). Entries past their TTL are dropped on load, after every write, and again before injection. |
+| Eviction | Oldest-`updatedAt`-first. Tier order: `system` → `agent` — the agent's own notes are the **last** to go. |
 
 **Managed tags**:
 
-- `agent` — written via `update_notebook` / `clear_notebook`
+- `agent` — written via `notebook_upsert` / `notebook_clear`
 - `system` — triage → `"triage-decision"`, deliberation → `"deliberation"`, etc.
-- `cpp` — Cognitive Preparation Pipeline writes situational context
 
 **Lifecycle**: Loaded at agent startup → **normalized on load** (TTL + caps; trimmed result is persisted immediately) → updated in-process → persisted with a 2s debounce **bounded by `NOTEBOOK_PERSIST_MAX_WAIT_MS` (10s)** so a chatty turn cannot defer the write indefinitely. Survives restarts.
-**Cleanup**: `clear_notebook({ key })` removes one entry; `clear_notebook` without key clears the whole notebook. TTL handles passive expiry; `clear_notebook` handles deliberate removal. Prompt guidance: clear when a task completes or context goes stale.
+**Cleanup**: `notebook_clear({ key })` removes one entry; `notebook_clear` without key clears the whole notebook. TTL handles passive expiry; `notebook_clear` handles deliberate removal. Prompt guidance: clear when a task completes or context goes stale.
 
 #### Invariants (§2 Notebook lifecycle)
 
 The notebook is a RESIDENT prompt region, so it needs all four mechanisms that keep a
 resident region honest. Historically only the storage-side per-entry cap existed, and
-the entry cap was applied on **one** write path — the other three writers
-(`triage` → `triage-decision`, `deliberation`, the CPP notebook writer) called
+the entry cap was applied on **one** write path — the other writers
+(`triage` → `triage-decision`, `deliberation`) called
 `workingMemory.set()` directly and were never counted. The load path trimmed
 nothing. Result: a real notebook reached **26 entries / 33 KB** against a nominal
-cap of 4, including an 18-day-old triage decision and a 57-day-old CPP output that
-were re-injected on every turn.
+cap of 4, including an 18-day-old triage decision that
+was re-injected on every turn.
 
 | # | Invariant | Authority |
 |---|-----------|-----------|
@@ -155,7 +159,7 @@ Map insertion order satisfied neither (evict + re-insert permutes the block).
 | Episodic retrieval | `recall_activity` tool | `packages/core/src/tools/recall.ts` |
 | Procedural | `RoleLoader` | `packages/core/src/role-loader.ts` |
 | Semantic tools | `memory_save`, `memory_search`, `memory_update` | `packages/core/src/tools/memory.ts` |
-| Notebook tools | `update_notebook`, `clear_notebook` | `packages/core/src/tools/mailbox-tools.ts` |
+| Notebook tools | `notebook_upsert`, `notebook_clear`, `notebook_read` | `packages/core/src/tools/mailbox-tools.ts` |
 | Vector search | `SemanticMemorySearch` | `packages/core/src/memory/semantic-search.ts` |
 | Notebook runtime | `Agent.workingMemory`, prompt injection | `packages/core/src/agent.ts` |
 
@@ -232,12 +236,12 @@ The agent organizes sections freely — common patterns: `conventions`, `procedu
 
 ## 4. Memory Tools
 
-Five primary tools (down from seven). Legacy aliases (`memory_list`, `memory_delete`, `memory_update_longterm`, `update_working_memory`, `clear_working_memory`) remain for backward compatibility.
+Five primary tools. Legacy memory aliases (`memory_list`, `memory_delete`, `memory_update_longterm`) remain for backward compatibility; the notebook aliases `update_working_memory` / `clear_working_memory` were **removed** — use `notebook_upsert` / `notebook_clear`.
 
 | Tool | Purpose |
 |------|---------|
-| `update_notebook` | Upsert a keyed entry in NOTEBOOK.md |
-| `clear_notebook` | Remove one entry or all agent-managed entries |
+| `notebook_upsert` | Upsert a keyed entry in NOTEBOOK.md |
+| `notebook_clear` | Remove one entry or all agent-managed entries |
 | `memory_save` | Append one observation to `knowledge.md` `## _observations` (`content` required; rejects arrays / empty) |
 | `memory_update` | Update curated `knowledge.md` section (`replace` / `patch`; `append`→`patch`) or delete observations (`mode: delete`) |
 | `memory_search` | Keyword search over observations **and** curated `knowledge.md` sections (token OR-match, ranked by hits); empty query lists recent observations. Falls back from semantic→keyword when embeddings miss. |
@@ -413,7 +417,7 @@ authoritative behavior spec.
 
 - **Behavior**: a **turn-level preflight** runs `memoryFlush` once per session when the
   previous turn's context usage crossed a high-water threshold (~75%). The flush asks the
-  agent to `memory_save` key decisions/facts and `update_notebook` current state. It runs
+  agent to `memory_save` key decisions/facts and `notebook_upsert` current state. It runs
   as an independent `sys_` session.
 - **Invariants**:
   - Flush fires **at most once per session** (deduplicated), and **before** the compression
@@ -474,7 +478,7 @@ Every state a running agent carries is placed by asking two questions only — *
 |---|---|---|---|---|---|
 | **Identity** | agent-lifetime | permanent (human-owned) | `role/ROLE.md`, `role/HEARTBEAT.md`, skills | human edit / explicit file write | fixed段 (system) |
 | **Knowledge** | agent-lifetime | long, forgettable | `knowledge.md` (curated sections + `## _observations`) | `memory_save`, `memory_update` (incl. `mode="forget"`) | volatile tail, budget-capped |
-| **Working** | agent-lifetime | short, auto-expiring | `NOTEBOOK.md` (per-tier TTL) | `update_notebook` (alias `update_working_memory`) | volatile tail (`## Notebook`) |
+| **Working** | agent-lifetime | short, auto-expiring | `NOTEBOOK.md` (per-tier TTL: agent 96h / system 24h) | `notebook_upsert` | volatile tail (`## Notebook`) |
 | **Session** | one session/worker | session-scoped | slots / `summary` / fragments | `session` tool family | fixed段 + history |
 
 ### 10.2 Consolidation record — what was merged away

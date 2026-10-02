@@ -194,6 +194,55 @@ describe('pickStreamReattachTarget', () => {
     ];
     expect(pickStreamReattachTarget(msgs)).toBeUndefined();
   });
+
+  // ── Refresh continuation (2026-10-02 regression) ──────────────────────────
+  // After a refresh the CURRENT turn's reply is already persisted, so it arrives
+  // from the DB with content but WITHOUT `isStreaming`. The old rule treated any
+  // content-bearing non-streaming agent message as "finished" and reattach then
+  // spawned a brand-new bubble next to it (prefix in one bubble, tail in another).
+
+  it('reuses the CURRENT turn partial reply while the server is still streaming', () => {
+    const msgs = [
+      mk('u1', 'user', 'A'),
+      mk('a1', 'agent', 'B (completed previous reply)'),
+      mk('u2', 'user', 'C'),
+      mk('a2', 'agent', 'partial D (persisted, not streaming)'),
+    ];
+    expect(pickStreamReattachTarget(msgs, { allowCurrentTurnPartial: true })?.id).toBe('a2');
+    // Without the streaming confirmation the same list must stay conservative.
+    expect(pickStreamReattachTarget(msgs)).toBeUndefined();
+  });
+
+  it('prefers the exact message id the server reports as in flight', () => {
+    const msgs = [
+      mk('u1', 'user', 'A'),
+      mk('a1', 'agent', 'B (completed)'),
+      mk('u2', 'user', 'C'),
+      mk('a2', 'agent', 'partial D'),
+    ];
+    expect(pickStreamReattachTarget(msgs, { expectedMessageId: 'a2' })?.id).toBe('a2');
+    // An id that is not present must not force a wrong reuse.
+    expect(pickStreamReattachTarget(msgs, { expectedMessageId: 'nope' })).toBeUndefined();
+  });
+
+  it('still never reuses a previous turn reply when allowCurrentTurnPartial is set', () => {
+    // New turn started but produced nothing yet → last agent message precedes the
+    // last user message, so it is the PREVIOUS turn's reply.
+    const msgs = [
+      mk('u1', 'user', 'A'),
+      mk('a1', 'agent', 'B (completed previous reply)'),
+      mk('u2', 'user', 'C'),
+    ];
+    expect(pickStreamReattachTarget(msgs, { allowCurrentTurnPartial: true })).toBeUndefined();
+  });
+
+  it('never reuses an error reply as the current-turn partial target', () => {
+    const msgs = [
+      mk('u1', 'user', 'A'),
+      mk('a1', 'agent', '⚠ error', { isError: true }),
+    ];
+    expect(pickStreamReattachTarget(msgs, { allowCurrentTurnPartial: true })).toBeUndefined();
+  });
 });
 
 describe('message finalization helpers', () => {

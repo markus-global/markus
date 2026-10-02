@@ -277,6 +277,7 @@ function createMockAgent(id: string, overrides: Record<string, unknown> = {}) {
       writeDailyLog: vi.fn(),
       addLongTermMemory: vi.fn(),
     })),
+    updateLongTermMemory: vi.fn(async () => ({ ok: true })),
     getUsageStats: vi.fn(() => ({
       toolCallsToday: 3,
       totalTokens: 100,

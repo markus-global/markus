@@ -5,9 +5,10 @@
  *
  * 资源域锁原先的粒度是**工具名**，因此同一个资源可以有两条互不互斥的写入路径：
  *
- *   1. `update_notebook` 登记为域 `'notebook'`，而别名 `update_working_memory`
- *      登记为域 `'working-memory'` —— 两者写的是**同一个 Map**
- *      （`Agent.writeNotebookEntry`），却因域名不同被判定为「不冲突」，锁形同虚设。
+ *   1. notebook 写工具曾按「正式名 + 别名」分登记到不同的域（`'notebook'` 与
+ *      `'working-memory'`），写的却是**同一个 Map**（`Agent.writeNotebookEntry`），
+ *      因域名不同被判定为「不冲突」，锁形同虚设。现别名已删除、名字归一为
+ *      `notebook_upsert` / `notebook_clear`，共享 `agent-memory:notebook` 锁域。
  *   2. `file_write` 走 `fs:<path>` 域，而记忆工具走 `memory` / `notebook` 域：
  *      同一个 `knowledge.md` 由「内存模型整文件重写」与「通用文件工具」两条路径
  *      写入，互不互斥 —— 外部编辑会被下一次内存落盘**静默覆盖**。
@@ -69,4 +70,38 @@ export function memoryResourceForPath(
 /** 记忆资源的锁请求（跨工具面统一锁键的落点）。 */
 export function memoryResourceLock(resource: AgentMemoryResource): LockRequest {
   return { domain: AGENT_MEMORY_RESOURCE_DOMAIN, sub: resource };
+}
+
+/**
+ * 「单一写入者」记忆文件 —— 通用文件工具 / shell 一律禁止直写。
+ *
+ * 这些文件由记忆服务整文件维护；任何绕过服务的外部写入都会与内存模型分叉，
+ * 最终被下一次落盘**静默覆盖**（审计 P-01：实测 2026-09-27 手改 knowledge.md
+ * 于 2026-09-28 被覆盖）。因此写门禁直接拒绝，并引导改用记忆 / 笔记本工具。
+ *
+ * 注意：`role.md` / `heartbeat.md`（身份 / 巡检）**不在此列** —— 它们本就由
+ * Agent 自行编辑（Learning Habits），不属于单一写入者资源。
+ */
+export const SINGLE_WRITER_MEMORY_FILES: ReadonlySet<string> = new Set([
+  'knowledge.md',
+  'notebook.md',
+  'state.md',
+]);
+
+/**
+ * 目标路径是否为「单一写入者记忆文件」。
+ *
+ * `workspacePath` 提供时，位于**该工作区内**的同名文件视为普通文件（放行）——
+ * 记忆文件位于 agent home，不在工作区内；工作区里的 `knowledge.md` 可能只是
+ * 普通文档，Agent 有权编辑。未提供 workspacePath 时按安全方向（拒绝）。
+ */
+export function isSingleWriterMemoryFile(rawPath: string, workspacePath?: string): boolean {
+  if (typeof rawPath !== 'string' || rawPath.length === 0) return false;
+  if (!SINGLE_WRITER_MEMORY_FILES.has(basename(rawPath).toLowerCase())) return false;
+  if (workspacePath) {
+    const abs = resolve(rawPath);
+    const root = resolve(workspacePath);
+    if (abs === root || abs.startsWith(root + sep)) return false;
+  }
+  return true;
 }

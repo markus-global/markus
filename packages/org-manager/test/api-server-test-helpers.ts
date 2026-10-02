@@ -204,6 +204,7 @@ export function createMockAgent(id: string, overrides: Record<string, unknown> =
       getRecentDailyLogs: () => [], getLongTermMemory: () => null, getSession: () => null,
       updateDailyLog: vi.fn(), updateLongTermMemory: vi.fn(), writeDailyLog: vi.fn(), addLongTermMemory: vi.fn(),
     })),
+    updateLongTermMemory: vi.fn(async () => ({ ok: true })),
     getMemorySessionIdForDbSession: vi.fn(() => null),
     getUsageStats: vi.fn(() => ({
       toolCallsToday: 3, totalTokens: 100, requestsToday: 5, tokensToday: 50,

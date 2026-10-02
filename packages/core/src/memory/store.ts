@@ -7,9 +7,20 @@
  *
  * Additionally exports Notebook (NOTEBOOK.md) parse/serialize for the cognitive workspace.
  * Procedural Memory (ROLE.md + skills) is managed by RoleLoader and the skill system.
- * Legacy MEMORY.md is migrated once via `ensureKnowledgeFile` and is never written.
+ *
+ * ─── Migration-read layer（审计 P-08：**读旧、只写新**）────────────────────
+ * 记忆读写遵循单一策略：**读取端容忍一切历史格式，写入端只发一种规范格式**。
+ * 遗留数据不删除，而是在加载时被**读入并迁移**为规范形态（无损、可检索）：
+ *   来源（读）                               → 归宿（写，唯一规范）
+ *   1. `memories.json`                       → knowledge.md `## _observations`，源消费
+ *   2. `MEMORY.md`                           → knowledge.md（源保留；仅当 knowledge 不存在时并入）
+ *   3. `state.md`（已退场介质）              → knowledge.md `## _observations`，源改名 `.migrated`
+ *   4. 旧 `<!-- type: x, tags: a, b -->` 行  → 加载时收敛为单 `data-meta` JSON 行
+ * 不变量：任一次落盘后，knowledge.md 内不再残留旧格式（`, tags: ` 行）。读取端的
+ * 容忍只为让旧数据**能进来**，不是长期形态。清退条件：线上所有 agent 目录均无上述
+ * 遗留文件、且 knowledge.md 无 `, tags: ` 行（实测 2026-09-29 仍有多名 agent 残留，故暂不满足）。
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, appendFileSync, statSync, unlinkSync, renameSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
   createLogger,
@@ -19,22 +30,21 @@ import {
   type LLMMessage,
   MEMORY_MD_SECTION_MAX_CHARS,
   MEMORY_MD_TOTAL_MAX_CHARS,
+  MEMORY_OBSERVATIONS_MAX_CHARS,
   MEMORY_ENTRY_MAX_CHARS,
   KNOWLEDGE_MD_SELF_HEAL_BYTES,
   KNOWLEDGE_SECTION_KEY_MAX_CHARS,
-  KNOWLEDGE_STUB_MAX_CHARS,
   NOTEBOOK_KEY_MAX_CHARS,
   NOTEBOOK_MAX_ENTRIES,
   NOTEBOOK_MAX_AGENT_ENTRIES,
   NOTEBOOK_TTL_MS_AGENT,
   NOTEBOOK_TTL_MS_SYSTEM,
-  NOTEBOOK_TTL_MS_CPP,
   SESSION_STORAGE_COMPACT_KEEP,
   SESSION_STORAGE_COMPACT_TRIGGER,
   CONTEXT_SLOT_MAX_CHARS,
 } from '@markus/shared';
-import type { IMemoryStore, MemoryEntry, ConversationSession } from './types.js';
-import { ensureKnowledgeFile, knowledgePath } from './taxonomy.js';
+import type { IMemoryStore, MemoryEntry, ConversationSession, CompactResult } from './types.js';
+import { ensureKnowledgeFile, knowledgePath, retiredStatePath } from './taxonomy.js';
 import { writeFileAtomic } from '../atomic-write.js';
 import { buildSlotSegment, buildSummarySegment, sanitizeSlotKey, type SlotEntry } from '../context-slot.js';
 
@@ -124,7 +134,7 @@ function parseDataMeta(raw: string): Record<string, unknown> | undefined {
 
 // ─── Notebook (NOTEBOOK.md) parse/serialize ─────────────────────────────────
 
-export type NotebookEntryManaged = 'agent' | 'system' | 'cpp';
+export type NotebookEntryManaged = 'agent' | 'system';
 
 export interface NotebookEntry {
   text: string;
@@ -178,7 +188,7 @@ export function parseNotebook(markdown: string): Map<string, NotebookEntry> {
       const managedMatch = NOTEBOOK_MANAGED_RE.exec(line);
       if (managedMatch) {
         const val = managedMatch[1] as NotebookEntryManaged;
-        if (val === 'agent' || val === 'system' || val === 'cpp') currentManaged = val;
+        if (val === 'agent' || val === 'system') currentManaged = val;
         continue;
       }
       contentLines.push(line);
@@ -230,7 +240,6 @@ export function normalizeNotebookKey(raw: string): string {
 
 /** Per-tier TTL lookup for a notebook entry. */
 export function notebookTtlMs(managed: NotebookEntryManaged): number {
-  if (managed === 'cpp') return NOTEBOOK_TTL_MS_CPP;
   if (managed === 'system') return NOTEBOOK_TTL_MS_SYSTEM;
   return NOTEBOOK_TTL_MS_AGENT;
 }
@@ -253,9 +262,9 @@ export interface NotebookPruneResult {
  * nothing, so a notebook could only ever grow.
  *
  * Eviction order is oldest-`updatedAt`-first within a tier, and the machine-written
- * tiers (`cpp`, then `system`) are evicted BEFORE the agent tier: situational state
- * is cheaper to lose than the agent's own deliberate notes, and it expires on its
- * own soon anyway.
+ * `system` tier is evicted BEFORE the agent tier: machine situational state is
+ * cheaper to lose than the agent's own deliberate notes, and it expires on its own
+ * soon anyway.
  */
 export function pruneNotebookEntries(
   entries: Map<string, NotebookEntry>,
@@ -287,12 +296,12 @@ export function pruneNotebookEntries(
 
   // ── Pass 3: hard total cap ─────────────────────────────────────────────
   // Evict oldest-first, and among comparable ages drop the LOWER-durability tier
-  // first: cpp → system → agent. Machine-written situational state is cheaper to
+  // first: system → agent. Machine-written situational state is cheaper to
   // lose than the agent's own deliberate notes (and it would expire on its own
   // soon anyway). Getting this order backwards silently ate the agent's own notes
   // whenever the machine tiers filled the budget.
   if (entries.size > NOTEBOOK_MAX_ENTRIES) {
-    const evictionRank = (e: NotebookEntry) => (e.managed === 'cpp' ? 0 : e.managed === 'system' ? 1 : 2);
+    const evictionRank = (e: NotebookEntry) => (e.managed === 'system' ? 0 : 1);
     const evictable = [...entries.entries()].sort((a, b) => {
       const ra = evictionRank(a[1]); const rb = evictionRank(b[1]);
       if (ra !== rb) return ra - rb;
@@ -341,6 +350,8 @@ export function saveNotebook(dataDir: string, entries: Map<string, NotebookEntry
 
 export class MemoryStore implements IMemoryStore {
   private static readonly MAX_SESSIONS_IN_MEMORY = 20;
+  /** 审计 P-09：summary 是**追加式多代锚点**，最多保留这么多代（旧锚仍在归档 fragment 中）。 */
+  private static readonly MAX_SUMMARY_ANCHORS = 6;
 
   private dataDir: string;
   private entries: MemoryEntry[] = [];
@@ -350,6 +361,7 @@ export class MemoryStore implements IMemoryStore {
   private logsDir: string;
   private saveDebounce: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private longTermFile: string;
+  private longTermArchiveFile: string;
 
   constructor(dataDir: string) {
     this.dataDir = dataDir;
@@ -361,6 +373,7 @@ export class MemoryStore implements IMemoryStore {
     ensureKnowledgeFile(dataDir);
     // SSOT: always knowledge.md after ensure (never write legacy MEMORY.md).
     this.longTermFile = knowledgePath(dataDir);
+    this.longTermArchiveFile = join(dataDir, 'knowledge-archive.md');
     this.loadFromDisk();
     this.loadSessionsFromDisk();
   }
@@ -369,10 +382,89 @@ export class MemoryStore implements IMemoryStore {
     return basename(this.longTermFile);
   }
 
+  /** 归档文件名：超预算段落正文的**无损**去处（可被 memory_search 检索，不注入）。 */
+  getArchiveFileName(): string {
+    return basename(this.longTermArchiveFile);
+  }
+
+  /**
+   * 记忆预算健康度（审计 P-12）：驱动提示词内的健康信号，让 Agent 知道何时该整理。
+   */
+  getMemoryHealth(): { totalChars: number; cap: number; percent: number; observations: number; curatedSections: number; archiveChars: number; lastConsolidatedAt: string | null } {
+    let totalChars = 0;
+    try {
+      if (existsSync(this.longTermFile)) totalChars = readFileSync(this.longTermFile, 'utf-8').length;
+    } catch { /* unreadable — treat as 0 */ }
+    let archiveChars = 0;
+    try {
+      if (existsSync(this.longTermArchiveFile)) archiveChars = readFileSync(this.longTermArchiveFile, 'utf-8').length;
+    } catch { /* archive optional */ }
+    const cap = MEMORY_MD_TOTAL_MAX_CHARS;
+    return {
+      totalChars,
+      cap,
+      percent: cap > 0 ? Math.round((totalChars / cap) * 100) : 0,
+      observations: this.entries.length,
+      curatedSections: parseCuratedSections(this.getLongTermMemory()).length,
+      archiveChars,
+      lastConsolidatedAt: this.getLastConsolidatedAt(),
+    };
+  }
+
+  /** 审计 P-11：上次整理（dream / memory_organize）时间 —— 供 memory_stats 与前端可观测。 */
+  getLastConsolidatedAt(): string | null {
+    try {
+      const f = join(this.dataDir, 'memory-meta.json');
+      if (!existsSync(f)) return null;
+      const meta = JSON.parse(readFileSync(f, 'utf-8')) as { lastConsolidatedAt?: string };
+      return meta.lastConsolidatedAt ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 记录一次整理发生（用于陈旧度信号）。 */
+  markConsolidated(at: Date = new Date()): void {
+    try {
+      const f = join(this.dataDir, 'memory-meta.json');
+      let meta: Record<string, unknown> = {};
+      if (existsSync(f)) {
+        try { meta = JSON.parse(readFileSync(f, 'utf-8')) as Record<string, unknown>; } catch { meta = {}; }
+      }
+      meta['lastConsolidatedAt'] = at.toISOString();
+      writeFileAtomic(f, JSON.stringify(meta, null, 2));
+    } catch (err) {
+      log.warn('Failed to persist memory meta', { error: String(err) });
+    }
+  }
+
+  /**
+   * Losslessly move a curated section body into `knowledge-archive.md`
+   * (审计 P-04/P-05：绝不静默丢弃 / 截断)。
+   * 主文件保留标题 + 指针，主题仍可发现；正文原文进归档，仍可检索。
+   */
+  private archiveSection(name: string, body: string): number {
+    const trimmed = body.trim();
+    if (!trimmed) return 0;
+    try {
+      const head = '# Knowledge Archive\n\n'
+        + '<!-- 超预算段落正文的无损归档（由记忆服务维护，可被 memory_search 检索）。 -->\n\n';
+      const existing = existsSync(this.longTermArchiveFile)
+        ? readFileSync(this.longTermArchiveFile, 'utf-8')
+        : head;
+      if (!existing.includes(trimmed)) {
+        appendFileSync(this.longTermArchiveFile, `## ${name}\n${trimmed}\n\n`);
+      }
+    } catch (err) {
+      log.warn('Failed to archive section body', { name, error: String(err) });
+    }
+    return trimmed.length;
+  }
+
   /**
    * NOTE (2026-09-16): `getStateMemory()` / `pruneStateMemory()` were removed together
    * with the state.md store. Situational state is Working-layer data and lives in
-   * NOTEBOOK.md (`update_notebook`), which already has per-tier TTL — a second
+   * NOTEBOOK.md (`notebook_upsert`), which already has per-tier TTL — a second
    * short-lived store added no capability, only a second place to look.
    * See docs/MEMORY-SYSTEM.md §10.2 (option A).
    */
@@ -432,6 +524,28 @@ export class MemoryStore implements IMemoryStore {
         score: score + 0.25,
       });
     }
+
+    // 归档段落（无损去处）：memory_search 必须能找回被归档的内容（审计 P-04/P-05）。
+    try {
+      if (existsSync(this.longTermArchiveFile)) {
+        const archivedText = readFileSync(this.longTermArchiveFile, 'utf-8');
+        for (const section of parseCuratedSections(archivedText)) {
+          const body = `## ${section.name}\n${section.body}`;
+          const score = scoreKeywordHaystack(body, tokens, fullLower);
+          if (score <= 0) continue;
+          scored.push({
+            entry: {
+              id: `archived_${slugSectionId(section.name)}`,
+              timestamp: '',
+              type: 'fact',
+              content: body.length > 2500 ? `${body.slice(0, 2500)}…` : body,
+              metadata: { source: 'archive', section: section.name, store: this.getArchiveFileName() },
+            },
+            score: score + 0.1,
+          });
+        }
+      }
+    } catch { /* archive missing/unreadable — non-fatal */ }
 
     scored.sort((a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id));
     return scored.map((s) => s.entry);
@@ -650,12 +764,14 @@ export class MemoryStore implements IMemoryStore {
       };
     }
     const key = sectionKey;
-    let truncatedContent = sanitizeSectionBody(content);
+    const truncatedContent = sanitizeSectionBody(content);
+    // 审计 P-04/P-05：单段正文超限 —— 不再静默截断，改为可读拒绝（无损、可操作）。
     if (truncatedContent.length > MEMORY_MD_SECTION_MAX_CHARS) {
-      log.warn('Section content exceeds limit, truncating', {
-        key, original: content.length, limit: MEMORY_MD_SECTION_MAX_CHARS,
-      });
-      truncatedContent = truncatedContent.slice(0, MEMORY_MD_SECTION_MAX_CHARS);
+      return {
+        ok: false,
+        reason: `Section body is ${truncatedContent.length} chars, over the ${MEMORY_MD_SECTION_MAX_CHARS}-char per-section limit. `
+          + 'Split it into multiple sections or shorten it — content is never silently truncated.',
+      };
     }
 
     let existing = '';
@@ -670,42 +786,27 @@ export class MemoryStore implements IMemoryStore {
         const regex = new RegExp(`(## ${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\n[\\s\\S]*?(?=\\n## |$)`);
         updated = existing.replace(regex, `${sectionHeader}\n${truncatedContent}\n`);
       } else {
-        updated = existing + `\n${sectionHeader}\n${truncatedContent}\n`;
-      }
-
-      if (updated.length > MEMORY_MD_TOTAL_MAX_CHARS) {
-        // Attempt auto-compression first before refusing the write
-        log.warn('knowledge.md total size exceeds limit, attempting compression', {
-          key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
-        });
-        const compressed = this.compressLongTermMemory();
-        if (compressed.charsAfter < updated.length) {
-          log.info('Compression freed space, retrying write', {
-            key, charsFreed: updated.length - compressed.charsAfter,
-          });
-          // Re-read the freshly compressed file and retry
-          existing = readFileSync(this.longTermFile, "utf-8");
-          if (existing.includes(sectionHeader)) {
-            const regex = new RegExp(`(## ${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\n[\\s\\S]*?(?=\\n## |$)`);
-            updated = existing.replace(regex, `${sectionHeader}\n${truncatedContent}\n`);
-          } else {
-            updated = existing + `\n${sectionHeader}\n${truncatedContent}\n`;
-          }
-          if (updated.length > MEMORY_MD_TOTAL_MAX_CHARS) {
-            log.warn('knowledge.md still exceeds limit even after compression, refusing write', {
-              key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
-            });
-            return { ok: false, reason: `knowledge.md is full (> ${MEMORY_MD_TOTAL_MAX_CHARS} chars) even after compression; write refused. Prune or shorten sections, or use memory_save (## _observations) instead.` };
-          }
+        // 审计 P-17（严重 bug 修复）：`## _observations` 必须是**最后一个**段落——
+        // saveToDisk() 以该标记为界重建文件，会丢弃其后的所有内容。历史上这里直接
+        // `existing + section` 追加到末尾，恰好落在 _observations 之后，导致**任何新建
+        // curated 段落在下一次观察区保存时被静默删除**（正文只剩归档副本）。
+        // 正确做法：新段落插入到 _observations **之前**。
+        const obsIdx = existing.indexOf('\n## _observations');
+        if (obsIdx >= 0) {
+          updated = existing.slice(0, obsIdx) + `\n${sectionHeader}\n${truncatedContent}\n` + existing.slice(obsIdx);
         } else {
-          log.warn('knowledge.md still exceeds limit after compression, refusing write', {
-            key, fileSize: updated.length, limit: MEMORY_MD_TOTAL_MAX_CHARS,
-          });
-          return { ok: false, reason: `knowledge.md is full (> ${MEMORY_MD_TOTAL_MAX_CHARS} chars) and could not be compressed further; write refused. Prune or shorten sections, or use memory_save (## _observations) instead.` };
+          updated = existing + `\n${sectionHeader}\n${truncatedContent}\n`;
         }
       }
 
       writeFileAtomic(this.longTermFile, updated);
+      // 审计 P-04/P-05：总量超预算 → 无损再平衡（归档），绝不拒绝写入、绝不静默丢弃。
+      if (updated.length > MEMORY_MD_TOTAL_MAX_CHARS) {
+        const rebalanced = this.compressLongTermMemory();
+        log.info('knowledge.md over budget after write — rebalanced losslessly', {
+          key, totalChars: updated.length, charsAfter: rebalanced.charsAfter, archived: rebalanced.truncatedChunks,
+        });
+      }
       log.debug('Long-term memory updated', { key, sectionChars: truncatedContent.length, totalChars: updated.length, store: this.getStoreFileName() });
       return { ok: true };
     } catch (err) {
@@ -843,10 +944,20 @@ export class MemoryStore implements IMemoryStore {
     return idx;
   }
 
-  compactSession(sessionId: string, keepLast: number = 20): { summary: string; flushedCount: number } {
-    const session = this.sessions.get(sessionId);
-    if (!session || session.messages.length <= keepLast) {
-      return { summary: '', flushedCount: 0 };
+  compactSession(sessionId: string, keepLast: number = 20): CompactResult {
+    // SSOT / LRU fallback: the in-memory map only holds the N most recent
+    // sessions (MAX_SESSIONS_IN_MEMORY=20) while thousands live on disk. Reading
+    // ONLY `this.sessions` made compact() a silent no-op for any session that
+    // had been evicted — it returned ok with flushedCount:0 and the agent could
+    // not tell "nothing to compact" from "compaction failed" (the 2026-09-30
+    // 刘利 P0 report). Every OTHER session accessor already falls back to disk
+    // (getSession/getSlots/serializeSummary/getRecentMessages); this one must too.
+    const session = this.sessions.get(sessionId) ?? this.getSession(sessionId);
+    if (!session) {
+      return { summary: '', flushedCount: 0, remaining: 0, found: false };
+    }
+    if (session.messages.length <= keepLast) {
+      return { summary: '', flushedCount: 0, remaining: session.messages.length, found: true };
     }
 
     // MessageGroup-atomic cut: never split an assistant(tool_calls) from its
@@ -897,13 +1008,20 @@ export class MemoryStore implements IMemoryStore {
     //   - turn-neutral (a `role:'user'` message would pollute attribution and
     //     could be mistaken for genuine human input).
     // Raw history is still fully recoverable via the archived fragment below.
-    session.summary = summary;
+    // 审计 P-09：摘要锚点是**追加式多代**（不再覆盖）——每次压缩各留一条代锚，
+    // 最新在后、总代有界（超出的旧锚仍在归档 fragment 中，可 session_retrieve）。
+    const anchorLine = `- [${new Date().toISOString()}] ${summary.replace(/\s+/g, ' ').trim().slice(0, 400)}`;
+    const priorAnchors = (session.summary ?? '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    session.summary = [...priorAnchors, anchorLine].slice(-MemoryStore.MAX_SUMMARY_ANCHORS).join('\n');
     session.summaryPagedOut = flushedCount;
     session.messages = retained;
     this.saveSessionToDisk(session);
 
     log.info('Session compacted', { sessionId, flushedCount, remaining: session.messages.length });
-    return { summary, flushedCount };
+    return { summary, flushedCount, remaining: session.messages.length, found: true };
   }
 
   /**
@@ -1135,8 +1253,57 @@ export class MemoryStore implements IMemoryStore {
 
   private static readonly MAX_MEMORY_ENTRIES = 500;
 
+  /**
+   * Migration-read layer（P-08）——**读旧、只写新**。
+   *
+   * 读取端容忍一切历史格式；写入端只发单一规范格式（单 `data-meta` JSON 行）。
+   * 遗留数据不删除，而是在加载时被读入并迁移为规范形态：
+   *   - 已退场的 `state.md` → 一条规范观察（源改名 `.migrated`，可恢复、不重复读）；
+   *   - knowledge.md 内的旧 `<!-- type: x, tags: a, b -->` 行 → 标记需收敛重写。
+   * （`memories.json` / `MEMORY.md` 的迁移在各自调用点，见文件头。）
+   *
+   * @returns true 表示内存态已变化、调用方应落盘收敛为规范格式。
+   */
+  private runLegacyMigrations(): boolean {
+    let changed = false;
+
+    // 已退场的 state.md：读入为一条观察，源改名（而非删除）→ 不再重复读取。
+    const retired = retiredStatePath(this.dataDir);
+    if (existsSync(retired)) {
+      try {
+        const raw = readFileSync(retired, 'utf-8').trim();
+        if (raw) {
+          this.entries.push({
+            id: `obs_${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            type: 'note',
+            content: raw,
+            metadata: { tags: ['legacy-state'] },
+          });
+          changed = true;
+        }
+        renameSync(retired, `${retired}.migrated`);
+        log.info('Migrated retired state.md into knowledge.md observations', { chars: raw.length });
+      } catch (err) {
+        log.warn('Failed to migrate retired state.md', { error: String(err) });
+      }
+    }
+
+    // 旧 `, tags:` 行（单 data-meta 之前的历史格式）：标记需收敛重写为规范格式。
+    try {
+      const raw = readFileSync(this.longTermFile, 'utf-8');
+      if (/(?:^|\n)<!-- type: \w+, tags: /.test(raw)) {
+        changed = true;
+        log.info('knowledge.md has legacy `, tags:` observation lines — converging to canonical `data-meta`');
+      }
+    } catch { /* file may not exist yet */ }
+
+    return changed;
+  }
+
   private loadFromDisk(): void {
-    // Migration: if memories.json exists, convert to ## _observations in knowledge.md
+    // [LEGACY-COMPAT #1] memories.json → ## _observations（见文件头「Legacy
+    // compatibility layer」）。仅当该遗留文件存在时触发一次，归一后不再触发。
     const memFile = join(this.dataDir, 'memories.json');
     if (existsSync(memFile)) {
       try {
@@ -1170,6 +1337,9 @@ export class MemoryStore implements IMemoryStore {
       this.saveToDisk();
     }
 
+    // ── Migration-read layer（P-08）：读旧 → 写成规范格式 ──────────────────
+    const migrationChanged = this.runLegacyMigrations();
+
     // ── Boot-time self-heal ──────────────────────────────────────────────
     // Some agents inherited a knowledge.md ballooned to tens/hundreds of MB by
     // an older nested-serialize feedback bug (a `data-meta` blob re-parsed as a
@@ -1184,14 +1354,21 @@ export class MemoryStore implements IMemoryStore {
     // This is idempotent and safe: entries were parsed with the fixed reader,
     // so re-writing them produces a clean, compact file.
     if (this.shouldSelfHeal()) {
-      log.warn('knowledge.md detected oversized/corrupt — rebuilding observations', {
-        store: this.getStoreFileName(),
-        fileBytes: statSync(this.longTermFile).size,
-        entryCount: this.entries.length,
-        maxEntryChars: this.entries.length
-          ? Math.max(...this.entries.map((e) => e.content.length))
-          : 0,
-      });
+      // 审计 P-07：安全修复 —— 先备份原文，再重建（绝不丢数据）。
+      try {
+        const backup = `${this.longTermFile}.corrupt-${Date.now()}.bak`;
+        writeFileSync(backup, readFileSync(this.longTermFile, 'utf-8'));
+        log.warn('knowledge.md oversized/corrupt — backed up, then rebuilding observations', {
+          store: this.getStoreFileName(),
+          backup: basename(backup),
+          fileBytes: statSync(this.longTermFile).size,
+          entryCount: this.entries.length,
+        });
+      } catch (err) {
+        log.warn('Failed to back up knowledge.md before self-heal', { error: String(err) });
+      }
+      this.saveToDisk();
+    } else if (migrationChanged) {
       this.saveToDisk();
     }
 
@@ -1219,14 +1396,14 @@ export class MemoryStore implements IMemoryStore {
     if (!existsSync(this.longTermFile)) {
       return { converged: false, charsBefore: 0, charsAfter: 0 };
     }
-    let size = 0;
+    let chars = 0;
     try {
-      size = statSync(this.longTermFile).size;
+      chars = readFileSync(this.longTermFile, 'utf-8').length;
     } catch {
       return { converged: false, charsBefore: 0, charsAfter: 0 };
     }
-    if (size <= MEMORY_MD_TOTAL_MAX_CHARS) {
-      return { converged: false, charsBefore: size, charsAfter: size };
+    if (chars <= MEMORY_MD_TOTAL_MAX_CHARS) {
+      return { converged: false, charsBefore: chars, charsAfter: chars };
     }
     const result = this.compressLongTermMemory();
     log.warn('knowledge.md over budget at load — converged', {
@@ -1411,9 +1588,25 @@ export class MemoryStore implements IMemoryStore {
         '<!-- Dream cycle consolidates recurring patterns into curated sections above. -->',
         '',
       ];
-      const entries = this.entries
-        .filter(e => e.content.trim().length > 0)
-        .slice(-MemoryStore.MAX_MEMORY_ENTRIES);
+      // 审计 P-10：观察缓冲区有界（字符），且与压缩碎片**分池**（各有 500 上限），
+      // 碎片不再挤占观察配额。超限的观察**无损归档**（可检索），绝不静默丢弃。
+      const isFrag = (e: MemoryEntry) => e.type === 'conversation_fragment';
+      const obsCount = () => this.entries.filter(e => !isFrag(e)).length;
+      let obsChars = this.entries
+        .filter(e => !isFrag(e))
+        .reduce((n, e) => n + e.content.length + 96, 0);
+      while (obsChars > MEMORY_OBSERVATIONS_MAX_CHARS && obsCount() > 1) {
+        const idx = this.entries.findIndex(e => !isFrag(e));
+        if (idx < 0) break;
+        const oldest = this.entries.splice(idx, 1)[0]!;
+        this.archiveSection(`observation ${oldest.id}`, oldest.content);
+        obsChars -= oldest.content.length + 96;
+      }
+      // 分池计数上限：观察与碎片各自独立保留最新 500 条（保持原顺序）。
+      const keptObs = this.entries.filter(e => !isFrag(e)).slice(-MemoryStore.MAX_MEMORY_ENTRIES);
+      const keptFrags = this.entries.filter(isFrag).slice(-MemoryStore.MAX_MEMORY_ENTRIES);
+      const keepIds = new Set<string>([...keptObs, ...keptFrags].map(e => e.id));
+      const entries = this.entries.filter(e => keepIds.has(e.id) && e.content.trim().length > 0);
       this.entries = entries;
       for (const entry of entries) {
         obsLines.push(`### ${entry.id}`);
@@ -1526,63 +1719,55 @@ export class MemoryStore implements IMemoryStore {
     }
 
     const sectionsBefore = sections.length;
-    let truncatedChunks = 0;
+    let archived = 0;
 
-    // ── Phase 2: per-section cap ─────────────────────────────────────────
+    const render = (): string => {
+      const out: string[] = [...preambleLines];
+      for (const s of sections) out.push(s.headerLine, s.body.join('\n'));
+      return out.join('\n');
+    };
+    const size = () => render().length;
+
+    const isPointer = (s: { body: string[] }) => /^_\[archived/.test(s.body.join('\n').trim());
+    const archiveBodyOf = (section: { headerLine: string; body: string[] }): void => {
+      const bodyStr = section.body.join('\n').trim();
+      if (!bodyStr) return;
+      const name = section.headerLine.replace(/^##\s+/, '').trim();
+      this.archiveSection(name, bodyStr); // 无损：正文进 knowledge-archive.md
+      section.body = [`_[archived → ${this.getArchiveFileName()}；正文已无损归档，可用 memory_search 检索]_`];
+      archived++;
+    };
+
+    // ── Phase 2: 单段超限 → 归档该段正文（无损，不截断）──────────────────
     for (const section of sections) {
       if (section.observationBuffer) continue;
-      const bodyStr = section.body.join('\n');
-      if (bodyStr.length > MEMORY_MD_SECTION_MAX_CHARS) {
-        // The explanatory footer counts AGAINST the cap, otherwise the "capped"
-        // section is limit+footer chars and the cap is not actually a cap.
-        const note = `\n_[section truncated to ${MEMORY_MD_SECTION_MAX_CHARS} chars]_`;
-        section.body = [bodyStr.slice(0, MEMORY_MD_SECTION_MAX_CHARS - note.length) + note];
-        truncatedChunks++;
-      }
+      if (section.body.join('\n').length > MEMORY_MD_SECTION_MAX_CHARS) archiveBodyOf(section);
     }
 
-    // ── Phase 3: TOTAL convergence ───────────────────────────────────────
-    // The per-section cap alone does NOT bound the file: N sections × 3 000 chars
-    // can sit arbitrarily far above MEMORY_MD_TOTAL_MAX_CHARS, and the total was
-    // only ever checked on the WRITE path — where crossing it caused the write to
-    // be REFUSED. A refused write cannot shrink an oversized file, so once a
-    // knowledge.md was over budget it stayed over budget forever (measured: 23 323
-    // chars against a 15 000 limit). Converge here instead: shrink the largest
-    // curated sections to a stub until the file fits, preserving the heading (so
-    // the index line and `memory_search` still surface the topic) and never
-    // touching `## _observations`.
-    const size = () => preambleLines.length
-      + sections.reduce((n, s) => n + s.headerLine.length + s.body.join('\n').length + 2, 0);
+    // ── Phase 3: 总量超限 → 逐个归档最大段落正文，直到达标 ─────────────────
+    // 审计 P-04/P-05：以前这里把段落「压成 stub」（有损）；现在改为把正文移入
+    // knowledge-archive.md（无损、可检索、不注入），主文件只留标题 + 指针。
+    // 绝不触碰 ## _observations（它有自己的容量与整理路径）。
     if (size() > MEMORY_MD_TOTAL_MAX_CHARS) {
       const shrinkable = sections
-        .filter(s => !s.observationBuffer)
+        .filter(s => !s.observationBuffer && !isPointer(s))
         .sort((a, b) => b.body.join('\n').length - a.body.join('\n').length);
       for (const section of shrinkable) {
         if (size() <= MEMORY_MD_TOTAL_MAX_CHARS) break;
-        const bodyStr = section.body.join('\n').trim();
-        if (bodyStr.length <= KNOWLEDGE_STUB_MAX_CHARS) continue;
-        section.body = [
-          `${bodyStr.slice(0, KNOWLEDGE_STUB_MAX_CHARS)}\n`
-          + `_[section condensed — knowledge.md was over its ${MEMORY_MD_TOTAL_MAX_CHARS}-char budget]_`,
-        ];
-        truncatedChunks++;
+        if (section.body.join('\n').trim().length <= 120) continue; // 已是小段，不值得归档
+        archiveBodyOf(section);
       }
     }
 
-    const outputLines: string[] = [...preambleLines];
-    for (const section of sections) {
-      outputLines.push(section.headerLine, section.body.join('\n'));
-    }
-
-    const compressed = outputLines.join('\n');
-    writeFileAtomic(this.longTermFile, compressed);
+    const compressed = render();
+    if (compressed !== content) writeFileAtomic(this.longTermFile, compressed);
 
     return {
       charsBefore,
       charsAfter: compressed.length,
       sectionsBefore,
       sectionsAfter: sections.length,
-      truncatedChunks,
+      truncatedChunks: archived,
     };
   }
 }

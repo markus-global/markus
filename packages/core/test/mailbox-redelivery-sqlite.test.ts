@@ -62,7 +62,6 @@ function makePersistence(repoRef: SqliteMailboxRepo): MailboxPersistence {
     },
     updateStatus: (itemId, status, extra) => repoRef.updateStatus(itemId, status, extra as Record<string, unknown>),
     markStaleProcessingAsDropped: (aid) => repoRef.markStaleProcessingAsDropped(aid),
-    markStaleProcessingAsCompleted: (aid, ownerId) => repoRef.markStaleProcessingAsCompleted(aid, ownerId),
     loadQueued: (aid) => repoRef.getByAgent(aid, { status: 'queued' }).map(toItem),
     loadDeferred: (aid) => repoRef.getByAgent(aid, { status: 'deferred' }).map(toItem),
     claimItem: (id, ownerId, leaseUntil, nowIso) => repoRef.claimItem(id, ownerId, leaseUntil, nowIso),

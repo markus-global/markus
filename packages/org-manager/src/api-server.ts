@@ -88,9 +88,13 @@ import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
-import { evaluateStall, DEFAULT_STALL_CONFIG } from './agent-stall.js';
-import { evaluateDirtyState } from './agent-dirty.js';
-import { AgentDirtyReconciler, type AgentLiveView } from './agent-dirty-reconciler.js';
+import {
+  AgentConservator,
+  evaluateConservator,
+  DEFAULT_CONSERVATOR_CONFIG,
+  type ConservatorAgentView,
+  type ConservatorVerdict,
+} from './agent-conservator.js';
 
 const log = createLogger('api-server');
 
@@ -231,7 +235,7 @@ export class APIServer {
   public licenseService?: LicenseService;
   private telemetryService?: TelemetryService;
   public storage?: StorageBridge;
-  private _dirtyReconciler?: AgentDirtyReconciler;
+  private _conservator?: AgentConservator;
   public llmRouter?: LLMRouter;
   public markusConfigPath?: string;
   private hubUrl = 'https://markus.global';
@@ -920,7 +924,7 @@ export class APIServer {
         }
 
         // Reject raw tool commands and slash commands — agent should use the actual tool.
-        const TOOL_CMD_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|update_notebook|clear_notebook|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
+        const TOOL_CMD_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|notebook_upsert|notebook_clear|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
         const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
         const blockedLines = cleanText.split('\n').filter(line => TOOL_CMD_RE.test(line) || SLASH_CMD_RE.test(line));
         if (blockedLines.length > 0) {
@@ -1973,7 +1977,7 @@ export class APIServer {
       //   1. Known Markus tool names — slash is optional (agent may write "recall_context" or "/recall_context")
       //   2. Generic slash commands from other platforms — slash is REQUIRED to avoid false positives
       //      (e.g. "/history 30" is a command, but "List the points" is normal text)
-      const KNOWN_TOOL_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|update_working_memory|clear_working_memory|update_notebook|clear_notebook|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
+      const KNOWN_TOOL_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|notebook_upsert|notebook_clear|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
       const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
       const cleanReply = noResponseStripped.split('\n')
         .filter(line => !KNOWN_TOOL_RE.test(line) && !SLASH_CMD_RE.test(line))
@@ -2435,7 +2439,7 @@ export class APIServer {
         void this.warmRoutingCandidates();
       });
       this.tryInitFeishuNotifier();
-      this.tryInitDirtyReconciler();
+      this.tryInitConservator();
     });
   }
 
@@ -2535,19 +2539,20 @@ export class APIServer {
    * Uses the Secretary's main session for context continuity (same as Web UI DM).
    */
   /**
-   * 启动 OB-3 脏态兜底 reconciler（守卫启动）。依赖（storage/taskService/orgService）
-   * 就绪时才启动；否则静默跳过（下次可通过重建 server 或首次触发重试）。安全默认：
-   * recover 只触发一次恢复心跳（让健康的 agent 自愈），不对 core 状态机做破坏性改动。
+   * 启动存活安全网统一仲裁器（Conservator，守卫启动）。依赖（storage/taskService/orgService）
+   * 就绪时才启动；否则静默跳过。安全默认：recover 只触发一次恢复心跳 / reconcile-idle
+   * （让健康的 agent 自愈），不对 core 状态机做破坏性改动；指数退避 + 次数上限 + 收敛证明
+   * 由 AgentConservator 内部保证（重构 1：dirty/stale/stall 收敛为单一仲裁组件）。
    */
-  private tryInitDirtyReconciler(): void {
-    if (this._dirtyReconciler) return;
+  private tryInitConservator(): void {
+    if (this._conservator) return;
     if (!this.storage || !this.taskService || !this.orgService) {
-      log.info('Dirty reconciler deferred — deps not ready');
+      log.info('Conservator deferred — deps not ready');
       return;
     }
     try {
       const agentManager = this.orgService.getAgentManager();
-      const reconciler = new AgentDirtyReconciler({
+      const conservator = new AgentConservator({
         getTask: (id: string) => this.taskService!.getTask(id) as never,
         appendExecution: (entry) => {
           // O 域可观测：把「谁/何时/为何被兜底」写入执行流，供 /api/execution-logs 与前端追溯。
@@ -2563,35 +2568,35 @@ export class APIServer {
             metadata: entry.metadata ?? {},
           });
         },
-        recover: async (v) => {
-          // 兜底：按恢复类型真正执行 —— reconcile-idle 直接清残留活动并回收 idle；
+        recover: async (v: ConservatorVerdict) => {
+          // 兜底：按统一仲裁动作真正执行 —— reconcile-idle 直接清残留活动并回收 idle；
           // trigger-heartbeat 在 agent 私有 bus 上触发一次心跳让 agent 自愈。
           // （此前统一 emit 到 manager bus 的 heartbeat:trigger 事件，agent 监听的是
           //   各自私有 bus，事件从未到达目标 —— 导致脏 agent 永远无法恢复。）
           let recovered = false;
           try {
-            if (v.recovery === 'reconcile-idle') {
+            if (v.action === 'reconcile-idle') {
               recovered = agentManager.reconcileAgentToIdle(v.agentId);
-            } else if (v.recovery === 'trigger-heartbeat') {
+            } else if (v.action === 'trigger-heartbeat') {
               recovered = agentManager.triggerAgentHeartbeat(v.agentId);
             }
           } catch (err) {
-            log.warn('Dirty reconciler recover failed', { agentId: v.agentId, recovery: v.recovery, error: String(err) });
+            log.warn('Conservator recover failed', { agentId: v.agentId, action: v.action, error: String(err) });
           }
-          log.info('Dirty reconciler recovering agent', {
+          log.info('Conservator recovering agent', {
             agentId: v.agentId,
-            recovery: v.recovery,
+            action: v.action,
             recovered,
             reason: v.reason,
           });
           this.ws?.broadcast?.({
             type: 'agent:dirty-recovered',
-            payload: { agentId: v.agentId, recovery: v.recovery, recovered, reason: v.reason },
+            payload: { agentId: v.agentId, recovery: v.action, recovered, reason: v.reason },
             timestamp: new Date().toISOString(),
           });
         },
         onNeedsHuman: (v) => {
-          log.warn('Dirty agent needs human review', { agentId: v.agentId, reason: v.reason, suggestions: v.suggestions });
+          log.warn('Agent needs human review (Conservator)', { agentId: v.agentId, reason: v.reason, suggestions: v.suggestions });
           this.ws?.broadcast?.({
             type: 'agent:dirty-human-review',
             payload: { agentId: v.agentId, reason: v.reason, suggestions: v.suggestions },
@@ -2599,22 +2604,26 @@ export class APIServer {
           });
         },
       });
-      this._dirtyReconciler = reconciler;
-      // 30s 轮询一次；scan 内部已按 feature flag + 去重组装，非脏态无副作用。
-      reconciler.start(() => {
-        const agents = agentManager.listAgents() as unknown as AgentLiveView[];
+      this._conservator = conservator;
+      // 30s 轮询一次；scan 内部已按 feature flag + 指数退避 + 次数上限组装，非脏态无副作用。
+      conservator.start(() => {
+        const agents = agentManager.listAgents() as unknown as ConservatorAgentView[];
         return agents.map((a) => ({
           agentId: String((a as any).id ?? a.agentId),
           status: String((a as any).status ?? a.status),
           currentActivity: (a as any).currentActivity,
           activeTaskIds: (a as any).activeTaskIds,
           lastHeartbeat: (a as any).lastHeartbeat,
+          lastProgressAt: (a as any).lastProgressAt,
+          lastError: (a as any).lastError,
           lastErrorAt: (a as any).lastErrorAt,
+          currentTaskId: (a as any).currentTaskId,
+          tokensUsedToday: (a as any).tokensUsedToday,
         }));
       }, 30_000);
-      log.info('Agent dirty reconciler started');
+      log.info('Agent Conservator started');
     } catch (err) {
-      log.warn('Failed to init dirty reconciler', { error: String(err) });
+      log.warn('Failed to init Conservator', { error: String(err) });
     }
   }
 
@@ -4407,24 +4416,27 @@ export class APIServer {
           },
           taskLookup,
         );
-        // OB-2: 在 runtime 之上派生出「疑似卡死」定位信息（stale-heartbeat 心跳停滞 /
-        // dead-dependency 依赖已死仍等待），让前端一眼看到阻塞点而非无限转圈。
-        const stall = evaluateStall({ runtime }, undefined, DEFAULT_STALL_CONFIG);
-        // OB-3: 派生「无任务却标记 processing」的脏态判定 —— 纯派生，只读 agent live state，
-        // 不回写状态；供前端给出「脏态 / 已自动兜底 / 需人工介入」提示。真实兜底由
-        // 周期 reconciler（start 时守卫启动）执行，此处仅为可观测展示。
-        const dirty = evaluateDirtyState(
+        // 重构 1（Conservator 统一仲裁）：OB-2 疑似卡死（stall）+ OB-3 脏态（dirty）收敛为
+        // 单一 evaluateConservator 判定 —— 展示 path 只读派生，不回写状态；真实兜底由周期
+        // Conservator（start 时守卫启动）执行。payload 形状与旧 runtime.stall / runtime.dirty 完全兼容。
+        const verdict = evaluateConservator(
           {
             agentId: listItem.id,
             status: listItem.status,
+            currentTaskId: listItem.currentTaskId,
             currentActivity: listItem.currentActivity,
-            activeTaskIds: (a as any).activeTaskIds,
             lastHeartbeat: (a as any).lastHeartbeat,
+            lastProgressAt: (a as any).lastProgressAt,
+            lastError: listItem.lastError,
             lastErrorAt: listItem.lastErrorAt,
+            tokensUsedToday: (a as any).tokensUsedToday,
+            activeTaskIds: (a as any).activeTaskIds,
           },
           taskLookup,
+          undefined,
+          DEFAULT_CONSERVATOR_CONFIG,
         );
-        return { ...a, runtime: { ...runtime, stall, dirty } };
+        return { ...a, runtime: { ...runtime, stall: verdict.stall, dirty: verdict.dirty } };
       });
       this.json(res, 200, { agents });
       return;
@@ -5721,6 +5733,25 @@ export class APIServer {
         const dailyLog = mem.getDailyLog();
         const recentDailyLogs = mem.getRecentDailyLogs(7);
         const longTermMemory = mem.getLongTermMemory();
+        // 审计 P-12/§9.1：暴露记忆健康可观测字段（前端 MemoryTab 可视化）。
+        const health = (() => {
+          try {
+            const h = (mem as unknown as { getMemoryHealth?: () => { percent: number; totalChars: number; cap: number; observations: number; curatedSections: number; archiveChars: number; lastConsolidatedAt: string | null } }).getMemoryHealth?.();
+            return h
+              ? {
+                  usedPercent: h.percent,
+                  budgetChars: h.totalChars,
+                  budgetLimit: h.cap,
+                  observationCount: h.observations,
+                  curatedCount: h.curatedSections,
+                  archivedChars: h.archiveChars,
+                  lastConsolidatedAt: h.lastConsolidatedAt,
+                }
+              : {};
+          } catch {
+            return {};
+          }
+        })();
         this.json(res, 200, {
           entries: entries.map(e => ({
             type: e.type,
@@ -5742,6 +5773,7 @@ export class APIServer {
           dailyLog: dailyLog ?? null,
           recentDailyLogs: recentDailyLogs ?? null,
           longTermMemory: longTermMemory ?? null,
+          ...health,
         });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
@@ -5812,8 +5844,8 @@ export class APIServer {
         const body = await this.readBody(req);
         const key = (body['key'] as string) ?? '';
         const content = (body['content'] as string) ?? '';
-        agent.getMemory().addLongTermMemory(key, content);
-        this.json(res, 200, { ok: true });
+        const writeResult = await agent.updateLongTermMemory(key, content);
+        this.json(res, 200, { ok: writeResult.ok, reason: writeResult.reason });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }

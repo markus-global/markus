@@ -61,6 +61,34 @@ export function isWithinActiveHours(activeHours: HeartbeatActiveHours, now: Date
   return current >= startMin || current < endMin;
 }
 
+/**
+ * 重构 2：心跳巡检状态指纹（纯函数，可确定性单测）。
+ *
+ * 编码「与 LLM 巡检相关的 agent 状态」—— 队列内容 + 活跃任务。仅当指纹变化时
+ * 才值得运行一次心跳 LLM 巡检；指纹不变 → skip（只写时间戳落库，不空转 LLM）。
+ *
+ * 维度设计（对照 docs/agent-liveness-redesign.md §三.2「LLM 巡检只在有实际变化时发生」）：
+ *   · 队列签名：**内容（sourceType + item id）**而非深度 —— 同一邮件一直挂着不构成
+ *     「状态变化」；新邮件到达（新 id）才触发。修复旧实现「队列深度相同即 skip /
+ *     队列深度变化即巡检」的双向误判：同一邮件挂一天不空转 LLM，新邮件却立刻感知。
+ *   · 活跃任务签名：任务开始/结束 → 巡检一次；任务集稳定 → 不巡检（任务会话自己
+ *     在做 LLM 工作，心跳不需要重复巡检）。
+ *
+ * 特意**不含** lastHeartbeat 时间戳（skip 也会写它 → 含则指纹恒变化 → 永远巡检）。
+ */
+export function heartbeatStateFingerprint(
+  queued: Array<{ sourceType: string; id: string }>,
+  activeTaskIds: Iterable<string>,
+): string {
+  const queue = queued
+    .filter(i => i.sourceType !== 'heartbeat')
+    .map(i => `${i.sourceType}:${i.id}`)
+    .sort()
+    .join(',');
+  const tasks = [...activeTaskIds].sort().join(',');
+  return `q:[${queue}]|t:[${tasks}]`;
+}
+
 export class HeartbeatScheduler {
   private initialTimer?: ReturnType<typeof setTimeout>;
   private timer?: ReturnType<typeof setInterval>;

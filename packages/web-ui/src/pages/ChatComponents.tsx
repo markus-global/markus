@@ -680,6 +680,7 @@ function ProcessRun({
   isStreaming,
   isLastBlock,
   hideApprovalCards,
+  reconnecting,
 }: {
   entries: ExecutionStreamEntryUI[];
   summary: ProcessRunSummary;
@@ -688,6 +689,12 @@ function ProcessRun({
   /** 这是时间线上的最后一块 —— 只有它可能以「思考中」收尾。 */
   isLastBlock: boolean;
   hideApprovalCards?: boolean;
+  /**
+   * SSE 传输断了、正在自动接回（服务端其实还在跑）。
+   * 此时**不能**收起「输出中」的活动反馈 —— 否则用户会以为这一轮已经结束，
+   * 于是重发请求（而服务端还在生成，导致重复）。断线是传输层的事，不是回合的结束。
+   */
+  reconnecting?: boolean;
 }) {
   const { t } = useTranslation('common');
   const [open, setOpen] = useState(false);
@@ -709,15 +716,23 @@ function ProcessRun({
   // 只要这轮还在流式，它就是在跑。只按位置判会让一个没收尾的工具显示成
   // 绿勾（已跑完），这是错的。位置只用来回答「思考是不是还在进行」——
   // 后面已经又出了正文，说明那段思考早就结束了。
-  const running = isStreaming && (summary.running || (isLastBlock && summary.tailIsThinking));
+  // 只要仍在流式输出且这是最后一块，就保持「输出中」的活动反馈。
+// 这覆盖了「LLM 首 token 还没返回、气泡里暂时什么都没有」的空窗
+// —— 否则用户会误以为 Agent 卡住。流结束（isStreaming=false）后自动收束。
+// 断线重连中同样算「在跑」：服务端还在生成，只是我们的传输断了。
+// 不这么算的话，气泡会在断线的一瞬间收起活动反馈，看起来像「答完了」——
+// 用户就会重发请求，可服务端其实还在跑（重复劳动 + 重复气泡）。
+const running = !!(isStreaming && (isLastBlock || summary.running)) || !!reconnecting;
   // 三个状态优先级：在跑 > 有失败 > 完成。跑着的时候先别急着报错（后面还会重试）。
   // 只有「在跑 / 跑完」两态：工具失败不再单独出一种图标（失败次数仍写在 label 里）。
   const state: ProcessRunState = running ? 'running' : 'done';
-  const liveLabel = running && summary.runningTool
+  const liveLabel = reconnecting
+    ? t('execution.reconnecting')
+    : (running && summary.runningTool
     ? t('execution.processRun.runningTool', {
         tool: t(`execution.tools.${summary.runningTool}`, { defaultValue: summary.runningTool }),
       })
-    : null;
+    : null);
 
   const parts: string[] = [];
   if (summary.thinkingCount > 0) parts.push(t('execution.processRun.thinking'));
@@ -1086,6 +1101,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
               isStreaming={isStreaming}
               isLastBlock={globalIndex === blocks.length - 1}
               hideApprovalCards
+              reconnecting={!!msg.reconnecting}
             />
           );
         })}

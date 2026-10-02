@@ -239,17 +239,18 @@ describe('AgentMailbox async and persistence', () => {
     expect(updateStatus).toHaveBeenCalledWith('mbx_stale', 'dropped');
   });
 
-  it('cleanStaleProcessing delegates to persistence', () => {
-    const markCompleted = vi.fn(() => 3);
+  it('cleanStaleProcessing delegates to persistence (dropped, not completed)', () => {
+    // 语义：卡住/被打断/超时的工作 ≠ 完成。cleanStaleProcessing 只应把 stuck
+    // 'processing' 标为 dropped（异常可见 + 允许补偿重投），绝不标 completed。
+    const markDropped = vi.fn(() => 3);
     const { mailbox } = makeMailbox({
       save: vi.fn(),
       updateStatus: vi.fn(),
-      markStaleProcessingAsCompleted: markCompleted,
+      markStaleProcessingAsDropped: markDropped,
     });
 
     expect(mailbox.cleanStaleProcessing()).toBe(3);
-    // P0：cleanStaleProcessing 传本实例 ownerId（用于排除其它实例有效租约内的在飞项）
-    expect(markCompleted).toHaveBeenCalledWith(AGENT_ID, expect.any(String));
+    expect(markDropped).toHaveBeenCalledWith(AGENT_ID);
   });
 
   it('emits mailbox:new-item on enqueue', () => {

@@ -24,8 +24,7 @@ import {
   type TriageResult,
   type DeliberationResult,
   type CognitiveConfig,
-  type CognitiveStimulus,
-  type CognitiveAgentContext,
+  CognitiveDepth,
   type PreparedCognitiveContext,
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
@@ -54,7 +53,6 @@ import {
   NOTEBOOK_MAX_ENTRIES,
   NOTEBOOK_MAX_CHARS_PER_ENTRY,
   NOTEBOOK_PROMPT_MAX_CHARS,
-  NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS,
   NOTEBOOK_PERSIST_MAX_WAIT_MS,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
@@ -63,7 +61,7 @@ import { EventBus } from './events.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
 import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
-import { HeartbeatScheduler } from './heartbeat.js';
+import { HeartbeatScheduler, heartbeatStateFingerprint } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
 import { stripToolNoise } from './llm/provider-helpers.js';
 import { MemoryStore, loadNotebook, saveNotebook, pruneNotebookEntries, normalizeNotebookKey, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
@@ -71,7 +69,6 @@ import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
 import { ContextEngine, type OrgContext, type LLMSummarizer, type SystemPromptSegment } from './context-engine.js';
-import { CognitivePreparation, selectCognitiveDepth } from './cognitive.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
 import {
@@ -80,6 +77,7 @@ import {
   COMMENT_RESPONSE_ALLOWED_TOOLS,
   REQUIREMENT_ACTION_ALLOWED_TOOLS,
   WORKFLOW_ACTION_ALLOWED_TOOLS,
+  SCHEMA_INJECTED_TOOLS,
   type CapabilityPack,
 } from './capability-packs.js';
 import { ensureAffordablePromptPack } from './afford-guard.js';
@@ -551,8 +549,7 @@ export class Agent {
   private notebookSaveTimer?: ReturnType<typeof setTimeout>;
   /** Earliest time the debounced notebook write may be deferred to (maxWait). */
   private notebookSaveDeadline?: number;
-  /** Cognitive Preparation Pipeline instance (null when CPP is disabled) */
-  private cognitivePrep?: CognitivePreparation;
+  /** 审计 §8.1：CPP 的 LLM 管道已移除；仅保留配置（决定是否注入确定性情境块）。 */
   private cognitiveConfig?: CognitiveConfig;
   /** Ring buffer of recent activity summaries for triage context. */
   private recentActivityRing: string[] = [];
@@ -752,7 +749,6 @@ export class Agent {
     this.toolHooks = new ToolHookRegistry();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
     if (options.cognitive?.enabled) {
-      this.cognitivePrep = new CognitivePreparation(options.cognitive);
       this.cognitiveConfig = options.cognitive;
     }
     this.heartbeat = new HeartbeatScheduler(this.id, this.eventBus, {
@@ -942,9 +938,66 @@ export class Agent {
   }
 
   /**
-   * Set agent status and emit status change event
+   * 单一状态转换意图（状态机收敛）——调用点只表达「发生了什么」，
+   * 不自行判断守卫；终态由 transitionStatus 内部按聚合状态 + 优先级裁定。
+   *   - working ：某个工作单元开始（幂等；可从 error 恢复并清错）
+   *   - idle    ：某个工作单元结束，请求回空闲（仅聚合空闲时落地；error 粘性：不被覆盖）
+   *   - error   ：工作单元失败（记录错误；仅无活跃任务时落地，避免部分失败污染全局状态）
+   *   - offline ：生命周期 stop（无条件）
+   *   - reset   ：生命周期 start / reconcile 兜底（无条件回 idle 并清错误）
    */
-  private setStatus(status: AgentState['status'], errorMessage?: string): void {
+  private transitionStatus(
+    intent:
+      | { to: 'working' }
+      | { to: 'idle' }
+      | { to: 'error'; message: string }
+      | { to: 'offline' }
+      | { to: 'reset' },
+    opts?: { force?: boolean },
+  ): void {
+    const oldStatus = this.state.status;
+    const force = opts?.force === true;
+
+    // 生命周期/兜底：无条件落地（start / stop / reconcile）。
+    if (intent.to === 'reset') {
+      this.applyStatus('idle');
+      return;
+    }
+    if (intent.to === 'offline') {
+      this.applyStatus('offline');
+      return;
+    }
+
+    // working：幂等；新工作开始视为恢复，允许覆盖 error 并清错。
+    if (intent.to === 'working') {
+      if (oldStatus === 'working') return;
+      this.applyStatus('working');
+      return;
+    }
+
+    // error：仅在无活跃任务时落地（与历史语义一致：部分失败不污染全局状态）。
+    if (intent.to === 'error') {
+      if (!force && this.activeTasks.size > 0) return;
+      this.applyStatus('error', intent.message);
+      return;
+    }
+
+    // idle：error 粘性 —— 一旦进入 error，后续 idle 意图不得覆盖（需 reset / 新 working 恢复）；
+    // 且仅当聚合空闲（无活跃任务；并发模式下各 worker 均空闲）才落地，避免与并行工作互相覆盖。
+    if (oldStatus === 'error' && !force) return;
+    if (!force && this.activeTasks.size > 0) return;
+    if (
+      !force &&
+      this.attentionController.getWorkerCount() > 1 &&
+      this.attentionController.getState() !== 'idle'
+    ) {
+      return;
+    }
+    this.applyStatus('idle');
+  }
+
+  /** 状态落地的唯一写入点：维护 lastError/lastErrorAt + stateManager + 状态通知。 */
+  private applyStatus(status: AgentState['status'], errorMessage?: string): void {
     const oldStatus = this.state.status;
     if (oldStatus === status && status !== 'error') return;
 
@@ -967,7 +1020,8 @@ export class Agent {
   }
 
   async start(options?: { initialHeartbeatDelayMs?: number }): Promise<void> {
-    this.setStatus('idle');
+    // start 是生命周期重置：无条件回 idle 并清错误。
+    this.transitionStatus({ to: 'reset' });
     this.stopReason = undefined;
 
     // Load persistent notebook (NOTEBOOK.md)
@@ -1092,7 +1146,7 @@ export class Agent {
     }
     this.metricsCollector.flush();
     this.stopReason = reason;
-    this.setStatus('offline');
+    this.transitionStatus({ to: 'offline' });
     this.eventBus.emit('agent:stopped', { agentId: this.id });
     log.info(`Agent stopped: ${this.config.name}`, { reason });
   }
@@ -1511,15 +1565,10 @@ export class Agent {
           mailboxDepth: this.mailbox.depth,
         });
         if (item) {
-          this.setStatus('working');
-        } else if (this.attentionController.getWorkerCount() > 1) {
-          // 并发模式：单个 worker 结束不代表 agent 空闲 —— 只有所有 worker
-          // 都空闲（聚合状态 idle）才恢复 idle，避免状态抖动。
-          if (this.attentionController.getState() === 'idle' && this.activeTasks.size === 0) {
-            this.setStatus('idle');
-          }
-        } else if (this.activeTasks.size === 0) {
-          this.setStatus('idle');
+          this.transitionStatus({ to: 'working' });
+        } else {
+          // 空闲判定统一收敛到 transitionStatus（活跃任务 + 并发 worker 聚合判断在函数内完成）。
+          this.transitionStatus({ to: 'idle' });
         }
       },
       getWorkerWorkspace: (workerId: number) => {
@@ -3630,20 +3679,6 @@ export class Agent {
     }
   }
 
-  private getNotebookWriter(): (key: string, text: string, managed: 'system' | 'cpp') => void {
-    return (key: string, text: string, managed: 'system' | 'cpp') => {
-      // `relevant-context` is a transcript of retrieved knowledge that is ALREADY
-      // injected as `## Your Knowledge`. One such entry measured 9 475 chars — more
-      // than the entire notebook prompt budget (6 000) — so it used to crowd every
-      // real note out of the injected block. Cap it hard; the full text remains
-      // retrievable via `memory_search`.
-      const capped = key === 'relevant-context'
-        ? text.slice(0, NOTEBOOK_RELEVANT_CONTEXT_MAX_CHARS)
-        : text;
-      this.writeNotebookEntry(key, capped, managed);
-    };
-  }
-
   /** Activated skill bodies — injected as their own uncapped system section. */
   private getActivatedSkillContext(): string | undefined {
     const instructions = this.activatedSkills();
@@ -3669,7 +3704,7 @@ export class Agent {
 
     if (this.workingMemory.size > 0) {
       const wmLines = ['## Notebook'];
-      wmLines.push(`Your cognitive workspace (max ${NOTEBOOK_MAX_ENTRIES} entries, ${Agent.NOTEBOOK_PROMPT_MAX_ENTRIES} shown). Persists across sessions. Update via \`update_notebook\`. System entries are auto-managed and expire on their own. Choose keys wisely — the oldest entry is evicted when full.`);
+      wmLines.push(`Your cognitive workspace (max ${NOTEBOOK_MAX_ENTRIES} entries, ${Agent.NOTEBOOK_PROMPT_MAX_ENTRIES} shown). Persists across sessions. Update via \`notebook_upsert\`. System entries are auto-managed and expire on their own. Choose keys wisely — the oldest entry is evicted when full.`);
       wmLines.push('');
 
       // Deterministic, most-recent-first order. Two properties matter here:
@@ -3731,60 +3766,34 @@ export class Agent {
   }
 
   /**
-   * Run the Cognitive Preparation Pipeline (appraisal phase) before the main LLM call.
-   * Returns undefined when CPP is disabled or on error (caller falls back to mechanical retrieval).
+   * 审计 §8.1：确定性情境准备（原 CPP 的 LLM 多阶段管道已移除）。
+   *
+   * 旧 CPP 在主调用前跑 0–3 次 LLM（appraise / reflect），带来额外时延与成本，
+   * 且与上下文引擎自身「有界的相关记忆检索」重复。现改为**纯确定性**装配一小段
+   * 情境块（近期活动 + 工作记忆键）；更深的跨域召回由 Agent 按场景提示主动调
+   * `memory_search` / `kb_search` 承担。返回 undefined 表示无情境可注入。
    */
   private async prepareCognitiveContext(
-    scenario: string,
-    message: string,
-    sender?: string,
+    _scenario: string,
+    _message: string,
+    _sender?: string,
   ): Promise<PreparedCognitiveContext | undefined> {
-    if (!this.cognitivePrep) return undefined;
-
-    const stimulus: CognitiveStimulus = {
-      type: scenario,
-      summary: message.slice(0, 200),
-      content: message,
-      sender,
-      scenario,
-    };
-
-    const agentCtx: CognitiveAgentContext = {
-      id: this.id,
-      name: this.config.name,
-      roleDescription: this.role.systemPrompt.slice(0, 300),
-      status: this.state.status,
-      currentTask: this.currentTaskId,
-      recentActivity: [
-        ...this.recentActivityRing.slice(-5),
-        ...(this.workingMemory.size > 0
-          ? [`[working_memory] ${this.workingMemory.size} entries: ${[...this.workingMemory.keys()].join(', ')}`]
-          : []),
-      ],
-    };
-
-    const tasks = this.tasksFetcher?.();
-    const hasFailedTasks = tasks?.some(t => t.status === 'failed') ?? false;
-    const hasBlockers = tasks?.some(t => t.status === 'blocked') ?? false;
-
-    const depth = selectCognitiveDepth(scenario, { hasFailedTasks, hasBlockers }, message.length);
-
-    try {
-      const startMs = Date.now();
-      const timeoutMs = this.cognitiveConfig?.timeoutMs ?? 15_000;
-      const result = await Promise.race([
-        this.cognitivePrep.prepare(stimulus, agentCtx, depth, this.llmRouter),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`CPP timed out after ${timeoutMs}ms`)), timeoutMs),
-        ),
-      ]);
-      const elapsedMs = Date.now() - startMs;
-      log.info('CPP completed', { depth: result.depth, isEmpty: result.isEmpty, elapsedMs });
-      return result;
-    } catch (err) {
-      log.warn('CPP failed, falling back to mechanical retrieval', { error: String(err) });
-      return undefined;
+    if (!this.cognitiveConfig?.enabled) return undefined;
+    const parts: string[] = [];
+    const activity = this.recentActivityRing.slice(-3);
+    if (activity.length > 0) {
+      parts.push('Recent activity:', ...activity.map((a) => `- ${a}`));
     }
+    if (this.workingMemory.size > 0) {
+      const keys = [...this.workingMemory.keys()].slice(0, 8).join(', ');
+      parts.push(`Working memory: ${this.workingMemory.size} entries (${keys})`);
+    }
+    if (parts.length === 0) return undefined;
+    return {
+      depth: CognitiveDepth.D1_Reactive,
+      cognitiveContext: parts.join('\n'),
+      isEmpty: false,
+    };
   }
 
   private getMailboxContext(): {
@@ -3831,12 +3840,19 @@ export class Agent {
     workerId: number;
     workerCount: number;
     handoffs: Array<{ workerId: number; kind: 'declared' | 'fact' | 'done' | 'conflict'; entityKey?: string; summary: string }>;
+    notebook?: Array<{ key: string; text: string; updatedAt: number; managed?: string }>;
   } | undefined {
     const log = this.handoffLog;
     const workerCount = this.attentionController.getWorkerCount();
     if (!log || workerCount <= 1) return undefined;
     const workerId = this.workspace().workerId;
-    return {
+    const ctx: {
+      enabled: boolean;
+      workerId: number;
+      workerCount: number;
+      handoffs: Array<{ workerId: number; kind: 'declared' | 'fact' | 'done' | 'conflict'; entityKey?: string; summary: string }>;
+      notebook?: Array<{ key: string; text: string; updatedAt: number; managed?: string }>;
+    } = {
       enabled: true,
       workerId,
       workerCount,
@@ -3847,6 +3863,12 @@ export class Agent {
         summary: h.summary,
       })),
     };
+    // P1-2：分身共享工作记忆 —— notebook 是 agent 级共享的（每个分身写的是同一
+    // 个 NOTEBOOK.md），但上下文默认不注入，分身之间互不知晓。并发模式下把快照
+    // 一起带上，让每个 worker 感知其他分身的 working-memory 状态。
+    const nb = this.getWorkingMemorySnapshot();
+    if (nb.length > 0) ctx.notebook = nb;
+    return ctx;
   }
 
   setAuditCallback(
@@ -4415,13 +4437,11 @@ export class Agent {
     // User Cancel on a non-stream turn (heartbeat etc.) — stop before spending an LLM call.
     if (this.isUserProcessingCancelled()) {
       log.info('handleMessage cancelled by user before start', { agentId: this.id, scenario: options?.scenario });
-      if (this.activeTasks.size === 0) this.setStatus('idle');
+      this.transitionStatus({ to: 'idle' });
       return '[cancelled]';
     }
 
-    if (this.activeTasks.size === 0) {
-      this.setStatus('working');
-    }
+    this.transitionStatus({ to: 'working' });
 
     const scenario = options?.scenario ?? 'chat';
     const isLightweight = scenario !== 'chat' && scenario !== 'task_execution' && scenario !== 'review';
@@ -4545,7 +4565,6 @@ export class Agent {
       concurrentContext: this.getConcurrentContext(),
       workflowContext: isLightweight ? undefined : this.workflowContextFetcher?.(),
       cognitiveContext,
-      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
     const { volatile } = systemPromptBuild;
@@ -5127,7 +5146,7 @@ export class Agent {
         this.emitActivityLog(chatActivityId, 'text', displayReply);
       }
       if (chatActivityId) this.endActivity(chatActivityId);
-      if (this.activeTasks.size === 0) this.setStatus('idle');
+      this.transitionStatus({ to: 'idle' });
 
       this.eventBus.emit('agent:message', {
         agentId: this.id,
@@ -5149,7 +5168,7 @@ export class Agent {
         });
       } catch { /* avoid masking the original error */ }
 
-      if (this.activeTasks.size === 0) this.setStatus('error', String(error));
+      this.transitionStatus({ to: 'error', message: String(error) });
       this.emitAudit({
         type: 'error',
         action: 'handle_message',
@@ -5193,16 +5212,14 @@ export class Agent {
     // onEvent callback is already a no-op when the connection is gone.
     if (cancelToken?.cancelled && cancelToken.userStopped) {
       log.info('Stream cancelled by user before processing started', { agentId: this.id });
-      if (this.activeTasks.size === 0) this.setStatus('idle');
+      this.transitionStatus({ to: 'idle' });
       return '[cancelled]';
     }
     if (cancelToken?.cancelled && !cancelToken.userStopped) {
       log.info('SSE disconnected before processing started — continuing without streaming', { agentId: this.id });
     }
 
-    if (this.activeTasks.size === 0) {
-      this.setStatus('working');
-    }
+    this.transitionStatus({ to: 'working' });
 
     // Track chat activity for streaming
     let streamChatActivityId: string | undefined;
@@ -5292,7 +5309,6 @@ export class Agent {
       concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
-      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
     const { volatile: volatileState } = systemPromptBuild;
@@ -5455,7 +5471,7 @@ export class Agent {
             });
           }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
-          if (this.activeTasks.size === 0) this.setStatus('idle');
+          this.transitionStatus({ to: 'idle' });
           return '[cancelled]';
         }
 
@@ -5479,7 +5495,7 @@ export class Agent {
               reasoningContent: response.reasoningContent,
             });
             if (streamChatActivityId) this.endActivity(streamChatActivityId);
-            if (this.activeTasks.size === 0) this.setStatus('idle');
+            this.transitionStatus({ to: 'idle' });
             return '[cancelled]';
           }
 
@@ -5566,7 +5582,7 @@ export class Agent {
               });
             }
             if (streamChatActivityId) this.endActivity(streamChatActivityId);
-            if (this.activeTasks.size === 0) this.setStatus('idle');
+            this.transitionStatus({ to: 'idle' });
             return '[cancelled]';
           }
 
@@ -5612,7 +5628,7 @@ export class Agent {
             });
           }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
-          if (this.activeTasks.size === 0) this.setStatus('idle');
+          this.transitionStatus({ to: 'idle' });
           return '[cancelled]';
         } else if (streamYield.decision === 'preempt') {
           // A human is awaiting this streamed reply (chat is non-preemptable by design;
@@ -5650,7 +5666,7 @@ export class Agent {
             });
           }
           if (streamChatActivityId) this.endActivity(streamChatActivityId);
-          if (this.activeTasks.size === 0) this.setStatus('idle');
+          this.transitionStatus({ to: 'idle' });
           return lastResponseContent || '';
         }
 
@@ -5693,7 +5709,7 @@ export class Agent {
           });
         }
         if (streamChatActivityId) this.endActivity(streamChatActivityId);
-        if (this.activeTasks.size === 0) this.setStatus('idle');
+        this.transitionStatus({ to: 'idle' });
         return '[cancelled]';
       }
       const rawReply = sanitizeLLMReply(response.content);
@@ -5712,7 +5728,7 @@ export class Agent {
         this.emitActivityLog(streamChatActivityId, 'text', displayReply);
       }
       if (streamChatActivityId) this.endActivity(streamChatActivityId);
-      if (this.activeTasks.size === 0) this.setStatus('idle');
+      this.transitionStatus({ to: 'idle' });
 
       this.eventBus.emit('agent:message', {
         agentId: this.id,
@@ -5738,7 +5754,7 @@ export class Agent {
           } catch { /* avoid masking */ }
         }
         if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: false });
-        if (this.activeTasks.size === 0) this.setStatus('idle');
+        this.transitionStatus({ to: 'idle' });
         return truncated + COMPLETION_MARKER;
       }
       if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: !cancelToken?.userStopped });
@@ -5754,7 +5770,7 @@ export class Agent {
             });
           } catch { /* avoid masking */ }
         }
-        if (this.activeTasks.size === 0) this.setStatus('idle');
+        this.transitionStatus({ to: 'idle' });
         return '[cancelled]';
       }
 
@@ -5771,7 +5787,7 @@ export class Agent {
         } catch { /* avoid masking the original error */ }
       }
 
-      if (this.activeTasks.size === 0) this.setStatus('error', String(error));
+      this.transitionStatus({ to: 'error', message: String(error) });
       this.emitAudit({
         type: 'error',
         action: 'handle_message_stream',
@@ -5900,7 +5916,7 @@ export class Agent {
         `Agent has reached maximum concurrent tasks (${taskConcurrencyLimit})`,
       );
     }
-    this.setStatus('working');
+    this.transitionStatus({ to: 'working' });
     this.activeTasks.add(taskId);
     const execGen = (this.activeTaskGen.get(taskId) ?? 0) + 1;
     this.activeTaskGen.set(taskId, execGen);
@@ -6065,7 +6081,6 @@ export class Agent {
       concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
-      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
     const { volatile: volatileState } = systemPromptBuild;
@@ -6549,12 +6564,11 @@ export class Agent {
       this.endActivity(taskActId);
       this.notifyStateChange();
 
-      if (this.activeTasks.size === 0) {
-        if (taskFailed) {
-          this.setStatus('error', taskFailed);
-        } else {
-          this.setStatus('idle');
-        }
+      // 终态裁定统一收敛到 transitionStatus（内部按聚合状态 + 优先级判定）。
+      if (taskFailed) {
+        this.transitionStatus({ to: 'error', message: taskFailed });
+      } else {
+        this.transitionStatus({ to: 'idle' });
       }
     }
   }
@@ -6580,7 +6594,7 @@ export class Agent {
       persist: boolean;
     }) => void,
   ): Promise<string> {
-    this.setStatus('working');
+    this.transitionStatus({ to: 'working' });
     const risLabel = userMessage.replace(/^[\s#*[\]]+/g, '').slice(0, 80) || 'Session response';
     const actId = this.startActivity('respond_in_session', risLabel);
 
@@ -6628,7 +6642,6 @@ export class Agent {
       concurrentContext: this.getConcurrentContext(),
       workflowContext: this.workflowContextFetcher?.(),
       cognitiveContext,
-      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
     const { volatile: volatileState } = systemPromptBuild;
@@ -6829,7 +6842,7 @@ export class Agent {
       throw error;
     } finally {
       this.endActivity(actId);
-      if (this.activeTasks.size === 0) this.setStatus('idle');
+      this.transitionStatus({ to: 'idle' });
       await this.finalizeBrowserSession(sessionId);
     }
   }
@@ -6863,7 +6876,7 @@ export class Agent {
   /**
    * THE single notebook write path.
    *
-   * Every writer — the `update_notebook` tool, triage, deliberation, and the CPP
+   * Every writer — the `notebook_upsert` tool, triage, deliberation, and the CPP
    * notebook writer — must go through here, because the entry cap and the TTL are
    * only meaningful as an *invariant* (true after every write), not as a check on
    * one code path. Three writers used to call `workingMemory.set()` directly and
@@ -7280,7 +7293,7 @@ export class Agent {
       if (!fresh) this.state.currentActivity = undefined;
     }
 
-    if (this.state.status !== 'idle') this.setStatus('idle');
+    if (this.state.status !== 'idle') this.transitionStatus({ to: 'reset' });
     if (cleared) {
       this.notifyStateChange();
       this.eventBus.emit('agent:reconciled-idle', { agentId: this.id, clearedActivity: true });
@@ -7342,6 +7355,16 @@ export class Agent {
 
   getMemory(): IMemoryStore {
     return this.memory;
+  }
+
+  /**
+   * 受锁写入长期记忆（审计 P-15）——admin API 等**非工具**路径也必须走统一的
+   * `agent-memory:knowledge` 资源锁，否则会与 dream cycle / 工具写入交错而丢写。
+   */
+  async updateLongTermMemory(key: string, content: string): Promise<{ ok: boolean; reason?: string }> {
+    return this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () =>
+      this.memory.addLongTermMemory(key, content),
+    );
   }
 
   getContextEngine(): ContextEngine {
@@ -7487,7 +7510,6 @@ export class Agent {
       availableSkills: this.availableSkillCatalog,
       mailboxContext: this.getMailboxContext(),
       concurrentContext: this.getConcurrentContext(),
-      notebookWriter: this.getNotebookWriter(),
       ...this.getTeamContextParams(),
     });
     const tools = this.buildToolDefinitions({
@@ -7857,6 +7879,17 @@ export class Agent {
     const skillToolNames: string[] = [];
 
     for (const name of requested) {
+      // 0. Schema-injected tools (ToolSelector.pushUnique) have no registerTool
+      // handler — they dispatch through if-branches in agent.ts. They must still
+      // be activate-able, or budget eviction + discover_tools dead-locks them
+      // (the P0-1 self-management bug: schedule_wakeup etc. listed as Deferred
+      // but discover_tools returned unknown). Activation = sticky + protected.
+      if (SCHEMA_INJECTED_TOOLS.has(name)) {
+        this.stickyTools().activated.add(name);
+        activated.push(name);
+        continue;
+      }
+
       // 1. Check if it's an existing tool name on this agent
       if (this.tools.has(name)) {
         this.stickyTools().activated.add(name);
@@ -7971,17 +8004,15 @@ export class Agent {
     process:          { domain: GLOBAL_LOCK_DOMAIN },
     // ── 单体状态资源：按**资源**而非工具名登记 ──────────────────────────
     // `resource` 让「同一个可变状态」的所有工具（正式名 + 兼容别名）解析到同一个
-    // 锁键。曾经 `update_notebook` 记在域 `notebook`、别名 `update_working_memory`
-    // 记在域 `working-memory` —— 两者写同一个 Map，却因域名不同被判为不冲突，
-    // 锁形同虚设。现在二者都是 `agent-memory:notebook`。
+    // 锁键。曾经 notebook 工具有「正式名 + 兼容别名」两套登记；别名现已删除，
+    // 名字归一为 notebook_upsert / notebook_clear。二者与其它写工具共享
+    // `agent-memory:notebook` 锁域，保证写同一个 Map 的工具有互斥。
     memory_save:            { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
     memory_update:          { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
     memory_update_longterm: { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
     memory_delete:          { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'knowledge' },
-    update_notebook:        { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
-    clear_notebook:         { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
-    update_working_memory:  { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
-    clear_working_memory:   { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    notebook_upsert:        { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
+    notebook_clear:         { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
     // 会话自我管理：compact / pin / unpin / purge 都是会话状态变更
     session:                { domain: 'session', arg: ['session_id', 'sessionId'] },
     // discover_tools 会写入「本会话已激活工具」集合 —— 共享可变状态
@@ -8099,7 +8130,7 @@ export class Agent {
     // ── 纯读取：文件 / 代码 / 检索
     'file_read', 'grep_search', 'glob_find', 'list_directory',
     'web_search', 'web_fetch', 'web_extract', 'describe_image',
-    'knowledge_search', 'knowledge_list', 'knowledge_read',
+    'kb_search', 'kb_list', 'kb_read',
     'recall_activity', 'recall_context', 'check_mailbox',
     // ── 纯读取：任务 / 需求 / 项目 / 团队
     'task_list', 'task_get', 'task_board_health', 'task_check_duplicates',
@@ -8848,6 +8879,30 @@ export class Agent {
     }
   }
 
+  /**
+   * 重构 2：心跳 skip 的唯一出口 —— 纯时间戳存活上报（不触发 LLM）。
+   *
+   * 所有 skip 分支（human-chat defer / idle / deep-sleep）都必须走这里：统一负责
+   * 活动记录 + lastHeartbeat 落库（notifyStateChange → Fix B 链路写入 DB）+ 指标，
+   * 以及可选的 deep-sleep 间隔延长。保证「skip 路径永不调用 LLM」成为结构性事实，
+   * 且任何 skip 都刷新存活时间戳（列存在有人写）。
+   */
+  private recordHeartbeatSkip(label: string, note: string, opts?: { deepSleep?: boolean }): void {
+    const skipActivityId = this.startActivity('heartbeat', label, {});
+    this.emitActivityLog(skipActivityId, 'text', note);
+    this.endActivity(skipActivityId, { success: true });
+    this.state.lastHeartbeat = new Date().toISOString();
+    this.metricsCollector.recordHeartbeat(true, true);
+    this.notifyStateChange(); // 心跳也是存活证明：落库 last_heartbeat，供所有观察者读取
+    if (opts?.deepSleep) {
+      try {
+        const cur = (this as unknown as { heartbeatIntervalMs?: number }).heartbeatIntervalMs ?? 6 * 3600_000;
+        const next = nextDeepSleepIntervalMs(cur);
+        this.heartbeat?.updateInterval?.(next);
+      } catch { /* optional */ }
+    }
+  }
+
   private async handleHeartbeat(ctx: {
     agentId: string;
     triggeredAt: string;
@@ -8856,41 +8911,43 @@ export class Agent {
 
     if (this.shouldDeferHeartbeatForHumanChat()) {
       log.info('Heartbeat: skipping LLM (human chat focused/queued)', { agentId: this.id });
-      const skipActivityId = this.startActivity('heartbeat', 'Heartbeat check-in (deferred for human chat)', {});
-      this.emitActivityLog(
-        skipActivityId,
-        'text',
+      this.recordHeartbeatSkip(
+        'Heartbeat check-in (deferred for human chat)',
         'Human chat is active or queued — skipping heartbeat LLM. Will patrol on the next trigger when chat is idle.',
       );
-      this.endActivity(skipActivityId, { success: true });
-      this.state.lastHeartbeat = new Date().toISOString();
-      this.metricsCollector.recordHeartbeat(true, true);
-      this.notifyStateChange(); // 心跳也是存活证明：落库 last_heartbeat，供所有观察者读取
       return;
     }
 
     // Deep sleep / idle skip — AGENT-RUNTIME deep sleep Spec.
-    const queuedNonHeartbeat = this.mailbox.getQueuedItems().filter(
+    const queuedAll = this.mailbox.getQueuedItems();
+    const queuedNonHeartbeat = queuedAll.filter(
       i => i.sourceType !== 'heartbeat' && i.status === 'queued'
-    ).length;
-    const humanOrTaskMail = this.mailbox.getQueuedItems().some(
+    );
+    const humanOrTaskMail = queuedAll.some(
       i => i.status === 'queued' && (
         i.sourceType === 'human_chat'
         || i.sourceType === 'task_status_update'
         || i.sourceType === 'task_comment'
       ),
     );
-    const fingerprint = `q:${queuedNonHeartbeat}`;
-    const unchanged = fingerprint === this.lastHeartbeatFingerprint && queuedNonHeartbeat === 0;
+    // 重构 2：巡检状态指纹 —— 队列内容（sourceType+id，含 stuck 邮件与队列空）+ 活跃任务集合。
+    // 仅当状态**实际变化**才巡检（新邮件/新任务出现 → 指纹变 → 巡检一次）；
+    // 无变化（含同一邮件一直卡在队列）→ skip LLM 只写时间戳，不空转 LLM。
+    const fingerprint = heartbeatStateFingerprint(queuedNonHeartbeat, this.activeTasks);
+    const unchanged = fingerprint === this.lastHeartbeatFingerprint;
     if (unchanged) this.consecutiveIdleHeartbeats++;
     else this.consecutiveIdleHeartbeats = resetIdleOnWake();
     this.lastHeartbeatFingerprint = fingerprint;
 
+    // 重构 2：深睡判定使用实时状态，不再硬编码 false —— 有活跃任务/待审邮件绝不深睡
+    // （否则长任务期间间隔被翻倍，存活证明变稀）。
     const deepSleep = shouldEnterDeepSleep({
       consecutiveIdleHeartbeats: this.consecutiveIdleHeartbeats,
-      hasActiveTasks: false,
-      hasPendingReviews: false,
-      hasHumanOrTaskMailbox: humanOrTaskMail || queuedNonHeartbeat > 0,
+      hasActiveTasks: this.activeTasks.size > 0,
+      hasPendingReviews: queuedAll.some(
+        i => i.status === 'queued' && i.sourceType === 'review_request',
+      ),
+      hasHumanOrTaskMailbox: humanOrTaskMail || queuedNonHeartbeat.length > 0,
     });
 
     // Skip LLM while unchanged (including deep sleep). No forced patrol when org is quiet —
@@ -8900,25 +8957,13 @@ export class Agent {
         consecutiveIdle: this.consecutiveIdleHeartbeats,
         deepSleep,
       });
-      const skipActivityId = this.startActivity('heartbeat', 'Heartbeat check-in (idle skip)', {});
-      this.emitActivityLog(
-        skipActivityId,
-        'text',
+      this.recordHeartbeatSkip(
+        'Heartbeat check-in (idle skip)',
         deepSleep
           ? `Deep sleep (idle ${this.consecutiveIdleHeartbeats}). No LLM call; interval may extend.`
           : `No changes detected (idle ${this.consecutiveIdleHeartbeats}). Skipping LLM.`,
+        { deepSleep },
       );
-      this.endActivity(skipActivityId, { success: true });
-      this.state.lastHeartbeat = new Date().toISOString();
-      this.metricsCollector.recordHeartbeat(true, true);
-      this.notifyStateChange(); // 心跳存活证明落库
-      if (deepSleep) {
-        try {
-          const cur = (this as unknown as { heartbeatIntervalMs?: number }).heartbeatIntervalMs ?? 6 * 3600_000;
-          const next = nextDeepSleepIntervalMs(cur);
-          this.heartbeat?.updateInterval?.(next);
-        } catch { /* optional */ }
-      }
       return;
     }
     this.consecutiveIdleHeartbeats = 0;
@@ -9198,7 +9243,7 @@ export class Agent {
         '- Technical details that would be costly to rediscover',
         '',
         'Call shape: `{ content, type?, tags? }` — never an array. Verify `{ status:"saved", store:"knowledge.md" }`.',
-        'Also use `update_notebook` for current working state.',
+        'Also use `notebook_upsert` for current working state.',
         '',
         'Only save genuinely important information. Skip routine exchanges.',
         'If nothing important needs saving, just respond with "No important information to save."',
@@ -9247,6 +9292,10 @@ export class Agent {
           await this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () => {
             await this.dreamConsolidateMemory(entries);
             this.pruneMemoryMd();
+            // 审计 P-11：上报整理时刻，使「陈旧」信号真实可用。
+            // （此前只有手动 memory_organize 会写 lastConsolidatedAt，自动 dream 周期不写 →
+            // 信号实际是死的。dream 定时器与 organize 原语共用同一时刻语义。）
+            this.memory.markConsolidated?.();
             // state.md TTL pruning removed with the store itself (2026-09-16): TTL now
             // lives in the notebook's per-tier expiry, which runs on every write.
           });

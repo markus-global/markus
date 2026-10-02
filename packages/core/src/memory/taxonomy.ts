@@ -16,6 +16,9 @@
  *   1. knowledge 文件的路径 / 读写；
  *   2. 历史文件的**一次性迁移**（外部存储已被清空的情形下不静默丢内容）。
  *
+ * 迁移策略：**读旧、只写新**。已退场的 `state.md` 不再作为写入目标；其遗留内容
+ * 由 MemoryStore 的「Migration-read layer」读入并入 knowledge.md（见 store.ts 文件头）。
+ *
  * 设计依据：docs/MEMORY-SYSTEM.md §10.2（state.md 退场，方案 A）。
  */
 
@@ -39,6 +42,7 @@ export function retiredStatePath(dataDir: string): string {
 /**
  * 一次性迁移：历史 `MEMORY.md` → `knowledge.md`。
  *
+ * [LEGACY-COMPAT #3]（见 store.ts 文件头「Legacy compatibility layer」，含退役判据）。
  * 旧实现把它**拆成两半**（`splitLegacyMemory` 按关键词猜哪些段落属于「状态」）；
  * state 档退场后拆分不再有意义 —— 整体并入 knowledge.md，宁可多留一点内容，
  * 也不静默丢弃。仅在 knowledge.md 尚不存在时执行。

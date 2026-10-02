@@ -197,25 +197,33 @@ describe('P0 认领 fail-open · 未落库的 item 不被静默跳过', () => {
   });
 });
 
-describe('P0 watchdog 自愈 · 租约感知（不误杀其它实例在飞项）', () => {
-  it('只清「本实例持有 / 无认领 / 租约过期」的 processing 行', () => {
+describe('P0 watchdog 自愈 · 只回收「无认领/租约过期」的 processing 行', () => {
+  it('有效租约（含本实例）不误杀；strict-state 过期行回队重试', () => {
     const t = now().toISOString();
     repo.save(row('mbx_other'));
     repo.claimItem('mbx_other', 'owner-B', iso(600_000), t);   // 别的实例：有效租约
     repo.save(row('mbx_mine'));
-    repo.claimItem('mbx_mine', 'owner-A', iso(600_000), t);    // 本实例：complete 失败残留
+    repo.claimItem('mbx_mine', 'owner-A', iso(600_000), t);    // 本实例：有效租约（同样不清）
     repo.save(row('mbx_expired'));
-    repo.claimItem('mbx_expired', 'ghost', iso(-60_000), t);   // 租约已过期的孤儿
+    repo.claimItem('mbx_expired', 'ghost', iso(-60_000), t);   // 租约已过期的孤儿（strict-state）
 
-    expect(repo.markStaleProcessingAsCompleted('agt_1', 'owner-A'), '只清本实例 + 过期孤儿').toBe(2);
+    // review_request 是 strict-state → 过期行回队待重试（不 drop、不 completed）
+    expect(repo.markStaleProcessingAsDropped('agt_1')).toBe(0);
     expect(repo.getById('mbx_other')!.status, '他人有效租约不被误杀').toBe('processing');
-    expect(repo.getById('mbx_mine')!.status).toBe('completed');
-    expect(repo.getById('mbx_expired')!.status).toBe('completed');
+    expect(repo.getById('mbx_mine')!.status, '本实例有效租约不被误杀').toBe('processing');
+    expect(repo.getById('mbx_expired')!.status, 'strict-state 过期行回队重试').toBe('queued');
+  });
 
-    // 不传 ownerId → 走**旧契约**分支（清理全部 processing 行），兼容既有调用与测试；
-    // 生产路径（mailbox.cleanStaleProcessing）始终传 ownerId，不会走到这个分支。
-    expect(repo.markStaleProcessingAsCompleted('agt_1')).toBe(1);
-    expect(repo.getById('mbx_other')!.status).toBe('completed');
+  it('非 strict-state 的过期/无认领行被 drop（异常可见 + 允许补偿重投）', () => {
+    const t = now().toISOString();
+    repo.save({ ...row('mbx_hb'), sourceType: 'heartbeat', payload: { summary: 'hb', content: 'hb' } });
+    repo.claimItem('mbx_hb', 'ghost', iso(-60_000), t);        // 租约过期的孤儿（非 strict-state）
+    repo.save({ ...row('mbx_nolease'), sourceType: 'heartbeat', payload: { summary: 'hb2', content: 'hb2' } });
+    repo.updateStatus('mbx_nolease', 'processing');            // 无认领的 processing 行
+
+    expect(repo.markStaleProcessingAsDropped('agt_1')).toBe(2);
+    expect(repo.getById('mbx_hb')!.status).toBe('dropped');
+    expect(repo.getById('mbx_nolease')!.status).toBe('dropped');
   });
 
   it('updateStatus 支持 priority（updatePriority 的落库路径，不再走幂等 save）', () => {

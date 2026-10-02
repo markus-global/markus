@@ -18,7 +18,34 @@ import {
   SHELL_SESSION_IDLE_TIMEOUT_MS,
   SHELL_SESSION_MAX_OUTPUT_BYTES,
 } from '@markus/shared';
-import { isIsolatedProcessGroup, killProcessTree } from './process-group.js';
+import { existsSync } from 'node:fs';
+import { killProcessTree } from './process-group.js';
+
+/**
+ * Pick the shell used for persistent sessions.
+ *
+ * WHY NOT `$SHELL`
+ * ----------------
+ * `$SHELL` mirrors the *user's login shell*, which is frequently NOT a POSIX
+ * shell: fish, csh/tcsh, nu, pwsh…  The session protocol below relies on POSIX
+ * behaviour (piping a command in, sourcing a sentinel back out), so a
+ * non-POSIX shell makes **every command fail instantly** with confusing errors
+ * like `Unable to read input file: Is a directory` — the agent then reports
+ * "commands don't work / hang", which is misdiagnosed as a timeout bug.
+ *
+ * We therefore prefer a known-good POSIX shell and only fall back to `$SHELL`
+ * as a last resort.
+ */
+function resolvePosixShell(): string {
+  for (const candidate of ['/bin/bash', '/bin/zsh', '/bin/sh']) {
+    try {
+      if (existsSync(candidate)) return candidate;
+    } catch {
+      /* ignore */
+    }
+  }
+  return process.env['SHELL'] || '/bin/sh';
+}
 
 export interface ShellSession {
   id: string;
@@ -60,6 +87,8 @@ class ManagedSession {
   readonly createdAt = Date.now();
   lastUsedAt = Date.now();
   alive = true;
+  /** Why this session was force-terminated (diagnostics only). */
+  terminationReason: string | null = null;
 
   private pending: PendingCommand | null = null;
   private dataBuffer = '';
@@ -161,9 +190,20 @@ class ManagedSession {
       const timer = setTimeout(() => {
         const partial = this.pending?.output ?? '';
         this.pending = null;
-        this.resetIdleTimer();
+        // A timeout MUST terminate the command, not just give up on waiting.
+        // The previous implementation only resolved the promise: the command
+        // (and everything it had spawned) kept running, and the shell stayed
+        // busy forever, so every later command in this session queued behind
+        // the runaway process and "timed out" as well — the session was wedged
+        // (owner report 2026-10-01: a 120s limit never actually stopped
+        // anything).  Terminating the session is the only deterministic way to
+        // stop an arbitrary subtree from a persistent shell; the manager
+        // transparently recreates a clean session (same cwd) on next use.
+        this.terminate('timed out');
         resolve({
-          stdout: partial + `\n[Command timed out after ${timeoutMs}ms]`,
+          stdout:
+            partial +
+            `\n[Command timed out after ${timeoutMs}ms — command and its child processes were killed; the shell session was reset.]`,
           exitCode: -1,
         });
       }, timeoutMs);
@@ -208,12 +248,25 @@ class ManagedSession {
   }
 
   kill() {
-    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.terminate('killed');
+  }
+
+  /**
+   * Force-terminate this session and everything it spawned.
+   *
+   * SIGTERM → SIGKILL over the whole process group: anything the agent started
+   * through this session (dev servers, watchers, test runners) must die with
+   * it, otherwise it is reparented to PID 1 and leaks forever.  Used both by
+   * kill() and by the command-timeout path.
+   */
+  terminate(reason: string) {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    this.terminationReason = reason;
     this.alive = false;
-    this.rejectPending('Session killed');
-    // SIGTERM → SIGKILL over the whole process group: anything the agent
-    // started through this session (dev servers, watchers, test runners) must
-    // die with it, otherwise it is reparented to PID 1 and leaks forever.
+    this.rejectPending(`Session terminated: ${reason}`);
     killProcessTree(this.process, this.process.pid ?? 0, this.isolatedGroup);
   }
 
@@ -238,6 +291,8 @@ class ManagedSession {
 export class ShellSessionManager {
   private sessions = new Map<string, ManagedSession>();
   private agentSessions = new Map<string, Set<string>>();
+  /** Last known cwd per session id — survives session recreation (e.g. after a timeout). */
+  private sessionCwd = new Map<string, string>();
 
   /**
    * Get or create the default session for an agent.
@@ -252,7 +307,11 @@ export class ShellSessionManager {
       this.removeSession(defaultId);
     }
 
-    return this.createSession(defaultId, agentId, cwd);
+    return this.createSession(
+      defaultId,
+      agentId,
+      cwd ?? this.sessionCwd.get(defaultId),
+    );
   }
 
   /**
@@ -302,14 +361,22 @@ export class ShellSessionManager {
     );
 
     let session: ManagedSession | undefined;
+    let sessionId: string;
     if (options?.sessionId) {
-      session = this.get(options.sessionId);
+      sessionId = options.sessionId;
+      session = this.get(sessionId);
       if (!session) {
-        return { stdout: `[Session ${options.sessionId} not found]`, exitCode: -1 };
+        return { stdout: `[Session ${sessionId} not found]`, exitCode: -1 };
       }
     } else {
+      sessionId = `${agentId}:default`;
       session = this.getOrCreateDefault(agentId, options?.cwd);
     }
+
+    // Remember the working directory so a session that has to be recreated
+    // (timeout termination, unexpected exit) resumes in the same place.
+    const effectiveCwd = options?.cwd ?? this.sessionCwd.get(sessionId);
+    if (options?.cwd) this.sessionCwd.set(sessionId, options.cwd);
 
     // If cwd is specified and differs, cd to it first
     if (options?.cwd) {
@@ -322,7 +389,18 @@ export class ShellSessionManager {
       }
     }
 
-    return session.execute(command, timeoutMs, options?.onOutput);
+    const result = await session.execute(command, timeoutMs, options?.onOutput);
+
+    // A timed-out command terminates its session (see ManagedSession.execute):
+    // the shell is gone, so drop it from the registry.  The next call lazily
+    // starts a clean session in the remembered cwd — the agent never inherits a
+    // wedged shell that would make every subsequent command time out too.
+    if (!session.alive) {
+      if (effectiveCwd) this.sessionCwd.set(sessionId, effectiveCwd);
+      this.removeSession(sessionId);
+    }
+
+    return result;
   }
 
   listForAgent(agentId: string): ShellSession[] {
@@ -364,7 +442,7 @@ export class ShellSessionManager {
     const isWin = process.platform === 'win32';
     const shell = isWin
       ? (process.env['COMSPEC'] || 'cmd.exe')
-      : (process.env['SHELL'] || '/bin/sh');
+      : resolvePosixShell();
     const isBashLike = !isWin && /\b(bash|zsh)\b/.test(shell);
     const args = isWin ? ['/Q'] : (isBashLike ? ['--norc', '--noprofile', '-i'] : []);
     const child = spawn(shell, args, {
@@ -379,11 +457,45 @@ export class ShellSessionManager {
       detached: !isWin,
     });
 
+    // Two interactive-mode behaviours must be neutralised at session start.
+    //
+    // 1. Job control (`set +m`). `bash -i` turns on monitor mode (`set -m`),
+    //    which puts every command — including `cmd &` — in its OWN process
+    //    group. The session group then no longer contains the real work, so
+    //    `kill(-pgid)` reaps only the shell and the actual command keeps running
+    //    (observed: `sleep` grandchildren alive minutes after a timeout fired).
+    //    `set +m` keeps every descendant inside the session's group.
+    //
+    // 2. Input echo (`set +o emacs`). GNU bash 5 — the version on Linux/CI —
+    //    ECHOES every command it reads back to **stderr** when interactive with
+    //    a non-tty stdin (bash 3.2 on macOS does not). ManagedSession merges
+    //    stderr into the sentinel-parsing buffer (see the stderr handler in the
+    //    constructor), so the echoed command leaked into the result `stdout` —
+    //    e.g. `echo $X` came back as "echo $X\n<value>\n" instead of "<value>".
+    //    Disabling emacs readline mode (neither emacs nor vi active) makes bash
+    //    read plainly and stop echoing. Reproduced 2026-10-02 on bash 5.2;
+    //    absent on bash 3.2.
+    //
+    // Both are written before any user command; their own echo and bash's
+    // startup banners arrive before the first `pending` command exists, so
+    // `onData` (which returns early when nothing is pending) drops them.
+    try {
+      child.stdin?.write('set +m 2>/dev/null; set +o emacs 2>/dev/null\n');
+    } catch {
+      /* best effort: worst case we fall back to the per-process kill */
+    }
+
     const session = new ManagedSession(
       sessionId,
       agentId,
       child,
-      isIsolatedProcessGroup(child.pid),
+      // Trust the spawn contract (`detached: !isWin` ⇒ POSIX setsid ⇒ pgid === pid).
+      // Do NOT re-derive this with a `ps` probe: that reports the process's CURRENT
+      // state, not the spawn contract. Measured failure (2026-10-01): 0/25 wrong
+      // while the wrapper is alive, but 100% wrong once the wrapper has exited
+      // (self-daemonizing commands) → the kill path degrades to "kill the wrapper
+      // only" and every descendant leaks. See process-group.ts for the full note.
+      !isWin,
     );
     this.sessions.set(sessionId, session);
 

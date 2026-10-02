@@ -4,7 +4,6 @@ import { platform } from 'node:os';
 import type { AgentToolHandler } from '../agent.js';
 import {
   KILL_GRACE_MS,
-  isIsolatedProcessGroup,
   isProcessGroupAlive,
   killProcessTree,
   type SignalDelivery,
@@ -165,7 +164,14 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
         stderr: [],
         process: child,
         notified: false,
-        isolatedGroup: isIsolatedProcessGroup(child.pid),
+        // Trust the spawn contract: we passed `detached: !isWin`, so on POSIX
+        // this child IS the leader of its own process group. Probing with `ps`
+        // here is wrong — once the wrapper exits (self-daemonizing commands
+        // such as `foo & exit`), `ps -p <pid>` returns nothing and the probe
+        // reports "not isolated". The kill path then degrades to signalling the
+        // (already dead) wrapper and every descendant leaks. Measured: 100%
+        // leak for `sh -c 'sleep N & exit 0'` when the probe gated the kill.
+        isolatedGroup: !isWin,
       };
 
       child.stdout?.on('data', (chunk: Buffer) => {

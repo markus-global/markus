@@ -80,7 +80,7 @@ MUST: `reflex` tool set MUST be a subset of:
 
 `task_list`, `task_get`, `memory_save`, `memory_search`, `notify_user`, `request_user_input`,
 `schedule_wakeup`, `cancel_wakeup`, `set_heartbeat_interval`, `discover_tools`,
-`check_mailbox`, `file_read`, `agent_send_message`, `update_notebook`,
+`check_mailbox`, `file_read`, `agent_send_message`, `notebook_upsert`,
 and for managers additionally `team_status`.
 
 MUST NOT: Include `package_install`, `package_list`, `goal_create`, `goal_update`, `goal_status`,

@@ -317,7 +317,9 @@ argument so that *different* resources run in parallel:
 > ① `update_notebook` was registered under domain `notebook` while its alias
 > `update_working_memory` lived under `working-memory` — both write the **same** Map
 > (`Agent.writeNotebookEntry`), yet they were judged non-conflicting, so the lock did
-> nothing. ② `file_write knowledge.md` took `fs:<path>` while `memory_update` took
+> nothing. (The alias has since been **removed** and the tool renamed `notebook_upsert`;
+> the resource-key fix below is what makes any such duplication impossible.)
+> ② `file_write knowledge.md` took `fs:<path>` while `memory_update` took
 > `memory` — the same file, two mutually non-exclusive paths, so a hand edit could be
 > **silently overwritten** by the next in-memory whole-file rewrite.
 > Both are fixed by resolving tools to a **resource key** via
@@ -338,7 +340,7 @@ argument so that *different* resources run in parallel:
 | `task` / `requirement` / `workflow` / `project` / `deliverable` | entity id | `task_update`, `requirement_update_status`, `workflow_run`, `deliverable_update` |
 | `terminal` / `browser` | terminal id / page id | `exec_terminal`, `click`, `navigate_page` |
 | `a2a-out` | target agent / channel | `agent_send_message`, `feishu_send_message` |
-| `agent-memory` | **resource key** (`knowledge` / `notebook` / `identity` / `state`) | `memory_save`, `memory_update`, `memory_update_longterm`, `memory_delete`, `update_notebook`, **`update_working_memory` / `clear_working_memory`** (alias → same key), `file_write` / `file_edit` on an agent memory file |
+| `agent-memory` | **resource key** (`knowledge` / `notebook` / `identity` / `state`) | `memory_save`, `memory_update`, `memory_update_longterm`, `memory_delete`, `notebook_upsert` / `notebook_clear`, `file_write` / `file_edit` on an agent memory file |
 | `session`, `session-tools`, `schedule`, `llm-config`, `org`, `ui`, `deliberation`, `mailbox-admin`, `notify` | single resource or item id | `session`, `discover_tools`, `team_update` |
 
 **Classification is closed and test-enforced.** `Agent.isWriteTool` is *default-deny*:
@@ -377,10 +379,8 @@ read → transform → write, and synchronous code still yields between those st
 whenever the read-modify-write spans an `await` — which it does on the dream-cycle
 path. Concretely (see §4.9 defect registry):
 
-- Tool-path writes (`memory_save` / `memory_update` / `update_notebook`) take the
-  `agent-memory:<resource>` lock (`knowledge` / `notebook`), so they mutually exclude —
-  including the `update_working_memory` alias, which now resolves to the *same* key
-  instead of a separate `working-memory` domain.
+- Tool-path writes (`memory_save` / `memory_update` / `notebook_upsert`) take the
+  `agent-memory:<resource>` lock (`knowledge` / `notebook`), so they mutually exclude.
 - The dream cycle (`consolidateMemory` → `dreamConsolidateMemory(entries)` →
   `pruneMemoryMd()` → `compressLongTermMemory()`) runs from a timer, **outside any tool
   call**, and therefore **outside any lock**. A concurrent `memory_update` could land
@@ -424,7 +424,7 @@ Defect registry (found 2026-09-16; each row is a *fixed* bug kept as a regressio
 
 | ID | Defect | Root cause | Fix | Guard |
 |---|---|---|---|---|
-| **P0-1** | `update_notebook` and its alias `update_working_memory` write the same Map yet never exclude each other | lock granularity was the **tool name**, and the alias was registered under a different domain (`working-memory`) | both resolve to `agent-memory:notebook` via `WRITE_TOOL_DOMAINS.resource` | `lock-resource-keys.test.ts` — alias key equality + live serialisation |
+| **P0-1** | two paths to the same notebook Map (formal name + alias) never excluded each other | lock granularity was the **tool name**, and the alias was registered under a different domain (`working-memory`) | both resolve to `agent-memory:notebook` via `WRITE_TOOL_DOMAINS.resource` (the alias was later removed and the tool renamed `notebook_upsert`) | `lock-resource-keys.test.ts` — resource key equality + live serialisation |
 | **P0-2** | a hand edit to `knowledge.md` / `NOTEBOOK.md` could be **silently overwritten** by the next in-memory whole-file rewrite | `file_write` took `fs:<path>` while `memory_update` took `memory` — same file, two non-exclusive paths | `Agent.resourceLocksFor(tc, dataDir)` rewrites an fs lock into the memory resource lock when the path names an agent memory file | same file — `file_write`/`file_edit` key equality |
 | **P0-3** | two OS processes (desktop + CLI) on the same agent have **no** mutual exclusion | `ResourceLockRegistry` and entity locks are in-process maps | **not fixed** — needs a process-level arbiter (file lock / single-instance election) | listed in §7 |
 

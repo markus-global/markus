@@ -81,10 +81,10 @@ export function createPatchTool(security?: SecurityGuard, workspacePath?: string
 
       // Validation pass — collect resolved paths so the apply pass reuses them
       for (const patch of patches) {
-        const { resolved: filePath, access } = resolveAndCheckAccess(patch.file, workspacePath, policy);
+        const { resolved: filePath, access, reason } = resolveAndCheckAccess(patch.file, workspacePath, policy);
 
         if (access === 'denied') {
-          return JSON.stringify({ status: 'denied', error: `Write denied: this path belongs to another agent's workspace. Cannot ${patch.action}: ${patch.file}` });
+          return JSON.stringify({ status: 'denied', error: reason ?? `Write denied: this path belongs to another agent's workspace. Cannot ${patch.action}: ${patch.file}` });
         }
 
         const check = guard.validateFilePath(filePath);

@@ -15,8 +15,8 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 | Document | Domain (single responsibility) |
 |----------|-------------------------------|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) *(this file)* | System overview, package structure, core concepts, channels, deployment, observability |
-| [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | Unified cognitive cycle, Cognitive Preparation Pipeline (CPP), heartbeat integration |
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Memory layers (ROLE / MEMORY / session / notebook / activity), storage compaction, memory flush |
+| [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | Unified cognitive cycle, deterministic context assembly, heartbeat integration |
+| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Memory layers (ROLE / knowledge / session / notebook / activity), storage compaction, memory flush |
 | [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) | Prompt & context assembly, LLM call taxonomy, context packing, prompt caching |
 | [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
@@ -28,6 +28,7 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 | [GUIDE.md](./GUIDE.md) | Setup, deployment, and usage guide |
 | [REMOTE-ACCESS.md](./REMOTE-ACCESS.md) | Remote access configuration |
 | [RELEASE-AND-DISTRIBUTION.md](./RELEASE-AND-DISTRIBUTION.md) | Release process and distribution |
+| [agent-liveness-redesign.md](../packages/org-manager/docs/agent-liveness-redesign.md) | 存活/自愈机制审计记录（心跳风暴根因 + 重构 1–4 完成状态）；现行设计并入本文件 §3.10 |
 
 ### 0.2 Relationship Graph
 
@@ -64,7 +65,7 @@ flowchart TD
   PROMPT -->|packing triggers flush| MEM
   PROMPT -->|tool defs and results| TOOLS
   TOOLS -->|tool errors surfaced as events| STREAM
-  COG -->|CPP writes notebook| MEM
+  PROMPT -->|deterministic bounded recall| MEM
 ```
 
 ### 0.3 Cross-Document Conventions
@@ -104,7 +105,7 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
 ┌──▼─────────▼──────────▼─────────▼───────────▼───────────────┐
 │                Agent Runtime (@markus/core)                   │
 │  Agent · Mailbox · AttentionController · ContextEngine        │
-│  Notebook · Memory · CognitivePreparation · PendingCallback   │
+│  Notebook · Memory · PendingCallback                           │
 │  Goal/Loop · LLMRouter · Heartbeat · Tools · MCP · Review     │
 └──────────────────────────┬──────────────────────────────────┘
                            │
@@ -148,8 +149,8 @@ Each Agent consists of:
 | `SKILLS.md` | Skill list (tool permissions) |
 | `HEARTBEAT.md` | Scheduled proactive tasks (e.g. daily issue checks) |
 | `POLICIES.md` | Behavior rules and boundaries |
-| `NOTEBOOK.md` | Persistent cognitive workspace (situational state, CPP output) |
-| `knowledge.md` (+ `NOTEBOOK.md`) | Long-term knowledge + working state. `state.md` retired 2026-09-16 (legacy `MEMORY.md` migrates once into `knowledge.md`) |
+| `NOTEBOOK.md` | Persistent cognitive workspace (situational state, triage output) |
+| `knowledge.md` (+ `NOTEBOOK.md`) | Long-term knowledge + working state. `knowledge.md` is the only write target; `MEMORY.md` / `memories.json` / `state.md` are legacy read-only sources migrated in at load (`state.md` → `state.md.migrated`) |
 | `CONTEXT.md` | Organization context (shared knowledge base) |
 
 The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagent` / `spawn_subagents`) for delegated subtasks. Subagent limits (parallelism, retry policy, preview truncation) are centralized in `packages/shared/src/limits.ts` rather than hardcoded. The parent agent has a **configurable tool-use iteration limit** (`AgentOptions.maxToolIterations`, system settings; default 200, range 1–10000) on chat-style harnesses — task execution and subagent loops remain uncapped by default.
@@ -186,7 +187,7 @@ Agents now have tools to actively manage their mailbox queue and cognitive works
 
 - `check_mailbox` (read-only inspection, all scenarios)
 - `defer_mailbox_item` / `drop_mailbox_item` (queue management)
-- `update_notebook` / `clear_notebook` (cognitive workspace management)
+- `notebook_upsert` / `notebook_clear` / `notebook_read` (cognitive workspace management)
 
 This shifts from system-driven to agent-driven cognition. The deliberation threshold is lowered to 2 items, making agent-driven triage the norm.
 
@@ -207,23 +208,22 @@ See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the complete design.
 
 ### 3.2.1 Cognitive System
 
-The agent cognitive system is a continuous cycle backed by persistent stores and optional deliberate preparation:
+The agent cognitive system is a continuous cycle backed by persistent stores and deterministic context assembly:
 
 ```
-Stimulus (Mailbox) → Triage → [CPP optional] → Context Assembly → Main LLM → Action → Reflection
+Stimulus (Mailbox) → Triage → Deterministic Context Assembly → Main LLM → Action
                                     ↓
-                              NOTEBOOK.md + MEMORY.md
+                   knowledge.md (injected) + NOTEBOOK.md (working state)
 ```
 
 | Component | Storage / Location | Role |
 |-----------|-------------------|------|
-| **Notebook** | `NOTEBOOK.md` | Persistent cognitive workspace — situational state, triage decisions, CPP outputs |
-| **Memory** | `MEMORY.md` | Unified long-term knowledge (curated sections) + raw `## _observations` buffer |
-| **CPP** | `packages/core/src/cognitive.ts` | Opt-in multi-phase context preparation (Appraisal → Retrieval → Reflection) |
+| **Notebook** | `NOTEBOOK.md` | Persistent cognitive workspace — situational state, triage decisions, working-memory keys |
+| **Memory** | `knowledge.md` | Unified long-term knowledge (curated sections) + raw `## _observations` buffer |
 | **Goal/Loop** | `GoalConfig` on Requirements | Persistent objectives with heartbeat integration |
 | **PendingCallbackRegistry** | `packages/core/src/pending-callback.ts` | Async operation tracking; completions → mailbox `callback_result` |
 
-**Cognitive Preparation Pipeline (CPP)** — opt-in via `agent.cognitive.enabled` in `markus.json` (default `false`). When enabled, CPP runs between triage and the main LLM call, writing outputs to `NOTEBOOK.md` (not separate prompt sections). Four depth levels (D0–D3) control preparation intensity: D0 reflexive (heartbeat OK), D1 reactive (most chats/A2A), D2 deliberative (task execution), D3 meta-cognitive (high-stakes).
+**Deterministic context assembly** — the former Cognitive Preparation Pipeline (CPP: the 0–3 pre-call LLM phases appraise / retrieve / reflect, plus `cognitive.ts`, `CognitivePreparation`, `selectCognitiveDepth` and `CognitiveDepth`) has been **removed**. Between triage and the main LLM call the ContextEngine injects a small, bounded, LLM-free situational block (recent activity + working-memory keys) together with its own deterministic relevant-memory retrieval. Deeper cross-domain recall is agent-driven via `memory_search` / `kb_search`. Prompt sections produced today: `## Cognitive Context` (deterministic) and `## Relevant Memories`; `## Retrieved Context` and `## Reflection` are no longer produced.
 
 **Goal/Loop mechanism** — Requirements can carry a `GoalConfig` (`loopEnabled`, `completionCriteria`, `maxIterations`, etc.) turning them into standing objectives. Heartbeat injects active goals; agents manage them via `goal_create`, `goal_update`, and `goal_status` tools.
 
@@ -251,12 +251,12 @@ Organization (Org)
 
 ### 3.4 Memory and Knowledge System
 
-**Two-file cognitive model** replaces the former volatile working memory + `memories.json` system:
+**Two-file cognitive model** replaces the former volatile working memory + `memories.json` system (`memories.json` / `MEMORY.md` / `state.md` are legacy read-only sources, migrated into `knowledge.md` at load):
 
 | File | Role | Prompt injection |
 |------|------|-----------------|
-| **`NOTEBOOK.md`** | Persistent cognitive workspace — situational state, CPP/triage outputs | Always loaded as `## Notebook` |
-| **`MEMORY.md`** | Curated long-term knowledge + raw `## _observations` buffer | Curated sections as `## Your Knowledge`; observations excluded |
+| **`NOTEBOOK.md`** | Persistent cognitive workspace — situational state, triage/working-memory outputs | Always loaded as `## Notebook` |
+| **`knowledge.md`** | Curated long-term knowledge + raw `## _observations` buffer | Curated sections as `## Your Knowledge`; observations excluded |
 
 The **dream cycle** (`memory_consolidation`) operates within `knowledge.md` — consolidating observations into curated sections and pruning stale content. Post-task learning uses a separate `distillation` scenario ([LEARNING-LOOP.md](./LEARNING-LOOP.md) §0 / §2).
 
@@ -265,9 +265,9 @@ The **dream cycle** (`memory_consolidation`) operates within `knowledge.md` — 
 | Layer | Storage | Role |
 |-------|---------|------|
 | **Procedural** | `role/ROLE.md` + skills | How the agent operates. Identity, behavioral rules. |
-| **Semantic** | `MEMORY.md` curated sections | What the agent knows. Agent-organized knowledge. |
+| **Semantic** | `knowledge.md` curated sections | What the agent knows. Agent-organized knowledge. |
 | **Episodic** | `sessions/*.json` (current) + SQLite `agent_activities` (past) | What happened. Current conversation + searchable activity history. |
-| **Working Memory** | `NOTEBOOK.md` | Persistent, agent-managed keyed entries (`update_notebook` / `clear_notebook`). |
+| **Working Memory** | `NOTEBOOK.md` | Persistent, agent-managed keyed entries (`notebook_upsert` / `notebook_clear` / `notebook_read`). |
 
 The agent retrieves past episodes via the `recall_activity` tool (keyword search on summary/keywords). Daily logs (`daily-logs/`) are a write-only audit trail for humans — never read back into prompts.
 
@@ -278,8 +278,8 @@ See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for the complete architecture.
 | Scope | Description | Tools |
 |-------|-------------|-------|
 | `personal` | Agent personal memory | `memory_save` / `memory_search` |
-| `project` | Project-level shared knowledge | `knowledge_contribute` / `knowledge_search` |
-| `org` | Org-level shared knowledge | `knowledge_search` (scope=org) |
+| `project` | Project-level shared knowledge | `kb_search` / `kb_read` |
+| `org` | Org-level shared knowledge | `kb_search` (scope=org) |
 
 Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`, `troubleshooting`, `dependency`, `process`, `reference`
 
@@ -290,7 +290,7 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 | Tool | Description |
 |------|-------------|
 | `shell_execute` | Run shell commands (auto-injects Agent identity into git commit) |
-| `file_read` / `file_write` / `file_edit` | File read/write/edit (writes blocked only to other agents' directories) |
+| `file_read` / `file_write` / `file_edit` | File read/write/edit (writes blocked to other agents' directories and to single-writer memory files — `knowledge.md` / `NOTEBOOK.md` / `state.md` must be changed via the memory tools) |
 | `file_list` | List directory contents |
 | `web_fetch` / `web_search` | HTTP requests / web search |
 | `spawn_subagent` / `spawn_subagents` | Spawn lightweight LLM subagents for focused subtasks (parallel support) |
@@ -388,8 +388,8 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 7. **System announcements** (urgent/high-priority announcements)
 8. **Human feedback** (annotations and instructions from report reviews)
 9. **Project knowledge highlights** (high-importance verified knowledge entries)
-10. **Your Knowledge** (MEMORY.md curated sections — observations excluded)
-11. **Notebook** (NOTEBOOK.md — cognitive workspace; CPP outputs land here when enabled)
+10. **Your Knowledge** (knowledge.md curated sections — observations excluded; a health banner is appended once usage reaches ≥70%)
+11. **Notebook** (NOTEBOOK.md — cognitive workspace; agent-managed working state)
 12. Active Goals (when heartbeat or goal-aware context)
 13. Task board (currently assigned Tasks)
 14. Current conversation identity (sender info)
@@ -427,6 +427,24 @@ Client touchpoints:
 
 Frozen response-field contract (keep in sync with Hub handlers): [`packages/core/test/hub-billing-contract.test.ts`](../packages/core/test/hub-billing-contract.test.ts) — mirrors Hub `billing-crossflows` plan + `cu/sync` keys (`remainingCu`, `openrouter.remainingUsd`, `planSource`, buckets, etc.).
 
+### 3.10 Agent 存活 / 自愈机制（Liveness SSOT + Conservator 统一仲裁）
+
+**设计主线一句话：单一存活事实源 + 一条有界安全网 + 收敛式状态机，其余全部去重。**
+
+背景（审计记录：[agent-liveness-redesign.md](../packages/org-manager/docs/agent-liveness-redesign.md)）：dirty / stale / stall 三个独立判定器各自为政、兜底回路没有统一仲裁和上限，曾导致「每 2 分钟一次」的心跳风暴（单 agent 数小时 600+ 条定时心跳签到）。重构 1–4 将机制收敛如下：
+
+1. **Liveness SSOT**：`agents.last_heartbeat` 由 core 单向写入（每轮心跳完成/跳过时，含 skip 路径），所有观察者统一读它（实时读 live-view，落列供跨进程/诊断）。心跳时间戳是唯一「活着」的证据。
+2. **心跳语义收紧**：心跳 = 存活上报 + 低频巡检（默认 6h）；**skip 路径（human-chat defer / idle / deep-sleep）收敛为纯时间戳**（`recordHeartbeatSkip()`，永不调用 LLM），LLM 巡检仅在状态实际变化时发生（`heartbeatStateFingerprint()` 指纹：队列内容签名 + activeTaskIds 签名）。所有触发心跳路径都收口到 `heartbeat:trigger` → `agent.ts` 唯一 handler → `mailbox.enqueue('heartbeat')` → 单条折叠处理。
+3. **单一安全网仲裁器（Conservator）**：`packages/org-manager/src/agent-conservator.ts` 把 dirty / stale / stall 三种判定**收敛为单一组件**（重构 4 起判定原语内联，组件彻底自包含）：
+   - `evaluateConservator`（纯函数）融合脏判定 + 卡死判定（dead-dependency、stale-heartbeat）+ 过期判定（心跳/活动新鲜度），输出**唯一动作阶梯**：`ok → observe → wake → reconcile → human-review`；
+   - `AgentConservator`（周期仲裁引擎，30s 轮询，守卫启动）施加**指数退避**（base·2^(n−1)，封顶 8h）+ **单 episode 总次数上限** + **收敛证明**（未脱离 processing-like 不复位 episode；human-review 每 episode 只通知一次并停止自动动作）；
+   - Fix A 合流：连续 3 次 trigger-heartbeat 无果 → 升级 human-review（`CONSERVATOR_MAX_WAKE_ATTEMPTS=3`），从机制上排除「每 2 分钟一次」周期解；
+   - 展示路径经 `evaluateConservator` 透出 `runtime.stall` / `runtime.dirty`（形状与旧前端完全兼容），只读派生不回写。
+4. **收敛式状态机**：core 中 27 处散落 `setStatus` 写入点全部收敛为单一意图化派生函数 `transitionStatus` + 落地 `applyStatus`（`packages/core/src/agent.ts`）——error 粘性（error 后 idle 不覆盖）、聚合状态守卫（activeTasks>0 / 并发 worker 忙碌 → idle 被拒）、force 强制兜底、reset 清错、offline 无条件；心跳巡检 / 保守仲裁 / Normal 转换统一走该函数，消除竞态覆盖。
+5. **持久化通路补全**：状态 payload 携带全部权威字段（status / lastHeartbeat / activeTaskIds / currentActivity / lastError），一次回调写全；`SqliteAgentRepo.updateLastHeartbeat` 落库。
+
+旧独立模块（`agent-dirty.ts` / `agent-stall.ts` / `agent-dirty-reconciler.ts`）已于重构 4 删除，判定逻辑全部收敛进 Conservator / core 状态机。相关回归测试：`packages/org-manager/test/agent-conservator.test.ts`（19 用例：stuck-working 心跳风暴、心跳宽限、指数退避、上限收敛、degraded/dead-dependency）、`packages/org-manager/test/agent-stall-api.test.ts`（API 展示契约）、`packages/core/test/heartbeat-liveness.test.ts`（skip 纯时间戳 + 指纹巡检）、`packages/core/test/agent-status-machine.test.ts`（状态机收敛）。
+
 ---
 
 ## 4. Governance Framework
@@ -458,9 +476,9 @@ Agents can manage other agents' lifecycle through tools with role-based permissi
 
 ### 4.2 Workspace Isolation
 
-Each agent has a dedicated workspace (`~/.markus/agents/<agentId>/workspace/`). The only hard enforcement is that agents **cannot write to other agents' directories** — this prevents cross-agent interference. All other file access (read and write) is unrestricted, allowing agents to respond to any user request. Prompt-based guidance encourages agents to work within their own workspace and use worktrees for project code.
+Each agent has a dedicated workspace (`~/.markus/agents/<agentId>/workspace/`). The hard enforcement is that agents **cannot write to other agents' directories** (prevents cross-agent interference) and **cannot write single-writer memory files** (`knowledge.md` / `NOTEBOOK.md` / `state.md`) via `file_write` / `file_edit` / `apply_patch` / shell — those must go through the memory tools (the write gate rejects direct writes and points at the right tool). All other file access (read and write) is unrestricted, allowing agents to respond to any user request. Prompt-based guidance encourages agents to work within their own workspace and use worktrees for project code.
 
-- The platform enforces: cross-agent write isolation (deny writes to other agents' directories)
+- The platform enforces: cross-agent write isolation (deny writes to other agents' directories) + single-writer memory files (deny direct writes to `knowledge.md` / `NOTEBOOK.md` / `state.md`)
 - The platform provides via prompt: workspace path, project context, best-practice guidance
 - The agent decides: branching strategy, worktree layout, merge workflow
 - Workflow details like branching conventions and review process are defined by **role templates and team norms**, not by the platform
