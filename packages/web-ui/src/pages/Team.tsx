@@ -1563,6 +1563,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const scrollFollowGenRef = useRef(0);
   /** Coalesces follow requests so at most one settle chain runs at a time. */
   const followRafRef = useRef<number | null>(null);
+  /** Re-assert chain armed by the submit-time snap (see snapChatToBottomForNewTurn). */
+  const sendSnapRafRef = useRef<number | null>(null);
+  const sendSnapTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   /** Suppresses instant follow while an explicit smooth jump is animating. */
   const smoothUntilRef = useRef(0);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -1829,6 +1832,49 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     for (const timer of restoreTimersRef.current) clearTimeout(timer);
     restoreTimersRef.current = [];
   }, []);
+
+  /**
+   * Guarantee one snap to the bottom when the user submits a turn.
+   *
+   * Submitting is an explicit "show me what happens next" gesture, but the snap
+   * used to be an *emergent* consequence of the message-list layout effect — and
+   * that effect bails out for four unrelated reasons (a stale prepend-skip flag,
+   * an in-flight view restore, a live gesture window, an expand-anchor
+   * suppression). Whichever happened to be true at submit time silently swallowed
+   * the scroll: the reply then streamed in below the fold and the user had to
+   * scroll by hand to find it. The turn boundary is exactly where those
+   * conditions must be *cleared* rather than respected — nothing scheduled for
+   * the previous view may own the viewport of the new turn.
+   *
+   * Re-asserted across a few frames because the snap has to survive asynchronous
+   * layout: the list container flips from `hidden` to visible on the first message
+   * of an empty conversation, rows are measured lazily, and the agent's
+   * placeholder lands a beat after the optimistic user bubble.
+   *
+   * The user's own gestures still win: every pass goes through
+   * `scrollChatToBottom`, which refuses to move the viewport once the user has
+   * taken it over.
+   */
+  const snapChatToBottomForNewTurn = useCallback(() => {
+    // The new turn owns the viewport.
+    resumeChatScrollFollow();
+    // A restore intent recorded for the previous view must not divert the chain.
+    pendingRestoreRef.current = null;
+    cancelScrollRestore();
+    // A prepend marker is consumed by the *next* message change — which is this
+    // one. Left armed it eats the snap and jumps to the oldest row instead.
+    skipScrollRef.current = false;
+    prependCountRef.current = 0;
+
+    if (sendSnapRafRef.current !== null) cancelAnimationFrame(sendSnapRafRef.current);
+    for (const timer of sendSnapTimersRef.current) clearTimeout(timer);
+
+    scrollChatToBottom('instant');
+    sendSnapRafRef.current = requestAnimationFrame(() => scrollChatToBottom('instant'));
+    sendSnapTimersRef.current = [60, 160, 320].map(delay =>
+      setTimeout(() => scrollChatToBottom('instant'), delay),
+    );
+  }, [resumeChatScrollFollow, cancelScrollRestore, scrollChatToBottom]);
 
   /** One restore pass. `finalPass` releases the intent once the chain ends. */
   const applyScrollRestore = useCallback((key: string, finalPass: boolean): boolean => {
@@ -2158,6 +2204,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   });
   const { send: hookSend, stopSending, tryReattachActiveStream, loadSessionMessages } = chatStream;
   sendRef.current = hookSend;
+
+  /**
+   * The composer's submit path (Enter key + Send button).
+   *
+   * The snap is armed *before* the send starts, so by the time the optimistic
+   * bubble and the agent's reply land the viewport is already following and the
+   * state that used to swallow the scroll has been cleared.
+   */
+  const sendFromComposer = useCallback(() => {
+    snapChatToBottomForNewTurn();
+    void hookSend();
+  }, [snapChatToBottomForNewTurn, hookSend]);
 
   // Load session messages from DB — phase-aware via ConversationBufferManager.
   // (loadSessionMessages moved into useChatStream hook — see above)
@@ -5131,7 +5189,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     e.currentTarget.blur();
                     return;
                   }
-                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void hookSend(); }
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendFromComposer(); }
                 }}
                 onPaste={handlePaste}
                 placeholder={placeholder}
@@ -5182,7 +5240,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 </button>
               ) : (
                 <button
-                  onClick={() => void hookSend()}
+                  onClick={() => sendFromComposer()}
                   disabled={(chatMode === 'direct' && (!selectedAgent || isAgentOffline)) || (!input.trim() && pendingImages.length === 0)}
                   className={
                     compactComposer
