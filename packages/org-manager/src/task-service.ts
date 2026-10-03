@@ -535,7 +535,7 @@ export class TaskService {
         if (agentStreak >= 2) {
           lines.push(``);
           lines.push(`Thread activity: ${agentStreak} consecutive agent comments on this task (no human input in between).`);
-          lines.push(`Consider whether your reply adds genuinely new information. If the discussion is going in circles, output [NO_REPLY_NEEDED] and let results speak.`);
+          lines.push(`Consider whether your reply adds genuinely new information. If the discussion is going in circles, call the end_turn tool and let results speak.`);
         }
         lines.push(``);
         lines.push(`**MANDATORY before replying**: You MUST first understand the full context:`);
@@ -683,7 +683,7 @@ export class TaskService {
         if (agentStreak >= 2) {
           lines.push(``);
           lines.push(`Thread activity: ${agentStreak} consecutive agent comments on this requirement (no human input in between).`);
-          lines.push(`Consider whether your reply adds genuinely new information. If the discussion is going in circles, output [NO_REPLY_NEEDED] and let results speak.`);
+          lines.push(`Consider whether your reply adds genuinely new information. If the discussion is going in circles, call the end_turn tool and let results speak.`);
         }
         lines.push(``);
         lines.push(`**MANDATORY before replying**: You MUST first understand the full context:`);

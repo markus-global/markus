@@ -1846,7 +1846,7 @@ export class APIServer {
         ];
         if ((chainCtx?.depth ?? 0) >= 2) {
           prefixLines.push(
-            '[LOOP GUARD] This DM already exchanged replies. Default to [NO_RESPONSE] unless you have a NEW fact, question, or instruction.',
+            '[LOOP GUARD] This DM already exchanged replies. If you have no NEW fact, question, or instruction, call the end_turn tool instead of replying.',
             'Do NOT acknowledge with 收到/保持待命/OK. Do NOT paste "回复说" back into this DM — use notify_user for humans.',
           );
         }
@@ -1879,7 +1879,7 @@ export class APIServer {
             prefixLines.push('>>> You are the target of this message. You SHOULD respond. <<<');
           } else {
             prefixLines.push('>>> STOP. This message is NOT for you. The user is talking to ' + [...targetNames].join(', ') + ', not you.');
-            prefixLines.push('You MUST respond with exactly: [NO_RESPONSE]');
+            prefixLines.push('You MUST end your turn by calling the end_turn tool — do not write a reply.');
             prefixLines.push('The ONLY exception: you are directly contradicted by a factual error. Offering opinions, agreement, "me too", or generic help does NOT count. <<<');
           }
         } else if (!isA2A) {
@@ -1901,7 +1901,7 @@ export class APIServer {
         }
         if (isTargeted && !thisAgentIsTarget && !isA2A) {
           prefixLines.push('');
-          prefixLines.push('REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. Respond ONLY with [NO_RESPONSE].');
+          prefixLines.push('REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. End your turn by calling the end_turn tool instead of replying.');
         }
 
         prefixLines.push('---', '');

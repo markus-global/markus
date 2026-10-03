@@ -130,6 +130,24 @@ export const MAILBOX_ITEM_MAX_RETRIES = 2;
  *  Chosen to be unique enough to never collide with natural language. */
 export const COMPLETION_MARKER = '<<HANDLE_COMPLETE>>';
 
+/**
+ * Internal-only return sentinel for the mailbox/attention channel.
+ *
+ * When an agent ends its turn deliberately via the `end_turn` tool, the reply is
+ * empty **on purpose** — that emptiness is what stops an agent↔agent DM peer from
+ * being auto-chained. But an empty reply is also exactly what a failed/aborted LLM
+ * turn looks like, so `detectAbnormalCompletion` treated the intentional silence as
+ * "abnormal completion" and requeued the item (observed 2026-10-03: `end_turn` →
+ * "empty reply from LLM-invoking item" → requeue → unbounded retry loop).
+ *
+ * Produced ONLY by the agent's `AttentionDelegate` wrapper, whose return value is
+ * consumed ONLY by the attention controller. It never reaches the peer: the reply a
+ * `sendMessage` caller receives is resolved inside `processMailboxItemCore` (BEFORE
+ * the wrapper runs), and the delivery path (`api-server`) suppresses an empty reply.
+ * Neither ever sees this sentinel.
+ */
+export const END_TURN_REPLY_SENTINEL = '[end_turn]';
+
 /** Instruction appended to the user message for LLM-invoking mailbox items. */
 export const COMPLETION_MARKER_INSTRUCTION =
   `\n\n[IMPORTANT: When you have finished processing this request, you MUST end your final response with the exact token: ${COMPLETION_MARKER}]`;
