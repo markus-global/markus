@@ -70,12 +70,26 @@ interface AgentDirtyConfig {
   staleAfterMs: number;
   /** lastHeartbeat 距今小于该值视为 agent 存活中（自巡检未停）——不判脏，避免误杀。 */
   heartbeatGraceMs: number;
+  /**
+   * lastProgressAt 距今小于该值视为 agent 真在干活（工具调用 / LLM 事件）——不判脏。
+   *
+   * 为什么必须独立于 currentActivity 与 lastHeartbeat：agent 执行一次长工具调用时，
+   * status=working，但不会留下 currentActivity 痕迹（该痕迹服务 thinking/LLM 阶段）；若它
+   * 同时被配置了较长的心跳间隔，就完全命中「working + 无活动 + 无任务 + 无新鲜心跳」，
+   * 被误判为 stuck busy flag，触发无谓的恢复心跳。而 lastProgressAt 恰恰是「它正在干活」
+   * 最直接的证据。
+   *
+   * 取值依据：单个不产生中间进展的工具调用最长为 shell 命令（SHELL_TIMEOUT_MAX_MS = 5
+   * 分钟），故窗口必须大于 5 分钟；取 10 分钟（2× 上界）留余量。
+   */
+  progressGraceMs: number;
 }
 
 const DEFAULT_DIRTY_CONFIG: AgentDirtyConfig = {
   enabled: true,
   staleAfterMs: 5 * 60_000, // 5 分钟无进展
   heartbeatGraceMs: 2 * 60_000, // 心跳 2 分钟内视为存活
+  progressGraceMs: 10 * 60_000, // 10 分钟内有工具/LLM 进展即视为存活（> shell 5 分钟上界）
 };
 
 interface AgentDirtyInput {
@@ -88,6 +102,8 @@ interface AgentDirtyInput {
   activeTaskIds?: string[];
   /** 最后心跳时间（ISO，可能缺失） */
   lastHeartbeat?: string;
+  /** 最近一次实质进展时间（ISO，来自 state.lastProgressAt = 工具调用 / LLM 请求等事件） */
+  lastProgressAt?: string;
   /** 最近一次错误时间（ISO，degraded 风险提示用） */
   lastErrorAt?: string;
 }
@@ -162,6 +178,16 @@ function evaluateDirtyState(
   const hbFresh = !Number.isNaN(lh) && nowMs - lh < cfg.heartbeatGraceMs;
   if (hbFresh) {
     return { dirty: false, reason: 'heartbeat fresh — agent still self-patrolling' };
+  }
+
+  // ②b 有实质进展（工具调用 / LLM 事件）→ agent 确在工作（Fix：长工具调用误判）。
+  // 这是「正在执行长工具」场景的关键判据：此时 status=working、无 currentActivity、
+  // 无 live task、心跳也可能早已超出宽限窗口，但 lastProgressAt 是新鲜的。缺此判据会
+  // 把「认真干活」误判为「卡死的 busy flag」，进而反复触发无谓的恢复心跳。
+  const lp = parseTs(input.lastProgressAt);
+  const progressFresh = !Number.isNaN(lp) && nowMs - lp < cfg.progressGraceMs;
+  if (progressFresh) {
+    return { dirty: false, reason: 'recent progress — agent actively working (tool/LLM events)' };
   }
 
   // ③ 当前活动刚启动（未超 staleAfterMs）→ 给时间，先别动。
@@ -382,6 +408,8 @@ export interface ConservatorConfig {
   staleAfterMs: number;
   /** lastHeartbeat 距今小于该值视为存活（对应 dirty.heartbeatGraceMs；宽限内不升级）。 */
   heartbeatGraceMs: number;
+  /** lastProgressAt 距今小于该值视为真在干活（对应 dirty.progressGraceMs）。 */
+  progressGraceMs: number;
   /** 拥有行为的 phase 但无任何进展超过该时长判定 stale-heartbeat（对应 stall.stallAfterMs）。 */
   stallAfterMs: number;
   /** 指数退避基数（两次动作间的最短间隔）。 */
@@ -400,6 +428,7 @@ export const DEFAULT_CONSERVATOR_CONFIG: ConservatorConfig = {
   enabled: true,
   staleAfterMs: 5 * 60_000,
   heartbeatGraceMs: 2 * 60_000,
+  progressGraceMs: 10 * 60_000,
   stallAfterMs: 30 * 60_000,
   retryBaseMs: CONSERVATOR_RETRY_AFTER_MS,
   backoffMaxMs: CONSERVATOR_BACKOFF_MAX_MS,
@@ -547,11 +576,17 @@ export function evaluateConservator(
       currentActivity: input.currentActivity as never,
       activeTaskIds: input.activeTaskIds,
       lastHeartbeat: input.lastHeartbeat,
+      lastProgressAt: input.lastProgressAt,
       lastErrorAt: input.lastErrorAt,
     },
     lookupTask,
     nowMs,
-    { enabled: cfg.enabled, staleAfterMs: cfg.staleAfterMs, heartbeatGraceMs: cfg.heartbeatGraceMs },
+    {
+      enabled: cfg.enabled,
+      staleAfterMs: cfg.staleAfterMs,
+      heartbeatGraceMs: cfg.heartbeatGraceMs,
+      progressGraceMs: cfg.progressGraceMs,
+    },
   );
   const stall = evaluateStall({ runtime }, nowMs, { stallAfterMs: cfg.stallAfterMs });
 
@@ -639,20 +674,28 @@ export function evaluateConservator(
     };
   }
 
-  // 4) 心跳新鲜 / 活动刚起步（未超 staleAfter）→ 给自愈机会，短窗口观察不动手。
+  // 4) 心跳新鲜 / 活动刚起步（未超 staleAfter）/ 有实质进展 → 给自愈机会，短窗口观察不动手。
   const lh = parseTs(input.lastHeartbeat);
   const hbFresh = !Number.isNaN(lh) && nowMs - lh < cfg.heartbeatGraceMs;
   const actStart = input.currentActivity?.startedAt ? parseTs(input.currentActivity.startedAt) : NaN;
   const actFresh = hasActivity && !Number.isNaN(actStart) && nowMs - actStart < cfg.staleAfterMs;
-  if (hbFresh || actFresh) {
+  // 「正在执行长工具」：无活动痕、心跳陈旧，但 lastProgressAt 新鲜。该判据必须在此**再次**
+  // 校验（不能只依赖 dirty）：dirty 判定为「非脏」时不会短路返回，会继续落到下面的兜底
+  // 分支 —— 兜底分支若不看进展，就会把认真干活的 agent 判为需要廉价唤醒（issue #342）。
+  // 与 hbFresh/actFresh 一样，此处与 evaluateDirtyState 保持同一语义、同源配置。
+  const lp = parseTs(input.lastProgressAt);
+  const progressFresh = !Number.isNaN(lp) && nowMs - lp < cfg.progressGraceMs;
+  if (hbFresh || actFresh || progressFresh) {
     return {
       ...base,
       stage: 'observe',
       action: 'none',
-      criterion: hbFresh ? 'fresh-heartbeat' : 'fresh-activity',
+      criterion: hbFresh ? 'fresh-heartbeat' : actFresh ? 'fresh-activity' : 'fresh-progress',
       reason: hbFresh
         ? 'processing-like but heartbeat fresh — short observation window, hold off'
-        : 'activity just started — within stale window, hold off',
+        : actFresh
+          ? 'activity just started — within stale window, hold off'
+          : 'processing-like with recent progress (tool/LLM events) — actively working, hold off',
       suggestions: ['保持观察；若 continue processing 无进展再升级'],
     };
   }
