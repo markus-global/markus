@@ -64,7 +64,12 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   }, [bumpStreamMembership]);
   const clearStreamSession = useCallback((k: string, s?: string) => {
     const changed = mgr.current.removeStreamSession(k, s);
-    if (isAgentKey(k)) chatStore.markAgentStreaming(k, false);
+    // Derive the sidebar signal from what is STILL live, not from the fact that
+    // ONE stream ended. Several tabs of the same agent can stream at once, so
+    // releasing tab A must not mark the agent idle while tab B is still running
+    // — that would let Team's ghost-reconciliation sweep tab B's live bubble and
+    // drop its "outputting" border mid-turn.
+    if (isAgentKey(k)) chatStore.markAgentStreaming(k, mgr.current.hasLiveStream(k));
     if (changed) bumpStreamMembership();
   }, [bumpStreamMembership]);
   const setActiveSession = useCallback((k: string, s: string) => mgr.current.setActiveSession(k, s), []);
@@ -118,7 +123,9 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   // Team.tsx; see ConversationBufferManager.abortStream for the pure logic.
   const abortStream = useCallback((key: string, sessionId?: string | null) => {
     const affected = mgr.current.abortStream(key, sessionId);
-    if (affected && isAgentKey(key)) chatStore.markAgentStreaming(key, false);
+    // Same derivation as clearStreamSession: aborting one tab's stream must not
+    // clear the agent's busy mark while a sibling tab is still streaming.
+    if (affected && isAgentKey(key)) chatStore.markAgentStreaming(key, mgr.current.hasLiveStream(key));
     if (affected) bumpStreamMembership();
     if (mgr.current.currentConvKey === key) {
       setSending(false);
