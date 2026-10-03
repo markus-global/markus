@@ -1018,6 +1018,38 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     return { byTeam: map, unmatched, custom, dmChannels };
   }, [groupChats, teams]);
 
+  // ── Agent 私聊频道：确定性排序（对应「L1 底部私聊顺序错乱」）──────────────────
+  // 排序键 = 会话两位参与者在 L1 智能体列表中的位置（先取靠前者，再取靠后者）。
+  //
+  // 为什么不按「发起者」排：A↔B 与 B↔A 是同一会话（channelKey 已按 id 排序归一化），
+  // 只有按「两个端点中在 L1 里靠前的那个」定位，才能让「秘书与其他 agent 的私聊」稳定
+  // 排在列表最前，且同一会话不会因发起方向不同而漂移。位置未知的参与者排在最后。
+  const dmChannelsOrdered = useMemo(() => {
+    // 与 L1 渲染顺序保持一致：未分组智能体在前，随后按 team 分组。
+    const order = new Map<string, number>();
+    let idx = 0;
+    for (const a of agentsByTeam.ungrouped) order.set(a.id, idx++);
+    for (const tm of teams) {
+      for (const a of agentsByTeam.byTeam.get(tm.id) ?? []) order.set(a.id, idx++);
+    }
+    const UNKNOWN = Number.MAX_SAFE_INTEGER;
+    // channelKey 形如 'dm:a2a:<idA>:<idB>'
+    const laneIndices = (channelKey: string): number[] => {
+      const parts = channelKey.split(':');
+      if (parts.length < 4) return [];
+      return [parts[2], parts[3]].map(p => order.get(p) ?? UNKNOWN).sort((a, b) => a - b);
+    };
+    return [...groupChatsByTeam.dmChannels].sort((x, y) => {
+      const ix = laneIndices(x.channelKey);
+      const iy = laneIndices(y.channelKey);
+      const x0 = ix[0] ?? UNKNOWN, x1 = ix[1] ?? UNKNOWN;
+      const y0 = iy[0] ?? UNKNOWN, y1 = iy[1] ?? UNKNOWN;
+      if (x0 !== y0) return x0 - y0;
+      if (x1 !== y1) return x1 - y1;
+      return x.channelKey.localeCompare(y.channelKey); // 稳定兜底，避免顺序抖动
+    });
+  }, [groupChatsByTeam.dmChannels, agentsByTeam, teams]);
+
   const [dmSectionExpanded, setDmSectionExpanded] = useState(false);
   const dmHasActiveChannel = chatMode === 'channel' && groupChatsByTeam.dmChannels.some(gc => gc.channelKey === activeChannel);
   // Auto-expand once when a DM channel becomes active so the selected chat is
@@ -1051,7 +1083,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
       items.push({ kind: 'team', id: `team:${tm.id}`, teamId: tm.id });
     }
     if (dmSectionExpanded) {
-      for (const gc of groupChatsByTeam.dmChannels) {
+      for (const gc of dmChannelsOrdered) {
         items.push({ kind: 'channel', id: `channel:${gc.channelKey}`, channelKey: gc.channelKey });
       }
     }
@@ -1409,7 +1441,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
           {teams.length === 0 && agentsByTeam.ungrouped.length === 0 && agents.length > 0 && agents.map(a => renderAgentItem(a))}
 
           {/* Agent-to-Agent DM channels — collapsible */}
-          {groupChatsByTeam.dmChannels.length > 0 && (
+          {dmChannelsOrdered.length > 0 && (
             <div className="mb-2">
               <button
                 onClick={() => setDmSectionExpanded(v => !v)}
@@ -1419,9 +1451,9 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
                   <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
                 </svg>
                 {t('chat.agentDMs')}
-                <span className="ml-auto text-[9px] font-normal text-fg-tertiary">{groupChatsByTeam.dmChannels.length}</span>
+                <span className="ml-auto text-[9px] font-normal text-fg-tertiary">{dmChannelsOrdered.length}</span>
               </button>
-              {dmSectionExpanded && groupChatsByTeam.dmChannels.map(gc => {
+              {dmSectionExpanded && dmChannelsOrdered.map(gc => {
                 const isActive = chatMode === 'channel' && activeChannel === gc.channelKey;
                 const chUnread = unreadByChannel?.[gc.channelKey] ?? 0;
                 const dmLabel = gc.name.replace(/^DM:\s*/, '');
