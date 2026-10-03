@@ -14,6 +14,7 @@ import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
 import { DeliverableShareModal } from './DeliverableShareModal.tsx';
 import { createDeliverableShareService, canShareDeliverableFormat, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
+import TabScrollRail from './TabScrollRail.tsx';
 import type { RightPanelMode, RightPanelPayload, RightPanelTab } from '../contexts/LayoutContext.tsx';
 
 type TabOwner = { agentId: string; agentName: string };
@@ -830,114 +831,121 @@ export function RightPanel({
               </button>
             </div>
           )}
+          {/* 标签区 = 「标签行 + 滚动轨道」两行结构。
+              轨道独占下一行，结构上不可能压住标签；旧实现用原生滚动条，而 macOS 的滚动条
+              是浮层，会画在标签行内部底边之上 —— hover 时缩略块显形，点标签下缘就变成
+              拖拽滚动条（本次误操作的根因）。原生浮层的厚度/时机/占位由系统决定，CSS 无法
+              可靠地挪开它，故改为自绘。justify-end 让标签行几乎保持原位，轨道落在原留白里。 */}
           {(showTabs || onNewTab) ? (
-            <div
-              data-no-drag
-              ref={tabStripRef}
-              role="tablist"
-              className="flex-1 min-w-0 flex flex-nowrap items-center gap-0.5 overflow-x-auto overflow-y-hidden overscroll-x-contain scrollbar-thin"
-              onWheel={e => {
-                const el = e.currentTarget;
-                if (el.scrollWidth <= el.clientWidth) return;
-                if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
-                el.scrollLeft += e.deltaY;
-                e.preventDefault();
-              }}
-            >
-              {tabs?.map(tab => {
-                const active = tab.id === activeTabId;
-                const pageId = tab.payload.kind === 'url' ? tab.payload.pageId : undefined;
-                const termId = tab.payload.kind === 'terminal' ? tab.payload.terminalId : undefined;
-                const owner = pageId != null
-                  ? tabOwners[pageId]
-                  : (termId ? termOwners[termId] : undefined);
-                const tabTitle = owner
-                  ? `${tab.title} — ${t('common:browserTabControlledBy', { name: owner.agentName })}`
-                  : tab.title;
-                return (
-                  // Sibling buttons (never nest <button>): select + close stay independent.
-                  <div
-                    key={tab.id}
-                    className={`group shrink-0 flex items-center max-w-[200px] rounded-md text-[11px] border transition-colors ${
-                      active
-                        ? owner
-                          ? 'bg-brand-500/10 border-brand-500/35 text-fg-primary'
-                          : 'bg-surface-elevated border-border-default text-fg-primary'
-                        : owner
-                          ? 'border-brand-500/25 text-fg-secondary hover:bg-brand-500/8'
-                          : 'border-transparent text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={active}
-                      ref={active ? activeTabBtnRef : undefined}
-                      className="min-w-0 flex-1 truncate pl-2.5 pr-1 py-1 text-left cursor-pointer flex items-center gap-1"
-                      title={tabTitle}
-                      onPointerDown={e => {
-                        // pointerdown beats click cancellation when native views steal focus.
-                        if (e.button !== 0) return;
-                        if (tab.id !== activeTabId && !confirmLeaveEditor()) return;
-                        onSelectTab?.(tab.id);
-                      }}
-                      onClick={() => {
-                        if (tab.id !== activeTabId && !confirmLeaveEditor()) return;
-                        onSelectTab?.(tab.id);
-                      }}
+            <div data-no-drag className="flex-1 min-w-0 self-stretch flex flex-col justify-end">
+              <div
+                ref={tabStripRef}
+                role="tablist"
+                className="flex flex-nowrap items-center gap-0.5 overflow-x-auto overflow-y-hidden overscroll-x-contain scrollbar-hide"
+                onWheel={e => {
+                  const el = e.currentTarget;
+                  if (el.scrollWidth <= el.clientWidth) return;
+                  if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+                  el.scrollLeft += e.deltaY;
+                  e.preventDefault();
+                }}
+              >
+                {tabs?.map(tab => {
+                  const active = tab.id === activeTabId;
+                  const pageId = tab.payload.kind === 'url' ? tab.payload.pageId : undefined;
+                  const termId = tab.payload.kind === 'terminal' ? tab.payload.terminalId : undefined;
+                  const owner = pageId != null
+                    ? tabOwners[pageId]
+                    : (termId ? termOwners[termId] : undefined);
+                  const tabTitle = owner
+                    ? `${tab.title} — ${t('common:browserTabControlledBy', { name: owner.agentName })}`
+                    : tab.title;
+                  return (
+                    // Sibling buttons (never nest <button>): select + close stay independent.
+                    <div
+                      key={tab.id}
+                      className={`group shrink-0 flex items-center max-w-[200px] rounded-md text-[11px] border transition-colors ${
+                        active
+                          ? owner
+                            ? 'bg-brand-500/10 border-brand-500/35 text-fg-primary'
+                            : 'bg-surface-elevated border-border-default text-fg-primary'
+                          : owner
+                            ? 'border-brand-500/25 text-fg-secondary hover:bg-brand-500/8'
+                            : 'border-transparent text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/50'
+                      }`}
                     >
-                      {owner && (
-                        <span
-                          className="shrink-0 inline-flex items-center gap-0.5 max-w-[72px] px-1 py-px rounded text-[9px] font-semibold tracking-wide bg-brand-500/20 text-brand-500"
-                          title={t('common:browserTabControlledBy', { name: owner.agentName })}
-                        >
-                          <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse shrink-0" aria-hidden />
-                          <span className="truncate">{owner.agentName}</span>
-                        </span>
-                      )}
-                      <span className="truncate min-w-0">{tab.title}</span>
-                    </button>
-                    {onCloseTab && (
                       <button
                         type="button"
+                        role="tab"
+                        aria-selected={active}
+                        ref={active ? activeTabBtnRef : undefined}
+                        className="min-w-0 flex-1 truncate pl-2.5 pr-1 py-1 text-left cursor-pointer flex items-center gap-1"
+                        title={tabTitle}
                         onPointerDown={e => {
+                          // pointerdown beats click cancellation when native views steal focus.
                           if (e.button !== 0) return;
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (tab.id === activeTabId && !confirmLeaveEditor()) return;
-                          onCloseTab(tab.id);
+                          if (tab.id !== activeTabId && !confirmLeaveEditor()) return;
+                          onSelectTab?.(tab.id);
                         }}
-                        onClick={e => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (tab.id === activeTabId && !confirmLeaveEditor()) return;
-                          onCloseTab(tab.id);
+                        onClick={() => {
+                          if (tab.id !== activeTabId && !confirmLeaveEditor()) return;
+                          onSelectTab?.(tab.id);
                         }}
-                        className={`shrink-0 mr-1 p-0.5 rounded hover:bg-surface-overlay transition-colors ${
-                          active ? 'text-fg-tertiary hover:text-fg-secondary' : 'text-fg-muted hover:text-fg-secondary opacity-70 group-hover:opacity-100'
-                        }`}
-                        title={t('common:closeTab', { defaultValue: 'Close tab' })}
-                        aria-label={t('common:closeTab', { defaultValue: 'Close tab' })}
                       >
-                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                        {owner && (
+                          <span
+                            className="shrink-0 inline-flex items-center gap-0.5 max-w-[72px] px-1 py-px rounded text-[9px] font-semibold tracking-wide bg-brand-500/20 text-brand-500"
+                            title={t('common:browserTabControlledBy', { name: owner.agentName })}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse shrink-0" aria-hidden />
+                            <span className="truncate">{owner.agentName}</span>
+                          </span>
+                        )}
+                        <span className="truncate min-w-0">{tab.title}</span>
                       </button>
-                    )}
-                  </div>
-                );
-              })}
-              {onNewTab && (
-                <button
-                  type="button"
-                  onClick={onNewTab}
-                  className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/60 transition-colors"
-                  title={t('common:newTab', { defaultValue: 'New Tab' })}
-                  aria-label={t('common:newTab', { defaultValue: 'New Tab' })}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                  </svg>
-                </button>
-              )}
+                      {onCloseTab && (
+                        <button
+                          type="button"
+                          onPointerDown={e => {
+                            if (e.button !== 0) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (tab.id === activeTabId && !confirmLeaveEditor()) return;
+                            onCloseTab(tab.id);
+                          }}
+                          onClick={e => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (tab.id === activeTabId && !confirmLeaveEditor()) return;
+                            onCloseTab(tab.id);
+                          }}
+                          className={`shrink-0 mr-1 p-0.5 rounded hover:bg-surface-overlay transition-colors ${
+                            active ? 'text-fg-tertiary hover:text-fg-secondary' : 'text-fg-muted hover:text-fg-secondary opacity-70 group-hover:opacity-100'
+                          }`}
+                          title={t('common:closeTab', { defaultValue: 'Close tab' })}
+                          aria-label={t('common:closeTab', { defaultValue: 'Close tab' })}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                {onNewTab && (
+                  <button
+                    type="button"
+                    onClick={onNewTab}
+                    className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated/60 transition-colors"
+                    title={t('common:newTab', { defaultValue: 'New Tab' })}
+                    aria-label={t('common:newTab', { defaultValue: 'New Tab' })}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+              <TabScrollRail scrollRef={tabStripRef} watch={`${tabs?.length ?? 0}:${activeTabId ?? ''}`} />
             </div>
           ) : (
             <span className="text-sm font-semibold text-fg-primary truncate flex-1 min-w-0 px-1.5" title={reference || title}>
