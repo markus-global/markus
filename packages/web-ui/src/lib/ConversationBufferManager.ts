@@ -52,8 +52,36 @@ export class ConversationBufferManager {
 
   // ── Phase transitions ──
 
+  /**
+   * Effective phase for a conversation.
+   *
+   * The stored phase alone is NOT enough. `phase` is agent-level (one convKey =
+   * one agent) while streams are tracked per SESSION, so with two tabs of the
+   * same agent streaming at once, one turn finishing calls `endStream()` and
+   * collapses the phase to 'ready' while the other turn is still live. Every
+   * consumer that gated on the stored phase then declared the surviving turn
+   * dead: the in-flight bubble lost its animated "outputting" border on the next
+   * switch-back, and the sidebar showed the agent as idle.
+   *
+   * So the stored phase is an OVERRIDE for the windows where the ownership
+   * record cannot speak (pre-registration: `beginStream` flips the phase before
+   * `session_start` lands the mark). Whenever the set is non-empty, it wins.
+   */
   getPhase(key: string): ConvPhase {
-    return this.phase.get(key) ?? 'idle';
+    const stored = this.phase.get(key) ?? 'idle';
+    if (stored === 'streaming') return stored;
+    return this.hasLiveStream(key) ? 'streaming' : stored;
+  }
+
+  /**
+   * Is at least one stream genuinely in flight for this conversation?
+   *
+   * `streamingSessions` is the positive ownership record (added on
+   * `setStreamSession`, released on done/abort/error). Single source of truth
+   * for both "is the agent busy" and the derived phase above.
+   */
+  hasLiveStream(key: string): boolean {
+    return (this.streamingSessions.get(key)?.size ?? 0) > 0;
   }
 
   beginLoad(key: string): void {
@@ -72,6 +100,14 @@ export class ConversationBufferManager {
     this.phase.set(key, 'streaming');
   }
 
+  /**
+   * Collapse the phase to 'ready' for this turn's end.
+   *
+   * Only meaningful when no other stream is live: while sibling tabs are still
+   * streaming, `getPhase()` keeps reporting 'streaming' by virtue of the
+   * ownership set, so flipping the stored value 'ready' is remembered but not
+   * yet observable. It becomes the answer once the last mark is released.
+   */
   endStream(key: string): void {
     if (this.getPhase(key) === 'streaming') {
       this.phase.set(key, 'ready');
@@ -200,14 +236,33 @@ export class ConversationBufferManager {
     // exactly where a stale DB response clobbers the in-flight display.
     const isStreamingPhase = phase === 'streaming';
     const streamingSet = this.streamingSessions.get(convKey);
+    // "Another session owns the live stream" must be a POSITIVE claim: there has
+    // to be a mark for a session that is neither the one being loaded NOR the
+    // pre-registration placeholder. Treating the placeholder as a foreign owner
+    // (the old `!set.has(sessionId)`) let a DB load replace the display in the
+    // middle of a live turn — the mid-turn DB only holds the user row, so the
+    // in-flight bubble was wiped and its animated border vanished on tab
+    // switch-back while the turn was still running.
     const otherSessionStreaming = isStreamingPhase
-      && (streamingSet?.size ?? 0) > 0
-      && !streamingSet!.has(sessionId);
+      && Array.from(streamingSet ?? []).some(
+        sid => sid !== sessionId && sid !== ConversationBufferManager.NEW_CHAT_ID,
+      );
     // Accept the result when this session is still the one being loaded OR the
     // one the user is viewing. Relying only on `loadingSession` drops the first
     // response when a second load for the same conversation races ahead.
+    //
+    // …but that leniency must never let a load for a DIFFERENT session write the
+    // shared display buffer. The display buffer is per-convKey (one agent = one
+    // view), so with several tabs of the same agent streaming at once, a
+    // background load landing for tab B used to satisfy `loadingSession` and
+    // replace tab A's transcript — the turn the user was actually watching
+    // vanished from under them. A positive pin to another session always wins.
     const activeSessionId = this.activeSession.get(convKey);
+    const pinnedToOtherSession = activeSessionId !== undefined
+      && activeSessionId !== ConversationBufferManager.NEW_CHAT_ID
+      && activeSessionId !== sessionId;
     const isCurrentView = this.currentConvKey === convKey
+      && !pinnedToOtherSession
       && (this.loadingSession === sessionId || activeSessionId === sessionId);
 
     if (isCurrentView && (!isStreamingPhase || otherSessionStreaming)) {
@@ -391,7 +446,26 @@ export class ConversationBufferManager {
     if (this.getPhase(convKey) !== 'streaming') return false;
     const set = this.streamingSessions.get(convKey);
     if (!set || set.size === 0) return true;
-    return set.has(sessionId);
+    if (set.has(sessionId)) return true;
+    return this.placeholderTurnBelongsTo(convKey, sessionId);
+  }
+
+  /**
+   * A turn can be tracked under the NEW_CHAT placeholder before the server
+   * assigns a real session id (`beginStream` flips the phase, `session_start`
+   * lands later), and a chat started from a fresh tab keeps that id. Such a
+   * mark belongs to whichever session is being VIEWED, so it must count as live
+   * for that session too.
+   *
+   * React's session-switch handler already treats the placeholder this way
+   * (`streamForThis`), so the two predicates used to disagree: the view said
+   * "this session is streaming" while the buffer manager said "some other
+   * session owns it" and dropped the in-flight row. One question, one answer.
+   */
+  private placeholderTurnBelongsTo(convKey: string, sessionId: string): boolean {
+    const set = this.streamingSessions.get(convKey);
+    if (!set || !set.has(ConversationBufferManager.NEW_CHAT_ID)) return false;
+    return this.activeSession.get(convKey) === sessionId;
   }
 
   // ── Send / stream tracking ──
