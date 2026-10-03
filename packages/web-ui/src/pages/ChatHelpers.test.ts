@@ -8,6 +8,7 @@ import {
   finalizeLastInterruptedAgent,
   finalizeStreamEnd,
   finalizeLastStreamingBubble,
+  clearGhostStreaming,
   formatSmartTime,
   hasStreamingTail,
   insertChatMsgByCreatedAt,
@@ -336,6 +337,54 @@ describe('message finalization helpers', () => {
   it('finalizeStreamEnd is idempotent — no-op when already finalized', () => {
     const msgs = [agentMsg('a0', 'done', { isStreaming: false })];
     expect(finalizeStreamEnd(msgs, 'a0')).toBe(msgs);
+  });
+
+  // ── Ghost streaming flag (reported: border stays lit after the reply finished,
+  //    chat header keeps saying 工作中 while the L1 sidebar says 空闲) ──────────
+  // Root cause: the done handler renames the optimistic bubble to the server
+  // messageId, so by the time the terminal convergence point runs the caller's id
+  // is gone. A pure id lookup missed, returned the array untouched, and the bubble
+  // kept isStreaming: true forever — which lights the border (isStreamingMsg) and
+  // pins the header badge (hasStreamingTail) while the sidebar, reading only the
+  // chatStore authority, correctly showed 空闲.
+  it('finalizeStreamEnd still lands when the passed id was renamed away (server messageId)', () => {
+    const msgs = [
+      agentMsg('a0', 'done'),
+      agentMsg('cm_stream_abc', 'the reply', {
+        isStreaming: true,
+        segments: [{ type: 'tool', key: 'k', tool: 'shell', status: 'running' }],
+      }),
+    ];
+    const out = finalizeStreamEnd(msgs, 'optimistic_local_id'); // id no longer present
+    expect(out[1]!.isStreaming).toBe(false);
+    expect(out[1]!.segments![0]).toMatchObject({ status: 'stopped' });
+    expect(hasStreamingTail(out)).toBe(false);
+  });
+
+  it('finalizeStreamEnd without an id lands every in-flight agent bubble', () => {
+    const msgs = [agentMsg('a0', 'done'), agentMsg('a1', 'partial', { isStreaming: true })];
+    const out = finalizeStreamEnd(msgs);
+    expect(out[1]!.isStreaming).toBe(false);
+    expect(hasStreamingTail(out)).toBe(false);
+  });
+
+  it('clearGhostStreaming clears the flag but keeps content and never touches stopped/error bubbles', () => {
+    const msgs = [
+      agentMsg('a0', 'done'),
+      agentMsg('a1', 'ghost content', { isStreaming: true }),
+      agentMsg('a2', 'interrupted', { isStreaming: true, isStopped: true }),
+      { id: 'u0', sender: 'user', text: 'hi', time: '12:00' } as ChatMsg,
+    ];
+    const out = clearGhostStreaming(msgs);
+    expect(out[1]!.isStreaming).toBe(false);
+    expect(out[1]!.text).toBe('ghost content'); // content survives, only the flag goes
+    expect(out[2]!.isStopped).toBe(true);       // a stopped bubble is a settled outcome
+    expect(out[3]).toBe(msgs[3]);               // user messages untouched
+  });
+
+  it('clearGhostStreaming is a no-op (same ref) when nothing is in flight', () => {
+    const msgs = [agentMsg('a0', 'done'), agentMsg('a1', 'stopped', { isStopped: true })];
+    expect(clearGhostStreaming(msgs)).toBe(msgs);
   });
 
   it('finalizeLastStreamingBubble finalizes the in-flight bubble, never a completed reply', () => {

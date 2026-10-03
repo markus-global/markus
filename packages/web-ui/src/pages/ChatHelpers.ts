@@ -174,16 +174,62 @@ export function finalizeLastInterruptedAgent(msgs: ChatMsg[]): ChatMsg[] {
  * renders as a perpetual "thinking…" (isStreamingMsg = ... || !!msg.isStreaming)
  * and the sidebar busy mark holds via hasStreamingTail. Returns the same array
  * ref when nothing changed so React can skip the re-render.
+ *
+ * `agentMsgId` is OPTIONAL and id lookup is only the fast path, because the id
+ * the caller passed in can stop existing before this runs: the done handler
+ * RENAMES the optimistic bubble to the server-persisted `messageId` (see the
+ * identity-alignment block in useChatStream). A pure id lookup then misses,
+ * returns the array untouched, and the bubble keeps isStreaming: true forever —
+ * which is exactly the reported "border stays lit after the reply finished, and
+ * the chat header keeps saying 工作中 while the L1 sidebar says 空闲". The id was
+ * never the identity of the stream; the terminal signal must land regardless.
  */
-export function finalizeStreamEnd(msgs: ChatMsg[], agentMsgId: string): ChatMsg[] {
-  const idx = msgs.findIndex(m => m.id === agentMsgId);
-  if (idx < 0) return msgs;
-  const msg = msgs[idx]!;
-  const segs = stopRunningTools(msg.segments);
-  if (!msg.isStreaming && segs === msg.segments) return msgs;
-  const u = [...msgs];
-  u[idx] = { ...msg, isStreaming: false, segments: segs };
-  return u;
+export function finalizeStreamEnd(msgs: ChatMsg[], agentMsgId?: string): ChatMsg[] {
+  if (agentMsgId) {
+    const idx = msgs.findIndex(m => m.id === agentMsgId);
+    if (idx >= 0) {
+      const msg = msgs[idx]!;
+      const segs = stopRunningTools(msg.segments);
+      if (!msg.isStreaming && segs === msg.segments) return msgs;
+      const u = [...msgs];
+      u[idx] = { ...msg, isStreaming: false, segments: segs };
+      return u;
+    }
+  }
+  // Id gone (renamed to the server messageId, or replaced by the DB heal) — the
+  // stream is still over, so every in-flight agent bubble must land.
+  return clearGhostStreaming(msgs);
+}
+
+/**
+ * Clear the display-level stream flag on every in-flight agent bubble, keeping
+ * their content (the empty-reply rule belongs to callers that own the outcome,
+ * i.e. finalizeAgentMessage).
+ *
+ * INVARIANT: `isStreaming` on a message is DERIVED state. The authority for
+ * "this conversation has a stream in flight" is the chatStore streaming set,
+ * which has exactly one add path (beginStream / setStreamSession) and one remove
+ * path (clearStreamSession). When the authority says the stream is over, any
+ * message still carrying isStreaming is a ghost — and a ghost is not cosmetic:
+ * it lights the animated border (isStreamingMsg = ... || !!msg.isStreaming) and
+ * pins the chat header to 工作中 (chatStreamActive → hasStreamingTail) while the
+ * L1 sidebar, which reads only the authority, correctly shows 空闲. One leaked
+ * flag, two contradicting answers for the same agent at the same instant.
+ *
+ * Landing a ghost means more than dropping the flag: a ghost whose last tool
+ * segment is still `running` keeps ITS OWN activity affordance alive (the
+ * execution card spinner), so the "still working" signal would survive the fix
+ * on a second surface. When the stream is over nothing can still be running, so
+ * the leftover segment status is landed together with the flag.
+ *
+ * Returns the same array ref when nothing changed so React can skip re-render.
+ */
+export function clearGhostStreaming(msgs: ChatMsg[]): ChatMsg[] {
+  if (!hasStreamingTail(msgs)) return msgs;
+  return msgs.map(m => {
+    if (m.sender !== 'agent' || !m.isStreaming || m.isStopped) return m;
+    return { ...m, isStreaming: false, segments: stopRunningTools(m.segments) };
+  });
 }
 
 /**
