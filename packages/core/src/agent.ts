@@ -32,6 +32,7 @@ import {
   COMPLETION_MARKER_INSTRUCTION,
   COMPLETION_MARKER,
   hasCompletionMarker,
+  END_TURN_REPLY_SENTINEL,
   stripCompletionMarkerLeak,
   TRIAGE_CONTEXT_MESSAGES_MAX,
   TRIAGE_CONTEXT_MSG_CHARS,
@@ -340,7 +341,16 @@ export interface ToolLoopResponseShape {
  * entry points in {@link Agent} share one authoritative decision instead of five
  * copies of the same boolean expression.
  */
-export function shouldContinueToolLoop(response: ToolLoopResponseShape): boolean {
+export function shouldContinueToolLoop(
+  response: ToolLoopResponseShape,
+  opts?: { endTurnRequested?: boolean },
+): boolean {
+  // A turn-terminating tool (`end_turn`) wins over everything else. The agent has
+  // explicitly declared the turn over, so we must NOT spend another LLM round-trip
+  // producing a reply it already decided not to send — and any text accompanying
+  // the tool call is discarded too (a mixed 「调了工具又写了话」 turn is exactly the
+  // ambiguity this removes).
+  if (opts?.endTurnRequested) return false;
   return Boolean(
     (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
       response.finishReason === 'max_tokens'
@@ -579,6 +589,27 @@ export class Agent {
   private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private browserCloseTabsHelper?: (sessionId: string) => string | null;
+  /**
+   * Set when the agent calls the `end_turn` tool — an explicit, typed "this turn is
+   * over, send nothing" signal. Read by the tool-loop guard (all 5 entry points) to
+   * stop immediately, and by the reply assembly to force an empty reply.
+   *
+   * Why a typed signal instead of the legacy `[NO_RESPONSE]` text token: an LLM told
+   * to "reply with a token" often paraphrases the decision into prose instead — and
+   * that prose IS a delivered message, which re-triggers the peer and restarts the
+   * exact loop it was meant to end (observed 2026-10-03, agent↔agent DM).
+   */
+  private endTurnRequested = false;
+  /**
+   * Monotonic counter of `end_turn` tool invocations. The AttentionDelegate wrapper
+   * snapshots it around one mailbox turn: an increase means THIS turn ended
+   * deliberately, so it returns {@link END_TURN_REPLY_SENTINEL} to the attention
+   * controller (whose only source of truth for turn status is the delegate's return
+   * value). A counter — not the mutable `endTurnRequested` flag, which the reply
+   * assembly resets before returning — keeps the signal attributable to the
+   * specific turn even with concurrent workers.
+   */
+  private endTurnCount = 0;
   /** Injected by AgentManager; read at skill-activation time so Settings changes apply live. */
   private browserElementSelectionProvider?: () => 'direct' | 'jev';
   private dynamicContextProviders = new Map<string, () => string>();
@@ -1527,7 +1558,13 @@ export class Agent {
     return {
       processMailboxItem: async (item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string) => {
         try {
+          // Snapshot the end_turn counter so we can tell whether THIS turn ended via
+          // the `end_turn` tool. If it did, report a typed sentinel to the attention
+          // controller — an intentional empty reply must COMPLETE the item, not be
+          // mistaken for an abnormal/empty LLM turn and requeued forever.
+          const endTurnCountBefore = this.endTurnCount;
           const result = await this.processMailboxItemInternal(item, batchItems, batchContext);
+          const endedTurnViaTool = this.endTurnCount > endTurnCountBefore;
           // C2 (measurement only): record turn-level harness health. Chat turns are exempt
           // from the completion-marker protocol; non-chat turns missing a marker feed the
           // marker-failure rate.
@@ -1539,7 +1576,7 @@ export class Agent {
           } catch (err) {
             log.debug('recordTurn failed', { agentId: this.id, itemId: item.id, error: String(err) });
           }
-          return result;
+          return endedTurnViaTool ? END_TURN_REPLY_SENTINEL : result;
         } finally {
           // Always clear cancel flags so the next mailbox item starts clean.
           this.clearProcessingCancel();
@@ -1778,7 +1815,7 @@ export class Agent {
       // Allow real remaining work, but keep a hard bound (this is still one continuation).
       const maxIter = Math.min(this._maxToolIterations, 24);
       while (
-        shouldContinueToolLoop(response)
+        shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
       ) {
         if (++toolIter > maxIter) {
           log.warn('ensureCompletionMarker tool loop hit max iterations', {
@@ -4443,6 +4480,9 @@ export class Agent {
 
     this.transitionStatus({ to: 'working' });
 
+    // Per-turn reset: the end_turn signal never carries over between turns.
+    this.endTurnRequested = false;
+
     const scenario = options?.scenario ?? 'chat';
     const isLightweight = scenario !== 'chat' && scenario !== 'task_execution' && scenario !== 'review';
     const isPreemptable = scenario !== 'chat';
@@ -4689,7 +4729,7 @@ export class Agent {
       const requirementActionToolUsed = new Set<string>();
 
       while (
-        shouldContinueToolLoop(response)
+        shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
       ) {
         if (++toolIterations > effectiveMaxIter) {
           log.warn('Tool loop hit max iterations', {
@@ -4892,6 +4932,11 @@ export class Agent {
         });
         const updatedMessages = prepared2.messages;
 
+        // end_turn: the agent already ended this turn. Skip the continuation LLM call —
+        // it exists only to produce a reply we will not send, so spending it would be
+        // exactly the wasted round-trip this signal is meant to avoid.
+        if (this.endTurnRequested) break;
+
         const llmStart2 = Date.now();
         response = await this.withNetworkRetry(
           () => this.llmRouter.chat({
@@ -4913,11 +4958,10 @@ export class Agent {
 
       // Safeguard: if agent finishes comment_response without calling
       // task_comment/requirement_comment, remind it and give one more chance.
-      // The agent MUST either call the tool or include [NO_REPLY_NEEDED] marker
-      // to explicitly signal that no response is warranted.
-      const hasNoReplyMarker = /\[NO_REPLY_NEEDED\]/i.test(response.content ?? '');
+      // The agent MUST either call the tool or call `end_turn` to explicitly
+      // signal that no response is warranted.
       if (scenario === 'comment_response' && commentToolUsed.size === 0
-        && !hasNoReplyMarker && toolIterations < effectiveMaxIter) {
+        && !this.endTurnRequested && toolIterations < effectiveMaxIter) {
         this.memory.appendMessage(sessionId, {
           role: 'assistant',
           content: response.content,
@@ -4926,7 +4970,7 @@ export class Agent {
         });
         this.memory.appendMessage(sessionId, {
           role: 'user',
-          content: '[SYSTEM] You are about to end your turn WITHOUT posting a reply and WITHOUT marking [NO_REPLY_NEEDED]. In this scenario your text output is NOT visible to anyone. You MUST either: (1) call `task_comment` or `requirement_comment` tool to post your reply in the comment thread, OR (2) output exactly [NO_REPLY_NEEDED] if you have determined that no response is warranted. Do it now.',
+          content: '[SYSTEM] You are about to end your turn WITHOUT posting a reply and WITHOUT calling the end_turn tool. In this scenario your text output is NOT visible to anyone. You MUST either: (1) call `task_comment` or `requirement_comment` tool to post your reply in the comment thread, OR (2) call the end_turn tool if you have determined that no response is warranted. Do it now.',
         });
 
         const reminderMessages = this.requestHistory(sessionId);
@@ -5122,6 +5166,20 @@ export class Agent {
             'Chat LLM requirement-action-reminder-final',
           );
         }
+      }
+
+      // end_turn: the agent explicitly ended the turn — deliver nothing. Returning ''
+      // is what makes this work end-to-end: the DM path in api-server already suppresses
+      // on an empty reply, so the peer is not auto-chained and the loop dies here.
+      if (this.endTurnRequested) {
+        this.endTurnRequested = false;
+        this.memory.appendMessage(sessionId, { role: 'assistant', content: '' });
+        if (chatActivityId) {
+          this.emitActivityLog(chatActivityId, 'text', '[end_turn — no reply sent]');
+          this.endActivity(chatActivityId);
+        }
+        this.transitionStatus({ to: 'idle' });
+        return '';
       }
 
       const rawReply = sanitizeLLMReply(response.content);
@@ -5449,7 +5507,7 @@ export class Agent {
       let streamToolIterations = 0;
 
       while (
-        shouldContinueToolLoop(response)
+        shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
       ) {
         if (++streamToolIterations > this._maxToolIterations) {
           log.warn('Stream tool loop hit max iterations', {
@@ -6174,7 +6232,7 @@ export class Agent {
       this.emitLlmRequestAudit('task_execution', response, Date.now() - taskLlmStart, taskLlmTokens);
 
       while (
-        shouldContinueToolLoop(response)
+        shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
       ) {
         taskToolIterations++;
         if (cancelToken?.cancelled) {
@@ -6715,7 +6773,7 @@ export class Agent {
       // Config-driven safety cap on tool iterations (same source as the other loops).
       const effectiveMaxIter = this._maxToolIterations;
       while (
-        shouldContinueToolLoop(response)
+        shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
       ) {
         if (++toolIter > effectiveMaxIter) {
           log.warn('respondInSession tool loop hit max iterations', {
@@ -8250,6 +8308,17 @@ export class Agent {
   }
 
   private async executeToolInternal(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
+    // `end_turn` — typed turn-termination signal. Sets the flag read by the tool-loop
+    // guard (stops the loop, no further LLM round-trip) and by the reply assembly
+    // (forces an empty reply ⇒ nothing is delivered to the peer).
+    if (toolCall.name === 'end_turn') {
+      this.endTurnRequested = true;
+      this.endTurnCount++;
+      const reason = typeof toolCall.arguments.reason === 'string' ? toolCall.arguments.reason.trim() : '';
+      log.info('Agent ended turn via end_turn tool', { agentId: this.id, sessionId, reason: reason || undefined });
+      return JSON.stringify({ status: 'ok', ended: true, note: 'Turn ended. Do not send further messages in this turn.' });
+    }
+
     // Handle the discover_tools meta-tool: activate requested tools, skills, and skill MCP servers
     if (toolCall.name === 'discover_tools') {
       return await this.handleDiscoverTools(toolCall.arguments);

@@ -1446,7 +1446,7 @@ export class ContextEngine {
       lines.push('- [ ] Read ALL prior comments — understand the thread.');
       lines.push('- [ ] Is the comment directed at you? Does it change your work?');
       lines.push('- [ ] Reply with `reply_to_comment_id`. One consolidated reply if multiple comments.');
-      lines.push('- [ ] Does your reply add NEW information? If not → `[NO_REPLY_NEEDED]`.');
+      lines.push('- [ ] Does your reply add NEW information? If not → no reply (call `end_turn`).');
       lines.push('');
       lines.push('**task_status_update** (usually informational):');
       lines.push('- [ ] Does this affect your current work or priorities?');
@@ -1660,8 +1660,12 @@ export class ContextEngine {
           lines.push('');
           lines.push('**Conversation flow**: After you reply, the other agent will be automatically triggered to respond. This creates a natural back-and-forth conversation — like texting a colleague.');
           lines.push('');
-          lines.push('**CRITICAL — When to STOP replying** (respond with exactly `[NO_RESPONSE]`):');
-          lines.push('Your reply triggers the other agent to respond, which triggers you again — an infinite loop if you do not stop. You MUST respond with `[NO_RESPONSE]` in ALL of these cases:');
+          lines.push('**CRITICAL — How to STOP the conversation**:');
+          lines.push('Your reply auto-triggers the other agent, so a reply that carries no new information keeps the exchange alive forever. To end your side, **call the `end_turn` tool** and write no reply text. That is the only correct stop signal: it ends your turn without sending anything to the peer.');
+          lines.push('Do NOT write a message explaining that you will not reply. Text like "no response needed", "无待办", "已收到，不重复回复", "该消息为重复，我不再回复" is **itself a reply**: it gets delivered, re-triggers the peer, and restarts the exact loop it was meant to stop. Silence is the *absence* of a message — never a message about being silent.');
+          lines.push('(Writing no reply text at all also stops the exchange, and a bare `[NO_RESPONSE]` is still accepted as a legacy shorthand — but **`end_turn` is preferred**: it cannot be paraphrased by mistake.)');
+          lines.push('');
+          lines.push('Stop and write nothing when:');
           lines.push('- The conversation has reached a natural conclusion (agreement reached, question answered, info exchanged)');
           lines.push('- You have nothing **new and actionable** to add — no new facts, no new questions, no new instructions');
           lines.push('- You are just acknowledging receipt ("OK", "got it", "understood", "收到", "noted", "roger", "will do", "保持待命", "standby", "收到，保持待命")');
@@ -1669,7 +1673,7 @@ export class ContextEngine {
           lines.push('- The other party confirmed or acknowledged your last message — the exchange is complete');
           lines.push('- You want to say something purely polite, ceremonial, or encouraging (e.g., "加油", "sounds good", "great work")');
           lines.push('- You already got the answer you needed from this peer — do NOT paste "X 回复说：…" back into this DM');
-          lines.push('**Default to [NO_RESPONSE]**. Only reply if you have genuinely new information, a question that needs answering, or a correction. When in doubt, STOP.');
+          lines.push('**Default to writing nothing.** Only reply if you have genuinely new information, a question that needs answering, or a correction. When in doubt, STOP.');
           lines.push('');
           lines.push('**Human delivery (very important):**');
           lines.push('- If you asked this peer something on behalf of a human (owner/boss), deliver the answer with `notify_user` (or report it in your human chat).');
@@ -1719,8 +1723,8 @@ export class ContextEngine {
           lines.push('4. When you accept a work assignment, verify a task has been created for it (`task_list`). If the coordinator did not create one, remind them or create it yourself with the correct `assigned_agent_id`. Do NOT make promises without task tracking.');
         }
         lines.push('5. DEFAULT IS SILENCE. Before responding, answer these questions:');
-        lines.push('   a) Has another agent already given a substantively similar answer? If yes → [NO_RESPONSE]');
-        lines.push('   b) Does your response add UNIQUE expertise or information? If no → [NO_RESPONSE]');
+        lines.push('   a) Has another agent already given a substantively similar answer? If yes → no reply (call `end_turn`)');
+        lines.push('   b) Does your response add UNIQUE expertise or information? If no → no reply (call `end_turn`)');
         lines.push('   c) Check channel history — duplicate or "me too" responses waste everyone\'s time.');
         lines.push('6. @MENTION — CRITICAL ROUTING MECHANISM:');
         lines.push('   The @ symbol controls message routing. You MUST use it correctly:');
@@ -1734,13 +1738,13 @@ export class ContextEngine {
         lines.push(`8. Your context already includes ~${CHANNEL_CONTEXT_MESSAGES} recent messages. For OLDER messages beyond that window, use recall_context(scope="channel"). For task/requirement details use task_get/requirement_get. Do NOT guess about prior discussion.`);
         lines.push('');
         lines.push('**GROUP CHAT PROCESSING CHECKLIST** (walk through before every response):');
-        lines.push('- [ ] Am I @mentioned or is this an open message? If directed at someone else → `[NO_RESPONSE]`.');
-        lines.push('- [ ] Check the channel messages in your context — has someone already answered? If yes → `[NO_RESPONSE]`.');
-        lines.push('- [ ] Does my role/expertise add UNIQUE value here? If no → `[NO_RESPONSE]`.');
+        lines.push('- [ ] Am I @mentioned or is this an open message? If directed at someone else → no reply (call `end_turn`).');
+        lines.push('- [ ] Check the channel messages in your context — has someone already answered? If yes → no reply (call `end_turn`).');
+        lines.push('- [ ] Does my role/expertise add UNIQUE value here? If no → no reply (call `end_turn`).');
         lines.push('- [ ] Draft my reply. Is it concise and actionable? Remove filler.');
         lines.push('- [ ] @mention specific agents if I need their input — use correct format (`@Name` or `@[Full Name]`).');
         lines.push('- [ ] My text response will be auto-sent to the group. No need to call `agent_send_group_message`.');
-        lines.push('- [ ] Final check: does my response contain NEW information? If not → `[NO_RESPONSE]`.');
+        lines.push('- [ ] Final check: does my response contain NEW information? If not → no reply (call `end_turn`).');
         break;
 
       case 'comment_response':
@@ -1769,7 +1773,7 @@ export class ContextEngine {
         lines.push('');
         lines.push('**MANDATORY outcome — you MUST end with exactly one of these:**');
         lines.push('1. Call `task_comment` or `requirement_comment` tool to post your reply, OR');
-        lines.push('2. Output `[NO_REPLY_NEEDED]` in your text to explicitly signal that no response is warranted.');
+        lines.push('2. Call the `end_turn` tool to explicitly signal that no response is warranted.');
         lines.push('');
         lines.push('If you finish without doing either of the above, the system will automatically retry your turn — your text output alone is NEVER sufficient.');
         lines.push('');
@@ -1786,10 +1790,10 @@ export class ContextEngine {
         lines.push('  and reference others by quoting: \'> [re: tc_xxx by @Bob]: "quote..." — your response\'');
         lines.push('- Include all addressed agent IDs in the `mentions` array for proper notifications.');
         lines.push('');
-        lines.push('**When to use `[NO_REPLY_NEEDED]` — convergence check:**');
-        lines.push('- Does your reply contain NEW INFORMATION, a CONCRETE ACTION, or a SPECIFIC QUESTION? If none → [NO_REPLY_NEEDED]');
-        lines.push('- If the last 2+ comments are agents acknowledging or restating without new substance → [NO_REPLY_NEEDED]');
-        lines.push('- If you and another agent exchanged views and neither has new data → [NO_REPLY_NEEDED]');
+        lines.push('**When to call `end_turn` — convergence check:**');
+        lines.push('- Does your reply contain NEW INFORMATION, a CONCRETE ACTION, or a SPECIFIC QUESTION? If none → call `end_turn`.');
+        lines.push('- If the last 2+ comments are agents acknowledging or restating without new substance → call `end_turn`.');
+        lines.push('- If you and another agent exchanged views and neither has new data → call `end_turn`.');
         lines.push('');
         lines.push('**Not a valid reason to reply:** "Got it" / "Will do" / "Agreed" / restating what was said / asking already-answered questions.');
         lines.push('');

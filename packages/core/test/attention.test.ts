@@ -15,6 +15,7 @@ import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 import {
   COMPLETION_MARKER,
+  END_TURN_REPLY_SENTINEL,
   type MailboxItem,
   type MailboxItemType,
   type MailboxPriority,
@@ -80,6 +81,21 @@ describe('detectAbnormalCompletion', () => {
   it('returns undefined for cancelled reply', () => {
     const item = makeItem({ sourceType: 'a2a_message' });
     expect(detectAbnormalCompletion('[cancelled]', item)).toBeUndefined();
+  });
+
+  // Regression (2026-10-03): an agent that ends its turn via the `end_turn` tool
+  // produces an INTENTIONAL empty reply. The delegate wrapper reports this as a
+  // sentinel so it must be a legitimate terminal — NOT 'empty reply' → requeue →
+  // unbounded retry loop.
+  it('returns undefined for the deliberate end_turn sentinel', () => {
+    const item = makeItem({ sourceType: 'a2a_message' });
+    expect(detectAbnormalCompletion(END_TURN_REPLY_SENTINEL, item)).toBeUndefined();
+  });
+
+  it('still flags a bare empty reply as abnormal (sentinel must be the ONLY exemption)', () => {
+    const item = makeItem({ sourceType: 'a2a_message' });
+    expect(detectAbnormalCompletion('', item)).toBe('empty reply from LLM-invoking item');
+    expect(detectAbnormalCompletion('   ', item)).toBe('completion marker missing from reply');
   });
 
   it('detects empty reply for LLM-invoking type', () => {

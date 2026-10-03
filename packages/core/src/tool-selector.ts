@@ -386,6 +386,26 @@ export class ToolSelector {
       },
     });
 
+    // Turn-termination signal for conversations where the agent's text reply is
+    // auto-delivered to a peer (agent↔agent DM). Silence must be a *typed* action:
+    // telling the model to "reply [NO_RESPONSE]" invites it to paraphrase the
+    // decision into prose — and that prose IS a message, which re-triggers the peer
+    // and restarts the loop it was meant to end. A tool call cannot be paraphrased.
+    pushUnique({
+      name: 'end_turn',
+      description:
+        'End this turn WITHOUT sending any message to the conversation. '
+        + 'Use it in an agent-to-agent conversation when the exchange is complete — you have no new fact, no question, and no correction. '
+        + 'This is the ONLY correct way to stop a back-and-forth loop: do NOT write a reply saying you have nothing to add, and do NOT write an acknowledgement. '
+        + 'Call end_turn and write no message text.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', description: 'Optional short note on why the exchange is complete. Recorded locally for audit; never sent to the peer.' },
+        },
+      },
+    });
+
     // Team Chat only: open/collapse the right-side preview panel (deliverable / file / url).
     if (opts.isChat) {
       pushUnique({
@@ -663,6 +683,24 @@ export class ToolSelector {
         kept: capped.length,
         evicted: evicted.map((e) => e.name),
         evictedActivated: this.lastEvictedActivated,
+      });
+    }
+
+    // D-guard: an evicted tool must still be recoverable. If it has neither a
+    // registered handler (`allTools`) nor a schema-injection entry, then it is
+    // gone from the schema AND `discover_tools` will answer "unknown" → the tool
+    // is unreachable for the rest of the turn. That is a should-never-happen
+    // event (it is how `end_turn` and open/collapse_right_panel silently died),
+    // so make it loud instead of burying it in the info-level cap log.
+    const unreachable = evicted
+      .map((e) => e.name)
+      .filter((n) => !opts.allTools.has(n) && !SCHEMA_INJECTED_TOOLS.has(n));
+    if (unreachable.length) {
+      log.warn('Evicted tool is not re-activatable — unreachable for this turn', {
+        pack,
+        budget,
+        unreachable,
+        hint: 'Add to TOOL_DEF_PROTECTED (must never evict) or SCHEMA_INJECTED_TOOLS (discover_tools can restore it).',
       });
     }
 

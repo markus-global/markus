@@ -16,6 +16,7 @@ import {
   MAILBOX_TYPE_REGISTRY,
   MAILBOX_ITEM_MAX_RETRIES,
   hasCompletionMarker,
+  END_TURN_REPLY_SENTINEL,
   MAILBOX_PROCESSING_TIMEOUT_MS,
   BACKSTOP_CANCEL_GRACE_MS,
   MAILBOX_COALESCE_WINDOW_MS,
@@ -48,6 +49,7 @@ import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } 
  *
  * Returns a reason string when abnormal, `undefined` when the reply is OK.
  */
+
 export function detectAbnormalCompletion(
   reply: string | void,
   item: MailboxItem,
@@ -58,6 +60,11 @@ export function detectAbnormalCompletion(
   // Intentional preemption (pause) or cancellation by the attention controller
   // — a higher-priority item arrived and this one was interrupted on purpose.
   if (reply === '[preempted]' || reply === '[cancelled]') return undefined;
+
+  // Deliberate turn termination via the `end_turn` tool — a typed, intentional
+  // silence, not a failure. Completing (not requeueing) is the whole point: the
+  // agent already decided the exchange is over.
+  if (reply === END_TURN_REPLY_SENTINEL) return undefined;
 
   if (reply === undefined || reply === '') {
     return 'empty reply from LLM-invoking item';

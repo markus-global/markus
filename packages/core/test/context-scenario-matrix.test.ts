@@ -167,6 +167,7 @@ describe('reflex scenarios restrict tools in the prompt (and the runtime enforce
   it('comment_response mandates context-first gathering before replying', async () => {
     const { text } = await build({ scenario: 'comment_response' });
     expect(text).toContain('task_get');
-    expect(text).toContain('[NO_REPLY_NEEDED]');
+    // Silence is now a typed tool call, not a magic token (see `end_turn`).
+    expect(text).toContain('end_turn');
   });
 });

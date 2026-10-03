@@ -347,6 +347,20 @@ describe('B5: shared tool-loop decision helpers', () => {
     expect(shouldContinueToolLoop({ finishReason: 'max_tokens', toolCalls: [{ id: 't' }] })).toBe(true);
   });
 
+  // end_turn is a *typed* turn-termination signal: once the agent has explicitly
+  // ended the turn, the loop must stop even though the model also asked for tools —
+  // otherwise we spend another LLM round-trip producing a reply it decided not to send.
+  it('shouldContinueToolLoop stops when the agent called end_turn', () => {
+    expect(
+      shouldContinueToolLoop({ finishReason: 'tool_use', toolCalls: [{ id: 't' }] }, { endTurnRequested: true }),
+    ).toBe(false);
+    expect(
+      shouldContinueToolLoop({ finishReason: 'max_tokens', toolCalls: [] }, { endTurnRequested: true }),
+    ).toBe(false);
+    // Absent the signal, behaviour is unchanged (backwards compatible for all other callers).
+    expect(shouldContinueToolLoop({ finishReason: 'tool_use', toolCalls: [{ id: 't' }] })).toBe(true);
+  });
+
   it('shouldContinueToolLoop stops on end_turn or tool_use with no calls', () => {
     expect(shouldContinueToolLoop({ finishReason: 'end_turn', toolCalls: [] })).toBe(false);
     expect(shouldContinueToolLoop({ finishReason: 'tool_use', toolCalls: [] })).toBe(false);
