@@ -573,9 +573,45 @@ html.electron-darwin .electron-mac-top-safe {
   left: 100%;
 }
 
-/* Streaming chat bubble: no left accent bar (it looked like a quote). */
+/* Streaming chat bubble: a living conic "sweep" ring while the turn is being
+   produced. Team.tsx applies `.streaming-bubble` only while the stream is live
+   and drops it the instant the turn ends, so the effect stops by itself.
+   Drawn as a masked ring rather than a border-image: border-image ignores
+   border-radius and would square off the bubble's corners. */
 .streaming-bubble {
+  position: relative;
   min-height: 2.5rem;
+  border-radius: 0.75rem;
+}
+.streaming-bubble::after {
+  content: '';
+  position: absolute;
+  /* Sits just OUTSIDE the content: the ring never crowds the text, and — more
+     importantly — starting/stopping the effect reflows nothing (no padding
+     change), so the bubble does not jump the moment a reply finishes. */
+  inset: -5px;
+  border-radius: 1.0625rem; /* concentric: 0.75rem + the 5px outset */
+  padding: 1px;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--border-angle),
+    transparent 0deg,
+    color-mix(in oklab, var(--color-brand-500) 40%, transparent) 60deg,
+    var(--color-brand-500) 120deg,
+    color-mix(in oklab, var(--color-brand-400) 65%, transparent) 180deg,
+    transparent 280deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: border-rotate 2.6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .streaming-bubble::after {
+    animation: none;
+    background: color-mix(in oklab, var(--color-brand-500) 45%, transparent);
+  }
 }
 
 /* Find-in-conversation: the bubble the current hit landed on flashes so the eye

@@ -173,7 +173,15 @@ export class ConversationBufferManager {
     msgs: ChatMsg[],
   ): BufferWriteResult {
     const cache = this.sessionMsgCache.get(sessionId);
-    const cacheIsFresher = this.isCacheFresher(sessionId, msgs);
+    // A cached `isStreaming` bubble is authoritative ONLY while a stream is in
+    // flight for THIS session. Once no stream is live it is stale local state —
+    // the finalize ran on whichever buffer was routed and left the other one
+    // behind. Both the freshness heuristic and the merge must ignore it, or the
+    // stale row keeps the cache looking newer than the DB forever and the
+    // authoritative list never gets to replace it (2026-10-02 report: an OLD
+    // reply bubble re-appearing AFTER the newest message).
+    const streamLive = this.isStreamLiveForSession(convKey, sessionId);
+    const cacheIsFresher = this.isCacheFresher(sessionId, msgs, streamLive);
     if (!cacheIsFresher) {
       this.sessionMsgCache.set(sessionId, msgs);
       this.touchSessionCache(sessionId);
@@ -207,7 +215,11 @@ export class ConversationBufferManager {
       // the assistant reply). A fresher cache may only add live-tail messages
       // that the DB does not have yet — it must never hide DB user messages,
       // which is what caused "user bubble after the agent reply" until refresh.
-      const displayMsgs = this.mergeDbWithCache(msgs, cacheIsFresher ? cache : undefined);
+      const displayMsgs = this.mergeDbWithCache(
+        msgs,
+        cacheIsFresher ? cache : undefined,
+        streamLive,
+      );
       this.msgBuffers.set(convKey, displayMsgs);
       this.loadingSession = sessionId;
       this.completeLoad(convKey);
@@ -232,7 +244,11 @@ export class ConversationBufferManager {
    * bubble is by definition the latest in-flight response, so the tail is
    * authoritative regardless of timestamps.
    */
-  private mergeDbWithCache(dbMsgs: ChatMsg[], cache?: ChatMsg[]): ChatMsg[] {
+  private mergeDbWithCache(
+    dbMsgs: ChatMsg[],
+    cache?: ChatMsg[],
+    streamLive = false,
+  ): ChatMsg[] {
     if (!cache || cache.length === 0) return [...dbMsgs];
     const byId = new Set<string>();
     const out: ChatMsg[] = [];
@@ -247,6 +263,13 @@ export class ConversationBufferManager {
     for (const cm of cache) {
       if (byId.has(cm.id)) continue;
       if (cm.sender === 'agent' && cm.isStreaming) {
+        // Only a LIVE stream may contribute a tail. With no stream running for
+        // this session, an `isStreaming` cache row is stale local state: its turn
+        // is either already persisted in the DB or already finalized locally, so
+        // keeping it strands a duplicate of an OLD reply at the bottom of the
+        // thread (its rawCreatedAt is the optimistic send time, so it can never
+        // be ordered correctly either). The DB is the sole authority once idle.
+        if (!streamLive) continue;
         streamingTail.push(cm);
         byId.add(cm.id);
       } else {
@@ -319,16 +342,33 @@ export class ConversationBufferManager {
   restoreFromCache(key: string, sessionId: string): ChatMsg[] | undefined {
     const cached = this.sessionMsgCache.get(sessionId);
     if (cached && cached.length > 0) {
-      this.msgBuffers.set(key, cached);
-      return cached;
+      // Never restore a stale streaming row into the view: it would render an old
+      // duplicate bubble at the tail until the next DB load heals it.
+      const live = this.isStreamLiveForSession(key, sessionId);
+      const usable = live
+        ? cached
+        : cached.filter(m => !(m.sender === 'agent' && m.isStreaming && !m.isStopped));
+      if (usable.length === 0) {
+        this.msgBuffers.delete(key);
+        return undefined;
+      }
+      this.msgBuffers.set(key, usable);
+      return usable;
     }
     this.msgBuffers.delete(key);
     return undefined;
   }
 
-  isCacheFresher(sessionId: string, dbMsgs: ChatMsg[]): boolean {
-    const cache = this.sessionMsgCache.get(sessionId);
-    if (!cache || cache.length === 0) return false;
+  isCacheFresher(sessionId: string, dbMsgs: ChatMsg[], streamLive = false): boolean {
+    const raw = this.sessionMsgCache.get(sessionId);
+    if (!raw || raw.length === 0) return false;
+    // Stale streaming rows must not count as freshness evidence: the extra row
+    // they carry is exactly what makes the cache look newer than the DB forever
+    // and stops the authoritative DB list from ever replacing it.
+    const cache = streamLive
+      ? raw
+      : raw.filter(m => !(m.sender === 'agent' && m.isStreaming && !m.isStopped));
+    if (cache.length === 0) return false;
     if (cache.length > dbMsgs.length) return true;
     const cacheTextLen = cache.reduce((s, m) => s + m.text.length, 0);
     const dbTextLen = dbMsgs.reduce((s, m) => s + m.text.length, 0);
@@ -336,6 +376,22 @@ export class ConversationBufferManager {
     const cacheSegLen = cache.reduce((s, m) => s + (m.segments?.length ?? 0), 0);
     const dbSegLen = dbMsgs.reduce((s, m) => s + (m.segments?.length ?? 0), 0);
     return cacheSegLen > dbSegLen;
+  }
+
+  /**
+   * Is a stream genuinely in flight for `sessionId` in this conversation?
+   *
+   * `streamingSessions` is the positive ownership record (`setStreamSession` on
+   * session_start, released on done/abort/error). An EMPTY set during a
+   * `streaming` phase is the pre-registration window — `beginStream` flips the
+   * phase before the session mark lands — so it must NOT be read as "no stream":
+   * that window is exactly where the in-flight placeholder legitimately lives.
+   */
+  private isStreamLiveForSession(convKey: string, sessionId: string): boolean {
+    if (this.getPhase(convKey) !== 'streaming') return false;
+    const set = this.streamingSessions.get(convKey);
+    if (!set || set.size === 0) return true;
+    return set.has(sessionId);
   }
 
   // ── Send / stream tracking ──

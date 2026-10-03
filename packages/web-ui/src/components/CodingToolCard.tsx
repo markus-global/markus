@@ -224,7 +224,7 @@ export function CodingToolCard({ session, className }: CodingToolCardProps) {
             <span className="font-medium uppercase tracking-wider">Raw output</span>
           </button>
           {expanded && (
-            <pre className="mt-2 text-[11px] text-fg-tertiary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-all font-mono">
+            <pre className="mt-2 text-[11px] text-fg-tertiary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">
               {rawOutput}
             </pre>
           )}

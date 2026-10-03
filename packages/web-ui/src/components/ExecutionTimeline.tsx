@@ -161,7 +161,7 @@ function ToolDetailContent({ info, time }: { info: ToolCallInfo; time?: string }
       {visibleSubagentLogs && visibleSubagentLogs.length > 0 && (
         <div>
           <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('execution.subagentExecution')}</h4>
-          <div ref={subagentScrollRef} className="bg-surface-elevated/50 rounded-lg px-3 py-2 space-y-1 max-h-64 overflow-y-auto">
+          <div ref={subagentScrollRef} className="bg-surface-elevated/50 rounded-lg px-3 py-2 space-y-1">
             {logCount > SUBAGENT_LOG_RENDER_LIMIT && (
               <div className="text-[10px] text-fg-tertiary pb-1">… {logCount - SUBAGENT_LOG_RENDER_LIMIT} earlier steps omitted</div>
             )}
@@ -880,7 +880,7 @@ export function ToolCallRow({ info, time, hideApprovalCards }: {
         </div>
         {/* Live streaming output (only while running) — render trailing window only */}
         {info.liveOutput && info.status === 'running' && (
-          <pre ref={outputRef} className="mt-1 font-mono text-[11px] text-fg-tertiary bg-surface-secondary/60 rounded px-2 py-1.5 max-h-32 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all">
+          <pre ref={outputRef} className="mt-1 font-mono text-[11px] text-fg-tertiary bg-surface-secondary/60 rounded px-2 py-1.5 overflow-x-hidden whitespace-pre-wrap break-all">
             {info.liveOutput.length > TOOL_DETAIL_PREVIEW_CHARS
               ? info.liveOutput.slice(info.liveOutput.length - TOOL_DETAIL_PREVIEW_CHARS)
               : info.liveOutput}
@@ -892,10 +892,12 @@ export function ToolCallRow({ info, time, hideApprovalCards }: {
             {latestSubagentLine}
           </div>
         )}
-        {/* Inline expandable detail (args + result), height-capped with its own scroll —
-            a lighter alternative to the old modal, consistent with the thinking block. */}
+        {/* Inline expandable detail (args + result). NO height cap / inner scroll:
+            the bubble itself grows to fit — a nested scrollbar inside a bubble is
+            what made replies look truncated. Very long text is still trimmed by
+            TruncatedPre's "show more" affordance, not by a scroll box. */}
         {expanded && hasDetail && (
-          <div className="mt-1 ml-[23px] border-l-2 border-border-default/60 pl-3 max-h-80 overflow-y-auto overflow-x-hidden">
+          <div className="mt-1 ml-[23px] border-l-2 border-border-default/60 pl-3 overflow-x-hidden">
             <ToolDetailContent info={info} time={time} />
           </div>
         )}
@@ -1121,7 +1123,7 @@ export function CompactExecutionCard({ entries, streamingText, isActive, onExpan
         </div>
 
         {streamingText ? (
-          <div className={`mt-1.5 ml-5.5 text-xs text-fg-secondary whitespace-pre-wrap break-words leading-relaxed ${embedded && isActive ? '' : 'max-h-32 overflow-y-auto'}`}>
+          <div className={`mt-1.5 ml-5.5 text-xs text-fg-secondary whitespace-pre-wrap break-words leading-relaxed ${embedded ? '' : 'max-h-32 overflow-y-auto'}`}>
             <MarkdownMessage content={streamingText} className="text-xs" />
           </div>
         ) : statusDetail ? (
