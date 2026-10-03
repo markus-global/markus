@@ -80,7 +80,7 @@ import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   dedupeAdjacentUserMessages,
-  stopRunningTools, hasStreamingTail,
+  stopRunningTools, hasStreamingTail, clearGhostStreaming,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
   resolveTeamChatShortcut, cycleSessionTabId,
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
@@ -1016,6 +1016,26 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     () => makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId),
     [chatMode, selectedAgent, activeChannel, activeDmUserId],
   );
+
+  // ── Ghost streaming reconciliation ────────────────────────────────────────
+  // `isStreaming` on a message is DERIVED display state. The authority for "this
+  // conversation has a stream in flight" is the chatStore streaming set, which has
+  // exactly one add path (beginStream / setStreamSession) and one remove path
+  // (clearStreamSession). Whenever the authority says the stream is over, a message
+  // still carrying isStreaming is a ghost — and a ghost is not cosmetic: it pins the
+  // animated border (isStreamingMsg = ... || !!msg.isStreaming) and the header badge
+  // to 工作中 (chatStreamActive → hasStreamingTail) while the L1 sidebar, which reads
+  // only the authority, correctly shows 空闲. One leaked flag, two contradicting
+  // answers for the same agent at the same instant — so heal it here instead of
+  // waiting for the user to reload the page. `messages` changing re-runs this, and
+  // clearGhostStreaming returns the same ref when there is nothing to do.
+  useEffect(() => {
+    if (chatMode !== 'direct' || !selectedAgent) return;
+    if (sending || streamingVisual) return;
+    if (chatStore.isAgentStreaming(selectedAgent)) return;
+    if (!hasStreamingTail(messages)) return;
+    updateConvMsgs(activeConvKey, prev => clearGhostStreaming(prev));
+  }, [activeConvKey, chatMode, selectedAgent, sending, streamingVisual, messages, updateConvMsgs]);
   const activeScrollKey = useMemo(
     () => scrollMemoryKey(activeConvKey, activeSessionId),
     [activeConvKey, activeSessionId],
