@@ -258,7 +258,8 @@ main() {
 
   if [ "$os" = "unknown" ]; then
     error "Unsupported operating system: $(uname -s)"
-    error "Markus supports macOS, Linux, and Windows (PowerShell installer)."
+    error "This installer supports macOS and Linux."
+    error "On Windows, install the Desktop App (.exe). The CLI is available on any platform via npm: ${NPM_PACKAGE}"
     exit 1
   fi
   if [ "$arch" = "unknown" ]; then
