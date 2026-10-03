@@ -329,3 +329,80 @@ describe('AgentConservator — 统一仲裁引擎（指数退避 + 上限 + 收�
     expect(onNeedsHuman).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * 回归（issue #342）：Conservator 误判「正在执行长工具的 agent」为 stuck busy flag。
+ *
+ * 场景：agent 跑一次长工具调用（例如 3 分钟的构建 / 大查询）——status=working，但不留
+ * currentActivity 痕迹（该痕迹服务 thinking/LLM 阶段），没有 live task，且若它被配置了
+ * 较长的心跳间隔（heartbeatGraceMs 固定 2 分钟）心跳也早已"不新鲜"。修复前这一组合完全
+ * 命中 stuck busy flag，于是反复触发无谓的 recovery heartbeat；而 lastProgressAt 恰恰是
+ * 「它正在干活」最直接的证据，此前从未参与该判定。
+ */
+describe('evaluateConservator — lastProgressAt 存活判据（长工具调用误判回归，issue #342）', () => {
+  const NOW_342 = Date.parse('2026-10-03T12:00:00.000Z');
+  const minutesAgo = (m: number) => new Date(NOW_342 - m * 60_000).toISOString();
+
+  /** 复现原始误判输入：working + 无活动痕 + 无任务 + 心跳陈旧。 */
+  const longToolCall = (ov: Record<string, unknown> = {}) => ({
+    agentId: 'a-long-tool',
+    status: 'working',
+    currentActivity: null,
+    activeTaskIds: [],
+    lastHeartbeat: minutesAgo(30),
+    ...ov,
+  });
+
+  it('正在执行长工具（心跳陈旧但进展新鲜）→ 不得判为 stuck busy flag', () => {
+    const v = evaluateConservator(longToolCall({ lastProgressAt: minutesAgo(1) }), () => undefined, NOW_342);
+    expect(v.dirty.dirty).toBe(false);
+    expect(v.action).toBe('none');
+  });
+
+  it('进展窗口覆盖整个长工具上界（shell 最长 5 分钟；9 分钟前仍有进展 → 存活）', () => {
+    const v = evaluateConservator(longToolCall({ lastProgressAt: minutesAgo(9) }), () => undefined, NOW_342);
+    expect(v.dirty.dirty).toBe(false);
+  });
+
+  it('窗口是有界的：进展超出 progressGraceMs 后不再豁免', () => {
+    const v = evaluateConservator(longToolCall({ lastProgressAt: minutesAgo(11) }), () => undefined, NOW_342);
+    expect(v.dirty.dirty).toBe(true);
+  });
+
+  it('守卫未被削弱（1）：无活动、无任务、心跳与进展皆陈旧 → 仍判 stuck busy flag', () => {
+    const v = evaluateConservator(longToolCall({ lastProgressAt: minutesAgo(45) }), () => undefined, NOW_342);
+    expect(v.dirty.dirty).toBe(true);
+    expect(v.dirty.recovery).toBe('trigger-heartbeat');
+  });
+
+  it('守卫未被削弱（2）：lastProgressAt 缺失 → 仍判 stuck busy flag（不能因缺字段而放行）', () => {
+    const v = evaluateConservator(longToolCall(), () => undefined, NOW_342);
+    expect(v.dirty.dirty).toBe(true);
+    expect(v.dirty.recovery).toBe('trigger-heartbeat');
+  });
+
+  it('配置理由可核对：progressGraceMs 必须大于单个长工具上界（shell 5 分钟）', () => {
+    expect(DEFAULT_CONSERVATOR_CONFIG.progressGraceMs).toBeGreaterThan(5 * 60_000);
+  });
+
+  it('端到端：长工具执行期间不再触发 recovery heartbeat（线上故障的复现）', async () => {
+    const recover = vi.fn();
+    const { conservator } = make({ recover });
+
+    // 心跳间隔很长 → lastHeartbeat 早已超出 2 分钟宽限；但每次扫描进展都是新鲜的。
+    const busyOnLongTool = (): ConservatorAgentView => ({
+      agentId: 'long-tool',
+      status: 'working',
+      currentActivity: null,
+      activeTaskIds: [],
+      lastHeartbeat: new Date(NOW_342 - 30 * 60_000).toISOString(),
+      lastProgressAt: new Date(NOW_342 - 60_000).toISOString(),
+    });
+
+    await conservator.scan([busyOnLongTool()], NOW_342);
+    await conservator.scan([busyOnLongTool()], NOW_342 + 30_000);
+    await conservator.scan([busyOnLongTool()], NOW_342 + 60_000);
+
+    expect(recover).not.toHaveBeenCalled();
+  });
+});
