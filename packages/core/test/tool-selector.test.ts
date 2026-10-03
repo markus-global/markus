@@ -1,4 +1,13 @@
+import { readFileSync } from 'node:fs';
 import { ToolSelector } from '../src/tool-selector.js';
+import {
+  SCHEMA_INJECTED_TOOLS,
+  TOOL_DEF_CORE_KEEP,
+  TOOL_DEF_EVICT_FIRST,
+  TOOL_DEF_PROTECTED,
+  evictToolsToBudget,
+  toolEvictionTier,
+} from '../src/capability-packs.js';
 
 function makeToolMap(names: string[]): Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }> {
   const map = new Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }>();
@@ -33,6 +42,9 @@ describe('ToolSelector', () => {
     expect(names).toContain('memory_search');
     expect(names).toContain('discover_tools');
     expect(names).toContain('notify_user');
+    // Typed turn-termination signal — must always be offered, otherwise an agent has
+    // no reliable way to end an agent↔agent exchange without sending a message.
+    expect(names).toContain('end_turn');
     // Both subagent tools are core-keep: `spawn_subagent` for serial delegation,
     // `spawn_subagents` for parallel fan-out (see spawn_subagents in CORE_KEEP).
     expect(names).toContain('spawn_subagent');
@@ -375,6 +387,97 @@ describe('ToolSelector', () => {
     expect(withActivated).toContain('shell_execute');
     expect(withActivated).toContain('file_read');
     expect(withActivated).toContain('discover_tools');
+  });
+
+  it('regression: end_turn survives budget eviction in converse', () => {
+    // 2026-10-03 实测（runtime 日志）发现：end_turn 已注册、提示词也明确要求模型
+    // 「call the `end_turn` tool」，但它不在 TOOL_DEF_PROTECTED 里 → converse 预算
+    // 压力下被驱逐：`evicted:[...,"end_turn",...]`。于是模型被要求调用一个不存在的
+    // 工具，退化回「写散文说明自己不回复」→ a2a 元回路复活（正是 end_turn 要消灭的）。
+    // 断言：预算确实紧张（有牺牲品），但终止信号必须活下来。
+    const selector = new ToolSelector();
+    const map = new Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }>();
+    for (const name of ALL_BUILTIN) {
+      map.set(name, {
+        name,
+        description: `Description for ${name} ${'PAD '.repeat(2_000)}`,
+        inputSchema: {
+          type: 'object',
+          properties: Object.fromEntries(
+            Array.from({ length: 40 }, (_, i) => [`field_${i}`, { type: 'string', description: 'x'.repeat(80) }]),
+          ),
+        },
+      });
+    }
+    const selected = selector.selectTools({ allTools: map, userMessage: 'hello', pack: 'converse' }).map((t) => t.name);
+    expect(selected.length).toBeLessThan(ALL_BUILTIN.length); // eviction actually happened
+    expect(selected).toContain('end_turn');                   // …but not to the stop signal
+  });
+
+  it('end_turn is offered in the reflex pack too (propagates via TOOL_DEF_PROTECTED)', () => {
+    const selector = new ToolSelector();
+    const selected = selector
+      .selectTools({ allTools: makeToolMap(ALL_BUILTIN), userMessage: 'heartbeat', pack: 'reflex' })
+      .map((t) => t.name);
+    expect(selected).toContain('end_turn');
+  });
+
+  it('guard: every pushUnique-injected tool is protected OR re-activatable', () => {
+    // Enforces the SCHEMA_INJECTED_TOOLS doc-comment ("MUST stay in sync with
+    // ToolSelector.selectTools() pushUnique calls") — previously enforced by
+    // nothing, which is how end_turn / open_right_panel / collapse_right_panel
+    // became evictable AND undiscoverable (unreachable) under budget pressure.
+    const src = readFileSync(new URL('../src/tool-selector.ts', import.meta.url), 'utf8');
+    const injected = new Set<string>();
+    for (const m of src.matchAll(/pushUnique\(\{\s*name:\s*'([a-z_]+)'/g)) injected.add(m[1]!);
+
+    expect(injected.size).toBeGreaterThan(5); // regex still matches the real source
+    const unsafe = [...injected].filter(
+      (n) => !TOOL_DEF_PROTECTED.has(n) && !SCHEMA_INJECTED_TOOLS.has(n),
+    );
+    expect(
+      unsafe,
+      `injected but neither protected nor discover-tools-activatable → unreachable once evicted: ${unsafe.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('guard: right-panel tools are re-activatable (65x/day eviction, 2026-10-03)', () => {
+    expect(SCHEMA_INJECTED_TOOLS.has('open_right_panel')).toBe(true);
+    expect(SCHEMA_INJECTED_TOOLS.has('collapse_right_panel')).toBe(true);
+  });
+
+  it('eviction is tiered: situational tools go before core, core before protected', () => {
+    expect(toolEvictionTier('end_turn')).toBe(0);          // protected → never
+    expect(toolEvictionTier('notify_user')).toBe(0);
+    expect(toolEvictionTier('shell_execute')).toBe(1);     // core → last
+    expect(toolEvictionTier('kb_search')).toBe(1);         // knowledge base is core
+    expect(toolEvictionTier('some_unknown_builtin')).toBe(2);
+    expect(toolEvictionTier('package_install')).toBe(3);   // situational → first
+    expect(toolEvictionTier('feishu_tool_x')).toBe(3);     // skill/MCP → first
+  });
+
+  it('tiered eviction keeps core tools while situational tools are dropped', () => {
+    // Equal-size schemas, so ONLY the tier can decide the order.
+    const mk = (name: string) => ({ name, description: 'd', inputSchema: { type: 'object', properties: {} } });
+    const tools = [
+      mk('package_install'), // tier 3
+      mk('team_status'),     // tier 3
+      mk('shell_execute'),   // tier 1 (core)
+      mk('file_read'),       // tier 1 (core)
+      mk('some_builtin'),    // tier 2
+      mk('notify_user'),     // tier 0 (protected)
+    ];
+    const { tools: kept, evicted } = evictToolsToBudget(tools, 1, TOOL_DEF_PROTECTED, TOOL_DEF_CORE_KEEP);
+    const evictedNames = evicted.map((e) => e.name);
+    const keptNames = kept.map((t) => t.name);
+
+    expect(evictedNames).toContain('package_install');
+    expect(evictedNames).toContain('team_status');
+    expect(keptNames).toContain('notify_user'); // protected survives even at budget 1
+    // Tier-3 extras must be gone before any tier-1 core tool is touched.
+    if (evictedNames.includes('shell_execute')) {
+      expect(evictedNames).toContain('some_builtin');
+    }
   });
 
   it('P0-3: activated skill/MCP stay LIVE under budget pressure (no silent eviction)', () => {

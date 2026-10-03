@@ -43,6 +43,14 @@ export const TOOL_DEF_PROTECTED = new Set([
   'notify_user',
   'request_user_input',
   'request_user_approval',
+  // Turn-termination signal. Prompt text for agent↔agent DM / comment threads
+  // instructs the model to "call the `end_turn` tool". If budget pressure evicts
+  // it, the model is told to call a tool it does not have → it falls back to
+  // writing prose about why it is not replying, and that prose IS a message that
+  // re-triggers the peer → the exact meta-loop end_turn exists to kill.
+  // Schema is tiny (one optional string), so protection is effectively free.
+  // Listing it here also propagates to TOOL_DEF_CORE_KEEP and the reflex allowlist.
+  'end_turn',
 ]);
 
 /**
@@ -62,6 +70,13 @@ export const SCHEMA_INJECTED_TOOLS = new Set([
   'complete_deliberation',
   'notebook_upsert',
   'notebook_clear',
+  // Right-panel control (Team Chat). Same hazard as the group above: pushed via
+  // pushUnique (no registerTool handler) and NOT in TOOL_DEF_PROTECTED, so budget
+  // eviction defers them — and without this entry discover_tools answers
+  // "unknown", leaving the feature permanently unreachable for that turn.
+  // Measured 2026-10-03: evicted 65x/day before this fix.
+  'open_right_panel',
+  'collapse_right_panel',
 ]);
 
 /**
@@ -94,6 +109,11 @@ export const TOOL_DEF_CORE_KEEP = new Set([
   'deliverable_search',
   'requirement_comment',
   'session',
+  // Knowledge base — the read path of the memory system. The agent's ability to
+  // consult its own curated knowledge is core work, not a situational extra.
+  'kb_search',
+  'kb_read',
+  'kb_list',
 ]);
 
 /** MCP / skill-namespaced tools — evict these before core Markus tools. */
@@ -102,6 +122,52 @@ export function isSkillOrMcpToolName(name: string): boolean {
     || name.startsWith('feishu_')
     || name.startsWith('chrome-devtools')
     || name.startsWith('chrome_');
+}
+
+/**
+ * Situational builtins — safe to defer behind `discover_tools`, and evicted
+ * *before* other builtins so they stop crowding out the tools an agent needs
+ * every turn.
+ *
+ * Rationale (2026-10-03): the old evictor had a single "non-core" bucket that
+ * mixed genuine extras (packaging, hub, team administration) with ordinary
+ * working tools. Under budget pressure it evicted everything in that bucket,
+ * so which tools survived came down to schema size. Splitting the extras out
+ * makes the ladder intentional: extras go first, then ordinary builtins, then
+ * core, and prompt-required signals are never touched.
+ */
+export const TOOL_DEF_EVICT_FIRST = new Set([
+  // packaging / hub / generation
+  'package_install', 'package_list', 'hub_search', 'hub_install', 'office_generate',
+  // misc situational
+  'decide', 'recall_context',
+  // team / org administration
+  'agent_broadcast_status', 'agent_delegate_task', 'agent_send_group_message',
+  'agent_create_group_chat', 'agent_list_group_chats', 'delegate_message',
+  'agent_start', 'agent_stop', 'team_status', 'team_list',
+]);
+
+/**
+ * Eviction priority. **Higher = evicted sooner.**
+ *
+ *   0  never evicted   (TOOL_DEF_PROTECTED — HITL + turn-termination)
+ *   1  core Markus     (shell/file/task/memory/knowledge — evicted last)
+ *   2  ordinary builtin
+ *   3  situational + skill/MCP (evicted first)
+ *
+ * Within one tier the largest schema is still chosen first, but tier ordering
+ * is now the primary key — so size can no longer decide whether something an
+ * agent fundamentally needs survives.
+ */
+export function toolEvictionTier(
+  name: string,
+  protectedNames: Set<string> = TOOL_DEF_PROTECTED,
+  coreKeep: Set<string> = TOOL_DEF_CORE_KEEP,
+): number {
+  if (protectedNames.has(name)) return 0;
+  if (TOOL_DEF_EVICT_FIRST.has(name) || isSkillOrMcpToolName(name)) return 3;
+  if (coreKeep.has(name)) return 1;
+  return 2;
 }
 
 /**
@@ -312,8 +378,14 @@ export function estimateToolDefTokens(tools: ToolDefLike[]): number {
 
 /**
  * Evict tools until under budget.
- * Order: skill/MCP tools first (largest among them), then other non-core,
- * then non-protected core as last resort. Never evict `protectedNames`.
+ *
+ * Primary key is {@link toolEvictionTier} — higher tier is evicted first:
+ * situational + skill/MCP (3) → ordinary builtins (2) → core (1) → never (0).
+ * Within a tier the largest schema goes first.
+ *
+ * This replaces the old three-predicate ladder, whose middle bucket mixed
+ * genuine extras with ordinary working tools — so under pressure *schema size*
+ * decided what survived, and prompt-referenced signals could be dropped.
  */
 export function evictToolsToBudget(
   tools: ToolDefLike[],
@@ -326,15 +398,18 @@ export function evictToolsToBudget(
 
   const sizeOf = (t: ToolDefLike) => JSON.stringify(t).length;
 
-  const pickVictim = (predicate: (t: ToolDefLike) => boolean): number => {
+  /** Largest tool in the highest evictable tier currently present. */
+  const pickVictim = (): number => {
     let victimIdx = -1;
+    let bestTier = 0;
     let victimSize = -1;
     for (let i = 0; i < current.length; i++) {
       const t = current[i]!;
-      if (protectedNames.has(t.name)) continue;
-      if (!predicate(t)) continue;
+      const tier = toolEvictionTier(t.name, protectedNames, coreKeep);
+      if (tier === 0) continue; // protected — never a victim
       const sz = sizeOf(t);
-      if (sz > victimSize) {
+      if (tier > bestTier || (tier === bestTier && sz > victimSize)) {
+        bestTier = tier;
         victimSize = sz;
         victimIdx = i;
       }
@@ -343,16 +418,7 @@ export function evictToolsToBudget(
   };
 
   while (estimateToolDefTokens(current) > budget && current.length > 0) {
-    // 1) Skill/MCP namespaces first — these flooded converse and deferred shell/file
-    let victimIdx = pickVictim((t) => isSkillOrMcpToolName(t.name));
-    // 2) Other non-core
-    if (victimIdx < 0) {
-      victimIdx = pickVictim((t) => !coreKeep.has(t.name));
-    }
-    // 3) Last resort: largest non-protected (may include core)
-    if (victimIdx < 0) {
-      victimIdx = pickVictim(() => true);
-    }
+    const victimIdx = pickVictim();
     if (victimIdx < 0) break; // only protected left
     const [victim] = current.splice(victimIdx, 1);
     if (victim) {
