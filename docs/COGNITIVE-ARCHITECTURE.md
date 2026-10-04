@@ -64,8 +64,9 @@ See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for storage-layer detail.
 > **CPP removed.** The former Cognitive Preparation Pipeline — 0–3 pre-call LLM phases
 > (Appraisal / Retrieval / Reflection), `packages/core/src/cognitive.ts`,
 > `CognitivePreparation`, `selectCognitiveDepth`, the `CognitiveDepth` levels D0–D3 and the
-> `agent.cognitive` depth/model fields — has been **removed**. It cost extra LLM calls per turn
-> and duplicated the ContextEngine's own retrieval.
+> `agent.cognitive` config (depth/model/timeout fields **and** the `enabled` flag) — has been
+> **removed**, types included; the deterministic situational block is now always assembled. It
+> cost extra LLM calls per turn and duplicated the ContextEngine's own retrieval.
 
 Context preparation is now **deterministic (no LLM)**: between triage and the main call the
 ContextEngine assembles a small, bounded situational block.
@@ -75,7 +76,7 @@ Stimulus → Triage → Deterministic Context Assembly → Main LLM
                         │
                         ├─ situational block: recent activity + working-memory keys
                         ├─ bounded relevant-memory retrieval (## Relevant Memories)
-                        └─ optional deterministic ## Cognitive Context block
+                        └─ deterministic ## Cognitive Context block (always assembled)
 ```
 
 ### Output destination: prompt only (the notebook dual-write was removed)
@@ -90,17 +91,18 @@ Prompt sections produced today: `## Cognitive Context` (deterministic) and `## R
 
 Triage decisions still write `triage-decision` (managed tag `system`) — that is runtime state, not CPP output.
 
-### Cognitive depth levels (retired)
+### Cognitive depth levels (removed)
 
-The D0–D3 depth ladder (`selectCognitiveDepth`) was part of CPP and is **gone**. There is no
-depth selection and no per-scenario LLM budget anymore — assembly is always the same cheap,
-deterministic step. Any residual `CognitiveDepth` enum value in shared types is inert.
+The D0–D3 depth ladder (`selectCognitiveDepth`) was part of CPP and is **gone**, together with
+the `CognitiveDepth` enum and the per-scenario LLM budget — assembly is always the same cheap,
+deterministic step.
 
 ### Configuration
 
-The `agent.cognitive.enabled` flag (`markus.json` → `agent.cognitive`, REST `/api/settings/agent`)
-survives and gates whether the deterministic situational block is assembled. The pipeline's
-depth / appraisal-model fields are inert — no LLM phase runs, so there is nothing to time out.
+There is **no settings flag any more**. The deterministic situational block is always assembled —
+the former `agent.cognitive` config, REST payload and Settings-UI toggle were all removed along
+with the LLM pipeline they once gated. Deep recall stays agent-driven via `memory_search` /
+`kb_search`.
 
 ---
 
@@ -280,7 +282,7 @@ Implementation: `packages/core/src/pending-callback.ts`, persisted via `SqlitePe
 | `PendingCallbackRegistry` | `packages/core/src/pending-callback.ts` | Async callback tracking |
 | `AgentManager` | `packages/core/src/agent-manager.ts` | A2A DM routing, cognitive config |
 
-Types: `packages/shared/src/types/cognitive.ts` (`CognitiveConfig`; the depth types are inert), `requirement.ts` (`GoalConfig`).
+Types: `requirement.ts` (`GoalConfig`). (The former `packages/shared/src/types/cognitive.ts` was deleted with CPP.)
 
 ---
 

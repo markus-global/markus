@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { getTextContent, type LLMContentPart } from '../src/types/llm.js';
-import { CognitiveDepth } from '../src/types/cognitive.js';
 import { ENTERPRISE_FEATURES } from '../src/types/license.js';
 import {
   MailboxPriorityLevel,
@@ -30,15 +29,6 @@ describe('getTextContent', () => {
 
   it('returns empty string when no text parts', () => {
     expect(getTextContent([{ type: 'image_url', image_url: { url: 'x' } }])).toBe('');
-  });
-});
-
-describe('CognitiveDepth', () => {
-  it('defines four depth levels', () => {
-    expect(CognitiveDepth.D0_Reflexive).toBe(0);
-    expect(CognitiveDepth.D1_Reactive).toBe(1);
-    expect(CognitiveDepth.D2_Deliberative).toBe(2);
-    expect(CognitiveDepth.D3_MetaCognitive).toBe(3);
   });
 });
 

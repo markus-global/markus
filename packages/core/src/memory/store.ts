@@ -751,8 +751,9 @@ export class MemoryStore implements IMemoryStore {
    *
    * Returns a structured result so callers (the memory tools) can surface a refusal
    * to the model instead of the write silently no-op'ing (B1). `{ ok: true }` on success;
-   * `{ ok: false, reason }` when the write is refused (over the total cap even after
-   * compression) or errors.
+   * `{ ok: false, reason }` when the write is refused (invalid or oversized section) or
+   * errors. Note: exceeding the **total** cap is no longer a refusal — the store
+   * rebalances losslessly (`compressLongTermMemory`), so the write always lands.
    */
   addLongTermMemory(rawKey: string, content: string): { ok: boolean; reason?: string } {
     const sectionKey = normalizeSectionKey(rawKey);

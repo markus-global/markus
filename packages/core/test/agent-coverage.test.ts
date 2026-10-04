@@ -896,13 +896,13 @@ describe('performDeliberation and cognitive pipeline', () => {
     const router = makeMockRouter({
       chatFn: async () => makeResponse('Deployment guidance provided.', 'end_turn'),
     });
-    const agent = createAgent(router, { cognitive: { enabled: true } });
+    const agent = createAgent(router);
     agent.updateWorkingMemory('current-task', 'deploy the latest build');
     await agent.handleMessage('Help me deploy the latest build');
     // 主调用照常发生…
     expect(router.chat).toHaveBeenCalled();
     // …但不再有任何 CPP 的 LLM 多阶段调用（appraisal / reflection）——
-    // 旧的 LLM 准备管道已移除，改为确定性情境装配（agent.prepareCognitiveContext）。
+    // 旧的 LLM 准备管道已移除，改为确定性情境装配（agent.buildCognitiveContext）。
     expect(router.chat.mock.calls.some(
       c => (c[0] as { metadata?: { purpose?: string } }).metadata?.purpose === 'cognitive_appraisal',
     )).toBe(false);

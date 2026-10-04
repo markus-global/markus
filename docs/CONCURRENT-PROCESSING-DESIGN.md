@@ -255,7 +255,7 @@ interface ConcurrentHandoff {
 沿用现有智能体设置的完整链路（见 subagent 调查）：
 - **前端**：`web-ui/src/pages/Settings.tsx`（execution 区块附近）+ `web-ui/src/api.ts` 的 `api.settings.updateAgent` schema。
 - **后端**：`org-manager/src/api-server.ts`（`/api/settings/agent` 读写）+ `saveConfig` → `~/.markus/markus.json` 的 `agent` 段。
-- **开关样式**：参照 `cognitive.enabled` 开关（`Settings.tsx` L2160-2165）、`proxyEnabled`（L296）等现成模式。
+- **开关样式**：参照 `proxyEnabled`、`autoCloseTabs` 等现成开关模式（`Settings.tsx`）。
 
 新字段（写入 markus.json `agent` 段）：
 
@@ -263,7 +263,6 @@ interface ConcurrentHandoff {
 {
   "agent": {
     "maxToolIterations": 200,
-    "cognitive": { "enabled": true },
     "concurrent": {
       "enabled": true,          // 并发处理总开关（默认开）
       "maxWorkers": 3,          // 并发上限（1 = 串行，完全等同于今天）
