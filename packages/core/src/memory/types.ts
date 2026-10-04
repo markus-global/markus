@@ -126,6 +126,14 @@ export interface IMemoryStore {
    */
   removeLongTermSection(sectionName: string): { ok: boolean; reason?: string; removedChars: number };
   /**
+   * §27 — the curated region's PREAMBLE: text before the first `## ` heading. Legacy files carry
+   * one, and the section-based tools could not touch it — a write-only region with no removal path
+   * accumulates stale content in the one place injected into EVERY prompt. Optional so mocks stay simple.
+   */
+  getLongTermPreamble?(): string;
+  setLongTermPreamble?(text: string): { ok: boolean; reason?: string };
+  removeLongTermPreamble?(): { ok: boolean; removedChars: number };
+  /**
    * NOTE: `getStateMemory` / `pruneStateMemory` (the state.md half of the old
    * "knowledge.md / state.md dual store") were removed on 2026-09-16. Situational
    * short-lived state is Working-layer data and lives in NOTEBOOK.md. See

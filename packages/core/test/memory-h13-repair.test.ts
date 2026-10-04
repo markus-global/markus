@@ -214,10 +214,13 @@ describe('H21 — 归档写入不再制造重名（歧义的源头）', () => {
     archiveSection('验证', 'SECOND_BODY');
     archiveSection('验证', 'FIRST_BODY');   // 完全重复 → 幂等，不新增
 
-    const arch = read(aFile());
-    expect(arch.match(/^## 验证$/gm)?.length).toBe(1);
-    expect(arch).toContain('## 验证 (2)');
-    expect(arch).toContain('FIRST_BODY');
-    expect(arch).toContain('SECOND_BODY');
+    // §27 — 归档写入 JSON 记录了（载荷无法再伪造 `## ` 边界）。
+    const recs = JSON.parse(read(path.join(dir, 'knowledge-archive.json'))) as Array<{ content: string; metadata: { name: string } }>;
+    const names = recs.map((r) => r.metadata.name);
+    expect(names.filter((n) => n === '验证').length).toBe(1);
+    expect(names).toContain('验证 (2)');
+    const all = recs.map((r) => r.content).join('\n');
+    expect(all).toContain('FIRST_BODY');
+    expect(all).toContain('SECOND_BODY');
   });
 });

@@ -84,6 +84,34 @@ import { parseRecords, serializeRecords } from './records.js';
 
 const VALID_TYPES = new Set<string>(['conversation', 'fact', 'task_result', 'note', 'insight', 'conversation_fragment']);
 
+/**
+ * §27 — headings that are PROMPT SCAFFOLDING, not knowledge.
+ *
+ * A historical bug wrote whole prompt dumps into knowledge.md; the retired archiver then copied
+ * those `## ` headings into the archive, and the reader served them back as "archived knowledge"
+ * (observed: 11 `## Relevant Memories` records in one agent's archive). They are the platform's
+ * OWN prompt headers, so the platform can name them exactly — this is a bounded known-bad list,
+ * not a generalizing heuristic. Matching records are moved aside on migration, never served.
+ */
+const PROMPT_SCAFFOLDING_HEADINGS = new Set([
+  'Relevant Memories',
+  'Your Knowledge',
+  'Your Attention State',
+  'Current Conversation',
+  'Team Status',
+  'Context',
+  'How Your Prompt Is Composed',
+  'Tool Usage Rules',
+  'Concurrency Context',
+  'Concurrency Context（并发上下文）',
+]);
+
+function isPromptScaffoldingHeading(name: string): boolean {
+  const n = name.trim();
+  if (PROMPT_SCAFFOLDING_HEADINGS.has(n)) return true;
+  return /^(Available Skills|Deferred Tools|Relevant Memories|Concurrency Context|Current Conversation)\b/.test(n);
+}
+
 /** Prevent section bodies from introducing sibling ## headings that split the store. */
 /**
  * Sanitize a curated section body AT WRITE TIME — the single point at which the agent's
@@ -411,6 +439,8 @@ export class MemoryStore implements IMemoryStore {
   private saveDebounce: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private longTermFile: string;
   private longTermArchiveFile: string;
+  /** §27 — archived records that are PROMPT SCAFFOLDING: kept aside, never served as knowledge. */
+  private longTermArchiveScaffoldingFile: string;
   /**
    * H24 — observations live in a JSON record file. Structure is JSON's, so no payload can forge a
    * record boundary; the H13/H17/H18/H22 family is gone by construction, not by another heuristic.
@@ -435,13 +465,17 @@ export class MemoryStore implements IMemoryStore {
     ensureKnowledgeFile(dataDir);
     // SSOT: always knowledge.md after ensure (never write legacy MEMORY.md).
     this.longTermFile = knowledgePath(dataDir);
-    this.longTermArchiveFile = join(dataDir, 'knowledge-archive.md');
+    this.longTermArchiveFile = join(dataDir, 'knowledge-archive.json');
+    this.longTermArchiveScaffoldingFile = join(dataDir, 'knowledge-archive-scaffolding.json');
     this.observationFile = join(dataDir, 'observations.json');
     this.observationArchiveFile = join(dataDir, 'observations-archive.json');
     this.fragmentFile = join(dataDir, 'session-fragments.json');
     this.fragmentArchiveFile = join(dataDir, 'session-fragments-archive.json');
     this.loadFromDisk();
     this.loadFragmentsFromDisk();
+    // §27 — the curated archive used to be an in-band markdown container (a payload `## ` could
+    // forge a "section"). Migrate it to JSON records once, before anything reads it.
+    this.migrateLegacyArchive();
     // §24 (R4) — the H13 residue repair is a **migration**, not an invariant, so it runs
     // exactly ONCE per agent, gated by a marker file. It used to run on EVERY load: a
     // permanent heuristic rewriter of agent-authored content sitting on the hot path —
@@ -477,6 +511,48 @@ export class MemoryStore implements IMemoryStore {
   }
 
   /**
+   * §27 — the curated region's "preamble": everything BEFORE the first `## ` heading.
+   *
+   * Legacy files carry one (`# Lessons Learned` …). The section-based tools could not touch it,
+   * so a write-only region with no removal path accumulated stale content in the ONE place that
+   * is injected into every prompt (same law as "a write-only store inflates until it fills up").
+   * These methods give the preamble the same write/forget symmetry as any named section.
+   */
+  getLongTermPreamble(): string {
+    let content = '';
+    try { if (existsSync(this.longTermFile)) content = readFileSync(this.longTermFile, 'utf-8'); } catch { /* empty */ }
+    const { curated } = splitKnowledgeSections(content);
+    const idx = curated.search(/^## /m);
+    return (idx < 0 ? curated : curated.slice(0, idx)).replace(/\s+$/, '');
+  }
+
+  setLongTermPreamble(text: string): { ok: boolean; reason?: string } {
+    let content = '';
+    try { if (existsSync(this.longTermFile)) content = readFileSync(this.longTermFile, 'utf-8'); } catch { /* empty */ }
+    const { curated } = splitKnowledgeSections(content);
+    const idx = curated.search(/^## /m);
+    const rest = idx < 0 ? '' : curated.slice(idx);
+    const body = sanitizeSectionBody(text ?? '').trim();
+    const updated = body ? `${body}\n\n${rest}` : rest;
+    const curatedChars = splitKnowledgeSections(updated).curated.length;
+    if (curatedChars > MEMORY_MD_CURATED_HARD_MAX_CHARS) {
+      return {
+        ok: false,
+        reason: `Curated knowledge would reach ${curatedChars} chars, over the hard ceiling of `
+          + `${MEMORY_MD_CURATED_HARD_MAX_CHARS}. Nothing was written.`,
+      };
+    }
+    this.writeKnowledgeMd(updated);
+    return { ok: true };
+  }
+
+  removeLongTermPreamble(): { ok: boolean; removedChars: number } {
+    const removed = this.getLongTermPreamble().length;
+    const res = this.setLongTermPreamble('');
+    return { ok: res.ok, removedChars: res.ok ? removed : 0 };
+  }
+
+  /**
    * 记忆预算健康度（审计 P-12）：驱动提示词内的健康信号，让 Agent 知道何时该整理。
    */
   getMemoryHealth(): MemoryHealth {
@@ -487,7 +563,7 @@ export class MemoryStore implements IMemoryStore {
     // H24 — "archived chars" is the TOTAL lossless overflow across EVERY archive (curated sections,
     // observations, fragments), which is exactly what the banner's "已归档 N 字符" claims.
     let archiveChars = 0;
-    for (const f of [this.longTermArchiveFile, this.observationArchiveFile, this.fragmentArchiveFile]) {
+    for (const f of [this.longTermArchiveFile, this.longTermArchiveScaffoldingFile, this.observationArchiveFile, this.fragmentArchiveFile]) {
       try {
         if (existsSync(f)) archiveChars += readFileSync(f, 'utf-8').length;
       } catch { /* archive optional */ }
@@ -557,25 +633,84 @@ export class MemoryStore implements IMemoryStore {
     const trimmed = body.trim();
     if (!trimmed) return 0;
     try {
-      const head = '# Knowledge Archive\n\n'
-        + '<!-- 超预算段落正文的无损归档（由记忆服务维护，可被 memory_search 检索）。 -->\n\n';
-      const existing = existsSync(this.longTermArchiveFile)
-        ? readFileSync(this.longTermArchiveFile, 'utf-8')
-        : head;
-      if (!existing.includes(`## ${name}\n`)) {
-        appendFileSync(this.longTermArchiveFile, `## ${name}\n${trimmed}\n\n`);
-      } else if (!existing.includes(trimmed)) {
-        // H21 — never create a DUPLICATE section name. A repeated name makes any later
-        // lookup (the residue repair included) undecidable; that ambiguity is exactly what
+      const recs = this.readArchiveRecords();
+      if (!recs.some((r) => r.metadata?.name === name && r.content === trimmed)) {
+        // H21 — never create a DUPLICATE name: a repeated name makes any later lookup
+        // (the residue repair included) undecidable; that ambiguity is exactly what
         // left 5 stubs unresolvable on the live org. Suffix until the name is unique.
-        let n = 2;
-        while (existing.includes(`## ${name} (${n})\n`)) n += 1;
-        appendFileSync(this.longTermArchiveFile, `## ${name} (${n})\n${trimmed}\n\n`);
+        let finalName = name;
+        let n = 1;
+        while (recs.some((r) => r.metadata?.name === finalName)) finalName = `${name} (${++n})`;
+        recs.push({
+          id: `archived_${slugSectionId(finalName)}`,
+          timestamp: new Date().toISOString(),
+          type: 'fact',
+          content: trimmed,
+          metadata: { name: finalName, source: 'archive' },
+        });
+        writeFileAtomic(this.longTermArchiveFile, serializeRecords(recs));
       }
     } catch (err) {
-      log.warn('Failed to archive section body', { name, error: String(err) });
+      log.warn('Failed to archive section record', { name, error: String(err) });
     }
     return trimmed.length;
+  }
+
+  /** §27 — read the JSON archive records (archived content stays searchable). */
+  private readArchiveRecords(): MemoryEntry[] {
+    try {
+      if (!existsSync(this.longTermArchiveFile)) return [];
+      const { entries, error } = parseRecords(readFileSync(this.longTermArchiveFile, 'utf-8'));
+      if (error) log.error('knowledge-archive.json unreadable — NOT overwriting it', { error });
+      return entries;
+    } catch { return []; }
+  }
+
+  /**
+   * §27 — one-time migration of the retired in-band archive container.
+   *
+   * The archive used to be `knowledge-archive.md` (`## name` + body). Its payload could itself
+   * contain `## ` lines, so the reader forged "sections" out of them (observed: 54 headings in one
+   * agent's archive, 11 of them `## Relevant Memories` — prompt dumps served back as archived
+   * knowledge). Records are now JSON, where a payload is just a string. The legacy split reuses
+   * the OLD reader's boundary rule (`indexArchiveBodies`) — inherited behaviour, no new guessing —
+   * and prompt scaffolding is moved ASIDE (never deleted) so it stops being served.
+   */
+  private migrateLegacyArchive(): void {
+    const legacy = join(this.dataDir, 'knowledge-archive.md');
+    if (!existsSync(legacy)) return;
+    if (existsSync(this.longTermArchiveFile)) {
+      try { unlinkSync(legacy); } catch { /* best effort: the JSON record file is authoritative */ }
+      return;
+    }
+    try {
+      const byName = indexArchiveBodies(readFileSync(legacy, 'utf-8'));
+      const keep: MemoryEntry[] = [];
+      const scaffolding: MemoryEntry[] = [];
+      let i = 0;
+      for (const [name, bodies] of byName) {
+        for (const body of bodies) {
+          const rec: MemoryEntry = {
+            id: `archived_${slugSectionId(name)}_${i++}`,
+            timestamp: new Date().toISOString(),
+            type: 'fact',
+            content: body,
+            metadata: { name, source: 'archive', migratedFrom: 'knowledge-archive.md' },
+          };
+          (isPromptScaffoldingHeading(name) ? scaffolding : keep).push(rec);
+        }
+      }
+      if (keep.length > 0) writeFileAtomic(this.longTermArchiveFile, serializeRecords(keep));
+      if (scaffolding.length > 0) {
+        writeFileAtomic(this.longTermArchiveScaffoldingFile, serializeRecords(scaffolding));
+      }
+      unlinkSync(legacy);
+      log.info('§27: migrated knowledge-archive.md → JSON records', {
+        kept: keep.length, scaffolding: scaffolding.length,
+      });
+    } catch (err) {
+      log.warn('§27: knowledge-archive.md migration failed — left in place', { error: String(err) });
+    }
   }
 
   /**
@@ -677,25 +812,24 @@ export class MemoryStore implements IMemoryStore {
       });
     }
 
-    // 归档段落（无损去处）：memory_search 必须能找回被归档的内容（审计 P-04/P-05）。
+    // §27 — 归档是 JSON 记录文件了（结构是 JSON 的，载荷无法再伪造"段落"）。
+    // 按记录检索；prompt 脚手架被分开存放，**刻意不检索**（它不是知识）。
     try {
-      if (existsSync(this.longTermArchiveFile)) {
-        const archivedText = readFileSync(this.longTermArchiveFile, 'utf-8');
-        for (const section of parseCuratedSections(archivedText)) {
-          const body = `## ${section.name}\n${section.body}`;
-          const score = scoreKeywordHaystack(body, tokens, fullLower);
-          if (score <= 0) continue;
-          scored.push({
-            entry: {
-              id: `archived_${slugSectionId(section.name)}`,
-              timestamp: '',
-              type: 'fact',
-              content: body.length > 2500 ? `${body.slice(0, 2500)}…` : body,
-              metadata: { source: 'archive', section: section.name, store: this.getArchiveFileName() },
-            },
-            score: score + 0.1,
-          });
-        }
+      for (const rec of this.readArchiveRecords()) {
+        const name = String(rec.metadata?.name ?? '');
+        const body = name ? `## ${name}\n${rec.content}` : rec.content;
+        const score = scoreKeywordHaystack(body, tokens, fullLower);
+        if (score <= 0) continue;
+        scored.push({
+          entry: {
+            id: rec.id,
+            timestamp: rec.timestamp,
+            type: 'fact',
+            content: body.length > 2500 ? `${body.slice(0, 2500)}…` : body,
+            metadata: { source: 'archive', section: name, store: this.getArchiveFileName() },
+          },
+          score: score + 0.1,
+        });
       }
     } catch { /* archive missing/unreadable — non-fatal */ }
 
@@ -1833,11 +1967,14 @@ export class MemoryStore implements IMemoryStore {
       curatedChanged: false, entriesChanged: false, fragmentsChanged: false,
     };
 
-    let archive = '';
-    try {
-      if (existsSync(this.longTermArchiveFile)) archive = readFileSync(this.longTermArchiveFile, 'utf-8');
-    } catch { return report; }
-    const bodies = indexArchiveBodies(archive);
+    // §27 — archived bodies are JSON records now; index them by their recorded `name`.
+    const bodies = new Map<string, string[]>();
+    for (const rec of this.readArchiveRecords()) {
+      const name = String(rec.metadata?.name ?? '').trim();
+      if (!name) continue;
+      const arr = bodies.get(name);
+      if (arr) arr.push(rec.content); else bodies.set(name, [rec.content]);
+    }
     if (bodies.size === 0) return report;
 
     const acc = { ambiguous: new Map<string, number>(), notFound: new Set<string>() };

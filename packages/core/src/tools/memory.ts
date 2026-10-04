@@ -256,8 +256,9 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         'Use for personal multi-step procedures / durable domain lessons — not one-off tips (use memory_save). ' +
         'Args: { section, content, mode?: "replace"|"patch"|"append"|"forget"|"delete" }. append≡patch. ' +
         'Prefer patch/append; replace only when rewriting the whole section. ' +
-        'mode="forget" removes the named curated section entirely (superseded knowledge must be ' +
+        'Mode="forget" removes the named curated section entirely (superseded knowledge must be ' +
         'removable — the store is capped, so a write-only store would inflate until it fills up). ' +
+        'Reserved key `_preamble` targets the text BEFORE the first `## ` heading (legacy scaffold). ' +
         'mode="delete" removes observation entries listed in "ids". ' +
         'Do not put ## headings in content (auto-downgraded to ###). ' +
         'Success: { status:"updated", store:"knowledge.md" }. On error, retry — never claim updated without status.',
@@ -291,6 +292,22 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         const mode = normalizeWriteMode(args['mode']);
         const ids = args['ids'] as string[] | undefined;
         const store = storeName(ctx.memory);
+
+        // §27 — reserved key for the curated region's PREAMBLE (text before the first `## `).
+        // The section-based tools could not reach it, so legacy preamble was injected forever.
+        if (section === '_preamble') {
+          if (mode === 'forget' || mode === 'delete') {
+            const r = ctx.memory.removeLongTermPreamble?.();
+            if (!r) return JSON.stringify({ status: 'error', error: 'this store does not support preamble removal', store });
+            if (!r.ok) return JSON.stringify({ status: 'error', error: 'preamble removal refused', store });
+            log.info('Agent cleared the curated preamble', { agentId: ctx.agentId, removedChars: r.removedChars });
+            return JSON.stringify({ status: 'forgotten', section: '_preamble', removedChars: r.removedChars, store });
+          }
+          const w = ctx.memory.setLongTermPreamble?.(content);
+          if (!w) return JSON.stringify({ status: 'error', error: 'this store does not support a preamble', store });
+          if (!w.ok) return JSON.stringify({ status: 'error', error: w.reason ?? 'preamble write refused', section, store });
+          return JSON.stringify({ status: 'updated', section: '_preamble', mode, store });
+        }
 
         if (mode === 'delete') {
           if (!ids?.length) {

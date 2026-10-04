@@ -1300,3 +1300,66 @@ H9 说"清理了 41 处死技能引用"——那清的是**存量 Agent 定义�
 - H9 → 存量 Agent 不再告警；
 - §26 → 新装/新建成 Agent 不再被注入死引用，退役技能不再随包发布。
 
+
+---
+
+## §27 归档容器 / curated 前言 / fragment 载荷（自身体验发现的三处）
+
+### 27.1 现象（实测于本人自己的 Agent 目录）
+
+排查"注入上下文里为什么反复出现 `## Relevant Memories` 存根"时发现三处：
+
+1. **`knowledge-archive.md` 是 in-band markdown 容器**：实测含 **54 个 `## ` 标题**，其中 **11 个是 `## Relevant Memories`**、还有 `## Your Knowledge` / `## Available Skills (live from system)` —— 全是**归档载荷里的 prompt dump 标题**。读取端 `parseCuratedSections` 把它们当"段落"，`memory_search` 当**已归档知识**召回并注入。
+2. **`knowledge.md` 的"前言区"（第一个 `## ` 之前）没有删除路径**：旧的 `# Lessons Learned` / `# Process Procedures` 永久注入，Agent 无法清理。我试图手改文件，被平台的 single-writer 守卫**拒绝**——守卫是对的，但工具侧缺执行点。
+3. **`conversation_fragment` 载荷……**：归档里看到一个 fragment 载荷达 **1,110,442 字符**（整段 prompt dump）。**（后经实测更正，见 27.7——当前写入路径有上界，那是遗留物。）**
+
+### 27.2 根因
+
+- **(1) ＝ R3 的残留**。观测池与片段池已在 §20/H24 改为 JSON，但**策展归档没改**——它是"唯一还留作 markdown 的机器容器"，于是 `## ` 载荷照样能伪造段落。**我上一轮"这一族在构造上消失"的说法，对归档不成立。** 且该归档的**产者已死**：`archiveSection` 无任何生产调用者（`compressLongTermMemory` 已删，仅测试引用）。
+- **(2) ＝ 缺执行点（写者与删除者不对称）**。`memory_update` / `memory_organize` 只操作具名 `## ` 段落；`forget` 也删不掉前言。能写进去、删不掉 ⇒ 必然堆积（与 store 注释里"write-only store inflates"是同一律）。
+- **(3) ＝ 误判（已更正）**。见 27.7：当前写入路径**有**上界。
+
+### 27.3 修法
+
+1. **归档改 JSON 记录** `knowledge-archive.json`（复用 `records.ts`）：`archiveSection` 写记录、`search` 读记录、`residue-repair` 读记录 —— **结构不再来自 markdown 记号**。旧 `.md` 一次性迁移（按旧写入端的边界切分，即**继承旧读取端的既有行为**，不新增猜测），迁完删除 `.md`；"有 md 无 json 即迁移"，幂等、无需新标记。
+   同时把**载荷里伪造出来的 prompt 脚手架**（名称命中平台自身 prompt 标题集，如 `Relevant Memories` / `Your Knowledge` / `Available Skills…`）在迁移时**分出**到 `knowledge-archive-scaffolding.json`——**移走而非删除**（可回滚、无损），`search` 不再把它们当知识返回。这正是我观察到的那堆重复存根的来源。
+2. **给前言一个执行点**：保留键 `_preamble`。`memory_update({ section: "_preamble", mode: "forget" })` 清空前言；`mode: "replace"` 写入/替换它。写者与删除者对称。
+3. ~~fragment 载荷上界~~ —— **实测证明无需改**（见 27.7）。
+
+### 27.4 测试（先红后绿）
+
+`packages/core/test/memory-archive-preamble.test.ts`：
+
+1. **归档迁移 + 分类**：预置含"正常段落 + prompt 脚手架名（`Relevant Memories`）"的 legacy `.md` → 构造后 `.json` 就位、`.md` 消失、脚手架记录进了 scaffolding 侧文件；
+2. **`search` 只返回真知识**：正常段落正文可被检索到（`metadata.source === 'archive'`），脚手架记录**不被返回**；
+3. **前言执行点**：清空前言后文件不再含前言、段落完好；`replace` 可写回；
+4. ~~fragment 上界~~ —— 已由既有 `sanitizeEntry`（`MEMORY_ENTRY_MAX_CHARS`）保证，不再另写测试。
+
+### 27.5 验证
+
+**红→绿**：测试先写 → 6/6 红（新 API 不存在）→ 实现后 **16/16 绿**（新文件 5 例 + 修正后的 h13 遗产修复 11 例）。
+
+**真实数据探针**（本人真实 Agent 目录副本，绝不碰线上）：
+
+| | 前 | 后 |
+|---|---|---|
+| `knowledge-archive.md` | **217,691 字节** | 已删除 |
+| `knowledge-archive.json` | — | **42 条真知识记录** |
+| `knowledge-archive-scaffolding.json` | — | **12 条脚手架**（`Relevant Memories` / `Your Knowledge` / `Available Skills (live from system)`）|
+| `search("Relevant Memories")` 返回的脚手架条目 | 多条 | **0** |
+| curated 前言 | **451 字符**（`# Lessons Learned` 遗留块）| `removeLongTermPreamble()` → 已清，`knowledge.md` 4636 → 4183 字节，段落完好 |
+
+**回归**：`tsc -b` 全仓 **0 错误**；记忆相关 **23 文件 / 182 用例全绿**；全量 `--project node` **5261 通过 / 10 skipped / 1 失败**（唯一失败＝既有环境性 flaky `cli/…quickInit` 真启服务+联网超时；首轮曾报 3 例，重跑不复现，属负载抖动）；`--project web-ui` **678/678**。
+
+### 27.7 一处**自我更正**（Fix 3 不成立）
+
+我最初把"1,110,442 字符的 fragment"当成"fragment 载荷无上界"。写测试时它当场打脸：喂 600k 字符进 `compactSession`，落盘后只有 **4034** 字符——因为 `addEntry` 对**所有**记录（含 fragment）都过 `sanitizeEntry`，硬截到 `MEMORY_ENTRY_MAX_CHARS = 4000`。
+
+**所以：(a) 那 1.1M 是旧 guard 时代的遗留物；(b) 当前写入路径本来就有上界。** Fix 3 取消。
+
+（顺带记录一个**真实**的设计问题：fragment 是"分页载荷、供 `session_retrieve` 逐字恢复历史"，却借用了**观察**的 4000 字上界；而片段池预算 `MEMORY_FRAGMENTS_MAX_CHARS` 是 60k。单个片段 4000 字意味着"逐字恢复"只能恢复很小一段。这是**上界过紧**而非缺失——属独立设计问题，未在本轮改动。）
+
+### 27.6 与 §20/§24 的关系
+
+§20/§24 把观测池、片段池改成了 JSON，并声明"载荷伪造结构这一族在构造上消失"。§27 补齐**最后一个 markdown 机器容器（策展归档）**，并修正 (2)(3) 两处非容器缺陷。至此机器拥有的三个池（观察 / 片段 / 归档）**统一为 JSON 记录**；只有 `knowledge.md`（**人读 + 注入**、且正文由平台净化）仍为 markdown。
+
