@@ -24,7 +24,6 @@ import {
   type TriageResult,
   type DeliberationResult,
   type CognitiveConfig,
-  CognitiveDepth,
   type PreparedCognitiveContext,
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
@@ -269,7 +268,7 @@ export interface AgentOptions {
   maxToolIterations?: number;
   /** Skill registry for runtime skill discovery and activation */
   skillRegistry?: SkillRegistry;
-  /** Cognitive Preparation Pipeline config (default: disabled) */
+  /** Deterministic cognitive-context config (default: disabled) */
   cognitive?: CognitiveConfig;
   /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected into the prompt so the agent reads it without searching. */
   handbookPath?: string;
@@ -3890,7 +3889,6 @@ export class Agent {
     }
     if (parts.length === 0) return undefined;
     return {
-      depth: CognitiveDepth.D1_Reactive,
       cognitiveContext: parts.join('\n'),
       isEmpty: false,
     };

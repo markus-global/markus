@@ -434,11 +434,8 @@ describe('ContextEngine — cache optimization', () => {
         scenario: 'a2a' as any,
         // Per-call situational meta — all belong in Tier 3.
         cognitiveContext: {
-          depth: 'shallow' as any,
           isEmpty: false,
           cognitiveContext: 'The user is asking about billing.',
-          retrievedContext: 'Prior billing thread.',
-          reflection: 'Stay concise.',
         },
         mailboxContext: {
           currentFocus: { type: 'a2a_message', label: 'from Bob', elapsedMs: 5000 },
@@ -582,7 +579,6 @@ describe('ContextEngine — cache optimization', () => {
         memory: makeMockMemory() as any,
         scenario: 'a2a' as any,
         cognitiveContext: {
-          depth: 'shallow' as any,
           isEmpty: false,
           cognitiveContext: 'situational note',
         },

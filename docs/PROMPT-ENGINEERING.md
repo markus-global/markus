@@ -394,9 +394,9 @@ injection point cannot silently land in a stable tier and bust the cache prefix.
 - **Invariants**:
   - The system `text` (all segments) contains **no** per-call varying content (CPP/triage/notebook/
     mailbox/task/date/skills markers appear only in the `volatile` tail).
-  - Every system segment carries a `cacheBreakpoint`; CPP writes cognitive output to `NOTEBOOK.md`
-    (surfaced via `volatile`/notebook writer), never as a new stable system-prompt section (see
-    [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) §3).
+  - Every system segment carries a `cacheBreakpoint`; the deterministic `## Cognitive Context`
+    block and `## Relevant Memories` ride the `volatile`/dynamic tail, never a stable
+    system-prompt section (see [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) §3).
 - **Design rationale**: dynamic content in the byte-stable system prefix invalidates every downstream
   cache hit; Scheme A keeps it in the volatile **history tail**, preserving prefix reuse across mode
   switches (Anthropic explicit + OpenAI/DeepSeek implicit).
@@ -1367,7 +1367,7 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 |----------|-------------|
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
 | [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Notebook + `knowledge.md` layers (`state.md` retired 2026-09-16); `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
-| [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | CPP writes to Notebook via `notebookWriter`; cognitive depth levels (§4.2 step 0) |
+| [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | Deterministic context assembly (§3); CPP and its depth levels removed |
 | `packages/core/src/agent.ts` | Implementation of all 8 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation; SLOT fixed segment, volatile tail, watermark |
 | `packages/core/src/context-slot.ts` | SLOT segment model: `SlotEntry` / `SlotsStore` / `buildSlotSegment()` — the never-compacted anchors (§3.7) |

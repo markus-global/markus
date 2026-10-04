@@ -312,7 +312,7 @@ describe('start command integration', () => {
         server: { apiPort, webPort: apiPort + 1 },
         agent: {
           maxToolIterations: 25,
-          cognitive: { enabled: true, maxDepth: 2, timeoutMs: 10000 },
+          cognitive: { enabled: true },
         },
         browser: {
           bringToFront: true,

@@ -1,88 +1,27 @@
 /**
- * Cognitive Preparation Pipeline types.
+ * Deterministic cognitive-context types.
  *
- * The CPP runs before the main LLM call, using 0–3 lightweight LLM calls
- * to prepare persona-aware context. See docs/COGNITIVE-ARCHITECTURE.md.
+ * The former Cognitive Preparation Pipeline (CPP — the 0–3 pre-call LLM phases
+ * appraise / retrieve / reflect) was **removed** in the memory-and-cognition
+ * refactor: see docs/COGNITIVE-ARCHITECTURE.md §3. What remains is a small,
+ * LLM-free situational block assembled per turn (recent activity + working-memory
+ * keys) plus the on/off flag that gates it. Deeper cross-domain recall is
+ * agent-driven via `memory_search` / `kb_search`, not a pre-call pipeline.
  */
 
-/** Cognitive depth levels (Kahneman Dual Process inspired) */
-export enum CognitiveDepth {
-  /** No CPP phases. Used for heartbeat acks, dream cycles. */
-  D0_Reflexive = 0,
-  /** Appraisal only. Most chats, A2A, comments. 0–1 extra LLM calls. */
-  D1_Reactive = 1,
-  /** Appraisal + Retrieval + Reflection. Task execution, complex questions. 2 calls. */
-  D2_Deliberative = 2,
-  /** Full pipeline + post-response evaluation. High-stakes, novel situations. 2–3 calls. */
-  D3_MetaCognitive = 3,
-}
-
-/** The stimulus that triggers cognitive preparation */
-export interface CognitiveStimulus {
-  type: string;
-  summary: string;
-  content: string;
-  sender?: string;
-  scenario?: string;
-}
-
-/** Agent context available to cognitive phases */
-export interface CognitiveAgentContext {
-  id: string;
-  name: string;
-  roleDescription: string;
-  status: string;
-  currentTask?: string;
-  recentActivity: string[];
-}
-
-/** Output of Phase 1: Appraisal */
-export interface AppraisalResult {
-  intent: string;
-  relevance: string;
-  confidence: 'high' | 'medium' | 'low';
-  retrievalPlan: RetrievalPlan;
-  reflectionNeeded: boolean;
-  cognitiveContext: string;
-}
-
-/** Instructions for Phase 2: what to retrieve */
-export interface RetrievalPlan {
-  memoryQueries: string[];
-  activityQueries: string[];
-  taskQueries: string[];
-}
-
-/** Output of Phase 2: Retrieved items */
-export interface RetrievedContext {
-  memories: Array<{ content: string; relevance: number }>;
-  activities: Array<{ summary: string; type: string }>;
-  tasks: Array<{ title: string; status: string; id: string }>;
-}
-
-/** Output of Phase 3: Reflection */
-export interface ReflectionResult {
-  interpretation: string;
-  recommendations: string[];
-}
-
-/** The final prepared context passed to buildSystemPrompt */
+/**
+ * The deterministic situational block passed to `buildSystemPrompt`.
+ * Rendered as `## Cognitive Context` when non-empty.
+ */
 export interface PreparedCognitiveContext {
-  depth: CognitiveDepth;
+  /** Recent activity + working-memory keys, if any. */
   cognitiveContext?: string;
-  retrievedContext?: string;
-  reflection?: string;
+  /** True when there is nothing to inject. */
   isEmpty: boolean;
 }
 
-/** Configuration for the cognitive pipeline */
+/** Configuration for the deterministic cognitive-context block (default: disabled). */
 export interface CognitiveConfig {
+  /** Gate the situational block. No LLM phase runs either way — this is pure assembly. */
   enabled: boolean;
-  defaultDepth?: CognitiveDepth;
-  /** Cap the maximum depth level (e.g. D1 for appraisal-only rollout) */
-  maxDepth?: CognitiveDepth;
-  /** Override model for appraisal/reflection calls (defaults to cheapest available) */
-  appraisalModel?: string;
-  /** Timeout in ms for CPP LLM calls (default: 15000) */
-  timeoutMs?: number;
 }

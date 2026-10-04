@@ -223,6 +223,15 @@ export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
  *  keeps creating new sections.  15 000 chars ≈ 5 sections × 3 000. */
 export const MEMORY_MD_TOTAL_MAX_CHARS = 15_000;
 
+/** Usage percent of the knowledge.md budget at which the in-prompt health banner
+ *  fires (and at which the `memory_status` hint suggests consolidation). Kept as
+ *  ONE constant so the banner and the tool hint can never drift apart — see
+ *  docs/ARCHITECTURE.md ("Your Knowledge") + docs/COGNITIVE-ARCHITECTURE.md §3. */
+export const MEMORY_HEALTH_WARN_PERCENT = 70;
+
+/** Usage percent at which the health banner escalates to the 🔴 critical marker. */
+export const MEMORY_HEALTH_CRITICAL_PERCENT = 90;
+
 /** Hard cap on the `## _observations` buffer size (chars).
  *  审计 P-10：观察缓冲区有自己的上限与整理路径；超限时最旧的观察被**无损归档**
  *  （写入 knowledge-archive.md），而不是让文件无限膨胀。 */

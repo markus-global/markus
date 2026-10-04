@@ -68,7 +68,7 @@ describe('createServices', () => {
       },
       agent: {
         maxToolIterations: 30,
-        cognitive: { enabled: true, maxDepth: 3, timeoutMs: 5000 },
+        cognitive: { enabled: true },
       },
       browser: {
         bringToFront: false,

@@ -240,7 +240,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [agentMsg, setAgentMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   // Cognitive Preparation Pipeline settings
   const [cppEnabled, setCppEnabled] = useState(false);
-  const [cppMaxDepth, setCppMaxDepth] = useState(1);
   const [cppSaving, setCppSaving] = useState(false);
   const [cppMsg, setCppMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   // Concurrent Processing settings
@@ -326,7 +325,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         if (d && typeof d.maxToolIterations === 'number') setAgentMaxIter(d.maxToolIterations);
         if (d?.cognitive) {
           setCppEnabled(d.cognitive.enabled ?? false);
-          setCppMaxDepth(d.cognitive.maxDepth ?? 1);
         }
         if (d?.concurrent) {
           setConcEnabled(d.concurrent.enabled ?? true);
@@ -2198,23 +2196,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </button>
             </div>
 
-            {/* Max Depth */}
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('cognitive.maxDepth')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('cognitive.maxDepthDesc')}</div>
-              </div>
-              <select
-                value={cppMaxDepth}
-                onChange={e => { setCppMaxDepth(Number(e.target.value)); setCppMsg(null); }}
-                className="px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary"
-              >
-                <option value={1}>D1 — {t('cognitive.depthD1')}</option>
-                <option value={2}>D2 — {t('cognitive.depthD2')}</option>
-                <option value={3}>D3 — {t('cognitive.depthD3')}</option>
-              </select>
-            </div>
-
             {/* Save */}
             <div className="flex items-center justify-end gap-2">
               <button
@@ -2223,10 +2204,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   setCppSaving(true); setCppMsg(null);
                   try {
                     const d = await api.settings.updateAgent({
-                      cognitive: { enabled: cppEnabled, maxDepth: cppMaxDepth },
+                      cognitive: { enabled: cppEnabled },
                     });
                     setCppEnabled(d.cognitive.enabled);
-                    setCppMaxDepth(d.cognitive.maxDepth ?? 1);
                     setCppMsg({ type: 'ok', text: t('cognitive.saved') });
                   } catch { setCppMsg({ type: 'err', text: t('cognitive.failedToSave') }); }
                   setCppSaving(false);

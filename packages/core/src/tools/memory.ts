@@ -1,7 +1,7 @@
 import type { AgentToolHandler } from '../agent.js';
 import type { IMemoryStore, MemoryEntry } from '../memory/types.js';
 import type { SemanticMemorySearch } from '../memory/semantic-search.js';
-import { createLogger } from '@markus/shared';
+import { createLogger, MEMORY_HEALTH_WARN_PERCENT } from '@markus/shared';
 
 const log = createLogger('memory-tools');
 
@@ -452,7 +452,7 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           curatedSections: { count: sectionNames.length, names: sectionNames.slice(0, 20) },
           archivedChars: health.archiveChars,
           lastConsolidatedAt: health.lastConsolidatedAt,
-          hint: health.percent > 80
+          hint: health.percent >= MEMORY_HEALTH_WARN_PERCENT
             ? 'Approaching budget — run memory_organize to merge observations into curated sections, or memory_update mode="forget" on superseded knowledge.'
             : undefined,
         });

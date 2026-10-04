@@ -277,7 +277,7 @@ interface NotebookEntry {
 
 ### POST `/api/settings/agent`
 
-Persists agent settings to `markus.json`, including full cognitive config.
+Persists agent settings to `markus.json`, including the agent runtime config.
 
 **Body:**
 
@@ -285,10 +285,7 @@ Persists agent settings to `markus.json`, including full cognitive config.
 {
   "maxToolIterations": 25,
   "cognitive": {
-    "enabled": true,
-    "maxDepth": 3,
-    "appraisalModel": "gpt-4o-mini",
-    "timeoutMs": 30000
+    "enabled": true
   }
 }
 ```
@@ -296,10 +293,7 @@ Persists agent settings to `markus.json`, including full cognitive config.
 | Field | Type | Description |
 |-------|------|-------------|
 | `maxToolIterations` | number | Max tool-call loops per agent turn |
-| `cognitive.enabled` | boolean | Enable cognitive appraisal loop |
-| `cognitive.maxDepth` | number | Max deliberation depth |
-| `cognitive.appraisalModel` | string | LLM model for appraisal steps |
-| `cognitive.timeoutMs` | number | Appraisal timeout in milliseconds |
+| `cognitive.enabled` | boolean | Gate the deterministic situational block (`## Cognitive Context`). No LLM call is made. |
 
 ---
 
