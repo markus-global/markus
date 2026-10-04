@@ -62,6 +62,20 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     if (isAgentKey(k)) chatStore.markAgentStreaming(k, true);
     if (changed) bumpStreamMembership();
   }, [bumpStreamMembership]);
+  /**
+   * The single source of truth for "this agent is busy" handed to chatStore.
+   *
+   * `hasLiveStream` (the ownership set) is the primary answer, but it can be
+   * EMPTY during the pre-registration window — `beginStream` flips the phase
+   * before `session_start` lands the mark — and the phase then still reads
+   * 'streaming'. Reporting idle in that window is what let the sidebar say 空闲
+   * while a bubble was visibly still typing, so the phase gets a vote too.
+   * Callers that genuinely end a turn pair this with `endStream`, which lands
+   * `ready` and therefore clears the mark.
+   */
+  const agentBusy = useCallback((k: string) =>
+    mgr.current.hasLiveStream(k) || mgr.current.getPhase(k) === 'streaming', []);
+
   const clearStreamSession = useCallback((k: string, s?: string) => {
     const changed = mgr.current.removeStreamSession(k, s);
     // Derive the sidebar signal from what is STILL live, not from the fact that
@@ -69,9 +83,9 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     // releasing tab A must not mark the agent idle while tab B is still running
     // — that would let Team's ghost-reconciliation sweep tab B's live bubble and
     // drop its "outputting" border mid-turn.
-    if (isAgentKey(k)) chatStore.markAgentStreaming(k, mgr.current.hasLiveStream(k));
+    if (isAgentKey(k)) chatStore.markAgentStreaming(k, agentBusy(k));
     if (changed) bumpStreamMembership();
-  }, [bumpStreamMembership]);
+  }, [agentBusy, bumpStreamMembership]);
   const setActiveSession = useCallback((k: string, s: string) => mgr.current.setActiveSession(k, s), []);
   const clearActiveSession = useCallback((k: string) => mgr.current.clearActiveSession(k), []);
 
@@ -114,9 +128,14 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   }, []);
   const endStream = useCallback((key: string) => {
     mgr.current.endStream(key);
-    // NOTE: intentionally does NOT unmark the agent — see comment above.
-    // The agent stays busy until clearStreamSession is called by whichever
-    // path owns the stream's end.
+    // Collapsing the turn-level phase is what retires the pre-registration
+    // window: `clearStreamSession` runs BEFORE this call in the terminal path
+    // and, with the ownership set still holding a sibling (or the phase still
+    // 'streaming'), it can legitimately leave the agent marked busy. Landing
+    // 'ready' here is therefore the point where a mark that nothing backs must
+    // fall — but ONLY when no stream remains live, else a sibling tab's badge
+    // would go 空闲 mid-turn (the mirrored failure of the bug this guards).
+    if (isAgentKey(key)) chatStore.markAgentStreaming(key, mgr.current.hasLiveStream(key));
   }, []);
   // Single teardown entry for abort-like paths (stop / retry / interrupt /
   // channel abort / unmount). Replaces the copy-pasted cleanup sequences in
@@ -125,7 +144,7 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     const affected = mgr.current.abortStream(key, sessionId);
     // Same derivation as clearStreamSession: aborting one tab's stream must not
     // clear the agent's busy mark while a sibling tab is still streaming.
-    if (affected && isAgentKey(key)) chatStore.markAgentStreaming(key, mgr.current.hasLiveStream(key));
+    if (affected && isAgentKey(key)) chatStore.markAgentStreaming(key, agentBusy(key));
     if (affected) bumpStreamMembership();
     if (mgr.current.currentConvKey === key) {
       setSending(false);

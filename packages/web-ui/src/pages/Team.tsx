@@ -80,7 +80,7 @@ import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   dedupeAdjacentUserMessages,
-  stopRunningTools, hasStreamingTail, clearGhostStreaming,
+  stopRunningTools, hasStreamingTail, clearGhostStreaming, shouldSweepGhostStreaming,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
   resolveTeamChatShortcut, cycleSessionTabId,
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
@@ -1030,12 +1030,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // waiting for the user to reload the page. `messages` changing re-runs this, and
   // clearGhostStreaming returns the same ref when there is nothing to do.
   useEffect(() => {
-    if (chatMode !== 'direct' || !selectedAgent) return;
-    if (sending || streamingVisual) return;
-    if (chatStore.isAgentStreaming(selectedAgent)) return;
-    if (!hasStreamingTail(messages)) return;
+    if (!shouldSweepGhostStreaming({
+      chatMode,
+      hasAgent: !!selectedAgent,
+      sending,
+      streamingVisual,
+      chatStoreStreaming: chatStore.isAgentStreaming(selectedAgent),
+      // Buffer-manager authority: the phase keeps saying 'streaming' while a
+      // sibling tab of the same agent is live (and through the pre-registration
+      // window), so it must be able to veto a sweep that the coarse `sending`
+      // flag and chatStore would wrongly allow.
+      convPhase: bufMgr.getPhase(activeConvKey),
+      hasStreamingTail: hasStreamingTail(messages),
+    })) return;
     updateConvMsgs(activeConvKey, prev => clearGhostStreaming(prev));
-  }, [activeConvKey, chatMode, selectedAgent, sending, streamingVisual, messages, updateConvMsgs]);
+  }, [activeConvKey, chatMode, selectedAgent, sending, streamingVisual, messages, updateConvMsgs, bufMgr]);
   const activeScrollKey = useMemo(
     () => scrollMemoryKey(activeConvKey, activeSessionId),
     [activeConvKey, activeSessionId],

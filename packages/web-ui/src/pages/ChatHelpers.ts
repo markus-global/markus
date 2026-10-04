@@ -233,6 +233,49 @@ export function clearGhostStreaming(msgs: ChatMsg[]): ChatMsg[] {
 }
 
 /**
+ * Should the ghost-streaming reconciliation sweep run for the current view?
+ *
+ * The sweep exists for ONE case: the stream is truly over but a bubble still
+ * carries `isStreaming` (a leaked flag). It must never fire while anything is
+ * genuinely in flight, because `clearGhostStreaming` is irreversible for that
+ * turn — it lands the flag, kills the animated border and stops the running-tool
+ * segments — while the backend keeps generating.
+ *
+ * A ghost is therefore proven by the ABSENCE of every live signal, and the
+ * signals are not equally trustworthy:
+ *
+ *  · `sending` (React) and `chatStoreStreaming` are derived/coarse. Both can be
+ *    momentarily false while a stream is live: `sending` is a single boolean for
+ *    the whole view (several tabs share one agent key), and chatStore is a
+ *    per-AGENT set whose only writer can be fed a stale ownership set.
+ *  · `convPhase` is the buffer manager's authoritative answer for the
+ *    conversation — and it deliberately keeps reporting 'streaming' through the
+ *    pre-registration window (stored phase flipped by `beginStream` before the
+ *    session mark lands) and while a SIBLING tab is still running.
+ *
+ * So the phase gets the last word: if the manager says the conversation is
+ * streaming, a flagged bubble is NOT a ghost. Skipping the sweep cannot strand a
+ * real ghost, because a finished stream collapses the phase (endStream → 'ready',
+ * empty ownership set) — the veto only spans windows where the turn is alive.
+ */
+export function shouldSweepGhostStreaming(input: {
+  chatMode: ChatMode;
+  hasAgent: boolean;
+  sending: boolean;
+  streamingVisual: boolean;
+  chatStoreStreaming: boolean;
+  convPhase: 'idle' | 'loading' | 'ready' | 'streaming';
+  hasStreamingTail: boolean;
+}): boolean {
+  if (input.chatMode !== 'direct' || !input.hasAgent) return false;
+  if (input.sending || input.streamingVisual) return false;
+  if (input.chatStoreStreaming) return false;
+  // Manager authority — see the doc comment above.
+  if (input.convPhase === 'streaming') return false;
+  return input.hasStreamingTail;
+}
+
+/**
  * Finalize the last in-flight agent bubble (agent && isStreaming && !isStopped)
  * — used when a reattach stream dies/aborts while feeding an existing bubble.
  * Unlike finalizeLastInterruptedAgent this never touches a completed reply:

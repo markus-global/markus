@@ -1502,8 +1502,18 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       const newCount = decrementSending(sendKey);
       // P1-14：无论 sessionId 是否已解析都要解除 busy。旧代码 `if (streamSessionId)`
       // 在「新会话首包前失败」（sessionId 仍为 null）时跳过清理，侧栏永久「工作中」，
-      // 刷新/切页/reattach 均不自愈。clearStreamSession 已支持 sid 省略（整键清理）。
-      clearStreamSession(sendKey, streamSessionId ?? undefined);
+      // 刷新/切页/reattach 均不自愈。
+      //
+      // BUT never with `undefined`: that is the WHOLE-KEY release, and the key is
+      // the AGENT (several session tabs of one agent share it). A turn that ends
+      // without a resolved session id — the new-chat tab, or a message the server
+      // MERGED into the agent's in-flight processing (no session_start for it) —
+      // would then wipe a SIBLING tab's live mark. chatStore drops to idle, the
+      // buffer manager still reports the conversation as streaming, and the two
+      // answers disagree: the sibling tab's bubble is a "ghost" by chatStore and
+      // gets swept (border + 输出中 die) while the backend keeps generating. The
+      // unresolved turn can only ever own the placeholder mark, so release that.
+      clearStreamSession(sendKey, streamSessionId ?? NEW_CHAT_PLACEHOLDER_ID);
       endStream(sendKey);
       if (abortControllerRef.current === abortCtrl || abortControllerRef.current === null) {
         abortControllerRef.current = null;

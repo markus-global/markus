@@ -135,4 +135,39 @@ describe('ConversationBufferManager — concurrent live turns', () => {
     expect(m.hasLiveStream('agent1')).toBe(false);
     expect(m.getPhase('agent1')).toBe('ready');
   });
+
+  /**
+   * The seam that made the phase veto necessary (see shouldSweepGhostStreaming).
+   * Consumers must not read chatStore's per-agent set as the ONLY authority for
+   * "is this conversation streaming": the phase legitimately reports 'streaming'
+   * with an empty ownership set.
+   */
+  it('pre-registration window: phase reads streaming while the ownership set is empty', () => {
+    const m = new ConversationBufferManager();
+    m.currentConvKey = 'agent1';
+    m.beginStream('agent1');
+    // beginStream flips the phase; session_start has not landed the mark yet.
+    expect(m.hasLiveStream('agent1')).toBe(false);
+    expect(m.getPhase('agent1')).toBe('streaming');
+  });
+
+  it('ending a turn with no resolved session id must NOT release a sibling tab', () => {
+    const m = new ConversationBufferManager();
+    m.currentConvKey = 'agent1';
+    m.beginStream('agent1');
+    m.addStreamSession('agent1', A);
+    m.addStreamSession('agent1', B);
+
+    // The finished turn never resolved a session id (new-chat tab, or a message
+    // the server merged into the in-flight run). Its unresolved turn can only
+    // own the placeholder mark — releasing the WHOLE key would silently drop B.
+    m.removeStreamSession('agent1', ConversationBufferManager.NEW_CHAT_ID);
+    expect(m.hasLiveStream('agent1')).toBe(true);
+    expect(m.getStreamSessions('agent1')?.has(B)).toBe(true);
+
+    // Contrast: the whole-key release does wipe every sibling — which is exactly
+    // why the terminal path must never call it with an unresolved id.
+    m.removeStreamSession('agent1');
+    expect(m.hasLiveStream('agent1')).toBe(false);
+  });
 });
