@@ -183,10 +183,13 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     messages, setMessages,
     sending, setSending,
     activities, setActivities,
-    // Expose manager maps directly (Team.tsx migration replaces .current. with direct access)
-    get msgBuffers() { return mgr.current.msgBuffers; },
-    get sessionMsgCache() { return mgr.current.sessionMsgCache; },
-    get activeSessionBuffer() { return mgr.current.activeSession; },
+    // 单一存储 + 视图指针（模型说明见 ConversationBufferManager 顶部）。
+    // 旧的 msgBuffers / sessionMsgCache / activeSession 三件套已不存在：
+    // 两个存储 + 一道路由门正是这一族 bug 的温床。
+    get buffers() { return mgr.current.buffers; },
+    get viewBuffer() { return mgr.current.view; },
+    /** 语义未变：convKey → 当前查看的 bufferId。*/
+    get activeSessionBuffer() { return mgr.current.view; },
     get actBuffers() { return mgr.current.actBuffers; },
     get sessionTabsBuffer() { return mgr.current.sessionTabs; },
     // Ref-shaped wrapper for currentConvKey (enables currentConvKeyRef.current = x)
@@ -225,13 +228,19 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     setStreamSession,
     clearStreamSession,
     getStreamSession,
-    // Session switch helpers
-    saveSessionToCache: (k: string, s: string) => mgr.current.saveToCache(k, s),
+    // 会话切换辅助：save 已是 no-op（不存在第二个存储可搬），
+    // restore 只做“把指针移到该会话 + 丢掉非 live 的 stale 流式行”。
+    saveSessionToCache: (_k?: string, _s?: string) => mgr.current.saveToCache(),
     restoreSessionFromCache: (k: string, s: string) => {
       const msgs = mgr.current.restoreFromCache(k, s);
       setMessages(msgs ?? []);
       return msgs;
     },
-    isSessionCacheFresherThanDb: (sid: string, dbMsgs: ChatMsg[]) => mgr.current.isCacheFresher(sid, dbMsgs),
+    // 会话缓冲的唯一读/写入口（取代直接 .get/.set buffers）。
+    readConvMsgs: (k: string) => mgr.current.getMessages(k),
+    writeConvMsgs: (k: string, msgs: ChatMsg[]) => {
+      const r = mgr.current.updateMessages(k, () => msgs);
+      if (r.displayChanged && r.newMessages) setMessages(r.newMessages);
+    },
   };
 }

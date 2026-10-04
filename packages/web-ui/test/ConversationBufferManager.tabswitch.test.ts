@@ -13,7 +13,7 @@ const NEW_CHAT = ConversationBufferManager.NEW_CHAT_ID;
  * agent bubble's streaming effect (animated border disappears) even though the
  * turn is still running on the server".
  *
- * The view is switched by saveToCache(current) -> restoreFromCache(target),
+ * Switching the view is now just moving the `view` pointer (restoreFromCache),
  * exactly as switchSession() does it in Team.tsx.
  */
 describe('ConversationBufferManager — live bubble across a session-tab switch', () => {
@@ -38,7 +38,6 @@ describe('ConversationBufferManager — live bubble across a session-tab switch'
     mgr.incrementSend(KEY);
     mgr.setActiveSession(KEY, SESSION_A);
     mgr.updateMessages(KEY, () => liveTurn(), SESSION_A);
-    mgr.saveToCache(KEY, SESSION_A);
   };
 
   const switchTo = (target: string) => {

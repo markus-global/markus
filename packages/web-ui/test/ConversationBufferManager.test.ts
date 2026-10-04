@@ -84,40 +84,41 @@ describe('ConversationBufferManager', () => {
   // ── Write routing tests ──
 
   describe('updateMessages write routing', () => {
-    it('matching session writes to msgBuffers and returns displayChanged: true', () => {
+    it('matching session writes to that session buffer and returns displayChanged: true', () => {
       mgr.setActiveSession('agent1', 'sess1');
       const r = mgr.updateMessages('agent1', () => [msg({ id: 'u1' })], 'sess1');
       expect(r.displayChanged).toBe(true);
       expect(r.newMessages).toHaveLength(1);
-      expect(mgr.msgBuffers.get('agent1')).toHaveLength(1);
+      expect(mgr.getMessages('agent1')).toHaveLength(1);
     });
 
-    it('mismatched session writes to sessionMsgCache only, displayChanged: false', () => {
+    it('a background session writes to its OWN buffer, displayChanged: false', () => {
       mgr.setActiveSession('agent1', 'sessA');
       const r = mgr.updateMessages('agent1', () => [msg({ id: 'u1' })], 'sessB');
       expect(r.displayChanged).toBe(false);
       expect(r.newMessages).toBeUndefined();
-      expect(mgr.sessionMsgCache.get('sessB')).toHaveLength(1);
-      expect(mgr.msgBuffers.has('agent1')).toBe(false);
+      // 写入落在 sessB 自己的 buffer 上，正在看的会话 A 完全不受影响。
+      expect(mgr.buffers.get('sessB')).toHaveLength(1);
+      expect(mgr.getMessages('agent1')).toBeUndefined();
     });
 
-    it('null sessionId writes to msgBuffers (isSameSession = true)', () => {
+    it('null sessionId writes to the viewed buffer (optimistic send)', () => {
       const r = mgr.updateMessages('agent1', () => [msg({ id: 'u1' })], null);
       expect(r.displayChanged).toBe(true);
-      expect(mgr.msgBuffers.get('agent1')).toHaveLength(1);
+      expect(mgr.getMessages('agent1')).toHaveLength(1);
     });
 
-    it('undefined sessionId writes to msgBuffers (isSameSession = true)', () => {
+    it('undefined sessionId writes to the viewed buffer (optimistic send)', () => {
       const r = mgr.updateMessages('agent1', () => [msg({ id: 'u1' })]);
       expect(r.displayChanged).toBe(true);
-      expect(mgr.msgBuffers.get('agent1')).toHaveLength(1);
+      expect(mgr.getMessages('agent1')).toHaveLength(1);
     });
 
     it('non-current convKey writes to buffer but displayChanged: false', () => {
       const r = mgr.updateMessages('agent2', () => [msg({ id: 'u1' })]);
       expect(r.displayChanged).toBe(false);
       expect(r.newMessages).toBeUndefined();
-      expect(mgr.msgBuffers.get('agent2')).toHaveLength(1);
+      expect(mgr.getMessages('agent2')).toHaveLength(1);
     });
 
     it('truncates at MAX_MESSAGES', () => {
@@ -127,22 +128,30 @@ describe('ConversationBufferManager', () => {
       expect(r.newMessages![0].id).toBe('m100');
     });
 
-    it('also writes to sessionMsgCache when sessionId is provided', () => {
+    it('also lands in the session-keyed store when sessionId is provided', () => {
       mgr.setActiveSession('agent1', 'sess1');
       mgr.updateMessages('agent1', () => [msg({ id: 'u1' })], 'sess1');
-      expect(mgr.sessionMsgCache.get('sess1')).toHaveLength(1);
+      expect(mgr.buffers.get('sess1')).toHaveLength(1);
     });
 
-    it('does not write to sessionMsgCache for NEW_CHAT_ID', () => {
+    it('a placeholder turn accumulates under NEW_CHAT_ID until session_start promotes it', () => {
+      // 新建 tab：真实 session id 还没到，乐观消息先落在占位 buffer 上。
       mgr.updateMessages('agent1', () => [msg({ id: 'u1' })], ConversationBufferManager.NEW_CHAT_ID);
-      expect(mgr.sessionMsgCache.has(ConversationBufferManager.NEW_CHAT_ID)).toBe(false);
+      expect(mgr.buffers.get(ConversationBufferManager.NEW_CHAT_ID)).toHaveLength(1);
+
+      // session_start 到达：占位 buffer 并入真实 session，指针前移。
+      mgr.setActiveSession('agent1', 'sess_real');
+      expect(mgr.buffers.get('sess_real')?.map(m => m.id)).toEqual(['u1']);
+      expect(mgr.buffers.has(ConversationBufferManager.NEW_CHAT_ID)).toBe(false);
+      expect(mgr.getMessages('agent1')?.map(m => m.id)).toEqual(['u1']);
     });
   });
 
   // ── Load guard tests (core race condition fix) ──
 
   describe('applyLoadResult (phase-aware load guard)', () => {
-    it('in loading phase writes to display', () => {
+    it('in loading phase writes to the viewed buffer', () => {
+      mgr.setActiveSession('agent1', 'sess1');
       mgr.beginLoad('agent1');
       mgr.loadingSession = 'sess1';
       const dbMsgs = [msg({ id: 'db1', text: 'from db' })];
@@ -152,7 +161,8 @@ describe('ConversationBufferManager', () => {
       expect(mgr.getPhase('agent1')).toBe('ready');
     });
 
-    it('in ready phase writes to display', () => {
+    it('in ready phase writes to the viewed buffer', () => {
+      mgr.setActiveSession('agent1', 'sess1');
       mgr.beginLoad('agent1');
       mgr.completeLoad('agent1');
       mgr.loadingSession = 'sess1';
@@ -162,14 +172,22 @@ describe('ConversationBufferManager', () => {
       expect(r.newMessages).toEqual(dbMsgs);
     });
 
-    it('in streaming phase -> cache only, displayChanged: false', () => {
+    it('a DB load during a live stream MERGES — the in-flight tail is preserved', () => {
+      mgr.setActiveSession('agent1', 'sess1');
       mgr.beginStream('agent1');
+      mgr.addStreamSession('agent1', 'sess1');
+      mgr.updateMessages('agent1', () => [
+        msg({ id: 'u1' }),
+        msg({ id: 'a1', sender: 'agent', text: 'partial', isStreaming: true }),
+      ], 'sess1');
       mgr.loadingSession = 'sess1';
       const dbMsgs = [msg({ id: 'db1', text: 'from db' })];
       const r = mgr.applyLoadResult('agent1', 'sess1', dbMsgs);
-      expect(r.displayChanged).toBe(false);
-      expect(mgr.sessionMsgCache.get('sess1')).toEqual(dbMsgs);
-      expect(mgr.msgBuffers.has('agent1')).toBe(false);
+      expect(r.displayChanged).toBe(true);
+      const ids = r.newMessages!.map(m => m.id);
+      expect(ids).toContain('db1');
+      // 关键：正在流式的气泡不能被 DB 加载抹掉。
+      expect(r.newMessages!.find(m => m.id === 'a1')?.isStreaming).toBe(true);
     });
 
     it('with stale convKey returns no display change', () => {
@@ -187,12 +205,13 @@ describe('ConversationBufferManager', () => {
       expect(r.displayChanged).toBe(false);
     });
 
-    it('keeps DB rows and appends fresher cache-only rows', () => {
+    it('keeps DB rows and appends buffer-only rows', () => {
       const cachedMsgs = [
         msg({ id: 'c1', text: 'cached reply with more text' }),
         msg({ id: 'c2', text: 'extra message' }),
       ];
-      mgr.sessionMsgCache.set('sess1', cachedMsgs);
+      mgr.buffers.set('sess1', cachedMsgs);
+      mgr.setActiveSession('agent1', 'sess1');
       mgr.beginLoad('agent1');
       mgr.loadingSession = 'sess1';
       const dbMsgs = [msg({ id: 'db1', text: 'short' })];
@@ -232,7 +251,7 @@ describe('ConversationBufferManager', () => {
       expect(displayed).toHaveLength(2);
       expect(displayed![0].id).toBe('u1');
       expect(displayed![1].id).toBe('a1');
-      expect(mgr.sessionMsgCache.get('sess_old')).toEqual(oldMsgs);
+      expect(mgr.buffers.get('sess_old')).toEqual(oldMsgs);
     });
   });
 
@@ -246,16 +265,17 @@ describe('ConversationBufferManager', () => {
   });
 
   describe('race condition: switchSession during streaming', () => {
-    it('load for new session writes to cache only, streaming data preserved', () => {
+    it('load for the newly-viewed session displays, and the other session’s live data stays put', () => {
       mgr.setActiveSession('agent1', 'sessA');
       mgr.beginStream('agent1');
+      mgr.addStreamSession('agent1', 'sessA');
       mgr.updateMessages('agent1', () => [
         msg({ id: 'u1', text: 'hi' }),
-        msg({ id: 'a1', sender: 'agent', text: 'partial...' }),
-      ]);
+        msg({ id: 'a1', sender: 'agent', text: 'partial...', isStreaming: true }),
+      ], 'sessA');
 
-      mgr.saveToCache('agent1', 'sessA');
-      mgr.setActiveSession('agent1', 'sessB');
+      // 切到 B：指针前移，A 自己的 buffer 原封不动。
+      mgr.restoreFromCache('agent1', 'sessB');
       mgr.beginLoad('agent1');
       expect(mgr.getPhase('agent1')).toBe('streaming');
 
@@ -263,43 +283,14 @@ describe('ConversationBufferManager', () => {
       const result = mgr.applyLoadResult('agent1', 'sessB', [
         msg({ id: 'b1', text: 'session B msg' }),
       ]);
-      expect(result.displayChanged).toBe(false);
-      expect(mgr.sessionMsgCache.get('sessA')).toHaveLength(2);
+      expect(result.displayChanged).toBe(true);
+      expect(mgr.buffers.get('sessA')).toHaveLength(2);
     });
   });
 
-  // ── Cache freshness tests ──
-
-  describe('isCacheFresher', () => {
-    it('empty cache is not fresher', () => {
-      expect(mgr.isCacheFresher('sess1', [msg({ id: 'db1' })])).toBe(false);
-    });
-
-    it('more messages -> fresher', () => {
-      mgr.sessionMsgCache.set('sess1', [msg({ id: 'c1' }), msg({ id: 'c2' })]);
-      expect(mgr.isCacheFresher('sess1', [msg({ id: 'db1' })])).toBe(true);
-    });
-
-    it('more total text -> fresher', () => {
-      mgr.sessionMsgCache.set('sess1', [msg({ id: 'c1', text: 'a long cached reply here' })]);
-      expect(mgr.isCacheFresher('sess1', [msg({ id: 'db1', text: 'short' })])).toBe(true);
-    });
-
-    it('more segments -> fresher', () => {
-      mgr.sessionMsgCache.set('sess1', [
-        msg({ id: 'c1', segments: [{ type: 'text' as const, content: 'a' }, { type: 'text' as const, content: 'b' }] }),
-      ]);
-      expect(mgr.isCacheFresher('sess1', [
-        msg({ id: 'db1', segments: [{ type: 'text' as const, content: 'a' }] }),
-      ])).toBe(true);
-    });
-
-    it('equal content is not fresher', () => {
-      const m = [msg({ id: 'x', text: 'hello' })];
-      mgr.sessionMsgCache.set('sess1', m);
-      expect(mgr.isCacheFresher('sess1', m)).toBe(false);
-    });
-  });
+  // ── isCacheFresher：已随双存储模型一并移除 ──
+  // 它存在的唯一理由是仲裁“两个存储哪个更新”，而那正是跨 tab 串味的温床。
+  // 现在只有一份按会话键的存储，没有“谁更新”这个问题。
 
   // ── Activity buffer tests ──
 
@@ -336,28 +327,21 @@ describe('ConversationBufferManager', () => {
   // ── Session management tests ──
 
   describe('session management', () => {
-    it('saveToCache and restoreFromCache round-trip', () => {
+    it('restoreFromCache points the view at that session’s buffer', () => {
       const msgs = [msg({ id: 'u1' }), msg({ id: 'a1', sender: 'agent' })];
-      mgr.msgBuffers.set('agent1', msgs);
-      mgr.saveToCache('agent1', 'sess1');
-      mgr.msgBuffers.delete('agent1');
+      mgr.updateMessages('agent1', () => msgs, 'sess1');
 
       const restored = mgr.restoreFromCache('agent1', 'sess1');
       expect(restored).toEqual(msgs);
-      expect(mgr.msgBuffers.get('agent1')).toEqual(msgs);
+      expect(mgr.getMessages('agent1')).toEqual(msgs);
     });
 
-    it('saveToCache skips NEW_CHAT_ID', () => {
-      mgr.msgBuffers.set('agent1', [msg({ id: 'u1' })]);
-      mgr.saveToCache('agent1', ConversationBufferManager.NEW_CHAT_ID);
-      expect(mgr.sessionMsgCache.has(ConversationBufferManager.NEW_CHAT_ID)).toBe(false);
-    });
-
-    it('restoreFromCache with no cached data deletes buffer', () => {
-      mgr.msgBuffers.set('agent1', [msg({ id: 'u1' })]);
+    it('restoreFromCache on a session with no buffer returns undefined', () => {
+      mgr.updateMessages('agent1', () => [msg({ id: 'u1' })], 'sess1');
       const restored = mgr.restoreFromCache('agent1', 'nonexistent');
       expect(restored).toBeUndefined();
-      expect(mgr.msgBuffers.has('agent1')).toBe(false);
+      // 另一个会话的 buffer 不受影响。
+      expect(mgr.buffers.has('sess1')).toBe(true);
     });
   });
 
@@ -404,20 +388,22 @@ describe('ConversationBufferManager', () => {
   // ── Buffer eviction tests ──
 
   describe('buffer eviction', () => {
-    it('evicts oldest buffers when exceeding MAX_CONVERSATIONS', () => {
-      for (let i = 0; i < 25; i++) {
+    it('evicts oldest buffers when exceeding MAX_BUFFERS', () => {
+      const n = ConversationBufferManager.MAX_BUFFERS + 10;
+      for (let i = 0; i < n; i++) {
         mgr.updateMessages(`key${i}`, () => [msg({ id: `m${i}` })]);
       }
-      expect(mgr.msgBuffers.size).toBeLessThanOrEqual(ConversationBufferManager.MAX_CONVERSATIONS + 1);
+      expect(mgr.buffers.size).toBeLessThanOrEqual(ConversationBufferManager.MAX_BUFFERS);
     });
 
-    it('never evicts currentConvKey', () => {
+    it('never evicts the viewed buffer', () => {
       mgr.currentConvKey = 'keep_me';
       mgr.updateMessages('keep_me', () => [msg({ id: 'keep' })]);
-      for (let i = 0; i < 25; i++) {
+      const n = ConversationBufferManager.MAX_BUFFERS + 10;
+      for (let i = 0; i < n; i++) {
         mgr.updateMessages(`key${i}`, () => [msg({ id: `m${i}` })]);
       }
-      expect(mgr.msgBuffers.has('keep_me')).toBe(true);
+      expect(mgr.buffers.has('keep_me')).toBe(true);
     });
   });
 
