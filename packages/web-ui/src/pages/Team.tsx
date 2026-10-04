@@ -2390,9 +2390,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // would incorrectly cause session B to appear as "streaming".
     const streamingSessions = getStreamSession(newKey);
     const targetSession = savedActiveSession ?? activeSessionId;
-    const isSendingNow = isSendingFor(newKey) &&
-      (chatMode !== 'direct' || !streamingSessions || !targetSession ||
-       streamingSessions.has(targetSession));
+    // 同 switchSession：在途与否只由会话自身的登记决定。
+    const isSendingNow = chatMode !== 'direct'
+      ? isSendingFor(newKey)
+      : !!streamingSessions && !!targetSession &&
+        (streamingSessions.has(targetSession) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
 
     // Activities are keyed by session, not convKey
     const actBufKey = targetSession ?? newKey;
@@ -3029,7 +3031,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // - If stream belongs to a DIFFERENT session → suppress spinner
     const streamingSessions = getStreamSession(key);
     const streamForThis = !!streamingSessions && (streamingSessions.has(s.id) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
-    const isStreaming = isSendingFor(key) && streamForThis;
+    // 只由「本会话是否真有在途流」决定，不再叠加 Agent 级 sendCount：
+    // 那个计数器是会话级事实的重复副本，会被别的 tab 的发送/中断清零，
+    // 于是正在输出的 tab 会瞬间显示为“已结束”。
+    const isStreaming = streamForThis;
     setSending(isStreaming);
     if (isStreaming) {
       setActivities(actBuffers.get(s.id) ?? []);

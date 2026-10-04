@@ -35,6 +35,8 @@ import {
   appendLiveOutput, appendSubagentLog,
   appendTextToSegments, appendThinkingToSegments,
   finalizeAgentMessage, finalizeLastInterruptedAgent, finalizeStreamEnd, finalizeLastStreamingBubble, msgHasContent,
+  shouldInterruptForSend,
+  shouldSettleDetachedSession,
 } from '../pages/ChatHelpers.ts';
 import { NEW_CHAT_PLACEHOLDER_ID } from './useConversationBuffers.ts';
 import { parseMentionNames } from '../components/CommentInput.tsx';
@@ -253,8 +255,13 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
        * 路径上从未 `beginStream`，故也不调 `endStream`（避免 refcount 下溢）。
        */
       const finalizeIfDetached = () => {
-        const owned = getStreamSession(convKey);
-        if (owned && owned.size > 0) return;
+        // 判据是「**这个会话**是否还有在途流」，不是「该 Agent 下任意会话有没有流」——
+        // 用别人的状态回答我的问题，正是本类 bug 的共同形状。
+        if (!shouldSettleDetachedSession({
+          liveSessions: getStreamSession(convKey),
+          sessionId,
+          placeholderId: NEW_CHAT_PLACEHOLDER_ID,
+        })) return;
         clearStreamSession(convKey, sessionId);
         if (currentConvKeyRef.current === convKey) {
           setSending(false);
@@ -723,11 +730,17 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       resumeGuardRef.current.set(resumeKey, now);
     }
 
-    // If agent is currently streaming in this same conversation, interrupt it first.
-    // If the user is in a DIFFERENT session (e.g., new chat tab) while another session
-    // streams, DON'T abort — the agent's mailbox will queue or merge the new message.
+    // 只有「本次要发的那个会话」自身有在途流时，才谈得上“打断并重发”。
+    //
+    // 旧判据是 `activeSessionId && activeSessionId !== NEW_CHAT`（= “当前 tab 有没有
+    // 真实 session id”），而 sending 与 convKey 都是 Agent 级、被同一 agent 的所有
+    // session tab 共用 —— 于是「在 tab B 发消息」被判成「打断当前流」，把正在输出的
+    // tab A 连同它的 SSE 一起 abort 掉。判据必须是会话自身的在途状态。
     if (volatile.sending && volatile.chatMode === 'direct') {
-      const isSameSession = volatile.activeSessionId && volatile.activeSessionId !== NEW_CHAT_PLACEHOLDER_ID;
+      const isSameSession = shouldInterruptForSend({
+        liveSessions: getStreamSession(currentConvKeyRef.current),
+        sendSessionId: volatile.activeSessionId,
+      });
       if (isSameSession) {
         const prevKey = currentConvKeyRef.current;
         const buf = msgBuffers.get(prevKey) ?? [];
