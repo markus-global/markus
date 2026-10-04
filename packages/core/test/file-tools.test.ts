@@ -239,3 +239,130 @@ describe('createFileEditTool', () => {
     expect(result.error).toContain('found 2 times');
   });
 });
+
+describe('多字节内容与路径（CJK / 代理对）', () => {
+  // 本文件此前零多字节覆盖。本组把「中文内容 / 代理对 / 中文文件名」这条链路钉住。
+  // 注意 bytesWritten 是**字节**语义（Buffer.byteLength），不是字符数 —— 中文 1 字 = 3 字节。
+  // 2026-10-04：曾有报告把「编辑后文档内容被复制」误判为 CJK / 字节-字符 offset 混用；
+  // 真因是替换串的 dollar 序列（见 file-edit-replace-template.test.ts）。本组用于证明
+  // 多字节本身是安全的，避免同一个误判再次发生。
+  const cjkFile = join(WORKSPACE, '中文文件名.md');
+
+  beforeEach(() => {
+    mkdirSync(WORKSPACE, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it('bytesWritten 按字节计数（中文 1 字 = 3 字节）', async () => {
+    const tool = createFileWriteTool(createMockGuard(), WORKSPACE);
+    const result = JSON.parse(await tool.execute({ path: 'zh-bytes.txt', content: '你好世界' }));
+    expect(result.status).toBe('success');
+    expect(result.bytesWritten).toBe(Buffer.byteLength('你好世界', 'utf-8'));
+    expect(result.bytesWritten).toBe(12); // 4 字 x 3 字节，而非 4
+    expect(readFileSync(join(WORKSPACE, 'zh-bytes.txt'), 'utf-8')).toBe('你好世界');
+  });
+
+  it('中文写入 / 读回不产生乱码，行号与总行数正确', async () => {
+    const content = '第一行标题\n第二行正文\n第三行结尾\n';
+    const write = createFileWriteTool(createMockGuard(), WORKSPACE);
+    const wrote = JSON.parse(await write.execute({ path: 'zh-roundtrip.txt', content }));
+    expect(wrote.status).toBe('success');
+
+    const read = createFileReadTool(createMockGuard(), WORKSPACE);
+    const result = JSON.parse(await read.execute({ path: 'zh-roundtrip.txt' }));
+    expect(result.status).toBe('success');
+    expect(result.totalLines).toBe(4);
+    expect(result.content).toContain('1|第一行标题');
+    expect(result.content).toContain('3|第三行结尾');
+    // 乱码哨兵：一旦出现替换字符，说明多字节被切断
+    expect(result.content).not.toContain(String.fromCharCode(0xFFFD));
+  });
+
+  it('替换中文 old_string：逐字落盘且不改变文档结构', async () => {
+    const original = '# 中文标题\n\n正文甲\n替换目标\n正文乙\n';
+    writeFileSync(cjkFile, original, 'utf-8');
+
+    const tool = createFileEditTool(createMockGuard(), WORKSPACE);
+    const result = JSON.parse(await tool.execute({
+      path: '中文文件名.md',
+      old_string: '替换目标',
+      new_string: '改后的中文内容',
+    }));
+    expect(result.status).toBe('success');
+    expect(result.replacements).toBe(1);
+    expect(readFileSync(cjkFile, 'utf-8')).toBe('# 中文标题\n\n正文甲\n改后的中文内容\n正文乙\n');
+  });
+
+  it('代理对（emoji / BMP 外星形汉字）在多字节编辑中不被切断', async () => {
+    const original = '开始🎉\n替换目标\n结束𠮷\n';
+    writeFileSync(cjkFile, original, 'utf-8');
+
+    const tool = createFileEditTool(createMockGuard(), WORKSPACE);
+    const result = JSON.parse(await tool.execute({
+      path: '中文文件名.md',
+      old_string: '替换目标',
+      new_string: '中段🙂',
+    }));
+    expect(result.status).toBe('success');
+
+    const after = readFileSync(cjkFile, 'utf-8');
+    expect(after).toBe('开始🎉\n中段🙂\n结束𠮷\n');
+    expect(after).toContain('𠮷'); // 星形汉字（U+20BB7，UTF-16 代理对）完整存活
+    expect(after).not.toContain(String.fromCharCode(0xFFFD));
+  });
+
+  it('中文 old_string 的唯一性判定按完整多字节串进行', async () => {
+    writeFileSync(cjkFile, '重复\n重复\n', 'utf-8');
+    const tool = createFileEditTool(createMockGuard(), WORKSPACE);
+    const result = JSON.parse(await tool.execute({
+      path: '中文文件名.md',
+      old_string: '重复',
+      new_string: '唯一',
+    }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('found 2 times');
+  });
+
+  it('中文长文档尾部替换（原报障形态）：行数不变、标题仅一份', async () => {
+    const body: string[] = [];
+    for (let i = 0; i < 120; i++) body.push('第 ' + (i + 1) + ' 段正文');
+    const original = ['# 工具契约文档', '', ...body, '', '替换目标', '', '结尾', ''].join('\n');
+    writeFileSync(cjkFile, original, 'utf-8');
+
+    const tool = createFileEditTool(createMockGuard(), WORKSPACE);
+    const result = JSON.parse(await tool.execute({
+      path: '中文文件名.md',
+      old_string: '替换目标',
+      new_string: '新的中文行',
+    }));
+    expect(result.status).toBe('success');
+
+    const after = readFileSync(cjkFile, 'utf-8');
+    expect(after).toContain('新的中文行');
+    expect(after.split('\n').length).toBe(original.split('\n').length);
+    expect(after.split('# 工具契约文档').length - 1).toBe(1);
+    expect(after).not.toContain(String.fromCharCode(0xFFFD));
+  });
+
+  it('中文文件名可写、可读、可编辑', async () => {
+    const write = createFileWriteTool(createMockGuard(), WORKSPACE);
+    const wrote = JSON.parse(await write.execute({ path: '中文文件名.md', content: '初始内容' }));
+    expect(wrote.status).toBe('success');
+    expect(existsSync(cjkFile)).toBe(true);
+
+    const read = createFileReadTool(createMockGuard(), WORKSPACE);
+    expect(JSON.parse(await read.execute({ path: '中文文件名.md' })).content).toContain('初始内容');
+
+    const edit = createFileEditTool(createMockGuard(), WORKSPACE);
+    const edited = JSON.parse(await edit.execute({
+      path: '中文文件名.md',
+      old_string: '初始内容',
+      new_string: '更新后的内容',
+    }));
+    expect(edited.status).toBe('success');
+    expect(readFileSync(cjkFile, 'utf-8')).toBe('更新后的内容');
+  });
+});

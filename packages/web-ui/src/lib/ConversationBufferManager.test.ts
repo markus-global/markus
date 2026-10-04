@@ -41,10 +41,9 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
     expect(ids).toEqual(['u1', 'a2']);
   });
 
-  it('does NOT touch the display while THIS session is streaming (in-flight bubble preserved)', () => {
-    // While this session's stream runs, the stream owns the view: a DB snapshot
-    // arriving mid-stream must not clobber the live bubble. This is why the merge
-    // (and its tail handling) is deliberately not reached in that state.
+  it('a DB load while THIS session is streaming MERGES and preserves the in-flight bubble', () => {
+    // 单存储模型下，“这一条正在流式的会话被加载”不再等于“整屏不动”：
+    // DB 行与该会话的实时尾部合并，正在流式的气泡必须活下来。
     const mgr = new ConversationBufferManager();
     mgr.currentConvKey = 'conv';
     mgr.setActiveSession('conv', 'sess_1');
@@ -64,8 +63,9 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
     const r = mgr.applyLoadResult('conv', 'sess_1', [
       msg('u1', 'user', 'hello', '2026-08-02T07:04:00.000Z'),
     ]);
-    // No display write → the in-flight bubble in the display buffer is untouched.
-    expect(r.displayChanged).toBe(false);
+    expect(r.displayChanged).toBe(true);
+    // 关键不变量：实时气泡没有被 DB 快照抹掉。
+    expect(r.newMessages!.find(m => m.id === 'live')?.isStreaming).toBe(true);
   });
 
   it('regression: a STALE streaming bubble (no live stream) is dropped, not appended after the newest message', () => {
@@ -126,7 +126,7 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
     const restored = mgr.restoreFromCache('conv', 'sess_1')!;
     expect(restored.map(m => m.id)).toEqual(['u1']);
     // And the display buffer must not carry the ghost either.
-    expect(mgr.msgBuffers.get('conv')!.some(m => m.id === 'agent_stale')).toBe(false);
+    expect(mgr.getMessages('conv')!.some(m => m.id === 'agent_stale')).toBe(false);
   });
 
   it('regression: when ANOTHER session streams, this session\u2019s stale streaming ghost is dropped, not appended', () => {
@@ -182,10 +182,10 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
     expect(r.newMessages!.map(m => m.id)).toEqual(['u1', 'a1']);
   });
 
-  it('still blocks the DB load display for the SAME session that is streaming', () => {
-    // The original streaming-phase protection must stay: when loading the very
-    // session whose stream is in flight, DB rows go to cache only so the live
-    // stream content in the display buffer is never clobbered mid-flight.
+  it('a DB load for the SAME session that is streaming is MERGED into that session’s buffer', () => {
+    // 单存储模型下不再是“整屏不动”：加载的就是用户正在看的那条会话，
+    // 于是 DB 行写入它自己的 buffer（并保留实时尾部），displayChanged 为真。
+    // 真正必须守住的是“DB 快照不得抹掉在飞内容”——由上面的 merge 测试钉住。
     const mgr = new ConversationBufferManager();
     mgr.currentConvKey = 'agt_x';
     mgr.setActiveSession('agt_x', 'sess_a');
@@ -195,7 +195,8 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
 
     const dbMsgs = [msg('u1', 'user', 'hello', '2026-08-02T07:04:00.000Z')];
     const r = mgr.applyLoadResult('agt_x', 'sess_a', dbMsgs);
-    expect(r.displayChanged).toBe(false);
+    expect(r.displayChanged).toBe(true);
+    expect(r.newMessages!.map(m => m.id)).toEqual(['u1']);
   });
 });
 
@@ -217,7 +218,7 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
     );
     // displayChanged must stay false: the visible buffer is the placeholder chat.
     expect(rOld.displayChanged).toBe(false);
-    expect(mgr.msgBuffers.get('agt_x')).toBeUndefined();
+    expect(mgr.getMessages('agt_x')).toBeUndefined();
 
     // The new chat's own optimistic message (no session yet → placeholder) still
     // renders into the visible buffer.
@@ -227,10 +228,10 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
       null,
     );
     expect(rNew.displayChanged).toBe(true);
-    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['u_new']);
+    expect(mgr.getMessages('agt_x')!.map(m => m.id)).toEqual(['u_new']);
 
     // No cross-session mixing in the visible buffer.
-    const visibleIds = mgr.msgBuffers.get('agt_x')!.map(m => m.id);
+    const visibleIds = mgr.getMessages('agt_x')!.map(m => m.id);
     expect(visibleIds).not.toContain('a_old');
     expect(visibleIds).toContain('u_new');
   });
@@ -251,7 +252,7 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
       'sess_old',
     );
     expect(rOld.displayChanged).toBe(false);
-    expect(mgr.msgBuffers.get('agt_x')).toBeUndefined();
+    expect(mgr.getMessages('agt_x')).toBeUndefined();
 
     // Fresh new-chat optimistic message still lands in the visible buffer.
     const rNew = mgr.updateMessages(
@@ -260,13 +261,13 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
       null,
     );
     expect(rNew.displayChanged).toBe(true);
-    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['u_new']);
+    expect(mgr.getMessages('agt_x')!.map(m => m.id)).toEqual(['u_new']);
 
-    // If repinTo were NOT applied (the old bug), activeSession would be undefined
-    // and the stale stream would have been treated as same-session and written
-    // into the display buffer. Assert it stayed clean.
-    expect(mgr.activeSession.get('agt_x')).toBe(ConversationBufferManager.NEW_CHAT_ID);
-    expect(mgr.msgBuffers.get('agt_x')!.some(m => m.id === 'a_old')).toBe(false);
+    // If repinTo were NOT applied (the old bug) the view would be undefined and
+    // the stale stream would have been treated as the viewed session and written
+    // into it. Assert the view stayed pinned and the buffer clean.
+    expect(mgr.view.get('agt_x')).toBe(ConversationBufferManager.NEW_CHAT_ID);
+    expect(mgr.getMessages('agt_x')!.some(m => m.id === 'a_old')).toBe(false);
   });
 
   it('resetConv repins to an existing session id when switching to it (remember/evolution path)', () => {
@@ -290,14 +291,14 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
       'sess_child',
     );
     expect(rChild.displayChanged).toBe(true);
-    expect(mgr.activeSession.get('agt_x')).toBe('sess_child');
-    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['a_child']);
+    expect(mgr.view.get('agt_x')).toBe('sess_child');
+    expect(mgr.getMessages('agt_x')!.map(m => m.id)).toEqual(['a_child']);
   });
 
-  it('switchSession pin: a background session stream routes to its own cache, never the shared display buffer', () => {
+  it('background session stream lands in its own buffer and never touches the viewed one', () => {
     const mgr = new ConversationBufferManager();
     mgr.currentConvKey = 'agt_x';
-    // User is viewing tab A → switchSession pins the gate to sess_a.
+    // User is viewing tab A → the view pointer sits on sess_a.
     mgr.setActiveSession('agt_x', 'sess_a');
 
     // Session A streaming in the foreground: same-session writes hit the display buffer.
@@ -306,25 +307,27 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
       msg('a_a', 'agent', 'partial', '2026-08-02T07:01:00.000Z'),
     ], 'sess_a');
     expect(rA.displayChanged).toBe(true);
-    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['u_a', 'a_a']);
+    expect(mgr.getMessages('agt_x')!.map(m => m.id)).toEqual(['u_a', 'a_a']);
 
-    // User switches to tab B → switchSession re-pins the gate to sess_b.
-    mgr.setActiveSession('agt_x', 'sess_b');
+    // User switches to tab B → the pointer moves. `setActiveSession` alone must
+    // NOT steal the view from another real session, so the switch goes through
+    // restoreFromCache exactly as switchSession() does it.
+    mgr.restoreFromCache('agt_x', 'sess_b');
 
-    // A's stream is STILL running in the background. Its chunk must go to
-    // session A's cache only — NOT into the display buffer (which is B's view).
+    // A's stream is STILL running in the background. Its chunk must land in A's
+    // own buffer only — the viewed tab B must stay untouched.
     const rA2 = mgr.updateMessages('agt_x', (prev) => {
       const u = [...prev];
       u[u.length - 1] = { ...u[u.length - 1]!, text: 'partial + more' };
       return u;
     }, 'sess_a');
     expect(rA2.displayChanged).toBe(false);
-    // Shared display buffer untouched by A's background stream.
-    expect(mgr.msgBuffers.get('agt_x')!.map(m => m.id)).toEqual(['u_a', 'a_a']);
-
-    // Lateral cache must NOT have picked up A's stream either.
-    expect((mgr.sessionMsgCache.get('sess_a') ?? []).map(m => m.id)).toEqual(['u_a', 'a_a']);
-    expect(mgr.sessionMsgCache.get('sess_a')![1]!.text).toBe('partial + more');
+    // The viewed tab (B) is empty and must remain so: another session's stream
+    // cannot reach it. This is structural now, not a guard.
+    expect(mgr.getMessages('agt_x')).toBeUndefined();
+    // …while A's own buffer kept accumulating the stream.
+    expect((mgr.buffers.get('sess_a') ?? []).map(m => m.id)).toEqual(['u_a', 'a_a']);
+    expect(mgr.buffers.get('sess_a')![1]!.text).toBe('partial + more');
 
     // Switching back to A (switchSession again) restores the accumulated stream.
     mgr.setActiveSession('agt_x', 'sess_a');

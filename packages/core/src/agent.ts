@@ -3000,16 +3000,79 @@ export class Agent {
    *          测试与诊断断言。
    */
   cancelActiveStream(target?: { itemId?: string; sessionId?: string; workerId?: number }): number | undefined {
-    const workerId = this.resolveCancelTargetWorker(target);
-    if (workerId !== undefined && this.workerWorkspaces.has(workerId)) {
-      this.cancelActiveStreamCore(workerId);
-      this.lastCancelledWorkerId = workerId;
-      return workerId;
+    const resolved = this.resolveCancelTarget(target);
+
+    if (resolved.kind === 'worker') {
+      this.cancelActiveStreamCore(resolved.workerId);
+      this.lastCancelledWorkerId = resolved.workerId;
+      return resolved.workerId;
     }
-    // 兼容路径：串行模式 / 无 target / 目标 worker 尚无 workspace。
+
+    if (resolved.kind === 'none') {
+      // 限定性请求解析不到在途流 = 没有东西需要取消。绝不能回落到
+      // 「取消根/ALS 上下文的那条流」——那会把「停掉 B」变成「停掉正在跑的 A」。
+      log.warn('cancelActiveStream: scoped target matched no active stream — ignoring', {
+        agentId: this.id,
+        itemId: target?.itemId,
+        sessionId: target?.sessionId,
+        workerId: target?.workerId,
+        workerCount: this.attentionController.getWorkerCount(),
+      });
+      this.lastCancelledWorkerId = undefined;
+      return undefined;
+    }
+
+    // 兼容路径：**无 target** 的 legacy 调用（ALS / 根上下文）。
     this.cancelActiveStreamCore();
     this.lastCancelledWorkerId = undefined;
     return undefined;
+  }
+
+  /**
+   * 三态解析，语义严格区分：
+   *
+   * - `worker`  命中持有该目标的 worker → 只取消它的流；
+   * - `root`    **无 target** 的 legacy 调用 → 保持旧行为（ALS / 根上下文）；
+   * - `none`    **显式给了 target 却解析不到任何在途流** → 调用方必须 no-op。
+   *
+   * 区分 `none` 与 `root` 正是这个 bug 的根因：旧实现把两者并成同一条兼容
+   * 路径，于是「按 sessionId 取消」在目标不存在时静默升级成「取消当前在跑的
+   * 那条流」—— 限定范围的请求降级为不限定范围的破坏性动作。
+   */
+  private resolveCancelTarget(target?: { itemId?: string; sessionId?: string; workerId?: number }):
+    { kind: 'worker'; workerId: number } | { kind: 'root' } | { kind: 'none' } {
+    if (!target) return { kind: 'root' };
+
+    // 调用方给出的权威 workerId：只有它确实有 workspace 才认领。
+    if (target.workerId !== undefined) {
+      return this.workerWorkspaces.has(target.workerId)
+        ? { kind: 'worker', workerId: target.workerId }
+        : { kind: 'none' };
+    }
+
+    if (this.attentionController.getWorkerCount() > 1) {
+      const workerId = this.resolveCancelTargetWorker(target);
+      return workerId !== undefined ? { kind: 'worker', workerId } : { kind: 'none' };
+    }
+
+    // 串行模式：唯一在途流位于根 workspace。只有 target 确实匹配当前 focus 才认领；
+    // 否则同样 no-op —— 旧实现无条件落到兼容路径，于是取消了错的会话。
+    const focus = this.attentionController.getCurrentFocus();
+    if (!focus) return { kind: 'none' };
+    if (target.itemId !== undefined && focus.id === target.itemId) return { kind: 'root' };
+    if (target.sessionId !== undefined && this.focusMatchesSession(focus, target.sessionId)) return { kind: 'root' };
+    return { kind: 'none' };
+  }
+
+  /**
+   * focus 上表达「属于哪个 DB 会话」的全部既有约定。
+   * 与 `AttentionController.findWorkerBySessionId` 必须同一套匹配规则，
+   * 否则串行/并发模式会对同一个 target 给出互相矛盾的答案。
+   */
+  private focusMatchesSession(focus: MailboxItem, sessionId: string): boolean {
+    return focus.metadata?.sessionId === sessionId
+      || focus.metadata?.dbSessionId === sessionId
+      || focus.payload?.extra?.sessionId === sessionId;
   }
 
   /** 最近一次定向取消实际命中的 workerId（未定向命中时为 undefined）。 */

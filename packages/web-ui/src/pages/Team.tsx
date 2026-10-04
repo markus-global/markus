@@ -661,7 +661,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     messages, setMessages,
     sending, setSending,
     activities, setActivities,
-    msgBuffers, sessionMsgCache, activeSessionBuffer, actBuffers, sessionTabsBuffer,
+    activeSessionBuffer, actBuffers, sessionTabsBuffer, readConvMsgs, writeConvMsgs,
     setActiveSession,
     currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
@@ -2155,7 +2155,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     try {
       const result = await api.channels.getMessages(channel, 50);
       const msgs = result.messages.map(m => channelMsgToChat(m, authUser?.id));
-      msgBuffers.set(key, msgs);
+      writeConvMsgs(key, msgs);
       if (currentConvKeyRef.current === key) {
         setMessages(msgs);
         setHasMore(result.hasMore);
@@ -2199,7 +2199,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   };
   const chatStream = useChatStream({
     stateRef: streamVolatileRef,
-    msgBuffers, actBuffers, sessionMsgCache, activeSessionBuffer, currentConvKeyRef,
+    actBuffers, activeSessionBuffer, readConvMsgs, currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginStream, endStream, abortStream, clearStreamSession, setStreamSession, getStreamSession,
     setActiveSession,
@@ -2306,7 +2306,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         setMessages(prev => {
           let combined = [...newMsgs, ...prev];
           if (combined.length > 500) combined = combined.slice(-500);
-          msgBuffers.set(convKey, combined);
+          writeConvMsgs(convKey, combined);
           return combined;
         });
         setHasMore(result.hasMore);
@@ -2319,7 +2319,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         setMessages(prev => {
           let combined = [...newMsgs, ...prev];
           if (combined.length > 500) combined = combined.slice(-500);
-          msgBuffers.set(convKey, combined);
+          writeConvMsgs(convKey, combined);
           return combined;
         });
         setHasMore(result.hasMore);
@@ -2381,7 +2381,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
 
     // Restore displayed state from this conv's buffer
-    const bufferedMsgs = msgBuffers.get(newKey);
+    const bufferedMsgs = readConvMsgs(newKey);
     // Restore or reset session tabs for the new agent
     const savedTabs = sessionTabsBuffer.get(newKey);
     const savedActiveSession = activeSessionBuffer.get(newKey);
@@ -2390,9 +2390,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // would incorrectly cause session B to appear as "streaming".
     const streamingSessions = getStreamSession(newKey);
     const targetSession = savedActiveSession ?? activeSessionId;
-    const isSendingNow = isSendingFor(newKey) &&
-      (chatMode !== 'direct' || !streamingSessions || !targetSession ||
-       streamingSessions.has(targetSession));
+    // 同 switchSession：在途与否只由会话自身的登记决定。
+    const isSendingNow = chatMode !== 'direct'
+      ? isSendingFor(newKey)
+      : !!streamingSessions && !!targetSession &&
+        (streamingSessions.has(targetSession) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
 
     // Activities are keyed by session, not convKey
     const actBufKey = targetSession ?? newKey;
@@ -2456,7 +2458,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setHasMore(false);
       oldestMsgId.current = null;
       // Clear a stale empty entry so later visits don't treat it as "already loaded"
-      msgBuffers.delete(newKey);
+      writeConvMsgs(newKey, []);
 
       if (chatMode === 'channel' || chatMode === 'dm') {
         const channelName = chatMode === 'dm'
@@ -2848,7 +2850,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const executeRetry = useCallback((retryMsg: ChatMsg, userMsg: ChatMsg | null, retryText: string) => {
     const convKey = currentConvKeyRef.current;
-    const currentMsgs = msgBuffers.get(convKey) ?? messages;
+    const currentMsgs = readConvMsgs(convKey) ?? messages;
     const retryIdx = currentMsgs.findIndex(m => m.id === retryMsg.id);
     if (retryIdx < 0) return;
     // Remove the agent bubble, all messages after it, and (if immediately preceding) the user message
@@ -2863,7 +2865,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const handleRetry = useCallback((retryMsg: ChatMsg) => {
     const convKey = currentConvKeyRef.current;
-    const currentMsgs = msgBuffers.get(convKey) ?? messages;
+    const currentMsgs = readConvMsgs(convKey) ?? messages;
     const retryIdx = currentMsgs.findIndex(m => m.id === retryMsg.id);
     if (retryIdx < 0) return;
     // Search backwards for the nearest user message
@@ -2886,7 +2888,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const handleResume = useCallback((resumeMsg: ChatMsg) => {
     const convKey = currentConvKeyRef.current;
-    const currentMsgs = msgBuffers.get(convKey) ?? messages;
+    const currentMsgs = readConvMsgs(convKey) ?? messages;
     const resumeIdx = currentMsgs.findIndex(m => m.id === resumeMsg.id);
     if (resumeIdx < 0) return;
 
@@ -3029,7 +3031,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // - If stream belongs to a DIFFERENT session → suppress spinner
     const streamingSessions = getStreamSession(key);
     const streamForThis = !!streamingSessions && (streamingSessions.has(s.id) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
-    const isStreaming = isSendingFor(key) && streamForThis;
+    // 只由「本会话是否真有在途流」决定，不再叠加 Agent 级 sendCount：
+    // 那个计数器是会话级事实的重复副本，会被别的 tab 的发送/中断清零，
+    // 于是正在输出的 tab 会瞬间显示为“已结束”。
+    const isStreaming = streamForThis;
     setSending(isStreaming);
     if (isStreaming) {
       setActivities(actBuffers.get(s.id) ?? []);

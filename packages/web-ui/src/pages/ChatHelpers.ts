@@ -276,6 +276,53 @@ export function shouldSweepGhostStreaming(input: {
 }
 
 /**
+ * 发送消息时是否应当"打断并重发"。
+ *
+ * 判据必须是「**我这次要发的那个会话**是否真有流在跑」，而不是
+ * 「当前 tab 有没有真实 session id」/「这个 agent 有没有在 sending」。
+ *
+ * 旧实现用的是后者（`isSameSession = activeSessionId && activeSessionId !== NEW_CHAT`），
+ * 而 `sending` 与 convKey 都是 **Agent 级**的——同一个 agent 的所有 session tab
+ * 共用它们。于是「在 tab B 发消息」会被判成「打断当前流」，把**正在输出的 tab A**
+ * 连同它的 SSE 一起 abort 掉（见 `cancelProcessing` 的定向取消）。
+ *
+ * 正确语义：只有你要发的那个会话自身有在途流时，才谈得上"打断它"；
+ * 否则交给后端 mailbox 排队/合并，一个字节都不要动别人的流。
+ */
+export function shouldInterruptForSend(input: {
+  /** convKey 维度当前登记的在途会话（含 NEW_CHAT 占位）。 */
+  liveSessions: ReadonlySet<string> | undefined | null;
+  /** 本次发送所属的会话（新 tab 时为 NEW_CHAT 占位 id）。 */
+  sendSessionId: string | undefined | null;
+}): boolean {
+  if (!input.sendSessionId) return false;
+  const live = input.liveSessions;
+  if (!live || live.size === 0) return false;
+  return live.has(input.sendSessionId);
+}
+
+/**
+ * 断线重连（reattach）判定"这条流确实已经脱离"时，是否应当就地收尾。
+ *
+ * 判据必须是「**这个会话**是否还有在途流」，而不是「该 Agent 下**任意**会话是否有流」。
+ * 旧实现用后者（`owned.size > 0` → return），于是当其它 tab 正在输出时，
+ * 针对本 tab 的收尾会被跳过；反过来一旦别的 tab 的流结束把 Agent 级标记清掉，
+ * 本 tab 的收尾又会误触发。两者都是"用别人的状态回答我的问题"。
+ */
+export function shouldSettleDetachedSession(input: {
+  liveSessions: ReadonlySet<string> | undefined | null;
+  /** 本次 reattach 的目标会话。 */
+  sessionId: string | undefined | null;
+  /** 未解析的新流占位 id（可能尚未提升为真实 id）。 */
+  placeholderId: string;
+}): boolean {
+  const live = input.liveSessions;
+  if (!live || live.size === 0) return true;
+  if (!input.sessionId) return true;
+  return !live.has(input.sessionId) && !live.has(input.placeholderId);
+}
+
+/**
  * Finalize the last in-flight agent bubble (agent && isStreaming && !isStopped)
  * — used when a reattach stream dies/aborts while feeding an existing bubble.
  * Unlike finalizeLastInterruptedAgent this never touches a completed reply:

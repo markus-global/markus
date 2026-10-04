@@ -4,6 +4,7 @@ import type { PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 import { resolveAndCheckAccess } from './file.js';
+import { replaceLiteral } from './literal-replace.js';
 
 interface PatchHunk {
   file: string;
@@ -118,7 +119,7 @@ export function createPatchTool(security?: SecurityGuard, workspacePath?: string
                 error: `Hunk ${i + 1} old_string found ${count} times in ${patch.file} — must be unique`,
               });
             }
-            content = content.replace(hunk.old_string, hunk.new_string);
+            content = replaceLiteral(content, hunk.old_string, hunk.new_string);
           }
         }
 
@@ -146,7 +147,7 @@ export function createPatchTool(security?: SecurityGuard, workspacePath?: string
           case 'edit': {
             let content = readFileSync(filePath, 'utf-8');
             for (const hunk of patch.hunks!) {
-              content = content.replace(hunk.old_string, hunk.new_string);
+              content = replaceLiteral(content, hunk.old_string, hunk.new_string);
             }
             writeFileSync(filePath, content);
             results.push({

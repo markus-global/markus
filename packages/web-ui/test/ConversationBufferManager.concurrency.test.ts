@@ -22,8 +22,8 @@ function turn(tag: string, text: string): ChatMsg[] {
 
 /**
  * Concurrency: several turns can be in flight at once — multiple session tabs
- * of the SAME agent, and several agents' tabs. These pin down whether the
- * shared-per-agent view (one convKey = one phase = one display buffer) stays
+ * of the SAME agent, and several agents' tabs. These pin down that the
+ * per-session buffer model (one store keyed by session + a view pointer) stays
  * correct when more than one stream is live.
  */
 describe('ConversationBufferManager — concurrent live turns', () => {
@@ -63,13 +63,11 @@ describe('ConversationBufferManager — concurrent live turns', () => {
     m.updateMessages('agent1', () => turn('A', 'answer A'), A);
     m.updateMessages('agent1', () => turn('B', 'answer B'), B);
 
-    // A -> B -> A
-    m.saveToCache('agent1', A);
+    // A -> B -> A (switching is just moving the view pointer now)
     m.setActiveSession('agent1', B);
     const onB = m.restoreFromCache('agent1', B);
     expect(onB?.find(x => x.id === 'a-B')?.isStreaming).toBe(true);
 
-    m.saveToCache('agent1', B);
     m.setActiveSession('agent1', A);
     const onA = m.restoreFromCache('agent1', A);
     expect(onA?.find(x => x.id === 'a-A')?.isStreaming).toBe(true);
@@ -124,7 +122,6 @@ describe('ConversationBufferManager — concurrent live turns', () => {
     expect(m.getPhase('agent1')).toBe('streaming');
 
     // …and B's in-flight bubble survives a switch away and back.
-    m.saveToCache('agent1', A);
     m.setActiveSession('agent1', B);
     const onB = m.restoreFromCache('agent1', B);
     expect(onB?.find(x => x.id === 'a-B')?.isStreaming).toBe(true);
