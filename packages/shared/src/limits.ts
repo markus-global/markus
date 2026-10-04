@@ -311,7 +311,7 @@ export const MEMORY_OBSERVATIONS_MAX_CHARS = 30_000;
  *  stored — a safe failure mode, unlike silently discarding the agent's history. */
 export const MEMORY_OBSERVATIONS_HARD_MAX_CHARS = 200_000;
 
-/** Hard cap on the **session-fragment** store (`session-fragments.md`) — the
+/** Hard cap on the **session-fragment** store (`session-fragments.json`) — the
  *  platform-managed payload of session compaction (paged-out raw history, kept so
  *  `session_retrieve` can recover it verbatim: "compaction == pagination, not
  *  deletion").
@@ -323,7 +323,7 @@ export const MEMORY_OBSERVATIONS_HARD_MAX_CHARS = 200_000;
  *  (b) the semantic dream cycle was handed raw transcripts to "dedupe/promote". The
  *  two are now structurally separate. Larger than the observation buffer because this
  *  is a lossless raw-history safety net, not a prompt payload. Over-cap trims the
- *  OLDEST fragments losslessly into `session-fragments-archive.md` (still searchable). */
+ *  OLDEST fragments losslessly into `session-fragments-archive.json` (still searchable). */
 export const MEMORY_FRAGMENTS_MAX_CHARS = 60_000;
 
 /** Max characters for a curated knowledge.md SECTION KEY.
@@ -331,9 +331,13 @@ export const MEMORY_FRAGMENTS_MAX_CHARS = 60_000;
  *  `normalizeSectionKey` in packages/core/src/memory/store.ts. */
 export const KNOWLEDGE_SECTION_KEY_MAX_CHARS = 64;
 
-/** When total convergence has to shrink a curated section, it is reduced to a
- *  stub of at most this many chars (the heading is always preserved, so the topic
- *  stays discoverable via the knowledge index line and `memory_search`). */
+/** Legacy stub width — the max chars a curated section body was reduced to when the old
+ *  load-time convergence shrank it (the heading was always preserved, so the topic stayed
+ *  discoverable via the knowledge index line and `memory_search`).
+ *
+ *  Retained for reference/back-compat only: since H19 nothing produces these stubs any more
+ *  (curated over-budget is REPORTED, and the store only refuses at the hard ceiling). The
+ *  H13/H20 residue repair still heals stubs written by older builds. */
 export const KNOWLEDGE_STUB_MAX_CHARS = 400;
 
 /** Hard cap on a single observation/top-level section body (chars).

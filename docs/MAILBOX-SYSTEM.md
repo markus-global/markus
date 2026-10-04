@@ -1211,12 +1211,24 @@ Activity log entries (marked with `activityLog: true` metadata) are hidden from 
 
 When the user opens an agent's chat, the frontend loads sessions via `getSessionsByAgent()`, which returns the main session first (sorted by `is_main DESC`). The main session's messages include both user conversations and notify/escalation messages, displayed chronologically.
 
-### Completion Marker
+### Completion protocol (typed `end_turn`)
 
-Agent responses include a `<<HANDLE_COMPLETE>>` completion marker to detect abnormal termination. This marker is:
-- Required in the agent's prompt instructions for non-chat processing
-- Stripped from all output before display (streaming `text_delta`, SSE segment fallback, heartbeat daily log)
-- Detected by `detectAbnormalCompletion()` — if absent, the mailbox item is requeued for retry (background types), except two cases that **complete without retry** to avoid duplicating side effects: (a) the marker is still missing after an in-session continuation was already attempted, and (b) a user-interaction item where the user already saw partial output.
+There is **no** text completion marker any more. An agent ends a turn by **calling the
+`end_turn` tool** (unconditionally injected, budget-protected); the reply is then empty on
+purpose, and the mailbox/attention layer receives the typed sentinel `[end_turn]`
+(`END_TURN_REPLY_SENTINEL`). A tool call cannot be paraphrased into prose, cannot leak into a
+reply, and needs no detection heuristic or cleanup — the old `<<HANDLE_COMPLETE>>` string, its
+prompt injection, its `<think>`-aware detector and its leak regex were all deleted (see
+[PLATFORM-HARDENING-2026-10.md](./PLATFORM-HARDENING-2026-10.md) §6).
+
+`detectAbnormalCompletion()` now judges exactly one thing: **did the turn produce any output at
+all?** `[preempted]`, `[cancelled]` and `[end_turn]` are deliberate typed signals → normal. An
+empty/undefined reply → abnormal:
+
+- background types are **requeued** (up to `MAILBOX_ITEM_MAX_RETRIES`); once the budget is
+  exhausted the item is marked **dropped** (visible, no silent loss), and
+- user-interaction types are marked **dropped** without retry (the user already saw partial
+  output and tool calls may have had side effects — restarting would duplicate them).
 
 ### Spec: unfinished/refused work is visible (P0)
 

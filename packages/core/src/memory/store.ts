@@ -625,9 +625,13 @@ export class MemoryStore implements IMemoryStore {
   }
 
   /**
-   * Losslessly move a curated section body into `knowledge-archive.md`
+   * Losslessly move a curated section body into `knowledge-archive.json`
    * (审计 P-04/P-05：绝不静默丢弃 / 截断)。
    * 主文件保留标题 + 指针，主题仍可发现；正文原文进归档，仍可检索。
+   *
+   * H19 — no production caller: the old load-time curated convergence (its only producer)
+   * was removed. Kept because it is exercised by the H13/H20 repair tests and the H21
+   * dedup contract lives here.
    */
   private archiveSection(name: string, body: string): number {
     const trimmed = body.trim();
@@ -1750,23 +1754,25 @@ export class MemoryStore implements IMemoryStore {
   }
 
   /**
-   * Enforce BOTH memory budgets at load time. Idempotent and cheap when already
-   * within budget (one read).
+   * Measure BOTH memory budgets at load time and REPORT on them. Idempotent and cheap when
+   * already within budget (one read); it never rewrites, archives or evicts anything.
    *
-   * Two budgets, two independent strong enforcement points (see
-   * `MEMORY_MD_CURATED_MAX_CHARS` / `MEMORY_OBSERVATIONS_MAX_CHARS`):
+   * Two budgets, each with its OWN contract (see `MEMORY_MD_CURATED_MAX_CHARS` /
+   * `MEMORY_OBSERVATIONS_MAX_CHARS`):
    *
-   *   1. curated (injected) → `compressLongTermMemory` archives the largest
-   *      section bodies losslessly until the injected part fits.
-   *   2. observations → `trimObservationsToCap` archives the OLDEST observations
-   *      losslessly until the buffer fits.
+   *   1. curated (injected) — SOFT line, report-only (H19). Over-budget is logged and carried
+   *      to the in-prompt banner; the agent consolidates with `memory_organize` /
+   *      `memory_update`. The hard ceiling (`MEMORY_MD_CURATED_HARD_MAX_CHARS`) is enforced
+   *      fail-closed on the write path — `addLongTermMemory` refuses, nothing is written.
+   *   2. observations — ADVISORY line, report-only (§24). The buffer is the agent's own
+   *      scratch log, and choosing what to drop is the agent's decision. Its single hard
+   *      enforcement point is the append path — `addEntry` refuses past
+   *      `MEMORY_OBSERVATIONS_HARD_MAX_CHARS` and moves nothing.
    *
-   * Step 2 is the piece that used to be missing. `compressLongTermMemory`
-   * deliberately skips the observation buffer ("it has its own budget"), but that
-   * budget was only enforced on the WRITE path — so an agent whose excess lived
-   * entirely in observations could never converge at load: the file was rewritten
-   * byte-for-byte and still logged `converged {charsBefore: X, charsAfter: X}`.
-   * A cap with no enforcement point is not a cap.
+   * The platform never acts on either budget here. Earlier versions "losslessly" archived the
+   * largest curated sections / the oldest observations at load; both were removed because a
+   * storage-format change alone could then decide which knowledge stayed live (H25), and
+   * because silently shrinking the live set is the platform deciding content (R4).
    */
   enforceMemoryBudgets(): MemoryBudgetEnforcement {
     const read = (): { curated: string; observations: string } => {
@@ -1883,10 +1889,10 @@ export class MemoryStore implements IMemoryStore {
   // ─── H16: session-compaction fragments (their OWN pool + file) ──────────────
   //
   // A conversation fragment is the platform's compaction pagination payload, not an
-  // agent observation. It lives in `session-fragments.md` with its OWN budget, is
+  // agent observation. It lives in `session-fragments.json` with its OWN budget, is
   // NOT injected, and is NOT fed to the dream cycle — see MEMORY_FRAGMENTS_MAX_CHARS.
 
-  /** Entries written to `session-fragments.md`: newest N, empty-content filtered. */
+  /** Entries written to `session-fragments.json`: newest N, empty-content filtered. */
   private fragmentWriteSet(): MemoryEntry[] {
     return this.fragments
       .filter(e => e.type === 'conversation_fragment' && e.content.trim().length > 0)
@@ -1902,8 +1908,8 @@ export class MemoryStore implements IMemoryStore {
   }
 
   /**
-   * Losslessly trim `session-fragments.md` to `MEMORY_FRAGMENTS_MAX_CHARS`: the
-   * OLDEST fragments are appended verbatim to `session-fragments-archive.md`, which
+   * Losslessly trim `session-fragments.json` to `MEMORY_FRAGMENTS_MAX_CHARS`: the
+   * OLDEST fragments are appended verbatim to `session-fragments-archive.json`, which
    * `retrieveFragments` also searches — so pagination stays recoverable.
    */
   private trimFragmentsToCap(): { archived: number; converged: boolean } {

@@ -37,18 +37,18 @@ MUST: Prefer `knowledge.md` on disk under the agent data dir as the single long-
 MUST: On first load, if only legacy `MEMORY.md` exists, migrate it into `knowledge.md`.
 MUST: Prompt injection of knowledge MUST honor `KNOWLEDGE_PROMPT_MAX_TOKENS`
 (`0` for reflex profile — omit full dump).
-MUST: `MEMORY_MD_CURATED_MAX_CHARS`（注入段预算）MUST be enforced as a **load-time invariant**, not only a
-write-time guard: `MemoryStore.enforceMemoryBudgets()` runs on construction/load and
-**losslessly archives** the largest curated section(s)' bodies to `knowledge-archive.md`
-**keeping the heading + a pointer line** (so the index line and `memory_search` still surface
-the topic), never touching `## _observations`. The observation buffer
-(`MEMORY_OBSERVATIONS_MAX_CHARS`) is a **separate** budget enforced by the same call
-(`trimObservationsToCap`). Rationale: writes are no longer refused at the
-total cap, so over-budget content would otherwise be dropped; archiving keeps the whole text
-retrievable (via `memory_search`) while the in-prompt file converges to ≤ 100% (measured
-23 323 chars against a 15 000 limit).
-MUST: `knowledge-archive.md` is archive-only — searchable via `memory_search`, but **never
-prompt-injected**.
+MUST: `MEMORY_MD_CURATED_MAX_CHARS`（注入段预算，15 000）is a **soft** line, enforced at load in
+**report-only** mode: `MemoryStore.enforceMemoryBudgets()` runs on construction/load and only
+logs + feeds the in-prompt health banner. The platform never rewrites the agent's curated prose
+(the old load-time archiving of the largest curated sections was removed — see
+[PLATFORM-HARDENING-2026-10.md](./PLATFORM-HARDENING-2026-10.md) §24). The **hard ceiling**
+`MEMORY_MD_CURATED_HARD_MAX_CHARS` (3× the soft budget) IS enforced, but **fail-closed on the
+write path**: `addLongTermMemory` refuses the write (nothing written, actionable reason) and the
+agent consolidates with its own tools (`memory_organize` / `memory_update`). The observation
+buffer (`MEMORY_OBSERVATIONS_MAX_CHARS`) is a **separate, independent** advisory line with its
+own hard ceiling (`MEMORY_OBSERVATIONS_HARD_MAX_CHARS`), enforced on the append path.
+MUST: `knowledge-archive.json` (`knowledge-archive-scaffolding.json` for the non-knowledge part)
+is archive-only — searchable via `memory_search`, but **never prompt-injected**.
 MUST: `memory_update mode="forget"` (`MemoryStore.removeLongTermSection`) is the curated-section
 **forget primitive**; forgetting `## _observations` is refused (delete observations by id instead).
 MUST: `knowledge.md` / `NOTEBOOK.md` MUST be persisted with `writeFileAtomic` (tmp + rename) so a
@@ -401,12 +401,18 @@ Periodic process that maintains semantic memory health. Runs via `consolidateMem
 4. Apply merges: replace groups with merged entry in `_observations`
 5. Apply promotions: append synthesized content to curated sections above `_observations`
 
-### knowledge.md Hygiene (`pruneMemoryMd`)
+### knowledge.md Hygiene (write-entry only)
 
-- Remove `## daily-report-*` sections (belong in daily-logs/)
-- Enforce section char limits (3000/section, 15000 total)
-- Strip leaked LLM artifacts (`<think>` blocks)
-- Drop empty observation entries left by legacy buggy writes
+There is **no** load-time hygiene pass over the file. The platform does not rewrite, prune or
+dedupe the agent's curated prose — that was `pruneMemoryMd()` (**removed**; it did title/size
+heuristic surgery on the agent's own sections). See
+[PLATFORM-HARDENING-2026-10.md](./PLATFORM-HARDENING-2026-10.md) §24.
+
+What remains is **single-point cleaning at the write entry**: `sanitizeSectionBody()` strips
+leaked `<think>` blocks (closed and unclosed) and demotes a sibling `## ` inside a body to
+`### `, so the injected region can never grow a section the agent did not author. The
+per-section and curated ceilings are enforced there too (see §8.8). Empty entries left by legacy
+writes are dropped when the observation pool is read.
 
 ---
 
@@ -440,12 +446,14 @@ authoritative behavior spec.
 
 ## 8.8 knowledge.md write-refusal visibility (spec)
 
-`knowledge.md` enforces a per-section cap (`MEMORY_MD_SECTION_MAX_CHARS = 3000`) and an
-**injected** total cap (`MEMORY_MD_CURATED_MAX_CHARS = 15000` — this is the curated part, NOT
-the whole file). Exceeding the injected cap is no longer a refusal: the store rebalances
-losslessly (archiving the largest section bodies, keeping the heading + a pointer), so the
-write always lands. The `## _observations` buffer is **not** injected and has its own,
-independent budget (`MEMORY_OBSERVATIONS_MAX_CHARS = 30000`), also enforced losslessly.
+`knowledge.md` enforces a per-section cap (`MEMORY_MD_SECTION_MAX_CHARS = 3000`) plus two
+curated-region thresholds: a **soft** budget (`MEMORY_MD_CURATED_MAX_CHARS = 15000` — the
+injected part, NOT the whole file) that is **report-only** (log + in-prompt banner), and a
+**hard ceiling** (`MEMORY_MD_CURATED_HARD_MAX_CHARS = 45000`, 3× the soft budget) at which the
+write is **refused** fail-closed — nothing written, with an actionable reason. The
+`## _observations` buffer is **not** injected and has its own advisory line
+(`MEMORY_OBSERVATIONS_MAX_CHARS = 30000`, report-only) and hard ceiling
+(`MEMORY_OBSERVATIONS_HARD_MAX_CHARS = 200000`), where the append path refuses.
 
 - **Behavior**: a refused write returns a structured failure (`{ ok:false, reason }`,
   recognized by `isToolErrorResult`) and is surfaced to the activity log / stream (see
