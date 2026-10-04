@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Agent } from '../src/agent.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { RoleTemplate } from '@markus/shared';
-import { COMPLETION_MARKER } from '@markus/shared';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -24,12 +23,12 @@ const MOCK_ROLE: RoleTemplate = {
 function makeRouter(): LLMRouter {
   return {
     chat: vi.fn(async () => ({
-      content: `Handled. ${COMPLETION_MARKER}`,
+      content: `Handled.`,
       finishReason: 'end_turn',
       usage: { inputTokens: 40, outputTokens: 20 },
     })),
     chatStream: vi.fn(async () => ({
-      content: `Stream handled. ${COMPLETION_MARKER}`,
+      content: `Stream handled.`,
       finishReason: 'end_turn',
       usage: { inputTokens: 40, outputTokens: 20 },
     })),

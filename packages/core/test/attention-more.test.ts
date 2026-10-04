@@ -6,7 +6,6 @@ import {
 import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 import {
-  COMPLETION_MARKER,
   type MailboxItem,
   type MailboxItemType,
   type MailboxPriority,
@@ -32,7 +31,7 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
   const eventBus = new EventBus();
   const mailbox = new AgentMailbox(AGENT_ID, eventBus);
   const delegate: AttentionDelegate = {
-    processMailboxItem: vi.fn().mockResolvedValue(`done ${COMPLETION_MARKER}`),
+    processMailboxItem: vi.fn().mockResolvedValue('done'),
     onDecisionMade: vi.fn(),
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
@@ -77,20 +76,31 @@ describe('AttentionController processFocusedItem outcomes', () => {
       processMailboxItem: vi.fn().mockResolvedValue(''),
     });
     const item = mailbox.enqueue('heartbeat', { summary: 'hb', content: 'check' });
+    // The controller must be RUNNING, otherwise `processFocusedItem` short-circuits on
+    // its own `!this.running` branch and requeues regardless of the reply — which would
+    // make this assertion pass without ever exercising the completion judgement.
+    controller['running'] = true;
 
     await controller['processFocusedItem'](item);
 
+    // (a) An empty reply is the one real abnormal case → background item requeued.
+    expect(item.status).toBe('queued');
     expect(controller.getCurrentFocus()).toBeUndefined();
   });
 
-  it('completes human_chat with missing marker without retry loop', async () => {
+  // H7：旧行为已推翻 —— 旧实现要求回复里必须出现完成标记，human_chat 缺标记会被判异常。
+  // 新语义：(d) 非空回复即使完全不含任何标记，也视为正常结束，不重试、不丢弃。
+  it('H7: completes human_chat on a plain non-empty reply with no marker (old behavior overturned)', async () => {
     const { controller, mailbox } = makeController({
       processMailboxItem: vi.fn().mockResolvedValue('partial reply without marker'),
     });
     const item = mailbox.enqueue('human_chat', { summary: 'user msg', content: 'hello' });
+    controller['running'] = true;
 
     await controller['processFocusedItem'](item);
 
+    // Non-empty reply → normal terminal, completed (not dropped/requeued).
+    expect(item.status).toBe('completed');
     expect(controller.getCurrentFocus()).toBeUndefined();
   });
 
@@ -105,14 +115,17 @@ describe('AttentionController processFocusedItem outcomes', () => {
 
   it('completes batch siblings when primary succeeds', async () => {
     const { controller, mailbox } = makeController({
-      processMailboxItem: vi.fn().mockResolvedValue(`batch done ${COMPLETION_MARKER}`),
+      processMailboxItem: vi.fn().mockResolvedValue('batch done'),
     });
     const primary = mailbox.enqueue('a2a_message', { summary: 'primary', content: 'p' });
     const batch1 = mailbox.enqueue('a2a_message', { summary: 'batch1', content: 'b1' });
     controller['pendingBatchItems'] = [batch1];
+    controller['running'] = true;
 
     await controller['processFocusedItem'](primary);
 
+    expect(primary.status).toBe('completed');
+    expect(batch1.status).toBe('completed');
     expect(controller.getCurrentFocus()).toBeUndefined();
   });
 

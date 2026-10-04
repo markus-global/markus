@@ -68,7 +68,7 @@ discover_tools({name:["schedule_wakeup","set_heartbeat_interval","cancel_wakeup"
 - `memory_save`：写 `knowledge.md ## _observations`
 - `memory_search` / `memory_list`：关键词检索（observations + curated sections）
 - `memory_update` / `memory_update_longterm`：写 curated sections
-- 预算：`shared/src/limits.ts` — `MEMORY_MD_SECTION_MAX_CHARS=3000`、`MEMORY_MD_TOTAL_MAX_CHARS=15_000`、`MEMORY_ENTRY_MAX_CHARS=4_000`
+- 预算：`shared/src/limits.ts` — `MEMORY_MD_SECTION_MAX_CHARS=3000`、`MEMORY_MD_CURATED_MAX_CHARS=15_000`（注入段）、`MEMORY_OBSERVATIONS_MAX_CHARS=30_000`（观察缓冲，独立预算、不注入）、`MEMORY_ENTRY_MAX_CHARS=4_000`
 - 超预算自动压缩：`store.ts` L676-697 `compressLongTermMemory()`（压缩后仍超则拒绝写入）
 - 被动 consolidation：`agent.ts` L611 `MEMORY_CONSOLIDATION_INTERVAL_MS=4h` → `consolidateMemory()`（dream cycle，信号量限 3 并发、随机初始延迟防风暴）
 

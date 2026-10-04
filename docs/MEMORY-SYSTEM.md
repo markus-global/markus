@@ -37,11 +37,13 @@ MUST: Prefer `knowledge.md` on disk under the agent data dir as the single long-
 MUST: On first load, if only legacy `MEMORY.md` exists, migrate it into `knowledge.md`.
 MUST: Prompt injection of knowledge MUST honor `KNOWLEDGE_PROMPT_MAX_TOKENS`
 (`0` for reflex profile — omit full dump).
-MUST: `MEMORY_MD_TOTAL_MAX_CHARS` MUST be enforced as a **load-time invariant**, not only a
-write-time guard: `MemoryStore.convergeLongTermToCap()` runs on construction/load and
+MUST: `MEMORY_MD_CURATED_MAX_CHARS`（注入段预算）MUST be enforced as a **load-time invariant**, not only a
+write-time guard: `MemoryStore.enforceMemoryBudgets()` runs on construction/load and
 **losslessly archives** the largest curated section(s)' bodies to `knowledge-archive.md`
 **keeping the heading + a pointer line** (so the index line and `memory_search` still surface
-the topic), never touching `## _observations`. Rationale: writes are no longer refused at the
+the topic), never touching `## _observations`. The observation buffer
+(`MEMORY_OBSERVATIONS_MAX_CHARS`) is a **separate** budget enforced by the same call
+(`trimObservationsToCap`). Rationale: writes are no longer refused at the
 total cap, so over-budget content would otherwise be dropped; archiving keeps the whole text
 retrievable (via `memory_search`) while the in-prompt file converges to ≤ 100% (measured
 23 323 chars against a 15 000 limit).
@@ -201,7 +203,7 @@ MEMORY.md                   ← DEPRECATED legacy; migrate → knowledge/state o
 |-----------|-------|
 | Write triggers | `memory_update` tool, Dream Cycle promotion |
 | System prompt | Loaded as `## Your Knowledge` when knowledge token cap > 0 (excludes `## _observations`) |
-| Limits | 3000 chars/section (`MEMORY_MD_SECTION_MAX_CHARS`), 15000 chars total (`MEMORY_MD_TOTAL_MAX_CHARS`) |
+| Limits | 3000 chars/section (`MEMORY_MD_SECTION_MAX_CHARS`), 15000 chars **injected** (`MEMORY_MD_CURATED_MAX_CHARS`); the non-injected `## _observations` buffer has its own budget (`MEMORY_OBSERVATIONS_MAX_CHARS`) |
 | Body rule | Section bodies MUST NOT introduce sibling `## ` headings (store sanitizes `## ` → `### `) |
 
 The agent organizes sections freely — common patterns: `conventions`, `procedures`, `preferences`, `domain-knowledge`.
@@ -438,9 +440,12 @@ authoritative behavior spec.
 
 ## 8.8 knowledge.md write-refusal visibility (spec)
 
-`knowledge.md` enforces per-section (`MEMORY_MD_SECTION_MAX_CHARS = 3000`) and total
-(`MEMORY_MD_TOTAL_MAX_CHARS = 15000`) limits. When a curated `memory_update` would
-exceed the cap after compression, the write is refused.
+`knowledge.md` enforces a per-section cap (`MEMORY_MD_SECTION_MAX_CHARS = 3000`) and an
+**injected** total cap (`MEMORY_MD_CURATED_MAX_CHARS = 15000` — this is the curated part, NOT
+the whole file). Exceeding the injected cap is no longer a refusal: the store rebalances
+losslessly (archiving the largest section bodies, keeping the heading + a pointer), so the
+write always lands. The `## _observations` buffer is **not** injected and has its own,
+independent budget (`MEMORY_OBSERVATIONS_MAX_CHARS = 30000`), also enforced losslessly.
 
 - **Behavior**: a refused write returns a structured failure (`{ ok:false, reason }`,
   recognized by `isToolErrorResult`) and is surfaced to the activity log / stream (see

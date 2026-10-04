@@ -844,6 +844,11 @@ export interface AgentInfo {
   activeTaskCount?: number;
   agentRole?: 'manager' | 'worker';
   teamId?: string;
+  /**
+   * H9: assigned skills the registry has no entry for. The list endpoint only carries
+   * this when `missing` is non-empty (the `available` catalog is detail-only).
+   */
+  skillWarnings?: { missing: string[] };
   /** True for the org-level Secretary (cannot be deleted / moved). */
   isOrgSecretary?: boolean;
   protected?: boolean;
@@ -1150,6 +1155,12 @@ export interface AgentDetail {
   agentRole: string;
   skills: string[];
   availableSkills?: AvailableSkillInfo[];
+  /**
+   * H9: assigned skills the registry has no entry for (their tools are unavailable),
+   * plus a capped catalog of skills that ARE installed. Always present on the detail
+   * endpoint so the UI has a stable field for the degradation banner.
+   */
+  skillWarnings?: { missing: string[]; available?: string[] };
   activeTaskCount?: number;
   activeTaskIds?: string[];
   avatarUrl?: string;

@@ -633,7 +633,7 @@ agent start
     ▼
 loadNotebook() ──► in-memory Map (keyed entries)
     │
-    ├── session: updateWorkingMemory / CPP / triage
+    ├── session: updateWorkingMemory / triage
     │       │
     │       └── scheduleNotebookPersist (2s debounce)
     │               │
@@ -662,4 +662,4 @@ agent stop
 | Debounced persist | 2s after last mutation → `saveNotebook()` |
 | Agent stop | Cancel debounce timer; synchronous final `persistNotebookSync()` |
 
-See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for storage format and CPP integration.
+See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for storage format and deterministic context assembly.

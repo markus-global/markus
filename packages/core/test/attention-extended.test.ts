@@ -6,7 +6,6 @@ import {
 import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 import {
-  COMPLETION_MARKER,
   type MailboxItem,
   type MailboxItemType,
   type MailboxPriority,
@@ -32,7 +31,7 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
   const eventBus = new EventBus();
   const mailbox = new AgentMailbox(AGENT_ID, eventBus);
   const delegate: AttentionDelegate = {
-    processMailboxItem: vi.fn().mockResolvedValue(`done ${COMPLETION_MARKER}`),
+    processMailboxItem: vi.fn().mockResolvedValue(`done`),
     onDecisionMade: vi.fn(),
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('continue'),

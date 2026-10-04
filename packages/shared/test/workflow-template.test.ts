@@ -193,6 +193,27 @@ describe('renderStepPrompt', () => {
     expect(result).toBe('Write about AI');
   });
 
+  it('inserts a parameter value containing $-sequences verbatim (no expansion)', () => {
+    const step: StepDef = { id: 's1', name: 'S', role: 'r', prompt: 'Topic: {{topic}} end', type: 'agent_task' };
+    const value = "cost is $& and $` and $' and $1 and $$";
+    const result = renderStepPrompt(step, { topic: value }, 1);
+    // String.prototype.replaceAll would have expanded these: `$&` → the matched
+    // `{{topic}}`, `` $` `` → the prefix `Topic: `, `$'` → the suffix ` end`,
+    // `$$` → `$`. The rendered prompt must hold the value exactly as authored.
+    expect(result).toBe(`Topic: ${value} end`);
+  });
+
+  it('keeps a $-containing value verbatim even when the placeholder repeats', () => {
+    const step: StepDef = { id: 's1', name: 'S', role: 'r', prompt: '{{x}} | {{x}}', type: 'agent_task' };
+    const result = renderStepPrompt(step, { x: '$&' }, 1);
+    expect(result).toBe('$& | $&');
+  });
+
+  it('substitutes every occurrence of a parameter', () => {
+    const step: StepDef = { id: 's1', name: 'S', role: 'r', prompt: '{{x}} and {{x}} and {{x}}', type: 'agent_task' };
+    expect(renderStepPrompt(step, { x: 'v' }, 1)).toBe('v and v and v');
+  });
+
   it('substitutes built-in {{run_number}}', () => {
     const step: StepDef = { id: 's1', name: 'S', role: 'r', prompt: 'Run #{{run_number}}', type: 'agent_task' };
     const result = renderStepPrompt(step, {}, 42);

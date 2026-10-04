@@ -87,16 +87,21 @@ describe('Unified knowledge.md — observations in ## _observations', () => {
   });
   afterEach(() => rmdir(tmp));
 
-  it('saves observations to ## _observations section in knowledge.md', () => {
+  it('saves observations as JSON records (observations.json), not inside knowledge.md', () => {
     store.addEntry({ id: 'obs_1', timestamp: '2024-01-01', type: 'note', content: 'user prefers concise responses' });
     store.addEntry({ id: 'obs_2', timestamp: '2024-01-02', type: 'fact', content: 'project uses TypeScript' });
 
-    const knowledgeMd = path.join(tmp, 'knowledge.md');
-    expect(fs.existsSync(knowledgeMd)).toBe(true);
-    const content = fs.readFileSync(knowledgeMd, 'utf-8');
-    expect(content).toContain('## _observations');
+    // H24 — 观察持久化为 JSON 记录文件（结构是 JSON 的，载荷无法伪造记录边界）
+    const obsJson = path.join(tmp, 'observations.json');
+    expect(fs.existsSync(obsJson)).toBe(true);
+    const content = fs.readFileSync(obsJson, 'utf-8');
     expect(content).toContain('user prefers concise responses');
     expect(content).toContain('project uses TypeScript');
+
+    // knowledge.md 只含 curated —— 观察不再落在里面
+    const knowledgeMd = path.join(tmp, 'knowledge.md');
+    expect(fs.existsSync(knowledgeMd)).toBe(true);
+    expect(fs.readFileSync(knowledgeMd, 'utf-8')).not.toContain('user prefers concise responses');
   });
 
   it('getObservations() returns entries from _observations', () => {

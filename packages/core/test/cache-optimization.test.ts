@@ -317,7 +317,6 @@ function makeMockMemory() {
     replaceEntries: vi.fn(),
     removeEntriesByTag: () => 0,
     addLongTermMemory: vi.fn(),
-    compressLongTermMemory: () => ({ charsBefore: 0, charsAfter: 0, sectionsBefore: 0, sectionsAfter: 0, truncatedChunks: 0 }),
     getSession: () => undefined,
     listSessions: () => [],
     getLatestSession: () => undefined,

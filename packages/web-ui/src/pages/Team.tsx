@@ -2361,7 +2361,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // Save current session tabs & active session before switching away
     if (prevKey && prevKey !== newKey) {
       sessionTabsBuffer.set(prevKey, openSessionTabs);
-      if (activeSessionId) activeSessionBuffer.set(prevKey, activeSessionId);
+      // 记下"离开时看的是哪个会话"。必须走 setActiveSession（而非直写指针）——
+      // 指针的写入路径只有一条，见 ConversationBufferManager 的模型说明。
+      if (activeSessionId) setActiveSession(prevKey, activeSessionId);
       // …and where the user actually was in it, per session tab. The transcript
       // of the outgoing view is still on screen at this point, so the anchor is
       // exact (see lib/chatScrollRestore.ts).

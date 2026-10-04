@@ -63,12 +63,17 @@ export interface ChatStreamVolatileState {
   chatReplyTo: { id: string; sender: string; text: string } | null;
 }
 
+import type { ActiveSessionView } from '../lib/ConversationBufferManager.ts';
+
 /** Stable handles/refs passed once from Team.tsx. */
 export interface ChatStreamContext {
   stateRef: RefObject<ChatStreamVolatileState>;
   // Buffer mgr accessors (stable)
   actBuffers: Map<string, unknown[]>;
-  activeSessionBuffer: Map<string, string>;
+  /** READ-ONLY view pointer. It has exactly one writer (`setActiveSession`), because
+   *  that method also performs placeholder promotion — see H4 in
+   *  docs/PLATFORM-HARDENING-2026-10.md §3. */
+  activeSessionBuffer: ActiveSessionView;
   /** Read the messages rendered for a conversation (projection of the view pointer). */
   readConvMsgs: (k: string) => ChatMsg[] | undefined;
   currentConvKeyRef: RefObject<string>;
@@ -1018,11 +1023,12 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             const currentSess = volatile.activeSessionId;
             if (!currentSess || currentSess === NEW_CHAT_PLACEHOLDER_ID || currentSess === event.sessionId) {
               setActiveSessionId(event.sessionId);
-              activeSessionBuffer.set(sendKey, event.sessionId);
-              // Pin the routing gate the same way the view state is pinned —
-              // otherwise the manager (activeSession) stays on the placeholder
-              // and every stream update is judged same-session, mixing it into
-              // the shared display buffer.
+              // NOTE: do NOT write `activeSessionBuffer` here. That map IS the manager's
+              // view pointer, and `setActiveSession` below is its single writer: it is what
+              // performs placeholder promotion. Writing the pointer first makes
+              // `setActiveSession`'s `cur === sessionId` guard short-circuit and skip the
+              // promotion, so the optimistic rows under `__new_chat__` are orphaned — the
+              // user's own message disappears and the reply never streams (H4).
               setActiveSession(sendKey, event.sessionId);
               promoteStreamCtl(event.sessionId);
               if (volatile.selectedAgent) setStoredActiveSession(volatile.selectedAgent, event.sessionId);

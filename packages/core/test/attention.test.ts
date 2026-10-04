@@ -14,7 +14,6 @@ import {
 import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 import {
-  COMPLETION_MARKER,
   END_TURN_REPLY_SENTINEL,
   type MailboxItem,
   type MailboxItemType,
@@ -44,7 +43,7 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
   const eventBus = new EventBus();
   const mailbox = new AgentMailbox(AGENT_ID, eventBus);
   const delegate: AttentionDelegate = {
-    processMailboxItem: vi.fn().mockResolvedValue(`done ${COMPLETION_MARKER}`),
+    processMailboxItem: vi.fn().mockResolvedValue(`done`),
     onDecisionMade: vi.fn(),
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
@@ -73,6 +72,7 @@ describe('detectAbnormalCompletion', () => {
     expect(detectAbnormalCompletion('', item)).toBeUndefined();
   });
 
+  // (c) Intentional interruptions are never abnormal.
   it('returns undefined for preempted reply', () => {
     const item = makeItem({ sourceType: 'a2a_message' });
     expect(detectAbnormalCompletion('[preempted]', item)).toBeUndefined();
@@ -83,22 +83,16 @@ describe('detectAbnormalCompletion', () => {
     expect(detectAbnormalCompletion('[cancelled]', item)).toBeUndefined();
   });
 
-  // Regression (2026-10-03): an agent that ends its turn via the `end_turn` tool
-  // produces an INTENTIONAL empty reply. The delegate wrapper reports this as a
-  // sentinel so it must be a legitimate terminal — NOT 'empty reply' → requeue →
-  // unbounded retry loop.
+  // (b) A turn ended via the `end_turn` tool returns END_TURN_REPLY_SENTINEL — a
+  // typed, deliberate silence and a legitimate terminal (NOT 'empty reply' →
+  // requeue → unbounded retry loop).
   it('returns undefined for the deliberate end_turn sentinel', () => {
     const item = makeItem({ sourceType: 'a2a_message' });
     expect(detectAbnormalCompletion(END_TURN_REPLY_SENTINEL, item)).toBeUndefined();
   });
 
-  it('still flags a bare empty reply as abnormal (sentinel must be the ONLY exemption)', () => {
-    const item = makeItem({ sourceType: 'a2a_message' });
-    expect(detectAbnormalCompletion('', item)).toBe('empty reply from LLM-invoking item');
-    expect(detectAbnormalCompletion('   ', item)).toBe('completion marker missing from reply');
-  });
-
-  it('detects empty reply for LLM-invoking type', () => {
+  // (a) The single honest abnormal case: literally NOTHING was produced.
+  it('flags a bare empty reply as abnormal (only real abnormal case)', () => {
     const item = makeItem({ sourceType: 'a2a_message' });
     expect(detectAbnormalCompletion('', item)).toBe('empty reply from LLM-invoking item');
   });
@@ -108,36 +102,35 @@ describe('detectAbnormalCompletion', () => {
     expect(detectAbnormalCompletion(undefined, item)).toBe('empty reply from LLM-invoking item');
   });
 
-  it('detects missing completion marker', () => {
+  // H7：旧行为已推翻 —— 旧实现要求回复里必须出现完成标记，否则判「abnormal」并
+  // 重试/丢弃（曾因模型漏掉魔法串而丢弃合法回合，2026-10-04）。
+  // 新语义：(d) 任何非空回复都是正常结束，不再要求任何标记。
+  it('H7: any non-empty reply WITHOUT any marker is normal (old behavior overturned)', () => {
     const item = makeItem({ sourceType: 'a2a_message' });
-    expect(detectAbnormalCompletion('some reply without marker', item)).toBe(
-      'completion marker missing from reply',
-    );
+    expect(detectAbnormalCompletion('some reply without marker', item)).toBeUndefined();
+    expect(detectAbnormalCompletion('done', item)).toBeUndefined();
+    // Whitespace-only text is still non-empty → a legitimate reply, not abnormal.
+    expect(detectAbnormalCompletion('   ', item)).toBeUndefined();
   });
 
-  it('returns undefined when marker is present', () => {
-    const item = makeItem({ sourceType: 'a2a_message' });
-    expect(
-      detectAbnormalCompletion(`done ${COMPLETION_MARKER}`, item),
-    ).toBeUndefined();
-  });
-
-  it('checks human_chat — no special bypass', () => {
+  it('checks human_chat — non-empty reply with no marker is normal', () => {
     const item = makeItem({ sourceType: 'human_chat' });
-    const result = detectAbnormalCompletion('reply without marker', item);
-    expect(result).toBe('completion marker missing from reply');
+    expect(detectAbnormalCompletion('reply without marker', item)).toBeUndefined();
   });
 
-  it('checks heartbeat type', () => {
+  it('checks heartbeat type — empty reply is abnormal', () => {
     const item = makeItem({ sourceType: 'heartbeat' });
     expect(detectAbnormalCompletion('', item)).toBe('empty reply from LLM-invoking item');
   });
 
+  it('checks heartbeat type — end_turn sentinel is a normal completion', () => {
+    const item = makeItem({ sourceType: 'heartbeat' });
+    expect(detectAbnormalCompletion(END_TURN_REPLY_SENTINEL, item)).toBeUndefined();
+  });
+
   it('checks system_event type', () => {
     const item = makeItem({ sourceType: 'system_event' });
-    expect(
-      detectAbnormalCompletion(`ok ${COMPLETION_MARKER}`, item),
-    ).toBeUndefined();
+    expect(detectAbnormalCompletion('ok', item)).toBeUndefined();
   });
 
   it('does not flag task_status_update (non-LLM type)', () => {
@@ -286,7 +279,7 @@ describe('heuristicDecision', () => {
 describe('processFocusedItem (via runLoop)', () => {
   it('completes item on normal reply with marker', async () => {
     const { controller, mailbox, delegate } = makeController({
-      processMailboxItem: vi.fn().mockResolvedValue(`done ${COMPLETION_MARKER}`),
+      processMailboxItem: vi.fn().mockResolvedValue(`done`),
     });
 
     const item = mailbox.enqueue('a2a_message', { summary: 'msg', content: 'body' });
@@ -340,7 +333,7 @@ describe('processFocusedItem (via runLoop)', () => {
       processMailboxItem: vi.fn().mockImplementation(async () => {
         callCount++;
         if (callCount <= 2) return '';
-        return `ok ${COMPLETION_MARKER}`;
+        return `ok`;
       }),
     });
 
@@ -365,11 +358,11 @@ describe('processFocusedItem (via runLoop)', () => {
       if (processCalls === 1) {
         return new Promise<string>(res => { resolveFirst = res; });
       }
-      return Promise.resolve(`ok ${COMPLETION_MARKER}`);
+      return Promise.resolve(`ok`);
     });
     // Cooperative abort: the delegate stops the orphan, which then settles.
     const cancelProcessing = vi.fn().mockImplementation(() => {
-      resolveFirst?.(`aborted ${COMPLETION_MARKER}`);
+      resolveFirst?.(`aborted`);
     });
     const { controller, mailbox, delegate } = makeController({ processMailboxItem, cancelProcessing });
     controller.setProcessingTimeoutMs(40);
@@ -423,9 +416,12 @@ describe('processFocusedItem (via runLoop)', () => {
     expect(delegate.cancelProcessing).toHaveBeenCalledTimes(1); // cancel was still attempted
   });
 
-  it('A3: emits agent:incomplete (no retry) when the completion marker is missing', async () => {
+  // H7：旧行为已推翻 —— 旧测试断言「缺完成标记 → agent:incomplete + dropped」。
+  // 新语义下非空且不含任何标记的回复是完全正常的结束：不产生 incomplete 事件、
+  // 不重试、不丢弃。
+  it('A3 (H7): a non-empty reply WITHOUT any marker completes normally — no agent:incomplete, no retry', async () => {
     const { controller, mailbox, eventBus, delegate } = makeController({
-      // Reply without the completion marker → marker-missing terminal.
+      // A plain reply with no marker — the common, legitimate case.
       processMailboxItem: vi.fn().mockResolvedValue('a reply with no marker'),
     });
     const incomplete = vi.fn();
@@ -434,19 +430,15 @@ describe('processFocusedItem (via runLoop)', () => {
     mailbox.enqueue('a2a_message', { summary: 'msg', content: 'body' });
     controller.start();
     await vi.waitFor(() => {
-      expect(incomplete).toHaveBeenCalledTimes(1);
+      expect(delegate.processMailboxItem).toHaveBeenCalledTimes(1);
+      expect(mailbox.depth).toBe(0);
     }, { timeout: 2000 });
     // Let the loop settle to prove there is no retry.
     await new Promise(r => setTimeout(r, 100));
     controller.stop();
 
-    // Visibility only: exactly one structured event, no additional processing attempt.
-    expect(incomplete).toHaveBeenCalledTimes(1);
-    expect(incomplete.mock.calls[0][0]).toMatchObject({
-      agentId: AGENT_ID,
-      type: 'a2a_message',
-      reason: 'completion marker missing from reply',
-    });
+    // Old behavior emitted agent:incomplete here; the new semantics do not.
+    expect(incomplete).not.toHaveBeenCalled();
     expect(delegate.processMailboxItem).toHaveBeenCalledTimes(1);
     expect(mailbox.depth).toBe(0);
   });
@@ -457,7 +449,7 @@ describe('processFocusedItem (via runLoop)', () => {
       processMailboxItem: vi.fn().mockImplementation(async () => {
         callCount++;
         if (callCount === 1) throw new Error('boom');
-        return `ok ${COMPLETION_MARKER}`;
+        return `ok`;
       }),
     });
 
@@ -492,7 +484,7 @@ describe('runLoop shutdown re-enqueue', () => {
       processMailboxItem: vi.fn().mockImplementation(async () => {
         // Simulate slow processing; controller.stop() will fire during this
         await new Promise(r => setTimeout(r, 500));
-        return `ok ${COMPLETION_MARKER}`;
+        return `ok`;
       }),
     });
 
@@ -560,7 +552,7 @@ describe('runLoop shutdown re-enqueue', () => {
 describe('applyDeliberationResult edge cases', () => {
   it('does not inline-complete the item chosen for full processing', async () => {
     const { controller, mailbox, delegate } = makeController({
-      processMailboxItem: vi.fn().mockResolvedValue(`ok ${COMPLETION_MARKER}`),
+      processMailboxItem: vi.fn().mockResolvedValue(`ok`),
       performDeliberation: vi.fn().mockImplementation(async (_head, allItems) => {
         // Deliberately inconsistent: list processItemId in inlineCompletedIds too
         return {
@@ -590,7 +582,7 @@ describe('applyDeliberationResult edge cases', () => {
 
   it('protects human_chat from being dropped by deliberation', async () => {
     const { controller, mailbox, delegate } = makeController({
-      processMailboxItem: vi.fn().mockResolvedValue(`ok ${COMPLETION_MARKER}`),
+      processMailboxItem: vi.fn().mockResolvedValue(`ok`),
       performDeliberation: vi.fn().mockImplementation(async (_head, allItems) => {
         // Try to drop everything including human_chat
         return {
@@ -621,7 +613,7 @@ describe('applyDeliberationResult edge cases', () => {
 
   it('never defers/drops strict state items even if deliberation result lists them', async () => {
     const { controller, mailbox, delegate } = makeController({
-      processMailboxItem: vi.fn().mockResolvedValue(`ok ${COMPLETION_MARKER}`),
+      processMailboxItem: vi.fn().mockResolvedValue(`ok`),
       performDeliberation: vi.fn().mockImplementation(async (_head, allItems) => {
         // Simulate a task execution arriving while deliberation is running,
         // then a (misbehaving) deliberation result that tries to defer it.
@@ -844,7 +836,7 @@ describe('triage and deliberation scheduling', () => {
   it('skips deliberation when queue contains formal task execution messages (tasks + messages all go through normal queue)', async () => {
     const { controller, mailbox, delegate } = makeController({
       performDeliberation: vi.fn().mockResolvedValue(null),
-      processMailboxItem: vi.fn().mockResolvedValue(`ok ${COMPLETION_MARKER}`),
+      processMailboxItem: vi.fn().mockResolvedValue(`ok`),
     });
 
     // Two formal task executions + one normal A2A message → backlog would normally trigger deliberation
@@ -876,7 +868,7 @@ describe('triage and deliberation scheduling', () => {
   it('skips deliberation when queue contains review_request (strict state item)', async () => {
     const { controller, mailbox, delegate } = makeController({
       performDeliberation: vi.fn().mockResolvedValue(null),
-      processMailboxItem: vi.fn().mockResolvedValue(`ok ${COMPLETION_MARKER}`),
+      processMailboxItem: vi.fn().mockResolvedValue(`ok`),
     });
 
     mailbox.enqueue('review_request', {
@@ -899,7 +891,7 @@ describe('triage and deliberation scheduling', () => {
   it('skips deliberation when queue contains requirement_update with actionRequired', async () => {
     const { controller, mailbox, delegate } = makeController({
       performDeliberation: vi.fn().mockResolvedValue(null),
-      processMailboxItem: vi.fn().mockResolvedValue(`ok ${COMPLETION_MARKER}`),
+      processMailboxItem: vi.fn().mockResolvedValue(`ok`),
     });
 
     mailbox.enqueue('requirement_update', {
@@ -962,7 +954,7 @@ describe('decision persistence and focus tracking', () => {
     const focus = controller.getCurrentFocus();
     expect(focus?.payload.summary).toBe('focus test');
 
-    resolveProcess?.(`done ${COMPLETION_MARKER}`);
+    resolveProcess?.(`done`);
     await new Promise(r => setTimeout(r, 50));
     controller.stop();
   });

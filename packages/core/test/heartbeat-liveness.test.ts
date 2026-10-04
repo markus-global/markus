@@ -3,7 +3,6 @@ import { Agent } from '../src/agent.js';
 import { heartbeatStateFingerprint } from '../src/heartbeat.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { RoleTemplate } from '@markus/shared';
-import { COMPLETION_MARKER } from '@markus/shared';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';

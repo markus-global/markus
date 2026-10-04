@@ -158,7 +158,7 @@ TypeScript monorepo，模块化包结构：
 | [工具系统](docs/TOOL-SYSTEM.md) | 内置工具、MCP 集成、工具契约 |
 | [技能生态](docs/SKILL-ECOSYSTEM.md) | 从 skills.sh、SkillHub、OpenClaw、AgentScope、MCP 导入/导出技能 |
 | [记忆系统](docs/MEMORY-SYSTEM.md) | 三层记忆架构（Tulving） |
-| [认知架构](docs/COGNITIVE-ARCHITECTURE.md) | 认知准备流水线（CPP）设计 |
+| [认知架构](docs/COGNITIVE-ARCHITECTURE.md) | 确定性情境装配（原认知准备流水线 CPP 已退役） |
 | [邮箱系统](docs/MAILBOX-SYSTEM.md) | Agent 注意力模型、优先级队列、分诊 |
 | [提示词工程](docs/PROMPT-ENGINEERING.md) | 系统提示词组装、工具循环、压缩 |
 | [状态机](docs/STATE-MACHINES.md) | 任务与需求 FSM 规范 |

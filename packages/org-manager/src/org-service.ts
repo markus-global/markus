@@ -16,7 +16,7 @@ import {
   type HumanUser,
   type HumanRole,
 } from '@markus/shared';
-import { RoleLoader, type AgentManager, type CreateAgentRequest, type SkillRegistry, discoverSkillsInDir, WELL_KNOWN_SKILL_DIRS } from '@markus/core';
+import { RoleLoader, type AgentManager, type CreateAgentRequest, type SkillRegistry, discoverSkillsInDir, WELL_KNOWN_SKILL_DIRS, getAgentSkillWarnings } from '@markus/core';
 import type { StorageBridge } from './storage-bridge.js';
 import type { DeliverableService } from './deliverable-service.ts';
 
@@ -874,6 +874,30 @@ export class OrganizationService {
       const results = await Promise.all(restorePromises);
       const restoredCount = results.filter(Boolean).length;
       log.info(`Restored ${restoredCount} agents from DB`);
+
+      // H9: ONE aggregate warning for the whole restore pass. The per-agent degradation
+      // ("assigned skill not installed → its tools never registered") used to be a per-agent
+      // warn; with dozens of restored agents that floods startup and buries every other
+      // message. Each restored agent already had its `skillWarnings` stamped inside
+      // `AgentManager.restoreAgent()`, so we read it back here and emit a single line.
+      try {
+        const affected: Array<{ name: string; missing: string[] }> = [];
+        for (const row of toRestore) {
+          try {
+            const inst = this.agentManager.getAgent(row.id);
+            const w = getAgentSkillWarnings(inst);
+            if (w && w.missing.length > 0) affected.push({ name: row.name, missing: w.missing });
+          } catch { /* agent failed to restore — already logged per-agent above */ }
+        }
+        if (affected.length > 0) {
+          log.warn(
+            `${affected.length} of ${toRestore.length} restored agents reference skills that are not installed — those skills' tools are unavailable`,
+            { affectedAgents: affected.map(a => a.name), details: affected },
+          );
+        }
+      } catch (summaryErr) {
+        log.warn('Failed to summarize missing-skill warnings after restore', { error: String(summaryErr) });
+      }
     } catch (error) {
       log.warn('Failed to restore agents from DB', { error: String(error) });
     }

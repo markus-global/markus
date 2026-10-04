@@ -38,6 +38,23 @@ import type { ChatSessionInfo } from '../api.ts';
 
 export type ConvPhase = 'idle' | 'loading' | 'ready' | 'streaming';
 
+/**
+ * READ-ONLY projection of the view pointer (`convKey → bufferId`).
+ *
+ * Deliberately exposes `get` only. The pointer has exactly one legitimate writer —
+ * `setActiveSession` — because that method also performs **placeholder promotion**
+ * (folding the `__new_chat__` buffer into the real session when the server assigns
+ * an id). A raw `view.set()` bypasses it: `setActiveSession`'s first line is
+ * `if (cur === sessionId) return`, so writing the pointer first makes it return
+ * early and SKIP promotion — silently turning the promotion logic into dead code.
+ * That is exactly the H4 regression (a brand-new chat's first message vanished and
+ * never streamed until the turn ended). Keeping the map private makes the bypass
+ * unrepresentable rather than merely discouraged.
+ */
+export interface ActiveSessionView {
+  get(key: string): string | undefined;
+}
+
 export interface BufferWriteResult {
   displayChanged: boolean;
   newMessages?: ChatMsg[];
@@ -65,7 +82,15 @@ export class ConversationBufferManager {
   /** 唯一消息存储：bufferId → messages。 */
   readonly buffers = new Map<string, ChatMsg[]>();
   /** convKey → 当前查看的 bufferId（**指针**，不是路由门）。 */
-  readonly view = new Map<string, string>();
+  private readonly view = new Map<string, string>();
+
+  /** Stable, READ-ONLY projection of `view` (same object identity every access —
+   *  an unstable identity here previously caused a 120-renders/s idle loop when it
+   *  was used as an effect dependency). */
+  private readonly viewReader: ActiveSessionView = { get: (key: string) => this.view.get(key) };
+
+  /** Read the view pointer for `convKey`. Writing goes through the setters below. */
+  get activeSessions(): ActiveSessionView { return this.viewReader; }
   readonly actBuffers = new Map<string, ActivityStep[]>();
   readonly sessionTabs = new Map<string, ChatSessionInfo[]>();
 

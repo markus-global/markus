@@ -47,6 +47,48 @@ export interface SubagentContext {
   getProgressCallback?: () => SubagentProgressCallback | undefined;
 }
 
+/**
+ * H6 — terminal status of a single subagent loop. A child is NEVER reported as a bare
+ * success string: an exhausted budget or a hit iteration cap is surfaced explicitly.
+ */
+export type SubagentStopStatus = 'completed' | 'budget_exhausted' | 'max_iterations';
+
+/**
+ * H6 — structured result of one subagent loop. `output` is guaranteed non-empty so the
+ * parent can always distinguish a truncated child from a successful one.
+ */
+export interface SubagentLoopResult {
+  status: SubagentStopStatus;
+  /** Never an empty string. When `status !== 'completed'` it carries an explicit
+   *  "incomplete" note describing why the child stopped early. */
+  output: string;
+  /** Tool iterations actually executed by this child. */
+  iterations: number;
+  /** True when the child was stopped by the shared fan-out ceiling (`aggregateBudget`). */
+  aggregateCeilingReached: boolean;
+}
+
+export interface SubagentLoopOptions {
+  systemPrompt?: string;
+  allowedTools?: string[];
+  /** Hard cap on tool iterations for this child (legacy option). */
+  maxIterations?: number;
+  /**
+   * H6: the child's OWN, INDEPENDENT iteration budget. Reaching it stops only this child
+   * and yields `status: 'budget_exhausted'` — one child can never drain a sibling's quota.
+   */
+  iterationBudget?: number;
+  /**
+   * H6: aggregate circuit breaker shared across one `spawn_subagents` fan-out. It is a
+   * breaker only — when exhausted the child stops with `aggregateCeilingReached: true`
+   * and `status: 'budget_exhausted'`. Mutated in place so the caller can observe it.
+   */
+  aggregateBudget?: { remaining: number };
+  /** @deprecated Legacy alias for {@link SubagentLoopOptions.aggregateBudget}. */
+  sharedBudget?: { remaining: number };
+  onProgress?: SubagentProgressCallback;
+}
+
 const isErrorResult = isToolErrorResult;
 
 const BLOCKED_TOOLS = new Set([
@@ -158,29 +200,26 @@ function persistSubagentLog(dataDir: string, subagentId: string, entries: Subage
  *
  * Exported so other modules (e.g. task system) can invoke subagent execution
  * without going through the tool dispatch path.
+ *
+ * H6: returns a structured {@link SubagentLoopResult}. The child's iteration budget is
+ * INDEPENDENT (`iterationBudget`); `aggregateBudget` is only an overall circuit breaker.
+ * When either is hit the result is explicit (`status: 'budget_exhausted'`) and `output`
+ * is never empty — a parent can always tell a truncated child from a successful one.
  */
 export async function runSubagentLoop(
   ctx: SubagentContext,
   task: string,
-  opts?: {
-    systemPrompt?: string;
-    allowedTools?: string[];
-    maxIterations?: number;
-    onProgress?: SubagentProgressCallback;
-    /**
-     * B4: aggregate iteration budget shared across a `spawn_subagents` fan-out. Each
-     * iteration decrements `remaining`; when it reaches 0 the loop stops early so the
-     * total work of a wide fan-out stays bounded. Mutated in place so the caller can
-     * detect exhaustion after all children settle.
-     */
-    sharedBudget?: { remaining: number };
-  },
-): Promise<string> {
+  opts?: SubagentLoopOptions,
+): Promise<SubagentLoopResult> {
   const hardCap = ctx.maxToolIterations ?? DEFAULT_MAX_SUBAGENT_ITERATIONS;
-  const maxIter = Math.min(opts?.maxIterations ?? hardCap, hardCap);
+  const maxIterations = Math.min(opts?.maxIterations ?? hardCap, hardCap);
+  /** This child's own iteration budget — never shared with siblings. */
+  const iterationBudget = opts?.iterationBudget;
+  /** Shared fan-out circuit breaker (legacy `sharedBudget` treated as the same thing). */
+  const aggregateBudget = opts?.aggregateBudget ?? opts?.sharedBudget;
   const onProgress = opts?.onProgress;
-  const sharedBudget = opts?.sharedBudget;
-  let budgetExhausted = false;
+  let status: SubagentStopStatus = 'completed';
+  let aggregateCeilingReached = false;
 
   const subagentId = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const logEntries: SubagentLogEntry[] = [];
@@ -217,7 +256,8 @@ export async function runSubagentLoop(
     subagentId,
     taskLength: task.length,
     toolCount: toolMap.size,
-    maxIterations: maxIter,
+    maxIterations,
+    iterationBudget,
   });
 
   onProgress?.({
@@ -241,26 +281,45 @@ export async function runSubagentLoop(
     (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
     response.finishReason === 'max_tokens'
   ) {
-    if (++iterations > maxIter) {
-      log.warn('Subagent hit max iterations', { parentAgent: ctx.agentId, subagentId, iterations });
-      onProgress?.({ type: 'error', content: `Subagent hit max iterations (${maxIter})` });
+    // H6: aggregate circuit breaker — shared across the fan-out, checked first. Its
+    // stop is explicit so the parent never mistakes it for a clean completion.
+    if (aggregateBudget) {
+      if (aggregateBudget.remaining <= 0) {
+        aggregateCeilingReached = true;
+        status = 'budget_exhausted';
+        log.warn('Subagent stopped: aggregate budget ceiling reached', {
+          parentAgent: ctx.agentId, subagentId, iterations,
+        });
+        onProgress?.({ type: 'error', content: 'Aggregate subagent budget ceiling reached' });
+        break;
+      }
+      aggregateBudget.remaining--;
+    }
+
+    // H6: the child's OWN iteration budget. Independent per child — reaching it stops
+    // only this child and is reported as `budget_exhausted`, never as a silent success.
+    if (iterationBudget !== undefined && iterations >= iterationBudget) {
+      status = 'budget_exhausted';
+      log.warn('Subagent stopped: own iteration budget exhausted', {
+        parentAgent: ctx.agentId, subagentId, iterations, iterationBudget,
+      });
+      onProgress?.({ type: 'error', content: `Subagent iteration budget exhausted (${iterationBudget})` });
       break;
     }
 
-    // B4: enforce the shared aggregate budget across the fan-out.
-    if (sharedBudget) {
-      if (sharedBudget.remaining <= 0) {
-        budgetExhausted = true;
-        log.warn('Subagent stopped: shared aggregate budget exhausted', { parentAgent: ctx.agentId, subagentId, iterations });
-        onProgress?.({ type: 'error', content: 'Shared subagent budget exhausted' });
-        break;
-      }
-      sharedBudget.remaining--;
+    // Hard iteration cap (legacy `maxIterations` / ctx.maxToolIterations).
+    if (iterations >= maxIterations) {
+      status = 'max_iterations';
+      log.warn('Subagent hit max iterations', { parentAgent: ctx.agentId, subagentId, iterations, maxIterations });
+      onProgress?.({ type: 'error', content: `Subagent hit max iterations (${maxIterations})` });
+      break;
     }
+
+    iterations++;
 
     onProgress?.({
       type: 'iteration',
-      content: `Iteration ${iterations}/${maxIter}`,
+      content: `Iteration ${iterations}/${maxIterations}`,
       metadata: { iteration: iterations, finishReason: response.finishReason },
     });
 
@@ -351,11 +410,25 @@ export async function runSubagentLoop(
   }
 
   const rawResult = response.content;
-  let cleanResult = stripThinkTags(rawResult);
-  if (budgetExhausted) {
-    // Make truncation-by-budget visible in the returned result so the parent (and model)
-    // knows this child stopped early rather than finishing its task.
-    cleanResult = `${cleanResult}\n\n[NOTE: subagent stopped early — shared aggregate iteration budget exhausted. Result may be incomplete.]`;
+  let cleanResult = stripThinkTags(rawResult ?? '');
+
+  // H6: make any early stop visible, and GUARANTEE a non-empty result. A parent must
+  // never receive an empty string that looks like a successful child.
+  if (status !== 'completed') {
+    const reason = status === 'max_iterations'
+      ? `reached its ${maxIterations}-iteration cap`
+      : aggregateCeilingReached
+        ? 'shared aggregate iteration budget exhausted'
+        : `own iteration budget (${iterationBudget}) exhausted`;
+    const note =
+      `[INCOMPLETE: subagent stopped early — ${reason} after ${iterations} iteration(s). ` +
+      `Its result is incomplete; do not treat it as a completed subtask.]`;
+    cleanResult = cleanResult.trim().length > 0
+      ? `${cleanResult.trimEnd()}\n\n${note}`
+      : note;
+  } else if (cleanResult.trim().length === 0) {
+    // A genuine `end_turn` with no text still must not serialise to an empty string.
+    cleanResult = '[Subagent completed without producing textual output.]';
   }
 
   logEntries.push({
@@ -369,21 +442,30 @@ export async function runSubagentLoop(
     logPath = persistSubagentLog(ctx.dataDir, subagentId, logEntries);
   }
 
-  log.info('Subagent completed', {
+  log.info('Subagent finished', {
     parentAgent: ctx.agentId,
     subagentId,
+    status,
     iterations,
+    aggregateCeilingReached,
     resultLength: cleanResult.length,
     logPath,
   });
 
   onProgress?.({
-    type: 'completed',
-    content: `Subagent completed in ${iterations} iterations`,
-    metadata: { subagentId, iterations, logPath, resultLength: cleanResult.length },
+    type: status === 'completed' ? 'completed' : 'error',
+    content: status === 'completed'
+      ? `Subagent completed in ${iterations} iterations`
+      : `Subagent stopped early (${status}) after ${iterations} iterations`,
+    metadata: { subagentId, status, iterations, aggregateCeilingReached, logPath, resultLength: cleanResult.length },
   });
 
-  return cleanResult;
+  return {
+    status,
+    output: cleanResult,
+    iterations,
+    aggregateCeilingReached,
+  };
 }
 
 /**
@@ -418,6 +500,10 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
           type: 'number',
           description: 'Max tool iterations. Lower this for quick tasks.',
         },
+        iteration_budget: {
+          type: 'number',
+          description: 'Optional per-child iteration budget. When reached, the subagent returns an explicit budget_exhausted status (never an empty success).',
+        },
       },
       required: ['task'],
     },
@@ -428,13 +514,20 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
         return JSON.stringify({ status: 'error', error: 'task is required' });
       }
       try {
-        const result = await runSubagentLoop(ctx, task, {
+        const loop = await runSubagentLoop(ctx, task, {
           systemPrompt: args['system_prompt'] as string | undefined,
           allowedTools: args['allowed_tools'] as string[] | undefined,
           maxIterations: args['max_iterations'] as number | undefined,
+          iterationBudget: args['iteration_budget'] as number | undefined,
           onProgress: ctx.getProgressCallback?.(),
         });
-        return JSON.stringify({ status: 'completed', result });
+        // H6: surface the child's real terminal status verbatim; `result` is never empty.
+        return JSON.stringify({
+          status: loop.status,
+          result: loop.output,
+          iterations: loop.iterations,
+          aggregateCeilingReached: loop.aggregateCeilingReached,
+        });
       } catch (err) {
         log.error('Subagent execution failed', { error: String(err) });
         return JSON.stringify({ status: 'error', error: `Subagent failed: ${String(err)}` });
@@ -489,6 +582,10 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
                 type: 'number',
                 description: 'Optional max iterations for this subagent.',
               },
+              iteration_budget: {
+                type: 'number',
+                description: 'Optional INDEPENDENT iteration budget for this subagent. Reaching it stops only this child and returns an explicit budget_exhausted status.',
+              },
             },
             required: ['id', 'task'],
           },
@@ -509,6 +606,7 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
         task: string;
         allowed_tools?: string[];
         max_iterations?: number;
+        iteration_budget?: number;
       }>;
       if (!tasks || !Array.isArray(tasks) || tasks.length === 0) {
         return JSON.stringify({ status: 'error', error: 'tasks array is required and must not be empty' });
@@ -537,9 +635,10 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
 
       const startTime = Date.now();
 
-      // B4: one aggregate iteration budget shared across all children of this fan-out,
-      // so a wide/parallel spawn cannot silently multiply CU/token spend.
-      const sharedBudget = { remaining: SUBAGENT_MAX_AGGREGATE_ITERATIONS };
+      // H6: the aggregate pool is ONLY an overall circuit breaker — it is NOT the
+      // per-child budget. Each child keeps its own INDEPENDENT `iterationBudget`, so no
+      // child can silently drain (and thereby starve) a sibling.
+      const aggregateBudget = { remaining: SUBAGENT_MAX_AGGREGATE_ITERATIONS };
 
       const results = await Promise.allSettled(
         tasks.map(async (t) => {
@@ -551,51 +650,81 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
               })
             : undefined;
 
-          const result = await runSubagentLoop(ctx, t.task, {
+          const loop = await runSubagentLoop(ctx, t.task, {
             systemPrompt: sharedSystemPrompt,
             allowedTools: t.allowed_tools,
             maxIterations: t.max_iterations,
+            iterationBudget: t.iteration_budget,
             onProgress: perTaskProgress,
-            sharedBudget,
+            aggregateBudget,
           });
-          return { id: t.id, result };
+          return { id: t.id, loop };
         })
       );
 
-      const budgetExceeded = sharedBudget.remaining <= 0;
+      const budgetExceeded = aggregateBudget.remaining <= 0;
 
       const output: Array<{
         id: string;
-        status: 'completed' | 'error';
-        result?: string;
+        status: SubagentStopStatus | 'error';
+        result: string;
+        iterations?: number;
+        aggregateCeilingReached?: boolean;
         error?: string;
       }> = results.map((r, i) => {
         if (r.status === 'fulfilled') {
-          return { id: r.value.id, status: 'completed' as const, result: r.value.result };
+          const { id, loop } = r.value;
+          // H6: `result` is NEVER empty — a child that produced nothing still surfaces
+          // an explicit, actionable message instead of an empty success.
+          const result = loop.output.trim().length > 0
+            ? loop.output
+            : `[INCOMPLETE: subagent "${id}" produced no output (status: ${loop.status}).]`;
+          return {
+            id,
+            status: loop.status,
+            result,
+            iterations: loop.iterations,
+            aggregateCeilingReached: loop.aggregateCeilingReached,
+          };
         }
-        return { id: tasks[i]!.id, status: 'error' as const, error: String(r.reason) };
+        const reason = String(r.reason);
+        return {
+          id: tasks[i]!.id,
+          status: 'error' as const,
+          result: `[INCOMPLETE: subagent failed — ${reason}]`,
+          error: reason,
+        };
       });
 
       const completed = output.filter(o => o.status === 'completed').length;
+      const stoppedEarly = output.filter(o => o.status === 'budget_exhausted' || o.status === 'max_iterations').length;
       const failed = output.filter(o => o.status === 'error').length;
       const durationMs = Date.now() - startTime;
 
       log.info('Parallel subagents finished', {
         parentAgent: ctx.agentId,
         completed,
+        stoppedEarly,
         failed,
+        budgetExceeded,
         totalDurationMs: durationMs,
       });
 
       onProgress?.({
-        type: 'completed',
-        content: `${completed}/${tasks.length} subagents completed (${durationMs}ms)`,
-        metadata: { completed, failed, durationMs },
+        type: stoppedEarly > 0 || failed > 0 ? 'error' : 'completed',
+        content: `${completed}/${tasks.length} subagents completed${stoppedEarly > 0 ? `, ${stoppedEarly} stopped early` : ''} (${durationMs}ms)`,
+        metadata: { completed, stoppedEarly, failed, budgetExceeded, durationMs },
       });
+
+      // H6: make a partial fan-out legible at a glance.
+      const summaryParts = [`${completed}/${tasks.length} subagents completed`];
+      if (stoppedEarly > 0) summaryParts.push(`${stoppedEarly} stopped early (incomplete)`);
+      if (failed > 0) summaryParts.push(`${failed} failed`);
+      if (budgetExceeded) summaryParts.push('aggregate iteration budget exhausted');
 
       return JSON.stringify({
         status: 'completed',
-        summary: `${completed}/${tasks.length} subagents completed successfully${failed > 0 ? `, ${failed} failed` : ''}${budgetExceeded ? ' (aggregate iteration budget exhausted — some results may be incomplete)' : ''}`,
+        summary: summaryParts.join('; '),
         durationMs,
         budgetExceeded,
         aggregateIterationBudget: SUBAGENT_MAX_AGGREGATE_ITERATIONS,

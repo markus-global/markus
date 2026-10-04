@@ -1,6 +1,6 @@
 # Prompt Engineering & Context Assembly
 
-This document specifies how Markus constructs prompts, manages context, and orchestrates LLM interactions across all scenarios. It complements [STATE-MACHINES.md](./STATE-MACHINES.md) (task lifecycle), [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) (storage layers), and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) (cognitive preparation pipeline).
+This document specifies how Markus constructs prompts, manages context, and orchestrates LLM interactions across all scenarios. It complements [STATE-MACHINES.md](./STATE-MACHINES.md) (task lifecycle), [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) (storage layers), and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) (deterministic context assembly).
 
 ---
 
@@ -33,14 +33,9 @@ P2 (Directed Retrieval) and P4 (Assembly) are code-only phases with no LLM call.
 | 7 | **Comment Response** | Mailbox `task_comment` / `requirement_update` | `handleMessage(scenario:'comment_response')` | No | Yes | Yes (via handleMessage) | 200 |
 | 8 | **Internal (Lightweight)** | Various | `handleMessage(scenario:'heartbeat')` | No | Varies | Yes (via handleMessage) | 200 |
 
-**Cognitive depth** determines how many Tier 1 calls precede each Tier 2 call:
-
-| Depth | Tier 1 Calls | When |
-|-------|-------------|------|
-| D0 Reflexive | 0 | HEARTBEAT_OK, acks, dream cycle |
-| D1 Reactive | 0-1 (Appraisal) | Most chats, A2A, comments |
-| D2 Deliberative | 2 (Appraisal + Reflection) | Task execution, complex questions |
-| D3 Meta-cognitive | 2-3 (Appraisal + Reflection + post-Evaluation) | High-stakes decisions |
+**Cognitive depth (retired)** — the former D0–D3 ladder (`selectCognitiveDepth`) decided how many
+Tier 1 calls preceded each Tier 2 call. It belonged to CPP and is **gone**: **every** Tier 2 call
+now runs with **zero** preceding Tier 1 LLM calls; context is assembled deterministically instead.
 
 ### 1.2 Lightweight Internal Calls (Scenario 8)
 
@@ -387,26 +382,31 @@ injection point cannot silently land in a stable tier and bust the cache prefix.
   tool-usage rules → **Tier 1 (stable)**. Org/workspace/scenario/announcements/norms/
   activated-skills/user-profile/trust → **Tier 2 (semi-stable; written on org/config events)**.
   Agent-written memory (`## Your Knowledge`, `## Notebook`) → **volatile** (§2.1.1
-  invariant 5). All per-call situational meta (CPP output via
-  `## Notebook`, triage decision, mailbox state, task board, timestamps, relevant memories, team
+  invariant 5). All per-call situational meta (the deterministic `## Cognitive Context` block,
+  triage decision, mailbox state, task board, timestamps, relevant memories, team
   status, query-filtered skills, working memory, contextHint) → **volatile tail (the `[Live
   context]` message), never in any system segment**.
 - **Invariants**:
-  - The system `text` (all segments) contains **no** per-call varying content (CPP/triage/notebook/
+  - The system `text` (all segments) contains **no** per-call varying content (cognitive-context/triage/notebook/
     mailbox/task/date/skills markers appear only in the `volatile` tail).
   - Every system segment carries a `cacheBreakpoint`; the deterministic `## Cognitive Context`
     block and `## Relevant Memories` ride the `volatile`/dynamic tail, never a stable
     system-prompt section (see [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) §3).
+- **Note — CPP retired; the deterministic block is always injected**: the deterministic situational
+  block (recent activity + working-memory keys) is now **always** injected as the `## Cognitive
+  Context` section — there is no CPP toggle and no pre-call LLM (see §1.1). It is **complementary
+  to, not mutually exclusive with**, the ContextEngine's relevant-memory retrieval: in the same turn
+  both `## Cognitive Context` and `## Relevant Memories` are injected when available.
 - **Design rationale**: dynamic content in the byte-stable system prefix invalidates every downstream
   cache hit; Scheme A keeps it in the volatile **history tail**, preserving prefix reuse across mode
   switches (Anthropic explicit + OpenAI/DeepSeek implicit).
 - **Testing** (`packages/core/test/cache-optimization.test.ts` — the "C3:" cases): with a
-  prompt carrying CPP output, mailbox/attention meta, channel history, sender identity and a
+  prompt carrying a deterministic `## Cognitive Context` block, mailbox/attention meta, channel history, sender identity and a
   timestamp, assert (a) **every system segment is a cache breakpoint and carries no dynamic marker**,
   (b) those markers appear only in `volatile`, (c) identity / tool-usage rules stay in the stable
   prefix while the **agent-written knowledge body stays OUT of it** (`C-cache-knowledge-body`) and a
-  `memory_save` leaves the system text byte-identical (`C-cache-knowledge-write`), and (d) CPP output
-  is routed to the notebook writer rather than injected as a stable `## Cognitive Context` section,
+  `memory_save` leaves the system text byte-identical (`C-cache-knowledge-write`), and (d) the
+  deterministic `## Cognitive Context` block rides the volatile tail rather than being injected as a stable system-prompt section,
   and (e) two turns with different per-turn context yield byte-identical `text` but different
   `volatile`. The cache-hit-rate metric is tracked separately (see
   [ARCHITECTURE.md §11.1](./ARCHITECTURE.md) observability).
@@ -421,7 +421,7 @@ Contains the core behavioral instructions, personality, and domain expertise.
 
 #### Your Knowledge (§14)
 Source: `memory.getLongTermMemory()` — curated sections from `knowledge.md` (legacy `MEMORY.md` is migrated once and not written afterward).
-The `## _observations` buffer is **excluded** from the prompt; observations are surfaced via `memory_search`, CPP retrieval, or mechanical relevance matching (written to Notebook as `relevant-context`). This section represents the agent's consolidated long-term knowledge — procedures, conventions, domain facts the agent maintains via `memory_update`.
+The `## _observations` buffer is **excluded** from the prompt; observations are surfaced via `memory_search`, the ContextEngine's deterministic relevant-memory retrieval, or mechanical relevance matching (written to Notebook as `relevant-context`). This section represents the agent's consolidated long-term knowledge — procedures, conventions, domain facts the agent maintains via `memory_update`.
 
 #### Dynamic Context — Notebook (§21)
 Source: `getDynamicContext()` — three sources:

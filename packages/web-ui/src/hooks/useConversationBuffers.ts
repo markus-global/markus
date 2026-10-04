@@ -187,9 +187,9 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     // 旧的 msgBuffers / sessionMsgCache / activeSession 三件套已不存在：
     // 两个存储 + 一道路由门正是这一族 bug 的温床。
     get buffers() { return mgr.current.buffers; },
-    get viewBuffer() { return mgr.current.view; },
-    /** 语义未变：convKey → 当前查看的 bufferId。*/
-    get activeSessionBuffer() { return mgr.current.view; },
+    get viewBuffer() { return mgr.current.activeSessions; },
+    /** 语义未变：convKey → 当前查看的 bufferId。**只读** —— 写入只能走 setActiveSession。*/
+    get activeSessionBuffer() { return mgr.current.activeSessions; },
     get actBuffers() { return mgr.current.actBuffers; },
     get sessionTabsBuffer() { return mgr.current.sessionTabs; },
     // Ref-shaped wrapper for currentConvKey (enables currentConvKeyRef.current = x)

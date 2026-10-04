@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { withJitter, TASK_RETRY_DELAYS_MS, COMPLETION_MARKER, hasCompletionMarker, stripCompletionMarkerLeak } from '../src/limits.js';
+import {
+  withJitter,
+  TASK_RETRY_DELAYS_MS,
+  END_TURN_REPLY_SENTINEL,
+  stripLegacyCompletionToken,
+} from '../src/limits.js';
 
 describe('withJitter', () => {
   it('returns a value close to the base', () => {
@@ -42,31 +47,32 @@ describe('constants', () => {
     }
   });
 
-  it('COMPLETION_MARKER is non-empty and unique', () => {
-    expect(COMPLETION_MARKER.length).toBeGreaterThan(5);
-    expect(COMPLETION_MARKER).toContain('<<');
+  // The text-marker protocol is fully retired; the only remaining completion
+  // signal is this typed sentinel (produced by the end_turn tool / heartbeat path).
+  it('END_TURN_REPLY_SENTINEL is the typed end-of-turn signal', () => {
+    expect(END_TURN_REPLY_SENTINEL).toBe('[end_turn]');
   });
 });
 
-describe('stripCompletionMarkerLeak', () => {
-  it('removes the exact marker', () => {
-    expect(stripCompletionMarkerLeak(`done ${COMPLETION_MARKER}`)).toBe('done ');
+describe('stripLegacyCompletionToken', () => {
+  it('removes the retired <<HANDLE_COMPLETE>> token', () => {
+    expect(stripLegacyCompletionToken('done <<HANDLE_COMPLETE>>')).toBe('done ');
   });
 
   it('removes malformed variants a weak model emits as prose', () => {
-    expect(stripCompletionMarkerLeak('带上 <HANDLE_COMPLETE> 标记')).toBe('带上  标记');
-    expect(stripCompletionMarkerLeak('end < HANDLE_COMPLETE >')).toBe('end ');
-    expect(stripCompletionMarkerLeak('x <<HANDLE_COMPLETE> y')).toBe('x  y');
-    expect(stripCompletionMarkerLeak('x <handle_complete> y')).toBe('x  y');
+    expect(stripLegacyCompletionToken('带上 <HANDLE_COMPLETE> 标记')).toBe('带上  标记');
+    expect(stripLegacyCompletionToken('end < HANDLE_COMPLETE >')).toBe('end ');
+    expect(stripLegacyCompletionToken('x <<HANDLE_COMPLETE> y')).toBe('x  y');
+    expect(stripLegacyCompletionToken('x <handle_complete> y')).toBe('x  y');
   });
 
   it('leaves ordinary text untouched', () => {
     const text = 'The task is complete and handled successfully.';
-    expect(stripCompletionMarkerLeak(text)).toBe(text);
+    expect(stripLegacyCompletionToken(text)).toBe(text);
   });
 
-  it('detection stays strict — a malformed variant is NOT a real marker', () => {
-    expect(hasCompletionMarker('带上 <HANDLE_COMPLETE> 标记')).toBe(false);
-    expect(hasCompletionMarker(`done ${COMPLETION_MARKER}`)).toBe(true);
+  it('does not touch the end_turn sentinel or ordinary non-marker replies', () => {
+    expect(stripLegacyCompletionToken(END_TURN_REPLY_SENTINEL)).toBe(END_TURN_REPLY_SENTINEL);
+    expect(stripLegacyCompletionToken('all done, nothing to see here')).toBe('all done, nothing to see here');
   });
 });
