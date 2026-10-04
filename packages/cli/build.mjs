@@ -2,9 +2,11 @@
 
 import { build } from 'esbuild';
 import { execSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// §26 — 目录拷贝的唯一实现（镜像语义）。此前这里是 mkdirSync+cpSync 的合并拷贝，
+// 导致源 templates/ 里删掉的条目（如退役的 skills/self-evolution）在产物里永存。
+import { syncDir } from '../../scripts/sync-dir.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const outfile = resolve(__dirname, 'dist', 'markus.mjs');
@@ -52,22 +54,19 @@ async function main() {
     resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
   });
 
-  // Step 3: Copy templates into dist/ so they ship with the npm package
+  // Step 3: Copy templates into dist/ so they ship with the npm package.
+  // §26 — 必须镜像（先清再拷）：合并拷贝会让源里删掉的模板永远留在包里。
   const templatesRoot = resolve(__dirname, '../../templates');
   const templatesDest = resolve(__dirname, 'templates');
-  if (existsSync(templatesRoot)) {
-    console.log('  Copying templates...');
-    mkdirSync(templatesDest, { recursive: true });
-    cpSync(templatesRoot, templatesDest, { recursive: true });
+  if (syncDir(templatesRoot, templatesDest)) {
+    console.log('  Copied templates (mirrored).');
   }
 
-  // Step 4: Copy pre-built Web UI into dist/ for static serving
+  // Step 4: Copy pre-built Web UI into dist/ for static serving (§26 — 镜像)
   const webUiDist = resolve(__dirname, '../web-ui/dist');
   const webUiDest = resolve(__dirname, 'dist', 'web-ui');
-  if (existsSync(webUiDist)) {
-    console.log('  Copying Web UI static assets...');
-    mkdirSync(webUiDest, { recursive: true });
-    cpSync(webUiDist, webUiDest, { recursive: true });
+  if (syncDir(webUiDist, webUiDest)) {
+    console.log('  Copied Web UI static assets (mirrored).');
   } else {
     console.log('  Web UI not built — skipping static assets (run pnpm --filter @markus/web-ui build first)');
   }

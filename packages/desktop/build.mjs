@@ -8,7 +8,9 @@
 import { build } from 'esbuild';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+// §26 — 目录拷贝的唯一实现（镜像）。两处模板/web-ui 拷贝改走它，消除重复实现。
+import { syncDir } from '../../scripts/sync-dir.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -94,26 +96,18 @@ async function main() {
   // Copy web-ui dist if available
   const webUiDist = resolve(__dirname, '../web-ui/dist');
   const webUiDest = resolve(__dirname, 'dist/web-ui');
-  if (existsSync(webUiDist)) {
-    console.log('  Copying Web UI static assets...');
-    // 先清空目标目录再拷：web-ui 的资源文件名带内容 hash，vite 只会清掉自己的
-    // dist（web-ui/dist），并管不到这里。不清就会每构建一次攒一批旧 chunk ——
-    // 实测攒到过 119 个旧 index-*.js / 235.8 MB，全部打进 app.asar
-    // （既胀包，也让「包里到底跑的是哪份前端」变得不可靠）。
-    rmSync(webUiDest, { recursive: true, force: true });
-    mkdirSync(webUiDest, { recursive: true });
-    cpSync(webUiDist, webUiDest, { recursive: true });
+  // §26 — syncDir 内部即「先清再拷」。web-ui 资源名带内容 hash，vite 只清自己的
+  // dist，管不到这里；不清会每构建一次攒一批旧 chunk（实测曾攒到 235.8 MB 打进 app.asar）。
+  if (syncDir(webUiDist, webUiDest)) {
+    console.log('  Copied Web UI static assets (mirrored).');
   }
 
   // Copy templates
   const templatesRoot = resolve(__dirname, '../../templates');
   const templatesDest = resolve(__dirname, 'dist/templates');
-  if (existsSync(templatesRoot)) {
-    console.log('  Copying templates...');
-    // 同上：整体镜像，先清再拷，否则删掉的模板会永远留在包里。
-    rmSync(templatesDest, { recursive: true, force: true });
-    mkdirSync(templatesDest, { recursive: true });
-    cpSync(templatesRoot, templatesDest, { recursive: true });
+  // §26 — 镜像：先清再拷，否则源里删掉的模板会永远留在包里。
+  if (syncDir(templatesRoot, templatesDest)) {
+    console.log('  Copied templates (mirrored).');
   }
 
   // Chrome extension zip — required for Settings download; fail the build if missing

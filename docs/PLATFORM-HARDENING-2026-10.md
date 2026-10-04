@@ -1221,3 +1221,82 @@ H27 **不是**靠读代码或想出来的，是靠**探针实测**：把三种�
 - **5 处存根串残留在 migrated JSON 载荷内**（本人 4 处 + `agt_f15a…` 1 处）：正文在 `knowledge-archive.md` 可检索、且**不在注入区**（在观察/片段池）。属历史载荷形态，不重写平台载荷（改写对话记录 = 伪造）。
 - **`shouldSelfHeal()` 方法体**与迁移读取器（`parseObservationsFromMemoryMd` 等）：随 §24.7 判据（全 Agent 迁移完成）一并删除。
 
+
+---
+
+## §26 模板/静态资源拷贝：合并 vs 镜像（R2 的又一实例）
+
+### 26.1 现象（新装用户相关）
+
+对"全新下载安装的用户，Agent 能否正常工作"做验证时发现：**CLI 分发包里的模板树陈旧**——`packages/cli/templates/` 相对源树多出 8 个**在源头已删除、却永远残留**的条目：
+
+```
+roles/SHARED.md
+skills/image-generation
+skills/markus-agent-cli
+skills/markus-cli
+skills/markus-project-cli
+skills/markus-skill-cli
+skills/markus-team-cli
+skills/self-evolution      ← 文档明令"不得随包发布"的退役技能
+```
+
+其中 `roles/*/agent.json` 还在声明 `dependencies.skills: ["self-evolution"]`（源树已改为 `["coding-tools"]`）。后果：CLI 安装的用户从模板建 Agent 时，会**声明一个已退役的技能**，并触发 H9 新加的 ⚠️ 缺失技能告警；退役技能包本身也**还在发**。
+
+### 26.2 根因：**不是"两棵树"，是"两种拷贝方式"**
+
+侦察纠正了两个错误假设：
+
+| 假设 | 实际 |
+|---|---|
+| `packages/cli/templates/` 是另一棵**源**树 | ❌ 它是 **gitignored 构建产物**（`.gitignore:21`），**未被 git 跟踪** |
+| CLI 构建用的是别的源 | ❌ CLI `build.mjs:55` **本来就从根 `templates/` 拷贝** |
+
+**单一源的设计早就存在。** 缺陷在拷贝语义：
+
+| 构建 | 拷贝方式 | 结果 |
+|---|---|---|
+| `packages/desktop/build.mjs:114` | `rmSync(dest)` → `mkdirSync` → `cpSync` | ✅ **镜像**（注释明写"先清再拷，否则删掉的模板会永远留在包里"）|
+| `packages/cli/build.mjs:60` | `mkdirSync` → `cpSync` | ❌ **合并**：源里删掉的文件在目标里**永存** |
+
+CLI 的 **web-ui 拷贝**（`build.mjs:69`）同样用合并。**同一件事、两种实现、一种是对的** —— 与 §24（多写者）、§18/§21（多度量）同族：R2。
+
+### 26.3 修法（结构，非补丁）
+
+抽出**唯一实现** `scripts/sync-dir.mjs`：
+
+```js
+export function syncDir(src, dest) {   // 真镜像：先清，再拷
+  rmSync(dest, { recursive: true, force: true });
+  mkdirSync(dest, { recursive: true });
+  cpSync(src, dest, { recursive: true });
+}
+```
+
+两个 `build.mjs` 的 **templates 与 web-ui** 四处拷贝全部改走它（desktop 那两处本就是镜像语义，改走它只是**消除重复实现**，行为不变）。此后"合并拷贝"不再有第二条产生路径。
+
+### 26.4 测试（先红后绿的证据）
+
+新增 `packages/core/test/templates-sync-mirror.test.ts`：
+
+1. **镜像语义**：目标目录预置陈旧文件 + 陈旧子目录 → `syncDir` 后**必须消失**，源内容必须在；
+2. **目标缺失时创建**；
+3. **幂等**：连跑两次结果一致；
+4. **结构闸门**：两个 `build.mjs` 都必须**调用 `syncDir(`**，且**不得**再出现 `cpSync(templatesRoot…` 这种裸合并——把"只能有一种拷贝方式"钉成断言。
+
+**红→绿**：先写测试（`syncDir` 尚不存在 → import 失败 = 红），再建 helper（绿）。
+
+### 26.5 验证
+
+- **红→绿**：测试先写（`syncDir` 不存在 → `Cannot find module` = 红），建 helper 后 **6/6 绿**（3 例镜像语义 + 3 例结构闸门）。
+- **实测镜像**（真实产物）：`syncDir(templates → packages/cli/templates)` 后，「只在产物里存在」的条目 **8 → 0**；`skills/self-evolution` 等退役包消失；`markus-admin-cli` 保留（源树本就有，属现役）。
+- `tsc -b` 全仓 **0 错误**；`--project node` **5256 通过 / 10 skipped / 1 失败**（唯一失败为既有环境性 flaky `cli/…quickInit` 真启服务+联网超时，未触及 `packages/cli` 源码）；`--project web-ui` **678/678**。
+- 两个 `build.mjs` 均 `node --check` 通过；未用 import 已清理（CLI 移除整个 `node:fs`，desktop 移除 `rmSync`）。
+
+### 26.6 与 H9 的关系（诚实更正）
+
+H9 说"清理了 41 处死技能引用"——那清的是**存量 Agent 定义（`data.db`）**，属**症状层**。**源头（构建产物 + 模板）仍在生成同样的死引用**。§26 修的是源头，两者互补：
+
+- H9 → 存量 Agent 不再告警；
+- §26 → 新装/新建成 Agent 不再被注入死引用，退役技能不再随包发布。
+
