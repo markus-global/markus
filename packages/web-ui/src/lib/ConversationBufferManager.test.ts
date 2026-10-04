@@ -266,7 +266,7 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
     // If repinTo were NOT applied (the old bug) the view would be undefined and
     // the stale stream would have been treated as the viewed session and written
     // into it. Assert the view stayed pinned and the buffer clean.
-    expect(mgr.view.get('agt_x')).toBe(ConversationBufferManager.NEW_CHAT_ID);
+    expect(mgr.activeSessions.get('agt_x')).toBe(ConversationBufferManager.NEW_CHAT_ID);
     expect(mgr.getMessages('agt_x')!.some(m => m.id === 'a_old')).toBe(false);
   });
 
@@ -291,8 +291,39 @@ describe('ConversationBufferManager multi-session stream isolation', () => {
       'sess_child',
     );
     expect(rChild.displayChanged).toBe(true);
-    expect(mgr.view.get('agt_x')).toBe('sess_child');
+    expect(mgr.activeSessions.get('agt_x')).toBe('sess_child');
     expect(mgr.getMessages('agt_x')!.map(m => m.id)).toEqual(['a_child']);
+  });
+
+  it('H4 — 指针不可被绕过写入，且 setActiveSession 从占位会话提升（防止再犯）', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt_x';
+
+    // 1) 投影是**只读**的：没有任何写入口。旧实现把裸 Map 暴露成 `mgr.view`，
+    //    调用方（useChatStream）先 `view.set(...)` 再调 setActiveSession，于是
+    //    setter 的 `cur === sessionId` 守卫短路、占位提升被静默跳过 → 新会话第一条
+    //    消息消失、回复不流式。这里把"没有写入口"钉死。
+    expect((mgr.activeSessions as unknown as { set?: unknown }).set).toBeUndefined();
+
+    // 2) 新会话：指针停在 NEW_CHAT 占位缓冲，乐观行落在占位缓冲里
+    mgr.resetConv('agt_x', ConversationBufferManager.NEW_CHAT_ID);
+    expect(mgr.activeSessions.get('agt_x')).toBe(ConversationBufferManager.NEW_CHAT_ID);
+    mgr.updateMessages('agt_x', () => [msg('u1', 'user', 'hi', '2026-08-02T07:00:00.000Z')], null);
+    expect(mgr.getMessages('agt_x')!.map(m => m.id)).toEqual(['u1']);
+
+    // 3) 服务端给出真实 session id → setActiveSession 必须**提升**占位行，而不是丢弃
+    mgr.setActiveSession('agt_x', 'sess_real');
+    expect(mgr.activeSessions.get('agt_x')).toBe('sess_real');
+    expect(mgr.getMessages('agt_x')!.map(m => m.id)).toEqual(['u1']);
+
+    // 4) 指向真实会话的增量分片必须落在视图里（这正是回归时"整段不流式"的症状）
+    const r = mgr.updateMessages(
+      'agt_x',
+      (prev) => [...(prev ?? []), msg('a1', 'agent', 'reply', '2026-08-02T07:00:01.000Z')],
+      'sess_real',
+    );
+    expect(r.displayChanged).toBe(true);
+    expect(mgr.getMessages('agt_x')!.map(m => m.id)).toEqual(['u1', 'a1']);
   });
 
   it('background session stream lands in its own buffer and never touches the viewed one', () => {

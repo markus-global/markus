@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AgentManager, EventBus, RoleLoader, type Agent } from '@markus/core';
-import { COMPLETION_MARKER, getTextContent, type LLMRequest } from '@markus/shared';
+import { getTextContent, type LLMRequest } from '@markus/shared';
 import { APIServer } from '../src/api-server.js';
 import { TaskService } from '../src/task-service.js';
 import { initStorage, type StorageBridge } from '../src/storage-bridge.js';
@@ -41,7 +41,7 @@ function makeRecordingRouter() {
     calls.push({ sessionId: options?.sessionId, text: messages.map(m => m.text).join('\n') });
   };
   const reply = () => ({
-    content: `reply ${COMPLETION_MARKER}`,
+    content: `reply`,
     finishReason: 'end_turn' as const,
     usage: { inputTokens: 1, outputTokens: 1 },
   });
@@ -60,7 +60,7 @@ function makeRecordingRouter() {
       options?: { sessionId?: string },
     ) => {
       record(request, options);
-      onEvent?.({ type: 'text_delta', content: `reply ${COMPLETION_MARKER}` });
+      onEvent?.({ type: 'text_delta', content: `reply` });
       return reply();
     }),
     resolveModalityCandidates: vi.fn(() => []),

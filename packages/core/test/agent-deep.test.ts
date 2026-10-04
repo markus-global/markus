@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Agent, type AgentToolHandler } from '../src/agent.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { RoleTemplate } from '@markus/shared';
-import { COMPLETION_MARKER } from '@markus/shared';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -431,7 +430,7 @@ describe('respondInSession and sendSessionReply', () => {
     const router = makeMockRouter({
       streamFn: async (_req, onEvent) => {
         onEvent?.({ type: 'text_delta', text: 'Reply in session.' });
-        return makeResponse(`Reply in session. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`Reply in session.`, 'end_turn');
       },
     });
     const agent = createAgent(router);
@@ -721,7 +720,7 @@ describe('skill catalog and context helpers', () => {
 describe('mailbox routing extended', () => {
   it('routes memory_consolidation through mailbox', async () => {
     const router = makeMockRouter({
-      chatFn: async () => makeResponse(`Consolidated. ${COMPLETION_MARKER}`, 'end_turn'),
+      chatFn: async () => makeResponse(`Consolidated.`, 'end_turn'),
     });
     const agent = createAgent(router);
     await agent.start();
@@ -737,7 +736,7 @@ describe('mailbox routing extended', () => {
 
   it('routes system_event through lightweight scenario', async () => {
     const router = makeMockRouter({
-      chatFn: async () => makeResponse(`System handled. ${COMPLETION_MARKER}`, 'end_turn'),
+      chatFn: async () => makeResponse(`System handled.`, 'end_turn'),
     });
     const agent = createAgent(router);
     await agent.start();
@@ -759,7 +758,7 @@ describe('mailbox routing extended', () => {
         if (calls === 1) {
           return makeResponse('Reply without marker.', 'end_turn');
         }
-        return makeResponse(`Here is the marker. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`Here is the marker.`, 'end_turn');
       },
     });
     const agent = createAgent(router);
@@ -779,7 +778,7 @@ describe('mailbox routing extended', () => {
     const router = makeMockRouter({
       streamFn: async (_req, onEvent) => {
         onEvent?.({ type: 'text_delta', text: 'Mailbox stream.' });
-        return makeResponse(`Mailbox stream. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`Mailbox stream.`, 'end_turn');
       },
     });
     const agent = createAgent(router);
@@ -1099,7 +1098,7 @@ describe('executeChatTask and heartbeat', () => {
 
   it('skips idle heartbeat when fingerprint unchanged', async () => {
     const router = makeMockRouter({
-      chatFn: async () => makeResponse(`Heartbeat ok. ${COMPLETION_MARKER}`, 'end_turn'),
+      chatFn: async () => makeResponse(`Heartbeat ok.`, 'end_turn'),
     });
     const agent = createAgent(router);
     await agent.start();

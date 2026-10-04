@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { EventBus } from '../src/events.js';
 import { RoleLoader } from '../src/role-loader.js';
 import { AgentManager } from '../src/agent-manager.js';
-import { COMPLETION_MARKER, getTextContent, type LLMRequest } from '@markus/shared';
+import { getTextContent, type LLMRequest } from '@markus/shared';
 import type { Agent } from '../src/agent.js';
 import type { LLMRouter } from '../src/llm/router.js';
 
@@ -45,7 +45,7 @@ function makeRecordingRouter() {
     defaultProviderName: 'anthropic',
     chat: vi.fn(async (request: LLMRequest, _p?: string, options?: { sessionId?: string }) => {
       record(request, options);
-      return { content: `reply ${COMPLETION_MARKER}`, finishReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } };
+      return { content: `reply`, finishReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } };
     }),
     chatStream: vi.fn(async (
       request: LLMRequest,
@@ -55,8 +55,8 @@ function makeRecordingRouter() {
       options?: { sessionId?: string },
     ) => {
       record(request, options);
-      onEvent?.({ type: 'text_delta', content: `reply ${COMPLETION_MARKER}` });
-      return { content: `reply ${COMPLETION_MARKER}`, finishReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } };
+      onEvent?.({ type: 'text_delta', content: `reply` });
+      return { content: `reply`, finishReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 } };
     }),
     resolveModalityCandidates: vi.fn(() => []),
     listProviders: vi.fn(() => ['anthropic']),

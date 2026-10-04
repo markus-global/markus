@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Agent, type AgentToolHandler } from '../src/agent.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { RoleTemplate } from '@markus/shared';
-import { COMPLETION_MARKER } from '@markus/shared';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -186,7 +185,7 @@ describe('session reply and respondInSession', () => {
     const router = makeMockRouter({
       streamFn: async (_req, onEvent) => {
         onEvent?.({ type: 'text_delta', text: 'Session ' });
-        return makeResponse(`Session reply. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`Session reply.`, 'end_turn');
       },
     });
     const agent = createAgent(router);
@@ -514,7 +513,7 @@ describe('subagent and streaming paths', () => {
       chatFn: async () => {
         calls++;
         if (calls === 1) return makeResponse('Reply without marker', 'end_turn');
-        return makeResponse(`Fixed reply. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`Fixed reply.`, 'end_turn');
       },
     });
     const agent = createAgent(router);
@@ -871,7 +870,7 @@ describe('performDeliberation and cognitive pipeline', () => {
             },
           }]);
         }
-        return makeResponse(`Handled. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`Handled.`, 'end_turn');
       },
     });
 
@@ -963,7 +962,7 @@ describe('performDeliberation and cognitive pipeline', () => {
     const router = makeMockRouter({
       streamFn: async (_req, onEvent) => {
         onEvent?.({ type: 'text_delta', text: 'Session ' });
-        return makeResponse(`Session reply. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`Session reply.`, 'end_turn');
       },
     });
     const agent = createAgent(router);
@@ -1134,7 +1133,7 @@ describe('performDeliberation and cognitive pipeline', () => {
     vi.useFakeTimers();
     try {
       const router = makeMockRouter({
-        chatFn: async () => makeResponse(`Consolidated. ${COMPLETION_MARKER}`, 'end_turn'),
+        chatFn: async () => makeResponse(`Consolidated.`, 'end_turn'),
       });
       const agent = createAgent(router);
       await agent.start({ startAsPaused: true, initialHeartbeatDelayMs: 999999 });

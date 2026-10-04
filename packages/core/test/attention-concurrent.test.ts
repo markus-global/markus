@@ -6,7 +6,7 @@ import {
 import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } from '../src/session-workspace.js';
-import { COMPLETION_MARKER, type MailboxItem, type MailboxItemType, type MailboxPriority } from '@markus/shared';
+import { type MailboxItem, type MailboxItemType, type MailboxPriority } from '@markus/shared';
 
 const AGENT_ID = 'attn-concurrent-agent';
 
@@ -57,7 +57,7 @@ function makeConcurrentHarness(workerCount = 2): Harness {
       active--;
       doneIds.push(item.id);
       return item.sourceType === 'a2a_message' || item.sourceType === 'human_chat'
-        ? `done ${COMPLETION_MARKER}`
+        ? `done`
         : 'ok';
     }),
     onDecisionMade: vi.fn(),

@@ -255,7 +255,8 @@ describe('AgentMetricsCollector', () => {
     it('starts at zero on a fresh collector', () => {
       const h = collector.getMetrics('24h').harness;
       expect(h.compressionCount).toBe(0);
-      expect(h.markerFailureRate).toBe(0);
+      expect(h.emptyTurnRate).toBe(0);
+      expect(h.turnEndedViaToolRate).toBe(0);
       expect(h.cacheHitRate).toBe(0);
       expect(h.perTurnCostUsd).toBe(0);
     });
@@ -266,16 +267,18 @@ describe('AgentMetricsCollector', () => {
       expect(collector.getMetrics('24h').harness.compressionCount).toBe(2);
     });
 
-    it('computes marker-failure rate over non-chat turns only', () => {
-      // Chat turns are exempt from the marker protocol → excluded from the denominator.
-      collector.recordTurn({ isChat: true, hadCompletionMarker: false });
-      // 4 non-chat turns, 1 missing its marker → 0.25
-      collector.recordTurn({ isChat: false, hadCompletionMarker: true });
-      collector.recordTurn({ isChat: false, hadCompletionMarker: true });
-      collector.recordTurn({ isChat: false, hadCompletionMarker: true });
-      collector.recordTurn({ isChat: false, hadCompletionMarker: false });
+    it('computes empty-turn rate and typed-completion rate over non-chat turns only', () => {
+      // Chat turns are excluded from completion accounting (a human reads the reply).
+      collector.recordTurn({ isChat: true, emptyReply: true });
+      // 4 non-chat turns: 1 produced nothing, 2 closed via the typed end_turn signal.
+      collector.recordTurn({ isChat: false, endedTurnViaTool: true });
+      collector.recordTurn({ isChat: false, endedTurnViaTool: true });
+      collector.recordTurn({ isChat: false });
+      collector.recordTurn({ isChat: false, emptyReply: true });
 
-      expect(collector.getMetrics('24h').harness.markerFailureRate).toBe(0.25);
+      const h = collector.getMetrics('24h').harness;
+      expect(h.emptyTurnRate).toBe(0.25);
+      expect(h.turnEndedViaToolRate).toBe(0.5);
     });
 
     it('computes cache-hit rate from provider cache tokens', () => {
@@ -290,8 +293,8 @@ describe('AgentMetricsCollector', () => {
     });
 
     it('computes per-turn USD cost from reported costs', () => {
-      collector.recordTurn({ isChat: false, hadCompletionMarker: true, costUsd: 0.10 });
-      collector.recordTurn({ isChat: false, hadCompletionMarker: true, costUsd: 0.30 });
+      collector.recordTurn({ isChat: false, costUsd: 0.10 });
+      collector.recordTurn({ isChat: false, costUsd: 0.30 });
       // total 0.40 over 2 turns → 0.20
       expect(collector.getMetrics('24h').harness.perTurnCostUsd).toBeCloseTo(0.2, 5);
     });
@@ -299,10 +302,10 @@ describe('AgentMetricsCollector', () => {
     it('persists and reloads harness counters', () => {
       // A collector without a dataDir keeps counters in memory; assert accumulation is stable.
       collector.recordCompression();
-      collector.recordTurn({ isChat: false, hadCompletionMarker: false });
+      collector.recordTurn({ isChat: false, emptyReply: true });
       const h = collector.getMetrics('24h').harness;
       expect(h.compressionCount).toBe(1);
-      expect(h.markerFailureRate).toBe(1);
+      expect(h.emptyTurnRate).toBe(1);
     });
   });
 

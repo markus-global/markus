@@ -120,7 +120,16 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           metadata: tagArray?.length ? { tags: tagArray } : undefined,
         };
 
-        ctx.memory.addEntry(entry);
+        const wrote = ctx.memory.addEntry(entry);
+        // Tolerate legacy/mock stores that return void — only an explicit refusal blocks.
+        if (wrote && wrote.ok === false) {
+          // §24 — the store REFUSES past its hard ceiling and moves nothing. Surfacing the
+          // verdict is the whole point: the AGENT decides how to make room (no silent eviction).
+          return JSON.stringify({
+            status: 'error', ok: false, id: entry.id,
+            error: wrote.reason ?? 'memory write refused', store: storeName(ctx.memory),
+          });
+        }
 
         if (ctx.semanticSearch?.isEnabled()) {
           ctx.semanticSearch.indexMemory(entry, ctx.agentId).catch(err => {
@@ -425,14 +434,17 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
     {
       name: 'memory_stats',
       description:
-        'Inspect your memory health: knowledge.md size vs budget, observation count, curated section count. ' +
+        'Inspect your memory health: the CURATED (injected) knowledge budget vs its cap, plus the ' +
+        'separate `## _observations` buffer usage, observation count and curated section count. ' +
+        'Note the two budgets are independent — the observation buffer is NOT injected into the prompt. ' +
         'Use periodically (or when memory feels bloated) to decide whether to run memory_organize. ' +
         'Returns JSON with budget usage percent. No args.',
       inputSchema: { type: 'object', properties: {} },
       async execute(): Promise<string> {
         const store = storeName(ctx.memory);
-        // SSOT：预算口径必须与提示词横幅 / 写入端强制归档（getMemoryHealth = 文件原始大小）完全一致，
+        // SSOT：预算口径必须与提示词横幅（context-engine「记忆健康」行）完全一致，
         // 否则会出现「横幅说 122%、工具说 95%」的自相矛盾（审计 P-12/P-16）。
+        // 现在是两个**独立**预算，分开报：curated（注入）与观察缓冲（不注入）。
         const health = ctx.memory.getMemoryHealth();
         const curated = ctx.memory.getLongTermMemory();
         const obs = ctx.memory.getObservations();
@@ -443,17 +455,27 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         return JSON.stringify({
           status: 'ok',
           store,
+          // The injected budget — the one that actually costs prompt space.
           budget: {
-            totalChars: health.totalChars,
-            limit: health.cap,
+            curatedChars: health.curatedChars,
+            limit: health.curatedCap,
             usedPercent: health.percent,
+          },
+          // A separate, non-injected budget (searched on demand).
+          observationBuffer: {
+            chars: health.observationChars,
+            limit: health.observationCap,
+            usedPercent: health.observationPercent,
           },
           observations: { count: obs.length, chars: obsChars },
           curatedSections: { count: sectionNames.length, names: sectionNames.slice(0, 20) },
           archivedChars: health.archiveChars,
           lastConsolidatedAt: health.lastConsolidatedAt,
           hint: health.percent >= MEMORY_HEALTH_WARN_PERCENT
-            ? 'Approaching budget — run memory_organize to merge observations into curated sections, or memory_update mode="forget" on superseded knowledge.'
+            ? 'Injected knowledge is near its budget — run memory_organize to merge sections, or memory_update mode="forget" on superseded knowledge.'
+            : undefined,
+          observationHint: health.observationPercent >= MEMORY_HEALTH_WARN_PERCENT
+            ? 'The observation buffer is near its own limit (it is NOT injected into the prompt). It is trimmed losslessly, oldest-first, when it overflows — memory_organize merges recurring patterns into curated sections before that happens.'
             : undefined,
         });
       },

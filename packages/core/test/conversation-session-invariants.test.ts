@@ -31,7 +31,7 @@ import { RoleLoader } from '../src/role-loader.js';
 import { AgentManager } from '../src/agent-manager.js';
 import { MemoryStore } from '../src/memory/store.js';
 import { sessionWorkspaceStore, createSessionWorkspace } from '../src/session-workspace.js';
-import { COMPLETION_MARKER, getTextContent, Logger, type LLMRequest } from '@markus/shared';
+import { getTextContent, Logger, type LLMRequest } from '@markus/shared';
 import type { Agent } from '../src/agent.js';
 import type { LLMRouter } from '../src/llm/router.js';
 
@@ -91,9 +91,9 @@ function makeRecordingRouter(): Probe {
     options?: { sessionId?: string },
   ) => {
     record(streamCalls, request, options);
-    onEvent?.({ type: 'text_delta', text: `reply ${COMPLETION_MARKER}` });
+    onEvent?.({ type: 'text_delta', text: `reply` });
     return {
-      content: `reply ${COMPLETION_MARKER}`,
+      content: `reply`,
       finishReason: 'end_turn',
       usage: { inputTokens: 10, outputTokens: 5 },
     };
@@ -106,7 +106,7 @@ function makeRecordingRouter(): Probe {
   ) => {
     record(chatCalls, request, options);
     return {
-      content: `reply ${COMPLETION_MARKER}`,
+      content: `reply`,
       finishReason: 'end_turn',
       usage: { inputTokens: 10, outputTokens: 5 },
     };

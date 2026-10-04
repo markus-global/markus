@@ -137,16 +137,18 @@ describe('handleMessageStream', () => {
 
     // The turn stops instead of streaming the same sentence forever.
     expect(reply).toContain('[response stopped: repetitive output detected]');
-    // Marked complete so upstream does not run a marker continuation on garbage.
-    expect(reply).toContain('<<HANDLE_COMPLETE>>');
+    // H7（旧行为已推翻）：旧实现往截断回复尾部补 `<<HANDLE_COMPLETE>>`，以阻止上游再跑
+    // 一次「补标记」续写。现在完成由**类型化**的 `end_turn` 信号表达，非空回复本身就是
+    // 正常结束 —— 回复里不应再出现任何魔法 token。
+    expect(reply).not.toContain('HANDLE_COMPLETE');
     // The stop note is visible to the UI.
     expect(events.join('')).toContain('[response stopped');
   });
 
-  it('B: forwards the marker-continuation text to the UI when streaming', async () => {
+  it('B: forwards the typed-continuation text to the UI when streaming', async () => {
     const router = makeMockRouter({
       chatFn: async () => ({
-        content: 'Finishing the report now. <<HANDLE_COMPLETE>>',
+        content: 'Finishing the report now.',
         finishReason: 'end_turn',
         usage: { inputTokens: 30, outputTokens: 10 },
       }),
@@ -157,18 +159,19 @@ describe('handleMessageStream', () => {
 
     const events: string[] = [];
     const ensure = (agent as unknown as {
-      ensureCompletionMarker: (r: string, s: string, e: (evt: { type: string; text?: string }) => void) => Promise<string>;
-    }).ensureCompletionMarker.bind(agent);
+      ensureTurnCompleted: (r: string, s: string, e: (evt: { type: string; text?: string }) => void) => Promise<string>;
+    }).ensureTurnCompleted.bind(agent);
 
     const result = await ensure('Here is the plan.', sessionId, (evt) => {
       if (evt.type === 'text_delta') events.push(evt.text ?? '');
     });
 
-    // Continuation content is streamed to the UI (marker stripped from deltas)...
+    // Continuation content is streamed to the UI live...
     expect(events.join('')).toContain('Finishing the report now.');
-    expect(events.join('')).not.toContain('<<HANDLE_COMPLETE>>');
-    // ...and the returned reply carries the marker so the turn is complete.
-    expect(result).toContain('<<HANDLE_COMPLETE>>');
+    // ...and no magic token is injected into the reply: completion is typed now, so there
+    // is nothing to append and nothing to strip.
+    expect(result).not.toContain('HANDLE_COMPLETE');
+    expect(result.length).toBeGreaterThan(0);
   });
 });
 

@@ -452,7 +452,6 @@ describe('working memory helpers', () => {
       getLongTermMemory: vi.fn(() => ''),
       getLongTermMemoryExcluding: vi.fn(() => ''),
       getLongTermSection: vi.fn(() => ''),
-      compressLongTermMemory: vi.fn(() => ({ charsBefore: 0, charsAfter: 0, sectionsBefore: 0, sectionsAfter: 0, truncatedChunks: 0 })),
       createSession: vi.fn(() => ({
         id: 'sess_1',
         agentId: 'test',

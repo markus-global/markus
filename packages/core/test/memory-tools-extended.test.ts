@@ -40,9 +40,6 @@ function createMockMemory(entries: MemoryEntry[] = []): IMemoryStore {
     getLongTermMemory: vi.fn().mockReturnValue(''),
     getLongTermSection: vi.fn((section: string) => (section === 'notes' ? 'Existing note' : '')),
     getLongTermMemoryExcluding: vi.fn().mockReturnValue(''),
-    compressLongTermMemory: vi.fn().mockReturnValue({
-      charsBefore: 0, charsAfter: 0, sectionsBefore: 0, sectionsAfter: 0, truncatedChunks: 0,
-    }),
     createSession: vi.fn(),
     getSession: vi.fn(),
     appendMessage: vi.fn(),

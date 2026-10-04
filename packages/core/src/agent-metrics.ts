@@ -25,8 +25,12 @@ export interface TaskMetrics {
 export interface HarnessHealthMetrics {
   /** How often per-call context packing had to compress (over budget). */
   compressionCount: number;
-  /** Share of non-chat turns that finished without a completion marker (0-1). */
-  markerFailureRate: number;
+  /** Share of non-chat turns that produced NO output at all (0-1).
+   *  Replaces the retired marker-based signal — see shared/limits.ts. */
+  emptyTurnRate: number;
+  /** Share of non-chat turns that closed themselves out via the typed `end_turn`
+   *  signal (0-1). Measures adoption of the unified completion protocol. */
+  turnEndedViaToolRate: number;
   /**
    * Cumulative prompt cache-hit rate from provider usage where reported (0-1).
    * Kept as a plain number for API/type stability — it is 0 when no reported
@@ -108,7 +112,8 @@ interface AuditCounters {
   cacheWriteTokens: number;
   turnsCompleted: number;
   nonChatTurns: number;
-  markerMissTurns: number;
+  emptyTurns: number;
+  endTurnTurns: number;
   /**
    * Count of llm_request audits where the provider actually reported prompt
    * tokens (i.e. `event.inputTokens` was present). Separates "server reported"
@@ -129,7 +134,7 @@ function freshCounters(): AuditCounters {
     todayCutoffDate: new Date().toISOString().slice(0, 10),
     compressionCount: 0,
     cacheReadTokens: 0, cacheWriteTokens: 0,
-    turnsCompleted: 0, nonChatTurns: 0, markerMissTurns: 0,
+    turnsCompleted: 0, nonChatTurns: 0, emptyTurns: 0, endTurnTurns: 0,
     promptTokensReported: 0,
   };
 }
@@ -287,17 +292,19 @@ export class AgentMetricsCollector {
   }
 
   /**
-   * C2: a mailbox turn completed. Non-chat turns are expected to end with a completion
-   * marker; missing markers on those turns feed the marker-failure rate. Chat turns are
-   * excluded (a human is reading the reply, no marker protocol applies).
+   * C2: a mailbox turn completed. The honest non-chat signals are "did the turn
+   * produce anything at all" (an empty reply is the real failure) and "did it close
+   * itself out via the typed `end_turn` signal". Chat turns are excluded — a human is
+   * reading the reply, so no completion accounting applies.
    */
-  recordTurn(opts: { isChat: boolean; hadCompletionMarker: boolean; costUsd?: number }): void {
+  recordTurn(opts: { isChat: boolean; emptyReply?: boolean; endedTurnViaTool?: boolean; costUsd?: number }): void {
     const c = this.counters;
     c.turnsCompleted++;
     if (opts.costUsd) c.estimatedCost += opts.costUsd;
     if (!opts.isChat) {
       c.nonChatTurns++;
-      if (!opts.hadCompletionMarker) c.markerMissTurns++;
+      if (opts.emptyReply) c.emptyTurns++;
+      if (opts.endedTurnViaTool) c.endTurnTurns++;
     }
     this.scheduleSave();
   }
@@ -334,7 +341,8 @@ export class AgentMetricsCollector {
   }
 
   private computeHarnessMetrics(c: AuditCounters): HarnessHealthMetrics {
-    const markerFailureRate = c.nonChatTurns > 0 ? c.markerMissTurns / c.nonChatTurns : 0;
+    const emptyTurnRate = c.nonChatTurns > 0 ? c.emptyTurns / c.nonChatTurns : 0;
+    const turnEndedViaToolRate = c.nonChatTurns > 0 ? c.endTurnTurns / c.nonChatTurns : 0;
     // Cache-hit rate over *reported* prompt-side tokens served. `c.promptTokens`
     // only accumulates `event.inputTokens ?? 0`, i.e. values the provider
     // actually reported, so this is already reported-only. Kept as a plain
@@ -357,7 +365,8 @@ export class AgentMetricsCollector {
     const perTurnCostUsd = c.turnsCompleted > 0 ? c.estimatedCost / c.turnsCompleted : 0;
     return {
       compressionCount: c.compressionCount,
-      markerFailureRate,
+      emptyTurnRate,
+      turnEndedViaToolRate,
       cacheHitRate,
       cacheHitRateWindow: window.cacheHitRateWindow,
       cacheHitRateSamples: window.cacheHitRateSamples,

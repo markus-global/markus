@@ -29,8 +29,11 @@ import {
   scoreKeywordHaystack,
   type LLMMessage,
   MEMORY_MD_SECTION_MAX_CHARS,
-  MEMORY_MD_TOTAL_MAX_CHARS,
+  MEMORY_MD_CURATED_MAX_CHARS,
+  MEMORY_MD_CURATED_HARD_MAX_CHARS,
   MEMORY_OBSERVATIONS_MAX_CHARS,
+  MEMORY_OBSERVATIONS_HARD_MAX_CHARS,
+  MEMORY_FRAGMENTS_MAX_CHARS,
   MEMORY_ENTRY_MAX_CHARS,
   KNOWLEDGE_MD_SELF_HEAL_BYTES,
   KNOWLEDGE_SECTION_KEY_MAX_CHARS,
@@ -43,20 +46,66 @@ import {
   SESSION_STORAGE_COMPACT_TRIGGER,
   CONTEXT_SLOT_MAX_CHARS,
 } from '@markus/shared';
-import type { IMemoryStore, MemoryEntry, ConversationSession, CompactResult } from './types.js';
+import type { IMemoryStore, MemoryEntry, ConversationSession, CompactResult, MemoryHealth } from './types.js';
 import { ensureKnowledgeFile, knowledgePath, retiredStatePath } from './taxonomy.js';
+import { indexArchiveBodies, healStubLines, accumulateResidue } from './residue-repair.js';
 import { writeFileAtomic } from '../atomic-write.js';
 import { buildSlotSegment, buildSummarySegment, sanitizeSlotKey, type SlotEntry } from '../context-slot.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
 
+/** Outcome of the one-time H13 residue repair. Rules live in `residue-repair.ts`. */
+export interface ResidueRepairReport {
+  /** Stub lines successfully replaced by their archived body. */
+  repaired: number;
+  /** Stubs whose owning name matched MORE THAN ONE archived section — left untouched. */
+  ambiguous: Array<{ name: string; candidates: number }>;
+  /** Stubs whose owning name matched no archived section — left untouched. */
+  notFound: string[];
+  curatedChanged: boolean;
+  entriesChanged: boolean;
+  fragmentsChanged: boolean;
+}
+
+// NOTE (H12, updated by H25): there is deliberately NO "per-entry overhead" constant here.
+// The observation buffer has exactly ONE size definition, shared by the writer, the trimmer
+// and the health report. Since H24 the buffer is a JSON record file, and since H25 that
+// definition is the **payload** (sum of entry bodies) — NOT the container's serialized
+// length. Measuring the container made capacity depend on the format: moving markdown →
+// pretty-printed JSON inflated the same knowledge by ~37% (indentation + repeated keys) and
+// silently evicted healthy observations at migration time.
+// The invariant to preserve is: measure the agent's bytes, never an approximation of them,
+// and never the container's syntax.
+
 const log = createLogger('memory-store');
+
+// H24 — 机器记录用机器格式（见 `records.ts` 与 docs §20）。载荷是 JSON 字符串，无法伪造记录边界。
+import { parseRecords, serializeRecords } from './records.js';
 
 const VALID_TYPES = new Set<string>(['conversation', 'fact', 'task_result', 'note', 'insight', 'conversation_fragment']);
 
 /** Prevent section bodies from introducing sibling ## headings that split the store. */
+/**
+ * Sanitize a curated section body AT WRITE TIME — the single point at which the agent's
+ * knowledge enters the store.
+ *
+ * §24 (I3) — the platform never rewrites the agent's curated content on READ. Anything it
+ * guarantees about that text must be guaranteed here, once, deterministically:
+ *   • a `## ` inside a body would split the section in two on the next parse → demote to `### `;
+ *   • leaked `<think>` blocks (model reasoning accidentally saved) must not land in the region
+ *     that is injected into EVERY prompt. Doing it here replaces the old load-time heuristic
+ *     sweep (`pruneMemoryMd` Pass 2, removed with §24).
+ */
 export function sanitizeSectionBody(content: string): string {
-  return content.replace(/^## /gm, '### ');
+  return stripThinkBlocks(content).replace(/^## /gm, '### ');
+}
+
+/** Drop `<think>…</think>` blocks, plus any unterminated opener (and everything after it). */
+function stripThinkBlocks(text: string): string {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/<think>[\s\S]*$/g, '')
+    .replace(/^\s*<\/think>\s*$/gm, '');
 }
 
 /**
@@ -362,6 +411,19 @@ export class MemoryStore implements IMemoryStore {
   private saveDebounce: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private longTermFile: string;
   private longTermArchiveFile: string;
+  /**
+   * H24 — observations live in a JSON record file. Structure is JSON's, so no payload can forge a
+   * record boundary; the H13/H17/H18/H22 family is gone by construction, not by another heuristic.
+   */
+  private observationFile: string;
+  private observationArchiveFile: string;
+  /**
+   * H16 — session compaction fragments live in their OWN pool + file, never mixed
+   * with `this.entries` (agent-authored observations). See MEMORY_FRAGMENTS_MAX_CHARS.
+   */
+  private fragments: MemoryEntry[] = [];
+  private fragmentFile: string;
+  private fragmentArchiveFile: string;
 
   constructor(dataDir: string) {
     this.dataDir = dataDir;
@@ -374,12 +436,39 @@ export class MemoryStore implements IMemoryStore {
     // SSOT: always knowledge.md after ensure (never write legacy MEMORY.md).
     this.longTermFile = knowledgePath(dataDir);
     this.longTermArchiveFile = join(dataDir, 'knowledge-archive.md');
+    this.observationFile = join(dataDir, 'observations.json');
+    this.observationArchiveFile = join(dataDir, 'observations-archive.json');
+    this.fragmentFile = join(dataDir, 'session-fragments.json');
+    this.fragmentArchiveFile = join(dataDir, 'session-fragments-archive.json');
     this.loadFromDisk();
+    this.loadFragmentsFromDisk();
+    // §24 (R4) — the H13 residue repair is a **migration**, not an invariant, so it runs
+    // exactly ONCE per agent, gated by a marker file. It used to run on EVERY load: a
+    // permanent heuristic rewriter of agent-authored content sitting on the hot path —
+    // which is precisely how H27 (repair writing back the retired container, leaving two
+    // copies of one fact) became possible. Once an agent has migrated, loading does no
+    // prose parsing and no content rewriting at all.
+    if (!existsSync(this.migrationMarkerPath())) {
+      this.repairStubResidue();
+      try {
+        writeFileSync(this.migrationMarkerPath(), new Date().toISOString(), 'utf-8');
+      } catch { /* best-effort marker; the repair itself is idempotent */ }
+    }
     this.loadSessionsFromDisk();
   }
 
   getStoreFileName(): string {
     return basename(this.longTermFile);
+  }
+
+  /**
+   * §24 — marker for the ONE-SHOT memory migration (legacy prose containers + the H13
+   * residue repair). Present ⇒ this agent is fully migrated: the load path is pure JSON,
+   * parses no prose and rewrites no content. Delete criterion for the whole migration
+   * module: every `agents/*` dir has this marker (docs §24.4).
+   */
+  private migrationMarkerPath(): string {
+    return join(this.dataDir, '.memory-v2-migrated');
   }
 
   /** 归档文件名：超预算段落正文的**无损**去处（可被 memory_search 检索，不注入）。 */
@@ -390,20 +479,41 @@ export class MemoryStore implements IMemoryStore {
   /**
    * 记忆预算健康度（审计 P-12）：驱动提示词内的健康信号，让 Agent 知道何时该整理。
    */
-  getMemoryHealth(): { totalChars: number; cap: number; percent: number; observations: number; curatedSections: number; archiveChars: number; lastConsolidatedAt: string | null } {
-    let totalChars = 0;
+  getMemoryHealth(): MemoryHealth {
+    let content = '';
     try {
-      if (existsSync(this.longTermFile)) totalChars = readFileSync(this.longTermFile, 'utf-8').length;
-    } catch { /* unreadable — treat as 0 */ }
+      if (existsSync(this.longTermFile)) content = readFileSync(this.longTermFile, 'utf-8');
+    } catch { /* unreadable — treat as empty */ }
+    // H24 — "archived chars" is the TOTAL lossless overflow across EVERY archive (curated sections,
+    // observations, fragments), which is exactly what the banner's "已归档 N 字符" claims.
     let archiveChars = 0;
-    try {
-      if (existsSync(this.longTermArchiveFile)) archiveChars = readFileSync(this.longTermArchiveFile, 'utf-8').length;
-    } catch { /* archive optional */ }
-    const cap = MEMORY_MD_TOTAL_MAX_CHARS;
+    for (const f of [this.longTermArchiveFile, this.observationArchiveFile, this.fragmentArchiveFile]) {
+      try {
+        if (existsSync(f)) archiveChars += readFileSync(f, 'utf-8').length;
+      } catch { /* archive optional */ }
+    }
+
+    // Two budgets, measured separately and honestly. See MEMORY_MD_CURATED_MAX_CHARS.
+    // H12: observations are reported via the SAME canonical measure the writer and
+    // the trimmer enforce (`observationPayloadChars`, H25: payload — NOT container size), not the raw on-disk slice —
+    // otherwise a file with content after `## _observations` makes the banner
+    // disagree with the very cap it is supposed to represent.
+    const { curated } = splitKnowledgeSections(content);
+    const curatedChars = curated.length;
+    // H24 — observations live in a JSON record file; report the canonical serialized size so the
+    // banner, the trigger and the trimmer all speak about ONE quantity.
+    const observationChars = this.observationPayloadChars();
     return {
-      totalChars,
-      cap,
-      percent: cap > 0 ? Math.round((totalChars / cap) * 100) : 0,
+      curatedChars,
+      curatedCap: MEMORY_MD_CURATED_MAX_CHARS,
+      percent: MEMORY_MD_CURATED_MAX_CHARS > 0
+        ? Math.round((curatedChars / MEMORY_MD_CURATED_MAX_CHARS) * 100)
+        : 0,
+      observationChars,
+      observationCap: MEMORY_OBSERVATIONS_MAX_CHARS,
+      observationPercent: MEMORY_OBSERVATIONS_MAX_CHARS > 0
+        ? Math.round((observationChars / MEMORY_OBSERVATIONS_MAX_CHARS) * 100)
+        : 0,
       observations: this.entries.length,
       curatedSections: parseCuratedSections(this.getLongTermMemory()).length,
       archiveChars,
@@ -452,8 +562,15 @@ export class MemoryStore implements IMemoryStore {
       const existing = existsSync(this.longTermArchiveFile)
         ? readFileSync(this.longTermArchiveFile, 'utf-8')
         : head;
-      if (!existing.includes(trimmed)) {
+      if (!existing.includes(`## ${name}\n`)) {
         appendFileSync(this.longTermArchiveFile, `## ${name}\n${trimmed}\n\n`);
+      } else if (!existing.includes(trimmed)) {
+        // H21 — never create a DUPLICATE section name. A repeated name makes any later
+        // lookup (the residue repair included) undecidable; that ambiguity is exactly what
+        // left 5 stubs unresolvable on the live org. Suffix until the name is unique.
+        let n = 2;
+        while (existing.includes(`## ${name} (${n})\n`)) n += 1;
+        appendFileSync(this.longTermArchiveFile, `## ${name} (${n})\n${trimmed}\n\n`);
       }
     } catch (err) {
       log.warn('Failed to archive section body', { name, error: String(err) });
@@ -471,16 +588,51 @@ export class MemoryStore implements IMemoryStore {
 
   // --- Short-term: session messages ---
 
-  addEntry(entry: MemoryEntry): void {
-    this.entries.push(sanitizeEntry(entry));
+  addEntry(entry: MemoryEntry): { ok: boolean; reason?: string } {
+    // H16 — route by TYPE. A conversation fragment is a platform pagination payload,
+    // not an agent observation; it belongs in the fragment pool/file, never in
+    // knowledge.md `## _observations`. Routing here keeps every caller (compaction
+    // included) unchanged.
+    if (entry.type === 'conversation_fragment') {
+      this.fragments.push(sanitizeEntry(entry));
+      this.saveFragmentsToDisk();
+      log.debug('Memory fragment added', { type: entry.type, id: entry.id });
+      return { ok: true };
+    }
+    const sanitized = sanitizeEntry(entry);
+    // §24 — the ONLY hard enforcement point for the observation log. Refuse at the ceiling
+    // and keep everything already stored untouched, rather than silently evicting the
+    // oldest entries (which moved the agent's history without asking and made capacity
+    // depend on the storage container — H25).
+    if (this.observationPayloadChars() + sanitized.content.length > MEMORY_OBSERVATIONS_HARD_MAX_CHARS) {
+      const reason = `Observation log is at its hard ceiling (${MEMORY_OBSERVATIONS_HARD_MAX_CHARS} chars). `
+        + 'Nothing was discarded — make room with `memory_organize` (merge recurring observations into a curated section) '
+        + 'or `memory_update({ mode: "delete", ... })`, then save again.';
+      log.warn('observation write REFUSED at the hard ceiling (no eviction, nothing moved)', {
+        chars: this.observationPayloadChars(),
+        ceiling: MEMORY_OBSERVATIONS_HARD_MAX_CHARS,
+        id: entry.id,
+      });
+      return { ok: false, reason };
+    }
+    this.entries.push(sanitized);
     this.saveToDisk();
     log.debug('Memory entry added', { type: entry.type, id: entry.id });
+    return { ok: true };
   }
 
   getEntries(type?: MemoryEntry['type'], limit?: number): MemoryEntry[] {
-    let result = type ? this.entries.filter((e) => e.type === type) : [...this.entries];
+    // Fragments are a separate pool (H16) — a `conversation_fragment` query must read
+    // the fragment pool, not the observation entries.
+    const source = type === 'conversation_fragment' ? this.fragments : this.entries;
+    let result = type ? source.filter((e) => e.type === type) : [...source];
     if (limit) result = result.slice(-limit);
     return result;
+  }
+
+  /** All session-compaction fragments currently held (most recent last). */
+  getFragments(): MemoryEntry[] {
+    return [...this.fragments];
   }
 
   getEntriesByTag(tag: string, limit?: number): MemoryEntry[] {
@@ -543,6 +695,16 @@ export class MemoryStore implements IMemoryStore {
             },
             score: score + 0.1,
           });
+        }
+      }
+    } catch { /* archive missing/unreadable — non-fatal */ }
+
+    // H24 — observation archive (JSON records): memory_search must still find trimmed observations.
+    try {
+      if (existsSync(this.observationArchiveFile)) {
+        for (const e of parseRecords(readFileSync(this.observationArchiveFile, 'utf-8')).entries) {
+          const score = scoreKeywordHaystack(`${e.content}\n${formatTags(e.metadata)}`, tokens, fullLower);
+          if (score > 0) scored.push({ entry: e, score });
         }
       }
     } catch { /* archive missing/unreadable — non-fatal */ }
@@ -785,7 +947,11 @@ export class MemoryStore implements IMemoryStore {
       let updated: string;
       if (existing.includes(sectionHeader)) {
         const regex = new RegExp(`(## ${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\n[\\s\\S]*?(?=\\n## |$)`);
-        updated = existing.replace(regex, `${sectionHeader}\n${truncatedContent}\n`);
+        // Replacer must be a FUNCTION: `truncatedContent` is agent-authored and may
+        // contain `$&` / ``$` `` / `$'` / `$1`, which a string replacement would
+        // expand — silently duplicating the surrounding file. Same class of bug as
+        // tools/literal-replace.ts; see docs/FILE-EDIT-LITERAL-REPLACEMENT-FIX.md.
+        updated = existing.replace(regex, () => `${sectionHeader}\n${truncatedContent}\n`);
       } else {
         // 审计 P-17（严重 bug 修复）：`## _observations` 必须是**最后一个**段落——
         // saveToDisk() 以该标记为界重建文件，会丢弃其后的所有内容。历史上这里直接
@@ -800,15 +966,34 @@ export class MemoryStore implements IMemoryStore {
         }
       }
 
-      writeFileAtomic(this.longTermFile, updated);
-      // 审计 P-04/P-05：总量超预算 → 无损再平衡（归档），绝不拒绝写入、绝不静默丢弃。
-      if (updated.length > MEMORY_MD_TOTAL_MAX_CHARS) {
-        const rebalanced = this.compressLongTermMemory();
-        log.info('knowledge.md over budget after write — rebalanced losslessly', {
-          key, totalChars: updated.length, charsAfter: rebalanced.charsAfter, archived: rebalanced.truncatedChunks,
+      // H19 — the curated region is injected into EVERY prompt, so it has a HARD ceiling.
+      // Exceeding it is REFUSED (fail-closed; nothing is written) with an actionable reason,
+      // exactly like the per-section limit above. Between the SOFT budget
+      // (`MEMORY_MD_CURATED_MAX_CHARS`) and that ceiling we only REPORT (log + in-prompt
+      // banner). The old code silently archived the largest sections here — value-blind,
+      // invisible to the agent, inconsistent with the per-section policy, and the root of
+      // H13; it never legitimately fired (0 of 94 agents ever exceeded the soft budget).
+      // Measured on the CURATED slice only — the observation buffer has its own budget and
+      // counting it here is what produced the old "always true" trigger.
+      const curatedChars = splitKnowledgeSections(updated).curated.length;
+      if (curatedChars > MEMORY_MD_CURATED_HARD_MAX_CHARS) {
+        return {
+          ok: false,
+          reason: `Curated knowledge would reach ${curatedChars} chars, over the hard ceiling of `
+            + `${MEMORY_MD_CURATED_HARD_MAX_CHARS} (this region is injected into every prompt). `
+            + 'Nothing was written. Consolidate first — `memory_organize` (merge related sections) '
+            + 'or `memory_update` (mode:"delete" an outdated section) — then retry.',
+        };
+      }
+
+      this.writeKnowledgeMd(updated);
+      if (curatedChars > MEMORY_MD_CURATED_MAX_CHARS) {
+        log.warn('knowledge.md curated over SOFT budget — reported, not rewritten', {
+          key, curatedChars, softCap: MEMORY_MD_CURATED_MAX_CHARS,
+          hardCap: MEMORY_MD_CURATED_HARD_MAX_CHARS, store: this.getStoreFileName(),
         });
       }
-      log.debug('Long-term memory updated', { key, sectionChars: truncatedContent.length, totalChars: updated.length, store: this.getStoreFileName() });
+      log.debug('Long-term memory updated', { key, sectionChars: truncatedContent.length, curatedChars, store: this.getStoreFileName() });
       return { ok: true };
     } catch (err) {
       log.warn('Failed to write long-term memory', { key, error: String(err) });
@@ -886,7 +1071,7 @@ export class MemoryStore implements IMemoryStore {
       const obsIdx = content.indexOf('## _observations');
       const obsPart = obsIdx >= 0 ? content.slice(obsIdx).trimStart() : '';
       const updated = (curatedAfter.trimEnd() + (obsPart ? '\n\n' + obsPart : '')).trimEnd() + '\n';
-      writeFileAtomic(this.longTermFile, updated);
+      this.writeKnowledgeMd(updated);
       log.info('Curated section removed', {
         name,
         removedChars: curatedBefore.length - curatedAfter.length,
@@ -1161,9 +1346,10 @@ export class MemoryStore implements IMemoryStore {
     maxResults: number = 5,
   ): Array<{ id: string; content: string; metadata?: Record<string, unknown> }> {
     const q = query.trim().toLowerCase();
-    const hits = this.entries.filter(
-      (e) => e.type === 'conversation_fragment',
-    );
+    // H16: search BOTH the live fragment pool and the overflow archive — an archived
+    // fragment is still "recoverable verbatim", so retrieval must see it.
+    const hits = [...this.fragments, ...this.archivedFragmentEntries()]
+      .filter((e) => e.type === 'conversation_fragment');
     // score by keyword hits against content
     const scored = hits
       .map((e) => {
@@ -1186,7 +1372,8 @@ export class MemoryStore implements IMemoryStore {
 
   /** Re-inject one archived fragment back into the live session as a user message. */
   includeFragment(sessionId: string, fragmentId: string): { ok: boolean; message: string } {
-    const entry = this.entries.find((e) => e.id === fragmentId && e.type === 'conversation_fragment');
+    const entry = [...this.fragments, ...this.archivedFragmentEntries()]
+      .find((e) => e.id === fragmentId && e.type === 'conversation_fragment');
     if (!entry) {
       return { ok: false, message: `No archived fragment with id ${fragmentId}.` };
     }
@@ -1206,12 +1393,12 @@ export class MemoryStore implements IMemoryStore {
 
   /** Purge archived fragments for a session (used by session_purge). */
   purgeSessionFragments(sessionId: string): number {
-    const before = this.entries.length;
-    this.entries = this.entries.filter(
+    const before = this.fragments.length;
+    this.fragments = this.fragments.filter(
       (e) => !(e.type === 'conversation_fragment' && e.metadata?.sessionId === sessionId),
     );
-    const removed = before - this.entries.length;
-    if (removed > 0) this.saveToDisk();
+    const removed = before - this.fragments.length;
+    if (removed > 0) this.saveFragmentsToDisk();
     return removed;
   }
 
@@ -1222,7 +1409,7 @@ export class MemoryStore implements IMemoryStore {
     fragmentCount: number;
   } {
     const session = this.sessions.get(sessionId);
-    const fragmentCount = this.entries.filter(
+    const fragmentCount = this.fragments.filter(
       (e) => e.type === 'conversation_fragment' && e.metadata?.sessionId === sessionId,
     ).length;
     return {
@@ -1326,8 +1513,39 @@ export class MemoryStore implements IMemoryStore {
       }
     }
 
-    // Load observations from ## _observations section of knowledge.md
-    this.entries = this.parseObservationsFromMemoryMd();
+    // ── H24 — observations are a JSON record file. Structure is JSON's, so no payload can forge a
+    // record boundary: the H13/H17/H18/H22 family is gone by construction, not by another heuristic. ──
+    if (existsSync(this.observationFile)) {
+      const { entries, error } = parseRecords(readFileSync(this.observationFile, 'utf-8'));
+      if (error) {
+        log.error('observations.json unreadable — NOT overwriting it; starting with empty in-memory state', {
+          error, file: basename(this.observationFile),
+        });
+      }
+      this.entries = entries.filter(e => e.content.trim().length > 0);
+      if (this.runLegacyMigrations()) this.saveToDisk();
+      this.enforceMemoryBudgets();
+      return;
+    }
+
+    // ── LEGACY MIGRATION ONLY (delete once every agent has migrated; docs §20) ──
+    // Load observations from the retired `## _observations` markdown section; the `saveToDisk`
+    // call at the end of this block writes observations.json and strips the region out of knowledge.md.
+    const hadLegacyRegion = this.hasLegacyObservationRegion();
+    const parsed = this.parseObservationsFromMemoryMd();
+    // H16 migration: fragments found in knowledge.md's `## _observations` (the legacy
+    // single-pool layout) move to their OWN pool/file; knowledge.md then self-heals on
+    // the save below. Lossless — every fragment is carried over verbatim.
+    const migratedFragments = parsed.filter(e => e.type === 'conversation_fragment');
+    if (migratedFragments.length > 0) {
+      this.fragments.push(...migratedFragments);
+      this.saveFragmentsToDisk();
+      log.info('Migrated session fragments out of knowledge.md observations', {
+        count: migratedFragments.length,
+        store: this.getStoreFileName(),
+      });
+    }
+    this.entries = parsed.filter(e => e.type !== 'conversation_fragment');
     const before = this.entries.length;
     this.entries = this.entries.filter(e => e.content.trim().length > 0);
     if (this.entries.length < before) {
@@ -1335,6 +1553,17 @@ export class MemoryStore implements IMemoryStore {
         removed: before - this.entries.length,
         store: this.getStoreFileName(),
       });
+    }
+
+    // H26 — persist the migration **unconditionally** whenever the retired in-band region was
+    // present. Previously the write happened only on the prune / fragment / self-heal paths,
+    // so a legacy agent whose buffer fit under the cap NEVER converged: the observations stayed
+    // in knowledge.md, no observations.json was created, and the ambiguity-prone markdown
+    // reader remained the source of truth on every subsequent load. Measured on the live org:
+    // only 10 of 94 agents had migrated — precisely the ones that happened to exceed the cap
+    // (the over-budget path was the only one that saved). A migration that only runs when you
+    // are already in trouble is not a migration.
+    if (hadLegacyRegion) {
       this.saveToDisk();
     }
 
@@ -1383,37 +1612,354 @@ export class MemoryStore implements IMemoryStore {
     // file, so an over-budget knowledge.md stayed over budget forever (measured:
     // 23 323 chars against a 15 000 limit). Enforcing it at load makes the cap an
     // actual invariant: "what was read is what fits".
-    this.convergeLongTermToCap();
+    this.enforceMemoryBudgets();
   }
 
   /**
-   * Shrink knowledge.md to `MEMORY_MD_TOTAL_MAX_CHARS` if it is over budget.
+   * Enforce BOTH memory budgets at load time. Idempotent and cheap when already
+   * within budget (one read).
    *
-   * Idempotent and cheap when already within budget (one `statSync`). Delegates to
-   * `compressLongTermMemory` so the per-section cap, the stub marker and the
-   * `## _observations` carve-out all follow one implementation.
+   * Two budgets, two independent strong enforcement points (see
+   * `MEMORY_MD_CURATED_MAX_CHARS` / `MEMORY_OBSERVATIONS_MAX_CHARS`):
+   *
+   *   1. curated (injected) → `compressLongTermMemory` archives the largest
+   *      section bodies losslessly until the injected part fits.
+   *   2. observations → `trimObservationsToCap` archives the OLDEST observations
+   *      losslessly until the buffer fits.
+   *
+   * Step 2 is the piece that used to be missing. `compressLongTermMemory`
+   * deliberately skips the observation buffer ("it has its own budget"), but that
+   * budget was only enforced on the WRITE path — so an agent whose excess lived
+   * entirely in observations could never converge at load: the file was rewritten
+   * byte-for-byte and still logged `converged {charsBefore: X, charsAfter: X}`.
+   * A cap with no enforcement point is not a cap.
    */
-  convergeLongTermToCap(): { converged: boolean; charsBefore: number; charsAfter: number } {
-    if (!existsSync(this.longTermFile)) {
-      return { converged: false, charsBefore: 0, charsAfter: 0 };
+  enforceMemoryBudgets(): MemoryBudgetEnforcement {
+    const read = (): { curated: string; observations: string } => {
+      try {
+        return splitKnowledgeSections(existsSync(this.longTermFile) ? readFileSync(this.longTermFile, 'utf-8') : '');
+      } catch {
+        return { curated: '', observations: '' };
+      }
+    };
+
+    const start = read();
+
+    // ── Budget 1: curated (injected) — REPORT ONLY (H19) ──────────────────
+    // The platform does NOT rewrite the curated region on its own. The old
+    // `compressLongTermMemory()` archived the LARGEST section bodies into
+    // knowledge-archive.md and left pointer stubs — value-blind, invisible to the agent,
+    // inconsistent with the per-section "never silently truncated" policy, and the root
+    // of H13. It never legitimately fired (measured: 0 / 94 agents over the soft budget).
+    // Over-budget is REPORTED here and by the in-prompt banner; the agent consolidates
+    // with its own tools (`memory_organize` / `memory_update`). The HARD ceiling is
+    // enforced fail-closed on the write path (see `addLongTermMemory`).
+    const curated = {
+      before: start.curated.length,
+      after: start.curated.length,
+      // H19: curated is REPORT-ONLY — the platform never rewrites it, so no enforcement
+      // action is ever taken. Kept `false` to match the field's meaning everywhere else
+      // ("did an enforcement action succeed?", as for `observations` below), NOT
+      // "is the region within budget?" (use `before <= MEMORY_MD_CURATED_MAX_CHARS`).
+      converged: false,
+      archived: 0,
+    };
+    if (curated.before > MEMORY_MD_CURATED_MAX_CHARS) {
+      log.warn('knowledge.md CURATED over soft budget at load — reported only, not rewritten', {
+        charsBefore: curated.before, cap: MEMORY_MD_CURATED_MAX_CHARS,
+        hardCap: MEMORY_MD_CURATED_HARD_MAX_CHARS, store: this.getStoreFileName(),
+      });
     }
-    let chars = 0;
+
+    // ── Budget 2: observation buffer (NOT injected, searched on demand) ────
+    // Measured by the CANONICAL payload size (see `observationPayloadChars`) so
+    // the trigger, the trimmer and the health banner all speak about ONE quantity.
+    // The old trigger read the on-disk slice while the trimmer used a hand-rolled
+    // per-entry estimate; the two straddled the cap and the trim became a no-op (H12).
+    // §24 (R2+R4) — REPORT ONLY. The platform no longer evicts or archives on the agent's
+    // behalf: the buffer is the agent's own scratch log, and choosing what to drop is the
+    // agent's decision (`memory_organize` / `memory_update mode:"delete"`). The single hard
+    // enforcement point is the append path (`addEntry`), which REFUSES past
+    // MEMORY_OBSERVATIONS_HARD_MAX_CHARS instead of silently moving older entries.
+    const obsBefore = this.observationPayloadChars();
+    const observations = {
+      before: obsBefore,
+      after: obsBefore,
+      converged: obsBefore <= MEMORY_OBSERVATIONS_MAX_CHARS,
+      archived: 0,
+    };
+    if (obsBefore > MEMORY_OBSERVATIONS_MAX_CHARS) {
+      log.warn('observation buffer over the ADVISORY line — reported only (agent decides)', {
+        chars: obsBefore,
+        advisory: MEMORY_OBSERVATIONS_MAX_CHARS,
+        hardCeiling: MEMORY_OBSERVATIONS_HARD_MAX_CHARS,
+        entries: this.entries.length,
+        store: this.getStoreFileName(),
+      });
+    }
+
+    return { curated, observations };
+  }
+
+  /**
+   * The exact set of entries that will be written into `## _observations`: the
+   * per-pool COUNT cap (500 newest observations) plus the empty-content filter.
+   * Kept in ONE place so the measured size and the written size can never diverge.
+   * (H16: session fragments are their OWN pool/file and are NOT part of this set.)
+   */
+  private observationWriteSet(): MemoryEntry[] {
+    return this.entries
+      .filter(e => e.content.trim().length > 0)
+      .slice(-MemoryStore.MAX_MEMORY_ENTRIES);
+  }
+
+  /**
+   * Canonical size (chars) of the observation buffer = the **payload** the agent authored
+   * (sum of entry bodies), NOT the container's serialized length.
+   *
+   * H25 — the measure must be INVARIANT under a change of container. H24 moved observations
+   * from in-band markdown into `observations.json`, and this function was switched to
+   * `serializeRecords(...).length` at the same time. The cap (`MEMORY_OBSERVATIONS_MAX_CHARS`)
+   * was calibrated for markdown, so the same knowledge suddenly measured ~37% larger
+   * (indentation + repeated keys + quotes): measured on real data, 34 entries were
+   * 25 716 chars (86%, healthy) under markdown but 35 182 (117%, over) under pretty JSON —
+   * and the load-time trimmer therefore **silently evicted** observations that were healthy
+   * before the format change (observed in the boot log: 10 agents archived 1–6 each).
+   *
+   * Measuring the payload makes capacity independent of how we persist it: a future format
+   * change can never again decide by itself which knowledge stays live. The count cap
+   * (`MAX_MEMORY_ENTRIES`) remains the structural bound on entry count.
+   */
+  private observationPayloadChars(): number {
+    return this.observationWriteSet().reduce((sum, e) => sum + e.content.length, 0);
+  }
+
+  // §24 — `trimObservationBufferToCap()` was REMOVED together with the archive pool.
+  //
+  // It archived the OLDEST observations whenever the buffer passed its cap. Two things were
+  // wrong with that, and both are structural rather than incidental:
+  //   1. R4 — the platform decided, silently, what the agent gets to keep. "Lossless" is not
+  //      the same as "harmless": the live set shrank without the agent acting.
+  //   2. R2 — it made capacity depend on the MEASUREMENT. When the container changed
+  //      (markdown → JSON) the same entries measured ~37% larger, so a format change alone
+  //      evicted healthy history (H25, observed: 10 agents archived 1–6 entries at boot).
+  // The replacement is a single, honest point: `addEntry` refuses at
+  // MEMORY_OBSERVATIONS_HARD_MAX_CHARS and moves nothing.
+
+  // ─── H16: session-compaction fragments (their OWN pool + file) ──────────────
+  //
+  // A conversation fragment is the platform's compaction pagination payload, not an
+  // agent observation. It lives in `session-fragments.md` with its OWN budget, is
+  // NOT injected, and is NOT fed to the dream cycle — see MEMORY_FRAGMENTS_MAX_CHARS.
+
+  /** Entries written to `session-fragments.md`: newest N, empty-content filtered. */
+  private fragmentWriteSet(): MemoryEntry[] {
+    return this.fragments
+      .filter(e => e.type === 'conversation_fragment' && e.content.trim().length > 0)
+      .slice(-MemoryStore.MAX_MEMORY_ENTRIES);
+  }
+
+  /**
+   * Canonical size (chars) of the fragment pool — payload only, same H25 invariant as
+   * `observationPayloadChars`: the cap must not move when the container changes.
+   */
+  private fragmentPayloadChars(): number {
+    return this.fragmentWriteSet().reduce((sum, e) => sum + e.content.length, 0);
+  }
+
+  /**
+   * Losslessly trim `session-fragments.md` to `MEMORY_FRAGMENTS_MAX_CHARS`: the
+   * OLDEST fragments are appended verbatim to `session-fragments-archive.md`, which
+   * `retrieveFragments` also searches — so pagination stays recoverable.
+   */
+  private trimFragmentsToCap(): { archived: number; converged: boolean } {
+    let archived = 0;
+    while (this.fragmentPayloadChars() > MEMORY_FRAGMENTS_MAX_CHARS && this.fragments.length > 1) {
+      const oldest = this.fragments.shift();
+      if (!oldest) break;
+      this.archiveFragment(oldest);
+      archived++;
+    }
+    return { archived, converged: this.fragmentPayloadChars() <= MEMORY_FRAGMENTS_MAX_CHARS };
+  }
+
+  /** Append one fragment to the JSON archive (lossless, idempotent, deduped by id). */
+  private archiveFragment(entry: MemoryEntry): void {
+    this.appendRecords(this.fragmentArchiveFile, [entry]);
+  }
+
+  /**
+   * H24 — append to a JSON record archive. Read + push + atomic write (rather than a raw text
+   * append) is what makes a JSON array safe: the array structure is JSON's, so no payload can ever
+   * end a record early. Deduped by id ⇒ idempotent.
+   */
+  private appendRecords(file: string, entries: MemoryEntry[]): void {
     try {
-      chars = readFileSync(this.longTermFile, 'utf-8').length;
+      const existing = existsSync(file) ? parseRecords(readFileSync(file, 'utf-8')).entries : [];
+      const seen = new Set(existing.map(e => e.id));
+      const merged = [...existing, ...entries.filter(e => !seen.has(e.id))];
+      writeFileAtomic(file, serializeRecords(merged));
+    } catch (err) {
+      log.warn('Failed to append to record archive', { file: basename(file), error: String(err) });
+    }
+  }
+
+  /** Fragments that overflowed into the archive — still searchable via session_retrieve. */
+  private archivedFragmentEntries(): MemoryEntry[] {
+    try {
+      if (!existsSync(this.fragmentArchiveFile)) return [];
+      return parseRecords(readFileSync(this.fragmentArchiveFile, 'utf-8')).entries
+        .filter(e => e.type === 'conversation_fragment');
     } catch {
-      return { converged: false, charsBefore: 0, charsAfter: 0 };
+      return [];
     }
-    if (chars <= MEMORY_MD_TOTAL_MAX_CHARS) {
-      return { converged: false, charsBefore: chars, charsAfter: chars };
+  }
+
+  /**
+   * H13/H20/H21 — repair the residue of the retired whole-file compression bug.
+   *
+   * The rules (deterministic, conservative, never-guess, idempotent) live in
+   * `residue-repair.ts`; this method is the orchestrator. It heals three regions:
+   *   1. the CURATED region — the part injected into every prompt (H21). A stub here is the
+   *      worst case: the agent's live knowledge shows an EMPTY section behind a pointer line,
+   *      which H20 (entry pools only) never touched — measured: 65 stubs across 25 agents.
+   *   2. the observation pool,  3. the fragment pool.
+   * Whatever changed is persisted here. Ambiguous (duplicate archive name) or unmatched
+   * stubs are left untouched and REPORTED — the content is still in the archive, searchable.
+   */
+  repairStubResidue(): ResidueRepairReport {
+    const report: ResidueRepairReport = {
+      repaired: 0, ambiguous: [], notFound: [],
+      curatedChanged: false, entriesChanged: false, fragmentsChanged: false,
+    };
+
+    let archive = '';
+    try {
+      if (existsSync(this.longTermArchiveFile)) archive = readFileSync(this.longTermArchiveFile, 'utf-8');
+    } catch { return report; }
+    const bodies = indexArchiveBodies(archive);
+    if (bodies.size === 0) return report;
+
+    const acc = { ambiguous: new Map<string, number>(), notFound: new Set<string>() };
+
+    // 1) Curated region — read as raw text (that is how `saveToDisk` preserves it).
+    let curated = '';
+    let curatedRaw = '';
+    try {
+      if (existsSync(this.longTermFile)) curatedRaw = readFileSync(this.longTermFile, 'utf-8');
+    } catch { /* unreadable — nothing to heal */ }
+    if (curatedRaw) {
+      curated = splitKnowledgeSections(curatedRaw).curated;
+      const healed = healStubLines(curated, bodies);
+      accumulateResidue(acc, healed.result);
+      if (healed.result.repaired > 0) {
+        curated = healed.text;
+        report.curatedChanged = true;
+        report.repaired += healed.result.repaired;
+      }
     }
-    const result = this.compressLongTermMemory();
-    log.warn('knowledge.md over budget at load — converged', {
-      charsBefore: result.charsBefore,
-      charsAfter: result.charsAfter,
-      cap: MEMORY_MD_TOTAL_MAX_CHARS,
-      store: this.getStoreFileName(),
-    });
-    return { converged: true, charsBefore: result.charsBefore, charsAfter: result.charsAfter };
+
+    // 2) Observation entries.
+    for (const entry of this.entries) {
+      const healed = healStubLines(entry.content, bodies);
+      accumulateResidue(acc, healed.result);
+      if (healed.result.repaired > 0) {
+        entry.content = healed.text;
+        report.entriesChanged = true;
+        report.repaired += healed.result.repaired;
+      }
+    }
+
+    // 3) Conversation fragments (their own file since H16).
+    for (const fragment of this.fragments) {
+      const healed = healStubLines(fragment.content, bodies);
+      accumulateResidue(acc, healed.result);
+      if (healed.result.repaired > 0) {
+        fragment.content = healed.text;
+        report.fragmentsChanged = true;
+        report.repaired += healed.result.repaired;
+      }
+    }
+
+    // H27 — persist through the CANONICAL writers only.
+    //
+    // The old code did `writeFileAtomic(knowledge.md, curated + serializeObservationBuffer(entries))`,
+    // i.e. it re-serialized the RETIRED in-band container. Two consequences, both real:
+    //   1. it resurrected the very `## _observations` region the H24/H26 migration had just
+    //      removed from knowledge.md (observed: after a load, a legacy region reappeared next to
+    //      a fresh observations.json — two containers for one fact);
+    //   2. it never updated observations.json, so on the next load the JSON (still holding the
+    //      un-repaired stub) won, and the repair was **silently discarded** — knowledge.md is no
+    //      longer the source of truth for observations.
+    // One fact ⇒ one writer. (Same defect class as H4/H12: a second writer of the same state.)
+    if (report.entriesChanged) {
+      this.saveToDisk(); // → observations.json (+ curated.md), the canonical pair
+    }
+    if (report.curatedChanged) {
+      // curated is STILL markdown — it is the injected, human-readable region. Write it via the
+      // single writer (curated ONLY: never an observation region).
+      this.writeKnowledgeMd(curated);
+    }
+    if (report.fragmentsChanged) this.saveFragmentsToDisk();
+
+    report.ambiguous = [...acc.ambiguous.entries()].map(([name, candidates]) => ({ name, candidates }));
+    report.notFound = [...acc.notFound];
+    if (report.repaired > 0) {
+      log.warn('H13 residue repaired — re-inlined archived bodies (H21: curated region included)', {
+        repaired: report.repaired, curatedChanged: report.curatedChanged,
+        entriesChanged: report.entriesChanged, fragmentsChanged: report.fragmentsChanged,
+        store: this.getStoreFileName(), archive: this.getArchiveFileName(),
+      });
+    }
+    if (report.ambiguous.length > 0 || report.notFound.length > 0) {
+      log.warn('H13 residue remains — left untouched (never guess); content still searchable in the archive', {
+        ambiguous: report.ambiguous.slice(0, 20), notFound: report.notFound.slice(0, 20),
+        store: this.getStoreFileName(),
+      });
+    }
+    return report;
+  }
+
+  private loadFragmentsFromDisk(): void {
+    try {
+      if (existsSync(this.fragmentFile)) {
+        const { entries, error } = parseRecords(readFileSync(this.fragmentFile, 'utf-8'));
+        if (error) {
+          log.error('session-fragments.json unreadable — NOT overwriting it; starting empty', {
+            error, file: basename(this.fragmentFile),
+          });
+        }
+        this.fragments = entries.filter(e => e.type === 'conversation_fragment' && e.content.trim().length > 0);
+        if (this.fragments.length > 0) {
+          log.info(`Loaded ${this.fragments.length} session fragments from ${basename(this.fragmentFile)}`);
+        }
+        return;
+      }
+      // ── LEGACY MIGRATION ONLY (delete once every agent has migrated; docs §20) ──
+      // Read the retired in-band markdown container exactly once and re-persist it as JSON.
+      const legacy = join(this.dataDir, 'session-fragments.md');
+      if (!existsSync(legacy)) return;
+      const region = extractFragmentRegion(readFileSync(legacy, 'utf-8'));
+      this.fragments = this.parseEntryBlocks(region, 'frag_\\S*')
+        .filter(e => e.type === 'conversation_fragment' && e.content.trim().length > 0);
+      this.saveFragmentsToDisk();
+      try { unlinkSync(legacy); } catch { /* best effort removal after a successful JSON write */ }
+      log.info('H24: migrated session fragments from markdown to JSON', {
+        count: this.fragments.length, file: basename(this.fragmentFile),
+      });
+    } catch (err) {
+      log.warn('Failed to load session fragments', { error: String(err) });
+    }
+  }
+
+  private saveFragmentsToDisk(): void {
+    try {
+      this.trimFragmentsToCap();
+      this.fragments = this.fragmentWriteSet();
+      writeFileAtomic(this.fragmentFile, serializeRecords(this.fragments));
+    } catch (err) {
+      log.warn('Failed to save session fragments', { error: String(err) });
+    }
   }
 
   /**
@@ -1440,15 +1986,48 @@ export class MemoryStore implements IMemoryStore {
   }
 
   /** Parse the ## _observations section of knowledge.md into MemoryEntry[] */
+  /**
+   * H26 — is the retired in-band `## _observations` region present in knowledge.md?
+   * Used to decide whether the one-time migration to `observations.json` still has work to do,
+   * independently of whether the buffer happens to be over budget.
+   */
+  private hasLegacyObservationRegion(): boolean {
+    try {
+      if (!existsSync(this.longTermFile)) return false;
+      return /(?:^|\n)## _observations\n/.test(readFileSync(this.longTermFile, 'utf-8'));
+    } catch {
+      return false;
+    }
+  }
+
   private parseObservationsFromMemoryMd(): MemoryEntry[] {
     if (!existsSync(this.longTermFile)) return [];
     try {
       const content = readFileSync(this.longTermFile, 'utf-8');
       const obsMatch = content.match(/(?:^|\n)## _observations\n([\s\S]*)$/);
       if (!obsMatch) return [];
-      const obsContent = obsMatch[1];
-      const entries: MemoryEntry[] = [];
-      const subsections = obsContent.split(/\n### /).filter(s => s.trim());
+      return this.parseEntryBlocks(obsMatch[1]!);
+    } catch (err) {
+      log.warn('Failed to parse observations from knowledge.md', { error: String(err) });
+      return [];
+    }
+  }
+
+  /**
+   * Parse `### <id>` entry blocks (with `<!-- type: … -->` meta comments) from a region
+   * body. Shared by the observation region, the session-fragment region AND the fragment
+   * archive — so all three round-trip through the SAME reader (no format drift).
+   */
+  private parseEntryBlocks(obsContent: string, boundaryId = '\\S+'): MemoryEntry[] {
+    const entries: MemoryEntry[] = [];
+    // H17 — the boundary is anchored on the MACHINE-emitted meta comment, not on a bare
+    // `### ` heading. `### ` is markdown H3, which an agent-authored body can freely
+    // contain; splitting on it silently truncated the entry and fabricated a phantom
+    // entry (same class as H13: `## ` misread inside a body). The single writer,
+    // `serializeEntryLines`, ALWAYS emits `### <id>` followed by `<!-- type: … -->`, so
+    // requiring that shape is exact for every byte this store writes — and a plain
+    // `### heading` inside a body no longer matches. See docs §13.
+    const subsections = obsContent.split(new RegExp(`\\n### (?=${boundaryId}\\n<!-- type: )`)).filter(s => s.trim());
       for (const section of subsections) {
         const lines = section.split('\n');
         const headerLine = lines[0] ?? '';
@@ -1468,7 +2047,17 @@ export class MemoryStore implements IMemoryStore {
           // `, data-meta:` — otherwise a tag with a comma/JSON regenerates on
           // every round-trip (the 50MB obs bomb). We first try to strip the
           // enclosed `data-meta: <json> -->` tail so `(.+?)` can never eat it.
-          const metaMatch = lines[i].match(/^<!-- type: (\w+)(?:, tags: (.*?))?(?:, data-meta: (.+))? -->$/);
+          // H18: the meta comment is emitted by `serializeEntryLines` at a FIXED
+          // position — the line immediately after `### <id>` — so ONLY that line is
+          // metadata. A body line that merely *looks* like a meta comment is payload
+          // and must be preserved verbatim: the old reader matched `<!-- type: … -->`
+          // on ANY line, so an agent write that contained such a line had it silently
+          // consumed (it could overwrite the entry's type, and when it was the entry's
+          // only body line the whole entry was dropped as "empty"). Same class as H13/H17:
+          // a structural token the payload can also produce. Anchor it, don't pattern-match it.
+          const metaMatch = i === 1
+            ? lines[i].match(/^<!-- type: (\w+)(?:, tags: (.*?))?(?:, data-meta: (.+))? -->$/)
+            : null;
           if (metaMatch) {
             const typeVal = metaMatch[1];
             if (typeVal && VALID_TYPES.has(typeVal)) type = typeVal as MemoryEntry['type'];
@@ -1495,7 +2084,7 @@ export class MemoryStore implements IMemoryStore {
             if (tags.some((t) => /data-meta|\\"|\\:/i.test(t))) tags = [];
             continue;
           }
-          contentLines.push(lines[i]);
+          contentLines.push(decodeEntryBodyLine(lines[i]));
         }
         const idTs = id.match(/^obs_(\d+)/);
         const timestamp = idTs ? new Date(parseInt(idTs[1])).toISOString() : new Date().toISOString();
@@ -1509,11 +2098,7 @@ export class MemoryStore implements IMemoryStore {
             : (tags.length > 0 ? { tags } : undefined),
         });
       }
-      return entries;
-    } catch (err) {
-      log.warn('Failed to parse observations from knowledge.md', { error: String(err) });
-      return [];
-    }
+    return entries;
   }
 
   private loadSessionsFromDisk(): void {
@@ -1582,74 +2167,53 @@ export class MemoryStore implements IMemoryStore {
 
   private saveToDisk(): void {
     try {
-      // Serialize observations as ## _observations subsections within knowledge.md
-      const obsLines: string[] = [
-        '## _observations',
-        '<!-- This section is the observation buffer. Searched on-demand, NOT always injected into prompt. -->',
-        '<!-- Dream cycle consolidates recurring patterns into curated sections above. -->',
-        '',
-      ];
-      // 审计 P-10：观察缓冲区有界（字符），且与压缩碎片**分池**（各有 500 上限），
-      // 碎片不再挤占观察配额。超限的观察**无损归档**（可检索），绝不静默丢弃。
-      const isFrag = (e: MemoryEntry) => e.type === 'conversation_fragment';
-      const obsCount = () => this.entries.filter(e => !isFrag(e)).length;
-      let obsChars = this.entries
-        .filter(e => !isFrag(e))
-        .reduce((n, e) => n + e.content.length + 96, 0);
-      while (obsChars > MEMORY_OBSERVATIONS_MAX_CHARS && obsCount() > 1) {
-        const idx = this.entries.findIndex(e => !isFrag(e));
-        if (idx < 0) break;
-        const oldest = this.entries.splice(idx, 1)[0]!;
-        this.archiveSection(`observation ${oldest.id}`, oldest.content);
-        obsChars -= oldest.content.length + 96;
-      }
-      // 分池计数上限：观察与碎片各自独立保留最新 500 条（保持原顺序）。
-      const keptObs = this.entries.filter(e => !isFrag(e)).slice(-MemoryStore.MAX_MEMORY_ENTRIES);
-      const keptFrags = this.entries.filter(isFrag).slice(-MemoryStore.MAX_MEMORY_ENTRIES);
-      const keepIds = new Set<string>([...keptObs, ...keptFrags].map(e => e.id));
-      const entries = this.entries.filter(e => keepIds.has(e.id) && e.content.trim().length > 0);
+      // §24 — write exactly what the agent has. NO trimming here: eviction silently moved
+      // the agent's own history and made "what stays live" depend on the storage container
+      // (H25: the same entries measured 25 716 chars as markdown vs 35 182 as pretty JSON,
+      // so a format change alone evicted healthy data). The only enforcement point is
+      // `addEntry`, which REFUSES past the hard ceiling.
+      const entries = this.observationWriteSet();
       this.entries = entries;
-      for (const entry of entries) {
-        obsLines.push(`### ${entry.id}`);
-        // Serialize metadata faithfully: conversation_fragment retro-traceability
-        // (sessionId/agentId/pagedOutCount/first/last) must survive disk round-trips.
-        // CRITICAL: emit a SINGLE `data-meta` JSON payload and store tags INSIDE it.
-        // Never emit a bare `, tags: a, b` field AND a separate data-meta that both
-        // carry the tags — the old dual format let a tag containing a comma/JSON blob
-        // be re-parsed by the greedy reader, re-serialized, re-nested indefinitely
-        // (observed: a single obs grew to 50MB from this feedback loop).
-        const tags = Array.isArray(entry.metadata?.tags)
-          ? (entry.metadata!.tags as string[])
-          : [];
-        const meta = entry.metadata && typeof entry.metadata === 'object'
-          ? { ...entry.metadata, tags }
-          : (tags.length > 0 ? { tags } : undefined);
-        const metaJson = meta ? safeJson(meta) : '';
-        obsLines.push(`<!-- type: ${entry.type}${metaJson ? `, data-meta: ${metaJson}` : ''} -->`);
-        obsLines.push(entry.content);
-        obsLines.push('');
-      }
-      const obsSection = obsLines.join('\n');
 
-      // Read existing knowledge.md, replace or append ## _observations
-      let existing = '';
-      if (existsSync(this.longTermFile)) {
-        existing = readFileSync(this.longTermFile, 'utf-8');
-      }
-      let obsStart = existing.indexOf('\n## _observations');
-      if (obsStart < 0 && existing.startsWith('## _observations')) obsStart = 0;
-      let updated: string;
-      if (obsStart > 0) {
-        updated = existing.slice(0, obsStart) + '\n' + obsSection;
-      } else if (obsStart === 0) {
-        updated = obsSection;
-      } else {
-        updated = (existing ? existing.trimEnd() + '\n\n' : '') + obsSection;
-      }
-      writeFileAtomic(this.longTermFile, updated);
+      // H24 — observations → JSON records; structure is JSON's, not markdown's.
+      writeFileAtomic(this.observationFile, serializeRecords(entries));
+      this.writeCuratedKnowledgeMd();
     } catch (err) {
-      log.warn('Failed to save observations to knowledge.md', { error: String(err) });
+      log.warn('Failed to save observations', { error: String(err) });
     }
+  }
+
+  /**
+   * H24 — `knowledge.md` now holds ONLY the curated region (the injected, human-readable part) plus
+   * a pointer comment. If a legacy `## _observations` region is still present, everything from it on
+   * is dropped — that content already lives in `observations.json`.
+   */
+  private writeCuratedKnowledgeMd(): void {
+    let existing = '';
+    try {
+      if (existsSync(this.longTermFile)) existing = readFileSync(this.longTermFile, 'utf-8');
+    } catch { /* unreadable — treat as empty */ }
+    this.writeKnowledgeMd(existing);
+  }
+
+  /**
+   * I1 — the SINGLE writer of `knowledge.md`.
+   *
+   * Every path that persists curated knowledge funnels through here, so "what is in
+   * knowledge.md" is decided in exactly one place: the R1 defect (one fact, several writers)
+   * is no longer expressible. It enforces the post-migration contract — the file holds the
+   * CURATED region ONLY; anything from a legacy in-band `## _observations` region is dropped,
+   * because that content lives in `observations.json` since H24 (§20). Bootstrap creation of
+   * the file (`ensureKnowledgeFile`) is separate: it only ever runs when the file is absent.
+   *
+   * A trailing pointer comment is deliberately NOT written: the curated region is injected into
+   * every prompt, so a comment after the last `## section` would be absorbed into that section's
+   * body and injected with it. Where observations went is documented in
+   * docs/PLATFORM-HARDENING-2026-10.md §20 and visible as observations.json next to the file.
+   */
+  private writeKnowledgeMd(text: string): void {
+    const curated = splitKnowledgeSections(text).curated.trimEnd();
+    writeFileAtomic(this.longTermFile, curated ? `${curated}\n` : '');
   }
 
   private saveSessionToDisk(session: ConversationSession): void {
@@ -1675,107 +2239,149 @@ export class MemoryStore implements IMemoryStore {
   }
 
   /** Compress knowledge.md — truncate oversized sections to prevent context bloat */
-  compressLongTermMemory(): { charsBefore: number; charsAfter: number; sectionsBefore: number; sectionsAfter: number; truncatedChunks: number } {
-    if (!existsSync(this.longTermFile)) {
-      return { charsBefore: 0, charsAfter: 0, sectionsBefore: 0, sectionsAfter: 0, truncatedChunks: 0 };
-    }
-
-    const content = readFileSync(this.longTermFile, 'utf-8');
-    const charsBefore = content.length;
-    const lines = content.split('\n');
-
-    // Phase 1: walk lines to identify preamble + section layout
-    let i = 0;
-    const preambleLines: string[] = [];
-    while (i < lines.length && !lines[i].startsWith('## ')) {
-      preambleLines.push(lines[i]);
-      i++;
-    }
-
-    // Sections as [headerLine, ...bodyLines]. `## _observations` is NOT a section
-    // we may touch: it is the observation buffer with its own cap and its own
-    // curation path (dream cycle). It is carried through verbatim.
-    const sections: { headerLine: string; body: string[]; observationBuffer: boolean }[] = [];
-    let currentHeader = '';
-    let currentBody: string[] = [];
-    let currentIsObs = false;
-
-    while (i < lines.length) {
-      const line = lines[i];
-      if (line.startsWith('## ')) {
-        if (currentHeader) {
-          sections.push({ headerLine: currentHeader, body: currentBody, observationBuffer: currentIsObs });
-        }
-        currentHeader = line;
-        currentBody = [];
-        currentIsObs = /^##\s+_observations\s*$/.test(line);
-      } else {
-        currentBody.push(line);
-      }
-      i++;
-    }
-    // Push last section
-    if (currentHeader) {
-      sections.push({ headerLine: currentHeader, body: currentBody, observationBuffer: currentIsObs });
-    }
-
-    const sectionsBefore = sections.length;
-    let archived = 0;
-
-    const render = (): string => {
-      const out: string[] = [...preambleLines];
-      for (const s of sections) out.push(s.headerLine, s.body.join('\n'));
-      return out.join('\n');
-    };
-    const size = () => render().length;
-
-    const isPointer = (s: { body: string[] }) => /^_\[archived/.test(s.body.join('\n').trim());
-    const archiveBodyOf = (section: { headerLine: string; body: string[] }): void => {
-      const bodyStr = section.body.join('\n').trim();
-      if (!bodyStr) return;
-      const name = section.headerLine.replace(/^##\s+/, '').trim();
-      this.archiveSection(name, bodyStr); // 无损：正文进 knowledge-archive.md
-      section.body = [`_[archived → ${this.getArchiveFileName()}；正文已无损归档，可用 memory_search 检索]_`];
-      archived++;
-    };
-
-    // ── Phase 2: 单段超限 → 归档该段正文（无损，不截断）──────────────────
-    for (const section of sections) {
-      if (section.observationBuffer) continue;
-      if (section.body.join('\n').length > MEMORY_MD_SECTION_MAX_CHARS) archiveBodyOf(section);
-    }
-
-    // ── Phase 3: 总量超限 → 逐个归档最大段落正文，直到达标 ─────────────────
-    // 审计 P-04/P-05：以前这里把段落「压成 stub」（有损）；现在改为把正文移入
-    // knowledge-archive.md（无损、可检索、不注入），主文件只留标题 + 指针。
-    // 绝不触碰 ## _observations（它有自己的容量与整理路径）。
-    if (size() > MEMORY_MD_TOTAL_MAX_CHARS) {
-      const shrinkable = sections
-        .filter(s => !s.observationBuffer && !isPointer(s))
-        .sort((a, b) => b.body.join('\n').length - a.body.join('\n').length);
-      for (const section of shrinkable) {
-        if (size() <= MEMORY_MD_TOTAL_MAX_CHARS) break;
-        if (section.body.join('\n').trim().length <= 120) continue; // 已是小段，不值得归档
-        archiveBodyOf(section);
-      }
-    }
-
-    const compressed = render();
-    if (compressed !== content) writeFileAtomic(this.longTermFile, compressed);
-
-    return {
-      charsBefore,
-      charsAfter: compressed.length,
-      sectionsBefore,
-      sectionsAfter: sections.length,
-      truncatedChunks: archived,
-    };
-  }
+  // H19 — `compressLongTermMemory()` was REMOVED. It silently archived the LARGEST curated
+  // section bodies into knowledge-archive.md and left pointer stubs: value-blind,
+  // invisible to the agent, inconsistent with the per-section "never silently truncated"
+  // policy, and the root cause of the H13 corruption (it scanned the WHOLE file, so an
+  // observation body containing `## ` was misread as a curated section and gutted).
+  // Measured: it never legitimately fired — 0 of 94 agents ever exceeded the soft budget.
+  // The contract is now explicit: over the SOFT budget → REPORT only; over the HARD
+  // ceiling → REFUSE the write (see `addLongTermMemory`); the agent consolidates with its
+  // own tools (`memory_organize` / `memory_update`). See docs §15.
 }
 
 function formatTags(metadata?: Record<string, unknown>): string {
   const tags = metadata?.tags;
   return Array.isArray(tags) ? tags.map(String).join(' ') : '';
+}
+
+/**
+ * Split a `knowledge.md` body into its two budgeted parts.
+ *
+ * Invariant (see `saveToDisk`): `## _observations` is always LAST, so everything
+ * from that marker onward is the observation buffer and everything before it is
+ * the curated (injected) part. Measuring the two together is what made the health
+ * percentage read >100% for a healthy agent — see `MemoryHealth`.
+ */
+/**
+ * Serialize the `## _observations` section EXACTLY as it is written to disk.
+ *
+ * This is THE canonical definition of the observation buffer's size — the writer,
+ * the trimmer and the health report all measure `serializeObservationBuffer(entries).length`,
+ * so the number shown to an agent and the number enforced can never drift apart.
+ * (H12: `OBSERVATION_ENTRY_OVERHEAD_CHARS` was exactly such a drift.)
+ */
+/** Header line of the session-fragment region — fragments live in their OWN file (H16). */
+export const FRAGMENT_REGION_HEADER = '## _session_fragments';
+
+/**
+ * H23 — close the in-band-container family (H13/H17/H18/H22) at the FORMAT level.
+ *
+ * The entry boundary is a line `### <id>` followed by a meta comment. `### ` is markdown H3 and
+ * `<!-- … -->` is markdown, so an agent-authored body can produce both — measured in the live org:
+ * `### 团队协调与通信路由` + `<!-- type: note -->` inside a conversation fragment (a context dump)
+ * was read as a record boundary, which TRUNCATED the real fragment by 2501 chars on load and then
+ * persisted the truncation. Shape heuristics (H17/H18) cannot fix this: the payload and a record are
+ * textually identical.
+ *
+ * Fix, in two independent halves:
+ *   1. WRITE — `escapeEntryBodyLine` prefixes a body line that starts with `\`, `### ` or `<!-- `
+ *      with one backslash, so a payload can never emit a structural-looking line. `decodeEntryBodyLine`
+ *      reverses it exactly. This is the structural guarantee (forward-safe for ANY payload).
+ *   2. READ  — `parseEntryBlocks` keeps accepting the machine-emitted shape for ANY id: ids are
+ *      caller-supplied and NOT shape-constrained in this codebase (measured in-tree: `o1`, `marker-0`,
+ *      `test-role`), so an id-shape rule would silently drop real entries — it broke 3 existing tests
+ *      when tried. Escaping is therefore what closes the family going forward. The ONE pool whose ids
+ *      the store fully owns is session fragments (written only as `frag_<ts>_<sessionId>`), so that pool
+ *      additionally anchors on the `frag_` prefix — which recovers fragment files damaged before the
+ *      escape existed. Legacy observation-pool forgeries are REPORTED, never guessed (see §19).
+ */
+export function escapeEntryBodyLine(line: string): string {
+  return /^(\\|### |<!-- )/.test(line) ? `\\${line}` : line;
+}
+
+/** Reverse of `escapeEntryBodyLine`. Identity on lines the writer never escaped (all legacy data). */
+export function decodeEntryBodyLine(line: string): string {
+  return /^(\\\\|\\### |\\<!-- )/.test(line) ? line.slice(1) : line;
+}
+
+/** Serialize the per-entry lines (`### id` + meta comment + body + blank). */
+function serializeEntryLines(entries: MemoryEntry[]): string[] {
+  const lines: string[] = [];
+  for (const entry of entries) {
+    lines.push(`### ${entry.id}`);
+    // Serialize metadata faithfully: conversation_fragment retro-traceability
+    // (sessionId/agentId/pagedOutCount/first/last) must survive disk round-trips.
+    // CRITICAL: emit a SINGLE `data-meta` JSON payload and store tags INSIDE it.
+    // Never emit a bare `, tags: a, b` field AND a separate data-meta that both
+    // carry the tags — the old dual format let a tag containing a comma/JSON blob
+    // be re-parsed by the greedy reader, re-serialized, re-nested indefinitely
+    // (observed: a single obs grew to 50MB from this feedback loop).
+    const tags = Array.isArray(entry.metadata?.tags)
+      ? (entry.metadata!.tags as string[])
+      : [];
+    const meta = entry.metadata && typeof entry.metadata === 'object'
+      ? { ...entry.metadata, tags }
+      : (tags.length > 0 ? { tags } : undefined);
+    const metaJson = meta ? safeJson(meta) : '';
+    lines.push(`<!-- type: ${entry.type}${metaJson ? `, data-meta: ${metaJson}` : ''} -->`);
+    // H23 — escape body lines that could be mistaken for structure (boundary or meta).
+    lines.push(...entry.content.split('\n').map(escapeEntryBodyLine));
+    lines.push('');
+  }
+  return lines;
+}
+
+/**
+ * LEGACY markdown serialization of the `## _observations` region (the retired H24 container).
+ *
+ * NOT a production path: since H24 observations are written as JSON records, and H27 removed the
+ * last caller that re-serialized this region. It is kept ONLY because the migration reader still
+ * has to parse historical markdown, and the regression suites use it to build legacy fixtures.
+ * Delete together with `parseObservationsFromMemoryMd` once every agent has migrated (docs §20).
+ */
+export function serializeObservationBuffer(entries: MemoryEntry[]): string {
+  return [
+    '## _observations',
+    '<!-- This section is the observation buffer. Searched on-demand, NOT always injected into prompt. -->',
+    '<!-- Dream cycle consolidates recurring patterns into curated sections above. -->',
+    '',
+    ...serializeEntryLines(entries),
+  ].join('\n');
+}
+
+/** Serialize the `## _session_fragments` region EXACTLY as it is written to disk. */
+export function serializeFragmentRegion(entries: MemoryEntry[]): string {
+  return [
+    FRAGMENT_REGION_HEADER,
+    '<!-- Platform-managed session compaction pagination payload; NOT agent knowledge. -->',
+    '<!-- Not injected into the prompt and NOT consolidated by the dream cycle. -->',
+    '<!-- Search on demand via session_retrieve; recover verbatim via session_include. -->',
+    '',
+    ...serializeEntryLines(entries),
+  ].join('\n');
+}
+
+/** Drop the leading `## _session_fragments` header line (if present) before parsing. */
+export function extractFragmentRegion(content: string): string {
+  if (content.startsWith(FRAGMENT_REGION_HEADER)) {
+    const nl = content.indexOf('\n');
+    return nl >= 0 ? content.slice(nl + 1) : '';
+  }
+  return content;
+}
+
+export function splitKnowledgeSections(content: string): { curated: string; observations: string } {
+  const idx = content.indexOf('\n## _observations');
+  if (idx >= 0) return { curated: content.slice(0, idx), observations: content.slice(idx) };
+  if (content.startsWith('## _observations')) return { curated: '', observations: content };
+  return { curated: content, observations: '' };
+}
+
+/** Outcome of enforcing both memory budgets at load/write time. */
+export interface MemoryBudgetEnforcement {
+  curated: { before: number; after: number; converged: boolean; archived: number };
+  observations: { before: number; after: number; converged: boolean; archived: number };
 }
 
 function parseCuratedSections(markdown: string): Array<{ name: string; body: string }> {

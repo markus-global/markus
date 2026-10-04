@@ -94,7 +94,7 @@ interface NotebookEntry {
   key: string;
   text: string;
   updatedAt: number;
-  managed: string;  // "agent" | "system" | "cpp"
+  managed: string;  // "agent" | "system"
 }
 ```
 

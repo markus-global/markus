@@ -4,6 +4,8 @@
 // Templates live on disk at ~/.markus/teams/{teamId}/workflows/*.yaml
 // and are instantiated as Requirement + Task DAGs via WorkflowRunner.
 
+import { replaceAllLiteral } from '../utils/literal-replace.js';
+
 // ─── Schedule ────────────────────────────────────────────────────────────────
 
 export interface ScheduleDef {
@@ -316,16 +318,19 @@ export function renderStepPrompt(
 ): string {
   let prompt = step.prompt;
 
-  // User parameters: {{topic}} → "AI Agent"
+  // User parameters: {{topic}} → "AI Agent".
+  // Values are agent/user-authored and may contain `$`-sequences (shell
+  // snippets, regex examples, template fragments) — insert them verbatim, never
+  // via String.prototype.replaceAll (which would expand `$&`, `` $` ``, `$'`…).
   for (const [key, value] of Object.entries(params)) {
-    prompt = prompt.replaceAll(`{{${key}}}`, value);
+    prompt = replaceAllLiteral(prompt, `{{${key}}}`, value);
   }
 
   // Built-in template variables
   const now = new Date();
-  prompt = prompt.replaceAll('{{date}}', formatDate(now));
-  prompt = prompt.replaceAll('{{time}}', formatDateTime(now));
-  prompt = prompt.replaceAll('{{run_number}}', String(runNumber));
+  prompt = replaceAllLiteral(prompt, '{{date}}', formatDate(now));
+  prompt = replaceAllLiteral(prompt, '{{time}}', formatDateTime(now));
+  prompt = replaceAllLiteral(prompt, '{{run_number}}', String(runNumber));
 
   // Upstream deliverable context
   if (step.inputs && step.inputs.length > 0) {

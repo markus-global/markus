@@ -16,6 +16,39 @@ export interface MemoryEntry {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * Memory budget health — TWO budgets, reported separately and honestly.
+ *
+ * `knowledge.md` carries two kinds of content with different injection
+ * semantics and therefore **separate** budgets (see
+ * `MEMORY_MD_CURATED_MAX_CHARS` / `MEMORY_OBSERVATIONS_MAX_CHARS`):
+ *
+ *   - curated sections → INJECTED every turn; `curatedChars` / `percent` is the
+ *     real "memory pressure" and the number the agent sees.
+ *   - `## _observations` → NOT injected, searched on demand; `observationChars`
+ *     / `observationPercent` is its own signal.
+ *
+ * Historically these were collapsed into one `totalChars`/`cap` pair measured
+ * over the WHOLE FILE, so a large (and perfectly healthy) observation buffer
+ * made `percent` read >100% while the injected footprint was tiny — a permanent
+ * false alarm that trained agents to ignore the banner.
+ */
+export interface MemoryHealth {
+  /** Curated (injected) footprint in chars — everything BEFORE `## _observations`. */
+  curatedChars: number;
+  curatedCap: number;
+  /** `curatedChars / curatedCap` as a percent — THE memory-health number. */
+  percent: number;
+  /** `## _observations` buffer size in chars (NOT injected). */
+  observationChars: number;
+  observationCap: number;
+  observationPercent: number;
+  observations: number;
+  curatedSections: number;
+  archiveChars: number;
+  lastConsolidatedAt: string | null;
+}
+
 export interface ConversationSession {
   id: string;
   agentId: string;
@@ -60,7 +93,12 @@ export interface CompactResult {
  */
 export interface IMemoryStore {
   // -- Semantic Memory: observation buffer (## _observations in knowledge.md) --
-  addEntry(entry: MemoryEntry): void;
+  /**
+   * Append one observation. §24 — returns a VERDICT instead of silently dropping data:
+   * `{ ok:false, reason }` means the log is at its hard ceiling and the caller must tell the
+   * agent to make room. The platform never evicts/archives on the agent's behalf.
+   */
+  addEntry(entry: MemoryEntry): { ok: boolean; reason?: string };
   getEntries(type?: MemoryEntry['type'], limit?: number): MemoryEntry[];
   getEntriesByTag(tag: string, limit?: number): MemoryEntry[];
   search(query: string): MemoryEntry[];
@@ -72,16 +110,9 @@ export interface IMemoryStore {
   // -- Semantic Memory: curated knowledge (knowledge.md SSOT) --
   /** Basename of the on-disk semantic store (normally "knowledge.md"). */
   getStoreFileName(): string;
-  /** Memory budget health (audit P-12) — powers the in-prompt health signal. */
-  getMemoryHealth(): {
-    totalChars: number;
-    cap: number;
-    percent: number;
-    observations: number;
-    curatedSections: number;
-    archiveChars: number;
-    lastConsolidatedAt: string | null;
-  };
+  /** Memory budget health (audit P-12) — powers the in-prompt health signal.
+   *  Reports the TWO budgets separately and honestly; see `MemoryHealth`. */
+  getMemoryHealth(): MemoryHealth;
   /** 审计 P-11：整理时间可观测（可选，便于 mock）。 */
   getLastConsolidatedAt?(): string | null;
   markConsolidated?(at?: Date): void;
@@ -89,7 +120,6 @@ export interface IMemoryStore {
   getLongTermMemory(): string;
   getLongTermMemoryExcluding(sections: string[]): string;
   getLongTermSection(sectionName: string): string;
-  compressLongTermMemory(): { charsBefore: number; charsAfter: number; sectionsBefore: number; sectionsAfter: number; truncatedChunks: number };
   /**
    * Remove a curated section outright — the "forget" primitive.
    * A write-only (or overwrite-only) store inflates until it hits its cap and stays there.

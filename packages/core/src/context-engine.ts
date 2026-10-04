@@ -896,8 +896,18 @@ export class ContextEngine {
               ? ` · 上次整理 ${staleDays} 天前`
               : '';
             volatile.push(
-              `> ${h.percent >= MEMORY_HEALTH_CRITICAL_PERCENT ? '🔴' : '⚠️'} **记忆健康 ${h.percent}%**（${h.totalChars}/${h.cap} 字符 · ${h.curatedSections} 个知识段 · ${h.observations} 条观察${h.archiveChars > 0 ? ` · 已归档 ${h.archiveChars} 字符` : ''}${staleness}）。`
-              + '超预算时旧知识会被**无损归档**（不再注入）。建议用 `memory_organize` 合并观察、或 `memory_update`（mode:"delete"）删除过时条目。',
+              `> ${h.percent >= MEMORY_HEALTH_CRITICAL_PERCENT ? '🔴' : '⚠️'} **记忆健康 ${h.percent}%**（注入段 ${h.curatedChars}/${h.curatedCap} 字符 · ${h.curatedSections} 个知识段${staleness}）。`
+              + '注入段超预算时，最大的段落正文会被**无损归档**（移出每轮注入，仍可用 `memory_search` 检索）。建议用 `memory_organize` 合并段落、或 `memory_update`（mode:"delete"）删除过时条目。',
+            );
+          }
+          // Signal 2 — the OBSERVATION buffer. A SEPARATE budget of its own and it is
+          // NOT injected, so it must never be folded into the number above (folding it
+          // was a permanent false alarm: a healthy large buffer read >100%).
+          if (h.observationPercent >= MEMORY_HEALTH_WARN_PERCENT) {
+            volatile.push(
+              `> 🗒️ **观察缓冲 ${h.observationPercent}%**（${h.observationChars}/${h.observationCap} 字符 · ${h.observations} 条观察${h.archiveChars > 0 ? ` · 已归档 ${h.archiveChars} 字符` : ''}）。`
+              + '观察缓冲**不注入** prompt（仅 `memory_search` 按需检索）；超上限时最旧的观察会被无损归档，仍可检索。'
+              + '平台会在下一轮 dream 周期自动合并重复项；也可现在就主动处理：`memory_organize`（把重复观察合并进 curated 段落）或 `memory_update`（`mode:"delete"` 删除过时项）。',
             );
           }
         } catch { /* health signal is best-effort */ }

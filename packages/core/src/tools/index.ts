@@ -19,7 +19,7 @@ export { createA2ATools, type A2AContext } from './a2a.js';
 export { createStructuredA2ATools, type StructuredA2AContext } from './a2a-structured.js';
 export { createAgentTaskTools, type AgentTaskContext } from './task-tools.js';
 export { createMemoryTools, type AgentMemoryContext } from './memory.js';
-export { createSubagentTool, createParallelSubagentTool, runSubagentLoop, type SubagentContext, type SubagentProgressCallback } from './subagent.js';
+export { createSubagentTool, createParallelSubagentTool, runSubagentLoop, type SubagentContext, type SubagentProgressCallback, type SubagentLoopResult, type SubagentLoopOptions, type SubagentStopStatus } from './subagent.js';
 export { createSettingsTools, type SettingsToolsContext } from './settings.js';
 export { createRecallTool, type RecallContext, type RecallCallbacks } from './recall.js';
 export { createMailboxTools, type MailboxToolContext } from './mailbox-tools.js';

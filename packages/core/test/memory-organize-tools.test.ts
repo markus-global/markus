@@ -9,7 +9,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createMemoryTools } from '../src/tools/memory.js';
 import type { IMemoryStore, MemoryEntry } from '../src/memory/types.js';
 import type { SemanticMemorySearch } from '../src/memory/semantic-search.js';
-import { MEMORY_MD_TOTAL_MAX_CHARS } from '@markus/shared';
+import { MEMORY_MD_CURATED_MAX_CHARS } from '@markus/shared';
 
 function makeObs(id: string, content: string, type: MemoryEntry['type'] = 'fact'): MemoryEntry {
   return { id, timestamp: '2026-09-27T00:00:00.000Z', type, content };
@@ -51,14 +51,17 @@ function createStatefulMemory(entries: MemoryEntry[], initialLtm = ''): IMemoryS
     removeEntriesByTag: vi.fn(() => 0),
     replaceEntries: vi.fn(),
     getStoreFileName: vi.fn(() => 'knowledge.md'),
-    // 预算 SSOT：真实 MemoryStore 以「文件原始大小」为准（与提示词横幅 / 写入端强制归档一致）。
+    // 预算 SSOT：真实 MemoryStore 现在分**两个**预算 —— 注入段（curated）与观察缓冲（不注入）。
     getMemoryHealth: vi.fn(() => {
-      const totalChars = state.ltm.length;
-      const cap = MEMORY_MD_TOTAL_MAX_CHARS;
+      const curatedChars = state.ltm.length;
+      const curatedCap = MEMORY_MD_CURATED_MAX_CHARS;
       return {
-        totalChars,
-        cap,
-        percent: Math.round((totalChars / cap) * 100),
+        curatedChars,
+        curatedCap,
+        percent: Math.round((curatedChars / curatedCap) * 100),
+        observationChars: 0,
+        observationCap: 30_000,
+        observationPercent: 0,
         observations: data.length,
         curatedSections: (state.ltm.match(/^## /gm) ?? []).length,
         archiveChars: 0,
@@ -79,9 +82,6 @@ function createStatefulMemory(entries: MemoryEntry[], initialLtm = ''): IMemoryS
       return (next >= 0 ? state.ltm.slice(start, next) : state.ltm.slice(start)).trim();
     }),
     getLongTermMemoryExcluding: vi.fn(() => state.ltm),
-    compressLongTermMemory: vi.fn(() => ({
-      charsBefore: 0, charsAfter: 0, sectionsBefore: 0, sectionsAfter: 0, truncatedChunks: 0,
-    })),
     removeLongTermSection: vi.fn(() => ({ ok: true, removedChars: 0 })),
     createSession: vi.fn(), getSession: vi.fn(), appendMessage: vi.fn(),
     getRecentMessages: vi.fn(), listSessions: vi.fn(), getLatestSession: vi.fn(),
@@ -121,9 +121,13 @@ describe('memory_stats（P1-1 记忆健康度）', () => {
     const tool = tools.find(t => t.name === 'memory_stats')!;
     const res = JSON.parse(await tool.execute({}));
     const h = mem.getMemoryHealth();
-    expect(res.budget.totalChars).toBe(h.totalChars);
-    expect(res.budget.limit).toBe(h.cap);
+    expect(res.budget.curatedChars).toBe(h.curatedChars);
+    expect(res.budget.limit).toBe(h.curatedCap);
     expect(res.budget.usedPercent).toBe(h.percent);
+    // 观察缓冲是**另一个**预算，必须单独暴露（否则"观察多"会被误读成"注入知识超预算"）
+    expect(res.observationBuffer.chars).toBe(h.observationChars);
+    expect(res.observationBuffer.limit).toBe(h.observationCap);
+    expect(res.observationBuffer.usedPercent).toBe(h.observationPercent);
     expect(res.archivedChars).toBe(h.archiveChars);
     expect(res.lastConsolidatedAt).toBe(h.lastConsolidatedAt);
   });

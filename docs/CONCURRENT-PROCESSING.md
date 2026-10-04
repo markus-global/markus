@@ -414,7 +414,7 @@ to consult before adding a writer.
 | Shared state | Scope | Owner / write path | Protection |
 |---|---|---|---|
 | Notebook map + `NOTEBOOK.md` | per-agent | `Agent.writeNotebookEntry` (single write path), persist debounce w/ 10 s maxWait | `agent-memory:notebook` lock; normalize-on-load + on-write (never at render time) |
-| `knowledge.md` (curated + observations) | per-agent | `MemoryStore` (`addLongTermMemory`, `convergeLongTermToCap`, `removeLongTermSection`) | `agent-memory:knowledge` lock; atomic write |
+| `knowledge.md` (curated + observations) | per-agent | `MemoryStore` (`addLongTermMemory`, `enforceMemoryBudgets`, `removeLongTermSection`) | `agent-memory:knowledge` lock; atomic write |
 | Handoff log | per-agent | `ConcurrentHandoffLog` | debounced flush; bounded ring (64) |
 | Entity locks | per-agent | `mailbox.entityKeyOf` | in-process map — **not** cross-process |
 | `ResourceLockRegistry` | per-agent | `withLocks` | in-process map — **not** cross-process |

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Agent, type AgentToolHandler } from '../src/agent.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { RoleTemplate } from '@markus/shared';
-import { COMPLETION_MARKER } from '@markus/shared';
 import { InMemorySkillRegistry } from '../src/skills/registry.js';
 import { EventBus } from '../src/events.js';
 import type { MailboxItem } from '../src/mailbox.js';
@@ -44,11 +43,11 @@ function makeMockRouter(overrides?: {
   streamFn?: (...args: unknown[]) => Promise<unknown>;
 }): LLMRouter {
   const chat = vi.fn(overrides?.chatFn ?? (async () =>
-    makeResponse(`Reply. ${COMPLETION_MARKER}`, 'end_turn')));
+    makeResponse(`Reply.`, 'end_turn')));
 
   const chatStream = vi.fn(overrides?.streamFn ?? (async (_req, onEvent) => {
     onEvent?.({ type: 'text_delta', text: 'Stream ' });
-    return makeResponse(`Stream reply. ${COMPLETION_MARKER}`, 'end_turn');
+    return makeResponse(`Stream reply.`, 'end_turn');
   }));
 
   return {
@@ -346,7 +345,7 @@ describe('memory consolidation and dream cycle', () => {
             }],
           }), 'end_turn');
         }
-        return makeResponse(`Saved. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`Saved.`, 'end_turn');
       },
     });
 
@@ -369,15 +368,12 @@ describe('memory consolidation and dream cycle', () => {
     expect(router.chat).toHaveBeenCalled();
   });
 
-  it('consolidateMemory runs dream cycle and prunes knowledge.md', async () => {
+  it('consolidateMemory runs the dream cycle but does NOT prune curated content (§24/R4)', async () => {
     writeFileSync(join(tempDir, 'knowledge.md'), [
       '## daily-report-2024-06-01',
       'Old daily report content',
       '## procedures',
       'Keep this procedure',
-      '<think>',
-      'secret reasoning',
-      '</think>',
       '## procedures',
       'Duplicate procedure section',
     ].join('\n'), 'utf-8');
@@ -389,7 +385,7 @@ describe('memory consolidation and dream cycle', () => {
         if (text.includes('[MEMORY CONSOLIDATION')) {
           return makeResponse('{"remove":[],"merge":[],"promote":[]}', 'end_turn');
         }
-        return makeResponse(`OK. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`OK.`, 'end_turn');
       },
     });
 
@@ -408,8 +404,12 @@ describe('memory consolidation and dream cycle', () => {
     await agent.stop();
 
     const knowledgeMd = readFileSync(join(tempDir, 'knowledge.md'), 'utf-8');
-    expect(knowledgeMd).not.toContain('daily-report-2024');
-    expect(knowledgeMd).not.toContain('<think>');
+    // §24 (R4) — the platform no longer uses heuristics to edit the agent's curated content:
+    // it neither strips `## daily-report-*` sections nor dedupes same-named sections.
+    // Deciding that "this section is junk" is the agent's call (memory_update / forget).
+    expect(knowledgeMd).toContain('daily-report-2024');
+    expect(knowledgeMd).toContain('Keep this procedure');
+    expect(knowledgeMd).toContain('Duplicate procedure section');
   });
 
   it('memoryFlush prompts agent when session has substantive content', async () => {
@@ -421,7 +421,7 @@ describe('memory consolidation and dream cycle', () => {
         if (text.includes('[MEMORY FLUSH')) {
           flushCalls++;
         }
-        return makeResponse(`Flushed. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`Flushed.`, 'end_turn');
       },
     });
     const agent = createAgent(router);
@@ -475,7 +475,7 @@ describe('deliberation and team context', () => {
             },
           }]);
         }
-        return makeResponse(`Done. ${COMPLETION_MARKER}`, 'end_turn');
+        return makeResponse(`Done.`, 'end_turn');
       },
     });
 

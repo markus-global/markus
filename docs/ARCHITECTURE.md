@@ -395,7 +395,7 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 14. Current conversation identity (sender info)
 15. Environment info (OS, toolchain, runtime)
 
-See [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) for the complete section ordering and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for the cognitive preparation pipeline.
+See [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) for the complete section ordering and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for deterministic context assembly (the former cognitive preparation pipeline was retired).
 
 ### 3.8 LLM Routing
 

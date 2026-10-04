@@ -64,7 +64,8 @@ describe('runSubagentLoop', () => {
     const router = makeMockRouter([{ content: 'Analysis complete.', finishReason: 'end_turn' }]);
     const ctx = makeCtx(router, new Map());
     const result = await runSubagentLoop(ctx, 'Analyze the module');
-    expect(result).toBe('Analysis complete.');
+    expect(result.status).toBe('completed');
+    expect(result.output).toBe('Analysis complete.');
   });
 
   it('executes tool calls and returns final result', async () => {
@@ -85,7 +86,8 @@ describe('runSubagentLoop', () => {
     ]);
     const ctx = makeCtx(router, tools);
     const result = await runSubagentLoop(ctx, 'Echo hello');
-    expect(result).toBe('Done: hello');
+    expect(result.status).toBe('completed');
+    expect(result.output).toBe('Done: hello');
     expect(echoTool.execute).toBeDefined();
   });
 
@@ -110,7 +112,8 @@ describe('runSubagentLoop', () => {
     ]);
     const ctx = makeCtx(router, tools);
     const result = await runSubagentLoop(ctx, 'Run broken tools');
-    expect(result).toBe('Recovered');
+    expect(result.status).toBe('completed');
+    expect(result.output).toBe('Recovered');
   });
 
   it('continues after max_tokens without tool calls', async () => {
@@ -120,7 +123,8 @@ describe('runSubagentLoop', () => {
     ]);
     const ctx = makeCtx(router, new Map());
     const result = await runSubagentLoop(ctx, 'Long task');
-    expect(result).toBe('Full answer now.');
+    expect(result.status).toBe('completed');
+    expect(result.output).toBe('Full answer now.');
   });
 
   it('stops at max iterations', async () => {
@@ -139,7 +143,9 @@ describe('runSubagentLoop', () => {
     };
     const ctx = makeCtx(router, new Map([['echo', echoTool]]));
     const result = await runSubagentLoop(ctx, 'Loop forever', { maxIterations: 1 });
-    expect(typeof result).toBe('string');
+    // H6: hitting the iteration cap is explicit and never an empty success.
+    expect(result.status).toBe('max_iterations');
+    expect(result.output.trim().length).toBeGreaterThan(0);
   });
 
   it('retries on rate limit errors', async () => {
@@ -154,7 +160,8 @@ describe('runSubagentLoop', () => {
     } as unknown as LLMRouter;
     const ctx = makeCtx(router, new Map());
     const result = await runSubagentLoop(ctx, 'Retry me');
-    expect(result).toBe('After retry');
+    expect(result.status).toBe('completed');
+    expect(result.output).toBe('After retry');
     expect(attempts).toBe(2);
   });
 
@@ -165,8 +172,9 @@ describe('runSubagentLoop', () => {
     }]);
     const ctx = makeCtx(router, new Map());
     const result = await runSubagentLoop(ctx, 'Think task');
-    expect(result).not.toContain('secret chain');
-    expect(result).toContain('Visible result');
+    expect(result.status).toBe('completed');
+    expect(result.output).not.toContain('secret chain');
+    expect(result.output).toContain('Visible result');
   });
 
   it('B4: stops early and marks the result when the shared aggregate budget is exhausted', async () => {
@@ -181,6 +189,7 @@ describe('runSubagentLoop', () => {
       execute: async () => '{"ok":true}',
     };
     const ctx = makeCtx(router, new Map([['echo', echoTool]]));
+    // `sharedBudget` is the legacy alias for the aggregate circuit breaker.
     const sharedBudget = { remaining: 2 };
     const result = await runSubagentLoop(ctx, 'Loop forever', { maxIterations: 1000, sharedBudget });
 
@@ -188,7 +197,11 @@ describe('runSubagentLoop', () => {
     expect(sharedBudget.remaining).toBe(0);
     // init chat + 2 iteration chats = 3 total (bounded, not 1000).
     expect((router.chat as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(3);
-    expect(result).toContain('shared aggregate iteration budget exhausted');
+    // H6: the shared pool is a breaker — its stop is explicit, never an empty success.
+    expect(result.status).toBe('budget_exhausted');
+    expect(result.aggregateCeilingReached).toBe(true);
+    expect(result.output).toContain('incomplete');
+    expect(result.output).toContain('aggregate iteration budget exhausted');
   });
 });
 
