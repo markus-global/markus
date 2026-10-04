@@ -64,8 +64,9 @@ See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for storage-layer detail.
 > **CPP removed.** The former Cognitive Preparation Pipeline — 0–3 pre-call LLM phases
 > (Appraisal / Retrieval / Reflection), `packages/core/src/cognitive.ts`,
 > `CognitivePreparation`, `selectCognitiveDepth`, the `CognitiveDepth` levels D0–D3 and the
-> `agent.cognitive` depth/model/timeout fields — has been **removed**, types included. It cost
-> extra LLM calls per turn and duplicated the ContextEngine's own retrieval.
+> `agent.cognitive` config (depth/model/timeout fields **and** the `enabled` flag) — has been
+> **removed**, types included; the deterministic situational block is now always assembled. It
+> cost extra LLM calls per turn and duplicated the ContextEngine's own retrieval.
 
 Context preparation is now **deterministic (no LLM)**: between triage and the main call the
 ContextEngine assembles a small, bounded situational block.
@@ -75,7 +76,7 @@ Stimulus → Triage → Deterministic Context Assembly → Main LLM
                         │
                         ├─ situational block: recent activity + working-memory keys
                         ├─ bounded relevant-memory retrieval (## Relevant Memories)
-                        └─ optional deterministic ## Cognitive Context block
+                        └─ deterministic ## Cognitive Context block (always assembled)
 ```
 
 ### Output destination: prompt only (the notebook dual-write was removed)
@@ -98,11 +99,10 @@ deterministic step.
 
 ### Configuration
 
-The `agent.cognitive.enabled` flag (`markus.json` → `agent.cognitive`, REST `/api/settings/agent`,
-Settings UI) gates whether the deterministic situational block is assembled. It is the **only**
-remaining cognitive setting: with the LLM pipeline gone the former depth / appraisal-model /
-timeout fields were inert (no phase ran), so they were deleted from the type, the REST payload
-and the UI.
+There is **no settings flag any more**. The deterministic situational block is always assembled —
+the former `agent.cognitive` config, REST payload and Settings-UI toggle were all removed along
+with the LLM pipeline they once gated. Deep recall stays agent-driven via `memory_search` /
+`kb_search`.
 
 ---
 
@@ -282,7 +282,7 @@ Implementation: `packages/core/src/pending-callback.ts`, persisted via `SqlitePe
 | `PendingCallbackRegistry` | `packages/core/src/pending-callback.ts` | Async callback tracking |
 | `AgentManager` | `packages/core/src/agent-manager.ts` | A2A DM routing, cognitive config |
 
-Types: `packages/shared/src/types/cognitive.ts` (`CognitiveConfig`, `PreparedCognitiveContext`), `requirement.ts` (`GoalConfig`).
+Types: `requirement.ts` (`GoalConfig`). (The former `packages/shared/src/types/cognitive.ts` was deleted with CPP.)
 
 ---
 

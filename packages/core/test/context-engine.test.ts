@@ -420,10 +420,7 @@ describe('buildSystemPrompt extended scenarios', () => {
         }],
         availableWorkflows: [{ name: 'Release', description: 'Release pipeline', stepCount: 4 }],
       },
-      cognitiveContext: {
-        plan: 'Step 1: analyze\nStep 2: implement',
-        reflections: ['Prior attempt failed on tests'],
-      } as never,
+      cognitiveContext: 'Prior attempt failed on tests.',
       trustLevel: { level: 'trusted', score: 85 },
       announcements: [{
         type: 'info',

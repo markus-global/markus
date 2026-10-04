@@ -1843,17 +1843,14 @@ export const api = {
       request('/settings/llm', { method: 'POST', body: JSON.stringify(data) }),
     getAgent: () => request<{
       maxToolIterations: number;
-      cognitive: { enabled: boolean };
       concurrent: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
     }>('/settings/agent'),
     updateAgent: (settings: {
       maxToolIterations?: number;
-      cognitive?: { enabled?: boolean };
       concurrent?: { enabled?: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
     }) =>
       request<{
         maxToolIterations: number;
-        cognitive: { enabled: boolean };
         concurrent: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
       }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
     getBrowser: () => request<{ mode: 'embedded' | 'system-chrome'; elementSelection: 'direct' | 'jev'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser'),

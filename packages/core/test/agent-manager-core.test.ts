@@ -161,12 +161,10 @@ describe('AgentManager constructor', () => {
     expect(manager.maxToolIterations).toBeGreaterThan(0);
   });
 
-  it('allows setting maxToolIterations and cognitiveConfig', () => {
+  it('allows setting maxToolIterations', () => {
     const manager = createManager();
     manager.maxToolIterations = 50;
-    manager.cognitiveConfig = { enabled: true };
     expect(manager.maxToolIterations).toBe(50);
-    expect(manager.cognitiveConfig?.enabled).toBe(true);
   });
 });
 
@@ -204,10 +202,9 @@ describe('createAgent', () => {
     expect(created.role.name).toBe('Developer');
   });
 
-  it('passes maxToolIterations and cognitive config to Agent constructor', async () => {
+  it('passes maxToolIterations to the Agent constructor', async () => {
     const manager = createManager();
     manager.maxToolIterations = 42;
-    manager.cognitiveConfig = { enabled: true };
 
     await manager.createAgent({ name: 'Cognitive Agent', roleName: 'custom', tools: [] });
 

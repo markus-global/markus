@@ -8572,7 +8572,6 @@ EXPLANATION_END`;
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
-        cognitive: am.cognitiveConfig ?? { enabled: false },
         concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
       });
       return;
@@ -8586,11 +8585,6 @@ EXPLANATION_END`;
       let changed = false;
       if (typeof body['maxToolIterations'] === 'number') {
         am.maxToolIterations = body['maxToolIterations'];
-        changed = true;
-      }
-      if (body['cognitive'] && typeof body['cognitive'] === 'object') {
-        const cc = body['cognitive'] as Record<string, unknown>;
-        am.cognitiveConfig = { enabled: cc['enabled'] === true };
         changed = true;
       }
       if (body['concurrent'] && typeof body['concurrent'] === 'object') {
@@ -8608,7 +8602,6 @@ EXPLANATION_END`;
           saveConfig({
             agent: {
               maxToolIterations: am.maxToolIterations,
-              cognitive: am.cognitiveConfig,
               concurrent: am.concurrentConfig,
             },
           } as any, this.markusConfigPath);
@@ -8630,7 +8623,6 @@ EXPLANATION_END`;
       }
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
-        cognitive: am.cognitiveConfig ?? { enabled: false },
         concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
       });
       return;

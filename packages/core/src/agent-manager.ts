@@ -13,7 +13,6 @@ import {
   type PathAccessPolicy,
   type RoleTemplate,
   type RoleCategory,
-  type CognitiveConfig,
   saveConfig,
   type CodingToolName,
   type CodingToolConfig,
@@ -486,7 +485,6 @@ export class AgentManager {
   private recallCallbacks?: RecallCallbacks;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
-  private _cognitiveConfig?: CognitiveConfig;
   private _concurrentConfig?: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
   private _codingToolsEnabled = false;
   private _codingToolsConfigs?: Record<string, CodingToolConfig>;
@@ -746,14 +744,6 @@ export class AgentManager {
 
   set maxToolIterations(value: number) {
     this._maxToolIterations = value <= 0 ? Infinity : value;
-  }
-
-  get cognitiveConfig(): CognitiveConfig | undefined {
-    return this._cognitiveConfig;
-  }
-
-  set cognitiveConfig(value: CognitiveConfig | undefined) {
-    this._cognitiveConfig = value;
   }
 
   get concurrentConfig(): { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' } | undefined {
@@ -1465,7 +1455,6 @@ export class AgentManager {
       pathPolicy,
       skillRegistry: this.skillRegistry,
       maxToolIterations: this._maxToolIterations,
-      cognitive: this._cognitiveConfig,
       handbookPath: this.resolveHandbookPath(roleName),
     };
 
@@ -2385,7 +2374,6 @@ export class AgentManager {
       restoredState: { tokensUsedToday: row.tokensUsedToday ?? 0 },
       skillRegistry: this.skillRegistry,
       maxToolIterations: this._maxToolIterations,
-      cognitive: this._cognitiveConfig,
       handbookPath: this.resolveHandbookPath(row.roleId ?? row.roleName),
     });
 

@@ -23,8 +23,6 @@ import {
   type AgentMindState,
   type TriageResult,
   type DeliberationResult,
-  type CognitiveConfig,
-  type PreparedCognitiveContext,
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
   HEARTBEAT_DAILY_LOG_CHARS,
@@ -268,8 +266,6 @@ export interface AgentOptions {
   maxToolIterations?: number;
   /** Skill registry for runtime skill discovery and activation */
   skillRegistry?: SkillRegistry;
-  /** Deterministic cognitive-context config (default: disabled) */
-  cognitive?: CognitiveConfig;
   /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected into the prompt so the agent reads it without searching. */
   handbookPath?: string;
 }
@@ -558,8 +554,6 @@ export class Agent {
   private notebookSaveTimer?: ReturnType<typeof setTimeout>;
   /** Earliest time the debounced notebook write may be deferred to (maxWait). */
   private notebookSaveDeadline?: number;
-  /** 审计 §8.1：CPP 的 LLM 管道已移除；仅保留配置（决定是否注入确定性情境块）。 */
-  private cognitiveConfig?: CognitiveConfig;
   /** Ring buffer of recent activity summaries for triage context. */
   private recentActivityRing: string[] = [];
   private static readonly ACTIVITY_RING_SIZE = 8;
@@ -778,9 +772,6 @@ export class Agent {
     this.guardrails = new GuardrailPipeline();
     this.toolHooks = new ToolHookRegistry();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
-    if (options.cognitive?.enabled) {
-      this.cognitiveConfig = options.cognitive;
-    }
     this.heartbeat = new HeartbeatScheduler(this.id, this.eventBus, {
       intervalMs: this.config.heartbeatIntervalMs,
       enabled: true,
@@ -3865,19 +3856,14 @@ export class Agent {
   }
 
   /**
-   * 审计 §8.1：确定性情境准备（原 CPP 的 LLM 多阶段管道已移除）。
+   * 审计 §8.1：确定性情境块（原 CPP 的 LLM 多阶段管道已移除）。
    *
    * 旧 CPP 在主调用前跑 0–3 次 LLM（appraise / reflect），带来额外时延与成本，
    * 且与上下文引擎自身「有界的相关记忆检索」重复。现改为**纯确定性**装配一小段
-   * 情境块（近期活动 + 工作记忆键）；更深的跨域召回由 Agent 按场景提示主动调
-   * `memory_search` / `kb_search` 承担。返回 undefined 表示无情境可注入。
+   * 情境块（近期活动 + 工作记忆键），始终注入；更深的跨域召回由 Agent 按场景提示
+   * 主动调 `memory_search` / `kb_search` 承担。返回 undefined 表示无可注入内容。
    */
-  private async prepareCognitiveContext(
-    _scenario: string,
-    _message: string,
-    _sender?: string,
-  ): Promise<PreparedCognitiveContext | undefined> {
-    if (!this.cognitiveConfig?.enabled) return undefined;
+  private buildCognitiveContext(): string | undefined {
     const parts: string[] = [];
     const activity = this.recentActivityRing.slice(-3);
     if (activity.length > 0) {
@@ -3887,11 +3873,7 @@ export class Agent {
       const keys = [...this.workingMemory.keys()].slice(0, 8).join(', ');
       parts.push(`Working memory: ${this.workingMemory.size} entries (${keys})`);
     }
-    if (parts.length === 0) return undefined;
-    return {
-      cognitiveContext: parts.join('\n'),
-      isEmpty: false,
-    };
+    return parts.length > 0 ? parts.join('\n') : undefined;
   }
 
   private getMailboxContext(): {
@@ -4631,7 +4613,7 @@ export class Agent {
     // P1-9：按生效模型激活 token 计数器（非流式路径）。
     await this.activateTokenCounterForModel();
 
-    const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
+    const cognitiveContext = this.buildCognitiveContext();
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -5396,7 +5378,7 @@ export class Agent {
     // 预算按错误模型/过期编码器计数（跨 agent 串扰）。
     await this.activateTokenCounterForModel();
 
-    const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
+    const cognitiveContext = this.buildCognitiveContext();
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -6168,7 +6150,7 @@ export class Agent {
     // P1-9（M1 修订）：任务执行路径同样按生效模型激活 token 计数器（与 chat 两条路径一致）。
     await this.activateTokenCounterForModel();
 
-    const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
+    const cognitiveContext = this.buildCognitiveContext();
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -6730,7 +6712,7 @@ export class Agent {
     this.memory.getOrCreateSession(this.id, sessionId);
     this.memory.appendMessage(sessionId, { role: 'user', content: userMessage });
 
-    const cognitiveContext = await this.prepareCognitiveContext('chat', userMessage);
+    const cognitiveContext = this.buildCognitiveContext();
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,

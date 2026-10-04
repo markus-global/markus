@@ -68,14 +68,6 @@ export interface MarkusConfig {
   agent?: {
     /** Safety cap on tool iterations per agent turn (default: 200) */
     maxToolIterations?: number;
-    /**
-     * Deterministic cognitive-context settings (default: disabled).
-     * Gates a small, LLM-free situational block — the former CPP LLM pipeline
-     * (depth levels / appraisal model / timeouts) was removed.
-     */
-    cognitive?: {
-      enabled?: boolean;
-    };
   };
   browser?: {
     /** Backend that drives agent browser automation: 'embedded' = built-in Electron WebContentsView (default), 'system-chrome' = Chrome extension bridge. */

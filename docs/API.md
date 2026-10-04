@@ -277,23 +277,19 @@ interface NotebookEntry {
 
 ### POST `/api/settings/agent`
 
-Persists agent settings to `markus.json`, including the agent runtime config.
+Persists agent settings to `markus.json`.
 
 **Body:**
 
 ```json
 {
-  "maxToolIterations": 25,
-  "cognitive": {
-    "enabled": true
-  }
+  "maxToolIterations": 25
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `maxToolIterations` | number | Max tool-call loops per agent turn |
-| `cognitive.enabled` | boolean | Gate the deterministic situational block (`## Cognitive Context`). No LLM call is made. |
 
 ---
 

@@ -204,7 +204,7 @@
   - "检索相关记忆" → 确定性轻量注入（`retrieveRelevantMemories` 精简版，体积有界）+ 提示词引导主动 `memory_search`；
   - "反思" → 由 `memory_organize` / 正常推理承担；
   - 复杂/多跳 → Agent 主动调 `memory_search`/`kb_search`。
-- **类型**：`shared/types/cognitive.ts` 与 `CognitiveConfig/Stimulus` 一并移除或降为内部实现细节。
+- **类型**：`shared/types/cognitive.ts`（`CognitiveConfig` / `CognitiveStimulus` 等 CPP 阶段类型）**已整文件删除**；确定性情境块改为**始终装配**、不再有任何开关（配置、REST、设置 UI 三处一并移除）。
 
 ### 8.2 整理触发面收敛（P-11）
 - **唯一原语** `memory_organize`。

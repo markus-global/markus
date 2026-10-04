@@ -381,14 +381,6 @@
     "saved": "已保存",
     "failedToSave": "保存失败"
   },
-  "cognitive": {
-    "title": "情境上下文",
-    "description": "开启后，智能体每轮会额外装配一小段确定性的情境块（近期活动 + 工作记忆键），不产生额外 LLM 调用。更深层的跨域召回由智能体主动调用 memory_search / kb_search 完成。",
-    "enabled": "启用情境块",
-    "enabledDesc": "启用后，智能体在响应前会注入近期活动与工作记忆键（无额外 LLM 调用）",
-    "saved": "已保存",
-    "failedToSave": "保存失败"
-  },
   "concurrent": {
     "title": "并发处理",
     "description": "让智能体用多个隔离的分身会话同时处理多个对话、任务与消息。关闭时严格逐个处理（串行）。",

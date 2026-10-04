@@ -8,7 +8,6 @@ import {
   type LLMMessage,
   type RoleTemplate,
   type IdentityContext,
-  type PreparedCognitiveContext,
   SYSTEM_MY_TASKS_MAX,
   SYSTEM_TEAM_TASKS_MAX,
   SYSTEM_KNOWLEDGE_CHARS,
@@ -425,7 +424,8 @@ export class ContextEngine {
         stepCount: number;
       }>;
     };
-    cognitiveContext?: PreparedCognitiveContext;
+    /** Deterministic situational block (recent activity + working-memory keys), rendered as `## Cognitive Context`. */
+    cognitiveContext?: string;
     channelContext?: Array<{ role: string; content: string }>;
     /** Prompt profile (AGENT-RUNTIME §4). Defaults from scenario pack. */
     promptProfile?: PromptProfile;
@@ -1099,13 +1099,10 @@ export class ContextEngine {
     const alreadyShownIds = new Set<string>();
     // Deterministic situational block (recent activity + working-memory keys).
     // 审计 P-03：情境块有**唯一目的地**——本轮 prompt（不落盘、不进可缓存前缀）。
-    // 它与下面的相关记忆检索**互补**而非互斥：早期实现用 `else if` 把两者做成二选一，
-    // 于是「开启情境块」会**静默吞掉** `## Relevant Memories`——与文档（两者都注入）
-    // 相悖。现在两者各自独立注入。
-    const cpp = opts.cognitiveContext;
-    if (cpp && !cpp.isEmpty && cpp.cognitiveContext) {
+    // 它与下面的相关记忆检索**互补**而非互斥：两者都注入。
+    if (opts.cognitiveContext) {
       dynamic.push('\n## Cognitive Context');
-      dynamic.push(cpp.cognitiveContext);
+      dynamic.push(opts.cognitiveContext);
     }
     if (!isDream) {
       const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId, alreadyShownIds);

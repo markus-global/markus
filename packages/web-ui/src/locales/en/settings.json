@@ -381,14 +381,6 @@
     "saved": "Saved",
     "failedToSave": "Failed to save"
   },
-  "cognitive": {
-    "title": "Situational Context",
-    "description": "When enabled, the agent assembles a small, deterministic situational block each turn (recent activity + working-memory keys). No extra LLM call is made. Deeper cross-domain recall is done by the agent itself via memory_search / kb_search.",
-    "enabled": "Enable situational block",
-    "enabledDesc": "When enabled, the agent injects recent activity and working-memory keys before responding (no extra LLM call)",
-    "saved": "Saved",
-    "failedToSave": "Failed to save"
-  },
   "concurrent": {
     "title": "Concurrent Processing",
     "description": "Let your agent handle multiple conversations, tasks, and messages at the same time with isolated worker sessions. When disabled, it processes strictly one item at a time (serial).",

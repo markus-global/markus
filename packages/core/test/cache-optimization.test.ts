@@ -433,10 +433,7 @@ describe('ContextEngine — cache optimization', () => {
         memory: memory as any,
         scenario: 'a2a' as any,
         // Per-call situational meta — all belong in Tier 3.
-        cognitiveContext: {
-          isEmpty: false,
-          cognitiveContext: 'The user is asking about billing.',
-        },
+        cognitiveContext: 'The user is asking about billing.',
         mailboxContext: {
           currentFocus: { type: 'a2a_message', label: 'from Bob', elapsedMs: 5000 },
           queueDepth: 2,
@@ -578,10 +575,7 @@ describe('ContextEngine — cache optimization', () => {
         role: makeRole(),
         memory: makeMockMemory() as any,
         scenario: 'a2a' as any,
-        cognitiveContext: {
-          isEmpty: false,
-          cognitiveContext: 'situational note',
-        },
+        cognitiveContext: 'situational note',
       });
       // 审计 P-03：CPP 产出只注入本轮 volatile tail（不再写 NOTEBOOK），
       // 且绝不进入可缓存的 stable 前缀。

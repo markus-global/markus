@@ -569,7 +569,7 @@ describe('additional handleMessage scenarios', () => {
 });
 
 describe('cognitive and path policy agent', () => {
-  it('constructs agent with cognitive config enabled', async () => {
+  it('constructs an agent that injects a deterministic cognitive context', async () => {
     const agent = new Agent({
       config: {
         id: 'cog-agent',
@@ -581,7 +581,6 @@ describe('cognitive and path policy agent', () => {
       role: MOCK_ROLE,
       llmRouter: makeMockRouter(),
       dataDir: tempDir,
-      cognitive: { enabled: true },
     });
 
     await agent.handleMessage('Plan my work');

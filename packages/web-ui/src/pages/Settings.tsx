@@ -238,10 +238,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [agentMaxIter, setAgentMaxIter] = useState(200);
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentMsg, setAgentMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
-  // Deterministic cognitive-context settings
-  const [cognitiveEnabled, setCognitiveEnabled] = useState(false);
-  const [cognitiveSaving, setCognitiveSaving] = useState(false);
-  const [cognitiveMsg, setCognitiveMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   // Concurrent Processing settings
   const [concEnabled, setConcEnabled] = useState(false);
   const [concMaxWorkers, setConcMaxWorkers] = useState(3);
@@ -323,9 +319,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     api.settings.getAgent()
       .then(d => {
         if (d && typeof d.maxToolIterations === 'number') setAgentMaxIter(d.maxToolIterations);
-        if (d?.cognitive) {
-          setCognitiveEnabled(d.cognitive.enabled ?? false);
-        }
         if (d?.concurrent) {
           setConcEnabled(d.concurrent.enabled ?? true);
           setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
@@ -2175,48 +2168,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
             </div>
             {agentMsg && <Msg type={agentMsg.type} text={agentMsg.text} />}
-          </div>
-        </Section>
-
-        <Section title={t('cognitive.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <div className="text-xs text-fg-tertiary">{t('cognitive.description')}</div>
-
-            {/* Enable toggle */}
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('cognitive.enabled')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('cognitive.enabledDesc')}</div>
-              </div>
-              <button
-                onClick={() => { setCognitiveEnabled(!cognitiveEnabled); setCognitiveMsg(null); }}
-                className={`relative w-10 h-5 rounded-full transition-colors ${cognitiveEnabled ? 'bg-brand-500' : 'bg-fg-quaternary'}`}
-              >
-                <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${cognitiveEnabled ? 'translate-x-5' : ''}`} />
-              </button>
-            </div>
-
-            {/* Save */}
-            <div className="flex items-center justify-end gap-2">
-              <button
-                disabled={cognitiveSaving}
-                onClick={async () => {
-                  setCognitiveSaving(true); setCognitiveMsg(null);
-                  try {
-                    const d = await api.settings.updateAgent({
-                      cognitive: { enabled: cognitiveEnabled },
-                    });
-                    setCognitiveEnabled(d.cognitive.enabled);
-                    setCognitiveMsg({ type: 'ok', text: t('cognitive.saved') });
-                  } catch { setCognitiveMsg({ type: 'err', text: t('cognitive.failedToSave') }); }
-                  setCognitiveSaving(false);
-                }}
-                className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
-              >
-                {cognitiveSaving ? t('common:saving') : t('common:save')}
-              </button>
-            </div>
-            {cognitiveMsg && <Msg type={cognitiveMsg.type} text={cognitiveMsg.text} />}
           </div>
         </Section>
 

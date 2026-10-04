@@ -381,14 +381,6 @@
     "saved": "Guardado",
     "failedToSave": "No se pudo guardar"
   },
-  "cognitive": {
-    "title": "Contexto situacional",
-    "description": "Cuando está habilitado, el agente ensambla cada turno un bloque situacional pequeño y determinista (actividad reciente + claves de memoria de trabajo). No se realiza ninguna llamada LLM adicional. El recuerdo profundo entre dominios lo hace el propio agente mediante memory_search / kb_search.",
-    "enabled": "Habilitar bloque situacional",
-    "enabledDesc": "Cuando está habilitado, el agente inyecta la actividad reciente y las claves de memoria de trabajo antes de responder (sin llamada LLM adicional)",
-    "saved": "Guardado",
-    "failedToSave": "No se pudo guardar"
-  },
   "searchApi": {
     "title": "Búsqueda web",
     "description": "Prioridad: Hub conectado con balance → Markus acogió primero; de lo contrario sus claves de API primero.",
