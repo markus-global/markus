@@ -150,9 +150,9 @@ knowledge.md
 | Curated sections | Distilled knowledge the agent maintains | Always injected as `## Your Knowledge` (via the volatile tail, not the byte-stable system prefix) |
 | `## _observations` | Raw observations from `memory_save` | Excluded from prompt; processed by dream cycle |
 
-The **dream cycle** (`memory_consolidation`) consolidates observations into curated sections, prunes stale content, and maintains `knowledge.md` hygiene. This is the long-term learning path at the end of the cognitive cycle.
+The **dream cycle** (`memory_consolidation`) consolidates observations into curated sections (dedupe / merge / promote) by asking the agent's own model, then lands the result through the store's write APIs. This is the long-term learning path at the end of the cognitive cycle. It does **not** do load-time hygiene over `knowledge.md` — the platform never rewrites the agent's curated prose (that was `pruneMemoryMd()`, removed).
 
-**Budget is lossless.** When curated sections exceed the character budget, the overflow is **archived** (moved verbatim into `knowledge-archive.md`, still retrievable via `memory_search`) rather than truncated or refused. The budget is an invariant — the file converges to ≤100% at load. The injected `## Your Knowledge` block carries a **health banner** when usage ≥70% (budget %, observation count, section count, archived count, last consolidation time).
+**Budget is reported, not rewritten.** The curated budget is a **soft** line: exceeding it is *reported* (log + in-prompt health banner) and the agent consolidates with `memory_organize` / `memory_update`. A **hard ceiling** (3× the soft budget) refuses the write fail-closed. The injected `## Your Knowledge` block carries a **health banner** when curated usage ≥70% (curated %, observation-buffer %, section count, observation count, archived chars, last consolidation time).
 
 **Migration-read.** `MEMORY.md` / `memories.json` / `state.md` are legacy read-only sources, read and migrated on load; only `knowledge.md` is written, and observation metadata is emitted as a single `<!-- type: X, data-meta: {…} -->` line (the old `, tags: a, b` form is read but converged on write). See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
 
