@@ -229,6 +229,19 @@ export class ConversationBufferManager {
    * Their rawCreatedAt is the OPTIMISTIC send time (earlier than the DB user
    * row's createdAt), so chronological insertion would place the in-flight
    * reply ABOVE the user message it answers.
+   *
+   * AUTHORITY RULE for agent rows: once a turn is over the DB is the sole
+   * authority. A buffer-only agent row may therefore ONLY ever be the LIVE tail
+   * of a stream still in flight. Any other buffer-only agent row is stale local
+   * state whose id was never converged to the persisted messageId — the turn
+   * ended while a different conversation was on screen, or the reply was
+   * recovered by a reattach / poll (see `alignStreamedAgentId`), or the user
+   * navigated away before `done`. It MUST be dropped rather than ordered: its
+   * rawCreatedAt is the optimistic send time, so chronological insertion strands
+   * a duplicate of the reply ABOVE its own user message (the "duplicate bubble
+   * in front" report). The ONLY exception is a client-only terminal marker
+   * (error / stopped / empty reply) — that carries the sole copy when a failure
+   * never reached the DB, so it is kept.
    */
   private mergeDbWithCache(dbMsgs: ChatMsg[], buffered?: ChatMsg[], streamLive = false): ChatMsg[] {
     if (!buffered || buffered.length === 0) return [...dbMsgs];
@@ -242,17 +255,20 @@ export class ConversationBufferManager {
     const rest: ChatMsg[] = [];
     for (const cm of buffered) {
       if (byId.has(cm.id)) continue;
-      if (cm.sender === 'agent' && cm.isStreaming) {
-        // Only a LIVE stream may contribute a tail. Otherwise the row is stale
-        // local state and keeping it strands a duplicate of an OLD reply at the
-        // bottom (its rawCreatedAt is the optimistic send time, so it can never
-        // be ordered correctly either). The DB is the sole authority once idle.
-        if (!streamLive) continue;
-        streamingTail.push(cm);
-        byId.add(cm.id);
-      } else {
-        rest.push(cm);
+      if (cm.sender === 'agent') {
+        const clientMarker = !!(cm.isError || cm.isStopped || cm.emptyReply);
+        if (!clientMarker) {
+          // DB is the sole authority for agent rows: only a LIVE tail survives.
+          if (streamLive && cm.isStreaming) {
+            streamingTail.push(cm);
+            byId.add(cm.id);
+          }
+          // else: stale local copy of an already-persisted reply → drop it.
+          continue;
+        }
+        // client marker: keep (falls through to chronological insert below)
       }
+      rest.push(cm);
     }
     for (const cm of rest) {
       if (byId.has(cm.id)) continue;
