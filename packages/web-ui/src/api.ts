@@ -2178,11 +2178,14 @@ export const api = {
       handlers: ChatStreamHandlers,
       signal?: AbortSignal,
       afterSeq = 0,
-    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; attached: boolean; terminal: boolean }> => {
+    ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; messageId?: string; attached: boolean; terminal: boolean }> => {
       return new Promise(async (resolve, reject) => {
         let fullContent = '';
         let resultSessionId: string | undefined = sessionId;
         let resultSegments: StoredSegment[] | undefined;
+        // Server-persisted id of the reply, surfaced so the reattached bubble can
+        // converge its synthetic id to it (see alignStreamedAgentId in useChatStream).
+        let resultMessageId: string | undefined;
         let watchdog: ReturnType<typeof createStreamWatchdog> | null = null;
         try {
           const res = await fetch(
@@ -2245,11 +2248,12 @@ export const api = {
                 } else if (type === 'done') {
                   fullContent = (event.content as string) || fullContent;
                   if (typeof event.sessionId === 'string') resultSessionId = event.sessionId;
+                  if (typeof event.messageId === 'string') resultMessageId = event.messageId;
                   const doneSegments = event.segments as StoredSegment[] | undefined;
                   if (doneSegments) resultSegments = doneSegments;
                   // 真·回合终态 —— 只有这里才允许调用方定型气泡。
                   sawTerminal = true;
-                  resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true, terminal: true });
+                  resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, messageId: resultMessageId, attached: true, terminal: true });
                   reader.cancel().catch(() => {});
                   watchdog?.stop();
                   return;
@@ -2292,7 +2296,7 @@ export const api = {
           // (socket cut / proxy stall / watchdog). Report it as such so the caller
           // re-attaches instead of finalizing a half-rendered reply as "complete".
           watchdog?.stop();
-          resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, attached: true, terminal: sawTerminal });
+          resolve({ content: fullContent, sessionId: resultSessionId, segments: resultSegments, messageId: resultMessageId, attached: true, terminal: sawTerminal });
         } catch (err) {
           watchdog?.stop();
           // Abort is not a successful attach — caller must not finalize the turn.

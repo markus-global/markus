@@ -31,7 +31,7 @@ import type { TFunction } from 'i18next';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat,
-  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
+  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget, alignStreamedAgentId,
   appendLiveOutput, appendSubagentLog,
   appendTextToSegments, appendThinkingToSegments,
   finalizeAgentMessage, finalizeLastInterruptedAgent, finalizeStreamEnd, finalizeLastStreamingBubble, msgHasContent,
@@ -675,6 +675,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       }
 
       if (currentConvKeyRef.current === convKey) {
+        let finalizedId: string | undefined;
         updateConvMsgs(convKey, prev => {
           const u = [...prev];
           const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
@@ -684,6 +685,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           // Only a still-in-flight bubble may be finalized here — never a
           // previous turn's completed reply.
           if (!msg.isStreaming) return prev;
+          finalizedId = msg.id;
           const finalSegs = result!.segments?.length
             ? storedSegmentsToMsgSegments(result!.segments, msg.segments)
             : undefined;
@@ -699,6 +701,12 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           };
           return u;
         }, sessionId);
+        // Converge the reattached bubble's synthetic id (`reattach_…`) to the
+        // server-persisted id, so a later DB load dedups it by id instead of
+        // rendering the reply twice.
+        if (finalizedId) {
+          updateConvMsgs(convKey, prev => alignStreamedAgentId(prev, finalizedId, result!.messageId), sessionId);
+        }
         setSending(false);
       }
       endStream(convKey);
@@ -1292,20 +1300,6 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             }, streamSessionId);
           }
 
-          // 身份对齐（重复气泡根因修复）：把本地流式气泡的 id 换成服务端持久化 id。
-          // 前端此前忽略 done 事件里的 messageId，气泡一直用客户端生成的 agentMsgId，
-          // 而 DB 里那行消息用的是另一个 id；一旦列表重载 / WS 推送把 DB 消息取回，
-          // 同一 条回复就会以两个 id 各渲染一个气泡。这里统一为服务端 id。
-          if (!streamResult.merged && streamResult.messageId && streamResult.messageId !== agentMsgId) {
-            updateConvMsgs(sendKey, prev => {
-              if (prev.some(m => m.id === streamResult.messageId)) {
-                // DB 版本已在列表里 → 丢掉本地流式副本，避免一分为二。
-                return prev.filter(m => m.id !== agentMsgId);
-              }
-              return prev.map(m => (m.id === agentMsgId ? { ...m, id: streamResult.messageId! } : m));
-            }, streamSessionId);
-          }
-
           if (streamResult.sessionId) {
             // Only update active session if user hasn't switched to a different session
             setActiveSessionId(prev => {
@@ -1421,6 +1415,21 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             }
           }
         }
+        // 身份对齐（重复气泡根因）：把本地流式气泡的**合成 id** 收敛到服务端持久化
+        // messageId。必须与「当前在看哪个会话」**解耦**——一次回合完全可能在你切到
+        // 别的会话 / 标签之后才收到 done（那时上面整段 done 处理被视图门控跳过），或
+        // 回复由 reattach / poll 恢复。只看视图会漏掉这些路径，本地气泡便带着合成 id
+        // 留下；随后的 DB 加载按 id 相等去重失败 → 同一回复两个气泡（且陈旧副本会被
+        // 按乐观发送时刻错插到它的用户消息之前）。路由走 streamSessionId（会话自身），
+        // 与视图无关；仅当会话尚未解析、无法按会话路由时，才退回视图判据。
+        if (!streamResult.merged
+          && (streamSessionId || currentConvKeyRef.current === sendKey)) {
+          updateConvMsgs(
+            sendKey,
+            prev => alignStreamedAgentId(prev, agentMsgId, streamResult.messageId),
+            streamSessionId,
+          );
+        }
       } catch (e) {
         // Preserve sessionId from error so subsequent messages stay in the same session
         const errSessionId = (e as Error & { sessionId?: string })?.sessionId;
@@ -1534,6 +1543,9 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
                   }
                   return u;
                 }, streamSessionId);
+                // The DB row we recovered is the authoritative identity — converge
+                // the optimistic bubble's id to it so a later load dedups by id.
+                updateConvMsgs(sendKey, prev => alignStreamedAgentId(prev, agentMsgId, recovered.id), streamSessionId);
                 return;
               }
             } catch { /* retry */ }

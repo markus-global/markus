@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   appendTextToSegments,
   appendThinkingToSegments,
+  alignStreamedAgentId,
   dedupeAdjacentUserMessages,
   dbMsgToChat,
   finalizeAgentMessage,
@@ -725,3 +726,31 @@ describe('resolveMobileTeamLayerState (mobile L2 blank-page guard)', () => {
     }
   });
 });
+
+describe('alignStreamedAgentId', () => {
+  const mk = (id: string, extra: Partial<ChatMsg> = {}): ChatMsg =>
+    ({ id, sender: 'agent', text: 'x', time: '12:00', ...extra } as ChatMsg);
+
+  it('renames the synthetic bubble id to the persisted messageId', () => {
+    const out = alignStreamedAgentId(
+      [{ id: 'u1', sender: 'user', text: 'hi', time: '12:00' } as ChatMsg, mk('a_8821')],
+      'a_8821',
+      'cm_real',
+    );
+    expect(out.map(m => m.id)).toEqual(['u1', 'cm_real']);
+  });
+
+  it('drops the local copy when the DB version is already present under the persisted id', () => {
+    // Prevents two rows sharing one id (which would double-render in React keys).
+    const out = alignStreamedAgentId([mk('cm_real'), mk('a_8821')], 'a_8821', 'cm_real');
+    expect(out.map(m => m.id)).toEqual(['cm_real']);
+  });
+
+  it('is a no-op when there is no persisted id, or the ids already match', () => {
+    const msgs = [mk('a_1')];
+    expect(alignStreamedAgentId(msgs, 'a_1', undefined)).toBe(msgs);      // no persisted id
+    expect(alignStreamedAgentId(msgs, 'a_1', 'a_1')).toBe(msgs);          // already converged
+    expect(alignStreamedAgentId(msgs, undefined, 'cm_1')).toBe(msgs);     // no synthetic row
+  });
+});
+
