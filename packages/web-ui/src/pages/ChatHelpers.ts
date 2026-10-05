@@ -233,6 +233,32 @@ export function clearGhostStreaming(msgs: ChatMsg[]): ChatMsg[] {
 }
 
 /**
+ * Converge a locally-streamed agent bubble's SYNTHETIC id to the server-persisted
+ * `messageId`, so any later DB load can deduplicate it BY ID (the cache merge
+ * keys on identity equality).
+ *
+ * A streamed turn has TWO identities until this runs: the client mints an
+ * optimistic id (`a_…` / `reattach_…`) at send time while the DB row uses the
+ * persisted messageId. If the two never converge, the next DB load keeps BOTH —
+ * the local synthetic row and the authoritative DB row — and the reply renders
+ * twice. This is the ONE place that bridging happens; every terminal path
+ * (done, reattach terminal, poll recovery) routes through it.
+ *
+ * If the DB version is already present under the persisted id, the local copy is
+ * DROPPED instead of renamed (renaming would produce two rows sharing one id).
+ * Returns the same array ref when nothing changed, so React can skip a re-render.
+ */
+export function alignStreamedAgentId(
+  msgs: ChatMsg[],
+  syntheticId: string | undefined,
+  persistedId: string | undefined,
+): ChatMsg[] {
+  if (!syntheticId || !persistedId || syntheticId === persistedId) return msgs;
+  if (msgs.some(m => m.id === persistedId)) return msgs.filter(m => m.id !== syntheticId);
+  return msgs.map(m => (m.id === syntheticId ? { ...m, id: persistedId } : m));
+}
+
+/**
  * Should the ghost-streaming reconciliation sweep run for the current view?
  *
  * The sweep exists for ONE case: the stream is truly over but a bubble still
