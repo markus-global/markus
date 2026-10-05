@@ -145,4 +145,25 @@ describe('ResourceLockRegistry — 链内嵌套冲突（自死锁）', () => {
     ]);
     expect(ok).toBe('ok');
   });
+
+  it("锁上下文泄漏到「存活期超出临界区」的异步资源上：不得误报嵌套冲突（跨 turn 持锁假象）", async () => {
+    // 复现线上 `LockNestingConflictError: already holds * and requested task`：
+    // 取 '*' 的工具（background_exec / 持久 shell 等）在临界区内 spawn 子进程 /
+    // setTimeout —— 这些异步资源**捕获**了当时的锁上下文，却晚于临界区才触发。
+    // 一旦把它们触发的续体当作「本链仍持有 '*'」，后续无关的写工具就会误报冲突。
+    const reg = new ResourceLockRegistry();
+    let releaseInner: () => void = () => {};
+    const gate = new Promise<void>(r => { releaseInner = r; });
+    let inner: Promise<string> | undefined;
+
+    await reg.withLock({ domain: GLOBAL_LOCK_DOMAIN }, async () => {
+      // 模拟「在 '*' 临界区内注册、存活期却超出临界区」的续体（子进程 exit 监听器 / 定时器）。
+      inner = gate.then(() => reg.withLock({ domain: 'task', sub: 't1' }, async () => 'ok'));
+      return 'outer-done';
+    });
+    // 临界区已退出、'*' 已释放，此刻才触发那个续体。
+    releaseInner();
+    await expect(inner!).resolves.toBe('ok'); // 旧实现：此处 reject LockNestingConflictError
+    expect(reg.snapshotHeld()).toEqual([]);
+  });
 });

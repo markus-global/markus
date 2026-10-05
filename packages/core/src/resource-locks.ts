@@ -69,9 +69,30 @@ interface Waiter {
   resolve: () => void;
 }
 
-/** 当前调用链已持有的锁请求（可重入判定 + 嵌套冲突检测）。 */
+/** 当前调用链已持有的一把锁。 */
+interface HeldLock {
+  req: LockRequest;
+  /**
+   * 该锁所属的临界区是否已退出。
+   *
+   * 关键：ALS（`heldLocksStore`）会把「持有锁」的上下文**传播给在临界区内创建、
+   * 但存活期超出临界区的异步资源**——子进程的 `'exit'/'close'` 监听器、`setTimeout`
+   * 回调、流事件等。这些资源在被创建（spawn/注册）时捕获了当时的锁上下文，即便
+   * `withLocks` 早已在 `finally` 里释放了注册表锁，那批资源的回调**仍带着这份
+   * 上下文运行**。若把这种「已退出临界区、却被烘进长生命周期资源」的锁当作仍被持有，
+   * 则它后来触发的**无关续体**（例如后台进程完成回调 → mailbox → 一个 turn → 工具
+   * 循环）会误报 `LockNestingConflictError`（`held '*'` vs `requested 'task'`）——
+   * 表现为「锁被永久持有、跨 turn 不释放」。
+   *
+   * 因此「本链持有某锁」只应在**其临界区仍在执行时**为真。`release` 时置 `true`，
+   * 冲突/可重入判定只看未释放者。
+   */
+  released: boolean;
+}
+
+/** 当前调用链已持有的锁（可重入判定 + 嵌套冲突检测）。 */
 interface HeldLocks {
-  held: readonly LockRequest[];
+  held: HeldLock[];
 }
 
 const heldLocksStore = new AsyncLocalStorage<HeldLocks>();
@@ -136,21 +157,27 @@ export class ResourceLockRegistry {
     const key = lockKey(req);
     const outer = heldLocksStore.getStore();
 
-    // 可重入：本调用链已持有同域同细分键 → 直接进入下一层。
-    if (outer?.held.some(h => lockKey(h) === key)) {
+    // 可重入：本调用链**仍持有**（临界区未退出）同域同细分键 → 直接进入下一层。
+    if (outer?.held.some(h => !h.released && lockKey(h.req) === key)) {
       return this.acquireChain(requests, index + 1, fn);
     }
-    // 嵌套冲突：本链已持有与之冲突的锁。放行会削弱独占语义，挂起会自死锁
-    // —— 因此快速失败（见 LockNestingConflictError 的说明）。
-    const conflicting = outer?.held.find(h => locksConflict(h, req));
-    if (conflicting) throw new LockNestingConflictError(conflicting, req);
+    // 嵌套冲突：本链**仍持有**与之冲突、且临界区未退出的锁。放行会削弱独占语义，
+    // 挂起会自死锁 —— 因此快速失败（见 LockNestingConflictError 的说明）。
+    // 只认「未释放」的持有：被 ALS 泄漏到存活期更长的异步资源上的旧锁（其临界区
+    // 早已退出）不得参与判定，否则无关的后续工作会误报冲突。
+    const conflicting = outer?.held.find(h => !h.released && locksConflict(h.req, req));
+    if (conflicting) throw new LockNestingConflictError(conflicting.req, req);
 
     await this.acquireOne(req);
-    const nextHeld: HeldLocks = { held: [...(outer?.held ?? []), req] };
+    const holder: HeldLock = { req, released: false };
+    const nextHeld: HeldLocks = { held: [...(outer?.held ?? []), holder] };
     try {
       return await heldLocksStore.run(nextHeld, () => this.acquireChain(requests, index + 1, fn));
     } finally {
       this.releaseOne(req);
+      // 临界区退出 —— 标记为已释放。此后任何仍携带本上下文的存活资源（见 HeldLock
+      // 说明）在判定时都会跳过它，不再误报「本链仍持有」。
+      holder.released = true;
     }
   }
 
