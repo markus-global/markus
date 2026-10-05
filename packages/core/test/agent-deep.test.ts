@@ -750,7 +750,7 @@ describe('mailbox routing extended', () => {
     await agent.stop();
   });
 
-  it('ensureCompletionMarker adds marker when missing from mailbox reply', async () => {
+  it('an a2a mailbox turn with a plain reply completes normally', async () => {
     let calls = 0;
     const router = makeMockRouter({
       chatFn: async () => {

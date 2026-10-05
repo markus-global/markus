@@ -1062,18 +1062,7 @@ export class AttentionController {
       const isUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(item.sourceType);
 
       if (abnormalReason && retries < MAILBOX_ITEM_MAX_RETRIES) {
-        if (abnormalReason === 'completion marker missing from reply') {
-          // In-session continuation was already attempted by the agent upstream.
-          // Requeuing would restart from scratch and duplicate all side effects.
-          // 语义修正：缺完成标记 = 未明确正常结束，标 dropped（异常可见），不标 completed。
-          log.warn('Completion marker still missing after in-session continuation — marking dropped without retry', {
-            agentId: this.agentId,
-            itemId: item.id,
-            type: item.sourceType,
-          });
-          this.emitIncomplete(item, abnormalReason);
-          this.mailbox.drop(item.id);
-        } else if (isUserInteraction) {
+        if (isUserInteraction) {
           // Empty reply / error for user-facing item — the user already saw
           // partial results and tool calls may have produced side effects.
           // Don't restart; the user can manually retry if needed.
@@ -1335,8 +1324,8 @@ export class AttentionController {
 
   /**
    * A3: emit a structured `agent:incomplete` event when a mailbox item completes
-   * without finishing cleanly (marker missing after continuation, or abnormal reply
-   * accepted without retry). Visibility only — does not change retry semantics.
+   * without finishing cleanly (an empty/abnormal reply accepted without retry).
+   * Visibility only — does not change retry semantics.
    */
   /**
    * 等待某 worker 的在途处理 promise 结束（有界等待）。

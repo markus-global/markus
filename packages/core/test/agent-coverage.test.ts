@@ -507,7 +507,7 @@ describe('subagent and streaming paths', () => {
     await agent.stop();
   });
 
-  it('ensureCompletionMarker triggers follow-up when marker missing', async () => {
+  it('an a2a turn with a plain reply completes the mailbox item (no marker protocol)', async () => {
     let calls = 0;
     const router = makeMockRouter({
       chatFn: async () => {
