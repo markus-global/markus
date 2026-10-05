@@ -198,6 +198,103 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
     expect(r.displayChanged).toBe(true);
     expect(r.newMessages!.map(m => m.id)).toEqual(['u1']);
   });
+
+  it('regression: a stale FINALIZED agent bubble (already persisted, no live stream) is dropped — never inserted in FRONT of its own user message', () => {
+    // 2026-10-05 report: "agent 输出的消息气泡会莫名其妙地在前面出现重复".
+    // Mechanism: a turn ended while a conversation OTHER than the one on screen
+    // was in view (or the reply was recovered by a reattach / poll, or arrived
+    // while the user had navigated away). The identity-alignment step that renames
+    // the optimistic bubble (`a_…` / `reattach_…`) to the server-persisted
+    // `messageId` is gated on "this conversation is the one being viewed", so it
+    // was skipped: the local copy kept its SYNTHETIC id while the DB row used the
+    // persisted id. The next DB load (switch back / refresh) merged both, because
+    // dedup is by id and the ids differ. The stale row is NOT `isStreaming`
+    // anymore, so the old code let it fall into the chronological `rest` bucket —
+    // and its `rawCreatedAt` is the OPTIMISTIC send time (equal-or-earlier than
+    // the DB user row it answers), so it landed ABOVE its own user message: a
+    // duplicate of the reply, in front of the question.
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'conv';
+    mgr.setActiveSession('conv', 'sess_1');
+    mgr.loadingSession = 'sess_1';
+    // The stream is long over — no beginStream/addStreamSession.
+
+    mgr.updateMessages(
+      'conv',
+      () => [
+        msg('u1', 'user', '盘一下改动', '2026-08-02T07:04:00.000Z'),
+        // Finalized (isStreaming false/undefined), synthetic id, optimistic time.
+        msg('a_8821', 'agent', '老板，盘完了。可以发——', '2026-08-02T07:04:00.000Z'),
+      ],
+      'sess_1',
+    );
+
+    const r = mgr.applyLoadResult('conv', 'sess_1', [
+      msg('u1', 'user', '盘一下改动', '2026-08-02T07:04:00.000Z'),
+      msg('cm_real', 'agent', '老板，盘完了。可以发——', '2026-08-02T07:05:00.000Z'),
+    ]);
+
+    const ids = r.newMessages!.map(m => m.id);
+    // Exactly the DB rows, in DB order — no synthetic-id duplicate anywhere.
+    expect(ids).toEqual(['u1', 'cm_real']);
+    expect(ids).not.toContain('a_8821');
+  });
+
+  it('regression: a stale FINALIZED agent bubble of a PREVIOUS turn is dropped even while a LATER turn streams', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'conv';
+    mgr.setActiveSession('conv', 'sess_1');
+    mgr.loadingSession = 'sess_1';
+    mgr.beginStream('conv');
+    mgr.addStreamSession('conv', 'sess_1'); // a new turn is in flight
+
+    mgr.updateMessages(
+      'conv',
+      () => [
+        msg('u1', 'user', 'first', '2026-08-02T07:04:00.000Z'),
+        msg('a_old', 'agent', 'old reply (synthetic id)', '2026-08-02T07:04:00.000Z'), // finalized, stale
+        { ...msg('u2', 'user', 'second', '2026-08-02T07:05:00.000Z') },
+        { ...msg('a_live', 'agent', 'streaming…', '2026-08-02T07:05:00.000Z'), isStreaming: true },
+      ],
+      'sess_1',
+    );
+
+    const r = mgr.applyLoadResult('conv', 'sess_1', [
+      msg('u1', 'user', 'first', '2026-08-02T07:04:00.000Z'),
+      msg('cm_old', 'agent', 'old reply (synthetic id)', '2026-08-02T07:04:30.000Z'),
+      msg('u2', 'user', 'second', '2026-08-02T07:05:00.000Z'),
+    ]);
+
+    const ids = r.newMessages!.map(m => m.id);
+    expect(ids).not.toContain('a_old');       // stale duplicate of cm_old → dropped
+    expect(ids[ids.length - 1]).toBe('a_live'); // the live tail is preserved, last
+    expect(r.newMessages!.find(m => m.id === 'a_live')?.isStreaming).toBe(true);
+  });
+
+  it('keeps a client-only terminal marker (error bubble the DB never received)', () => {
+    // A network/transport failure before the server persisted anything leaves the
+    // error bubble as the ONLY copy. It is a client marker (isError), not a stale
+    // duplicate of a DB row, so it must survive a DB load.
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'conv';
+    mgr.setActiveSession('conv', 'sess_1');
+    mgr.loadingSession = 'sess_1';
+
+    mgr.updateMessages(
+      'conv',
+      () => [
+        msg('u1', 'user', 'hi', '2026-08-02T07:04:00.000Z'),
+        { ...msg('a_err', 'agent', '⚠ 网络错误，请重试', '2026-08-02T07:04:00.000Z'), isError: true, isStopped: true },
+      ],
+      'sess_1',
+    );
+
+    const r = mgr.applyLoadResult('conv', 'sess_1', [
+      msg('u1', 'user', 'hi', '2026-08-02T07:04:00.000Z'),
+    ]);
+
+    expect(r.newMessages!.map(m => m.id)).toEqual(['u1', 'a_err']);
+  });
 });
 
 describe('ConversationBufferManager multi-session stream isolation', () => {
