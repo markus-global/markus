@@ -4397,6 +4397,13 @@ export class APIServer {
           a.id === orgSecretaryId ? { ...a, isOrgSecretary: true, protected: true } : a
         );
       }
+      // P4b：附上后端权威的「是否正在处理」——前端据此否决本地乐观态（幽灵「空闲」）。
+      // listAgents() 返回纯记录，故从活的 Agent 实例取派生状态（getSessionStates()∪队列）。
+      const mgr = this.orgService.getAgentManager();
+      agents = agents.map(a => {
+        const live = mgr.getAgent?.(a.id as string);
+        return live ? { ...a, isProcessing: live.isProcessing() } : a;
+      });
       if (this.gateway) {
         const extRegs = this.gateway.listRegistrations();
         const disconnectedIds = new Set(

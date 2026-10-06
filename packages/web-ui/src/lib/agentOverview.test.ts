@@ -386,4 +386,32 @@ describe('resolveAgentStatus', () => {
     expect(resolveAgentStatus('working', true)).toEqual(agentStatusPresentation('working'));
     expect(resolveAgentStatus('working', false).tone).toBe('busy');
   });
+
+  // ── P4b：后端权威信号（否决幽灵「空闲」）─────────────────────────────────
+  it('后端在处理但本地未标记流 ⇒ 显示工作中（消灭幽灵「空闲」）', () => {
+    expect(resolveAgentStatus('idle', false, true)).toEqual(agentStatusPresentation('working'));
+    expect(resolveAgentStatus('idle', false, true).labelKey).toBe('common:status.working');
+    // 未知状态维持既有契约（muted，不冒充空闲/工作中）。
+    expect(resolveAgentStatus(undefined, false, true).labelKey).toBeNull();
+  });
+
+  it('权威停止优先：后端在处理也不能覆盖 offline / paused', () => {
+    expect(resolveAgentStatus('offline', false, true).labelKey).toBe('common:status.offline');
+    expect(resolveAgentStatus('paused', false, true).labelKey).toBe('common:status.paused');
+    expect(resolveAgentStatus('error', false, true).tone).toBe('danger');
+  });
+
+  it('serverBusy===false 不强制空闲（避免「发送瞬间」竞态制造新幽灵空闲）', () => {
+    // 本地已乐观置忙：保留
+    expect(resolveAgentStatus('idle', true, false).tone).toBe('busy');
+    // 本地也未标记：维持原样（不得凭 false 断言空闲）
+    expect(resolveAgentStatus('idle', false, false)).toEqual(agentStatusPresentation('idle'));
+  });
+
+  it('未传 serverBusy 时行为与旧版逐字一致（向后兼容）', () => {
+    for (const s of ['idle', 'working', 'error', 'offline', 'paused', undefined]) {
+      expect(resolveAgentStatus(s, false), String(s)).toEqual(agentStatusPresentation(s));
+      expect(resolveAgentStatus(s, true), String(s)).toEqual(resolveAgentStatus(s, true, undefined));
+    }
+  });
 });

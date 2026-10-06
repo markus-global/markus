@@ -671,7 +671,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     // sidebar said 工作中 for the same agent at the same instant.
     // NOTE: an agent that is offline CANNOT be streaming — authoritative stop
     // must always win over a stale frontend refcount (missed endStream pair).
-    const statusPres = resolveAgentStatus(a.status, !isStopped && streamingAgents.has(a.id));
+    const statusPres = resolveAgentStatus(a.status, !isStopped && streamingAgents.has(a.id), (a as { isProcessing?: boolean }).isProcessing);
     const isBusy = statusPres.tone === 'busy';
     const statusColor = statusPres.dotClass;
 

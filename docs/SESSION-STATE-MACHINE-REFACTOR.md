@@ -1,6 +1,6 @@
 # 会话状态机重构 — 分析、设计与执行计划
 
-> 状态：**执行中** — P1 ✅ / P2a ✅ / P2b ✅ / P3 ✅ / **P4a ✅ · P4b（前端同步）待做**（老板 2026-10-06：「按序执行，完成后再更新本文档」）
+> 状态：**P1–P4b 全部 ✅ 已实现并验证**（老板 2026-10-06：「按序执行，完成后再更新本文档」；待老板编译重启后完整验证）
 > 创建：2026-10-06 · 分支 `refactor/session-state-machine`（自 PR #359 的 bugfix 分支拉出；PR #359 未动）
 > 本文档是本次重构的**唯一执行入口**：每个阶段先在这里更新，再动代码。
 > 关联：[STATE-OWNERSHIP.md](./STATE-OWNERSHIP.md) · [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) · [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) · [MESSAGE-STOP-CANCEL-FIX-PLAN.md](./MESSAGE-STOP-CANCEL-FIX-PLAN.md)
@@ -172,7 +172,7 @@ mailbox 主体/会话身份从 `payload.*`/`metadata.*`/`extra.*` 零散推断�
 | **P2b** ✅ | **截断可见化 + 判定统一**：循环达迭代上限仍未结束 ⇒ 标记截断，会话以 `error` 结算（不再静默当成功）；非任务循环统一走 `turnContinuationKind`。**in-band nudge 保留**（见 §11 残余说明） | agent loop 改造 + 纯函数 + 单测 | 1 提交 |
 | **P3** ✅ | **Mailbox subject 绑定**：`MailboxItem.subject` 一等字段（持久化，列 `subject TEXT` 加法迁移）、`deriveMailboxSubject` 单一派生点、`enqueue` 一次绑定、`resolveEntityKeys` 从 subject 派生（conversation 键回退到 sessionHint/originSessionId）、修复 `callback_result` 锁退化为 `system:` | mailbox 类型 + storage 迁移 + adapter + 单测 | 1 提交 |
 | **P4a** ✅ | **后端权威 per-session 状态**：`getSessionStates()` = 注册表（在跑的 turn）∪ mailbox 队列（仍 queued 的 item）**并集派生**（重启一致、不可能泄漏）；`isProcessing()` 纳入队列；`getAgentStatusSummary()` 附 `sessionStates` | core 派生 + 纯函数 + 单测 | 1 提交 |
-| **P4b** | **前端同步**：agent 级 per-session 状态端点（在 `/stream/status` 或新增路由）+ 前端以后端为准并否决本地乐观态 + SSE fault 语义 | org-manager 端点 + web-ui + 单测 | 1 提交 |
+| **P4b** ✅ | **前端同步**：`/api/agents` 附后端权威 `isProcessing`；前端单一判据 `resolveAgentStatus(status, streaming, serverBusy)` 以后端权威**否决幽灵「空闲」**（`serverBusy===false` 不强制空闲，避免发送竞态） | org-manager 端点 + web-ui 4 调用点 + 单测 | 1 提交 |
 | **P5** | **验证 + 清理**：真实数据探针（真实会话/流序列化形态）、全量回归、删除因重构而多余的旧补丁（净删代码） | 验证报告 + 残余清单 | 收尾 |
 
 ### 每阶段的验收不变量（测试钉死）
@@ -354,6 +354,30 @@ getSessionStates() = deriveSessionStates(注册表.list(), 队列按会话归组
 否决本地乐观态（幽灵「空闲」）。**精确接入点**：`api-server.ts:3890`
 （`activeStreams.status(agentId, sessionId)`）与 `Agent.getSessionStates()`；
 `activeStreams` 仅在**已开流**后才有值，对「已入队未开流」无感知 —— 这正是 `getSessionStates()` 要补的缺口。
+
+---
+
+## 14. P4b 落地记录（✅ 已实现并验证）——前端以后端权威否决幽灵「空闲」
+
+**接线**：
+- 后端 `/api/agents` GET：为每个 agent 附后端权威 `isProcessing`（取自**活的 Agent 实例**的
+  `isProcessing()` = 注册表在跑的 turn ∪ mailbox 队列；`listAgents()` 返回纯记录，故必须查活实例）。
+- 前端**单一判据** `resolveAgentStatus(status, streaming, serverBusy?)`（`lib/agentOverview.ts`）：
+  - `serverBusy === true` ⇒ 一律 `working`（**即便本地 stream 标记尚未建立**）——消灭幽灵「空闲」；
+  - 权威停止优先（offline/paused/error 仍胜出）；
+  - **`serverBusy === false` 不强制空闲**：避免「发送瞬间本地已乐观置忙、后端尚未登记」的竞态
+    制造**新的**幽灵「空闲」。
+- 4 处调用点（ChatTeamSidebar / TeamDetailPanel / Team×2）统一传入 `agent.isProcessing`。
+
+**为何是 `resolveAgentStatus` 而非新增端点**：它已是全 UI 的**唯一**状态判据（头部徽标、
+侧栏、队伍页都走它）。把权威信号接进这一个点，等于所有面板同时被对齐——而不是各面板各修一处
+（那正是过去「只修一个面板、漏掉另一个」的复发模式）。
+
+**验证**：
+| 项 | 结果 |
+|---|---|
+| 新增 `agentOverview.test.ts` P4b 用例（+4，含幽灵空闲/权威停止/竞态/向后兼容） | ✅ 49/49 |
+| `tsc -b packages/org-manager` / `tsc -b packages/web-ui` | ✅ 干净 |
 
 
 
