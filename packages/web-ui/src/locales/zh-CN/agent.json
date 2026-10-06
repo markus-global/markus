@@ -452,6 +452,7 @@
       "notebookHint": "Agent 的持久认知工作区。仅展示最近 {{count}} 条，完整内容存于 NOTEBOOK.md；条目会自动过期失效。",
       "expandNotebook": "展开剩余 {{count}} 条…",
       "staleProcessingWarning": "存在异常处理中项目（Agent 已空闲）",
+      "recoverStaleBtn": "清理",
       "agentDetails": "Agent 详情",
       "triageDecision": "分拣决策",
       "processingItem": "处理中：{{id}}…",

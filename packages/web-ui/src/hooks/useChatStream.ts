@@ -39,6 +39,7 @@ import {
   shouldSettleDetachedSession,
 } from '../pages/ChatHelpers.ts';
 import { NEW_CHAT_PLACEHOLDER_ID } from './useConversationBuffers.ts';
+import { resolveStopCancelDecision } from '../lib/stopCancelDecision.ts';
 import { parseMentionNames } from '../components/CommentInput.tsx';
 import { exponentialBackoffDelay } from '../lib/streamResilience.ts';
 import { friendlyAgentError, isMarkusCreditError, dispatchCreditNotification } from '../pages/ChatComponents.tsx';
@@ -228,11 +229,18 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
     // 1) Tell the backend to stop FIRST. Aborting the SSE alone is a soft
     // disconnect — the agent keeps working for up to SSE_DISCONNECT_FORCE_STOP_MS
     // unless cancel-processing marks userStopped.
+    //
+    // 【P1 H1 修法：目标限定】只对**既有会话**发 scoped 取消（`none` 不误杀）；
+    // 占位/无会话 → `skip`：仅前端 abort + 记 userStopped，不触后端 —— 无 target
+    // 的请求会让服务端走 `root` 兼容路径，取消"当前 ALS/根上下文流"，而发送线程
+    // 没有 ALS → 落成"取消此刻正在跑的那条流"，误杀别的会话（"两条都处理中 /
+    // 第一条没真正处理"的直接成因）。见 lib/stopCancelDecision.ts。
     const agentId = stateRef.current.chatMode === 'direct' ? stateRef.current.selectedAgent : null;
     if (agentId) {
-      const sid = stateRef.current.activeSessionId;
-      const target = sid && sid !== NEW_CHAT_PLACEHOLDER_ID ? { sessionId: sid } : undefined;
-      void api.agents.cancelProcessing(agentId, target).catch(() => {});
+      const decision = resolveStopCancelDecision(stateRef.current.activeSessionId, NEW_CHAT_PLACEHOLDER_ID);
+      if (decision.kind === 'cancel') {
+        void api.agents.cancelProcessing(agentId, decision.target).catch(() => {});
+      }
     }
 
     // 2) Abort both the live send() stream and any reattachStream consumer.
@@ -790,8 +798,11 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         // Same text already in-flight — don't stack another user bubble; retry the turn.
         if (lastUser?.text === text && !options?.isRetry && !options?.isResume) {
           abortStreamsFor(volatile.activeSessionId ?? NEW_CHAT_PLACEHOLDER_ID);
-          const sid0 = volatile.activeSessionId ?? undefined;
-          void api.agents.cancelProcessing(volatile.selectedAgent!, { sessionId: sid0 }).catch(() => {});
+          // P1 2b：占位/无会话不发后端取消（无 target 会 root 误杀），与 stopSending 同一决策。
+          const dec0 = resolveStopCancelDecision(volatile.activeSessionId, NEW_CHAT_PLACEHOLDER_ID);
+          if (dec0.kind === 'cancel') {
+            void api.agents.cancelProcessing(volatile.selectedAgent!, dec0.target).catch(() => {});
+          }
           abortStream(prevKey, volatile.activeSessionId);
           // Drop the in-flight user+empty agent pair before the retry re-adds them.
           updateConvMsgs(prevKey, prev => {
@@ -806,8 +817,11 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         }
         // Same session: interrupt current stream and resend
         abortStreamsFor(volatile.activeSessionId ?? NEW_CHAT_PLACEHOLDER_ID);
-        const sid1 = volatile.activeSessionId ?? undefined;
-        void api.agents.cancelProcessing(volatile.selectedAgent!, { sessionId: sid1 }).catch(() => {});
+        // P1 2b：同一决策 —— 占位/无会话不发后端取消（无 target 会 root 误杀）。
+        const dec1 = resolveStopCancelDecision(volatile.activeSessionId, NEW_CHAT_PLACEHOLDER_ID);
+        if (dec1.kind === 'cancel') {
+          void api.agents.cancelProcessing(volatile.selectedAgent!, dec1.target).catch(() => {});
+        }
         abortStream(prevKey, volatile.activeSessionId);
         updateConvMsgs(prevKey, prev => finalizeLastInterruptedAgent(prev));
         await new Promise(r => setTimeout(r, 50));

@@ -446,6 +446,7 @@
       "expandQueue": "Show {{count}} más…",
       "collapseQueue": "Contraer",
       "staleProcessingWarning": "Se detectan elementos de procesamiento por etapas (el agente es inactivo)",
+      "recoverStaleBtn": "Limpiar",
       "agentDetails": "Detalles del agente",
       "triageDecision": "Decisión de triaje",
       "processingItem": "Procesamiento: {{id}}…",

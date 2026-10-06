@@ -17,6 +17,8 @@ import { friendlyAgentError } from './ChatComponents.tsx';
 import { DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
 import { getToolMeta } from '../components/execution-utils.ts';
 import { categorizeTools } from '../lib/toolCategories.ts';
+import { canCancelMailboxItem } from '../lib/mailboxCancelable.ts';
+import { deriveMailboxRowDisplayStatus } from '../lib/mailboxRowDisplay.ts';
 import { NamedIcon } from '../lib/namedIcons.tsx';
 import { sliceNotebookForDisplay, formatNotebookAge, NOTEBOOK_DISPLAY_LIMIT } from '../lib/notebookDisplay.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
@@ -2386,6 +2388,16 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     } catch { /* ignore */ }
   }, [agentId, mailbox, catFilter, statusFilter]);
 
+  // 「运行与注意力」stale processing 手动恢复入口（docs/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.6 步骤 2c）：
+  // 把卡在 processing 的陈旧行（无认领/租约已过期）标为 dropped，刷新后即自愈，
+  // 不再只能重启。租约感知，不误杀其它实例/在飞项。
+  const recoverStaleMailbox = useCallback(async () => {
+    try {
+      await api.agents.recoverStaleMailbox(agentId);
+    } catch { /* 恢复失败不致命 — 保留原状，下次刷新只看结果 */ }
+    await load();
+  }, [agentId, load]);
+
   useEffect(() => {
     setExpandedId(highlightId ?? null);
     setHighlightedId(highlightId ?? null);
@@ -2532,7 +2544,15 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
         {agentRunning && hasStaleProcessingItems && (
           <div className="mb-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center gap-2">
             <span className="text-amber-500 text-sm">⚠</span>
-            <span className="text-[11px] text-amber-600">{t('agent:profilePage.mind.staleProcessingWarning')}</span>
+            <span className="text-[11px] text-amber-600 flex-1">{t('agent:profilePage.mind.staleProcessingWarning')}</span>
+            {canManageAgents && (
+              <button
+                onClick={() => { void recoverStaleMailbox(); }}
+                className="px-2 py-0.5 text-[10px] font-medium rounded-md bg-amber-500/20 text-amber-700 hover:bg-amber-500/30 transition-colors shrink-0"
+              >
+                {t('agent:profilePage.mind.recoverStaleBtn')}
+              </button>
+            )}
           </div>
         )}
 
@@ -2727,6 +2747,14 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             const isExpanded = expandedId === item.id;
             const icon = MAILBOX_TYPE_ICONS[item.sourceType] ?? '●';
             const display = getMailboxItemDisplay(item, t);
+            // 【2d 收敛】行状态点的"处理中"以在途流为权威：DB processing 但
+            // 不是当前 focus / agent 已停止 → stale（不再蓝色脉冲谎称在处理）。
+            const rowDisplayStatus = deriveMailboxRowDisplayStatus({
+              itemStatus: item.status,
+              agentRunning,
+              currentFocusMailboxItemId: mind?.currentFocus?.mailboxItemId ?? null,
+              itemId: item.id,
+            });
             const senderName = item.metadata?.senderName as string | undefined;
             const senderRole = item.metadata?.senderRole as string | undefined;
             const isHighlighted = highlightedId === item.id;
@@ -2737,7 +2765,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                   onClick={() => setExpandedId(isExpanded ? null : item.id)}
                 >
                   <span className="text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
-                  <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${STATUS_COLORS[item.status] ?? 'bg-gray-400'}`} />
+                  <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${rowDisplayStatus === 'stale' ? 'bg-amber-400/70' : (STATUS_COLORS[item.status] ?? 'bg-gray-400')}`} />
                   <span className="text-sm">{icon}</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -2762,7 +2790,12 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                     </div>
                   </div>
                   <span className="text-[10px] text-fg-tertiary bg-surface-3 px-1.5 py-0.5 rounded shrink-0">{item.sourceType}</span>
-                  {canManageAgents && item.status === 'processing' && (
+                  {canManageAgents && canCancelMailboxItem({
+                    agentRunning,
+                    itemId: item.id,
+                    currentFocusId: mind?.currentFocus?.mailboxItemId ?? null,
+                    itemStatus: item.status,
+                  }) && (
                     <button
                       onClick={(e) => { e.stopPropagation(); setCancelConfirmId(item.id); }}
                       className="px-2 py-0.5 text-[10px] font-medium rounded-md bg-red-500/15 text-red-500 hover:bg-red-500/25 transition-colors shrink-0"
@@ -2820,8 +2853,10 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                           <ActivityLog agentId={agentId} activityId={item.activity.id} isLive={!item.activity.endedAt} />
                         )}
                       </div>
-                    ) : item.status === 'processing' ? (
+                    ) : rowDisplayStatus === 'processing' ? (
                       <div className="text-xs text-fg-tertiary text-center py-2 animate-pulse">{t('agent:profilePage.mind.processing')}</div>
+                    ) : rowDisplayStatus === 'stale' ? (
+                      <div className="text-xs text-amber-600 text-center py-2">{t('agent:profilePage.mind.staleProcessingWarning')}</div>
                     ) : item.status === 'completed' ? (
                       <div className="text-xs text-fg-tertiary text-center py-2">{t('agent:profilePage.mind.noActivityLog')}</div>
                     ) : null}

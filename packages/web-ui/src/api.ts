@@ -1345,6 +1345,8 @@ export const api = {
         body: target ? JSON.stringify(target) : undefined,
         headers: target ? { 'Content-Type': 'application/json' } : undefined,
       }),
+    recoverStaleMailbox: (id: string) =>
+      request<{ dropped: number }>(`/agents/${id}/mailbox/recover-stale`, { method: 'POST' }),
     evolveFromMessage: (
       id: string,
       body: {

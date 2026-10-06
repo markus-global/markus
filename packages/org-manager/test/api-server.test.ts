@@ -252,7 +252,7 @@ function createMockAgent(id: string, overrides: Record<string, unknown> = {}) {
       currentActivity: null,
     })),
     getMindState: vi.fn(() => ({ focus: 'idle', attention: [] })),
-    getMailbox: vi.fn(() => ({ getQueuedItems: () => [] })),
+    getMailbox: vi.fn(() => ({ getQueuedItems: () => [], cleanStaleProcessing: () => 0 })),
     getAttentionController: vi.fn(() => ({ getRecentDecisions: () => [] })),
     getMetrics: vi.fn(() => ({
       period: '24h',
@@ -1090,6 +1090,15 @@ describe('APIServer route handlers', () => {
     it('GET /api/agents/:id/mailbox', async () => {
       const res = await request(ctx.server, 'GET', `/api/agents/${AGENT_A}/mailbox`);
       expect(res.status).toBe(200);
+    });
+
+    it('POST /api/agents/:id/mailbox/recover-stale (stale processing 手动恢复入口)', async () => {
+      const res = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/mailbox/recover-stale`);
+      expect(res.status).toBe(200);
+      expect(typeof (res.json.dropped as number)).toBe('number');
+      // 幂等：再调一次不炸（无陈旧行时 dropped=0）
+      const again = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/mailbox/recover-stale`);
+      expect(again.status).toBe(200);
     });
 
     it('GET /api/agents/:id/decisions', async () => {

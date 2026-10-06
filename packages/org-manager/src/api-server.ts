@@ -5638,6 +5638,22 @@ export class APIServer {
       return;
     }
 
+    // Agent mailbox — runtime stale-processing recovery (manual「清理」entry).
+    // 「运行与注意力」amber 警告条旁的清理按钮调这里：把卡在 processing 的陈旧行
+    // 标为 dropped（租约感知，不误杀其它实例/在飞项），让运行中可自愈而不必重启。
+    // 对应 docs/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.3c 残余 → §2.6 步骤 2c。
+    if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/) && req.method === 'POST') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const dropped = agent.getMailbox().cleanStaleProcessing();
+        this.json(res, 200, { dropped });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
     // Agent attention decisions — decision timeline
     if (path.match(/^\/api\/agents\/[^/]+\/decisions$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
@@ -12989,6 +13005,7 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/mailbox$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+\/decisions$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/metrics$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/config$/, 'PATCH'),
