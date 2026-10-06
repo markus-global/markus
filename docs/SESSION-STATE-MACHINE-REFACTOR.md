@@ -1,6 +1,6 @@
 # 会话状态机重构 — 分析、设计与执行计划
 
-> 状态：**执行中** — P1 ✅ / P2a ✅ / **P2b · P3 · P4 进行中**（老板 2026-10-06：「按序执行，完成后再更新本文档」）
+> 状态：**执行中** — P1 ✅ / P2a ✅ / P2b ✅ / P3 ✅ / **P4a ✅ · P4b（前端同步）待做**（老板 2026-10-06：「按序执行，完成后再更新本文档」）
 > 创建：2026-10-06 · 分支 `refactor/session-state-machine`（自 PR #359 的 bugfix 分支拉出；PR #359 未动）
 > 本文档是本次重构的**唯一执行入口**：每个阶段先在这里更新，再动代码。
 > 关联：[STATE-OWNERSHIP.md](./STATE-OWNERSHIP.md) · [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) · [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) · [MESSAGE-STOP-CANCEL-FIX-PLAN.md](./MESSAGE-STOP-CANCEL-FIX-PLAN.md)
@@ -171,7 +171,8 @@ mailbox 主体/会话身份从 `payload.*`/`metadata.*`/`extra.*` 零散推断�
 | **P2a** ✅ | **统一 turn 终止（第一步）**：finish 诚实化（§4.3，`incomplete` 枚举）、`incomplete` 视为**未终结**（同一会话有界续跑）、对 chat 生效；task 循环显式 opt-out（老板约束） | provider 分类修复 + agent loop 收敛 + 单测（先红） | 1 提交 |
 | **P2b** ✅ | **截断可见化 + 判定统一**：循环达迭代上限仍未结束 ⇒ 标记截断，会话以 `error` 结算（不再静默当成功）；非任务循环统一走 `turnContinuationKind`。**in-band nudge 保留**（见 §11 残余说明） | agent loop 改造 + 纯函数 + 单测 | 1 提交 |
 | **P3** ✅ | **Mailbox subject 绑定**：`MailboxItem.subject` 一等字段（持久化，列 `subject TEXT` 加法迁移）、`deriveMailboxSubject` 单一派生点、`enqueue` 一次绑定、`resolveEntityKeys` 从 subject 派生（conversation 键回退到 sessionHint/originSessionId）、修复 `callback_result` 锁退化为 `system:` | mailbox 类型 + storage 迁移 + adapter + 单测 | 1 提交 |
-| **P4** | **前端同步**：后端 per-session 状态端点 + 前端对齐 + agent 状态点以后端聚合为准 + SSE fault 语义 | org-manager 端点 + web-ui + 单测 | 1 提交 |
+| **P4a** ✅ | **后端权威 per-session 状态**：`getSessionStates()` = 注册表（在跑的 turn）∪ mailbox 队列（仍 queued 的 item）**并集派生**（重启一致、不可能泄漏）；`isProcessing()` 纳入队列；`getAgentStatusSummary()` 附 `sessionStates` | core 派生 + 纯函数 + 单测 | 1 提交 |
+| **P4b** | **前端同步**：agent 级 per-session 状态端点（在 `/stream/status` 或新增路由）+ 前端以后端为准并否决本地乐观态 + SSE fault 语义 | org-manager 端点 + web-ui + 单测 | 1 提交 |
 | **P5** | **验证 + 清理**：真实数据探针（真实会话/流序列化形态）、全量回归、删除因重构而多余的旧补丁（净删代码） | 验证报告 + 残余清单 | 收尾 |
 
 ### 每阶段的验收不变量（测试钉死）
@@ -321,6 +322,38 @@ PR #359 = P1–P4 的**症状级补丁**（停止/取消/重发 + 前端闪烁�
 | 新增 `mailbox-subject.test.ts`（5，先红后绿） | ✅ 5/5 |
 | 回归 mailbox-core / concurrency / agent-extended / shared-types | ✅ 全绿 |
 | `tsc -b packages/cli`（含 shared/storage/core） | ✅ 干净 |
+
+---
+
+## 13. P4a 落地记录（✅ 已实现并验证）——后端权威 per-session 状态
+
+**设计取舍**：不把 mailbox 队列**复制**进注册表（那会再造一个需要清理的并行副本 →
+泄漏「卡在 processing」幽灵）。而是**派生**：
+
+```
+getSessionStates() = deriveSessionStates(注册表.list(), 队列按会话归组)
+```
+
+即「会话在跑」= 注册表里正在跑的 turn **∪** mailbox 里仍是 `queued` 的 item。
+- **重启一致**：队列是已持久化事实，重启后照常载入 → 立即可见（无需 seeding）；
+- **不可能泄漏**：无并行副本要清理（R1 根因：一个事实一个写者）；
+- **「入队即处理中」**：队列里的 item 天然让会话显示 processing，覆盖「入队→认领」窗口。
+
+**改动**：
+- `session-state.ts`：新增纯函数 `deriveSessionStates()` + `DerivedSessionState`；
+- `agent.ts`：`getSessionStates()` 改为派生；新增私有 `queuedItemsBySession()`（用 `subject.sessionKey`，缺失回退 `deriveMailboxSubject`）；`isProcessing()` 纳入「队列非空」；`getAgentStatusSummary()` 两个分支都附 `sessionStates`。
+
+**验证**：
+| 项 | 结果 |
+|---|---|
+| 新增 `session-state-derived.test.ts`（5，含「入队 ⇒ 处理中」端到端） | ✅ 5/5 |
+| 回归 session-state / agent-session-state / mailbox-subject / turn-truncation / finish-honesty（31） | ✅ 31/31 |
+| `tsc -b packages/cli` | ✅ 干净 |
+
+**P4b（前端同步）留给下一轮**：把 `getSessionStates()` 暴露为 agent 级端点，前端以其为权威、
+否决本地乐观态（幽灵「空闲」）。**精确接入点**：`api-server.ts:3890`
+（`activeStreams.status(agentId, sessionId)`）与 `Agent.getSessionStates()`；
+`activeStreams` 仅在**已开流**后才有值，对「已入队未开流」无感知 —— 这正是 `getSessionStates()` 要补的缺口。
 
 
 

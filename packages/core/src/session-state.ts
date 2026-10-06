@@ -136,3 +136,48 @@ export class SessionStateRegistry {
     this.sessions.clear();
   }
 }
+
+export interface DerivedSessionState {
+  sessionKey: string;
+  state: SessionStateName;
+  processingSince?: number;
+  /** 该会话当前挂着的 item 数（排队 + 在飞去重后）。 */
+  itemCount: number;
+  lastOutcome?: SessionSettleOutcome;
+  lastErrorMessage?: string;
+}
+
+/**
+ * P4：把「某会话在不在处理中」从**两个权威来源的并集**派生——
+ *   (a) 注册表里正在跑的 turn；(b) mailbox 队列中仍是 `queued` 的 item。
+ *
+ * 为什么是并集/派生而不是把队列也塞进注册表：队列是**已持久化**的事实，
+ * 重启后照常载入；派生出来的状态**天然与后端一致、且不可能泄漏**（无并行副本
+ * 需要清理）。这正是「前端状态必须能被后端权威状态否决」所需的真相源。
+ */
+export function deriveSessionStates(
+  registry: SessionRuntimeState[],
+  queuedBySession: Map<string, string[]>,
+): DerivedSessionState[] {
+  const out = new Map<string, DerivedSessionState>();
+  for (const s of registry) {
+    out.set(s.sessionKey, {
+      sessionKey: s.sessionKey,
+      state: s.state,
+      processingSince: s.processingSince,
+      itemCount: s.itemIds.size,
+      lastOutcome: s.lastOutcome,
+      lastErrorMessage: s.lastErrorMessage,
+    });
+  }
+  for (const [key, ids] of queuedBySession) {
+    const cur = out.get(key);
+    if (cur) {
+      cur.state = 'processing';
+      cur.itemCount += ids.length;
+    } else {
+      out.set(key, { sessionKey: key, state: 'processing', itemCount: ids.length });
+    }
+  }
+  return [...out.values()];
+}

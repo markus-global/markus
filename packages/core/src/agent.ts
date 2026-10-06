@@ -49,6 +49,7 @@ import {
   NOTEBOOK_MAX_CHARS_PER_ENTRY,
   NOTEBOOK_PROMPT_MAX_CHARS,
   NOTEBOOK_PERSIST_MAX_WAIT_MS,
+  deriveMailboxSubject,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle } from './memory/dream-trigger.js';
@@ -92,7 +93,7 @@ import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
-import { SessionStateRegistry } from './session-state.js';
+import { SessionStateRegistry, deriveSessionStates, type DerivedSessionState } from './session-state.js';
 import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
 import { requestHistoryWindow } from './history-window.js';
 import {
@@ -2844,22 +2845,37 @@ export class Agent {
   isProcessing(): boolean {
     return this.state.status === 'working'
       || !!this.processingMailboxItemId
-      || this.sessionStates.anyProcessing();
+      || this.sessionStates.anyProcessing()
+      // P4：队列中仍有待处理 item ⇒ 有工作。覆盖「入队 → 被认领」窗口，
+      // 以及**重启后**（队列从 DB 载入）的即时状态一致性。
+      || this.mailbox.getQueuedItems().length > 0;
   }
 
   /**
-   * 会话处理状态快照（P1）。供诊断与 P4 的前端状态端点使用——
-   * 让前端能拿到「这个 agent 现在有哪几个会话在跑」，而不是只看一个滞后的 agent.status。
+   * P4：把队列里的待处理 item 按**会话**归组（用一等主体 subject，缺失时回退派生）。
+   * 这是 getSessionStates 的权威来源之一（另一来源是注册表里正在跑的 turn）。
    */
-  getSessionStates(): Array<{ sessionKey: string; state: string; processingSince?: number; itemCount: number; lastOutcome?: string; lastErrorMessage?: string }> {
-    return this.sessionStates.list().map(s => ({
-      sessionKey: s.sessionKey,
-      state: s.state,
-      processingSince: s.processingSince,
-      itemCount: s.itemIds.size,
-      lastOutcome: s.lastOutcome,
-      lastErrorMessage: s.lastErrorMessage,
-    }));
+  private queuedItemsBySession(): Map<string, string[]> {
+    const map = new Map<string, string[]>();
+    for (const it of this.mailbox.getQueuedItems()) {
+      const key = it.subject?.sessionKey ?? deriveMailboxSubject(it).sessionKey;
+      if (!key) continue;
+      const arr = map.get(key) ?? [];
+      arr.push(it.id);
+      map.set(key, arr);
+    }
+    return map;
+  }
+
+  /**
+   * 会话处理状态快照（P4 · 后端唯一真相源）。
+   *
+   * = 注册表（正在跑的 turn）∪ mailbox 队列（仍 queued 的 item）的**并集**，
+   * 故**重启一致、且不可能泄漏**（无并行副本需要清理）。前端应据此渲染
+   * 「哪些会话在跑」，并可据其**否决**本地乐观态（幽灵「空闲」或幽灵「进行中」）。
+   */
+  getSessionStates(): DerivedSessionState[] {
+    return deriveSessionStates(this.sessionStates.list(), this.queuedItemsBySession());
   }
 
   /**
@@ -2997,8 +3013,9 @@ export class Agent {
     if (!this.stateManager) {
       return {
         agentId: this.id,
-        isBusy: this.activeTasks.size > 0,
+        isBusy: this.isProcessing(),
         activeTaskCount: this.activeTasks.size,
+        sessionStates: this.getSessionStates(),
         queueStats: {
           pending: 0,
           running: this.activeTasks.size,
@@ -3018,7 +3035,11 @@ export class Agent {
       };
     }
 
-    return this.stateManager.getStatusSummary();
+    return {
+      ...this.stateManager.getStatusSummary(),
+      // P4：附上权威的 per-session 处理状态，供前端对齐（并否决其本地乐观态）。
+      sessionStates: this.getSessionStates(),
+    };
   }
 
   /**
