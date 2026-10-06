@@ -1060,9 +1060,13 @@ export class Agent {
     ) {
       return;
     }
-    // P1：会话状态机是「工作中」的权威依据——任一会话仍在处理 ⇒ 不得回 idle。
-    // 把历史「activeTasks + worker 内存态」的启发式收敛到会话粒度（并集语义）。
-    if (!force && this.sessionStates.anyProcessing()) return;
+    // 注：此处**刻意不再**叠加「任一会话 processing ⇒ 不得回 idle」的额外闸门。
+    // 会话并集语义已由上方 worker 聚合闸门
+    // （getWorkerCount()>1 && attentionController.getState() !== 'idle'）承担——
+    // 每个会话的 turn 恰好占用一个 worker，故 worker 聚合即会话并集。
+    // 曾试加的 sessionStates 闸门是**冗余守卫**，且会让并发取消隔离路径的
+    // 「恢复到 idle」被卡死（见 agent-concurrent-cancel-isolation 回归）。
+    // 权威 per-session 状态改由 getSessionStates() 单独**暴露**（供前端），不改写状态转换。
     this.applyStatus('idle');
   }
 
