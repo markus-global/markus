@@ -372,6 +372,17 @@ export function shouldContinueToolLoop(
 }
 
 /**
+ * P2b: 一轮结束时该以什么结果结算会话。截断（未结束却达迭代上限）必须**可见**为
+ * 'error'，绝不静默当作 'ok' —— 否则半个回复会冒充完整回复（问题 A 的另一半）。
+ */
+export function turnSettleOutcome(
+  turnFailed: boolean,
+  truncated: boolean,
+): 'ok' | 'error' {
+  return (turnFailed || truncated) ? 'error' : 'ok';
+}
+
+/**
  * B5: whether a `max_tokens` cutoff needs an explicit "continue" nudge — i.e. the
  * model hit the output cap *without* also requesting tools (a tool_use turn already
  * continues on its own). Pure counterpart to {@link shouldContinueToolLoop}.
@@ -679,6 +690,12 @@ export class Agent {
    * 详见 packages/core/src/session-state.ts。
    */
   private readonly sessionStates = new SessionStateRegistry();
+  /**
+   * P2b：本轮是否以「截断」收尾（循环达到迭代上限时模型仍未结束）。
+   * 用于把「静默收尾」升级为**可观测的异常结果**（P1 注册表 lastOutcome='error' + 日志），
+   * 而不是让半个回复冒充完整回复。每轮开始重置。
+   */
+  private turnEndedTruncated = false;
 
   /** 公开访问 attention 控制器（并发设置热传播等用）。 */
   get attention(): AttentionController {
@@ -1860,6 +1877,7 @@ export class Agent {
           log.warn('ensureTurnCompleted tool loop hit max iterations', {
             agentId: this.id, sessionId, iterations: toolIter, cap: maxIter,
           });
+          this.markTurnTruncated('ensureTurnCompleted', response.finishReason);
           break;
         }
 
@@ -1984,6 +2002,8 @@ export class Agent {
     // P1：本轮会话身份（在 resolveTurnSession 之后填充）——用于会话状态机。
     let activeSessionKey: string | undefined;
     let turnFailed = false;
+    // P2b：每轮开始清空「截断」标记。
+    this.turnEndedTruncated = false;
 
     const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
     // Whether this item's turn should be closed out with the typed completion check.
@@ -2463,8 +2483,18 @@ export class Agent {
     } finally {
       this.processingMailboxItemId = undefined;
       // P1：本轮结束 → 结算该会话（该会话全部 item 结算完才回 idle）。
+      // P2b：截断收尾（循环达上限仍未结束）标记为异常结果，绝不静默当成功。
       if (activeSessionKey) {
-        this.sessionStates.settle(activeSessionKey, item.id, turnFailed ? 'error' : 'ok');
+        const truncated = this.turnEndedTruncated;
+        this.sessionStates.settle(
+          activeSessionKey,
+          item.id,
+          turnSettleOutcome(turnFailed, truncated),
+          truncated && !turnFailed
+            ? 'turn ended truncated at iteration bound (output may be incomplete)'
+            : undefined,
+        );
+        this.turnEndedTruncated = false;
       }
 
       // Inject concise activity summary into main session for non-chat items
@@ -2821,13 +2851,35 @@ export class Agent {
    * 会话处理状态快照（P1）。供诊断与 P4 的前端状态端点使用——
    * 让前端能拿到「这个 agent 现在有哪几个会话在跑」，而不是只看一个滞后的 agent.status。
    */
-  getSessionStates(): Array<{ sessionKey: string; state: string; processingSince?: number; itemCount: number }> {
+  getSessionStates(): Array<{ sessionKey: string; state: string; processingSince?: number; itemCount: number; lastOutcome?: string; lastErrorMessage?: string }> {
     return this.sessionStates.list().map(s => ({
       sessionKey: s.sessionKey,
       state: s.state,
       processingSince: s.processingSince,
       itemCount: s.itemIds.size,
+      lastOutcome: s.lastOutcome,
+      lastErrorMessage: s.lastErrorMessage,
     }));
+  }
+
+  /**
+   * P2b：本轮以截断收尾（循环达到迭代上限，但模型仍未给出可信的结束信号）。
+   * 标记后由 processMailboxItemCore 的 finally 以 'error' 结算该会话，
+   * 让「输出可能不完整」成为**可见**的事实，而不是静默当作成功。
+   */
+  private markTurnTruncated(where: string, finishReason?: string): void {
+    const kind = turnContinuationKind(
+      { finishReason },
+      { endTurnRequested: this.endTurnRequested },
+    );
+    if (kind !== 'text') return; // 循环因工具/正常结束退出，不算截断
+    this.turnEndedTruncated = true;
+    log.warn('Turn ended truncated at iteration bound — output may be incomplete', {
+      agentId: this.id,
+      sessionId: this.currentSessionId,
+      where,
+      finishReason,
+    });
   }
 
   /** Returns the id of the in-memory session currently bound to this agent, if any. */
@@ -4951,6 +5003,7 @@ export class Agent {
             iterations: toolIterations,
             cap: effectiveMaxIter,
           });
+          this.markTurnTruncated('handleMessage', response.finishReason);
           break;
         }
 
@@ -5728,6 +5781,7 @@ export class Agent {
             agentId: this.id,
             iterations: streamToolIterations,
           });
+          this.markTurnTruncated('handleMessageStream', response.finishReason);
           break;
         }
 
@@ -6995,6 +7049,7 @@ export class Agent {
           log.warn('respondInSession tool loop hit max iterations', {
             agentId: this.id, sessionId, iterations: toolIter, cap: effectiveMaxIter,
           });
+          this.markTurnTruncated('respondInSession', response.finishReason);
           break;
         }
         flushText();

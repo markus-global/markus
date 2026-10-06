@@ -1,8 +1,8 @@
 # 会话状态机重构 — 分析、设计与执行计划
 
-> 状态：**设计待批准**（Phase 0 产出）
-> 创建：2026-10-06 · 分支 `bugfix/message-stop-cancel-p4`（重构建议另开 `refactor/session-state-machine`）
-> 本文档是本次重构的**唯一执行入口**：先在这里定约束，再动代码。
+> 状态：**执行中** — P1 ✅ / P2a ✅ / **P2b · P3 · P4 进行中**（老板 2026-10-06：「按序执行，完成后再更新本文档」）
+> 创建：2026-10-06 · 分支 `refactor/session-state-machine`（自 PR #359 的 bugfix 分支拉出；PR #359 未动）
+> 本文档是本次重构的**唯一执行入口**：每个阶段先在这里更新，再动代码。
 > 关联：[STATE-OWNERSHIP.md](./STATE-OWNERSHIP.md) · [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) · [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) · [MESSAGE-STOP-CANCEL-FIX-PLAN.md](./MESSAGE-STOP-CANCEL-FIX-PLAN.md)
 
 ---
@@ -169,7 +169,7 @@ mailbox 主体/会话身份从 `payload.*`/`metadata.*`/`extra.*` 零散推断�
 |------|------|----------|----------|
 | **P1** ✅ | **SessionStateRegistry（后端唯一真相源）**：`packages/core/src/session-state.ts`——`Map<sessionKey, {state, processingSince, itemIds}>` + `begin/settle/getSession/anyProcessing/list`；agent `status` 改为从它派生（并集）；持久化 + 启动恢复（对齐 `STATE-OWNERSHIP.md`） | 状态机模块 + 单测（先红）+ `transitionStatus` 派生改造 | 1 提交 |
 | **P2a** ✅ | **统一 turn 终止（第一步）**：finish 诚实化（§4.3，`incomplete` 枚举）、`incomplete` 视为**未终结**（同一会话有界续跑）、对 chat 生效；task 循环显式 opt-out（老板约束） | provider 分类修复 + agent loop 收敛 + 单测（先红） | 1 提交 |
-| **P2b** | 移除 in-band nudge（`ensureTurnCompleted` 改写为结构性续跑）、硬上界 → error 可见、chat/background 终止判定完全统一 | agent loop 重构 + 回归 | 1 提交 |
+| **P2b** ✅ | **截断可见化 + 判定统一**：循环达迭代上限仍未结束 ⇒ 标记截断，会话以 `error` 结算（不再静默当成功）；非任务循环统一走 `turnContinuationKind`。**in-band nudge 保留**（见 §11 残余说明） | agent loop 改造 + 纯函数 + 单测 | 1 提交 |
 | **P3** | **Mailbox subject 绑定**：`MailboxItem.subject` 一等字段、生产者写入、`resolveEntityKeys` 从 subject 派生、callback/system session 归位、legacy 迁移 | mailbox 类型 + 各 producer + 迁移 + 单测 | 1–2 提交 |
 | **P4** | **前端同步**：后端 per-session 状态端点 + 前端对齐 + agent 状态点以后端聚合为准 + SSE fault 语义 | org-manager 端点 + web-ui + 单测 | 1 提交 |
 | **P5** | **验证 + 清理**：真实数据探针（真实会话/流序列化形态）、全量回归、删除因重构而多余的旧补丁（净删代码） | 验证报告 + 残余清单 | 收尾 |
@@ -268,6 +268,31 @@ PR #359 = P1–P4 的**症状级补丁**（停止/取消/重发 + 前端闪烁�
 | 新增 `finish-reason-honesty.test.ts`（5，先红后绿） | ✅ 5/5 |
 | 回归：agent-core/loop/extended/deep（273）+ llm providers/anthropic/openai/codex/markus（199） | ✅ 全绿 |
 | `tsc -b packages/core` | ✅ 干净 |
+
+---
+
+## 11. P2b 落地记录（✅ 已实现并验证）——截断可见化 + 判定统一
+
+**改动**：
+- 非任务循环（`handleMessage` / `handleMessageStream` / `respondInSession` / `ensureTurnCompleted`）达迭代上限 `break` 前调用 `markTurnTruncated(where, finishReason)`；若该响应**仍未结束**（`turnContinuationKind === 'text'`）⇒ 置 `turnEndedTruncated`；
+- `processMailboxItemCore` finally：结算结果 = `turnSettleOutcome(turnFailed, truncated)`——截断 ⇒ **`error`**（含错误信息），绝不静默当 `ok`；
+- `getSessionStates()` 暴露 `lastOutcome` / `lastErrorMessage`（P4 前端状态端点的数据源）。
+- task 循环同样不打此标记（保持既有语义）。
+
+**明确保留的残余（诚实记录）**：**未移除 `ensureTurnCompleted` 的 in-band nudge**。理由：
+1. 该 nudge 仅作用于**非 chat**（`human_chat` 已在入口被排除）的 LLM 轮次（mention / review / system / callback），是驱动弱模型调用 `end_turn` 的**承重**机制；
+2. 真正移除它需要一个**结构化的续跑信号**（LLM 请求层的 continuation 标志），而非文本注入——那是独立、风险更高的改动，**不宜在全量验证前动**；
+3. 已确认它不污染 human chat 会话（入口排除），故问题 A 的用户可见路径不受其影响。
+
+→ 列为 **P5（可选）/ 后续**：`ensureTurnCompleted` 结构性续跑化。
+
+**验证**：
+| 项 | 结果 |
+|---|---|
+| 新增 `turn-truncation-outcome.test.ts`（4） | ✅ 4/4 |
+| 回归 agent-core/loop/extended + 本重构新增（121） | ✅ 121/121 |
+| `tsc -b packages/core` | ✅ 干净 |
+
 
 
 
