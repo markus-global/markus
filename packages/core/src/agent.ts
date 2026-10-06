@@ -92,6 +92,7 @@ import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
+import { SessionStateRegistry } from './session-state.js';
 import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
 import { requestHistoryWindow } from './history-window.js';
 import {
@@ -650,6 +651,13 @@ export class Agent {
   private mailbox: AgentMailbox;
   /** Attention controller for event-driven focus management */
   private attentionController: AttentionController;
+  /**
+   * P1 · 会话处理状态机（后端唯一真相源）。
+   * 键 = 会话身份（resolveTurnSession 解析出的内存会话 id）；
+   * agent「工作中」= 各会话状态的并集（任一会话 processing ⇒ working）。
+   * 详见 packages/core/src/session-state.ts。
+   */
+  private readonly sessionStates = new SessionStateRegistry();
 
   /** 公开访问 attention 控制器（并发设置热传播等用）。 */
   get attention(): AttentionController {
@@ -1013,6 +1021,9 @@ export class Agent {
     ) {
       return;
     }
+    // P1：会话状态机是「工作中」的权威依据——任一会话仍在处理 ⇒ 不得回 idle。
+    // 把历史「activeTasks + worker 内存态」的启发式收敛到会话粒度（并集语义）。
+    if (!force && this.sessionStates.anyProcessing()) return;
     this.applyStatus('idle');
   }
 
@@ -1949,6 +1960,10 @@ export class Agent {
 
     const ts = Date.now();
 
+    // P1：本轮会话身份（在 resolveTurnSession 之后填充）——用于会话状态机。
+    let activeSessionKey: string | undefined;
+    let turnFailed = false;
+
     const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
     // Whether this item's turn should be closed out with the typed completion check.
     // Chat replies are exempt (see the `!== 'human_chat'` guard at the call sites),
@@ -1995,6 +2010,11 @@ export class Agent {
           sourceType: item.sourceType,
         });
       this.resolveTurnSession(sessionHint, item);
+
+      // P1：该会话进入「处理中」（唯一写者 = SessionStateRegistry）。
+      // 会话身份在 resolveTurnSession 后已确定（currentSessionId）。
+      activeSessionKey = this.currentSessionId;
+      if (activeSessionKey) this.sessionStates.begin(activeSessionKey, item.id);
 
       switch (item.sourceType) {
         case 'human_chat':
@@ -2416,10 +2436,15 @@ export class Agent {
         }
       }
     } catch (err) {
+      turnFailed = true;
       rejectResponse(err);
       throw err;
     } finally {
       this.processingMailboxItemId = undefined;
+      // P1：本轮结束 → 结算该会话（该会话全部 item 结算完才回 idle）。
+      if (activeSessionKey) {
+        this.sessionStates.settle(activeSessionKey, item.id, turnFailed ? 'error' : 'ok');
+      }
 
       // Inject concise activity summary into main session for non-chat items
       // so the agent maintains narrative continuity across processing contexts.
@@ -2766,7 +2791,22 @@ export class Agent {
 
   /** Returns true if the agent is currently processing a mailbox item (streaming or otherwise). */
   isProcessing(): boolean {
-    return this.state.status === 'working' || !!this.processingMailboxItemId;
+    return this.state.status === 'working'
+      || !!this.processingMailboxItemId
+      || this.sessionStates.anyProcessing();
+  }
+
+  /**
+   * 会话处理状态快照（P1）。供诊断与 P4 的前端状态端点使用——
+   * 让前端能拿到「这个 agent 现在有哪几个会话在跑」，而不是只看一个滞后的 agent.status。
+   */
+  getSessionStates(): Array<{ sessionKey: string; state: string; processingSince?: number; itemCount: number }> {
+    return this.sessionStates.list().map(s => ({
+      sessionKey: s.sessionKey,
+      state: s.state,
+      processingSince: s.processingSince,
+      itemCount: s.itemIds.size,
+    }));
   }
 
   /** Returns the id of the in-memory session currently bound to this agent, if any. */
