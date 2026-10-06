@@ -328,26 +328,47 @@ export interface ToolLoopResponseShape {
 }
 
 /**
- * B5: single source of truth for "should the tool-execution loop iterate again?".
- * The loop continues while the model is still requesting tools, or was cut off by
- * `max_tokens` (so we can nudge it to continue). Extracted (pure) so all five loop
- * entry points in {@link Agent} share one authoritative decision instead of five
- * copies of the same boolean expression.
+ * B5: single source of truth for "how should the tool-execution loop proceed?".
+ *
+ *  - 'done' : turn is over — stop looping.
+ *  - 'tools': model requested tools — execute them, then iterate.
+ *  - 'text' : model output was cut off — either `max_tokens`, or a **fault/truncation**
+ *             that produced no trustworthy finish_reason (`incomplete`). Append what it
+ *             produced, nudge it to continue, then iterate. This is how a broken stream
+ *             stops masquerading as a finished turn.
+ *
+ * `incompleteAsContinuation` (default true) lets the task-execution loop opt out so the
+ * task auto-continue / review mechanics stay byte-for-byte as before (owner constraint).
+ *
+ * Extracted (pure) so all loop entry points in {@link Agent} share one authoritative
+ * decision instead of N copies of the same boolean expression.
  */
-export function shouldContinueToolLoop(
+export type TurnContinuationKind = 'done' | 'tools' | 'text';
+
+export function turnContinuationKind(
   response: ToolLoopResponseShape,
-  opts?: { endTurnRequested?: boolean },
-): boolean {
+  opts?: { endTurnRequested?: boolean; incompleteAsContinuation?: boolean },
+): TurnContinuationKind {
   // A turn-terminating tool (`end_turn`) wins over everything else. The agent has
   // explicitly declared the turn over, so we must NOT spend another LLM round-trip
   // producing a reply it already decided not to send — and any text accompanying
   // the tool call is discarded too (a mixed 「调了工具又写了话」 turn is exactly the
   // ambiguity this removes).
-  if (opts?.endTurnRequested) return false;
-  return Boolean(
-    (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
-      response.finishReason === 'max_tokens'
-  );
+  if (opts?.endTurnRequested) return 'done';
+  // 断流/截断（无真实 finish_reason）不是终点：同一会话续跑（有界）。
+  if (response.finishReason === 'incomplete') {
+    return (opts?.incompleteAsContinuation ?? true) ? 'text' : 'done';
+  }
+  if (response.finishReason === 'tool_use' && response.toolCalls?.length) return 'tools';
+  if (response.finishReason === 'max_tokens') return 'text';
+  return 'done';
+}
+
+export function shouldContinueToolLoop(
+  response: ToolLoopResponseShape,
+  opts?: { endTurnRequested?: boolean; incompleteAsContinuation?: boolean },
+): boolean {
+  return turnContinuationKind(response, opts) !== 'done';
 }
 
 /**
@@ -1842,7 +1863,7 @@ export class Agent {
           break;
         }
 
-        if (needsMaxTokensContinuation(response)) {
+        if (turnContinuationKind(response, { endTurnRequested: this.endTurnRequested }) === 'text') {
           this.memory.appendMessage(sessionId, {
             role: 'assistant',
             content: response.content,
@@ -4933,8 +4954,8 @@ export class Agent {
           break;
         }
 
-        // Handle max_tokens continuation (model was cut off mid-response)
-        if (needsMaxTokensContinuation(response)) {
+        // Handle text cutoff (max_tokens or a fault/truncation → 'incomplete')
+        if (turnContinuationKind(response, { endTurnRequested: this.endTurnRequested }) === 'text') {
           this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
           const contMsg: LLMMessage = {
             role: 'user',
@@ -5726,8 +5747,8 @@ export class Agent {
           return '[cancelled]';
         }
 
-        // Handle max_tokens continuation
-        if (needsMaxTokensContinuation(response)) {
+        // Handle text cutoff (max_tokens or a fault/truncation → 'incomplete')
+        if (turnContinuationKind(response, { endTurnRequested: this.endTurnRequested }) === 'text') {
           this.memory.appendMessage(this.currentSessionId, {
             role: 'assistant',
             content: response.content,
@@ -6425,7 +6446,9 @@ export class Agent {
       this.emitLlmRequestAudit('task_execution', response, Date.now() - taskLlmStart, taskLlmTokens);
 
       while (
-        shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
+        // 任务执行循环保持原语义：断流（incomplete）不在本循环内续跑，
+        // 交回既有 task 自动继续 / review 机制处理（老板约束：本次不改该机制）。
+        shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested, incompleteAsContinuation: false })
       ) {
         taskToolIterations++;
         if (cancelToken?.cancelled) {
@@ -6976,7 +6999,7 @@ export class Agent {
         }
         flushText();
 
-        if (needsMaxTokensContinuation(response)) {
+        if (turnContinuationKind(response, { endTurnRequested: this.endTurnRequested }) === 'text') {
           this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
           this.memory.appendMessage(sessionId, {
             role: 'user',

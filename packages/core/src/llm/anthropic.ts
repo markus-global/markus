@@ -242,7 +242,7 @@ export class AnthropicProvider implements LLMProviderInterface {
     let content = '';
     const toolCalls: Array<{ id: string; name: string; args: string }> = [];
     let currentToolIdx = -1;
-    let finishReason: LLMResponse['finishReason'] = 'end_turn';
+    let finishReason: LLMResponse['finishReason'] = 'incomplete';
     let inputTokens = 0;
     let outputTokens = 0;
     let cacheReadTokens: number | undefined;
@@ -314,7 +314,7 @@ export class AnthropicProvider implements LLMProviderInterface {
                 const finishMap: Record<string, LLMResponse['finishReason']> = {
                   end_turn: 'end_turn', tool_use: 'tool_use', max_tokens: 'max_tokens', stop_sequence: 'stop_sequence', refusal: 'content_filter',
                 };
-                finishReason = finishMap[event.delta.stop_reason] ?? 'end_turn';
+                finishReason = finishMap[event.delta.stop_reason] ?? 'incomplete';
               }
               if (event.usage?.output_tokens) outputTokens = event.usage.output_tokens;
               break;
@@ -527,7 +527,7 @@ export class AnthropicProvider implements LLMProviderInterface {
         cacheReadTokens: data.usage.cache_read_input_tokens,
         cacheWriteTokens: data.usage.cache_creation_input_tokens,
       },
-      finishReason: finishMap[data.stop_reason] ?? 'end_turn',
+      finishReason: finishMap[data.stop_reason] ?? 'incomplete',
       compactionContent,
     };
   }

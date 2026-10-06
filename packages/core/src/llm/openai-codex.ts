@@ -114,7 +114,7 @@ export class CodexResponsesProvider implements LLMProviderInterface {
     let content = '';
     let reasoningContent = '';
     const toolCallsMap = new Map<string, { id: string; name: string; args: string; callId: string }>();
-    let finishReason: LLMResponse['finishReason'] = 'end_turn';
+    let finishReason: LLMResponse['finishReason'] = 'incomplete';
     let promptTokens = 0;
     let completionTokens = 0;
 

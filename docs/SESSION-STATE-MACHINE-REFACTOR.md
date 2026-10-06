@@ -168,7 +168,8 @@ mailbox 主体/会话身份从 `payload.*`/`metadata.*`/`extra.*` 零散推断�
 | 阶段 | 内容 | 关键产物 | 回滚单元 |
 |------|------|----------|----------|
 | **P1** ✅ | **SessionStateRegistry（后端唯一真相源）**：`packages/core/src/session-state.ts`——`Map<sessionKey, {state, processingSince, itemIds}>` + `begin/settle/getSession/anyProcessing/list`；agent `status` 改为从它派生（并集）；持久化 + 启动恢复（对齐 `STATE-OWNERSHIP.md`） | 状态机模块 + 单测（先红）+ `transitionStatus` 派生改造 | 1 提交 |
-| **P2** | **统一 turn 终止**：finish 诚实化（§4.3，`incomplete` 枚举）、循环终止收敛为「session concluded 或 cancel 或 bound」、移除 in-band nudge（`ensureTurnCompleted` 改写为结构性续跑）、**对 chat 也生效** | provider 分类修复 + agent loop 收敛 + 单测（先红） | 1–2 提交 |
+| **P2a** ✅ | **统一 turn 终止（第一步）**：finish 诚实化（§4.3，`incomplete` 枚举）、`incomplete` 视为**未终结**（同一会话有界续跑）、对 chat 生效；task 循环显式 opt-out（老板约束） | provider 分类修复 + agent loop 收敛 + 单测（先红） | 1 提交 |
+| **P2b** | 移除 in-band nudge（`ensureTurnCompleted` 改写为结构性续跑）、硬上界 → error 可见、chat/background 终止判定完全统一 | agent loop 重构 + 回归 | 1 提交 |
 | **P3** | **Mailbox subject 绑定**：`MailboxItem.subject` 一等字段、生产者写入、`resolveEntityKeys` 从 subject 派生、callback/system session 归位、legacy 迁移 | mailbox 类型 + 各 producer + 迁移 + 单测 | 1–2 提交 |
 | **P4** | **前端同步**：后端 per-session 状态端点 + 前端对齐 + agent 状态点以后端聚合为准 + SSE fault 语义 | org-manager 端点 + web-ui + 单测 | 1 提交 |
 | **P5** | **验证 + 清理**：真实数据探针（真实会话/流序列化形态）、全量回归、删除因重构而多余的旧补丁（净删代码） | 验证报告 + 残余清单 | 收尾 |
@@ -243,6 +244,31 @@ PR #359 = P1–P4 的**症状级补丁**（停止/取消/重发 + 前端闪烁�
 | 回归：agent-status-machine / session-invariants / attention / worker-scoped-state / heartbeat-rollover | ✅ 129/129 绿 |
 | 回归：mailbox-core/lifecycle/concurrent/claim-lease/recovery + agent-concurrent-e2e/cancel-isolation + handoff | ✅ 100/100 绿 |
 | `tsc -p packages/core` | ✅ EXIT=0 |
+
+---
+
+## 10. P2a 落地记录（✅ 已实现并验证）——finish 诚实化
+
+**问题 A 的直接机制**：全链路 `FINISH_REASON_MAP[...] ?? 'end_turn'` + `createSSEAccumulator` 默认 `'end_turn'`
+→ 一个「没有任何 finish_reason 就断掉」的流被**静默当成模型说完了**，系统再也分不清「真的完成」与「流断了」。
+
+**产物**：
+- 类型：`LLMResponse['finishReason']` 新增 `'incomplete'`（`@markus/shared`）。
+- 映射：新增 `mapUpstreamFinishReason(raw)`——**未知/缺失一律 → `incomplete`**（`provider-helpers.ts`）；替换 provider-helpers / anthropic / google / openai-codex / ollama 的全部 `?? 'end_turn'` 回退与流式默认值。
+- 循环：新增纯函数 `turnContinuationKind(response, opts) → 'done'|'tools'|'text'`；`shouldContinueToolLoop` 委托它。
+  `incomplete` ⇒ `'text'`（追加已产出内容 + 续跑 nudge，**有界**于既有 `maxToolIterations`），而非收尾。
+- **task 循环显式 opt-out**：`executeTaskConcurrent` 传 `incompleteAsContinuation: false` → 任务自动继续/review 机制**逐字节不变**（老板约束）。
+- 落点：`handleMessageStream` / `handleMessage` / `respondInSession` / `ensureTurnCompleted` 四个非任务循环的文本续跑分支由 `turnContinuationKind(...)==='text'` 判定。
+
+**明确不做（P2b）**：移除 `ensureTurnCompleted` 的 in-band 文本 nudge；硬上界 → error 可见；终止判定与 task 完全统一。
+
+**验证**：
+| 项 | 结果 |
+|---|---|
+| 新增 `finish-reason-honesty.test.ts`（5，先红后绿） | ✅ 5/5 |
+| 回归：agent-core/loop/extended/deep（273）+ llm providers/anthropic/openai/codex/markus（199） | ✅ 全绿 |
+| `tsc -b packages/core` | ✅ 干净 |
+
 
 
 

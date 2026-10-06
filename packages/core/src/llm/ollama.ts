@@ -206,7 +206,7 @@ export class OllamaProvider implements LLMProviderInterface {
     if (idleTimer) clearTimeout(idleTimer);
 
     const finishReason: LLMResponse['finishReason'] =
-      toolCalls.length > 0 ? 'tool_use' : (doneReason ?? 'end_turn');
+      toolCalls.length > 0 ? 'tool_use' : (doneReason ?? 'incomplete');
     const usage = { inputTokens: promptTokens, outputTokens: completionTokens };
     onEvent({ type: 'message_end', usage, finishReason });
 
