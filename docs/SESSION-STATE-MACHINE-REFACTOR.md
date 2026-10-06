@@ -170,7 +170,7 @@ mailbox 主体/会话身份从 `payload.*`/`metadata.*`/`extra.*` 零散推断�
 | **P1** ✅ | **SessionStateRegistry（后端唯一真相源）**：`packages/core/src/session-state.ts`——`Map<sessionKey, {state, processingSince, itemIds}>` + `begin/settle/getSession/anyProcessing/list`；agent `status` 改为从它派生（并集）；持久化 + 启动恢复（对齐 `STATE-OWNERSHIP.md`） | 状态机模块 + 单测（先红）+ `transitionStatus` 派生改造 | 1 提交 |
 | **P2a** ✅ | **统一 turn 终止（第一步）**：finish 诚实化（§4.3，`incomplete` 枚举）、`incomplete` 视为**未终结**（同一会话有界续跑）、对 chat 生效；task 循环显式 opt-out（老板约束） | provider 分类修复 + agent loop 收敛 + 单测（先红） | 1 提交 |
 | **P2b** ✅ | **截断可见化 + 判定统一**：循环达迭代上限仍未结束 ⇒ 标记截断，会话以 `error` 结算（不再静默当成功）；非任务循环统一走 `turnContinuationKind`。**in-band nudge 保留**（见 §11 残余说明） | agent loop 改造 + 纯函数 + 单测 | 1 提交 |
-| **P3** | **Mailbox subject 绑定**：`MailboxItem.subject` 一等字段、生产者写入、`resolveEntityKeys` 从 subject 派生、callback/system session 归位、legacy 迁移 | mailbox 类型 + 各 producer + 迁移 + 单测 | 1–2 提交 |
+| **P3** ✅ | **Mailbox subject 绑定**：`MailboxItem.subject` 一等字段（持久化，列 `subject TEXT` 加法迁移）、`deriveMailboxSubject` 单一派生点、`enqueue` 一次绑定、`resolveEntityKeys` 从 subject 派生（conversation 键回退到 sessionHint/originSessionId）、修复 `callback_result` 锁退化为 `system:` | mailbox 类型 + storage 迁移 + adapter + 单测 | 1 提交 |
 | **P4** | **前端同步**：后端 per-session 状态端点 + 前端对齐 + agent 状态点以后端聚合为准 + SSE fault 语义 | org-manager 端点 + web-ui + 单测 | 1 提交 |
 | **P5** | **验证 + 清理**：真实数据探针（真实会话/流序列化形态）、全量回归、删除因重构而多余的旧补丁（净删代码） | 验证报告 + 残余清单 | 收尾 |
 
@@ -292,6 +292,35 @@ PR #359 = P1–P4 的**症状级补丁**（停止/取消/重发 + 前端闪烁�
 | 新增 `turn-truncation-outcome.test.ts`（4） | ✅ 4/4 |
 | 回归 agent-core/loop/extended + 本重构新增（121） | ✅ 121/121 |
 | `tsc -b packages/core` | ✅ 干净 |
+
+---
+
+## 12. P3 落地记录（✅ 已实现并验证）——mailbox 一等主体
+
+**根因（R1/C）**：item 的「归属」没有一等字段，turn 会话读 `payload.extra.originSessionId`、
+并发实体锁读 `metadata.sessionId` —— 同一事实两个来源。`deliverCallback` 从不写 metadata，
+于是 `callback_result` 的 turn 会话正确、但锁键退化为 `system:{agentId}`（回调可与其来源会话**并发**）。
+
+**产物**：
+- `MailboxSubject` 接口 + `MailboxItem.subject?`（shared）；
+- `deriveMailboxSubject(item)` —— 主体**唯一派生点**；优先级刻意保守（metadata 在前），
+  既有已解析项**逐字不变**，只有旧实现解析不出值时才回退 `sessionHint` / `originSessionId`（纯加法）；
+- `resolveEntityKeys` 改为 `item.subject ?? deriveMailboxSubject(item)`；
+- `mailbox.enqueue` 入队时一次派生并绑定 `subject`；
+- storage：`mailbox_items.subject TEXT` 列 + **受保护加法迁移** + INSERT/`mapRow`/`loadQueued|Deferred` 贯通；
+  旧行 `subject=NULL` ⇒ 读取方回退派生，**无需回填、可原地回滚**。
+
+**明确顺延到 P4（诚实记录）**：**enqueue 时即 `begin`（标记处理中）**。文档 §238 原本约定 P3 提供主体后
+即可在 enqueue 处 begin；但「排队即 processing」要求对**所有终态路径**（drop/defer/merge/未认领重启）
+都显式 settle，否则会泄漏「卡在 processing」的幽灵会话——那正是本次要消灭的 UI 幽灵态。
+故与 P4 的「**注册表重启重建 + 前端权威状态**」一并实现，避免半成品引入新幽灵。
+
+**验证**：
+| 项 | 结果 |
+|---|---|
+| 新增 `mailbox-subject.test.ts`（5，先红后绿） | ✅ 5/5 |
+| 回归 mailbox-core / concurrency / agent-extended / shared-types | ✅ 全绿 |
+| `tsc -b packages/cli`（含 shared/storage/core） | ✅ 干净 |
 
 
 

@@ -499,7 +499,8 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   retry_count INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT,
   lease_until TEXT,
-  dedup_key TEXT
+  dedup_key TEXT,
+  subject TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
@@ -728,6 +729,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'mailbox_items', column: 'claimed_by', sql: "ALTER TABLE mailbox_items ADD COLUMN claimed_by TEXT" },
     { table: 'mailbox_items', column: 'lease_until', sql: "ALTER TABLE mailbox_items ADD COLUMN lease_until TEXT" },
     { table: 'mailbox_items', column: 'dedup_key', sql: "ALTER TABLE mailbox_items ADD COLUMN dedup_key TEXT" },
+    { table: 'mailbox_items', column: 'subject', sql: "ALTER TABLE mailbox_items ADD COLUMN subject TEXT" },
     { table: 'users', column: 'avatar_url', sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT" },
     { table: 'users', column: 'invite_token', sql: "ALTER TABLE users ADD COLUMN invite_token TEXT" },
     { table: 'users', column: 'invite_expires_at', sql: "ALTER TABLE users ADD COLUMN invite_expires_at TEXT" },
@@ -4470,6 +4472,8 @@ export interface MailboxItemRow {
   leaseUntil?: string | null;
   /** P0：幂等键（无幂等语义的项为 null）。 */
   dedupKey?: string | null;
+  /** P3 一等主体（JSON 反序列化后的对象；旧行 NULL → undefined）。 */
+  subject?: Record<string, unknown> | null;
 }
 
 /**
@@ -4510,17 +4514,20 @@ export class SqliteMailboxRepo {
     queuedAt: string;
     /** P0 幂等键；缺省 / undefined 表示不加约束（落库为 NULL）。 */
     dedupKey?: string;
+    /** P3 一等主体（JSON）；缺省 / undefined 落库为 NULL，读取方回退到派生逻辑。 */
+    subject?: Record<string, unknown>;
   }): boolean {
     const res = this.db
       .prepare(
-        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key, subject)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT DO NOTHING`
       )
       .run(
         item.id, item.agentId, item.sourceType, item.priority,
         item.status, toJson(item.payload), toJson(item.metadata ?? {}),
         item.queuedAt, item.dedupKey ?? null,
+        item.subject ? toJson(item.subject) : null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;
   }
@@ -4809,6 +4816,7 @@ export class SqliteMailboxRepo {
       claimedBy: (r['claimed_by'] as string | null) ?? null,
       leaseUntil: (r['lease_until'] as string | null) ?? null,
       dedupKey: (r['dedup_key'] as string | null) ?? null,
+      subject: r['subject'] ? (fromJson<Record<string, unknown>>(r['subject'] as string) ?? undefined) : undefined,
     };
   }
 }
