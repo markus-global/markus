@@ -68,6 +68,44 @@ describe('ConversationBufferManager.applyLoadResult cache merge', () => {
     expect(r.newMessages!.find(m => m.id === 'live')?.isStreaming).toBe(true);
   });
 
+  it('regression(P4): 在途流式气泡与 DB 同回合快照收敛为一条 —— 不得重复/被完成态快照闪现', () => {
+    // 2026-10-06 report: agent 流式输出时闪现"完整气泡"后直接进入结束态。
+    // 机制：服务端在流进行中已把部分回复以**最终 messageId** 持久化（partial
+    // persist），本地在途气泡仍带合成 id (`a_…`) 且 isStreaming。一次 DB 回填
+    // 时，二者是同一回复的两个身份却因 id 不同被同时保留 → 同一回复渲染两条：
+    // 一条是 DB 的"非流式快照"（看起来就是"完整气泡 + 结束态"），另一条才是实时
+    // 气泡。正确不变量：同一回复只渲染一条，内容以实时为准，身份用持久化 id。
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'conv';
+    mgr.setActiveSession('conv', 'sess_1');
+    mgr.loadingSession = 'sess_1';
+    mgr.beginStream('conv');
+    mgr.addStreamSession('conv', 'sess_1');
+
+    mgr.updateMessages(
+      'conv',
+      () => [
+        msg('u1', 'user', 'hello', '2026-08-02T07:04:00.000Z'),
+        { ...msg('a_1', 'agent', 'streaming partial…', '2026-08-02T07:04:01.000Z'), isStreaming: true },
+      ],
+      'sess_1',
+    );
+
+    // DB: 本回合的已持久化快照，带**最终** messageId（与本地合成 id 不同）。
+    const r = mgr.applyLoadResult('conv', 'sess_1', [
+      msg('u1', 'user', 'hello', '2026-08-02T07:04:00.000Z'),
+      msg('m1', 'agent', 'streaming partial…', '2026-08-02T07:04:01.000Z'),
+    ]);
+
+    const ids = r.newMessages!.map(m => m.id);
+    // 同一回复只有一行，且身份是持久化 id（React key 稳定 → 不闪烁）。
+    expect(ids).toEqual(['u1', 'm1']);
+    // 实时身份保留：这一行仍是"进行中"的气泡，而非被 DB 快照定型为结束态。
+    expect(r.newMessages!.find(m => m.id === 'm1')?.isStreaming).toBe(true);
+    // 内容以实时为准（与 DB 快照一致或更新），不得因帧序倒挂丢内容。
+    expect(r.newMessages!.find(m => m.id === 'm1')?.text).toBe('streaming partial…');
+  });
+
   it('regression: a STALE streaming bubble (no live stream) is dropped, not appended after the newest message', () => {
     // 2026-10-02 report: an OLD reply bubble re-appeared AFTER the newest
     // message. Mechanism: the stream for an earlier turn had already finished

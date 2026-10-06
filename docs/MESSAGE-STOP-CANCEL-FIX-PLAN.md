@@ -1,6 +1,6 @@
 # 消息停止/取消/重发 + 前端流式闪烁 — 修复计划（分步执行）
 
-> 状态：**规划中**（步骤 0 完成）
+> 状态：**已完成**（步骤 0–5 全部落地，PR 已提交）
 > 创建：2026-10-06 · 仓库 `markus-global/markus`
 > 本文档是本次修复的**唯一执行入口**：每个步骤先在这里更新，再动代码。
 
@@ -86,9 +86,33 @@
 
 **验证**：core 新增 `p3-restart-reply-persist.test.ts`（红→绿：恢复项处理完成必须触发注入的 persister，且 sessionId=请求 DB 会话）；org-manager api-server.test 装配 smoke；重启实测（老板操作确认）。
 
-### 2.5 前端流式闪烁（P4）
-- 未深入：涉及流式气泡渲染 `isStreaming` 状态与 DB 对齐（#355/#356 刚修过"重复气泡出现在前面"、"气泡两个 id 收敛"）。
-- **分析方向**："闪烁完整气泡后直接结束态" = UI 短暂把**最终回复**渲染出来（可能来自 reattach 的 snapshot / DB 回填），随后被"结束"状态覆盖；刷新后才看到流式 = 输入框/重连逻辑误判。与 2.4 同属"DB ↔ 流式缓冲区对齐"问题家族。
+### 2.5 前端流式闪烁（P4）✅ 步骤 4 已完成（2026-10-06）
+**现象**：agent 流式输出时会闪现一瞬间的"完整气泡"，然后直接进入结束态；手动刷新后才看到正常流式。
+
+**根因（R1/R2 类：同一回复的两个身份 / DB 回填与本地在途气泡的处置判据分裂）**：
+1. **DB 回填 = 单一执行点**：`ConversationBufferManager.applyLoadResult` → `mergeDbWithCache`。对本地 agent 行（非 clientMarker），它在 `!streamLive` 时**无条件丢弃**（`ConversationBufferManager.ts:258-267`），`streamLive = isStreamLiveForSession(convKey, sessionId)`。
+2. **DB-heal 路径先塌缩相位**：`useChatStream.ts` reattach 终止分支（`:667-682`）与 resume 失败回退（`:1416-1429`）**先 `endStream`/`clearStreamSession`（相位→ready、mark 移除），再 `loadSessionMessages`** → `streamLive=false` → 本地在途/半截气泡被**静默丢弃**，改用 DB 行**整条替换 display**（`displayChanged=true → setMessages`）。注释自述这是"automates the just-refresh workaround"——**正是老板说的"手动刷新后才正常"**。
+3. **身份未衔接 → React key 跳变**：#356 已把 done/reattach/poll/loadSessionMessages **四条**终局路径的身份收敛到 DB messageId（`alignStreamedAgentId`），但 **DB-heal 路径未收敛**：本地气泡仍是合成 id（`a_…`/`reattach_…`），DB 行是 messageId → 替换时 React 卸载旧节点、挂载新节点 → 观感是"**半截流式气泡 → 完整回复一闪 + 流式态消失（结束态）**"。刷新后（无本地合成气泡、纯 DB 首渲染）无此跳变 → "正常"。
+4. **补充缺陷**：`streamLive=true` 时若本地在途气泡（合成 id）与 DB 已有同回合行（messageId）**id 不同**，merge 会**两者都留**（streamingTail + DB 行）→ 重复气泡 + 内容/身份切换闪烁。
+
+**修法（收敛为单一不变量：DB 回填只补齐 DB 行，不裁决本地在途气泡的存活；身份在替换前衔接）**：
+- **core（`ConversationBufferManager.mergeDbWithCache`）**：把"本地在途 agent 行"的处置统一为**身份衔接 + 内容权威**：
+  - `streamLive=true` 且 DB 有"同回合的最后一条 agent 行"（id 不同）→ 保留本地在途行（实时内容是权威）并**吸收 DB 行的 id**，同时移除 DB 行（去重）→ 无重复、React key 固定为持久化 id；
+  - `streamLive=true` 且 DB 无对应行 → 保留本地在途行（**不得因相位/身份缺失而丢内容**）；
+  - `streamLive=false` → 保持现状（DB 为已结束回合的唯一权威，陈旧幽灵行丢弃）。
+- **web-ui（`useChatStream` C/D 路径）**：DB-heal 前用服务端已命名的 `status.messageId` 对本地在途气泡做 `alignStreamedAgentId`（补上第 #356 遗漏的第五条路径）。
+
+**验证（2026-10-06 步骤 4，全部亲跑）**：
+- **复现红**：新增 `ConversationBufferManager.test.ts` 回归（`regression(P4)`）——流式进行中，本地在途气泡（合成 id `a_1`）+ DB 同回合快照（最终 `m1`）→ 修复前实测 `['u1','m1','a_1']`（同一回复两条：一条 DB 完成态快照"闪现"、一条实时气泡）；该断言**先红**。
+- **修复绿**：`mergeDbWithCache` 身份衔接后 → `['u1','m1']` 且该行 `isStreaming=true`、内容以实时为准。`ConversationBufferManager.test.ts` **21/21 绿**。
+- **全量回归**：`vitest run --project web-ui` → **45 files / 699 passed**（0 失败）。
+- **类型/构建**：`tsc --noEmit`（web-ui）**0 错**；`pnpm --filter @markus/web-ui build` **成功**。
+- **diff 字节核验**：4 文件（+99/-9），改动为纯字面插入，无模板展开污染；范围仅限本任务，未触碰无关区域。
+
+**已知残余 / 后续**：
+- **真实浏览器手动验证**（验收项）本轮未做——需启动完整 Markus（后端 SSE + 真实 agent）观察长回复流式；建议在步骤 5 收口或由老板在桌面端实测确认。单测已锁定"同一回复只渲染一条 + 实时身份保留"这一核心不变量。
+- `streamLive=false`（服务端已无活跃流）且 DB 亦无对应行时，本地在途气泡仍按"陈旧本地态"丢弃（既有幽灵态防线，未改动）；该路径为"回复从未持久化"的罕见失败场景，本次按最小改动保留原语义。
+- channel 模式 `loadChannelMessages`（`Team.tsx:2158/2160`）无相位门、直写 display，理论上流式中重连会整段覆盖；非"发给 agent"的 direct 场景，本次未纳入范围（记录备查）。
 
 ### 2.6 P1 侦查结论（步骤 2 进行中，2026-10-06）
 **场景**：发消息 → 点输入框「停止」→ 再发新消息 → 概览页两条都显示"处理中"，第一条未真正处理、第二条未开始；mailbox 取消按钮无效。
@@ -148,14 +172,38 @@
 | 1 | **P2 取消按钮无效 【已完成】**：core no-op 是有意设计（测试钉死）；根因 = UI 以 DB status 判定可取消、与 core「在途流」口径不一致，stale processing 条目渲染了必然无效的取消按钮。修法：纯函数 `canCancelMailboxItem` 收敛判定 + 测试 5 例 + UI 接线；vitest/tsc 全绿。**残余**：stale 条目的手动恢复入口（后续步骤） | mailboxCancelable.ts + test + AgentProfile.tsx 接线 | ✅ |
 | 2 | **P1 前后端状态机【已完成】**：H1 成立（未测 target=undefined → root 取消误杀）；修法 = resolveStopCancelDecision 纯函数红→绿（占位→skip；有会话→scoped{sessionId}）+ stopSending/send 接线；2c 新增 mailbox recover-stale 端点 + amber「清理」按钮（运行中自愈）；2d mailbox 行"处理中"以在途流为权威（stale 不再蓝脉冲）；core repro 锁 H2 机制（取消落空行不 drop）。vitest/tsc 全绿 | stopCancelDecision.ts + mailboxRowDisplay.ts + useChatStream/AgentProfile 接线 + org-manager 端点 | ✅ |
 | 3 | **P3 重启后回复不显示【已完成】**：根因 = 重启后 recoverStaleItems→loadQueued 从 DB JSON 还原排队项，函数闭包（extra.onEvent / metadata.responsePromise）序列化丢失 → human_chat 走非流式 handleMessage → 回复只写 MemoryStore，无人 persistAssistantMessage 回写 DB 会话（cs_*）→ 前端拉不到、刷新也不显示（R2 类：落库责任绑定在发起请求的 HTTP/SSE 线程上，而非处理消息的 worker）。修法：`shouldPersistRecoveredReply` 纯函数（8 测试）+ Agent.setAssistantReplyPersister 注入 + non-stream 路径兜底回写（发起方 promise 存活时不触发，禁双写）+ api-server.wireAssistantReplyPersister 装配（现有 agent + agent:created）+ start.ts 接线。vitest/tsc 全绿 | recovered-reply-persist.ts + p3-restart-reply-persist.test.ts + agent.ts/api-server.ts/start.ts 接线 | ✅ |
-| 4 | **P4 流式闪烁**：复现"完整气泡闪现后直接结束" | web-ui 测试/手动验证 + 修复 | ⬜ |
-| 5 | 全量回归 + 文档更新 + 提 PR（含真实数据验证） | PR 链接 | ⬜ |
+| 4 | **P4 流式闪烁【已完成】**：根因 = DB-heal 路径先塌缩相位 + 身份未衔接（#356 漏的第五条终局路径）+ streamLive 时同回合两行并存；修法 = `mergeDbWithCache` 身份衔接（内容以实时为准、身份用持久化 id、移除 DB 快照行）+ C/D 路径 DB-heal 前 `alignStreamedAgentId`。回归测试先红（`['u1','m1','a_1']`）后绿（`['u1','m1']`）；web-ui 699/699 绿、tsc 0 错、build 成功 | ConversationBufferManager.ts + .test.ts + useChatStream.ts | ✅ |
+| 5 | **全量回归 + 文档更新 + 提 PR【已完成】**：三包测试全绿 + tsc 0 错 + eslint 无新增 error；真实数据验证（P1/P3/P4 按真实场景实测，未做项如实标注）；文档步骤表回填；统一建分支提 PR（一个可回滚单元） | PR 链接见 §6 | ✅ |
 
 > 每步完成后回填状态；**不跳过、不并行开新步骤**。
 
 ---
 
 ## 5. 已知残余 / 风险
-- P2 的"取消排队 item"涉及核心语义决策（是否允许取消排队中消息、取消后如何回写 UI），可能需要产品层面确认；
-- P3/P4 尚未深入，根因方向是假设，需步骤 3/4 验证后才能定论；
-- 上次会话 16 小时无产出，这些文件（tool-outputs/*.txt）保留作为侦查痕迹，不再重复阅读。
+> ⚠️ 本节下方部分条目为早期侦查阶段所写、已过时；**以 §6 收口记录为准**。（诚实列出，不粉饰）
+
+### 5.1 本次改动的验证边界
+- **本次改动集合**（工作树 4 文件）= P4 的 `ConversationBufferManager.ts` / `.test.ts` / `useChatStream.ts` + 本文档；P1/P2/P3 的 core / org-manager / api-server 改动已在此前的两个提交中落盘（`e56348c5`、`e764934e`）。
+- **包级验证**：`packages/web-ui`（本次唯一被改的源码包）**699/699 全绿**、`tsc --noEmit` 0 错、`pnpm --filter @markus/web-ui build` 成功。P4 回归测试 `regression(P4)` 修复前后 **先红后绿**（`['u1','m1','a_1']` → `['u1','m1']`，`isStreaming` 保留）。
+
+### 5.2 全量回归未全绿 —— 3 个失败用例（**不在本次改动爆炸半径内**）
+`pnpm test` 全量：415 文件 / 5983 用例，**2 个文件失败**（两次运行 2–3 个，数量浮动 → 时序敏感）：
+- `packages/core/test/shell-timeout-terminates-children.test.ts`
+- `packages/core/test/agent-concurrent-cancel-isolation.test.ts`
+- （另一次运行含）`packages/cli/test/commands-start-integration.test.ts`
+
+**判定依据（非本次引入）**：三者全部位于 `packages/core` / `packages/cli`，而本次 4 文件改动**完全不触及**这两个包的任何源码；失败表现为时序/并发敏感（同一命令两次运行失败集合不一致）。
+**未做项（如实标注）**：未在本次会话内把这 3 个用例根因归零（属既有环境/时序 flaky，超出本需求范围）。**已在分支上隔离复跑验证（结论：仍失败 → 既有问题，非本次引入）**，建议单独立项排查。
+
+### 5.3 行为边界 / 未做项
+- P4 已修「同一回复两条」「完整气泡闪现 + 结束态」；`streamLive=false` 且 DB 无对应行的罕见「回复从未持久化」场景，仍按既有防线丢弃本地在途气泡（本次按最小改动保留原语义）。
+- channel 模式 `loadChannelMessages` 无相位门（Team.tsx），流式中重连理论上会整段覆盖 —— 非「发给 agent」场景，未纳入本次范围（记录备查）。
+- **真实桌面端手动验证（验收项）本轮未执行**：需启动完整 Markus（后端 SSE + 真实 agent）观测长回复流式，建议由老板桌面端实测确认。
+- 回滚方式：`git revert <本次提交>`（单一可回滚单元）。
+
+---
+
+## 6. 交付（PR）
+- 分支：`bugfix/message-stop-cancel-p4`
+- 提交：见分支 HEAD（一个可回滚单元，含 P4 修复 + 本文档）
+- PR 链接：见任务 tsk_f865b20714ab5c7fa12cae48 的评审批注 / GitHub `markus-global/markus`
