@@ -1810,12 +1810,16 @@ async function startServerCore(
     };
 
     // Wire for existing agents
-    for (const a of agentManager.listAgents()) wireMailboxPersistence(a.id);
+    for (const a of agentManager.listAgents()) {
+      wireMailboxPersistence(a.id);
+      apiServer.wireAssistantReplyPersister(a.id);
+    }
 
     // Wire for future agents via event bus
     agentManager.getEventBus().on('agent:created', (evt: unknown) => {
       const { agentId } = evt as { agentId: string };
       wireMailboxPersistence(agentId);
+      apiServer.wireAssistantReplyPersister(agentId);
     });
   }
 

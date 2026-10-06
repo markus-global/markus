@@ -52,6 +52,7 @@ import {
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle } from './memory/dream-trigger.js';
+import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
@@ -578,6 +579,8 @@ export class Agent {
   private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private browserCloseTabsHelper?: (sessionId: string) => string | null;
+  /** 【P3】回合回复落库回调：由 org-manager 装配注入（见 setAssistantReplyPersister）。 */
+  private assistantReplyPersister?: (args: { sessionId: string; agentId: string; reply: string; tokensUsed: number }) => Promise<void>;
   /**
    * Set when the agent calls the `end_turn` tool — an explicit, typed "this turn is
    * over, send nothing" signal. Read by the tool-loop guard (all 5 entry points) to
@@ -2082,6 +2085,13 @@ export class Agent {
           );
           if (needsTurnCompletion && item.sourceType !== 'human_chat') {
             reply = await this.ensureTurnCompleted(reply, opts.sessionId ?? this.currentSessionId);
+          }
+          // P3: 重启后从 DB 恢复的排队项（发起方 responsePromise 随 JSON 丢失，SSEHandler /
+          // api-server 请求线程已死）→ worker 兜底把回复写回 DB 会话（cs_*），否则前端
+          // 从 DB 拉不到回复（刷新也不显示）。正常路径（发起方 promise 存活）由发起方
+          // persistAssistantMessage，这里不写（避免双写）——判据见 shouldPersistRecoveredReply。
+          if (item.sourceType === 'human_chat') {
+            await this.persistRecoveredReplyIfNeeded(reply, extra, item.metadata);
           }
           resolveResponse(reply);
           return reply;
@@ -4147,6 +4157,60 @@ export class Agent {
     this.onActivityStartCb = cbs.onStart;
     this.onActivityLogCb = cbs.onLog;
     this.onActivityEndCb = cbs.onEnd;
+  }
+
+  /**
+   * 【P3】注入「回合回复持久化」回调。当 worker 处理一个**重启后从 DB 恢复**的排队项
+   * （发起方的 responsePromise 随 JSON 序列化丢失）时，正常负责回写 DB 会话（cs_*）的
+   * SSEHandler / api-server 请求线程已死 —— 由处理该消息的 worker 兜底把回复写回 DB，
+   * 否则前端刷新也拉不到回复。org-manager 在装配时注入（指向走 chatSessionRepo 的落库）。
+   */
+  setAssistantReplyPersister(
+    cb: ((args: { sessionId: string; agentId: string; reply: string; tokensUsed: number }) => Promise<void>) | null,
+  ): void {
+    this.assistantReplyPersister = cb ?? undefined;
+  }
+
+  /**
+   * 【P3】重启恢复的排队项：若非流式路径拿到回复后，发起方 promise 已死且可定位 DB 会话
+   * （extra.sessionId / metadata.dbSessionId，二者均随 JSON 保留）→ worker 兜底落库。
+   * 判据见 `shouldPersistRecoveredReply`（core/recovered-reply-persist.ts）：
+   * - responsePromise.resolve 仍是函数 → 发起方活着（SSEHandler / api-server 请求线程），
+   *   由它 persistAssistantMessage，worker 绝不重复写（避免双写）；
+   * - 无任何 DB 会话身份 → 无法定位目标会话，宁可缺失也不落错（不写）。
+   */
+  async persistRecoveredReplyIfNeeded(
+    reply: string,
+    extra: Record<string, unknown>,
+    metadata: { dbSessionId?: unknown; responsePromise?: { resolve?: unknown } } | undefined,
+  ): Promise<void> {
+    if (!reply || typeof reply !== 'string' || !reply.trim()) return;
+    if (!this.assistantReplyPersister) return;
+    const decision = shouldPersistRecoveredReply({
+      resolveIsFunction: typeof (metadata?.responsePromise as { resolve?: unknown } | undefined)?.resolve === 'function',
+      sessionId: extra.sessionId,
+      dbSessionId: metadata?.dbSessionId,
+    });
+    if (!decision.shouldPersist || !decision.sessionId) return;
+    try {
+      await this.assistantReplyPersister!({
+        sessionId: decision.sessionId,
+        agentId: this.id,
+        reply,
+        tokensUsed: this.getTokensUsed(),
+      });
+      log.info('P3: worker persisted recovered reply to DB session', {
+        agentId: this.id,
+        sessionId: decision.sessionId,
+        replyLength: reply.length,
+      });
+    } catch (err) {
+      log.warn('P3: failed to persist recovered reply', {
+        agentId: this.id,
+        sessionId: decision.sessionId,
+        error: String(err),
+      });
+    }
   }
 
   setBrowserCloseTabsHelper(fn: (sessionId: string) => string | null): void {

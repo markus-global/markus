@@ -2408,6 +2408,24 @@ export class APIServer {
     }
   }
 
+  /**
+   * 【P3】装配「回合回复持久化」回调到某个 agent：当 worker 处理**重启后从 DB 恢复**的
+   * 排队项（发起方 responsePromise 随 JSON 丢失，SSEHandler / api-server 请求线程已死、
+   * 无人 persistAssistantMessage）时，由处理该消息的 worker 调用本回调把回复写回 DB 会话
+   * （cs_*），否则前端刷新也拉不到回复。正常路径（发起方 promise 存活）由 SSEHandler /
+   * api-server 非流式分支自行落库，回调在 core 侧由 `shouldPersistRecoveredReply` 判定不触发。
+   */
+  wireAssistantReplyPersister(agentId: string): void {
+    try {
+      const agent = this.orgService.getAgentManager().getAgent(agentId);
+      agent.setAssistantReplyPersister(async ({ sessionId, agentId: aId, reply, tokensUsed }) => {
+        await this.persistAssistantMessage(sessionId, aId, reply, tokensUsed);
+      });
+    } catch {
+      /* agent not loaded */
+    }
+  }
+
   private triggerSecretaryWelcome(userId: string, userName: string, userRole: string): void {
     try {
       const mgr = this.orgService.getAgentManager();

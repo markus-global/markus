@@ -66,10 +66,25 @@
 - 验证：vitest 2 文件 16 例全绿；`tsc -p packages/web-ui --noEmit` EXIT 0。
 - **未做（后续步骤）**：stale processing 条目的「恢复/清理」动作（重启时 `recoverStaleItems` 会回收，但运行中前端无手动恢复入口）；该条目仍显示 amber 警告。
 
-### 2.4 重启后回复不显示（P3）
-- 未深入：涉及 SSE 重连（`tryReattachActiveStream`，useChatStream.ts:263-384）、`streamStatus`、DB 消息持久化、WS 回退。
-- 已见关键逻辑：重连要求 `status.status === 'streaming'` 或 `lateTerminal`；`userStoppedSessionsRef` 会阻止被停止的会话重连。
-- **分析方向**：重启后 mailbox 里的第二条消息被处理，回复写入 DB/经 WS 广播；前端打开会话时应从 DB 拉取（`loadAndDisplay`）。"刷新也不显示"更像 **DB 消息没落库 / 落库到别的 session / WS 广播没接上** 三者之一。
+### 2.4 重启后回复不显示（P3）✅ 步骤 3 已完成（2026-10-06）
+**场景**：发消息 → 停止 → 重发（排队）→ 重启 Markus → 排队消息被 `recoverStaleItems` 恢复并处理 → 处理完成后回复不显示，**刷新后也不显示**。
+
+**根因（R2 类：回复落库的执行点依赖「发起请求的 HTTP/SSE 线程」存活，而非「处理该消息的 worker」）**：
+1. 重启后 `loadQueued`（cli/start.ts:1718）从 DB JSON 还原排队项 → **函数闭包丢失**：`extra.onEvent`（SSE 回调）、`metadata.responsePromise` 全为 undefined。
+2. `processMailboxItemCore`（agent.ts:2002）human_chat 分支 `if (extra.stream && typeof extra.onEvent === 'function')` → onEvent 不是函数 → **落入非流式路径** `handleMessage`（而非 `handleMessageStream`）。
+3. 非流式路径完成后，回复只写 MemoryStore（`sess_*`）：`this.memory.appendMessage(...)` + `resolveResponse(reply)`（**responsePromise 丢失 → no-op**）。
+4. **没有任何代码调用 `persistAssistantMessage` 回写 DB 会话（cs_*）**：正常路径下这是 SSEHandler 在 `sendMessageStream` resolve 后做的（sse-handler.ts:347 → api-server.persistAssistantMessage），但重启后 HTTP 线程已死、注入的回写闭包也没了。
+5. 前端 `api.sessions.getMessages(cs_*)` 从 DB 拉 → 该会话只有 user 消息、没有 assistant 回复 → **刷新也不显示**。
+
+**修复（把「回复落库责任」移到 worker 侧，以「发起方 promise 是否存活」判定）**：
+- core（agent.ts）：human_chat 非流式路径完成拿到 reply 后，若 `typeof item.metadata?.responsePromise?.resolve !== 'function'`（= 发起方 promise 已随 JSON 丢失，原 SSE 上下文/API 等待方已死）且有 DB 会话身份（`extra.sessionId` / `metadata.dbSessionId`，JSON 保留）且注入了 `assistantReplyPersister` 回调 → worker 自行把回复写回 DB 会话。
+  - **判据精妙点**：正常非流式 `sendMessage()` 也有 responsePromise（api-server 在等待并自行落库）→ 不触发 worker 回写，无双写；只有「发起方 promise 丢失」（恢复项）才触发。
+- org-manager（api-server.ts）：
+  - `persistAssistantMessage` 去 private → public 包装或保留 private + 新增 `assistantReplyPersister` 注入闭包（复用同一落库 + `updateLastMessage` + WS `broadcastUnreadUpdate`）。
+  - API server 启动时遍历 `agentManager.listAgents()` 装配 + 订阅 `agent:created` 对新 agent 装配。
+- 前端无需改动：回复落库到正确 cs_* 后 `loadSessionMessages`（刷新）即能拉到。
+
+**验证**：core 新增 `p3-restart-reply-persist.test.ts`（红→绿：恢复项处理完成必须触发注入的 persister，且 sessionId=请求 DB 会话）；org-manager api-server.test 装配 smoke；重启实测（老板操作确认）。
 
 ### 2.5 前端流式闪烁（P4）
 - 未深入：涉及流式气泡渲染 `isStreaming` 状态与 DB 对齐（#355/#356 刚修过"重复气泡出现在前面"、"气泡两个 id 收敛"）。
@@ -132,7 +147,7 @@
 | 0 | 本计划文档 | 本文档 | ✅ |
 | 1 | **P2 取消按钮无效 【已完成】**：core no-op 是有意设计（测试钉死）；根因 = UI 以 DB status 判定可取消、与 core「在途流」口径不一致，stale processing 条目渲染了必然无效的取消按钮。修法：纯函数 `canCancelMailboxItem` 收敛判定 + 测试 5 例 + UI 接线；vitest/tsc 全绿。**残余**：stale 条目的手动恢复入口（后续步骤） | mailboxCancelable.ts + test + AgentProfile.tsx 接线 | ✅ |
 | 2 | **P1 前后端状态机【已完成】**：H1 成立（未测 target=undefined → root 取消误杀）；修法 = resolveStopCancelDecision 纯函数红→绿（占位→skip；有会话→scoped{sessionId}）+ stopSending/send 接线；2c 新增 mailbox recover-stale 端点 + amber「清理」按钮（运行中自愈）；2d mailbox 行"处理中"以在途流为权威（stale 不再蓝脉冲）；core repro 锁 H2 机制（取消落空行不 drop）。vitest/tsc 全绿 | stopCancelDecision.ts + mailboxRowDisplay.ts + useChatStream/AgentProfile 接线 + org-manager 端点 | ✅ |
-| 3 | **P3 重启后回复不显示**：验证 DB 落库 + WS/重连路径，复现"处理后无回复" | 测试（红）+ 修复 | ⬜ |
+| 3 | **P3 重启后回复不显示【已完成】**：根因 = 重启后 recoverStaleItems→loadQueued 从 DB JSON 还原排队项，函数闭包（extra.onEvent / metadata.responsePromise）序列化丢失 → human_chat 走非流式 handleMessage → 回复只写 MemoryStore，无人 persistAssistantMessage 回写 DB 会话（cs_*）→ 前端拉不到、刷新也不显示（R2 类：落库责任绑定在发起请求的 HTTP/SSE 线程上，而非处理消息的 worker）。修法：`shouldPersistRecoveredReply` 纯函数（8 测试）+ Agent.setAssistantReplyPersister 注入 + non-stream 路径兜底回写（发起方 promise 存活时不触发，禁双写）+ api-server.wireAssistantReplyPersister 装配（现有 agent + agent:created）+ start.ts 接线。vitest/tsc 全绿 | recovered-reply-persist.ts + p3-restart-reply-persist.test.ts + agent.ts/api-server.ts/start.ts 接线 | ✅ |
 | 4 | **P4 流式闪烁**：复现"完整气泡闪现后直接结束" | web-ui 测试/手动验证 + 修复 | ⬜ |
 | 5 | 全量回归 + 文档更新 + 提 PR（含真实数据验证） | PR 链接 | ⬜ |
 
