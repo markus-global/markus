@@ -81,7 +81,9 @@ describe('P4 Agent 派生状态（队列即处理中）', () => {
     const states = agent.getSessionStates();
     const s = states.find(x => x.sessionKey === 'cs_p4');
     expect(s?.state).toBe('processing');
-    expect(agent.isProcessing()).toBe(true);
+    // 展示层「忙碌」语义（队列并入）由派生状态/getAgentStatusSummary 提供；
+    // isProcessing() 保持纯 turn 语义，故此处不依赖它。
+    expect(agent.getSessionStates().some(x => x.state === 'processing')).toBe(true);
     expect(agent.getAgentStatusSummary().sessionStates?.length).toBeGreaterThan(0);
   });
 });

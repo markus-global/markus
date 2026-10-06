@@ -348,7 +348,7 @@ export type TurnContinuationKind = 'done' | 'tools' | 'text';
 
 export function turnContinuationKind(
   response: ToolLoopResponseShape,
-  opts?: { endTurnRequested?: boolean; incompleteAsContinuation?: boolean },
+  opts?: { endTurnRequested?: boolean; incompleteAsContinuation?: boolean; cancelled?: boolean },
 ): TurnContinuationKind {
   // A turn-terminating tool (`end_turn`) wins over everything else. The agent has
   // explicitly declared the turn over, so we must NOT spend another LLM round-trip
@@ -356,6 +356,10 @@ export function turnContinuationKind(
   // the tool call is discarded too (a mixed 「调了工具又写了话」 turn is exactly the
   // ambiguity this removes).
   if (opts?.endTurnRequested) return 'done';
+  // 取消/用户停止是**终态**：绝不再花一次 LLM 往返。被取消的流没有真实
+  // finish_reason ⇒ 会被判为 'incomplete'；若不在此处拦截，取消后会**继续跑**，
+  // 正是并发取消隔离用例卡死的根因（取消后仍重调模型）。
+  if (opts?.cancelled) return 'done';
   // 断流/截断（无真实 finish_reason）不是终点：同一会话续跑（有界）。
   if (response.finishReason === 'incomplete') {
     return (opts?.incompleteAsContinuation ?? true) ? 'text' : 'done';
@@ -367,7 +371,7 @@ export function turnContinuationKind(
 
 export function shouldContinueToolLoop(
   response: ToolLoopResponseShape,
-  opts?: { endTurnRequested?: boolean; incompleteAsContinuation?: boolean },
+  opts?: { endTurnRequested?: boolean; incompleteAsContinuation?: boolean; cancelled?: boolean },
 ): boolean {
   return turnContinuationKind(response, opts) !== 'done';
 }
@@ -2847,12 +2851,13 @@ export class Agent {
 
   /** Returns true if the agent is currently processing a mailbox item (streaming or otherwise). */
   isProcessing(): boolean {
+    // 单一语义：**正在处理**某个 mailbox item（在飞的 turn）。
+    // 「队列里还有待处理项」是另一件事，**不**并进来——否则该谓词会有两种含义
+    // （R2：一个不变量多种度量）。需要「忙碌/有待办」的展示语义请用
+    // getSessionStates()（已把队列并入），见 org-manager 的 isProcessing 字段。
     return this.state.status === 'working'
       || !!this.processingMailboxItemId
-      || this.sessionStates.anyProcessing()
-      // P4：队列中仍有待处理 item ⇒ 有工作。覆盖「入队 → 被认领」窗口，
-      // 以及**重启后**（队列从 DB 载入）的即时状态一致性。
-      || this.mailbox.getQueuedItems().length > 0;
+      || this.sessionStates.anyProcessing();
   }
 
   /**
@@ -5827,7 +5832,7 @@ export class Agent {
         }
 
         // Handle text cutoff (max_tokens or a fault/truncation → 'incomplete')
-        if (turnContinuationKind(response, { endTurnRequested: this.endTurnRequested }) === 'text') {
+        if (turnContinuationKind(response, { endTurnRequested: this.endTurnRequested, cancelled: cancelToken?.cancelled || cancelToken?.userStopped }) === 'text') {
           this.memory.appendMessage(this.currentSessionId, {
             role: 'assistant',
             content: response.content,

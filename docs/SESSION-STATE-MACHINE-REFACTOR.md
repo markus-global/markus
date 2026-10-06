@@ -379,6 +379,32 @@ getSessionStates() = deriveSessionStates(注册表.list(), 队列按会话归组
 | 新增 `agentOverview.test.ts` P4b 用例（+4，含幽灵空闲/权威停止/竞态/向后兼容） | ✅ 49/49 |
 | `tsc -b packages/org-manager` / `tsc -b packages/web-ui` | ✅ 干净 |
 
+---
+
+## 15. P1-fix / P2a-fix 落地记录（✅ 已修 + 全量回归绿）——两处真实回归与更正
+
+在「完整回归」时发现 `agent-concurrent-cancel-isolation` 在本分支失败。逐层定位后**更正**：
+
+> **我最初判断「P1 的 idle 闸门导致确定性回归」是错的**——复跑显示该用例本身就有时序脆弱性（同代码 2 通过 / 1 失败）。真正的根因是下面两处**真实缺陷**，修完即 4/4 稳定通过、全量 3607/3607 绿。
+
+**缺陷 1（致命）：取消后的 turn 仍在续跑。**
+- P2a 把「无 finish_reason」映射为 `'incomplete'`（诚实化），而 `turnContinuationKind` 把它判为「继续」。
+- 但**被取消的流本来就没有 finish_reason** ⇒ 取消后被判 incomplete ⇒ **继续再调一次模型**。并发取消隔离用例的 mock 会「持有」第二次调用 → worker 永久卡在 focused（实测 debug：`inFlight:[1,2] workerStates:["focused","focused"]`）。
+- **修法（根因）**：`turnContinuationKind` 新增 `cancelled` 维度——**取消/用户停止是终态**，优先于 incomplete 的直接返回 `done`。流式循环传入 `cancelToken?.cancelled || cancelToken?.userStopped`。
+- 回归护栏：`finish-reason-honesty.test.ts` 新增「incomplete + cancelled ⇒ done」。
+
+**缺陷 2：`isProcessing()` 被赋予两种含义。**
+- P4a 给 `isProcessing()` 加了 `|| mailbox.getQueuedItems().length > 0`，使这个「**正在处理** turn」的谓词混入了「**队列还有待办**」。这是我自己反复强调的 R2（一个不变量多种度量）。
+- **修法**：`isProcessing()` 回到纯 turn 语义；「忙碌（含排队窗口）」的**展示**语义放到 `getSessionStates()`（已并入队列）与 org-manager 的 `/api/agents` 字段里组合。
+- 顺带删除 **P1 的 `transitionStatus` 会话 idle 闸门**：它与上方的 worker 聚合闸门**冗余**（每个会话的 turn 恰好占用一个 worker），且早退会让 `reconcileIdleState` 收敛不了（幽灵「工作中」）。
+
+**最终验证**：
+| 项 | 结果 |
+|---|---|
+| `agent-concurrent-cancel-isolation` 连跑 4 次 | ✅ 4/4（~42s，与 base 一致） |
+| 全量 core + storage + shared | ✅ **268 文件 / 3607 通过 / 0 失败**（10 skipped） |
+| `tsc -b packages/cli` / `packages/org-manager` | ✅ 干净 |
+
 
 
 

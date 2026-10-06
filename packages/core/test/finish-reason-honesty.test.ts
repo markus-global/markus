@@ -55,4 +55,13 @@ describe('finish-reason 诚实化（P2）', () => {
     expect(turnContinuationKind({ finishReason: 'tool_use', toolCalls: [{}] })).toBe('tools');
     expect(turnContinuationKind({ finishReason: 'max_tokens' })).toBe('text');
   });
+
+  it('取消/用户停止是终态：incomplete 也必须 done（不许取消后继续跑）', () => {
+    // 被取消的流没有真实 finish_reason ⇒ 会判为 incomplete；若不拦截，取消后
+    // 会继续花一次 LLM 往返（并发取消隔离用例卡死的真实根因）。
+    expect(turnContinuationKind({ finishReason: 'incomplete' }, { cancelled: true })).toBe('done');
+    expect(shouldContinueToolLoop({ finishReason: 'incomplete' }, { cancelled: true })).toBe(false);
+    // 取消优先于「继续」；未取消时 incomplete 照旧继续。
+    expect(turnContinuationKind({ finishReason: 'incomplete' }, { cancelled: false })).toBe('text');
+  });
 });

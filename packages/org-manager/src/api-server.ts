@@ -4397,12 +4397,17 @@ export class APIServer {
           a.id === orgSecretaryId ? { ...a, isOrgSecretary: true, protected: true } : a
         );
       }
-      // P4b：附上后端权威的「是否正在处理」——前端据此否决本地乐观态（幽灵「空闲」）。
-      // listAgents() 返回纯记录，故从活的 Agent 实例取派生状态（getSessionStates()∪队列）。
+      // P4b：附上后端权威的「是否忙碌」——前端据此否决本地乐观态（幽灵「空闲」）。
+      // listAgents() 返回纯记录，故从活的 Agent 实例取派生状态。
+      // 语义 = 正在处理（isProcessing）∪ 队列中仍有待处理项（getSessionStates 已并入队列），
+      // 这样「已入队但尚未被认领」的窗口也不会被误显示为空闲。
       const mgr = this.orgService.getAgentManager();
       agents = agents.map(a => {
         const live = mgr.getAgent?.(a.id as string);
-        return live ? { ...a, isProcessing: live.isProcessing() } : a;
+        if (!live) return a;
+        const busy = live.isProcessing()
+          || live.getSessionStates().some(s => s.state === 'processing');
+        return { ...a, isProcessing: busy };
       });
       if (this.gateway) {
         const extRegs = this.gateway.listRegistrations();

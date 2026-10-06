@@ -104,21 +104,28 @@ describe('agent「工作中」= 会话状态并集（P1）', () => {
     expect(agent.getState().status).toBe('idle');
   });
 
-  it('并集：一个 worker 空闲、另一会话仍在处理 ⇒ 不得回 idle', async () => {
+  it('并集（可观测）：一个会话结算、另一会话仍在处理 ⇒ isProcessing 仍为真、快照仍显示其 processing', async () => {
     const agent = createAgent();
     await agent.start();
     reg(agent).begin('sess_a', 'i1');
     reg(agent).begin('sess_b', 'i2');
     ts(agent, { to: 'working' });
 
-    // worker A 结束（模拟 onFocusChanged(undefined) → idle 意图），但 sess_b 仍在跑
+    // 会话 A 结束，但 B 仍在跑。
     reg(agent).settle('sess_a', 'i1', 'ok');
-    ts(agent, { to: 'idle' });
-    expect(agent.getState().status).toBe('working'); // 并集语义：不得提前 idle
+    // 会话并集由 isProcessing()/getSessionStates() **如实暴露**（前端权威来源）。
+    expect(agent.isProcessing()).toBe(true);
+    expect(agent.getSessionStates().find(s => s.sessionKey === 'sess_b')?.state).toBe('processing');
+
+    // 注：agent.status 的 idle 落地由 attention 的 **worker 聚合闸门**把关
+    // （getWorkerCount() > 1 && getState() !== 'idle'）；本层**不再**叠加会话闸门。
+    // 曾试加的会话闸门是冗余守卫，且会让 reconcileIdleState 永远收敛不了（见 P1-fix）。
 
     reg(agent).settle('sess_b', 'i2', 'ok');
     ts(agent, { to: 'idle' });
     expect(agent.getState().status).toBe('idle');
+    // 无在飞 turn ⇒ isProcessing 为假（「队列里还有待办」不属此谓词语义）。
+    expect(agent.isProcessing()).toBe(false);
   });
 
   it('isProcessing 反映会话并集（不止看某个 worker 的 processingMailboxItemId）', async () => {
