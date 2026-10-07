@@ -513,6 +513,48 @@ getSessionStates() = deriveSessionStates(注册表.list(), 队列按会话归组
 | 红线验证（临时禁用落库执行点 → 新用例立即变红 → 恢复转绿） | ✅ 红 → 绿 |
 | DB 兼容（老板点名） | ✅ 仅**纯读**新增（`json_extract` 查询）；**无新增列、无 schema 变更、无存量数据改动、可原地回滚** |
 
+## 18. P5b：心跳轮 `[end_turn]` 气泡泄漏（2026-10-07，Owner 实测发现）
+
+**现象**：Team Chat 用户会话出现与心跳周期同步的 `[end_turn]` 气泡（15:27/16:27/17:27/18:05 共 4 条），`chat_messages.metadata` 全空（既非流式路径也非 P5 out-of-band 路径的产物）。
+
+**取证**（`runtime-2026-10-07.log` + `data.db`）：
+```
+07:27:14.792 [agent] Heartbeat: skipping LLM (idle/deep-sleep)
+07:27:14.797 [agent] P5: turn reply persisted to DB chat session
+               {"memorySessionId":"sess_1791354662832_9nwxw6","reason":"mem-only","replyLength":10}
+```
+`replyLength:10` = `'[end_turn]'.length`。即：心跳轮跳过 LLM，返回类型化哨兵 `[end_turn]`（「主动沉默」信号）；此时 worker 的**当前会话**恰好是用户聊天会话的内存会话（上一轮 human_chat/callback 留下的），`mem-only` 反查到 `cs_*` → 哨兵被当正文写入用户对话。
+
+**根因（两层叠加，均为 P5 引入）**：
+- **B1 白名单是死代码**：`CHAT_CONVERSATION_TURN_TYPES`（agent.ts）只被**注释**与**测试**（断言 Set 内容）引用，**没有任何运行路径消费它**。P5 的 system_event 护栏用例因「无会话身份 → no-target」**空转变绿**——它测的是「找不到会话所以不写」，不是「白名单拒绝」。生产形态（当前会话绑着聊天会话）从未被覆盖。
+- **B2 哨兵即内容**：`[end_turn]` 是 in-band 控制信号，attention 层认得并吞掉（`attention.ts:61`），但落库判据不认 → 控制信号泄漏为用户可见正文（R3）。
+
+**修法（单一度量点，不加第二处守卫）**：白名单与哨兵拒绝**搬进** `shouldPersistTurnReply`（`recovered-reply-persist.ts`）——「这轮回复是否可能属于用户对话」从此只有**一个**判定处，按序：
+1. 回复是控制信号（`[end_turn]` / `[preempted]` / `[cancelled]`）→ 不落库（`reason:'no-user-reply'`）；
+2. `sourceType ∉ {human_chat, callback_result}` → 不落库（`reason:'not-user-facing'`；**fail-closed**：sourceType 缺失即拒绝）；
+3. 其后维持 P3/P5 判据不变（发起方存活不写 / cs 一级 / mem 反查二级）。
+
+配套：`Agent.CHAT_CONVERSATION_TURN_TYPES` 静态字段**删除**（单一事实源移入决策模块），测试改为直接 import 常量；`persistTurnReplyIfUnowned` 增加 `sourceType` 参数；finally 调用点传入 `item.sourceType`。
+`session_reply` / `a2a_message` 不受影响（前者生产端带 responsePromise → 本就不走 worker 落库；后者 §16 残余已记录不纳入）。
+
+**测试计划（先红后绿）**：
+- 决策级（p3-restart-reply-persist.test.ts）：心跳 / system_event / daily_report / review_request 即便 `mem-only` 也判不落库；`[end_turn]`/`[preempted]`/`[cancelled`] 判不落库；human_chat / callback_result 判据逐字维持（存量用例补 `sourceType` 字段）。
+- 集成级（p5-callback-reply-visible.test.ts）：**复现生产形态**（`currentSessionId` 绑聊天会话 + 心跳跳过 LLM 返回哨兵）→ persister 不得被调用；哨兵即便来自白名单类型（callback_result）也不得当正文。
+
+**数据清理**：4 条垃圾行从 `data.db` 删除（先备份进 `chat_messages_endturn_leak_20261007` 表，可回滚）。
+
+**验证记录（✅ 2026-10-07）**：
+
+| 项 | 结果 |
+|---|---|
+| 红→绿 | ✅ 7 个新用例先红（含生产形态精确复现：`currentSessionId` 绑聊天会话 + 心跳跳 LLM → persister 收到 `reply:"[end_turn]"`）→ 修后 3 文件 24/24 |
+| 回归：attention + 并发取消隔离 + mailbox 恢复 | ✅ 91/91 |
+| 全量 `packages/core` | ✅ 241 文件 / 3234 通过 / 10 skipped / 0 失败 |
+| `tsc -b packages/core` | ✅ exit 0 |
+| DB 清理 | ✅ 4 条 `[end_turn]` 删除，备份表在库（可回滚） |
+
+**教训（进 knowledge）**：护栏测试若只断言「常量的内容」而不断言「运行路径消费了它」，护栏就是死的——绿灯来自别的偶然原因（no-target 空转）。给不变量加护栏时，测试必须**穿透到行为**（用生产形态的输入复现泄漏），否则测的是图纸不是门。
+
 
 
 

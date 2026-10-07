@@ -2525,7 +2525,8 @@ export class Agent {
       // `callback_result`（background_exec 完成 / a2a in_session 回复）的回复只写进
       // MemoryStore —— 用户在 Team Chat 里永远看不到后台任务的结果。现在统一在此判定
       // 「谁是这一轮回复的落库执行者」（见 shouldPersistTurnReply）：发起方还活着由它自己
-      // 写，否则 worker 兜底写回会话。白名单见 CHAT_CONVERSATION_TURN_TYPES。
+      // 写，否则 worker 兜底写回会话。白名单与控制信号拒绝均收敛在
+      // shouldPersistTurnReply（recovered-reply-persist.ts，P5b 单一度量点）。
       //
       // 顺序：落库 **先于** resolve —— 调用方一旦观察到回合结束就会去 DB 拉消息，
       // 反过来会重现「回复已结束但 DB 里还没有」的竞态（P3 契约）。
@@ -2536,6 +2537,7 @@ export class Agent {
           item.metadata,
           activeSessionKey,
           item.sourceType === 'callback_result' ? 'callback_result' : undefined,
+          item.sourceType,
         );
         if (typeof item.metadata?.responsePromise?.resolve === 'function') {
           item.metadata.responsePromise.resolve(stripCompletionMarker(pendingReply));
@@ -3823,25 +3825,6 @@ export class Agent {
     'notify_user', 'escalation', 'task_completed', 'task_failed',
   ]);
 
-  /**
-   * P5：哪些 sourceType 的 turn **可能属于某个用户对话会话**（其回复因此要经受
-   * `shouldPersistTurnReply` 的落库判定）。
-   *
-   * 用**白名单**而不是「所有类型」：心跳 / 任务 / 系统 / 记忆整理等内部 turn 的输出
-   * 绝不能泄漏进用户对话。它们多数用 hb_* / task_* / sys_* 会话（本就没有 cs_* 绑定），
-   * 但白名单让「不泄漏」成为**结构保证**，而不是依赖下游反查恰好失败。
-   *
-   * 目前纳入：
-   *  - `human_chat`：正常聊天（正常路径由发起方落库；重启恢复项由 worker 兜底）。
-   *  - `callback_result`：异步回调回到发起它的那一轮 —— 过去完全不可见（P5 修复）。
-   *
-   * 未纳入 `a2a_message`：其分支的会话身份取自 `opts.sessionId`（a2a_* / awaitOrigin），
-   * 并未反映到 `activeSessionKey`，纳入会有「写错会话」的风险（见文档 §16 残余）。
-   */
-  private static readonly CHAT_CONVERSATION_TURN_TYPES = new Set<string>([
-    'human_chat', 'callback_result',
-  ]);
-
   injectActivityToMainSession(opts: {
     type: string;
     summary: string;
@@ -4402,6 +4385,10 @@ export class Agent {
    * 目标会话：extra.sessionId / metadata.dbSessionId（cs_*）优先；只有内存会话 id 时，
    * 交给装配层（org-manager）用 `chat_sessions.metadata.memorySessionId` 反查 cs_*。
    * 判据见 `shouldPersistTurnReply`（core/recovered-reply-persist.ts）。
+   *
+   * 【P5b】白名单（sourceType ∈ CHAT_CONVERSATION_TURN_TYPES，fail-closed）与控制
+   * 信号拒绝（[end_turn] 等哨兵不是正文）也收敛在该判据里 —— 内部 turn（心跳/系统/
+   * 任务）结构上不可能把回复写进用户对话（2026-10-07 生产泄漏修复）。
    */
   async persistTurnReplyIfUnowned(
     reply: string,
@@ -4409,11 +4396,14 @@ export class Agent {
     metadata: { dbSessionId?: unknown; responsePromise?: { resolve?: unknown } } | undefined,
     memorySessionId: string | undefined,
     origin?: string,
+    sourceType?: string,
   ): Promise<void> {
     if (!reply || typeof reply !== 'string' || !reply.trim()) return;
     if (!this.assistantReplyPersister) return;
     const decision = shouldPersistTurnReply({
       resolveIsFunction: typeof (metadata?.responsePromise as { resolve?: unknown } | undefined)?.resolve === 'function',
+      sourceType,
+      reply,
       sessionId: extra.sessionId,
       dbSessionId: metadata?.dbSessionId,
       memorySessionId,

@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Agent } from '../src/agent.js';
 import type { AgentOptions } from '../src/agent.js';
+import { CHAT_CONVERSATION_TURN_TYPES } from '../src/recovered-reply-persist.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { MailboxItem } from '@markus/shared';
 
@@ -159,9 +160,9 @@ describe('P5：callback_result 回复对用户可见（落库执行点）', () =
     expect(persister).not.toHaveBeenCalled();
   });
 
-  it('白名单是结构保证：心跳 / 任务 / 系统 / 记忆整理均不纳入', () => {
-    const allow = (Agent as unknown as { CHAT_CONVERSATION_TURN_TYPES: Set<string> })
-      .CHAT_CONVERSATION_TURN_TYPES;
+  it('白名单是结构保证：心跳 / 任务 / 系统 / 记忆整理均不纳入（单一事实源：决策模块）', () => {
+    // P5b：常量从 Agent 静态字段（死代码）移入决策模块，由 shouldPersistTurnReply 消费。
+    const allow = CHAT_CONVERSATION_TURN_TYPES;
     expect(allow.has('human_chat')).toBe(true);
     expect(allow.has('callback_result')).toBe(true);
     for (const t of ['heartbeat', 'task_status_update', 'system_event', 'daily_report', 'memory_consolidation', 'review_request']) {
