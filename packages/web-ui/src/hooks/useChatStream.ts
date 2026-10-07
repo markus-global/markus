@@ -31,10 +31,12 @@ import type { TFunction } from 'i18next';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat,
-  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget,
+  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget, alignStreamedAgentId,
   appendLiveOutput, appendSubagentLog,
   appendTextToSegments, appendThinkingToSegments,
   finalizeAgentMessage, finalizeLastInterruptedAgent, finalizeStreamEnd, finalizeLastStreamingBubble, msgHasContent,
+  shouldInterruptForSend,
+  shouldSettleDetachedSession,
 } from '../pages/ChatHelpers.ts';
 import { NEW_CHAT_PLACEHOLDER_ID } from './useConversationBuffers.ts';
 import { parseMentionNames } from '../components/CommentInput.tsx';
@@ -61,14 +63,19 @@ export interface ChatStreamVolatileState {
   chatReplyTo: { id: string; sender: string; text: string } | null;
 }
 
+import type { ActiveSessionView } from '../lib/ConversationBufferManager.ts';
+
 /** Stable handles/refs passed once from Team.tsx. */
 export interface ChatStreamContext {
   stateRef: RefObject<ChatStreamVolatileState>;
-  // Buffer mgr maps (stable)
-  msgBuffers: Map<string, ChatMsg[]>;
+  // Buffer mgr accessors (stable)
   actBuffers: Map<string, unknown[]>;
-  sessionMsgCache: Map<string, ChatMsg[]>;
-  activeSessionBuffer: Map<string, string>;
+  /** READ-ONLY view pointer. It has exactly one writer (`setActiveSession`), because
+   *  that method also performs placeholder promotion — see H4 in
+   *  docs/PLATFORM-HARDENING-2026-10.md §3. */
+  activeSessionBuffer: ActiveSessionView;
+  /** Read the messages rendered for a conversation (projection of the view pointer). */
+  readConvMsgs: (k: string) => ChatMsg[] | undefined;
   currentConvKeyRef: RefObject<string>;
   // Buffer callbacks (stable useCallback from useConversationBuffers)
   updateConvMsgs: (k: string, u: (p: ChatMsg[]) => ChatMsg[], s?: string | null) => void;
@@ -125,8 +132,38 @@ export interface ChatStreamApi {
 
 export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
   // ── Stream-private refs (every mutation site lives inside the moved fns) ──
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const reattachAbortRef = useRef<AbortController | null>(null);
+  // ── 每会话一份 controller（不再是单槽）────────────────────────────
+  // 单槽 ref 表达不了 N 条并发流：abort「那个」流正是兄弟 tab 的 SSE 被误杀的
+  // 根源。按会话 id 寻址后，abort 只可能命中目标会话自己的传输。
+  const streamCtrlsRef = useRef<Map<string, AbortController>>(new Map());
+  const reattachCtrlsRef = useRef<Map<string, AbortController>>(new Map());
+  const dropStreamCtl = (ctl: AbortController | null) => {
+    if (!ctl) return;
+    for (const [k, v] of streamCtrlsRef.current) if (v === ctl) streamCtrlsRef.current.delete(k);
+  };
+  const dropReattachCtl = (ctl: AbortController | null) => {
+    if (!ctl) return;
+    for (const [k, v] of reattachCtrlsRef.current) if (v === ctl) reattachCtrlsRef.current.delete(k);
+  };
+  /** Abort only the stream(s) owned by `sid` — never a sibling tab's. */
+  const abortStreamsFor = (sid: string) => {
+    const sc = streamCtrlsRef.current.get(sid);
+    if (sc) { sc.abort(); streamCtrlsRef.current.delete(sid); }
+    const rc = reattachCtrlsRef.current.get(sid);
+    if (rc) { rc.abort(); reattachCtrlsRef.current.delete(sid); }
+  };
+  /**
+   * session_start 到达后，把占位键上的 controller 改挂到真实会话键上。
+   * 否则之后按真实 id 发起的 interrupt 找不到它（“停不下”）。
+   * 仅当占位键下恰好只有这一条时迁移，避免抢走兄弟 tab 的条目。
+   */
+  const promoteStreamCtl = (realSid: string) => {
+    const c = streamCtrlsRef.current.get(NEW_CHAT_PLACEHOLDER_ID);
+    if (c && streamCtrlsRef.current.size === 1) {
+      streamCtrlsRef.current.delete(NEW_CHAT_PLACEHOLDER_ID);
+      streamCtrlsRef.current.set(realSid, c);
+    }
+  };
   const reattachCooldownRef = useRef<Map<string, number>>(new Map());
   const userStoppedSessionsRef = useRef<Set<string>>(new Set());
   const lastSendGuardRef = useRef<{ text: string; at: number } | null>(null);
@@ -142,7 +179,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
   const { stateRef } = ctx;
   // Stable destructure — deps for useCallback below stay constant.
   const {
-    msgBuffers, actBuffers, sessionMsgCache, activeSessionBuffer, currentConvKeyRef,
+    actBuffers, activeSessionBuffer, readConvMsgs, currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginStream, endStream, abortStream,
     clearStreamSession, setStreamSession, getStreamSession, setActiveSession,
@@ -161,7 +198,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
     const seqAtStart = sessionSwitchSeqRef.current;
     // Soft-refresh (buffer already has messages) should not flash a full-page spinner.
     const showSpinner = currentConvKeyRef.current === convKey
-      && (msgBuffers.get(convKey)?.length ?? 0) === 0;
+      && (readConvMsgs(convKey)?.length ?? 0) === 0;
     if (showSpinner) setLoadingChat(true);
     try {
       const { count, hasMore: more, oldestCursor } = await loadAndDisplay(sessionId, convKey, async () => {
@@ -184,7 +221,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // the user is actually viewing now.
       if (showSpinner && currentConvKeyRef.current === convKey && sessionSwitchSeqRef.current === seqAtStart) setLoadingChat(false);
     }
-  }, [loadAndDisplay, msgBuffers, sessionSwitchSeqRef]);
+  }, [loadAndDisplay, readConvMsgs, sessionSwitchSeqRef]);
 
   // ── Stop (interrupt) ───────────────────────────────────────────────────────
   const stopSending = () => {
@@ -201,10 +238,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
     // 2) Abort both the live send() stream and any reattachStream consumer.
     // Previously only abortControllerRef was cleared — after refresh/reattach
     // the stop button looked clickable but did nothing to the open SSE.
-    abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
-    reattachAbortRef.current?.abort();
-    reattachAbortRef.current = null;
+    abortStreamsFor(stateRef.current.activeSessionId ?? NEW_CHAT_PLACEHOLDER_ID);
 
     // 3) A user-initiated stop is final for the CURRENT turn. Remember the
     // session so reattach/refresh never resumes it (the agent may still report
@@ -237,9 +271,10 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // beginStream here — the owning send() already marked the agent as
       // streaming and will endStream it. Calling it again leaks the refcount
       // and pins the sidebar to "working" after the agent has stopped.
+      const sendCtl = streamCtrlsRef.current.get(sessionId);
       if (
-        abortControllerRef.current
-        && !abortControllerRef.current.signal.aborted
+        sendCtl
+        && !sendCtl.signal.aborted
         && getStreamSession(convKey)?.has(sessionId)
       ) {
         if (currentConvKeyRef.current === convKey) setSending(true);
@@ -253,8 +288,13 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
        * 路径上从未 `beginStream`，故也不调 `endStream`（避免 refcount 下溢）。
        */
       const finalizeIfDetached = () => {
-        const owned = getStreamSession(convKey);
-        if (owned && owned.size > 0) return;
+        // 判据是「**这个会话**是否还有在途流」，不是「该 Agent 下任意会话有没有流」——
+        // 用别人的状态回答我的问题，正是本类 bug 的共同形状。
+        if (!shouldSettleDetachedSession({
+          liveSessions: getStreamSession(convKey),
+          sessionId,
+          placeholderId: NEW_CHAT_PLACEHOLDER_ID,
+        })) return;
         clearStreamSession(convKey, sessionId);
         if (currentConvKeyRef.current === convKey) {
           setSending(false);
@@ -276,7 +316,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       reattachCooldownRef.current.set(cooldownKey, Date.now());
 
       const status = await api.sessions.streamStatus(agentId, sessionId);
-      const msgs = msgBuffers.get(convKey) ?? [];
+      const msgs = readConvMsgs(convKey) ?? [];
       const serverStreaming = status.status === 'streaming';
       // Reattach must only ever continue the IN-FLIGHT bubble. Two signals:
       //  · `expectedMessageId` — the server names the in-flight assistant message;
@@ -300,9 +340,10 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       }
 
       reattachCooldownRef.current.set(cooldownKey, Date.now());
-      reattachAbortRef.current?.abort();
+      for (const c of reattachCtrlsRef.current.values()) c.abort();
+      reattachCtrlsRef.current.clear();
       abortCtrl = new AbortController();
-      reattachAbortRef.current = abortCtrl;
+      reattachCtrlsRef.current.set(sessionId, abortCtrl);
       beginStream(convKey);
       setSending(true);
       setStreamSession(convKey, sessionId);
@@ -629,11 +670,12 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             updateConvMsgs(convKey, prev => finalizeLastStreamingBubble(prev), sessionId);
           });
         }
-        if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
+        dropReattachCtl(abortCtrl);
         return;
       }
 
       if (currentConvKeyRef.current === convKey) {
+        let finalizedId: string | undefined;
         updateConvMsgs(convKey, prev => {
           const u = [...prev];
           const idx = agentMsgId ? u.findIndex(m => m.id === agentMsgId) : -1;
@@ -643,6 +685,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           // Only a still-in-flight bubble may be finalized here — never a
           // previous turn's completed reply.
           if (!msg.isStreaming) return prev;
+          finalizedId = msg.id;
           const finalSegs = result!.segments?.length
             ? storedSegmentsToMsgSegments(result!.segments, msg.segments)
             : undefined;
@@ -658,17 +701,23 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           };
           return u;
         }, sessionId);
+        // Converge the reattached bubble's synthetic id (`reattach_…`) to the
+        // server-persisted id, so a later DB load dedups it by id instead of
+        // rendering the reply twice.
+        if (finalizedId) {
+          updateConvMsgs(convKey, prev => alignStreamedAgentId(prev, finalizedId, result!.messageId), sessionId);
+        }
         setSending(false);
       }
       endStream(convKey);
       // This reattach's stream session is finished (stream completed) — remove
       // it so the sidebar busy mark clears with the stream.
       clearStreamSession(convKey, sessionId);
-      if (reattachAbortRef.current === abortCtrl) reattachAbortRef.current = null;
+      dropReattachCtl(abortCtrl);
     } catch (err) {
       // Aborted by stop / newer reattach / navigation — always clear local stream UI.
-      const wasActive = reattachAbortRef.current === abortCtrl;
-      if (wasActive) reattachAbortRef.current = null;
+      const wasActive = abortCtrl ? [...reattachCtrlsRef.current.values()].includes(abortCtrl) : false;
+      dropReattachCtl(abortCtrl);
       endStream(convKey);
       // Same as above: whatever ended this reattach (abort / error) means the
       // stream session is no longer active — release it.
@@ -686,7 +735,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       }
       if (err instanceof Error && err.name === 'AbortError') return;
     }
-  }, [appendConvActivity, beginStream, endStream, getStreamSession, msgBuffers, setStreamSession, updateConvMsgs, updateConvMsgsRaf]);
+  }, [appendConvActivity, beginStream, endStream, getStreamSession, readConvMsgs, setStreamSession, updateConvMsgs, updateConvMsgsRaf]);
 
   // ── Send ──────────────────────────────────────────────────────────────────
   const send = useCallback(async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean; sessionIdOverride?: string }) => {
@@ -723,19 +772,24 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       resumeGuardRef.current.set(resumeKey, now);
     }
 
-    // If agent is currently streaming in this same conversation, interrupt it first.
-    // If the user is in a DIFFERENT session (e.g., new chat tab) while another session
-    // streams, DON'T abort — the agent's mailbox will queue or merge the new message.
+    // 只有「本次要发的那个会话」自身有在途流时，才谈得上“打断并重发”。
+    //
+    // 旧判据是 `activeSessionId && activeSessionId !== NEW_CHAT`（= “当前 tab 有没有
+    // 真实 session id”），而 sending 与 convKey 都是 Agent 级、被同一 agent 的所有
+    // session tab 共用 —— 于是「在 tab B 发消息」被判成「打断当前流」，把正在输出的
+    // tab A 连同它的 SSE 一起 abort 掉。判据必须是会话自身的在途状态。
     if (volatile.sending && volatile.chatMode === 'direct') {
-      const isSameSession = volatile.activeSessionId && volatile.activeSessionId !== NEW_CHAT_PLACEHOLDER_ID;
+      const isSameSession = shouldInterruptForSend({
+        liveSessions: getStreamSession(currentConvKeyRef.current),
+        sendSessionId: volatile.activeSessionId,
+      });
       if (isSameSession) {
         const prevKey = currentConvKeyRef.current;
-        const buf = msgBuffers.get(prevKey) ?? [];
+        const buf = readConvMsgs(prevKey) ?? [];
         const lastUser = [...buf].reverse().find(m => m.sender === 'user');
         // Same text already in-flight — don't stack another user bubble; retry the turn.
         if (lastUser?.text === text && !options?.isRetry && !options?.isResume) {
-          abortControllerRef.current?.abort();
-          abortControllerRef.current = null;
+          abortStreamsFor(volatile.activeSessionId ?? NEW_CHAT_PLACEHOLDER_ID);
           const sid0 = volatile.activeSessionId ?? undefined;
           void api.agents.cancelProcessing(volatile.selectedAgent!, { sessionId: sid0 }).catch(() => {});
           abortStream(prevKey, volatile.activeSessionId);
@@ -751,8 +805,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           return send(text, { isRetry: true });
         }
         // Same session: interrupt current stream and resend
-        abortControllerRef.current?.abort();
-        abortControllerRef.current = null;
+        abortStreamsFor(volatile.activeSessionId ?? NEW_CHAT_PLACEHOLDER_ID);
         const sid1 = volatile.activeSessionId ?? undefined;
         void api.agents.cancelProcessing(volatile.selectedAgent!, { sessionId: sid1 }).catch(() => {});
         abortStream(prevKey, volatile.activeSessionId);
@@ -764,8 +817,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // finishing the current stream, and the response will arrive via SSE or WS fallback.
     } else if (volatile.sending && volatile.chatMode !== 'direct') {
       // Non-direct mode (channel/dm): abort as before since channels are independent
-      abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
+      abortStreamsFor(stateRef.current.activeSessionId ?? currentConvKeyRef.current);
       const prevKey = currentConvKeyRef.current;
       abortStream(prevKey);
       updateConvMsgs(prevKey, prev => finalizeLastInterruptedAgent(prev));
@@ -970,11 +1022,8 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
               m.id === optimisticUserId ? { ...m, id: event.userMessageId! } : m
             ), event.sessionId);
           }
-          // Seed the session cache with current buffer so streaming reads don't start empty
-          const currentBuf = msgBuffers.get(sendKey);
-          if (currentBuf && currentBuf.length > 0) {
-            sessionMsgCache.set(event.sessionId, currentBuf);
-          }
+          // 占位 buffer 的提升由 setActiveSession 统一负责（见 promotePlaceholder）——
+          // 不再需要手工把显示缓冲拷贝进一份单独的 session 缓存。
           if (currentConvKeyRef.current === sendKey) {
             // Only update activeSessionId if this stream's session matches what user expects.
             // If user was on __new_chat__ or the same session, update. Otherwise skip to
@@ -982,12 +1031,14 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             const currentSess = volatile.activeSessionId;
             if (!currentSess || currentSess === NEW_CHAT_PLACEHOLDER_ID || currentSess === event.sessionId) {
               setActiveSessionId(event.sessionId);
-              activeSessionBuffer.set(sendKey, event.sessionId);
-              // Pin the routing gate the same way the view state is pinned —
-              // otherwise the manager (activeSession) stays on the placeholder
-              // and every stream update is judged same-session, mixing it into
-              // the shared display buffer.
+              // NOTE: do NOT write `activeSessionBuffer` here. That map IS the manager's
+              // view pointer, and `setActiveSession` below is its single writer: it is what
+              // performs placeholder promotion. Writing the pointer first makes
+              // `setActiveSession`'s `cur === sessionId` guard short-circuit and skip the
+              // promotion, so the optimistic rows under `__new_chat__` are orphaned — the
+              // user's own message disappears and the reply never streams (H4).
               setActiveSession(sendKey, event.sessionId);
+              promoteStreamCtl(event.sessionId);
               if (volatile.selectedAgent) setStoredActiveSession(volatile.selectedAgent, event.sessionId);
               setOpenSessionTabs(prev => {
                 // Replace placeholder if exists; otherwise ensure the session tab is present
@@ -1136,7 +1187,11 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       };
 
       const abortCtrl = new AbortController();
-      abortControllerRef.current = abortCtrl;
+      // 按「这次发送所在的会话」登记，interrupt 时才能精确命中它。
+      streamCtrlsRef.current.set(
+        stateRef.current.activeSessionId ?? NEW_CHAT_PLACEHOLDER_ID,
+        abortCtrl,
+      );
       // Same source as streamSessionId's initial value (formula deduped — the
       // async session_start resolution happens only inside messageStream below,
       // so this snapshot always equals the initial streamSessionId).
@@ -1245,20 +1300,6 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             }, streamSessionId);
           }
 
-          // 身份对齐（重复气泡根因修复）：把本地流式气泡的 id 换成服务端持久化 id。
-          // 前端此前忽略 done 事件里的 messageId，气泡一直用客户端生成的 agentMsgId，
-          // 而 DB 里那行消息用的是另一个 id；一旦列表重载 / WS 推送把 DB 消息取回，
-          // 同一 条回复就会以两个 id 各渲染一个气泡。这里统一为服务端 id。
-          if (!streamResult.merged && streamResult.messageId && streamResult.messageId !== agentMsgId) {
-            updateConvMsgs(sendKey, prev => {
-              if (prev.some(m => m.id === streamResult.messageId)) {
-                // DB 版本已在列表里 → 丢掉本地流式副本，避免一分为二。
-                return prev.filter(m => m.id !== agentMsgId);
-              }
-              return prev.map(m => (m.id === agentMsgId ? { ...m, id: streamResult.messageId! } : m));
-            }, streamSessionId);
-          }
-
           if (streamResult.sessionId) {
             // Only update active session if user hasn't switched to a different session
             setActiveSessionId(prev => {
@@ -1272,6 +1313,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             const curSess = activeSessionBuffer.get(sendKey);
             if (!curSess || curSess === NEW_CHAT_PLACEHOLDER_ID || curSess === streamResult.sessionId) {
               setActiveSession(sendKey, streamResult.sessionId);
+              promoteStreamCtl(streamResult.sessionId);
             }
             setOpenSessionTabs(prev => {
               // Replace placeholder if exists
@@ -1341,7 +1383,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
                       : m,
                   ), resumeSessionId);
                   decrementSending(sendKey);
-                  if (abortControllerRef.current === abortCtrl) abortControllerRef.current = null;
+                  dropStreamCtl(abortCtrl);
                   setStreamSession(sendKey, resumeSessionId);
                   // Balance OUR beginStream(sendKey) above before handing over to
                   // reattach — tryReattachActiveStream marks the agent streaming
@@ -1365,13 +1407,28 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
                 const loaded = await loadSessionMessages(resumeSessionId, sendKey);
                 if (loaded > 0) {
                   decrementSending(sendKey);
-                  if (abortControllerRef.current === abortCtrl) abortControllerRef.current = null;
+                  dropStreamCtl(abortCtrl);
                   endStream(sendKey);
                   return;
                 }
               } catch { /* fall through to normal cleanup */ }
             }
           }
+        }
+        // 身份对齐（重复气泡根因）：把本地流式气泡的**合成 id** 收敛到服务端持久化
+        // messageId。必须与「当前在看哪个会话」**解耦**——一次回合完全可能在你切到
+        // 别的会话 / 标签之后才收到 done（那时上面整段 done 处理被视图门控跳过），或
+        // 回复由 reattach / poll 恢复。只看视图会漏掉这些路径，本地气泡便带着合成 id
+        // 留下；随后的 DB 加载按 id 相等去重失败 → 同一回复两个气泡（且陈旧副本会被
+        // 按乐观发送时刻错插到它的用户消息之前）。路由走 streamSessionId（会话自身），
+        // 与视图无关；仅当会话尚未解析、无法按会话路由时，才退回视图判据。
+        if (!streamResult.merged
+          && (streamSessionId || currentConvKeyRef.current === sendKey)) {
+          updateConvMsgs(
+            sendKey,
+            prev => alignStreamedAgentId(prev, agentMsgId, streamResult.messageId),
+            streamSessionId,
+          );
         }
       } catch (e) {
         // Preserve sessionId from error so subsequent messages stay in the same session
@@ -1381,6 +1438,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           // Keep the routing gate in sync with the resolved session id so a
           // later reattach cannot mix this stream into another session's buffer.
           setActiveSession(sendKey, errSessionId);
+          promoteStreamCtl(errSessionId);
           setOpenSessionTabs(prev =>
             prev.map(t => t.id === NEW_CHAT_PLACEHOLDER_ID ? { ...t, id: errSessionId } : t)
           );
@@ -1457,7 +1515,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // poll the session messages to recover the persisted reply.
       // Use the actual session ID from the stream result (or activeSessionId) instead
       // of blindly fetching the "latest" session which could be a different conversation.
-      const currentMsgs = msgBuffers.get(sendKey) ?? [];
+      const currentMsgs = readConvMsgs(sendKey) ?? [];
       const agentMsg = currentMsgs.find(m => m.id === agentMsgId);
       const pollSessionId = volatile.activeSessionId && volatile.activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? volatile.activeSessionId : null;
       const hasVisibleContent = agentMsg ? msgHasContent(agentMsg) : false;
@@ -1485,6 +1543,9 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
                   }
                   return u;
                 }, streamSessionId);
+                // The DB row we recovered is the authoritative identity — converge
+                // the optimistic bubble's id to it so a later load dedups by id.
+                updateConvMsgs(sendKey, prev => alignStreamedAgentId(prev, agentMsgId, recovered.id), streamSessionId);
                 return;
               }
             } catch { /* retry */ }
@@ -1502,11 +1563,21 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       const newCount = decrementSending(sendKey);
       // P1-14：无论 sessionId 是否已解析都要解除 busy。旧代码 `if (streamSessionId)`
       // 在「新会话首包前失败」（sessionId 仍为 null）时跳过清理，侧栏永久「工作中」，
-      // 刷新/切页/reattach 均不自愈。clearStreamSession 已支持 sid 省略（整键清理）。
-      clearStreamSession(sendKey, streamSessionId ?? undefined);
+      // 刷新/切页/reattach 均不自愈。
+      //
+      // BUT never with `undefined`: that is the WHOLE-KEY release, and the key is
+      // the AGENT (several session tabs of one agent share it). A turn that ends
+      // without a resolved session id — the new-chat tab, or a message the server
+      // MERGED into the agent's in-flight processing (no session_start for it) —
+      // would then wipe a SIBLING tab's live mark. chatStore drops to idle, the
+      // buffer manager still reports the conversation as streaming, and the two
+      // answers disagree: the sibling tab's bubble is a "ghost" by chatStore and
+      // gets swept (border + 输出中 die) while the backend keeps generating. The
+      // unresolved turn can only ever own the placeholder mark, so release that.
+      clearStreamSession(sendKey, streamSessionId ?? NEW_CHAT_PLACEHOLDER_ID);
       endStream(sendKey);
-      if (abortControllerRef.current === abortCtrl || abortControllerRef.current === null) {
-        abortControllerRef.current = null;
+      if ([...streamCtrlsRef.current.values()].includes(abortCtrl) || streamCtrlsRef.current.size === 0) {
+        dropStreamCtl(abortCtrl);
         actBuffers.delete(streamSessionId ?? sendKey);
         if (currentConvKeyRef.current === sendKey) {
           setSending(newCount > 0);
@@ -1516,7 +1587,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         actBuffers.delete(streamSessionId ?? sendKey);
       }
     }
-  }, [appendConvActivity, beginStream, clearStreamSession, currentConvKeyRef, decrementSending, endStream, incrementSending, loadSessions, msgBuffers, setSending, setStreamSession, stateRef, updateConvMsgs, updateConvMsgsRaf]);
+  }, [appendConvActivity, beginStream, clearStreamSession, currentConvKeyRef, decrementSending, endStream, incrementSending, loadSessions, readConvMsgs, setSending, setStreamSession, stateRef, updateConvMsgs, updateConvMsgsRaf]);
 
   return {
     send,

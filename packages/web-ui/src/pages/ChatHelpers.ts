@@ -233,6 +233,122 @@ export function clearGhostStreaming(msgs: ChatMsg[]): ChatMsg[] {
 }
 
 /**
+ * Converge a locally-streamed agent bubble's SYNTHETIC id to the server-persisted
+ * `messageId`, so any later DB load can deduplicate it BY ID (the cache merge
+ * keys on identity equality).
+ *
+ * A streamed turn has TWO identities until this runs: the client mints an
+ * optimistic id (`a_…` / `reattach_…`) at send time while the DB row uses the
+ * persisted messageId. If the two never converge, the next DB load keeps BOTH —
+ * the local synthetic row and the authoritative DB row — and the reply renders
+ * twice. This is the ONE place that bridging happens; every terminal path
+ * (done, reattach terminal, poll recovery) routes through it.
+ *
+ * If the DB version is already present under the persisted id, the local copy is
+ * DROPPED instead of renamed (renaming would produce two rows sharing one id).
+ * Returns the same array ref when nothing changed, so React can skip a re-render.
+ */
+export function alignStreamedAgentId(
+  msgs: ChatMsg[],
+  syntheticId: string | undefined,
+  persistedId: string | undefined,
+): ChatMsg[] {
+  if (!syntheticId || !persistedId || syntheticId === persistedId) return msgs;
+  if (msgs.some(m => m.id === persistedId)) return msgs.filter(m => m.id !== syntheticId);
+  return msgs.map(m => (m.id === syntheticId ? { ...m, id: persistedId } : m));
+}
+
+/**
+ * Should the ghost-streaming reconciliation sweep run for the current view?
+ *
+ * The sweep exists for ONE case: the stream is truly over but a bubble still
+ * carries `isStreaming` (a leaked flag). It must never fire while anything is
+ * genuinely in flight, because `clearGhostStreaming` is irreversible for that
+ * turn — it lands the flag, kills the animated border and stops the running-tool
+ * segments — while the backend keeps generating.
+ *
+ * A ghost is therefore proven by the ABSENCE of every live signal, and the
+ * signals are not equally trustworthy:
+ *
+ *  · `sending` (React) and `chatStoreStreaming` are derived/coarse. Both can be
+ *    momentarily false while a stream is live: `sending` is a single boolean for
+ *    the whole view (several tabs share one agent key), and chatStore is a
+ *    per-AGENT set whose only writer can be fed a stale ownership set.
+ *  · `convPhase` is the buffer manager's authoritative answer for the
+ *    conversation — and it deliberately keeps reporting 'streaming' through the
+ *    pre-registration window (stored phase flipped by `beginStream` before the
+ *    session mark lands) and while a SIBLING tab is still running.
+ *
+ * So the phase gets the last word: if the manager says the conversation is
+ * streaming, a flagged bubble is NOT a ghost. Skipping the sweep cannot strand a
+ * real ghost, because a finished stream collapses the phase (endStream → 'ready',
+ * empty ownership set) — the veto only spans windows where the turn is alive.
+ */
+export function shouldSweepGhostStreaming(input: {
+  chatMode: ChatMode;
+  hasAgent: boolean;
+  sending: boolean;
+  streamingVisual: boolean;
+  chatStoreStreaming: boolean;
+  convPhase: 'idle' | 'loading' | 'ready' | 'streaming';
+  hasStreamingTail: boolean;
+}): boolean {
+  if (input.chatMode !== 'direct' || !input.hasAgent) return false;
+  if (input.sending || input.streamingVisual) return false;
+  if (input.chatStoreStreaming) return false;
+  // Manager authority — see the doc comment above.
+  if (input.convPhase === 'streaming') return false;
+  return input.hasStreamingTail;
+}
+
+/**
+ * 发送消息时是否应当"打断并重发"。
+ *
+ * 判据必须是「**我这次要发的那个会话**是否真有流在跑」，而不是
+ * 「当前 tab 有没有真实 session id」/「这个 agent 有没有在 sending」。
+ *
+ * 旧实现用的是后者（`isSameSession = activeSessionId && activeSessionId !== NEW_CHAT`），
+ * 而 `sending` 与 convKey 都是 **Agent 级**的——同一个 agent 的所有 session tab
+ * 共用它们。于是「在 tab B 发消息」会被判成「打断当前流」，把**正在输出的 tab A**
+ * 连同它的 SSE 一起 abort 掉（见 `cancelProcessing` 的定向取消）。
+ *
+ * 正确语义：只有你要发的那个会话自身有在途流时，才谈得上"打断它"；
+ * 否则交给后端 mailbox 排队/合并，一个字节都不要动别人的流。
+ */
+export function shouldInterruptForSend(input: {
+  /** convKey 维度当前登记的在途会话（含 NEW_CHAT 占位）。 */
+  liveSessions: ReadonlySet<string> | undefined | null;
+  /** 本次发送所属的会话（新 tab 时为 NEW_CHAT 占位 id）。 */
+  sendSessionId: string | undefined | null;
+}): boolean {
+  if (!input.sendSessionId) return false;
+  const live = input.liveSessions;
+  if (!live || live.size === 0) return false;
+  return live.has(input.sendSessionId);
+}
+
+/**
+ * 断线重连（reattach）判定"这条流确实已经脱离"时，是否应当就地收尾。
+ *
+ * 判据必须是「**这个会话**是否还有在途流」，而不是「该 Agent 下**任意**会话是否有流」。
+ * 旧实现用后者（`owned.size > 0` → return），于是当其它 tab 正在输出时，
+ * 针对本 tab 的收尾会被跳过；反过来一旦别的 tab 的流结束把 Agent 级标记清掉，
+ * 本 tab 的收尾又会误触发。两者都是"用别人的状态回答我的问题"。
+ */
+export function shouldSettleDetachedSession(input: {
+  liveSessions: ReadonlySet<string> | undefined | null;
+  /** 本次 reattach 的目标会话。 */
+  sessionId: string | undefined | null;
+  /** 未解析的新流占位 id（可能尚未提升为真实 id）。 */
+  placeholderId: string;
+}): boolean {
+  const live = input.liveSessions;
+  if (!live || live.size === 0) return true;
+  if (!input.sessionId) return true;
+  return !live.has(input.sessionId) && !live.has(input.placeholderId);
+}
+
+/**
  * Finalize the last in-flight agent bubble (agent && isStreaming && !isStopped)
  * — used when a reattach stream dies/aborts while feeding an existing bubble.
  * Unlike finalizeLastInterruptedAgent this never touches a completed reply:

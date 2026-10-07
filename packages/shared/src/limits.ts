@@ -120,62 +120,58 @@ export const REVISION_REASON_CHARS = 200;
 /** Max retries after transient errors (network, rate-limit). */
 export const TASK_MAX_RETRIES = 3;
 
-/** Max retries for mailbox items whose reply lacks the completion marker.
+/** Max retries for mailbox items whose turn produced NO output at all.
  *  Keeps retry budget low because repeated failures with the same model
  *  are unlikely to self-correct. */
 export const MAILBOX_ITEM_MAX_RETRIES = 2;
 
-/** Sentinel token the agent must emit at the end of every mailbox-item reply
- *  to signal successful processing.  Absence triggers automatic retry.
- *  Chosen to be unique enough to never collide with natural language. */
-export const COMPLETION_MARKER = '<<HANDLE_COMPLETE>>';
-
 /**
- * Internal-only return sentinel for the mailbox/attention channel.
+ * THE completion protocol — a single, typed signal.
  *
- * When an agent ends its turn deliberately via the `end_turn` tool, the reply is
- * empty **on purpose** — that emptiness is what stops an agent↔agent DM peer from
- * being auto-chained. But an empty reply is also exactly what a failed/aborted LLM
- * turn looks like, so `detectAbnormalCompletion` treated the intentional silence as
- * "abnormal completion" and requeued the item (observed 2026-10-03: `end_turn` →
- * "empty reply from LLM-invoking item" → requeue → unbounded retry loop).
+ * Completion used to be signalled by a magic STRING the model had to emit
+ * (`<<HANDLE_COMPLETE>>`). That protocol needed an instruction appended to every
+ * mailbox message, a `<think>`-aware detector, a leak regex for malformed variants,
+ * stripping at three display/persist sites, AND a whole extra LLM continuation call
+ * to recover a missing token — and it still mis-judged legitimate turns as
+ * "completion marker missing" → the item was requeued and eventually dropped
+ * (8 in one day, 2026-10-04). Deleted in docs/PLATFORM-HARDENING-2026-10.md §6.
  *
- * Produced ONLY by the agent's `AttentionDelegate` wrapper, whose return value is
- * consumed ONLY by the attention controller. It never reaches the peer: the reply a
- * `sendMessage` caller receives is resolved inside `processMailboxItemCore` (BEFORE
- * the wrapper runs), and the delivery path (`api-server`) suppresses an empty reply.
- * Neither ever sees this sentinel.
+ * The typed signal replaced it: an agent ends a turn by CALLING the `end_turn` tool
+ * (unconditionally injected, budget-protected — see capability-packs.ts
+ * `TOOL_DEF_PROTECTED`). A tool call cannot be paraphrased into prose, cannot leak
+ * into a reply, and needs no detection heuristic or cleanup. This sentinel is how the
+ * agent reports that typed fact to the mailbox/attention layer.
+ *
+ * Also returned by scheduled heartbeats to mean "this self-check completed" — a more
+ * accurate statement than the old "here is a magic token".
+ *
+ * Internal-only: produced by the agent's `AttentionDelegate` wrapper (whose return
+ * value only the attention controller reads) and by the heartbeat path. It never
+ * reaches a peer or the UI: the reply a `sendMessage` caller receives is resolved
+ * inside `processMailboxItemCore`, before the wrapper runs, and the delivery path
+ * suppresses an empty reply.
  */
 export const END_TURN_REPLY_SENTINEL = '[end_turn]';
 
-/** Instruction appended to the user message for LLM-invoking mailbox items. */
-export const COMPLETION_MARKER_INSTRUCTION =
-  `\n\n[IMPORTANT: When you have finished processing this request, you MUST end your final response with the exact token: ${COMPLETION_MARKER}]`;
-
 /**
- * Check whether the completion marker is present in the *visible* portion of
- * a reply — i.e. outside any `<think>…</think>` reasoning blocks.
+ * Legacy-token scrubber for the **retired** text-marker protocol.
  *
- * Some models quote the marker instruction inside their `<think>` block while
- * reasoning about it, which causes a false positive if we simply use
- * `reply.includes(COMPLETION_MARKER)`.
+ * `<<HANDLE_COMPLETE>>` is no longer injected or detected (see above), but it is
+ * still present in historical sessions, daily logs and `knowledge.md` sections that
+ * get replayed into context — a model can imitate what it sees and emit the token
+ * into a user-visible reply. Scrubbing it at the display/persist boundary keeps that
+ * historical artefact out of what users read. Also matches the malformed variants a
+ * weak model produced (`<HANDLE_COMPLETE>`, `< HANDLE_COMPLETE >`).
+ *
+ * This is a bounded compatibility shim, NOT part of the protocol.
+ * **Removal criterion:** delete this function and its 2 call sites once no stored
+ * session, daily log or knowledge file contains the token.
  */
-export function hasCompletionMarker(reply: string): boolean {
-  const outside = reply.replace(/<think>[\s\S]*?<\/think>/g, '');
-  return outside.includes(COMPLETION_MARKER);
-}
+const LEGACY_COMPLETION_TOKEN_RE = /<{1,2}\s*HANDLE_COMPLETE\s*>{1,2}/gi;
 
-/**
- * Matches the completion marker AND common malformed variants a weak model may
- * emit as prose — single brackets or stray whitespace, e.g. `<HANDLE_COMPLETE>`
- * or `< HANDLE_COMPLETE >`. Used for display/persist cleanup so these never leak
- * into stored or shown replies. Detection (`hasCompletionMarker`) stays strict.
- */
-const COMPLETION_MARKER_LEAK_RE = /<{1,2}\s*HANDLE_COMPLETE\s*>{1,2}/gi;
-
-/** Remove the completion marker and its malformed variants from a reply. */
-export function stripCompletionMarkerLeak(text: string): string {
-  return text.replace(COMPLETION_MARKER_LEAK_RE, '');
+/** Strip the retired `<<HANDLE_COMPLETE>>` token (and its malformed variants). */
+export function stripLegacyCompletionToken(text: string): string {
+  return text.replace(LEGACY_COMPLETION_TOKEN_RE, '');
 }
 
 /** Max auto-retries when execution finishes without task_submit_review. */
@@ -218,24 +214,130 @@ export const SYSTEM_LONGTERM_MEMORY_CHARS = 5000;
  *  Prevents any single section from growing unbounded. */
 export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
 
-/** Hard cap on total knowledge.md file size (chars).
- *  Prevents the file from growing without bound even if the agent
- *  keeps creating new sections.  15 000 chars ≈ 5 sections × 3 000. */
-export const MEMORY_MD_TOTAL_MAX_CHARS = 15_000;
+/** Hard cap on the **CURATED** part of knowledge.md (chars) — the sections that
+ *  are actually injected into every turn's `## Your Knowledge` block.
+ *
+ *  ⚠️ This is NOT "the size of knowledge.md". knowledge.md holds two kinds of
+ *  content with different injection semantics, and they have **separate**
+ *  budgets (see MEMORY_OBSERVATIONS_MAX_CHARS):
+ *
+ *    • curated sections (`## <key>`) → INJECTED every turn. This is the budget
+ *      below; it is what "memory pressure" actually means for the prompt.
+ *    • `## _observations`           → NOT injected, searched on demand.
+ *
+ *  Treating them as one number is what produced the "permanent false alarm"
+ *  bug: a healthy, large observation buffer made the injected-footprint
+ *  percentage read >100% while the agent's prompt carried only ~2k chars.
+ *  15 000 chars ≈ 5 sections × 3 000. */
+export const MEMORY_MD_CURATED_MAX_CHARS = 15_000;
 
-/** Hard cap on the `## _observations` buffer size (chars).
- *  审计 P-10：观察缓冲区有自己的上限与整理路径；超限时最旧的观察被**无损归档**
- *  （写入 knowledge-archive.md），而不是让文件无限膨胀。 */
+/**
+ * H19 — HARD ceiling for the curated (injected) region. Writes that would exceed it
+ * are **refused** (fail-closed, nothing written); between `MEMORY_MD_CURATED_MAX_CHARS`
+ * and this ceiling, over-budget is **reported** (banner + log) but never silently
+ * rewritten.
+ *
+ * Why a *separate* hard ceiling instead of refusing at the soft budget: consolidating
+ * two sections (`memory_organize`) necessarily makes the region larger *mid-operation*
+ * (add the merged target, then delete the sources). Refusing at the soft budget would
+ * deadlock the one path that can actually shrink the region. 3× the soft budget leaves
+ * ample room for that, while still bounding what can ever be injected.
+ *
+ * Replaces the old `compressLongTermMemory()` behaviour, which silently archived the
+ * LARGEST section bodies into `knowledge-archive.md` and left pointer stubs. That was
+ * value-blind, invisible to the agent, inconsistent with the per-section policy
+ * ("content is never silently truncated"), and was the root of H13. Measured: it never
+ * legitimately fired for ANY agent (0 of 94 ever exceeded the soft budget).
+ */
+export const MEMORY_MD_CURATED_HARD_MAX_CHARS = 3 * MEMORY_MD_CURATED_MAX_CHARS;
+
+/** Usage percent of the **curated (injected)** budget at which the in-prompt
+ *  health banner fires (and at which the `memory_status` hint suggests
+ *  consolidation). Kept as ONE constant so the banner and the tool hint can
+ *  never drift apart — see docs/ARCHITECTURE.md ("Your Knowledge") +
+ *  docs/COGNITIVE-ARCHITECTURE.md §3. */
+export const MEMORY_HEALTH_WARN_PERCENT = 70;
+
+/** Usage percent of the **observation-buffer** budget at which the periodic memory
+ *  **dream cycle** (semantic prune / merge / promote, an LLM call) runs.
+ *
+ *  Deliberately the SAME constant as `MEMORY_HEALTH_WARN_PERCENT`: the pressure that
+ *  makes the in-prompt banner warn the agent is the SAME pressure that makes the
+ *  platform do its automatic part. That keeps the warning from ever being a dead end.
+ *
+ *  Why this exists at all (H14): the dream used to gate on `entries.length >= 50` — an
+ *  *entry count*, while the budget is measured in *characters*. A buffer of a few LARGE
+ *  entries (real entries carry `data-meta` JSON, ≈960 chars each) can sit at 99% of its
+ *  30 000-char budget with ~31 entries — the count never approaches 50, so the dream
+ *  silently never ran and the buffer was only ever trimmed *mechanically* (lossless
+ *  oldest-first archive), never *semantically* cleaned. One budget, two measures —
+ *  the same anti-pattern fixed in H1–H3/H12. Now the trigger and the banner share ONE
+ *  measure, so they can never drift apart. */
+export const MEMORY_DREAM_TRIGGER_PERCENT = MEMORY_HEALTH_WARN_PERCENT;
+
+/** Secondary, count-based pressure signal for the dream cycle: many tiny entries are
+ *  cheap in bytes but expensive to search. Not the primary gate (see above) — the byte
+ *  budget is. Kept so a buffer of hundreds of small fragments still gets consolidated. */
+export const MEMORY_DREAM_MIN_ENTRIES = 50;
+
+/** Usage percent at which the health banner escalates to the 🔴 critical marker. */
+export const MEMORY_HEALTH_CRITICAL_PERCENT = 90;
+
+/** Hard cap on the `## _observations` buffer size (chars) — a budget of its OWN,
+ *  deliberately independent of MEMORY_MD_CURATED_MAX_CHARS.
+ *
+ *  Why independent: the observation buffer is the agent's raw, search-on-demand
+ *  scratch log, not prompt payload, so it is allowed to be larger than the
+ *  injected budget — summing the two would make the injected cap unsatisfiable.
+ *
+ *  ADVISORY line (docs §24, R2+R4): exceeding it is **reported, never acted on**.
+ *  The platform does NOT move, archive or delete observations on its own — the
+ *  buffer is the agent's own scratch log, and choosing what to drop is the agent's
+ *  decision (tools: `memory_organize`, `memory_update mode:"delete"`).
+ *
+ *  History: this used to be a hard cap whose enforcement silently evicted the OLDEST
+ *  observations into an archive file on BOTH the write path and the load path. That
+ *  made "how much knowledge stays live" depend on the storage format (H25: the same
+ *  34 entries measured 25 716 chars as markdown but 35 182 as pretty JSON, so the
+ *  format change alone evicted healthy data). Silent, format-dependent eviction is
+ *  exactly the class of behaviour this redesign removes. */
 export const MEMORY_OBSERVATIONS_MAX_CHARS = 30_000;
+
+/** Hard ceiling on the observation log — the ONLY point at which a write is refused.
+ *
+ *  Deliberately pathological (≈7× the advisory line): it exists so a runaway loop
+ *  cannot grow the file without bound, not to police an agent's habits. Hitting it
+ *  blocks NEW appends (with an actionable error) and touches nothing that is already
+ *  stored — a safe failure mode, unlike silently discarding the agent's history. */
+export const MEMORY_OBSERVATIONS_HARD_MAX_CHARS = 200_000;
+
+/** Hard cap on the **session-fragment** store (`session-fragments.json`) — the
+ *  platform-managed payload of session compaction (paged-out raw history, kept so
+ *  `session_retrieve` can recover it verbatim: "compaction == pagination, not
+ *  deletion").
+ *
+ *  Why it is its OWN file and its OWN budget (H16): a fragment is a **platform**
+ *  artifact (pagination), not **agent** knowledge. Historically fragments were mixed
+ *  into `## _observations`, which meant (a) they consumed the agent's observation
+ *  budget even though the agent did not author them and cannot consolidate them, and
+ *  (b) the semantic dream cycle was handed raw transcripts to "dedupe/promote". The
+ *  two are now structurally separate. Larger than the observation buffer because this
+ *  is a lossless raw-history safety net, not a prompt payload. Over-cap trims the
+ *  OLDEST fragments losslessly into `session-fragments-archive.json` (still searchable). */
+export const MEMORY_FRAGMENTS_MAX_CHARS = 60_000;
 
 /** Max characters for a curated knowledge.md SECTION KEY.
  *  Keys are headings of a durable knowledge base, not free text — see
  *  `normalizeSectionKey` in packages/core/src/memory/store.ts. */
 export const KNOWLEDGE_SECTION_KEY_MAX_CHARS = 64;
 
-/** When total convergence has to shrink a curated section, it is reduced to a
- *  stub of at most this many chars (the heading is always preserved, so the topic
- *  stays discoverable via the knowledge index line and `memory_search`). */
+/** Legacy stub width — the max chars a curated section body was reduced to when the old
+ *  load-time convergence shrank it (the heading was always preserved, so the topic stayed
+ *  discoverable via the knowledge index line and `memory_search`).
+ *
+ *  Retained for reference/back-compat only: since H19 nothing produces these stubs any more
+ *  (curated over-budget is REPORTED, and the store only refuses at the hard ceiling). The
+ *  H13/H20 residue repair still heals stubs written by older builds. */
 export const KNOWLEDGE_STUB_MAX_CHARS = 400;
 
 /** Hard cap on a single observation/top-level section body (chars).

@@ -4,6 +4,7 @@ import { type PathAccessPolicy, validateManifest } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
 import { assertWriteAllowed } from '../write-guard.js';
+import { replaceLiteral } from './literal-replace.js';
 
 const MANIFEST_FILENAMES = new Set(['agent.json', 'team.json', 'skill.json']);
 
@@ -248,7 +249,9 @@ export function createFileEditTool(security?: SecurityGuard, workspacePath?: str
           });
         }
 
-        const updated = content.replace(oldStr, newStr);
+        // Replacer must be a FUNCTION so newStr is inserted verbatim.
+        // See tools/literal-replace.ts for the full failure mode.
+        const updated = replaceLiteral(content, oldStr, newStr);
         writeFileSync(path, updated);
 
         return JSON.stringify({ status: 'success', path, replacements: 1 });

@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { MemoryStore, normalizeSectionKey } from '../src/memory/store.js';
-import { MEMORY_MD_TOTAL_MAX_CHARS, KNOWLEDGE_SECTION_KEY_MAX_CHARS } from '@markus/shared';
+import { MEMORY_MD_CURATED_MAX_CHARS, KNOWLEDGE_SECTION_KEY_MAX_CHARS } from '@markus/shared';
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'knowledge-lifecycle-'));
@@ -55,7 +55,7 @@ describe('knowledge.md — section key hygiene (K-2)', () => {
   });
 });
 
-describe('knowledge.md — total-size convergence (K-1)', () => {
+describe('knowledge.md — curated budget: REPORT, never silently rewrite (H19)', () => {
   let dir: string;
   beforeEach(() => { dir = makeTempDir(); });
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
@@ -64,37 +64,23 @@ describe('knowledge.md — total-size convergence (K-1)', () => {
     return path.join(dir, 'knowledge.md');
   }
 
-  it('shrinks an oversized file to the budget instead of refusing forever', () => {
-    const store = new MemoryStore(dir);
-    // Build an over-budget file directly (simulating a legacy/oversized store —
-    // the point is that compress can RECOVER from it, which the old code could not).
-    const sections: string[] = [];
-    for (let i = 0; i < 12; i++) {
-      sections.push(`## section-${i}\n${'A'.repeat(2_000)}`);
-    }
-    fs.writeFileSync(knowledgeFile(), sections.join('\n\n'));
-    const before = fs.readFileSync(knowledgeFile(), 'utf-8').length;
-    expect(before).toBeGreaterThan(MEMORY_MD_TOTAL_MAX_CHARS);
-
-    const result = store.compressLongTermMemory();
-    const after = fs.readFileSync(knowledgeFile(), 'utf-8').length;
-
-    expect(result.charsBefore).toBe(before);
-    expect(after).toBeLessThanOrEqual(MEMORY_MD_TOTAL_MAX_CHARS);
-    expect(result.charsAfter).toBe(after);
-    expect(result.truncatedChunks).toBeGreaterThan(0);
-  });
-
-  it('preserves every section HEADING while shrinking bodies (topic stays discoverable)', () => {
+  it('an over-budget curated file is REPORTED, not rewritten — every body survives intact', () => {
+    // Simulate a legacy/oversized store. The OLD code silently archived the largest
+    // section bodies and left pointer stubs; H19 removed that path entirely.
     const store = new MemoryStore(dir);
     const sections: string[] = [];
-    for (let i = 0; i < 10; i++) sections.push(`## keep-heading-${i}\n${'B'.repeat(2_500)}`);
+    for (let i = 0; i < 12; i++) sections.push(`## section-${i}\n${'A'.repeat(2_000)}`);
     fs.writeFileSync(knowledgeFile(), sections.join('\n\n'));
 
-    store.compressLongTermMemory();
-    const content = fs.readFileSync(knowledgeFile(), 'utf-8');
+    const before = fs.readFileSync(knowledgeFile(), 'utf-8');
+    expect(before.length).toBeGreaterThan(MEMORY_MD_CURATED_MAX_CHARS);
 
-    for (let i = 0; i < 10; i++) expect(content).toContain(`## keep-heading-${i}`);
+    store.enforceMemoryBudgets();
+
+    const after = fs.readFileSync(knowledgeFile(), 'utf-8');
+    expect(after).toBe(before);                // byte-for-byte: no silent rewrite
+    expect(after).not.toContain('_[archived'); // no pointer stubs
+    for (let i = 0; i < 12; i++) expect(after).toContain(`## section-${i}`);
   });
 
   it('never touches ## _observations (it has its own cap and its own curation path)', () => {
@@ -106,20 +92,19 @@ describe('knowledge.md — total-size convergence (K-1)', () => {
       `## big-section\n${'C'.repeat(20_000)}\n\n## _observations\n${obs}`,
     );
 
-    store.compressLongTermMemory();
+    store.enforceMemoryBudgets();
     const content = fs.readFileSync(knowledgeFile(), 'utf-8');
 
     expect(content).toContain('## _observations');
-    expect(content).toContain('observation number 19');
-    expect(content).toContain('## big-section'); // heading survives
+    expect(content).toContain('observation number 19'); // newest observation survives
+    expect(content).toContain('## big-section');        // curated heading survives too
   });
 
   it('is a no-op on a file already within budget', () => {
     const store = new MemoryStore(dir);
     fs.writeFileSync(knowledgeFile(), '## small\nshort body');
     const before = fs.readFileSync(knowledgeFile(), 'utf-8');
-    const result = store.compressLongTermMemory();
+    store.enforceMemoryBudgets();
     expect(fs.readFileSync(knowledgeFile(), 'utf-8')).toBe(before);
-    expect(result.truncatedChunks).toBe(0);
   });
 });

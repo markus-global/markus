@@ -218,9 +218,8 @@ describe('AgentManager integration (real Agent)', () => {
     await manager.stopAgent(agent.id);
   });
 
-  it('createAgent with teamId and cognitive config', async () => {
+  it('createAgent with teamId', async () => {
     const manager = createManager();
-    manager.cognitiveConfig = { enabled: true };
     manager.maxToolIterations = 25;
 
     const agent = await manager.createAgent({

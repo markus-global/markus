@@ -35,15 +35,15 @@ describe('MemoryStore — migration-read layer (P-08)', () => {
 
     // 构造即触发迁移读取层 → 规范重写。
     const store = new MemoryStore(tmp);
-    const after = fs.readFileSync(path.join(tmp, 'knowledge.md'), 'utf8');
-
-    // 落盘后只保留规范格式，不再有裸 `, tags:` 行。
-    expect(after).toMatch(/<!-- type: insight, data-meta: \{/);
+    // H24 — 观察现在持久化为 JSON 记录；旧 `, tags:` 行被归一为 metadata.tags 数组。
+    const after = fs.readFileSync(path.join(tmp, 'observations.json'), 'utf8');
+    expect(after).toContain('legacy observation body');
     expect(after).not.toMatch(/<!-- type: \w+, tags: /);
-    // 标签无损跨格式保留（读旧 → 写新）。
-    expect(after).toContain('alpha');
-    // 观察内容仍可读取。
-    expect(store.getObservations().map(e => e.content)).toContain('legacy observation body');
+    const obs = store.getObservations().find(e => e.content === 'legacy observation body');
+    expect(obs).toBeTruthy();
+    expect(obs!.metadata?.tags).toEqual(['alpha', 'beta']);
+    // knowledge.md 只含 curated：观察已不在其中（标签无损跨格式保留）。
+    expect(fs.readFileSync(path.join(tmp, 'knowledge.md'), 'utf8')).not.toContain('legacy observation body');
   });
 
   it('读入已退场的 state.md 为观察，源文件改名 .migrated（不销毁）', () => {

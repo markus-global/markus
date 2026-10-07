@@ -1,5 +1,38 @@
 # Release Log
 
+## v0.11.1
+
+**正式版（patch）** — 相对上一正式版 `v0.11.0`，本版为**修复合集**，主题是 **Team Chat 流式保活收尾**、**Agent「沉默」契约重构** 与 **工具预算淘汰策略修正**。含 5 个 PR（#341 / #343 / #344 / #346 / #347），无新增对外功能、无破坏性变更。
+
+### Bug Fixes
+
+- **同一 Agent 多 tab：一个 tab 结束后切到仍在输出的 tab，动态边框与「输出中」闪一下即消失** — 现象：两个 session tab 同时输出时各自正常、切换也正常；但其中一个 tab 结束后切到另一个仍在输出的 tab，会先正常一瞬，随后边框与活动态消失（像已结束），而后端其实仍在生成。根因是**同一事实两个来源，且清错了键**：① 回合终态调用 `clearStreamSession(sendKey, sessionId ?? undefined)`，而该 key 是 **Agent 级**（同一 agent 的多个 tab 共用），传 `undefined` 即**整键释放**，会把兄弟 tab 的存活标记一并抹掉 —— 当回合未解析出 `sessionId`（新建 tab，或消息被服务端 MERGED 进在飞 run、无 `session_start`）时正好走这条分支；② 幽灵对账 effect **只信 `chatStore`**，而它恰恰是可以失真的一方 —— 被抹成空闲后，对账把活气泡判为幽灵并落地边框、停掉 running 工具段，而缓冲管理器的相位仍是 `streaming`（`beginStream` 早于 `session_start` 登记），**它才是权威却没有否决权**。修复（权威归一）：新增纯函数 `shouldSweepGhostStreaming()`，纳入管理器相位**一票否决**（`streaming` 时不清理；真幽灵不会被滞留 —— 终态 `endStream` 会把相位落成 `ready`，届时照常清理）；未解析出 sessionId 的回合改传 `NEW_CHAT` 占位标记，绝不整键释放兄弟 tab；并新增 `agentBusy(k) = hasLiveStream(k) || phase === 'streaming'`，同时让 `endStream` 也重新对账 busy，避免侧栏永久「工作中」（旧 bug 复发）。
+- **切走 session tab 再切回，正在输出的气泡活动态丢失** — 根因：管理器与 React 侧对「这条流属于当前会话吗」存在**两套互相矛盾的判据**——管理器只认 `set.has(sessionId)`，而 React 侧还认 `NEW_CHAT` 占位 id（流可能早于服务端分配真实 session id 就开始）；于是切回时管理器把在飞气泡当作「别的会话留下的陈旧行」丢弃，并在本轮 DB 加载时被整条替换。修复：新增 `placeholderTurnBelongsTo()` 与 React 侧对齐；`otherSessionStreaming` 由负向改为**正向判定**（须存在「非本会话、非占位」的标记，才算他人拥有这条流）。
+- **同 Agent 多 tab 并发：后台 B 的加载冲掉正在看的 A** — 后台会话加载满足 `loadingSession === sessionId` 时被当作「当前视图」，其内容写进共享 display buffer，导致正在看的会话整个消失。修复：新增 `pinnedToOtherSession` 守卫 —— 已明确 pin 到别的会话时，永远不许写 display。
+- **同 Agent 多 tab：一个 tab 结束会把 Agent 整体标成「空闲」** — `phase` 是 **Agent 级**而流是**单会话**的：A 结束置 `ready`，即使 B 仍在流，也会使 B 的存活判据全部失效，气泡在下次恢复/合并时被当陈旧行丢掉。修复：`getPhase` 改为**派生** —— 只要该 Agent 还有任一 live 流就返回 `streaming`；`clearStreamSession` / `abortStream` 的 busy 标记改按剩余存活流派生。
+- **Conservator 把「正在执行长工具」误判为卡死（反复唤醒）** — 现象：健康且正在跑长工具的 agent 被反复「恢复」，短时间内多次触发 recovery heartbeat（白烧 LLM run + 打断真实工作）。根因：**同一个存活判据被写了两遍** —— ① `AgentDirtyInput` 没有 `lastProgressAt` 字段（调用方早已传入，只是没接进该判定）；② 动作阶梯的兜底分支独立重算同一判据且不看进展。**只修 ① 无效**（`dirty=false` 时不会短路返回，会落到 ② 照样唤醒）—— 由回归测试当场抓出。修复：`AgentDirtyInput` 补 `lastProgressAt`、`evaluateDirtyState` 新增「进展新鲜 ⇒ 非脏」、动作阶梯纳入 `progressFresh ⇒ observe`，并新增 `progressGraceMs`（默认 10 分钟，依据单个不产生中间进展的工具调用上限 `SHELL_TIMEOUT_MAX_MS = 5 分钟` 取 2× 上界）。
+- **Agent 间「元回路」：双方反复发送「我决定不回复」** — 现象：两个 Agent 各发数条零信息量消息，内容均为「该消息为重复回显，无待办，不重复回复」，而**文本自身已声明不再回复却照样发出**，形成可自持放大、烧钱的回路（每轮都是一次完整 LLM run）。根因：平台把「沉默」实现成一个**文本口令**（`[NO_RESPONSE]` / `[NO_REPLY_NEEDED]`），再由多层正则兜底模型不吐口令时写下的内容；本次模型写了一段「解释自己为什么不回复」的散文，含口令字样但无方括号、也非致谢语气，多层兜底全漏 → 被当正常消息投递 → 对端视为新输入 → 回路。**要害**：要求模型「输出一个 token 来表示不说话」本身就逼它产生文本；而它一旦不吐 token，写下的任何东西都会被投递 —— **沉默没法用说话来表达**。
+- **主动沉默被下游误判为「异常空回复」而重试** — 采用 `end_turn` 契约后，`agent.sendMessage` 返回空回复，api-server 侧正确抑制（什么都不发），但 attention 侧 `detectAbnormalCompletion` 对 `reply === ''` 直接判为 `empty reply from LLM-invoking item` 并把消息 requeue 重试（白烧一次 LLM run，且 mailbox item 未被标 completed）。根因同前：**「主动沉默」与「出错」共用同一个判据**，无法区分。修复：新增哨兵 `END_TURN_REPLY_SENTINEL`（与 `COMPLETION_MARKER` 同源），`agent.ts` 用**单调计数器** `endTurnCount` 在 delegate 包装层前后快照，本回合调过 `end_turn` 则返回哨兵；`attention.detectAbnormalCompletion` 把哨兵视作合法终态（与 `[preempted]` / `[cancelled]` 同级）。哨兵只流向 attention，api-server 拿到的仍是原始空串，**对端永远看不到哨兵**。
+- **`install.sh` 承诺一个已不存在的安装器** — 不支持的 OS 分支仍提示 "Markus supports macOS, Linux, and Windows (PowerShell installer)"，与该脚本下方「只有 Linux 有独立二进制」的说明自相矛盾。该悬空引用是 v0.8.5「分发策略重构」（`install.ps1` 被刻意移除）时漏掉的用户提示文案。修复：改为「macOS/Linux 走本安装器；Windows 装 Desktop App (.exe)；CLI 全平台统一用 npm 包 `@markus-global/cli`」。**教训**：删除产物时须全仓库 grep 残留引用，包括脚本内的用户提示字符串。
+
+### Refactor / Features
+
+- **`end_turn` 工具化「沉默」契约（替代文本口令）** — 把「主动结束对话 / 无需回复」从**文本口令**改为**类型化工具调用**。理由：文本口令可被模型改写、无法与「出错」区分、也无法统计归因；而 `!reply.trim()` 同时覆盖「主动静默」和「模型挂了」—— 既统计不出抑制机制是否生效，也判断不了沉默是「判断」还是「故障」；工具调用则把这件事变成**可审计的事件**。落地：新增终止型工具 `end_turn`（无必填参数，可选 `reason` 仅记本地审计、**永不发给对端**）；`shouldContinueToolLoop` 是 5 个工具循环入口的**唯一判定源**，一处改动即让 chat / chat_stream / task_execution / respond_in_session / continuation **五种模式同时获得终止能力**；回复装配处强制返回空串，下游既有「空回复即静默」分支一行未改。同时把 `[NO_RESPONSE]` / `[NO_REPLY_NEEDED]` / 正则兜底**三套并存机制收敛为一套** —— 上下文提示、api-server 提示注入、task-service 全部改为 `end_turn`；并修掉一处正确性 bug：`comment_response` 的「强制重试」守卫原先只认 `[NO_REPLY_NEEDED]`，改认 `end_turn` 后若不加 `!this.endTurnRequested`，agent 调了 `end_turn` 反而会被系统判定「没评论」而反复重试。
+- **工具 schema 预算淘汰：由「按体积」改为「按层级」** — 根因：淘汰按 schema **体积**挑受害者，于是「某个工具能不能活下来」取决于它的 JSON 有多啰嗦，而非 agent 是否需要它；且「必须保留」是一份**手工维护名单**，失效方式就是「某天有人忘了加」—— 已发生过两次（含 `end_turn` 自身）。修复：新增 `toolEvictionTier()`，**层级为主键、体积仅作同层 tiebreak**（0 = HITL / 终止信号，永不裁；1 = 核心工作工具；2 = 普通内置；3 = 情境型 + skill / MCP，最先裁），并把 `kb_*`（记忆系统读路径）提入核心保留。
+- **不可达工具告警（should-never-happen 显式化）** — 淘汰后计算 `unreachable`（既无注册处理器、又不可 `discover_tools` 激活）并 `log.warn`。此前这种情况静默埋在 info 级「已裁剪」日志里（单个 pack 单日可达 95 条）。同时修掉两个**活着**的死锁：`end_turn`（修复前会被预算驱逐，导致「提示词要求调用但工具不存在」→ 模型退化成写散文 → 回路复活）与 `open_right_panel` / `collapse_right_panel`（不可见且 `discover_tools` 找不回，右侧面板功能半瘫）。
+- **Team Chat L1 私聊列表按智能体顺序排序** — 私聊区块此前无任何排序，直接呈现 API 原始顺序。现按会话两位参与者在 L1 中的位置排序（先取靠前者、再取靠后者）。**为何不按发起者排**：`A↔B` 与 `B→A` 是同一个会话（`channelKey` 已按 id 排序归一化），若按发起者排，同一会话会随「这次是 A 发还是 B 发」在列表中漂移；只有按两个端点中在 L1 里靠前的那个定位，「秘书与其他 agent 的私聊」才会稳定排在最前。键盘 j/k 导航顺序同步修正，避免视觉顺序与键盘顺序不一致。
+
+### Tests
+
+- 新增 `ghostSweep.test.ts`（管理器相位否决 / 相位落 `ready` 后仍须清理真幽灵的反向守卫）、`ConversationBufferManager.concurrency.test.ts`（占位释放不波及兄弟 tab，与整键释放对比留证）、`ConversationBufferManager.tabswitch.test.ts`；`tool-selector` 新增层级映射与「同等体积下情境工具必须先于核心工具被裁、保护工具预算 = 1 也须存活」用例，以及**机器校验的守卫**：扫描 `pushUnique` 调用点，断言每个注入工具必须「受保护 **或** 可 `discover_tools` 激活」，把手工名单的「MUST stay in sync」从口头约定变成测试强制；`agent-loop` / `attention` / `context-scenario-matrix` / `agent-conservator` 均补回归（含端到端复现线上故障，以及「进展陈旧 / 字段缺失 ⇒ 仍须判污」的反向守卫，防修过头）。
+- 验证：`core` 3052 passed / 10 skipped（215 文件）、`org-manager` 1189 passed（55 文件）、`web-ui` 672 passed（41 文件）；`tsc -b` 全量 + `tsc --noEmit`（web-ui）+ eslint 均 0 error。
+
+### Stats
+
+- 自 `v0.11.0`：5 个 PR（#341 / #343 / #344 / #346 / #347），25 files changed, 1079 insertions(+), 77 deletions(-)
+
+---
+
 ## v0.11.0
 
 **正式版** — 由 `v0.11.0-rc.1` 转正。相对上一正式版 `v0.10.1`，本版主题为 **Agent 自愈 / 自我管理机制重构** 与 **Team Chat 交互可靠性**：包含一次架构级重构（存活仲裁、记忆与认知机制）、多项 P0 稳定性修复，以及 Team Chat 流式交互与气泡体验的系列修复。完整背景见下方 `v0.11.0-rc.0` / `v0.11.0-rc.1` 条目。

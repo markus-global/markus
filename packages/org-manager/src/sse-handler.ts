@@ -13,7 +13,7 @@
 import type { ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import type { Agent, TurnSessionHint } from '@markus/core';
-import { createLogger, stripCompletionMarkerLeak, SSE_DISCONNECT_FORCE_STOP_MS, type LLMStreamEvent } from '@markus/shared';
+import { createLogger, stripLegacyCompletionToken, SSE_DISCONNECT_FORCE_STOP_MS, type LLMStreamEvent } from '@markus/shared';
 import { SSEBuffer } from './sse-buffer.js';
 import type { ActiveStreamRegistry, ActiveStreamSession } from './active-stream-registry.js';
 
@@ -278,7 +278,7 @@ export class SSEHandler {
         persistReply = segText || '';
       }
       // Strip completion marker (and malformed variants) from persisted/displayed reply
-      persistReply = stripCompletionMarkerLeak(persistReply).trim() || persistReply;
+      persistReply = stripLegacyCompletionToken(persistReply).trim() || persistReply;
 
       // Empty assistant turn (cancel / failed start) — still a terminal outcome the
       // client must see as stopped/error so Retry is available after refresh.

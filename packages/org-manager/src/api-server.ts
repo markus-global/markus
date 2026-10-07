@@ -27,6 +27,7 @@ import {
   type HandbookProject,
   discoverSkillsInDir,
   WELL_KNOWN_SKILL_DIRS,
+  getAgentSkillWarnings,
   type AgentManager,
   ModelCatalogService,
   estimateQualityScore,
@@ -4438,6 +4439,23 @@ export class APIServer {
         );
         return { ...a, runtime: { ...runtime, stall: verdict.stall, dirty: verdict.dirty } };
       });
+      // H9: surface "assigned skill is not installed" per agent. The list payload carries
+      // ONLY the non-empty `missing` array (never the `available` catalog) so a large org
+      // does not ship dozens of full skill catalogs on every poll. Full detail (missing +
+      // available) is on GET /api/agents/:id. Warnings are stamped on the Agent instance
+      // at create/restore time (see core skill-warnings.ts); listAgents() returns plain
+      // summaries, so we look up the live instance here.
+      const skillAgentManager = this.orgService.getAgentManager();
+      agents = agents.map(a => {
+        try {
+          const inst = skillAgentManager.getAgent(a.id as string);
+          const w = getAgentSkillWarnings(inst);
+          if (w && w.missing.length > 0) {
+            return { ...a, skillWarnings: { missing: w.missing } };
+          }
+        } catch { /* agent unloaded between list and lookup — skip silently */ }
+        return a;
+      });
       this.json(res, 200, { agents });
       return;
     }
@@ -5734,14 +5752,19 @@ export class APIServer {
         const recentDailyLogs = mem.getRecentDailyLogs(7);
         const longTermMemory = mem.getLongTermMemory();
         // 审计 P-12/§9.1：暴露记忆健康可观测字段（前端 MemoryTab 可视化）。
+        // 现在是**两个独立预算**：注入段（curated）与观察缓冲（不注入）。前端两者都要能看到，
+        // 否则「观察缓冲很大」会被误读成「注入知识超预算」。
         const health = (() => {
           try {
-            const h = (mem as unknown as { getMemoryHealth?: () => { percent: number; totalChars: number; cap: number; observations: number; curatedSections: number; archiveChars: number; lastConsolidatedAt: string | null } }).getMemoryHealth?.();
+            const h = (mem as unknown as { getMemoryHealth?: () => { percent: number; curatedChars: number; curatedCap: number; observationPercent: number; observationChars: number; observationCap: number; observations: number; curatedSections: number; archiveChars: number; lastConsolidatedAt: string | null } }).getMemoryHealth?.();
             return h
               ? {
                   usedPercent: h.percent,
-                  budgetChars: h.totalChars,
-                  budgetLimit: h.cap,
+                  budgetChars: h.curatedChars,
+                  budgetLimit: h.curatedCap,
+                  observationPercent: h.observationPercent,
+                  observationChars: h.observationChars,
+                  observationLimit: h.observationCap,
                   observationCount: h.observations,
                   curatedCount: h.curatedSections,
                   archivedChars: h.archiveChars,
@@ -6414,6 +6437,10 @@ EXPLANATION_END`;
           activeTaskCount: state.activeTaskCount,
           activeTaskIds: state.activeTaskIds,
           skills: agent.getActiveSkillNames(),
+          // H9: assigned skills that are not installed in the registry. Stamped on the agent
+          // instance at create/restore; full shape here (missing + available catalog, capped).
+          // Always present so the UI has a stable field to render the ⚠️ degradation banner.
+          skillWarnings: getAgentSkillWarnings(agent) ?? { missing: [], available: [] },
           availableSkills: this.skillRegistry?.list().map(s => ({
             name: s.name,
             description: s.description,
@@ -8572,7 +8599,6 @@ EXPLANATION_END`;
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
-        cognitive: am.cognitiveConfig ?? { enabled: false },
         concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
       });
       return;
@@ -8586,16 +8612,6 @@ EXPLANATION_END`;
       let changed = false;
       if (typeof body['maxToolIterations'] === 'number') {
         am.maxToolIterations = body['maxToolIterations'];
-        changed = true;
-      }
-      if (body['cognitive'] && typeof body['cognitive'] === 'object') {
-        const cc = body['cognitive'] as Record<string, unknown>;
-        am.cognitiveConfig = {
-          enabled: cc['enabled'] === true,
-          maxDepth: typeof cc['maxDepth'] === 'number' ? cc['maxDepth'] : undefined,
-          appraisalModel: typeof cc['appraisalModel'] === 'string' ? cc['appraisalModel'] : undefined,
-          timeoutMs: typeof cc['timeoutMs'] === 'number' ? cc['timeoutMs'] : undefined,
-        };
         changed = true;
       }
       if (body['concurrent'] && typeof body['concurrent'] === 'object') {
@@ -8613,7 +8629,6 @@ EXPLANATION_END`;
           saveConfig({
             agent: {
               maxToolIterations: am.maxToolIterations,
-              cognitive: am.cognitiveConfig,
               concurrent: am.concurrentConfig,
             },
           } as any, this.markusConfigPath);
@@ -8635,7 +8650,6 @@ EXPLANATION_END`;
       }
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
-        cognitive: am.cognitiveConfig ?? { enabled: false },
         concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
       });
       return;

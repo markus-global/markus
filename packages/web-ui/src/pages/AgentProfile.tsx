@@ -1211,6 +1211,7 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
   const [detailLoading, setDetailLoading] = useState(false);
 
   const allSkills = agent.availableSkills ?? [];
+  const missingSkills = agent.skillWarnings?.missing ?? [];
   const byCategory = new Map<string, typeof allSkills>();
   for (const s of allSkills) {
     const cat = s.category || 'custom';
@@ -1349,6 +1350,23 @@ function SkillsTab({ agent }: { agent: AgentDetail }) {
 
   return (
     <div className="space-y-4">
+      {missingSkills.length > 0 && (
+        <div
+          role="alert"
+          className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-600 space-y-1.5"
+        >
+          <div className="font-semibold flex items-center gap-1.5">
+            <span aria-hidden>⚠️</span>
+            {t('agent:profilePage.skillsTab.missingSkillsTitle', { count: missingSkills.length })}
+          </div>
+          <ul className="list-disc list-inside space-y-0.5">
+            {missingSkills.map(name => (
+              <li key={name}><span className="font-medium">{name}</span></li>
+            ))}
+          </ul>
+          <div className="text-amber-600/90">{t('agent:profilePage.skillsTab.missingSkillsHint')}</div>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div className="text-xs text-fg-tertiary">{t('agent:profilePage.skillsTab.installedCount', { count: allSkills.length })}</div>
       </div>

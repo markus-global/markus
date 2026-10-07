@@ -68,16 +68,6 @@ export interface MarkusConfig {
   agent?: {
     /** Safety cap on tool iterations per agent turn (default: 200) */
     maxToolIterations?: number;
-    /** Cognitive Preparation Pipeline settings (default: disabled) */
-    cognitive?: {
-      enabled?: boolean;
-      /** Cap depth level: 0=D0, 1=D1, 2=D2, 3=D3 (default: 1 = appraisal only) */
-      maxDepth?: number;
-      /** Model override for appraisal/reflection calls */
-      appraisalModel?: string;
-      /** Timeout in ms for CPP LLM calls (default: 15000) */
-      timeoutMs?: number;
-    };
   };
   browser?: {
     /** Backend that drives agent browser automation: 'embedded' = built-in Electron WebContentsView (default), 'system-chrome' = Chrome extension bridge. */

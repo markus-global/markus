@@ -381,10 +381,12 @@ path. Concretely (see §4.9 defect registry):
 
 - Tool-path writes (`memory_save` / `memory_update` / `notebook_upsert`) take the
   `agent-memory:<resource>` lock (`knowledge` / `notebook`), so they mutually exclude.
-- The dream cycle (`consolidateMemory` → `dreamConsolidateMemory(entries)` →
-  `pruneMemoryMd()` → `compressLongTermMemory()`) runs from a timer, **outside any tool
+- The dream cycle (`consolidateMemory` → `dreamConsolidateMemory(entries)`, whose result
+  lands through the store's write APIs) runs from a timer, **outside any tool
   call**, and therefore **outside any lock**. A concurrent `memory_update` could land
-  between the dream's read and write and lose one of the two updates.
+  between the dream's read and write and lose one of the two updates. (The old
+  `pruneMemoryMd()` → `compressLongTermMemory()` tail of this pipeline was removed —
+  `consolidateMemory()` now runs only the dream cycle.)
 
 Fixed by wrapping the whole dream-critical section in
 `resourceLocks.withLock(memoryResourceLock('knowledge'), …)`, so the dream cycle and
@@ -414,7 +416,7 @@ to consult before adding a writer.
 | Shared state | Scope | Owner / write path | Protection |
 |---|---|---|---|
 | Notebook map + `NOTEBOOK.md` | per-agent | `Agent.writeNotebookEntry` (single write path), persist debounce w/ 10 s maxWait | `agent-memory:notebook` lock; normalize-on-load + on-write (never at render time) |
-| `knowledge.md` (curated + observations) | per-agent | `MemoryStore` (`addLongTermMemory`, `convergeLongTermToCap`, `removeLongTermSection`) | `agent-memory:knowledge` lock; atomic write |
+| `knowledge.md` (curated + observations) | per-agent | `MemoryStore` (`addLongTermMemory`, `enforceMemoryBudgets`, `removeLongTermSection`) | `agent-memory:knowledge` lock; atomic write |
 | Handoff log | per-agent | `ConcurrentHandoffLog` | debounced flush; bounded ring (64) |
 | Entity locks | per-agent | `mailbox.entityKeyOf` | in-process map — **not** cross-process |
 | `ResourceLockRegistry` | per-agent | `withLocks` | in-process map — **not** cross-process |

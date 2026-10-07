@@ -18,7 +18,6 @@ import {
 import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 import {
-  COMPLETION_MARKER,
   type MailboxItem,
   type DeliberationResult,
 } from '@markus/shared';
@@ -33,7 +32,7 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
   const delegate: AttentionDelegate = {
     processMailboxItem: vi.fn().mockImplementation(async (item: MailboxItem) => {
       processedItems.push(item);
-      return `processed ${item.id} ${COMPLETION_MARKER}`;
+      return `processed ${item.id}`;
     }),
     onDecisionMade: vi.fn(),
     onFocusChanged: vi.fn(),
@@ -300,7 +299,7 @@ describe('Batch Deliberation Processing', () => {
     const { controller, mailbox } = makeController({
       processMailboxItem: vi.fn().mockImplementation(async (item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string) => {
         processedBatches.push({ item, batch: batchItems, ctx: batchContext });
-        return `processed ${COMPLETION_MARKER}`;
+        return `processed`;
       }),
       performDeliberation: vi.fn().mockImplementation(async (_head: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult> => {
         return {

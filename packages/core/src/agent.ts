@@ -23,17 +23,11 @@ import {
   type AgentMindState,
   type TriageResult,
   type DeliberationResult,
-  type CognitiveConfig,
-  CognitiveDepth,
-  type PreparedCognitiveContext,
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
   HEARTBEAT_DAILY_LOG_CHARS,
-  COMPLETION_MARKER_INSTRUCTION,
-  COMPLETION_MARKER,
-  hasCompletionMarker,
   END_TURN_REPLY_SENTINEL,
-  stripCompletionMarkerLeak,
+  stripLegacyCompletionToken,
   TRIAGE_CONTEXT_MESSAGES_MAX,
   TRIAGE_CONTEXT_MSG_CHARS,
   DELIBERATION_ALLOWED_TOOLS,
@@ -57,6 +51,7 @@ import {
   NOTEBOOK_PERSIST_MAX_WAIT_MS,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
+import { shouldRunDreamCycle } from './memory/dream-trigger.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
@@ -151,9 +146,11 @@ function normalizeFsLockKey(rawPath: string): string {
 }
 
 /**
- * Strip raw XML tool-call markup from LLM replies.  The completion marker
- * is NOT removed here — it must survive until `detectAbnormalCompletion`
- * inspects the reply; stripping happens later in `stripCompletionMarker`.
+ * Strip raw XML tool-call markup from LLM replies, then trim.
+ *
+ * The retired text marker is no longer special-cased here: "did this turn finish?"
+ * is now answered by the typed `end_turn` signal, so nothing has to survive
+ * sanitising in order to be detected later.
  */
 const RAW_TOOL_XML_RE =
   /<[^<>]*?tool_calls>[\s\S]*?<\/[^<>]*?tool_calls>|(?:minimax:tool_call\s*)?<[^<>]*?invoke\s+name="[^"]*">[\s\S]*?<\/[^<>]*?invoke>\s*(?:<\/minimax:tool_call>)?/gi;
@@ -164,37 +161,33 @@ function sanitizeLLMReply(reply: string): string {
 }
 
 /**
- * Remove the completion marker from a reply so it is never stored in
- * memory or shown to users.  Called after abnormal-completion detection.
+ * Normalise a reply at every persist/display boundary.
+ *
+ * The name is historical: it used to strip the `<<HANDLE_COMPLETE>>` text marker
+ * before a reply was stored or shown. That protocol is retired
+ * (docs/PLATFORM-HARDENING-2026-10.md §6); what remains is the legacy-token scrub
+ * (see `stripLegacyCompletionToken`) plus a trim.
  */
 function stripCompletionMarker(reply: string): string {
-  return stripCompletionMarkerLeak(reply).trim();
+  return stripLegacyCompletionToken(reply).trim();
 }
 
 /**
- * Create a streaming delta emitter that buffers the tail to strip
- * the completion marker from real-time output. The marker may arrive
- * split across multiple chunks, so we hold back enough characters.
+ * Create a streaming delta forwarder (`emit` + `flush`).
+ *
+ * It used to hold back a marker-length tail so a `<<HANDLE_COMPLETE>>` token split
+ * across chunks could be stripped before the user saw it. With the marker retired
+ * there is nothing to hold back, so `emit` forwards immediately — the old buffering
+ * only delayed every stream by N characters for no benefit.
+ *
+ * `flush` stays in the returned contract because callers already invoke it at
+ * end-of-stream.
  */
 function createMarkerStrippingDelta(rawEmit: (text: string) => void) {
-  const markerLen = COMPLETION_MARKER.length;
-  let tail = '';
-
-  const emit = (chunk: string) => {
-    tail += chunk;
-    if (tail.length <= markerLen) return;
-    const safe = tail.slice(0, tail.length - markerLen);
-    tail = tail.slice(safe.length);
-    if (safe) rawEmit(safe);
+  return {
+    emit: (chunk: string) => { if (chunk) rawEmit(chunk); },
+    flush: () => { /* nothing is buffered — see doc above */ },
   };
-
-  const flush = () => {
-    const cleaned = stripCompletionMarkerLeak(tail);
-    tail = '';
-    if (cleaned) rawEmit(cleaned);
-  };
-
-  return { emit, flush };
 }
 
 /** @see isToolErrorResult — kept as a local alias for call sites in this file. */
@@ -269,8 +262,6 @@ export interface AgentOptions {
   maxToolIterations?: number;
   /** Skill registry for runtime skill discovery and activation */
   skillRegistry?: SkillRegistry;
-  /** Cognitive Preparation Pipeline config (default: disabled) */
-  cognitive?: CognitiveConfig;
   /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected into the prompt so the agent reads it without searching. */
   handbookPath?: string;
 }
@@ -559,8 +550,6 @@ export class Agent {
   private notebookSaveTimer?: ReturnType<typeof setTimeout>;
   /** Earliest time the debounced notebook write may be deferred to (maxWait). */
   private notebookSaveDeadline?: number;
-  /** 审计 §8.1：CPP 的 LLM 管道已移除；仅保留配置（决定是否注入确定性情境块）。 */
-  private cognitiveConfig?: CognitiveConfig;
   /** Ring buffer of recent activity summaries for triage context. */
   private recentActivityRing: string[] = [];
   private static readonly ACTIVITY_RING_SIZE = 8;
@@ -779,9 +768,6 @@ export class Agent {
     this.guardrails = new GuardrailPipeline();
     this.toolHooks = new ToolHookRegistry();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
-    if (options.cognitive?.enabled) {
-      this.cognitiveConfig = options.cognitive;
-    }
     this.heartbeat = new HeartbeatScheduler(this.id, this.eventBus, {
       intervalMs: this.config.heartbeatIntervalMs,
       enabled: true,
@@ -1565,13 +1551,15 @@ export class Agent {
           const endTurnCountBefore = this.endTurnCount;
           const result = await this.processMailboxItemInternal(item, batchItems, batchContext);
           const endedTurnViaTool = this.endTurnCount > endTurnCountBefore;
-          // C2 (measurement only): record turn-level harness health. Chat turns are exempt
-          // from the completion-marker protocol; non-chat turns missing a marker feed the
-          // marker-failure rate.
+          // C2 (measurement only): record turn-level harness health. With the typed
+          // completion protocol the honest signals are "did this turn produce anything"
+          // and "did it close itself out with end_turn" — see §6 of
+          // docs/PLATFORM-HARDENING-2026-10.md.
           try {
             this.metricsCollector.recordTurn({
               isChat: item.sourceType === 'human_chat',
-              hadCompletionMarker: typeof result === 'string' && result.includes(COMPLETION_MARKER),
+              endedTurnViaTool,
+              emptyReply: result === undefined || result === '',
             });
           } catch (err) {
             log.debug('recordTurn failed', { agentId: this.id, itemId: item.id, error: String(err) });
@@ -1735,16 +1723,32 @@ export class Agent {
     };
   }
 
-  private async ensureCompletionMarker(
+  /**
+   * If a turn finished without a typed completion signal, continue in-session with
+   * tools enabled so the model can finish announced-but-unfinished work rather than
+   * leaving the user with a plan and no result.
+   *
+   * The guard is TYPED: a turn that ended via the `end_turn` tool is complete by
+   * definition (as are cancellation / preemption / merge), so no continuation runs.
+   * The nudge asks for the `end_turn` **tool call** — the same signal the mailbox
+   * layer reads — instead of a magic string (docs/PLATFORM-HARDENING-2026-10.md §6).
+   *
+   * Still a single bounded continuation attempt: if it yields nothing further the
+   * reply is returned as-is and the attention controller completes the item, because
+   * a non-empty reply is never "abnormal".
+   */
+  private async ensureTurnCompleted(
     reply: string,
     sessionId?: string,
     onEvent?: (event: LLMStreamEvent & { agentEvent?: string }) => void,
   ): Promise<string> {
     if (!reply || reply === '[cancelled]' || reply === '[preempted]' || reply === '[merged]') return reply;
-    if (hasCompletionMarker(reply)) return reply;
+    // Typed completion signal. `endTurnRequested` is reset at the START of the next
+    // turn, so immediately after a turn returns it still describes THAT turn.
+    if (this.endTurnRequested) return reply;
     if (!sessionId || !this.memory.getSession(sessionId)) return reply;
 
-    log.info('Completion marker missing — continuing in-session to obtain marker', {
+    log.info('Turn finished without an end_turn signal — continuing in-session to close it out', {
       agentId: this.id,
       sessionId,
       replyLength: reply.length,
@@ -1753,9 +1757,9 @@ export class Agent {
     this.memory.appendMessage(sessionId, {
       role: 'user',
       content:
-        `[SYSTEM] Your previous response did not include the required completion marker and may have unfinished work. ` +
+        `[SYSTEM] You ended your turn without calling the end_turn tool and may have unfinished work. ` +
         `Do NOT only announce remaining steps — finish them with tools now if anything is still pending. ` +
-        `When truly done, end your response with exactly: ${COMPLETION_MARKER}`,
+        `When you are truly done, call the \`end_turn\` tool.`,
     });
 
     try {
@@ -1769,7 +1773,7 @@ export class Agent {
       };
       let llmTools = this.buildToolDefinitions(markerToolSelectOpts);
       const multimodalToolNames = ['generate_image', 'text_to_speech', 'speech_to_text', 'generate_video'];
-      log.info('ensureCompletionMarker tool selection', {
+      log.info('ensureTurnCompleted tool selection', {
         agentId: this.id,
         sessionId,
         toolCount: llmTools.length,
@@ -1818,7 +1822,7 @@ export class Agent {
         shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
       ) {
         if (++toolIter > maxIter) {
-          log.warn('ensureCompletionMarker tool loop hit max iterations', {
+          log.warn('ensureTurnCompleted tool loop hit max iterations', {
             agentId: this.id, sessionId, iterations: toolIter, cap: maxIter,
           });
           break;
@@ -1832,7 +1836,7 @@ export class Agent {
           });
           this.memory.appendMessage(sessionId, {
             role: 'user',
-            content: `[Continue from where you left off. When done, end with exactly: ${COMPLETION_MARKER}]`,
+            content: '[Continue from where you left off. When you are truly done, call the end_turn tool.]',
           });
         } else {
           this.memory.appendMessage(sessionId, {
@@ -1943,8 +1947,10 @@ export class Agent {
     const ts = Date.now();
 
     const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
-    const needsMarker = !!registry?.invokesLLM;
-    const markerSuffix = needsMarker ? COMPLETION_MARKER_INSTRUCTION : '';
+    // Whether this item's turn should be closed out with the typed completion check.
+    // Chat replies are exempt (see the `!== 'human_chat'` guard at the call sites),
+    // and the retired text marker means nothing is appended to the prompt any more.
+    const needsTurnCompletion = !!registry?.invokesLLM;
 
     const buildHandleOpts = (defaults: HandleMessageOptions = {}): HandleMessageOptions => {
       const opts: HandleMessageOptions = { ...defaults };
@@ -2002,7 +2008,7 @@ export class Agent {
               });
             } else {
               let reply = await this.handleMessageStream(
-                item.payload.content + markerSuffix,
+                item.payload.content,
                 extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
                 item.metadata?.senderId,
                 senderInfo,
@@ -2016,8 +2022,8 @@ export class Agent {
               );
               // Team Chat: do not burn an extra LLM round just to obtain <<HANDLE_COMPLETE>>.
               // Prompt discipline ends the turn; attention already completes chat without retry.
-              if (needsMarker && item.sourceType !== 'human_chat') {
-                reply = await this.ensureCompletionMarker(
+              if (needsTurnCompletion && item.sourceType !== 'human_chat') {
+                reply = await this.ensureTurnCompleted(
                   reply,
                   this.currentSessionId,
                   extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
@@ -2069,13 +2075,13 @@ export class Agent {
           // section instead of the group-chat routing rules.
           if (item.sourceType === 'a2a_message' && extra.scenario === undefined) opts.scenario = 'a2a';
           let reply = await this.handleMessage(
-            item.payload.content + markerSuffix,
+            item.payload.content,
             item.metadata?.senderId,
             senderInfo,
             opts,
           );
-          if (needsMarker && item.sourceType !== 'human_chat') {
-            reply = await this.ensureCompletionMarker(reply, opts.sessionId ?? this.currentSessionId);
+          if (needsTurnCompletion && item.sourceType !== 'human_chat') {
+            reply = await this.ensureTurnCompleted(reply, opts.sessionId ?? this.currentSessionId);
           }
           resolveResponse(reply);
           return reply;
@@ -2187,12 +2193,12 @@ export class Agent {
         case 'mention': {
           const mentionSessionId = `sys_${this.id}_${ts}`;
           let reply = await this.handleMessage(
-            item.payload.content + markerSuffix,
+            item.payload.content,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({ sessionId: mentionSessionId, scenario: 'a2a' }),
           );
-          if (needsMarker) reply = await this.ensureCompletionMarker(reply, mentionSessionId);
+          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, mentionSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -2201,7 +2207,7 @@ export class Agent {
           if (extra.actionRequired) {
             const reqId = item.payload.requirementId ?? 'unknown';
             const reply = await this.handleMessage(
-              item.payload.content + COMPLETION_MARKER_INSTRUCTION,
+              item.payload.content,
               item.metadata?.senderId,
               senderInfo,
               buildHandleOpts({
@@ -2223,7 +2229,7 @@ export class Agent {
         case 'requirement_comment': {
           const reqId = item.payload.requirementId ?? 'unknown';
           const reply = await this.handleMessage(
-            item.payload.content + COMPLETION_MARKER_INSTRUCTION,
+            item.payload.content,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({
@@ -2240,7 +2246,7 @@ export class Agent {
           if (extra.actionRequired) {
             const wfEvent = extra.event ?? 'update';
             const reply = await this.handleMessage(
-              item.payload.content + COMPLETION_MARKER_INSTRUCTION,
+              item.payload.content,
               item.metadata?.senderId,
               senderInfo,
               buildHandleOpts({
@@ -2268,7 +2274,7 @@ export class Agent {
           } else {
             const commentTaskId = taskId ?? 'unknown';
             await this.handleMessage(
-              item.payload.content + COMPLETION_MARKER_INSTRUCTION,
+              item.payload.content,
               item.metadata?.senderId,
               senderInfo,
               buildHandleOpts({
@@ -2285,14 +2291,14 @@ export class Agent {
         case 'review_request': {
           const reviewSessionId = `review_${this.id}_${ts}`;
           let reply = await this.handleMessage(
-            item.payload.content + markerSuffix,
+            item.payload.content,
             item.metadata?.senderId,
             item.metadata?.senderName
               ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
               : undefined,
             buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
           );
-          if (needsMarker) reply = await this.ensureCompletionMarker(reply, reviewSessionId);
+          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, reviewSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -2302,11 +2308,13 @@ export class Agent {
             agentId: this.id,
             triggeredAt: item.queuedAt,
           });
-          // Propagate preempt/cancel so attention defers or drops correctly
-          // (previously always returned COMPLETION_MARKER, hiding interruptions).
+          // Propagate preempt/cancel so attention defers or drops correctly. Otherwise
+          // report the TYPED completion sentinel: a self-check that ran to completion is
+          // a deliberately finished turn — a more accurate statement than the retired
+          // magic token this used to return.
           const hbReply = (hbResult === '[preempted]' || hbResult === '[cancelled]')
             ? hbResult
-            : COMPLETION_MARKER;
+            : END_TURN_REPLY_SENTINEL;
           resolveResponse(hbReply);
           return hbReply;
         }
@@ -2322,12 +2330,12 @@ export class Agent {
             ? asAgentScenario(extra.scenario)
             : undefined) ?? 'heartbeat';
           let reply = await this.handleMessage(
-            item.payload.content + markerSuffix,
+            item.payload.content,
             undefined,
             undefined,
             buildHandleOpts({ sessionId: sysSessionId, scenario: sysScenario }),
           );
-          if (needsMarker) reply = await this.ensureCompletionMarker(reply, sysSessionId);
+          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, sysSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -2335,12 +2343,12 @@ export class Agent {
         case 'memory_consolidation': {
           const memSessionId = `sys_${this.id}_${ts}`;
           let reply = await this.handleMessage(
-            item.payload.content + markerSuffix,
+            item.payload.content,
             undefined,
             undefined,
             buildHandleOpts({ sessionId: memSessionId, scenario: 'memory_consolidation' }),
           );
-          if (needsMarker) reply = await this.ensureCompletionMarker(reply, memSessionId);
+          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, memSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -2349,19 +2357,19 @@ export class Agent {
           const sessionId = extra.sessionId as string | undefined;
           const onLog = (extra.onLog as ((entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void)) ?? (() => {});
           if (sessionId) {
-            let reply = await this.respondInSession(sessionId, item.payload.content + markerSuffix, onLog);
-            if (needsMarker) reply = await this.ensureCompletionMarker(reply, sessionId);
+            let reply = await this.respondInSession(sessionId, item.payload.content, onLog);
+            if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, sessionId);
             resolveResponse(reply);
             return reply;
           }
           const srFallbackSessionId = `sys_${this.id}_${ts}`;
           let reply = await this.handleMessage(
-            item.payload.content + markerSuffix,
+            item.payload.content,
             item.metadata?.senderId,
             senderInfo,
             buildHandleOpts({ sessionId: srFallbackSessionId }),
           );
-          if (needsMarker) reply = await this.ensureCompletionMarker(reply, srFallbackSessionId);
+          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, srFallbackSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -2387,12 +2395,12 @@ export class Agent {
           // 的「保持当前会话」纪律处理。
           if (originSessionId) cbOpts.sessionId = originSessionId;
           let reply = await this.handleMessage(
-            item.payload.content + markerSuffix,
+            item.payload.content,
             undefined,
             undefined,
             cbOpts,
           );
-          if (needsMarker) reply = await this.ensureCompletionMarker(reply, cbOpts.sessionId ?? this.currentSessionId);
+          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, cbOpts.sessionId ?? this.currentSessionId);
           resolveResponse(reply);
           return reply;
         }
@@ -3000,16 +3008,79 @@ export class Agent {
    *          测试与诊断断言。
    */
   cancelActiveStream(target?: { itemId?: string; sessionId?: string; workerId?: number }): number | undefined {
-    const workerId = this.resolveCancelTargetWorker(target);
-    if (workerId !== undefined && this.workerWorkspaces.has(workerId)) {
-      this.cancelActiveStreamCore(workerId);
-      this.lastCancelledWorkerId = workerId;
-      return workerId;
+    const resolved = this.resolveCancelTarget(target);
+
+    if (resolved.kind === 'worker') {
+      this.cancelActiveStreamCore(resolved.workerId);
+      this.lastCancelledWorkerId = resolved.workerId;
+      return resolved.workerId;
     }
-    // 兼容路径：串行模式 / 无 target / 目标 worker 尚无 workspace。
+
+    if (resolved.kind === 'none') {
+      // 限定性请求解析不到在途流 = 没有东西需要取消。绝不能回落到
+      // 「取消根/ALS 上下文的那条流」——那会把「停掉 B」变成「停掉正在跑的 A」。
+      log.warn('cancelActiveStream: scoped target matched no active stream — ignoring', {
+        agentId: this.id,
+        itemId: target?.itemId,
+        sessionId: target?.sessionId,
+        workerId: target?.workerId,
+        workerCount: this.attentionController.getWorkerCount(),
+      });
+      this.lastCancelledWorkerId = undefined;
+      return undefined;
+    }
+
+    // 兼容路径：**无 target** 的 legacy 调用（ALS / 根上下文）。
     this.cancelActiveStreamCore();
     this.lastCancelledWorkerId = undefined;
     return undefined;
+  }
+
+  /**
+   * 三态解析，语义严格区分：
+   *
+   * - `worker`  命中持有该目标的 worker → 只取消它的流；
+   * - `root`    **无 target** 的 legacy 调用 → 保持旧行为（ALS / 根上下文）；
+   * - `none`    **显式给了 target 却解析不到任何在途流** → 调用方必须 no-op。
+   *
+   * 区分 `none` 与 `root` 正是这个 bug 的根因：旧实现把两者并成同一条兼容
+   * 路径，于是「按 sessionId 取消」在目标不存在时静默升级成「取消当前在跑的
+   * 那条流」—— 限定范围的请求降级为不限定范围的破坏性动作。
+   */
+  private resolveCancelTarget(target?: { itemId?: string; sessionId?: string; workerId?: number }):
+    { kind: 'worker'; workerId: number } | { kind: 'root' } | { kind: 'none' } {
+    if (!target) return { kind: 'root' };
+
+    // 调用方给出的权威 workerId：只有它确实有 workspace 才认领。
+    if (target.workerId !== undefined) {
+      return this.workerWorkspaces.has(target.workerId)
+        ? { kind: 'worker', workerId: target.workerId }
+        : { kind: 'none' };
+    }
+
+    if (this.attentionController.getWorkerCount() > 1) {
+      const workerId = this.resolveCancelTargetWorker(target);
+      return workerId !== undefined ? { kind: 'worker', workerId } : { kind: 'none' };
+    }
+
+    // 串行模式：唯一在途流位于根 workspace。只有 target 确实匹配当前 focus 才认领；
+    // 否则同样 no-op —— 旧实现无条件落到兼容路径，于是取消了错的会话。
+    const focus = this.attentionController.getCurrentFocus();
+    if (!focus) return { kind: 'none' };
+    if (target.itemId !== undefined && focus.id === target.itemId) return { kind: 'root' };
+    if (target.sessionId !== undefined && this.focusMatchesSession(focus, target.sessionId)) return { kind: 'root' };
+    return { kind: 'none' };
+  }
+
+  /**
+   * focus 上表达「属于哪个 DB 会话」的全部既有约定。
+   * 与 `AttentionController.findWorkerBySessionId` 必须同一套匹配规则，
+   * 否则串行/并发模式会对同一个 target 给出互相矛盾的答案。
+   */
+  private focusMatchesSession(focus: MailboxItem, sessionId: string): boolean {
+    return focus.metadata?.sessionId === sessionId
+      || focus.metadata?.dbSessionId === sessionId
+      || focus.payload?.extra?.sessionId === sessionId;
   }
 
   /** 最近一次定向取消实际命中的 workerId（未定向命中时为 undefined）。 */
@@ -3213,14 +3284,42 @@ export class Agent {
     return `Task ${taskId}`;
   }
 
+  /** Banner that starts every offload payload. Used to emit it AND to detect an
+   *  already-offloaded result, so a capped output is never offloaded twice. */
+  private static readonly OFFLOAD_BANNER_PREFIX = '[FULL output (';
+
+  /**
+   * Read the optional per-call output cap (`max_output_chars`).
+   *
+   * This is a cross-tool convention: any tool may advertise it, and the agent
+   * honours it at the tool boundary (see `executeToolInternal`). It exists because
+   * the alternative was worse — the agent had no way to *ask* for less output, so a
+   * chatty command (a 46 k-char grep) was offloaded with a 2 k preview and cost a
+   * second `file_read` round-trip to get at the part it actually wanted.
+   */
+  private static readMaxOutputChars(args: Record<string, unknown> | undefined): number | undefined {
+    const raw = args?.['max_output_chars'];
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+  }
+
   private static readonly BROWSER_INTERACTIVE_TOOLS = new Set([
     'take_snapshot', 'take_screenshot', 'evaluate_script',
     'list_console_messages', 'list_network_requests', 'get_network_request',
     'lighthouse_audit', 'performance_stop_trace', 'performance_analyze_insight',
   ]);
 
-  private offloadLargeResult(toolName: string, result: string): string {
-    const OFFLOAD_THRESHOLD = TOOL_RESULT_OFFLOAD_CHARS;
+  private offloadLargeResult(toolName: string, result: string, maxOutputChars?: number): string {
+    // Idempotence: a payload that is ALREADY an offload result must never be
+    // offloaded again — that would nest file references and burn a write.
+    if (result.startsWith(Agent.OFFLOAD_BANNER_PREFIX)) return result;
+
+    // A caller-requested cap (see `readMaxOutputChars`) lowers the offload threshold
+    // AND is the preview size, so the returned text is exactly what was asked for.
+    const requestedCap = maxOutputChars && maxOutputChars > 0 ? Math.floor(maxOutputChars) : undefined;
+    const OFFLOAD_THRESHOLD = requestedCap
+      ? Math.min(TOOL_RESULT_OFFLOAD_CHARS, requestedCap)
+      : TOOL_RESULT_OFFLOAD_CHARS;
     if (result.length <= OFFLOAD_THRESHOLD) return result;
 
     // file_read already has built-in auto-limiting — don't re-offload its output
@@ -3229,7 +3328,7 @@ export class Agent {
 
     const baseName = toolName.includes('__') ? toolName.split('__').pop()! : toolName;
     const isBrowserTool = Agent.BROWSER_INTERACTIVE_TOOLS.has(baseName);
-    const previewSize = isBrowserTool ? 30_000 : 2_000;
+    const previewSize = requestedCap ?? (isBrowserTool ? 30_000 : 2_000);
 
     try {
       const offloadDir = join(this.dataDir, 'tool-outputs');
@@ -3241,8 +3340,8 @@ export class Agent {
       const preview = safeSlice(result, 0, previewSize);
       const lineCount = result.split('\n').length;
       return [
-        `[FULL output (${result.length} chars, ${lineCount} lines) saved to: ${filepath}]`,
-        `[NOTE: The content below is only the first ${previewSize} chars. The complete, untruncated result is in the file above.]`,
+        `${Agent.OFFLOAD_BANNER_PREFIX}${result.length} chars, ${lineCount} lines) saved to: ${filepath}]`,
+        `[NOTE: The content below is only the first ${previewSize} chars${requestedCap ? ` — max_output_chars=${requestedCap} was requested` : ''}. The complete, untruncated result is in the file above.]`,
         `[To read the full content, use file_read with offset and limit parameters to read in chunks, e.g.: file_read(path="${filepath}", offset=1, limit=500)]`,
         ``,
         preview,
@@ -3803,19 +3902,14 @@ export class Agent {
   }
 
   /**
-   * 审计 §8.1：确定性情境准备（原 CPP 的 LLM 多阶段管道已移除）。
+   * 审计 §8.1：确定性情境块（原 CPP 的 LLM 多阶段管道已移除）。
    *
    * 旧 CPP 在主调用前跑 0–3 次 LLM（appraise / reflect），带来额外时延与成本，
    * 且与上下文引擎自身「有界的相关记忆检索」重复。现改为**纯确定性**装配一小段
-   * 情境块（近期活动 + 工作记忆键）；更深的跨域召回由 Agent 按场景提示主动调
-   * `memory_search` / `kb_search` 承担。返回 undefined 表示无情境可注入。
+   * 情境块（近期活动 + 工作记忆键），始终注入；更深的跨域召回由 Agent 按场景提示
+   * 主动调 `memory_search` / `kb_search` 承担。返回 undefined 表示无可注入内容。
    */
-  private async prepareCognitiveContext(
-    _scenario: string,
-    _message: string,
-    _sender?: string,
-  ): Promise<PreparedCognitiveContext | undefined> {
-    if (!this.cognitiveConfig?.enabled) return undefined;
+  private buildCognitiveContext(): string | undefined {
     const parts: string[] = [];
     const activity = this.recentActivityRing.slice(-3);
     if (activity.length > 0) {
@@ -3825,12 +3919,7 @@ export class Agent {
       const keys = [...this.workingMemory.keys()].slice(0, 8).join(', ');
       parts.push(`Working memory: ${this.workingMemory.size} entries (${keys})`);
     }
-    if (parts.length === 0) return undefined;
-    return {
-      depth: CognitiveDepth.D1_Reactive,
-      cognitiveContext: parts.join('\n'),
-      isEmpty: false,
-    };
+    return parts.length > 0 ? parts.join('\n') : undefined;
   }
 
   private getMailboxContext(): {
@@ -4570,7 +4659,7 @@ export class Agent {
     // P1-9：按生效模型激活 token 计数器（非流式路径）。
     await this.activateTokenCounterForModel();
 
-    const cognitiveContext = await this.prepareCognitiveContext(scenario, effectiveMessage, senderId);
+    const cognitiveContext = this.buildCognitiveContext();
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -5335,7 +5424,7 @@ export class Agent {
     // 预算按错误模型/过期编码器计数（跨 agent 串扰）。
     await this.activateTokenCounterForModel();
 
-    const cognitiveContext = await this.prepareCognitiveContext('chat', effectiveMessage, senderId);
+    const cognitiveContext = this.buildCognitiveContext();
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -5801,7 +5890,7 @@ export class Agent {
       streamMarkerDelta.flush();
       // A: graceful truncation when we aborted a repetitive turn. Persist what
       // streamed, append a visible note, and mark the turn done so upstream does
-      // not run a marker continuation on known-degenerate output.
+      // not run a completion continuation on known-degenerate output.
       if (degeneratedAbort) {
         const note = '\n\n[response stopped: repetitive output detected]';
         const truncated = stripCompletionMarker(sanitizeLLMReply(streamedText)) + note;
@@ -5813,7 +5902,7 @@ export class Agent {
         }
         if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: false });
         this.transitionStatus({ to: 'idle' });
-        return truncated + COMPLETION_MARKER;
+        return truncated;
       }
       if (streamChatActivityId) this.endActivity(streamChatActivityId, { success: !cancelToken?.userStopped });
       if (cancelToken?.userStopped) {
@@ -6107,7 +6196,7 @@ export class Agent {
     // P1-9（M1 修订）：任务执行路径同样按生效模型激活 token 计数器（与 chat 两条路径一致）。
     await this.activateTokenCounterForModel();
 
-    const cognitiveContext = await this.prepareCognitiveContext('task_execution', taskPrompt);
+    const cognitiveContext = this.buildCognitiveContext();
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -6669,7 +6758,7 @@ export class Agent {
     this.memory.getOrCreateSession(this.id, sessionId);
     this.memory.appendMessage(sessionId, { role: 'user', content: userMessage });
 
-    const cognitiveContext = await this.prepareCognitiveContext('chat', userMessage);
+    const cognitiveContext = this.buildCognitiveContext();
 
     const systemPromptBuild = await this.contextEngine.buildSystemPrompt({
       agentId: this.id,
@@ -8307,7 +8396,21 @@ export class Agent {
     return await this.executeToolInternal(toolCall, onOutput, sessionId);
   }
 
+  /**
+   * Tool-boundary entry point. Every tool invocation funnels through here (write-locked
+   * or not), which makes it the single place that can honour a per-call output cap
+   * (`max_output_chars`) exactly once, whichever loop drove the call.
+   *
+   * The cap is enforced LOSSLESSLY: hitting it delegates to `offloadLargeResult`, which
+   * writes the complete output to a file and returns a capped preview plus that path.
+   */
   private async executeToolInternal(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
+    const raw = await this.runTool(toolCall, onOutput, sessionId);
+    const cap = Agent.readMaxOutputChars(toolCall.arguments as Record<string, unknown> | undefined);
+    return cap ? this.offloadLargeResult(toolCall.name, raw, cap) : raw;
+  }
+
+  private async runTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
     // `end_turn` — typed turn-termination signal. Sets the flag read by the tool-loop
     // guard (stops the loop, no further LLM round-trip) and by the reply assembly
     // (forces an empty reply ⇒ nothing is delivered to the peer).
@@ -9348,19 +9451,29 @@ export class Agent {
       // Memory dream: prune, deduplicate, merge.
       // Runs once per day normally, but up to 4x/day when memory is heavily bloated.
       const entries = this.memory.getObservations();
+      // Trigger on the SAME measure the health banner uses — buffer pressure by CHARS —
+      // not the entry COUNT. See shouldRunDreamCycle / docs §11 (H14): counting entries
+      // made the dream structurally dead for buffers of a few LARGE entries (≈31 real
+      // entries already sit at 99% of the 30 000-char budget, so `>= 50` never fired).
+      const health = this.memory.getMemoryHealth();
       const dreamKey = entries.length > 500 ? `${today}_${Math.floor(Date.now() / (6 * 3600_000))}` : today;
-      if (entries.length >= 50 && this.lastDreamDate !== dreamKey) {
+      if (shouldRunDreamCycle({ observationPercent: health.observationPercent, entryCount: entries.length })
+          && this.lastDreamDate !== dreamKey) {
         this.lastDreamDate = dreamKey;
         await Agent.acquireDreamSlot();
         try {
           // The dream cycle rewrites knowledge.md directly (read → replace → write in
-          // `pruneMemoryMd` / `compressLongTermMemory`). Tool-path writes take the same
+          // the store's write path). Tool-path writes take the same
           // lock key (`agent-memory:knowledge`) via `WRITE_TOOL_DOMAINS.resource`, and a
           // heartbeat-triggered dream runs outside any tool call — so without this lock a
           // dream and a concurrent `memory_update` could interleave and lose one write.
           await this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () => {
             await this.dreamConsolidateMemory(entries);
-            this.pruneMemoryMd();
+            // §24 — `pruneMemoryMd()` was REMOVED: it deleted/deduped curated sections and
+            // stripped `## daily-report-*` by heuristic string surgery over the agent's own
+            // prose (heading equality, body-subset tests). That is R4 — the platform deciding
+            // what the agent's knowledge means. The dream is the AGENT's own consolidation,
+            // and it already lands through the store's APIs (single writer).
             // 审计 P-11：上报整理时刻，使「陈旧」信号真实可用。
             // （此前只有手动 memory_organize 会写 lastConsolidatedAt，自动 dream 周期不写 →
             // 信号实际是死的。dream 定时器与 organize 原语共用同一时刻语义。）
@@ -9569,129 +9682,6 @@ export class Agent {
       }
     } catch (error) {
       log.warn('Dream cycle failed', { agentId: this.id, error: String(error) });
-    }
-  }
-
-  /**
-   * Enforce knowledge.md hygiene: remove daily-report sections (they belong in
-   * daily-logs/), strip leaked LLM <think> blocks, and enforce section/total
-   * size limits via heuristic compression. Preserves ## _observations.
-   */
-  private pruneMemoryMd(): void {
-    const content = this.memory.getLongTermMemory();
-    if (!content) return;
-
-    // Pass 1: remove ## daily-report-* sections (they belong in daily-logs/)
-    // and deduplicate sections with identical or near-identical content.
-    const lines = content.split('\n');
-    const afterSectionPrune: string[] = [];
-    let inDailyReport = false;
-
-    for (const line of lines) {
-      if (line.startsWith('## daily-report-')) {
-        inDailyReport = true;
-        continue;
-      }
-      if (inDailyReport && line.startsWith('## ')) {
-        inDailyReport = false;
-      }
-      if (!inDailyReport) afterSectionPrune.push(line);
-    }
-
-    // Pass 1b: deduplicate sections with the same heading or very similar content.
-    // Parse into sections, keep the last occurrence of duplicate headings,
-    // and remove sections whose body is a subset of another same-titled section.
-    const sections: Array<{ heading: string; body: string; startIdx: number }> = [];
-    let currentHeading = '';
-    let currentBody: string[] = [];
-    let sectionStart = 0;
-
-    for (let i = 0; i <= afterSectionPrune.length; i++) {
-      const line = i < afterSectionPrune.length ? afterSectionPrune[i] : undefined;
-      const isHeading = line !== undefined && /^#{1,3}\s/.test(line);
-      if (isHeading || line === undefined) {
-        if (currentHeading || currentBody.length > 0) {
-          sections.push({
-            heading: currentHeading,
-            body: currentBody.join('\n').trim(),
-            startIdx: sectionStart,
-          });
-        }
-        currentHeading = line ?? '';
-        currentBody = [];
-        sectionStart = i;
-      } else {
-        currentBody.push(line);
-      }
-    }
-
-    // For sections with the same heading, keep the last (most recent) one.
-    // Also remove sections whose body is fully contained in another section with the same heading.
-    const headingLastIdx = new Map<string, number>();
-    const normalizeHeading = (h: string) => h.replace(/^#+\s*/, '').trim().toLowerCase();
-    for (let i = 0; i < sections.length; i++) {
-      const key = normalizeHeading(sections[i].heading);
-      if (key) headingLastIdx.set(key, i);
-    }
-
-    const deduped: typeof sections = [];
-    for (let i = 0; i < sections.length; i++) {
-      const s = sections[i];
-      const key = normalizeHeading(s.heading);
-      if (key && headingLastIdx.get(key) !== i && headingLastIdx.has(key)) {
-        continue;
-      }
-      deduped.push(s);
-    }
-
-    afterSectionPrune.length = 0;
-    for (const s of deduped) {
-      if (s.heading) afterSectionPrune.push(s.heading);
-      if (s.body) afterSectionPrune.push(s.body);
-      afterSectionPrune.push('');
-    }
-
-    // Pass 2: strip <think>...</think> blocks leaked from LLM output
-    const outputLines: string[] = [];
-    let inThinkBlock = false;
-
-    for (const line of afterSectionPrune) {
-      if (line.trim() === '<think>') {
-        inThinkBlock = true;
-        continue;
-      }
-      if (inThinkBlock && line.trim() === '</think>') {
-        inThinkBlock = false;
-        continue;
-      }
-      if (!inThinkBlock) outputLines.push(line);
-    }
-
-    const pruned = outputLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-    if (pruned !== content.trim()) {
-      const knowledgeMdPath = join(this.dataDir, 'knowledge.md');
-      let obsTail = '';
-      try {
-        if (existsSync(knowledgeMdPath)) {
-          const existing = readFileSync(knowledgeMdPath, 'utf-8');
-          const obsStart = existing.indexOf('\n## _observations');
-          if (obsStart >= 0) obsTail = existing.slice(obsStart);
-          else if (existing.startsWith('## _observations')) obsTail = '\n' + existing;
-        }
-      } catch { /* best-effort preserve observations */ }
-      writeFileSync(knowledgeMdPath, pruned + (obsTail ? '\n' + obsTail.replace(/^\n+/, '') : '') + '\n');
-      log.info('Pruned knowledge.md: removed daily-report sections and LLM artifacts', { agentId: this.id });
-    }
-
-    // Pass 3: heuristic compression — enforce per-section & total size limits
-    const compressed = this.memory.compressLongTermMemory();
-    if (compressed.truncatedChunks > 0) {
-      log.info('Compressed knowledge.md during Dream Cycle', {
-        agentId: this.id,
-        charsBefore: compressed.charsBefore,
-        charsAfter: compressed.charsAfter,
-        sectionsTrimmed: compressed.truncatedChunks,
-      });
     }
   }
 }

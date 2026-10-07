@@ -15,7 +15,6 @@ import {
 import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 import {
-  COMPLETION_MARKER,
   type MailboxItem,
   type MailboxPriority,
   type DeliberationResult,
@@ -31,7 +30,7 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
   const delegate: AttentionDelegate = {
     processMailboxItem: vi.fn().mockImplementation(async (item: MailboxItem) => {
       processedItems.push(item);
-      return `processed ${item.id} ${COMPLETION_MARKER}`;
+      return `processed ${item.id}`;
     }),
     onDecisionMade: vi.fn(),
     onFocusChanged: vi.fn(),
@@ -103,7 +102,7 @@ describe('Mailbox Lifecycle: enqueue → process → complete', () => {
           });
           await new Promise(r => setTimeout(r, 50));
         }
-        return `done ${COMPLETION_MARKER}`;
+        return `done`;
       }),
     });
 
@@ -136,7 +135,7 @@ describe('Mailbox Lifecycle: interrupt → defer → resurface → reprocess', (
           // Simulate: first call processes a2a, returns preempted
           return '[preempted]';
         }
-        return `done ${COMPLETION_MARKER}`;
+        return `done`;
       }),
     });
 
@@ -203,7 +202,7 @@ describe('Mailbox Lifecycle: deliberation → triage', () => {
     const { controller, mailbox } = makeController({
       processMailboxItem: vi.fn().mockImplementation(async (item: MailboxItem) => {
         processedIds.push(item.id);
-        return `done ${COMPLETION_MARKER}`;
+        return `done`;
       }),
       performDeliberation: vi.fn().mockImplementation(
         async (headItem: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult> => {
@@ -250,7 +249,7 @@ describe('Mailbox Lifecycle: deliberation → triage', () => {
     const { controller, mailbox } = makeController({
       processMailboxItem: vi.fn().mockImplementation(async (item: MailboxItem) => {
         processedIds.push(item.id);
-        return `done ${COMPLETION_MARKER}`;
+        return `done`;
       }),
       performDeliberation: vi.fn().mockImplementation(
         async (headItem: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult> => {
@@ -295,7 +294,7 @@ describe('Mailbox Lifecycle: deliberation → triage', () => {
     const { controller, mailbox } = makeController({
       processMailboxItem: vi.fn().mockImplementation(async (item: MailboxItem) => {
         processedIds.push(item.id);
-        return `done ${COMPLETION_MARKER}`;
+        return `done`;
       }),
       performDeliberation: vi.fn().mockImplementation(
         async (headItem: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult> => {
@@ -337,7 +336,7 @@ describe('Mailbox Lifecycle: shutdown during processing', () => {
         processing = true;
         // Simulate long processing
         await new Promise(r => setTimeout(r, 500));
-        return `done ${COMPLETION_MARKER}`;
+        return `done`;
       }),
     });
 

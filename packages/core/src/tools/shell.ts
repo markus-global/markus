@@ -114,6 +114,10 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
           type: 'string',
           description: 'Reuse a persistent shell session by name. State (cwd, env vars, shell variables) persists across calls with the same session_id. Omit to use the default session.',
         },
+        max_output_chars: {
+          type: 'number',
+          description: 'Cap on how many characters of output you want back (e.g. 8000). When the output is longer, the FULL output is saved to a file (path returned to you) and only this many characters are shown — so nothing is lost and you avoid a second read. Omit for the default behaviour (offload only when very large).',
+        },
       },
       required: ['command'],
     },

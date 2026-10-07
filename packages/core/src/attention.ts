@@ -15,7 +15,6 @@ import {
   MailboxPriorityLevel,
   MAILBOX_TYPE_REGISTRY,
   MAILBOX_ITEM_MAX_RETRIES,
-  hasCompletionMarker,
   END_TURN_REPLY_SENTINEL,
   MAILBOX_PROCESSING_TIMEOUT_MS,
   BACKSTOP_CANCEL_GRACE_MS,
@@ -33,23 +32,24 @@ import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } 
 // ─── Abnormal Completion Detection ──────────────────────────────────────────
 
 /**
- * Check whether a mailbox-item reply was completed normally.
+ * Check whether a mailbox-item turn produced nothing.
  *
- * For LLM-invoking items the agent is instructed to end its reply with
- * `COMPLETION_MARKER`.  If the marker is absent the model either crashed
- * or output garbage (e.g. raw XML tool calls) — we should retry.
+ * This layer can only honestly judge ONE thing: whether the turn emitted any output
+ * at all. Whether the agent actually *finished its work* is a question only the agent
+ * loop can answer — it owns the tool loop and the typed `end_turn` signal. Judging it
+ * here is what the old text-marker protocol got wrong: a legitimate turn whose model
+ * forgot the magic string was requeued (and eventually dropped) as "incomplete"
+ * (8 items in one day, 2026-10-04).
  *
- * However, intentional interruptions (preemption, user cancellation) are
- * NOT abnormal and must never be retried:
+ * Intentional interruptions and typed silences are not abnormal and must never be retried:
  *  - Preempted items return '[preempted]' — the scheduler will re-trigger
  *    background scenarios naturally.
- *  - User-facing chats (human_chat, a2a_message) already streamed a
- *    (partial) response to the caller; re-processing the same input would
- *    produce a *different* reply, which is confusing.
+ *  - Cancelled items return '[cancelled]' — the user/controller meant to stop.
+ *  - Turns ended via the `end_turn` tool return {@link END_TURN_REPLY_SENTINEL} — a
+ *    typed, deliberate silence, which is exactly what completes the item.
  *
  * Returns a reason string when abnormal, `undefined` when the reply is OK.
  */
-
 export function detectAbnormalCompletion(
   reply: string | void,
   item: MailboxItem,
@@ -57,21 +57,12 @@ export function detectAbnormalCompletion(
   const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
   if (!registry?.invokesLLM) return undefined;
 
-  // Intentional preemption (pause) or cancellation by the attention controller
-  // — a higher-priority item arrived and this one was interrupted on purpose.
   if (reply === '[preempted]' || reply === '[cancelled]') return undefined;
-
-  // Deliberate turn termination via the `end_turn` tool — a typed, intentional
-  // silence, not a failure. Completing (not requeueing) is the whole point: the
-  // agent already decided the exchange is over.
   if (reply === END_TURN_REPLY_SENTINEL) return undefined;
 
+  // The single honest judgement available here: nothing was produced.
   if (reply === undefined || reply === '') {
     return 'empty reply from LLM-invoking item';
-  }
-
-  if (!hasCompletionMarker(reply)) {
-    return 'completion marker missing from reply';
   }
 
   return undefined;
@@ -1071,18 +1062,7 @@ export class AttentionController {
       const isUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(item.sourceType);
 
       if (abnormalReason && retries < MAILBOX_ITEM_MAX_RETRIES) {
-        if (abnormalReason === 'completion marker missing from reply') {
-          // In-session continuation was already attempted by the agent upstream.
-          // Requeuing would restart from scratch and duplicate all side effects.
-          // 语义修正：缺完成标记 = 未明确正常结束，标 dropped（异常可见），不标 completed。
-          log.warn('Completion marker still missing after in-session continuation — marking dropped without retry', {
-            agentId: this.agentId,
-            itemId: item.id,
-            type: item.sourceType,
-          });
-          this.emitIncomplete(item, abnormalReason);
-          this.mailbox.drop(item.id);
-        } else if (isUserInteraction) {
+        if (isUserInteraction) {
           // Empty reply / error for user-facing item — the user already saw
           // partial results and tool calls may have produced side effects.
           // Don't restart; the user can manually retry if needed.
@@ -1344,8 +1324,8 @@ export class AttentionController {
 
   /**
    * A3: emit a structured `agent:incomplete` event when a mailbox item completes
-   * without finishing cleanly (marker missing after continuation, or abnormal reply
-   * accepted without retry). Visibility only — does not change retry semantics.
+   * without finishing cleanly (an empty/abnormal reply accepted without retry).
+   * Visibility only — does not change retry semantics.
    */
   /**
    * 等待某 worker 的在途处理 promise 结束（有界等待）。

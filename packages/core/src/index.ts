@@ -14,6 +14,15 @@ export {
   type RoleSyncResult,
 } from './agent-manager.js';
 export { RoleLoader } from './role-loader.js';
+export {
+  resolveMissingSkills,
+  buildSkillWarnings,
+  setAgentSkillWarnings,
+  getAgentSkillWarnings,
+  SKILL_WARNINGS_AVAILABLE_LIMIT,
+  type SkillWarnings,
+  type SkillLookup,
+} from './skill-warnings.js';
 export { HeartbeatScheduler } from './heartbeat.js';
 export { ContextEngine, type OrgContext, type ContextConfig, type LLMSummarizer, type SystemPromptResult, type SystemPromptSegment } from './context-engine.js';
 export {
@@ -193,6 +202,9 @@ export {
   runSubagentLoop,
   type SubagentContext,
   type SubagentProgressCallback,
+  type SubagentLoopResult,
+  type SubagentLoopOptions,
+  type SubagentStopStatus,
   createMultiModalTools,
   type MultiModalToolsContext,
   createFeishuTools,

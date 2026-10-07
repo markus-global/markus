@@ -22,15 +22,15 @@ function entry(id: string, content: string): MemoryEntry {
 }
 
 describe('knowledge.md 段落顺序不变量（P-17）', () => {
-  it('新增 curated 段落插入到 _observations 之前，后续观察区保存不删除它', () => {
+  it('反复保存观察不会删除或改动已有 curated 段落（顺序稳定）', () => {
     const dir = tmp();
     try {
       const store = new MemoryStore(dir);
-      // 1) 先建立 _observations 段落（使其成为最后一段）
+      // 1) 建立第一个 curated 段落 + 一条观察
       store.addLongTermMemory('alpha', 'content-alpha');
       store.addEntry(entry('o1', 'obs-1'));
 
-      // 2) 在 _observations 已存在的前提下，新增第二个 curated 段落
+      // 2) 在观察已存在的前提下，新增第二个 curated 段落
       const w = store.addLongTermMemory('beta', 'content-beta');
       expect(w.ok).toBe(true);
 
@@ -41,17 +41,24 @@ describe('knowledge.md 段落顺序不变量（P-17）', () => {
       expect(store.getLongTermSection('alpha')).toBe('content-alpha');
       expect(store.getLongTermSection('beta')).toBe('content-beta');
 
-      // 5) 磁盘上 _observations 之后不应再有其它段落（顺序不变量）
+      // 5) H24 — 观察区已不在 knowledge.md；这里的不变量收敛为「curated 相对顺序稳定、
+      //    且观察正文绝不落进 curated 文件」。
       const raw = fs.readFileSync(path.join(dir, 'knowledge.md'), 'utf-8');
-      const after = raw.slice(raw.indexOf('## _observations'));
-      expect(after).not.toContain('\n## beta');
-      expect(after).not.toContain('\n## alpha');
+      expect(raw.indexOf('## alpha')).toBeGreaterThanOrEqual(0);
+      expect(raw.indexOf('## alpha')).toBeLessThan(raw.indexOf('## beta'));
+      expect(raw).not.toContain('obs-1');
+      expect(raw).not.toContain('obs-2');
+
+      // 6) 持久化无损：重新加载后依然如此
+      const reopened = new MemoryStore(dir);
+      expect(reopened.getLongTermSection('alpha')).toBe('content-alpha');
+      expect(reopened.getLongTermSection('beta')).toBe('content-beta');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('不变量：多次「加段落 + 存观察」后，_observations 始终是最后一段且所有段落存活', () => {
+  it('不变量：多次「加段落 + 存观察」后，所有 curated 段落存活、顺序稳定、且不含观察', () => {
     const dir = tmp();
     try {
       const store = new MemoryStore(dir);
@@ -67,10 +74,12 @@ describe('knowledge.md 段落顺序不变量（P-17）', () => {
         expect(store.getLongTermSection(k)).toBe(v);
       }
 
-      // 顺序不变量：`## _observations` 之后不应再有任何 `## ` 段落
+      // H24 — curated 相对顺序稳定；观察正文绝不出现在 curated 文件里
       const raw = fs.readFileSync(path.join(dir, 'knowledge.md'), 'utf-8');
-      const after = raw.slice(raw.indexOf('## _observations'));
-      expect(after.includes('\n## ')).toBe(false);
+      expect(raw.indexOf('## alpha')).toBeLessThan(raw.indexOf('## beta'));
+      expect(raw.indexOf('## beta')).toBeLessThan(raw.indexOf('## gamma'));
+      expect(raw).not.toContain('obs-1');
+      expect(raw).not.toContain('obs-3');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -157,7 +157,7 @@ TypeScript monorepo with modular packages:
 | [Tool System](docs/TOOL-SYSTEM.md) | Built-in tools, MCP integration, tool contracts |
 | [Skill Ecosystem](docs/SKILL-ECOSYSTEM.md) | Import/export skills from skills.sh, SkillHub, OpenClaw, AgentScope, MCP |
 | [Memory System](docs/MEMORY-SYSTEM.md) | Three-layer memory architecture (Tulving) |
-| [Cognitive Architecture](docs/COGNITIVE-ARCHITECTURE.md) | Cognitive Preparation Pipeline (CPP) design |
+| [Cognitive Architecture](docs/COGNITIVE-ARCHITECTURE.md) | Deterministic context assembly (CPP retired) |
 | [Mailbox System](docs/MAILBOX-SYSTEM.md) | Agent attention model, priority queue, triage |
 | [Prompt Engineering](docs/PROMPT-ENGINEERING.md) | System prompt assembly, tool loop, compression |
 | [State Machines](docs/STATE-MACHINES.md) | Task & requirement FSM specification |

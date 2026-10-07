@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { EventBus } from '../src/events.js';
 import { RoleLoader } from '../src/role-loader.js';
 import { AgentManager } from '../src/agent-manager.js';
-import { COMPLETION_MARKER, getTextContent, type LLMRequest } from '@markus/shared';
+import { getTextContent, type LLMRequest } from '@markus/shared';
 import type { LLMRouter } from '../src/llm/router.js';
 
 let dataDir: string;
@@ -90,7 +90,7 @@ function makeProbeRouter(): RouterProbe {
     }
 
     return {
-      content: `reply-for-${token} ${COMPLETION_MARKER}`,
+      content: `reply-for-${token}`,
       finishReason: 'end_turn',
       usage: { inputTokens: 10, outputTokens: 5 },
     };
@@ -100,7 +100,7 @@ function makeProbeRouter(): RouterProbe {
     defaultProviderName: 'anthropic',
     chat,
     chatStream: vi.fn(async function* () {
-      yield { type: 'done', content: `reply ${COMPLETION_MARKER}`, finishReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
+      yield { type: 'done', content: `reply`, finishReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
     }),
     resolveModalityCandidates: vi.fn(() => []),
     listProviders: vi.fn(() => ['anthropic']),

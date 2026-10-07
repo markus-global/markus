@@ -329,7 +329,9 @@
       "detailsUnavailable": "Detalles de habilidad no disponibles (la habilidad puede no estar registrada en la tienda)",
       "installedCount": "{{count}} habilidades instaladas — descripciones automáticas inyectadas en contexto de agente",
       "noSkills": "No hay habilidades instaladas",
-      "byAuthor": "por {{author}}"
+      "byAuthor": "por {{author}}",
+      "missingSkillsTitle": "{{count}} habilidad asignada no instalada",
+      "missingSkillsHint": "Esta habilidad no está instalada, por lo que sus herramientas no están disponibles. Instálala o elimínala de este agente."
     },
     "memoryTab": {
       "loading": "Cargando memoria...",

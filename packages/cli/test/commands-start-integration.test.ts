@@ -296,7 +296,7 @@ describe('start command integration', () => {
     globalThis.fetch = originalFetch;
   }, 60000);
 
-  it('boots with agent cognitive and browser config', async () => {
+  it('boots with agent and browser config', async () => {
     writeFileSync(
       configPath,
       JSON.stringify({
@@ -312,7 +312,6 @@ describe('start command integration', () => {
         server: { apiPort, webPort: apiPort + 1 },
         agent: {
           maxToolIterations: 25,
-          cognitive: { enabled: true, maxDepth: 2, timeoutMs: 10000 },
         },
         browser: {
           bringToFront: true,

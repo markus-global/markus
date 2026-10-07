@@ -152,12 +152,32 @@
       "lifetimeCaption": "Cumulative since the agent was created",
       "storageDepthLimited": "Directory tree is deep — actual usage may be higher",
       "sections": {
-        "files": { "title": "Files", "hint": "ROLE.md / HEARTBEAT.md / knowledge.md, etc." },
-        "mind": { "title": "Runtime & Attention", "hint": "Current focus · queue · recent decisions" },
-        "recent": { "title": "Recent Activity", "hint": "Heartbeat and A2A history", "empty": "No recent activity recorded" },
-        "tools": { "title": "Capabilities", "hint": "Enabled skills and tools" },
-        "memory": { "title": "Memory & Heartbeat", "hint": "Long-term memory · sessions · heartbeat rhythm" },
-        "usage": { "title": "Usage & Storage", "hint": "Lifetime tokens · requests · disk usage", "empty": "No usage data yet" }
+        "files": {
+          "title": "Files",
+          "hint": "ROLE.md / HEARTBEAT.md / knowledge.md, etc."
+        },
+        "mind": {
+          "title": "Runtime & Attention",
+          "hint": "Current focus · queue · recent decisions"
+        },
+        "recent": {
+          "title": "Recent Activity",
+          "hint": "Heartbeat and A2A history",
+          "empty": "No recent activity recorded"
+        },
+        "tools": {
+          "title": "Capabilities",
+          "hint": "Enabled skills and tools"
+        },
+        "memory": {
+          "title": "Memory & Heartbeat",
+          "hint": "Long-term memory · sessions · heartbeat rhythm"
+        },
+        "usage": {
+          "title": "Usage & Storage",
+          "hint": "Lifetime tokens · requests · disk usage",
+          "empty": "No usage data yet"
+        }
       },
       "storageBuckets": {
         "workspace": "Workspace",
@@ -309,7 +329,9 @@
       "detailsUnavailable": "Skill details not available (skill may not be registered in the store)",
       "installedCount": "{{count}} skills installed — descriptions auto-injected into agent context",
       "noSkills": "No skills installed",
-      "byAuthor": "by {{author}}"
+      "byAuthor": "by {{author}}",
+      "missingSkillsTitle": "{{count}} assigned skill not installed",
+      "missingSkillsHint": "This skill is not installed, so its related tools are unavailable. Install it or remove it from this agent."
     },
     "memoryTab": {
       "loading": "Loading memory...",

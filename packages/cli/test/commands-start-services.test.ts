@@ -68,7 +68,6 @@ describe('createServices', () => {
       },
       agent: {
         maxToolIterations: 30,
-        cognitive: { enabled: true, maxDepth: 3, timeoutMs: 5000 },
       },
       browser: {
         bringToFront: false,
@@ -88,7 +87,6 @@ describe('createServices', () => {
     expect(services.taskService).toBeDefined();
     expect(services.orgService).toBeDefined();
     expect(services.agentManager.maxToolIterations).toBe(30);
-    expect(services.agentManager.cognitiveConfig?.enabled).toBe(true);
 
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;

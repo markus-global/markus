@@ -13,7 +13,6 @@ import {
   type PathAccessPolicy,
   type RoleTemplate,
   type RoleCategory,
-  type CognitiveConfig,
   saveConfig,
   type CodingToolName,
   type CodingToolConfig,
@@ -48,6 +47,12 @@ import { createRecallTool, type RecallCallbacks } from './tools/recall.js';
 import { createSessionTool, createMemorySessionRepo, type SessionRepo, type SessionCompactor, type SessionSlotStore, type SessionFragmentStore } from './tools/session.js';
 import { SemanticMemorySearch, OpenAIEmbeddingProvider, LocalVectorStore } from './memory/semantic-search.js';
 import type { SkillRegistry } from './skills/types.js';
+import {
+  buildSkillWarnings,
+  setAgentSkillWarnings,
+  getAgentSkillWarnings,
+  type SkillWarnings,
+} from './skill-warnings.js';
 import { clickChromeAllowDialog } from './tools/chrome-dialog-clicker.js';
 import { MarkusBrowserBridge } from './tools/markus-browser-bridge.js';
 import { createBridgeToolHandlers, getBridgeToolDescriptors } from './tools/markus-browser-mcp.js';
@@ -486,7 +491,6 @@ export class AgentManager {
   private recallCallbacks?: RecallCallbacks;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
-  private _cognitiveConfig?: CognitiveConfig;
   private _concurrentConfig?: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
   private _codingToolsEnabled = false;
   private _codingToolsConfigs?: Record<string, CodingToolConfig>;
@@ -746,14 +750,6 @@ export class AgentManager {
 
   set maxToolIterations(value: number) {
     this._maxToolIterations = value <= 0 ? Infinity : value;
-  }
-
-  get cognitiveConfig(): CognitiveConfig | undefined {
-    return this._cognitiveConfig;
-  }
-
-  set cognitiveConfig(value: CognitiveConfig | undefined) {
-    this._cognitiveConfig = value;
   }
 
   get concurrentConfig(): { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' } | undefined {
@@ -1465,7 +1461,6 @@ export class AgentManager {
       pathPolicy,
       skillRegistry: this.skillRegistry,
       maxToolIterations: this._maxToolIterations,
-      cognitive: this._cognitiveConfig,
       handbookPath: this.resolveHandbookPath(roleName),
     };
 
@@ -1507,16 +1502,21 @@ export class AgentManager {
       agent.setAvailableSkillCatalog(this.skillRegistry.getSkillCatalog());
     }
 
+    // H9: resolve assigned skills that are not installed and stamp the agent so
+    // the degradation is structurally visible (agent state → API → UI), not only
+    // a log line. Shared computation with the restore path (see skill-warnings.ts);
+    // the startup aggregate warn lives in OrgService after the restore loop.
+    const skillWarnings = buildSkillWarnings(config, this.skillRegistry);
+    setAgentSkillWarnings(agent, skillWarnings);
+    if (skillWarnings.missing.length > 0) {
+      log.debug(`Agent ${config.name} (${id}) references skills not found in registry`, {
+        missing: skillWarnings.missing,
+        available: skillWarnings.available,
+      });
+    }
+
     // Connect MCP servers for assigned skills (tools only — instructions on demand)
     if (this.skillRegistry && config.skills.length > 0) {
-      const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
-      if (missingSkills.length > 0) {
-        log.warn(`Agent ${config.name} (${id}) references skills not found in registry`, {
-          missing: missingSkills,
-          available: this.skillRegistry.list().map(s => s.name),
-        });
-      }
-
       // Connect MCP servers declared by explicitly assigned skills
       for (const skillName of config.skills) {
         const skill = this.skillRegistry.get(skillName);
@@ -2385,7 +2385,6 @@ export class AgentManager {
       restoredState: { tokensUsedToday: row.tokensUsedToday ?? 0 },
       skillRegistry: this.skillRegistry,
       maxToolIterations: this._maxToolIterations,
-      cognitive: this._cognitiveConfig,
       handbookPath: this.resolveHandbookPath(row.roleId ?? row.roleName),
     });
 
@@ -2394,16 +2393,20 @@ export class AgentManager {
       agent.setAvailableSkillCatalog(this.skillRegistry.getSkillCatalog());
     }
 
+    // H9: same structured-missing-skill computation as the create path. A single
+    // aggregate warn is emitted by OrgService after the whole restore loop, so no
+    // per-agent warn here (dozens of restored agents must not flood the log).
+    const skillWarnings = buildSkillWarnings(config, this.skillRegistry);
+    setAgentSkillWarnings(agent, skillWarnings);
+    if (skillWarnings.missing.length > 0) {
+      log.debug(`Restored agent ${config.name} (${id}) references skills not found in registry`, {
+        missing: skillWarnings.missing,
+        available: skillWarnings.available,
+      });
+    }
+
     // Connect MCP servers for assigned skills (tools only — instructions on demand)
     if (this.skillRegistry && config.skills.length > 0) {
-      const missingSkills = config.skills.filter(s => !this.skillRegistry!.get(s));
-      if (missingSkills.length > 0) {
-        log.warn(`Restored agent ${config.name} (${id}) references skills not found in registry`, {
-          missing: missingSkills,
-          available: this.skillRegistry.list().map(s => s.name),
-        });
-      }
-
       // Connect MCP servers declared by explicitly assigned skills (background, non-blocking).
       // Skip chrome-devtools during restore — it connects lazily when the agent actually
       // needs browser tools. This prevents flooding Chrome with 20+ concurrent CDP connections

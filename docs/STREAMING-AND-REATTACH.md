@@ -80,11 +80,12 @@ tool progress events, and terminal `done` / `error`.
 
 - **Behavior**: three currently near-silent conditions become **visible** structured
   events (and activity-log entries), without changing retry semantics:
-  - completion-marker missing after in-session continuation → `incomplete`
+  - a turn that produced nothing and exhausted its retries (or a user-interaction turn whose
+    reply was empty) → `incomplete`
     (see [STATE-MACHINES.md](./STATE-MACHINES.md) mailbox-item terminal states),
   - a tool returning a structured failure (`isToolErrorResult`) → `tool_error`,
-  - a `MEMORY.md` write refused for exceeding limits → surfaced (see
-    [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md)).
+  - a `knowledge.md` write refused for exceeding its limits → surfaced (see
+    [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §8.8).
 - **Invariants**:
   - Each condition is surfaced without being mistaken for success.
   - No **additional** retries are triggered by making these visible (visibility only).
@@ -95,7 +96,7 @@ tool progress events, and terminal `done` / `error`.
   once with no extra retry; tool-error and memory-refusal classification are covered.
 - **Status**: implemented, surfaced across layers (visibility only, no new retries):
   - *incomplete* — `AttentionController.emitIncomplete` emits one `agent:incomplete` event on
-    the agent bus (marker-missing / max-retries terminals); see
+    the agent bus (empty-reply / max-retries terminals); see
     [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) and [STATE-MACHINES.md](./STATE-MACHINES.md).
   - *tool failure* — the SSE handler marks the tool segment `status: 'error'` when
     `event.success === false` and persists `success:false`, so a failed tool never renders as

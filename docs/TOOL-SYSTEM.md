@@ -105,7 +105,7 @@ Test IDs: `A-tooldef-budget`, `A-tooldef-sticky-capped`, `S-catalog-not-in-toold
   - A previously-used tool remains available for the rest of the session.
   - `discover_tools` is always present.
 - **Design rationale**: Fixes historical misses where a short follow-up or a
-  synthetic `[Continue…]` / completion-marker message failed to re-match keywords and
+  synthetic `[Continue…]` continuation message failed to re-match keywords and
   dropped tools the turn actually needed (e.g. multimodal).
 - **Testing** (`packages/core/test/tool-selector.test.ts` — the "B2:" cases):
   - Core tools + `discover_tools` present for empty / whitespace / synthetic / short input,
@@ -183,13 +183,14 @@ A "turn" runs the model, executes any tool calls it emits, appends the results, 
 the model again — until the model stops requesting tools (or a safety cap is hit). Markus
 runs this loop in several entry points in [`agent.ts`](../packages/core/src/agent.ts):
 streaming chat (`handleMessageStream`), non-streaming chat (`handleMessage`), task
-execution (`executeTask`), respond-in-session (`respondInSession`), and the
-completion-marker continuation (`ensureCompletionMarker`).
+execution (`executeTask` / `executeTaskConcurrent`), and respond-in-session
+(`respondInSession`). (The old completion-marker continuation path — `ensureCompletionMarker` —
+was removed with the retire of the text protocol; completion is now the typed `end_turn` signal.)
 
 Shared safety behavior across paths:
 
 - **Iteration cap** `DEFAULT_MAX_TOOL_ITERATIONS = 200` (task execution is uncapped by
-  design; heartbeat and marker-continuation use smaller caps).
+  design; heartbeat runs with smaller caps).
 - **Tool arg casing aliases** so snake_case vs camelCase never causes an infinite retry.
 - **Loop detection** to break repeated identical tool calls.
 - **`max_tokens` continuation** via a synthetic `[Continue…]` user message.
@@ -199,17 +200,18 @@ Shared safety behavior across paths:
 ### 3.1 Spec: shared turn helper (incremental consolidation)
 
 - **Behavior**: The common sub-steps of the loop — tool execution, error classification
-  (`isToolErrorResult`), completion-marker handling, and the `max_tokens` continuation
+  (`isToolErrorResult`), loop termination, and the `max_tokens` continuation
   decision — are extracted into shared helpers invoked by all paths, so behavior does not
   diverge between entry points. This is an **incremental** consolidation, not a rewrite of
   the ~7k-line file. The first extraction covers the two loop-control decisions that were
-  copy-pasted at all five loop sites: `shouldContinueToolLoop(response)` (keep iterating
+  copy-pasted at every loop site: `shouldContinueToolLoop(response)` (keep iterating
   while the model still wants tools or was cut off by `max_tokens`) and
   `needsMaxTokensContinuation(response)` (a `max_tokens` cutoff without tool calls needs a
-  "continue" nudge). Error classification (`isToolErrorResult`) and marker handling
-  (`COMPLETION_MARKER` / `ensureCompletionMarker`) were already shared.
-- **Invariants**: the five paths produce identical decisions for the same
-  (tool result, finishReason, marker) inputs; existing loop/casing/`max_tokens` behavior is
+  "continue" nudge). Error classification (`isToolErrorResult`) was already shared, and loop
+  termination now reads the typed `end_turn` signal (`endTurnRequested`) instead of a text
+  completion marker — see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) "Completion protocol".
+- **Invariants**: all paths produce identical decisions for the same
+  (tool result, finishReason, `end_turn`) inputs; existing loop/casing/`max_tokens` behavior is
   preserved (regression-guarded by the agent-loop tests). The helpers are pure and always
   return a `boolean` (never a truthy `toolCalls.length`).
 - **Design rationale**: aligns with Pi's `pi-agent-core` and Hermes's single

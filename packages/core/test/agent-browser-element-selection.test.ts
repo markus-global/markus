@@ -9,7 +9,6 @@ import { describe, it, expect, vi } from 'vitest';
 import { Agent } from '../src/agent.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { RoleTemplate } from '@markus/shared';
-import { COMPLETION_MARKER } from '@markus/shared';
 import { InMemorySkillRegistry } from '../src/skills/registry.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -34,7 +33,7 @@ const OTHER_BODY = '# Some Other Skill\n\nDo other things.';
 
 function makeMockRouter(): LLMRouter {
   const resp = () => ({
-    content: `ok ${COMPLETION_MARKER}`,
+    content: `ok`,
     finishReason: 'end_turn',
     toolCalls: undefined,
     usage: { inputTokens: 10, outputTokens: 5 },

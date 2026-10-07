@@ -381,19 +381,6 @@
     "saved": "Guardado",
     "failedToSave": "No se pudo guardar"
   },
-  "cognitive": {
-    "title": "Cognitive Preparation Pipeline",
-    "description": "Antes de cada llamada principal de LLM, el agente realiza una evaluación ligera para evaluar el estímulo y preparar el contexto de persona-aware. Esto puede mejorar la relevancia de la respuesta al costo de una pequeña llamada extra LLM (~500ms).",
-    "enabled": "Habilitación del PPP",
-    "enabledDesc": "Cuando está habilitado, los agentes realizan una evaluación cognitiva antes de responder",
-    "maxDepth": "Max Cognitive Depth",
-    "maxDepthDesc": "Controla cuánto se hace la preparación antes de cada respuesta",
-    "depthD1": "Sólo es posible",
-    "depthD2": "Appraisal + Retrieval + Reflexión",
-    "depthD3": "Gasoducto completo + post-evaluación",
-    "saved": "Guardado",
-    "failedToSave": "No se pudo guardar"
-  },
   "searchApi": {
     "title": "Búsqueda web",
     "description": "Prioridad: Hub conectado con balance → Markus acogió primero; de lo contrario sus claves de API primero.",

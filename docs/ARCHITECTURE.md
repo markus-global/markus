@@ -395,7 +395,7 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 14. Current conversation identity (sender info)
 15. Environment info (OS, toolchain, runtime)
 
-See [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) for the complete section ordering and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for the cognitive preparation pipeline.
+See [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) for the complete section ordering and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for deterministic context assembly (the former cognitive preparation pipeline was retired).
 
 ### 3.8 LLM Routing
 
@@ -809,8 +809,9 @@ completion behavior are visible.
 
 - **Behavior**: the collector additionally tracks:
   - **compression count** — how often per-call context packing had to compress (over budget),
-  - **completion-marker failure rate** — share of non-chat turns that finished without a marker
-    (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) completion marker),
+  - **empty-turn rate** — share of non-chat turns that produced NO output at all, plus
+    **turn-ended-via-tool rate** — share that closed themselves out via the typed `end_turn`
+    signal (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) "Completion protocol"),
   - **prompt cache-hit rate** — from provider usage where reported (see the injection-point
     audit in [PROMPT-ENGINEERING.md §2.2](./PROMPT-ENGINEERING.md)),
   - **per-turn cost** — cost attributed per completed turn.
@@ -821,8 +822,8 @@ completion behavior are visible.
   - *compression count* — `ContextEngine.prepareMessages` sets `usage.compressed` when it
     runs token-budget compression; `Agent` calls `recordCompression()` at the chat/stream/
     task consumers.
-  - *marker failure rate* — the `Agent` attention delegate calls `recordTurn({ isChat,
-    hadCompletionMarker })` after each mailbox turn (chat turns are excluded from the
+  - *empty-turn / end_turn rates* — the `Agent` attention delegate calls `recordTurn({ isChat,
+    emptyReply, endedTurnViaTool })` after each mailbox turn (chat turns are excluded from the
     denominator).
   - *cache-hit rate* — accumulated from the `cacheReadTokens`/`cacheWriteTokens` already
     present on `llm_request` audit events, over total prompt-side tokens.

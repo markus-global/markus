@@ -8,10 +8,11 @@ import {
   type LLMMessage,
   type RoleTemplate,
   type IdentityContext,
-  type PreparedCognitiveContext,
   SYSTEM_MY_TASKS_MAX,
   SYSTEM_TEAM_TASKS_MAX,
   SYSTEM_KNOWLEDGE_CHARS,
+  MEMORY_HEALTH_WARN_PERCENT,
+  MEMORY_HEALTH_CRITICAL_PERCENT,
   SYSTEM_USER_PROFILE_CHARS,
   SYSTEM_PROJECT_DESC_CHARS,
   SYSTEM_MAILBOX_MERGED_CHARS,
@@ -423,7 +424,8 @@ export class ContextEngine {
         stepCount: number;
       }>;
     };
-    cognitiveContext?: PreparedCognitiveContext;
+    /** Deterministic situational block (recent activity + working-memory keys), rendered as `## Cognitive Context`. */
+    cognitiveContext?: string;
     channelContext?: Array<{ role: string; content: string }>;
     /** Prompt profile (AGENT-RUNTIME §4). Defaults from scenario pack. */
     promptProfile?: PromptProfile;
@@ -889,13 +891,23 @@ export class ContextEngine {
           const staleDays = h.lastConsolidatedAt
             ? Math.max(0, Math.floor((Date.now() - Date.parse(h.lastConsolidatedAt)) / 86_400_000))
             : null;
-          if (h.percent >= 70 || (staleDays !== null && staleDays >= 14)) {
+          if (h.percent >= MEMORY_HEALTH_WARN_PERCENT || (staleDays !== null && staleDays >= 14)) {
             const staleness = staleDays !== null && staleDays >= 14
               ? ` · 上次整理 ${staleDays} 天前`
               : '';
             volatile.push(
-              `> ${h.percent >= 90 ? '🔴' : '⚠️'} **记忆健康 ${h.percent}%**（${h.totalChars}/${h.cap} 字符 · ${h.curatedSections} 个知识段 · ${h.observations} 条观察${h.archiveChars > 0 ? ` · 已归档 ${h.archiveChars} 字符` : ''}${staleness}）。`
-              + '超预算时旧知识会被**无损归档**（不再注入）。建议用 `memory_organize` 合并观察、或 `memory_update`（mode:"delete"）删除过时条目。',
+              `> ${h.percent >= MEMORY_HEALTH_CRITICAL_PERCENT ? '🔴' : '⚠️'} **记忆健康 ${h.percent}%**（注入段 ${h.curatedChars}/${h.curatedCap} 字符 · ${h.curatedSections} 个知识段${staleness}）。`
+              + '注入段超预算时，最大的段落正文会被**无损归档**（移出每轮注入，仍可用 `memory_search` 检索）。建议用 `memory_organize` 合并段落、或 `memory_update`（mode:"delete"）删除过时条目。',
+            );
+          }
+          // Signal 2 — the OBSERVATION buffer. A SEPARATE budget of its own and it is
+          // NOT injected, so it must never be folded into the number above (folding it
+          // was a permanent false alarm: a healthy large buffer read >100%).
+          if (h.observationPercent >= MEMORY_HEALTH_WARN_PERCENT) {
+            volatile.push(
+              `> 🗒️ **观察缓冲 ${h.observationPercent}%**（${h.observationChars}/${h.observationCap} 字符 · ${h.observations} 条观察${h.archiveChars > 0 ? ` · 已归档 ${h.archiveChars} 字符` : ''}）。`
+              + '观察缓冲**不注入** prompt（仅 `memory_search` 按需检索）；超上限时最旧的观察会被无损归档，仍可检索。'
+              + '平台会在下一轮 dream 周期自动合并重复项；也可现在就主动处理：`memory_organize`（把重复观察合并进 curated 段落）或 `memory_update`（`mode:"delete"` 删除过时项）。',
             );
           }
         } catch { /* health signal is best-effort */ }
@@ -1095,24 +1107,14 @@ export class ContextEngine {
     }
 
     const alreadyShownIds = new Set<string>();
-    const cpp = opts.cognitiveContext;
-    if (cpp && !cpp.isEmpty) {
-      // 审计 P-03：CPP 产出有**唯一目的地**——本轮 prompt。以前它写进共享 NOTEBOOK
-      // （并因此**不注入当轮 prompt**），与 `## Your Knowledge` 重复、还把瞬时检索
-      // 记录沉淀成持久笔记。现在只注入，不落盘。
-      if (cpp.cognitiveContext) {
-        dynamic.push('\n## Cognitive Context');
-        dynamic.push(cpp.cognitiveContext);
-      }
-      if (cpp.retrievedContext) {
-        dynamic.push('\n## Retrieved Context');
-        dynamic.push(cpp.retrievedContext);
-      }
-      if (cpp.reflection) {
-        dynamic.push('\n## Reflection');
-        dynamic.push(cpp.reflection);
-      }
-    } else if (!isDream) {
+    // Deterministic situational block (recent activity + working-memory keys).
+    // 审计 P-03：情境块有**唯一目的地**——本轮 prompt（不落盘、不进可缓存前缀）。
+    // 它与下面的相关记忆检索**互补**而非互斥：两者都注入。
+    if (opts.cognitiveContext) {
+      dynamic.push('\n## Cognitive Context');
+      dynamic.push(opts.cognitiveContext);
+    }
+    if (!isDream) {
       const relevantMemories = await this.retrieveRelevantMemories(opts.memory, opts.currentQuery, opts.agentId, alreadyShownIds);
       if (relevantMemories.length > 0) {
         // 审计 P-03：检索结果只注入本轮，不写共享 NOTEBOOK。

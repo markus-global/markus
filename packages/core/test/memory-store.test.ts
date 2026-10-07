@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { MemoryStore, sanitizeSectionBody } from '../src/memory/store.js';
+import {
+  MEMORY_MD_CURATED_MAX_CHARS,
+  MEMORY_MD_CURATED_HARD_MAX_CHARS,
+  MEMORY_MD_SECTION_MAX_CHARS,
+} from '@markus/shared';
 import type { MemoryEntry, ConversationSession } from '../src/memory/types.js';
 
 function makeTempDir(): string {
@@ -32,17 +37,18 @@ describe('MemoryStore — addLongTermMemory result (B1)', () => {
     expect(res).toEqual({ ok: true });
   });
 
-  it('never refuses on a full knowledge.md — it rebalances losslessly (audit P-04/P-05)', () => {
-    // Each section body is ≤ the per-section cap, so every write is accepted;
-    // when the TOTAL exceeds the budget the store ARCHIVES bodies (lossless),
-    // it never refuses and never silently truncates.
-    const big = 'x'.repeat(3000);
+  it('reports an over-budget curated region instead of silently rebalancing (H19)', () => {
+    // Each body is ≤ the per-section cap, so individual writes are accepted; when the
+    // TOTAL crosses the soft budget nothing is archived or rewritten — it is reported.
+    const big = 'x'.repeat(2500);
     for (let i = 0; i < 12; i++) {
       expect(store.addLongTermMemory(`Section ${i}`, big).ok).toBe(true);
     }
-    expect(store.getLongTermMemory().length).toBeLessThanOrEqual(15000);
-    // Archived bodies live in knowledge-archive.md (retrievable, not injected).
-    expect(fs.existsSync(path.join(tmp, 'knowledge-archive.md'))).toBe(true);
+    const curated = store.getLongTermMemory();
+    expect(curated.length).toBeGreaterThan(MEMORY_MD_CURATED_MAX_CHARS); // over soft budget
+    // No silent rewrite: every full body survives, no pointer stubs, no archive file.
+    expect(curated).not.toContain('_[archived');
+    expect(fs.existsSync(path.join(tmp, 'knowledge-archive.md'))).toBe(false);
   });
 });
 
@@ -261,13 +267,17 @@ describe('MemoryStore — Semantic: knowledge.md', () => {
     expect(store.getLongTermSection('big')).toBe('');
   });
 
-  it('rebalances (archives) instead of refusing when the total exceeds the limit', () => {
+  it('reports (does not refuse, does not archive) when the total crosses the soft budget', () => {
     for (let i = 0; i < 6; i++) {
       store.addLongTermMemory(`section-${i}`, 'a'.repeat(2500));
     }
     const res = store.addLongTermMemory('overflow', 'b'.repeat(2500));
     expect(res.ok).toBe(true);
-    expect(store.getLongTermMemory().length).toBeLessThanOrEqual(15000);
+    // 7 × 2500 = 17 500 → over the soft budget, far under the hard ceiling.
+    const curated = store.getLongTermMemory();
+    expect(curated.length).toBeGreaterThan(MEMORY_MD_CURATED_MAX_CHARS);
+    expect(curated).toContain('## overflow');
+    expect(curated).not.toContain('_[archived');
   });
 
   it('persists knowledge.md to disk', () => {
@@ -295,7 +305,9 @@ describe('MemoryStore — Semantic: knowledge.md', () => {
     store.addEntry({ id: 'obs_1', timestamp: new Date().toISOString(), type: 'insight', content: 'an insight' });
     expect(fs.readFileSync(legacyPath, 'utf8')).toBe(before);
     expect(fs.readFileSync(path.join(tmp, 'knowledge.md'), 'utf8')).toContain('new knowledge');
-    expect(fs.readFileSync(path.join(tmp, 'knowledge.md'), 'utf8')).toContain('an insight');
+    // H24 — 观察写入 observations.json，不再进 knowledge.md
+    expect(fs.readFileSync(path.join(tmp, 'observations.json'), 'utf8')).toContain('an insight');
+    expect(fs.readFileSync(path.join(tmp, 'knowledge.md'), 'utf8')).not.toContain('an insight');
   });
 
   it('prunes empty observations on load', () => {
@@ -318,55 +330,42 @@ describe('MemoryStore — Semantic: knowledge.md', () => {
     expect(reloaded.getEntries()[0]!.type).toBe('insight');
   });
 
-  it('compressLongTermMemory handles bootstrap knowledge.md', () => {
-    const result = store.compressLongTermMemory();
-    expect(result.truncatedChunks).toBe(0);
-    expect(result.charsAfter).toBeLessThanOrEqual(result.charsBefore);
-  });
-
-  it('compressLongTermMemory is no-op when within per-section and total limits', () => {
-    store.addLongTermMemory('conventions', 'Use kebab-case for file names.');
-    store.addLongTermMemory('procedures', 'Step 1: build\nStep 2: test\nStep 3: deploy');
-    store.addLongTermMemory('preferences', 'Prefer TypeScript strict mode.');
-
-    const result = store.compressLongTermMemory();
-    expect(result.truncatedChunks).toBe(0);
-    expect(result.charsBefore).toBe(result.charsAfter);
-  });
-
-  it('compressLongTermMemory archives oversized section bodies (lossless)', () => {
-    // Can't create an oversized section via the API (writes are rejected), so
-    // simulate a legacy/oversized file directly.
-    fs.writeFileSync(path.join(tmp, 'knowledge.md'), `## oversized\n${'a'.repeat(3500)}\n`, 'utf8');
-
-    const result = store.compressLongTermMemory();
-    expect(result.truncatedChunks).toBeGreaterThan(0);
-
-    const section = store.getLongTermSection('oversized') ?? '';
-    expect(section.length).toBeLessThanOrEqual(3000);
-    // The full body is preserved (searchable) in the archive — nothing lost.
-    expect(fs.readFileSync(path.join(tmp, 'knowledge-archive.md'), 'utf8')).toContain('a'.repeat(3500));
-  });
-
-  it('compressLongTermMemory trims from bottom when total exceeds limit', () => {
+  it('curated over the SOFT budget is written as-is — never silently archived (H19)', () => {
     for (let i = 0; i < 6; i++) {
-      store.addLongTermMemory(`section-${i}`, 'b'.repeat(2500));
+      const r = store.addLongTermMemory(`section-${i}`, 'b'.repeat(2500));
+      expect(r.ok).toBe(true);
     }
-
-    const result = store.compressLongTermMemory();
-    const contentAfter = store.getLongTermMemory();
-    expect(contentAfter.length).toBeLessThanOrEqual(15000);
+    // 6 × 2500 ≈ 15 000+ → over the SOFT budget, far under the HARD ceiling.
+    expect(store.getLongTermMemory().length).toBeGreaterThan(MEMORY_MD_CURATED_MAX_CHARS);
+    // No pointer stub ever appears: the old silent-archive behaviour is gone.
+    expect(fs.readFileSync(path.join(tmp, 'knowledge.md'), 'utf8')).not.toContain('_[archived');
   });
 
-  it('addLongTermMemory rebalances losslessly when a write pushes it over budget', () => {
-    for (let i = 0; i < 6; i++) {
-      store.addLongTermMemory(`section-${i}`, 'c'.repeat(2483));
+  it('addLongTermMemory refuses a write that would exceed the HARD ceiling (fail-closed)', () => {
+    let last: { ok: boolean; reason?: string } = { ok: true };
+    for (let i = 0; i < 40; i++) {
+      last = store.addLongTermMemory(`s-${i}`, 'c'.repeat(2500));
+      if (!last.ok) break;
     }
-    const res = store.addLongTermMemory('overflow', 'extra content');
-    expect(res.ok).toBe(true);
-    // Never refused, never silently dropped: within budget, new section discoverable.
-    expect(store.getLongTermMemory().length).toBeLessThanOrEqual(15000);
-    expect(store.getLongTermMemory()).toContain('## overflow');
+    expect(last.ok).toBe(false);
+    expect(last.reason).toMatch(/limit|ceiling|上限/i);
+  });
+
+  it('legacy over-limit curated content is REPORTED, never silently rewritten (H19)', () => {
+    const file = path.join(tmp, 'knowledge.md');
+    fs.writeFileSync(file, `## oversized\n${'a'.repeat(3500)}\n`, 'utf8');
+
+    const before = fs.readFileSync(file, 'utf8');
+    store.enforceMemoryBudgets();
+    // Old behaviour: archived the body and left a stub. New: byte-for-byte untouched.
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(store.getLongTermSection('oversized') ?? '').toContain('a'.repeat(3500));
+  });
+
+  it('per-section limit still refuses an oversized section write', () => {
+    const res = store.addLongTermMemory('huge', 'a'.repeat(3500));
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/limit|上限/i);
   });
 });
 
@@ -626,7 +625,10 @@ describe('MemoryStore — Audit trail: daily-logs', () => {
     }
     store.compactSessionOnDemand(session.id, 5);
     // The paged-out messages must survive in the external store as fragments.
-    const allFragments = store.getEntries().filter((e) => e.type === 'conversation_fragment');
+    // H16: fragments live in their OWN pool — query them by type. A bare
+    // `getEntries()` returns the agent's observation entries (which never contain
+    // fragments any more), so it must NOT be used to find them.
+    const allFragments = store.getEntries('conversation_fragment');
     const frag = allFragments.find((e) => (e.metadata as Record<string, unknown>)?.sessionId === session.id);
     expect(frag).toBeDefined();
     expect(frag!.content).toContain('secret payload: keep me');

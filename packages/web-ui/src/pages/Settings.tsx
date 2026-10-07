@@ -238,11 +238,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [agentMaxIter, setAgentMaxIter] = useState(200);
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentMsg, setAgentMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
-  // Cognitive Preparation Pipeline settings
-  const [cppEnabled, setCppEnabled] = useState(false);
-  const [cppMaxDepth, setCppMaxDepth] = useState(1);
-  const [cppSaving, setCppSaving] = useState(false);
-  const [cppMsg, setCppMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   // Concurrent Processing settings
   const [concEnabled, setConcEnabled] = useState(false);
   const [concMaxWorkers, setConcMaxWorkers] = useState(3);
@@ -324,10 +319,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     api.settings.getAgent()
       .then(d => {
         if (d && typeof d.maxToolIterations === 'number') setAgentMaxIter(d.maxToolIterations);
-        if (d?.cognitive) {
-          setCppEnabled(d.cognitive.enabled ?? false);
-          setCppMaxDepth(d.cognitive.maxDepth ?? 1);
-        }
         if (d?.concurrent) {
           setConcEnabled(d.concurrent.enabled ?? true);
           setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
@@ -2177,66 +2168,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
             </div>
             {agentMsg && <Msg type={agentMsg.type} text={agentMsg.text} />}
-          </div>
-        </Section>
-
-        <Section title={t('cognitive.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <div className="text-xs text-fg-tertiary">{t('cognitive.description')}</div>
-
-            {/* Enable toggle */}
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('cognitive.enabled')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('cognitive.enabledDesc')}</div>
-              </div>
-              <button
-                onClick={() => { setCppEnabled(!cppEnabled); setCppMsg(null); }}
-                className={`relative w-10 h-5 rounded-full transition-colors ${cppEnabled ? 'bg-brand-500' : 'bg-fg-quaternary'}`}
-              >
-                <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${cppEnabled ? 'translate-x-5' : ''}`} />
-              </button>
-            </div>
-
-            {/* Max Depth */}
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('cognitive.maxDepth')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('cognitive.maxDepthDesc')}</div>
-              </div>
-              <select
-                value={cppMaxDepth}
-                onChange={e => { setCppMaxDepth(Number(e.target.value)); setCppMsg(null); }}
-                className="px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary"
-              >
-                <option value={1}>D1 — {t('cognitive.depthD1')}</option>
-                <option value={2}>D2 — {t('cognitive.depthD2')}</option>
-                <option value={3}>D3 — {t('cognitive.depthD3')}</option>
-              </select>
-            </div>
-
-            {/* Save */}
-            <div className="flex items-center justify-end gap-2">
-              <button
-                disabled={cppSaving}
-                onClick={async () => {
-                  setCppSaving(true); setCppMsg(null);
-                  try {
-                    const d = await api.settings.updateAgent({
-                      cognitive: { enabled: cppEnabled, maxDepth: cppMaxDepth },
-                    });
-                    setCppEnabled(d.cognitive.enabled);
-                    setCppMaxDepth(d.cognitive.maxDepth ?? 1);
-                    setCppMsg({ type: 'ok', text: t('cognitive.saved') });
-                  } catch { setCppMsg({ type: 'err', text: t('cognitive.failedToSave') }); }
-                  setCppSaving(false);
-                }}
-                className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
-              >
-                {cppSaving ? t('common:saving') : t('common:save')}
-              </button>
-            </div>
-            {cppMsg && <Msg type={cppMsg.type} text={cppMsg.text} />}
           </div>
         </Section>
 
