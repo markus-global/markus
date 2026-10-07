@@ -53,7 +53,7 @@ import {
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle } from './memory/dream-trigger.js';
-import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
+import { shouldPersistTurnReply } from './recovered-reply-persist.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
@@ -617,8 +617,21 @@ export class Agent {
   private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private browserCloseTabsHelper?: (sessionId: string) => string | null;
-  /** 【P3】回合回复落库回调：由 org-manager 装配注入（见 setAssistantReplyPersister）。 */
-  private assistantReplyPersister?: (args: { sessionId: string; agentId: string; reply: string; tokensUsed: number }) => Promise<void>;
+  /**
+   * 【P3→P5】回合回复落库回调：由 org-manager 装配注入（见 setAssistantReplyPersister）。
+   * - `sessionId`：已确知的 DB 会话 id（cs_*）——直接写；
+   * - `memorySessionId`：只知道内存会话 id（如 callback_result 回到发起它的那一轮）时，
+   *   由装配层用 `chat_sessions.metadata.memorySessionId` 反查 cs_*；
+   * - `origin`：回复来源（如 `'callback_result'`），供前端以「后台任务完成」形态呈现。
+   */
+  private assistantReplyPersister?: (args: {
+    sessionId?: string;
+    memorySessionId?: string;
+    agentId: string;
+    reply: string;
+    tokensUsed: number;
+    origin?: string;
+  }) => Promise<void>;
   /**
    * Set when the agent calls the `end_turn` tool — an explicit, typed "this turn is
    * over, send nothing" signal. Read by the tool-loop guard (all 5 entry points) to
@@ -1995,10 +2008,16 @@ export class Agent {
     const senderInfo = item.metadata?.senderName
       ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user', isFirstConversation: item.metadata.isFirstConversation as boolean | undefined }
       : undefined;
+    // P5：回合收尾的**单一出口**。这里只**登记**最终回复；真正的「（无发起方时）落库 →
+    // 结算响应」序列在 finally 里按固定顺序执行。
+    //
+    // 为什么不能在这里直接 resolve：顺序不能反。无发起方的 turn（callback_result /
+    // 重启恢复项）必须**先把回复写回 DB 会话（cs_*）、再让调用方观察到「回合结束」** ——
+    // 前端收到 done 会立刻从 DB 重拉消息，写晚了气泡就缺失（P3 起就依赖这个顺序）。
+    // 把落库放在 resolve 之后（例如放在 finally 的后半段）看似更简单，实则会**回归**
+    // 「回复已结束但 DB 里还没有」的竞态。
     const resolveResponse = (reply: string) => {
-      if (typeof item.metadata?.responsePromise?.resolve === 'function') {
-        item.metadata.responsePromise.resolve(stripCompletionMarker(reply));
-      }
+      pendingReply = reply;
     };
     const rejectResponse = (err: unknown) => {
       if (typeof item.metadata?.responsePromise?.reject === 'function') {
@@ -2011,6 +2030,9 @@ export class Agent {
     // P1：本轮会话身份（在 resolveTurnSession 之后填充）——用于会话状态机。
     let activeSessionKey: string | undefined;
     let turnFailed = false;
+    // P5：本轮最终回复（在 resolveResponse 登记）——真正的「落库 → 结算响应」序列在 finally
+    // 里按固定顺序执行，见那里的说明。
+    let pendingReply: string | undefined;
     // P2b：每轮开始清空「截断」标记。
     this.turnEndedTruncated = false;
 
@@ -2155,13 +2177,6 @@ export class Agent {
           );
           if (needsTurnCompletion && item.sourceType !== 'human_chat') {
             reply = await this.ensureTurnCompleted(reply, opts.sessionId ?? this.currentSessionId);
-          }
-          // P3: 重启后从 DB 恢复的排队项（发起方 responsePromise 随 JSON 丢失，SSEHandler /
-          // api-server 请求线程已死）→ worker 兜底把回复写回 DB 会话（cs_*），否则前端
-          // 从 DB 拉不到回复（刷新也不显示）。正常路径（发起方 promise 存活）由发起方
-          // persistAssistantMessage，这里不写（避免双写）——判据见 shouldPersistRecoveredReply。
-          if (item.sourceType === 'human_chat') {
-            await this.persistRecoveredReplyIfNeeded(reply, extra, item.metadata);
           }
           resolveResponse(reply);
           return reply;
@@ -2504,6 +2519,27 @@ export class Agent {
             : undefined,
         );
         this.turnEndedTruncated = false;
+      }
+
+      // P5：**单一落库执行点 + 顺序保证**。过去只有 human_chat 分支调用兜底落库，于是
+      // `callback_result`（background_exec 完成 / a2a in_session 回复）的回复只写进
+      // MemoryStore —— 用户在 Team Chat 里永远看不到后台任务的结果。现在统一在此判定
+      // 「谁是这一轮回复的落库执行者」（见 shouldPersistTurnReply）：发起方还活着由它自己
+      // 写，否则 worker 兜底写回会话。白名单见 CHAT_CONVERSATION_TURN_TYPES。
+      //
+      // 顺序：落库 **先于** resolve —— 调用方一旦观察到回合结束就会去 DB 拉消息，
+      // 反过来会重现「回复已结束但 DB 里还没有」的竞态（P3 契约）。
+      if (pendingReply !== undefined) {
+        await this.persistTurnReplyIfUnowned(
+          pendingReply,
+          extra,
+          item.metadata,
+          activeSessionKey,
+          item.sourceType === 'callback_result' ? 'callback_result' : undefined,
+        );
+        if (typeof item.metadata?.responsePromise?.resolve === 'function') {
+          item.metadata.responsePromise.resolve(stripCompletionMarker(pendingReply));
+        }
       }
 
       // Inject concise activity summary into main session for non-chat items
@@ -2926,6 +2962,20 @@ export class Agent {
     if (!this.currentSessionId) return null;
     for (const [dbId, memId] of this.dbSessionMap) {
       if (memId === this.currentSessionId) return dbId;
+    }
+    return null;
+  }
+
+  /**
+   * 【P5】按**内存会话 id** 反查它绑定的 DB 会话 id（cs_*）。
+   * `dbSessionMap` 是 db→mem 的单向表，反向遍历即可；重启后该表为空，装配层会用
+   * `chat_sessions.metadata.memorySessionId` 兜底（见 org-manager 的
+   * `resolveChatSessionForMemorySession`）。
+   */
+  getDbSessionIdForMemorySession(memorySessionId: string): string | null {
+    if (!memorySessionId) return null;
+    for (const [dbId, memId] of this.dbSessionMap) {
+      if (memId === memorySessionId) return dbId;
     }
     return null;
   }
@@ -3773,6 +3823,25 @@ export class Agent {
     'notify_user', 'escalation', 'task_completed', 'task_failed',
   ]);
 
+  /**
+   * P5：哪些 sourceType 的 turn **可能属于某个用户对话会话**（其回复因此要经受
+   * `shouldPersistTurnReply` 的落库判定）。
+   *
+   * 用**白名单**而不是「所有类型」：心跳 / 任务 / 系统 / 记忆整理等内部 turn 的输出
+   * 绝不能泄漏进用户对话。它们多数用 hb_* / task_* / sys_* 会话（本就没有 cs_* 绑定），
+   * 但白名单让「不泄漏」成为**结构保证**，而不是依赖下游反查恰好失败。
+   *
+   * 目前纳入：
+   *  - `human_chat`：正常聊天（正常路径由发起方落库；重启恢复项由 worker 兜底）。
+   *  - `callback_result`：异步回调回到发起它的那一轮 —— 过去完全不可见（P5 修复）。
+   *
+   * 未纳入 `a2a_message`：其分支的会话身份取自 `opts.sessionId`（a2a_* / awaitOrigin），
+   * 并未反映到 `activeSessionKey`，纳入会有「写错会话」的风险（见文档 §16 残余）。
+   */
+  private static readonly CHAT_CONVERSATION_TURN_TYPES = new Set<string>([
+    'human_chat', 'callback_result',
+  ]);
+
   injectActivityToMainSession(opts: {
     type: string;
     summary: string;
@@ -4303,54 +4372,75 @@ export class Agent {
   }
 
   /**
-   * 【P3】注入「回合回复持久化」回调。当 worker 处理一个**重启后从 DB 恢复**的排队项
-   * （发起方的 responsePromise 随 JSON 序列化丢失）时，正常负责回写 DB 会话（cs_*）的
-   * SSEHandler / api-server 请求线程已死 —— 由处理该消息的 worker 兜底把回复写回 DB，
-   * 否则前端刷新也拉不到回复。org-manager 在装配时注入（指向走 chatSessionRepo 的落库）。
+   * 【P3→P5】注入「回合回复持久化」回调。当 worker 处理一个**没有活发起方**的 turn 时
+   * （重启后从 DB 恢复的排队项、或本来就无发起方的 `callback_result`），正常负责回写 DB
+   * 会话（cs_*）的 SSEHandler / api-server 请求线程不存在 —— 由处理该消息的 worker 兜底
+   * 把回复写回 DB，否则前端永远拉不到它。org-manager 在装配时注入（指向走 chatSessionRepo
+   * 的落库 + 会话级 WS 广播）。
    */
   setAssistantReplyPersister(
-    cb: ((args: { sessionId: string; agentId: string; reply: string; tokensUsed: number }) => Promise<void>) | null,
+    cb: ((args: {
+      sessionId?: string;
+      memorySessionId?: string;
+      agentId: string;
+      reply: string;
+      tokensUsed: number;
+      origin?: string;
+    }) => Promise<void>) | null,
   ): void {
     this.assistantReplyPersister = cb ?? undefined;
   }
 
   /**
-   * 【P3】重启恢复的排队项：若非流式路径拿到回复后，发起方 promise 已死且可定位 DB 会话
-   * （extra.sessionId / metadata.dbSessionId，二者均随 JSON 保留）→ worker 兜底落库。
-   * 判据见 `shouldPersistRecoveredReply`（core/recovered-reply-persist.ts）：
-   * - responsePromise.resolve 仍是函数 → 发起方活着（SSEHandler / api-server 请求线程），
-   *   由它 persistAssistantMessage，worker 绝不重复写（避免双写）；
-   * - 无任何 DB 会话身份 → 无法定位目标会话，宁可缺失也不落错（不写）。
+   * 【P3→P5】回合回复落库 —— 由 `processMailboxItemCore` 的 finally **统一调用**
+   * （单一执行点），判定「谁是这一轮回复的落库执行者」：
+   *  - 发起方（HTTP/SSE 请求线程）promise 仍存活 → 它自己落库，worker 不写（避免双写）；
+   *  - 否则 worker 兜底写回 DB 会话（cs_*）。两类触发：
+   *      (a) 重启后从 DB 恢复的排队项（闭包随 JSON 丢失）；
+   *      (b) 本来就没有发起方的 turn —— `callback_result`：过去回复只写 MemoryStore，
+   *          用户在 Team Chat 里**永远看不到**后台任务的结果（P5 修复）。
+   * 目标会话：extra.sessionId / metadata.dbSessionId（cs_*）优先；只有内存会话 id 时，
+   * 交给装配层（org-manager）用 `chat_sessions.metadata.memorySessionId` 反查 cs_*。
+   * 判据见 `shouldPersistTurnReply`（core/recovered-reply-persist.ts）。
    */
-  async persistRecoveredReplyIfNeeded(
+  async persistTurnReplyIfUnowned(
     reply: string,
     extra: Record<string, unknown>,
     metadata: { dbSessionId?: unknown; responsePromise?: { resolve?: unknown } } | undefined,
+    memorySessionId: string | undefined,
+    origin?: string,
   ): Promise<void> {
     if (!reply || typeof reply !== 'string' || !reply.trim()) return;
     if (!this.assistantReplyPersister) return;
-    const decision = shouldPersistRecoveredReply({
+    const decision = shouldPersistTurnReply({
       resolveIsFunction: typeof (metadata?.responsePromise as { resolve?: unknown } | undefined)?.resolve === 'function',
       sessionId: extra.sessionId,
       dbSessionId: metadata?.dbSessionId,
+      memorySessionId,
     });
-    if (!decision.shouldPersist || !decision.sessionId) return;
+    if (!decision.shouldPersist || (!decision.sessionId && !decision.memorySessionId)) return;
     try {
-      await this.assistantReplyPersister!({
-        sessionId: decision.sessionId,
+      await this.assistantReplyPersister({
+        ...(decision.sessionId ? { sessionId: decision.sessionId } : {}),
+        ...(decision.memorySessionId ? { memorySessionId: decision.memorySessionId } : {}),
         agentId: this.id,
         reply,
         tokensUsed: this.getTokensUsed(),
+        ...(origin ? { origin } : {}),
       });
-      log.info('P3: worker persisted recovered reply to DB session', {
+      log.info('P5: turn reply persisted to DB chat session', {
         agentId: this.id,
         sessionId: decision.sessionId,
+        memorySessionId: decision.memorySessionId,
+        reason: decision.reason,
+        origin,
         replyLength: reply.length,
       });
     } catch (err) {
-      log.warn('P3: failed to persist recovered reply', {
+      log.warn('P5: failed to persist turn reply', {
         agentId: this.id,
         sessionId: decision.sessionId,
+        memorySessionId: decision.memorySessionId,
         error: String(err),
       });
     }

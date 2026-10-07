@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { Agent } from '../src/agent.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { RoleTemplate } from '@markus/shared';
-import { shouldPersistRecoveredReply } from '../src/recovered-reply-persist.js';
+import { shouldPersistTurnReply } from '../src/recovered-reply-persist.js';
 
 let tempDir: string;
 
@@ -66,12 +66,21 @@ function makeMockRouter(): LLMRouter {
 }
 
 type PrivateAgent = Agent & {
-  persistRecoveredReplyIfNeeded(
+  persistTurnReplyIfUnowned(
     reply: string,
     extra: Record<string, unknown>,
     metadata: Record<string, unknown> | undefined,
+    memorySessionId: string | undefined,
+    origin?: string,
   ): Promise<void>;
-  setAssistantReplyPersister(cb: ((args: { sessionId: string; agentId: string; reply: string; tokensUsed: number }) => Promise<void>) | null): void;
+  setAssistantReplyPersister(cb: ((args: {
+    sessionId?: string;
+    memorySessionId?: string;
+    agentId: string;
+    reply: string;
+    tokensUsed: number;
+    origin?: string;
+  }) => Promise<void>) | null): void;
 };
 
 function createTestAgent(): PrivateAgent {
@@ -97,9 +106,9 @@ afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-describe('shouldPersistRecoveredReply（纯决策：谁是回复落库的执行者）', () => {
+describe('shouldPersistTurnReply（纯决策：谁是回复落库的执行者）', () => {
   it('恢复项：responsePromise 非函数 ∧ 带 DB 会话 → worker 须回写', () => {
-    const d = shouldPersistRecoveredReply({
+    const d = shouldPersistTurnReply({
       resolveIsFunction: false,
       sessionId: 'cs_restored_1',
       dbSessionId: undefined,
@@ -109,7 +118,7 @@ describe('shouldPersistRecoveredReply（纯决策：谁是回复落库的执行�
   });
 
   it('恢复项：extra.sessionId 缺失但有 metadata.dbSessionId → 取 dbSessionId 回写', () => {
-    const d = shouldPersistRecoveredReply({
+    const d = shouldPersistTurnReply({
       resolveIsFunction: false,
       sessionId: undefined,
       dbSessionId: 'cs_restored_2',
@@ -119,7 +128,7 @@ describe('shouldPersistRecoveredReply（纯决策：谁是回复落库的执行�
   });
 
   it('正常 SSE / 正常非流式（responsePromise 是函数，发起方等待中自写）→ 不触发 worker 回写', () => {
-    const d = shouldPersistRecoveredReply({
+    const d = shouldPersistTurnReply({
       resolveIsFunction: true,
       sessionId: 'cs_live',
       dbSessionId: 'cs_live',
@@ -128,7 +137,7 @@ describe('shouldPersistRecoveredReply（纯决策：谁是回复落库的执行�
   });
 
   it('SSE 断连但进程活着（responsePromise 仍在）→ 不触发 worker 回写（api-server 仍负责）', () => {
-    const d = shouldPersistRecoveredReply({
+    const d = shouldPersistTurnReply({
       resolveIsFunction: true,
       sessionId: 'cs_live_nonsse',
       dbSessionId: 'cs_live_nonsse',
@@ -137,12 +146,48 @@ describe('shouldPersistRecoveredReply（纯决策：谁是回复落库的执行�
   });
 
   it('恢复项：无任何 DB 会话身份 → 无法定位目标会话，不写（宁可缺也不落错）', () => {
-    const d = shouldPersistRecoveredReply({
+    const d = shouldPersistTurnReply({
       resolveIsFunction: false,
       sessionId: undefined,
       dbSessionId: undefined,
     });
     expect(d.shouldPersist).toBe(false);
+    expect(d.reason).toBe('no-target');
+  });
+
+  // ── P5：无发起方的 turn（callback_result）只有内存会话 id ────────────────────
+  it('【P5】只有内存会话 → 须交给装配层反查 cs_*（不是不写，而是换一级定位）', () => {
+    const d = shouldPersistTurnReply({
+      resolveIsFunction: false,
+      sessionId: undefined,
+      dbSessionId: undefined,
+      memorySessionId: 'sess_origin',
+    });
+    expect(d.shouldPersist).toBe(true);
+    expect(d.memorySessionId).toBe('sess_origin');
+    expect(d.sessionId).toBeUndefined();
+    expect(d.reason).toBe('mem-only');
+  });
+
+  it('【P5】cs_* 与内存会话同时存在 → cs_* 一级优先（行为与 P3 逐字一致）', () => {
+    const d = shouldPersistTurnReply({
+      resolveIsFunction: false,
+      sessionId: 'cs_known',
+      memorySessionId: 'sess_origin',
+    });
+    expect(d.shouldPersist).toBe(true);
+    expect(d.sessionId).toBe('cs_known');
+    expect(d.reason).toBe('cs-known');
+  });
+
+  it('【P5】空白字符串不算身份（不得落到空会话）', () => {
+    const d = shouldPersistTurnReply({
+      resolveIsFunction: false,
+      sessionId: '   ',
+      memorySessionId: '',
+    });
+    expect(d.shouldPersist).toBe(false);
+    expect(d.reason).toBe('no-target');
   });
 });
 
@@ -152,10 +197,11 @@ describe('P3 恢复项：worker 兜底回写 DB 会话', () => {
     const persister = vi.fn(async () => {});
     agent.setAssistantReplyPersister(persister);
 
-    await agent.persistRecoveredReplyIfNeeded(
+    await agent.persistTurnReplyIfUnowned(
       'Hello from restored turn.',
       { stream: true, sessionId: 'cs_restored_1' },
       { senderId: 'user', dbSessionId: 'cs_restored_1' },
+      undefined,
     );
 
     expect(persister).toHaveBeenCalledTimes(1);
@@ -170,10 +216,11 @@ describe('P3 恢复项：worker 兜底回写 DB 会话', () => {
     const persister = vi.fn(async () => {});
     agent.setAssistantReplyPersister(persister);
 
-    await agent.persistRecoveredReplyIfNeeded(
+    await agent.persistTurnReplyIfUnowned(
       'live reply',
       { stream: true, onEvent: () => {}, sessionId: 'cs_live' },
       { senderId: 'user', dbSessionId: 'cs_live', responsePromise: { resolve: () => {}, reject: () => {} } },
+      undefined,
     );
 
     expect(persister).not.toHaveBeenCalled();
@@ -184,12 +231,39 @@ describe('P3 恢复项：worker 兜底回写 DB 会话', () => {
     const persister = vi.fn(async () => {});
     agent.setAssistantReplyPersister(persister);
 
-    await agent.persistRecoveredReplyIfNeeded(
+    await agent.persistTurnReplyIfUnowned(
       '',
       { stream: true, sessionId: 'cs_restored_3' },
       { dbSessionId: 'cs_restored_3' },
+      undefined,
     );
 
     expect(persister).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 【P5】无发起方的 turn（callback_result）——只有内存会话 id 时也必须落库，
+   * 而且要把 origin 一并交给装配层（前端据此渲染「后台任务完成」标记）。
+   */
+  it('【P5】无发起方的 turn：persister 收到 memorySessionId + origin，且不带 sessionId', async () => {
+    const agent = createTestAgent();
+    const persister = vi.fn(async () => {});
+    agent.setAssistantReplyPersister(persister);
+
+    await agent.persistTurnReplyIfUnowned(
+      'background job finished: 42 tests green',
+      { callbackType: 'background_exec' },
+      {},
+      'sess_origin',
+      'callback_result',
+    );
+
+    expect(persister).toHaveBeenCalledTimes(1);
+    const arg = persister.mock.calls[0]![0];
+    expect(arg.memorySessionId).toBe('sess_origin');
+    expect(arg.sessionId).toBeUndefined();
+    expect(arg.origin).toBe('callback_result');
+    expect(arg.agentId).toBe(AGENT_ID);
+    expect(arg.reply).toBe('background job finished: 42 tests green');
   });
 });

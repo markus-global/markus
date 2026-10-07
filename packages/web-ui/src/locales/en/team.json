@@ -226,6 +226,7 @@
       "requestChanges": "Request Changes"
     },
     "badgeLabel": "Notification",
+    "backgroundTaskBadge": "Background task finished",
     "approvalType": {
       "task": "Task",
       "requirement": "Requirement",

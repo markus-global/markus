@@ -2418,6 +2418,31 @@ export class SqliteChatSessionRepo {
     }
   }
 
+  /**
+   * 【P5】按**内存会话 id** 反查 DB 会话 id（cs_*）。
+   *
+   * 为什么需要：`callback_result`（`background_exec` 完成、a2a in_session 回复）回到发起它的
+   * 那一轮时，只知道**内存会话 id**（`sess_*`）。要把回复写回正确的对话、并把「后台任务完成」
+   * 气泡推给该对话，必须先把内存会话映射回 cs_*。绑定由
+   * `updateSessionMetadata(dbSessionId, { memorySessionId })` 写入（org-manager 的
+   * `persistMemorySessionBinding`）。
+   *
+   * 纯**读**：不新增列、不改 schema、不动存量数据；旧会话没有该元数据时返回 null
+   * （调用方宁可缺失也不落错会话）。
+   */
+  findSessionIdByMemorySessionId(agentId: string, memorySessionId: string): string | null {
+    if (!agentId || !memorySessionId) return null;
+    const row = this.db
+      .prepare(
+        `SELECT id FROM chat_sessions
+          WHERE agent_id = ? AND metadata IS NOT NULL
+            AND json_extract(metadata, '$.memorySessionId') = ?
+          ORDER BY last_message_at DESC LIMIT 1`,
+      )
+      .get(agentId, memorySessionId) as { id: string } | undefined;
+    return row?.id ?? null;
+  }
+
   getMessages(sessionId: string, limit = 50, before?: string) {
     let q = 'SELECT * FROM chat_messages WHERE session_id = ?';
     const vals: SqlParams = [sessionId];

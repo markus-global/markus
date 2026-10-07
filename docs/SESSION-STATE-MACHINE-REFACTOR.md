@@ -405,6 +405,114 @@ getSessionStates() = deriveSessionStates(注册表.list(), 队列按会话归组
 | 全量 core + storage + shared | ✅ **268 文件 / 3607 通过 / 0 失败**（10 skipped） |
 | `tsc -b packages/cli` / `packages/org-manager` | ✅ 干净 |
 
+---
+
+## 16. P5 落地记录（✅ 已实现并验证）——`callback_result` 的回复对用户可见（Team Chat 气泡）
+
+**产品决策（老板 2026-10-07）**：形态 **B** —— 后台结果在会话里呈现为**带「后台任务完成」标记的独立气泡**
+（与普通回复同源同气泡形态，只多加 provenance 标记）。理由：同形保证「它就是 agent 在会话里说的话」；
+标记避免**因果混淆**（用户会以为 agent 在回答他刚才那个问题）。
+
+### 16.1 实现（B1–B3）
+
+| 件 | 位置 | 说明 |
+|---|---|---|
+| 判据泛化 | `core/recovered-reply-persist.ts` | `shouldPersistTurnReply`：**两级定位**。一级 `extra.sessionId` → `metadata.dbSessionId`（cs_*，直接写）；二级**内存会话 id** → 交装配层反查 cs_*。都定位不到 → 不写（宁可缺失也不落错会话） |
+| **单一执行点** | `core/agent.ts` `processMailboxItemCore` 的 `finally` | 删掉 `human_chat` 分支里那处**专用**调用；`resolveResponse` 退化为**只登记**最终回复，落库/结算在 finally 按固定顺序执行（见 §17 —— 顺序是硬约束） |
+| 白名单 | `Agent.CHAT_CONVERSATION_TURN_TYPES` | 只有 `human_chat` / `callback_result` 的回复**可能属于用户对话**。白名单而非「所有类型」：心跳/任务/系统/记忆整理轮的输出绝不泄漏进用户对话 —— 让「不泄漏」成为**结构保证**，而不是依赖下游反查恰好失败 |
+| 反向索引 | `storage` `findSessionIdByMemorySessionId` | 纯**读** `chat_sessions.metadata.memorySessionId`（`json_extract`）。**不新增列、不改 schema、不动存量数据**；无绑定返回 null |
+| 装配层 | `org-manager/api-server.ts` | `resolveChatSessionForMemorySession`（活 agent 绑定表 → 持久绑定兜底）+ `broadcastOutOfBandAgentReply`（复用既有 `chat:proactive_message`，**不新增事件类型**） |
+| 前端 | `web-ui` | `ChatMsg.isBackgroundTask/origin` + `BackgroundTaskBadge`（zh/en/es）+ `dbMsgToChat` 历史行映射 |
+
+**关键设计**：`resolveIsFunction`（发起方 promise 是否存活）是**唯一钥匙**，与 P3 逐字一致 —— P5 没有新增机制，
+只是把既有机制**覆盖到「没有发起方的 turn」**（`callback_result` 从来没有 `responsePromise` ⇒ worker 即 owner）。
+落库后**主动广播**：无发起方 ⇒ 没有 SSE 客户端在等这条回复，不广播则用户必须刷新才看得到。
+
+### 16.2 测试
+
+| 用例 | 断言 |
+|---|---|
+| `p5-callback-reply-visible.test.ts` | callback_result（只有内存会话）→ persister 被调用且带 `memorySessionId`+`origin`；`system_event` 不落库（白名单护栏）；白名单结构断言；无 persister 时安全 no-op |
+| `p3-restart-reply-persist.test.ts`（改名 + 扩） | 原 P3 契约逐字保留（cs_* 一级优先、发起方存活不双写）；新增 mem-only / 空白身份不算身份 |
+| `storage/p5-memory-session-binding.test.ts` | 反查命中 / 未绑定 null / **不跨 agent** / 旧元数据无该键 → null / 空参安全 |
+| `ChatHelpers.test.ts`（扩） | `origin==='callback_result'` → 标记（含刷新后）；普通回复不误标；未知 origin 不标记 |
+
+**红线验证（红 → 绿）**：把 finally 那处落库执行点临时禁用 → 新增的 callback 用例**立即变红**（persister 0 次），
+恢复后转绿 —— 证明该护栏不是空转。
+
+### 16.3 残余（诚实列）
+
+- **B4 未做**：会话头部按 `cs_*` 显示「该会话处理中」**没实现**。我上一轮汇报把它说得太满，此处更正：
+  P4b 接的是 **agent 级** `isProcessing`，不是「这个会话在忙」。要标到**具体某一个** Team Chat 对话上，
+  需要 per-session → `cs_*` 的映射端点（后端已有 `getSessionStates()`，缺的是「按会话暴露」的读接口 + 前端消费）。
+- **`a2a_message` 未纳入白名单**：其分支的会话身份取自 `opts.sessionId`（`a2a_*` / `awaitOrigin`），
+  并未反映到 `activeSessionKey`，纳入会有**写错会话**的风险。要纳入需先把该分支的会话身份提升到 `activeSessionKey`
+  （属 P1 的会话身份收敛残留）。当前语义：a2a 回复不落 Team Chat 气泡（保持旧行为，非回归）。
+- **过程仍不可见**：本阶段只解决「**结果**呈现」。回调 turn 的处理**过程**（工具调用、日志）不走 SSE
+  ⇒ 仍不产生流式气泡；用户能看到的是「处理中」（B4，未做）+ 结束后的结果气泡。
+
+### 16.4 顺序回归与更正（P5 引入 → 已修）
+
+**问题**：一条 `callback_result`（`background_exec` 完成、`agent_send_message reply_in_session` 的对端回复等）
+若绑定的会话正是某个 Team Chat 对话，它的**处理过程与结果**会不会作为消息气泡出现在该对话里？
+
+**结论：目前不会** —— 过程看不到，结果也看不到。
+
+**证据（分支 `refactor/session-state-machine`）**
+
+1. 消费端 `agent.ts` `case 'callback_result'`：走 `handleMessage()` **非流式**分支 —— 不传 `extra.onEvent`、
+   不经 `handleMessageStream` ⇒ 无 SSE token、无工具 segment ⇒ 前端既无流式气泡也无「输出中」。
+2. 落库：chat 气泡（`cs_*`）的**全部写入者**只有
+   - `api-server.persistChatTurn / persistUserMessage / persistAssistantMessage`（HTTP / SSE 请求线程；
+     或 P3 的 `persistRecoveredReplyIfNeeded` 兜底 —— 且**只对 `human_chat`** 调用）；
+   - `cli/start.ts` 的三个 eventBus 监听（`agent:activity-log` → 主会话、`agent:notify-user` → 目标会话、
+     `agent:escalation` → 主会话）。
+   `callback_result` **一条都不走** ⇒ 不落库、不 WS 广播 ⇒ 无气泡。
+3. `injectActivityToMainSession` 被 `SESSION_INJECT_TYPES = {notify_user, escalation, task_completed,
+   task_failed}` 闸住 ⇒ `callback_result` 连「主会话活动气泡」都没有。
+4. 唯一实际效果：`memory.appendMessage(currentSessionId = originSessionId)` ⇒ 只进**内存会话上下文**
+   （LLM 下次在该会话发言时会「记得」），用户永远看不到。
+
+**顺带承认的 P4 缺口**：P4b 只把 per-session 权威状态接到 **agent 级** 布尔（`isProcessing`）。
+要显示「**这个**会话在忙」，需要 registry key（内存 `sess_*`）→ 会话 id（`cs_*`）的**反向**映射；
+而 `Agent.getDbSessionId()` 只是遍历 `dbSessionMap` 找**当前**会话的 db id（重启后该 Map 为空，
+须靠 `chat_sessions.metadata.memorySessionId` 反查），并未提供持久反向索引。
+
+**根因归类**：**R1（一个事实多个/缺失写者）**—— 「一个 turn 属于哪个会话」只在内存里**单向**存在
+（db→mem），没有一等、双向、可持久的事实源。于是落库不知道写哪里、前端不知道标哪个、状态不知道挂哪个。
+
+### 16.4 顺序回归与更正（P5 引入 → 已修）
+
+**现象**：`agent-concurrent-cancel-isolation` 在我把落库执行点挪到 `finally` 之后，从 4/4 绿变成 **3/3 稳定红**
+（断言：某 worker `userCancelCurrent` 仍为 `true`）。
+
+**先排除、再归因**：`git stash` 到 HEAD 跑同一用例 → **4/4 绿** ⇒ 确认是我引入的回归，
+**不是既有 flaky**（我先前「这是时序脆弱用例」的判断是错的，此处更正）。
+
+**插桩取证**（临时 TRACE，已移除）：`requestUserCancelForWorker(1)` 置位后，worker 1 在 attention 里
+**已被发布为 `idle` 且无 focus**，但它的 delegate `finally → clearProcessingCancel()` 还没跑
+⇒ 断言窗口内看到 `cancel:true`。也就是说：**「worker 已空闲」先于「取消标志已清」被发布**。
+
+**根因**：我的重构把 `resolveResponse`（resolve 发起方 promise）从「落库**之后**」搬到了「落库**之前**」——
+破坏了 P3 的**顺序契约**：调用方一旦观察到回合结束就会去 DB 拉消息，写晚了气泡就缺失。
+**这是一个真实的行为回归，不只是测试问题。**
+
+**修法（结构性，不是调测试）**：`resolveResponse` 退化为**只登记**最终回复；
+`finally` 按 **结算会话状态 → 落库 → resolve 发起方** 的固定顺序执行。单一执行点保留，顺序契约恢复。
+→ 该用例 20/20 绿。
+
+**教训**：在 `finally` 里加一个 `await` 并非「无害的时序微扰」——它移动的是**契约可见性边界**。
+凡「先写库、再对外表态」这类顺序契约，必须写在**同一处**并加注释锁住，否则下一次「顺手重构」就会把它搬走。
+
+## 17. P5 验证记录（✅）
+
+| 项 | 结果 |
+|---|---|
+| `tsc -b` core / storage / org-manager / web-ui / cli | ✅ 干净（`desktop` 3 处报错为**既有**：`ws` 缺类型声明 + `window.ts` 可空 —— 均非本次触碰文件） |
+| 全量 core + storage + web-ui + shared | ✅ **320 文件 / 4378 通过 / 0 失败**（10 skipped） |
+| 红线验证（临时禁用落库执行点 → 新用例立即变红 → 恢复转绿） | ✅ 红 → 绿 |
+| DB 兼容（老板点名） | ✅ 仅**纯读**新增（`json_extract` 查询）；**无新增列、无 schema 变更、无存量数据改动、可原地回滚** |
+
 
 
 

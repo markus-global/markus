@@ -73,7 +73,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
+  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; origin?: string; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
   tokensUsed: number;
   createdAt: string;
 }

@@ -88,7 +88,7 @@ import {
 } from './ChatHelpers.ts';
 import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
 import {
-  NotificationBadge, ChatAgentLink, AvatarPopover, MessageActions, RememberModal,
+  NotificationBadge, BackgroundTaskBadge, ChatAgentLink, AvatarPopover, MessageActions, RememberModal,
   AgentMessageBody, segmentsToStreamEntries, friendlyAgentError, isMarkusCreditError, dispatchCreditNotification,
 } from './ChatComponents.tsx';
 export type { MsgSegment };
@@ -2745,6 +2745,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               } : {}),
               ...(!isActivity && meta.taskId ? { taskId: meta.taskId as string } : {}),
               ...(!isActivity && meta.requirementId ? { requirementId: meta.requirementId as string } : {}),
+              // 【P5】无发起方的回合（callback_result）落库后主动推来 —— 带 provenance 标记。
+              ...(meta.origin ? { isBackgroundTask: true, origin: meta.origin as string } : {}),
             }),
       };
 
@@ -4806,6 +4808,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       {msg.isNotification && (
                         <NotificationBadge priority={msg.notifyPriority} />
                       )}
+                      {msg.isBackgroundTask && <BackgroundTaskBadge />}
                     </div>
                     {showActions && !previewMode && (
                       <div className={`transition-opacity ${msg.isStopped || msg.isError || msg.emptyReply || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
