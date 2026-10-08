@@ -280,7 +280,7 @@ Implementation: `packages/core/src/pending-callback.ts`, persisted via `SqlitePe
 | `Agent` | `packages/core/src/agent.ts` | Cycle orchestration, heartbeat, notebook persistence |
 | `MemoryStore` | `packages/core/src/memory/store.ts` | knowledge.md + NOTEBOOK.md I/O, migration-read |
 | `PendingCallbackRegistry` | `packages/core/src/pending-callback.ts` | Async callback tracking |
-| `AgentManager` | `packages/core/src/agent-manager.ts` | A2A DM routing, cognitive config |
+| `AgentManager` | `packages/core/src/agent-manager.ts` | A2A DM routing |
 
 Types: `requirement.ts` (`GoalConfig`). (The former `packages/shared/src/types/cognitive.ts` was deleted with CPP.)
 

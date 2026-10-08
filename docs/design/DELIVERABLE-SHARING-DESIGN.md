@@ -3,6 +3,15 @@
 > Author: CTO | Date: 2026-08-12 | Status: Pending review
 > Scope: joint work across both ends — the Markus client (desktop) + Markus Hub (cloud)
 
+> **As built:** the client side shipped. `DeliverableShareService` (`packages/core/src/deliverable-share.ts`) plus the
+> web-ui wrapper/dialog (`packages/web-ui/src/lib/deliverableShare.ts`, `packages/web-ui/src/components/DeliverableShareModal.tsx`)
+> write the §4.1 fields onto `DeliverableRow` (`hubShareId`/`shareStatus`/`shareUrl`/`shareVisibility`, plus a `shareReason`
+> field added for rejection reasons) and call `/api/hub/deliverables/publish|status|revoke` (client also adds
+> `GET /api/hub/deliverables/mine` via `listMine()`) through the client's **generic** `/api/hub/*` proxy in
+> `packages/org-manager/src/api-server.ts`, not a deliverables-specific route. The Hub-side items (§4.2 `DeliverableShare`
+> table, R2 object storage, `/deliverable/{slug}` page, sitemap/search, review queue) live in the separate markus.global
+> service and are not verifiable from this repo.
+
 ---
 
 ## 1. Background and Goals

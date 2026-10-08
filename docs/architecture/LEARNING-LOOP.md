@@ -14,7 +14,7 @@
 | Learning Habits | Always (non-dream) | N/A (L0 text) | — | Look back / me-vs-others / encode / verify |
 | Remember | User button (DM) | `chat` child session | Yes | Human-driven chat replay (§9) |
 | Distillation | Task **completed** (predicates) | **`distillation`** | **Yes** | Trajectory → Learning Habits encode (§2) |
-| Dream | obs ≥50, ~1×/day | `memory_consolidation` | **No** | Hygiene: dedupe/merge/promote/TTL (§5) |
+| Dream | obs buffer ≥70% of budget (or ≥50 entries), ~1×/day | `memory_consolidation` | **No** | Hygiene: dedupe/merge/promote/TTL (§5) |
 | Memory Flush | Context high-water | `memory_flush` / sys | No essay | Preserve before compaction |
 | Heartbeat | Timer | `heartbeat` | Yes (short) | Patrol only; ≤1-line `memory_save` (§7) |
 

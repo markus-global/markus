@@ -133,16 +133,19 @@ Markus is an **AI Digital Workforce Platform** that lets organizations hire, man
 ## 2. Package Structure
 
 ```
-packages/
-├── shared/       # Shared types, constants, utils (governance/project/knowledge types)
-├── core/         # Agent runtime (core engine) + ReviewService
-├── storage/      # SQLite persistence + Repository layer
-├── org-manager/  # Org management + REST API + governance (Project/Report/Knowledge/Trust)
-├── comms/        # Communication adapters (Feishu, etc.)
-├── a2a/          # Agent-to-Agent protocol types + DelegationManager (A2ABus retired)
-├── gui/          # GUI automation (VNC + OmniParser)
-├── web-ui/       # Web admin UI (governance/project/knowledge/report pages)
-└── cli/          # CLI entry point + service assembly
+packages/                   # 12 workspace packages (external/ is vendored, not a workspace)
+├── shared/             # Shared types, constants, utils (governance/project/knowledge types)
+├── core/               # Agent runtime (core engine) + ReviewService
+├── storage/            # SQLite persistence + Repository layer
+├── org-manager/        # Org management + REST API + governance (Project/Report/Knowledge/Trust)
+├── comms/              # Communication adapters (Feishu, etc.)
+├── a2a/                # Agent-to-Agent protocol types + DelegationManager (A2ABus retired)
+├── gui/                # GUI automation (VNC + OmniParser)
+├── web-ui/             # Web admin UI (governance/project/knowledge/report pages)
+├── desktop/            # Electron desktop app wrapping the platform
+├── remote/             # Remote-access agent (`RemoteAccessAgent`)
+├── chrome-extension/   # Chrome browser extension (packaged as markus-browser-extension.zip)
+└── cli/                # CLI entry point + service assembly
 ```
 
 ---
@@ -581,11 +584,11 @@ Agent completes work
 |-----------|------------|--------|
 | Task `in_progress` too long | > 24h or 2x avg completion time | Warn Agent -> report to Manager |
 | Task `review` unhandled | > 12h | Report to human |
-| Task `assigned` not started | > 4h | Remind Agent -> reassign |
+| Task `pending` not started | > 4h | Remind Agent -> reassign |
 
 ### 4.7 Agent Lifecycle & Sourcing
 
-Agents can be sourced from three paths:
+Agents can be sourced from two paths:
 
 | Source | Tool | Flow |
 |--------|------|------|
@@ -637,23 +640,21 @@ requirements (id, org_id, project_id, title, description, priority, status,
 deliverables (id, org_id, project_id, agent_id, task_id, type, title,
               summary, reference, tags, status, created_at, updated_at)
 
--- Project knowledge
-project_knowledge (id, scope, scope_id, category, title, content, tags,
-                   source, importance, status, verified_by, supersedes,
-                   access_count, last_accessed_at, created_at, updated_at)
+-- Agent knowledge (per-agent curated knowledge entries)
+agent_knowledge (id, agent_id, org_id, category, title, content, tags,
+                 source, metadata, importance, access_count, last_accessed_at,
+                 created_at, updated_at)
 
--- Reports
-reports (id, type, scope, scope_id, period_start, period_end, status,
-         metrics, task_summary, cost_summary, highlights, blockers, learnings,
-         upcoming_plan, generated_at, generated_by, reviewed_by, reviewed_at)
+-- Project knowledge base is file-based, not a table: a knowledge-base document is a
+-- deliverable with source='knowledge', and projects.knowledge_base_paths names the
+-- directories that are synced into it.
 
--- Report feedback
-report_feedback (id, report_id, author_id, author_name, type, anchor,
-                 content, priority, disclosure, actions, created_at)
+-- Reports / report feedback are NOT persisted in SQLite. ReportService keeps them in
+-- in-memory maps for the lifetime of the process.
 
--- System announcements
-system_announcements (id, type, title, content, priority, created_by,
-                      target_scope, target_ids, acknowledged, created_at, expires_at)
+-- System announcements are NOT persisted in SQLite. AgentManager holds the active
+-- announcements in memory and broadcasts them; per-team announcements live in the team
+-- data directory as ANNOUNCEMENT.md.
 
 -- Audit logs
 audit_logs (id, org_id, agent_id, task_id, project_id, event_type,

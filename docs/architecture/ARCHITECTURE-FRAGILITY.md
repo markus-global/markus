@@ -29,14 +29,14 @@ system must always satisfy.
 |---|---|---|
 | 1 | The same fix was delivered **twice**: `2bbdc7d7` (this branch) and `4454b4f3` (another branch), equivalent in content, sitting on two branches | Missing delivery de-duplication; unclear branch semantics |
 | 2 | That fix internally **copy-pasted the `isResume` 400 guard twice** | Copy-paste patching; missing pre-commit static checks |
-| 3 | In `packages/core/src/agent.ts`, **12** `console.error('[HM]/[PMC]/[CAS]')` debug prints were left in production code, spitting the sessionId to stderr on every message | Missing pre-commit gate (no-console) |
+| 3 | In `packages/core/src/agent.ts`, **12** `console.error('[HM]/[PMC]/[CAS]')` debug prints were left in production code, spitting the sessionId to stderr on every message — **✅ resolved:** none remain, and `scripts/architecture-guard.mjs` enforces `no-console` | Missing pre-commit gate (no-console) |
 | 4 | 1200 lines of legacy dead code lingered for months, justified by "the file tool that contains `<thinking>` can't be deleted" — **it actually can be deleted when you test it** | A wrong conclusion inherited as fact; nobody reproduced it |
-| 5 | `MemoryStore.getRecentMessages` **silently returns `[]`** for an unknown id, and doesn't check disk | Silent degradation: an error disguised as "no history" |
+| 5 | `MemoryStore.getRecentMessages` **silently returns `[]`** for an unknown id, and doesn't check disk — **✅ resolved:** it now lazily loads from disk and `log.warn`s on unknown/empty ids (`memory/store.ts`) | Silent degradation: an error disguised as "no history" |
 | 6 | Session context is written to `rootWorkspace` only on the HTTP thread, while messages are processed by a worker in its own workspace | No state ownership contract; scope changed behind our backs |
 | 7 | Two concurrency gates contradict each other (worker gate = 3 / task gate = 1); 3 workers grab 3 tasks while 2 of them wait for nothing | The same semantics implemented twice; no single source of truth |
 | 8 | Two id spaces, DB session id (`cs_*`) and in-memory session id (`sess_*`), kept consistent via `dbSessionMap` + metadata binding | Dual storage held together by convention, with no invariant checking |
-| 9 | Across the whole repo there is **not a single** test for "two consecutive messages in the same session must see history" | Zero coverage of a critical invariant → only users can discover it |
-| 10 | When `OPENAI_API_KEY` is present on the machine, tests really call the embedding API, hanging for ~10s per run | Test environment not isolated; CI noise masks real problems |
+| 9 | Across the whole repo there is **not a single** test for "two consecutive messages in the same session must see history" — **✅ resolved:** `packages/core/test/conversation-session-invariants.test.ts` now asserts it | Zero coverage of a critical invariant → only users can discover it |
+| 10 | When `OPENAI_API_KEY` is present on the machine, tests really call the embedding API, hanging for ~10s per run — **✅ resolved:** session-invariant tests now delete `OPENAI_API_KEY` to stay offline | Test environment not isolated; CI noise masks real problems |
 
 ---
 
@@ -124,7 +124,7 @@ Rule: any "not found → return empty / create new / swallow the exception" must
 - Already landed in this round: `getRecentMessages` **lazily loads a non-resident session from disk by id first**,
   and warns on an unknown/empty id; a failed session-history load is no longer disguised as a "new session"
   (`null` = explicitly a new conversation, `undefined` = unknown identity → keep the original session).
-- TODO: a lint gate banning `catch {}` and `console.*` (always go through the logger, with context).
+- **✅ landed:** `scripts/architecture-guard.mjs` enforces `no-console` / `no-empty-catch` on server packages (`packages/core`, `packages/org-manager`) as a CI gate.
 
 ### C3 Single source of truth / eliminate split-brain (this week)
 - The one external identity = the DB session (`cs_*`); the in-memory session (`sess_*`) is an internal cache, and
@@ -134,7 +134,7 @@ Rule: any "not found → return empty / create new / swallow the exception" must
   in-memory sessions, disk session count reconciled.
 
 ### C4 Converge multiple paths (2 weeks)
-- stream and non-stream converge onto the same `resolveTurnSession()` + the same message-processing kernel.
+- **✅ landed (identity resolution):** both paths now resolve session identity through the single point `resolveTurnSession()` (called from `processMailboxItemCore`); convergence onto one message-processing kernel remains the target.
 - Delete the coexisting legacy/hook dual implementation (this round already removed 1232 lines of dead code).
 
 ### C5 "Session invariants" test suite (**highest leverage**, kicked off in this round)

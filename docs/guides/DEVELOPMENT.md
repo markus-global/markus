@@ -104,11 +104,13 @@ packages/
 
 ## 5. Testing
 
-- Framework: **Vitest** (root `vitest.config.ts`, auto-discovers `packages/*/test/` or `*.test.ts`).
+- Framework: **Vitest**. The root `vitest.config.ts` defines two projects — `node` (backend packages) and `web-ui` (frontend, `happy-dom`) — so run `pnpm test:node` or `pnpm test:web-ui` to target one side.
 - Run just one package/file (faster for local development):
   ```bash
   pnpm test -- packages/core          # filter by path
   pnpm test -- src/foo.test.ts        # single file
+  pnpm test:node                      # backend (node project) only
+  pnpm test:web-ui                    # frontend (web-ui project) only
   pnpm test:watch                     # watch mode
   pnpm test:coverage                  # coverage
   ```
@@ -120,7 +122,7 @@ packages/
 
 > Last updated: 2026-09 (evergreen baseline after the v0.9.9 release assessment).
 
-- **Backend thresholds** (`packages/core` / `org-manager` / `storage` / combined): **75 / 65 / 78 / 80**.
+- **Backend thresholds** (`packages/core` / `org-manager` / `storage` / combined): **71 / 61 / 73 / 74**.
   The whole repo has roughly **360 test files**; the backend tests are solid and a trustworthy precondition for a release.
 - **CI gate composition**: 3 architecture-gate rules, session invariants as their own step, a coverage ratchet (only up, never down),
   HOME isolation (`MARKUS_*` environment variables are not isolated — a known gap).

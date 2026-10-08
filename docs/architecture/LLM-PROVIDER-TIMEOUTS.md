@@ -12,25 +12,26 @@
 |------------------|--------------------|---------------------|----------|----------------|-------|-------|
 | **openai** | ✅ configurable | ✅ idle (per-chunk reset) + hard | ✅ | ✅ shared AbortController | — | Reference implementation; fails loudly |
 | **markus-provider** | ✅ | ✅ idle (per-chunk reset) + hard | ✅ | ✅ external abort | ✅ budget shared across retries (not reset) | Aligned baseline with openai |
-| **anthropic** | ❌ **none** — non-stream chat can hang forever | ✅ | — | ✅ | — | **Most severe gap (set A)** |
-| **google** | partial | partial | — | — | — | Needs hardening (set A) |
-| **dashscope** | partial | — | — | — | — | Needs timeout coverage (set A) |
-| **ollama** | partial | — | — | — | — | Needs timeout coverage (set A) |
+| **anthropic** | ✅ configurable (default 90 s) | ✅ idle (per-chunk reset) + hard | ✅ | ✅ | — | ~~Most severe gap (set A)~~ **RESOLVED** |
+| **google** | ✅ (60 s) | ✅ idle (per-chunk reset) + hard | ✅ | ✅ (stream) | — | ~~Needs hardening (set A)~~ **RESOLVED** |
+| **dashscope** | ✅ via OpenAIProvider (chat) | ✅ via OpenAIProvider | ✅ | ✅ | — | ~~Needs timeout coverage (set A)~~ **RESOLVED** (chat inherits openai; media paths self-timed) |
+| **ollama** | ✅ (120 s) | ✅ idle (per-chunk reset) + hard | ✅ | ✅ (stream) | — | ~~Needs timeout coverage (set A)~~ **RESOLVED** |
 | **openai-codex** | — | — | ✅ single 180 s | — | — | Single coarse root timer |
 | **proxy-fetch** | ❌ **no built-in timeout** | — | — | relies on caller-passed signal | — | Caller must pass `signal`, else unbounded |
 | **minimax** | ✅ | ✅ | — | — | — | **Video polling can hang ~30 min, not externally cancellable; silent `max_tokens` downgrade + empty-array fallbacks** |
 
 ## 2. Known risk inventory (priority order)
 
-1. **anthropic non-streaming chat: no timeout at all** — a hung model call blocks the
+1. **RESOLVED** — **anthropic non-streaming chat: no timeout at all** — a hung model call blocks the
    turn indefinitely. Must get an idle timeout + hard cap (openai semantics).
+   *(Now: `chatTimeoutMs` default 90 s + idle/hard stream caps.)*
 2. **minimax video polling: ~30 min without external cancel** — plus silent degradation
    (downgraded `max_tokens`, empty-array response accepted as success). Needs a real poll
    timeout + fail-loud on degradation.
 3. **proxy-fetch: no own timeout** — unbounded unless the caller threads a signal.
    Should default to a sane timeout and still honor an external signal.
-4. **google / dashscope / ollama**: partial coverage — streaming idle semantics and hard
-   caps not consistently implemented.
+4. **RESOLVED** — **google / dashscope / ollama**: partial coverage — streaming idle semantics and hard
+   caps not consistently implemented. *(Now: google/ollama implement idle + hard caps; dashscope inherits openai.)*
 5. **Streaming errors thrown as bare `AbortError`** in several adapters — callers cannot
    distinguish user-cancel from provider failure; wrap with intent.
 6. **Timer leaks** where timers are not cleared on completion paths.

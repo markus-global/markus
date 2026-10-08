@@ -182,7 +182,7 @@ Processing follows the same pattern as `task_comment`: `createsActivity: false`,
 
 ### 3.5 Context-First Protocol for Comments
 
-When processing `task_comment` (on inactive tasks) or `requirement_update` (comments), the agent uses `scenario: 'comment_response'`. This instructs the LLM to follow a mandatory context-gathering protocol **before** replying:
+When processing `task_comment` (on inactive tasks) or `requirement_comment`, the agent uses `scenario: 'comment_response'`. This instructs the LLM to follow a mandatory context-gathering protocol **before** replying:
 
 1. **Fetch the full item** — call `task_get` or `requirement_list` to get the complete current state
 2. **Read ALL previous comments** — understand the full conversation thread
@@ -955,7 +955,7 @@ Requests a decision or approval from the user. The tool **blocks** until the use
 
 **Flow**: `agent.executeTool('request_user_approval')` → `attentionController.setWaitingForApproval(true)` → `HITLService.requestApprovalAndWait(options)` → notification + WebSocket → NotificationBell renders options → user responds → `HITLService.respondToApproval(selectedOption)` → promise resolves → agent receives result
 
-The attention controller uses `APPROVAL_WAIT_TIMEOUT_MS` (24h) instead of the normal 10-minute backstop while waiting for approval, preventing the mailbox item from being requeued prematurely.
+The attention controller uses `APPROVAL_WAIT_TIMEOUT_MS` (24h) instead of the normal 45-minute backstop (`MAILBOX_PROCESSING_TIMEOUT_MS`) while waiting for approval, preventing the mailbox item from being requeued prematurely.
 
 ### 13.3 Prompt Guidance
 
@@ -1345,10 +1345,11 @@ Defined by `DELIBERATION_ALLOWED_TOOLS` in `@markus/shared`:
 
 | Category | Tools |
 |----------|-------|
-| Context gathering | `task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`, `team_status`, `recall_activity`, `memory_search`, `memory_search_longterm` |
+| Context gathering | `task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`, `team_status`, `recall_activity`, `memory_search` |
 | Inline communication | `notify_user`, `task_comment`, `requirement_comment`, `agent_send_message`, `agent_send_group_message`, `agent_create_group_chat`, `agent_list_group_chats` |
 | Mailbox management | `check_mailbox`, `defer_mailbox_item`, `drop_mailbox_item`, `prioritize_mailbox_item` |
 | Working memory | `notebook_upsert`, `notebook_clear`, `notebook_read` |
+| Memory | `memory_save`, `memory_update`, `memory_update_longterm` |
 | Decision output | `complete_deliberation` |
 
 **Excluded**: `task_create`, `task_update`, `requirement_propose`, code/shell tools, `spawn_subagent`. These are heavy side-effect tools that belong in the processing phase.
@@ -1435,7 +1436,7 @@ age labels per entry. The agent decides what to keep, update, or expire.
 
 When `performDeliberation` is unavailable, the system falls back to the legacy mini triage loop:
 - Triage LLM uses the agent's name and role in its system prompt.
-- Can call tools from `TRIAGE_ALLOWED_TOOLS` (including `recall_activity`, `memory_search`, `memory_search_longterm`) up to `TRIAGE_MAX_TOOL_ITERATIONS` (6) rounds.
+- Can call tools from `TRIAGE_ALLOWED_TOOLS` (including `recall_activity`, `memory_search`) up to `TRIAGE_MAX_TOOL_ITERATIONS` (6) rounds.
 - Returns a structured JSON decision (same as `TriageResult`).
 
 ### Key Methods
@@ -1468,7 +1469,7 @@ Deferred mailbox items are automatically resurfaced when the agent is idle:
 
 ## 23. Task Status Update Processing
 
-`task_status_update` items are **informational only** (`invokesLLM: false`). The side-effect system in `updateTaskStatus()` handles all real actions automatically:
+`task_status_update` items are **informational by default** (`invokesLLM: false`); execution-mode items (`extra.triggerExecution`) run as a full task execution (§3.4). The side-effect system in `updateTaskStatus()` handles all real actions automatically:
 - **→ `in_progress`**: Auto-starts task execution
 - **Leaving `in_progress`**: Cancels running execution
 - **→ `review`**: Notifies reviewer (agent via mailbox, or human via approval request)

@@ -42,7 +42,7 @@ pnpm install
 pnpm build
 ```
 
-You should see 11 workspace packages compile successfully.
+You should see 12 workspace packages compile successfully.
 
 ### 3. Configure
 
@@ -59,7 +59,7 @@ In a **first terminal**, run:
 node packages/cli/dist/index.js start
 ```
 
-When the backend API is ready, it will display `API server listening on port 8056`.
+When the backend API is ready, it will display `API server listening on 0.0.0.0:8056 (HTTP + WebSocket)`.
 
 ### 5. Start the Frontend Dev Server
 
@@ -274,7 +274,7 @@ For the full REST API reference (all endpoints, request/response formats, and We
 ## Custom Role Templates
 
 Built-in roles are in `templates/roles/`:
-- `manager` — Organization lead; handles routing and coordination
+- `org-manager` — Organization lead; handles routing and coordination
 - `developer` — Software development engineer
 - `product-manager` — Product manager
 - `operations` — Ops/DevOps

@@ -3,7 +3,7 @@
 > **In one sentence**: Markus skills are "bidirectionally compatible" with mainstream external skill ecosystems — `markus skill import` normalizes
 > external skills such as skills.sh / SkillHub / OpenClaw / SOUL.md / AgentScope / MCP-server into
 > the Markus format (skill.json + SKILL.md), while `markus skill export` renders
-> Markus skills back into external formats for publishing to the community. Together with the existing `discover_tools search/install`,
+> Markus skills back into external formats for publishing to the community. Together with the existing `discover_tools` modes (`activate` / `list_skills` / `search_registry` / `install`),
 > the Markus ecosystem can directly consume **80,000+ community skills**, and your own skills can be published outward in return.
 
 ---
@@ -70,21 +70,17 @@ All commands support `--json` machine-readable output.
 
 ## 4. Using Inside an Agent (discover_tools)
 
-An agent can import a local external skill directory directly in a conversation:
-
-```json
-{
-  "mode": "import",
-  "path": "/path/to/external-skill-directory",
-  "name": "optional-rename"
-}
-```
-
-Once the import succeeds, the skill is registered into the runtime registry and can then be activated in the usual way:
+An agent activates an already-installed skill directly in a conversation — the skill's instructions (and any MCP
+servers it ships) are injected on demand, no restart needed:
 
 ```json
 { "name": ["<skill-name>"] }
 ```
+
+`"activate"` is the default `mode`, so the object above is enough. The other modes are
+`{ "mode": "list_skills" }` (browse installed skills), `{ "mode": "search_registry", "query": "..." }`
+(search remote registries such as SkillHub / skills.sh for uninstalled skills), and
+`{ "mode": "install", "name": ["<skill-name>"], "source": "skillhub" }` (install one from a registry).
 
 ---
 
@@ -103,7 +99,7 @@ packages/core/src/skills/codec/
 
 - The entry point is `packages/core/src/skills/codec/index.ts`, exported via `@markus/core`.
 - Service-layer wrapping: `@markus/org-manager`'s `importSkillFromDirectory / exportSkillToFormat`
-  (including runtime registry refresh); the CLI and the `discover_tools import` mode share the same implementation.
+  (including runtime registry refresh); the CLI and the in-agent `discover_tools` flow share the same implementation.
 - Adding a format only requires: add a signal in `detect.ts` → add a parse function in `parse.ts` → add a renderer in `render.ts`.
 
 ---
@@ -120,8 +116,8 @@ Markus ships with a skill ecosystem adapter that **connects both ways** with mai
   MCP-server, and other formats into Markus skills — no code changes, ready to use once installed.
 - **Export**: `markus skill export <name> --format claude` renders a Markus skill into external
   standard formats, ready to publish to skills.sh / SkillHub / OpenClaw and other communities.
-- **In-agent loop**: in a conversation, `discover_tools({ mode: "import" })` imports a local skill package,
-  which is registered and activated immediately, no restart needed.
+- **In-agent loop**: in a conversation, `discover_tools({ name: ["<skill-name>"] })` activates an installed
+  skill's instructions immediately (and `mode: "install"` pulls one in from a registry), no restart needed.
 ```
 
 ---

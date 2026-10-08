@@ -47,7 +47,8 @@ The only session bridge that may be shared across threads is `dbSessionMap` (`cs
 1. **DB ids and in-memory ids are never mixed**. `cs_*` is the request identity, `sess_*` is the internal cache key;
    never use a `cs_*` directly as a `MemoryStore` key (that causes split-brain: one conversation splits into two stores).
 2. **Passing session identity across threads must be explicit**. For the HTTP thread to hand a session to a worker,
-   it may only go through the mailbox item's `extra.sessionId` / `extra.sessionRestore`, never through any shared pointer.
+   it may only go through the mailbox item's `extra.sessionHint` (normalized from the legacy `extra.sessionId` /
+   `extra.sessionRestore`), never through any shared pointer.
 3. **Session context is applied only in the workspace that handles that item**. "Eager restore" in the HTTP thread
    is forbidden (it only writes `rootWorkspace`, which the worker never sees).
 4. **Failures must be visible**. Distinguish `found | missing | notLoaded`: the latter two must at minimum `log.warn`
@@ -61,8 +62,8 @@ The only session bridge that may be shared across threads is `dbSessionMap` (`cs
 
 | Mechanism | Location | What it protects |
 |---|---|---|
-| Streaming path carries the DB session id explicitly | `agent.ts` `sendMessageStream` → `extra.sessionId` | rule R2 |
-| Session resolution order "DB-bound in-memory session > workspace pointer > create new" | `handleMessageStream` | rule R1 |
+| Streaming path carries the DB session id explicitly | `agent.ts` `sendMessageStream` → `extra.sessionHint` | rule R2 |
+| Session resolution order "DB-bound in-memory session > workspace pointer > create new" | `resolveTurnSession` (single resolution point, called from `processMailboxItemCore`) | rule R1 |
 | restore / binding executed in the workspace handling that item | `processMailboxItemCore` | rules R3/R5 |
 | Lazy loading for history reads + warning on unknown id | `memory/store.ts` `getRecentMessages` | rule R4 |
 | Invariant test suite | `packages/core/test/conversation-session-invariants.test.ts` | all of the above |

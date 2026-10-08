@@ -65,7 +65,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 | `in_progress` | `cancelled` | User cancels | `cancelTask()` |
 | `blocked` | `in_progress` | User resumes, or all blockers satisfied | `resumeTask` / `checkDependentTasks()` |
 | `blocked` | `cancelled` | User cancels / cascade cancel | `cancelTask()` |
-| `blocked` | `failed` | Blocker failed → cascade fail (dead dependency) | `cascadeFailDependents()` |
+| `blocked` | `failed` | Blocker failed → cascade fail (dead dependency) | `autoFailBlockedDependent()` |
 | `review` | `completed` | Reviewer approves | `acceptTask()` |
 | `review` | `in_progress` | Reviewer requests revision (new round) | `requestRevision()` |
 | `review` | `cancelled` | User cancels | `cancelTask()` |
@@ -161,7 +161,7 @@ The schedule configuration (`every`, `cron`, `maxRuns`, `timezone`) can be modif
 
 - **Frontend**: "Edit" button appears on the schedule info banner (hidden when task is running or for one-shot `runAt` tasks). Opens an inline editor to switch between interval/cron mode and set max runs.
 - **API**: `PUT /api/tasks/:id/schedule` with body `{ every?, cron?, maxRuns?, timezone? }`. Setting `every` clears `cron`/`runAt`; setting `cron` clears `every`/`runAt`. Recalculates `nextRunAt`.
-- **Agent tool**: `task_update` accepts a `schedule` object `{ every?, cron?, maxRuns?, timezone? }` for scheduled tasks.
+- **Agent tool**: `task_update` accepts a `schedule` object `{ every?, cron?, max_runs?, timezone? }` for scheduled tasks.
 
 ### Key Differences from Standard Tasks
 

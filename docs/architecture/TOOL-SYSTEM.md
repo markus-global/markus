@@ -156,7 +156,7 @@ toolErr(msg)  → {"...extra", "status":"error", "error":"<msg>"}
 
 ### 2.2 Large tool-result offload
 
-Results larger than `OFFLOAD_THRESHOLD` (50,000 chars) are written to
+Results larger than `TOOL_RESULT_OFFLOAD_CHARS` (12,000 chars) are written to
 `{dataDir}/tool-outputs/…` and replaced with a **preview + file path** so the model can
 `file_read` the rest in chunks (browser snapshots get a larger 30k preview;
 `file_read` output is exempt to avoid an offload loop). See

@@ -67,8 +67,8 @@ Test IDs: `B-approve-install`, `B-reject-feedback`, `B-stats-reject-feedback`.
 
 | Pack | Scenarios | ToolDef budget (tokens) | Prompt profile |
 |------|-----------|-------------------------|----------------|
-| `reflex` | `heartbeat`, `memory_consolidation` (Dream), `memory_flush`, `distillation` | 3_000 | `reflex` |
-| `converse` | `chat`, `a2a`, `group_chat`, `comment_response`, `requirement_action` | 8_000 | `converse` |
+| `reflex` | `memory_consolidation` (Dream), `memory_flush`, `distillation` | 3_000 | `reflex` |
+| `converse` | `heartbeat`, `chat`, `a2a`, `group_chat`, `comment_response`, `requirement_action`, `workflow_action` | 8_000 | `converse` |
 | `execute` | `task_execution` | 10_000 | `execute` |
 | `govern` | `review`, `deliberation` | 8_000 | `govern` |
 
