@@ -1128,14 +1128,26 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           </div>
         )}
 
-        {/* Ensure rate-limit / model errors always surface as calm grey copy, even if
-            the timeline only captured tool rows before the stream failed. */}
+        {/* Abnormally finished turn → a quiet annotation, never a red warning.
+            The reason is a SYSTEM note (kept out of `segments`), so this still shows
+            when the timeline only captured tool rows before the stream died. */}
         {!isStreaming && (msg.isError || msg.text.startsWith('⚠')) && msg.text && !(
           segments?.some(s => s.type === 'text' && s.content && (s.content === msg.text || s.content.startsWith('⚠')))
         ) && (
-          <p className="mt-1.5 text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">
-            {msg.text.replace(/^⚠\s*/, '')}
-          </p>
+          <div className="flex items-start gap-1.5 mt-2 text-[11px] text-fg-tertiary leading-relaxed">
+            <svg
+              className="w-3 h-3 mt-0.5 shrink-0" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2" aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 8v4.5M12 16h.01" strokeLinecap="round" />
+            </svg>
+            <span className="min-w-0">
+              <span className="text-fg-secondary">{t('page.endedEarly')}</span>
+              <span className="mx-1">·</span>
+              <span>{msg.text.replace(/^⚠\s*/, '')}</span>
+            </span>
+          </div>
         )}
 
         {isStopped && (

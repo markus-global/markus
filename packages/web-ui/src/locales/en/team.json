@@ -282,7 +282,7 @@
     "defaultTooManyRequests": "Too many requests",
     "defaultServiceDown": "Service temporarily down",
     "markusCuExceeded": "⚠ Insufficient balance. Please top up or upgrade: https://markus.global/settings?tab=billing",
-    "markusRateLimited": "⚠ Upstream model provider rate-limited the request (OpenRouter / model vendor). This usually clears in a few seconds to a minute; if many agents are running, retry shortly or stagger tasks.",
+    "markusRateLimited": "The upstream model provider throttled the request. Retry in a moment.",
     "markusWindowExceeded": "⚠ Upstream temporarily limited request rate. Please retry shortly; if you are out of credits, top up or upgrade: https://markus.global/settings?tab=billing",
     "creditModalTitle": "Credits Exhausted",
     "creditModalDesc": "Your Markus Cloud AI credits have been used up. Please purchase more credits or upgrade your subscription to continue.",
@@ -334,6 +334,7 @@
       "aiGeneratedDisclaimer": "AI-generated content — please verify carefully"
     },
     "stopped": "Stopped",
+    "endedEarly": "Ended early",
     "emptyReply": "The assistant didn't produce a reply this time. This usually means the request was too large or the AI service was briefly unavailable. Please retry — if it keeps happening, check your credits or switch models in Settings.",
     "fallbackAgent": "Agent",
     "fallbackYou": "You",
