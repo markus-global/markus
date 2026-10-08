@@ -134,7 +134,11 @@ describe('ConversationBufferManager — concurrent live turns', () => {
   });
 
   /**
-   * The seam that made the phase veto necessary (see shouldSweepGhostStreaming).
+   * The seam that made the phase veto necessary. NOTE (2026-10-08): the consumer
+   * that used to read this seam (`shouldSweepGhostStreaming`) has been removed —
+   * judging "is this turn over" from client-local signals was itself the bug.
+   * The invariant still holds and still matters: the remove path must consult the
+   * phase rather than the per-agent set alone.
    * Consumers must not read chatStore's per-agent set as the ONLY authority for
    * "is this conversation streaming": the phase legitimately reports 'streaming'
    * with an empty ownership set.

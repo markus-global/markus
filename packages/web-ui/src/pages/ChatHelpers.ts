@@ -206,17 +206,14 @@ export function finalizeStreamEnd(msgs: ChatMsg[], agentMsgId?: string): ChatMsg
  * their content (the empty-reply rule belongs to callers that own the outcome,
  * i.e. finalizeAgentMessage).
  *
- * INVARIANT: `isStreaming` on a message is DERIVED state. The authority for
- * "this conversation has a stream in flight" is the chatStore streaming set,
- * which has exactly one add path (beginStream / setStreamSession) and one remove
- * path (clearStreamSession). When the authority says the stream is over, any
- * message still carrying isStreaming is a ghost — and a ghost is not cosmetic:
- * it lights the animated border (isStreamingMsg = ... || !!msg.isStreaming) and
- * pins the chat header to 工作中 (chatStreamActive → hasStreamingTail) while the
- * L1 sidebar, which reads only the authority, correctly shows 空闲. One leaked
- * flag, two contradicting answers for the same agent at the same instant.
+ * ONLY a fallback for callers that have ALREADY established that the turn is
+ * over from the server authority (see `finalizeStreamEnd`, which is reached only
+ * after `decideOnStreamEnd` returned 'finalize'). Never call it speculatively:
+ * in-flight-ness is not knowable from client-local signals, and buying the flag
+ * early costs the animated border while the backend keeps generating
+ * (2026-10-08 incident — reading the client's own bookkeeping as authority).
  *
- * Landing a ghost means more than dropping the flag: a ghost whose last tool
+ * Landing a bubble means more than dropping the flag: one whose last tool
  * segment is still `running` keeps ITS OWN activity affordance alive (the
  * execution card spinner), so the "still working" signal would survive the fix
  * on a second surface. When the stream is over nothing can still be running, so
@@ -258,48 +255,15 @@ export function alignStreamedAgentId(
   return msgs.map(m => (m.id === syntheticId ? { ...m, id: persistedId } : m));
 }
 
-/**
- * Should the ghost-streaming reconciliation sweep run for the current view?
- *
- * The sweep exists for ONE case: the stream is truly over but a bubble still
- * carries `isStreaming` (a leaked flag). It must never fire while anything is
- * genuinely in flight, because `clearGhostStreaming` is irreversible for that
- * turn — it lands the flag, kills the animated border and stops the running-tool
- * segments — while the backend keeps generating.
- *
- * A ghost is therefore proven by the ABSENCE of every live signal, and the
- * signals are not equally trustworthy:
- *
- *  · `sending` (React) and `chatStoreStreaming` are derived/coarse. Both can be
- *    momentarily false while a stream is live: `sending` is a single boolean for
- *    the whole view (several tabs share one agent key), and chatStore is a
- *    per-AGENT set whose only writer can be fed a stale ownership set.
- *  · `convPhase` is the buffer manager's authoritative answer for the
- *    conversation — and it deliberately keeps reporting 'streaming' through the
- *    pre-registration window (stored phase flipped by `beginStream` before the
- *    session mark lands) and while a SIBLING tab is still running.
- *
- * So the phase gets the last word: if the manager says the conversation is
- * streaming, a flagged bubble is NOT a ghost. Skipping the sweep cannot strand a
- * real ghost, because a finished stream collapses the phase (endStream → 'ready',
- * empty ownership set) — the veto only spans windows where the turn is alive.
- */
-export function shouldSweepGhostStreaming(input: {
-  chatMode: ChatMode;
-  hasAgent: boolean;
-  sending: boolean;
-  streamingVisual: boolean;
-  chatStoreStreaming: boolean;
-  convPhase: 'idle' | 'loading' | 'ready' | 'streaming';
-  hasStreamingTail: boolean;
-}): boolean {
-  if (input.chatMode !== 'direct' || !input.hasAgent) return false;
-  if (input.sending || input.streamingVisual) return false;
-  if (input.chatStoreStreaming) return false;
-  // Manager authority — see the doc comment above.
-  if (input.convPhase === 'streaming') return false;
-  return input.hasStreamingTail;
-}
+// `shouldSweepGhostStreaming` 已删除（2026-10-08）。
+//
+// 它用**客户端本地的派生副本**（sending / streamingVisual / chatStore 所有权集合 /
+// buffer phase）回答「这轮结束了没有」，而这些副本恰好在**传输断开**时全部变成"没流"
+// —— 服务端此时仍在生成。于是它把活着的回合当幽灵就地正法（不可逆地抹掉
+// isStreaming、动态边框与 running 工具段），且挂在 `[messages]` 上每次 delta 都跑，
+// 边框永远亮不回来。它有 9 条测试且当时全绿 —— 那些用例固化的是**错误的**不变量。
+// 终止判据已收敛为单一权威：`lib/streamLiveness.ts#decideOnStreamEnd`（其回归护栏在
+// `src/lib/streamLiveness.test.ts`）。详见 docs/records/team-chat-stream-transport-vs-turn-2026-10-08.md。
 
 /**
  * 发送消息时是否应当"打断并重发"。
