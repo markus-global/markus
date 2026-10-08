@@ -153,19 +153,50 @@ const URL_END_BOUNDARY = [
 ].join('');
 const BARE_URL_RE = new RegExp(`https?://[^${URL_END_BOUNDARY}]+`, 'gi');
 
+/**
+ * A trailing delimiter run (`**`/`*`/`__`/`_`/`~~`) at the end of a URL match is
+ * markdown **syntax around the URL**, not part of the URL — but only when the same
+ * run opens immediately before it, because that is the pairing the parser will
+ * consume.
+ *
+ * Why not just add `*` to the boundary set: that set answers "which characters may
+ * not END a URL", and the honest answer is "none in particular" — `_` and `~` are
+ * perfectly legal at the end of a real URL (…/foo_, …/~user). A denylist cannot
+ * tell payload from syntax, and every new markdown construct (`~~`, `||`, …) would
+ * need another entry. Pairing the runs asks the actual question, and it degrades in
+ * the safe direction: an unpaired trailing byte is left in the URL (the link may be
+ * slightly long) rather than silently truncating a working URL into a wrong one.
+ */
+const EMPHASIS_RUN_RE = /(\*{1,3}|_{1,3}|~{1,2})$/;
+
+function emphasisRunOpenedBefore(text: string, offset: number, end: string): string | null {
+  const m = end.match(EMPHASIS_RUN_RE);
+  if (!m) return null;
+  const run = m[1]!;
+  const before = text.slice(Math.max(0, offset - run.length), offset);
+  return before === run ? run : null;
+}
+
 /** Wrap bare http(s) URLs in prose as explicit `[url](url)` links so GFM
  *  autolink does not swallow trailing CJK / full-width characters. */
 export function autolinkBareUrls(text: string): string {
   return text.replace(BARE_URL_RE, (url: string, offset: number) => {
     // Defense in depth: never touch a URL inside a markdown destination `](...)`.
     if (isInsideMarkdownDestination(text, offset)) return url;
-    const trimmed = url.replace(/[.,;:!?\]\)"']+$/, '');
-    if (!trimmed) return url;
-    const trail = url.slice(trimmed.length);
+    // Trailing sentence punctuation never belongs to the URL.
+    let end = url.replace(/[.,;:!?\]\)"']+$/, '');
+    if (!end) return url;
+    // Nor does a delimiter run that the surrounding markdown opened (2026-10-08:
+    // `**https://…/363**` used to become a link whose text AND href ended in `**`,
+    // which killed the bold and put the asterisks in the click target).
+    const run = emphasisRunOpenedBefore(text, offset, end);
+    if (run) end = end.slice(0, end.length - run.length);
+    if (!end) return url;
+    const trail = url.slice(end.length);
     // If the URL still carries problematic parens we'd have to escape in a
     // destination, leave it as-is rather than risk corrupting the source.
-    if (/[()[\]]/.test(trimmed)) return url;
-    return `[${trimmed}](${trimmed})${trail}`;
+    if (/[()[\]]/.test(end)) return url;
+    return `[${end}](${end})${trail}`;
   });
 }
 
