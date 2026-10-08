@@ -3455,7 +3455,7 @@ function ProviderSection({ title, defaultCollapsed, configuredProviders, t, chil
         </span>
       </button>
       {collapsed && configuredProviders.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-2">
+        <div className="flex flex-wrap items-center gap-2 mb-2">
           {configuredProviders.map(([name, info]) => (
             <button
               key={name}
@@ -3471,6 +3471,20 @@ function ProviderSection({ title, defaultCollapsed, configuredProviders, t, chil
               {info.displayName ?? name}
             </button>
           ))}
+          {/* Prominent CTA: expand the full provider list so a new provider can be added
+              without having to discover that the section title itself is clickable. */}
+          <button
+            type="button"
+            onClick={() => setCollapsed(false)}
+            title={t('modelProviders.manageProvidersHint')}
+            aria-label={t('modelProviders.addProviderCta')}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-brand-500/50 bg-brand-500/10 text-brand-500 hover:bg-brand-500/20 hover:border-brand-500 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+            {t('modelProviders.addProviderCta')}
+          </button>
         </div>
       )}
       {!collapsed && <div className="space-y-4">{children}</div>}

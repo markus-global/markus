@@ -289,6 +289,8 @@
     "configuredCount": "configured",
     "groupConfigured": "Configured ({{count}})",
     "groupUnconfigured": "More Providers",
+    "addProviderCta": "Add Provider",
+    "manageProvidersHint": "Expand to see all providers and add a new one",
     "markusHint": "Connect to Markus Cloud AI service",
     "markusSetup": "Enter your Markus API key to connect. You can get one from your Markus Hub account.",
     "markusSetupLogin": "Log in to your Markus Hub account to automatically connect to Markus Cloud AI.",

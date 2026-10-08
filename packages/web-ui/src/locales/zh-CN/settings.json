@@ -289,6 +289,8 @@
     "configuredCount": "已配置",
     "groupConfigured": "已配置（{{count}}个）",
     "groupUnconfigured": "更多提供商",
+    "addProviderCta": "添加提供商",
+    "manageProvidersHint": "展开查看全部提供商并添加新的提供商",
     "markusHint": "连接到 Markus Cloud AI 服务",
     "markusSetup": "输入您的 Markus API 密钥进行连接。您可以从 Markus Hub 账户中获取。",
     "markusSetupLogin": "登录您的 Markus Hub 账户即可自动连接 Markus Cloud AI。",
