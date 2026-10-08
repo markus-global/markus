@@ -222,7 +222,7 @@ export interface LLMResponse {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
   };
-  finishReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' | 'content_filter';
+  finishReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' | 'content_filter' | 'incomplete';
   /** Anthropic compaction summary (present when compaction triggers) */
   compactionContent?: string;
   /** Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning_content) that must be round-tripped. */

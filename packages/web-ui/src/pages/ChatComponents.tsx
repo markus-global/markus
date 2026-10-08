@@ -41,6 +41,25 @@ export function NotificationBadge({ priority }: { priority?: string }) {
   );
 }
 
+// ─── BackgroundTaskBadge ─────────────────────────────────────────────────────
+/**
+ * 【P5】标记一条「无发起方」的回复：它来自后台任务完成（`callback_result`），
+ * **不是**对用户刚提那个问题的回答。与普通回复同源、同气泡形态，只多加 provenance 标记，
+ * 以免用户误以为 agent 在回答他刚才的问题（因果混淆）。
+ */
+export function BackgroundTaskBadge() {
+  const { t } = useTranslation(['team']);
+  return (
+    <div className="inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-fg-tertiary/10 text-fg-tertiary border border-fg-tertiary/20">
+      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 2" />
+      </svg>
+      <span>{t('team:notifications.backgroundTaskBadge')}</span>
+    </div>
+  );
+}
+
 // ─── ChatAgentLink ────────────────────────────────────────────────────────────
 
 export function ChatAgentLink({ name, agentId, agents, onViewProfile }: {

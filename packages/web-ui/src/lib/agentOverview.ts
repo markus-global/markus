@@ -194,11 +194,17 @@ export const WORKING_STATUS: AgentStatusPresentation = STATUS_TABLE.working!;
 export function resolveAgentStatus(
   status: string | null | undefined,
   streaming: boolean,
+  serverBusy?: boolean,
 ): AgentStatusPresentation {
   const base = agentStatusPresentation(status);
-  if (!streaming) return base;
   // Not running (offline / paused), or already carrying a stronger signal.
   if (!base.running || base.tone === 'danger' || base.tone === 'busy') return base;
+  // P4b：后端权威信号**只用于否决「幽灵空闲」**——后端明确在处理 ⇒ 一律显示工作中，
+  // 即便本地 stream 标记尚未建立（chat 首 token 前、或 WS 刷新丢了本地态）。
+  // 反向不成立：`serverBusy === false` **不**强制空闲，以免与「发送瞬间本地已乐观置忙
+  // 但后端尚未登记」竞态，制造新的幽灵「空闲」。
+  if (serverBusy === true) return WORKING_STATUS;
+  if (!streaming) return base;
   return WORKING_STATUS;
 }
 

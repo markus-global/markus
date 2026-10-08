@@ -39,7 +39,8 @@ export interface SSEMessageHandlerOptions {
   persistUserMessage?: (agentId: string, text: string, senderId?: string, images?: string[], sessionId?: string) => Promise<string | { sessionId: string; messageId?: string } | null>;
   /** Optional: remove a just-persisted user message when the turn was merged into an active one. */
   deleteUserMessage?: (messageId: string) => void;
-  persistAssistantMessage?: (sessionId: string | null, agentId: string, reply: string, tokensUsed: number, meta?: unknown) => Promise<void>;
+  /** 返回持久化后的 message id（无法落库时 null）—— P5 的会话外广播需要它与气泡 id 对齐。 */
+  persistAssistantMessage?: (sessionId: string | null, agentId: string, reply: string, tokensUsed: number, meta?: unknown) => Promise<string | null>;
   onTextDelta?: (text: string) => void;
   onToolEvent?: (event: AgentStreamEvent) => void;
   onComplete?: (reply: string, segments: Array<{type: string; content?: string; tool?: string; status?: string}>, tokensUsed: number) => Promise<void>;

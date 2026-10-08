@@ -233,7 +233,8 @@
     "optionLabels": {
       "requestChanges": "Solicitar cambios"
     },
-    "badgeLabel": "Notificación"
+    "badgeLabel": "Notificación",
+    "backgroundTaskBadge": "Tarea en segundo plano completada"
   },
   "userInput": {
     "respond": "Responder",

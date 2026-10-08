@@ -49,10 +49,11 @@ import {
   NOTEBOOK_MAX_CHARS_PER_ENTRY,
   NOTEBOOK_PROMPT_MAX_CHARS,
   NOTEBOOK_PERSIST_MAX_WAIT_MS,
+  deriveMailboxSubject,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle } from './memory/dream-trigger.js';
-import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
+import { shouldPersistTurnReply } from './recovered-reply-persist.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
@@ -92,6 +93,7 @@ import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
+import { SessionStateRegistry, deriveSessionStates, type DerivedSessionState } from './session-state.js';
 import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
 import { requestHistoryWindow } from './history-window.js';
 import {
@@ -327,26 +329,62 @@ export interface ToolLoopResponseShape {
 }
 
 /**
- * B5: single source of truth for "should the tool-execution loop iterate again?".
- * The loop continues while the model is still requesting tools, or was cut off by
- * `max_tokens` (so we can nudge it to continue). Extracted (pure) so all five loop
- * entry points in {@link Agent} share one authoritative decision instead of five
- * copies of the same boolean expression.
+ * B5: single source of truth for "how should the tool-execution loop proceed?".
+ *
+ *  - 'done' : turn is over — stop looping.
+ *  - 'tools': model requested tools — execute them, then iterate.
+ *  - 'text' : model output was cut off — either `max_tokens`, or a **fault/truncation**
+ *             that produced no trustworthy finish_reason (`incomplete`). Append what it
+ *             produced, nudge it to continue, then iterate. This is how a broken stream
+ *             stops masquerading as a finished turn.
+ *
+ * `incompleteAsContinuation` (default true) lets the task-execution loop opt out so the
+ * task auto-continue / review mechanics stay byte-for-byte as before (owner constraint).
+ *
+ * Extracted (pure) so all loop entry points in {@link Agent} share one authoritative
+ * decision instead of N copies of the same boolean expression.
  */
-export function shouldContinueToolLoop(
+export type TurnContinuationKind = 'done' | 'tools' | 'text';
+
+export function turnContinuationKind(
   response: ToolLoopResponseShape,
-  opts?: { endTurnRequested?: boolean },
-): boolean {
+  opts?: { endTurnRequested?: boolean; incompleteAsContinuation?: boolean; cancelled?: boolean },
+): TurnContinuationKind {
   // A turn-terminating tool (`end_turn`) wins over everything else. The agent has
   // explicitly declared the turn over, so we must NOT spend another LLM round-trip
   // producing a reply it already decided not to send — and any text accompanying
   // the tool call is discarded too (a mixed 「调了工具又写了话」 turn is exactly the
   // ambiguity this removes).
-  if (opts?.endTurnRequested) return false;
-  return Boolean(
-    (response.finishReason === 'tool_use' && response.toolCalls?.length) ||
-      response.finishReason === 'max_tokens'
-  );
+  if (opts?.endTurnRequested) return 'done';
+  // 取消/用户停止是**终态**：绝不再花一次 LLM 往返。被取消的流没有真实
+  // finish_reason ⇒ 会被判为 'incomplete'；若不在此处拦截，取消后会**继续跑**，
+  // 正是并发取消隔离用例卡死的根因（取消后仍重调模型）。
+  if (opts?.cancelled) return 'done';
+  // 断流/截断（无真实 finish_reason）不是终点：同一会话续跑（有界）。
+  if (response.finishReason === 'incomplete') {
+    return (opts?.incompleteAsContinuation ?? true) ? 'text' : 'done';
+  }
+  if (response.finishReason === 'tool_use' && response.toolCalls?.length) return 'tools';
+  if (response.finishReason === 'max_tokens') return 'text';
+  return 'done';
+}
+
+export function shouldContinueToolLoop(
+  response: ToolLoopResponseShape,
+  opts?: { endTurnRequested?: boolean; incompleteAsContinuation?: boolean; cancelled?: boolean },
+): boolean {
+  return turnContinuationKind(response, opts) !== 'done';
+}
+
+/**
+ * P2b: 一轮结束时该以什么结果结算会话。截断（未结束却达迭代上限）必须**可见**为
+ * 'error'，绝不静默当作 'ok' —— 否则半个回复会冒充完整回复（问题 A 的另一半）。
+ */
+export function turnSettleOutcome(
+  turnFailed: boolean,
+  truncated: boolean,
+): 'ok' | 'error' {
+  return (turnFailed || truncated) ? 'error' : 'ok';
 }
 
 /**
@@ -579,8 +617,21 @@ export class Agent {
   private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private browserCloseTabsHelper?: (sessionId: string) => string | null;
-  /** 【P3】回合回复落库回调：由 org-manager 装配注入（见 setAssistantReplyPersister）。 */
-  private assistantReplyPersister?: (args: { sessionId: string; agentId: string; reply: string; tokensUsed: number }) => Promise<void>;
+  /**
+   * 【P3→P5】回合回复落库回调：由 org-manager 装配注入（见 setAssistantReplyPersister）。
+   * - `sessionId`：已确知的 DB 会话 id（cs_*）——直接写；
+   * - `memorySessionId`：只知道内存会话 id（如 callback_result 回到发起它的那一轮）时，
+   *   由装配层用 `chat_sessions.metadata.memorySessionId` 反查 cs_*；
+   * - `origin`：回复来源（如 `'callback_result'`），供前端以「后台任务完成」形态呈现。
+   */
+  private assistantReplyPersister?: (args: {
+    sessionId?: string;
+    memorySessionId?: string;
+    agentId: string;
+    reply: string;
+    tokensUsed: number;
+    origin?: string;
+  }) => Promise<void>;
   /**
    * Set when the agent calls the `end_turn` tool — an explicit, typed "this turn is
    * over, send nothing" signal. Read by the tool-loop guard (all 5 entry points) to
@@ -650,6 +701,19 @@ export class Agent {
   private mailbox: AgentMailbox;
   /** Attention controller for event-driven focus management */
   private attentionController: AttentionController;
+  /**
+   * P1 · 会话处理状态机（后端唯一真相源）。
+   * 键 = 会话身份（resolveTurnSession 解析出的内存会话 id）；
+   * agent「工作中」= 各会话状态的并集（任一会话 processing ⇒ working）。
+   * 详见 packages/core/src/session-state.ts。
+   */
+  private readonly sessionStates = new SessionStateRegistry();
+  /**
+   * P2b：本轮是否以「截断」收尾（循环达到迭代上限时模型仍未结束）。
+   * 用于把「静默收尾」升级为**可观测的异常结果**（P1 注册表 lastOutcome='error' + 日志），
+   * 而不是让半个回复冒充完整回复。每轮开始重置。
+   */
+  private turnEndedTruncated = false;
 
   /** 公开访问 attention 控制器（并发设置热传播等用）。 */
   get attention(): AttentionController {
@@ -1013,6 +1077,13 @@ export class Agent {
     ) {
       return;
     }
+    // 注：此处**刻意不再**叠加「任一会话 processing ⇒ 不得回 idle」的额外闸门。
+    // 会话并集语义已由上方 worker 聚合闸门
+    // （getWorkerCount()>1 && attentionController.getState() !== 'idle'）承担——
+    // 每个会话的 turn 恰好占用一个 worker，故 worker 聚合即会话并集。
+    // 曾试加的 sessionStates 闸门是**冗余守卫**，且会让并发取消隔离路径的
+    // 「恢复到 idle」被卡死（见 agent-concurrent-cancel-isolation 回归）。
+    // 权威 per-session 状态改由 getSessionStates() 单独**暴露**（供前端），不改写状态转换。
     this.applyStatus('idle');
   }
 
@@ -1828,10 +1899,11 @@ export class Agent {
           log.warn('ensureTurnCompleted tool loop hit max iterations', {
             agentId: this.id, sessionId, iterations: toolIter, cap: maxIter,
           });
+          this.markTurnTruncated('ensureTurnCompleted', response.finishReason);
           break;
         }
 
-        if (needsMaxTokensContinuation(response)) {
+        if (turnContinuationKind(response, { endTurnRequested: this.endTurnRequested }) === 'text') {
           this.memory.appendMessage(sessionId, {
             role: 'assistant',
             content: response.content,
@@ -1936,10 +2008,16 @@ export class Agent {
     const senderInfo = item.metadata?.senderName
       ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user', isFirstConversation: item.metadata.isFirstConversation as boolean | undefined }
       : undefined;
+    // P5：回合收尾的**单一出口**。这里只**登记**最终回复；真正的「（无发起方时）落库 →
+    // 结算响应」序列在 finally 里按固定顺序执行。
+    //
+    // 为什么不能在这里直接 resolve：顺序不能反。无发起方的 turn（callback_result /
+    // 重启恢复项）必须**先把回复写回 DB 会话（cs_*）、再让调用方观察到「回合结束」** ——
+    // 前端收到 done 会立刻从 DB 重拉消息，写晚了气泡就缺失（P3 起就依赖这个顺序）。
+    // 把落库放在 resolve 之后（例如放在 finally 的后半段）看似更简单，实则会**回归**
+    // 「回复已结束但 DB 里还没有」的竞态。
     const resolveResponse = (reply: string) => {
-      if (typeof item.metadata?.responsePromise?.resolve === 'function') {
-        item.metadata.responsePromise.resolve(stripCompletionMarker(reply));
-      }
+      pendingReply = reply;
     };
     const rejectResponse = (err: unknown) => {
       if (typeof item.metadata?.responsePromise?.reject === 'function') {
@@ -1948,6 +2026,15 @@ export class Agent {
     };
 
     const ts = Date.now();
+
+    // P1：本轮会话身份（在 resolveTurnSession 之后填充）——用于会话状态机。
+    let activeSessionKey: string | undefined;
+    let turnFailed = false;
+    // P5：本轮最终回复（在 resolveResponse 登记）——真正的「落库 → 结算响应」序列在 finally
+    // 里按固定顺序执行，见那里的说明。
+    let pendingReply: string | undefined;
+    // P2b：每轮开始清空「截断」标记。
+    this.turnEndedTruncated = false;
 
     const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
     // Whether this item's turn should be closed out with the typed completion check.
@@ -1995,6 +2082,11 @@ export class Agent {
           sourceType: item.sourceType,
         });
       this.resolveTurnSession(sessionHint, item);
+
+      // P1：该会话进入「处理中」（唯一写者 = SessionStateRegistry）。
+      // 会话身份在 resolveTurnSession 后已确定（currentSessionId）。
+      activeSessionKey = this.currentSessionId;
+      if (activeSessionKey) this.sessionStates.begin(activeSessionKey, item.id);
 
       switch (item.sourceType) {
         case 'human_chat':
@@ -2085,13 +2177,6 @@ export class Agent {
           );
           if (needsTurnCompletion && item.sourceType !== 'human_chat') {
             reply = await this.ensureTurnCompleted(reply, opts.sessionId ?? this.currentSessionId);
-          }
-          // P3: 重启后从 DB 恢复的排队项（发起方 responsePromise 随 JSON 丢失，SSEHandler /
-          // api-server 请求线程已死）→ worker 兜底把回复写回 DB 会话（cs_*），否则前端
-          // 从 DB 拉不到回复（刷新也不显示）。正常路径（发起方 promise 存活）由发起方
-          // persistAssistantMessage，这里不写（避免双写）——判据见 shouldPersistRecoveredReply。
-          if (item.sourceType === 'human_chat') {
-            await this.persistRecoveredReplyIfNeeded(reply, extra, item.metadata);
           }
           resolveResponse(reply);
           return reply;
@@ -2416,10 +2501,48 @@ export class Agent {
         }
       }
     } catch (err) {
+      turnFailed = true;
       rejectResponse(err);
       throw err;
     } finally {
       this.processingMailboxItemId = undefined;
+      // P1：本轮结束 → 结算该会话（该会话全部 item 结算完才回 idle）。
+      // P2b：截断收尾（循环达上限仍未结束）标记为异常结果，绝不静默当成功。
+      if (activeSessionKey) {
+        const truncated = this.turnEndedTruncated;
+        this.sessionStates.settle(
+          activeSessionKey,
+          item.id,
+          turnSettleOutcome(turnFailed, truncated),
+          truncated && !turnFailed
+            ? 'turn ended truncated at iteration bound (output may be incomplete)'
+            : undefined,
+        );
+        this.turnEndedTruncated = false;
+      }
+
+      // P5：**单一落库执行点 + 顺序保证**。过去只有 human_chat 分支调用兜底落库，于是
+      // `callback_result`（background_exec 完成 / a2a in_session 回复）的回复只写进
+      // MemoryStore —— 用户在 Team Chat 里永远看不到后台任务的结果。现在统一在此判定
+      // 「谁是这一轮回复的落库执行者」（见 shouldPersistTurnReply）：发起方还活着由它自己
+      // 写，否则 worker 兜底写回会话。白名单与控制信号拒绝均收敛在
+      // shouldPersistTurnReply（recovered-reply-persist.ts，P5b 单一度量点）。
+      //
+      // 顺序：落库 **先于** resolve —— 调用方一旦观察到回合结束就会去 DB 拉消息，
+      // 反过来会重现「回复已结束但 DB 里还没有」的竞态（P3 契约）。
+      if (pendingReply !== undefined) {
+        await this.persistTurnReplyIfUnowned(
+          pendingReply,
+          extra,
+          item.metadata,
+          activeSessionKey,
+          item.sourceType === 'callback_result' ? 'callback_result' : undefined,
+          item.sourceType,
+        );
+        if (typeof item.metadata?.responsePromise?.resolve === 'function') {
+          item.metadata.responsePromise.resolve(stripCompletionMarker(pendingReply));
+        }
+      }
 
       // Inject concise activity summary into main session for non-chat items
       // so the agent maintains narrative continuity across processing contexts.
@@ -2766,7 +2889,60 @@ export class Agent {
 
   /** Returns true if the agent is currently processing a mailbox item (streaming or otherwise). */
   isProcessing(): boolean {
-    return this.state.status === 'working' || !!this.processingMailboxItemId;
+    // 单一语义：**正在处理**某个 mailbox item（在飞的 turn）。
+    // 「队列里还有待处理项」是另一件事，**不**并进来——否则该谓词会有两种含义
+    // （R2：一个不变量多种度量）。需要「忙碌/有待办」的展示语义请用
+    // getSessionStates()（已把队列并入），见 org-manager 的 isProcessing 字段。
+    return this.state.status === 'working'
+      || !!this.processingMailboxItemId
+      || this.sessionStates.anyProcessing();
+  }
+
+  /**
+   * P4：把队列里的待处理 item 按**会话**归组（用一等主体 subject，缺失时回退派生）。
+   * 这是 getSessionStates 的权威来源之一（另一来源是注册表里正在跑的 turn）。
+   */
+  private queuedItemsBySession(): Map<string, string[]> {
+    const map = new Map<string, string[]>();
+    for (const it of this.mailbox.getQueuedItems()) {
+      const key = it.subject?.sessionKey ?? deriveMailboxSubject(it).sessionKey;
+      if (!key) continue;
+      const arr = map.get(key) ?? [];
+      arr.push(it.id);
+      map.set(key, arr);
+    }
+    return map;
+  }
+
+  /**
+   * 会话处理状态快照（P4 · 后端唯一真相源）。
+   *
+   * = 注册表（正在跑的 turn）∪ mailbox 队列（仍 queued 的 item）的**并集**，
+   * 故**重启一致、且不可能泄漏**（无并行副本需要清理）。前端应据此渲染
+   * 「哪些会话在跑」，并可据其**否决**本地乐观态（幽灵「空闲」或幽灵「进行中」）。
+   */
+  getSessionStates(): DerivedSessionState[] {
+    return deriveSessionStates(this.sessionStates.list(), this.queuedItemsBySession());
+  }
+
+  /**
+   * P2b：本轮以截断收尾（循环达到迭代上限，但模型仍未给出可信的结束信号）。
+   * 标记后由 processMailboxItemCore 的 finally 以 'error' 结算该会话，
+   * 让「输出可能不完整」成为**可见**的事实，而不是静默当作成功。
+   */
+  private markTurnTruncated(where: string, finishReason?: string): void {
+    const kind = turnContinuationKind(
+      { finishReason },
+      { endTurnRequested: this.endTurnRequested },
+    );
+    if (kind !== 'text') return; // 循环因工具/正常结束退出，不算截断
+    this.turnEndedTruncated = true;
+    log.warn('Turn ended truncated at iteration bound — output may be incomplete', {
+      agentId: this.id,
+      sessionId: this.currentSessionId,
+      where,
+      finishReason,
+    });
   }
 
   /** Returns the id of the in-memory session currently bound to this agent, if any. */
@@ -2788,6 +2964,20 @@ export class Agent {
     if (!this.currentSessionId) return null;
     for (const [dbId, memId] of this.dbSessionMap) {
       if (memId === this.currentSessionId) return dbId;
+    }
+    return null;
+  }
+
+  /**
+   * 【P5】按**内存会话 id** 反查它绑定的 DB 会话 id（cs_*）。
+   * `dbSessionMap` 是 db→mem 的单向表，反向遍历即可；重启后该表为空，装配层会用
+   * `chat_sessions.metadata.memorySessionId` 兜底（见 org-manager 的
+   * `resolveChatSessionForMemorySession`）。
+   */
+  getDbSessionIdForMemorySession(memorySessionId: string): string | null {
+    if (!memorySessionId) return null;
+    for (const [dbId, memId] of this.dbSessionMap) {
+      if (memId === memorySessionId) return dbId;
     }
     return null;
   }
@@ -2884,8 +3074,9 @@ export class Agent {
     if (!this.stateManager) {
       return {
         agentId: this.id,
-        isBusy: this.activeTasks.size > 0,
+        isBusy: this.isProcessing(),
         activeTaskCount: this.activeTasks.size,
+        sessionStates: this.getSessionStates(),
         queueStats: {
           pending: 0,
           running: this.activeTasks.size,
@@ -2905,7 +3096,11 @@ export class Agent {
       };
     }
 
-    return this.stateManager.getStatusSummary();
+    return {
+      ...this.stateManager.getStatusSummary(),
+      // P4：附上权威的 per-session 处理状态，供前端对齐（并否决其本地乐观态）。
+      sessionStates: this.getSessionStates(),
+    };
   }
 
   /**
@@ -4160,54 +4355,82 @@ export class Agent {
   }
 
   /**
-   * 【P3】注入「回合回复持久化」回调。当 worker 处理一个**重启后从 DB 恢复**的排队项
-   * （发起方的 responsePromise 随 JSON 序列化丢失）时，正常负责回写 DB 会话（cs_*）的
-   * SSEHandler / api-server 请求线程已死 —— 由处理该消息的 worker 兜底把回复写回 DB，
-   * 否则前端刷新也拉不到回复。org-manager 在装配时注入（指向走 chatSessionRepo 的落库）。
+   * 【P3→P5】注入「回合回复持久化」回调。当 worker 处理一个**没有活发起方**的 turn 时
+   * （重启后从 DB 恢复的排队项、或本来就无发起方的 `callback_result`），正常负责回写 DB
+   * 会话（cs_*）的 SSEHandler / api-server 请求线程不存在 —— 由处理该消息的 worker 兜底
+   * 把回复写回 DB，否则前端永远拉不到它。org-manager 在装配时注入（指向走 chatSessionRepo
+   * 的落库 + 会话级 WS 广播）。
    */
   setAssistantReplyPersister(
-    cb: ((args: { sessionId: string; agentId: string; reply: string; tokensUsed: number }) => Promise<void>) | null,
+    cb: ((args: {
+      sessionId?: string;
+      memorySessionId?: string;
+      agentId: string;
+      reply: string;
+      tokensUsed: number;
+      origin?: string;
+    }) => Promise<void>) | null,
   ): void {
     this.assistantReplyPersister = cb ?? undefined;
   }
 
   /**
-   * 【P3】重启恢复的排队项：若非流式路径拿到回复后，发起方 promise 已死且可定位 DB 会话
-   * （extra.sessionId / metadata.dbSessionId，二者均随 JSON 保留）→ worker 兜底落库。
-   * 判据见 `shouldPersistRecoveredReply`（core/recovered-reply-persist.ts）：
-   * - responsePromise.resolve 仍是函数 → 发起方活着（SSEHandler / api-server 请求线程），
-   *   由它 persistAssistantMessage，worker 绝不重复写（避免双写）；
-   * - 无任何 DB 会话身份 → 无法定位目标会话，宁可缺失也不落错（不写）。
+   * 【P3→P5】回合回复落库 —— 由 `processMailboxItemCore` 的 finally **统一调用**
+   * （单一执行点），判定「谁是这一轮回复的落库执行者」：
+   *  - 发起方（HTTP/SSE 请求线程）promise 仍存活 → 它自己落库，worker 不写（避免双写）；
+   *  - 否则 worker 兜底写回 DB 会话（cs_*）。两类触发：
+   *      (a) 重启后从 DB 恢复的排队项（闭包随 JSON 丢失）；
+   *      (b) 本来就没有发起方的 turn —— `callback_result`：过去回复只写 MemoryStore，
+   *          用户在 Team Chat 里**永远看不到**后台任务的结果（P5 修复）。
+   * 目标会话：extra.sessionId / metadata.dbSessionId（cs_*）优先；只有内存会话 id 时，
+   * 交给装配层（org-manager）用 `chat_sessions.metadata.memorySessionId` 反查 cs_*。
+   * 判据见 `shouldPersistTurnReply`（core/recovered-reply-persist.ts）。
+   *
+   * 【P5b】白名单（sourceType ∈ CHAT_CONVERSATION_TURN_TYPES，fail-closed）与控制
+   * 信号拒绝（[end_turn] 等哨兵不是正文）也收敛在该判据里 —— 内部 turn（心跳/系统/
+   * 任务）结构上不可能把回复写进用户对话（2026-10-07 生产泄漏修复）。
    */
-  async persistRecoveredReplyIfNeeded(
+  async persistTurnReplyIfUnowned(
     reply: string,
     extra: Record<string, unknown>,
     metadata: { dbSessionId?: unknown; responsePromise?: { resolve?: unknown } } | undefined,
+    memorySessionId: string | undefined,
+    origin?: string,
+    sourceType?: string,
   ): Promise<void> {
     if (!reply || typeof reply !== 'string' || !reply.trim()) return;
     if (!this.assistantReplyPersister) return;
-    const decision = shouldPersistRecoveredReply({
+    const decision = shouldPersistTurnReply({
       resolveIsFunction: typeof (metadata?.responsePromise as { resolve?: unknown } | undefined)?.resolve === 'function',
+      sourceType,
+      reply,
       sessionId: extra.sessionId,
       dbSessionId: metadata?.dbSessionId,
+      memorySessionId,
     });
-    if (!decision.shouldPersist || !decision.sessionId) return;
+    if (!decision.shouldPersist || (!decision.sessionId && !decision.memorySessionId)) return;
     try {
-      await this.assistantReplyPersister!({
-        sessionId: decision.sessionId,
+      await this.assistantReplyPersister({
+        ...(decision.sessionId ? { sessionId: decision.sessionId } : {}),
+        ...(decision.memorySessionId ? { memorySessionId: decision.memorySessionId } : {}),
         agentId: this.id,
         reply,
         tokensUsed: this.getTokensUsed(),
+        ...(origin ? { origin } : {}),
       });
-      log.info('P3: worker persisted recovered reply to DB session', {
+      log.info('P5: turn reply persisted to DB chat session', {
         agentId: this.id,
         sessionId: decision.sessionId,
+        memorySessionId: decision.memorySessionId,
+        reason: decision.reason,
+        origin,
         replyLength: reply.length,
       });
     } catch (err) {
-      log.warn('P3: failed to persist recovered reply', {
+      log.warn('P5: failed to persist turn reply', {
         agentId: this.id,
         sessionId: decision.sessionId,
+        memorySessionId: decision.memorySessionId,
         error: String(err),
       });
     }
@@ -4890,11 +5113,12 @@ export class Agent {
             iterations: toolIterations,
             cap: effectiveMaxIter,
           });
+          this.markTurnTruncated('handleMessage', response.finishReason);
           break;
         }
 
-        // Handle max_tokens continuation (model was cut off mid-response)
-        if (needsMaxTokensContinuation(response)) {
+        // Handle text cutoff (max_tokens or a fault/truncation → 'incomplete')
+        if (turnContinuationKind(response, { endTurnRequested: this.endTurnRequested }) === 'text') {
           this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
           const contMsg: LLMMessage = {
             role: 'user',
@@ -5667,6 +5891,7 @@ export class Agent {
             agentId: this.id,
             iterations: streamToolIterations,
           });
+          this.markTurnTruncated('handleMessageStream', response.finishReason);
           break;
         }
 
@@ -5686,8 +5911,8 @@ export class Agent {
           return '[cancelled]';
         }
 
-        // Handle max_tokens continuation
-        if (needsMaxTokensContinuation(response)) {
+        // Handle text cutoff (max_tokens or a fault/truncation → 'incomplete')
+        if (turnContinuationKind(response, { endTurnRequested: this.endTurnRequested, cancelled: cancelToken?.cancelled || cancelToken?.userStopped }) === 'text') {
           this.memory.appendMessage(this.currentSessionId, {
             role: 'assistant',
             content: response.content,
@@ -6385,7 +6610,9 @@ export class Agent {
       this.emitLlmRequestAudit('task_execution', response, Date.now() - taskLlmStart, taskLlmTokens);
 
       while (
-        shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
+        // 任务执行循环保持原语义：断流（incomplete）不在本循环内续跑，
+        // 交回既有 task 自动继续 / review 机制处理（老板约束：本次不改该机制）。
+        shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested, incompleteAsContinuation: false })
       ) {
         taskToolIterations++;
         if (cancelToken?.cancelled) {
@@ -6932,11 +7159,12 @@ export class Agent {
           log.warn('respondInSession tool loop hit max iterations', {
             agentId: this.id, sessionId, iterations: toolIter, cap: effectiveMaxIter,
           });
+          this.markTurnTruncated('respondInSession', response.finishReason);
           break;
         }
         flushText();
 
-        if (needsMaxTokensContinuation(response)) {
+        if (turnContinuationKind(response, { endTurnRequested: this.endTurnRequested }) === 'text') {
           this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
           this.memory.appendMessage(sessionId, {
             role: 'user',

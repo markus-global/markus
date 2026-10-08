@@ -226,6 +226,7 @@
       "requestChanges": "请求修改"
     },
     "badgeLabel": "通知",
+    "backgroundTaskBadge": "后台任务完成",
     "approvalType": {
       "task": "任务",
       "requirement": "需求",

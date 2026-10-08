@@ -12,6 +12,7 @@ import {
   type MailboxPriority,
   MAILBOX_TYPE_REGISTRY,
   resolveEntityKeys,
+  deriveMailboxSubject,
   isStrictStateItem,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
@@ -686,6 +687,9 @@ export class AgentMailbox {
       payload,
       metadata: options?.metadata,
       queuedAt: new Date().toISOString(),
+      // P3：入队时**一次性**派生并绑定主体（单一派生点）。所有消费者只读 item.subject；
+      // 旧行/未绑定项由 resolveEntityKeys 回退到同一派生函数，故向后兼容。
+      subject: deriveMailboxSubject({ sourceType, payload, metadata: options?.metadata }),
     };
 
     // P0 幂等键（根因 #5）：**先落库再入内存队列**。落库被唯一键拒绝（返回 false）

@@ -43,6 +43,14 @@ export interface ChatMsg {
   requirementId?: string;
   isNotification?: boolean;
   notifyPriority?: string;
+  /**
+   * 【P5】「无发起方」的回合（`callback_result`：background_exec 完成 / a2a in_session 回复）
+   * 落库后主动推来的气泡 —— 与普通回复同源、同气泡形态，但**不是**对用户刚问那句话的回答，
+   * 故带 provenance 标记，避免因果混淆。
+   */
+  isBackgroundTask?: boolean;
+  /** 来源标签（如 'callback_result'）。 */
+  origin?: string;
 }
 
 /** Remember is only for user↔agent personal DM (`showRemember` from ChatPanel / chatMode=direct). */
@@ -542,6 +550,10 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   }
   if (m.metadata?.images?.length) {
     base.images = m.metadata.images;
+  }
+  if (m.metadata?.origin === 'callback_result') {
+    base.isBackgroundTask = true;
+    base.origin = 'callback_result';
   }
   if (m.metadata?.notifyUser) {
     base.isNotification = true;

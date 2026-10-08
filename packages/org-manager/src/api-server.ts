@@ -2370,14 +2370,19 @@ export class APIServer {
   }
 
   /** Persist the assistant reply after LLM completes (upsert while streaming). */
+  /**
+   * 落库一条 assistant 回复。返回持久化后的 message id（无法落库时 null）——
+   * P5 的无发起方 turn（callback_result）需要这个 id 把它广播给 Team Chat UI（气泡 id 必须
+   * 与 DB 行一致，否则列表重载会把同一条回复渲染成两个气泡）。
+   */
   private async persistAssistantMessage(
     sessionId: string | null,
     agentId: string,
     reply: string,
     tokensUsed = 0,
     metadata?: unknown
-  ): Promise<void> {
-    if (!this.storage || !sessionId) return;
+  ): Promise<string | null> {
+    if (!this.storage || !sessionId) return null;
     try {
       const meta = (metadata && typeof metadata === 'object')
         ? metadata as Record<string, unknown>
@@ -2403,26 +2408,95 @@ export class APIServer {
       if (msg?.id) {
         this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
       }
+      return msg?.id ?? null;
     } catch (err) {
       log.warn('Failed to persist assistant message', { error: String(err) });
+      return null;
     }
   }
 
   /**
-   * 【P3】装配「回合回复持久化」回调到某个 agent：当 worker 处理**重启后从 DB 恢复**的
-   * 排队项（发起方 responsePromise 随 JSON 丢失，SSEHandler / api-server 请求线程已死、
-   * 无人 persistAssistantMessage）时，由处理该消息的 worker 调用本回调把回复写回 DB 会话
-   * （cs_*），否则前端刷新也拉不到回复。正常路径（发起方 promise 存活）由 SSEHandler /
-   * api-server 非流式分支自行落库，回调在 core 侧由 `shouldPersistRecoveredReply` 判定不触发。
+   * 【P3→P5】装配「回合回复持久化」回调到某个 agent。当 worker 处理一个**没有活发起方**的
+   * turn 时（重启后从 DB 恢复的排队项；或本来就无发起方的 `callback_result`），负责回写 DB
+   * 会话（cs_*）的 SSEHandler / api-server 请求线程不存在 —— 由处理该消息的 worker 兜底落库，
+   * 否则前端刷新也拉不到回复。core 侧由 `shouldPersistTurnReply` 判定何时触发。
+   *
+   * P5 的新增职责：
+   *  1. **反查目标会话**：callback_result 只知道内存会话 id（sess_*），需经
+   *     `chat_sessions.metadata.memorySessionId` 反查 cs_*（纯读，owner 的存量数据零迁移）；
+   *  2. **主动广播**：无发起方 ⇒ 没有 SSE 客户端在等这条回复，必须广播
+   *     `chat:proactive_message`（带 origin 标记）才能在打开的会话里即时出现 ——
+   *     否则用户要手动刷新才看得到后台任务的结果。
    */
   wireAssistantReplyPersister(agentId: string): void {
     try {
       const agent = this.orgService.getAgentManager().getAgent(agentId);
-      agent.setAssistantReplyPersister(async ({ sessionId, agentId: aId, reply, tokensUsed }) => {
-        await this.persistAssistantMessage(sessionId, aId, reply, tokensUsed);
+      agent.setAssistantReplyPersister(async ({ sessionId, memorySessionId, agentId: aId, reply, tokensUsed, origin }) => {
+        const cs = sessionId
+          ?? (memorySessionId ? this.resolveChatSessionForMemorySession(aId, memorySessionId) : null);
+        if (!cs) {
+          // 会话定位不到（心跳 / 任务 / 系统轮使用 hb_* / task_* / sys_* 会话，本就没有
+          // cs_* 绑定）—— 宁可缺也不落错会话。
+          log.debug('Turn reply not persisted — no DB chat session bound to this turn', {
+            agentId: aId, memorySessionId, origin,
+          });
+          return;
+        }
+        const messageId = await this.persistAssistantMessage(
+          cs, aId, reply, tokensUsed, origin ? { origin } : undefined,
+        );
+        if (origin && messageId) {
+          this.broadcastOutOfBandAgentReply(aId, cs, messageId, reply, origin);
+        }
       });
     } catch {
       /* agent not loaded */
+    }
+  }
+
+  /** 内存会话 id（sess_*）→ DB 会话 id（cs_*）——先查活 agent 的绑定表，再查持久绑定。 */
+  private resolveChatSessionForMemorySession(agentId: string, memorySessionId: string): string | null {
+    try {
+      const agent = this.orgService.getAgentManager().getAgent(agentId);
+      const fromLive = agent.getDbSessionIdForMemorySession?.(memorySessionId);
+      if (fromLive) return fromLive;
+    } catch {
+      /* agent not loaded — fall through to the persisted binding */
+    }
+    return this.storage?.chatSessionRepo.findSessionIdByMemorySessionId(agentId, memorySessionId) ?? null;
+  }
+
+  /**
+   * 广播一条「无发起方」的回复到它所属的会话 —— 与 notify_user 同一条通路
+   * （`chat:proactive_message`），故前端无需新事件类型；`origin` 随元数据透出，
+   * 前端据此把它渲染成带「后台任务完成」标记的气泡（而非看起来像刚回答的那个问题）。
+   */
+  private broadcastOutOfBandAgentReply(
+    agentId: string,
+    sessionId: string,
+    messageId: string,
+    reply: string,
+    origin: string,
+  ): void {
+    try {
+      const session = this.storage?.chatSessionRepo.getSession(sessionId);
+      const agent = this.orgService.getAgentManager().getAgent(agentId);
+      this.ws.broadcastProactiveMessage(
+        agentId,
+        agent.config.name,
+        sessionId,
+        messageId,
+        reply,
+        {
+          origin,
+          sessionId,
+          messageId,
+          isMainSession: !!session?.isMain,
+        },
+        session?.userId ?? undefined,
+      );
+    } catch (err) {
+      log.warn('Failed to broadcast out-of-band agent reply', { agentId, sessionId, error: String(err) });
     }
   }
 
@@ -4397,6 +4471,18 @@ export class APIServer {
           a.id === orgSecretaryId ? { ...a, isOrgSecretary: true, protected: true } : a
         );
       }
+      // P4b：附上后端权威的「是否忙碌」——前端据此否决本地乐观态（幽灵「空闲」）。
+      // listAgents() 返回纯记录，故从活的 Agent 实例取派生状态。
+      // 语义 = 正在处理（isProcessing）∪ 队列中仍有待处理项（getSessionStates 已并入队列），
+      // 这样「已入队但尚未被认领」的窗口也不会被误显示为空闲。
+      const mgr = this.orgService.getAgentManager();
+      agents = agents.map(a => {
+        const live = mgr.getAgent?.(a.id as string);
+        if (!live) return a;
+        const busy = live.isProcessing()
+          || live.getSessionStates().some(s => s.state === 'processing');
+        return { ...a, isProcessing: busy };
+      });
       if (this.gateway) {
         const extRegs = this.gateway.listRegistrations();
         const disconnectedIds = new Set(

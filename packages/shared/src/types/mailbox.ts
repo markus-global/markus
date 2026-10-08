@@ -132,6 +132,56 @@ export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types:
 // silently fall outside concurrency protection.
 
 /**
+ * mailbox item 的**一等主体** —— 「这条消息属于谁」。
+ *
+ * 【为什么需要】此前「归属」没有一等字段，而是每个消费者各自从
+ * `payload.extra` / `metadata` 里**分别**翻找：turn 会话读 `extra.originSessionId`，
+ * 并发实体锁读 `metadata.sessionId`。同一个事实两个来源 ⇒ `callback_result` 的
+ * 会话正确、但锁键退化为 `system:{agentId}`（R1：同一事实两个写者）。
+ * 现在统一由 {@link deriveMailboxSubject} 派生，消费者只读 `item.subject`。
+ */
+export interface MailboxSubject {
+  /** 该消息归属的会话键（内存会话 id）——决定 turn 会话 + `conversation` 并发锁。 */
+  sessionKey?: string;
+  /** 会话在数据库中的 id（若有），作为锁键时优先于 sessionKey。 */
+  dbSessionId?: string;
+  taskId?: string;
+  requirementId?: string;
+  senderId?: string;
+  channelKey?: string;
+}
+
+/**
+ * 主体派生的**唯一入口**：把零散的 payload.extra / metadata 归一成 {@link MailboxSubject}。
+ *
+ * 优先级刻意保守（metadata 在前）以**保持既有锁行为不变**：真实存在某个线索时，
+ * 解析结果与旧实现逐字一致；只有旧实现**解析不出任何值**的情形（如无 metadata 的
+ * callback_result）才回退到 sessionHint / originSessionId——纯加法。
+ */
+export function deriveMailboxSubject(
+  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
+): MailboxSubject {
+  const extra = (item.payload?.extra ?? {}) as Record<string, unknown>;
+  const hint = extra.sessionHint as
+    | { memorySessionId?: string; dbSessionId?: string }
+    | undefined;
+  const subject: MailboxSubject = {};
+  const taskId = item.payload?.taskId ?? item.metadata?.taskId;
+  if (taskId) subject.taskId = taskId;
+  if (item.payload?.requirementId) subject.requirementId = item.payload.requirementId;
+  if (item.metadata?.senderId) subject.senderId = item.metadata.senderId;
+  if (typeof extra.channelKey === 'string') subject.channelKey = extra.channelKey;
+  const dbSessionId = item.metadata?.dbSessionId ?? hint?.dbSessionId;
+  if (dbSessionId) subject.dbSessionId = dbSessionId;
+  const sessionKey =
+    item.metadata?.sessionId
+    ?? hint?.memorySessionId
+    ?? (typeof extra.originSessionId === 'string' ? extra.originSessionId : undefined);
+  if (sessionKey) subject.sessionKey = sessionKey;
+  return subject;
+}
+
+/**
  * Resolve the full set of entity-affinity lock keys for a mailbox item.
  *
  * An item can belong to **several** entities at once (e.g. a human chat is both
@@ -147,43 +197,41 @@ export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types:
  * are part of the contract and shared with the handoff log.
  */
 export function resolveEntityKeys(
-  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
+  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'> & { subject?: MailboxSubject },
   agentId: string,
 ): string[] {
+  // 单一主体来源：显式 subject 优先，否则从 payload/metadata 派生（旧行向后兼容）。
+  const subject = item.subject ?? deriveMailboxSubject(item);
   const scopes = MAILBOX_TYPE_REGISTRY[item.sourceType]?.entityScopes ?? ENTITY_SCOPE_ORDER;
   const keys: string[] = [];
   for (const scope of scopes) {
     if (scope === 'system') break; // fallback handled below
     switch (scope) {
       case 'task': {
-        const id = item.payload.taskId ?? item.metadata?.taskId;
-        if (id) keys.push(`task:${id}`);
+        if (subject.taskId) keys.push(`task:${subject.taskId}`);
         break;
       }
       case 'requirement': {
-        const id = item.payload.requirementId;
-        if (id) keys.push(`req:${id}`);
+        if (subject.requirementId) keys.push(`req:${subject.requirementId}`);
         break;
       }
       case 'user': {
-        const id = item.metadata?.senderId;
-        if (id) keys.push(`user:${id}`);
+        if (subject.senderId) keys.push(`user:${subject.senderId}`);
         break;
       }
       case 'conversation': {
-        const id = item.metadata?.dbSessionId ?? item.metadata?.sessionId;
+        const id = subject.dbSessionId ?? subject.sessionKey;
         if (id) keys.push(`conv:${id}`);
         break;
       }
       case 'channel': {
-        const id = item.payload.extra?.channelKey as string | undefined;
-        if (id) keys.push(`channel:${id}`);
+        if (subject.channelKey) keys.push(`channel:${subject.channelKey}`);
         break;
       }
     }
   }
   if (keys.length === 0) keys.push(`system:${agentId}`);
-  return dedupeKeys(keys);
+  return dedupeKeys(keys);;
 }
 
 /**
@@ -218,6 +266,12 @@ export interface MailboxItem {
   status: MailboxItemStatus;
   payload: MailboxPayload;
   metadata?: MailboxItemMetadata;
+  /**
+   * 一等主体（P3）：这条消息属于哪个实体/会话。由 {@link deriveMailboxSubject}
+   * 在入队时派生一次并持久化；所有消费者（并发锁、后端状态）只读此字段。
+   * 旧数据为 undefined ⇒ 消费者回退到派生逻辑（向后兼容）。
+   */
+  subject?: MailboxSubject;
   queuedAt: string;
   startedAt?: string;
   completedAt?: string;

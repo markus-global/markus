@@ -173,7 +173,7 @@ export class GoogleProvider implements MultiModalProviderInterface {
     let content = '';
     let reasoningContent = '';
     const toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
-    let finishReason: LLMResponse['finishReason'] = 'end_turn';
+    let finishReason: LLMResponse['finishReason'] = 'incomplete';
     let promptTokens = 0;
     let completionTokens = 0;
 
@@ -345,7 +345,7 @@ export class GoogleProvider implements MultiModalProviderInterface {
       SPII: 'content_filter',
       RECITATION: 'content_filter',
     };
-    return map[reason] ?? 'end_turn';
+    return map[reason] ?? 'incomplete';
   }
 
   private convertResponse(data: GeminiResponse): LLMResponse {
