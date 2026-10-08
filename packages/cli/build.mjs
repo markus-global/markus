@@ -62,6 +62,15 @@ async function main() {
     console.log('  Copied templates (mirrored).');
   }
 
+  // Step 3b: Copy docs/ so they ship with the npm package too. templates/roles/HANDBOOK.md
+  // tells agents that these docs are available relative to the installation root; shipping
+  // them is what makes that true. §26 — mirrored; `images/` is GitHub README art (excluded).
+  const docsRoot = resolve(__dirname, '../../docs');
+  const docsDest = resolve(__dirname, 'docs');
+  if (syncDir(docsRoot, docsDest, { ignore: ['images'] })) {
+    console.log('  Copied docs (mirrored, images excluded).');
+  }
+
   // Step 4: Copy pre-built Web UI into dist/ for static serving (§26 — 镜像)
   const webUiDist = resolve(__dirname, '../web-ui/dist');
   const webUiDest = resolve(__dirname, 'dist', 'web-ui');

@@ -110,6 +110,15 @@ async function main() {
     console.log('  Copied templates (mirrored).');
   }
 
+  // Copy docs — shipped so an installed agent can actually read the platform docs that
+  // templates/roles/HANDBOOK.md points at. §26 — mirrored. `images/` is GitHub README art
+  // (~7 MB) and has no use in the bundle, so it is excluded.
+  const docsRoot = resolve(__dirname, '../../docs');
+  const docsDest = resolve(__dirname, 'dist/docs');
+  if (syncDir(docsRoot, docsDest, { ignore: ['images'] })) {
+    console.log('  Copied docs (mirrored, images excluded).');
+  }
+
   // Chrome extension zip — required for Settings download; fail the build if missing
   console.log('  Ensuring Chrome extension zip...');
   const { execSync } = await import('node:child_process');

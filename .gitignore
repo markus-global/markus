@@ -19,6 +19,8 @@ coverage.old.*/
 
 # Build artifacts copied during bundle (packages/cli/build.mjs)
 packages/cli/templates/
+# docs/ is mirrored into the CLI package by build.mjs — build output, not source.
+packages/cli/docs/
 
 # Binary distribution build output (scripts/build-binary.sh)
 dist-binary/
@@ -30,8 +32,10 @@ packages/desktop/node_modules/
 # Config lock files
 markus.json.lock
 
-# Auto-generated API docs (regenerate via typedoc)
-docs/api/
+# Auto-generated API docs (regenerate via typedoc).
+# NOTE: docs/api/ is deliberately NOT ignored — it holds the hand-written API
+# reference (docs/api/API.md), which must stay tracked. Only the generated
+# test fixture path is ignored.
 docs/api-test/
 
 # Paper — independent repo (paper/.git)
