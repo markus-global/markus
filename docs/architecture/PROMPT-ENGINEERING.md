@@ -604,7 +604,7 @@ by `HANDOFF_CONTEXT_LIMIT` (8).
 
 #### Scenario Section (§15)
 Source: `buildScenarioSection()`.  
-Placed at the **end of Tier 2** so the identity/org prefix remains stable across mode switches (chat ↔ heartbeat ↔ a2a). Eight distinct instruction sets depending on `scenario` parameter. Each scenario is slim and references the global Task Workflow and Tool Usage Rules rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
+Placed at the **end of Tier 2** so the identity/org prefix remains stable across mode switches (chat ↔ heartbeat ↔ a2a). Twelve distinct instruction sets depending on `scenario` parameter (see §5.9 for the full matrix). Each scenario is slim and references the global Task Workflow and Tool Usage Rules rather than re-explaining them. Each scenario includes a **Communication channel** paragraph that specifies output visibility and appropriate tools:
 
 | Scenario | Key Instructions | Output Visibility | Communication Tools |
 |----------|-----------------|-------------------|-------------------|
@@ -616,7 +616,7 @@ Placed at the **end of Tier 2** so the identity/org prefix remains stable across
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
 | `group_chat` | Team group chat channel. Silence by default, @mention routing, processing checklist, reply-in-group rules. | Visible to **all team members** | `agent_send_group_message` for replies; `notify_user` for private escalation |
 | `comment_response` | Context-first protocol. Batch awareness (handle bundled comments as one). Use `reply_to_comment_id` for structural quoting. Convergence check before replying. | **Not directly visible** | `task_comment` / `requirement_comment` for thread (with `reply_to_comment_id`); `notify_user` if urgent |
-| `deliberation` | Multiple mailbox items — assess before committing. Use `check_mailbox` for full queue inspection; `defer_mailbox_item` / `drop_mailbox_item` for queue management; `update_notebook` to record situational assessment; finish with `complete_deliberation`. Goal tools (`goal_create`, `goal_update`, `goal_status`) available. | **Not visible** | Inline handling via deliberation whitelist (`notify_user`, `task_comment`, `agent_send_message`, etc.) |
+| `deliberation` | Multiple mailbox items — assess before committing. Use `check_mailbox` for full queue inspection; `defer_mailbox_item` / `drop_mailbox_item` for queue management; `notebook_upsert` to record situational assessment; finish with `complete_deliberation`. Goal tools (`goal_create`, `goal_update`, `goal_status`) available. | **Not visible** | Inline handling via deliberation whitelist (`notify_user`, `task_comment`, `agent_send_message`, etc.) |
 | `review` | Evaluate deliverable quality against acceptance criteria. | **Not directly visible** | `task_update` for verdict; `notify_user` optionally |
 | `memory_consolidation` | Internal memory management. Purely private. | **Not visible**; internal only | No communication tools needed |
 
@@ -655,7 +655,7 @@ Placed in **Tier 1 (Stable)** (`## Error Recovery` + `## Autonomy & Escalation`)
 
 ### 2.3 Skill Filtering
 
-`filterSkillsByRelevance()` scores each skill against the current query by keyword overlap. Returns top 30. Each entry is one line: `**name** [category]: description`. The filtered skills catalog is placed in the **volatile tail** because the filter results depend on the current query, which changes per message. This keeps the byte-stable system prefix intact and prevents per-message skill filtering from busting the cache prefix.
+**removed (2026-09-16)** — `filterSkillsByRelevance()` (query-keyword scoring, "top 30") was deleted as dead code; it was never called. The every-turn skill catalog is ORG context (scope O) — byte-stable for the whole org — so ranking it per query would convert a shared cached block into a per-call one. See §3.9.1 O4.
 
 ---
 
@@ -749,7 +749,7 @@ The first user message in a task session often contains the task description and
 
 When available, `smartSummarizeAndTruncate()` uses an LLM call to summarize older messages:
 - The summarizer LLM call is cheap: truncates each message to 300 chars, total input capped at 8000 chars.
-- Output max 1024 tokens, temperature 0.2.
+- No `maxTokens` cap — the router fills in the model's real output limit (the prompt itself bounds output to "under 1500 characters"). Temperature 0.2.
 - Fallback: `buildHeuristicSummary()` extracts key sentences from assistant messages.
 - The summary is **not** persisted to disk — `prepareMessages()` must stay pure (no `writeDailyLog`).
   It is instead carried in-history as a `[SYSTEM] [Conversation history summary …]` message, and the
@@ -788,9 +788,9 @@ plumbing.
   re-reading files**.
 - Runtime caps: `CONTEXT_SLOT_MAX_CHARS` (1200).
 
-**Session tools (agent-driven compaction + anchors)** — `tools/session.ts` exposes 9 operations so
+**Session tools (agent-driven compaction + anchors)** — `tools/session.ts` exposes 10 operations so
 the agent can actively manage long sessions instead of relying only on passive auto-compaction:
-`list | get | compact(keepLast, goal?, done?, next?) | pin | unpin | retrieve | include | purge | status`.
+`list | get | compact(keepLast, goal?, done?, next?) | pin | unpin | retrieve | include | purge | status | rename`.
 - `compact` folds expired history into structured anchors (`compactWithAnchor`: pin goal/done/next
   into SLOTs, then compress), keeping recent N; raw history is archived to `conversation_fragment`
   (never deleted) and recoverable via `include`.
@@ -1137,7 +1137,7 @@ User: ## Memory Entries\n{id|timestamp|type|tags|content for each entry}
       ## Instructions: Output JSON with remove, merge operations...
 ```
 
-Capped at 200 most recent entries. Output is parsed as JSON and applied programmatically (remove entries, merge duplicates). Vector index is synchronized post-consolidation.
+Capped at 500 most recent entries (`MAX_ENTRIES_FOR_LLM`). Output is parsed as JSON and applied programmatically (remove entries, merge duplicates). Vector index is synchronized post-consolidation.
 
 ### 5.9 Scenario × Context Matrix (2026-09-16)
 
@@ -1371,7 +1371,7 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 | `packages/core/src/agent.ts` | Implementation of all 8 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation; SLOT fixed segment, volatile tail, watermark |
 | `packages/core/src/context-slot.ts` | SLOT segment model: `SlotEntry` / `SlotsStore` / `buildSlotSegment()` — the never-compacted anchors (§3.7) |
-| `packages/core/src/tools/session.ts` | Session 9-op tool family (compact/pin/include/retrieve…) + `checkOwnership` (§3.7) |
+| `packages/core/src/tools/session.ts` | Session 10-op tool family (compact/pin/include/retrieve…) + `checkOwnership` (§3.7) |
 | `packages/core/src/llm/router.ts` | Provider routing, circuit breaker, model catalog, output token resolution |
 | `packages/core/src/tool-selector.ts` | Tool selection logic |
 | ~~`context-os.md`~~ | **Merged into this document §3.7** (Fixed/Variable split, SLOT anchors, session tools, watermark). "ContextOS" is the name of that mechanism; deliverable notes (8/20 repro, regression ledger) are archived in git history. |

@@ -195,7 +195,7 @@ MEMORY.md                   ← DEPRECATED legacy; migrate → knowledge/state o
 |-------|------|------|
 | **Inject** | Curated sections → `## Your Knowledge` (capped; omitted for reflex). Observations **not** injected. Notebook always (it carries the situational state that the retired `state.md` used to hold). | Every non-reflex turn packing |
 | **Update** | `memory_save` → `_observations` (one entry; `content` required). `memory_update` / `memory_update_longterm` → named curated section (`replace` / `patch`; `append` aliases `patch`). | Immediate on tool call |
-| **Clean** | Dream (`memory_consolidation` only): dedupe / merge / promote (3+ theme) when ≥50 observations (≤1×/day; ≤4×/day if ≥500). Empty observations rejected on write and pruned on load. Section ≤3000 / file ≤15000 chars — now enforced **at load** as well as on write (an over-budget file is converged on load instead of refusing future writes). Notebook per-tier TTL prune runs on every notebook write. Post-task encode is **Distillation** (`scenario: distillation`), not Dream — see [LEARNING-LOOP.md](./LEARNING-LOOP.md) §0. | `consolidateMemory()` + write-time guards |
+| **Clean** | Dream (`memory_consolidation` only): dedupe / merge / promote (3+ theme) when ≥50 observations (≤1×/day; ≤4×/day if ≥500). Empty observations rejected on write and pruned on load. Section ≤3000 (`MEMORY_MD_SECTION_MAX_CHARS`) enforced on write; the curated soft budget (≤15000, `MEMORY_MD_CURATED_MAX_CHARS`) is **report-only** at load, and the write path refuses only at the hard ceiling `MEMORY_MD_CURATED_HARD_MAX_CHARS` (45000). (The old load-time convergence/rewrite of an over-budget file was **removed** — see §8.8.) Notebook per-tier TTL prune runs on every notebook write. Post-task encode is **Distillation** (`scenario: distillation`), not Dream — see [LEARNING-LOOP.md](./LEARNING-LOOP.md) §0. | `consolidateMemory()` + write-time guards |
 
 ### Curated Sections
 
@@ -517,7 +517,7 @@ Principles this produced:
 
 | Limit | Why it is accepted for now |
 |---|---|
-| Curated knowledge does **not** decay by age | distinguishing "durable principle" from "temporary conclusion" is a semantic judgement only an LLM can make → belongs in the dream-cycle curation prompt, not the storage layer. Bounded instead by the load-time total cap. |
+| Curated knowledge does **not** decay by age | distinguishing "durable principle" from "temporary conclusion" is a semantic judgement only an LLM can make → belongs in the dream-cycle curation prompt, not the storage layer. Bounded instead by the curated soft budget (report-only at load) and the write-path hard ceiling `MEMORY_MD_CURATED_HARD_MAX_CHARS`; the load-time total cap was **removed** (see §8.8). |
 | No write queue for memory writes | lock-key unification + atomic writes removed the main interleaving surface; a queue would add a serialisation bottleneck without evidence of remaining contention. |
 | `relevant-context` may repeat what `## Your Knowledge` already says | deliberate: deduplicating raises "which copy is authoritative?" ambiguity. |
 | Frontend renders the notebook; there is no jsdom-level render test | helper-level unit tests only (`packages/web-ui/src/lib/notebookDisplay.test.ts`); render-level harness is a separate piece of work. |
