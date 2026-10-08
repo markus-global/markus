@@ -39,6 +39,7 @@ import {
   shouldSettleDetachedSession,
 } from '../pages/ChatHelpers.ts';
 import { NEW_CHAT_PLACEHOLDER_ID } from './useConversationBuffers.ts';
+import { resolveStopCancelDecision } from '../lib/stopCancelDecision.ts';
 import { parseMentionNames } from '../components/CommentInput.tsx';
 import { exponentialBackoffDelay } from '../lib/streamResilience.ts';
 import { friendlyAgentError, isMarkusCreditError, dispatchCreditNotification } from '../pages/ChatComponents.tsx';
@@ -228,11 +229,18 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
     // 1) Tell the backend to stop FIRST. Aborting the SSE alone is a soft
     // disconnect — the agent keeps working for up to SSE_DISCONNECT_FORCE_STOP_MS
     // unless cancel-processing marks userStopped.
+    //
+    // 【P1 H1 修法：目标限定】只对**既有会话**发 scoped 取消（`none` 不误杀）；
+    // 占位/无会话 → `skip`：仅前端 abort + 记 userStopped，不触后端 —— 无 target
+    // 的请求会让服务端走 `root` 兼容路径，取消"当前 ALS/根上下文流"，而发送线程
+    // 没有 ALS → 落成"取消此刻正在跑的那条流"，误杀别的会话（"两条都处理中 /
+    // 第一条没真正处理"的直接成因）。见 lib/stopCancelDecision.ts。
     const agentId = stateRef.current.chatMode === 'direct' ? stateRef.current.selectedAgent : null;
     if (agentId) {
-      const sid = stateRef.current.activeSessionId;
-      const target = sid && sid !== NEW_CHAT_PLACEHOLDER_ID ? { sessionId: sid } : undefined;
-      void api.agents.cancelProcessing(agentId, target).catch(() => {});
+      const decision = resolveStopCancelDecision(stateRef.current.activeSessionId, NEW_CHAT_PLACEHOLDER_ID);
+      if (decision.kind === 'cancel') {
+        void api.agents.cancelProcessing(agentId, decision.target).catch(() => {});
+      }
     }
 
     // 2) Abort both the live send() stream and any reattachStream consumer.
@@ -315,7 +323,10 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // speed — one of the two amplifiers of the idle CPU storm.
       reattachCooldownRef.current.set(cooldownKey, Date.now());
 
+      // 服务端已命名的在途回复 id —— 供 DB-heal 收尾做身份衔接（见 `!result` 分支）。
+      let lastMessageId: string | undefined;
       const status = await api.sessions.streamStatus(agentId, sessionId);
+      if (status.messageId) lastMessageId = status.messageId;
       const msgs = readConvMsgs(convKey) ?? [];
       const serverStreaming = status.status === 'streaming';
       // Reattach must only ever continue the IN-FLIGHT bubble. Two signals:
@@ -647,6 +658,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         // 传输中途断了 —— 问服务端到底还在不在跑，再决定是否继续接。
         markReconnecting(true);
         const st = await api.sessions.streamStatus(agentId, sessionId).catch(() => null);
+        if (st?.messageId) lastMessageId = st.messageId;
         if (!st || !st.active || st.status === 'not_found' || st.status === 'idle') {
           markReconnecting(false);
           result = null;
@@ -664,11 +676,20 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         clearStreamSession(convKey, sessionId);
         if (currentConvKeyRef.current === convKey) {
           setSending(false);
+          // 身份衔接（补 #356 遗漏的第五条终局路径）：先把本地合成 id 收敛到服务端
+          // 已命名的 messageId，使随后的 DB heal 复用**同一行**。否则本地合成 id 的
+          // 气泡被整条替换成 DB messageId 行 → React 卸载旧节点、挂载新节点，观感
+          // 就是「半截流式气泡 → 完整回复一闪 + 结束态」（刷新后无此跳变，故"正常"）。
+          if (lastMessageId && agentMsgId) {
+            updateConvMsgs(convKey, prev => alignStreamedAgentId(prev, agentMsgId, lastMessageId), sessionId);
+          }
           // 以持久化的完整回复为准重建气泡（DB heal），而不是把当前这半截内容
-          // 定型成「已完成」。DB 读取失败时才退回本地定型，避免永久「思考中」。
-          void loadSessionMessages(sessionId, convKey).catch(() => {
-            updateConvMsgs(convKey, prev => finalizeLastStreamingBubble(prev), sessionId);
-          });
+          // 定型成「已完成」。DB 读取失败/无该行时退回本地定型，避免永久「思考中」。
+          void loadSessionMessages(sessionId, convKey)
+            .catch(() => {})
+            .finally(() => {
+              updateConvMsgs(convKey, prev => finalizeLastStreamingBubble(prev, 'done'), sessionId);
+            });
         }
         dropReattachCtl(abortCtrl);
         return;
@@ -790,8 +811,11 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         // Same text already in-flight — don't stack another user bubble; retry the turn.
         if (lastUser?.text === text && !options?.isRetry && !options?.isResume) {
           abortStreamsFor(volatile.activeSessionId ?? NEW_CHAT_PLACEHOLDER_ID);
-          const sid0 = volatile.activeSessionId ?? undefined;
-          void api.agents.cancelProcessing(volatile.selectedAgent!, { sessionId: sid0 }).catch(() => {});
+          // P1 2b：占位/无会话不发后端取消（无 target 会 root 误杀），与 stopSending 同一决策。
+          const dec0 = resolveStopCancelDecision(volatile.activeSessionId, NEW_CHAT_PLACEHOLDER_ID);
+          if (dec0.kind === 'cancel') {
+            void api.agents.cancelProcessing(volatile.selectedAgent!, dec0.target).catch(() => {});
+          }
           abortStream(prevKey, volatile.activeSessionId);
           // Drop the in-flight user+empty agent pair before the retry re-adds them.
           updateConvMsgs(prevKey, prev => {
@@ -806,8 +830,11 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         }
         // Same session: interrupt current stream and resend
         abortStreamsFor(volatile.activeSessionId ?? NEW_CHAT_PLACEHOLDER_ID);
-        const sid1 = volatile.activeSessionId ?? undefined;
-        void api.agents.cancelProcessing(volatile.selectedAgent!, { sessionId: sid1 }).catch(() => {});
+        // P1 2b：同一决策 —— 占位/无会话不发后端取消（无 target 会 root 误杀）。
+        const dec1 = resolveStopCancelDecision(volatile.activeSessionId, NEW_CHAT_PLACEHOLDER_ID);
+        if (dec1.kind === 'cancel') {
+          void api.agents.cancelProcessing(volatile.selectedAgent!, dec1.target).catch(() => {});
+        }
         abortStream(prevKey, volatile.activeSessionId);
         updateConvMsgs(prevKey, prev => finalizeLastInterruptedAgent(prev));
         await new Promise(r => setTimeout(r, 50));
@@ -1361,11 +1388,14 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             // The server can be mid-transition when we ask, so retry a few times
             // with light backoff instead of giving up on the first answer.
             let attached = false;
+            // 服务端已命名的在途回复 id —— 供下方 DB-heal 收尾做身份衔接。
+            let resumeStatusMessageId: string | undefined;
             for (let attempt = 0; attempt < 4 && !attached; attempt += 1) {
               if (attempt > 0) await new Promise(r => setTimeout(r, 350 * attempt));
               if (abortCtrl.signal.aborted) break;
               try {
                 const st = await api.sessions.streamStatus(resumeAgent, resumeSessionId);
+                if (st.messageId) resumeStatusMessageId = st.messageId;
                 // `active` stays true briefly after done/error (TTL) — only resume mid-run.
                 if (st.status === 'streaming') {
                   updateConvMsgs(sendKey, prev => prev.map(m =>
@@ -1403,6 +1433,11 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
               // Could not reattach. Reload the session so the bubble shows the
               // COMPLETE result instead of a truncated prefix — this automates the
               // "just refresh the page and it's fine" workaround.
+              // 身份衔接（同上）：先把本地合成 id 收敛到服务端 messageId，使 DB heal
+              // 复用同一行（React key 稳定），避免「半截气泡被整条替换」的闪烁。
+              if (resumeStatusMessageId && agentMsgId) {
+                updateConvMsgs(sendKey, prev => alignStreamedAgentId(prev, agentMsgId, resumeStatusMessageId), resumeSessionId);
+              }
               try {
                 const loaded = await loadSessionMessages(resumeSessionId, sendKey);
                 if (loaded > 0) {

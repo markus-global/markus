@@ -253,6 +253,15 @@ export class ConversationBufferManager {
     }
     const streamingTail: ChatMsg[] = [];
     const rest: ChatMsg[] = [];
+    // 本回合的持久化回复 = DB 的最后一条行（若为 agent）。在途气泡与它是同一回复的
+    // 两个身份（本地合成 id `a_…` / `reattach_…` vs 持久化 messageId）：一个回合的
+    // 回复只允许渲染一条。若两者 id 不同而都保留，就会看到「DB 的完成态快照」与
+    // 「实时气泡」并排/互换 —— 这正是「流式时闪现一个完整气泡后直接进入结束态」的
+    // 机制。合并规则：内容以**实时**为准（本地 deltas 领先于 DB 的 partial 快照），
+    // 身份用**持久化 id**（React key 稳定 → 不再整条替换闪烁），DB 快照行移除。
+    const dbTail = dbMsgs.length > 0 ? dbMsgs[dbMsgs.length - 1] : undefined;
+    const dbTailIsAgentRow = !!dbTail && dbTail.sender === 'agent';
+    let absorbedDbTailId = false;
     for (const cm of buffered) {
       if (byId.has(cm.id)) continue;
       if (cm.sender === 'agent') {
@@ -260,8 +269,16 @@ export class ConversationBufferManager {
         if (!clientMarker) {
           // DB is the sole authority for agent rows: only a LIVE tail survives.
           if (streamLive && cm.isStreaming) {
-            streamingTail.push(cm);
-            byId.add(cm.id);
+            if (dbTailIsAgentRow && dbTail && !absorbedDbTailId) {
+              const i = out.findIndex(m => m.id === dbTail.id);
+              if (i >= 0) out.splice(i, 1);
+              absorbedDbTailId = true;
+              streamingTail.push({ ...cm, id: dbTail.id });
+              byId.add(dbTail.id);
+            } else {
+              streamingTail.push(cm);
+              byId.add(cm.id);
+            }
           }
           // else: stale local copy of an already-persisted reply → drop it.
           continue;

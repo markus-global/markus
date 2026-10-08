@@ -2408,6 +2408,24 @@ export class APIServer {
     }
   }
 
+  /**
+   * 【P3】装配「回合回复持久化」回调到某个 agent：当 worker 处理**重启后从 DB 恢复**的
+   * 排队项（发起方 responsePromise 随 JSON 丢失，SSEHandler / api-server 请求线程已死、
+   * 无人 persistAssistantMessage）时，由处理该消息的 worker 调用本回调把回复写回 DB 会话
+   * （cs_*），否则前端刷新也拉不到回复。正常路径（发起方 promise 存活）由 SSEHandler /
+   * api-server 非流式分支自行落库，回调在 core 侧由 `shouldPersistRecoveredReply` 判定不触发。
+   */
+  wireAssistantReplyPersister(agentId: string): void {
+    try {
+      const agent = this.orgService.getAgentManager().getAgent(agentId);
+      agent.setAssistantReplyPersister(async ({ sessionId, agentId: aId, reply, tokensUsed }) => {
+        await this.persistAssistantMessage(sessionId, aId, reply, tokensUsed);
+      });
+    } catch {
+      /* agent not loaded */
+    }
+  }
+
   private triggerSecretaryWelcome(userId: string, userName: string, userRole: string): void {
     try {
       const mgr = this.orgService.getAgentManager();
@@ -5632,6 +5650,22 @@ export class APIServer {
           sourceTypeCounts,
           history,
         });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Agent mailbox — runtime stale-processing recovery (manual「清理」entry).
+    // 「运行与注意力」amber 警告条旁的清理按钮调这里：把卡在 processing 的陈旧行
+    // 标为 dropped（租约感知，不误杀其它实例/在飞项），让运行中可自愈而不必重启。
+    // 对应 docs/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.3c 残余 → §2.6 步骤 2c。
+    if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/) && req.method === 'POST') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const dropped = agent.getMailbox().cleanStaleProcessing();
+        this.json(res, 200, { dropped });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -12989,6 +13023,7 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/mailbox$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+\/decisions$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/metrics$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/config$/, 'PATCH'),

@@ -452,6 +452,7 @@
       "notebookHint": "The agent's persistent cognitive workspace. Showing the most recent {{count}}; the rest lives in NOTEBOOK.md. Entries expire automatically.",
       "expandNotebook": "Show {{count}} more…",
       "staleProcessingWarning": "Stale processing items detected (agent is idle)",
+      "recoverStaleBtn": "Clean up",
       "agentDetails": "Agent Details",
       "triageDecision": "Triage Decision",
       "processingItem": "Processing: {{id}}…",
