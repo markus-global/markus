@@ -95,7 +95,7 @@ import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   dedupeAdjacentUserMessages,
-  stopRunningTools, hasStreamingTail, clearGhostStreaming, shouldSweepGhostStreaming,
+  stopRunningTools, hasStreamingTail,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
   resolveTeamChatShortcut, cycleSessionTabId,
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
@@ -1027,34 +1027,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     [chatMode, selectedAgent, activeChannel, activeDmUserId],
   );
 
-  // ── Ghost streaming reconciliation ────────────────────────────────────────
-  // `isStreaming` on a message is DERIVED display state. The authority for "this
-  // conversation has a stream in flight" is the chatStore streaming set, which has
-  // exactly one add path (beginStream / setStreamSession) and one remove path
-  // (clearStreamSession). Whenever the authority says the stream is over, a message
-  // still carrying isStreaming is a ghost — and a ghost is not cosmetic: it pins the
-  // animated border (isStreamingMsg = ... || !!msg.isStreaming) and the header badge
-  // to 工作中 (chatStreamActive → hasStreamingTail) while the L1 sidebar, which reads
-  // only the authority, correctly shows 空闲. One leaked flag, two contradicting
-  // answers for the same agent at the same instant — so heal it here instead of
-  // waiting for the user to reload the page. `messages` changing re-runs this, and
-  // clearGhostStreaming returns the same ref when there is nothing to do.
-  useEffect(() => {
-    if (!shouldSweepGhostStreaming({
-      chatMode,
-      hasAgent: !!selectedAgent,
-      sending,
-      streamingVisual,
-      chatStoreStreaming: chatStore.isAgentStreaming(selectedAgent),
-      // Buffer-manager authority: the phase keeps saying 'streaming' while a
-      // sibling tab of the same agent is live (and through the pre-registration
-      // window), so it must be able to veto a sweep that the coarse `sending`
-      // flag and chatStore would wrongly allow.
-      convPhase: bufMgr.getPhase(activeConvKey),
-      hasStreamingTail: hasStreamingTail(messages),
-    })) return;
-    updateConvMsgs(activeConvKey, prev => clearGhostStreaming(prev));
-  }, [activeConvKey, chatMode, selectedAgent, sending, streamingVisual, messages, updateConvMsgs, bufMgr]);
+  // ── 「幽灵清扫」已删除（2026-10-08）────────────────────────────────────────
+  // 这里曾有一个 effect，挂在 `[messages]` 上（即每次 delta 都跑）：当**客户端本地**
+  // 的派生副本（sending / streamingVisual / chatStore 所有权集合 / buffer phase）全都
+  // 说"没流"、而气泡还挂着 isStreaming 时，认定它是"幽灵"，调 `clearGhostStreaming`
+  // 就地抹掉标记、动态边框与 running 工具段（**不可逆**）。
+  //
+  // 它的口径是**倒置的**：判断"这轮结束了没有"用的是本地派生副本，而这些副本恰恰在
+  // **传输断开**时全部变成"没流"——而服务端此时仍在生成（SSE 断开后最长 45min 才强制
+  // 停，日志 "detaching (agent continues)"）。于是它把**活着的**回合当幽灵就地正法：
+  // 边框消失、内容却还在涨；又因为 effect 挂在 `[messages]` 上，边框永远亮不回来。
+  //
+  // 根因是「传输结束被当成回合结束」，清扫只是在替那个错误推断擦屁股，还擦错了方向。
+  // 该推断已收敛为单一权威判据 `lib/streamLiveness.ts#decideOnStreamEnd`（只有服务端
+  // 终态或用户显式 stop 才能改写 isStreaming），清扫因此整体删除。
+  // 详见 docs/records/team-chat-stream-transport-vs-turn-2026-10-08.md。
   const activeScrollKey = useMemo(
     () => scrollMemoryKey(activeConvKey, activeSessionId),
     [activeConvKey, activeSessionId],

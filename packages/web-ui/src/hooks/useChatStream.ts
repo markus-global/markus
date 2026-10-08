@@ -42,6 +42,7 @@ import { NEW_CHAT_PLACEHOLDER_ID } from './useConversationBuffers.ts';
 import { resolveStopCancelDecision } from '../lib/stopCancelDecision.ts';
 import { parseMentionNames } from '../components/CommentInput.tsx';
 import { exponentialBackoffDelay } from '../lib/streamResilience.ts';
+import { decideOnStreamEnd, normalizeServerStreamStatus } from '../lib/streamLiveness.ts';
 import { friendlyAgentError, isMarkusCreditError, dispatchCreditNotification } from '../pages/ChatComponents.tsx';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
 
@@ -314,7 +315,13 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       const cooldownKey = `${agentId}:${sessionId}`;
       const lastAttempt = reattachCooldownRef.current.get(cooldownKey) ?? 0;
       if (Date.now() - lastAttempt < 1500) {
-        finalizeIfDetached();
+        // 冷却是**节流**，不是**判据**：它只说"这次先别连"，绝不说"这一轮结束了"。
+        //
+        // 旧实现在这里直接 `finalizeIfDetached()` —— 于是「1.5s 内又切了一次 tab /
+        // 又加载了一次会话」被解释成「回合结束」：抹掉 isStreaming（动态边框）、
+        // 把在途气泡就地定型，**一次都不问权威**。而服务端仍在生成、SSE 仍在喂内容，
+        // 用户看到的就是「边框消失、内容还在涨」（2026-10-08 事故）。
+        // 现在一律返回，交由 owner 循环 / 下一次 attach 走权威对账。
         return;
       }
       // Throttle EVERY attempt, not only successful attaches. The idle path
@@ -342,10 +349,18 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // `active` stays true for ~90s after done/error so a late refresh can drain
       // the terminal event — only attach when still streaming, or when the UI
       // bubble is still marked in-flight and needs the final `done`.
+      // 本会话的回合是否已结束 —— **唯一判据**（lib/streamLiveness.ts#decideOnStreamEnd）。
+      // 只有「服务端终态」或「权威明确说没有在途流」才允许结案；传输层的一切
+      // （attach 冷却、socket 断开、看门狗）都不参与，**问不到权威也一律不结案**。
       const lateTerminal = !!status.active
         && (status.status === 'done' || status.status === 'error')
         && !!last?.isStreaming;
-      if (!serverStreaming && !lateTerminal) {
+      const end = decideOnStreamEnd({
+        aborted: false,
+        sawTerminal: lateTerminal,
+        serverStatus: normalizeServerStreamStatus(status.status),
+      });
+      if (end === 'finalize') {
         finalizeIfDetached();
         return;
       }
@@ -1396,8 +1411,15 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
               try {
                 const st = await api.sessions.streamStatus(resumeAgent, resumeSessionId);
                 if (st.messageId) resumeStatusMessageId = st.messageId;
-                // `active` stays true briefly after done/error (TTL) — only resume mid-run.
-                if (st.status === 'streaming') {
+                // 同一个权威判据（lib/streamLiveness.ts#decideOnStreamEnd）：
+                // 软断开之后「该不该继续接」只由**服务端**说话 —— 传输层的一切
+                // （这次请求失败、状态接口一时不可达）都不参与结案。
+                const end = decideOnStreamEnd({
+                  aborted: abortCtrl.signal.aborted,
+                  sawTerminal: false,
+                  serverStatus: normalizeServerStreamStatus(st.status),
+                });
+                if (end === 'reattach') {
                   updateConvMsgs(sendKey, prev => prev.map(m =>
                     m.id === agentMsgId
                       ? {
@@ -1424,9 +1446,8 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
                   attached = true;
                   return;
                 }
-                // Turn already finished server-side while we were detached — the
-                // persisted message is the source of truth, so stop retrying.
-                if (st.status === 'done' || st.status === 'error' || st.status === 'stopped') break;
+                // 权威明确说没有在途流了 —— 服务端已结束，转 DB heal，不再重试。
+                break;
               } catch { /* keep retrying */ }
             }
             if (!attached && !abortCtrl.signal.aborted) {
@@ -1495,13 +1516,16 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
 
         const errText = friendlyAgentError(e, t);
         if (errText) {
+          // The reason is a SYSTEM note, not the model's prose. Keep it OUT of
+          // `segments`: the timeline renders text blocks with MarkdownMessage, so a
+          // segment would come out as ordinary body copy — default colour, leading
+          // "⚠" intact, indistinguishable from something the agent actually said.
+          // In `msg.text` it renders as the calm end-of-turn annotation instead.
           updateConvMsgs(sendKey, prev => {
             const u = [...prev];
             const idx = u.findIndex(m => m.id === agentMsgId);
             if (idx >= 0) {
-              const segs = u[idx]!.segments ?? [];
-              u[idx] = { ...u[idx]!, text: errText, isError: true,
-                segments: [...segs, { type: 'text', content: errText }] };
+              u[idx] = { ...u[idx]!, text: errText, isError: true };
             }
             return u;
           }, streamSessionId);

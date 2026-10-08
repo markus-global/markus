@@ -2,8 +2,12 @@
  * animationBudget 回归护栏。
  *
  * 这个模块是「Team 页 100%+ CPU」P0 故障的修复落点：
- *   - 窗口隐藏 / 失焦时必须暂停，否则永远运行的 CSS 动画会让主线程每帧做一次全量
- *     style recalc（实测 120 次/秒，量化/合成层提升都无效）。
+ *   - 页面不在屏幕上（visibilityState === 'hidden'）时必须暂停，否则永远运行的 CSS
+ *     动画会让主线程每帧做一次全量 style recalc（实测 120 次/秒，量化/合成层提升都无效）。
+ *   - 暂停判据只看可见性，**不看焦点**。右栏是 Electron WebContentsView，用户焦点在
+ *     app 内任何别处时它的 document 都算「失焦」，而面板始终可见。旧判据把
+ *     !hasFocus() 也算进暂停条件 → 面板整个生命周期被冻结（流式环画着但
+ *     border-rotate 停在 0deg：“边框没了、内容还在涨”）。见下方 2026-10-08 回归用例。
  *   - tick 定时器在暂停后必须被真正 clearInterval，而不是「不更新属性」——否则
  *     CPU 问题根本没修好（只是看不见了）。
  *
@@ -84,11 +88,12 @@ describe('animationBudget — 暂停判定与幂等安装', () => {
     const { installAnimationBudget } = await loadModule();
 
     installAnimationBudget();
-    // visibilitychange 在 document 上，focus / blur / pageshow 在 window 上。
+    // visibilitychange 在 document 上，pageshow 在 window 上。
+    // focus / blur 不再注册 —— 它们答不了「页面是否在屏幕上」，已从判据里删除。
     expect(docAddSpy.mock.calls.filter(c => c[0] === 'visibilitychange')).toHaveLength(1);
-    expect(winAddSpy.mock.calls.filter(c => c[0] === 'focus')).toHaveLength(1);
-    expect(winAddSpy.mock.calls.filter(c => c[0] === 'blur')).toHaveLength(1);
     expect(winAddSpy.mock.calls.filter(c => c[0] === 'pageshow')).toHaveLength(1);
+    expect(winAddSpy.mock.calls.filter(c => c[0] === 'focus')).toHaveLength(0);
+    expect(winAddSpy.mock.calls.filter(c => c[0] === 'blur')).toHaveLength(0);
 
     const total = docAddSpy.mock.calls.length + winAddSpy.mock.calls.length;
 
@@ -98,7 +103,7 @@ describe('animationBudget — 暂停判定与幂等安装', () => {
     expect(docAddSpy.mock.calls.length + winAddSpy.mock.calls.length).toBe(total);
   });
 
-  it('可见且聚焦：不带 data-anim-paused，且开启 tick', async () => {
+  it('页面可见：不带 data-anim-paused，且开启 tick', async () => {
     const { installAnimationBudget } = await loadModule();
     installAnimationBudget();
 
@@ -116,14 +121,18 @@ describe('animationBudget — 暂停判定与幂等安装', () => {
     expect(tickValue()).toBeNull();
   });
 
-  it('窗口未聚焦：带 data-anim-paused 且完全不启动 tick', async () => {
+  it('回归 2026-10-08：页面可见但未聚焦 —— 不暂停（右栏 WebContentsView 的常态）', async () => {
+    // 右栏是 Electron WebContentsView：用户焦点在 app 内别处时，它一直是「失焦」状态，
+    // 但面板完全可见。旧判据把 !hasFocus() 算进暂停条件 → 面板被永久冻结：
+    // 流式环的 conic-gradient 照画，border-rotate 却停在 0deg（看着像没有动态边框），
+    // 而正文由 React state 驱动照常更新 —— 即「边框没了、内容还在涨」。
     visState = 'visible';
     focused = false;
     const { installAnimationBudget } = await loadModule();
     installAnimationBudget();
 
-    expect(document.documentElement.getAttribute(PAUSED_ATTR)).toBe('true');
-    expect(tickValue()).toBeNull();
+    expect(document.documentElement.hasAttribute(PAUSED_ATTR)).toBe(false);
+    expect(tickValue()).toBe(0);
   });
 });
 
@@ -143,30 +152,34 @@ describe('animationBudget — 各事件触发后状态翻转', () => {
     expect(tickValue()).toBe(0);
   });
 
-  it('blur / focus：失焦暂停、重新聚焦恢复', async () => {
+  it('回归 2026-10-08：blur / focus 不改变暂停状态（焦点不是可见性）', async () => {
     const { installAnimationBudget } = await loadModule();
     installAnimationBudget();
+    expect(document.documentElement.hasAttribute(PAUSED_ATTR)).toBe(false);
 
+    // 失焦 —— 页面仍然可见 → 必须继续动。
     focused = false;
     window.dispatchEvent(new Event('blur'));
-    expect(document.documentElement.getAttribute(PAUSED_ATTR)).toBe('true');
+    expect(document.documentElement.hasAttribute(PAUSED_ATTR)).toBe(false);
+    expect(tickValue()).toBe(0);
 
+    // 重新聚焦 —— 状态不变。
     focused = true;
     window.dispatchEvent(new Event('focus'));
     expect(document.documentElement.hasAttribute(PAUSED_ATTR)).toBe(false);
     expect(tickValue()).toBe(0);
   });
 
-  it('pageshow：休眠唤醒后重新纠偏（焦点状态可能已过期）', async () => {
+  it('pageshow：休眠唤醒后按真实的可见性状态重新纠偏', async () => {
     const { installAnimationBudget } = await loadModule();
     installAnimationBudget();
-    // 先制造一个「已暂停」的陈旧状态
-    focused = false;
-    window.dispatchEvent(new Event('blur'));
+
+    // 陈旧状态：属性说 paused（例如睡眠前是隐藏的）。
+    visState = 'hidden';
+    document.dispatchEvent(new Event('visibilitychange'));
     expect(document.documentElement.getAttribute(PAUSED_ATTR)).toBe('true');
 
-    // 唤醒后可见 + 已聚焦，pageshow 应把它拉回未暂停。
-    focused = true;
+    // 唤醒后页面可见 —— pageshow 必须把它拉回未暂停。
     visState = 'visible';
     window.dispatchEvent(new Event('pageshow'));
     expect(document.documentElement.hasAttribute(PAUSED_ATTR)).toBe(false);

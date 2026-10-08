@@ -21,9 +21,20 @@
  * changes a few times per second. The only lever that works is to stop asking the
  * compositor for frames at all.
  *
- * Job 1 — no frames while the window is hidden or unfocused (`data-anim-paused`).
- *         Measured: visible 33% -> hidden 0.4%. Required because this build disables
- *         Chromium's own occlusion throttling (--disable-features=MacWebContentsOcclusion).
+ * Job 1 — no frames while the page is not on screen (`data-anim-paused`).
+ *         Measured: visible 33% -> hidden 0.4%.
+ *
+ *         The predicate is `visibilityState === 'hidden'` and NOTHING ELSE. It used to
+ *         also include `!document.hasFocus()` — which is unsound here. The Team Chat side
+ *         panel is an Electron WebContentsView (desktop/embedded-browser.ts), so its
+ *         document is unfocused whenever the user's focus is anywhere else in the SAME
+ *         app, even though the panel is fully visible. `data-anim-paused` was therefore
+ *         stuck true for the entire life of the panel, freezing every animation inside it:
+ *         the live-turn ring kept painting its conic gradient, but `border-rotate` stayed
+ *         parked at 0deg, so a running turn looked dead while its text kept streaming in.
+ *
+ *         "Is this page on screen?" is a question Chromium already answers — for occlusion,
+ *         minimise and tab-switch alike. Ask it. Do not rehearse the answer with focus.
  *
  * Job 2 — for the *persistent* indicators (agent "thinking/running" labels, busy
  *         dots, active execution cards), replace the infinite CSS animation with a
@@ -39,8 +50,7 @@ const TICK_PHASES = 8;
 const TICK_INTERVAL_MS = 250;
 
 function shouldPause(): boolean {
-  if (document.visibilityState !== 'visible' || document.hidden) return true;
-  return !document.hasFocus();
+  return document.visibilityState !== 'visible' || document.hidden;
 }
 
 let tickTimer: number | null = null;
@@ -82,10 +92,8 @@ export function installAnimationBudget(): void {
 
   sync();
   document.addEventListener('visibilitychange', sync, { passive: true });
-  window.addEventListener('focus', sync, { passive: true });
-  window.addEventListener('blur', sync, { passive: true });
 
-  // Resuming from a long sleep can leave focus state stale.
+  // Resuming from a long sleep can leave the visibility state stale.
   window.addEventListener('pageshow', sync, { passive: true });
 }
 

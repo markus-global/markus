@@ -282,7 +282,7 @@
     "defaultTooManyRequests": "Demasiados pedidos",
     "defaultServiceDown": "Servicio temporalmente caído",
     "markusCuExceeded": "⚠ Equilibrio insuficiente. Por favor, subir o actualizar: https://markus.global/settings?tab=billing",
-    "markusRateLimited": "⚠ Proveedor de modelo Upstream redujo la solicitud (OpenRouter / proveedor de modelo). Esto generalmente se aclara en unos segundos a un minuto; si muchos agentes se ejecutan, retraen en breve o se estancan tareas.",
+    "markusRateLimited": "El proveedor del modelo limitó la solicitud. Vuelve a intentarlo en un momento.",
     "markusWindowExceeded": "⚠ Tasa de solicitud temporalmente limitada. Por favor vuelva a entrar en breve; si usted está fuera de los créditos, arriba o mejora: https://markus.global/settings?tab=billing",
     "creditModalTitle": "Créditos agotados",
     "creditModalDesc": "Sus créditos Markus Cloud AI se han utilizado. Por favor, compre más créditos o actualice su suscripción para continuar.",
@@ -330,6 +330,7 @@
       "aiGeneratedDisclaimer": "Contenido generado por IA: verifique cuidadosamente"
     },
     "stopped": "Detenido",
+    "endedEarly": "Finalizó antes de tiempo",
     "emptyReply": "El asistente no presentó una respuesta esta vez. Esto generalmente significa que la solicitud era demasiado grande o el servicio AI no estaba disponible brevemente. Por favor vuelva a entrar — si sigue sucediendo, compruebe sus créditos o cambie modelos en Ajustes.",
     "fallbackAgent": "Agente",
     "fallbackYou": "Tú.",

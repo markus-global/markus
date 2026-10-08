@@ -241,6 +241,67 @@ describe('autolinkBareUrls', () => {
     expect(result).toContain('[https://a.com/x](https://a.com/x)');
     expect(result).toContain('[https://b.com/y](https://b.com/y)');
   });
+
+  // ── Incident 2026-10-08: the autolinker ate markdown emphasis bytes ───────
+  //
+  // `autolinkBareUrls` decides where a bare URL ends. Its terminator set knew
+  // about CJK / full-width punctuation but not about markdown emphasis, so for
+  // `**https://…/363**` the match ran through to the closing `**`: the link text
+  // AND the href both ended in `**`, the bold never applied, and clicking the
+  // link navigated to a URL containing the asterisks.
+  //
+  // The rule is not "a list of characters that may not end a URL" — it is that a
+  // delimiter run belongs to the URL only if the markdown around it did not open
+  // it. Same delimiter before and after the URL means the parser (not the URL)
+  // owns those bytes, so they must stay outside the link.
+  describe('markdown emphasis around a bare URL (2026-10-08 incident)', () => {
+    it('keeps ** outside the link so bold renders and the href is clean', () => {
+      const input = '**https://github.com/markus-global/markus/pull/363**';
+      const result = autolinkBareUrls(input);
+      expect(result).toBe(
+        '**[https://github.com/markus-global/markus/pull/363](https://github.com/markus-global/markus/pull/363)**',
+      );
+      expect(result).not.toContain('363**]');
+    });
+
+    it('handles the bolded URL inside a sentence', () => {
+      const result = autolinkBareUrls('见 **https://example.com/a** 这条');
+      expect(result).toBe('见 **[https://example.com/a](https://example.com/a)** 这条');
+    });
+
+    it('handles italic, underscore emphasis and strikethrough', () => {
+      expect(autolinkBareUrls('*https://example.com/a*'))
+        .toBe('*[https://example.com/a](https://example.com/a)*');
+      expect(autolinkBareUrls('__https://example.com/a__'))
+        .toBe('__[https://example.com/a](https://example.com/a)__');
+      expect(autolinkBareUrls('_https://example.com/a_'))
+        .toBe('_[https://example.com/a](https://example.com/a)_');
+      expect(autolinkBareUrls('~~https://example.com/a~~'))
+        .toBe('~~[https://example.com/a](https://example.com/a)~~');
+    });
+
+    it('still moves trailing sentence punctuation out, after the emphasis', () => {
+      const result = autolinkBareUrls('**https://example.com/a**.');
+      expect(result).toBe('**[https://example.com/a](https://example.com/a)**.');
+    });
+
+    // Reverse protection: never damage a URL that merely ENDS with one of these
+    // characters. Without a matching opening run the byte is payload, not syntax.
+    it('keeps a trailing underscore that no emphasis run opened', () => {
+      const result = autolinkBareUrls('https://example.com/foo_');
+      expect(result).toBe('[https://example.com/foo_](https://example.com/foo_)');
+    });
+
+    it('keeps a trailing tilde that no strikethrough opened', () => {
+      const result = autolinkBareUrls('https://example.com/~user');
+      expect(result).toBe('[https://example.com/~user](https://example.com/~user)');
+    });
+
+    it('keeps asterisks that sit inside the URL body', () => {
+      const result = autolinkBareUrls('https://example.com/a*b/c');
+      expect(result).toBe('[https://example.com/a*b/c](https://example.com/a*b/c)');
+    });
+  });
 });
 
 // ─── looksLikePlantUML ──────────────────────────────────────────────────────
