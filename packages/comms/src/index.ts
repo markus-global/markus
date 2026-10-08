@@ -12,3 +12,17 @@ export { TelegramAdapter } from './telegram/adapter.js';
 export { TelegramClient } from './telegram/client.js';
 export { MessageRouter } from './router.js';
 export type { CommAdapter, CommAdapterConfig } from './adapter.js';
+
+export { DiscordAdapter } from './discord/adapter.js';
+export { DiscordClient } from './discord/client.js';
+
+export type { DiscordAdapterConfig } from './discord/adapter.js';
+
+export type {
+  DiscordClientConfig,
+  DiscordGatewayEvent,
+  DiscordGatewayTransport,
+  DiscordMessage,
+  DiscordMessageHandler,
+  DiscordRestTransport,
+} from './discord/client.js';

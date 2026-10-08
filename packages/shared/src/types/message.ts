@@ -1,5 +1,12 @@
 export type MessageDirection = 'inbound' | 'outbound';
-export type MessagePlatform = 'feishu' | 'whatsapp' | 'slack' | 'telegram' | 'webui' | 'internal';
+export type MessagePlatform =
+  | 'feishu'
+  | 'whatsapp'
+  | 'slack'
+  | 'telegram'
+  | 'discord'
+  | 'webui'
+  | 'internal';
 
 export interface Message {
   id: string;
