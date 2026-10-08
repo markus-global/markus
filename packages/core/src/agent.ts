@@ -238,6 +238,8 @@ export type ApprovalCallback = (request: {
   toolArgs: Record<string, unknown>;
   reason: string;
   taskId?: string;
+  /** In-memory chat session the tool call belongs to (for in-chat approval cards). */
+  sessionId?: string;
 }) => Promise<{ approved: boolean; comment?: string }>;
 
 export interface TaskProjectContext {
@@ -4119,6 +4121,7 @@ export class Agent {
       toolArgs: { command },
       reason,
       taskId: this.getCurrentTaskId(),
+      sessionId: this.currentSessionId,
     });
   }
 
@@ -8864,6 +8867,7 @@ export class Agent {
           toolArgs: toolCall.arguments,
           reason: `Agent wants to execute '${toolCall.name}'`,
           taskId: this.getCurrentTaskId(),
+          sessionId: this.currentSessionId,
         });
         if (!result.approved) {
           const reason = result.comment ? `: ${result.comment}` : '';

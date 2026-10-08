@@ -178,3 +178,135 @@ manager.abortStream(key, opts: { markStopped?: boolean; sessionId?: string })
 ## 6. 与既有提交的关系
 
 分支上已有 19 个提交，其中 web-ui 侧已解决：流式 refcount 泄漏、侧栏工作中残留（单一事实源）、会话历史分页、session 切换加载态、多会话流隔离。本设计文档的 S2-S7 是在此基础上的**纵深重构**，不推翻已有成果，只收敛剩余的新旧并存与复制粘贴。
+
+---
+
+## 7. Interaction Reliability Contracts (`feat/ui-optimize-1008`, 2026-10)
+
+Three user-reported failures in the Team Chat page — a **stalled tool approval**, a **notification that
+landed nowhere**, and an **unreliable "jump to search result"** — turned out to be the same two
+structural faults in different clothes:
+
+- **R1 — one fact, several writers.** Two independent async writers could publish the same fact, and
+  whichever finished last won. (Which session tab is active; where the viewport is; how much history a
+  window still has.)
+- **R2 — one invariant, several measures.** The same invariant was computed in more than one place, so
+  the places could disagree — and one of them was cached past the point of being true. (`hasMore` read
+  from a React render-time projection; "the target session finished loading" inferred from
+  `!loadingChat`.)
+
+Both are cured the same way: **delete the second writer / the second measure**, or move the fact into the
+scope that actually owns it. The contracts below are the durable outcome; the round-by-round chase is
+recorded in the commit message, and the invariants are pinned by unit tests in
+`packages/web-ui/src/lib/*.test.ts` + `packages/web-ui/test/*.test.ts`.
+
+### 7.1 The message scroll container has exactly two write paths
+
+`pages/Team.tsx` drives a single scroll container, and it may only be written by:
+
+1. **bottom-follow** while a stream is appending, and
+2. **one pending scroll intent** for the view (`pendingRestoreRef`, keyed by the scroll-memory key).
+
+There is deliberately **no third path**. In particular the virtualizer's `scrollToIndex` / `measure()`
+are forbidden: `scrollToIndex` arms an uncancellable internal rAF reconcile loop (≤ 5 s) that re-pushes
+the viewport every time the measured offset of that index changes — which is exactly while lazy row
+measurement is still settling — and `measure()` resets every cached row height to an estimate, causing
+overlap and drift.
+
+**Intent priority** (`ScrollIntentPriority`; the single arbiter is `shouldAcceptRestoreIntent`):
+
+| priority | intent | meaning |
+|---|---|---|
+| 3 | `jump` | the user explicitly asked to see this message |
+| 2 | `prepend` | pagination layout compensation (scrolled to top → older page inserted above) |
+| 1 | `restore` | "bring me back to where I was" |
+
+A later intent replaces an in-flight one **only if its priority is ≥** (equal ⇒ later wins) and only for
+the same view. Consequence: an unsatisfied `jump` is never overridden by a `prepend` / `restore`.
+
+**Viewport ownership** (`mayChangeViewportOwner`): only `jump` / `restore` may change who owns the
+viewport. `prepend` moves pixels and nothing else — a pure layout compensation must not hand control
+back to bottom-follow. `decideScrollFollow` takes `intentPending` so a pending intent also blocks
+hand-back while the jump is still travelling.
+
+**Release condition** (`anchorStability` + `planIntentPass`): an intent is released by **stability, not
+by a timer**. "Rendered in the DOM" is not "at rest" — with estimated row heights, the first measurement
+pass pushes the target away. `planIntentPass` therefore returns `refine` (correct now, keep retrying)
+until the anchor is measured at its target position in **two consecutive passes**. While unsettled,
+`RESTORE_INTENT_TTL_MS` (10 s) is not a release reason, and a `jump` / `prepend` is never downgraded to
+"scroll to bottom". `GOTO_ROW_INSET` (12 px) parks the hit just below the viewport top so its trailing
+context stays visible.
+
+### 7.2 Window bounds are per-buffer, owned by the buffer manager
+
+`{ hasMore, oldestCursor }` used to live in **two globals** on `Team.tsx` while message content lived in
+`ConversationBufferManager`, keyed per `bufferId`. Any session's load then overwrote the current view's
+bounds → the loader read another session's `hasMore=false` / `oldestCursor=null`, spanned zero pages, and
+a `jump` concluded "target not found → go to bottom". This is why it worked the first time (empty
+buffer → the guarded path) and broke from the second visit onward.
+
+Contract: bounds live **next to the messages they describe** — `windowBounds: bufferId → { hasMore,
+oldestCursor }` inside the manager, same key, same storage, same lifetime (reset on eviction). The single
+writer is the loader for **that** buffer. `loadMore()`'s return value is the only progress signal, and
+`hasMore` is never re-derived from a render-time value.
+
+### 7.3 "Jump to message" is self-fetching and never shares the pagination channel
+
+`loadMore()` returns `0` for three unrelated reasons — end of history, page dropped because the view
+changed mid-flight, or "I joined someone else's in-flight request". A caller cannot tell them apart, so
+`jumpToMessage` does **not** use that channel:
+
+- `collectJumpWindow` — if the target is already in the buffer, **no fetch at all** (the fast path; this
+  is why same-session jumps always worked). Otherwise it pages from newest backwards until the target is
+  found, the target's own timestamp (`targetCreatedAt`) is passed, or the page cap (40) is hit.
+- The collected ascending window plus its bounds are installed **in one write**; the scroll intent then
+  positions the view.
+- `trimJumpWindow` — when the display cap trims, the target must survive (the cap keeps the newest, and
+  deep-history targets sit at the oldest end).
+- Anchor resolution is **by row identity, not index** (`resolveRowAnchor`): the rendered list is a
+  projection of the buffer (activity-log rows and acknowledged notifications are filtered out), so a
+  buffer index does not address a rendered row.
+
+### 7.4 Session selection has one owner while a navigation is in flight
+
+`navigationOwnsSessionChoice` — while a navigation intent is pending, the agent-switch effect must **not**
+pick a session tab and must **not** schedule its own scroll restore. Otherwise two async writers race for
+"which tab is active" (the late one wins → "it flashes the right message, then moves"), and a spurious
+background load for the previously-viewed session can write bounds that the jump then reads.
+`await switchSession()` resolves *after* messages are loaded, so callers must never infer "loaded" from
+`!loadingChat`.
+
+### 7.5 Blocking approvals and notifications get a near-field entry point
+
+Focus arbitration: **tool approval (it blocks the agent turn) > user input > notification.** One arbiter,
+one modal at a time.
+
+- **Tool approvals** (`hitlService.requestApprovalAndWait` suspends the whole agent turn) now get the same
+  treatment as `request_user_input`: an **amber banner above the composer** plus an auto-opened
+  `ToolApprovalModal`. Selection uses `details.toolName` — the marker unique to tool approvals — which
+  naturally excludes task/requirement structured approvals from the chat surface. The banner is scoped to
+  `activeSessionId` via `details.sessionId`, falling back to `agentId` for rows written before that field
+  existed. Auto-open happens once per approval, and only while the Team page is active on the chat tab.
+- **Notifications**: clicking an agent in the roster (L1) opens **one review queue modal** — progress
+  `1 / N`, button "Next" → "Done" on the last — rather than N stacked modals. Closing it still performs
+  the landing. Only unread notifications auto-pop, and only on an explicit roster click (live arrivals
+  still go to the banner). Landing (`resolveReviewLanding`) prefers the session the notifications came
+  from and locates the earliest one, falling back to the main session only when they span sessions. The
+  notification's own time is shown via the single `lib/timeAgo.ts` implementation shared with the bell.
+
+### 7.6 Diagnostics
+
+`lib/scrollDebug.ts` is an **opt-in, zero-overhead-when-off** trace for the intent path. Enable it once
+in DevTools with `localStorage.setItem('markus.scrollDebug', '1')` (remove the key to disable). It prints
+about ten decisions per jump (`jump:collected` / `jump:located` / `intent:apply` / `intent:refine` /
+`intent:release-*`). This link is only truly observable in a live Electron window; the switch exists so
+the next report can be diagnosed from evidence instead of inference.
+
+### 7.7 Known residuals
+
+- Cross-agent jumps where the target session is not on the first page of that agent's session list still
+  switch by id; the left-hand tab title renders empty until refresh.
+- Very deep targets need several sequential page fetches, so there is a brief wait between click and
+  landing (the viewport is pinned meanwhile — it does not bounce).
+- A target that genuinely does not exist (deleted, or beyond the page cap) falls back to bottom with a
+  `console.warn` — an honest fallback, not a silent wrong jump.

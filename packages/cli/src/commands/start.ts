@@ -1500,7 +1500,7 @@ async function startServerCore(
       type: 'action',
       title,
       description: request.reason,
-      details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId, taskTitle },
+      details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId, taskTitle, sessionId: request.sessionId },
       targetUserId: ownerUserId,
     });
     auditService.record({

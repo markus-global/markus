@@ -31,6 +31,21 @@ function atBottom(overrides: Partial<ScrollFollowInput> = {}): ScrollFollowInput
   };
 }
 
+describe('intentPending —— 在途滚动意图拥有视口，滚动事件不得把它交还', () => {
+  it('takeover 且贴底：只有没有在途意图时才 resume', () => {
+    expect(decideScrollFollow(atBottom({ takeover: true, distance: 0 }))).toBe('resume');
+    expect(decideScrollFollow(atBottom({ takeover: true, distance: 0, intentPending: true }))).toBe('hold');
+  });
+
+  it('在途意图不干扰「跟随中」的分支（未被接管的视口照常 follow）', () => {
+    expect(decideScrollFollow(atBottom({ intentPending: true }))).toBe('follow');
+  });
+
+  it('内容不可滚动时仍可交还（短会话不该因为这个输入卡住）', () => {
+    expect(decideScrollFollow(atBottom({ takeover: true, scrollable: false, intentPending: true }))).toBe('resume');
+  });
+});
+
 describe('geometry helpers', () => {
   const el = { scrollTop: 400, scrollHeight: 1000, clientHeight: 500 };
 

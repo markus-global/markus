@@ -7,11 +7,12 @@ import {
   type AgentInfo, type AgentActivityInfo, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
   type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
-  type NotificationInfo,
+  type NotificationInfo, type SearchResult,
 } from '../api.ts';
 import { MarkdownMessage, ImagePreviewModal } from '../components/MarkdownMessage.tsx';
 import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
 import { UserInputModal } from '../components/UserInputModal.tsx';
+import { ToolApprovalModal } from '../components/ToolApprovalModal.tsx';
 import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
 import { notifTitle, notifBody } from '../components/NotificationBell.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
@@ -39,15 +40,23 @@ import {
   type GestureDirection,
 } from '../lib/chatScrollFollow.ts';
 import {
+  anchorStability,
   captureChatScrollAnchor,
   chatScrollMemory,
-  findRowTopInViewport,
+  INTENT_RETRY_MS,
+  gotoAnchor,
+  mayChangeViewportOwner,
+  planIntentPass,
   readRenderedRowOffsets,
-  rowCorrection,
+  resolveRowAnchor,
   scrollMemoryKey,
   isRestoreIntentStale,
+  shouldAcceptRestoreIntent,
   type ScrollAnchor,
+  type ScrollIntentPriority,
 } from '../lib/chatScrollRestore.ts';
+import { navigationOwnsSessionChoice, type NavigationFocus } from '../lib/navigationFocus.ts';
+import type { WindowBounds } from '../lib/ConversationBufferManager.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
 import { renderMentionText } from '../components/CommentInput.tsx';
@@ -57,6 +66,12 @@ import { RightPanel } from '../components/RightPanel.tsx';
 import { GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
 import { ChatHistorySearch } from '../components/ChatHistorySearch.tsx';
 import { searchChatHistory } from '../lib/chatSearch.ts';
+import { collectJumpWindow, trimJumpWindow } from '../lib/jumpWindow.ts';
+import { scrollDebug } from '../lib/scrollDebug.ts';
+import { selectToolApprovals } from '../lib/toolApproval.ts';
+import {
+  selectAgentReviewNotifications, resolveReviewLanding, notifySessionId,
+} from '../lib/notifyReview.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { AgentProfile, LEGACY_TAB_SECTION, type ProfileTab, type OverviewSectionId } from './AgentProfile.tsx';
 import { resolveMobileChatBackHash, teamChannelKey } from '../lib/mobileTeamNav.ts';
@@ -86,6 +101,7 @@ import {
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
   resolveMobileTeamLayerState,
 } from './ChatHelpers.ts';
+import { timeAgo, formatExactTime } from '../lib/timeAgo.ts';
 import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
 import {
   NotificationBadge, ChatAgentLink, AvatarPopover, MessageActions, RememberModal,
@@ -95,21 +111,6 @@ export type { MsgSegment };
 
 /** L1/L2 team-chat sidebar collapse preference. Only written on manual toggle. */
 const TEAM_SIDEBARS_COLLAPSED_KEY = 'markus_team_sidebars_c';
-
-/** Session id carried by a notify_user → agent_report notification. */
-function notifySessionId(n: NotificationInfo): string | undefined {
-  const meta = n.metadata ?? {};
-  if (typeof meta.sessionId === 'string' && meta.sessionId) return meta.sessionId;
-  if (n.actionType === 'open_chat' && n.actionTarget) {
-    try {
-      const target = typeof n.actionTarget === 'string' ? JSON.parse(n.actionTarget) : n.actionTarget;
-      if (target && typeof target === 'object' && typeof (target as { sessionId?: unknown }).sessionId === 'string') {
-        return (target as { sessionId: string }).sessionId;
-      }
-    } catch { /* ignore */ }
-  }
-  return undefined;
-}
 
 /**
  * 会话在 tab 栏 / 历史列表里的**默认**标签。
@@ -857,9 +858,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [userInputApprovals, setUserInputApprovals] = useState<ApprovalInfo[]>([]);
   const [activeInputModal, setActiveInputModal] = useState<ApprovalInfo | null>(null);
   const [respondingInputId, setRespondingInputId] = useState<string | null>(null);
+  // Pending TOOL-execution approvals (git writes etc.). These BLOCK the agent turn,
+  // so they get the same near-field banner as user-input requests — plus an auto-open
+  // of the modal, because a blocking prompt the user never notices stalls the agent.
+  const [toolApprovals, setToolApprovals] = useState<ApprovalInfo[]>([]);
+  const [activeToolApproval, setActiveToolApproval] = useState<ApprovalInfo | null>(null);
+  const [respondingApprovalId, setRespondingApprovalId] = useState<string | null>(null);
+  // Approval ids we have already auto-opened once — never auto-open the same one twice.
+  const autoOpenedApprovalIds = useRef<Set<string>>(new Set());
   // Unread notify_user (agent_report) cards for the active direct-chat session.
   const [sessionNotifyCards, setSessionNotifyCards] = useState<NotificationInfo[]>([]);
-  const [activeNotifyModal, setActiveNotifyModal] = useState<NotificationInfo | null>(null);
+  // 通知审阅队列（点 L1 / 点横幅都走这一个状态）。
+  //   - items 有序（优先级 → 时间），index 指向当前展示的那条
+  //   - agentId：发起审阅的 Agent —— 用户中途切走就作废这个队列（见下方 reconcile effect）
+  const [notifyReview, setNotifyReview] = useState<
+    { items: NotificationInfo[]; index: number; agentId?: string } | null
+  >(null);
+  /** 当前展示的通知 —— 从队列派生，队列是唯一事实源。 */
+  const activeNotifyModal = notifyReview ? (notifyReview.items[notifyReview.index] ?? null) : null;
   const [acknowledgingNotifyId, setAcknowledgingNotifyId] = useState<string | null>(null);
   // Message ids currently represented by a bottom notify card — hide the duplicate bubble.
   const [hiddenNotifyMsgIds, setHiddenNotifyMsgIds] = useState<string[]>([]);
@@ -878,7 +894,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   };
   const historyBtnRef = useRef<HTMLButtonElement>(null);
   const historyPanelRef = useRef<HTMLDivElement>(null);
-  const oldestMsgId = useRef<string | null>(null);
 
   // Group chats
   const [groupChats, setGroupChats] = useState<Array<{ id: string; name: string; type: string; channelKey: string; memberCount?: number; teamId?: string; creatorId?: string; creatorName?: string; members?: Array<{ id: string; name: string; type: 'human' | 'agent' }> }>>(previewData?.groupChats ?? []);
@@ -1002,11 +1017,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       bufMgr.setActiveSession(key, id);
     }
   }, [setActiveSessionId, bufMgr]);
-  /**
-   * When true, the next scroll-to-bottom effect is suppressed (used by loadMore)
-   */
-  const skipScrollRef = useRef(false);
-
   // ── Per-view scroll memory wiring ──────────────────────────────────────────
   // See lib/chatScrollRestore.ts for the contract. `activeScrollKeyRef` is the
   // key of the view currently on screen — computed during render (not in an
@@ -1055,16 +1065,98 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
    * Set while a view switch is waiting to be re-positioned. Held until the
    * restore is honoured (or a user gesture / another switch supersedes it), so a
    * slow DB load that outlives the retry window still lands correctly.
+   *
+   * `priority` 区分两个写者（见 lib/chatScrollRestore.ts#shouldAcceptRestoreIntent）：
+   * 未满足的 `jump`（用户明确要看某条消息）不会被后续的 `restore`（切视图的记忆/底部）
+   * 覆盖 —— 否则切会话路径排的 restore 会把跳转冲回底部。
    */
-  const pendingRestoreRef = useRef<{ key: string; anchor: ScrollAnchor; at: number } | null>(null);
+  const pendingRestoreRef = useRef<{
+    key: string;
+    /**
+     * 这个意图所属的 **buffer id**（= 它指向的那个 session 的缓冲，`readConvMsgs` 直接可读）。
+     *
+     * 为什么存在意图上、而不是在判定时读环境值：`readConvMsgs(convKey)` 会经**视图指针**
+     * （`view.get(convKey)`）解析到「当前激活的 session」，而那个指针是**另一个写者**
+     * （`setActiveSession`）写的。第九轮在真实浏览器里复现到的失败就是它：
+     * 跳转定位成功、+142ms 后却因为「行不在缓冲里」而被终局释放，视口停在错误位置。
+     * 意图自己记住它拥有哪个缓冲，判定就只问**那个缓冲**，且从**权威边界**读「还能翻吗」。
+     */
+    bufferId: string;
+    anchor: ScrollAnchor;
+    at: number;
+    priority: ScrollIntentPriority;
+    /**
+     * 上一趟是否已量到「锚点就位」（|修正| ≤ 1px）。`null` = 还没量过。
+     *
+     * 存它的唯一目的：区分「恰好这一刻看起来对」与「**稳定**对」——
+     * 跨会话跳转时行高是估算值，第一帧的正确位置马上会被 ResizeObserver 推翻
+     * （目标行上方的行变高 → `translateY` 把它推走而 `scrollTop` 不变）。
+     * 见 lib/chatScrollRestore.ts#anchorStability。
+     */
+    prevSettled: boolean | null;
+  } | null>(null);
+
+  /**
+   * 「跳到某条消息」的导航意图（搜索命中 / 通知深链）。目标可能在不同 Agent / session
+   * tab，需要分阶段满足前提后才跳。**在滚动意图旁边声明** —— 它就是「这个视图接下来
+   * 该停在哪」的意图，和 pendingRestoreRef 属于同一族。
+   */
+  const pendingFocusRef = useRef<NavigationFocus | null>(null);
+
+  /** 正在执行的 focus 导航（防止 effect 重入、重复切会话）。 */
+  const focusNavRef = useRef<typeof pendingFocusRef.current>(null);
+
   /** Bumped to cancel an in-flight restore chain. */
   const restoreGenRef = useRef(0);
   const restoreTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const scrollCaptureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const visibleMessagesRef = useRef<ChatMsg[]>([]);
-  const loadingChatRef = useRef(false);
   /** Stable ref to loadMore for use in IntersectionObserver callback */
-  const loadMoreRef = useRef<() => Promise<void>>(undefined);
+  const loadMoreRef = useRef<() => Promise<number>>(undefined);
+  /** In-flight earlier-page request, so the scroll-up pagination never fires a duplicate. */
+  const loadMoreInflightRef = useRef<Promise<number> | null>(null);
+  /**
+   * 「这个视图还能往前翻吗 / 从哪儿翻」—— 权威值住在 `ConversationBufferManager`
+   * （`windowBounds: bufferId → {hasMore, oldestCursor}`，与消息内容**同一个 key**）。
+   * 这里只保留两件事：唯一写入口 `writeWindowBounds`、以及它的渲染投影 `hasMore` state。
+   *
+   * 为什么权威值必须搬到 per-buffer 的存储里（第六轮报障的根因）：旧实现把它放在两个
+   * **全局** ref（`hasMoreRef` / `oldestMsgId`）里，于是**任何**会话的加载都会覆盖当前视图的
+   * 边界 —— 换 Agent 的 effect 会为「上次那个会话」发一次背景 soft-refresh，它与导航自己的
+   * 加载并发，谁最后完成谁写边界；导航要跳的那条消息还没加载进来，而 `locateMessage` 的
+   * 翻页闸门读到的是**别人的** `hasMore=false` / `oldestCursor=null` → 一次都不翻 →
+   * 判定「目标加载失败」→ 回到底部。这就是「跨会话搜索第一次正常、多试几次之后跳错 /
+   * 直接显示该会话最新消息」：第一次进入该 Agent 时它的缓冲是空的，走的分支不并发加载。
+   *
+   * 铁律：读窗口边界的地方全是**异步控制流**（`locateMessage` 的翻页推进、`loadMore` 的
+   * 前置判断），它们只能读权威存储（`bufMgr.getWindowBounds`），**不得**读 React 派生值
+   * （第五轮的教训：`hasMoreRef.current = hasMore` 在 render 里赋值，异步续体必然读到过期值）。
+   */
+  const activeBufferId = useCallback(
+    () => bufMgr.getActiveSession(currentConvKeyRef.current) ?? currentConvKeyRef.current,
+    [bufMgr],
+  );
+
+  /**
+   * 写「某个 buffer 的窗口边界」。**唯一写入口** —— 谁加载了这个 buffer，谁写它的边界
+   * （`loadMore` / `loadSessionMessages` / `loadChannelMessages` 三处全部走这里）。
+   */
+  const writeWindowBounds = useCallback((bufferId: string, bounds: WindowBounds) => {
+    if (!bufferId) return;
+    bufMgr.setWindowBounds(bufferId, bounds);
+    // `hasMore` state 只是**渲染投影**（给「加载更早」的 UI 入口用），不是判定依据；
+    // 只有"被显示的那个 buffer"的边界才需要投影出来。
+    if (bufferId === activeBufferId()) setHasMore(bounds.hasMore);
+  }, [bufMgr, activeBufferId]);
+
+  /**
+   * 切视图后把新视图的边界投影到 state。每个 buffer 自带边界，所以**切视图不需要"重置"**
+   * 任何东西 —— 旧实现里那几处 `setWindowHasMore(false); oldestMsgId.current = null;`
+   * 正是"把别人的事实重置掉"的补丁，全部删除。
+   */
+  useEffect(() => {
+    setHasMore(bufMgr.getWindowBounds(activeBufferId()).hasMore);
+  }, [bufMgr, activeBufferId, chatMode, selectedAgent, activeChannel, activeDmUserId, activeSessionId]);
   // Close history panel on click outside
   useEffect(() => {
     if (!showSessions) return;
@@ -1636,6 +1728,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       distance: distanceFromBottom(el),
       deltaScrollTop,
       programmatic: opts?.programmatic ?? isProgrammaticScrollRef.current,
+      // 在途滚动意图（跳转落位 / 翻页补偿 / 位置记忆）正驱动视口：它产生的滚动事件
+      // 不是用户行为，不得据此把视口交还给贴底 —— 否则跳转落位过程中任何一次瞬时贴底
+      // 都会把 follow 重新武装，下一帧把用户刚看到的那条消息拽走。
+      intentPending: pendingRestoreRef.current !== null,
     });
     if (decision === 'handover') {
       pinChatScrollAway();
@@ -1726,6 +1822,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     adjustTextareaHeight();
   }, [mainTab, visibleMessages.length, adjustTextareaHeight]);
 
+  // ── 视口只允许一个驱动者 ────────────────────────────────────────────────────
+  // `chatScrollRef` 上的滚动**只允许**两条写入路径：
+  //   • `scrollChatToBottom`  —— 跟随 / 贴底（用户未接管时）
+  //   • `applyScrollRestore`  —— 唯一的滚动意图（jump / prepend / restore）
+  // **禁止**调用这个 virtualizer 的 `scrollToIndex` / `scrollToOffset` / `scrollBy`：
+  // 它们会把库内部点着一个 ≤5s、**不可取消**的 rAF reconcile 循环（见上方长注释），
+  // 之后任何行高变化都会重新推视口 —— 这正是「闪一下正确的消息，然后被拽到别处」
+  // 的机制（跨会话搜索跳转需要翻页，才暴露出来）。
   const chatVirtualizer = useVirtualizer({
     count: visibleMessages.length,
     getScrollElement: () => chatScrollRef.current,
@@ -1843,6 +1947,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, []);
 
   /**
+   * Drop every pending scroll assignment for the view we are entering/leaving.
+   *
+   * A view may have exactly ONE scheduled scroll. Both explicit "claim the viewport"
+   * intents (a new turn, a jump to a message) must wipe the previous one first —
+   * otherwise a restore intent scheduled by the session/agent switch keeps writing
+   * to the container for ~900ms and silently undoes the intent (the jump snaps back
+   * to the bottom; the turn's reply scrolls out of view).
+   */
+  const clearPendingScrollRestore = useCallback(() => {
+    pendingRestoreRef.current = null;
+    cancelScrollRestore();
+  }, [cancelScrollRestore]);
+
+  /**
    * Guarantee one snap to the bottom when the user submits a turn.
    *
    * Submitting is an explicit "show me what happens next" gesture, but the snap
@@ -1867,13 +1985,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const snapChatToBottomForNewTurn = useCallback(() => {
     // The new turn owns the viewport.
     resumeChatScrollFollow();
-    // A restore intent recorded for the previous view must not divert the chain.
-    pendingRestoreRef.current = null;
-    cancelScrollRestore();
-    // A prepend marker is consumed by the *next* message change — which is this
-    // one. Left armed it eats the snap and jumps to the oldest row instead.
-    skipScrollRef.current = false;
-    prependCountRef.current = 0;
+    // Nothing scheduled for the previous view may divert this snap.
+    clearPendingScrollRestore();
 
     if (sendSnapRafRef.current !== null) cancelAnimationFrame(sendSnapRafRef.current);
     for (const timer of sendSnapTimersRef.current) clearTimeout(timer);
@@ -1883,73 +1996,154 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     sendSnapTimersRef.current = [60, 160, 320].map(delay =>
       setTimeout(() => scrollChatToBottom('instant'), delay),
     );
-  }, [resumeChatScrollFollow, cancelScrollRestore, scrollChatToBottom]);
+  }, [resumeChatScrollFollow, clearPendingScrollRestore, scrollChatToBottom]);
 
-  /** One restore pass. `finalPass` releases the intent once the chain ends. */
-  const applyScrollRestore = useCallback((key: string, finalPass: boolean): boolean => {
+  /**
+   * 一趟意图应用。返回值 = 意图是否已**终结**（`true` 释放 / `false` 继续等，由
+   * `kickScrollRestore` 续跑重试）。
+   *
+   * 判定全部交给 `planIntentPass`（唯一执行点），所以"释放"由**事实**决定，不由计时器决定
+   * —— 旧实现最后一趟无条件清掉意图，目标行稍晚渲染出来就永久停在估算的位置上。
+   */
+  const applyScrollRestore = useCallback((key: string): boolean => {
     const pending = pendingRestoreRef.current;
     if (!pending || pending.key !== key) return true;
-    // The user moved the viewport, or we are no longer looking at this view:
-    // drop the intent rather than fight either of them.
-    if (gestureActive() || activeScrollKeyRef.current !== key) {
+    // We are no longer looking at this view: drop the intent rather than fight
+    // whichever view replaced it.
+    if (activeScrollKeyRef.current !== key) {
       pendingRestoreRef.current = null;
       return true;
     }
-    if (isRestoreIntentStale(pending.at, performance.now())) {
+    // 用户手势取消的是**位置**意图（视图记忆 / 跳转）—— 视口已交给他。
+    // `prepend` 不同：向上翻页正是由这个手势触发的（滑到顶部→加载更早），
+    // 因此必须照做，否则插入的历史会在手指底下把内容抽走。
+    if (pending.priority !== 'prepend' && gestureActive()) {
       pendingRestoreRef.current = null;
       return true;
     }
     const el = chatScrollRef.current;
     if (!el) return true;
-    const msgs = visibleMessagesRef.current;
-    // Transcript not here yet — stay pending; the layout effect re-kicks the
-    // chain the moment messages land.
-    if (msgs.length === 0 && loadingChatRef.current) return false;
     // A row the user just expanded owns the anchoring window (see
-    // execution-utils.suppressVirtualScrollAdjust): never fight it, and release
-    // the intent once the chain is over so it cannot resurface later.
-    if (isVirtualScrollAdjustSuppressed()) {
-      if (finalPass) pendingRestoreRef.current = null;
-      return finalPass;
-    }
+    // execution-utils.suppressVirtualScrollAdjust): never fight it. 意图**留着**
+    // （重试到 TTL 为止），抑制窗口一过就照常落位。
+    if (isVirtualScrollAdjustSuppressed()) return false;
 
     const { anchor } = pending;
-    if (anchor.kind === 'bottom' || msgs.length === 0) {
-      // No record for this view (first visit in this process) or the user left it
-      // glued to the newest output: hand the viewport back to the follow loop.
-      resumeChatScrollFollow();
+
+    // ① `bottom` 锚点（这个视图在本进程没有记录）：交还贴底跟随，同样由**事实**释放
+    //    —— 只有真的贴到底才算完成。行高是惰性测量的，一次写入常常落在真实底部之上，
+    //    所以要跨几趟补齐（这就是旧链条存在的理由，不能退化成"写一次就完成"）。
+    if (anchor.kind === 'bottom') {
+      if (mayChangeViewportOwner(pending.priority)) resumeChatScrollFollow();
       el.scrollTop = el.scrollHeight;
-      if (finalPass) pendingRestoreRef.current = null;
-      return finalPass;
+      // 同样要**稳定**才算完成：行高是惰性测量的，一写入就“到底”不代表真实底部。
+      const settledBottom = distanceFromBottom(el) <= 1;
+      const stableBottom = anchorStability(settledBottom, pending.prevSettled);
+      pending.prevSettled = settledBottom;
+      if (stableBottom) {
+        pendingRestoreRef.current = null;
+        return true;
+      }
+      return false;
     }
 
-    // A parked position means the user was NOT following: pin the viewport away
-    // so neither the follow loop nor a streaming bubble's height change drags it
-    // back down (and the jump affordance stays available).
-    pinChatScrollAway();
-    const top = findRowTopInViewport(el, anchor.id);
-    if (top !== null) {
-      const correction = rowCorrection(top, anchor.delta);
-      if (Math.abs(correction) > 1) el.scrollTop += correction;
-      if (finalPass) pendingRestoreRef.current = null;
-      return finalPass;
+    // ② 行锚点：能精确校正就落位；否则按 `planIntentPass` 决定微调 / 等 / 兜底 / 释放。
+    const stale = isRestoreIntentStale(pending.at, performance.now());
+    const correction = resolveRowAnchor(readRenderedRowOffsets(el), el, anchor.id, anchor.delta);
+    // 「行还在缓冲里吗」只在真的需要区分时才算（DOM 命中是常见路径，不为它扫缓冲）。
+    // 读**意图自己的 bufferId**：`readConvMsgs(convKey)` 会经视图指针解析（另一个写者
+    // 在跳转过程中可能还没/不再指向目标），而意图自己记得它拥有哪个缓冲。
+    const inBuffer = correction === null && !stale
+      && (readConvMsgs(pending.bufferId) ?? []).some(m => m.id === anchor.id);
+    // 「就位」= 这一趟量到它已经在本趟应该处的位置上（|修正| ≤ 1px）。
+    // 跨会话时这只是**此刻看起来对** —— 目标行上方的行高还是估算值，测量一到就会被推翻，
+    // 所以要连续两趟都就位才算**稳定**（见 anchorStability / 第八轮报障）。
+    const settledNow = correction !== null && Math.abs(correction) <= 1;
+    const stable = anchorStability(settledNow, pending.prevSettled);
+    // 目标行这一帧既没渲染、也不在缓冲里。
+    const absent = correction === null && !inBuffer;
+    // 「还能往前翻吗」从**权威边界**读（意图自己的 buffer），不是渲染期投影、
+    // 也不是环境指针：只要还能翻，就**不允许**断定行已消失（第九轮根因）。
+    const canLoadMore = bufMgr.getWindowBounds(pending.bufferId).hasMore;
+    const action = planIntentPass({
+      priority: pending.priority,
+      rendered: correction !== null,
+      stale,
+      stable,
+      absent,
+      canLoadMore,
+    });
+    // 没渲染出来 = 这一趟的几何信息不算数，下一趟重新开始积累。
+    pending.prevSettled = correction !== null ? settledNow : null;
+
+    // 停在某个具体位置 = 用户没有在跟最新输出：把视口 pin 住，贴底循环与流式气泡的高度
+    // 变化都拽不走它（`prepend` 例外：布局补偿不是导航，不该改变视口归属）。
+    if (mayChangeViewportOwner(pending.priority) && action !== 'release-bottom' && action !== 'release-hold') {
+      pinChatScrollAway();
     }
-    // The anchored row is not mounted yet: jump to the virtualizer's idea of its
-    // offset and let a later pass do the exact correction once it renders.
-    const index = msgs.findIndex(m => m.id === anchor.id);
-    if (index < 0) {
-      // Gone from this transcript (trimmed history / different revision) — the
-      // bottom beats guessing where the user was.
-      if (loadingChatRef.current) return false;
-      pendingRestoreRef.current = null;
-      resumeChatScrollFollow();
-      el.scrollTop = el.scrollHeight;
-      return true;
+
+    switch (action) {
+      case 'apply': {
+        // `stable` 意味着它已经在本趟应该在的位置上（|修正| ≤ 1px），不需要再写。
+        scrollDebug('intent:apply', { id: anchor.id, priority: pending.priority, correction });
+        pendingRestoreRef.current = null;
+        return true;
+      }
+      case 'refine': {
+        // 渲染出来了、但位置还没稳定：现在校正一次（让用户先看到正确位置），
+        // **并且继续重试**直到测量收敛 —— 这正是「闪一下正确的消息然后被推走」的解法。
+        if (correction !== null && Math.abs(correction) > 1) el.scrollTop += correction;
+        // 只记“真的挪了”的那些趟，避免 TTL 内的高频重试刷屏。
+        if (correction !== null && Math.abs(correction) > 8) {
+          scrollDebug('intent:refine', { id: anchor.id, priority: pending.priority, correction });
+        }
+        return false;
+      }
+      case 'release-bottom': {
+        scrollDebug('intent:release-bottom', { id: anchor.id, priority: pending.priority });
+        pendingRestoreRef.current = null;
+        if (mayChangeViewportOwner(pending.priority)) resumeChatScrollFollow();
+        el.scrollTop = el.scrollHeight;
+        return true;
+      }
+      case 'release-hold': {
+        // 释放但**视口不动**：`jump` 的目标行确实渲染不出来时，宁可停在原地并告警，
+        // 也不谎报「这就是你要的地方」（那不但是另一种"什么都没发生"，还会把视口
+        // 交还给贴底追加，把用户从他要看的地方拽走）。
+        // 判定已经要求「缺席连续两趟成立且无加载在途」（planIntentPass），所以走到这里
+        // 要么是 TTL 兜底、要么是真的翻遍了也找不到；把事实一并打出来，下次失败可归因。
+        scrollDebug('intent:release-hold', {
+          id: anchor.id,
+          priority: pending.priority,
+          stale,
+          absent,
+          canLoadMore,
+          bufferId: pending.bufferId,
+        });
+        pendingRestoreRef.current = null;
+        console.warn('[scroll-intent] 目标行始终没能渲染出来，放弃定位（视口保持在原地）', {
+          priority: pending.priority, anchor,
+        });
+        return true;
+      }
+      default: {
+        // 'keep'：这一帧还没渲染到它 —— 先把视口按虚拟表的**估算**挪过去（下一趟拿到
+        // 真实几何后再精确校正），并让重试继续逼近。
+        const index = visibleMessagesRef.current.findIndex(m => m.id === anchor.id);
+        if (index >= 0) {
+          const offset = chatVirtualizer.getOffsetForIndex(index, 'start');
+          if (offset) el.scrollTop = offset[0] + anchor.delta;
+        } else {
+          // 行不在**已加载**的窗口里（典型：并发的重载把这一页挤掉了，目标暂时消失）。
+          // 用唯一的定位器把它再取回来 —— `loadMore` 自己知道还有没有更早的历史，
+          // 没有时同步返回 0；有 `loadMoreInflightRef` 去重，不会重复发请求。
+          // 这就是「缓冲被替换后目标消失」的自愈路径，不需要新增机制。
+          void loadMoreRef.current?.();
+        }
+        return false;
+      }
     }
-    const offset = chatVirtualizer.getOffsetForIndex(index, 'start');
-    if (offset) el.scrollTop = offset[0] + anchor.delta;
-    return false;
-  }, [chatVirtualizer, gestureActive, pinChatScrollAway, resumeChatScrollFollow]);
+  }, [chatVirtualizer, gestureActive, pinChatScrollAway, resumeChatScrollFollow, readConvMsgs]);
 
   /**
    * Run the restore chain for the pending intent: a frame, then a widening set
@@ -1962,12 +2156,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const key = pending.key;
     cancelScrollRestore();
     const gen = restoreGenRef.current;
+    // 一趟没落位就**续跑重试**（一条链路，不是六条）—— "目标行稍后才渲染出来"必然收敛，
+    // 而"永远不满足的意图"也会在 TTL 到期时被释放（见 planIntentPass），
+    // 不可能永远 pin 住视口。
+    const retry = (delay: number) => {
+      restoreTimersRef.current.push(setTimeout(() => {
+        if (gen !== restoreGenRef.current) return;
+        if (pendingRestoreRef.current?.key !== key) return;
+        if (!applyScrollRestore(key)) retry(INTENT_RETRY_MS);
+      }, delay));
+    };
     const passes = [0, 60, 160, 320, 560, 900];
     passes.forEach((delay, i) => {
       const isLast = i === passes.length - 1;
       const run = () => {
         if (gen !== restoreGenRef.current) return;
-        applyScrollRestore(key, isLast);
+        const settled = applyScrollRestore(key);
+        if (!settled && isLast) retry(INTENT_RETRY_MS);
       };
       if (delay === 0) requestAnimationFrame(run);
       else restoreTimersRef.current.push(setTimeout(run, delay));
@@ -1979,15 +2184,42 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
    * this process holds no record for the view (the product rule — and the only
    * thing that can happen after a restart, since the store is in-memory).
    */
-  const scheduleScrollRestore = useCallback((key: string) => {
-    if (!key) return;
+  /**
+   * Point the next restore at an explicit anchor. The ONE writer of
+   * `pendingRestoreRef` — a view can never have two competing scroll intents.
+   *
+   * `priority` 决定谁赢：未满足的 `jump` 不被后续的 `restore` 覆盖（返回 false，
+   * 在途意图保持不动）。见 lib/chatScrollRestore.ts#shouldAcceptRestoreIntent。
+   */
+  const scheduleScrollRestoreToAnchor = useCallback((
+    key: string,
+    anchor: ScrollAnchor,
+    priority: ScrollIntentPriority = 'restore',
+    /**
+     * 这个意图指向的缓冲（session）。缺省用当前激活的缓冲 —— 调用方指向的就是「这个视图」。
+     * 存下来是为了让后续判定只问**这一个缓冲**，不受环境指针（另一个写者）影响。
+     */
+    bufferId?: string,
+  ): boolean => {
+    if (!key) return false;
+    const current = pendingRestoreRef.current;
+    if (!shouldAcceptRestoreIntent(current, { key, priority })) return false;
     pendingRestoreRef.current = {
       key,
-      anchor: chatScrollMemory.get(key) ?? { kind: 'bottom' },
+      bufferId: bufferId ?? activeBufferId(),
+      anchor,
       at: performance.now(),
+      priority,
+      prevSettled: null,
     };
     kickScrollRestore();
-  }, [kickScrollRestore]);
+    return true;
+  }, [activeBufferId, kickScrollRestore]);
+
+  const scheduleScrollRestore = useCallback((key: string) => {
+    if (!key) return;
+    scheduleScrollRestoreToAnchor(key, chatScrollMemory.get(key) ?? { kind: 'bottom' });
+  }, [scheduleScrollRestoreToAnchor]);
 
   /**
    * Debounced snapshot while the user scrolls. Switch paths capture exactly, but
@@ -2008,7 +2240,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // Latest render values, read by the restore chain (which runs out of band).
   visibleMessagesRef.current = visibleMessages;
-  loadingChatRef.current = loadingChat;
 
   // On teardown: flush this view's position (the DOM is still mounted during a
   // layout-effect cleanup) and stop any timer from firing against a dead tree.
@@ -2030,29 +2261,126 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // unrelated hit (the arrow keys would then "continue" from the wrong place).
   useEffect(() => { setFindCursor(-1); }, [findQuery]);
 
+  /** Flash a message bubble so the user can see where the jump landed. */
+  const flashMessageElement = useCallback((messageId: string) => {
+    const flash = () => {
+      const node = document.getElementById(`msg-${messageId}`);
+      if (!node) return false;
+      node.classList.remove('chat-find-hit');
+      // Force reflow so repeated jumps to the same bubble re-trigger the animation.
+      void node.offsetWidth;
+      node.classList.add('chat-find-hit');
+      window.setTimeout(() => node.classList.remove('chat-find-hit'), 1600);
+      return true;
+    };
+    // The bubble may mount a frame or two after switching sessions / loading a page.
+    let tries = 0;
+    const tick = () => {
+      if (flash()) return;
+      if (tries++ >= 8) return;
+      window.requestAnimationFrame(tick);
+    };
+    tick();
+  }, []);
+
+  /**
+   * Jump to a specific message: make sure it is loaded, scroll the virtualizer to it,
+   * and flash it. This is the SINGLE implementation of「跳到某条消息」—— toasts, links
+   * and search hits all funnel through here so none of them can silently miss.
+   */
+  const jumpToMessage = useCallback(async (messageId: string, targetCreatedAt?: string) => {
+    // Claim the viewport BEFORE awaiting — this is an explicit user intent, so from
+    // this instant nothing else may scroll this view. Without it, the restore intent
+    // the session/agent switch scheduled (anchored at the BOTTOM, because this
+    // process has never visited the target view) keeps re-scrolling to the bottom
+    // while we page history in — it even re-arms the follow loop — and the jump loses.
+    clearPendingScrollRestore();
+    pinChatScrollAway();
+
+    const key = activeScrollKeyRef.current;
+    const convKey = currentConvKeyRef.current;
+    // fast path：目标已在**权威缓冲**里（同会话 ⌘F / 通知深链命中）→ 不取数、不安装。
+    const inBuffer = () => (readConvMsgs(convKey) ?? []).some((m) => m.id === messageId);
+    // 跨会话：跳转**自带取数**（lib/jumpWindow.ts）—— 从最新往更早逐页取到目标为止，
+    // 再把这一整窗口一次性安装。刻意**不再**复用滚动用的增量翻页 `loadMore`：那条通道的
+    // 翻页闸门默认值 / 全局在途去重 / 「视图已变则丢弃整页」三种状态都会被别人改写，
+    // 而且它们**都以「返回 0」表达** —— 调用方无法区分「到底了 / 这页被丢弃 /
+    // 我加入了别人的请求」。这正是「同一会话内搜正常、跨会话多试几次就坏」的来源（第九轮报障）。
+    let loaded = inBuffer();
+    if (!loaded && key) {
+      const sid = bufMgr.getActiveSession(convKey) ?? convKey;
+      const page = await collectJumpWindow({
+        targetId: messageId,
+        has: inBuffer,
+        targetCreatedAt,
+        fetchPage: async (before) => {
+          if (!sid || sid === NEW_CHAT_PLACEHOLDER_ID) return { messages: [], hasMore: false };
+          const r = await api.sessions.getMessages(sid, 50, before);
+          return { messages: r.messages, hasMore: r.hasMore };
+        },
+      });
+      // 安装前先裁到显示上限并**保证目标仍在**（见 trimJumpWindow）：`updateMessages`
+      // 的 `slice(-MAX_MESSAGES)` 保留最新、丢掉最旧，而深历史跳转的目标恰在最旧一端。
+      const kept = trimJumpWindow(page.messages, messageId);
+      if (kept.length > 0) {
+        writeConvMsgs(convKey, kept.map(dbMsgToChat));
+        writeWindowBounds(sid, {
+          hasMore: page.hasMore,
+          oldestCursor: kept[0] ? new Date(kept[0].createdAt).toISOString() : null,
+        });
+      }
+      loaded = page.found || inBuffer();
+      scrollDebug('jump:collected', {
+        messageId, found: page.found, kept: kept.length, exhausted: page.exhausted,
+      });
+    }
+    scrollDebug('jump:located', { messageId, loaded, key, nowKey: activeScrollKeyRef.current });
+    // The user clicked another result / switched view while we were paging: that
+    // newer intent owns the viewport now.
+    if (key && activeScrollKeyRef.current !== key) return;
+
+    if (loaded && key) {
+      // A「jump」IS a scroll anchor pointed at one message — hand it to the ONE
+      // restore mechanism instead of a second, competing scroll path. It pins away
+      // from the follow loop, re-asserts while lazily-measured rows settle, and
+      // self-cancels. `priority: 'jump'` also makes it immune to the `restore`
+      // intents that switchSession / the agent-switch effect queue for the SAME
+      // view — otherwise one of them lands after us and drags the view to bottom.
+      //
+      // Deliberately NOT chatVirtualizer.measure() + scrollToIndex(): measure()
+      // resets every cached row size (see the note above the virtualizer) and
+      // scrollToIndex() arms virtual-core's own uncancellable reconcile loop, which
+      // would then fight the user's next gesture.
+      scheduleScrollRestoreToAnchor(key, gotoAnchor(messageId), 'jump', activeBufferId());
+      scrollDebug('jump:scheduled', { messageId, key });
+      flashMessageElement(messageId);
+      return;
+    }
+    // 目标没能加载进来（历史被裁剪 / 该 id 不在这个会话 / 已到分页上界）：
+    // 不要把「被 pin 住、停在半空」的视口留给用户 —— 那正是「点了结果什么都没发生 /
+    // 连消息都没加载出来」。交还给贴底跟随，至少让他看到最新输出。
+    if (key) {
+      scrollDebug('jump:fallback-bottom', { messageId, key });
+      console.warn('[jump] target message not loaded — falling back to the bottom', { messageId });
+      resumeChatScrollFollow();
+      scrollChatToBottom('instant');
+    }
+  }, [clearPendingScrollRestore, pinChatScrollAway, scheduleScrollRestoreToAnchor, flashMessageElement, readConvMsgs, bufMgr, writeConvMsgs, writeWindowBounds, resumeChatScrollFollow, scrollChatToBottom]);
+
   const jumpToFindMatch = useCallback((index: number) => {
     const match = findOutcome.matches[index];
     if (!match) return;
     setFindCursor(index);
-    // Jumping somewhere else IS the user taking control: without this the
-    // streaming follow would immediately snap back to the bottom and the hit
-    // would scroll away again.
+    // Jumping somewhere else IS the user taking control: same single mechanism as a
+    // search hit — otherwise the streaming follow snaps straight back to the bottom
+    // and the hit scrolls away again.
+    clearPendingScrollRestore();
     pinChatScrollAway();
-    chatVirtualizer.scrollToIndex(match.messageIndex, { align: 'center' });
-    // The row may not be mounted yet (virtualized), so give the flash a few
-    // frames to find it before giving up — a miss just means no highlight.
-    let tries = 0;
-    const flash = () => {
-      const node = document.getElementById(`msg-${match.messageId}`);
-      if (node) {
-        node.classList.add('chat-find-hit');
-        window.setTimeout(() => node.classList.remove('chat-find-hit'), 1600);
-        return;
-      }
-      if (tries < 8) { tries += 1; requestAnimationFrame(flash); }
-    };
-    requestAnimationFrame(flash);
-  }, [findOutcome.matches, chatVirtualizer, pinChatScrollAway]);
+    if (activeScrollKeyRef.current) {
+      scheduleScrollRestoreToAnchor(activeScrollKeyRef.current, gotoAnchor(match.messageId), 'jump');
+    }
+    flashMessageElement(match.messageId);
+  }, [findOutcome.matches, clearPendingScrollRestore, pinChatScrollAway, scheduleScrollRestoreToAnchor, flashMessageElement]);
 
   // Cmd+F (Mac) / Ctrl+F (Win/Linux) opens find-in-conversation while the chat
   // tab is showing — the convention in every chat client, and the only
@@ -2086,20 +2414,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // repeated scrollToBottom and fight the user / expand-anchor.
   // When items are prepended (loadMore), anchor scroll to the previously top-visible item.
   useLayoutEffect(() => {
-    if (skipScrollRef.current) {
-      skipScrollRef.current = false;
-      const count = prependCountRef.current;
-      if (count > 0) {
-        prependCountRef.current = 0;
-        chatVirtualizer.scrollToIndex(count, { align: 'start', behavior: 'instant' });
-      }
+    // Fresh content (a prepended page, a streamed chunk, a loaded transcript) means
+    // every row was re-measured — re-assert the pending intent against the new
+    // layout. There is deliberately no second branch here: a prepend IS an anchor
+    // too (see loadMore), so this single intent is the only thing that may move the
+    // viewport. The old `scrollToIndex(newCount)` branch was a second scroll writer
+    // that ignored intents entirely and armed virtual-core's own reconcile loop.
+    if (pendingRestoreRef.current) {
+      kickScrollRestore();
       return;
     }
     if (!isActiveRef.current) return;
-    // A view restore owns the viewport until it settles. Re-kick it here so
-    // content that arrives after the timer chain (a slow DB load) still lands on
-    // the remembered row instead of falling through to the bottom snap.
-    if (pendingRestoreRef.current) { kickScrollRestore(); return; }
     if (!mayFollow()) return;
     // Expanding/collapsing a tool row temporarily owns scroll anchoring —
     // don't yank back to bottom while that suppression window is open.
@@ -2156,17 +2481,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       const result = await api.channels.getMessages(channel, 50);
       const msgs = result.messages.map(m => channelMsgToChat(m, authUser?.id));
       writeConvMsgs(key, msgs);
-      if (currentConvKeyRef.current === key) {
-        setMessages(msgs);
-        setHasMore(result.hasMore);
-        oldestMsgId.current = result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null;
-      }
+      // 边界与内容同一个 key、同一个写者（channel/dm 没有会话概念 → buffer id 就是 convKey）。
+      writeWindowBounds(key, {
+        hasMore: result.hasMore,
+        oldestCursor: result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null,
+      });
+      if (currentConvKeyRef.current === key) setMessages(msgs);
     } catch {
-      if (currentConvKeyRef.current === key) { setMessages([]); setHasMore(false); }
+      if (currentConvKeyRef.current === key) setMessages([]);
     } finally {
       if (!opts?.quiet && currentConvKeyRef.current === key) setLoadingChat(false);
     }
-  }, []);
+  }, [writeWindowBounds]);
 
   // Load sessions list for agent (paginated — History panel loads 20 at a time)
   const loadSessions = useCallback(async (agentId: string) => {
@@ -2204,10 +2530,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     beginStream, endStream, abortStream, clearStreamSession, setStreamSession, getStreamSession,
     setActiveSession,
     incrementSending, decrementSending, loadAndDisplay,
-    thinkingTimeoutRef, sessionSwitchSeqRef, oldestMsgId,
+    thinkingTimeoutRef, sessionSwitchSeqRef,
     setSending, setActivities, setInput, setChatContext, setPendingImages,
     setMentionDropdown, setChatReplyTo, setActiveSessionId, setStoredActiveSession,
-    setOpenSessionTabs, setSessions, setLoadingChat, setHasMore, setThinkingAgents,
+    setOpenSessionTabs, setSessions, setLoadingChat, setWindowBounds: writeWindowBounds, setThinkingAgents,
     makeConvKey, makeDmChannel, addRecentMsgId, resumeChatScrollFollow, loadSessions,
     t,
   });
@@ -2290,45 +2616,116 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     cancelRenameSession();
   }, [renamingDraft, cancelRenameSession]);
 
-  // Load more (pagination) — preserves scroll position after prepending
-  const prependCountRef = useRef(0);
-  const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore || !oldestMsgId.current) return;
-    setLoadingMore(true);
-    try {
-      const convKey = currentConvKeyRef.current;
-      if (chatMode === 'channel' || chatMode === 'dm') {
-        const channelName = chatMode === 'dm' ? makeDmChannel(authUser?.id ?? '', activeDmUserId) : activeChannel;
-        const result = await api.channels.getMessages(channelName, 50, oldestMsgId.current);
-        const newMsgs = result.messages.map(m => channelMsgToChat(m, authUser?.id));
-        prependCountRef.current = newMsgs.length;
-        skipScrollRef.current = true;
-        setMessages(prev => {
-          let combined = [...newMsgs, ...prev];
-          if (combined.length > 500) combined = combined.slice(-500);
-          writeConvMsgs(convKey, combined);
-          return combined;
-        });
-        setHasMore(result.hasMore);
-        if (result.messages[0]) oldestMsgId.current = new Date(result.messages[0].createdAt).toISOString();
-      } else if (activeSessionId) {
-        const result = await api.sessions.getMessages(activeSessionId, 50, oldestMsgId.current);
-        const newMsgs = result.messages.map(dbMsgToChat);
-        prependCountRef.current = newMsgs.length;
-        skipScrollRef.current = true;
-        setMessages(prev => {
-          let combined = [...newMsgs, ...prev];
-          if (combined.length > 500) combined = combined.slice(-500);
-          writeConvMsgs(convKey, combined);
-          return combined;
-        });
-        setHasMore(result.hasMore);
-        if (result.messages[0]) oldestMsgId.current = new Date(result.messages[0].createdAt).toISOString();
+  // Load more (pagination) — keeps the viewport still by re-anchoring the row at
+  // the viewport top (see the anchor capture inside).
+  // Returns the number of newly loaded messages (0 = nothing more / busy / the view
+  // moved on). NOTE: 0 is overloaded here (three different facts); that is exactly why
+  // 「跳到某条消息」no longer goes through this channel — see lib/jumpWindow.ts.
+  const loadMore = useCallback(async (): Promise<number> => {
+    // Join an in-flight page rather than launching a second one. Callers page
+    // sequentially; without this, a second call would see the
+    // stale closure (`loadingMore === false`) and fire a duplicate request.
+    if (loadMoreInflightRef.current) return loadMoreInflightRef.current;
+    // 权威指针（**不是** React state —— 见第五轮的教训）：请求、缓冲写入、窗口边界三者
+    // 必须落在**同一个** buffer 上。`activeSessionId` 在切换后的那一拍还是旧值，用它会让
+    // 这一页翻到别的会话、却把游标记在当前视图名下。
+    const convKey = currentConvKeyRef.current;
+    const bufId = bufMgr.getActiveSession(convKey) ?? convKey;
+    // 翻页闸门与游标**只读权威边界存储**（per-buffer，见 ConversationBufferManager#WindowBounds）。
+    // 第六轮报障根因：这两个值原是全局 ref，**任何**会话的加载都会覆盖当前视图的边界 ——
+    // 换 Agent 的背景 soft-refresh 与导航自己的加载并发，谁最后完成谁写边界；目标还没加载
+    // 进来，而闸门读到别人的 `hasMore=false` / `oldestCursor=null` → 一次都不翻 →
+    // 判定「目标加载失败」→ 回到底部（"直接显示该会话最新消息"）。
+    const bounds = bufMgr.getWindowBounds(bufId);
+    const cursor = bounds.oldestCursor;
+    if (!bounds.hasMore || !cursor) return 0;
+    // 直切到「本进程没见过」的会话时，指针可能还是新建会话的占位 id —— 那不是可查询的会话。
+    const sessionIdForRequest = bufId && bufId !== NEW_CHAT_PLACEHOLDER_ID ? bufId : null;
+
+    const run = async (): Promise<number> => {
+      setLoadingMore(true);
+      try {
+        // 这一页是给「哪个视图」翻的 —— 记下身份，写回前要重新校验。
+        const viewKeyAtRequest = activeScrollKeyRef.current;
+        let newMsgs: ChatMsg[] = [];
+        let more = false;
+        let oldestOf: string | null = null;
+        if (chatMode === 'channel' || chatMode === 'dm') {
+          const channelName = chatMode === 'dm' ? makeDmChannel(authUser?.id ?? '', activeDmUserId) : activeChannel;
+          const result = await api.channels.getMessages(channelName, 50, cursor);
+          newMsgs = result.messages.map(m => channelMsgToChat(m, authUser?.id));
+          more = result.hasMore;
+          oldestOf = result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null;
+        } else if (sessionIdForRequest) {
+          const result = await api.sessions.getMessages(sessionIdForRequest, 50, cursor);
+          newMsgs = result.messages.map(dbMsgToChat);
+          more = result.hasMore;
+          oldestOf = result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null;
+        } else {
+          return 0;
+        }
+        if (newMsgs.length === 0) {
+          // 服务端说没有更早的了（或返回空页）：把这个 buffer 的边界写成「到头了」。
+          // 游标保持原值 —— 没有拿到任何消息，就不能凭空前进。
+          writeWindowBounds(bufId, { hasMore: more, oldestCursor: cursor });
+          return 0;
+        }
+        // 请求在途时用户切了会话/Agent：这一页不再属于当前视图。若照写，它会与
+        // **另一个**会话的缓冲合并成一份谁都不认识的混合记录（同一个事实两个写者）。
+        if (currentConvKeyRef.current !== convKey || activeScrollKeyRef.current !== viewKeyAtRequest) {
+          return 0;
+        }
+        // 「向上翻页必须保持视口不动」是一个**布局补偿**，不是导航：把它表达成
+        // 「翻页前视口顶部那一行」的 anchor，交给**唯一**的滚动意图机制。
+        // 锚点必须在改动前采集（此刻 DOM 还是旧内容）。
+        //
+        // 刻意不再用 `chatVirtualizer.scrollToIndex(newMsgs.length, {align:'start'})`：
+        //   ① 它会点亮 virtual-core 内部一个 ≤5s、**不可取消**的 rAF reconcile 循环
+        //      （scrollState/reconcileScroll）：该下标的偏移量每变一次就重新推视口，
+        //      而惰性测量的行高恰好在「跳转落位」的那几百毫秒里持续变化 → 跳转被拽走；
+        //   ② 它拿「本次新增条数」当**渲染列表的下标**用，而渲染的是缓冲区的一个
+        //      投影（剔除活动日志行/已确认通知）→ 下标整体偏移；
+        //   ③ 它不受意图机制管辖，跳转正在落位时照样滚。
+        const scrollEl = chatScrollRef.current;
+        const prependAnchor = scrollEl
+          ? captureChatScrollAnchor(readRenderedRowOffsets(scrollEl), scrollEl)
+          : null;
+        // Write the AUTHORITATIVE buffer FIRST (synchronously), then the display.
+        // Order matters: the pagination gate/cursor and any reader of this buffer
+        // must see the page the moment this function reports it added, while a
+        // side-effectful `setMessages(updater)` would only run during render.
+        const prev = readConvMsgs(convKey) ?? [];
+        // 按 id 去重再拼接：缓冲可能已经含这一页（上次翻到更深处、这次又用新游标翻回来），
+        // 重复行会在虚拟表里出现同 key 的两行、也会让 `has()` 之外的一切都偏移。
+        const seen = new Set(newMsgs.map(m => m.id));
+        let combined = [...newMsgs, ...prev.filter(m => !seen.has(m.id))];
+        if (combined.length > 500) combined = combined.slice(-500);
+        writeConvMsgs(convKey, combined);
+        // 边界与内容**同时**前进（同一个 key、同一个写者）：这一页已经进了缓冲，
+        // 游标才允许前移。反之（上面被丢弃的那一页）一律不动边界。
+        writeWindowBounds(bufId, { hasMore: more, oldestCursor: oldestOf });
+        if (prependAnchor) {
+          // `prepend` 优先级：它压过切视图的 `restore`，但**让位**给未满足的
+          // `jump`（跳转自己的翻页不能被翻页锚点拽走）。
+          scheduleScrollRestoreToAnchor(activeScrollKeyRef.current, prependAnchor, 'prepend');
+        }
+        setMessages(combined);
+        return newMsgs.length;
+      } catch {
+        return 0;
+      } finally {
+        setLoadingMore(false);
       }
-    } catch { /* ignore */ } finally {
-      setLoadingMore(false);
+    };
+
+    const inflight = run();
+    loadMoreInflightRef.current = inflight;
+    try {
+      return await inflight;
+    } finally {
+      loadMoreInflightRef.current = null;
     }
-  }, [loadingMore, hasMore, chatMode, activeChannel, activeSessionId, authUser?.id, activeDmUserId]);
+  }, [chatMode, activeChannel, authUser?.id, activeDmUserId, readConvMsgs, writeConvMsgs, bufMgr, writeWindowBounds]);
 
   loadMoreRef.current = loadMore;
 
@@ -2414,6 +2811,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // If no saved tabs, we'll populate from DB below for direct mode
     setShowSessions(false);
 
+    // 导航在途（搜索结果 / ⌘F / 通知深链）：**它拥有「这个视图看哪个会话 + 加载什么」**。
+    // 判据与另一条分支共用 `navigationOwnsSessionChoice`（唯一执行点）——
+    // 否则同一视图会有两个加载在途：一个属于导航要去的会话，一个属于"上次离开时的会话"，
+    // 而它们的完成顺序是不确定的（"第一次正常、多试几次才坏"就是这么来的）。
+    const navOwnsView = navigationOwnsSessionChoice(pendingFocusRef.current, {
+      chatMode, agentId: selectedAgent,
+    });
     // Empty in-memory buffers must NOT skip the DB load — a prior race can leave
     // `[]` in the map and make history look "missing" until a full page refresh.
     const hasBufferedContent = bufferedMsgs !== undefined && bufferedMsgs.length > 0;
@@ -2423,7 +2827,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (!isSendingNow) bufMgr.completeLoad(newKey);
       setLoadingChat(false);
       setMessages(bufferedMsgs!);
-      setHasMore(false);
       if (savedActiveSession !== undefined) {
         changeActiveSession(newKey, savedActiveSession);
         scheduleScrollRestore(scrollMemoryKey(newKey, savedActiveSession));
@@ -2440,6 +2843,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         && selectedAgent
         && savedActiveSession
         && savedActiveSession !== NEW_CHAT_PLACEHOLDER_ID
+        // 导航在途：不替「上次那个会话」再发一次软刷新 —— 它必然被导航自己的加载覆盖，
+        // 却会在被覆盖前写一次显示（用户看到的「闪一下」），而且两个加载在途时完成顺序
+        // 不确定。让导航独占这一次加载。
+        && !navOwnsView
       ) {
         if (!isSendingNow) {
           void loadSessionMessages(savedActiveSession, newKey).then(() => {
@@ -2457,8 +2864,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       beginLoad(newKey);
       setLoadingChat(true);
       setMessages([]);
-      setHasMore(false);
-      oldestMsgId.current = null;
       // Clear a stale empty entry so later visits don't treat it as "already loaded"
       writeConvMsgs(newKey, []);
 
@@ -2494,6 +2899,21 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               if (found) initialTabs = [...initialTabs, found];
             }
             const validId = restoreId && initialTabs.some(t => t.id === restoreId) ? restoreId : initialTabs[0]!.id;
+            // A「跳到某条消息」navigation is in flight for this view: it owns BOTH
+            // the session choice and the scroll intent. Choosing a session and
+            // queueing a bottom-anchored restore here is what used to yank the jump
+            // away (「闪一下正确的消息，然后跳到底部」) — the pending focus effect
+            // awaits its own switchSession and then jumps. Set the tabs, stand down.
+            const focus = pendingFocusRef.current;
+            if (
+              focus
+              && focus.mode === 'direct'
+              && focus.agentId === selectedAgent
+              && (focus.sessionId || focus.preferMain)
+            ) {
+              setOpenSessionTabs(initialTabs);
+              return;
+            }
             // changeActiveSession keeps view state and the manager routing gate
             // in sync (single entry) — a concurrently-streaming OTHER session
             // of this agent cannot land chunks in this buffer (same bug family
@@ -2993,8 +3413,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       resetConv(key, childSession.id);
       setStoredActiveSession(selectedAgent, childSession.id);
       setMessages([]);
-      setHasMore(false);
-      oldestMsgId.current = null;
       await hookSend(result.seedPrompt, { sessionIdOverride: result.sessionId });
     } catch (err) {
       console.error('evolve-from-message failed', err);
@@ -3022,8 +3440,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // Restore this session's own position — bottom when it has no record yet.
     scheduleScrollRestore(scrollMemoryKey(key, s.id));
     setShowSessions(false);
-    setHasMore(false);
-    oldestMsgId.current = null;
     resumeChatScrollFollow();
     setShowScrollBtn(false);
     newMsgCountRef.current = 0;
@@ -3111,26 +3527,112 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     findServerDebounceRef.current = setTimeout(() => void runFindServerSearch(q), 300);
   }, [runFindServerSearch]);
 
-  const handleFindServerResultClick = useCallback((result: import('../api.ts').SearchResult) => {
+  /**
+   * Pending「跳到某条消息」request from a search hit. Resolved in stages, because the
+   * target may live in a different agent / session tab whose transcript loads async:
+   *   stage 1 → wait for the right agent;
+   *   stage 2 → make the target session tab active **and await its transcript**;
+   *   stage 3 → hand off to jumpToMessage (the ONE「跳到某条消息」implementation).
+   * Staging is what makes「点了搜索结果」actually land on the message instead of only
+   * switching the view and silently doing nothing. `pendingFocusRef` itself is
+   * declared next to `pendingRestoreRef` (same family: "where this view should be").
+   */
+
+  /** 通知审阅完成后的落点（判读完再应用，避免用户还在看弹窗底下就已经换会话）。 */
+  const pendingNotifyLandingRef = useRef<{
+    agentId: string;
+    sessionId?: string | null;
+    messageId?: string;
+    preferMain?: boolean;
+  } | null>(null);
+
+  const handleFindServerResultClick = useCallback((result: SearchResult) => {
     setFindOpen(false);
     setFindQuery('');
     setFindServerResults([]);
     if (result.source === 'channel' && result.channel) {
       setChatMode('channel');
       setActiveChannel(result.channel);
-    } else if (result.source === 'direct' && result.agentId) {
-      setChatMode('direct');
-      setSelectedAgent(result.agentId);
+      setMainTab('chat');
+      pendingFocusRef.current = { messageId: result.id, mode: 'channel', channel: result.channel };
+      return;
     }
-    setTimeout(() => {
-      const el = document.getElementById(`msg-${result.id}`);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.classList.add('bg-brand-500/10');
-        setTimeout(() => el.classList.remove('bg-brand-500/10'), 2000);
-      }
-    }, 500);
-  }, []);
+    if (result.source === 'direct' && result.agentId) {
+      setChatMode('direct');
+      setMainTab('chat');
+      if (result.agentId !== selectedAgent) setSelectedAgent(result.agentId);
+      pendingFocusRef.current = {
+        messageId: result.id,
+        mode: 'direct',
+        agentId: result.agentId,
+        sessionId: result.sessionId ?? null,
+        // 目标自身的时间：让跳转的取数器能在「翻过这个时间仍未命中」时判定
+        // 「目标不在本会话」（已删除/不属于这里）并收手，不必空翻到会话开头。
+        createdAt: result.createdAt,
+      };
+    }
+  }, [selectedAgent]);
+
+  // Drive a pending focus request forward as its prerequisites become true.
+  //
+  // Stage 2 **awaits** `switchSession` (which awaits the transcript load) instead
+  // of guessing readiness from `!loadingChat`. That flag cannot tell「loaded」from
+  // 「not started yet」, so the old heuristic could hand off to `jumpToMessage`
+  // while the buffer still held the PREVIOUS session's messages → the jump found
+  // nothing and silently did nothing (「消息都没加载出来」).
+  useEffect(() => {
+    const p = pendingFocusRef.current;
+    if (!p) return;
+
+    const finish = () => {
+      focusNavRef.current = null;
+      if (pendingFocusRef.current !== p) return; // superseded by a newer navigation
+      pendingFocusRef.current = null;
+      if (p.messageId) void jumpToMessage(p.messageId, p.createdAt);
+    };
+
+    if (p.mode === 'channel') {
+      if (chatMode !== 'channel' || activeChannel !== p.channel) return;
+      if (loadingChat) return;
+      finish();
+      return;
+    }
+
+    if (chatMode !== 'direct' || mainTab !== 'chat') return;
+    if (p.agentId && p.agentId !== selectedAgent) return; // stage 1: agent switch
+
+    // Landing after a notification review that has no single target session
+    // (reports from several sessions): go to the agent's MAIN session.
+    const targetSessionId = p.preferMain
+      ? (sessions.find(s => s.isMain) ?? openSessionTabs.find(t => t.isMain))?.id
+      : p.sessionId;
+    if (p.preferMain && !targetSessionId) return; // session list not in yet
+
+    if (targetSessionId && targetSessionId !== activeSessionId) {
+      if (focusNavRef.current === p) return; // a switch for this request is already in flight
+      const target = sessions.find(s => s.id === targetSessionId)
+        ?? openSessionTabs.find(t => t.id === targetSessionId)
+        ?? (sessions.length === 0 ? null : undefined);
+      // The session list hasn't arrived yet: wait, don't switch blind.
+      if (target === null) return;
+      focusNavRef.current = p;
+      void (async () => {
+        const now = new Date().toISOString();
+        await switchSession(target ?? {
+          id: targetSessionId, agentId: p.agentId ?? selectedAgent ?? '',
+          userId: null, title: null, createdAt: now, lastMessageAt: now,
+        });
+        finish(); // transcript for the target session is now loaded
+      })();
+      return;
+    }
+
+    if (loadingChat) return;
+    finish();
+  }, [
+    chatMode, activeChannel, selectedAgent, activeSessionId, sessions, sessionsHasMore,
+    openSessionTabs, loadingChat, mainTab, visibleMessages, jumpToMessage, switchSession,
+  ]);
 
   const newConversation = () => {
     // A brand-new session has no transcript to come back to: remember the view we
@@ -3151,8 +3653,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // content land in the wrong bubbles.
     resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
     setMessages([]);
-    setHasMore(false);
-    oldestMsgId.current = null;
     setShowSessions(false);
     // Add a placeholder "New Chat" tab
     setOpenSessionTabs(prev => {
@@ -3527,9 +4027,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }).catch(() => {});
   }, [previewMode, activeChannel, groupChats]);
 
-  // Load pending request_user_input requests for the agent in the active direct chat.
+  // Load pending approvals for the agent in the active direct chat:
+  //   - request_user_input (has `questions`) → banner + UserInputModal;
+  //   - tool execution approvals (git writes …) → banner + ToolApprovalModal.
+  // Both BLOCK the agent turn, so both need a near-field entry point, not just the bell.
   const refreshUserInputs = useCallback(async () => {
-    if (previewMode || chatMode !== 'direct' || !selectedAgent) { setUserInputApprovals([]); return; }
+    if (previewMode || chatMode !== 'direct' || !selectedAgent) {
+      setUserInputApprovals([]);
+      setToolApprovals([]);
+      return;
+    }
     try {
       // Bypass GET dedup cache — otherwise a pre-approval poll (empty list) can
       // shadow the WS-driven refresh for up to DEDUP_TTL_MS and hide the chat card.
@@ -3540,8 +4047,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         Array.isArray(a.questions) && a.questions.length > 0 &&
         ((a.details?.agentId as string | undefined) ?? a.agentId) === selectedAgent,
       ));
+      setToolApprovals(selectToolApprovals(approvals, {
+        agentId: selectedAgent,
+        sessionId: activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? activeSessionId : null,
+      }));
     } catch { /* */ }
-  }, [previewMode, chatMode, selectedAgent]);
+  }, [previewMode, chatMode, selectedAgent, activeSessionId]);
 
   // Load unread notify_user cards for the active session (mirrors user-input cards).
   const refreshSessionNotifies = useCallback(async () => {
@@ -3608,6 +4119,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     };
   }, [refreshUserInputs, refreshSessionNotifies]);
 
+  // Tool approvals BLOCK the agent turn. A bell notification the user may never open
+  // is not enough — so when a fresh one lands on the chat the user is actually looking
+  // at, open its dialog once. Auto-open exactly once per approval id; if the user
+  // dismisses it, the banner above the composer stays as their entry point.
+  useEffect(() => {
+    if (!isActive || previewMode || chatMode !== 'direct' || mainTab !== 'chat') return;
+    if (toolApprovals.length === 0) return;
+    if (activeToolApproval || activeInputModal || activeNotifyModal) return;
+    const next = toolApprovals.find(a => !autoOpenedApprovalIds.current.has(a.id));
+    if (!next) return;
+    autoOpenedApprovalIds.current.add(next.id);
+    setActiveToolApproval(next);
+  }, [isActive, previewMode, chatMode, mainTab, toolApprovals, activeToolApproval, activeInputModal, activeNotifyModal]);
+
   const handleUserInputSubmit = useCallback(async (
     approvalId: string,
     r: { approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[] },
@@ -3622,21 +4147,111 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     setRespondingInputId(null);
   }, [authUser?.id]);
 
+  const handleToolApprovalDecision = useCallback(async (
+    approvalId: string,
+    approved: boolean,
+    comment?: string,
+  ) => {
+    setRespondingApprovalId(approvalId);
+    try {
+      await api.approvals.respond(approvalId, approved, authUser?.id, comment);
+      setToolApprovals(prev => prev.filter(a => a.id !== approvalId));
+      setActiveToolApproval(null);
+      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
+    } catch { /* */ }
+    setRespondingApprovalId(null);
+  }, [authUser?.id]);
+
+  /**
+   * Close the review queue and apply its landing decision.
+   *
+   * Landing is deferred until the queue is done (read or dismissed) so the chat does
+   * not switch sessions under a modal the user is still reading. Dismissing early does
+   * NOT skip the landing: the user already asked to go to this agent by clicking the
+   * roster, so completing the navigation is what they expect.
+   */
+  const finishNotifyReview = useCallback(() => {
+    setNotifyReview(null);
+    const land = pendingNotifyLandingRef.current;
+    pendingNotifyLandingRef.current = null;
+    if (!land) return;
+    pendingFocusRef.current = {
+      messageId: land.messageId,
+      mode: 'direct',
+      agentId: land.agentId,
+      sessionId: land.sessionId,
+      preferMain: land.preferMain,
+    };
+  }, []);
+
+  /**
+   * If the user switches to another agent mid-review, drop the stale queue.
+   * (Clicking two roster rows quickly used to leave a dialog for the previous agent.)
+   */
+  useEffect(() => {
+    const reviewAgent = notifyReview?.agentId;
+    if (!reviewAgent || reviewAgent === selectedAgent) return;
+    setNotifyReview(null);
+    pendingNotifyLandingRef.current = null;
+  }, [notifyReview?.agentId, selectedAgent]);
+
+  /**
+   * Roster → agent. Besides switching the view, surface that agent's unread
+   * `notify_user` reports right away.
+   *
+   * Why: a bell the user never opens is not an entry point, and the plain path lands on
+   *「whatever session I last looked at」— where the session-scoped notification banner
+   * does not match, so the reports become invisible and the user has no idea anything
+   * was sent. Reviewing them here, then landing on the session they came from, closes
+   * that loop.
+   */
+  const maybeReviewAgentNotifications = useCallback(async (agentId: string) => {
+    if (previewMode || !authUser?.id || notifyReview) return;
+    try {
+      invalidateApiCache('/notifications');
+      const { notifications } = await api.notifications.list(authUser.id, true, {
+        type: 'agent_report',
+        limit: 30,
+      });
+      const items = selectAgentReviewNotifications(notifications, agentId);
+      if (items.length === 0) return;
+      const landing = resolveReviewLanding(items);
+      pendingNotifyLandingRef.current = landing.sessionId
+        ? { agentId, sessionId: landing.sessionId, messageId: landing.messageId ?? undefined }
+        : { agentId, sessionId: null, preferMain: true };
+      setNotifyReview({ items, index: 0, agentId });
+    } catch { /* notifications are best-effort; never block navigation */ }
+  }, [previewMode, authUser?.id, notifyReview]);
+
+  const selectAgentFromRoster = useCallback((agentId: string) => {
+    setChatMode('direct');
+    setSelectedAgent(agentId);
+    setMainTab('chat');
+    void maybeReviewAgentNotifications(agentId);
+  }, [maybeReviewAgentNotifications]);
+
   const handleNotifyAcknowledge = useCallback(async (notificationId: string) => {
     setAcknowledgingNotifyId(notificationId);
+    const review = notifyReview;
     try {
-      const card = sessionNotifyCards.find(n => n.id === notificationId) ?? activeNotifyModal;
+      const card = review?.items.find(n => n.id === notificationId) ?? activeNotifyModal;
       const messageId = typeof card?.metadata?.messageId === 'string' ? card.metadata.messageId : null;
       await api.notifications.markRead(notificationId);
       setSessionNotifyCards(prev => prev.filter(n => n.id !== notificationId));
       if (messageId) {
         setHiddenNotifyMsgIds(prev => prev.filter(id => id !== messageId));
       }
-      setActiveNotifyModal(null);
+      // Step through the queue one report at a time; only the last one closes it.
+      const nextIndex = (review?.index ?? 0) + 1;
+      if (review && nextIndex < review.items.length) {
+        setNotifyReview({ ...review, index: nextIndex });
+      } else {
+        finishNotifyReview();
+      }
       window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
     } catch { /* */ }
     setAcknowledgingNotifyId(null);
-  }, [sessionNotifyCards, activeNotifyModal]);
+  }, [notifyReview, activeNotifyModal, finishNotifyReview]);
 
   const modeTitle =
     chatMode === 'channel' ? (activeGroupChat?.name ?? activeChannel) :
@@ -3720,7 +4335,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         activeChannel={activeChannel}
         activeDmUserId={activeDmUserId}
         previewMode={previewMode}
-        onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
+        onSelectAgent={(agentId) => { selectAgentFromRoster(agentId); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
         onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
         onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); setShowMemberPanel(false); if (isMobile) enterMobileDetail(); }}
         onSelectTeam={(teamId) => {
@@ -3914,7 +4529,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             activeChannel={activeChannel}
             activeDmUserId={activeDmUserId}
             teams={teams}
-            onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); setShowMemberPanel(false); }}
+            onSelectAgent={(agentId) => { selectAgentFromRoster(agentId); setShowMemberPanel(false); }}
             onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); }}
             onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); setShowMemberPanel(false); }}
             onBack={() => setShowTeamDetailPanel(false)}
@@ -3949,7 +4564,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 activeChannel={activeChannel}
                 activeDmUserId={activeDmUserId}
                 teams={teams}
-                onSelectAgent={(agentId) => { setChatMode('direct'); setSelectedAgent(agentId); setMainTab('chat'); setShowMemberPanel(false); setL2Floating(false); }}
+                onSelectAgent={(agentId) => { selectAgentFromRoster(agentId); setShowMemberPanel(false); setL2Floating(false); }}
                 onSelectChannel={(channelKey) => { setChatMode('channel'); setActiveChannel(channelKey); setMainTab('chat'); setShowMemberPanel(false); setL2Floating(false); }}
                 onSelectDm={(userId) => { setChatMode('dm'); setActiveDmUserId(userId); setMainTab('chat'); setShowMemberPanel(false); setL2Floating(false); }}
                 onBack={() => setL2Floating(false)}
@@ -4904,7 +5519,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         )}
 
         {/* Pending user-input / notify_user cards for this direct-chat session */}
-        {chatMode === 'direct' && (userInputApprovals.length > 0 || sessionNotifyCards.length > 0) && (
+        {chatMode === 'direct' && (userInputApprovals.length > 0 || toolApprovals.length > 0 || sessionNotifyCards.length > 0) && (
           <div className={`${isMobile ? 'px-3' : 'px-5'} pb-1 shrink-0 ${isEmptyChat ? '' : chatRightReserve}`}>
             <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex flex-col gap-1.5`}>
               {userInputApprovals.map(a => (
@@ -4931,12 +5546,39 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   </span>
                 </button>
               ))}
+              {toolApprovals.map(a => (
+                <button
+                  key={a.id}
+                  onClick={() => setActiveToolApproval(a)}
+                  className="w-full text-left px-3.5 py-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15 transition-colors flex items-center gap-3"
+                >
+                  <span className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-500 flex items-center justify-center shrink-0">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                      <path d="M12 9v4" /><path d="M12 17h.01" />
+                    </svg>
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="flex items-baseline gap-1.5 min-w-0">
+                      <span className="flex-1 text-sm font-medium text-fg-primary truncate">{a.title}</span>
+                      <span className="text-[10px] text-fg-tertiary shrink-0 whitespace-nowrap">{formatSmartTime(a.requestedAt, a.requestedAt, dateLabels)}</span>
+                    </span>
+                    <span className="block text-xs text-fg-tertiary truncate">
+                      {t('page.toolApprovalPrompt', { defaultValue: 'Tool execution awaiting your approval' })}
+                    </span>
+                  </span>
+                  <span className="text-xs font-medium text-amber-500 shrink-0 inline-flex items-center gap-1">
+                    {t('page.toolApprovalReview', { defaultValue: 'Review' })}
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
+                  </span>
+                </button>
+              ))}
               {sessionNotifyCards.map(n => {
                 const isHigh = n.priority === 'high' || n.priority === 'urgent';
                 return (
                   <button
                     key={n.id}
-                    onClick={() => setActiveNotifyModal(n)}
+                    onClick={() => setNotifyReview({ items: [n], index: 0 })}
                     className={`w-full text-left px-3.5 py-2.5 rounded-xl border transition-colors flex items-center gap-3 ${
                       isHigh
                         ? 'border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15'
@@ -4954,7 +5596,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <span className="flex-1 min-w-0">
                       <span className="flex items-baseline gap-1.5 min-w-0">
                         <span className="flex-1 text-sm font-medium text-fg-primary truncate">{notifTitle(n, t)}</span>
-                        <span className="text-[10px] text-fg-tertiary shrink-0 whitespace-nowrap">{formatSmartTime(n.createdAt, n.createdAt, dateLabels)}</span>
+                        <span className="text-[10px] text-fg-tertiary shrink-0 whitespace-nowrap" title={formatExactTime(n.createdAt, i18n.language)}>{timeAgo(n.createdAt, t)}</span>
                       </span>
                       <span className="block text-xs text-fg-tertiary truncate">
                         {notifBody(n, t).replace(/\s+/g, ' ').trim() || t('page.notifyUserPrompt', { defaultValue: 'Agent notification awaiting your attention' })}
@@ -4979,12 +5621,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             onSubmit={(r) => handleUserInputSubmit(activeInputModal.id, r)}
           />
         )}
+        {activeToolApproval && (
+          <ToolApprovalModal
+            approval={activeToolApproval}
+            submitting={respondingApprovalId === activeToolApproval.id}
+            readOnly={activeToolApproval.status !== 'pending'}
+            onClose={() => setActiveToolApproval(null)}
+            onDecision={(approved, comment) => handleToolApprovalDecision(activeToolApproval.id, approved, comment)}
+          />
+        )}
         {activeNotifyModal && (
           <NotifyUserModal
             notification={activeNotifyModal}
             agentName={currentAgent?.name}
             acknowledging={acknowledgingNotifyId === activeNotifyModal.id}
-            onClose={() => setActiveNotifyModal(null)}
+            index={notifyReview?.index ?? 0}
+            total={notifyReview?.items.length ?? 1}
+            onClose={finishNotifyReview}
             onAcknowledge={() => handleNotifyAcknowledge(activeNotifyModal.id)}
           />
         )}

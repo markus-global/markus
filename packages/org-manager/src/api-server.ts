@@ -7281,7 +7281,7 @@ EXPLANATION_END`;
       const channel = url.searchParams.get('channel') ?? undefined;
       const scope = url.searchParams.get('scope') ?? 'all';
       const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '30', 10), 100);
-      const results: { source: string; id: string; text: string; senderName?: string; channel?: string; sessionId?: string; agentId?: string; createdAt: string }[] = [];
+      const results: { source: string; id: string; text: string; senderName?: string; channel?: string; sessionId?: string; agentId?: string; sessionTitle?: string | null; createdAt: string }[] = [];
 
       if ((scope === 'all' || scope === 'channel') && this.storage?.channelMessageRepo) {
         const channelResults = this.storage.channelMessageRepo.searchMessages(query, channel, limit);
@@ -7305,6 +7305,9 @@ EXPLANATION_END`;
             text: r.content as string,
             sessionId: r.sessionId as string,
             agentId: r.sessionAgentId,
+            // Which conversation the hit belongs to — the result row is otherwise
+            // indistinguishable across session tabs.
+            sessionTitle: (r.sessionTitle as string | null) ?? null,
             createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
           });
         }

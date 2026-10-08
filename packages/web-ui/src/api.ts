@@ -113,6 +113,8 @@ export interface SearchResult {
   channel?: string;
   sessionId?: string;
   agentId?: string;
+  /** 该命中所属会话的标题（direct 结果）；结果行据此告诉用户「在哪个会话里」。 */
+  sessionTitle?: string | null;
   createdAt: string;
 }
 

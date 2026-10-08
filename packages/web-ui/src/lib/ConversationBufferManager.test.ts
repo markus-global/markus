@@ -564,3 +564,48 @@ describe('ConversationBufferManager.abortStream', () => {
     expect(mgr.getStreamSessions('agt_x')).toBeUndefined();
   });
 });
+
+describe('ConversationBufferManager window bounds（窗口边界必须与窗口内容同一个 key）', () => {
+  it('没有记录时按「没有更早的历史」处理', () => {
+    const mgr = new ConversationBufferManager();
+    expect(mgr.getWindowBounds('sess_a')).toEqual({ hasMore: false, oldestCursor: null });
+  });
+
+  it('按 buffer 隔离：另一个会话晚到的加载改不了这个会话的边界', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.setWindowBounds('sess_target', { hasMore: true, oldestCursor: '2026-01-01T00:00:00.000Z' });
+    // 背景 soft-refresh 属于**别的**会话（例如刚切换走的那一个）。
+    mgr.setWindowBounds('sess_other', { hasMore: false, oldestCursor: null });
+
+    expect(mgr.getWindowBounds('sess_target')).toEqual({
+      hasMore: true,
+      oldestCursor: '2026-01-01T00:00:00.000Z',
+    });
+  });
+
+  it('resetConv 连带丢掉被重置 buffer 的边界（事实与内容同生命周期）', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'agt';
+    mgr.setActiveSession('agt', 'sess_a');
+    mgr.updateMessages('agt', () => [msg('m1', 'user', 'hi')], 'sess_a');
+    mgr.setWindowBounds('sess_a', { hasMore: true, oldestCursor: 'c1' });
+
+    mgr.resetConv('agt', 'sess_b');
+
+    expect(mgr.getWindowBounds('sess_a')).toEqual({ hasMore: false, oldestCursor: null });
+  });
+
+  it('buffer 被淘汰时边界一起淘汰（不留下悬空的窗口边界）', () => {
+    const mgr = new ConversationBufferManager();
+    mgr.currentConvKey = 'conv';
+    const overflow = ConversationBufferManager.MAX_BUFFERS + 2;
+    for (let i = 0; i < overflow; i++) {
+      const id = `sess_${i}`;
+      mgr.updateMessages(`conv_${i}`, () => [msg(`m${i}`, 'user', 'x')], id);
+      mgr.setWindowBounds(id, { hasMore: true, oldestCursor: `c${i}` });
+    }
+
+    expect(mgr.getWindowBounds('sess_0')).toEqual({ hasMore: false, oldestCursor: null });
+    expect(mgr.getWindowBounds(`sess_${overflow - 1}`).hasMore).toBe(true);
+  });
+});

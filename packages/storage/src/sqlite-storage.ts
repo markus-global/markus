@@ -2793,8 +2793,10 @@ export class SqliteChatSessionRepo {
 
   searchMessages(query: string, limit = 30) {
     const pattern = `%${query}%`;
+    // `session_title` rides along so search results can show WHICH conversation a
+    // hit belongs to (the result row is otherwise indistinguishable across tabs).
     const rows = this.db.prepare(
-      `SELECT cm.*, cs.agent_id as session_agent_id
+      `SELECT cm.*, cs.agent_id as session_agent_id, cs.title as session_title
        FROM chat_messages cm
        JOIN chat_sessions cs ON cm.session_id = cs.id
        WHERE cm.content LIKE ?
@@ -2803,6 +2805,7 @@ export class SqliteChatSessionRepo {
     return rows.map(r => ({
       ...this._mapMsg(r),
       sessionAgentId: r['session_agent_id'] as string,
+      sessionTitle: (r['session_title'] as string | null) ?? null,
     }));
   }
 
