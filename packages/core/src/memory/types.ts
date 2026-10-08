@@ -137,7 +137,7 @@ export interface IMemoryStore {
    * NOTE: `getStateMemory` / `pruneStateMemory` (the state.md half of the old
    * "knowledge.md / state.md dual store") were removed on 2026-09-16. Situational
    * short-lived state is Working-layer data and lives in NOTEBOOK.md. See
-   * docs/MEMORY-SYSTEM.md §10.2 (option A).
+   * docs/architecture/MEMORY-SYSTEM.md §10.2 (option A).
    */
 
   // -- Episodic Memory: conversation sessions --

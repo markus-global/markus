@@ -12,23 +12,34 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 
 ### 0.1 Document Index
 
+> **The full, categorised index is [`docs/README.md`](../README.md).** The table below lists only this
+> document's home folder (`docs/architecture/`) plus its immediate neighbours; see the index for
+> `guides/`, `api/`, `design/` and `records/`.
+
 | Document | Domain (single responsibility) |
 |----------|-------------------------------|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) *(this file)* | System overview, package structure, core concepts, channels, deployment, observability |
+| [ARCHITECTURE-FRAGILITY.md](./ARCHITECTURE-FRAGILITY.md) | Why this system keeps producing fragile bugs, and the structural rules that prevent it |
+| [AGENT-RUNTIME.md](./AGENT-RUNTIME.md) | Agent lifecycle, execution model, workspace isolation |
 | [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | Unified cognitive cycle, deterministic context assembly, heartbeat integration |
 | [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Memory layers (ROLE / knowledge / session / notebook / activity), storage compaction, memory flush |
 | [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) | Prompt & context assembly, LLM call taxonomy, context packing, prompt caching |
 | [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
 | [STATE-MACHINES.md](./STATE-MACHINES.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
+| [STATE-OWNERSHIP.md](./STATE-OWNERSHIP.md) | State-ownership contract: who owns which state, who may read it, in which execution context |
+| [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md) | How one agent handles multiple sessions / mailbox items in parallel |
 | [TOOL-SYSTEM.md](./TOOL-SYSTEM.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
 | [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience |
 | [LLM-PROVIDER-TIMEOUTS.md](./LLM-PROVIDER-TIMEOUTS.md) | Per-provider LLM timeout/retry governance matrix, known risk inventory, target design |
-| [CODING-TOOLS.md](./CODING-TOOLS.md) | External coding CLI integration (Claude Code / Codex / Cursor Agent) |
-| [API.md](./API.md) | REST / WebSocket API reference |
-| [GUIDE.md](./GUIDE.md) | Setup, deployment, and usage guide |
-| [REMOTE-ACCESS.md](./REMOTE-ACCESS.md) | Remote access configuration |
-| [RELEASE-AND-DISTRIBUTION.md](./RELEASE-AND-DISTRIBUTION.md) | Release process and distribution |
-| [agent-liveness-redesign.md](../packages/org-manager/docs/agent-liveness-redesign.md) | 存活/自愈机制审计记录（心跳风暴根因 + 重构 1–4 完成状态）；现行设计并入本文件 §3.10 |
+| [LEARNING-LOOP.md](./LEARNING-LOOP.md) | Agent self-improvement, distillation, memory consolidation |
+| [frontend/TEAM-CHAT.md](./frontend/TEAM-CHAT.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
+| [../api/API.md](../api/API.md) | REST / WebSocket API reference |
+| [../guides/GUIDE.md](../guides/GUIDE.md) | Setup, deployment, and usage guide |
+| [../guides/CODING-TOOLS.md](../guides/CODING-TOOLS.md) | External coding CLI integration (Claude Code / Codex / Cursor Agent) |
+| [../guides/REMOTE-ACCESS.md](../guides/REMOTE-ACCESS.md) | Remote access configuration |
+| [../guides/RELEASE-AND-DISTRIBUTION.md](../guides/RELEASE-AND-DISTRIBUTION.md) | Release process and distribution |
+| [../design/DELIVERABLE-SHARING-DESIGN.md](../design/DELIVERABLE-SHARING-DESIGN.md) | Sharing deliverables to Markus Hub |
+| [agent-liveness-redesign.md](../../packages/org-manager/docs/agent-liveness-redesign.md) | Liveness / self-healing audit record (heartbeat-storm root cause + completion state of refactors 1–4); the current design lives in §3.10 below |
 
 ### 0.2 Relationship Graph
 
@@ -425,25 +436,62 @@ Client touchpoints:
 | `LLMRouter` | Must not route Markus credit exhaustion to BYOK |
 | OverviewUsage / claim UI | Reads `GET /api/user/plan`; Free claim deep-links to Hub `?claim=1` |
 
-Frozen response-field contract (keep in sync with Hub handlers): [`packages/core/test/hub-billing-contract.test.ts`](../packages/core/test/hub-billing-contract.test.ts) — mirrors Hub `billing-crossflows` plan + `cu/sync` keys (`remainingCu`, `openrouter.remainingUsd`, `planSource`, buckets, etc.).
+Frozen response-field contract (keep in sync with Hub handlers): [`packages/core/test/hub-billing-contract.test.ts`](../../packages/core/test/hub-billing-contract.test.ts) — mirrors Hub `billing-crossflows` plan + `cu/sync` keys (`remainingCu`, `openrouter.remainingUsd`, `planSource`, buckets, etc.).
 
-### 3.10 Agent 存活 / 自愈机制（Liveness SSOT + Conservator 统一仲裁）
+### 3.10 Agent Liveness / Self-Healing (Liveness SSOT + single Conservator arbiter)
 
-**设计主线一句话：单一存活事实源 + 一条有界安全网 + 收敛式状态机，其余全部去重。**
+**Design in one line: one liveness source of truth + one bounded safety net + a convergent state
+machine, everything else deduplicated.**
 
-背景（审计记录：[agent-liveness-redesign.md](../packages/org-manager/docs/agent-liveness-redesign.md)）：dirty / stale / stall 三个独立判定器各自为政、兜底回路没有统一仲裁和上限，曾导致「每 2 分钟一次」的心跳风暴（单 agent 数小时 600+ 条定时心跳签到）。重构 1–4 将机制收敛如下：
+Background (audit record: [agent-liveness-redesign.md](../../packages/org-manager/docs/agent-liveness-redesign.md)):
+three independent verdict loops — dirty / stale / stall — each did its own thing, and the backstop
+loop had neither a shared arbiter nor a cap, which once produced a heartbeat storm ("once every 2
+minutes": a single agent logged 600+ scheduled heartbeat check-ins over a few hours). Refactors 1–4
+converged the mechanism as follows:
 
-1. **Liveness SSOT**：`agents.last_heartbeat` 由 core 单向写入（每轮心跳完成/跳过时，含 skip 路径），所有观察者统一读它（实时读 live-view，落列供跨进程/诊断）。心跳时间戳是唯一「活着」的证据。
-2. **心跳语义收紧**：心跳 = 存活上报 + 低频巡检（默认 6h）；**skip 路径（human-chat defer / idle / deep-sleep）收敛为纯时间戳**（`recordHeartbeatSkip()`，永不调用 LLM），LLM 巡检仅在状态实际变化时发生（`heartbeatStateFingerprint()` 指纹：队列内容签名 + activeTaskIds 签名）。所有触发心跳路径都收口到 `heartbeat:trigger` → `agent.ts` 唯一 handler → `mailbox.enqueue('heartbeat')` → 单条折叠处理。
-3. **单一安全网仲裁器（Conservator）**：`packages/org-manager/src/agent-conservator.ts` 把 dirty / stale / stall 三种判定**收敛为单一组件**（重构 4 起判定原语内联，组件彻底自包含）：
-   - `evaluateConservator`（纯函数）融合脏判定 + 卡死判定（dead-dependency、stale-heartbeat）+ 过期判定（心跳/活动新鲜度），输出**唯一动作阶梯**：`ok → observe → wake → reconcile → human-review`；
-   - `AgentConservator`（周期仲裁引擎，30s 轮询，守卫启动）施加**指数退避**（base·2^(n−1)，封顶 8h）+ **单 episode 总次数上限** + **收敛证明**（未脱离 processing-like 不复位 episode；human-review 每 episode 只通知一次并停止自动动作）；
-   - Fix A 合流：连续 3 次 trigger-heartbeat 无果 → 升级 human-review（`CONSERVATOR_MAX_WAKE_ATTEMPTS=3`），从机制上排除「每 2 分钟一次」周期解；
-   - 展示路径经 `evaluateConservator` 透出 `runtime.stall` / `runtime.dirty`（形状与旧前端完全兼容），只读派生不回写。
-4. **收敛式状态机**：core 中 27 处散落 `setStatus` 写入点全部收敛为单一意图化派生函数 `transitionStatus` + 落地 `applyStatus`（`packages/core/src/agent.ts`）——error 粘性（error 后 idle 不覆盖）、聚合状态守卫（activeTasks>0 / 并发 worker 忙碌 → idle 被拒）、force 强制兜底、reset 清错、offline 无条件；心跳巡检 / 保守仲裁 / Normal 转换统一走该函数，消除竞态覆盖。
-5. **持久化通路补全**：状态 payload 携带全部权威字段（status / lastHeartbeat / activeTaskIds / currentActivity / lastError），一次回调写全；`SqliteAgentRepo.updateLastHeartbeat` 落库。
+1. **Liveness SSOT**: `agents.last_heartbeat` is written only by core (on every heartbeat completion
+   *and* skip, including the skip path); every observer reads that one field (live-view for
+   real-time, the persisted column for cross-process / diagnostics). The heartbeat timestamp is the
+   only evidence that an agent is alive.
+2. **Tighter heartbeat semantics**: a heartbeat = liveness report + low-frequency inspection (6h by
+   default). The **skip paths** (human-chat defer / idle / deep-sleep) are reduced to a pure
+   timestamp (`recordHeartbeatSkip()`, which never calls the LLM); LLM inspection happens only when
+   state actually changed — fingerprinted by `heartbeatStateFingerprint()` (queue-content signature
+   + activeTaskIds signature). Every heartbeat trigger funnels through `heartbeat:trigger` → the
+   single handler in `agent.ts` → `mailbox.enqueue('heartbeat')` → single-item coalesced processing.
+3. **Single safety-net arbiter (Conservator)**: `packages/org-manager/src/agent-conservator.ts`
+   **collapses the dirty / stale / stall verdicts into one component** (as of refactor 4 the
+   decision primitives are inlined and the component is fully self-contained):
+   - `evaluateConservator` (pure function) fuses the dirty verdict + the stuck verdict
+     (dead-dependency, stale-heartbeat) + the expiry verdict (heartbeat / activity freshness) into a
+     **single action ladder**: `ok → observe → wake → reconcile → human-review`;
+   - `AgentConservator` (periodic arbiter, 30s polling, guarded startup) applies **exponential
+     backoff** (base·2^(n−1), capped at 8h) + a **per-episode attempt cap** + **convergence proof**
+     (an episode is not reset while the agent has not left the processing-like states; human-review
+     notifies once per episode and then stops automatic action);
+   - Fix A merge: three failed trigger-heartbeats in a row escalate to human-review
+     (`CONSERVATOR_MAX_WAKE_ATTEMPTS=3`), which structurally rules out the "once every 2 minutes"
+     periodic solution;
+   - the display path exposes `runtime.stall` / `runtime.dirty` through `evaluateConservator` (shape
+     fully compatible with the old frontend) — read-only derivation, never written back.
+4. **Convergent state machine**: the 27 scattered `setStatus` write sites in core are all collapsed
+   into a single intent-based derivation function `transitionStatus` + application function
+   `applyStatus` (`packages/core/src/agent.ts`) — error is sticky (idle no longer overwrites error),
+   aggregate-state guard (activeTasks > 0 / busy concurrent workers ⇒ idle is rejected), `force` as
+   the explicit escape hatch, `reset` clears errors, `offline` is unconditional; heartbeat
+   inspection / conservator arbitration / Normal transitions all go through it, removing
+   race-induced overwrites.
+5. **Persistence path completed**: the status payload carries every authoritative field (status /
+   lastHeartbeat / activeTaskIds / currentActivity / lastError) and writes them in one callback;
+   `SqliteAgentRepo.updateLastHeartbeat` persists to the DB.
 
-旧独立模块（`agent-dirty.ts` / `agent-stall.ts` / `agent-dirty-reconciler.ts`）已于重构 4 删除，判定逻辑全部收敛进 Conservator / core 状态机。相关回归测试：`packages/org-manager/test/agent-conservator.test.ts`（19 用例：stuck-working 心跳风暴、心跳宽限、指数退避、上限收敛、degraded/dead-dependency）、`packages/org-manager/test/agent-stall-api.test.ts`（API 展示契约）、`packages/core/test/heartbeat-liveness.test.ts`（skip 纯时间戳 + 指纹巡检）、`packages/core/test/agent-status-machine.test.ts`（状态机收敛）。
+The old standalone modules (`agent-dirty.ts` / `agent-stall.ts` / `agent-dirty-reconciler.ts`) were
+deleted in refactor 4; all verdict logic converged into the Conservator / core state machine.
+Related regression tests: `packages/org-manager/test/agent-conservator.test.ts` (19 cases:
+stuck-working heartbeat storm, heartbeat grace, exponential backoff, attempt-cap convergence,
+degraded / dead-dependency), `packages/org-manager/test/agent-stall-api.test.ts` (API display
+contract), `packages/core/test/heartbeat-liveness.test.ts` (skip = pure timestamp + fingerprint
+inspection), `packages/core/test/agent-status-machine.test.ts` (state-machine convergence).
 
 ---
 
@@ -707,7 +755,7 @@ Connection: `ws://localhost:8056`
 | `system:resume-all` | Global resume event |
 | `system:emergency-stop` | Emergency stop event |
 
-**EventBus Architecture**: Each `Agent` has a private `EventBus`; the `AgentManager` has a separate manager-level `EventBus`. Agent events are forwarded to the manager's bus via `forwardAgentEvents()` so that `start.ts` WS broadcast handlers receive them. See `docs/MAILBOX-SYSTEM.md` §19 for the full forwarding table.
+**EventBus Architecture**: Each `Agent` has a private `EventBus`; the `AgentManager` has a separate manager-level `EventBus`. Agent events are forwarded to the manager's bus via `forwardAgentEvents()` so that `start.ts` WS broadcast handlers receive them. See [`MAILBOX-SYSTEM.md`](./MAILBOX-SYSTEM.md) §19 for the full forwarding table.
 
 ---
 
@@ -796,7 +844,7 @@ Agents understand the workflow and governance rules through three layers:
 
 ## 11. Observability
 
-`AgentMetricsCollector` ([`packages/core/src/agent-metrics.ts`](../packages/core/src/agent-metrics.ts))
+`AgentMetricsCollector` ([`packages/core/src/agent-metrics.ts`](../../packages/core/src/agent-metrics.ts))
 aggregates per-agent counters (tokens, cost, CU, requests, tool calls, errors, heartbeat
 success, response time) from the audit callback and event bus, and exposes
 `AgentMetricsSnapshot` over the API for the dashboard.

@@ -1,5 +1,5 @@
 /**
- * 【P1】「停止 → 重发 → 两条处理中」core 层复现/语义锁（docs/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.6）
+ * 【P1】「停止 → 重发 → 两条处理中」core 层复现/语义锁（docs/records/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.6）
  *
  * 场景：消息刚入队（human_chat item 尚未被 worker 拾取 → 无在途流），用户点「停止」。
  * 此时 `stopSending` 若传 `{ sessionId }`（既有会话）→ `resolveCancelTarget` 解析不到

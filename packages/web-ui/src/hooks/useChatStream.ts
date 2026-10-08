@@ -73,7 +73,7 @@ export interface ChatStreamContext {
   actBuffers: Map<string, unknown[]>;
   /** READ-ONLY view pointer. It has exactly one writer (`setActiveSession`), because
    *  that method also performs placeholder promotion — see H4 in
-   *  docs/PLATFORM-HARDENING-2026-10.md §3. */
+   *  docs/records/PLATFORM-HARDENING-2026-10.md §3. */
   activeSessionBuffer: ActiveSessionView;
   /** Read the messages rendered for a conversation (projection of the view pointer). */
   readConvMsgs: (k: string) => ChatMsg[] | undefined;

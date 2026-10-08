@@ -1,5 +1,5 @@
 /**
- * Knowledge lifecycle invariants (docs/MEMORY-SYSTEM.md §1.1, §3).
+ * Knowledge lifecycle invariants (docs/architecture/MEMORY-SYSTEM.md §1.1, §3).
  *
  * Locks down three real regressions:
  *   - section keys were free text, so scratch notes became "knowledge headings"

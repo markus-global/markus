@@ -1,5 +1,5 @@
 /**
- * Notebook lifecycle invariants (docs/MEMORY-SYSTEM.md §2 Notebook, §3 invariants).
+ * Notebook lifecycle invariants (docs/architecture/MEMORY-SYSTEM.md §2 Notebook, §3 invariants).
  *
  * These tests assert the INVARIANTS of the notebook, not the steps used to reach
  * them — that is what makes them survive refactors. The specific regressions they

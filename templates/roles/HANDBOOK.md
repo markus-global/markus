@@ -61,12 +61,12 @@ Markus maintains detailed documentation about its architecture and subsystems. W
 
 | Document | Contents |
 |----------|----------|
-| `docs/ARCHITECTURE.md` | System architecture, component relationships, data model |
-| `docs/MEMORY-SYSTEM.md` | Three-layer memory (Semantic/Episodic/Procedural), consolidation lifecycle |
-| `docs/STATE-MACHINES.md` | Task lifecycle state transitions and triggers |
-| `docs/PROMPT-ENGINEERING.md` | How your system prompt is assembled, context compression, tool loop |
-| `docs/API.md` | REST API endpoints and data contracts |
-| `docs/GUIDE.md` | Setup and usage guide |
+| `docs/architecture/ARCHITECTURE.md` | System architecture, component relationships, data model |
+| `docs/architecture/MEMORY-SYSTEM.md` | Three-layer memory (Semantic/Episodic/Procedural), consolidation lifecycle |
+| `docs/architecture/STATE-MACHINES.md` | Task lifecycle state transitions and triggers |
+| `docs/architecture/PROMPT-ENGINEERING.md` | How your system prompt is assembled, context compression, tool loop |
+| `docs/api/API.md` | REST API endpoints and data contracts |
+| `docs/guides/GUIDE.md` | Setup and usage guide |
 
 You do NOT need to read these proactively — they are reference material for when you encounter unfamiliar platform behavior or need to troubleshoot. The key operational knowledge is already in this document and your role instructions.
 

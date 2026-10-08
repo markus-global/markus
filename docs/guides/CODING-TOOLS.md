@@ -758,6 +758,6 @@ All coding tool types live in `packages/shared/src/types/coding-tool.ts`:
 
 ## Related Documentation
 
-- [Architecture](./ARCHITECTURE.md) — overall platform architecture
-- [API Reference](./API.md) — full REST API
+- [Architecture](../architecture/ARCHITECTURE.md) — overall platform architecture
+- [API Reference](../api/API.md) — full REST API
 - [User Guide](./GUIDE.md) — setup and Web UI usage

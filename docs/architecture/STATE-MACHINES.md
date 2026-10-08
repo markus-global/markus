@@ -554,7 +554,7 @@ complete (completed)
 ### Terminal Outcomes (all mailbox items)
 
 After `processFocusedItem` runs, exactly one terminal outcome is chosen (implemented in
-[`attention.ts`](../packages/core/src/attention.ts) `processFocusedItem`):
+[`attention.ts`](../../packages/core/src/attention.ts) `processFocusedItem`):
 
 | Outcome | Trigger | Persistence effect | Resumable? |
 |---------|---------|--------------------|-----------|

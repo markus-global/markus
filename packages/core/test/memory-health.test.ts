@@ -6,7 +6,7 @@
  *
  * 回归背景：旧实现用**整个文件大小**除 15000 作为 percent，于是"观察缓冲很大"
  * 会把健康度推到 >100%（实测 245%），而真正注入 prompt 的只有约 2k —— 一个
- * 永远在响、但从不代表真实问题的警报。详见 docs/PLATFORM-HARDENING-2026-10.md §2。
+ * 永远在响、但从不代表真实问题的警报。详见 docs/records/PLATFORM-HARDENING-2026-10.md §2。
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';

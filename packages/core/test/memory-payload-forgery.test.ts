@@ -1,7 +1,7 @@
 /**
  * H23 —— 载荷不能再伪造条目边界（in-band 容器族的格式级收口）。
  *
- * 回归背景（见 docs/PLATFORM-HARDENING-2026-10.md §19）：
+ * 回归背景（见 docs/records/PLATFORM-HARDENING-2026-10.md §19）：
  *
  *   `session-fragments.md` 是**对话分页载荷**，其正文是**任意文本**。实测（真实 Agent 数据）：
  *   一个片段的正文恰好是一份上下文转储，里面逐字包含

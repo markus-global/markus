@@ -269,7 +269,7 @@ Inside a single user turn a tool loop can issue 60+ calls, so the blob
 `sess_1789536167018_dxnmco` (66 calls, one user turn, `inputTokens` 24 481 → 269 168):
 
 - consecutive-call similarity of the compiled tail: **0.9989**
-- one persistent fact (`worker 2 正在处理同一话题`) was re-delivered **66×**
+- one persistent fact (`worker 2 is working on the same topic`) was re-delivered **66×**
 - the assistant went on to re-narrate that same fact in **3 separate iterations**
   and re-emitted identical progress-recap lines **×4 / ×3 / ×2**
 

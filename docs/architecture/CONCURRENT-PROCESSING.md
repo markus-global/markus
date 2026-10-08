@@ -1,9 +1,10 @@
-# Concurrent Processing（并发处理）
+# Concurrent Processing
 
 > Status: **implemented** · Last updated: 2026-09-11
 > Scope: how a single agent processes **multiple mailbox items / sessions at once**
 > through a pool of isolated workers, while preserving factual consistency.
-> Design origin: [`CONCURRENT-PROCESSING-DESIGN.md`](./CONCURRENT-PROCESSING-DESIGN.md) (the original design memo — rationale, alternatives, phase plan).
+> Design origin: the original design memo (rationale, alternatives, phase plan) — superseded by this
+> document and retired; recoverable from git history.
 
 Related docs: [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) (queue, priority, attention),
 [ARCHITECTURE.md](./ARCHITECTURE.md) (runtime overview),
@@ -29,7 +30,7 @@ independent consumer of the same mailbox:
 - Within any single entity, processing is still **strictly serial** — enforced by an
   *entity-affinity lock* in the mailbox.
 - Workers do not share mutable session state: each mounts its own
-  [`SessionWorkspace`](../packages/core/src/session-workspace.ts) via `AsyncLocalStorage`.
+  [`SessionWorkspace`](../../packages/core/src/session-workspace.ts) via `AsyncLocalStorage`.
 - Worker activity is made visible to every other worker through a persistent
   **concurrent handoff log**, injected into the system prompt.
 
@@ -329,8 +330,8 @@ argument so that *different* resources run in parallel:
 > `Agent.resourceLocksFor(toolCall, dataDir)` rewrites an `fs`-domain lock into the memory
 > resource lock when the path names an agent memory file (`knowledge.md`, `NOTEBOOK.md`,
 > `state.md`, `role/ROLE.md`, `role/HEARTBEAT.md`).
-> Invariant pinned by `packages/core/test/lock-resource-keys.test.ts`: **同一资源 ⇒ 同一锁键**
-> (same resource ⇒ same lock key, incl. aliases and the `file_write` route), while distinct
+> Invariant pinned by `packages/core/test/lock-resource-keys.test.ts`: **same resource ⇒ same lock key**
+> (incl. aliases and the `file_write` route), while distinct
 > resources still run in parallel.
 
 | Domain | Keyed by | Examples |
@@ -430,7 +431,7 @@ Defect registry (found 2026-09-16; each row is a *fixed* bug kept as a regressio
 | **P0-2** | a hand edit to `knowledge.md` / `NOTEBOOK.md` could be **silently overwritten** by the next in-memory whole-file rewrite | `file_write` took `fs:<path>` while `memory_update` took `memory` — same file, two non-exclusive paths | `Agent.resourceLocksFor(tc, dataDir)` rewrites an fs lock into the memory resource lock when the path names an agent memory file | same file — `file_write`/`file_edit` key equality |
 | **P0-3** | two OS processes (desktop + CLI) on the same agent have **no** mutual exclusion | `ResourceLockRegistry` and entity locks are in-process maps | **not fixed** — needs a process-level arbiter (file lock / single-instance election) | listed in §7 |
 
-Invariant to preserve when touching this area: **同一资源 ⇒ 同一锁键** — same resource ⇒ same
+Invariant to preserve when touching this area: **same resource ⇒ same lock key** — same resource ⇒ same
 lock key, *including aliases and the generic-file-tool route* — while distinct resources must
 stay parallel (a test asserts notebook∥knowledge concurrency is 2, not 1).
 

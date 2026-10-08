@@ -1,7 +1,7 @@
 /**
  * H1–H3 —— knowledge.md 的**两个预算**必须各自可执行、各自诚实。
  *
- * 回归背景（见 docs/PLATFORM-HARDENING-2026-10.md §2）：
+ * 回归背景（见 docs/records/PLATFORM-HARDENING-2026-10.md §2）：
  *
  *  1. **指标口径错误**：`getMemoryHealth()` 曾用**整个文件大小**（含**从不注入**的
  *     `## _observations` 缓冲）除注入预算，于是任何观察日志正常的 Agent 都显示
@@ -183,7 +183,7 @@ describe('H2b — curated（注入）预算同样是强不变量', () => {
 /**
  * H12 回归组 —— "上报口径必须等于执行口径"。
  *
- * 背景（见 docs/PLATFORM-HARDENING-2026-10.md §10）：H1–H3 落地后 Owner 亲测，
+ * 背景（见 docs/records/PLATFORM-HARDENING-2026-10.md §10）：H1–H3 落地后 Owner 亲测，
  * 观察缓冲依旧 119%、一个字没减。根因是**同一个预算有两种互不相等的度量**：
  * 不变量用序列化后的原始文本长度，而裁剪循环用手写常量估算 `content + 96/条`。
  * 真实条目携带 `data-meta` JSON（≈168 字符/条开销），估算系统性低估 → while 永假。
@@ -255,7 +255,7 @@ describe('H12 — 观察缓冲：上报口径 == 执行口径（真实 data-meta
 /**
  * H13 —— 压缩（`compressLongTermMemory`）只能改 curated 区。
  *
- * 背景（见 docs/PLATFORM-HARDENING-2026-10.md §11）：旧实现读**整个文件**并逐行把
+ * 背景（见 docs/records/PLATFORM-HARDENING-2026-10.md §11）：旧实现读**整个文件**并逐行把
  * 任何 `## ` 开头的行当成 curated 段落，仅排除 `_observations` 本身。于是观察/fragment
  * 正文里的 `## ` 标题被当成独立段落，Phase 2/3 再把它「归档存根化」——把观察正文
  * 覆盖成指针，并把对话文本推进知识归档。这是真实数据损坏（Owner 亲测中发现）。

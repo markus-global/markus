@@ -166,7 +166,7 @@ function sanitizeLLMReply(reply: string): string {
  *
  * The name is historical: it used to strip the `<<HANDLE_COMPLETE>>` text marker
  * before a reply was stored or shown. That protocol is retired
- * (docs/PLATFORM-HARDENING-2026-10.md §6); what remains is the legacy-token scrub
+ * (docs/records/PLATFORM-HARDENING-2026-10.md §6); what remains is the legacy-token scrub
  * (see `stripLegacyCompletionToken`) plus a trim.
  */
 function stripCompletionMarker(reply: string): string {
@@ -1559,7 +1559,7 @@ export class Agent {
           // C2 (measurement only): record turn-level harness health. With the typed
           // completion protocol the honest signals are "did this turn produce anything"
           // and "did it close itself out with end_turn" — see §6 of
-          // docs/PLATFORM-HARDENING-2026-10.md.
+          // docs/records/PLATFORM-HARDENING-2026-10.md.
           try {
             this.metricsCollector.recordTurn({
               isChat: item.sourceType === 'human_chat',
@@ -1736,7 +1736,7 @@ export class Agent {
    * The guard is TYPED: a turn that ended via the `end_turn` tool is complete by
    * definition (as are cancellation / preemption / merge), so no continuation runs.
    * The nudge asks for the `end_turn` **tool call** — the same signal the mailbox
-   * layer reads — instead of a magic string (docs/PLATFORM-HARDENING-2026-10.md §6).
+   * layer reads — instead of a magic string (docs/records/PLATFORM-HARDENING-2026-10.md §6).
    *
    * Still a single bounded continuation attempt: if it yields nothing further the
    * reply is returned as-is and the attention controller completes the item, because
@@ -8213,7 +8213,7 @@ export class Agent {
     package_install:  { domain: GLOBAL_LOCK_DOMAIN },
     hub_install:      { domain: GLOBAL_LOCK_DOMAIN },
     // 后台作业：派发期登记进程表 + 生成后续会写盘/写库的进程。
-    // 注意：锁只覆盖**派发**，作业本身的执行期在锁外（见 docs/CONCURRENT-PROCESSING.md §3.3）。
+    // 注意：锁只覆盖**派发**，作业本身的执行期在锁外（见 docs/architecture/CONCURRENT-PROCESSING.md §3.3）。
     background_exec:  { domain: GLOBAL_LOCK_DOMAIN },
     process:          { domain: GLOBAL_LOCK_DOMAIN },
     // ── 单体状态资源：按**资源**而非工具名登记 ──────────────────────────
@@ -8411,7 +8411,7 @@ export class Agent {
    * feishu 28 个），全局独占会让它们与所有文件/任务/记忆写互相阻塞，代价远超收益。
    * 代价（已知残余风险）：能力未知的工具若与 `file_write` 写同一文件，二者不互斥
    * —— 内建工具由 `agent-write-lock.test.ts` 强制显式分类，因此该残余只影响
-   * 真正动态的工具，已在 `docs/CONCURRENT-PROCESSING.md` 记录。
+   * 真正动态的工具，已在 `docs/architecture/CONCURRENT-PROCESSING.md` 记录。
    */
   private static resourceLocksFor(toolCall: LLMToolCall, dataDir?: string): LockRequest[] {
     const spec = Agent.WRITE_TOOL_DOMAINS[toolCall.name];

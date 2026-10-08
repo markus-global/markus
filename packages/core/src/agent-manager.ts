@@ -1388,7 +1388,7 @@ export class AgentManager {
     // situational state" half of an old dual store that never got a write tool, and its
     // job is covered by the notebook's `system` tier. Not creating it keeps new agents
     // from inheriting a store nobody writes to.
-    // See docs/MEMORY-SYSTEM.md §10.2 (option A).
+    // See docs/architecture/MEMORY-SYSTEM.md §10.2 (option A).
     const sessionsDir = join(agentDataDir, 'sessions');
     const dailyLogsDir = join(agentDataDir, 'daily-logs');
     mkdirSync(sessionsDir, { recursive: true });

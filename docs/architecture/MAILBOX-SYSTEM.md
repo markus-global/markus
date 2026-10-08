@@ -24,7 +24,7 @@ Early Markus let an agent handle multiple messages simultaneously, which caused:
 
 The mailbox model fixed this by treating the agent's attention as a scarce, serial resource. Concurrent processing re-introduces parallelism **only *between* entities**, and addresses each of these three failures directly:
 
-- **Memory contamination** → per-worker [`SessionWorkspace`](../packages/core/src/session-workspace.ts) isolation via `AsyncLocalStorage`.
+- **Memory contamination** → per-worker [`SessionWorkspace`](../../packages/core/src/session-workspace.ts) isolation via `AsyncLocalStorage`.
 - **Cognitive interference** → concurrent worker loops are pure consumers; triage / deliberation / preempt logic runs only in the serial loop.
 - **Non-deterministic races** → entity-affinity lock in the mailbox + an agent-level tool write-lock.
 
@@ -1219,7 +1219,7 @@ purpose, and the mailbox/attention layer receives the typed sentinel `[end_turn]
 (`END_TURN_REPLY_SENTINEL`). A tool call cannot be paraphrased into prose, cannot leak into a
 reply, and needs no detection heuristic or cleanup — the old `<<HANDLE_COMPLETE>>` string, its
 prompt injection, its `<think>`-aware detector and its leak regex were all deleted (see
-[PLATFORM-HARDENING-2026-10.md](./PLATFORM-HARDENING-2026-10.md) §6).
+[PLATFORM-HARDENING-2026-10.md](../records/PLATFORM-HARDENING-2026-10.md) §6).
 
 `detectAbnormalCompletion()` now judges exactly one thing: **did the turn produce any output at
 all?** `[preempted]`, `[cancelled]` and `[end_turn]` are deliberate typed signals → normal. An
@@ -1325,9 +1325,9 @@ When `delegate.performDeliberation` is available (always in production), the att
 **Strict state items are excluded from deliberation (critical safety)**:
 
 Items carrying formal task/requirement/workflow state transitions — collectively **strict state items** (predicate `isStrictStateItem` in `@markus/shared`):
-- `task_status_update` with `extra.triggerExecution`（正式任务执行）
-- `review_request`（评审请求）
-- `requirement_update` / `workflow_update` with `extra.actionRequired`（收尾动作）
+- `task_status_update` with `extra.triggerExecution` (formal task execution)
+- `review_request` (review request)
+- `requirement_update` / `workflow_update` with `extra.actionRequired` (closure action)
 
 are **filtered out of the deliberation view entirely**:
 
@@ -1368,9 +1368,10 @@ individual mailbox items using dedicated tools:
 | `notebook_clear` | All scenarios | Clear stale awareness |
 
 **Safety**: `human_chat` items are protected — they cannot be deferred, dropped,
-or reprioritized by tool calls. **Strict state items**（正式任务执行 / 评审 / 需求·工作流收尾动作，
-见上文）也是受保护的：`defer_mailbox_item` / `drop_mailbox_item` 会返回错误，只能通过
-`prioritize_mailbox_item` 调整优先级，最终由正常出队路径单独执行。
+or reprioritized by tool calls. **Strict state items** (formal task execution / review /
+requirement·workflow closure actions — see above) are protected too: `defer_mailbox_item` /
+`drop_mailbox_item` return an error, and only `prioritize_mailbox_item` may change their priority;
+they are ultimately executed one at a time by the normal dequeue path.
 
 **Relationship to `complete_deliberation`**: The individual tools take immediate
 effect. `complete_deliberation` handles remaining items in bulk. They are additive.

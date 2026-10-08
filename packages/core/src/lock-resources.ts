@@ -36,7 +36,7 @@ export type AgentMemoryResource = 'knowledge' | 'notebook' | 'identity' | 'state
 /**
  * 记忆文件 basename → 资源键。
  *
- * `state.md` 处于**退场中**（见 docs/MEMORY-SYSTEM.md §10.2）：
+ * `state.md` 处于**退场中**（见 docs/architecture/MEMORY-SYSTEM.md §10.2）：
  * 它保留在表里只为覆盖一次性迁移写入，不代表它仍是受支持的介质。
  */
 const MEMORY_FILE_RESOURCES: Readonly<Record<string, AgentMemoryResource>> = {

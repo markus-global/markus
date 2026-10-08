@@ -10,7 +10,7 @@ import {
 /**
  * 锁的粒度必须是**资源**，不是工具名。
  *
- * 回归背景（P0-1 / P0-2，见 docs/CONCURRENT-PROCESSING.md §4.9）：
+ * 回归背景（P0-1 / P0-2，见 docs/architecture/CONCURRENT-PROCESSING.md §4.9）：
  *   - notebook 写工具曾按「正式名 + 别名」分登记到不同的域（`notebook` /
  *     `working-memory`）—— 写**同一个 Map**，却因域名不同被判「不冲突」，锁形同虚设；
  *   - `file_write knowledge.md` 走 `fs:<path>`，而 `memory_update` 走 `memory` ——

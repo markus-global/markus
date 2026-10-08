@@ -718,7 +718,7 @@ export class ToolSelector {
    * Build the discover_tools meta-tool description.
    * Lists optional tools and available skills (prompt-based instruction packages).
    *
-   * CACHE CONTRACT (invariant I3, `docs/PROMPT-ENGINEERING.md` §2.1.1): this
+   * CACHE CONTRACT (invariant I3, `docs/architecture/PROMPT-ENGINEERING.md` §2.1.1): this
    * description MUST be a pure function of the tool REGISTRY and the skill
    * catalog — never of the per-turn selection. The `tools` array serialises ahead
    * of `system` + `messages` in the provider prompt, so one byte of drift here

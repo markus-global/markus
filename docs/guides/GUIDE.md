@@ -201,7 +201,7 @@ The left sidebar lets you choose a conversation target:
   - **Enable concurrent processing** (default on) — let the agent work several *independent* items at once via isolated worker sessions.
   - **Max workers** (1–10, default 3) — `1` means strictly serial (one item at a time), identical to disabling concurrency.
   - **Conflict policy** — *Auto* (requeue & retry when an entity is busy) or *Report* (escalate/emit a conflict event).
-  - Note: concurrency only ever applies **between** different entities. The same task, requirement, conversation, or user is never processed by two workers at once — see [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md).
+  - Note: concurrency only ever applies **between** different entities. The same task, requirement, conversation, or user is never processed by two workers at once — see [CONCURRENT-PROCESSING.md](../architecture/CONCURRENT-PROCESSING.md).
 
 ### Tasks Page
 
@@ -267,7 +267,7 @@ The Team page serves dual purposes: team management and communication hub.
 
 ## REST API Reference
 
-For the full REST API reference (all endpoints, request/response formats, and WebSocket events), see **[API.md](./API.md)**.
+For the full REST API reference (all endpoints, request/response formats, and WebSocket events), see **[API.md](../api/API.md)**.
 
 ---
 

@@ -1,5 +1,5 @@
 /**
- * Agent overview derivation rules (docs/PROMPT-ENGINEERING.md §prompt correctness
+ * Agent overview derivation rules (docs/architecture/PROMPT-ENGINEERING.md §prompt correctness
  * sibling: the panel is a *display* surface, but a wrong number there is a wrong
  * fact to the reader).
  *

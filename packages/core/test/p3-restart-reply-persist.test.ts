@@ -1,5 +1,5 @@
 /**
- * 【P3】重启后 agent 回复不显示在前端 — core 层复现/语义锁（docs/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.4）
+ * 【P3】重启后 agent 回复不显示在前端 — core 层复现/语义锁（docs/records/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.4）
  *
  * 场景：重启后 `recoverStaleItems` → `loadQueued` 从 DB JSON 还原排队项，函数闭包
  * （`extra.onEvent`、`metadata.responsePromise`）序列化丢失 → `processMailboxItemCore`

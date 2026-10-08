@@ -37,11 +37,11 @@ MUST: Prefer `knowledge.md` on disk under the agent data dir as the single long-
 MUST: On first load, if only legacy `MEMORY.md` exists, migrate it into `knowledge.md`.
 MUST: Prompt injection of knowledge MUST honor `KNOWLEDGE_PROMPT_MAX_TOKENS`
 (`0` for reflex profile — omit full dump).
-MUST: `MEMORY_MD_CURATED_MAX_CHARS`（注入段预算，15 000）is a **soft** line, enforced at load in
+MUST: `MEMORY_MD_CURATED_MAX_CHARS` (injected-section budget, 15,000) is a **soft** line, enforced at load in
 **report-only** mode: `MemoryStore.enforceMemoryBudgets()` runs on construction/load and only
 logs + feeds the in-prompt health banner. The platform never rewrites the agent's curated prose
 (the old load-time archiving of the largest curated sections was removed — see
-[PLATFORM-HARDENING-2026-10.md](./PLATFORM-HARDENING-2026-10.md) §24). The **hard ceiling**
+[PLATFORM-HARDENING-2026-10.md](../records/PLATFORM-HARDENING-2026-10.md) §24). The **hard ceiling**
 `MEMORY_MD_CURATED_HARD_MAX_CHARS` (3× the soft budget) IS enforced, but **fail-closed on the
 write path**: `addLongTermMemory` refuses the write (nothing written, actionable reason) and the
 agent consolidates with its own tools (`memory_organize` / `memory_update`). The observation
@@ -406,7 +406,7 @@ Periodic process that maintains semantic memory health. Runs via `consolidateMem
 There is **no** load-time hygiene pass over the file. The platform does not rewrite, prune or
 dedupe the agent's curated prose — that was `pruneMemoryMd()` (**removed**; it did title/size
 heuristic surgery on the agent's own sections). See
-[PLATFORM-HARDENING-2026-10.md](./PLATFORM-HARDENING-2026-10.md) §24.
+[PLATFORM-HARDENING-2026-10.md](../records/PLATFORM-HARDENING-2026-10.md) §24.
 
 What remains is **single-point cleaning at the write entry**: `sanitizeSectionBody()` strips
 leaked `<think>` blocks (closed and unclosed) and demotes a sibling `## ` inside a body to
@@ -489,10 +489,10 @@ Every state a running agent carries is placed by asking two questions only — *
 
 | Layer | Scope | Durability | Carrier | Write path | Injected as |
 |---|---|---|---|---|---|
-| **Identity** | agent-lifetime | permanent (human-owned) | `role/ROLE.md`, `role/HEARTBEAT.md`, skills | human edit / explicit file write | fixed段 (system) |
+| **Identity** | agent-lifetime | permanent (human-owned) | `role/ROLE.md`, `role/HEARTBEAT.md`, skills | human edit / explicit file write | fixed segment (system) |
 | **Knowledge** | agent-lifetime | long, forgettable | `knowledge.md` (curated sections + `## _observations`) | `memory_save`, `memory_update` (incl. `mode="forget"`) | volatile tail, budget-capped |
 | **Working** | agent-lifetime | short, auto-expiring | `NOTEBOOK.md` (per-tier TTL: agent 96h / system 24h) | `notebook_upsert` | volatile tail (`## Notebook`) |
-| **Session** | one session/worker | session-scoped | slots / `summary` / fragments | `session` tool family | fixed段 + history |
+| **Session** | one session/worker | session-scoped | slots / `summary` / fragments | `session` tool family | fixed segment + history |
 
 ### 10.2 Consolidation record — what was merged away
 

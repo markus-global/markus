@@ -100,7 +100,7 @@ Markus 会组队、拆任务、开始执行 — 专才并行，每份交付都�
 - 🤖 **任意 LLM** — Anthropic、OpenAI、Google、DeepSeek、MiniMax、Ollama、OpenRouter 等 — 模型统一自动发现，故障自动切换。
 - 🔒 **自带密钥** — 凭证只存在你的部署里，绝不上第三方云。
 
-> 技能生态完整说明：[技能生态适配器](docs/SKILL-ECOSYSTEM.md)
+> 技能生态完整说明：[技能生态适配器](docs/guides/SKILL-ECOSYSTEM.md)
 
 ---
 
@@ -152,23 +152,28 @@ TypeScript monorepo，模块化包结构：
 
 | 指南 | 说明 |
 |------|------|
-| [用户指南](docs/GUIDE.md) | 安装、配置、Web 控制台使用 |
-| [架构设计](docs/ARCHITECTURE.md) | 系统设计、Agent 运行时、记忆、治理 |
-| [Agent 运行时](docs/AGENT-RUNTIME.md) | Agent 生命周期、执行模型、工作区隔离 |
-| [工具系统](docs/TOOL-SYSTEM.md) | 内置工具、MCP 集成、工具契约 |
-| [技能生态](docs/SKILL-ECOSYSTEM.md) | 从 skills.sh、SkillHub、OpenClaw、AgentScope、MCP 导入/导出技能 |
-| [记忆系统](docs/MEMORY-SYSTEM.md) | 三层记忆架构（Tulving） |
-| [认知架构](docs/COGNITIVE-ARCHITECTURE.md) | 确定性情境装配（原认知准备流水线 CPP 已退役） |
-| [邮箱系统](docs/MAILBOX-SYSTEM.md) | Agent 注意力模型、优先级队列、分诊 |
-| [提示词工程](docs/PROMPT-ENGINEERING.md) | 系统提示词组装、工具循环、压缩 |
-| [状态机](docs/STATE-MACHINES.md) | 任务与需求 FSM 规范 |
-| [并发处理](docs/CONCURRENT-PROCESSING.md) | 单个 Agent 并行处理多个邮箱项 / 会话 |
-| [流式与重连](docs/STREAMING-AND-REATTACH.md) | 流式事件、断连重连、工具循环完整性 |
-| [API 参考](docs/API.md) | REST API 端点与 WebSocket 事件 |
-| [编码工具](docs/CODING-TOOLS.md) | Claude Code / Codex / Cursor 集成 |
-| [学习循环](docs/LEARNING-LOOP.md) | Agent 自我改进与记忆沉淀 |
-| [远程访问](docs/REMOTE-ACCESS.md) | Cloudflare Tunnel、Tailscale、FRP、ngrok 配置 |
-| [发布与分发](docs/RELEASE-AND-DISTRIBUTION.md) | 构建、打包、发布流水线 |
+文档总入口见 **[文档索引](docs/README.md)**。
+
+| [架构设计](docs/architecture/ARCHITECTURE.md) | 系统设计、Agent 运行时、记忆、治理 |
+| [Agent 运行时](docs/architecture/AGENT-RUNTIME.md) | Agent 生命周期、执行模型、工作区隔离 |
+| [工具系统](docs/architecture/TOOL-SYSTEM.md) | 内置工具、MCP 集成、工具契约 |
+| [记忆系统](docs/architecture/MEMORY-SYSTEM.md) | 三层记忆架构（Tulving） |
+| [认知架构](docs/architecture/COGNITIVE-ARCHITECTURE.md) | 确定性情境装配（原认知准备流水线 CPP 已退役） |
+| [邮箱系统](docs/architecture/MAILBOX-SYSTEM.md) | Agent 注意力模型、优先级队列、分诊 |
+| [提示词工程](docs/architecture/PROMPT-ENGINEERING.md) | 系统提示词组装、工具循环、压缩 |
+| [状态机](docs/architecture/STATE-MACHINES.md) | 任务与需求 FSM 规范 |
+| [并发处理](docs/architecture/CONCURRENT-PROCESSING.md) | 单个 Agent 并行处理多个邮箱项 / 会话 |
+| [流式与重连](docs/architecture/STREAMING-AND-REATTACH.md) | 流式事件、断连重连、工具循环完整性 |
+| [Team Chat（前端）](docs/architecture/frontend/TEAM-CHAT.md) | Team Chat 页面状态模型与交互契约 |
+| [学习循环](docs/architecture/LEARNING-LOOP.md) | Agent 自我改进与记忆沉淀 |
+| [API 参考](docs/api/API.md) | REST API 端点与 WebSocket 事件 |
+| [用户指南](docs/guides/GUIDE.md) | 安装、配置、Web 控制台使用 |
+| [开发指南](docs/guides/DEVELOPMENT.md) | 本地环境、开发脚本、调试 |
+| [编码工具](docs/guides/CODING-TOOLS.md) | Claude Code / Codex / Cursor 集成 |
+| [技能生态](docs/guides/SKILL-ECOSYSTEM.md) | 从 skills.sh、SkillHub、OpenClaw、AgentScope、MCP 导入/导出技能 |
+| [远程访问](docs/guides/REMOTE-ACCESS.md) | Cloudflare Tunnel、Tailscale、FRP、ngrok 配置 |
+| [发布与分发](docs/guides/RELEASE-AND-DISTRIBUTION.md) | 构建、打包、发布流水线 |
+| [开发记录](docs/records/) | 带日期的审计、事故复盘、加固日志 |
 | [博客](https://markus.global/blog) | 关于 Markus 与 AI Agent 的文章与教程 |
 
 ---
@@ -180,7 +185,7 @@ TypeScript monorepo，模块化包结构：
 - **Discord** — 全球英文用户实时交流 — *即将上线*
 - **微信群** — 中文用户交流群，获取帮助、内测与贡献支持（建设中）
 
-加入方式、频道地图与贡献者升级路径见 [docs/COMMUNITY.md](docs/COMMUNITY.md)。所有频道遵守我们的 [行为准则](CODE_OF_CONDUCT.md)。
+加入方式、频道地图与贡献者升级路径见 [docs/guides/COMMUNITY.md](docs/guides/COMMUNITY.md)。所有频道遵守我们的 [行为准则](CODE_OF_CONDUCT.md)。
 
 ---
 

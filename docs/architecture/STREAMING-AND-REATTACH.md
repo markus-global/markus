@@ -17,9 +17,9 @@ terminal states, including "completed without marker").
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| `SSEHandler` | [`org-manager/src/sse-handler.ts`](../packages/org-manager/src/sse-handler.ts) | Owns one HTTP SSE response; drives `agent.sendMessageStream`; buffers + persists |
+| `SSEHandler` | [`org-manager/src/sse-handler.ts`](../../packages/org-manager/src/sse-handler.ts) | Owns one HTTP SSE response; drives `agent.sendMessageStream`; buffers + persists |
 | `SSEBuffer` | `org-manager/src/sse-*` | Batches writes, heartbeats the connection |
-| `ActiveStreamRegistry` / `ActiveStreamSession` | [`org-manager/src/active-stream-registry.ts`](../packages/org-manager/src/active-stream-registry.ts) | Tracks in-flight generations for reattach; ring buffer + UI snapshot |
+| `ActiveStreamRegistry` / `ActiveStreamSession` | [`org-manager/src/active-stream-registry.ts`](../../packages/org-manager/src/active-stream-registry.ts) | Tracks in-flight generations for reattach; ring buffer + UI snapshot |
 | `cancelToken` | in `SSEHandler` | `{ cancelled, userStopped }` — the single source of truth for stopping the agent |
 
 ---

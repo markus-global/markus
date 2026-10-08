@@ -1,7 +1,7 @@
 /**
  * H9 — 「Agent 引用了未安装的技能」必须结构化可见，而不是只丢一行日志。
  *
- * 回归背景（docs/PLATFORM-HARDENING-2026-10.md §7 H9）：创建/恢复 agent 的两处代码各自
+ * 回归背景（docs/records/PLATFORM-HARDENING-2026-10.md §7 H9）：创建/恢复 agent 的两处代码各自
  * 算了一遍 `config.skills.filter(s => !registry.get(s))`，然后**只 log.warn**。启动恢复
  * 几十个 agent 时刷屏、而界面上零可见——受影响的 agent 静默降级（相关工具从未注册），
  * 看起来一切正常。

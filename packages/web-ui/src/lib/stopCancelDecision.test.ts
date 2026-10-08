@@ -1,7 +1,7 @@
 /**
  * stopSending 的「是否触发后端取消」判定 —— 单一决策源。
  *
- * 缺陷（docs/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.6 H1）：
+ * 缺陷（docs/records/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.6 H1）：
  * 旧 `stopSending` 无条件调 `cancelProcessing(agentId, target)`，而 target 在
  * 新会话（无既定 session / PLACEHOLDER）时是 `undefined` —— 请求不带 body →
  * 服务端 `resolveCancelTarget(undefined)` 走 `{ kind: 'root' }` 兼容路径，

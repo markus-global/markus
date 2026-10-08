@@ -722,7 +722,7 @@ export class MemoryStore implements IMemoryStore {
    * with the state.md store. Situational state is Working-layer data and lives in
    * NOTEBOOK.md (`notebook_upsert`), which already has per-tier TTL — a second
    * short-lived store added no capability, only a second place to look.
-   * See docs/MEMORY-SYSTEM.md §10.2 (option A).
+   * See docs/architecture/MEMORY-SYSTEM.md §10.2 (option A).
    */
 
   // --- Short-term: session messages ---
@@ -1088,7 +1088,7 @@ export class MemoryStore implements IMemoryStore {
         // Replacer must be a FUNCTION: `truncatedContent` is agent-authored and may
         // contain `$&` / ``$` `` / `$'` / `$1`, which a string replacement would
         // expand — silently duplicating the surrounding file. Same class of bug as
-        // tools/literal-replace.ts; see docs/FILE-EDIT-LITERAL-REPLACEMENT-FIX.md.
+        // tools/literal-replace.ts; see docs/records/FILE-EDIT-LITERAL-REPLACEMENT-FIX.md.
         updated = existing.replace(regex, () => `${sectionHeader}\n${truncatedContent}\n`);
       } else {
         // 审计 P-17（严重 bug 修复）：`## _observations` 必须是**最后一个**段落——
@@ -2352,7 +2352,7 @@ export class MemoryStore implements IMemoryStore {
    * A trailing pointer comment is deliberately NOT written: the curated region is injected into
    * every prompt, so a comment after the last `## section` would be absorbed into that section's
    * body and injected with it. Where observations went is documented in
-   * docs/PLATFORM-HARDENING-2026-10.md §20 and visible as observations.json next to the file.
+   * docs/records/PLATFORM-HARDENING-2026-10.md §20 and visible as observations.json next to the file.
    */
   private writeKnowledgeMd(text: string): void {
     const curated = splitKnowledgeSections(text).curated.trimEnd();

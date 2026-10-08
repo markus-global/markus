@@ -10,7 +10,7 @@ Related docs: [AGENT-RUNTIME.md](./AGENT-RUNTIME.md) (SSOT for packs/budgets),
 [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) (how tool definitions and
 results are packed into context), [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) (the attention
 loop that owns each turn), [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) (how
-tool progress and tool errors reach the client), [CODING-TOOLS.md](./CODING-TOOLS.md)
+tool progress and tool errors reach the client), [CODING-TOOLS.md](../guides/CODING-TOOLS.md)
 (external coding CLIs, a distinct concern from the general tool loop).
 
 ---
@@ -19,7 +19,7 @@ tool progress and tool errors reach the client), [CODING-TOOLS.md](./CODING-TOOL
 
 Not every registered tool is sent to the model on every call. Sending the full registry
 would inflate the system/tool prefix (token tax) and dilute the model's attention. The
-[`ToolSelector`](../packages/core/src/tool-selector.ts) chooses a working set per call
+[`ToolSelector`](../../packages/core/src/tool-selector.ts) chooses a working set per call
 **within a Scenario Capability Pack** ([AGENT-RUNTIME.md](./AGENT-RUNTIME.md) §2).
 
 ### 1.0 Spec: Scenario Capability Packs
@@ -122,7 +122,7 @@ Test IDs: `A-tooldef-budget`, `A-tooldef-sticky-capped`, `S-catalog-not-in-toold
 Tool results are strings the model reads back as `tool` messages. A consistent envelope
 lets the model, the tool loop (loop detection, error handling), and the activity UI agree
 on success vs failure. Canonical helpers live in
-[`tools/result.ts`](../packages/core/src/tools/result.ts):
+[`tools/result.ts`](../../packages/core/src/tools/result.ts):
 
 ```
 toolOk(data)  → {"...data", "status":"success", "success":true}
@@ -160,7 +160,7 @@ Results larger than `OFFLOAD_THRESHOLD` (50,000 chars) are written to
 `{dataDir}/tool-outputs/…` and replaced with a **preview + file path** so the model can
 `file_read` the rest in chunks (browser snapshots get a larger 30k preview;
 `file_read` output is exempt to avoid an offload loop). See
-[`Agent.offloadLargeResult`](../packages/core/src/agent.ts).
+[`Agent.offloadLargeResult`](../../packages/core/src/agent.ts).
 
 - **Spec**: The offload replacement is a clearly-marked, machine-recognizable envelope
   carrying the full-content **path**, so downstream summarization never drops the pointer.
@@ -181,7 +181,7 @@ Results larger than `OFFLOAD_THRESHOLD` (50,000 chars) are written to
 
 A "turn" runs the model, executes any tool calls it emits, appends the results, and calls
 the model again — until the model stops requesting tools (or a safety cap is hit). Markus
-runs this loop in several entry points in [`agent.ts`](../packages/core/src/agent.ts):
+runs this loop in several entry points in [`agent.ts`](../../packages/core/src/agent.ts):
 streaming chat (`handleMessageStream`), non-streaming chat (`handleMessage`), task
 execution (`executeTask` / `executeTaskConcurrent`), and respond-in-session
 (`respondInSession`). (The old completion-marker continuation path — `ensureCompletionMarker` —
@@ -229,7 +229,7 @@ Shared safety behavior across paths:
 
 `spawn_subagent` and `spawn_subagents` run focused child agents with a **fresh, isolated
 message history** that inherits the parent's tools and returns synchronously as a
-`tool_result`. See [`tools/subagent.ts`](../packages/core/src/tools/subagent.ts).
+`tool_result`. See [`tools/subagent.ts`](../../packages/core/src/tools/subagent.ts).
 
 Current guardrails:
 
